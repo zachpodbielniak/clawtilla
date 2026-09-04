@@ -130,6 +130,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/computer/clawt-desktop-relay.h \
 	$(SRCDIR)/computer/clawt-computer-factory.h \
 	$(SRCDIR)/chat/clawt-message.h \
+	$(SRCDIR)/chat/clawt-turn-step.h \
 	$(SRCDIR)/chat/clawt-chat-run.h \
 	$(SRCDIR)/chat/clawt-chat-layout.h \
 	$(SRCDIR)/decision/clawt-decision.h \
@@ -217,6 +218,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-venture.c \
 	$(SRCDIR)/core/daemon-config.c \
 	$(SRCDIR)/core/daemon-skill.c \
+	$(SRCDIR)/core/daemon-step.c \
 	$(SRCDIR)/core/clawt-event-bus.c \
 	$(SRCDIR)/core/clawt-event-log.c \
 	$(SRCDIR)/integration/clawt-connector.c \
@@ -280,6 +282,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/computer/clawt-desktop-relay.c \
 	$(SRCDIR)/computer/clawt-computer-factory.c \
 	$(SRCDIR)/chat/clawt-message.c \
+	$(SRCDIR)/chat/clawt-turn-step.c \
 	$(SRCDIR)/chat/clawt-chat-run.c \
 	$(SRCDIR)/chat/clawt-chat-layout.c \
 	$(SRCDIR)/decision/clawt-decision.c \

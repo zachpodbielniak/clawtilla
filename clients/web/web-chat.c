@@ -478,6 +478,123 @@ conversation_switcher(ClawtWebApp *app, const gchar *agent_id,
     return HTMX_ELEMENT(g_steal_pointer(&bar));
 }
 
+/*
+ * What the turn running in this conversation has done so far.
+ *
+ * Its own region rather than part of the transcript, and listening for
+ * `step` rather than `fleet`: a turn produces tens of steps, and
+ * re-fetching a whole conversation for each one would make every open
+ * browser pay for the agent working.  Undotted because a dot in an
+ * hx-trigger is a class selector.
+ *
+ * Steps are never persisted, so a page opened mid-turn gets its
+ * history from this one call and nowhere else.  Empty is the ordinary
+ * answer -- no turn running, or one that has not reached a tool yet --
+ * and draws nothing at all rather than an empty box that would sit
+ * under every idle conversation.
+ */
+static HtmxElement *
+turn_steps(ClawtWebApp *app, const gchar *agent_id, const gchar *peer)
+{
+    g_autoptr(HtmxDiv) box = htmx_div_new();
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    JsonArray *steps;
+    guint i;
+    guint n;
+
+    htmx_element_add_class(HTMX_ELEMENT(box), "turn-steps");
+    htmx_element_set_id(HTMX_ELEMENT(box), "turn-steps");
+
+    {
+        g_autofree gchar *url = NULL;
+        g_autofree gchar *escaped = g_uri_escape_string(agent_id, NULL, FALSE);
+
+        url = g_strdup_printf("/f/a/%s/steps", escaped);
+        htmx_element_set_attribute(HTMX_ELEMENT(box), "hx-get", url);
+        htmx_element_set_attribute(HTMX_ELEMENT(box), "hx-trigger",
+                                   "sse:step");
+        htmx_element_set_attribute(HTMX_ELEMENT(box), "hx-swap", "outerHTML");
+    }
+
+    clawt_web_payload_set(payload, "room", peer != NULL ? peer : agent_id);
+    clawt_web_payload_set(payload, "as", peer != NULL ? agent_id : "user");
+
+    reply = clawt_web_app_call(app, "room.steps",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    steps = clawt_web_member_array(clawt_web_root(reply), "steps");
+    n = (steps != NULL) ? json_array_get_length(steps) : 0;
+
+    for (i = 0; i < n; ) {
+        JsonObject *entry = json_array_get_object_element(steps, i);
+        g_autoptr(ClawtTurnStep) step = NULL;
+
+        if (entry == NULL) {
+            i++;
+            continue;
+        }
+
+        step = clawt_turn_step_new_from_object(
+            entry, clawt_web_member(entry, "agent", NULL));
+
+        if (step == NULL) {
+            i++;
+            continue;
+        }
+
+        /*
+         * A run of tool calls becomes one line, exactly as it does in
+         * the GTK client -- the counting and the wording are both
+         * clawt_turn_step_run_label()'s, because a rule two clients
+         * apply separately is a rule they will disagree about.
+         */
+        if (clawt_turn_step_joins_run(step)) {
+            guint tools = 0;
+            guint failed = 0;
+            g_autofree gchar *label = NULL;
+            HtmxP *row;
+
+            while (i < n) {
+                JsonObject *item = json_array_get_object_element(steps, i);
+                g_autoptr(ClawtTurnStep) run = (item != NULL)
+                    ? clawt_turn_step_new_from_object(item, NULL) : NULL;
+
+                if (run == NULL || !clawt_turn_step_joins_run(run))
+                    break;
+
+                tools++;
+                if (clawt_turn_step_get_failed(run))
+                    failed++;
+                i++;
+            }
+
+            label = clawt_turn_step_run_label(tools, failed);
+            row = clawt_web_text(label, failed > 0 ? "turn-step bad"
+                                                   : "turn-step good");
+            clawt_web_add(box, row);
+            continue;
+        }
+
+        {
+            g_autofree gchar *text = clawt_turn_step_summary(step);
+            g_autofree gchar *marked = NULL;
+            g_autofree gchar *css = NULL;
+
+            if (clawt_turn_step_get_kind(step) == CLAWT_STEP_THINKING)
+                marked = g_strdup_printf("thinking: %s", text);
+
+            css = g_strdup_printf("turn-step %s", clawt_turn_step_tone(step));
+
+            clawt_web_add(box, clawt_web_text(
+                marked != NULL ? marked : text, css));
+            i++;
+        }
+    }
+
+    return HTMX_ELEMENT(g_steal_pointer(&box));
+}
+
 static HtmxElement *
 transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
            const gchar *peer)
@@ -601,6 +718,17 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
                           message_element(one, agent_id, has_avatar,
                                           run_start, color));
         }
+    }
+
+    /*
+     * What the agent is doing right now, at the live end -- after the
+     * messages and before the anchor, so it reads as the continuation
+     * of the conversation rather than as a panel beside it.
+     */
+    {
+        g_autoptr(HtmxElement) live = turn_steps(app, agent_id, peer);
+
+        htmx_node_add_child(HTMX_NODE(inner), HTMX_NODE(live));
     }
 
     /*
@@ -1548,6 +1676,28 @@ on_transcript_fragment(HtmxRequest *request, GHashTable *params,
 }
 
 /*
+ * Just the live step region, for the sse:step trigger.
+ *
+ * Deliberately not the whole transcript: this fires tens of times per
+ * turn, and re-rendering a conversation each time is what the separate
+ * trigger exists to avoid.
+ */
+static HtmxResponse *
+on_steps_fragment(HtmxRequest *request, GHashTable *params,
+                  gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+    g_autoptr(HtmxElement) fragment = NULL;
+
+    (void)request;
+
+    fragment = turn_steps(app, agent_id, NULL);
+
+    return clawt_web_fragment_response(fragment);
+}
+
+/*
  * The bytes of one attachment.
  *
  * Fetched from the daemon rather than read off disk: clawtilla-web and
@@ -1728,6 +1878,7 @@ clawt_web_register_chat(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_post(router, "/a/:id/draft", on_draft, app);
     htmx_router_post(router, "/a/:id/interrupt", on_interrupt, app);
     htmx_router_get(router, "/f/a/:id/transcript", on_transcript_fragment, app);
+    htmx_router_get(router, "/f/a/:id/steps", on_steps_fragment, app);
     htmx_router_get(router, "/f/attachment/:id", on_attachment, app);
     htmx_router_get(router, "/a/:id/export", on_export, app);
     htmx_router_get(router, "/a/:id/copy", on_copy, app);

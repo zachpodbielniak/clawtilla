@@ -193,6 +193,27 @@ struct _ClawtDaemon {
     ClawtTurnWatch   *room_watch;   /* rooms.turn_timeout_seconds */
     ClawtSteerQueue  *steers;       /* messages typed at a busy agent */
     GHashTable       *room_holder;  /* room id -> agent id holding its turn */
+
+    /*
+     * The steps of each room's running turn: room id -> GPtrArray of
+     * ClawtTurnStep*.
+     *
+     * Kept only while the turn runs, and only so a client that opens a
+     * room mid-turn is not left staring at a typing dot with no idea
+     * what the agent has been doing.  Both clients rebuild a chat pane
+     * when somebody switches rooms, so without this every switch throws
+     * the running turn's history away.
+     *
+     * Never written to the transcript.  A step is not part of the
+     * answer, and the last thing in a thread is what
+     * clawt_task_manager_complete_on_turn_end() reads as a task's
+     * result -- a persisted step would make "Ran 6 commands" the
+     * reported outcome of a delegated task.
+     *
+     * Dropped by clawt_daemon_turn_settle_room(), which is the one
+     * place a room's turn ends.
+     */
+    GHashTable       *room_steps;
     GHashTable       *turn_grace;   /* agent id -> GSource*, see arm_grace() */
     GSource          *turn_sweep;
     guint             turn_grace_seconds;
@@ -1033,6 +1054,29 @@ void clawt_daemon_turn_settle(ClawtDaemon *self, const gchar *agent_id);
 void clawt_daemon_turn_begin_room(ClawtDaemon *self, const gchar *agent_id,
                                   const gchar *room_id);
 void clawt_daemon_turn_settle_room(ClawtDaemon *self, const gchar *room_id);
+
+/**
+ * clawt_daemon_note_step:
+ * @self: the daemon
+ * @step: one step of a running turn
+ *
+ * Redacts @step, keeps it for its room while the turn runs, and
+ * publishes it as a `turn.step` event.
+ *
+ * Deliberately not a delivery.  See daemon-step.c.
+ */
+void clawt_daemon_note_step(ClawtDaemon *self, ClawtTurnStep *step);
+
+/**
+ * clawt_daemon_room_steps:
+ * @self: the daemon
+ * @room_id: (nullable): a room
+ *
+ * Returns: (transfer container) (element-type ClawtTurnStep): what the
+ *   room's running turn has done so far, oldest first.  Empty when no
+ *   turn is running, which is not an error.
+ */
+GPtrArray *clawt_daemon_room_steps(ClawtDaemon *self, const gchar *room_id);
 
 /*
  * A turn is waiting on a person, and is waiting no longer.

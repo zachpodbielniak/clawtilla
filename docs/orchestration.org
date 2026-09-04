@@ -338,12 +338,81 @@ The notice is:
 The settle also spends the delegation's invite: the assignee's sign-off
 after the notice -- the text an AI CLI cannot help writing -- goes
 nowhere, so one settle is one delivery.  And the assignee's /mid-turn/
-thread messages, the "Still working..." notes libreclaw posts every few
-minutes, are recorded in the room and the recall index without waking
-the delegator at all.  Interim progress is read, through
+thread messages -- a guardian refusal, a restart notice -- are recorded
+in the room and the recall index without waking the delegator at all.  Interim progress is read, through
 ~clawtilla_task_status~ or the room, never delivered; the conclusion is
 delivered.  A delegator polls nothing and an assignee narrates to
 nobody, which is the turn economy the rest of this page asks for.
+
+*** Watching a turn while it runs
+:PROPERTIES:
+:CUSTOM_ID: turn-steps
+:END:
+
+An agent's turn can run for a long time.  With nothing to show for it, a
+ten-minute turn and a wedged one look identical: a typing dot, then
+either an answer or nothing.
+
+So an agent reports its *steps* as it takes them -- the tools it reaches
+for and the prose it writes between them -- and both clients draw them
+at the live end of the conversation.  A run of tool calls collapses to
+one line ("Ran 6 commands", "Ran 13 commands (1 failed)") so the prose
+between them stays readable; hovering it in the GTK client shows each
+command.
+
+**** A step is not a message, and that is the whole design
+
+This is the part worth understanding, because the obvious
+implementation is a trap the project has already fallen into once.
+
+libreclaw used to post a "Still working..." note into the room every
+five minutes.  For a person that is a line to glance at and ignore.  For
+an *agent* it is a delivery, and delivery is what starts a turn: the
+recipient has to read it, decide it needs no answer, and stop -- and pay
+a model call for doing so.  On a fleet where agents wait on each other,
+a peer working for twenty minutes made four turns happen in somebody
+else's context for no reason.  The notes were switched off for exactly
+that.
+
+A step is therefore not a message.  It has no id, no sender and no
+thread, so there is nothing about it a router could deliver or a reader
+could reply to, and there is no code path from a step to a mailbox.  An
+agent watching a peer work takes no turn over it, because there is
+nothing to take a turn on.  That is structural, not a flag somebody
+could forget to check.
+
+It follows that steps are never persisted.  They are not written to the
+transcript, not held in the event replay ring, and not written to the
+event log -- which also means the last thing in a thread is still the
+agent's own writing, so a delegated task's inferred result cannot become
+"Ran 6 commands".  A client that opens a room mid-turn asks ~room.steps~
+for the running turn's history; when the turn settles, there is nothing
+left to ask for.
+
+Tool arguments appear as a one-line preview with secrets redacted, never
+the whole argument object.  Turn the whole thing off with
+~stream_steps: false~ -- fleet-wide under ~defaults~, or per agent under
+~agents.<id>.runtime~ -- for a fleet where even a redacted command line
+should not reach whoever can open the chat.
+
+**** The two turn timeouts are off by default
+
+Both ~agents.runtime.turn_timeout_seconds~ and
+~rooms.turn_timeout_seconds~ default to 0, which disables them.
+
+They used to default to twenty and five minutes, and both numbers were
+guesses that were wrong in the expensive direction.  A long refactor or
+a slow test suite is not a wedged turn, and the five-minute room budget
+stopped an agent doing real work in the operator's own room and stalled
+the room, with a notice that read as though the agent had misbehaved.
+
+Steps are what made them unnecessary.  Every step counts as activity, so
+a turn that is working now says so continuously and a person can /see/ a
+stalled one rather than having a timer guess for them.
+
+Set either to a number to bring the watchdog back -- the room one is
+worth having in a busy shared room, where the point is that no single
+member holds the floor indefinitely.
 
 **** Reporting progress without finishing
 

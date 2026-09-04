@@ -750,11 +750,31 @@ test_the_watchdog_reaches_the_agents_config(void)
                                           "/tmp/s.sock", "/tmp/state", NULL);
     g_assert_nonnull(strstr(unbounded, "watchdog_timeout_seconds: 0"));
 
-    /* And an agent that says nothing gets the schema's default. */
+    /*
+     * And an agent that says nothing gets the schema's default,
+     * whatever that is.
+     *
+     * Asked of the schema rather than written out.  A literal here was
+     * a second copy of the default, and when the default changed the
+     * test failed for a value nobody had got wrong -- while still not
+     * checking the thing it was for, which is that the rendered figure
+     * comes from the config at all.
+     */
     ordinary = clawt_config_render_agent(config,
                                          g_ptr_array_index(agents, 2),
                                          "/tmp/s.sock", "/tmp/state", NULL);
-    g_assert_nonnull(strstr(ordinary, "watchdog_timeout_seconds: 1200"));
+    {
+        const ClawtSchemaEntry *entry = clawt_config_schema_lookup(
+            "agents.runtime.turn_timeout_seconds");
+        g_autofree gchar *expected = NULL;
+
+        g_assert_nonnull(entry);
+        g_assert_nonnull(entry->default_value);
+
+        expected = g_strdup_printf("watchdog_timeout_seconds: %s",
+                                   entry->default_value);
+        g_assert_nonnull(strstr(ordinary, expected));
+    }
 }
 
 /* ── Drafts ──────────────────────────────────────────────────────── */

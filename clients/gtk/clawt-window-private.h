@@ -347,6 +347,23 @@ struct _ClawtWindow {
     GtkRevealer       *jump_revealer;
     GtkWidget         *unread_marker;    /* borrowed; owned by transcript */
 
+    /*
+     * What the agent is doing right now, drawn at the live end of the
+     * transcript while a turn runs.
+     *
+     * Steps are never persisted, so this is rebuilt from the daemon's
+     * per-room list whenever the shown room changes -- switching away
+     * and back must not lose the running turn's history, and the client
+     * has nowhere of its own to have kept it.
+     *
+     * The widget is borrowed; the transcript owns it.  It is dropped
+     * when the turn settles, because the answer that follows is what
+     * the reader wanted and a stale list of tool calls under it reads
+     * as work still in flight.
+     */
+    GtkWidget         *steps_block;      /* borrowed; owned by transcript */
+    GPtrArray         *steps;            /* ClawtTurnStep*, the shown room's */
+
     GtkTextView       *entry;
     GtkWidget         *placeholder;
     GtkLabel          *streaming;
@@ -909,6 +926,34 @@ clawt_gtk_reset_transcript(ClawtWindow *self);
 
 void
 clawt_gtk_set_activity(ClawtWindow *self, const gchar *text);
+
+/**
+ * clawt_gtk_steps_add:
+ * @self: the window
+ * @step: one step of the shown room's running turn
+ *
+ * Adds @step to the live block at the end of the transcript.
+ */
+void clawt_gtk_steps_add(ClawtWindow *self, ClawtTurnStep *step);
+
+/**
+ * clawt_gtk_steps_clear:
+ * @self: the window
+ *
+ * Drops the live block and everything in it.  Called when a turn
+ * settles and when the shown room changes.
+ */
+void clawt_gtk_steps_clear(ClawtWindow *self);
+
+/**
+ * clawt_gtk_steps_load:
+ * @self: the window
+ *
+ * Asks the daemon what the shown room's running turn has done so far
+ * and draws it.  A room with no turn running answers with nothing,
+ * which is not an error.
+ */
+void clawt_gtk_steps_load(ClawtWindow *self);
 
 void
 clawt_gtk_set_following(ClawtWindow *self, gboolean following);

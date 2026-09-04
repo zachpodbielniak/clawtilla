@@ -69,6 +69,7 @@ typedef struct _ClawtClient         ClawtClient;
 
 /* Chat */
 typedef struct _ClawtMessage        ClawtMessage;
+typedef struct _ClawtTurnStep       ClawtTurnStep;
 typedef struct _ClawtRoom           ClawtRoom;
 typedef struct _ClawtRoomManager    ClawtRoomManager;
 typedef struct _ClawtTranscript     ClawtTranscript;

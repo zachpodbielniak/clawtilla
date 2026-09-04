@@ -1228,6 +1228,26 @@ clawt_scope_covers(ClawtScope           scope,
     return FALSE;
 }
 
+/* Register ClawtStepKind as a GLib enum type */
+GType
+clawt_step_kind_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_STEP_TEXT, "CLAWT_STEP_TEXT", "text" },
+            { CLAWT_STEP_THINKING, "CLAWT_STEP_THINKING", "thinking" },
+            { CLAWT_STEP_TOOL, "CLAWT_STEP_TOOL", "tool" },
+            { CLAWT_STEP_STATUS, "CLAWT_STEP_STATUS", "status" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtStepKind", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
 /* Register ClawtMemoryScope as a GLib enum type */
 GType
 clawt_memory_scope_get_type(void)

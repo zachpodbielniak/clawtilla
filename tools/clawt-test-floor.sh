@@ -26,7 +26,7 @@ set -eu
 # suite grows.  It sits at the real count rather than below it: every
 # binary short of that is one that did not run, and a floor with slack
 # in it is a floor that tolerates exactly the failure it exists for.
-TEST_FLOOR=78
+TEST_FLOOR=79
 
 main () {
     if [ $# -ne 1 ]

@@ -25,6 +25,7 @@ enum {
     SIGNAL_HELLO,
     SIGNAL_MESSAGE,
     SIGNAL_TYPING,
+    SIGNAL_STEP,
     SIGNAL_CLOSED,
     N_SIGNALS
 };
@@ -216,6 +217,69 @@ handle_typing(ClawtLink *self, JsonObject *payload)
     g_signal_emit(self, signals[SIGNAL_TYPING], 0, room_id, typing);
 }
 
+/*
+ * One step of the turn the agent is running.
+ *
+ * Read as a step and never as a message, which is why this is a
+ * separate handler rather than a flag on handle_chat_out(): there is no
+ * path from here into the router, so no later edit can turn a tool call
+ * into a delivery that starts a turn in somebody else.
+ *
+ * A step with no room is dropped.  An agent runs a turn per room and
+ * can be mid-turn in three at once, so a roomless step has no
+ * transcript it demonstrably belongs to -- and putting one
+ * conversation's tool calls in another's reads as the agent having done
+ * something nobody asked for.  Silently, because a peer that predates
+ * the room round-trip would otherwise warn on every step it sends.
+ */
+static void
+handle_step(ClawtLink *self, JsonObject *payload)
+{
+    g_autoptr(ClawtTurnStep) step = NULL;
+    const gchar *room_id = NULL;
+    const gchar *kind_nick = NULL;
+    const gchar *text = NULL;
+    const gchar *tool = NULL;
+    const gchar *detail = NULL;
+    gboolean failed = FALSE;
+    gint kind = CLAWT_STEP_STATUS;
+
+    if (payload == NULL || self->agent_id == NULL)
+        return;
+
+    if (json_object_has_member(payload, "room_id"))
+        room_id = json_object_get_string_member(payload, "room_id");
+
+    if (room_id == NULL || room_id[0] == '\0')
+        return;
+
+    if (json_object_has_member(payload, "kind"))
+        kind_nick = json_object_get_string_member(payload, "kind");
+    if (json_object_has_member(payload, "text"))
+        text = json_object_get_string_member(payload, "text");
+    if (json_object_has_member(payload, "tool"))
+        tool = json_object_get_string_member(payload, "tool");
+    if (json_object_has_member(payload, "detail"))
+        detail = json_object_get_string_member(payload, "detail");
+
+    /*
+     * Read with the boolean reader, because `failed` is a JSON boolean.
+     * Reading it with the string reader is the same class of bug as a
+     * misspelled member with nothing misspelled in it: json-glib returns
+     * the fallback and every failing tool would draw as a successful one.
+     */
+    if (json_object_has_member(payload, "failed"))
+        failed = json_object_get_boolean_member(payload, "failed");
+
+    if (!clawt_enum_from_nick(CLAWT_TYPE_STEP_KIND, kind_nick, &kind))
+        kind = CLAWT_STEP_STATUS;
+
+    step = clawt_turn_step_new((ClawtStepKind)kind, self->agent_id, room_id,
+                               text, tool, detail, failed);
+
+    g_signal_emit(self, signals[SIGNAL_STEP], 0, step);
+}
+
 static void
 handle_mcp_request(ClawtLink *self, const LcBridgeFrame *frame)
 {
@@ -280,6 +344,10 @@ handle_frame(ClawtLink *self, const LcBridgeFrame *frame)
 
     case LC_BRIDGE_FRAME_CHAT_TYPING:
         handle_typing(self, frame->payload);
+        break;
+
+    case LC_BRIDGE_FRAME_CHAT_STEP:
+        handle_step(self, frame->payload);
         break;
 
     case LC_BRIDGE_FRAME_MCP_REQUEST:
@@ -674,6 +742,24 @@ clawt_link_class_init(ClawtLinkClass *klass)
      *
      * The connection has gone.  Emitted exactly once.
      */
+    /**
+     * ClawtLink::step:
+     * @self: the link
+     * @step: (type ClawtTurnStep): what the agent just did
+     *
+     * Emitted for each step of a turn the agent is running.
+     *
+     * Telemetry about work in flight, not a message.  Anything
+     * connected to this must not enqueue, deliver or reply -- a step
+     * that became a delivery would start a turn in whoever received it,
+     * and a fleet where every agent starts a turn on every step of
+     * every other agent's turn does nothing else.
+     */
+    signals[SIGNAL_STEP] =
+        g_signal_new("step", CLAWT_TYPE_LINK, G_SIGNAL_RUN_LAST, 0,
+                     NULL, NULL, NULL, G_TYPE_NONE, 1,
+                     CLAWT_TYPE_TURN_STEP);
+
     signals[SIGNAL_CLOSED] =
         g_signal_new("closed", CLAWT_TYPE_LINK, G_SIGNAL_RUN_LAST, 0,
                      NULL, NULL, NULL, G_TYPE_NONE, 0);

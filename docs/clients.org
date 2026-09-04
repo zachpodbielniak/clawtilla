@@ -378,6 +378,32 @@ Nothing moved in the URL.  Each page keeps the nickname it had, so
 where it did; the section is which tab is drawn as current, not part of
 the path.
 
+*** Watching a turn while it runs
+
+An agent's steps -- the tools it reaches for and the prose it writes
+between them -- appear at the live end of the chat while its turn runs,
+under whatever it has already said.
+
+A run of consecutive tool calls collapses to one line ("Ran 6 commands",
+"Ran 13 commands (1 failed)"); its tooltip lists each command.  Prose
+appears as it is written, a paragraph at a time.  Reasoning is marked as
+such, because it is explicitly not what the agent is telling anybody.
+Only a failed tool is coloured -- a colour on every row is a colour that
+has stopped meaning anything.
+
+The block clears when the turn settles and the answer takes its place.
+Steps are never stored, so what you see is the running turn only;
+switching rooms and coming back refetches it from the daemon, and after
+the turn ends there is nothing to refetch.
+
+The web client shows the same thing in the same place, refreshed on its
+own SSE event so a turn's tool calls do not re-fetch the whole
+conversation.
+
+Both are switched off by ~stream_steps: false~.  The reasoning, and why
+a step is deliberately not a message, is in
+[[file:orchestration.org::#turn-steps][Watching a turn while it runs]].
+
 *** A VM agent's hardware
 
 Cores, memory, disk and screen size sit together in the agent editor,

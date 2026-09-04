@@ -161,6 +161,40 @@ typedef enum {
 ClawtAlertTier clawt_alert_tier_for_event(ClawtEvent *event);
 
 /**
+ * clawt_event_is_ephemeral:
+ * @event: the event
+ *
+ * Whether @event describes work in flight rather than something that
+ * happened.
+ *
+ * An ephemeral event is delivered live to every subscriber and then
+ * forgotten: it is not kept in the bus's replay ring and not written to
+ * the ndjson event log.  Two separate reasons, and both matter.
+ *
+ * The ring is small and shared.  A turn makes tens of tool calls, so
+ * retaining steps would push real events out of it within one busy
+ * turn -- and a client resuming from a cursor would be told its replay
+ * was incomplete because an agent had been working, which is exactly
+ * when it most needs the messages it missed.
+ *
+ * The log is the record.  A step is not part of the answer and is
+ * deliberately never persisted anywhere, because the last thing in a
+ * thread is what `clawt_task_manager_complete_on_turn_end()` reads as a
+ * task's result -- a retained step would make "Ran 6 commands" the
+ * recorded outcome of somebody's delegated work.
+ *
+ * A client that missed steps is caught up from the room's own live list
+ * instead, which is dropped when the turn ends.
+ *
+ * Here rather than in the bus and the log separately, because the two
+ * had no reason to disagree and every reason to be asked the same
+ * question.
+ *
+ * Returns: %TRUE if @event must not be retained
+ */
+gboolean clawt_event_is_ephemeral(ClawtEvent *event);
+
+/**
  * CLAWT_TOAST_REPEAT_SECONDS:
  *
  * How long an identical toast is treated as already said.

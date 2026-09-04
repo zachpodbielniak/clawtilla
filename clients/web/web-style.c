@@ -469,6 +469,28 @@ clawt_web_stylesheet(void)
      */
     ".transcript-inner{max-width:var(--chat-measure);margin:0 auto}"
     /*
+     * What the agent is doing right now, at the live end.  Set in the
+     * dim text colour and one step down in size, because these are not
+     * the answer -- drawing them in the same voice as a reply is how a
+     * half-finished tool call gets read as one.
+     *
+     * Only a failure is coloured.  A colour on every row is a colour
+     * that has stopped meaning anything, which is the argument the
+     * alert tiers already make.
+     */
+    ".turn-steps{display:flex;flex-direction:column;gap:.15rem;"
+    "margin:.5rem 0 .25rem}"
+    ".turn-step{margin:0;font-size:.85rem;color:var(--muted);"
+    "line-height:1.45}"
+    /*
+     * The step text can be a whole command line, so it wraps rather
+     * than widening its container.  A wrapping element still reports
+     * its unwrapped width as its natural one, and one long preview
+     * would otherwise make the conversation scroll sideways.
+     */
+    ".turn-step{overflow-wrap:anywhere}"
+    ".turn-step.bad{color:var(--bad-fg)}"
+    /*
      * A run is consecutive messages from one sender: one header, tight
      * spacing inside, a bigger gap between runs.  That grouping is what
      * makes a stack of paragraphs read as a conversation, and it is the

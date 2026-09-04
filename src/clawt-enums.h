@@ -1298,6 +1298,31 @@ const gchar *clawt_memory_scope_nth_nick(guint n);
 const gchar *clawt_memory_scope_nth_label(guint n);
 
 /**
+ * ClawtStepKind:
+ * @CLAWT_STEP_TEXT: prose the agent wrote partway through a turn
+ * @CLAWT_STEP_THINKING: reasoning, which is explicitly not the answer
+ * @CLAWT_STEP_TOOL: a tool it reached for, and whether that failed
+ * @CLAWT_STEP_STATUS: the backend saying something about itself
+ *
+ * What one step of a running turn was.
+ *
+ * Like #ClawtSkillSource and for the same reason, this has no
+ * `_count()`/`_nth()` family: nobody picks a step kind.  It is reported
+ * by whatever produced the step, and the only consumers are the two
+ * clients deciding how to draw it -- which they do through
+ * clawt_turn_step_tone(), not by spelling these out.
+ */
+typedef enum {
+    CLAWT_STEP_TEXT = 0,
+    CLAWT_STEP_THINKING,
+    CLAWT_STEP_TOOL,
+    CLAWT_STEP_STATUS
+} ClawtStepKind;
+
+GType clawt_step_kind_get_type(void) G_GNUC_CONST;
+#define CLAWT_TYPE_STEP_KIND (clawt_step_kind_get_type())
+
+/**
  * ClawtSkillSource:
  * @CLAWT_SKILL_SOURCE_USER: written here, by a person, in the library
  * @CLAWT_SKILL_SOURCE_IMPORTED: copied in from somewhere else

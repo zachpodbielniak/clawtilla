@@ -58,6 +58,7 @@ enum {
     SIGNAL_LINK_REMOVED,
     SIGNAL_MESSAGE,
     SIGNAL_TYPING,
+    SIGNAL_STEP,
     SIGNAL_LINK_CONTESTED,
     N_SIGNALS
 };
@@ -136,6 +137,25 @@ on_link_typing(ClawtLink   *link,
 
     g_signal_emit(self, signals[SIGNAL_TYPING], 0,
                   clawt_link_get_agent_id(link), room_id, typing);
+}
+
+/*
+ * Relays one step of the turn the agent is running.
+ *
+ * The typing indicator says a turn is happening; this says what it is
+ * doing.  Both come up the same link and neither is a message: nothing
+ * downstream of here enqueues, routes or replies.
+ */
+static void
+on_link_step(ClawtLink     *link,
+             ClawtTurnStep *step,
+             gpointer       user_data)
+{
+    ClawtLinkServer *self = user_data;
+
+    (void)link;
+
+    g_signal_emit(self, signals[SIGNAL_STEP], 0, step);
 }
 
 /*
@@ -379,6 +399,7 @@ on_incoming(GSocketService    *service,
     g_signal_connect(link, "hello", G_CALLBACK(on_link_hello), self);
     g_signal_connect(link, "message", G_CALLBACK(on_link_message), self);
     g_signal_connect(link, "typing", G_CALLBACK(on_link_typing), self);
+    g_signal_connect(link, "step", G_CALLBACK(on_link_step), self);
     g_signal_connect(link, "closed", G_CALLBACK(on_link_closed), self);
 
     /*
@@ -760,6 +781,21 @@ clawt_link_server_class_init(ClawtLinkServerClass *klass)
         g_signal_new("typing", CLAWT_TYPE_LINK_SERVER, G_SIGNAL_RUN_LAST,
                      0, NULL, NULL, NULL, G_TYPE_NONE, 3,
                      G_TYPE_STRING, G_TYPE_STRING, G_TYPE_BOOLEAN);
+
+    /**
+     * ClawtLinkServer::step:
+     * @self: the server
+     * @step: (type ClawtTurnStep): what the agent just did
+     *
+     * Emitted for each step of a running turn.  The step names its own
+     * agent and room, so unlike ::typing this carries no separate id
+     * arguments -- one object rather than four parameters that a later
+     * field would have to become a fifth of.
+     */
+    signals[SIGNAL_STEP] =
+        g_signal_new("step", CLAWT_TYPE_LINK_SERVER, G_SIGNAL_RUN_LAST,
+                     0, NULL, NULL, NULL, G_TYPE_NONE, 1,
+                     CLAWT_TYPE_TURN_STEP);
 
     /**
      * ClawtLinkServer::link-contested:

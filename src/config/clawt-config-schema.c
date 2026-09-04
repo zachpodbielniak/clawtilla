@@ -471,6 +471,24 @@ static const ClawtSchemaEntry schema[] = {
   "false", NULL,
   "Whether new agents start with the daemon.", "0.1.0" },
 
+{ "defaults.stream_steps", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "true", NULL,
+  "Whether agents report what they are doing while a turn runs.\n"
+  "\n"
+  "With this on, the tools an agent reaches for and the prose it writes\n"
+  "between them appear in the conversation as they happen, so a turn\n"
+  "that takes ten minutes is something to watch rather than a typing\n"
+  "dot. With it off, a turn shows the indicator and then its answer.\n"
+  "\n"
+  "A step is not a message. It is never delivered, never queued, never\n"
+  "written to the transcript and never answered -- so an agent watching\n"
+  "a peer work does not take a turn over it, which is the failure the\n"
+  "old five-minute progress notes had.\n"
+  "\n"
+  "Tool arguments are previewed, one line each, with secrets redacted.\n"
+  "Turn it off for a fleet where even a redacted command line should\n"
+  "not reach whoever can open the chat.", "0.2.0" },
+
 /* ── ai_assist ───────────────────────────────────────────────────── */
 { "defaults.avatar_max_bytes", CLAWT_SCHEMA_INT,
   CLAWT_SCHEMA_FLAG_COMMENTED, "4194304", NULL,
@@ -963,18 +981,27 @@ static const ClawtSchemaEntry schema[] = {
 
 /* ── teams ───────────────────────────────────────────────────────── */
 { "rooms.turn_timeout_seconds", CLAWT_SCHEMA_INT,
-  CLAWT_SCHEMA_FLAG_NONE, "300", NULL,
+  CLAWT_SCHEMA_FLAG_NONE, "0", NULL,
   "How long one member may hold a room's turn before it is yielded.\n"
+  "0, the default, turns it off.\n"
   "\n"
-  "Counted in work, not wall time: the clock holds while the turn is\n"
-  "parked on an open decision and resumes with what is left. Stopping a\n"
-  "turn under a question nobody has answered manufactures a stranded\n"
-  "decision, which the daemon then has to repair.\n"
+  "Off for the same reason as agents.runtime.turn_timeout_seconds, and\n"
+  "the five minutes it used to default to were worse: an agent doing\n"
+  "real work in the operator's own room was stopped mid-turn and the\n"
+  "room stalled, five minutes in, and the notice explaining it read as\n"
+  "though the agent had misbehaved.\n"
+  "\n"
+  "Set a number for a busy shared room, where the point is that one\n"
+  "member must not hold the floor indefinitely. Counted in work, not\n"
+  "wall time: the clock holds while the turn is parked on an open\n"
+  "decision and resumes with what is left. Stopping a turn under a\n"
+  "question nobody has answered manufactures a stranded decision, which\n"
+  "the daemon then has to repair.\n"
   "\n"
   "Different from the runtime's turn timeout: that one catches a wedged\n"
   "worker, this one catches a wedged conversation.\n"
   "\n"
-  "Anything below 60 is raised to 60, and 0 turns it off.", "0.2.0" },
+  "Anything below 60 is raised to 60.", "0.2.0" },
 
 { "teams", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Teams, so a fleet larger than a handful has a shape.\n"
@@ -1937,15 +1964,28 @@ static const ClawtSchemaEntry schema[] = {
   "Consecutive failures before the agent is left in error rather than\n"
   "restarted again. 0 means never give up.", "0.1.0" },
 
+{ "agents.runtime.stream_steps", CLAWT_SCHEMA_BOOLEAN,
+  CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Report this agent's steps while its turn runs. Defaults to\n"
+  "defaults.stream_steps.", "0.2.0" },
+
 { "agents.runtime.turn_timeout_seconds", CLAWT_SCHEMA_INT,
-  CLAWT_SCHEMA_FLAG_NONE, "1200", NULL,
+  CLAWT_SCHEMA_FLAG_NONE, "0", NULL,
   "How long a turn may go without producing anything before it is\n"
-  "cancelled. 0 disables it.\n"
+  "cancelled. 0, the default, disables it.\n"
   "\n"
-  "Activity, not duration: a turn may legitimately run for an hour\n"
-  "while events keep arriving, and a turn that has emitted nothing at\n"
-  "all for this long is wedged. A turn parked on a decision is exempt,\n"
-  "because waiting for a person is not a stall.\n"
+  "Off by default because the number was always a guess, and the guess\n"
+  "was wrong in the expensive direction: a twenty-minute ceiling killed\n"
+  "real work -- a long refactor, a slow test suite -- and reported it\n"
+  "as a wedged turn. Every step an agent takes now counts as activity,\n"
+  "so a turn that is working says so continuously and a person can see\n"
+  "a stalled one rather than having a timer guess for them.\n"
+  "\n"
+  "Set a number to bring the watchdog back. It counts activity, not\n"
+  "duration: a turn may legitimately run for an hour while steps keep\n"
+  "arriving, and one that has produced nothing at all for this long is\n"
+  "wedged. A turn parked on a decision is exempt, because waiting for a\n"
+  "person is not a stall.\n"
   "\n"
   "Watched in two places, on purpose. The daemon watches activity and\n"
   "publishes turn.timed_out; the same number is rendered into the\n"
@@ -3009,6 +3049,7 @@ static const ClawtSchemaAgentKey agent_keys[] = {
     { "model.model",                "defaults.model" },
     { "computer.type",              "defaults.computer" },
     { "runtime.autostart",          "defaults.autostart" },
+    { "runtime.stream_steps",       "defaults.stream_steps" },
     { "runtime.restart",            "defaults.restart" },
     { "computer.container.image",   "defaults.container_image" }
 };

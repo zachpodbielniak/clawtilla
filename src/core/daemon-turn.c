@@ -511,6 +511,9 @@ clawt_daemon_turn_setup(ClawtDaemon *self)
     self->room_holder = g_hash_table_new_full(g_str_hash, g_str_equal,
                                               g_free, g_free);
 
+    self->room_steps = g_hash_table_new_full(
+        g_str_hash, g_str_equal, g_free, (GDestroyNotify)g_ptr_array_unref);
+
     if (self->turn_grace_seconds == 0)
         self->turn_grace_seconds = TURN_GRACE_SECONDS;
     self->turn_grace = g_hash_table_new_full(g_str_hash, g_str_equal,
@@ -599,6 +602,7 @@ clawt_daemon_turn_teardown(ClawtDaemon *self)
      */
     g_clear_pointer(&self->turn_grace, g_hash_table_unref);
     g_clear_pointer(&self->room_holder, g_hash_table_unref);
+    g_clear_pointer(&self->room_steps, g_hash_table_unref);
 
     if (self->guard != NULL) {
         g_signal_handlers_disconnect_by_func(self->guard,
@@ -696,6 +700,13 @@ clawt_daemon_turn_settle_room(ClawtDaemon *self, const gchar *room_id)
 
     if (self->room_holder != NULL)
         g_hash_table_remove(self->room_holder, room_id);
+
+    /*
+     * And the steps of the turn that just ended.  They describe work in
+     * flight, and there is no longer any.
+     */
+    if (self->room_steps != NULL)
+        g_hash_table_remove(self->room_steps, room_id);
 }
 
 void
@@ -782,12 +793,17 @@ clawt_daemon_turn_settle(ClawtDaemon *self, const gchar *agent_id)
          * iteration is undefined, and g_hash_table_iter_remove() would
          * still leave the keys we are about to read freed underneath us.
          */
-        for (i = 0; i < held->len; i++) {
-            const gchar *room = g_ptr_array_index(held, i);
-
-            clawt_turn_watch_end(self->room_watch, room);
-            g_hash_table_remove(self->room_holder, room);
-        }
+        /*
+         * Through the per-room settle rather than repeating its body.
+         * The two had already diverged once in the making: this loop
+         * knew about the watch and the holder, and nothing here would
+         * have known about anything a later change added to the other
+         * one -- which is the shape that leaves a rule enforced at one
+         * call site instead of in the function.
+         */
+        for (i = 0; i < held->len; i++)
+            clawt_daemon_turn_settle_room(self,
+                                          g_ptr_array_index(held, i));
     }
 
     /*

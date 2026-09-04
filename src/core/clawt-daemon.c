@@ -1626,6 +1626,26 @@ notify_user_message(ClawtDaemon *self, const gchar *from, const gchar *body,
  * is never going to answer.  Not persisted: it describes right now, and
  * a client that connects late learns the state from the next transition.
  */
+/*
+ * One step of an agent's running turn.
+ *
+ * A thin forward on purpose: everything the daemon does with a step is
+ * in daemon-step.c, so there is one place to read when asking what a
+ * step can reach -- and the answer is the event bus and a bounded
+ * per-room list, never the router.
+ */
+static void
+on_link_step(ClawtLinkServer *server,
+             ClawtTurnStep   *step,
+             gpointer         user_data)
+{
+    ClawtDaemon *self = user_data;
+
+    (void)server;
+
+    clawt_daemon_note_step(self, step);
+}
+
 static void
 on_link_typing(ClawtLinkServer *server,
                const gchar     *agent_id,
@@ -5732,6 +5752,8 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
                      G_CALLBACK(on_link_removed), self);
     g_signal_connect(self->link_server, "message",
                      G_CALLBACK(on_link_message), self);
+    g_signal_connect(self->link_server, "step",
+                     G_CALLBACK(on_link_step), self);
     g_signal_connect(self->link_server, "typing",
                      G_CALLBACK(on_link_typing), self);
     g_signal_connect(self->link_server, "link-contested",

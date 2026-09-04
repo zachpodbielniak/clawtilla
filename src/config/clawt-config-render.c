@@ -406,6 +406,23 @@ render_clawtilla_channel(GString          *out,
      * question, and it landed in the operator's transcript.
      */
     append_key_bool(out, 4, "progress_enabled", FALSE);
+
+    /*
+     * What replaced them.  libreclaw reports the tools the agent
+     * reaches for and the prose it writes between them as *steps*,
+     * which travel as telemetry rather than as posts: they are never
+     * delivered, never queued and never written to the transcript, so
+     * an agent watching a peer work does not take a turn over one.
+     *
+     * Written even at the default for the same reason the watchdog is:
+     * a config that states the value is a config somebody can read the
+     * answer out of, and `false` has to be rendered or leaving the key
+     * out would restore the channel's own default instead of honouring
+     * the fleet's.
+     */
+    append_key_bool(out, 4, "steps_enabled",
+                    clawt_agent_config_get_boolean(agent,
+                                                   "runtime.stream_steps"));
 }
 
 /*

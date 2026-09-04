@@ -336,6 +336,23 @@ defaults:
   # Whether new agents start with the daemon.
   autostart: false
 
+  # Whether agents report what they are doing while a turn runs.
+  #
+  # With this on, the tools an agent reaches for and the prose it writes
+  # between them appear in the conversation as they happen, so a turn
+  # that takes ten minutes is something to watch rather than a typing
+  # dot. With it off, a turn shows the indicator and then its answer.
+  #
+  # A step is not a message. It is never delivered, never queued, never
+  # written to the transcript and never answered -- so an agent watching
+  # a peer work does not take a turn over it, which is the failure the
+  # old five-minute progress notes had.
+  #
+  # Tool arguments are previewed, one line each, with secrets redacted.
+  # Turn it off for a fleet where even a redacted command line should
+  # not reach whoever can open the chat.
+  stream_steps: true
+
   # # Largest profile picture the daemon will read and serve.
   # #
   # # A picture crosses IPC as bytes rather than as a path, because a

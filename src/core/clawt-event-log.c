@@ -154,6 +154,13 @@ on_bus_event(ClawtEventBus *bus, ClawtEvent *event, gpointer user_data)
 
     (void)bus;
 
+    /*
+     * The log is the record, and a step is not part of one.  See
+     * clawt_event_is_ephemeral().
+     */
+    if (clawt_event_is_ephemeral(event))
+        return;
+
     if (!clawt_event_log_append(self, event, &error)) {
         /*
          * Warned once per failure rather than raised: losing the log is

@@ -598,11 +598,32 @@ client raises a toast and leaves the activity line clear.
 A room has one state per member, so there is no single honest answer and
 the key is omitted rather than guessed at.
 
-~room.list~, ~room.create~, ~room.add~, ~room.history~.
+~room.list~, ~room.create~, ~room.add~, ~room.history~, ~room.steps~.
 
 ~room.history~ accepts an agent id as well as a room id: an agent id
 means the direct room with that agent, the same way it does for
 ~msg.send~.  Pass ~as~ to say who is asking; it defaults to ~user~.
+
+~room.steps~ takes the same ~room~ and ~as~ pair, through the same
+resolver, and answers with what the turn running in that room has done
+so far: an array of ~steps~, oldest first, plus the ~room~ it resolved.
+
+Each entry carries ~step_kind~ (~text~, ~thinking~, ~tool~ or
+~status~), ~room_id~, the ~agent~ whose turn it is, and then whichever
+of ~text~, ~tool~ and ~detail~ apply.  ~failed~ is a *JSON boolean* and
+is present on every entry.
+
+An empty array is the ordinary answer, not a failure.  A room with no
+turn running has no steps, and neither does one whose agent has not
+reached a tool yet -- so this is safe to call on every refresh.  A room
+that does not resolve answers the same way rather than refusing, because
+a handler that calls an ordinary condition an error stacks one toast per
+refresh over whatever is underneath it.
+
+The list is *live only*.  It is dropped the moment the room's turn
+settles and is never written to the transcript, so this is the only way
+to catch up on a turn that was already running when a client opened the
+room -- and there is nothing to fetch afterwards.
 
 *** mailbox.*
 
@@ -1223,6 +1244,7 @@ Every kind published, by subject:
 | a cloud image | ~image.progress~ (~done~, ~total~), ~image.finished~ (~path~ or ~error~) |
 | an agent | ~computer.exec~ |
 | an agent | ~turn.timed_out~, ~turn.repeating~, ~message.steered~ |
+| an agent | ~turn.step~ (~step_kind~, ~room_id~, ~text~, ~tool~, ~detail~, ~failed~) |
 | a task | ~handoff.queued~, ~handoff.settled~ |
 
 ~decision.settled~ exists because ~decision.asked~ on its own could only
@@ -1379,6 +1401,32 @@ held text is delivered.
 message had travelled -- which is what lets a client show a chain
 climbing towards ~max_hops~ instead of an inexplicable wall of polite
 agreement.
+
+~turn.step~ is one step of a turn that is still running: a tool the
+agent reached for, or a paragraph it wrote between two of them.  It
+carries the same members ~room.steps~ does.
+
+It is *ephemeral*.  Unlike every other kind in the table it is delivered
+live and then forgotten -- not held in the replay ring, and not written
+to the ndjson event log.  Two separate reasons.  The ring is small and
+shared, and a turn makes tens of tool calls, so retaining steps would
+evict real events within one busy turn and a client resuming from a
+cursor would be told its replay was incomplete precisely because an
+agent had been working.  The log is the record, and a step is not part
+of one: the last thing in a thread is what a finished turn's task result
+is inferred from, so a retained step would make "Ran 6 commands" the
+recorded outcome of somebody's delegated work.
+
+A step is *not a message*.  It has no id, no sender and no thread, so
+there is nothing about it a router could deliver or a reader could reply
+to.  That is structural rather than a flag: there is no code path from a
+step to a mailbox.  It matters because delivery is what starts a turn --
+an agent that took a turn over each step of a peer's turn would answer
+its own answers for ever, which is a faster version of what the
+five-minute "Still working..." notes used to do.
+
+A client that missed steps catches up with ~room.steps~, not by
+replaying the event stream.
 
 ~agent.typing~ carries ~typing~ ("true" or "false") and, when the agent
 named one, ~room~.  It originates in libreclaw, which raises the

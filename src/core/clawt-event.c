@@ -240,10 +240,12 @@ clawt_alert_tier_for_event(ClawtEvent *event)
         return CLAWT_ALERT_SKIP;
 
     /*
-     * One per percent, and a spinner.  Neither is a thing that happened.
+     * One per percent, a spinner, and a running commentary.  None of
+     * them is a thing that happened.
      */
     if (g_strcmp0(kind, "image.progress") == 0 ||
-        g_strcmp0(kind, "agent.typing") == 0)
+        g_strcmp0(kind, "agent.typing") == 0 ||
+        g_strcmp0(kind, "turn.step") == 0)
         return CLAWT_ALERT_SKIP;
 
     /*
@@ -442,4 +444,19 @@ clawt_team_tally(JsonArray   *agents,
             json_object_get_boolean_member(agent, "busy"))
             (*busy)++;
     }
+}
+
+gboolean
+clawt_event_is_ephemeral(ClawtEvent *event)
+{
+    const gchar *kind;
+
+    g_return_val_if_fail(event != NULL, FALSE);
+
+    kind = clawt_event_get_kind(event);
+
+    if (kind == NULL)
+        return FALSE;
+
+    return g_strcmp0(kind, "turn.step") == 0;
 }

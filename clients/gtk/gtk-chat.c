@@ -50,6 +50,265 @@ clawt_gtk_set_activity(ClawtWindow *self, const gchar *text)
     gtk_spinner_start(self->activity_spinner);
 }
 
+/* ------------------------------------------------------------------ */
+/* The live end of the transcript: what the agent is doing now          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * One row of the live block.
+ *
+ * A caption in the step's own tone, indented under the transcript's
+ * left edge so a run of them reads as one thing happening rather than
+ * as several messages.
+ */
+static GtkWidget *
+step_row_new(const gchar *text, const gchar *tone, gboolean monospace)
+{
+    GtkWidget *label = gtk_label_new(text);
+
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+    gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+    gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
+
+    /*
+     * A wrapping label reports its *unwrapped* width as its natural
+     * one, and the scroller above gives a child exactly that -- so one
+     * long tool preview would make the whole page scroll sideways with
+     * nothing ellipsised and nothing logged.  The max-width cap is what
+     * makes the wrap actually happen.
+     */
+    gtk_label_set_max_width_chars(GTK_LABEL(label), 60);
+
+    gtk_widget_add_css_class(label, "caption");
+    gtk_widget_add_css_class(label, "dim-label");
+
+    if (monospace)
+        gtk_widget_add_css_class(label, "monospace");
+
+    /*
+     * Only a failure is coloured.  If every row carried a colour the
+     * colour would stop meaning anything, which is the same argument
+     * the alert tiers make.
+     */
+    if (g_strcmp0(tone, "bad") == 0)
+        gtk_widget_add_css_class(label, "error");
+
+    return label;
+}
+
+/*
+ * Redraws the live block from self->steps.
+ *
+ * Rebuilt wholesale rather than appended to, because a run of tool
+ * calls collapses into one line whose text changes as the run grows --
+ * "Ran 5 commands" becoming "Ran 6 commands" is an edit to an existing
+ * row, not a new one, and tracking which row that was is more state
+ * than redrawing a list that is bounded at two hundred entries.
+ */
+static void
+steps_rebuild(ClawtWindow *self)
+{
+    GtkWidget *box;
+    guint i;
+
+    if (self->transcript == NULL)
+        return;
+
+    if (self->steps_block != NULL) {
+        gtk_box_remove(self->transcript, self->steps_block);
+        self->steps_block = NULL;
+    }
+
+    if (self->steps == NULL || self->steps->len == 0)
+        return;
+
+    box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    gtk_widget_set_margin_start(box, 12);
+    gtk_widget_set_margin_top(box, 6);
+    gtk_widget_set_margin_bottom(box, 6);
+    gtk_widget_add_css_class(box, "clawt-turn-steps");
+
+    for (i = 0; i < self->steps->len; ) {
+        ClawtTurnStep *step = g_ptr_array_index(self->steps, i);
+
+        /*
+         * A run of tool calls becomes one line.  A turn makes tens of
+         * them, and a row each buries the prose between them -- which
+         * is the part somebody is actually reading.
+         */
+        if (clawt_turn_step_joins_run(step)) {
+            guint tools = 0;
+            guint failed = 0;
+            g_autofree gchar *label = NULL;
+            g_autoptr(GString) tip = g_string_new(NULL);
+
+            while (i < self->steps->len) {
+                ClawtTurnStep *run = g_ptr_array_index(self->steps, i);
+                g_autofree gchar *line = NULL;
+
+                if (!clawt_turn_step_joins_run(run))
+                    break;
+
+                tools++;
+                if (clawt_turn_step_get_failed(run))
+                    failed++;
+
+                line = clawt_turn_step_summary(run);
+                g_string_append(tip, line);
+                g_string_append_c(tip, '\n');
+                i++;
+            }
+
+            label = clawt_turn_step_run_label(tools, failed);
+
+            {
+                /*
+                 * The detail is a tooltip rather than a row.  Somebody
+                 * skimming wants the count; somebody debugging wants
+                 * every command, and asking for it should not push the
+                 * conversation off the screen for everyone else.
+                 */
+                GtkWidget *row = step_row_new(
+                    label, failed > 0 ? "bad" : "good", FALSE);
+
+                if (tip->len > 0) {
+                    g_strstrip(tip->str);
+                    gtk_widget_set_tooltip_text(row, tip->str);
+                }
+
+                gtk_box_append(GTK_BOX(box), row);
+            }
+
+            continue;
+        }
+
+        {
+            g_autofree gchar *text = clawt_turn_step_summary(step);
+            GtkWidget *row;
+
+            /*
+             * Reasoning is marked, because it is explicitly not what
+             * the agent is telling anybody -- presenting it in the same
+             * voice as the answer is how a half-formed thought gets
+             * quoted back as a decision.
+             */
+            if (clawt_turn_step_get_kind(step) == CLAWT_STEP_THINKING) {
+                g_autofree gchar *marked = g_strdup_printf("thinking: %s",
+                                                           text);
+
+                row = step_row_new(marked, clawt_turn_step_tone(step), FALSE);
+            } else {
+                row = step_row_new(text, clawt_turn_step_tone(step), FALSE);
+            }
+
+            gtk_box_append(GTK_BOX(box), row);
+            i++;
+        }
+    }
+
+    gtk_box_append(self->transcript, box);
+    self->steps_block = box;
+}
+
+void
+clawt_gtk_steps_clear(ClawtWindow *self)
+{
+    if (self->steps != NULL)
+        g_ptr_array_set_size(self->steps, 0);
+
+    steps_rebuild(self);
+}
+
+void
+clawt_gtk_steps_load(ClawtWindow *self)
+{
+    g_autoptr(JsonNode) reply = NULL;
+    JsonObject *payload;
+    JsonArray  *array;
+    guint i;
+
+    if (self->selected_room == NULL) {
+        clawt_gtk_steps_clear(self);
+
+        return;
+    }
+
+    /*
+     * Asked for first, and only then is anything cleared.
+     *
+     * clawt_window_request() iterates the main context while it waits
+     * and events are delivered from an idle, so a step -- or another
+     * room switch -- can arrive *inside* this call.  Clearing before
+     * the wait and appending after it would have the inner arrival
+     * land in a list the outer call then appends to, which is how the
+     * chat came back showing two copies of the same tail.  Take the
+     * answer, then replace the list in one go.
+     */
+    reply = clawt_window_request(
+        self, "room.steps",
+        clawt_build_payload("room", self->selected_room, NULL));
+
+    clawt_gtk_steps_clear(self);
+
+    if (reply == NULL)
+        return;
+
+    /*
+     * The payload is asked for as a pointer and checked as one.  A node
+     * holding the object *type* with no object behind it answers
+     * JSON_NODE_HOLDS_OBJECT() with TRUE and hands back NULL, which is
+     * what every payload-less reply in this protocol used to be.
+     */
+    payload = clawt_payload_of(reply);
+
+    if (payload == NULL || !json_object_has_member(payload, "steps"))
+        return;
+
+    array = json_object_get_array_member(payload, "steps");
+
+    if (array == NULL)
+        return;
+
+    if (self->steps == NULL)
+        self->steps = g_ptr_array_new_with_free_func(
+            (GDestroyNotify)clawt_turn_step_free);
+
+    for (i = 0; i < json_array_get_length(array); i++) {
+        JsonObject *entry = json_array_get_object_element(array, i);
+        ClawtTurnStep *step;
+
+        if (entry == NULL)
+            continue;
+
+        step = clawt_turn_step_new_from_object(
+            entry, clawt_json_string(entry, "agent", NULL));
+
+        if (step != NULL)
+            g_ptr_array_add(self->steps, step);
+    }
+
+    steps_rebuild(self);
+}
+
+void
+clawt_gtk_steps_add(ClawtWindow *self, ClawtTurnStep *step)
+{
+    if (self->steps == NULL)
+        self->steps = g_ptr_array_new_with_free_func(
+            (GDestroyNotify)clawt_turn_step_free);
+
+    /*
+     * Bounded here as well as in the daemon.  A client that stays open
+     * across a very long turn must not grow a widget per tool call.
+     */
+    while (self->steps->len >= 200)
+        g_ptr_array_remove_index(self->steps, 0);
+
+    g_ptr_array_add(self->steps, clawt_turn_step_copy(step));
+
+    steps_rebuild(self);
+}
+
 /*
  * Shows or hides Stop, and says why it is not offered.
  *
@@ -2070,11 +2329,21 @@ clawt_gtk_note_arrival(ClawtWindow *self)
  * removes a widget that is already gone.  Re-arming here is also what
  * keeps load_history()'s replay from drawing a "New messages" rule at
  * the top of a freshly loaded transcript.
+ *
+ * The live step block is a borrowed pointer into the same box and is
+ * dropped here for exactly the same reason -- one function, so the next
+ * borrowed pointer somebody adds has an obvious place to be forgotten
+ * in rather than a second one to be forgotten from.
  */
 void
 clawt_gtk_reset_transcript(ClawtWindow *self)
 {
     self->unread_marker = NULL;
+    self->steps_block   = NULL;
+
+    if (self->steps != NULL)
+        g_ptr_array_set_size(self->steps, 0);
+
     g_clear_pointer(&self->run_sender, g_free);
     g_clear_pointer(&self->run_day, g_free);
     clawt_gtk_clear_box(self->transcript);
@@ -3294,6 +3563,17 @@ clawt_gtk_load_history(ClawtWindow *self)
      */
     if (g_hash_table_remove(self->unread, self->selected_agent))
         clawt_gtk_update_unread_tab(self);
+
+    /*
+     * And whatever the turn running in this room has done so far.
+     *
+     * After the messages, because the block belongs at the live end.
+     * Steps are never persisted, so this is the only way a room opened
+     * mid-turn shows anything but a spinner -- and switching away and
+     * back goes through here too, which is what stops a switch from
+     * losing the running turn.
+     */
+    clawt_gtk_steps_load(self);
 
     clawt_gtk_set_following(self, TRUE);
     clawt_gtk_queue_scroll(self);

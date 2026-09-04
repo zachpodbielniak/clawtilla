@@ -411,6 +411,23 @@ defaults:
   # Whether new agents start with the daemon.
   autostart: false
 
+  # Whether agents report what they are doing while a turn runs.
+  #
+  # With this on, the tools an agent reaches for and the prose it writes
+  # between them appear in the conversation as they happen, so a turn
+  # that takes ten minutes is something to watch rather than a typing
+  # dot. With it off, a turn shows the indicator and then its answer.
+  #
+  # A step is not a message. It is never delivered, never queued, never
+  # written to the transcript and never answered -- so an agent watching
+  # a peer work does not take a turn over it, which is the failure the
+  # old five-minute progress notes had.
+  #
+  # Tool arguments are previewed, one line each, with secrets redacted.
+  # Turn it off for a fleet where even a redacted command line should
+  # not reach whoever can open the chat.
+  stream_steps: true
+
   # Largest profile picture the daemon will read and serve.
   #
   # A picture crosses IPC as bytes rather than as a path, because a
@@ -868,17 +885,26 @@ rooms:
     max_hops: null
 
     # How long one member may hold a room's turn before it is yielded.
+    # 0, the default, turns it off.
     #
-    # Counted in work, not wall time: the clock holds while the turn is
-    # parked on an open decision and resumes with what is left. Stopping a
-    # turn under a question nobody has answered manufactures a stranded
-    # decision, which the daemon then has to repair.
+    # Off for the same reason as agents.runtime.turn_timeout_seconds, and
+    # the five minutes it used to default to were worse: an agent doing
+    # real work in the operator's own room was stopped mid-turn and the
+    # room stalled, five minutes in, and the notice explaining it read as
+    # though the agent had misbehaved.
+    #
+    # Set a number for a busy shared room, where the point is that one
+    # member must not hold the floor indefinitely. Counted in work, not
+    # wall time: the clock holds while the turn is parked on an open
+    # decision and resumes with what is left. Stopping a turn under a
+    # question nobody has answered manufactures a stranded decision, which
+    # the daemon then has to repair.
     #
     # Different from the runtime's turn timeout: that one catches a wedged
     # worker, this one catches a wedged conversation.
     #
-    # Anything below 60 is raised to 60, and 0 turns it off.
-    turn_timeout_seconds: 300
+    # Anything below 60 is raised to 60.
+    turn_timeout_seconds: 0
 
 # Teams, so a fleet larger than a handful has a shape.
 #
@@ -1754,19 +1780,31 @@ agents:
       # restarted again. 0 means never give up.
       max_restarts: 10
 
+      # Report this agent's steps while its turn runs. Defaults to
+      # defaults.stream_steps.
+      stream_steps: null
+
       # How long a turn may go without producing anything before it is
-      # cancelled. 0 disables it.
+      # cancelled. 0, the default, disables it.
       #
-      # Activity, not duration: a turn may legitimately run for an hour
-      # while events keep arriving, and a turn that has emitted nothing at
-      # all for this long is wedged. A turn parked on a decision is exempt,
-      # because waiting for a person is not a stall.
+      # Off by default because the number was always a guess, and the guess
+      # was wrong in the expensive direction: a twenty-minute ceiling killed
+      # real work -- a long refactor, a slow test suite -- and reported it
+      # as a wedged turn. Every step an agent takes now counts as activity,
+      # so a turn that is working says so continuously and a person can see
+      # a stalled one rather than having a timer guess for them.
+      #
+      # Set a number to bring the watchdog back. It counts activity, not
+      # duration: a turn may legitimately run for an hour while steps keep
+      # arriving, and one that has produced nothing at all for this long is
+      # wedged. A turn parked on a decision is exempt, because waiting for a
+      # person is not a stall.
       #
       # Watched in two places, on purpose. The daemon watches activity and
       # publishes turn.timed_out; the same number is rendered into the
       # agent's own session.watchdog_timeout_seconds, so a turn wedged
       # somewhere the daemon cannot see is still unwound from inside.
-      turn_timeout_seconds: 1200
+      turn_timeout_seconds: 0
 
     # What the agent can run commands on.
     computer:

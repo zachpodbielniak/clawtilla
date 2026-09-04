@@ -15,6 +15,39 @@
 #include "core/clawt-daemon.h"
 #include "core/clawt-daemon-private.h"
 
+/*
+ * The room a request names, resolving an agent id to the direct room
+ * with that agent.
+ *
+ * One resolver for every verb that takes a room, because the rule is
+ * not obvious and a second copy of it would be a second answer.  A
+ * client showing a conversation must not have to know how a direct room
+ * is named -- the GTK client did not, and every chat opened empty with
+ * a "no such room" behind it until this existed.
+ *
+ * Returns: (nullable) (transfer none): the room, or %NULL
+ */
+static ClawtRoom *
+resolve_room(ClawtDaemon *self, const gchar *room_id, const gchar *viewer)
+{
+    ClawtRoom *room;
+
+    if (room_id == NULL)
+        return NULL;
+
+    room = clawt_room_manager_get(self->rooms, room_id);
+
+    if (room != NULL)
+        return room;
+
+    if (clawt_agent_manager_get(self->agents, room_id) == NULL)
+        return NULL;
+
+    return clawt_room_manager_get_direct(
+        self->rooms, viewer != NULL ? viewer : "user", room_id);
+}
+
+
 JsonNode *
 clawt_daemon_handle_room(
     ClawtDaemon  *self,
@@ -171,6 +204,102 @@ clawt_daemon_handle_room(
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
 
+    /*
+     * What the turn running in a room has done so far.
+     *
+     * For a client that opened the room while an agent was already
+     * working: both clients rebuild a chat pane on every room switch,
+     * so without this a switch away and back throws the running turn's
+     * history away and leaves a typing dot with no explanation.
+     *
+     * An empty list is the ordinary answer, not a failure -- a room
+     * with no turn running has no steps, and so does one whose agent
+     * has not reached a tool yet.  Answered as an empty array rather
+     * than a refusal, because a handler that calls an ordinary
+     * condition an error gets one toast per refresh stacked over the
+     * controls underneath it.
+     */
+    if (g_strcmp0(kind, "room.steps") == 0) {
+        const gchar *room_id = clawt_ipc_payload_string(payload, "room");
+        const gchar *viewer = clawt_ipc_payload_string(payload, "as");
+        ClawtRoom *room = resolve_room(self, room_id, viewer);
+        g_autoptr(GPtrArray) steps = NULL;
+        guint i;
+
+        /*
+         * The same room/as pair room.history takes, through the same
+         * resolver, so a client that can draw a conversation can ask
+         * what is happening in it without a second way of naming it.
+         *
+         * A room that does not resolve answers with nothing rather than
+         * refusing.  This is polled while a turn runs, and a handler
+         * that calls an ordinary condition an error stacks one toast
+         * per refresh over the controls underneath -- which is exactly
+         * what computer.frame did while a VM booted.
+         */
+        steps = (room != NULL)
+            ? clawt_daemon_room_steps(self, clawt_room_get_id(room))
+            : g_ptr_array_new();
+
+        json_builder_begin_object(builder);
+
+        json_builder_set_member_name(builder, "room");
+        json_builder_add_string_value(
+            builder, room != NULL ? clawt_room_get_id(room) : "");
+
+        json_builder_set_member_name(builder, "steps");
+        json_builder_begin_array(builder);
+
+        for (i = 0; steps != NULL && i < steps->len; i++) {
+            ClawtTurnStep *step = g_ptr_array_index(steps, i);
+
+            json_builder_begin_object(builder);
+
+            json_builder_set_member_name(builder, CLAWT_STEP_MEMBER_KIND);
+            json_builder_add_string_value(
+                builder, clawt_enum_to_nick(CLAWT_TYPE_STEP_KIND,
+                                            clawt_turn_step_get_kind(step)));
+
+            json_builder_set_member_name(builder, CLAWT_STEP_MEMBER_ROOM);
+            json_builder_add_string_value(builder,
+                                          clawt_turn_step_get_room_id(step));
+
+            if (clawt_turn_step_get_text(step) != NULL) {
+                json_builder_set_member_name(builder, CLAWT_STEP_MEMBER_TEXT);
+                json_builder_add_string_value(builder,
+                                              clawt_turn_step_get_text(step));
+            }
+
+            if (clawt_turn_step_get_tool_name(step) != NULL) {
+                json_builder_set_member_name(builder, CLAWT_STEP_MEMBER_TOOL);
+                json_builder_add_string_value(
+                    builder, clawt_turn_step_get_tool_name(step));
+            }
+
+            if (clawt_turn_step_get_detail(step) != NULL) {
+                json_builder_set_member_name(builder,
+                                             CLAWT_STEP_MEMBER_DETAIL);
+                json_builder_add_string_value(
+                    builder, clawt_turn_step_get_detail(step));
+            }
+
+            json_builder_set_member_name(builder, CLAWT_STEP_MEMBER_FAILED);
+            json_builder_add_boolean_value(builder,
+                                           clawt_turn_step_get_failed(step));
+
+            json_builder_set_member_name(builder, "agent");
+            json_builder_add_string_value(builder,
+                                          clawt_turn_step_get_agent_id(step));
+
+            json_builder_end_object(builder);
+        }
+
+        json_builder_end_array(builder);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
     if (g_strcmp0(kind, "room.create") == 0) {
         const gchar *room_id = clawt_ipc_payload_string(payload, "room");
         const gchar *name = clawt_ipc_payload_string(payload, "name");
@@ -222,21 +351,9 @@ clawt_daemon_handle_room(
     if (g_strcmp0(kind, "room.history") == 0) {
         const gchar *room_id = clawt_ipc_payload_string(payload, "room");
         const gchar *viewer = clawt_ipc_payload_string(payload, "as");
-        ClawtRoom *room = clawt_room_manager_get(self->rooms, room_id);
+        ClawtRoom *room = resolve_room(self, room_id, viewer);
         g_autoptr(GPtrArray) history = NULL;
         guint i;
-
-        /*
-         * An agent id means the direct room with that agent, the same way
-         * it does for msg.send.  Without this a client showing a
-         * conversation had to know how a direct room is named -- and the
-         * GTK client did not, so every chat opened empty with a "no such
-         * room" error behind it.
-         */
-        if (room == NULL && room_id != NULL &&
-            clawt_agent_manager_get(self->agents, room_id) != NULL)
-            room = clawt_room_manager_get_direct(
-                self->rooms, viewer != NULL ? viewer : "user", room_id);
 
         if (room == NULL)
             return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,

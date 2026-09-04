@@ -1413,6 +1413,24 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
         return;
     }
 
+    if (g_strcmp0(kind, "turn.step") == 0) {
+        g_autoptr(ClawtTurnStep) step = clawt_turn_step_new_from_event(event);
+
+        /*
+         * Only the conversation on screen.  An agent runs a turn per
+         * room and can be mid-turn in three at once, so the room is
+         * checked rather than the agent -- drawing a peer exchange's
+         * tool calls under the operator's own chat would read as the
+         * agent doing something nobody asked it to.
+         */
+        if (step != NULL && self->selected_room != NULL &&
+            g_strcmp0(clawt_turn_step_get_room_id(step),
+                      self->selected_room) == 0)
+            clawt_gtk_steps_add(self, step);
+
+        return;
+    }
+
     if (g_strcmp0(kind, "agent.typing") == 0) {
         const gchar *typing = clawt_event_get_detail(event, "typing");
         const gchar *peer = clawt_event_get_detail(event, "peer");
@@ -1434,6 +1452,19 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
                 what = g_strdup("thinking");
 
             clawt_gtk_set_activity(self, what);
+
+            /*
+             * And the steps of the turn that just ended.
+             *
+             * Dropped when the indicator falls rather than left in
+             * place: the answer arrives immediately after, and a list
+             * of tool calls sitting under it reads as work still in
+             * flight.  The daemon has dropped its copy at the same
+             * moment, so leaving this would also be the only place the
+             * steps still existed.
+             */
+            if (g_strcmp0(typing, "true") != 0)
+                clawt_gtk_steps_clear(self);
 
             /*
              * And the button that ends it.  The caps come from the
@@ -5631,6 +5662,12 @@ clawt_window_dispose(GObject *object)
     g_clear_pointer(&self->flow_run_day, g_free);
     g_clear_pointer(&self->selected_color, g_free);
     g_clear_pointer(&self->shown, g_hash_table_unref);
+
+    /*
+     * The widget is the transcript's; the array is ours.
+     */
+    self->steps_block = NULL;
+    g_clear_pointer(&self->steps, g_ptr_array_unref);
     g_clear_pointer(&self->flow_shown, g_hash_table_unref);
     g_clear_pointer(&self->drafts, g_hash_table_unref);
     g_clear_pointer(&self->unread, g_hash_table_unref);

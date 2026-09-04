@@ -53,6 +53,19 @@ clawt_event_bus_publish(ClawtEventBus *self, ClawtEvent *event)
     self->cursor++;
     clawt_event_set_cursor(event, self->cursor);
 
+    /*
+     * Delivered but not kept.  The ring is small and shared, and a turn
+     * makes tens of tool calls -- retaining them would evict real
+     * events within one busy turn, so a client resuming from a cursor
+     * would be told its replay was incomplete precisely because an
+     * agent had been working.
+     */
+    if (clawt_event_is_ephemeral(event)) {
+        g_signal_emit(self, signals[SIGNAL_EVENT], 0, event);
+
+        return self->cursor;
+    }
+
     stored = clawt_event_copy(event);
     g_ptr_array_add(self->history, stored);
 

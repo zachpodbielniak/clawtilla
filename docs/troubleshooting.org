@@ -1789,6 +1789,26 @@ deleted, to ~sessions.reset-<timestamp>~ beside it, so a reset that threw
 away something you wanted is recoverable.  Those are ignored by the state
 directory's git block and are yours to delete.
 
+** A turn was stopped after five or twenty minutes
+
+#+begin_example
+[clawtilla] 'scribe' held this room's turn for its whole budget
+and it has been yielded.
+#+end_example
+
+Both turn budgets now default to 0, which turns them off, so this
+happens only where somebody set a number --- or on a fleet whose
+~clawtilla.yaml~ still carries the old defaults written out by hand.
+
+#+begin_src bash
+clawtilla config get rooms.turn_timeout_seconds
+clawtilla config get defaults.turn_timeout_seconds
+#+end_src
+
+Set either to ~0~ to disable it.  The reasoning, and when a budget is
+still worth having, is in
+[[file:orchestration.org::#turn-steps][Watching a turn while it runs]].
+
 ** A task or routine says completed and the answer is a progress note
 
 #+begin_example
@@ -1804,6 +1824,10 @@ Fixed at both ends, and a running agent picks up the first half at its
 next start: the note is no longer generated (~progress_enabled: false~ in
 the rendered ~channels.clawtilla~ block), and the daemon no longer acts
 on a message that arrives while the agent is still mid-turn.
+
+What replaced it is the step stream, which reports the same thing
+without posting anything into the conversation --- see
+[[file:orchestration.org::#turn-steps][Watching a turn while it runs]].
 
 #+begin_src bash
 clawtilla config render <agent> | grep -A5 'clawtilla:'

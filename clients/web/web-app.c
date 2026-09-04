@@ -789,6 +789,28 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
         if (!htmx_sse_connection_is_connected(connection))
             continue;
 
+        /*
+         * A running turn's steps go out under their own undotted name
+         * and stay off the umbrella, for two separate reasons.
+         *
+         * Undotted because a dot in an hx-trigger is a class selector,
+         * so `sse:turn.step` would listen for nothing -- the same trap
+         * that made the umbrella necessary in the first place.
+         *
+         * Off the umbrella because `sse:fleet` is what the whole
+         * transcript re-fetches on, and a turn produces tens of steps:
+         * every open browser would re-fetch an entire conversation per
+         * tool call, for the whole of every turn.  The small region
+         * that draws the steps listens for `step` instead, so the
+         * expensive one is left alone.
+         */
+        if (clawt_event_is_ephemeral(event)) {
+            htmx_sse_connection_send_event(connection, "step",
+                                           subject != NULL ? subject : "",
+                                           NULL);
+            continue;
+        }
+
         htmx_sse_connection_send_event(connection, kind,
                                        subject != NULL ? subject : "", NULL);
 
