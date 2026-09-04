@@ -116,6 +116,48 @@ gboolean clawt_room_is_group(ClawtRoom *self);
  *
  * Returns: %TRUE if it is a room somebody declared
  */
+/**
+ * clawt_room_get_order:
+ * @self: a #ClawtRoom
+ *
+ * Where it sits in the sidebar, on the same scale as an agent's, so a
+ * client draws one list rather than two.
+ *
+ * Returns: the position, or 0 when it has none
+ */
+gint clawt_room_get_order(ClawtRoom *self);
+
+void clawt_room_set_order(ClawtRoom *self, gint order);
+
+/**
+ * clawt_room_get_team:
+ * @self: a #ClawtRoom
+ *
+ * Which team's group it appears under.  Presentation and nothing else:
+ * it changes neither who is in the room nor who a message reaches.
+ *
+ * Returns: (nullable) (transfer none): the team id, or %NULL
+ */
+const gchar *clawt_room_get_team(ClawtRoom *self);
+
+void clawt_room_set_team(ClawtRoom *self, const gchar *team);
+
+/**
+ * clawt_room_get_catchup_messages:
+ * @self: a #ClawtRoom
+ *
+ * How much of the room a member is caught up on when it is named.
+ *
+ * In a room that requires mentions an agent receives only what named
+ * it, so without this it cannot follow the conversation at all -- the
+ * transcript holds it and the model does not.
+ *
+ * Returns: the cap, or 0 for none
+ */
+guint clawt_room_get_catchup_messages(ClawtRoom *self);
+
+void clawt_room_set_catchup_messages(ClawtRoom *self, guint messages);
+
 gboolean clawt_room_is_declared(const gchar *room_id);
 
 /**

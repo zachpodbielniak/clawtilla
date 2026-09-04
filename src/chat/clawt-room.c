@@ -34,6 +34,9 @@ struct _ClawtRoom {
     gboolean   require_mention_set;
     guint      max_hops;
     guint      turn_timeout_seconds;
+    gint       order;
+    gchar     *team;
+    guint      catchup_messages;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtRoom, clawt_room, G_TYPE_OBJECT)
@@ -165,6 +168,55 @@ clawt_room_is_group(ClawtRoom *self)
     g_return_val_if_fail(CLAWT_IS_ROOM(self), FALSE);
 
     return self->members->len > 2;
+}
+
+gint
+clawt_room_get_order(ClawtRoom *self)
+{
+    g_return_val_if_fail(CLAWT_IS_ROOM(self), 0);
+
+    return self->order;
+}
+
+void
+clawt_room_set_order(ClawtRoom *self, gint order)
+{
+    g_return_if_fail(CLAWT_IS_ROOM(self));
+
+    self->order = order;
+}
+
+const gchar *
+clawt_room_get_team(ClawtRoom *self)
+{
+    g_return_val_if_fail(CLAWT_IS_ROOM(self), NULL);
+
+    return self->team;
+}
+
+void
+clawt_room_set_team(ClawtRoom *self, const gchar *team)
+{
+    g_return_if_fail(CLAWT_IS_ROOM(self));
+
+    g_free(self->team);
+    self->team = g_strdup(team);
+}
+
+guint
+clawt_room_get_catchup_messages(ClawtRoom *self)
+{
+    g_return_val_if_fail(CLAWT_IS_ROOM(self), 0);
+
+    return self->catchup_messages;
+}
+
+void
+clawt_room_set_catchup_messages(ClawtRoom *self, guint messages)
+{
+    g_return_if_fail(CLAWT_IS_ROOM(self));
+
+    self->catchup_messages = messages;
 }
 
 gboolean
@@ -522,6 +574,7 @@ clawt_room_finalize(GObject *object)
     g_clear_pointer(&self->room_id, g_free);
     g_clear_pointer(&self->name, g_free);
     g_clear_pointer(&self->transcript_path, g_free);
+    g_clear_pointer(&self->team, g_free);
     g_clear_pointer(&self->members, g_ptr_array_unref);
     g_clear_pointer(&self->messages, g_ptr_array_unref);
 

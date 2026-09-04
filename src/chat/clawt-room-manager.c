@@ -611,6 +611,9 @@ clawt_room_manager_load(ClawtRoomManager *self, ClawtConfig *config)
 
         clawt_room_set_max_hops(room, spec->max_hops);
         clawt_room_set_turn_timeout(room, spec->turn_timeout_seconds);
+        clawt_room_set_order(room, spec->order);
+        clawt_room_set_team(room, spec->team);
+        clawt_room_set_catchup_messages(room, spec->catchup_messages);
     }
 
     return created;

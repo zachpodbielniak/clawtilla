@@ -90,6 +90,19 @@ HtmxElement *clawt_web_chat_body_full(ClawtWebApp *app,
                                       const gchar *agent_id,
                                       gboolean     cleared,
                                       const gchar *peer);
+/**
+ * clawt_web_room_body:
+ * @app: a #ClawtWebApp
+ * @room_id: (nullable): which room
+ *
+ * A group room's chat: the transcript and a composer that posts into
+ * the room.  A room has exactly one view, because every other page is
+ * scoped to an agent.
+ *
+ * Returns: (transfer full): the room view
+ */
+HtmxElement *clawt_web_room_body(ClawtWebApp *app, const gchar *room_id);
+
 HtmxElement *clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_mailbox_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_computer_body(ClawtWebApp *app, const gchar *agent_id);
@@ -431,5 +444,36 @@ HtmxResponse *clawt_web_chat_interrupt(ClawtWebApp *app,
  * Returns: how many were shown
  */
 guint clawt_web_warnings(HtmxElement *parent, JsonNode *reply);
+
+/**
+ * clawt_web_sidebar_entries:
+ * @app: a #ClawtWebApp
+ * @find: (nullable): an id to locate
+ * @index_out: (out): where @find sits, or -1
+ *
+ * The sidebar as one ordered list of typed entries -- `a:<agent>` and
+ * `r:<room>` -- which is what a reorder frame carries.
+ *
+ * Returns: (transfer full) (element-type utf8): the entries
+ */
+GPtrArray *clawt_web_sidebar_entries(ClawtWebApp *app,
+                                     const gchar *find,
+                                     gint        *index_out);
+
+/**
+ * clawt_web_move_entry:
+ * @app: a #ClawtWebApp
+ * @entries: (element-type utf8): the list from clawt_web_sidebar_entries()
+ * @index: which entry to move
+ * @direction: "up" or anything else for down
+ * @message: (out) (transfer none): what to say afterwards
+ *
+ * Returns: %FALSE only when the daemon refused the frame
+ */
+gboolean clawt_web_move_entry(ClawtWebApp  *app,
+                              GPtrArray    *entries,
+                              gint          index,
+                              const gchar  *direction,
+                              const gchar **message);
 
 G_END_DECLS

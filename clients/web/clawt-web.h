@@ -321,6 +321,30 @@ ClawtConnectionStatus *clawt_web_app_connection_status(ClawtWebApp *self,
 void clawt_web_app_set_viewing(ClawtWebApp *self, const gchar *agent_id);
 
 /**
+ * clawt_web_app_set_viewing_room:
+ * @self: a #ClawtWebApp
+ * @room_id: (nullable): the group room on screen, or %NULL for none
+ *
+ * Which sidebar entry is a room rather than an agent.  The two are
+ * exclusive -- a room is a first-class entry, not one of a selected
+ * agent's conversations -- so setting one clears the other.
+ *
+ * Opening it also clears its unread count, which is the only thing that
+ * does: a counter that decays on its own is a counter you stop
+ * trusting.
+ */
+void clawt_web_app_set_viewing_room(ClawtWebApp *self,
+                                    const gchar *room_id);
+
+/**
+ * clawt_web_app_get_viewing_room:
+ * @self: a #ClawtWebApp
+ *
+ * Returns: (nullable) (transfer none): the room on screen, or %NULL
+ */
+const gchar *clawt_web_app_get_viewing_room(ClawtWebApp *self);
+
+/**
  * clawt_web_app_switch:
  * @self: a #ClawtWebApp
  * @connection: (transfer none): the daemon to talk to instead

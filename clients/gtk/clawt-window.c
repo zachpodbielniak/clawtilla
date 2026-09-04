@@ -425,6 +425,87 @@ clawt_gtk_stored_draft(ClawtWindow *self, const gchar *agent_id)
 }
 
 void
+clawt_gtk_select_room(ClawtWindow *self, const gchar *room_id)
+{
+    if (room_id == NULL || *room_id == '\0')
+        return;
+
+    if (g_strcmp0(room_id, self->selected_room_entry) == 0) {
+        /*
+         * The same stuck-view retry clawt_gtk_select_agent() does, for
+         * the same reason: a transcript with no room lost its history
+         * load, and a re-click is what a person actually tries.
+         */
+        if (self->selected_room == NULL && self->history_inflight == 0)
+            clawt_gtk_load_history(self);
+        return;
+    }
+
+    /* Keep what was being written wherever we are leaving. */
+    if (self->selected_agent != NULL || self->selected_room_entry != NULL) {
+        const gchar *leaving = (self->selected_room_entry != NULL)
+            ? self->selected_room_entry : self->selected_agent;
+        g_autofree gchar *draft = clawt_gtk_entry_text(self);
+
+        clawt_gtk_persist_draft(self, leaving, draft);
+
+        if (draft != NULL && draft[0] != '\0')
+            g_hash_table_insert(self->drafts, g_strdup(leaving),
+                                g_steal_pointer(&draft));
+        else
+            g_hash_table_remove(self->drafts, leaving);
+    }
+
+    /*
+     * A room is not an agent, and the two selections are exclusive.
+     *
+     * Clearing the agent is what makes every agent-scoped page -- the
+     * computer, the mailbox, its memories -- stop describing somebody
+     * who is not on screen.  A room has none of those, so it shows the
+     * chat and nothing else.
+     */
+    g_clear_pointer(&self->selected_agent, g_free);
+    g_clear_pointer(&self->selected_conversation, g_free);
+
+    g_free(self->selected_room_entry);
+    self->selected_room_entry = g_strdup(room_id);
+
+    self->selected_has_avatar = FALSE;
+    g_clear_pointer(&self->selected_color, g_free);
+    self->selected_can_interrupt = FALSE;
+    clawt_gtk_sync_stop_turn(self, FALSE);
+
+    if (g_hash_table_remove(self->unread, room_id))
+        clawt_gtk_update_unread_tab(self);
+
+    {
+        const gchar *held = g_hash_table_lookup(self->drafts, room_id);
+        g_autofree gchar *stored = NULL;
+
+        if (held == NULL) {
+            stored = clawt_gtk_stored_draft(self, room_id);
+            held = stored;
+        }
+
+        clawt_gtk_entry_set_text(self, held);
+    }
+
+    adw_window_title_set_title(
+        ADW_WINDOW_TITLE(g_object_get_data(G_OBJECT(self), "title")),
+        room_id);
+
+    clawt_gtk_load_history(self);
+    clawt_gtk_fill_conversation_menu(self);
+    clawt_gtk_refresh_selected(self);
+
+    if (adw_overlay_split_view_get_collapsed(self->split)) {
+        self->sidebar_transient = TRUE;
+        adw_overlay_split_view_set_show_sidebar(self->split, FALSE);
+        self->sidebar_transient = FALSE;
+    }
+}
+
+void
 clawt_gtk_select_agent(ClawtWindow *self, const gchar *agent_id)
 {
     if (agent_id == NULL || *agent_id == '\0')
@@ -470,6 +551,13 @@ clawt_gtk_select_agent(ClawtWindow *self, const gchar *agent_id)
     self->selected_agent = g_strdup(agent_id);
 
     /*
+     * And no longer a room.  The two selections are exclusive, and a
+     * stale room entry would keep the sidebar highlighting a row
+     * nobody is looking at.
+     */
+    g_clear_pointer(&self->selected_room_entry, g_free);
+
+    /*
      * A different agent opens on its operator conversation. Keeping the
      * peer would mean clicking an agent and landing in a conversation
      * between two others -- and "with gnuisaince" means a different room
@@ -483,8 +571,17 @@ clawt_gtk_select_agent(ClawtWindow *self, const gchar *agent_id)
      * Not scrolling, not the window gaining focus, not time passing: a
      * counter that decays on its own is a counter you stop trusting.
      */
-    if (g_hash_table_remove(self->unread, agent_id))
-        clawt_gtk_update_unread_tab(self);
+    {
+        /*
+         * By the room, because that is what the count is against now --
+         * a group has no agent to key on, and every row has a room.
+         */
+        g_autofree gchar *room = clawt_room_manager_direct_id("user",
+                                                              agent_id);
+
+        if (g_hash_table_remove(self->unread, room))
+            clawt_gtk_update_unread_tab(self);
+    }
 
     {
         const gchar *has_avatar =
@@ -5671,6 +5768,7 @@ clawt_window_dispose(GObject *object)
     g_clear_pointer(&self->steps, g_ptr_array_unref);
     g_clear_pointer(&self->flow_shown, g_hash_table_unref);
     g_clear_pointer(&self->drafts, g_hash_table_unref);
+    g_clear_pointer(&self->selected_room_entry, g_free);
     g_clear_pointer(&self->unread, g_hash_table_unref);
     g_clear_pointer(&self->dm_rooms, g_hash_table_unref);
     g_clear_pointer(&self->alerts, g_ptr_array_unref);

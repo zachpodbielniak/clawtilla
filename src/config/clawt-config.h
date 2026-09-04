@@ -418,6 +418,10 @@ guint clawt_config_adopt_libreclaw(ClawtAgentConfig *agent,
  * @max_hops: this room's hop limit, or 0 to use the global one
  * @turn_timeout_seconds: how long a member may hold this room's turn,
  *   or 0 for no bound
+ * @order: where it sits in the sidebar, among the agents
+ * @team: (nullable): which team's group it appears under
+ * @catchup_messages: how much of the room a member is caught up on when
+ *   it is named
  *
  * One entry from the config's `rooms:` list.
  */
@@ -429,6 +433,9 @@ typedef struct {
     gboolean  require_mention_set;
     guint     max_hops;
     guint     turn_timeout_seconds;
+    gint      order;
+    gchar    *team;
+    guint     catchup_messages;
 } ClawtRoomSpec;
 
 void clawt_room_spec_free(ClawtRoomSpec *self);

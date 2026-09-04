@@ -225,65 +225,35 @@ on_reorder(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
     ClawtWebApp *app = user_data;
     g_autofree gchar *agent_id = clawt_web_param(params, "id");
-    const gchar *direction = htmx_request_get_query_param(request,
-                                                          "direction");
-    g_autoptr(JsonNode) list = clawt_web_app_call(app, "agent.list", NULL);
-    JsonArray *agents = clawt_web_member_array(clawt_web_root(list), "agents");
-    g_autoptr(GPtrArray) ids = g_ptr_array_new_with_free_func(g_free);
-    g_autoptr(ClawtWebPayload) payload = NULL;
-    g_autoptr(JsonNode) reply = NULL;
-    g_autofree gchar *joined = NULL;
     gint index = -1;
-    gint swap_with;
-    guint i;
+    g_autoptr(GPtrArray) entries = clawt_web_sidebar_entries(app, agent_id,
+                                                             &index);
+    const gchar *message = NULL;
 
-    for (i = 0; agents != NULL && i < json_array_get_length(agents); i++) {
-        const gchar *id = clawt_web_member(
-            json_array_get_object_element(agents, i), "id", NULL);
-
-        if (id == NULL)
-            continue;
-
-        if (g_strcmp0(id, agent_id) == 0)
-            index = (gint)ids->len;
-
-        g_ptr_array_add(ids, g_strdup(id));
-    }
-
+    /*
+     * The whole sidebar, not only the agents.
+     *
+     * What this sends is a renumbering: a frame carrying only the
+     * agents would number them from ten while the rooms kept whatever
+     * they had, and the two scales would interleave in a way nobody
+     * asked for.  Both move buttons therefore build one list, through
+     * one helper, so an agent moved and a room moved cannot disagree
+     * about what the list is.
+     */
     if (index < 0)
         return clawt_web_after_action(app, request, agent_id,
                                       CLAWT_PAGE_CHAT, NULL);
 
-    swap_with = (g_strcmp0(direction, "up") == 0) ? index - 1 : index + 1;
-
-    if (swap_with < 0 || swap_with >= (gint)ids->len)
-        return clawt_web_after_action(app, request, agent_id,
-                                      CLAWT_PAGE_CHAT,
-                                      "Already at the end.");
-
-    {
-        gpointer moved = g_ptr_array_index(ids, (guint)index);
-
-        ids->pdata[index] = ids->pdata[swap_with];
-        ids->pdata[swap_with] = moved;
-    }
-
-    g_ptr_array_add(ids, NULL);
-    joined = g_strjoinv(",", (gchar **)ids->pdata);
-
-    payload = clawt_web_payload_new();
-    clawt_web_payload_set(payload, "agents", joined);
-
-    reply = clawt_web_app_call(app, "agent.reorder",
-                               clawt_web_payload_take(g_steal_pointer(&payload)));
-
-    if (reply == NULL)
+    if (!clawt_web_move_entry(app, entries, index,
+                              htmx_request_get_query_param(request,
+                                                           "direction"),
+                              &message))
         return clawt_web_error_page(app, request, agent_id,
                                     CLAWT_PAGE_CHAT,
                                     clawt_web_app_last_error(app));
 
-    return clawt_web_after_action(app, request, agent_id,
-                                  CLAWT_PAGE_CHAT, NULL);
+    return clawt_web_after_action(app, request, agent_id, CLAWT_PAGE_CHAT,
+                                  message);
 }
 
 /*

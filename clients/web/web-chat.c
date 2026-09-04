@@ -906,13 +906,16 @@ draft_key_for(ClawtWebApp *app, const gchar *agent_id)
 }
 
 static HtmxElement *
-composer(ClawtWebApp *app, const gchar *agent_id, gboolean busy)
+composer_for(ClawtWebApp *app, const gchar *base, const gchar *target,
+             gboolean busy, gboolean attachments)
 {
     g_autoptr(HtmxElement) foot = HTMX_ELEMENT(htmx_footer_new());
     g_autoptr(HtmxDiv) inner = htmx_div_new();
-    g_autofree gchar *escaped = g_uri_escape_string(agent_id, NULL, FALSE);
-    g_autofree gchar *action = g_strdup_printf("/a/%s/send", escaped);
-    g_autofree gchar *draft_action = g_strdup_printf("/a/%s/draft", escaped);
+    g_autofree gchar *escaped = g_uri_escape_string(target, NULL, FALSE);
+    g_autofree gchar *action = g_strdup_printf("/%s/%s/send", base, escaped);
+    g_autofree gchar *draft_action = g_strdup_printf("/%s/%s/draft", base,
+                                                     escaped);
+    const gchar *agent_id = target;
     g_autofree gchar *key = draft_key_for(app, agent_id);
     g_autofree gchar *draft = clawt_draft_store_get(NULL, key);
     g_autoptr(HtmxForm) form = clawt_web_form(action);
@@ -1006,7 +1009,7 @@ composer(ClawtWebApp *app, const gchar *agent_id, gboolean busy)
      * does not. Sharing one would mean encoding every message as a file
      * upload for the sake of the attachment nobody added.
      */
-    {
+    if (attachments) {
         g_autofree gchar *attach_action =
             g_strdup_printf("/a/%s/attach", escaped);
         g_autoptr(HtmxForm) attach = clawt_web_form(attach_action);
@@ -1033,6 +1036,52 @@ composer(ClawtWebApp *app, const gchar *agent_id, gboolean busy)
 }
 
 /* ── The view ────────────────────────────────────────────────────── */
+
+/*
+ * A group room's chat.
+ *
+ * The transcript and the composer are the agent chat's own, given the
+ * room id: `room.history` takes a room directly, and `msg.send`
+ * resolves a room target the same way it resolves an agent one.  What
+ * a room does not have is the agent chrome -- the conversation
+ * switcher is about one agent's peers, and attachments are not offered
+ * because the attach route is agent-scoped.
+ */
+HtmxElement *
+clawt_web_room_body(ClawtWebApp *app, const gchar *room_id)
+{
+    g_autoptr(HtmxElement) main_el = HTMX_ELEMENT(htmx_main_new());
+
+    htmx_element_add_class(main_el, "chat");
+
+    if (room_id == NULL) {
+        clawt_web_add(main_el,
+                      clawt_web_empty("No room selected",
+                                      "Pick one from the sidebar."));
+
+        return g_steal_pointer(&main_el);
+    }
+
+    {
+        g_autoptr(HtmxDiv) body = htmx_div_new();
+        g_autoptr(HtmxButton) pill = htmx_button_new_with_label("New messages");
+
+        htmx_element_add_class(HTMX_ELEMENT(body), "chat-body");
+        htmx_element_add_class(HTMX_ELEMENT(pill), "jump-pill");
+        htmx_element_set_id(HTMX_ELEMENT(pill), "jump-pill");
+        htmx_element_set_attribute(HTMX_ELEMENT(pill), "type", "button");
+        htmx_element_set_attribute(HTMX_ELEMENT(pill), "aria-label",
+                                   "Jump to the newest message");
+
+        clawt_web_add(body, transcript(app, room_id, FALSE, NULL));
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(pill));
+        htmx_node_add_child(HTMX_NODE(main_el), HTMX_NODE(body));
+    }
+
+    clawt_web_add(main_el, composer_for(app, "r", room_id, FALSE, FALSE));
+
+    return g_steal_pointer(&main_el);
+}
 
 HtmxElement *
 clawt_web_chat_body_full(ClawtWebApp *app, const gchar *agent_id,
@@ -1106,7 +1155,8 @@ clawt_web_chat_body_full(ClawtWebApp *app, const gchar *agent_id,
                         strstr(clawt_web_member(info, "caps", ""),
                                "interrupt") != NULL;
 
-        clawt_web_add(main_el, composer(app, agent_id, busy));
+        clawt_web_add(main_el,
+                      composer_for(app, "a", agent_id, busy, TRUE));
     }
     else
         clawt_web_add(main_el, clawt_web_text(
@@ -1736,6 +1786,100 @@ clawt_web_send_message(ClawtWebApp *app, HtmxRequest *request,
                                   CLAWT_PAGE_CHAT, NULL);
 }
 
+/*
+ * Posting into a group room.
+ *
+ * `msg.send` resolves a room target the same way it resolves an agent
+ * one, so this is the agent path with a different redirect -- a room's
+ * page is `/r/<id>`, and sending somebody back to `/a/<room>/chat`
+ * would open a conversation with an agent that does not exist.
+ */
+/*
+ * Back to a room's page after acting on it.
+ *
+ * Its own helper rather than clawt_web_after_action(), which builds an
+ * agent URL -- sending somebody to `/a/<room>/chat` opens a
+ * conversation with an agent that does not exist.
+ *
+ * Returns: (transfer full): the redirect
+ */
+static HtmxResponse *
+room_redirect(const gchar *room_id)
+{
+    g_autofree gchar *escaped = g_uri_escape_string(room_id, NULL, FALSE);
+    g_autofree gchar *url = g_strdup_printf("/r/%s", escaped);
+    HtmxResponse *response = htmx_response_new();
+
+    htmx_response_set_status(response, 204);
+    htmx_response_add_header(response, "HX-Redirect", url);
+
+    return response;
+}
+
+static HtmxResponse *
+on_room_send(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *room_id = clawt_web_param(params, "id");
+    const gchar *body = clawt_web_form_value(request, "body");
+    g_autofree gchar *trimmed = NULL;
+    g_autoptr(ClawtWebPayload) payload = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+
+    if (body == NULL)
+        return room_redirect(room_id);
+
+    trimmed = g_strdup(body);
+    g_strstrip(trimmed);
+
+    if (*trimmed == '\0')
+        return room_redirect(room_id);
+
+    payload = clawt_web_payload_new();
+    clawt_web_payload_set(payload, "target", room_id);
+    clawt_web_payload_set(payload, "body", trimmed);
+    clawt_web_payload_set(payload, "from", "user");
+
+    reply = clawt_web_app_call(app, "msg.send",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        return clawt_web_error_page(app, request, NULL, CLAWT_PAGE_CHAT,
+                                    clawt_web_app_last_error(app));
+
+    {
+        g_autofree gchar *key = draft_key_for(app, room_id);
+
+        clawt_draft_store_set(NULL, key, NULL, NULL);
+    }
+
+    return room_redirect(room_id);
+}
+
+/*
+ * The composer's contents in a room, saved without sending anything --
+ * the same debounce and the same store the agent chat uses.
+ */
+static HtmxResponse *
+on_room_draft(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *room_id = clawt_web_param(params, "id");
+    const gchar *body = clawt_web_form_value(request, "body");
+    g_autofree gchar *key = draft_key_for(app, room_id);
+
+    HtmxResponse *response;
+
+    clawt_draft_store_set(NULL, key,
+                          (body != NULL && *body != '\0') ? body : NULL,
+                          NULL);
+
+    response = htmx_response_new();
+    htmx_response_set_status(response, 204);
+
+    return response;
+}
+
 static HtmxResponse *
 on_send(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
@@ -1986,6 +2130,8 @@ void
 clawt_web_register_chat(HtmxRouter *router, ClawtWebApp *app)
 {
     htmx_router_post(router, "/a/:id/send", on_send, app);
+    htmx_router_post(router, "/r/:id/send", on_room_send, app);
+    htmx_router_post(router, "/r/:id/draft", on_room_draft, app);
     htmx_router_post(router, "/a/:id/draft", on_draft, app);
     htmx_router_post(router, "/a/:id/interrupt", on_interrupt, app);
     htmx_router_get(router, "/f/a/:id/transcript", on_transcript_fragment, app);

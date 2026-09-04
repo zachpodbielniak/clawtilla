@@ -1611,6 +1611,7 @@ clawt_room_spec_free(ClawtRoomSpec *self)
 
     g_free(self->id);
     g_free(self->name);
+    g_free(self->team);
     g_strfreev(self->members);
     g_free(self);
 }
@@ -2033,6 +2034,33 @@ clawt_config_get_rooms(ClawtConfig *self)
 
             spec->max_hops = (node != NULL)
                 ? (guint)yaml_node_get_int(node) : 0;
+        }
+
+        {
+            YamlNode *node = node_at_path(entry, "order", FALSE);
+
+            spec->order = (node != NULL) ? (gint)yaml_node_get_int(node) : 0;
+        }
+
+        spec->team = g_strdup(member_string(yaml_node_get_mapping(entry),
+                                            "team"));
+
+        {
+            YamlNode *node = node_at_path(entry, "catchup_messages", FALSE);
+            const gchar *fallback =
+                schema_default_for("rooms.catchup_messages");
+
+            /*
+             * Through the schema default rather than a literal, for the
+             * reason require_mention above resolves that way: a room
+             * that declares nothing must behave as the documented
+             * default rather than as zero, which here would silently
+             * turn the catch-up off for every room in the fleet.
+             */
+            spec->catchup_messages = (node != NULL)
+                ? (guint)yaml_node_get_int(node)
+                : (guint)g_ascii_strtoull(fallback != NULL ? fallback : "0",
+                                          NULL, 10);
         }
 
         {

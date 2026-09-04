@@ -979,7 +979,6 @@ static const ClawtSchemaEntry schema[] = {
   "budget and the cycle detector are untouched, so a loop that costs\n"
   "money still has three limits on it.", "0.1.0" },
 
-/* ── teams ───────────────────────────────────────────────────────── */
 { "rooms.turn_timeout_seconds", CLAWT_SCHEMA_INT,
   CLAWT_SCHEMA_FLAG_NONE, "0", NULL,
   "How long one member may hold a room's turn before it is yielded.\n"
@@ -1003,6 +1002,35 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "Anything below 60 is raised to 60.", "0.2.0" },
 
+{ "rooms.order", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Where this room sits in the sidebar, among the agents.\n"
+  "\n"
+  "The same scale as agents.order, because a client draws one list and\n"
+  "a room can sit beside the agents it concerns. Written by the clients\n"
+  "when a room is dragged or moved, numbered from one in steps of ten so\n"
+  "there is room to hand-place something between two.", "0.2.0" },
+
+{ "rooms.team", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Which team's group this room appears under in the sidebar.\n"
+  "\n"
+  "Presentation and nothing else: it does not change who is in the room\n"
+  "or who a message reaches. A room with no team sits with the agents\n"
+  "that have none.", "0.2.0" },
+
+{ "rooms.catchup_messages", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "20", NULL,
+  "How much of a room a member is caught up on when it is named.\n"
+  "\n"
+  "In a room that requires mentions an agent only receives the messages\n"
+  "that named it, so without this it has no idea what was being\n"
+  "discussed -- the transcript holds the conversation and the model does\n"
+  "not. Each delivery carries the messages since that member last heard\n"
+  "from the room, capped here, with a count of anything dropped.\n"
+  "\n"
+  "0 turns it off. Anything older is clawtilla_room_history, which the\n"
+  "delivery preamble names.", "0.2.0" },
+
+/* ── teams ───────────────────────────────────────────────────────── */
 { "teams", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Teams, so a fleet larger than a handful has a shape.\n"
   "\n"

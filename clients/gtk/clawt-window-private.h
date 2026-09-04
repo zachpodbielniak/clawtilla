@@ -526,6 +526,21 @@ struct _ClawtWindow {
     gchar             *selected_agent;
 
     /*
+     * The group room on screen, when the sidebar row that is selected is
+     * a room rather than an agent.
+     *
+     * Distinct from selected_room, which is the transcript's own id
+     * whatever kind of conversation it is, and from
+     * selected_conversation, which is one of a *selected agent's* peer
+     * exchanges and is read-only.  A group is neither: it is a
+     * first-class entry in its own right and it is one you type into,
+     * so reusing selected_conversation for it would make the composer
+     * insensitive -- the read-only rule there is about posting into a
+     * room the operator is not part of, which is the opposite of this.
+     */
+    gchar             *selected_room_entry;
+
+    /*
      * Which room the transcript on screen actually is.
      *
      * Not derivable from selected_agent: a chat with an agent is the
@@ -842,6 +857,18 @@ clawt_gtk_row_opens_something(GtkWidget *row);
 
 void
 clawt_gtk_select_agent(ClawtWindow *self, const gchar *agent_id);
+
+/*
+ * Opens a group room, which is a sidebar entry in its own right rather
+ * than one of a selected agent's conversations.
+ *
+ * A sibling of clawt_gtk_select_agent() rather than an argument to it:
+ * that one assumes an agent throughout -- the draft it saves, the
+ * avatar it caches, the stop-turn button it syncs -- and a room has
+ * none of those.
+ */
+void
+clawt_gtk_select_room(ClawtWindow *self, const gchar *room_id);
 
 /*
  * Composer text that has not been sent, in the client's own config

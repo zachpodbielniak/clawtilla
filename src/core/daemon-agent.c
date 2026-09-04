@@ -15,6 +15,85 @@
 #include "core/clawt-daemon.h"
 #include "core/clawt-daemon-private.h"
 
+/*
+ * Puts the sidebar in the order @entries gives.
+ *
+ * @typed says whether each entry carries its kind -- `a:<agent>` or
+ * `r:<room>` -- or is a bare agent id, which is what agent.reorder has
+ * always sent and what the CLI still sends.  One function either way,
+ * because the numbering is the part a person editing the file by hand
+ * depends on and two copies of it would drift.
+ *
+ * Numbered from one in steps of ten.  The gap is not decoration: it
+ * leaves room to place something between two others by setting a single
+ * number, which is the only way to do it in a text editor without
+ * renumbering the whole file.
+ *
+ * An id that is not there is skipped rather than refused.  The list
+ * comes from a client's view of the fleet, which may be a moment behind
+ * one that has just been removed -- and failing the whole reorder over
+ * that would lose the arrangement somebody had just made.
+ *
+ * Returns: %TRUE if the config was saved
+ */
+static gboolean
+renumber_fleet(ClawtDaemon  *self,
+               const gchar  *entries,
+               gboolean      typed,
+               GError      **error)
+{
+    g_auto(GStrv) wanted = g_strsplit(entries, ",", -1);
+    gsize i;
+
+    for (i = 0; wanted[i] != NULL; i++) {
+        const gchar *entry = g_strstrip(wanted[i]);
+        gboolean is_room = FALSE;
+        guint position;
+
+        if (*entry == '\0')
+            continue;
+
+        if (typed) {
+            if (g_str_has_prefix(entry, "r:")) {
+                is_room = TRUE;
+                entry += 2;
+            } else if (g_str_has_prefix(entry, "a:")) {
+                entry += 2;
+            } else {
+                /*
+                 * An untyped entry in a typed list is a client that has
+                 * not been taught the prefix.  Read as an agent, which
+                 * is what it would have meant before there was anything
+                 * else in the list.
+                 */
+                is_room = FALSE;
+            }
+        }
+
+        position = (guint)((i + 1) * 10);
+
+        if (is_room) {
+            clawt_config_set_room_int(self->config, entry, "order",
+                                      (gint64)position);
+            continue;
+        }
+
+        {
+            ClawtAgentConfig *config =
+                clawt_config_get_agent(self->config, entry);
+            g_autofree gchar *text = NULL;
+
+            if (config == NULL)
+                continue;
+
+            text = g_strdup_printf("%u", position);
+            clawt_agent_config_set_string(config, "order", text);
+        }
+    }
+
+    return clawt_config_save(self->config, error);
+}
+
 JsonNode *
 clawt_daemon_handle_agent(
     ClawtDaemon  *self,
@@ -1283,8 +1362,6 @@ clawt_daemon_handle_agent(
 
     if (g_strcmp0(kind, "agent.reorder") == 0) {
         const gchar *ids = clawt_ipc_payload_string(payload, "agents");
-        g_auto(GStrv) wanted = NULL;
-        gsize i;
 
         if (ids == NULL)
             return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
@@ -1292,44 +1369,42 @@ clawt_daemon_handle_agent(
                                        "order you want them, comma "
                                        "separated");
 
-        wanted = g_strsplit(ids, ",", -1);
-
         /*
-         * Numbered from one, in steps of ten.
-         *
-         * The gap is not decoration: it leaves room to place one agent
-         * between two others by setting a single number by hand, which
-         * is the only way to do it in a text editor without renumbering
-         * the whole file.
+         * Through the same renumbering fleet.reorder uses, with every
+         * entry read as an agent.  Two implementations of "put these in
+         * this order" would differ exactly once, and the case they
+         * would differ on is the numbering -- which is what a person
+         * hand-editing the file relies on.
          */
-        for (i = 0; wanted[i] != NULL; i++) {
-            const gchar *agent_id = g_strstrip(wanted[i]);
-            ClawtAgentConfig *config;
-            g_autofree gchar *position = NULL;
-
-            if (*agent_id == '\0')
-                continue;
-
-            config = clawt_config_get_agent(self->config, agent_id);
-
-            /*
-             * An id that is not there is skipped rather than refused.
-             * The list comes from a client's view of the fleet, which
-             * may be a moment behind one that has just been removed --
-             * and failing the whole reorder over that would lose the
-             * arrangement somebody had just made.
-             */
-            if (config == NULL)
-                continue;
-
-            position = g_strdup_printf("%u", (guint)((i + 1) * 10));
-            clawt_agent_config_set_string(config, "order", position);
-        }
-
-        if (!clawt_config_save(self->config, &error))
+        if (!renumber_fleet(self, ids, FALSE, &error))
             return clawt_ipc_error_new(request, error->code, error->message);
 
         clawt_event_bus_emit(self->bus, "agent.changed", NULL);
+
+        return clawt_ipc_response_new(request, NULL);
+    }
+
+    if (g_strcmp0(kind, "fleet.reorder") == 0) {
+        const gchar *entries = clawt_ipc_payload_string(payload, "entries");
+
+        if (entries == NULL)
+            return clawt_ipc_error_new(
+                request, CLAWT_ERROR_INVALID_ARGUMENT,
+                "entries is required: the sidebar in the order you want "
+                "it, comma separated, each one `a:<agent>` or `r:<room>`");
+
+        /*
+         * One frame describes the whole arrangement, exactly as
+         * agent.reorder does -- a client whose view was a moment stale
+         * cannot produce a half-applied reorder, and a sidebar holding
+         * two kinds of row would otherwise need two frames and could
+         * land one of them.
+         */
+        if (!renumber_fleet(self, entries, TRUE, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        clawt_event_bus_emit(self->bus, "agent.changed", NULL);
+        clawt_event_bus_emit(self->bus, "room.changed", NULL);
 
         return clawt_ipc_response_new(request, NULL);
     }

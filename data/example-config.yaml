@@ -906,6 +906,33 @@ rooms:
     # Anything below 60 is raised to 60.
     turn_timeout_seconds: 0
 
+    # Where this room sits in the sidebar, among the agents.
+    #
+    # The same scale as agents.order, because a client draws one list and
+    # a room can sit beside the agents it concerns. Written by the clients
+    # when a room is dragged or moved, numbered from one in steps of ten so
+    # there is room to hand-place something between two.
+    order: null
+
+    # Which team's group this room appears under in the sidebar.
+    #
+    # Presentation and nothing else: it does not change who is in the room
+    # or who a message reaches. A room with no team sits with the agents
+    # that have none.
+    team: null
+
+    # How much of a room a member is caught up on when it is named.
+    #
+    # In a room that requires mentions an agent only receives the messages
+    # that named it, so without this it has no idea what was being
+    # discussed -- the transcript holds the conversation and the model does
+    # not. Each delivery carries the messages since that member last heard
+    # from the room, capped here, with a count of anything dropped.
+    #
+    # 0 turns it off. Anything older is clawtilla_room_history, which the
+    # delivery preamble names.
+    catchup_messages: 20
+
 # Teams, so a fleet larger than a handful has a shape.
 #
 # An agent names its team in agents.team, and its standing there in

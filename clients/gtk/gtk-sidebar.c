@@ -56,12 +56,12 @@ state_dot(const gchar *state)
 /* ── Unread ──────────────────────────────────────────────────────── */
 
 static guint
-unread_for(ClawtWindow *self, const gchar *agent_id)
+unread_for(ClawtWindow *self, const gchar *room_id)
 {
-    if (agent_id == NULL || self->unread == NULL)
+    if (room_id == NULL || self->unread == NULL)
         return 0;
 
-    return GPOINTER_TO_UINT(g_hash_table_lookup(self->unread, agent_id));
+    return GPOINTER_TO_UINT(g_hash_table_lookup(self->unread, room_id));
 }
 
 /*
@@ -116,7 +116,7 @@ void
 clawt_gtk_note_unread(ClawtWindow *self, ClawtEvent *event, const gchar *from)
 {
     const gchar *room_id = clawt_event_get_subject(event);
-    const gchar *agent_id;
+    const gchar *agent_id = NULL;
     guint count;
 
     /*
@@ -129,13 +129,19 @@ clawt_gtk_note_unread(ClawtWindow *self, ClawtEvent *event, const gchar *from)
                                    self->connected_at))
         return;
 
-    agent_id = g_hash_table_lookup(self->dm_rooms, room_id);
+    /*
+     * Counted against the room rather than the agent whose room it is.
+     *
+     * It used to resolve the room to an agent and give up when there
+     * was none -- which is every group room, so a group could never
+     * light a badge and a chat you have to remember to open is a chat
+     * you forget.  Every row in the sidebar has a room, so the room is
+     * the thing both kinds of row have in common.
+     */
+    (void)agent_id;
 
-    if (agent_id == NULL)
-        return;
-
-    count = unread_for(self, agent_id) + 1;
-    g_hash_table_insert(self->unread, g_strdup(agent_id),
+    count = unread_for(self, room_id) + 1;
+    g_hash_table_insert(self->unread, g_strdup(room_id),
                         GUINT_TO_POINTER(count));
 }
 
@@ -801,6 +807,65 @@ team_of_agent_row(ClawtWindow *self, const gchar *agent_id)
  *
  * Returns: %TRUE if the daemon accepted it
  */
+/*
+ * Which team's group a room row is currently under.
+ *
+ * By id rather than by widget pointer, for the same reason the agent
+ * lookup is: a refresh can arrive from an idle mid-drag and destroy
+ * every row.
+ */
+static const gchar *
+team_of_room_row(ClawtWindow *self, const gchar *room_id)
+{
+    GtkWidget *child;
+
+    for (child = gtk_widget_get_first_child(GTK_WIDGET(self->sidebar));
+         child != NULL;
+         child = gtk_widget_get_next_sibling(child)) {
+        const gchar *id;
+
+        if (!GTK_IS_LIST_BOX_ROW(child))
+            continue;
+
+        id = g_object_get_data(G_OBJECT(child), "room-id");
+
+        if (g_strcmp0(id, room_id) == 0)
+            return g_object_get_data(G_OBJECT(child), "room-team");
+    }
+
+    return NULL;
+}
+
+/*
+ * Moves a room into a team's group, which is presentation and nothing
+ * else: it changes neither who is in the room nor who a message
+ * reaches.
+ */
+static gboolean
+move_room_to_team(ClawtWindow *self, const gchar *room_id,
+                  const gchar *team, const gchar *team_label)
+{
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *message = NULL;
+
+    reply = clawt_window_request(
+        self, "room.set",
+        clawt_build_payload("room", room_id, "team",
+                            team != NULL ? team : "", NULL));
+
+    if (reply == NULL)
+        return FALSE;
+
+    message = (team != NULL && *team != '\0')
+              ? g_strdup_printf("%s moved to %s.", room_id,
+                                team_label != NULL ? team_label : team)
+              : g_strdup_printf("%s taken off its team.", room_id);
+
+    clawt_window_toast(self, message);
+
+    return TRUE;
+}
+
 static gboolean
 move_agent_to_team(ClawtWindow *self, const gchar *agent_id,
                    const gchar *team, const gchar *team_label)
@@ -841,7 +906,9 @@ on_team_header_drop(GtkDropTarget *target, const GValue *value, gdouble x,
 {
     GtkWidget *header = user_data;
     ClawtWindow *self = g_object_get_data(G_OBJECT(header), "window");
-    const gchar *dragged = g_value_get_string(value);
+    const gchar *token = g_value_get_string(value);
+    const gchar *dragged;
+    gboolean dragged_is_a_room;
     const gchar *team = g_object_get_data(G_OBJECT(header), "team-id");
     const gchar *label = g_object_get_data(G_OBJECT(header), "team-label");
     const gchar *was;
@@ -857,21 +924,31 @@ on_team_header_drop(GtkDropTarget *target, const GValue *value, gdouble x,
      */
     on_drop_hover_leave(NULL, header);
 
-    if (dragged == NULL || team == NULL || self == NULL)
+    if (token == NULL || team == NULL || self == NULL)
         return FALSE;
+
+    /* Either kind of row can be dropped onto a heading. */
+    dragged_is_a_room = g_str_has_prefix(token, "r:");
+    dragged = g_str_has_prefix(token, "a:") || dragged_is_a_room
+        ? token + 2 : token;
 
     /*
      * Already there.  Accepted rather than refused: the drag animating
      * back to where it started reads as "that did not work", and it did
      * work -- there was simply nothing to do.
      */
-    was = team_of_agent_row(self, dragged);
+    was = dragged_is_a_room ? team_of_room_row(self, dragged)
+                            : team_of_agent_row(self, dragged);
 
     if (g_strcmp0(was != NULL ? was : "", team) == 0)
         return TRUE;
 
-    if (!move_agent_to_team(self, dragged, team, label))
+    if (dragged_is_a_room) {
+        if (!move_room_to_team(self, dragged, team, label))
+            return FALSE;
+    } else if (!move_agent_to_team(self, dragged, team, label)) {
         return FALSE;
+    }
 
     clawt_gtk_refresh_agents(self);
 
@@ -943,15 +1020,28 @@ on_row_drag_prepare(GtkDragSource *source, gdouble x, gdouble y,
 {
     GtkWidget *row = user_data;
     const gchar *agent_id = g_object_get_data(G_OBJECT(row), "agent-id");
+    const gchar *room_id = g_object_get_data(G_OBJECT(row), "room-id");
+    g_autofree gchar *token = NULL;
 
     (void)source;
     (void)x;
     (void)y;
 
-    if (agent_id == NULL)
+    /*
+     * The kind travels with the id, because the drop handler cannot
+     * work it out from a bare string: it has to know whether to move a
+     * room's team or an agent's, and a room read as an agent silently
+     * reaches nobody.  Typing only the reorder frame would not have
+     * been enough -- the handler decides that before it builds one.
+     */
+    if (agent_id != NULL)
+        token = g_strconcat("a:", agent_id, NULL);
+    else if (room_id != NULL)
+        token = g_strconcat("r:", room_id, NULL);
+    else
         return NULL;
 
-    return gdk_content_provider_new_typed(G_TYPE_STRING, agent_id);
+    return gdk_content_provider_new_typed(G_TYPE_STRING, token);
 }
 
 static void
@@ -991,7 +1081,9 @@ on_row_drop(GtkDropTarget *target, const GValue *value, gdouble x, gdouble y,
 {
     GtkWidget *onto = user_data;
     ClawtWindow *self = g_object_get_data(G_OBJECT(onto), "window");
-    const gchar *dragged = g_value_get_string(value);
+    const gchar *token = g_value_get_string(value);
+    const gchar *dragged;
+    gboolean dragged_is_a_room;
     const gchar *landed = g_object_get_data(G_OBJECT(onto), "agent-id");
     const gchar *onto_team = g_object_get_data(G_OBJECT(onto), "agent-team");
     const gchar *from_team;
@@ -1006,7 +1098,20 @@ on_row_drop(GtkDropTarget *target, const GValue *value, gdouble x, gdouble y,
 
     on_drop_hover_leave(NULL, onto);
 
-    if (dragged == NULL || landed == NULL || self == NULL)
+    if (token == NULL || self == NULL)
+        return FALSE;
+
+    dragged_is_a_room = g_str_has_prefix(token, "r:");
+    dragged = g_str_has_prefix(token, "a:") || dragged_is_a_room
+        ? token + 2 : token;
+
+    /* The row it was dropped on is either kind too. */
+    if (landed == NULL) {
+        landed = g_object_get_data(G_OBJECT(onto), "room-id");
+        onto_team = g_object_get_data(G_OBJECT(onto), "room-team");
+    }
+
+    if (landed == NULL)
         return FALSE;
 
     if (g_strcmp0(dragged, landed) == 0)
@@ -1028,7 +1133,8 @@ on_row_drop(GtkDropTarget *target, const GValue *value, gdouble x, gdouble y,
      * coarser of the two, and an agent in the right team at the wrong
      * position is a better failure than the reverse.
      */
-    from_team = team_of_agent_row(self, dragged);
+    from_team = dragged_is_a_room ? team_of_room_row(self, dragged)
+                                  : team_of_agent_row(self, dragged);
 
     if (g_strcmp0(from_team != NULL ? from_team : "",
                   onto_team != NULL ? onto_team : "") != 0) {
@@ -1040,8 +1146,12 @@ on_row_drop(GtkDropTarget *target, const GValue *value, gdouble x, gdouble y,
                     clawt_payload_of(self->teams_seen), "teams"),
                 onto_team);
 
-        if (!move_agent_to_team(self, dragged, onto_team, label))
+        if (dragged_is_a_room) {
+            if (!move_room_to_team(self, dragged, onto_team, label))
+                return FALSE;
+        } else if (!move_agent_to_team(self, dragged, onto_team, label)) {
             return FALSE;
+        }
     }
 
     /*
@@ -1058,38 +1168,44 @@ on_row_drop(GtkDropTarget *target, const GValue *value, gdouble x, gdouble y,
          child != NULL;
          child = gtk_widget_get_next_sibling(child)) {
         const gchar *agent_id;
+        const gchar *room_id;
+        g_autofree gchar *entry = NULL;
         gint index;
 
         if (!GTK_IS_LIST_BOX_ROW(child))
             continue;
 
         agent_id = g_object_get_data(G_OBJECT(child), "agent-id");
+        room_id = g_object_get_data(G_OBJECT(child), "room-id");
 
-        if (agent_id == NULL)
+        /* A team heading is neither, and is not part of the order. */
+        if (agent_id != NULL)
+            entry = g_strconcat("a:", agent_id, NULL);
+        else if (room_id != NULL)
+            entry = g_strconcat("r:", room_id, NULL);
+        else
             continue;
 
         index = gtk_list_box_row_get_index(GTK_LIST_BOX_ROW(child));
 
         /* Taken out of where it was... */
-        if (g_strcmp0(agent_id, dragged) == 0)
+        if (g_strcmp0(agent_id != NULL ? agent_id : room_id, dragged) == 0)
             continue;
 
-        if (index == onto_index && !after) {
+        if (index == onto_index && !after)
             g_string_append_printf(ids, "%s%s", ids->len > 0 ? "," : "",
-                                   dragged);
-        }
+                                   token);
 
-        g_string_append_printf(ids, "%s%s", ids->len > 0 ? "," : "",
-                               agent_id);
+        g_string_append_printf(ids, "%s%s", ids->len > 0 ? "," : "", entry);
 
         /* ...and put back beside the row it was dropped on. */
         if (index == onto_index && after)
-            g_string_append_printf(ids, ",%s", dragged);
+            g_string_append_printf(ids, ",%s", token);
     }
 
     reply = clawt_window_request(
-        self, "agent.reorder",
-        clawt_build_payload("agents", ids->str, NULL));
+        self, "fleet.reorder",
+        clawt_build_payload("entries", ids->str, NULL));
 
     if (reply == NULL)
         return FALSE;
@@ -1139,6 +1255,7 @@ clawt_gtk_on_row_selected(GtkListBox *box, GtkListBoxRow *row, gpointer user_dat
 {
     ClawtWindow *self = user_data;
     const gchar *agent_id;
+    const gchar *room_id;
 
     (void)box;
 
@@ -1148,8 +1265,21 @@ clawt_gtk_on_row_selected(GtkListBox *box, GtkListBoxRow *row, gpointer user_dat
 
     agent_id = g_object_get_data(G_OBJECT(row), "agent-id");
 
-    if (agent_id != NULL)
+    if (agent_id != NULL) {
         clawt_gtk_select_agent(self, agent_id);
+        return;
+    }
+
+    /*
+     * Or a room, which is a first-class entry rather than one of a
+     * selected agent's conversations.  A row with neither key does
+     * nothing and says nothing, which is how a new kind of row fails
+     * invisibly -- so both are read here, in the one handler.
+     */
+    room_id = g_object_get_data(G_OBJECT(row), "room-id");
+
+    if (room_id != NULL)
+        clawt_gtk_select_room(self, room_id);
 }
 
 /*
@@ -1292,6 +1422,147 @@ park_sidebar_focus(ClawtWindow *self)
     return g_strdup(id);
 }
 
+/*
+ * A room's label, from its members rather than its id.
+ *
+ * How a room is named is the daemon's business, and a client that takes
+ * `dm:a:b` apart is a client that breaks when that changes.  A room
+ * somebody named uses that name; one that has none is described by who
+ * is in it, which is the only other true thing about it.
+ *
+ * Returns: (transfer full): the label
+ */
+static gchar *
+room_label(JsonObject *room)
+{
+    const gchar *id = clawt_json_string(room, "id", "");
+    const gchar *name = clawt_json_string(room, "name", NULL);
+    JsonArray *members;
+    g_autoptr(GString) out = NULL;
+    guint i;
+
+    if (name != NULL && *name != '\0' && g_strcmp0(name, id) != 0)
+        return g_strdup(name);
+
+    if (!json_object_has_member(room, "members"))
+        return g_strdup(id);
+
+    members = json_object_get_array_member(room, "members");
+    out = g_string_new(NULL);
+
+    for (i = 0; i < json_array_get_length(members); i++) {
+        const gchar *member = json_array_get_string_element(members, i);
+
+        if (g_strcmp0(member, "user") == 0)
+            continue;
+
+        if (out->len > 0)
+            g_string_append(out, ", ");
+
+        g_string_append(out, member);
+    }
+
+    if (out->len == 0)
+        return g_strdup(id);
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+/*
+ * One room in the sidebar, beside the agents.
+ *
+ * Carries `room-id` where an agent row carries `agent-id`, which is
+ * also how every handler tells the two apart -- a row with neither does
+ * nothing at all, silently, which is how a new row type fails
+ * invisibly.
+ */
+static GtkWidget *
+room_row(ClawtWindow *self, JsonObject *room, guint unread)
+{
+    GtkWidget *row = adw_action_row_new();
+    const gchar *room_id = clawt_json_string(room, "id", "");
+    g_autofree gchar *label = room_label(room);
+    g_autofree gchar *subtitle = NULL;
+    JsonArray *members = json_object_has_member(room, "members")
+        ? json_object_get_array_member(room, "members") : NULL;
+    guint count = (members != NULL) ? json_array_get_length(members) : 0;
+
+    gtk_widget_add_css_class(row, "clawt-agent-row");
+
+    /*
+     * How many are in it, and whether being in it means answering
+     * everything.  The second is the thing somebody actually needs to
+     * know about a room before they type in it.
+     */
+    subtitle = clawt_json_boolean(room, "require_mention", FALSE)
+        ? g_strdup_printf("%u members \xc2\xb7 answers when named", count)
+        : g_strdup_printf("%u members \xc2\xb7 everyone answers", count);
+
+    clawt_gtk_set_row_text(row, label, subtitle);
+
+    if (unread > 0)
+        adw_action_row_add_suffix(ADW_ACTION_ROW(row), unread_badge(unread));
+
+    g_object_set_data_full(G_OBJECT(row), "room-id", g_strdup(room_id),
+                           g_free);
+    g_object_set_data_full(G_OBJECT(row), "room-team",
+                           g_strdup(clawt_json_string(room, "team", "")),
+                           g_free);
+
+    (void)self;
+
+    return row;
+}
+
+/*
+ * Every room in @team's group, appended after that team's agents.
+ *
+ * Rooms sit with the agents they concern rather than in a section of
+ * their own, which is what "move it wherever you like" has to mean if
+ * a team's group is somewhere you can put one.  A room with no team
+ * goes with the agents that have none.
+ */
+static void
+append_rooms_for_team(ClawtWindow *self, JsonArray *rooms,
+                      const gchar *team, GHashTable *emitted)
+{
+    guint i;
+
+    if (rooms == NULL)
+        return;
+
+    for (i = 0; i < json_array_get_length(rooms); i++) {
+        JsonObject *room = json_array_get_object_element(rooms, i);
+        const gchar *id = clawt_json_string(room, "id", "");
+        const gchar *room_team = clawt_json_string(room, "team", "");
+        GtkWidget *row;
+
+        /*
+         * Only rooms somebody made.  A direct conversation is already
+         * the agent's own row, and a routine's or a trigger's belongs to
+         * that routine or trigger -- listing them here would be three
+         * more entries per agent, none of which anybody chose.
+         */
+        if (!clawt_json_boolean(room, "declared", FALSE))
+            continue;
+
+        if (g_strcmp0(room_team, team != NULL ? team : "") != 0)
+            continue;
+
+        if (g_hash_table_contains(emitted, id))
+            continue;
+
+        g_hash_table_add(emitted, g_strdup(id));
+
+        row = room_row(self, room, unread_for(self, id));
+        gtk_list_box_append(self->sidebar, row);
+        make_row_draggable(self, row);
+
+        if (g_strcmp0(id, self->selected_room_entry) == 0)
+            gtk_list_box_select_row(self->sidebar, GTK_LIST_BOX_ROW(row));
+    }
+}
+
 static void
 refresh_agents_once(ClawtWindow *self)
 {
@@ -1301,9 +1572,14 @@ refresh_agents_once(ClawtWindow *self)
     g_autofree gchar *shown_team = NULL;
     g_autofree gchar *refocus = NULL;
     JsonArray *teams = NULL;
+    g_autoptr(JsonNode) room_reply = NULL;
+    JsonArray *rooms = NULL;
     g_autoptr(GHashTable) emitted = g_hash_table_new_full(g_str_hash,
                                                           g_str_equal,
                                                           g_free, NULL);
+    g_autoptr(GHashTable) rooms_emitted = g_hash_table_new_full(g_str_hash,
+                                                                g_str_equal,
+                                                                g_free, NULL);
     guint i;
 
     reply = clawt_window_request(self, "agent.list", NULL);
@@ -1322,6 +1598,17 @@ refresh_agents_once(ClawtWindow *self)
     if (team_reply != NULL)
         teams = json_object_get_array_member(clawt_payload_of(team_reply),
                                              "teams");
+
+    /*
+     * And the rooms, already ordered by the daemon.  Sorting them here
+     * would be a second answer to what order the sidebar is in, and the
+     * two would differ exactly once.
+     */
+    room_reply = clawt_window_request(self, "room.list", NULL);
+
+    if (room_reply != NULL)
+        rooms = json_object_get_array_member(clawt_payload_of(room_reply),
+                                             "rooms");
 
     /*
      * Kept for the context menu, which needs the same list and cannot
@@ -1370,6 +1657,15 @@ refresh_agents_once(ClawtWindow *self)
 
         clawt_gtk_set_row_text(row, "No agents yet", "Use the + button to add one");
         gtk_list_box_append(self->sidebar, row);
+
+        /*
+         * And any rooms, which the loop below never reaches because it
+         * walks agents.  A fleet with no agents has no rooms worth
+         * having either -- but a config declaring both, with the agents
+         * removed, would otherwise show a sidebar that has silently
+         * lost them.
+         */
+        append_rooms_for_team(self, rooms, "", rooms_emitted);
         return;
     }
 
@@ -1394,6 +1690,17 @@ refresh_agents_once(ClawtWindow *self)
          * broken rather than as narrow.
          */
         if (g_strcmp0(team, shown_team) != 0 || i == 0) {
+            /*
+             * The outgoing team's rooms, before the next heading takes
+             * the floor -- so a room sits under the team it was put in
+             * rather than at the end of the list.
+             */
+            if (i > 0 && !team_is_collapsed(self,
+                                            shown_team != NULL
+                                                ? shown_team : ""))
+                append_rooms_for_team(self, rooms, shown_team,
+                                      rooms_emitted);
+
             emit_empty_headers_before(self, teams, agents,
                                       team != NULL ? team : "", &emitted);
             append_team_header(self, teams, agents, team, &emitted);
@@ -1410,7 +1717,8 @@ refresh_agents_once(ClawtWindow *self)
             continue;
 
         row = agent_row(self, agent,
-                       unread_for(self, clawt_json_string(agent, "id", "")));
+                       unread_for(self,
+                                  clawt_json_string(agent, "dm_room", "")));
         gtk_list_box_append(self->sidebar, row);
 
         /*
@@ -1439,7 +1747,8 @@ refresh_agents_once(ClawtWindow *self)
          */
         if (g_strcmp0(clawt_json_string(agent, "id", ""),
                       self->selected_agent) == 0 ||
-            (self->selected_agent == NULL && i == 0))
+            (self->selected_agent == NULL &&
+             self->selected_room_entry == NULL && i == 0))
             gtk_list_box_select_row(self->sidebar, GTK_LIST_BOX_ROW(row));
 
         /*
@@ -1463,8 +1772,29 @@ refresh_agents_once(ClawtWindow *self)
         }
     }
 
+    /* The last team's rooms, which no following header will flush. */
+    if (!team_is_collapsed(self, shown_team != NULL ? shown_team : ""))
+        append_rooms_for_team(self, rooms, shown_team, rooms_emitted);
+
     /* Whatever the fleet declares and nobody is on yet, at the bottom. */
     emit_empty_headers_before(self, teams, agents, NULL, &emitted);
+
+    /*
+     * And any room whose team holds no agents at all, which the loop
+     * above never reaches: it walks agents, so a team with none of them
+     * is a heading it never stands under.  A room that vanished because
+     * the last agent left its team would read as a room that was
+     * deleted.
+     */
+    if (rooms != NULL) {
+        for (i = 0; i < json_array_get_length(rooms); i++) {
+            JsonObject *room = json_array_get_object_element(rooms, i);
+
+            append_rooms_for_team(self, rooms,
+                                  clawt_json_string(room, "team", ""),
+                                  rooms_emitted);
+        }
+    }
 }
 
 void

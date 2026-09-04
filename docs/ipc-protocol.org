@@ -212,7 +212,8 @@ several agents at once.
 ~agent.list~, ~agent.show~, ~agent.start~, ~agent.stop~, ~agent.restart~,
 ~agent.interrupt~, ~agent.reset~, ~agent.logs~, ~agent.create~,
 ~agent.import~,
-~agent.remove~, ~agent.set~, ~agent.reorder~, ~agent.discover~,
+~agent.remove~, ~agent.set~, ~agent.reorder~, ~fleet.reorder~,
+~agent.discover~,
 ~agent.forget~, ~agent.files~, ~agent.file_read~, ~agent.file_write~,
 ~agent.avatar~, ~agent.avatar_set~, ~agent.avatar_clear~,
 ~agent.mount.list~, ~agent.mount.add~, ~agent.mount.remove~.
@@ -262,6 +263,20 @@ wanted, and numbers them in tens.  An id it does not know is skipped
 rather than refused: the list comes from a client's view, which may be a
 moment behind a removal, and failing the whole reorder over that would
 lose the arrangement somebody had just made.
+
+~fleet.reorder~ takes ~entries~ instead: the same list, in the same
+order, with each one written ~a:<agent>~ or ~r:<room>~.  The sidebar
+holds both kinds since a group room sits beside the agents it concerns,
+and what a reorder actually sends is a *renumbering* of the whole
+list --- so a frame carrying only the agents would number them from ten
+while the rooms kept whatever they had, and the two scales would
+interleave in a way nobody asked for.  Both graphical clients send this
+one; ~agent.reorder~ remains for the CLI and is the same renumbering
+with every entry read as an agent, so the two cannot drift.
+
+The gap of ten is not decoration: it leaves room to place something
+between two others by setting a single number, which is the only way to
+do it in a text editor without renumbering the whole file.
 
 ~agent.remove~ takes ~remove_files~ beside ~remove_computer~ and answers
 with ~files~, which is ~removed~ or the reason it was not.

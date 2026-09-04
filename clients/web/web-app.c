@@ -64,6 +64,7 @@ struct _ClawtWebApp {
      */
     GHashTable  *connection_status;
     gchar       *viewing;
+    gchar       *viewing_room;
 
     /*
      * When this app connected, in microseconds.
@@ -330,14 +331,14 @@ clawt_web_app_last_refusal(ClawtWebApp *self)
 }
 
 guint
-clawt_web_app_unread(ClawtWebApp *self, const gchar *agent_id)
+clawt_web_app_unread(ClawtWebApp *self, const gchar *room_id)
 {
     g_return_val_if_fail(CLAWT_IS_WEB_APP(self), 0);
 
-    if (agent_id == NULL)
+    if (room_id == NULL)
         return 0;
 
-    return GPOINTER_TO_UINT(g_hash_table_lookup(self->unread, agent_id));
+    return GPOINTER_TO_UINT(g_hash_table_lookup(self->unread, room_id));
 }
 
 guint
@@ -419,7 +420,6 @@ clawt_web_app_note_fleet(ClawtWebApp *self, JsonArray *agents)
             continue;
 
         id = json_object_get_string_member(agent, "id");
-        g_hash_table_add(live, (gpointer)id);
 
         if (!json_object_has_member(agent, "dm_room"))
             continue;
@@ -429,15 +429,21 @@ clawt_web_app_note_fleet(ClawtWebApp *self, JsonArray *agents)
         if (json_node_get_value_type(room) != G_TYPE_STRING)
             continue;
 
+        g_hash_table_add(live, (gpointer)json_node_get_string(room));
+
         g_hash_table_insert(self->dm_rooms,
                             g_strdup(json_node_get_string(room)),
                             g_strdup(id));
     }
 
     /*
-     * And forget the count for an agent that is no longer in the fleet.
+     * And forget the count for a conversation that is no longer there.
      * Without this a removed agent's number stays in the total on the
      * Chat tab for ever, pointing at a row nobody can open to clear it.
+     *
+     * `live` holds rooms rather than agent ids, because that is what the
+     * counts are keyed on: a group has no agent, and every row has a
+     * room.
      */
     g_hash_table_iter_init(&iter, self->unread);
 
@@ -455,13 +461,53 @@ clawt_web_app_set_viewing(ClawtWebApp *self, const gchar *agent_id)
     g_free(self->viewing);
     self->viewing = g_strdup(agent_id);
 
+    /* And no longer a room; the two are exclusive. */
+    if (agent_id != NULL)
+        g_clear_pointer(&self->viewing_room, g_free);
+
     /*
      * Opening a conversation is the only thing that clears its count --
      * the same single rule the GTK client follows.  A counter that
      * decays on its own is a counter you stop trusting.
      */
-    if (agent_id != NULL)
-        g_hash_table_remove(self->unread, agent_id);
+    if (agent_id != NULL) {
+        /*
+         * By the room, because that is what the count is against -- a
+         * group has no agent to key on.
+         */
+        g_autofree gchar *room = clawt_room_manager_direct_id("user",
+                                                              agent_id);
+
+        g_hash_table_remove(self->unread, room);
+    }
+}
+
+void
+clawt_web_app_set_viewing_room(ClawtWebApp *self, const gchar *room_id)
+{
+    g_return_if_fail(CLAWT_IS_WEB_APP(self));
+
+    g_free(self->viewing_room);
+    self->viewing_room = g_strdup(room_id);
+
+    /*
+     * The two selections are exclusive: a room is an entry in its own
+     * right rather than one of a selected agent's conversations, and a
+     * stale agent would keep the sidebar highlighting a row nobody is
+     * looking at.
+     */
+    if (room_id != NULL) {
+        g_clear_pointer(&self->viewing, g_free);
+        g_hash_table_remove(self->unread, room_id);
+    }
+}
+
+const gchar *
+clawt_web_app_get_viewing_room(ClawtWebApp *self)
+{
+    g_return_val_if_fail(CLAWT_IS_WEB_APP(self), NULL);
+
+    return self->viewing_room;
 }
 
 ClawtClient *
@@ -695,8 +741,6 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
      */
     if (g_strcmp0(kind, "message") == 0) {
         const gchar *from = clawt_event_get_detail(event, "from");
-        const gchar *agent_id = (subject != NULL)
-            ? g_hash_table_lookup(self->dm_rooms, subject) : NULL;
         g_autofree gchar *viewing_room = NULL;
 
         /*
@@ -710,13 +754,19 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
             viewing_room = clawt_room_manager_direct_id("user",
                                                         self->viewing);
 
-        if (agent_id != NULL &&
-            clawt_unread_should_count(subject, viewing_room, from,
+        /*
+         * Counted against the room rather than the agent whose room it
+         * is.  It used to give up when the room resolved to no agent --
+         * which is every group room, so a group could never light a
+         * badge, and a chat you have to remember to open is a chat you
+         * forget.
+         */
+        if (clawt_unread_should_count(subject, viewing_room, from,
                                       clawt_event_get_timestamp(event),
                                       self->connected_at))
             g_hash_table_insert(
-                self->unread, g_strdup(agent_id),
-                GUINT_TO_POINTER(clawt_web_app_unread(self, agent_id) + 1));
+                self->unread, g_strdup(subject),
+                GUINT_TO_POINTER(clawt_web_app_unread(self, subject) + 1));
     }
 
     /*
@@ -931,6 +981,7 @@ clawt_web_app_finalize(GObject *object)
     g_clear_pointer(&self->unread, g_hash_table_unref);
     g_clear_pointer(&self->dm_rooms, g_hash_table_unref);
     g_clear_pointer(&self->viewing, g_free);
+    g_clear_pointer(&self->viewing_room, g_free);
     g_clear_pointer(&self->alerts, g_ptr_array_unref);
     g_clear_pointer(&self->connection, clawt_connection_free);
     g_clear_pointer(&self->daemon_version, g_free);

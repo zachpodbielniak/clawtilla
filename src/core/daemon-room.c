@@ -48,6 +48,27 @@ resolve_room(ClawtDaemon *self, const gchar *room_id, const gchar *viewer)
 }
 
 
+/*
+ * Rooms in the order a sidebar draws them.
+ *
+ * By `order` and then by id, so a fleet where nobody has arranged
+ * anything is still stable rather than in hash-table order -- a list
+ * that reshuffles on every refresh is a list nobody can click in.
+ */
+static gint
+compare_rooms_by_order(gconstpointer a, gconstpointer b)
+{
+    ClawtRoom *left = *(ClawtRoom **)a;
+    ClawtRoom *right = *(ClawtRoom **)b;
+    gint left_order = clawt_room_get_order(left);
+    gint right_order = clawt_room_get_order(right);
+
+    if (left_order != right_order)
+        return (left_order < right_order) ? -1 : 1;
+
+    return g_strcmp0(clawt_room_get_id(left), clawt_room_get_id(right));
+}
+
 JsonNode *
 clawt_daemon_handle_room(
     ClawtDaemon  *self,
@@ -144,6 +165,16 @@ clawt_daemon_handle_room(
         g_autoptr(GPtrArray) rooms = clawt_room_manager_list(self->rooms);
         guint i;
 
+        /*
+         * Sorted here, not in each client.
+         *
+         * Grouping and ordering belong to whoever already decides them:
+         * agent.list returns the fleet ordered, and a client that
+         * sorted rooms itself would be a second answer to what order
+         * the sidebar is in -- and the two would differ exactly once.
+         */
+        g_ptr_array_sort(rooms, compare_rooms_by_order);
+
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "rooms");
         json_builder_begin_array(builder);
@@ -176,6 +207,30 @@ clawt_daemon_handle_room(
             json_builder_set_member_name(builder, "messages");
             json_builder_add_int_value(
                 builder, clawt_room_get_message_count(room));
+
+            /*
+             * What a sidebar needs to draw it beside the agents: where
+             * it sits, whose group it is under, whether it is a room
+             * somebody made rather than one the daemon derives, and
+             * whether being in it means answering everything.
+             */
+            json_builder_set_member_name(builder, "group");
+            json_builder_add_boolean_value(builder,
+                                           clawt_room_is_group(room));
+            json_builder_set_member_name(builder, "declared");
+            json_builder_add_boolean_value(
+                builder, clawt_room_is_declared(clawt_room_get_id(room)));
+            json_builder_set_member_name(builder, "require_mention");
+            json_builder_add_boolean_value(
+                builder, clawt_room_get_require_mention(room));
+            json_builder_set_member_name(builder, "order");
+            json_builder_add_int_value(builder, clawt_room_get_order(room));
+
+            if (clawt_room_get_team(room) != NULL) {
+                json_builder_set_member_name(builder, "team");
+                json_builder_add_string_value(builder,
+                                              clawt_room_get_team(room));
+            }
 
             {
                 g_autoptr(GPtrArray) last = clawt_room_get_history(room, 1);
@@ -482,6 +537,21 @@ clawt_daemon_handle_room(
             clawt_room_set_name(room, name);
             clawt_config_set_room_string(self->config, room_id, "name",
                                          name);
+        }
+
+        /*
+         * Which team's group it appears under, which is presentation and
+         * nothing else -- it changes neither who is in the room nor who
+         * a message reaches.  An empty string takes it off a team, since
+         * that and "no team key at all" have to be spellable apart.
+         */
+        if (json_object_has_member(payload, "team")) {
+            const gchar *team = clawt_ipc_payload_string(payload, "team");
+            gboolean none = (team == NULL || *team == '\0');
+
+            clawt_room_set_team(room, none ? NULL : team);
+            clawt_config_set_room_string(self->config, room_id, "team",
+                                         none ? NULL : team);
         }
 
         if (members != NULL) {
