@@ -1571,32 +1571,6 @@ on_task_changed(ClawtTaskManager *manager,
  * worth a buzz. A direct room is `dm:<a>:<b>` with the pair sorted, so
  * the question is whether one half of it is the operator.
  */
-/*
- * Whether @body addresses anybody who is in @room.
- *
- * Asked of the members rather than of the text alone: a message naming
- * somebody who is not in the room has addressed nobody, and treating it
- * as deliberate would invite an answer that no delivery can produce.
- */
-static gboolean
-names_a_member(ClawtRoom *room, const gchar *body)
-{
-    GPtrArray *members;
-    guint i;
-
-    if (room == NULL || body == NULL)
-        return FALSE;
-
-    members = clawt_room_get_members(room);
-
-    for (i = 0; i < members->len; i++) {
-        if (clawt_mention_names(body, g_ptr_array_index(members, i), NULL))
-            return TRUE;
-    }
-
-    return FALSE;
-}
-
 static gboolean
 is_operator_room(const gchar *room_id)
 {
@@ -1954,7 +1928,7 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
         clawt_message_set_invites_reply(
             message,
             room != NULL && clawt_room_get_require_mention(room) &&
-            names_a_member(room, body));
+            clawt_room_names_any_member(room, body, self->agents));
     }
 
     /*
@@ -2654,6 +2628,29 @@ file_decision_for_tools(const gchar    *agent_id,
         clawt_decision_get_default(decision) != NULL
             ? clawt_decision_get_default(decision)
             : "your default");
+}
+
+/*
+ * Making a room on behalf of an agent that asked, through exactly the
+ * path a person's room.create takes.
+ *
+ * The tool used to reach the room manager directly, which made the
+ * object and nothing else -- so an agent's room was gone at the next
+ * restart with its transcript orphaned, and every later edit to it
+ * reported success while writing to a `rooms:` entry that did not
+ * exist.
+ */
+static gboolean
+create_room_for_tools(const gchar  *room_id,
+                      const gchar  *name,
+                      const gchar  *members,
+                      gpointer      user_data,
+                      GError      **error)
+{
+    ClawtDaemon *self = user_data;
+
+    return clawt_daemon_create_room(self, room_id, name, members,
+                                    error) != NULL;
 }
 
 static gchar *
@@ -5736,6 +5733,8 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      */
     clawt_mcp_tools_set_create_agent_func(self->mcp_tools,
                                           create_agent_for_tools, self, NULL);
+    clawt_mcp_tools_set_create_room_func(self->mcp_tools,
+                                         create_room_for_tools, self, NULL);
     clawt_mcp_tools_set_ask_decision_func(self->mcp_tools,
                                           file_decision_for_tools, self,
                                           NULL);

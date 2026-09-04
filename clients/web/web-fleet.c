@@ -420,6 +420,9 @@ room_row(JsonObject *room, const gchar *selected_room, guint unread)
     return HTMX_ELEMENT(g_steal_pointer(&row));
 }
 
+static HtmxElement *team_picker_for(const gchar *base, const gchar *id,
+                                    const gchar *current, JsonArray *teams);
+
 /*
  * Every room in @team's group, after that team's agents.
  *
@@ -429,8 +432,8 @@ room_row(JsonObject *room, const gchar *selected_room, guint unread)
  */
 static void
 append_rooms_for_team(ClawtWebApp *app, HtmxDiv *scroll, JsonArray *rooms,
-                      const gchar *team, const gchar *selected_room,
-                      GHashTable *emitted)
+                      JsonArray *teams, const gchar *team,
+                      const gchar *selected_room, GHashTable *emitted)
 {
     guint i;
 
@@ -481,6 +484,21 @@ append_rooms_for_team(ClawtWebApp *app, HtmxDiv *scroll, JsonArray *rooms,
             clawt_web_add(move, clawt_web_post_button("Move down", down,
                                                       "default", NULL));
             htmx_node_add_child(HTMX_NODE(scroll), HTMX_NODE(move));
+
+            /*
+             * And which team's group it sits in -- the same control an
+             * agent gets, writing the same key.
+             *
+             * The route for this was registered and nothing on the page
+             * posted to it, so a GTK operator could drag a room onto a
+             * heading and a web operator could not do it at all.  `make
+             * parity` reported OK because layer 5 can only see an
+             * affordance somebody declared, and nobody had.
+             */
+            clawt_web_add(scroll,
+                          team_picker_for("r", id,
+                                          clawt_web_member(room, "team", ""),
+                                          teams));
         }
     }
 }
@@ -634,12 +652,11 @@ emit_empty_headers_before(HtmxDiv *scroll, JsonArray *teams,
  * cannot quietly reassign it.
  */
 static HtmxElement *
-team_picker(JsonArray *teams, JsonObject *agent)
+team_picker_for(const gchar *base, const gchar *id, const gchar *current,
+                JsonArray *teams)
 {
-    const gchar *id = clawt_web_member(agent, "id", "");
-    const gchar *current = clawt_web_member(agent, "team", "");
     g_autofree gchar *escaped = g_uri_escape_string(id, NULL, FALSE);
-    g_autofree gchar *action = g_strdup_printf("/a/%s/team", escaped);
+    g_autofree gchar *action = g_strdup_printf("/%s/%s/team", base, escaped);
     g_autoptr(HtmxForm) form = clawt_web_form(action);
     g_autoptr(HtmxDiv) row = htmx_div_new();
     g_autoptr(GPtrArray) ids = g_ptr_array_new_with_free_func(g_free);
@@ -819,7 +836,7 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view,
      * the daemon itself: a request from there would run while a page
      * render is blocked inside its own request on the same context.
      */
-    clawt_web_app_note_fleet(app, agents);
+    clawt_web_app_note_fleet(app, agents, rooms);
 
     if (agents == NULL) {
         const gchar *why = clawt_web_app_last_error(app);
@@ -852,8 +869,9 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view,
              * rather than at the end of the list.
              */
             if (!first)
-                append_rooms_for_team(app, scroll, rooms, current_team,
-                                      selected_room, rooms_shown);
+                append_rooms_for_team(app, scroll, rooms, teams,
+                                      current_team, selected_room,
+                                      rooms_shown);
 
             emit_empty_headers_before(scroll, teams, agents,
                                       team != NULL ? team : "", shown);
@@ -914,7 +932,11 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view,
              * the same operation for a page that has to work without
              * JavaScript, and it writes the same `agents.team`.
              */
-            clawt_web_add(scroll, team_picker(teams, agent));
+            clawt_web_add(scroll,
+                          team_picker_for("a", clawt_web_member(agent, "id",
+                                                                ""),
+                                          clawt_web_member(agent, "team", ""),
+                                          teams));
         }
     }
 
@@ -926,8 +948,8 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view,
      * to do.
      */
     /* The last team's rooms, which no following heading will flush. */
-    append_rooms_for_team(app, scroll, rooms, current_team, selected_room,
-                          rooms_shown);
+    append_rooms_for_team(app, scroll, rooms, teams, current_team,
+                          selected_room, rooms_shown);
 
     if (agents != NULL)
         emit_empty_headers_before(scroll, teams, agents, NULL, shown);
@@ -940,7 +962,7 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view,
      */
     for (i = 0; rooms != NULL && i < json_array_get_length(rooms); i++)
         append_rooms_for_team(
-            app, scroll, rooms,
+            app, scroll, rooms, teams,
             clawt_web_member(json_array_get_object_element(rooms, i),
                              "team", ""),
             selected_room, rooms_shown);

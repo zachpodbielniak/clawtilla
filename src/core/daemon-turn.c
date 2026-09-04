@@ -330,6 +330,24 @@ settle_hold(ClawtDaemon *self, const gchar *key)
         g_hash_table_remove(self->room_holder, key);
 }
 
+static gboolean on_turn_sweep(gpointer data);
+
+/*
+ * One sweep, now.
+ *
+ * For tests: a budget measured in minutes cannot be reached by waiting,
+ * and the thing worth testing is what the daemon's handler does with an
+ * overrun -- whose turn it stops and whether it ends the room -- not
+ * that a timer eventually fires.
+ */
+void
+clawt_daemon_turn_sweep_now(ClawtDaemon *self)
+{
+    g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+    on_turn_sweep(self);
+}
+
 static gboolean
 on_turn_sweep(gpointer data)
 {
@@ -375,19 +393,41 @@ on_turn_sweep(gpointer data)
             continue;
 
         message = g_strdup_printf(
-            "[clawtilla] '%s' held this room's turn for its whole budget "
-            "and it has been yielded. That is rooms.turn_timeout_seconds, "
-            "counted in work rather than in wall time -- the clock holds "
-            "while a turn is waiting on a person.", held);
+            "[clawtilla] '%s' held its turn in this room for the whole "
+            "budget and it has been yielded. That is "
+            "rooms.turn_timeout_seconds, counted in work rather than in "
+            "wall time -- the clock holds while a turn is waiting on a "
+            "person.", held);
 
         /*
-         * The room is stalled as well as the turn stopped.  A member that
-         * spent a whole budget without finishing will spend the next one
-         * the same way, and the room is where the exchange lives.
+         * The member's turn is always stopped.  Whether the *room* is
+         * stalled with it depends on how many other members there are.
+         *
+         * A pair is an exchange: one member that spent a whole budget
+         * without finishing will spend the next one the same way, and
+         * ending the exchange is the only thing that stops it.  A group
+         * is not -- stalling it refuses every other member's posts and
+         * stalls every task they hold, so one slow agent freezes a
+         * standup of five, and the notice said it "held this room's
+         * turn" when it held only its own.  The hold is keyed per
+         * member now; the stall has to be too, and for a group the
+         * honest answer is to stop that member and leave the room
+         * running.
          */
-        if (self->guard != NULL)
-            clawt_loop_guard_stall_room(self->guard, room_id,
-                                        CLAWT_STALL_ROOM_TIMEOUT, message);
+        {
+            ClawtRoom *room = (self->rooms != NULL)
+                ? clawt_room_manager_get(self->rooms, room_id) : NULL;
+            gboolean is_a_group = room != NULL && clawt_room_is_group(room);
+
+            if (self->guard != NULL && !is_a_group)
+                clawt_loop_guard_stall_room(self->guard, room_id,
+                                            CLAWT_STALL_ROOM_TIMEOUT,
+                                            message);
+
+            if (is_a_group)
+                clawt_mailbox_router_note(self->router, room_id, message,
+                                          NULL);
+        }
 
         stop_expired_turn(self, held, CLAWT_STALL_ROOM_TIMEOUT, message);
     }

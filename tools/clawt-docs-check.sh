@@ -40,9 +40,26 @@ check_public_headers () {
 
         # Exported functions are declared at column 0 as `type name(`, or as
         # `name(` on its own line following the return type.  Anything with a
-        # gtk-doc block has a `/**` within the preceding few lines.
+        # gtk-doc block has one ending within the preceding few lines.
+        #
+        # Measured from where the block *ends*, not where it starts.  From
+        # the start it was really a cap on how long a doc comment may be,
+        # and this codebase writes long ones on purpose -- so adding a
+        # paragraph to an already-thorough block reported the symbol as
+        # undocumented, which is the opposite of what the check is for.
+        #
+        # What this still cannot see: whether the block is about *this*
+        # symbol.  It asks only that one ended nearby, so deleting a
+        # declaration's own comment leaves it passing on the strength of
+        # whichever block came next -- verified by deleting one and
+        # watching the check report OK.  Requiring the block to name the
+        # symbol it documents (its first line is ` * name:`) is the fix,
+        # and it reports 398 symbols across the tree, so it is its own
+        # piece of work rather than a line in somebody else's change.
         awk -v file="src/${local_h}" '
-            /^\/\*\*/ { doc = NR }
+            /^\/\*\*/ { in_doc = 1 }
+
+            in_doc && /\*\// { doc = NR; in_doc = 0 }
             /^[a-zA-Z_][a-zA-Z0-9_ *]*\**[a-zA-Z_][a-zA-Z0-9_]*\(/ {
                 if ($0 ~ /^(static|typedef|G_|#)/) next
 

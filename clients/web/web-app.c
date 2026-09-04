@@ -67,6 +67,14 @@ struct _ClawtWebApp {
     gchar       *viewing_room;
 
     /*
+     * Every conversation the sidebar draws a row for: each agent's room
+     * with the operator, and each declared room.  An unread count may
+     * only be keyed on one of these, because a number against a room
+     * with no row can never be cleared.
+     */
+    GHashTable  *sidebar_rooms;
+
+    /*
      * When this app connected, in microseconds.
      *
      * A client subscribes from cursor 0 and the daemon replays its
@@ -395,11 +403,9 @@ clawt_web_app_unread_total(ClawtWebApp *self)
 }
 
 void
-clawt_web_app_note_fleet(ClawtWebApp *self, JsonArray *agents)
+clawt_web_app_note_fleet(ClawtWebApp *self, JsonArray *agents,
+                         JsonArray *rooms)
 {
-    g_autoptr(GHashTable) live = NULL;
-    GHashTableIter iter;
-    gpointer key;
     guint i;
 
     g_return_if_fail(CLAWT_IS_WEB_APP(self));
@@ -407,19 +413,15 @@ clawt_web_app_note_fleet(ClawtWebApp *self, JsonArray *agents)
     if (agents == NULL)
         return;
 
-    live = g_hash_table_new(g_str_hash, g_str_equal);
-
     g_hash_table_remove_all(self->dm_rooms);
+    g_hash_table_remove_all(self->sidebar_rooms);
 
     for (i = 0; i < json_array_get_length(agents); i++) {
         JsonObject *agent = json_array_get_object_element(agents, i);
         JsonNode *room;
-        const gchar *id;
 
         if (agent == NULL || !json_object_has_member(agent, "id"))
             continue;
-
-        id = json_object_get_string_member(agent, "id");
 
         if (!json_object_has_member(agent, "dm_room"))
             continue;
@@ -429,27 +431,51 @@ clawt_web_app_note_fleet(ClawtWebApp *self, JsonArray *agents)
         if (json_node_get_value_type(room) != G_TYPE_STRING)
             continue;
 
-        g_hash_table_add(live, (gpointer)json_node_get_string(room));
+        g_hash_table_add(self->sidebar_rooms,
+                         g_strdup(json_node_get_string(room)));
 
-        g_hash_table_insert(self->dm_rooms,
-                            g_strdup(json_node_get_string(room)),
-                            g_strdup(id));
+        g_hash_table_insert(
+            self->dm_rooms, g_strdup(json_node_get_string(room)),
+            g_strdup(json_object_get_string_member(agent, "id")));
     }
 
     /*
-     * And forget the count for a conversation that is no longer there.
+     * And the declared rooms, which have rows of their own.  This is the
+     * set an unread count is allowed to be keyed on -- a number against
+     * a conversation with no row can only ever climb, because there is
+     * nothing to click to clear it.
+     */
+    for (i = 0; rooms != NULL && i < json_array_get_length(rooms); i++) {
+        JsonObject *room = json_array_get_object_element(rooms, i);
+
+        if (room == NULL ||
+            !clawt_web_member_bool(room, "declared", FALSE))
+            continue;
+
+        g_hash_table_add(self->sidebar_rooms,
+                         g_strdup(clawt_web_member(room, "id", "")));
+    }
+
+    /*
+     * And forget the count for a conversation that is no longer drawn.
      * Without this a removed agent's number stays in the total on the
      * Chat tab for ever, pointing at a row nobody can open to clear it.
      *
-     * `live` holds rooms rather than agent ids, because that is what the
-     * counts are keyed on: a group has no agent, and every row has a
-     * room.
+     * The set moved from agent ids to room ids when the counts did, and
+     * for a while this pruner did not -- so it deleted every group
+     * room's count on the render before the sidebar drew it, and the
+     * badge could never appear at all.
      */
-    g_hash_table_iter_init(&iter, self->unread);
+    {
+        GHashTableIter iter;
+        gpointer key;
 
-    while (g_hash_table_iter_next(&iter, &key, NULL)) {
-        if (!g_hash_table_contains(live, key))
-            g_hash_table_iter_remove(&iter);
+        g_hash_table_iter_init(&iter, self->unread);
+
+        while (g_hash_table_iter_next(&iter, &key, NULL)) {
+            if (!g_hash_table_contains(self->sidebar_rooms, key))
+                g_hash_table_iter_remove(&iter);
+        }
     }
 }
 
@@ -464,6 +490,7 @@ clawt_web_app_set_viewing(ClawtWebApp *self, const gchar *agent_id)
     /* And no longer a room; the two are exclusive. */
     if (agent_id != NULL)
         g_clear_pointer(&self->viewing_room, g_free);
+    g_clear_pointer(&self->sidebar_rooms, g_hash_table_unref);
 
     /*
      * Opening a conversation is the only thing that clears its count --
@@ -750,7 +777,16 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
          * so the room being read is that agent's, which is the reverse
          * of the same lookup.
          */
-        if (self->viewing != NULL)
+        /*
+         * The room on screen is either an agent's conversation or a
+         * group.  Deriving it only from `viewing` meant a group being
+         * read counted its own arrivals as unread: set_viewing_room()
+         * clears `viewing`, so there was nothing to compare against and
+         * the badge lit on the very row somebody was looking at.
+         */
+        if (self->viewing_room != NULL)
+            viewing_room = g_strdup(self->viewing_room);
+        else if (self->viewing != NULL)
             viewing_room = clawt_room_manager_direct_id("user",
                                                         self->viewing);
 
@@ -763,7 +799,8 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
          */
         if (clawt_unread_should_count(subject, viewing_room, from,
                                       clawt_event_get_timestamp(event),
-                                      self->connected_at))
+                                      self->connected_at,
+                                      self->sidebar_rooms))
             g_hash_table_insert(
                 self->unread, g_strdup(subject),
                 GUINT_TO_POINTER(clawt_web_app_unread(self, subject) + 1));
@@ -1008,6 +1045,8 @@ clawt_web_app_init(ClawtWebApp *self)
     self->streams = g_ptr_array_new_with_free_func(g_object_unref);
     self->unread = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                          NULL);
+    self->sidebar_rooms = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                                g_free, NULL);
     self->dm_rooms = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                            g_free);
     self->alerts = g_ptr_array_new_with_free_func(alert_free);

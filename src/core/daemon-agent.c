@@ -73,8 +73,24 @@ renumber_fleet(ClawtDaemon  *self,
         position = (guint)((i + 1) * 10);
 
         if (is_room) {
+            ClawtRoom *room = (self->rooms != NULL)
+                ? clawt_room_manager_get(self->rooms, entry) : NULL;
+
             clawt_config_set_room_int(self->config, entry, "order",
                                       (gint64)position);
+
+            /*
+             * And on the live room, because that is what room.list
+             * sorts on.  Writing only the config left the reorder
+             * invisible until a restart: the daemon answered OK, both
+             * clients refetched, and the row snapped back to where it
+             * was -- then silently jumped on the next start.  An agent
+             * does not need this because agent.list reads `order`
+             * straight from the config node.
+             */
+            if (room != NULL)
+                clawt_room_set_order(room, (gint)position);
+
             continue;
         }
 

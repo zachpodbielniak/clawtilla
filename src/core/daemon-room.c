@@ -69,6 +69,75 @@ compare_rooms_by_order(gconstpointer a, gconstpointer b)
     return g_strcmp0(clawt_room_get_id(left), clawt_room_get_id(right));
 }
 
+/*
+ * Makes a room, everywhere a room has to exist.
+ *
+ * Three of them: the `rooms:` entry that lets it survive a restart, the
+ * live object the router delivers through, and the event both clients
+ * redraw on.  One function because the MCP tool reached the room
+ * manager alone -- so a room an agent made was gone at the next restart
+ * with its transcript orphaned, and every later edit to it reported
+ * success while writing nothing, since clawt_config_set_room_*() has no
+ * entry to write to.
+ *
+ * The config write comes first so a refusal there costs nothing, and is
+ * undone if the manager then refuses -- the two validate the same
+ * things, but a caller should not be left with half a room either way.
+ *
+ * Returns: (transfer none) (nullable): the room, or %NULL with @error
+ */
+ClawtRoom *
+clawt_daemon_create_room(ClawtDaemon  *self,
+                         const gchar  *room_id,
+                         const gchar  *name,
+                         const gchar  *members,
+                         GError      **error)
+{
+    ClawtRoom *room;
+
+    g_return_val_if_fail(CLAWT_IS_DAEMON(self), NULL);
+
+    if (room_id == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "which room should be created?");
+        return NULL;
+    }
+
+    if (!clawt_config_add_room(self->config, room_id, name, members, error))
+        return NULL;
+
+    room = clawt_room_manager_create(self->rooms, room_id, name, error);
+
+    if (room == NULL) {
+        clawt_config_remove_room(self->config, room_id);
+        return NULL;
+    }
+
+    if (members != NULL) {
+        g_auto(GStrv) parts = g_strsplit(members, ",", -1);
+        gsize i;
+
+        for (i = 0; parts[i] != NULL; i++) {
+            const gchar *member = g_strstrip(parts[i]);
+
+            if (*member != '\0')
+                clawt_room_add_member(room, member);
+        }
+    }
+
+    {
+        g_autoptr(GError) save_error = NULL;
+
+        if (!clawt_config_save(self->config, &save_error))
+            g_warning("room %s was created but not saved: %s", room_id,
+                      save_error->message);
+    }
+
+    clawt_event_bus_emit(self->bus, "room.created", room_id);
+
+    return room;
+}
+
 JsonNode *
 clawt_daemon_handle_room(
     ClawtDaemon  *self,
@@ -406,46 +475,15 @@ clawt_daemon_handle_room(
 
     if (g_strcmp0(kind, "room.create") == 0) {
         const gchar *room_id = clawt_ipc_payload_string(payload, "room");
-        const gchar *name = clawt_ipc_payload_string(payload, "name");
-        const gchar *members = clawt_ipc_payload_string(payload, "members");
         ClawtRoom *room;
 
-        if (room_id == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-                                       "which room should be created?");
+        room = clawt_daemon_create_room(
+            self, room_id,
+            clawt_ipc_payload_string(payload, "name"),
+            clawt_ipc_payload_string(payload, "members"), &error);
 
-        /*
-         * Written to clawtilla.yaml as well as made.
-         *
-         * A room that lives only in the running daemon is one a person
-         * makes in a client, uses, restarts the daemon, and cannot
-         * find -- with its transcript still on disk and nothing to
-         * reopen it, since clawt_room_manager_load_direct() restores
-         * only the `dm:` files.  The config write comes first so a
-         * refusal there costs nothing.
-         */
-        if (!clawt_config_add_room(self->config, room_id, name, members,
-                                   &error))
+        if (room == NULL)
             return clawt_ipc_error_new(request, error->code, error->message);
-
-        room = clawt_room_manager_create(self->rooms, room_id, name, &error);
-
-        if (room == NULL) {
-            clawt_config_remove_room(self->config, room_id);
-            return clawt_ipc_error_new(request, error->code, error->message);
-        }
-
-        if (members != NULL) {
-            g_auto(GStrv) parts = g_strsplit(members, ",", -1);
-            gsize i;
-
-            for (i = 0; parts[i] != NULL; i++) {
-                const gchar *member = g_strstrip(parts[i]);
-
-                if (*member != '\0')
-                    clawt_room_add_member(room, member);
-            }
-        }
 
         /*
          * The mention rule, when the caller said anything about it.
@@ -459,13 +497,11 @@ clawt_daemon_handle_room(
             clawt_room_set_require_mention(room, require);
             clawt_config_set_room_boolean(self->config, room_id,
                                           "require_mention", require);
+
+            if (!clawt_config_save(self->config, &error))
+                g_warning("room %s was created but its mention rule was "
+                          "not saved: %s", room_id, error->message);
         }
-
-        if (!clawt_config_save(self->config, &error))
-            g_warning("room %s was created but not saved: %s", room_id,
-                      error->message);
-
-        clawt_event_bus_emit(self->bus, "room.created", room_id);
 
         return clawt_ipc_response_new(request, NULL);
     }

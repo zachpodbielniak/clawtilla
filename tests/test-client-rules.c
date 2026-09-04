@@ -24,11 +24,40 @@
 #define LIVE         (CONNECTED_AT + 1000)
 #define REPLAYED     (CONNECTED_AT - 1000)
 
+/*
+ * The conversations a sidebar draws a row for.
+ *
+ * Every one of these tests needs one, because a room with no row is a
+ * count nobody can clear -- so the rule refuses it, and passing NULL
+ * would make every assertion below about the wrong condition.
+ */
+static GHashTable *
+rows_for(const gchar *first, ...)
+{
+    GHashTable *out = g_hash_table_new(g_str_hash, g_str_equal);
+    const gchar *each = first;
+    va_list args;
+
+    va_start(args, first);
+
+    while (each != NULL) {
+        g_hash_table_add(out, (gpointer)each);
+        each = va_arg(args, const gchar *);
+    }
+
+    va_end(args);
+
+    return out;
+}
+
 static void
 test_a_message_elsewhere_counts(void)
 {
+    g_autoptr(GHashTable) rows =
+        rows_for("dm:alpha:user", "dm:beta:user", "standup", NULL);
+
     g_assert_true(clawt_unread_should_count("dm:beta:user", "dm:alpha:user",
-                                            "beta", LIVE, CONNECTED_AT));
+                                            "beta", LIVE, CONNECTED_AT, rows));
 }
 
 /*
@@ -40,24 +69,33 @@ test_a_message_elsewhere_counts(void)
 static void
 test_the_room_on_screen_does_not(void)
 {
+    g_autoptr(GHashTable) rows =
+        rows_for("dm:alpha:user", "dm:beta:user", "standup", NULL);
+
     g_assert_false(clawt_unread_should_count("dm:alpha:user",
                                              "dm:alpha:user", "alpha", LIVE,
-                                             CONNECTED_AT));
+                                             CONNECTED_AT, rows));
 }
 
 /* Nothing on screen at all -- a settings page -- still counts. */
 static void
 test_no_room_on_screen_still_counts(void)
 {
+    g_autoptr(GHashTable) rows =
+        rows_for("dm:alpha:user", "dm:beta:user", "standup", NULL);
+
     g_assert_true(clawt_unread_should_count("dm:alpha:user", NULL, "alpha",
-                                            LIVE, CONNECTED_AT));
+                                            LIVE, CONNECTED_AT, rows));
 }
 
 static void
 test_your_own_message_does_not(void)
 {
+    g_autoptr(GHashTable) rows =
+        rows_for("dm:alpha:user", "dm:beta:user", "standup", NULL);
+
     g_assert_false(clawt_unread_should_count("dm:beta:user", "dm:alpha:user",
-                                             "user", LIVE, CONNECTED_AT));
+                                             "user", LIVE, CONNECTED_AT, rows));
 }
 
 /*
@@ -70,26 +108,94 @@ test_your_own_message_does_not(void)
 static void
 test_a_replayed_message_does_not(void)
 {
+    g_autoptr(GHashTable) rows =
+        rows_for("dm:alpha:user", "dm:beta:user", "standup", NULL);
+
     g_assert_false(clawt_unread_should_count("dm:beta:user", "dm:alpha:user",
                                              "beta", REPLAYED,
-                                             CONNECTED_AT));
+                                             CONNECTED_AT, rows));
 }
 
 /* An event with no timestamp is taken at face value rather than dropped. */
 static void
 test_an_undated_message_counts(void)
 {
+    g_autoptr(GHashTable) rows =
+        rows_for("dm:alpha:user", "dm:beta:user", "standup", NULL);
+
     g_assert_true(clawt_unread_should_count("dm:beta:user", "dm:alpha:user",
-                                            "beta", 0, CONNECTED_AT));
+                                            "beta", 0, CONNECTED_AT, rows));
 }
 
 static void
 test_nothing_without_a_room_or_a_sender(void)
 {
+    g_autoptr(GHashTable) rows =
+        rows_for("dm:alpha:user", "dm:beta:user", "standup", NULL);
+
     g_assert_false(clawt_unread_should_count(NULL, NULL, "beta", LIVE,
-                                             CONNECTED_AT));
+                                             CONNECTED_AT, rows));
     g_assert_false(clawt_unread_should_count("dm:beta:user", NULL, NULL,
-                                             LIVE, CONNECTED_AT));
+                                             LIVE, CONNECTED_AT, rows));
+}
+
+
+/*
+ * A room with no row in the sidebar is not counted.
+ *
+ * Peer traffic between two agents, and every routine's and trigger's
+ * room, has nothing to click to clear it -- so a count against one could
+ * only ever climb, and a number that cannot be cleared is one people
+ * stop reading.  This used to be enforced by each client resolving the
+ * room to an agent first, which is exactly why extending the counts to
+ * group rooms dropped it: a group resolves to no agent.
+ */
+static void
+test_a_room_with_no_row_does_not_count(void)
+{
+    g_autoptr(GHashTable) rows =
+        rows_for("dm:alpha:user", "standup", NULL);
+
+    g_assert_false(clawt_unread_should_count("dm:alpha:beta", NULL, "alpha",
+                                             LIVE, CONNECTED_AT, rows));
+    g_assert_false(clawt_unread_should_count("routine:nightly", NULL,
+                                             "routine", LIVE, CONNECTED_AT,
+                                             rows));
+
+    /* And a group room that does have one is counted. */
+    g_assert_true(clawt_unread_should_count("standup", NULL, "beta", LIVE,
+                                            CONNECTED_AT, rows));
+}
+
+/*
+ * Knowing of no conversations counts nothing, rather than everything.
+ *
+ * A client that has not listed the fleet yet cannot tell a room it draws
+ * from one it does not, and "unknown" reading as "all of them" is how a
+ * fresh window opens with a number against traffic nobody can reach.
+ */
+static void
+test_an_unknown_sidebar_counts_nothing(void)
+{
+    g_assert_false(clawt_unread_should_count("dm:alpha:user", NULL, "alpha",
+                                             LIVE, CONNECTED_AT, NULL));
+}
+
+/*
+ * A group room being read does not count its own arrivals.
+ *
+ * The same rule as an agent's conversation, and it needs saying because
+ * the web client derived "the room on screen" from the selected *agent*
+ * -- which opening a group clears -- so every reply lit a badge on the
+ * very row somebody was looking at.
+ */
+static void
+test_a_group_room_on_screen_does_not_count(void)
+{
+    g_autoptr(GHashTable) rows = rows_for("standup", NULL);
+
+    g_assert_false(clawt_unread_should_count("standup", "standup", "beta",
+                                             LIVE, CONNECTED_AT, rows));
 }
 
 /* ── Following the live edge ─────────────────────────────────────── */
@@ -822,6 +928,12 @@ main(int argc, char *argv[])
                     test_an_undated_message_counts);
     g_test_add_func("/client-rules/unread/incomplete",
                     test_nothing_without_a_room_or_a_sender);
+    g_test_add_func("/client-rules/unread/a-room-with-no-row",
+                    test_a_room_with_no_row_does_not_count);
+    g_test_add_func("/client-rules/unread/an-unknown-sidebar",
+                    test_an_unknown_sidebar_counts_nothing);
+    g_test_add_func("/client-rules/unread/a-group-on-screen",
+                    test_a_group_room_on_screen_does_not_count);
 
     g_test_add_func("/client-rules/follow/at-the-bottom",
                     test_at_the_bottom_follows);

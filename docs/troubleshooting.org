@@ -2574,6 +2574,73 @@ standup.
 Clear it by messaging the room yourself; a person repeating themselves is
 a person, and clawtilla does not end their conversation.
 
+** A group room shows a blank chat, or typing into one does nothing
+
+Fixed.  Selecting a room clears the selected *agent* --- the two are
+exclusive --- and three functions still returned early on "no agent
+selected", a guard written when a selection could only be one.  So the
+history was never requested, the composer was never re-enabled, and
+Enter reached nothing.
+
+Two of the same shape were crashes rather than silences: clearing an
+unread count and clearing a draft both keyed on the selected agent, and
+~g_str_hash(NULL)~ segfaults.  The second ran *after* the message had
+been routed, so the send worked and the client did not.
+
+~tests/test-gtk-rooms.sh~ clicks a room and types into one under Xvfb.
+It needs ~CLAWT_TEST_INTEGRATION=1~, because an X server is
+infrastructure and ~make test~ may not touch any.
+
+** A room moved in the sidebar and jumped back
+
+Fixed.  ~fleet.reorder~ wrote the new position to ~clawtilla.yaml~ and
+not to the live room, and ~room.list~ sorts on the live one --- so the
+daemon answered OK, both clients refetched, and the row returned to
+where it was, then moved on the next daemon start.  An agent was
+unaffected because ~agent.list~ reads ~order~ straight from the config.
+
+** One slow agent froze a whole standup
+
+Fixed.  ~rooms.turn_timeout_seconds~ is a budget per member, and when it
+ran out the *room* was stalled --- refusing every other member's posts
+and stalling every task they held, with a notice claiming the agent
+"held this room's turn" when it held only its own.
+
+A group now stops that member and tells the room, in a note that costs
+nobody a turn.  A two-member room still stalls: there the exchange is
+the two of them.
+
+** A post into a stalled room was recorded anyway
+
+Fixed.  A message reaching nobody skipped the loop guard *whole*, which
+also skipped the stall check and the hop check --- so a room that had
+been ended went on accepting text into its transcript, invisibly, and a
+message past ~orchestration.max_hops~ that named nobody was recorded
+instead of refused.
+
+Only the rate limit and the cycle detector are skipped now: the two that
+measure what a sender spends of other agents' time.
+
+** A room an agent made vanished on restart
+
+Fixed.  ~clawtilla_create_room~ reached the room manager alone, which
+makes the object and not the ~rooms:~ entry --- so the room was gone at
+the next start with its transcript orphaned, and every later edit to it
+reported success while writing to an entry that did not exist.  Both an
+agent's room and yours go through one path now.
+
+** An ordinary word woke an agent
+
+Fixed, and it is why a *bare* name now matches exactly while only the
+~@~ form ignores case.  Folding a bare word charged an agent called
+~writer~ a model turn for "Writer's block on section 2", and one called
+~research~ for any sentence opening with "Research".
+
+Two more of the same: "hasta mañana" reached an agent called ~ana~,
+because the byte test read the second byte of ~ñ~ as a word boundary;
+and ~bob@example.com~ reached ~bob~, because ~@~ ended a word on one
+side and not the other.
+
 ** ~@bob~ used to wake an agent called ~bob~ when I wrote ~@bobby~
 
 It did, and it no longer does.  The matcher was wrong on four counts: the

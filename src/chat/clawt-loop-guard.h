@@ -163,6 +163,10 @@ gboolean clawt_loop_guard_check(ClawtLoopGuard  *self,
  * @self: a #ClawtLoopGuard
  * @message: (transfer none): the message about to be sent
  * @room_max_hops: this room's own hop limit, or 0 to use the fleet's
+ * @reaches_anybody: whether it is delivered to at least one mailbox.
+ *   A message that reaches nobody still faces the stall, hop and budget
+ *   checks, and escapes only the rate limit and the cycle detector --
+ *   the two that measure what a sender spends of other agents' time.
  * @error: (out) (optional): return location for why it was refused
  *
  * clawt_loop_guard_check() with the destination room's hop limit.
@@ -198,6 +202,7 @@ gboolean clawt_loop_guard_check(ClawtLoopGuard  *self,
 gboolean clawt_loop_guard_check_in_room(ClawtLoopGuard  *self,
                                         ClawtMessage    *message,
                                         guint            room_max_hops,
+                                        gboolean         reaches_anybody,
                                         GError         **error);
 
 /**

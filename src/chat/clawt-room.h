@@ -98,6 +98,91 @@ gboolean clawt_room_get_require_mention(ClawtRoom *self);
 gboolean clawt_room_is_group(ClawtRoom *self);
 
 /**
+ * clawt_room_get_order:
+ * @self: a #ClawtRoom
+ *
+ * Where it sits in the sidebar, on the same scale as an agent's, so a
+ * client draws one list rather than two.
+ *
+ * Returns: the position, or 0 when it has none
+ */
+gint clawt_room_get_order(ClawtRoom *self);
+
+/**
+ * clawt_room_set_order:
+ * @self: a #ClawtRoom
+ * @order: where it sits, on the same scale as an agent's
+ *
+ * Set by the config loader and by `fleet.reorder`.  Both, because
+ * `room.list` sorts on this and writing only the config left a reorder
+ * invisible until the next daemon start.
+ */
+void clawt_room_set_order(ClawtRoom *self, gint order);
+
+/**
+ * clawt_room_get_team:
+ * @self: a #ClawtRoom
+ *
+ * Which team's group it appears under.  Presentation and nothing else:
+ * it changes neither who is in the room nor who a message reaches.
+ *
+ * Returns: (nullable) (transfer none): the team id, or %NULL
+ */
+const gchar *clawt_room_get_team(ClawtRoom *self);
+
+/**
+ * clawt_room_set_team:
+ * @self: a #ClawtRoom
+ * @team: (nullable): the team whose group it appears under, or %NULL
+ *
+ * Presentation only: it changes neither who is in the room nor who a
+ * message reaches.
+ */
+void clawt_room_set_team(ClawtRoom *self, const gchar *team);
+
+/**
+ * clawt_room_get_catchup_messages:
+ * @self: a #ClawtRoom
+ *
+ * How much of the room a member is caught up on when it is named.
+ *
+ * In a room that requires mentions an agent receives only what named
+ * it, so without this it cannot follow the conversation at all -- the
+ * transcript holds it and the model does not.
+ *
+ * Returns: the cap, or 0 for none
+ */
+guint clawt_room_get_catchup_messages(ClawtRoom *self);
+
+/**
+ * clawt_room_set_catchup_messages:
+ * @self: a #ClawtRoom
+ * @messages: how many to carry, or 0 for none
+ */
+void clawt_room_set_catchup_messages(ClawtRoom *self, guint messages);
+
+/**
+ * clawt_room_names_any_member:
+ * @self: a #ClawtRoom
+ * @body: (nullable): the message text
+ * @agents: (transfer none) (nullable): the fleet, for display names
+ *
+ * Whether @body addresses anybody who is in this room.
+ *
+ * Asked of the members rather than of the text alone: naming somebody
+ * who is not here has addressed nobody.  It resolves each member's
+ * display name the same way delivery does, which is why it takes the
+ * fleet -- two private copies of this walk passed %NULL for the name,
+ * so a post naming an agent by the name its own roster advertises was
+ * delivered and reported as having named nobody.
+ *
+ * Returns: %TRUE if any member is named
+ */
+gboolean clawt_room_names_any_member(ClawtRoom         *self,
+                                     const gchar       *body,
+                                     ClawtAgentManager *agents);
+
+/**
  * clawt_room_is_declared:
  * @room_id: a room id
  *
@@ -116,48 +201,6 @@ gboolean clawt_room_is_group(ClawtRoom *self);
  *
  * Returns: %TRUE if it is a room somebody declared
  */
-/**
- * clawt_room_get_order:
- * @self: a #ClawtRoom
- *
- * Where it sits in the sidebar, on the same scale as an agent's, so a
- * client draws one list rather than two.
- *
- * Returns: the position, or 0 when it has none
- */
-gint clawt_room_get_order(ClawtRoom *self);
-
-void clawt_room_set_order(ClawtRoom *self, gint order);
-
-/**
- * clawt_room_get_team:
- * @self: a #ClawtRoom
- *
- * Which team's group it appears under.  Presentation and nothing else:
- * it changes neither who is in the room nor who a message reaches.
- *
- * Returns: (nullable) (transfer none): the team id, or %NULL
- */
-const gchar *clawt_room_get_team(ClawtRoom *self);
-
-void clawt_room_set_team(ClawtRoom *self, const gchar *team);
-
-/**
- * clawt_room_get_catchup_messages:
- * @self: a #ClawtRoom
- *
- * How much of the room a member is caught up on when it is named.
- *
- * In a room that requires mentions an agent receives only what named
- * it, so without this it cannot follow the conversation at all -- the
- * transcript holds it and the model does not.
- *
- * Returns: the cap, or 0 for none
- */
-guint clawt_room_get_catchup_messages(ClawtRoom *self);
-
-void clawt_room_set_catchup_messages(ClawtRoom *self, guint messages);
-
 gboolean clawt_room_is_declared(const gchar *room_id);
 
 /**

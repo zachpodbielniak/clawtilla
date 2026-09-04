@@ -264,7 +264,8 @@ router_setup(RouterFixture *fixture)
         "agents:\n"
         "  - id: alice\n    name: Alice\n"
         "  - id: bob\n    name: Bob\n"
-        "  - id: carol\n    name: Carol\n",
+        "  - id: carol\n    name: Carol\n"
+        "  - id: oryx-research\n    name: Oryx\n",
         fixture->dir, fixture->dir, fixture->dir);
 
     fixture->config = clawt_config_load_from_string(yaml, &error);
@@ -1241,6 +1242,249 @@ test_a_room_nobody_configured_still_requires_a_mention(void)
     router_teardown(&fixture);
 }
 
+/*
+ * A reorder reaches the live room, not only the config file.
+ *
+ * room.list sorts on clawt_room_get_order() of the live object, and
+ * fleet.reorder wrote the config alone -- so the daemon answered OK,
+ * both clients refetched, and the row snapped back to where it had
+ * been, then silently jumped on the next restart.  An agent did not
+ * show it because agent.list reads `order` straight from the config
+ * node.
+ */
+static void
+test_a_reorder_reaches_the_live_room(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) created = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    ClawtRoom *first;
+    ClawtRoom *second;
+
+    fixture_setup(&fixture,
+                  "agents:\n  - id: alice\n  - id: bob\n  - id: carol\n");
+
+    created = call(&fixture, "room.create",
+                   "{\"room\": \"standup\", "
+                   "\"members\": \"alice,bob,carol\"}");
+    g_assert_false(replied_with_an_error(created));
+
+    {
+        g_autoptr(JsonNode) other =
+            call(&fixture, "room.create",
+                 "{\"room\": \"retro\", \"members\": \"alice,bob,carol\"}");
+
+        g_assert_false(replied_with_an_error(other));
+    }
+
+    reply = call(&fixture, "fleet.reorder",
+                 "{\"entries\": \"r:retro,r:standup\"}");
+    g_assert_false(replied_with_an_error(reply));
+
+    first = clawt_room_manager_get(fixture.daemon->rooms, "retro");
+    second = clawt_room_manager_get(fixture.daemon->rooms, "standup");
+
+    g_assert_nonnull(first);
+    g_assert_nonnull(second);
+    g_assert_cmpint(clawt_room_get_order(first), <,
+                    clawt_room_get_order(second));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A room an agent made survives a restart, and can be edited.
+ *
+ * clawtilla_create_room reached the room manager alone -- ClawtMcpTools
+ * holds no ClawtConfig -- so the room was gone at the next start with
+ * its transcript orphaned, and every later edit reported success while
+ * writing to a `rooms:` entry that did not exist.
+ */
+static void
+test_a_room_an_agent_made_is_written_to_the_config(void)
+{
+    Fixture fixture = { 0 };
+    g_autofree gchar *saved = NULL;
+    ClawtRoom *room;
+    g_autoptr(GError) error = NULL;
+
+    fixture_setup(&fixture,
+                  "agents:\n  - id: alice\n  - id: bob\n  - id: carol\n");
+
+    /*
+     * Through the same hook the tool calls, which is the whole point of
+     * the hook: one path for a person's room.create and an agent's.
+     */
+    room = clawt_daemon_create_room(fixture.daemon, "triage", "Triage",
+                                    "alice,bob,carol", &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(room);
+
+    g_assert_true(g_file_get_contents(fixture.config_path, &saved, NULL,
+                                      NULL));
+    g_assert_nonnull(strstr(saved, "triage"));
+    g_assert_nonnull(strstr(saved, "Triage"));
+    g_assert_nonnull(strstr(saved, "carol"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A display name delivers, and is reported as having delivered.
+ *
+ * The roster in every delivery advertises `@researcher (Oryx)`, so an
+ * agent writing `@Oryx` is doing what it was told.  Two private copies
+ * of the member walk passed NULL for the display name while delivery
+ * resolved it, so that post was delivered *and* reported to its sender
+ * as having named nobody -- and marked as inviting no answer, so the
+ * reply it earned was dropped as a sign-off.
+ */
+static void
+test_a_display_name_delivers_and_is_reported(void)
+{
+    RouterFixture fixture = { 0 };
+    ClawtRoom *room;
+
+    router_setup(&fixture);
+    room = mention_room(&fixture);
+    clawt_room_add_member(room, "oryx-research");
+
+    /*
+     * `oryx-research` is called `Oryx`, which is a name the `@` form
+     * cannot reach by folding case -- so this is the one spelling that
+     * needs the display name resolved, and the one the roster in every
+     * delivery advertises.
+     */
+    g_assert_cmpint(post(&fixture, "user", "@Oryx take the ticket"), ==, 1);
+
+    /* And the walk the tool and the daemon use gives the same answer. */
+    g_assert_true(clawt_room_names_any_member(room, "@Oryx take the ticket",
+                                              fixture.agents));
+    g_assert_true(clawt_room_names_any_member(room, "@oryx-research take it",
+                                              fixture.agents));
+    g_assert_false(clawt_room_names_any_member(room, "nobody in particular",
+                                               fixture.agents));
+
+    /* Without the fleet there is no display name to resolve, and it says so. */
+    g_assert_false(clawt_room_names_any_member(room, "@Oryx take it", NULL));
+
+    router_teardown(&fixture);
+}
+
+/*
+ * A stalled room stops accepting posts, even ones that name nobody.
+ *
+ * The guard was skipped whole when a message reached no mailbox, which
+ * dropped the stall check with it -- so a room ended by the cycle
+ * detector or the turn sweep went on recording every member's closing
+ * text and publishing it as live, and the stall was invisible to anyone
+ * reading the room.
+ */
+static void
+test_a_stalled_room_refuses_even_a_post_naming_nobody(void)
+{
+    RouterFixture fixture = { 0 };
+
+    router_setup(&fixture);
+    mention_room(&fixture);
+
+    clawt_loop_guard_stall_room(fixture.guard, "standup",
+                                CLAWT_STALL_REPEATED_MESSAGE, "enough");
+
+    g_assert_cmpint(post(&fixture, "alice", "thinking out loud"), <, 0);
+    g_assert_cmpint(post(&fixture, "alice", "@bob still there?"), <, 0);
+
+    router_teardown(&fixture);
+}
+
+/*
+ * And the hop limit still applies to one, for the same reason.
+ *
+ * A message past max_hops that named nobody was recorded instead of
+ * refused, so a runaway could keep writing into the transcript at any
+ * depth as long as it addressed nobody.
+ */
+static void
+test_the_hop_limit_applies_to_a_post_naming_nobody(void)
+{
+    RouterFixture fixture = { 0 };
+    g_autoptr(ClawtMessage) deep = NULL;
+
+    router_setup(&fixture);
+    mention_room(&fixture);
+
+    deep = clawt_message_new("standup", "alice", "still going");
+    clawt_message_set_depth(deep, 99);
+
+    g_assert_cmpint(clawt_mailbox_router_send(fixture.router, deep, NULL),
+                    <, 0);
+
+    router_teardown(&fixture);
+}
+
+/* Long past any budget a room could have been given. */
+static gint64
+far_future(gpointer user_data)
+{
+    (void)user_data;
+
+    return g_get_monotonic_time() + G_GINT64_CONSTANT(3600) * G_USEC_PER_SEC;
+}
+
+/*
+ * One member's overrun stops that member, not the standup.
+ *
+ * The hold became per (room, member), and the expiry handler went on
+ * calling clawt_loop_guard_stall_room() -- reasoning written when a
+ * room held one agent.  So one slow member froze a room of five: every
+ * other member's posts refused, every task they held stalled, and a
+ * notice claiming it "held this room's turn" when it held only its own.
+ *
+ * A pair is different and still stalls: there the exchange *is* the two
+ * of them, and ending it is the only thing that stops a member spending
+ * every budget the same way.
+ */
+static void
+test_one_members_overrun_does_not_stall_a_group(void)
+{
+    Fixture fixture = { 0 };
+
+    fixture_setup(&fixture,
+                  "agents:\n  - id: alice\n  - id: bob\n  - id: carol\n"
+                  "rooms:\n"
+                  "  - id: standup\n"
+                  "    members: [alice, bob, carol]\n"
+                  "    turn_timeout_seconds: 60\n"
+                  "  - id: pair\n"
+                  "    members: [alice, bob]\n"
+                  "    turn_timeout_seconds: 60\n");
+
+    /*
+     * Driven through the sweep's own path rather than by waiting sixty
+     * seconds: the watch is asked for what has expired, and a test that
+     * slept would be a test that sometimes hangs.
+     */
+    clawt_daemon_turn_begin_room(fixture.daemon, "alice", "standup");
+    clawt_daemon_turn_begin_room(fixture.daemon, "alice", "pair");
+
+    /*
+     * A clock far past the budget, rather than a sleep: a test that
+     * waits sixty seconds is a test that sometimes hangs.
+     */
+    clawt_turn_watch_set_clock(fixture.daemon->room_watch, far_future, NULL,
+                               NULL);
+    clawt_daemon_turn_sweep_now(fixture.daemon);
+
+    g_assert_cmpint(clawt_loop_guard_get_stall_reason(fixture.daemon->guard,
+                                                      "standup"),
+                    ==, CLAWT_STALL_NONE);
+    g_assert_cmpint(clawt_loop_guard_get_stall_reason(fixture.daemon->guard,
+                                                      "pair"),
+                    ==, CLAWT_STALL_ROOM_TIMEOUT);
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1262,6 +1506,8 @@ main(int argc, char **argv)
                     test_one_member_settling_leaves_the_other_holding);
     g_test_add_func("/group/room/agent-settle-releases-every-room",
                     test_an_agent_settling_releases_every_room_it_held);
+    g_test_add_func("/group/room/one-overrun-does-not-stall-a-group",
+                    test_one_members_overrun_does_not_stall_a_group);
     g_test_add_func("/group/mention/naming-nobody-reaches-nobody",
                     test_naming_nobody_reaches_nobody_and_is_still_recorded);
     g_test_add_func("/group/mention/naming-one-reaches-one",
@@ -1274,6 +1520,12 @@ main(int argc, char **argv)
                     test_a_repeat_that_reaches_nobody_does_not_stall_the_room);
     g_test_add_func("/group/guard/repeat-to-somebody-still-stalls",
                     test_a_repeat_that_reaches_somebody_still_stalls_the_room);
+    g_test_add_func("/group/guard/a-stalled-room-refuses-everything",
+                    test_a_stalled_room_refuses_even_a_post_naming_nobody);
+    g_test_add_func("/group/guard/hops-apply-to-a-post-naming-nobody",
+                    test_the_hop_limit_applies_to_a_post_naming_nobody);
+    g_test_add_func("/group/mention/a-display-name-delivers-and-reports",
+                    test_a_display_name_delivers_and_is_reported);
     g_test_add_func("/group/preamble/names-the-room-and-permits-silence",
                     test_a_group_delivery_names_the_room_and_permits_silence);
     g_test_add_func("/group/preamble/roster-follows-membership",
@@ -1306,6 +1558,10 @@ main(int argc, char **argv)
                     test_removing_a_room_keeps_the_transcript);
     g_test_add_func("/group/config/reload-drops-a-removed-member",
                     test_a_reload_drops_a_member_taken_out_of_the_file);
+    g_test_add_func("/group/config/reorder-reaches-the-live-room",
+                    test_a_reorder_reaches_the_live_room);
+    g_test_add_func("/group/config/an-agents-room-is-written",
+                    test_a_room_an_agent_made_is_written_to_the_config);
 
     status = g_test_run();
 

@@ -721,6 +721,23 @@ copy_as(ClawtWindow *self, const gchar *markdown, ClawtExportFormat format,
  * that quietly stopped there would be a export of the window rather
  * than of the conversation.
  */
+/*
+ * What is selected, whichever kind it is.
+ *
+ * Used where the answer is a *label* -- an export filename, the name a
+ * saved document is offered under -- rather than an agent to act on.
+ * Those all read selected_agent, which a room selection deliberately
+ * leaves NULL, so a group would have exported itself as "(null)".
+ *
+ * Returns: (nullable) (transfer none): the room or agent id
+ */
+static const gchar *
+selected_label(ClawtWindow *self)
+{
+    return (self->selected_room_entry != NULL) ? self->selected_room_entry
+                                               : self->selected_agent;
+}
+
 static gchar *
 conversation_markdown(ClawtWindow *self)
 {
@@ -729,13 +746,16 @@ conversation_markdown(ClawtWindow *self)
     JsonArray *array;
     guint i;
 
-    if (self->selected_agent == NULL)
+    if (self->selected_agent == NULL && self->selected_room_entry == NULL)
         return NULL;
 
     reply = clawt_window_request(
         self, "room.history",
-        clawt_build_payload("room", self->selected_agent, "as", "user",
-                            "limit", "5000", NULL));
+        clawt_build_payload("room",
+                            (self->selected_room_entry != NULL)
+                                ? self->selected_room_entry
+                                : self->selected_agent,
+                            "as", "user", "limit", "5000", NULL));
 
     if (reply == NULL)
         return NULL;
@@ -754,7 +774,7 @@ conversation_markdown(ClawtWindow *self)
         g_ptr_array_add(messages, message);
     }
 
-    return clawt_export_transcript(self->selected_agent, messages,
+    return clawt_export_transcript(selected_label(self), messages,
                                    CLAWT_EXPORT_MARKDOWN, NULL);
 }
 
@@ -887,9 +907,10 @@ on_conversation_action(ClawtWindow *self, const gchar *action, gpointer target)
     if (g_str_has_prefix(action, "copy"))
         copy_text(self, converted, "Conversation");
     else if (g_str_has_prefix(action, "edit"))
-        open_document_in_editor(self, converted, self->selected_agent, format);
+        open_document_in_editor(self, converted, selected_label(self),
+                                format);
     else if (g_str_has_prefix(action, "save"))
-        save_document(self, converted, self->selected_agent, format);
+        save_document(self, converted, selected_label(self), format);
 }
 
 static void
@@ -3095,7 +3116,11 @@ run_slash_command(ClawtWindow *self, const gchar *text, gchar **expanded)
     }
 
     if (self->selected_agent == NULL) {
-        append_local(self, "Pick an agent first.");
+        append_local(self,
+                     (self->selected_room_entry != NULL)
+                         ? "That command is about one agent, and a room is "
+                           "several. Pick an agent from the sidebar."
+                         : "Pick an agent first.");
         return TRUE;
     }
 
@@ -3555,8 +3580,15 @@ clawt_gtk_load_history(ClawtWindow *self)
      * No conversation at all -- the agent was removed, or nothing has
      * been selected yet.  A blank pane is the honest rendering, and
      * there is no answer to wait for.
+     *
+     * A selected *room* is a conversation.  This guard predates rooms
+     * and tested the only kind of selection there was, so once
+     * clawt_gtk_select_room() cleared selected_agent -- which it must,
+     * since the two are exclusive -- clicking a group reset the
+     * transcript and returned without ever asking for its history.  A
+     * blank pane, no request, and nothing logged.
      */
-    if (self->selected_agent == NULL) {
+    if (self->selected_agent == NULL && self->selected_room_entry == NULL) {
         clawt_gtk_reset_transcript(self);
         clawt_gtk_set_activity(self, NULL);
         g_clear_pointer(&self->selected_room, g_free);
@@ -3689,7 +3721,15 @@ clawt_gtk_load_history(ClawtWindow *self)
      * room -- and it is on screen now, so the pill it raised would be
      * a count of nothing.
      */
-    if (g_hash_table_remove(self->unread, self->selected_agent))
+    /*
+     * By the room, which is what the table is keyed on and what both
+     * kinds of selection have.  This still said `selected_agent`, which
+     * a room selection deliberately leaves NULL -- so clicking a group
+     * reached g_str_hash(NULL) and took the client down with it, with
+     * nothing in the log.
+     */
+    if (self->selected_room != NULL &&
+        g_hash_table_remove(self->unread, self->selected_room))
         clawt_gtk_update_unread_tab(self);
 
     clawt_gtk_set_following(self, TRUE);
@@ -3706,7 +3746,8 @@ on_send(GtkWidget *widget, gpointer user_data)
 
     (void)widget;
 
-    if (self->selected_agent == NULL)
+    /* A room is somewhere to send to, exactly as an agent is. */
+    if (self->selected_agent == NULL && self->selected_room_entry == NULL)
         return;
 
     body = clawt_gtk_entry_text(self);
@@ -3763,8 +3804,25 @@ on_send(GtkWidget *widget, gpointer user_data)
      * on.
      */
     clawt_gtk_entry_set_text(self, "");
-    g_hash_table_remove(self->drafts, self->selected_agent);
-    clawt_gtk_persist_draft(self, self->selected_agent, NULL);
+
+    /*
+     * Under whichever key the draft was saved with.  This said
+     * `selected_agent`, which a room selection leaves NULL -- so
+     * sending into a group reached g_str_hash(NULL) and took the client
+     * down *after* the message had already been routed, which is the
+     * worst place for it: the send worked and the client did not.
+     *
+     * clawt_gtk_select_room() writes a room's draft under the room id,
+     * so this is the same key it would have to clear.
+     */
+    {
+        const gchar *key = selected_label(self);
+
+        if (key != NULL) {
+            g_hash_table_remove(self->drafts, key);
+            clawt_gtk_persist_draft(self, key, NULL);
+        }
+    }
 
     /*
      * A stopped agent accepts the message -- that is what a durable
@@ -3833,6 +3891,28 @@ clawt_gtk_fill_conversation_menu(ClawtWindow *self)
         return;
 
     g_menu_remove_all(self->conversation_menu);
+
+    /*
+     * A room has no peer switcher -- that menu lists one *agent's*
+     * conversations -- but it is still a conversation somebody types
+     * into, so the composer has to be enabled on the way out.
+     *
+     * Returning early here left it insensitive for anybody who had been
+     * reading a peer conversation before clicking a group: the
+     * sensitivity line lives at the end of this function, and the guard
+     * that was written when a selection could only be an agent skipped
+     * it entirely.
+     */
+    if (self->selected_room_entry != NULL) {
+        gtk_widget_set_visible(self->conversation_bar, FALSE);
+
+        if (self->entry != NULL) {
+            gtk_widget_set_sensitive(GTK_WIDGET(self->entry), TRUE);
+            gtk_text_view_set_editable(self->entry, TRUE);
+        }
+
+        return;
+    }
 
     if (self->selected_agent == NULL) {
         gtk_widget_set_visible(self->conversation_bar, FALSE);

@@ -511,8 +511,15 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
      * Working the recipients out first writes nothing, so the claim
      * above still holds -- what moved is the arithmetic, not the
      * record.
+     *
+     * Whether it reaches anybody is passed *in* rather than deciding
+     * whether to ask.  Skipping the whole predicate for a costless
+     * message also skipped the stall check, so a room that had been
+     * ended went on accepting posts into its transcript, and the hop
+     * check, so a message past max_hops that named nobody was recorded
+     * instead of refused.
      */
-    if (self->guard != NULL && recipients->len > 0) {
+    if (self->guard != NULL) {
         g_autoptr(GError) refusal = NULL;
 
         /*
@@ -527,6 +534,7 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
          */
         if (!clawt_loop_guard_check_in_room(self->guard, message,
                                             clawt_room_get_max_hops(room),
+                                            recipients->len > 0,
                                             &refusal)) {
             /*
              * Announced, not only returned.  A refusal on the link path

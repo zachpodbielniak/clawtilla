@@ -292,7 +292,7 @@ clawt_message_body_fingerprint(ClawtMessage *self)
 gboolean
 clawt_unread_should_count(const gchar *room_id, const gchar *viewing_room,
                           const gchar *from, gint64 event_ts,
-                          gint64 connected_at)
+                          gint64 connected_at, GHashTable *rows)
 {
     if (room_id == NULL || from == NULL)
         return FALSE;
@@ -310,6 +310,18 @@ clawt_unread_should_count(const gchar *room_id, const gchar *viewing_room,
      * timestamps, which is the whole of the test.
      */
     if (event_ts > 0 && event_ts < connected_at)
+        return FALSE;
+
+    /*
+     * And a room somebody can actually open to clear it.
+     *
+     * Peer traffic between two agents, and every routine's and
+     * trigger's room, has no row in either sidebar -- so a count
+     * against it can only ever go up.  It used to be excluded by each
+     * client resolving the room to an agent first, which is exactly why
+     * counting group rooms dropped it: a group resolves to no agent.
+     */
+    if (rows == NULL || !g_hash_table_contains(rows, room_id))
         return FALSE;
 
     return TRUE;

@@ -278,6 +278,9 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtMessage, clawt_message_free)
  * @from: (nullable): who sent it
  * @event_ts: when it happened, in microseconds
  * @connected_at: when this client connected, in microseconds
+ * @rows: (nullable) (element-type utf8 gpointer): the rooms this client
+ *   draws a row for -- every agent's conversation with the operator, and
+ *   every declared room in the sidebar
  *
  * Whether an arriving message counts as unread.
  *
@@ -294,9 +297,16 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtMessage, clawt_message_free)
  *   previous session.  Counting those opens a window already showing a
  *   number for a conversation nobody has touched, and makes the count
  *   depend on whether the replay beat the first fleet listing.
- * - **A room at all.**  The caller resolves @room_id to an agent before
- *   asking; a room that is nobody's conversation with the operator is
- *   the fleet's own peer traffic.
+ * - **A room somebody can open.**  @rows is the set the sidebar draws,
+ *   so peer traffic in `dm:chief:researcher` and every `routine:` and
+ *   `trigger:` room is not counted: there is no row to click to clear
+ *   it, and a number that cannot be cleared is one people stop reading.
+ *   This condition used to live in each client as a lookup that
+ *   resolved the room to an agent -- which is why extending the counts
+ *   to group rooms silently dropped it, since a group resolves to no
+ *   agent.  An empty or %NULL @rows counts nothing, deliberately: a
+ *   client that has not listed the fleet yet knows of no conversation,
+ *   and "unknown" must not read as "everything".
  *
  * Here rather than in either client because both apply it, and two
  * implementations of one rule differ exactly once -- on the case nobody
@@ -309,7 +319,8 @@ gboolean clawt_unread_should_count(const gchar *room_id,
                                    const gchar *viewing_room,
                                    const gchar *from,
                                    gint64       event_ts,
-                                   gint64       connected_at);
+                                   gint64       connected_at,
+                                   GHashTable  *rows);
 
 /**
  * CLAWT_TRANSCRIPT_FOLLOW_TOLERANCE:
