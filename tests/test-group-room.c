@@ -1194,6 +1194,53 @@ test_the_catchup_can_be_turned_off(void)
     router_teardown(&fixture);
 }
 
+/*
+ * A room nobody set the rule on still applies it.
+ *
+ * Every other test here calls clawt_room_set_require_mention()
+ * explicitly, and clawt_room_message_is_for() read the *field* rather
+ * than the resolver -- so a group made from a client, which sets
+ * nothing on purpose, delivered every remark to every member while the
+ * whole suite passed.  Found by running it.
+ *
+ * A default is not a default unless every reader goes through the
+ * resolver.
+ */
+static void
+test_a_room_nobody_configured_still_requires_a_mention(void)
+{
+    RouterFixture fixture = { 0 };
+    ClawtRoom *room;
+
+    router_setup(&fixture);
+
+    /* Exactly what room.create does: members, and nothing else. */
+    room = clawt_room_manager_create(fixture.rooms, "standup", NULL, NULL);
+    g_assert_nonnull(room);
+    clawt_room_add_member(room, "alice");
+    clawt_room_add_member(room, "bob");
+    clawt_room_add_member(room, "carol");
+
+    g_assert_cmpint(post(&fixture, "user", "morning all"), ==, 0);
+    g_assert_cmpint(post(&fixture, "user", "@alice thoughts?"), ==, 1);
+
+    /* And a two-member room still delivers everything, untouched. */
+    {
+        ClawtRoom *pair = clawt_room_manager_create(fixture.rooms, "pair",
+                                                    NULL, NULL);
+        g_autoptr(ClawtMessage) message =
+            clawt_message_new("pair", "user", "no names here");
+
+        clawt_room_add_member(pair, "alice");
+        clawt_room_add_member(pair, "bob");
+
+        g_assert_cmpint(clawt_mailbox_router_send(fixture.router, message,
+                                                  NULL), ==, 2);
+    }
+
+    router_teardown(&fixture);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1221,6 +1268,8 @@ main(int argc, char **argv)
                     test_naming_one_member_reaches_exactly_that_member);
     g_test_add_func("/group/mention/only-a-non-agent-may-broadcast",
                     test_only_a_non_agent_sender_may_broadcast);
+    g_test_add_func("/group/mention/an-unconfigured-room-still-applies-it",
+                    test_a_room_nobody_configured_still_requires_a_mention);
     g_test_add_func("/group/guard/repeat-to-nobody-does-not-stall",
                     test_a_repeat_that_reaches_nobody_does_not_stall_the_room);
     g_test_add_func("/group/guard/repeat-to-somebody-still-stalls",

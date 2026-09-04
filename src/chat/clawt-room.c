@@ -325,7 +325,18 @@ clawt_room_message_is_for(ClawtRoom    *self,
             return g_strcmp0(only_for, agent_id) == 0;
     }
 
-    if (!self->require_mention)
+    /*
+     * Through the getter, not the field.
+     *
+     * The field is only meaningful when somebody set it; a room that
+     * declared nothing resolves the rule from its own shape.  Reading
+     * the field here meant a group made from a client -- which sets
+     * nothing, on purpose -- delivered every remark to every member,
+     * while every test passed because each set it explicitly.  A
+     * default is not a default unless every reader goes through the
+     * resolver.
+     */
+    if (!clawt_room_get_require_mention(self))
         return TRUE;
 
     body = clawt_message_get_body(message);

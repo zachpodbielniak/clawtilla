@@ -1597,6 +1597,20 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
     }
 
     /*
+     * A room was made, renamed, moved or had its members changed.
+     *
+     * The sidebar draws rooms beside the agents, so it has to redraw --
+     * and this is the one that arrives from *another* client, or from
+     * the CLI, which is exactly when nothing else on screen would have
+     * prompted it.  `room.created` and `room.changed` were published
+     * from the day rooms existed and nothing had ever subscribed.
+     */
+    if (g_str_has_prefix(kind, "room.")) {
+        clawt_gtk_refresh_agents(self);
+        return;
+    }
+
+    /*
      * A new frame, or a screen that changed hands. Both redraw the
      * Screen tab; neither touches anything else, so this is deliberately
      * not folded into the agent refresh above.
