@@ -1571,6 +1571,32 @@ on_task_changed(ClawtTaskManager *manager,
  * worth a buzz. A direct room is `dm:<a>:<b>` with the pair sorted, so
  * the question is whether one half of it is the operator.
  */
+/*
+ * Whether @body addresses anybody who is in @room.
+ *
+ * Asked of the members rather than of the text alone: a message naming
+ * somebody who is not in the room has addressed nobody, and treating it
+ * as deliberate would invite an answer that no delivery can produce.
+ */
+static gboolean
+names_a_member(ClawtRoom *room, const gchar *body)
+{
+    GPtrArray *members;
+    guint i;
+
+    if (room == NULL || body == NULL)
+        return FALSE;
+
+    members = clawt_room_get_members(room);
+
+    for (i = 0; i < members->len; i++) {
+        if (clawt_mention_names(body, g_ptr_array_index(members, i), NULL))
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
 static gboolean
 is_operator_room(const gchar *room_id)
 {
@@ -1911,8 +1937,25 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
      * is why two of them acknowledging each other could not stop. A
      * deliberate message earns one answer and the answer earns none, so
      * an exchange settles at one round instead of running to max_hops.
+     *
+     * Unless it named somebody. In a room that requires mentions,
+     * writing @name is the deliberate act -- the same thing
+     * clawtilla_message_agent does, spelled in the reply instead of in
+     * a tool call -- so it earns one answer and that answer earns none,
+     * exactly as before. Without this the mentioned member would be
+     * handed the closed-exchange preamble and told its reply goes
+     * nowhere, in the one room where that is not true; the rule stays
+     * "a deliberate message earns one answer" and only learns to
+     * recognise a second way of being deliberate.
      */
-    clawt_message_set_invites_reply(message, FALSE);
+    {
+        ClawtRoom *room = clawt_room_manager_get(self->rooms, destination);
+
+        clawt_message_set_invites_reply(
+            message,
+            room != NULL && clawt_room_get_require_mention(room) &&
+            names_a_member(room, body));
+    }
 
     /*
      * One hop further than the message being answered, not a flat 1.

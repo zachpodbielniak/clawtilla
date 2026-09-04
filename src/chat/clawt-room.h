@@ -64,7 +64,38 @@ GPtrArray *clawt_room_get_members(ClawtRoom *self);
  */
 void clawt_room_set_require_mention(ClawtRoom *self, gboolean require);
 
+/**
+ * clawt_room_get_require_mention:
+ * @self: a #ClawtRoom
+ *
+ * Whether a message must name a member to reach it.
+ *
+ * When nothing has set it, this follows the room's shape: two members
+ * are a conversation and everything said in one is for the other, while
+ * three or more is a group where delivering every remark to everybody
+ * costs a model turn each.  One resolver, so a creation site cannot
+ * arrive at a different answer -- the schema states the same rule.
+ *
+ * Returns: %TRUE if only named members receive
+ */
 gboolean clawt_room_get_require_mention(ClawtRoom *self);
+
+/**
+ * clawt_room_is_group:
+ * @self: a #ClawtRoom
+ *
+ * Whether this room holds more than two members.
+ *
+ * The one spelling of the question, because it decides three separate
+ * things -- the mention default above, which delivery preamble a member
+ * is handed, and whether an agent's session may be partitioned by
+ * sender.  There is deliberately no room-kind enum: the daemon's own
+ * rooms are already told apart by their id prefix, and a fourth way of
+ * asking what sort of room this is would be a fourth thing to drift.
+ *
+ * Returns: %TRUE if it has more than two members
+ */
+gboolean clawt_room_is_group(ClawtRoom *self);
 
 /**
  * clawt_room_message_is_for:

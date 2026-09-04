@@ -24,6 +24,7 @@
 
 #include <glib/gstdio.h>
 #include <string.h>
+#include <sys/socket.h>
 
 #include "clawt-test-util.h"
 
@@ -229,6 +230,7 @@ typedef struct {
     ClawtRoomManager   *rooms;
     ClawtLoopGuard     *guard;
     ClawtMailboxRouter *router;
+    GSocket            *far_end;
 } RouterFixture;
 
 /*
@@ -287,6 +289,7 @@ router_setup(RouterFixture *fixture)
 static void
 router_teardown(RouterFixture *fixture)
 {
+    g_clear_object(&fixture->far_end);
     g_clear_object(&fixture->router);
     g_clear_object(&fixture->guard);
     g_clear_object(&fixture->rooms);
@@ -447,6 +450,205 @@ test_a_repeat_that_reaches_somebody_still_stalls_the_room(void)
     router_teardown(&fixture);
 }
 
+
+/* ── What a member is told on every message ──────────────────────── */
+
+/*
+ * Gives @agent a link the drain will actually write into.
+ *
+ * A socketpair rather than the link server, because a drain with no
+ * open link returns before it builds a preamble at all -- so a test
+ * that skipped this would pass against a build where the text had never
+ * been written.  The read side is never started; nothing here speaks
+ * the agent's half of the protocol.
+ */
+static void
+give_agent_a_link(RouterFixture *fixture, ClawtAgent *agent)
+{
+    g_autoptr(GSocket) near_end = NULL;
+    g_autoptr(GSocketConnection) connection = NULL;
+    g_autoptr(ClawtLink) link = NULL;
+    g_autoptr(GError) error = NULL;
+    int fds[2];
+
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), ==, 0);
+
+    near_end = g_socket_new_from_fd(fds[0], &error);
+    g_assert_no_error(error);
+
+    fixture->far_end = g_socket_new_from_fd(fds[1], &error);
+    g_assert_no_error(error);
+
+    connection = g_socket_connection_factory_create_connection(near_end);
+    link = clawt_link_new(connection);
+
+    clawt_agent_set_link(agent, link);
+}
+
+/* What the agent was actually handed, as text. */
+static gchar *
+read_delivered(RouterFixture *fixture)
+{
+    gchar buffer[16384];
+    gssize got;
+    g_autoptr(GError) error = NULL;
+
+    g_socket_set_blocking(fixture->far_end, FALSE);
+    got = g_socket_receive(fixture->far_end, buffer, sizeof(buffer) - 1,
+                           NULL, &error);
+
+    if (got <= 0)
+        return NULL;
+
+    buffer[got] = '\0';
+    return g_strdup(buffer);
+}
+
+/*
+ * Every message into a group carries the roster and the addressing
+ * rule -- and the permission to answer without naming anybody.
+ *
+ * The last clause is asserted specifically rather than by checking that
+ * a preamble exists, because it is the one sentence keeping the room
+ * quiet.  An AI CLI cannot end a turn without writing something, so a
+ * preamble that read as "name somebody" would produce an agent that
+ * names somebody every time -- the runaway the mention rule exists to
+ * prevent, rebuilt out of prompt text.  A test that only looked for the
+ * roster would pass against a build that had lost it.
+ */
+static void
+test_a_group_delivery_names_the_room_and_permits_silence(void)
+{
+    RouterFixture fixture = { 0 };
+    ClawtAgent *bob;
+    g_autofree gchar *delivered = NULL;
+
+    router_setup(&fixture);
+    mention_room(&fixture);
+
+    bob = clawt_agent_manager_get(fixture.agents, "bob");
+    g_assert_nonnull(bob);
+    give_agent_a_link(&fixture, bob);
+
+    g_assert_cmpint(post(&fixture, "user", "@bob what do you think?"),
+                    ==, 1);
+
+    delivered = read_delivered(&fixture);
+    g_assert_nonnull(delivered);
+
+    /* Which room, and that it is a room rather than the operator. */
+    g_assert_nonnull(strstr(delivered, "room 'standup'"));
+
+    /* Who else is in it, by the name the matcher accepts. */
+    g_assert_nonnull(strstr(delivered, "@alice"));
+    g_assert_nonnull(strstr(delivered, "@carol"));
+
+    /* And not itself: an agent cannot address its own reply to itself. */
+    g_assert_null(strstr(delivered, "@bob (Bob)"));
+
+    /* How to reach one of them. */
+    g_assert_nonnull(strstr(delivered, "@name"));
+
+    /* The clause that keeps the room quiet. */
+    g_assert_nonnull(strstr(delivered,
+                            "Most replies here should name nobody"));
+
+    /* And that broadcasting is not theirs to do. */
+    g_assert_nonnull(strstr(delivered, "@all"));
+
+    /*
+     * And which conversation to name back, which a group needs whoever
+     * sent the message: being in a room is the case where an agent has
+     * several going at once.
+     */
+    g_assert_nonnull(strstr(delivered, "turn_room"));
+
+    /* The message itself is still there, after all of that. */
+    g_assert_nonnull(strstr(delivered, "what do you think?"));
+
+    router_teardown(&fixture);
+}
+
+/*
+ * A roster is not stale, because it is built per delivery.
+ *
+ * The alternative was a managed region in the agent's workspace, which
+ * is refreshed at agent start -- so a member added to a group today
+ * would learn about it after its next restart, and a removed one would
+ * go on being told it is still a member.
+ */
+static void
+test_the_roster_follows_a_membership_change(void)
+{
+    RouterFixture fixture = { 0 };
+    ClawtRoom *room;
+    ClawtAgent *bob;
+    g_autofree gchar *first = NULL;
+    g_autofree gchar *second = NULL;
+
+    router_setup(&fixture);
+    room = mention_room(&fixture);
+
+    bob = clawt_agent_manager_get(fixture.agents, "bob");
+    give_agent_a_link(&fixture, bob);
+
+    g_assert_cmpint(post(&fixture, "user", "@bob one"), ==, 1);
+    first = read_delivered(&fixture);
+    g_assert_nonnull(strstr(first, "@carol"));
+
+    g_assert_true(clawt_room_remove_member(room, "carol"));
+
+    g_assert_cmpint(post(&fixture, "user", "@bob two"), ==, 1);
+    second = read_delivered(&fixture);
+    g_assert_nonnull(second);
+    g_assert_null(strstr(second, "@carol"));
+    g_assert_nonnull(strstr(second, "@alice"));
+
+    router_teardown(&fixture);
+}
+
+/*
+ * And a pair still gets the pair text.
+ *
+ * The regression guard: the group preamble is chosen by the room's
+ * mention rule, so a two-member conversation must be untouched in both
+ * directions.
+ */
+static void
+test_a_pair_still_gets_the_pair_preamble(void)
+{
+    RouterFixture fixture = { 0 };
+    ClawtRoom *room;
+    ClawtAgent *bob;
+    g_autofree gchar *delivered = NULL;
+
+    router_setup(&fixture);
+
+    room = clawt_room_manager_create(fixture.rooms, "pair", NULL, NULL);
+    g_assert_nonnull(room);
+    clawt_room_add_member(room, "alice");
+    clawt_room_add_member(room, "bob");
+
+    bob = clawt_agent_manager_get(fixture.agents, "bob");
+    give_agent_a_link(&fixture, bob);
+
+    {
+        g_autoptr(ClawtMessage) message =
+            clawt_message_new("pair", "alice", "a question for you");
+
+        g_assert_cmpint(clawt_mailbox_router_send(fixture.router, message,
+                                                  NULL), ==, 1);
+    }
+
+    delivered = read_delivered(&fixture);
+    g_assert_nonnull(delivered);
+
+    g_assert_nonnull(strstr(delivered, "another agent in your fleet"));
+    g_assert_null(strstr(delivered, "Most replies here should name nobody"));
+
+    router_teardown(&fixture);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -478,6 +680,12 @@ main(int argc, char **argv)
                     test_a_repeat_that_reaches_nobody_does_not_stall_the_room);
     g_test_add_func("/group/guard/repeat-to-somebody-still-stalls",
                     test_a_repeat_that_reaches_somebody_still_stalls_the_room);
+    g_test_add_func("/group/preamble/names-the-room-and-permits-silence",
+                    test_a_group_delivery_names_the_room_and_permits_silence);
+    g_test_add_func("/group/preamble/roster-follows-membership",
+                    test_the_roster_follows_a_membership_change);
+    g_test_add_func("/group/preamble/a-pair-is-unchanged",
+                    test_a_pair_still_gets_the_pair_preamble);
 
     status = g_test_run();
 

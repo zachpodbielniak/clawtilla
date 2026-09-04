@@ -495,7 +495,16 @@ clawt_room_manager_load(ClawtRoomManager *self, ClawtConfig *config)
         for (j = 0; spec->members != NULL && spec->members[j] != NULL; j++)
             clawt_room_add_member(room, spec->members[j]);
 
-        clawt_room_set_require_mention(room, spec->require_mention);
+        /*
+         * Only when the config actually said so.  Calling the setter
+         * with a resolved default would mark the room as having been
+         * told, and a standup that declares nothing would then inherit
+         * `false` -- every member taking a turn on every remark, which
+         * is the thing a mention rule exists to stop.
+         */
+        if (spec->require_mention_set)
+            clawt_room_set_require_mention(room, spec->require_mention);
+
         clawt_room_set_max_hops(room, spec->max_hops);
         clawt_room_set_turn_timeout(room, spec->turn_timeout_seconds);
     }

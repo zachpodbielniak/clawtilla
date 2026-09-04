@@ -1363,53 +1363,6 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
 /* Past this the listing says how many more there are and stops. */
 #define ROSTER_MAX_AGENTS (40)
 
-/*
- * Clips a field to @limit characters, on a character boundary.
- *
- * These fields come out of clawtilla.yaml, and with an imported team
- * they were written by somebody who is not the operator.  They are being
- * interpolated into a prompt the agent treats as trustworthy, so the one
- * thing that must not be possible is a description long enough to be the
- * rest of the prompt.
- *
- * g_utf8_offset_to_pointer() rather than a byte count: a cut in the
- * middle of a sequence produces a replacement character in the middle of
- * a name, which reads as data corruption rather than as a clip.
- */
-static gchar *
-roster_clip(const gchar *value, glong limit)
-{
-    g_autofree gchar *line = NULL;
-    const gchar *newline;
-
-    if (value == NULL || *value == '\0')
-        return NULL;
-
-    /*
-     * One line each. A description with a newline in it would otherwise
-     * break the one-agent-per-line shape the listing promises, and a
-     * reader -- model or person -- would take the second line for
-     * another agent.
-     */
-    newline = strchr(value, '\n');
-    line = (newline != NULL) ? g_strndup(value, (gsize)(newline - value))
-                             : g_strdup(value);
-    g_strstrip(line);
-
-    if (*line == '\0')
-        return NULL;
-
-    if (g_utf8_strlen(line, -1) <= limit)
-        return g_steal_pointer(&line);
-
-    {
-        const gchar *end = g_utf8_offset_to_pointer(line, limit);
-        g_autofree gchar *cut = g_strndup(line, (gsize)(end - line));
-
-        g_strchomp(cut);
-        return g_strdup_printf("%s...", cut);
-    }
-}
 
 /*
  * Where an agent stands, in the words the fleet uses for it.
@@ -1436,7 +1389,7 @@ roster_role(ClawtAgentConfig *config)
         return NULL;
 
     {
-        g_autofree gchar *clipped = roster_clip(team, ROSTER_ROLE_CHARS);
+        g_autofree gchar *clipped = clawt_clip_line(team, ROSTER_ROLE_CHARS);
 
         if (clipped == NULL)
             return NULL;
@@ -1484,7 +1437,7 @@ roster_skills(ClawtAgentConfig *config)
 
     joined = g_strjoinv(", ", skills);
 
-    return roster_clip(joined, ROSTER_DESCRIPTION_CHARS);
+    return clawt_clip_line(joined, ROSTER_DESCRIPTION_CHARS);
 }
 
 /*
@@ -1538,9 +1491,9 @@ append_roster(ClawtMcpTools *self, GString *out, const gchar *agent_id)
                 "| Agent | Where they sit | What they are for |\n"
                 "|-------+----------------+-------------------|\n");
 
-        name = roster_clip(clawt_agent_get_name(agent), ROSTER_NAME_CHARS);
+        name = clawt_clip_line(clawt_agent_get_name(agent), ROSTER_NAME_CHARS);
         role = roster_role(clawt_agent_get_config(agent));
-        description = roster_clip(clawt_agent_get_description(agent),
+        description = clawt_clip_line(clawt_agent_get_description(agent),
                                   ROSTER_DESCRIPTION_CHARS);
 
         /*
@@ -1975,9 +1928,9 @@ tool_list_agents(ClawtMcpTools *self, const gchar *agent_id)
             continue;
         }
 
-        name = roster_clip(clawt_agent_get_name(agent), ROSTER_NAME_CHARS);
+        name = clawt_clip_line(clawt_agent_get_name(agent), ROSTER_NAME_CHARS);
         role = roster_role(config);
-        description = roster_clip(clawt_agent_get_description(agent),
+        description = clawt_clip_line(clawt_agent_get_description(agent),
                                   ROSTER_DESCRIPTION_CHARS);
         skills = roster_skills(config);
 

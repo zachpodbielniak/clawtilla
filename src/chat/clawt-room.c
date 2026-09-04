@@ -31,6 +31,7 @@ struct _ClawtRoom {
     GPtrArray *messages;     /* ClawtMessage*, oldest first */
 
     gboolean   require_mention;
+    gboolean   require_mention_set;
     guint      max_hops;
     guint      turn_timeout_seconds;
 };
@@ -134,14 +135,36 @@ void
 clawt_room_set_require_mention(ClawtRoom *self, gboolean require)
 {
     g_return_if_fail(CLAWT_IS_ROOM(self));
+
     self->require_mention = require;
+    self->require_mention_set = TRUE;
 }
 
 gboolean
 clawt_room_get_require_mention(ClawtRoom *self)
 {
     g_return_val_if_fail(CLAWT_IS_ROOM(self), FALSE);
-    return self->require_mention;
+
+    if (self->require_mention_set)
+        return self->require_mention;
+
+    /*
+     * One resolver rather than a schema default and a second answer at
+     * every creation site.  A room nobody has decided about follows its
+     * shape: two members are a conversation and everything said in it is
+     * for the other one, while three or more is a group, where delivering
+     * every remark to every member costs a model turn each and is never
+     * what anybody meant.
+     */
+    return clawt_room_is_group(self);
+}
+
+gboolean
+clawt_room_is_group(ClawtRoom *self)
+{
+    g_return_val_if_fail(CLAWT_IS_ROOM(self), FALSE);
+
+    return self->members->len > 2;
 }
 
 guint

@@ -318,6 +318,9 @@ guint clawt_config_adopt_libreclaw(ClawtAgentConfig *agent,
  * @name: (nullable): display name
  * @members: (array zero-terminated=1) (nullable): agent ids
  * @require_mention: whether members only respond when named
+ * @require_mention_set: whether the config said so, as against the value
+ *   being the resolved default -- a room that declares nothing takes the
+ *   member count into account, and only #ClawtRoom can see that
  * @max_hops: this room's hop limit, or 0 to use the global one
  * @turn_timeout_seconds: how long a member may hold this room's turn,
  *   or 0 for no bound
@@ -329,6 +332,7 @@ typedef struct {
     gchar    *name;
     GStrv     members;
     gboolean  require_mention;
+    gboolean  require_mention_set;
     guint     max_hops;
     guint     turn_timeout_seconds;
 } ClawtRoomSpec;

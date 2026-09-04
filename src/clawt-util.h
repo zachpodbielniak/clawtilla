@@ -601,4 +601,6 @@ gchar *clawt_command_shell_syntax_refusal(const gchar *command);
 gboolean clawt_log_level_permits(ClawtLogLevel  ceiling,
                                  GLogLevelFlags level);
 
+gchar *clawt_clip_line(const gchar *value, glong limit);
+
 G_END_DECLS

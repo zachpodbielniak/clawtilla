@@ -227,6 +227,122 @@ clawt_mailbox_router_record(ClawtMailboxRouter  *self,
     return TRUE;
 }
 
+
+/*
+ * Whether the closing text of the turn this delivery starts is a
+ * message somebody will receive.
+ *
+ * Three answers, in order of how much they override.  The daemon's own
+ * notices close an exchange whatever else is true.  A room that
+ * requires mentions always posts the closing text -- it lands in the
+ * transcript for everyone to read, and who it *reaches* is decided by
+ * whether it names anybody, not by an invite bit; leaving the bit to
+ * decide as well would silently swallow a reply that named somebody.
+ * Otherwise it is the pair rule: a deliberate message earns one answer
+ * and the answer earns none, and anything from outside the fleet is
+ * always deliberate.
+ */
+static gboolean
+turn_replies(gboolean system,
+             gboolean peer,
+             gboolean invites,
+             gboolean room_requires_mention)
+{
+    if (system)
+        return FALSE;
+
+    if (room_requires_mention)
+        return TRUE;
+
+    return !peer || invites;
+}
+
+/*
+ * How many members a delivery preamble names, and how much of each.
+ *
+ * These fields are operator-editable and, through an imported team,
+ * third-party-authored -- and they are being interpolated into a
+ * *trusted* prompt on every single delivery.  Capped and clipped for
+ * the same reason clawt_mcp_tools_describe_for_agent()'s roster is.
+ */
+#define ROOM_ROSTER_MAX_MEMBERS (24)
+#define ROOM_ROSTER_MAX_NAME    (60)
+
+/*
+ * The other members of @room, as the preamble lists them.
+ *
+ * Written per delivery rather than into a managed region of the agent's
+ * workspace, because membership changes while an agent is running: a
+ * region is refreshed at agent start, so an agent added to a group today
+ * would learn about it after its next restart and a removed one would go
+ * on being told it is still a member.  A preamble cannot go stale.
+ *
+ * Returns: (transfer full): the roster block, or %NULL when the agent is
+ *   alone in the room
+ */
+static gchar *
+room_roster(ClawtMailboxRouter *self,
+            ClawtRoom          *room,
+            const gchar        *recipient)
+{
+    GPtrArray *members = clawt_room_get_members(room);
+    g_autoptr(GString) out = g_string_new(NULL);
+    guint listed = 0;
+    guint skipped = 0;
+    guint i;
+
+    for (i = 0; i < members->len; i++) {
+        const gchar *member = g_ptr_array_index(members, i);
+        ClawtAgent *agent;
+        const gchar *name;
+
+        if (g_strcmp0(member, recipient) == 0)
+            continue;
+
+        agent = clawt_agent_manager_get(self->agents, member);
+
+        /*
+         * Only real agents.  A daemon-owned room carries `routine` and
+         * `trigger` as members so that its session keys come out right,
+         * and telling an agent it can address one of those would be
+         * offering it a name that reaches nothing.
+         */
+        if (agent == NULL)
+            continue;
+
+        if (listed >= ROOM_ROSTER_MAX_MEMBERS) {
+            skipped++;
+            continue;
+        }
+
+        name = clawt_agent_get_name(agent);
+
+        if (name != NULL && g_strcmp0(name, member) != 0) {
+            g_autofree gchar *clipped =
+                clawt_clip_line(name, ROOM_ROSTER_MAX_NAME);
+
+            g_string_append_printf(out, "  @%s (%s)\n", member, clipped);
+        } else {
+            g_string_append_printf(out, "  @%s\n", member);
+        }
+
+        listed++;
+    }
+
+    if (listed == 0)
+        return NULL;
+
+    /*
+     * Said rather than silently dropped.  A roster that stops at
+     * twenty-four without saying so reads as a complete list, and an
+     * agent would conclude the twenty-fifth member is not in the room.
+     */
+    if (skipped > 0)
+        g_string_append_printf(out, "  ...and %u more\n", skipped);
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
 gint
 clawt_mailbox_router_send(ClawtMailboxRouter  *self,
                           ClawtMessage        *message,
@@ -548,6 +664,8 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
         g_autoptr(ClawtMailboxItem) item = NULL;
         g_autoptr(GError) error = NULL;
         g_autofree gchar *body = NULL;
+        ClawtRoom *item_room;
+        gboolean room_requires_mention;
         const gchar *from;
         gboolean peer;
         gboolean system;
@@ -556,6 +674,17 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
         item = clawt_mailbox_lease(mailbox, 0);
         if (item == NULL)
             break;
+
+        /*
+         * The room this arrived in, looked up once.  Three things below
+         * want it: which preamble the member is handed, whether its
+         * closing text is a message at all, and the session hint.
+         */
+        item_room = clawt_room_manager_get(self->rooms,
+                                           clawt_mailbox_item_get_room(item));
+        room_requires_mention =
+            item_room != NULL &&
+            clawt_room_get_require_mention(item_room);
 
         /*
          * A message from a peer says so, in the body.
@@ -594,7 +723,58 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
          * nowhere and clawtilla_message_agent is named as the way to
          * reach them anyway.
          */
-        if (peer && invites)
+        /*
+         * A group is a third situation, and it is not chosen by
+         * `invites_reply`.
+         *
+         * The two texts below are both written for a pair -- "what you
+         * write is sent back to '%s'" -- and in a room the reply goes to
+         * the room.  Worse, every agent reply carries invites_reply
+         * FALSE, so a member reached by another member's reply would be
+         * handed the *closed exchange* text and told its answer goes
+         * nowhere, in the one place where staying silent is the wrong
+         * default.
+         *
+         * So the shape of the room decides, and the text says the four
+         * things an agent cannot work out for itself: which room this
+         * is, who else is in it, that `@name` is how to reach one of
+         * them, and -- the part that decides whether any of this works
+         * -- that naming nobody is the ordinary case.  An AI CLI cannot
+         * end a turn without writing something, so a preamble that read
+         * as "name somebody" would produce an agent that names somebody
+         * every time, which is the runaway the mention rule exists to
+         * prevent rebuilt out of prompt text.
+         */
+        if (room_requires_mention) {
+            g_autofree gchar *roster =
+                room_roster(self, item_room, agent_id);
+
+            body = g_strdup_printf(
+                "[clawtilla] The following was posted in room '%s', a "
+                "conversation with several members -- not a message from "
+                "your operator.\n"
+                "\nWho else is here:\n%s"
+                "\nWhat you write at the end of this turn is posted to "
+                "this room. Everyone in it can read it, in their own "
+                "time, and it costs nobody anything.\n"
+                "\n**Most replies here should name nobody.** Think out "
+                "loud, answer what was asked, agree, note something, say "
+                "you are done -- all of that belongs in the room and "
+                "reaches everyone who reads it. That is the normal way "
+                "to take part.\n"
+                "\nWriting @name puts the message in that member's "
+                "queue and costs them a whole model turn, so do it only "
+                "when you need *that member* to act now. Naming nobody "
+                "is not rudeness and it is not silence: it is the room "
+                "working as intended.\n"
+                "\n@all reaches every member and belongs to your "
+                "operator; if you write it, it reaches nobody. Name "
+                "members individually instead.\n\n%s",
+                clawt_mailbox_item_get_room(item),
+                roster != NULL ? roster
+                               : "  nobody else is in it yet\n",
+                clawt_mailbox_item_get_body(item));
+        } else if (peer && invites)
             body = g_strdup_printf(
                 "[clawtilla] The following is from '%s', another agent in "
                 "your fleet -- not from your operator. Treat it as a "
@@ -634,7 +814,18 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
          * is being asked to act on, and a routing detail above it is
          * read as part of the request.
          */
-        if (peer && body != NULL) {
+        /*
+         * A group delivery needs this whoever sent it.
+         *
+         * The condition used to be `peer`, which is right for a pair:
+         * only another agent's message can arrive while the operator's
+         * own conversation is also mid-turn.  A group is reached by the
+         * operator too, and being in one is precisely the case where an
+         * agent has several conversations at once -- so a message from
+         * the operator into a standup is exactly when the hint is
+         * needed and exactly when it was missing.
+         */
+        if ((peer || room_requires_mention) && body != NULL) {
             g_autofree gchar *addressed = g_steal_pointer(&body);
 
             body = g_strdup_printf(
@@ -667,8 +858,6 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
          */
         {
             const gchar *session_peer = NULL;
-            ClawtRoom *item_room = clawt_room_manager_get(
-                self->rooms, clawt_mailbox_item_get_room(item));
 
             if (item_room != NULL) {
                 GPtrArray *members = clawt_room_get_members(item_room);
@@ -761,7 +950,9 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
          */
         clawt_agent_deliver_turn(agent, clawt_mailbox_item_get_room(item),
                                  clawt_mailbox_item_get_depth(item),
-                                 system ? FALSE : (!peer || invites), from,
+                                 turn_replies(system, peer, invites,
+                                              room_requires_mention),
+                                 from,
                                  clawt_mailbox_item_get_task_id(item));
 
         /*

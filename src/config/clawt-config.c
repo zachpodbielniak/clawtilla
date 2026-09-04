@@ -1953,10 +1953,17 @@ clawt_config_get_rooms(ClawtConfig *self)
             YamlNode *node = node_at_path(entry, "require_mention", FALSE);
 
             /*
-             * Defaults to the schema default rather than to FALSE, so a
-             * room that says nothing behaves the same as the documented
-             * default instead of quietly being the opposite.
+             * Whether the room said anything is carried separately.
+             *
+             * The schema default is `false`, which is right for a room
+             * with two members and wrong for a standup: without a
+             * mention rule every member takes a turn on every remark,
+             * which is expensive and is never what anybody wanted.  So
+             * a room that declares nothing lets #ClawtRoom answer from
+             * its member count, and this flag is how it knows nobody
+             * chose.
              */
+            spec->require_mention_set = (node != NULL);
             spec->require_mention = (node != NULL)
                 ? yaml_node_get_boolean(node)
                 : g_strcmp0(schema_default_for("rooms.require_mention"),
