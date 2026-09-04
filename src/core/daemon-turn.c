@@ -37,6 +37,8 @@
 
 #include "clawtilla.h"
 
+#include <string.h>
+
 #include "core/clawt-daemon.h"
 #include "core/clawt-daemon-private.h"
 
@@ -274,6 +276,60 @@ agent_turn_budget(ClawtDaemon *self, const gchar *agent_id)
                           config, "runtime.turn_timeout_seconds"), 0);
 }
 
+/*
+ * One member's hold on one room.
+ *
+ * The holder table was keyed on the room alone, which is exactly right
+ * while a room has two members and one of them is the operator: there
+ * is only ever one agent in it, so room and holder are the same fact.
+ * A group room breaks that -- mention two agents and both take a turn
+ * in the same room -- and a scalar per room then described whichever
+ * had started last.  The other member was left unwatched, and either
+ * one's falling edge ended the watch for both.
+ *
+ * The separator is a byte an id cannot contain: clawt_is_valid_id()
+ * allows letters, digits, '-' and '_', and a room id additionally has
+ * the daemon's own ':' prefixes, none of which is a control character.
+ */
+#define ROOM_HOLD_SEPARATOR "\x1f"
+
+static gchar *
+room_hold_key(const gchar *room_id, const gchar *agent_id)
+{
+    return g_strconcat(room_id, ROOM_HOLD_SEPARATOR, agent_id, NULL);
+}
+
+/*
+ * The room half of such a key.
+ *
+ * Returns: (transfer full): the room id
+ */
+static gchar *
+room_hold_room(const gchar *key)
+{
+    const gchar *sep = strstr(key, ROOM_HOLD_SEPARATOR);
+
+    return (sep != NULL) ? g_strndup(key, (gsize)(sep - key))
+                         : g_strdup(key);
+}
+
+/*
+ * Ends one hold, by its key.
+ *
+ * Both settle paths go through here rather than repeating the pair of
+ * calls, because they had already diverged once: the agent-wide settle
+ * knew about the watch and the holder, and would have known about
+ * nothing a later change added to the per-room one.
+ */
+static void
+settle_hold(ClawtDaemon *self, const gchar *key)
+{
+    clawt_turn_watch_end(self->room_watch, key);
+
+    if (self->room_holder != NULL)
+        g_hash_table_remove(self->room_holder, key);
+}
+
 static gboolean
 on_turn_sweep(gpointer data)
 {
@@ -305,14 +361,15 @@ on_turn_sweep(gpointer data)
     overrun = clawt_turn_watch_collect_expired(self->room_watch);
 
     for (i = 0; i < overrun->len; i++) {
-        const gchar *room_id = g_ptr_array_index(overrun, i);
+        const gchar *key = g_ptr_array_index(overrun, i);
         const gchar *holder = (self->room_holder != NULL)
-            ? g_hash_table_lookup(self->room_holder, room_id) : NULL;
+            ? g_hash_table_lookup(self->room_holder, key) : NULL;
         g_autofree gchar *held = g_strdup(holder);
+        g_autofree gchar *room_id = room_hold_room(key);
         g_autofree gchar *message = NULL;
 
         if (self->room_holder != NULL)
-            g_hash_table_remove(self->room_holder, room_id);
+            g_hash_table_remove(self->room_holder, key);
 
         if (held == NULL)
             continue;
@@ -666,6 +723,7 @@ void
 clawt_daemon_turn_begin_room(ClawtDaemon *self, const gchar *agent_id,
                              const gchar *room_id)
 {
+    g_autofree gchar *key = NULL;
     ClawtRoom *room;
     guint budget;
 
@@ -681,25 +739,35 @@ clawt_daemon_turn_begin_room(ClawtDaemon *self, const gchar *agent_id,
     if (budget == 0)
         return;
 
-    clawt_turn_watch_set_budget(self->room_watch, budget);
-    clawt_turn_watch_begin(self->room_watch, room_id);
+    key = room_hold_key(room_id, agent_id);
 
-    g_hash_table_insert(self->room_holder, g_strdup(room_id),
+    clawt_turn_watch_set_budget(self->room_watch, budget);
+    clawt_turn_watch_begin(self->room_watch, key);
+
+    g_hash_table_insert(self->room_holder, g_steal_pointer(&key),
                         g_strdup(agent_id));
 }
 
 void
-clawt_daemon_turn_settle_room(ClawtDaemon *self, const gchar *room_id)
+clawt_daemon_turn_settle_room(ClawtDaemon *self, const gchar *agent_id,
+                              const gchar *room_id)
 {
+    g_autofree gchar *key = NULL;
+
     g_return_if_fail(CLAWT_IS_DAEMON(self));
 
-    if (room_id == NULL || self->room_watch == NULL)
+    if (agent_id == NULL || room_id == NULL || self->room_watch == NULL)
         return;
 
-    clawt_turn_watch_end(self->room_watch, room_id);
+    /*
+     * The member as well as the room.  Without it, one member of a
+     * group finishing ended the watch on the room -- and so on the
+     * member still working, whose budget then could not be enforced
+     * and whose overrun could not be named.
+     */
+    key = room_hold_key(room_id, agent_id);
 
-    if (self->room_holder != NULL)
-        g_hash_table_remove(self->room_holder, room_id);
+    settle_hold(self, key);
 
     /*
      * The steps of the turn that just ended are *kept*.
@@ -810,8 +878,7 @@ clawt_daemon_turn_settle(ClawtDaemon *self, const gchar *agent_id)
          * call site instead of in the function.
          */
         for (i = 0; i < held->len; i++)
-            clawt_daemon_turn_settle_room(self,
-                                          g_ptr_array_index(held, i));
+            settle_hold(self, g_ptr_array_index(held, i));
     }
 
     /*

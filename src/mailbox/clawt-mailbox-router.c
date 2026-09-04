@@ -233,6 +233,7 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
                           GError             **error)
 {
     GPtrArray *members;  /* unowned: the room keeps its member list */
+    g_autoptr(GPtrArray) recipients = NULL;  /* unowned ClawtAgent* */
     ClawtRoom *room;
     const gchar *sender;
     guint queued = 0;
@@ -248,12 +249,53 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
     if (room == NULL)
         return -1;
 
+    members = clawt_room_get_members(room);
+    recipients = g_ptr_array_new();
+
+    /*
+     * Who this actually reaches, worked out before anything is spent on
+     * it.
+     *
+     * In a room that requires mentions most messages reach nobody by
+     * design -- a member thinking out loud, agreeing, noting something
+     * -- and every one of those used to be charged against two limits
+     * it has no business touching.  The rate limit is the smaller half.
+     * The cycle detector is the sharp one: it fingerprints sender, room
+     * and body, and for a peer sender an exact repeat inside
+     * `orchestration.cycle_seconds` does not refuse but **stalls the
+     * whole room**, which takes a person to undo and stalls every task
+     * its members hold.  One agent writing "Acknowledged." twice in a
+     * standup would have ended the standup.
+     */
+    for (i = 0; i < members->len; i++) {
+        const gchar *member = g_ptr_array_index(members, i);
+        ClawtAgent *agent;
+
+        if (g_strcmp0(member, sender) == 0)
+            continue;
+
+        agent = clawt_agent_manager_get(self->agents, member);
+
+        if (agent == NULL || clawt_agent_get_mailbox(agent) == NULL)
+            continue;
+
+        if (!clawt_room_message_is_for(room, message, member,
+                                       clawt_agent_get_name(agent)))
+            continue;
+
+        g_ptr_array_add(recipients, agent);
+    }
+
     /*
      * Checked before anything is written.  A runaway fan-out has to be
      * stopped at the source: by delivery time the messages already exist,
      * and refusing then means cleaning up rather than preventing.
+     *
+     * Working the recipients out first writes nothing, so the claim
+     * above still holds -- what moved is the arithmetic, not the
+     * record.
      */
-    if (self->guard != NULL) {
+    if (self->guard != NULL && recipients->len > 0) {
         g_autoptr(GError) refusal = NULL;
 
         /*
@@ -292,32 +334,20 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
         }
     }
 
+    /*
+     * Recorded whoever it reaches.  A remark in a room that named
+     * nobody is still what was said there, and the transcript is what a
+     * member catching up reads.
+     */
     record_in_room(self, room, message);
 
-    members = clawt_room_get_members(room);
-
-    for (i = 0; i < members->len; i++) {
-        const gchar *member = g_ptr_array_index(members, i);
-        ClawtAgent *agent;
-        ClawtMailbox *mailbox;
+    for (i = 0; i < recipients->len; i++) {
+        ClawtAgent *agent = g_ptr_array_index(recipients, i);
+        const gchar *member = clawt_agent_get_id(agent);
+        ClawtMailbox *mailbox = clawt_agent_get_mailbox(agent);
         g_autoptr(ClawtMailboxItem) item = NULL;
         g_autofree gchar *item_id = NULL;
         g_autoptr(GError) local = NULL;
-
-        /* A sender does not receive its own message. */
-        if (g_strcmp0(member, sender) == 0)
-            continue;
-
-        if (!clawt_room_message_is_for(room, message, member))
-            continue;
-
-        agent = clawt_agent_manager_get(self->agents, member);
-        if (agent == NULL)
-            continue;
-
-        mailbox = clawt_agent_get_mailbox(agent);
-        if (mailbox == NULL)
-            continue;
 
         item = clawt_mailbox_item_new(sender, member,
                                       clawt_message_get_body(message));

@@ -177,7 +177,8 @@ clawt_room_set_turn_timeout(ClawtRoom *self, guint seconds)
 gboolean
 clawt_room_message_is_for(ClawtRoom    *self,
                           ClawtMessage *message,
-                          const gchar  *agent_id)
+                          const gchar  *agent_id,
+                          const gchar  *display_name)
 {
     const gchar *body;
 
@@ -213,44 +214,40 @@ clawt_room_message_is_for(ClawtRoom    *self,
         return TRUE;
 
     body = clawt_message_get_body(message);
+
     if (body == NULL)
         return FALSE;
 
     /*
-     * Named either bare or with an @, since people write both and an agent
-     * addressed as "@researcher" plainly meant the same as "researcher".
+     * Everybody, but only from a sender that is not an agent.
+     *
+     * An agent that could broadcast would turn one reply into a turn
+     * for every other member, each of which could broadcast again --
+     * the runaway the mention rule exists to prevent, rebuilt out of
+     * one word.  So an agent's `@all` falls through and names nobody
+     * unless it also named somebody individually, and the tool that
+     * posts refuses it out loud rather than leaving the agent to wonder
+     * where its message went.
+     *
+     * The test is clawt_agent_id_is_reserved(), which is already the
+     * list of senders that are not agents -- the operator, the daemon
+     * itself, and the routine and trigger runners.  None of those is a
+     * model that can decide to broadcast again, and all of them are
+     * saying something the operator arranged.  Asking it this way also
+     * means a room needs no view of the fleet to answer.
      */
-    {
-        g_autofree gchar *at_form = g_strdup_printf("@%s", agent_id);
-
-        if (strstr(body, at_form) != NULL)
-            return TRUE;
-    }
+    if (clawt_mention_is_broadcast(body) &&
+        clawt_agent_id_is_reserved(clawt_message_get_sender_id(message)))
+        return TRUE;
 
     /*
-     * A whole word, not a substring: an agent called "bob" was matching
-     * a message that only mentioned "bobby", so require_mention quietly
-     * delivered to somebody nobody had addressed.
+     * The matching itself is clawt_mention_names(), because both
+     * clients need the same answer -- one to offer a completion, the
+     * other to warn before a message is sent to nobody -- and three
+     * copies of a boundary rule is three chances to disagree about
+     * whether `@bobby` addresses `bob`.
      */
-    {
-        const gchar *found = body;
-        gsize length = strlen(agent_id);
-
-        while ((found = strstr(found, agent_id)) != NULL) {
-            gboolean start_ok = (found == body) ||
-                                !g_ascii_isalnum(found[-1]);
-            gboolean end_ok = (found[length] == '\0') ||
-                              !g_ascii_isalnum(found[length]);
-
-            if (start_ok && end_ok &&
-                found[length] != '_' && found[length] != '-')
-                return TRUE;
-
-            found += length;
-        }
-    }
-
-    return FALSE;
+    return clawt_mention_names(body, agent_id, display_name);
 }
 
 /*

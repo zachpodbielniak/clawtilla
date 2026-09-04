@@ -1762,7 +1762,7 @@ on_link_typing(ClawtLinkServer *server,
     if (typing && (edge & CLAWT_TYPING_EDGE_ROOM) != 0)
         clawt_daemon_turn_begin_room(self, agent_id, room_id);
     else if (!typing && (edge & CLAWT_TYPING_EDGE_ROOM) != 0)
-        clawt_daemon_turn_settle_room(self, room_id);
+        clawt_daemon_turn_settle_room(self, agent_id, room_id);
 
     /*
      * And the moment that decides whether the last frame is worth

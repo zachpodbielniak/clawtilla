@@ -71,17 +71,24 @@ gboolean clawt_room_get_require_mention(ClawtRoom *self);
  * @self: a #ClawtRoom
  * @message: (transfer none): a message posted to the room
  * @agent_id: a member
+ * @display_name: (nullable): what that member is called, when it differs
+ *   from its id
  *
  * Whether @agent_id should receive @message.
  *
  * An agent never receives its own message, whatever the mention rules say
  * -- that alone would be an infinite loop.
  *
+ * @display_name comes from the caller because a room holds ids and
+ * nothing else: it has no view of the fleet, and giving it one so that
+ * it could look a name up would be a second answer to who an agent is.
+ *
  * Returns: %TRUE if it should be delivered
  */
 gboolean clawt_room_message_is_for(ClawtRoom    *self,
                                    ClawtMessage *message,
-                                   const gchar  *agent_id);
+                                   const gchar  *agent_id,
+                                   const gchar  *display_name);
 
 /**
  * clawt_room_append:

@@ -1,0 +1,487 @@
+/*
+ * test-group-room.c - Rooms with more than two members
+ *
+ * Copyright (C) 2026
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * This file is part of clawtilla.
+ *
+ * A group room is the first room where more than one agent can be
+ * mid-turn at once, and that is a shape none of the per-room state was
+ * written for.  Every test here therefore uses **two** agents in **one**
+ * room: a fixture with one of each cannot see a shared-scalar bug, and
+ * each of the mechanisms below held perfectly until a second holder
+ * existed.
+ *
+ * The daemon half includes core/clawt-daemon-private.h directly, for the
+ * reason test-turn-hygiene.c already records: that header *is* the
+ * interface of src/core/daemon-turn.c, and settling a turn is something
+ * libreclaw's typing frame does, which a hermetic test has no way to
+ * reach through the IPC surface.
+ */
+
+#include <clawtilla.h>
+
+#include <glib/gstdio.h>
+#include <string.h>
+
+#include "clawt-test-util.h"
+
+#include "core/clawt-daemon-private.h"
+
+typedef struct {
+    gchar        *dir;
+    gchar        *config_path;
+    ClawtDaemon  *daemon;
+    GMainContext *context;
+} Fixture;
+
+static void
+fixture_setup(Fixture *fixture, const gchar *extra_yaml)
+{
+    g_autofree gchar *yaml = NULL;
+    g_autoptr(GError) error = NULL;
+
+    fixture->dir = g_dir_make_tmp("clawt-group-XXXXXX", NULL);
+    fixture->config_path = g_build_filename(fixture->dir, "config.yaml",
+                                            NULL);
+
+    /*
+     * Five things pinned, every one of which otherwise escapes into the
+     * developer's own fleet or onto the network.
+     */
+    yaml = g_strdup_printf(
+        "daemon:\n"
+        "  tailscale: false\n"
+        "  state_dir: \"%s/state\"\n"
+        "  socket: \"%s/daemon.sock\"\n"
+        "  automation_dir: \"%s/pods\"\n"
+        "defaults:\n  workspace_root: \"%s/agents\"\n"
+        "%s",
+        fixture->dir, fixture->dir, fixture->dir, fixture->dir,
+        extra_yaml != NULL ? extra_yaml : "");
+
+    g_file_set_contents(fixture->config_path, yaml, -1, &error);
+    g_assert_no_error(error);
+
+    fixture->context = g_main_context_new();
+    fixture->daemon = clawt_daemon_new(fixture->config_path,
+                                       fixture->context);
+
+    g_assert_true(clawt_daemon_start(fixture->daemon, &error));
+    g_assert_no_error(error);
+}
+
+static void
+fixture_teardown(Fixture *fixture)
+{
+    if (fixture->daemon != NULL) {
+        clawt_daemon_stop(fixture->daemon);
+        g_clear_object(&fixture->daemon);
+    }
+
+    if (fixture->context != NULL) {
+        while (g_main_context_iteration(fixture->context, FALSE))
+            ;
+    }
+
+    g_clear_pointer(&fixture->context, g_main_context_unref);
+
+    if (fixture->dir != NULL)
+        clawt_test_remove_tree(fixture->dir);
+
+    g_clear_pointer(&fixture->dir, g_free);
+    g_clear_pointer(&fixture->config_path, g_free);
+}
+
+/*
+ * A room with three members and a budget, which is the only shape in
+ * which two agents can hold one room's turn at the same time.
+ */
+static const gchar *STANDUP_YAML =
+    "rooms:\n"
+    "  - id: standup\n"
+    "    members: [alice, bob, carol]\n"
+    "    turn_timeout_seconds: 60\n";
+
+/*
+ * How many of the room's holders are this agent.
+ *
+ * By value rather than by key, so the test says nothing about how a
+ * hold is spelled -- the point being asserted is that two of them can
+ * exist at once, not what the hash table looks like.
+ */
+static guint
+holds_by(ClawtDaemon *daemon, const gchar *agent_id)
+{
+    GHashTableIter iter;
+    gpointer key;
+    gpointer value;
+    guint found = 0;
+
+    g_hash_table_iter_init(&iter, daemon->room_holder);
+
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+        if (g_strcmp0(value, agent_id) == 0)
+            found++;
+    }
+
+    return found;
+}
+
+/*
+ * Two members mid-turn in one room are two holders, not one.
+ *
+ * `room_holder` was `room id -> agent id`, a scalar per room, which is
+ * exactly right while a room has two members and one of them is the
+ * operator.  Mention two agents in a group and both take a turn: the
+ * second overwrote the first, so `rooms.turn_timeout_seconds` could
+ * only ever fire naming whichever had started last, and the one it
+ * named might have finished long ago.
+ */
+static void
+test_two_members_hold_one_room_at_once(void)
+{
+    Fixture fixture = { 0 };
+
+    fixture_setup(&fixture, STANDUP_YAML);
+
+    clawt_daemon_turn_begin_room(fixture.daemon, "alice", "standup");
+    clawt_daemon_turn_begin_room(fixture.daemon, "bob", "standup");
+
+    g_assert_cmpuint(holds_by(fixture.daemon, "alice"), ==, 1);
+    g_assert_cmpuint(holds_by(fixture.daemon, "bob"), ==, 1);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * And one of them finishing does not end the other's turn.
+ *
+ * The settle took only the room, so either member's falling edge
+ * removed the single holder and ended the watch -- leaving the member
+ * still working unwatched, and the budget unenforceable against the
+ * one it was written for.
+ */
+static void
+test_one_member_settling_leaves_the_other_holding(void)
+{
+    Fixture fixture = { 0 };
+
+    fixture_setup(&fixture, STANDUP_YAML);
+
+    clawt_daemon_turn_begin_room(fixture.daemon, "alice", "standup");
+    clawt_daemon_turn_begin_room(fixture.daemon, "bob", "standup");
+
+    clawt_daemon_turn_settle_room(fixture.daemon, "alice", "standup");
+
+    g_assert_cmpuint(holds_by(fixture.daemon, "alice"), ==, 0);
+    g_assert_cmpuint(holds_by(fixture.daemon, "bob"), ==, 1);
+
+    clawt_daemon_turn_settle_room(fixture.daemon, "bob", "standup");
+
+    g_assert_cmpuint(holds_by(fixture.daemon, "bob"), ==, 0);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A member holding two rooms still releases both when it stops.
+ *
+ * The regression guard for the composite key: an agent's own settle
+ * finds its holds by value, and must keep finding all of them.
+ */
+static void
+test_an_agent_settling_releases_every_room_it_held(void)
+{
+    Fixture fixture = { 0 };
+
+    fixture_setup(&fixture,
+                  "rooms:\n"
+                  "  - id: standup\n"
+                  "    members: [alice, bob, carol]\n"
+                  "    turn_timeout_seconds: 60\n"
+                  "  - id: design\n"
+                  "    members: [alice, bob]\n"
+                  "    turn_timeout_seconds: 60\n");
+
+    clawt_daemon_turn_begin_room(fixture.daemon, "alice", "standup");
+    clawt_daemon_turn_begin_room(fixture.daemon, "alice", "design");
+    clawt_daemon_turn_begin_room(fixture.daemon, "bob", "standup");
+
+    g_assert_cmpuint(holds_by(fixture.daemon, "alice"), ==, 2);
+
+    clawt_daemon_turn_settle(fixture.daemon, "alice");
+
+    g_assert_cmpuint(holds_by(fixture.daemon, "alice"), ==, 0);
+    g_assert_cmpuint(holds_by(fixture.daemon, "bob"), ==, 1);
+
+    fixture_teardown(&fixture);
+}
+
+
+/* ── The router, the mention rule and the loop guard ─────────────── */
+
+typedef struct {
+    gchar              *dir;
+    ClawtConfig        *config;
+    ClawtAgentManager  *agents;
+    ClawtRoomManager   *rooms;
+    ClawtLoopGuard     *guard;
+    ClawtMailboxRouter *router;
+} RouterFixture;
+
+/*
+ * Which senders are agents, which is what lets the guard end an
+ * exchange rather than only refuse another message.  Without it nothing
+ * ever stalls and the standup test below would pass against a build
+ * where the bug was still there.
+ */
+static gboolean
+sender_is_an_agent(const gchar *sender, gpointer user_data)
+{
+    RouterFixture *fixture = user_data;
+
+    return sender != NULL &&
+           clawt_agent_manager_get(fixture->agents, sender) != NULL;
+}
+
+static void
+router_setup(RouterFixture *fixture)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *yaml = NULL;
+
+    fixture->dir = g_dir_make_tmp("clawt-groupr-XXXXXX", NULL);
+
+    yaml = g_strdup_printf(
+        "daemon:\n"
+        "  state_dir: \"%s\"\n"
+        "  socket: \"%s/daemon.sock\"\n"
+        "defaults:\n  workspace_root: \"%s/agents\"\n"
+        "agents:\n"
+        "  - id: alice\n    name: Alice\n"
+        "  - id: bob\n    name: Bob\n"
+        "  - id: carol\n    name: Carol\n",
+        fixture->dir, fixture->dir, fixture->dir);
+
+    fixture->config = clawt_config_load_from_string(yaml, &error);
+    g_assert_no_error(error);
+
+    fixture->agents = clawt_agent_manager_new(fixture->config);
+    clawt_agent_manager_load(fixture->agents, NULL);
+
+    fixture->rooms = clawt_room_manager_new(NULL);
+
+    fixture->guard = clawt_loop_guard_new();
+    clawt_loop_guard_set_limits(fixture->guard, 8, 30, 10);
+    clawt_loop_guard_set_cycle_seconds(fixture->guard, 300);
+    clawt_loop_guard_set_peer_func(fixture->guard, sender_is_an_agent,
+                                   fixture, NULL);
+
+    fixture->router = clawt_mailbox_router_new(fixture->agents,
+                                               fixture->rooms,
+                                               fixture->guard);
+}
+
+static void
+router_teardown(RouterFixture *fixture)
+{
+    g_clear_object(&fixture->router);
+    g_clear_object(&fixture->guard);
+    g_clear_object(&fixture->rooms);
+    g_clear_object(&fixture->agents);
+    g_clear_object(&fixture->config);
+
+    if (fixture->dir != NULL)
+        clawt_test_remove_tree(fixture->dir);
+
+    g_clear_pointer(&fixture->dir, g_free);
+}
+
+/* A three-member room that only delivers what names somebody. */
+static ClawtRoom *
+mention_room(RouterFixture *fixture)
+{
+    ClawtRoom *room = clawt_room_manager_create(fixture->rooms, "standup",
+                                                "Standup", NULL);
+
+    g_assert_nonnull(room);
+
+    clawt_room_add_member(room, "alice");
+    clawt_room_add_member(room, "bob");
+    clawt_room_add_member(room, "carol");
+    clawt_room_set_require_mention(room, TRUE);
+
+    return room;
+}
+
+static gint
+post(RouterFixture *fixture, const gchar *from, const gchar *body)
+{
+    g_autoptr(ClawtMessage) message =
+        clawt_message_new("standup", from, body);
+
+    return clawt_mailbox_router_send(fixture->router, message, NULL);
+}
+
+/*
+ * A remark that names nobody is recorded and reaches nobody.
+ *
+ * This is the whole feature in one assertion: being in the room is not
+ * being asked a question, so five members do not each take a turn on
+ * every line.
+ */
+static void
+test_naming_nobody_reaches_nobody_and_is_still_recorded(void)
+{
+    RouterFixture fixture = { 0 };
+    ClawtRoom *room;
+
+    router_setup(&fixture);
+    room = mention_room(&fixture);
+
+    g_assert_cmpint(post(&fixture, "user", "morning all"), ==, 0);
+    g_assert_cmpuint(clawt_room_get_message_count(room), ==, 1);
+
+    router_teardown(&fixture);
+}
+
+/* And one that names somebody reaches exactly them. */
+static void
+test_naming_one_member_reaches_exactly_that_member(void)
+{
+    RouterFixture fixture = { 0 };
+
+    router_setup(&fixture);
+    mention_room(&fixture);
+
+    g_assert_cmpint(post(&fixture, "user", "@alice what do you think?"),
+                    ==, 1);
+    g_assert_cmpint(post(&fixture, "user", "alice and @bob please"), ==, 2);
+
+    router_teardown(&fixture);
+}
+
+/*
+ * `@all` is the operator's, and an agent writing it reaches nobody.
+ *
+ * An agent that could broadcast would turn one reply into a turn for
+ * every other member, each of which could broadcast again.
+ */
+static void
+test_only_a_non_agent_sender_may_broadcast(void)
+{
+    RouterFixture fixture = { 0 };
+
+    router_setup(&fixture);
+    mention_room(&fixture);
+
+    /* The operator reaches all three. */
+    g_assert_cmpint(post(&fixture, "user", "@all standup now"), ==, 3);
+
+    /* The daemon's own automation is the operator's, and reaches them. */
+    g_assert_cmpint(post(&fixture, "routine", "@all nightly report"), ==, 3);
+
+    /* An agent's does not. */
+    g_assert_cmpint(post(&fixture, "alice", "@all I am done"), ==, 0);
+
+    /* But naming somebody still works from an agent. */
+    g_assert_cmpint(post(&fixture, "alice", "@all -- @bob especially"),
+                    ==, 1);
+
+    router_teardown(&fixture);
+}
+
+/*
+ * Saying the same thing twice to nobody does not end the room.
+ *
+ * The cycle detector fingerprints sender, room and body, and for an
+ * agent sender an exact repeat inside `cycle_seconds` does not refuse
+ * -- it **stalls the room**, which takes a person to undo and stalls
+ * every task its members hold.  Once a group records the closing text
+ * of every turn, one member writing "Acknowledged." twice in five
+ * minutes would have ended the standup.
+ */
+static void
+test_a_repeat_that_reaches_nobody_does_not_stall_the_room(void)
+{
+    RouterFixture fixture = { 0 };
+
+    router_setup(&fixture);
+    mention_room(&fixture);
+
+    g_assert_cmpint(post(&fixture, "alice", "Acknowledged."), ==, 0);
+    g_assert_cmpint(post(&fixture, "alice", "Acknowledged."), ==, 0);
+
+    g_assert_cmpint(clawt_loop_guard_get_stall_reason(fixture.guard,
+                                                      "standup"),
+                    ==, CLAWT_STALL_NONE);
+
+    router_teardown(&fixture);
+}
+
+/*
+ * And saying it twice to somebody still does.
+ *
+ * The guard is not being switched off in group rooms -- a genuine
+ * mutual-mention ping-pong is exactly what it is for, and this is the
+ * assertion that says the fix above narrowed the input rather than
+ * removing the check.
+ */
+static void
+test_a_repeat_that_reaches_somebody_still_stalls_the_room(void)
+{
+    RouterFixture fixture = { 0 };
+
+    router_setup(&fixture);
+    mention_room(&fixture);
+
+    g_assert_cmpint(post(&fixture, "alice", "@bob same thing"), ==, 1);
+    g_assert_cmpint(post(&fixture, "alice", "@bob same thing"), <, 0);
+
+    g_assert_cmpint(clawt_loop_guard_get_stall_reason(fixture.guard,
+                                                      "standup"),
+                    ==, CLAWT_STALL_REPEATED_MESSAGE);
+
+    router_teardown(&fixture);
+}
+
+int
+main(int argc, char **argv)
+{
+    g_autofree gchar *data_dir = g_dir_make_tmp("clawt-group-data-XXXXXX",
+                                                NULL);
+    gint status;
+
+    /*
+     * Before anything can ask for it: GLib caches the data directory on
+     * first use, so setting it after g_test_init() reaches nothing.
+     */
+    g_setenv("XDG_DATA_HOME", data_dir, TRUE);
+
+    g_test_init(&argc, &argv, NULL);
+
+    g_test_add_func("/group/room/two-members-hold-at-once",
+                    test_two_members_hold_one_room_at_once);
+    g_test_add_func("/group/room/settling-one-leaves-the-other",
+                    test_one_member_settling_leaves_the_other_holding);
+    g_test_add_func("/group/room/agent-settle-releases-every-room",
+                    test_an_agent_settling_releases_every_room_it_held);
+    g_test_add_func("/group/mention/naming-nobody-reaches-nobody",
+                    test_naming_nobody_reaches_nobody_and_is_still_recorded);
+    g_test_add_func("/group/mention/naming-one-reaches-one",
+                    test_naming_one_member_reaches_exactly_that_member);
+    g_test_add_func("/group/mention/only-a-non-agent-may-broadcast",
+                    test_only_a_non_agent_sender_may_broadcast);
+    g_test_add_func("/group/guard/repeat-to-nobody-does-not-stall",
+                    test_a_repeat_that_reaches_nobody_does_not_stall_the_room);
+    g_test_add_func("/group/guard/repeat-to-somebody-still-stalls",
+                    test_a_repeat_that_reaches_somebody_still_stalls_the_room);
+
+    status = g_test_run();
+
+    clawt_test_remove_tree(data_dir);
+
+    return status;
+}

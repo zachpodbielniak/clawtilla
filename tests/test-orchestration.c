@@ -415,8 +415,8 @@ test_message_never_goes_back_to_its_sender(void)
 
     message = clawt_message_new("standup", "chief", "anyone free?");
 
-    g_assert_false(clawt_room_message_is_for(room, message, "chief"));
-    g_assert_true(clawt_room_message_is_for(room, message, "researcher"));
+    g_assert_false(clawt_room_message_is_for(room, message, "chief", NULL));
+    g_assert_true(clawt_room_message_is_for(room, message, "researcher", NULL));
 }
 
 /*
@@ -438,15 +438,15 @@ test_require_mention_narrows_delivery(void)
                                   "@researcher can you look at this?");
     general = clawt_message_new("standup", "chief", "morning everyone");
 
-    g_assert_true(clawt_room_message_is_for(room, addressed, "researcher"));
-    g_assert_false(clawt_room_message_is_for(room, general, "researcher"));
+    g_assert_true(clawt_room_message_is_for(room, addressed, "researcher", NULL));
+    g_assert_false(clawt_room_message_is_for(room, general, "researcher", NULL));
 
     /* A bare name counts too: people write both. */
     {
         g_autoptr(ClawtMessage) bare =
             clawt_message_new("standup", "chief", "researcher, take a look");
 
-        g_assert_true(clawt_room_message_is_for(room, bare, "researcher"));
+        g_assert_true(clawt_room_message_is_for(room, bare, "researcher", NULL));
     }
 }
 
@@ -459,7 +459,7 @@ test_non_members_never_receive(void)
     clawt_room_add_member(room, "chief");
     message = clawt_message_new("standup", "chief", "hello");
 
-    g_assert_false(clawt_room_message_is_for(room, message, "outsider"));
+    g_assert_false(clawt_room_message_is_for(room, message, "outsider", NULL));
 }
 
 static void
