@@ -610,7 +610,15 @@ so far: an array of ~steps~, oldest first, plus the ~room~ it resolved.
 
 Each entry carries ~step_kind~ (~text~, ~thinking~, ~tool~ or
 ~status~), ~room_id~, the ~agent~ whose turn it is, and then whichever
-of ~text~, ~tool~ and ~detail~ apply.  ~failed~ is a *JSON boolean* and
+of ~text~, ~tool~ and ~detail~ apply.
+
+~status~ is for notices libreclaw writes itself -- that steps were
+dropped, say.  A provider's own status lines are *not* forwarded: the
+kind is documented as having no fixed vocabulary, and Claude Code
+emits one per protocol line, so a four-tool turn put ~claude: init~,
+~claude: task_started~ and ~claude: task_notification~ into the
+conversation seven times.  There is no filter to write for that either,
+since the vocabulary is per provider and undeclared.  ~failed~ is a *JSON boolean* and
 is present on every entry.
 
 An empty array is the ordinary answer, not a failure.  A room with no
