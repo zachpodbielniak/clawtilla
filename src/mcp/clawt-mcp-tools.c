@@ -126,7 +126,22 @@ static const ClawtParamInfo post_room_params[] = {
 
 static const ClawtParamInfo ask_agent_params[] = {
     { "agent_id", "string", "Who to ask.", TRUE },
-    { "message",  "string", "The question.", TRUE }
+    { "message",  "string", "The question.", TRUE },
+    /*
+     * The same parameter the other hop tools take, and it was missing
+     * here alone.  clawtilla_ask_agent dispatches into tool_message_agent(),
+     * which reads turn_room -- so an agent calling this one could not
+     * name its conversation and always fell back to the agent-wide fold,
+     * which takes the *deepest* of its running turns.  That is a fair
+     * trade while an agent is usually in one conversation and a bad one
+     * once being in several at once is ordinary, which is what a group
+     * room makes it.
+     */
+    { "turn_room", "string",
+      "Which of your conversations this call is part of, from the "
+      "[clawtilla] line on the message you are handling. Only "
+      "needed when you are working in more than one at once; it is "
+      "not where the tool acts.", FALSE }
 };
 
 static const ClawtParamInfo delegate_params[] = {
@@ -208,7 +223,8 @@ static const ClawtParamInfo mailbox_reply_params[] = {
 
 static const ClawtParamInfo create_room_params[] = {
     { "room_id", "string", "Identifier for the new room.", TRUE },
-    { "members", "string", "Comma-separated agent ids.", TRUE },
+    { "members", "string", "Comma-separated agent ids, including your "
+                           "own.", TRUE },
     { "name",    "string", "Display name.", FALSE }
 };
 
@@ -441,13 +457,29 @@ static const ToolDefinition tools[] = {
          "which is not always obvious from the names on it.",
          NEEDS_PEER_COMMS, no_params),
 
+    /*
+     * "reaching every member" was true when a room meant two people and
+     * became a lie the moment one could hold five.  A tool's
+     * description is part of its behaviour -- one sentence in
+     * clawtilla_message_user's sent a whole chain of agents into the
+     * operator's chat -- so this one says what actually happens and,
+     * more importantly, that saying nothing to anybody is the ordinary
+     * case rather than a failure to address somebody.
+     */
     TOOL("clawtilla_post_room",
-         "Post a message to a room, reaching every member.",
+         "Post a message to a room. Everyone in it can read what you "
+         "write, in their own time. In a room with several members it is "
+         "only *delivered* to the members you name with @their-id, and "
+         "naming nobody is the normal way to take part -- do that unless "
+         "you need a particular member to act on it now, because being "
+         "named costs them a whole model turn. @all is your operator's.",
          NEEDS_PEER_COMMS, post_room_params),
 
     TOOL("clawtilla_create_room",
          "Create a room with the given members, for work that several "
-         "agents need to see.",
+         "agents need to see. You must be one of them. In a room with "
+         "more than two members, a message reaches only the members it "
+         "names with @their-id.",
          NEEDS_PEER_COMMS, create_room_params),
 
     TOOL("clawtilla_room_history",
@@ -1363,53 +1395,6 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
 /* Past this the listing says how many more there are and stops. */
 #define ROSTER_MAX_AGENTS (40)
 
-/*
- * Clips a field to @limit characters, on a character boundary.
- *
- * These fields come out of clawtilla.yaml, and with an imported team
- * they were written by somebody who is not the operator.  They are being
- * interpolated into a prompt the agent treats as trustworthy, so the one
- * thing that must not be possible is a description long enough to be the
- * rest of the prompt.
- *
- * g_utf8_offset_to_pointer() rather than a byte count: a cut in the
- * middle of a sequence produces a replacement character in the middle of
- * a name, which reads as data corruption rather than as a clip.
- */
-static gchar *
-roster_clip(const gchar *value, glong limit)
-{
-    g_autofree gchar *line = NULL;
-    const gchar *newline;
-
-    if (value == NULL || *value == '\0')
-        return NULL;
-
-    /*
-     * One line each. A description with a newline in it would otherwise
-     * break the one-agent-per-line shape the listing promises, and a
-     * reader -- model or person -- would take the second line for
-     * another agent.
-     */
-    newline = strchr(value, '\n');
-    line = (newline != NULL) ? g_strndup(value, (gsize)(newline - value))
-                             : g_strdup(value);
-    g_strstrip(line);
-
-    if (*line == '\0')
-        return NULL;
-
-    if (g_utf8_strlen(line, -1) <= limit)
-        return g_steal_pointer(&line);
-
-    {
-        const gchar *end = g_utf8_offset_to_pointer(line, limit);
-        g_autofree gchar *cut = g_strndup(line, (gsize)(end - line));
-
-        g_strchomp(cut);
-        return g_strdup_printf("%s...", cut);
-    }
-}
 
 /*
  * Where an agent stands, in the words the fleet uses for it.
@@ -1436,7 +1421,7 @@ roster_role(ClawtAgentConfig *config)
         return NULL;
 
     {
-        g_autofree gchar *clipped = roster_clip(team, ROSTER_ROLE_CHARS);
+        g_autofree gchar *clipped = clawt_clip_line(team, ROSTER_ROLE_CHARS);
 
         if (clipped == NULL)
             return NULL;
@@ -1484,7 +1469,7 @@ roster_skills(ClawtAgentConfig *config)
 
     joined = g_strjoinv(", ", skills);
 
-    return roster_clip(joined, ROSTER_DESCRIPTION_CHARS);
+    return clawt_clip_line(joined, ROSTER_DESCRIPTION_CHARS);
 }
 
 /*
@@ -1538,9 +1523,9 @@ append_roster(ClawtMcpTools *self, GString *out, const gchar *agent_id)
                 "| Agent | Where they sit | What they are for |\n"
                 "|-------+----------------+-------------------|\n");
 
-        name = roster_clip(clawt_agent_get_name(agent), ROSTER_NAME_CHARS);
+        name = clawt_clip_line(clawt_agent_get_name(agent), ROSTER_NAME_CHARS);
         role = roster_role(clawt_agent_get_config(agent));
-        description = roster_clip(clawt_agent_get_description(agent),
+        description = clawt_clip_line(clawt_agent_get_description(agent),
                                   ROSTER_DESCRIPTION_CHARS);
 
         /*
@@ -1975,9 +1960,9 @@ tool_list_agents(ClawtMcpTools *self, const gchar *agent_id)
             continue;
         }
 
-        name = roster_clip(clawt_agent_get_name(agent), ROSTER_NAME_CHARS);
+        name = clawt_clip_line(clawt_agent_get_name(agent), ROSTER_NAME_CHARS);
         role = roster_role(config);
-        description = roster_clip(clawt_agent_get_description(agent),
+        description = clawt_clip_line(clawt_agent_get_description(agent),
                                   ROSTER_DESCRIPTION_CHARS);
         skills = roster_skills(config);
 
@@ -4724,6 +4709,76 @@ room_for(ClawtMcpTools *self, const gchar *room_id, const gchar *caller)
                                          room_id);
 }
 
+/*
+ * Whether @body addresses anybody who is in @room.
+ *
+ * Asked of the members rather than of the text: naming somebody who is
+ * not in the room has addressed nobody, and reporting it as a delivery
+ * would be worse than reporting nothing.
+ */
+static gboolean
+names_a_member(ClawtRoom *room, const gchar *body)
+{
+    GPtrArray *members;
+    guint i;
+
+    if (room == NULL || body == NULL)
+        return FALSE;
+
+    members = clawt_room_get_members(room);
+
+    for (i = 0; i < members->len; i++) {
+        if (clawt_mention_names(body, g_ptr_array_index(members, i), NULL))
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+/*
+ * The members of @room an agent could have named, as `@id` spellings.
+ *
+ * A refusal or a caveat that says only what did not happen sends
+ * somebody looking for a mistake.  This is the other half: here is what
+ * to write instead.
+ *
+ * Returns: (transfer full) (nullable): the list, or %NULL when the
+ *   caller is alone in the room
+ */
+static gchar *
+addressable_members(ClawtMcpTools *self, ClawtRoom *room,
+                    const gchar *caller)
+{
+    GPtrArray *members = clawt_room_get_members(room);
+    g_autoptr(GString) out = g_string_new(NULL);
+    guint i;
+
+    for (i = 0; i < members->len; i++) {
+        const gchar *member = g_ptr_array_index(members, i);
+
+        if (g_strcmp0(member, caller) == 0)
+            continue;
+
+        /*
+         * Only real agents.  A daemon-owned room carries `routine` and
+         * `trigger` as members so its session keys come out right, and
+         * offering one of those is offering a name that reaches nothing.
+         */
+        if (clawt_agent_manager_get(self->agents, member) == NULL)
+            continue;
+
+        if (out->len > 0)
+            g_string_append(out, ", ");
+
+        g_string_append_printf(out, "@%s", member);
+    }
+
+    if (out->len == 0)
+        return NULL;
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
 static gchar *
 tool_post_room(ClawtMcpTools *self, const gchar *agent_id,
                const gchar *turn_room,
@@ -4732,13 +4787,16 @@ tool_post_room(ClawtMcpTools *self, const gchar *agent_id,
     const gchar *room_id = argument_string(arguments, "room_id");
     const gchar *body = argument_string(arguments, "body");
     g_autoptr(GError) error = NULL;
+    ClawtRoom *room;
 
     if (room_id == NULL || body == NULL) {
         *is_error = TRUE;
         return g_strdup("room_id and body are both required.");
     }
 
-    if (room_for(self, room_id, agent_id) == NULL) {
+    room = room_for(self, room_id, agent_id);
+
+    if (room == NULL) {
         *is_error = TRUE;
         return g_strdup_printf("There is no room called '%s'.", room_id);
     }
@@ -4748,6 +4806,28 @@ tool_post_room(ClawtMcpTools *self, const gchar *agent_id,
         return g_strdup("Posting is not available.");
     }
 
+    /*
+     * `@all` belongs to the operator, and saying so beats letting it
+     * reach nobody.
+     *
+     * An agent that could broadcast would turn one message into a turn
+     * for every other member, each of which could broadcast again.  The
+     * router already declines it, but silently -- and a refusal that
+     * only says what is not allowed reads as being cut off from one's
+     * colleagues, so this one names what is.
+     */
+    if (clawt_room_get_require_mention(room) &&
+        clawt_mention_is_broadcast(body)) {
+        g_autofree gchar *names = addressable_members(self, room, agent_id);
+
+        *is_error = TRUE;
+        return g_strdup_printf(
+            "@all is your operator's; a message from you carrying it "
+            "reaches nobody. Name the members you actually need, "
+            "individually, and each of them gets it: %s",
+            names != NULL ? names : "there is nobody else in this room");
+    }
+
     if (!self->deliver(agent_id, room_id, body, NULL,
                        outbound_depth(self, agent_id, turn_room), CLAWT_PRIORITY_NORMAL,
                        self->deliver_data, &error)) {
@@ -4755,17 +4835,43 @@ tool_post_room(ClawtMcpTools *self, const gchar *agent_id,
         return g_strdup(error->message);
     }
 
+    /*
+     * And whether it reached anybody.
+     *
+     * A post that named nobody in a room that requires mentions is
+     * recorded and delivers to no mailbox, which is the ordinary way to
+     * leave a remark -- but reporting it as "Posted to standup." leaves
+     * an agent believing it has asked somebody something.  Said plainly
+     * either way, with the members it could have named, because a
+     * selector that matches nothing must not be silent when the thing
+     * it is on then reaches nobody.
+     */
+    if (clawt_room_get_require_mention(room) && !names_a_member(room, body)) {
+        g_autofree gchar *names = addressable_members(self, room, agent_id);
+
+        return g_strdup_printf(
+            "Posted to %s. It named nobody, so everyone there can read it "
+            "and nobody was interrupted -- which is usually what you want. "
+            "If you need somebody to act on it, write @their-id: %s",
+            room_id,
+            names != NULL ? names : "there is nobody else in this room");
+    }
+
     return g_strdup_printf("Posted to %s.", room_id);
 }
 
 static gchar *
-tool_create_room(ClawtMcpTools *self, JsonObject *arguments,
-                 gboolean *is_error)
+tool_create_room(ClawtMcpTools *self, const gchar *agent_id,
+                 JsonObject *arguments, gboolean *is_error)
 {
     const gchar *room_id = argument_string(arguments, "room_id");
     const gchar *members = argument_string(arguments, "members");
+    const gchar *name = argument_string(arguments, "name");
+    g_auto(GStrv) parts = NULL;
     g_autoptr(GError) error = NULL;
+    gboolean caller_is_a_member = FALSE;
     ClawtRoom *room;
+    gsize i;
 
     if (room_id == NULL || members == NULL) {
         *is_error = TRUE;
@@ -4777,7 +4883,66 @@ tool_create_room(ClawtMcpTools *self, JsonObject *arguments,
         return g_strdup("Rooms cannot be created from here.");
     }
 
-    room = clawt_room_manager_create(self->room_manager, room_id, NULL,
+    /*
+     * The member list is checked before anything is created.
+     *
+     * This tool had no permission check at all: any agent with peer
+     * comms could name any agents, and the room then appeared in their
+     * conversations and delivered into their mailboxes.  Two rules,
+     * both checkable with what the fleet actually models:
+     *
+     * The caller has to be in it.  Convening a conversation you are not
+     * part of is arranging other agents' work, which is what delegation
+     * is for and has its own team rules.
+     *
+     * And every member has to exist, because a name that is not an
+     * agent silently becomes a member that never receives anything.
+     *
+     * Two things are deliberately *not* checked, and both were drafted
+     * and then removed rather than left in as walls with no doors.
+     * "May the caller message this agent" is not a permission that
+     * exists: NEEDS_PEER_COMMS is a capability rather than a relation,
+     * and the only per-target gate in the tree is
+     * clawt_team_may_assign(), which is about assigning work.  And "can
+     * this member answer" cannot fail: recompute_caps() grants
+     * CLAWT_AGENT_CAPS_PEER_COMMS to every agent unconditionally, and a
+     * member answers a room by ending a turn rather than by calling
+     * anything, so there is no capability standing between it and a
+     * reply.
+     */
+    parts = g_strsplit(members, ",", -1);
+
+    for (i = 0; parts[i] != NULL; i++) {
+        const gchar *member = g_strstrip(parts[i]);
+        ClawtAgent *agent;
+
+        if (*member == '\0')
+            continue;
+
+        if (g_strcmp0(member, agent_id) == 0) {
+            caller_is_a_member = TRUE;
+            continue;
+        }
+
+        agent = clawt_agent_manager_get(self->agents, member);
+
+        if (agent == NULL) {
+            *is_error = TRUE;
+            return g_strdup_printf("There is no agent called '%s'.",
+                                   member);
+        }
+
+    }
+
+    if (!caller_is_a_member) {
+        *is_error = TRUE;
+        return g_strdup_printf(
+            "You have to be in a room you create -- add '%s' to the "
+            "members. If the work is for others and not for you, hand it "
+            "to somebody with clawtilla_delegate instead.", agent_id);
+    }
+
+    room = clawt_room_manager_create(self->room_manager, room_id, name,
                                      &error);
 
     if (room == NULL) {
@@ -4785,17 +4950,24 @@ tool_create_room(ClawtMcpTools *self, JsonObject *arguments,
         return g_strdup(error->message);
     }
 
-    {
-        g_auto(GStrv) parts = g_strsplit(members, ",", -1);
-        gsize i;
+    for (i = 0; parts[i] != NULL; i++) {
+        const gchar *member = g_strstrip(parts[i]);
 
-        for (i = 0; parts[i] != NULL; i++) {
-            const gchar *member = g_strstrip(parts[i]);
-
-            if (*member != '\0')
-                clawt_room_add_member(room, member);
-        }
+        if (*member != '\0')
+            clawt_room_add_member(room, member);
     }
+
+    /*
+     * Said rather than left to be discovered.  A room of three delivers
+     * only what names somebody, and an agent that created one and then
+     * posted a greeting into it would otherwise conclude the room was
+     * broken.
+     */
+    if (clawt_room_get_require_mention(room))
+        return g_strdup_printf(
+            "Created %s. It has more than two members, so a message there "
+            "reaches only the members it names with @their-id -- everyone "
+            "can still read everything.", room_id);
 
     return g_strdup_printf("Created %s.", room_id);
 }
@@ -5464,7 +5636,7 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
     else if (g_strcmp0(tool_name, "clawtilla_post_room") == 0)
         text = tool_post_room(self, agent_id, turn_room, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_create_room") == 0)
-        text = tool_create_room(self, arguments, &is_error);
+        text = tool_create_room(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_room_history") == 0)
         text = tool_room_history(self, agent_id, arguments,
                                  &is_error);

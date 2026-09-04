@@ -64,24 +64,136 @@ GPtrArray *clawt_room_get_members(ClawtRoom *self);
  */
 void clawt_room_set_require_mention(ClawtRoom *self, gboolean require);
 
+/**
+ * clawt_room_get_require_mention:
+ * @self: a #ClawtRoom
+ *
+ * Whether a message must name a member to reach it.
+ *
+ * When nothing has set it, this follows the room's shape: two members
+ * are a conversation and everything said in one is for the other, while
+ * three or more is a group where delivering every remark to everybody
+ * costs a model turn each.  One resolver, so a creation site cannot
+ * arrive at a different answer -- the schema states the same rule.
+ *
+ * Returns: %TRUE if only named members receive
+ */
 gboolean clawt_room_get_require_mention(ClawtRoom *self);
+
+/**
+ * clawt_room_is_group:
+ * @self: a #ClawtRoom
+ *
+ * Whether this room holds more than two members.
+ *
+ * The one spelling of the question, because it decides three separate
+ * things -- the mention default above, which delivery preamble a member
+ * is handed, and whether an agent's session may be partitioned by
+ * sender.  There is deliberately no room-kind enum: the daemon's own
+ * rooms are already told apart by their id prefix, and a fourth way of
+ * asking what sort of room this is would be a fourth thing to drift.
+ *
+ * Returns: %TRUE if it has more than two members
+ */
+gboolean clawt_room_is_group(ClawtRoom *self);
+
+/**
+ * clawt_room_is_declared:
+ * @room_id: a room id
+ *
+ * Whether this room is one somebody wrote down, as against one the
+ * daemon derives from who exists.
+ *
+ * A direct room, a routine's room and a trigger's room have no config
+ * entry: their members follow from the pair or the owner, so editing
+ * one is meaningless and removing one deletes nothing and comes back
+ * the moment the two speak again.  Told apart by the prefixes that
+ * already name them -- a declared id cannot contain a colon, so the two
+ * sets cannot overlap.
+ *
+ * Takes an id rather than a room because every caller is checking
+ * whether it may act on a name it was handed.
+ *
+ * Returns: %TRUE if it is a room somebody declared
+ */
+/**
+ * clawt_room_get_order:
+ * @self: a #ClawtRoom
+ *
+ * Where it sits in the sidebar, on the same scale as an agent's, so a
+ * client draws one list rather than two.
+ *
+ * Returns: the position, or 0 when it has none
+ */
+gint clawt_room_get_order(ClawtRoom *self);
+
+void clawt_room_set_order(ClawtRoom *self, gint order);
+
+/**
+ * clawt_room_get_team:
+ * @self: a #ClawtRoom
+ *
+ * Which team's group it appears under.  Presentation and nothing else:
+ * it changes neither who is in the room nor who a message reaches.
+ *
+ * Returns: (nullable) (transfer none): the team id, or %NULL
+ */
+const gchar *clawt_room_get_team(ClawtRoom *self);
+
+void clawt_room_set_team(ClawtRoom *self, const gchar *team);
+
+/**
+ * clawt_room_get_catchup_messages:
+ * @self: a #ClawtRoom
+ *
+ * How much of the room a member is caught up on when it is named.
+ *
+ * In a room that requires mentions an agent receives only what named
+ * it, so without this it cannot follow the conversation at all -- the
+ * transcript holds it and the model does not.
+ *
+ * Returns: the cap, or 0 for none
+ */
+guint clawt_room_get_catchup_messages(ClawtRoom *self);
+
+void clawt_room_set_catchup_messages(ClawtRoom *self, guint messages);
+
+gboolean clawt_room_is_declared(const gchar *room_id);
+
+/**
+ * clawt_room_member_list:
+ * @self: a #ClawtRoom
+ *
+ * Its members as one comma-separated string, which is how they cross
+ * IPC and how they are written back to the config.
+ *
+ * Returns: (transfer full): the list, possibly empty
+ */
+gchar *clawt_room_member_list(ClawtRoom *self);
 
 /**
  * clawt_room_message_is_for:
  * @self: a #ClawtRoom
  * @message: (transfer none): a message posted to the room
  * @agent_id: a member
+ * @display_name: (nullable): what that member is called, when it differs
+ *   from its id
  *
  * Whether @agent_id should receive @message.
  *
  * An agent never receives its own message, whatever the mention rules say
  * -- that alone would be an infinite loop.
  *
+ * @display_name comes from the caller because a room holds ids and
+ * nothing else: it has no view of the fleet, and giving it one so that
+ * it could look a name up would be a second answer to who an agent is.
+ *
  * Returns: %TRUE if it should be delivered
  */
 gboolean clawt_room_message_is_for(ClawtRoom    *self,
                                    ClawtMessage *message,
-                                   const gchar  *agent_id);
+                                   const gchar  *agent_id,
+                                   const gchar  *display_name);
 
 /**
  * clawt_room_append:

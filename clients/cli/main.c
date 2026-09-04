@@ -2194,7 +2194,17 @@ cmd_send(int argc, char *argv[])
                     "ends, and is not in the transcript until then.\n",
                     argv[2]);
         else if (queued == 0)
-            g_print("Nobody was queued: check the room's members.\n");
+            /*
+             * Not "check the room's members", which is what this used
+             * to say and is the wrong place to look almost every time.
+             * In a room that requires mentions, reaching nobody is the
+             * ordinary outcome: the message is in the transcript and
+             * everybody can read it, and nobody was interrupted.
+             */
+            g_print("Posted, and nobody was interrupted -- it named no "
+                    "member. Everyone in the room can read it. Write "
+                    "@their-id to reach somebody, or @all for all of "
+                    "them.\n");
         else if (state != NULL && g_strcmp0(state, "running") != 0)
             g_print("Queued: %s is %s, so it is held in the mailbox until "
                     "the agent starts.\n", argv[2], state);

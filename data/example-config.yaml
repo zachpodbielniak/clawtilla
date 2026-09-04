@@ -865,10 +865,22 @@ rooms:
     # Agent ids in the room. The human is always implicitly a member.
     members: []
 
-    # Only deliver messages that name an agent.
+    # Only deliver messages that name a member.
     #
-    # Worth turning on for a busy room: without it every agent takes a turn
-    # on every message, which is expensive and rarely wanted.
+    # Defaults to the room's shape when it is not set: off for two members,
+    # where everything said is for the other one, and on for three or more,
+    # where delivering every remark to everybody costs a model turn each
+    # and is never what anybody meant. Setting it explicitly wins either
+    # way.
+    #
+    # A member is named as @its-id or as a bare word; matching ignores
+    # case, and an agent's display name counts when it is a single word.
+    # @all reaches everybody and belongs to you -- an agent writing it
+    # reaches nobody, because one broadcast per reply is how a room of five
+    # turns one remark into a runaway.
+    #
+    # A message that names nobody is still recorded and everyone can read
+    # it. That is the ordinary way to take part, and each delivery says so.
     require_mention: false
 
     # Overrides orchestration.max_hops for this room.
@@ -905,6 +917,33 @@ rooms:
     #
     # Anything below 60 is raised to 60.
     turn_timeout_seconds: 0
+
+    # Where this room sits in the sidebar, among the agents.
+    #
+    # The same scale as agents.order, because a client draws one list and
+    # a room can sit beside the agents it concerns. Written by the clients
+    # when a room is dragged or moved, numbered from one in steps of ten so
+    # there is room to hand-place something between two.
+    order: null
+
+    # Which team's group this room appears under in the sidebar.
+    #
+    # Presentation and nothing else: it does not change who is in the room
+    # or who a message reaches. A room with no team sits with the agents
+    # that have none.
+    team: null
+
+    # How much of a room a member is caught up on when it is named.
+    #
+    # In a room that requires mentions an agent only receives the messages
+    # that named it, so without this it has no idea what was being
+    # discussed -- the transcript holds the conversation and the model does
+    # not. Each delivery carries the messages since that member last heard
+    # from the room, capped here, with a count of anything dropped.
+    #
+    # 0 turns it off. Anything older is clawtilla_room_history, which the
+    # delivery preamble names.
+    catchup_messages: 20
 
 # Teams, so a fleet larger than a handful has a shape.
 #
@@ -1750,6 +1789,17 @@ agents:
       # job assumes the shape. An explicit value here always wins, and
       # dropping the role restores the ordinary default; toggling a role
       # never writes this key on your behalf.
+      #
+      # A member of a room with more than two members defaults to room
+      # mode instead, and sender-room is refused for one. That mode gives
+      # an agent a session per speaker in the same room, and every piece
+      # of the daemon's per-room turn state is keyed on the room alone --
+      # the typing indicator carries the room and not the session, so two
+      # such turns cannot be told apart: the second to start would run
+      # holding the first one's depth and origin, and the first to finish
+      # would settle both. It is reported and replaced with room rather
+      # than refused, because refusing would take the agent out of the
+      # fleet over a setting.
       # Values: sender-room, room, agent
       routing_mode: "sender-room"
 

@@ -31,8 +31,12 @@ struct _ClawtRoom {
     GPtrArray *messages;     /* ClawtMessage*, oldest first */
 
     gboolean   require_mention;
+    gboolean   require_mention_set;
     guint      max_hops;
     guint      turn_timeout_seconds;
+    gint       order;
+    gchar     *team;
+    guint      catchup_messages;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtRoom, clawt_room, G_TYPE_OBJECT)
@@ -134,15 +138,126 @@ void
 clawt_room_set_require_mention(ClawtRoom *self, gboolean require)
 {
     g_return_if_fail(CLAWT_IS_ROOM(self));
+
     self->require_mention = require;
+    self->require_mention_set = TRUE;
 }
 
 gboolean
 clawt_room_get_require_mention(ClawtRoom *self)
 {
     g_return_val_if_fail(CLAWT_IS_ROOM(self), FALSE);
-    return self->require_mention;
+
+    if (self->require_mention_set)
+        return self->require_mention;
+
+    /*
+     * One resolver rather than a schema default and a second answer at
+     * every creation site.  A room nobody has decided about follows its
+     * shape: two members are a conversation and everything said in it is
+     * for the other one, while three or more is a group, where delivering
+     * every remark to every member costs a model turn each and is never
+     * what anybody meant.
+     */
+    return clawt_room_is_group(self);
 }
+
+gboolean
+clawt_room_is_group(ClawtRoom *self)
+{
+    g_return_val_if_fail(CLAWT_IS_ROOM(self), FALSE);
+
+    return self->members->len > 2;
+}
+
+gint
+clawt_room_get_order(ClawtRoom *self)
+{
+    g_return_val_if_fail(CLAWT_IS_ROOM(self), 0);
+
+    return self->order;
+}
+
+void
+clawt_room_set_order(ClawtRoom *self, gint order)
+{
+    g_return_if_fail(CLAWT_IS_ROOM(self));
+
+    self->order = order;
+}
+
+const gchar *
+clawt_room_get_team(ClawtRoom *self)
+{
+    g_return_val_if_fail(CLAWT_IS_ROOM(self), NULL);
+
+    return self->team;
+}
+
+void
+clawt_room_set_team(ClawtRoom *self, const gchar *team)
+{
+    g_return_if_fail(CLAWT_IS_ROOM(self));
+
+    g_free(self->team);
+    self->team = g_strdup(team);
+}
+
+guint
+clawt_room_get_catchup_messages(ClawtRoom *self)
+{
+    g_return_val_if_fail(CLAWT_IS_ROOM(self), 0);
+
+    return self->catchup_messages;
+}
+
+void
+clawt_room_set_catchup_messages(ClawtRoom *self, guint messages)
+{
+    g_return_if_fail(CLAWT_IS_ROOM(self));
+
+    self->catchup_messages = messages;
+}
+
+gboolean
+clawt_room_is_declared(const gchar *room_id)
+{
+    if (room_id == NULL)
+        return FALSE;
+
+    /*
+     * A derived room is one the daemon names for itself, and its
+     * membership follows from who exists rather than from anything
+     * anybody wrote down.  Told apart by the prefixes that already name
+     * them, because those prefixes are the only place the distinction
+     * has ever lived -- and a colon cannot appear in a declared id, so
+     * the two sets cannot overlap.
+     */
+    return !g_str_has_prefix(room_id, "dm:") &&
+           !g_str_has_prefix(room_id, "routine:") &&
+           !g_str_has_prefix(room_id, "trigger:");
+}
+
+gchar *
+clawt_room_member_list(ClawtRoom *self)
+{
+    g_autoptr(GString) out = NULL;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_ROOM(self), NULL);
+
+    out = g_string_new(NULL);
+
+    for (i = 0; i < self->members->len; i++) {
+        if (out->len > 0)
+            g_string_append_c(out, ',');
+
+        g_string_append(out, g_ptr_array_index(self->members, i));
+    }
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
 
 guint
 clawt_room_get_max_hops(ClawtRoom *self)
@@ -177,7 +292,8 @@ clawt_room_set_turn_timeout(ClawtRoom *self, guint seconds)
 gboolean
 clawt_room_message_is_for(ClawtRoom    *self,
                           ClawtMessage *message,
-                          const gchar  *agent_id)
+                          const gchar  *agent_id,
+                          const gchar  *display_name)
 {
     const gchar *body;
 
@@ -209,48 +325,55 @@ clawt_room_message_is_for(ClawtRoom    *self,
             return g_strcmp0(only_for, agent_id) == 0;
     }
 
-    if (!self->require_mention)
+    /*
+     * Through the getter, not the field.
+     *
+     * The field is only meaningful when somebody set it; a room that
+     * declared nothing resolves the rule from its own shape.  Reading
+     * the field here meant a group made from a client -- which sets
+     * nothing, on purpose -- delivered every remark to every member,
+     * while every test passed because each set it explicitly.  A
+     * default is not a default unless every reader goes through the
+     * resolver.
+     */
+    if (!clawt_room_get_require_mention(self))
         return TRUE;
 
     body = clawt_message_get_body(message);
+
     if (body == NULL)
         return FALSE;
 
     /*
-     * Named either bare or with an @, since people write both and an agent
-     * addressed as "@researcher" plainly meant the same as "researcher".
+     * Everybody, but only from a sender that is not an agent.
+     *
+     * An agent that could broadcast would turn one reply into a turn
+     * for every other member, each of which could broadcast again --
+     * the runaway the mention rule exists to prevent, rebuilt out of
+     * one word.  So an agent's `@all` falls through and names nobody
+     * unless it also named somebody individually, and the tool that
+     * posts refuses it out loud rather than leaving the agent to wonder
+     * where its message went.
+     *
+     * The test is clawt_agent_id_is_reserved(), which is already the
+     * list of senders that are not agents -- the operator, the daemon
+     * itself, and the routine and trigger runners.  None of those is a
+     * model that can decide to broadcast again, and all of them are
+     * saying something the operator arranged.  Asking it this way also
+     * means a room needs no view of the fleet to answer.
      */
-    {
-        g_autofree gchar *at_form = g_strdup_printf("@%s", agent_id);
-
-        if (strstr(body, at_form) != NULL)
-            return TRUE;
-    }
+    if (clawt_mention_is_broadcast(body) &&
+        clawt_agent_id_is_reserved(clawt_message_get_sender_id(message)))
+        return TRUE;
 
     /*
-     * A whole word, not a substring: an agent called "bob" was matching
-     * a message that only mentioned "bobby", so require_mention quietly
-     * delivered to somebody nobody had addressed.
+     * The matching itself is clawt_mention_names(), because both
+     * clients need the same answer -- one to offer a completion, the
+     * other to warn before a message is sent to nobody -- and three
+     * copies of a boundary rule is three chances to disagree about
+     * whether `@bobby` addresses `bob`.
      */
-    {
-        const gchar *found = body;
-        gsize length = strlen(agent_id);
-
-        while ((found = strstr(found, agent_id)) != NULL) {
-            gboolean start_ok = (found == body) ||
-                                !g_ascii_isalnum(found[-1]);
-            gboolean end_ok = (found[length] == '\0') ||
-                              !g_ascii_isalnum(found[length]);
-
-            if (start_ok && end_ok &&
-                found[length] != '_' && found[length] != '-')
-                return TRUE;
-
-            found += length;
-        }
-    }
-
-    return FALSE;
+    return clawt_mention_names(body, agent_id, display_name);
 }
 
 /*
@@ -462,6 +585,7 @@ clawt_room_finalize(GObject *object)
     g_clear_pointer(&self->room_id, g_free);
     g_clear_pointer(&self->name, g_free);
     g_clear_pointer(&self->transcript_path, g_free);
+    g_clear_pointer(&self->team, g_free);
     g_clear_pointer(&self->members, g_ptr_array_unref);
     g_clear_pointer(&self->messages, g_ptr_array_unref);
 

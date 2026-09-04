@@ -748,6 +748,51 @@ can create agents that create agents, and the hop limit does not apply to
 that.  It also means giving one a container or a VM, which is a machine
 that runs code.
 
+*** Rooms an agent may make, and who it may put in them
+
+~clawtilla_create_room~ had *no permission check of any kind*: any agent
+with peer comms could name any agents, and the room then appeared in
+their conversations and delivered into their mailboxes.  It is now
+restricted to a room the caller is itself a member of --- convening a
+conversation you are not part of is arranging other agents' work, which
+is what ~clawtilla_delegate~ is for and has its own team rules --- and
+every named member must be an agent that exists.
+
+Two further checks were drafted and *removed* rather than left in as
+walls with no doors, because a check that cannot fail is worse than
+none:
+
+- "May the caller message this agent" is not a permission that exists.
+  ~NEEDS_PEER_COMMS~ is a capability rather than a relation, and the
+  only per-target gate in the tree is ~clawt_team_may_assign()~, which
+  is about assigning work.
+- "Can this member answer" cannot fail.  Every agent is granted
+  ~CLAWT_AGENT_CAPS_PEER_COMMS~ unconditionally, and a member answers a
+  room by ending a turn rather than by calling anything.
+
+*** ~room.add~ into a direct conversation
+
+~room.add~, ~room.set~ and ~room.remove~ refuse a conversation the
+daemon *derives* rather than one somebody declared --- anything named
+~dm:~, ~routine:~ or ~trigger:~.
+
+The sharp case is ~room.add~.  It would happily have put a third member
+into ~dm:oryx:user~, and membership *is* permission: that agent could
+then read and post into your private conversation with another.  Only
+the operator can reach these verbs --- agents reach the daemon over
+their link and not over IPC --- so it was a footgun rather than an
+escalation.  Putting room editing in a client is exactly what would have
+made somebody do it by accident.
+
+*** ~@all~ belongs to the operator
+
+An agent that could broadcast would turn one reply into a turn for every
+other member of a room, each of which could broadcast again.  A message
+carrying ~@all~ therefore reaches everybody only when its sender is not
+a registered agent.  This is a cost control rather than a confidentiality
+boundary: an agent can still name every member individually, and should
+when it means to.
+
 *** Team roles are not a security boundary
 
 Worth stating plainly, because the vocabulary invites the other reading.

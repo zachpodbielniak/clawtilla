@@ -961,10 +961,23 @@ static const ClawtSchemaEntry schema[] = {
 
 { "rooms.require_mention", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "false", NULL,
-  "Only deliver messages that name an agent.\n"
+  "Only deliver messages that name a member.\n"
   "\n"
-  "Worth turning on for a busy room: without it every agent takes a turn\n"
-  "on every message, which is expensive and rarely wanted.", "0.1.0" },
+  "Defaults to the room's shape when it is not set: off for two members,\n"
+  "where everything said is for the other one, and on for three or more,\n"
+  "where delivering every remark to everybody costs a model turn each\n"
+  "and is never what anybody meant. Setting it explicitly wins either\n"
+  "way.\n"
+  "\n"
+  "A member is named as @its-id or as a bare word; matching ignores\n"
+  "case, and an agent's display name counts when it is a single word.\n"
+  "@all reaches everybody and belongs to you -- an agent writing it\n"
+  "reaches nobody, because one broadcast per reply is how a room of five\n"
+  "turns one remark into a runaway.\n"
+  "\n"
+  "A message that names nobody is still recorded and everyone can read\n"
+  "it. That is the ordinary way to take part, and each delivery says so.",
+  "0.1.0" },
 
 { "rooms.max_hops", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Overrides orchestration.max_hops for this room.\n"
@@ -979,7 +992,6 @@ static const ClawtSchemaEntry schema[] = {
   "budget and the cycle detector are untouched, so a loop that costs\n"
   "money still has three limits on it.", "0.1.0" },
 
-/* ── teams ───────────────────────────────────────────────────────── */
 { "rooms.turn_timeout_seconds", CLAWT_SCHEMA_INT,
   CLAWT_SCHEMA_FLAG_NONE, "0", NULL,
   "How long one member may hold a room's turn before it is yielded.\n"
@@ -1003,6 +1015,35 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "Anything below 60 is raised to 60.", "0.2.0" },
 
+{ "rooms.order", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Where this room sits in the sidebar, among the agents.\n"
+  "\n"
+  "The same scale as agents.order, because a client draws one list and\n"
+  "a room can sit beside the agents it concerns. Written by the clients\n"
+  "when a room is dragged or moved, numbered from one in steps of ten so\n"
+  "there is room to hand-place something between two.", "0.2.0" },
+
+{ "rooms.team", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Which team's group this room appears under in the sidebar.\n"
+  "\n"
+  "Presentation and nothing else: it does not change who is in the room\n"
+  "or who a message reaches. A room with no team sits with the agents\n"
+  "that have none.", "0.2.0" },
+
+{ "rooms.catchup_messages", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "20", NULL,
+  "How much of a room a member is caught up on when it is named.\n"
+  "\n"
+  "In a room that requires mentions an agent only receives the messages\n"
+  "that named it, so without this it has no idea what was being\n"
+  "discussed -- the transcript holds the conversation and the model does\n"
+  "not. Each delivery carries the messages since that member last heard\n"
+  "from the room, capped here, with a count of anything dropped.\n"
+  "\n"
+  "0 turns it off. Anything older is clawtilla_room_history, which the\n"
+  "delivery preamble names.", "0.2.0" },
+
+/* ── teams ───────────────────────────────────────────────────────── */
 { "teams", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Teams, so a fleet larger than a handful has a shape.\n"
   "\n"
@@ -1932,7 +1973,18 @@ static const ClawtSchemaEntry schema[] = {
   "team_role: lead defaults to agent mode, because an orchestrator's\n"
   "job assumes the shape. An explicit value here always wins, and\n"
   "dropping the role restores the ordinary default; toggling a role\n"
-  "never writes this key on your behalf.", "0.2.0" },
+  "never writes this key on your behalf.\n"
+  "\n"
+  "A member of a room with more than two members defaults to room\n"
+  "mode instead, and sender-room is refused for one. That mode gives\n"
+  "an agent a session per speaker in the same room, and every piece\n"
+  "of the daemon's per-room turn state is keyed on the room alone --\n"
+  "the typing indicator carries the room and not the session, so two\n"
+  "such turns cannot be told apart: the second to start would run\n"
+  "holding the first one's depth and origin, and the first to finish\n"
+  "would settle both. It is reported and replaced with room rather\n"
+  "than refused, because refusing would take the agent out of the\n"
+  "fleet over a setting.", "0.2.0" },
 
 { "agents.runtime", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "How this agent's libreclaw instance is hosted.", "0.1.0" },

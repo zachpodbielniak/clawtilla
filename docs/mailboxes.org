@@ -16,6 +16,23 @@ daemon killed mid-turn does not lose anything.
 The store is SQLite in WAL mode at
 ~<state_dir>/agents/<id>/mailbox.db~, written only by the daemon.
 
+** One message, several mailboxes
+
+Posting into a room queues an item into *each* member's mailbox, minted
+per recipient with an id of its own.  A full mailbox on one member does
+not fail the post: a room of five where one is backed up should still
+reach the other four, and the failure is reported rather than hidden.
+
+In a room that requires mentions, most messages queue *nothing* --- the
+message is recorded and only the members it names are delivered to.  A
+message that reaches nobody is not a failure and is not counted against
+the rate limit or the cycle detector; see
+[[file:orchestration.org][orchestration.org]].
+
+Delivery acknowledges at the socket rather than when a turn finishes, so
+a message handed to an agent whose runtime then dies is gone.  That is
+the trade the mailbox makes for not re-delivering the same work twice.
+
 ** What an item carries
 
 | Field | Why it is there |

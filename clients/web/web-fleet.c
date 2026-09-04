@@ -318,6 +318,173 @@ agent_row(JsonObject *agent, const gchar *selected, ClawtPage view,
 }
 
 
+/*
+ * A room's label, from its members rather than its id.
+ *
+ * How a room is named is the daemon's business, and a client that takes
+ * `dm:a:b` apart is a client that breaks when that changes.
+ *
+ * Returns: (transfer full): the label
+ */
+static gchar *
+room_label(JsonObject *room)
+{
+    const gchar *id = clawt_web_member(room, "id", "");
+    const gchar *name = clawt_web_member(room, "name", NULL);
+    JsonArray *members;
+    g_autoptr(GString) out = NULL;
+    guint i;
+
+    if (name != NULL && *name != '\0' && g_strcmp0(name, id) != 0)
+        return g_strdup(name);
+
+    members = clawt_web_member_array(room, "members");
+
+    if (members == NULL)
+        return g_strdup(id);
+
+    out = g_string_new(NULL);
+
+    for (i = 0; i < json_array_get_length(members); i++) {
+        const gchar *member = json_array_get_string_element(members, i);
+
+        if (g_strcmp0(member, "user") == 0)
+            continue;
+
+        if (out->len > 0)
+            g_string_append(out, ", ");
+
+        g_string_append(out, member);
+    }
+
+    if (out->len == 0)
+        return g_strdup(id);
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+/*
+ * One room in the sidebar, beside the agents it concerns.
+ *
+ * A room has exactly one view -- every other page is scoped to an agent
+ * and means nothing here -- so the href carries no view segment, and
+ * clawt_web_view_body()'s switch is left alone rather than gaining a
+ * page only one kind of entry can answer.
+ */
+static HtmxElement *
+room_row(JsonObject *room, const gchar *selected_room, guint unread)
+{
+    const gchar *id = clawt_web_member(room, "id", "");
+    g_autofree gchar *escaped = g_uri_escape_string(id, NULL, FALSE);
+    g_autofree gchar *url = g_strdup_printf("/r/%s", escaped);
+    g_autofree gchar *label = room_label(room);
+    g_autofree gchar *meta_text = NULL;
+    JsonArray *members = clawt_web_member_array(room, "members");
+    guint count = (members != NULL) ? json_array_get_length(members) : 0;
+    g_autoptr(HtmxA) row = htmx_a_new_with_href(url);
+    g_autoptr(HtmxDiv) line = htmx_div_new();
+    g_autoptr(HtmxDiv) meta = htmx_div_new();
+    g_autoptr(HtmxSpan) name = htmx_span_new();
+
+    htmx_element_add_class(HTMX_ELEMENT(row), "agent-row");
+
+    if (g_strcmp0(id, selected_room) == 0)
+        htmx_element_add_class(HTMX_ELEMENT(row), "selected");
+
+    htmx_element_add_class(HTMX_ELEMENT(line), "agent-line");
+    htmx_element_add_class(HTMX_ELEMENT(name), "agent-name");
+    htmx_node_set_text_content(HTMX_NODE(name), label);
+    htmx_node_add_child(HTMX_NODE(line), HTMX_NODE(g_steal_pointer(&name)));
+
+    if (unread > 0) {
+        g_autofree gchar *badge = g_strdup_printf("%u", unread);
+
+        clawt_web_add(line, clawt_web_badge(badge, "accent"));
+    }
+
+    htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(g_steal_pointer(&line)));
+
+    /*
+     * How many are in it, and whether being in it means answering
+     * everything -- the second being what somebody needs to know about a
+     * room before they type in it.
+     */
+    meta_text = clawt_web_member_bool(room, "require_mention", FALSE)
+        ? g_strdup_printf("%u members \xc2\xb7 answers when named", count)
+        : g_strdup_printf("%u members \xc2\xb7 everyone answers", count);
+
+    htmx_element_add_class(HTMX_ELEMENT(meta), "agent-meta");
+    htmx_node_set_text_content(HTMX_NODE(meta), meta_text);
+    htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(g_steal_pointer(&meta)));
+
+    return HTMX_ELEMENT(g_steal_pointer(&row));
+}
+
+/*
+ * Every room in @team's group, after that team's agents.
+ *
+ * Rooms sit with the agents they concern rather than in a section of
+ * their own, which is what "move it wherever you like" has to mean if a
+ * team's group is somewhere one can be put.
+ */
+static void
+append_rooms_for_team(ClawtWebApp *app, HtmxDiv *scroll, JsonArray *rooms,
+                      const gchar *team, const gchar *selected_room,
+                      GHashTable *emitted)
+{
+    guint i;
+
+    for (i = 0; rooms != NULL && i < json_array_get_length(rooms); i++) {
+        JsonObject *room = json_array_get_object_element(rooms, i);
+        const gchar *id = clawt_web_member(room, "id", "");
+
+        /*
+         * Only rooms somebody made.  A direct conversation is already
+         * the agent's own row, and a routine's or a trigger's belongs to
+         * that routine or trigger.
+         */
+        if (!clawt_web_member_bool(room, "declared", FALSE))
+            continue;
+
+        if (g_strcmp0(clawt_web_member(room, "team", ""),
+                      team != NULL ? team : "") != 0)
+            continue;
+
+        if (g_hash_table_contains(emitted, id))
+            continue;
+
+        g_hash_table_add(emitted, g_strdup(id));
+
+        clawt_web_add(scroll,
+                      room_row(room, selected_room,
+                               clawt_web_app_unread(app, id)));
+
+        /*
+         * Move controls for the row somebody is looking at, in the same
+         * strip an agent gets.  The GTK client drags; a button is the
+         * same capability on a page that has to work without
+         * JavaScript, and both write the same key.
+         */
+        if (g_strcmp0(id, selected_room) == 0) {
+            g_autoptr(HtmxDiv) move = htmx_div_new();
+            g_autofree gchar *escaped = g_uri_escape_string(id, NULL, FALSE);
+            g_autofree gchar *up =
+                g_strdup_printf("/r/%s/reorder?direction=up", escaped);
+            g_autofree gchar *down =
+                g_strdup_printf("/r/%s/reorder?direction=down", escaped);
+
+            htmx_element_add_class(HTMX_ELEMENT(move), "btn-row");
+            htmx_element_set_attribute(HTMX_ELEMENT(move), "style",
+                                       "padding:4px 20px 8px");
+            clawt_web_add(move, clawt_web_post_button("Move up", up,
+                                                      "default", NULL));
+            clawt_web_add(move, clawt_web_post_button("Move down", down,
+                                                      "default", NULL));
+            htmx_node_add_child(HTMX_NODE(scroll), HTMX_NODE(move));
+        }
+    }
+}
+
 static const gchar *
 team_display_name(JsonArray *teams, const gchar *team_id)
 {
@@ -536,12 +703,24 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view,
     g_autoptr(HtmxHeading) wordmark = htmx_heading_new(1);
     g_autoptr(JsonNode) reply = NULL;
     g_autoptr(JsonNode) teams_reply = NULL;
+    g_autoptr(JsonNode) rooms_reply = NULL;
     JsonArray *agents;
     JsonArray *teams;
+    JsonArray *rooms = NULL;
+
+    /*
+     * Which sidebar entry is a room rather than an agent.  The two are
+     * exclusive: a room is a first-class entry, not one of a selected
+     * agent's conversations, and `selected` names an agent.
+     */
+    const gchar *selected_room = clawt_web_app_get_viewing_room(app);
     const gchar *current_team = NULL;
     g_autoptr(GHashTable) shown = g_hash_table_new_full(g_str_hash,
                                                         g_str_equal,
                                                         g_free, NULL);
+    g_autoptr(GHashTable) rooms_shown = g_hash_table_new_full(g_str_hash,
+                                                              g_str_equal,
+                                                              g_free, NULL);
     gboolean first = TRUE;
     guint i;
 
@@ -622,8 +801,17 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view,
 
     reply = clawt_web_app_call(app, "agent.list", NULL);
     teams_reply = clawt_web_app_call(app, "team.list", NULL);
+
+    /*
+     * And the rooms, already ordered by the daemon.  Sorting them here
+     * would be a second answer to what order the sidebar is in, and the
+     * two clients would differ exactly once.
+     */
+    rooms_reply = clawt_web_app_call(app, "room.list", NULL);
+
     agents = clawt_web_member_array(clawt_web_root(reply), "agents");
     teams = clawt_web_member_array(clawt_web_root(teams_reply), "teams");
+    rooms = clawt_web_member_array(clawt_web_root(rooms_reply), "rooms");
 
     /*
      * Which room is whose conversation, learned here because this is
@@ -658,6 +846,15 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view,
          * most under every team in the fleet.
          */
         if (first || g_strcmp0(team, current_team) != 0) {
+            /*
+             * The outgoing team's rooms, before the next heading takes
+             * the floor -- so a room sits under the team it was put in
+             * rather than at the end of the list.
+             */
+            if (!first)
+                append_rooms_for_team(app, scroll, rooms, current_team,
+                                      selected_room, rooms_shown);
+
             emit_empty_headers_before(scroll, teams, agents,
                                       team != NULL ? team : "", shown);
 
@@ -683,7 +880,8 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view,
         clawt_web_add(scroll,
                       agent_row(agent, selected, view,
                                 clawt_web_app_unread(
-                                    app, clawt_web_member(agent, "id", "")),
+                                    app,
+                                    clawt_web_member(agent, "dm_room", "")),
                                 show_description));
 
         /*
@@ -727,8 +925,25 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view,
      * looking for it, because filling it is the next thing they meant
      * to do.
      */
+    /* The last team's rooms, which no following heading will flush. */
+    append_rooms_for_team(app, scroll, rooms, current_team, selected_room,
+                          rooms_shown);
+
     if (agents != NULL)
         emit_empty_headers_before(scroll, teams, agents, NULL, shown);
+
+    /*
+     * And any room whose team holds no agents, which the loop above
+     * never reaches: it walks agents, so a team with none of them is a
+     * heading it never stands under.  A room that vanished because the
+     * last agent left its team would read as a room that was deleted.
+     */
+    for (i = 0; rooms != NULL && i < json_array_get_length(rooms); i++)
+        append_rooms_for_team(
+            app, scroll, rooms,
+            clawt_web_member(json_array_get_object_element(rooms, i),
+                             "team", ""),
+            selected_room, rooms_shown);
 
     htmx_node_add_child(HTMX_NODE(aside), HTMX_NODE(scroll));
 
@@ -736,12 +951,22 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view,
 
     {
         g_autoptr(HtmxA) add = htmx_a_new_with_href("/new");
+        g_autoptr(HtmxA) room = htmx_a_new_with_href("/new-room");
         g_autoptr(HtmxA) import = htmx_a_new_with_href("/import");
 
         htmx_element_add_class(HTMX_ELEMENT(add), "btn");
         htmx_element_add_class(HTMX_ELEMENT(add), "btn-primary");
         htmx_node_set_text_content(HTMX_NODE(add), "New agent");
         htmx_node_add_child(HTMX_NODE(foot), HTMX_NODE(add));
+
+        /*
+         * Beside New agent rather than somewhere else, because both add
+         * a row to this list and somebody looking for "how do I make one
+         * of these" should find them in one place.
+         */
+        htmx_element_add_class(HTMX_ELEMENT(room), "btn");
+        htmx_node_set_text_content(HTMX_NODE(room), "New room");
+        htmx_node_add_child(HTMX_NODE(foot), HTMX_NODE(room));
 
         htmx_element_add_class(HTMX_ELEMENT(import), "btn");
         htmx_node_set_text_content(HTMX_NODE(import), "Import");
@@ -1216,12 +1441,347 @@ lifecycle_new(ClawtWebApp *app, const gchar *kind, const gchar *done)
     return action;
 }
 
+/*
+ * A group room's page.
+ *
+ * `/r/:id` with no view segment, because a room has exactly one view --
+ * every other page is scoped to an agent and means nothing here.  That
+ * also keeps clawt_web_view_body()'s switch untouched rather than
+ * adding a ClawtPage only one kind of entry can answer.
+ */
+/*
+ * The sidebar as one ordered list of typed entries.
+ *
+ * Both move buttons build the same list, because what they send is a
+ * *renumbering* of the whole sidebar: a frame carrying only the agents
+ * would renumber them from ten while the rooms kept whatever numbers
+ * they had, and the two scales would interleave in a way nobody asked
+ * for.  One helper, so an agent moved and a room moved cannot disagree
+ * about what the list is.
+ *
+ * Returns: (transfer full) (element-type utf8): the entries
+ */
+GPtrArray *
+clawt_web_sidebar_entries(ClawtWebApp *app, const gchar *find, gint *index_out)
+{
+    g_autoptr(JsonNode) agent_list = clawt_web_app_call(app, "agent.list",
+                                                        NULL);
+    g_autoptr(JsonNode) room_list = clawt_web_app_call(app, "room.list",
+                                                       NULL);
+    JsonArray *agents = clawt_web_member_array(clawt_web_root(agent_list),
+                                               "agents");
+    JsonArray *rooms = clawt_web_member_array(clawt_web_root(room_list),
+                                              "rooms");
+    GPtrArray *entries = g_ptr_array_new_with_free_func(g_free);
+    guint i;
+
+    *index_out = -1;
+
+    for (i = 0; agents != NULL && i < json_array_get_length(agents); i++) {
+        const gchar *id = clawt_web_member(
+            json_array_get_object_element(agents, i), "id", NULL);
+
+        if (id == NULL)
+            continue;
+
+        if (g_strcmp0(id, find) == 0)
+            *index_out = (gint)entries->len;
+
+        g_ptr_array_add(entries, g_strconcat("a:", id, NULL));
+    }
+
+    for (i = 0; rooms != NULL && i < json_array_get_length(rooms); i++) {
+        JsonObject *room = json_array_get_object_element(rooms, i);
+        const gchar *id = clawt_web_member(room, "id", NULL);
+
+        if (id == NULL || !clawt_web_member_bool(room, "declared", FALSE))
+            continue;
+
+        if (g_strcmp0(id, find) == 0)
+            *index_out = (gint)entries->len;
+
+        g_ptr_array_add(entries, g_strconcat("r:", id, NULL));
+    }
+
+    return entries;
+}
+
+/*
+ * Swaps @index with its neighbour and sends the whole arrangement.
+ *
+ * Returns: (transfer full) (nullable): a message for the banner, or
+ *   %NULL when the frame was refused
+ */
+gboolean
+clawt_web_move_entry(ClawtWebApp *app, GPtrArray *entries, gint index,
+           const gchar *direction, const gchar **message)
+{
+    g_autoptr(ClawtWebPayload) payload = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *joined = NULL;
+    gint swap_with = (g_strcmp0(direction, "up") == 0) ? index - 1
+                                                        : index + 1;
+
+    if (swap_with < 0 || swap_with >= (gint)entries->len) {
+        *message = "Already at the end.";
+        return TRUE;
+    }
+
+    {
+        gpointer moved = g_ptr_array_index(entries, (guint)index);
+
+        entries->pdata[index] = entries->pdata[swap_with];
+        entries->pdata[swap_with] = moved;
+    }
+
+    g_ptr_array_add(entries, NULL);
+    joined = g_strjoinv(",", (gchar **)entries->pdata);
+
+    payload = clawt_web_payload_new();
+    clawt_web_payload_set(payload, "entries", joined);
+
+    reply = clawt_web_app_call(app, "fleet.reorder",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        return FALSE;
+
+    *message = "Moved.";
+
+    return TRUE;
+}
+
+static HtmxResponse *
+on_room_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *room_id = clawt_web_param(params, "id");
+    g_autoptr(HtmxElement) body = NULL;
+    g_autofree gchar *html = NULL;
+
+    clawt_web_app_set_viewing_room(app, room_id);
+
+    body = clawt_web_room_body(app, room_id);
+    html = clawt_web_page(app, NULL, CLAWT_PAGE_CHAT, body, request);
+
+    return clawt_web_html_response(html);
+}
+
+/*
+ * Moves a room one place in the sidebar.
+ *
+ * The GTK client drags; a pair of buttons is the same capability on a
+ * page that has to work without JavaScript, and both send the same
+ * `fleet.reorder` frame describing the whole arrangement -- a client
+ * whose view was a moment stale cannot produce a half-applied reorder.
+ */
+static HtmxResponse *
+on_room_reorder(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *room_id = clawt_web_param(params, "id");
+    gint index = -1;
+    g_autoptr(GPtrArray) entries = clawt_web_sidebar_entries(app, room_id, &index);
+    const gchar *message = NULL;
+
+    if (index < 0)
+        return clawt_web_after_action(app, request, NULL, CLAWT_PAGE_CHAT,
+                                      NULL);
+
+    if (!clawt_web_move_entry(app, entries, index,
+                    htmx_request_get_query_param(request, "direction"),
+                    &message))
+        return clawt_web_error_page(app, request, NULL, CLAWT_PAGE_CHAT,
+                                    clawt_web_app_last_error(app));
+
+    return clawt_web_after_action(app, request, NULL, CLAWT_PAGE_CHAT,
+                                  message);
+}
+
+/*
+ * Puts a room in a team's group, which is presentation and nothing else
+ * -- it changes neither who is in the room nor who a message reaches.
+ */
+static HtmxResponse *
+on_room_team(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *room_id = clawt_web_param(params, "id");
+    const gchar *team = clawt_web_form_value(request, "team");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+
+    clawt_web_payload_set(payload, "room", room_id);
+    clawt_web_payload_set(payload, "team", team != NULL ? team : "");
+
+    reply = clawt_web_app_call(app, "room.set",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        return clawt_web_error_page(app, request, NULL, CLAWT_PAGE_CHAT,
+                                    clawt_web_app_last_error(app));
+
+    return clawt_web_after_action(app, request, NULL, CLAWT_PAGE_CHAT,
+                                  "Moved.");
+}
+
+/*
+ * The New room page.
+ *
+ * A room is made from the same corner an agent is, rather than a
+ * separate one, so somebody looking for "how do I make one of these"
+ * finds both in the same place.  Members are checkboxes because the
+ * page has to work without JavaScript and a multi-select does not
+ * degrade well.
+ */
+static HtmxResponse *
+on_new_room_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autoptr(HtmxDiv) view = htmx_div_new();
+    g_autoptr(HtmxDiv) pad = htmx_div_new();
+    g_autoptr(HtmxDiv) card = clawt_web_card("New room", NULL);
+    HtmxElement *body = clawt_web_card_body(card);
+    g_autoptr(HtmxForm) form = clawt_web_form("/new-room");
+    g_autoptr(JsonNode) reply = NULL;
+    JsonArray *agents;
+    g_autofree gchar *html = NULL;
+    guint i;
+
+    (void)params;
+
+    clawt_web_add(form, clawt_web_field("Id", "room", NULL, "standup"));
+    clawt_web_add(form, clawt_web_field("Name", "name", NULL, "Standup"));
+
+    clawt_web_add(form, clawt_web_text(
+        "Everyone in a room can read everything said in it. With more "
+        "than two members, a message is only delivered to the members it "
+        "names with @their-id -- so being in a room does not mean "
+        "answering everything in it.", "lede"));
+
+    reply = clawt_web_app_call(app, "agent.list", NULL);
+    agents = clawt_web_member_array(clawt_web_root(reply), "agents");
+
+    for (i = 0; agents != NULL && i < json_array_get_length(agents); i++) {
+        JsonObject *agent = json_array_get_object_element(agents, i);
+        const gchar *id = clawt_web_member(agent, "id", "");
+
+        clawt_web_add(form,
+                      clawt_web_switch_field(id, id,
+                                             clawt_web_member(agent,
+                                                              "description",
+                                                              NULL),
+                                             FALSE));
+    }
+
+    {
+        g_autoptr(HtmxDiv) row = htmx_div_new();
+        g_autoptr(HtmxButton) create = clawt_web_button("Create", "primary");
+        g_autoptr(HtmxA) cancel = htmx_a_new_with_href("/");
+
+        htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
+        htmx_element_set_attribute(HTMX_ELEMENT(create), "type", "submit");
+        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(create));
+
+        htmx_element_add_class(HTMX_ELEMENT(cancel), "btn");
+        htmx_node_set_text_content(HTMX_NODE(cancel), "Cancel");
+        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(cancel));
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(row));
+    }
+
+    htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
+    htmx_element_add_class(HTMX_ELEMENT(pad), "pad");
+    htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(card));
+    htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
+
+    html = clawt_web_page(app, NULL, CLAWT_PAGE_CHAT, HTMX_ELEMENT(view),
+                          request);
+
+    return clawt_web_html_response(html);
+}
+
+static HtmxResponse *
+on_new_room_submit(HtmxRequest *request, GHashTable *params,
+                   gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    const gchar *room_id = clawt_web_form_value(request, "room");
+    const gchar *name = clawt_web_form_value(request, "name");
+    g_autoptr(JsonNode) list = clawt_web_app_call(app, "agent.list", NULL);
+    JsonArray *agents = clawt_web_member_array(clawt_web_root(list),
+                                               "agents");
+    g_autoptr(GString) members = g_string_new(NULL);
+    g_autoptr(ClawtWebPayload) payload = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    guint chosen = 0;
+    guint i;
+
+    (void)params;
+
+    if (room_id == NULL || *room_id == '\0')
+        return clawt_web_error_page(app, request, NULL, CLAWT_PAGE_CHAT,
+                                    "A room needs a name to be addressed "
+                                    "by.");
+
+    for (i = 0; agents != NULL && i < json_array_get_length(agents); i++) {
+        const gchar *id = clawt_web_member(
+            json_array_get_object_element(agents, i), "id", NULL);
+
+        if (id == NULL || !clawt_web_form_flag(request, id))
+            continue;
+
+        if (members->len > 0)
+            g_string_append_c(members, ',');
+
+        g_string_append(members, id);
+        chosen++;
+    }
+
+    if (chosen < 2)
+        return clawt_web_error_page(app, request, NULL, CLAWT_PAGE_CHAT,
+                                    "Pick at least two agents -- a room "
+                                    "with one is the conversation you "
+                                    "already have with it.");
+
+    payload = clawt_web_payload_new();
+    clawt_web_payload_set(payload, "room", room_id);
+    clawt_web_payload_set(payload, "name",
+                          (name != NULL && *name != '\0') ? name : room_id);
+    clawt_web_payload_set(payload, "members", members->str);
+
+    reply = clawt_web_app_call(app, "room.create",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        return clawt_web_error_page(app, request, NULL, CLAWT_PAGE_CHAT,
+                                    clawt_web_app_last_error(app));
+
+    return clawt_web_after_action(
+        app, request, NULL, CLAWT_PAGE_CHAT,
+        chosen > 2
+            ? "Created. A message there reaches only the members you name "
+              "with @their-id -- everyone can still read everything."
+            : "Created.");
+}
+
 void
 clawt_web_register_fleet(HtmxRouter *router, ClawtWebApp *app)
 {
     htmx_router_get(router, "/", on_index, app);
     htmx_router_get(router, "/a/:id", on_agent_root, app);
     htmx_router_get(router, "/f/sidebar", on_sidebar_fragment, app);
+
+    /*
+     * The room routes live in their own space rather than under /a/, so
+     * they are not affected by the catch-all `/a/:id/:view` -- which
+     * matches everything under an agent and has swallowed a route once
+     * already.
+     */
+    htmx_router_get(router, "/r/:id", on_room_page, app);
+    htmx_router_get(router, "/new-room", on_new_room_page, app);
+    htmx_router_post(router, "/new-room", on_new_room_submit, app);
+    htmx_router_post(router, "/r/:id/reorder", on_room_reorder, app);
+    htmx_router_post(router, "/r/:id/team", on_room_team, app);
 
     htmx_router_post(router, "/a/:id/start", on_lifecycle,
                      lifecycle_new(app, "agent.start", "Starting."));

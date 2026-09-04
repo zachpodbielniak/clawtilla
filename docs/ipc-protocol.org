@@ -212,7 +212,8 @@ several agents at once.
 ~agent.list~, ~agent.show~, ~agent.start~, ~agent.stop~, ~agent.restart~,
 ~agent.interrupt~, ~agent.reset~, ~agent.logs~, ~agent.create~,
 ~agent.import~,
-~agent.remove~, ~agent.set~, ~agent.reorder~, ~agent.discover~,
+~agent.remove~, ~agent.set~, ~agent.reorder~, ~fleet.reorder~,
+~agent.discover~,
 ~agent.forget~, ~agent.files~, ~agent.file_read~, ~agent.file_write~,
 ~agent.avatar~, ~agent.avatar_set~, ~agent.avatar_clear~,
 ~agent.mount.list~, ~agent.mount.add~, ~agent.mount.remove~.
@@ -262,6 +263,20 @@ wanted, and numbers them in tens.  An id it does not know is skipped
 rather than refused: the list comes from a client's view, which may be a
 moment behind a removal, and failing the whole reorder over that would
 lose the arrangement somebody had just made.
+
+~fleet.reorder~ takes ~entries~ instead: the same list, in the same
+order, with each one written ~a:<agent>~ or ~r:<room>~.  The sidebar
+holds both kinds since a group room sits beside the agents it concerns,
+and what a reorder actually sends is a *renumbering* of the whole
+list --- so a frame carrying only the agents would number them from ten
+while the rooms kept whatever they had, and the two scales would
+interleave in a way nobody asked for.  Both graphical clients send this
+one; ~agent.reorder~ remains for the CLI and is the same renumbering
+with every entry read as an agent, so the two cannot drift.
+
+The gap of ten is not decoration: it leaves room to place something
+between two others by setting a single number, which is the only way to
+do it in a text editor without renumbering the whole file.
 
 ~agent.remove~ takes ~remove_files~ beside ~remove_computer~ and answers
 with ~files~, which is ~removed~ or the reason it was not.
@@ -598,7 +613,38 @@ client raises a toast and leaves the activity line clear.
 A room has one state per member, so there is no single honest answer and
 the key is omitted rather than guessed at.
 
-~room.list~, ~room.create~, ~room.add~, ~room.history~, ~room.steps~.
+~room.list~, ~room.create~, ~room.set~, ~room.add~, ~room.remove~,
+~room.history~, ~room.steps~.
+
+~room.create~ takes ~room~, an optional ~name~, comma-separated
+~members~ and an optional ~require_mention~.  It writes a ~rooms:~ entry
+*and* makes the room, because writing the config is not creating the
+room --- and a room that lived only in the running daemon was one
+somebody made in a client, used, restarted, and could not find, with its
+transcript still on disk and nothing that would ever reopen it.
+
+Omitting ~require_mention~ is the ordinary case: the room then resolves
+it from its own shape, which is what somebody editing ~clawtilla.yaml~
+by hand gets too.
+
+~room.set~ takes ~room~ and any of ~name~, ~members~ and
+~require_mention~.  A ~members~ list *replaces* the membership rather
+than adding to it, so it is how somebody is taken out of a room as well
+as put in.
+
+~room.remove~ takes ~room~ and answers ~transcript_kept: true~.
+Removing a room is a configuration change; destroying the record of what
+was said in it is not, and is not recoverable.  It is reported because
+nothing will reopen that file on its own --- only ~dm:~ transcripts are
+restored at start.
+
+*~room.set~, ~room.add~ and ~room.remove~ refuse a derived
+conversation* --- anything named ~dm:~, ~routine:~ or ~trigger:~.  Those
+have no config entry: their members follow from who exists, so removing
+one deletes nothing and it returns the moment the pair speaks again.
+More sharply, ~room.add~ would otherwise put a third member into
+~dm:oryx:user~, and membership *is* permission --- that agent could then
+read and post into the operator's private conversation with another.
 
 ~room.history~ accepts an agent id as well as a room id: an agent id
 means the direct room with that agent, the same way it does for

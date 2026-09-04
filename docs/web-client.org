@@ -542,6 +542,31 @@ A comment goes down every idle stream twice a minute.  A quiet fleet can
 go hours without an event, and anything in between -- a proxy, a NAT
 holding a mapping -- times an idle connection out without saying so.
 
+** Group rooms
+
+A room with more than two members is a sidebar entry in its own right,
+drawn beside the agents and under whichever team it was put in.  Its
+subtitle says how many members it has and whether being in it means
+answering everything.
+
+Make one with *New room*, beside *New agent* in the sidebar's footer ---
+both add a row to the same list, so both are in the same place.  Fewer
+than two members is refused: a room with one is the conversation you
+already have with that agent.
+
+A room lives at ~/r/<id>~ and has *exactly one view*.  Every other page
+is scoped to an agent and means nothing for a room, so there is no view
+segment --- which also keeps ~clawt_web_view_body()~'s ~default:~-less
+switch untouched rather than adding a ~ClawtPage~ only one kind of entry
+can answer.  The room routes sit outside ~/a/~, where the catch-all
+~/a/:id/:view~ cannot swallow them.
+
+Move up and Move down appear on the selected room, exactly as they do on
+the selected agent, and both send one ~fleet.reorder~ frame carrying the
+whole sidebar with each entry written ~a:<agent>~ or ~r:<room>~.  The
+GTK client drags; buttons are the same capability on a page that has to
+work without JavaScript.
+
 ** Without JavaScript
 
 Every action is a real form or a real link.  With scripting off the whole

@@ -1369,3 +1369,58 @@ clawt_log_level_permits(ClawtLogLevel  ceiling,
     /* Lower is more severe, so "at or above the ceiling" is a <=. */
     return level <= bound;
 }
+
+/**
+ * clawt_clip_line:
+ * @value: (nullable): the text
+ * @limit: how many characters to keep
+ *
+ * Clips a field to @limit characters, on a character boundary.
+ *
+ * These fields come out of clawtilla.yaml, and with an imported team
+ * they were written by somebody who is not the operator.  They are being
+ * interpolated into a prompt the agent treats as trustworthy, so the one
+ * thing that must not be possible is a description long enough to be the
+ * rest of the prompt.
+ *
+ * g_utf8_offset_to_pointer() rather than a byte count: a cut in the
+ * middle of a sequence produces a replacement character in the middle of
+ * a name, which reads as data corruption rather than as a clip.
+ *
+ * Returns: (transfer full) (nullable): one clipped line, or %NULL when
+ *   @value is empty
+ */
+gchar *
+clawt_clip_line(const gchar *value, glong limit)
+{
+    g_autofree gchar *line = NULL;
+    const gchar *newline;
+
+    if (value == NULL || *value == '\0')
+        return NULL;
+
+    /*
+     * One line each. A description with a newline in it would otherwise
+     * break the one-agent-per-line shape the listing promises, and a
+     * reader -- model or person -- would take the second line for
+     * another agent.
+     */
+    newline = strchr(value, '\n');
+    line = (newline != NULL) ? g_strndup(value, (gsize)(newline - value))
+                             : g_strdup(value);
+    g_strstrip(line);
+
+    if (*line == '\0')
+        return NULL;
+
+    if (g_utf8_strlen(line, -1) <= limit)
+        return g_steal_pointer(&line);
+
+    {
+        const gchar *end = g_utf8_offset_to_pointer(line, limit);
+        g_autofree gchar *cut = g_strndup(line, (gsize)(end - line));
+
+        g_strchomp(cut);
+        return g_strdup_printf("%s...", cut);
+    }
+}

@@ -3589,7 +3589,15 @@ clawt_gtk_load_history(ClawtWindow *self)
     self->history_inflight++;
     reply = clawt_window_request(
         self, "room.history",
-        (self->selected_conversation != NULL)
+        (self->selected_room_entry != NULL)
+        /*
+         * A group is named directly, because it is a room rather than
+         * somebody's conversation -- there is no counterparty to
+         * resolve it from.
+         */
+        ? clawt_build_payload("room", self->selected_room_entry,
+                              "as", "user", NULL)
+        : (self->selected_conversation != NULL)
         ? clawt_build_payload("room", self->selected_conversation,
                               "as", self->selected_agent, NULL)
         : clawt_build_payload("room", self->selected_agent, "as", "user",
@@ -3731,10 +3739,18 @@ on_send(GtkWidget *widget, gpointer user_data)
 
     full = body_with_attachments(self, body);
 
+    /*
+     * The room when one is selected, the agent otherwise.  msg.send
+     * resolves either: a room id names the room, an agent id names the
+     * direct conversation with it.
+     */
     reply = clawt_window_request(
         self, "msg.send",
-        clawt_build_payload("target", self->selected_agent, "body", full,
-                            "from", "user", NULL));
+        clawt_build_payload("target",
+                            (self->selected_room_entry != NULL)
+                                ? self->selected_room_entry
+                                : self->selected_agent,
+                            "body", full, "from", "user", NULL));
 
     if (reply == NULL)
         return;
@@ -3894,7 +3910,16 @@ clawt_gtk_fill_conversation_menu(ClawtWindow *self)
      * as the client having lost the connection.
      */
     if (self->entry != NULL) {
-        gboolean own = self->selected_conversation == NULL;
+        /*
+         * A group is typed into.  The read-only rule above is about
+         * posting into a room the operator is not part of, which is
+         * exactly the opposite of a room they made -- and the router
+         * exempts non-agent senders from the membership check for that
+         * reason.  Reusing selected_conversation for a group would have
+         * inherited a rule written against the other case.
+         */
+        gboolean own = self->selected_conversation == NULL ||
+                       self->selected_room_entry != NULL;
 
         gtk_widget_set_sensitive(GTK_WIDGET(self->entry), own);
         gtk_text_view_set_editable(self->entry, own);

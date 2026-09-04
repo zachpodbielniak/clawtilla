@@ -60,6 +60,7 @@
 #include "computer/clawt-computer-factory.h"
 
 #include "chat/clawt-message.h"
+#include "chat/clawt-mention.h"
 #include "chat/clawt-turn-step.h"
 #include "chat/clawt-chat-run.h"
 #include "chat/clawt-chat-layout.h"
