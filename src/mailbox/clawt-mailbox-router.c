@@ -258,6 +258,107 @@ turn_replies(gboolean system,
 }
 
 /*
+ * What @agent_id has missed in @room since it last spoke there.
+ *
+ * A room that requires mentions delivers only the messages that name a
+ * member, which is the whole point -- and it means an agent's context
+ * holds its own corner of the conversation and nothing else.  The
+ * transcript has what was said; the model does not.  A group chat whose
+ * members each see a quarter of it is not a group chat.
+ *
+ * Bounded by `rooms.catchup_messages`, with a count of what was dropped
+ * rather than a silent truncation: half a conversation presented as the
+ * whole of it is worse than an honest gap, and an agent that knows it
+ * missed something can call clawtilla_room_history.
+ *
+ * The agent's own last message is the watermark rather than a stored
+ * one, because there is nothing to keep in step: an AI CLI cannot end a
+ * turn without writing something, and in a room that requires mentions
+ * that text is always posted -- so the last thing an agent said there
+ * is the last time it was looking.
+ *
+ * Returns: (transfer full) (nullable): the block, or %NULL when there
+ *   is nothing to catch up on
+ */
+static gchar *
+room_catchup(ClawtRoom    *room,
+             const gchar  *agent_id,
+             const gchar  *from,
+             const gchar  *body,
+             guint         cap)
+{
+    g_autoptr(GPtrArray) history = NULL;
+    g_autoptr(GPtrArray) missed = NULL;
+    g_autoptr(GString) out = NULL;
+    guint dropped = 0;
+    guint i;
+
+    if (cap == 0)
+        return NULL;
+
+    /*
+     * One more than the cap, so the caller can tell "exactly the cap"
+     * from "the cap and there was more".
+     */
+    history = clawt_room_get_history(room, 0);
+    missed = g_ptr_array_new();
+
+    for (i = history->len; i > 0; i--) {
+        ClawtMessage *message = g_ptr_array_index(history, i - 1);
+
+        /*
+         * Not the message being delivered.  It is already in the
+         * transcript by the time the drain runs -- record_in_room()
+         * comes first -- and quoting it above itself reads as the room
+         * having said everything twice.
+         *
+         * Matched on who said it and what they said, because the item
+         * carries neither the message's id nor anything else that
+         * would identify it: a mailbox item is minted per recipient
+         * with an id of its own.
+         */
+        if (g_strcmp0(clawt_message_get_sender_id(message), from) == 0 &&
+            g_strcmp0(clawt_message_get_body(message), body) == 0)
+            continue;
+
+        /* Back as far as the last thing this agent said, and no further. */
+        if (g_strcmp0(clawt_message_get_sender_id(message), agent_id) == 0)
+            break;
+
+        if (missed->len >= cap) {
+            dropped++;
+            continue;
+        }
+
+        g_ptr_array_add(missed, message);
+    }
+
+    if (missed->len == 0)
+        return NULL;
+
+    out = g_string_new("[clawtilla] What has been said in this room since "
+                       "you last did, oldest first");
+
+    if (dropped > 0)
+        g_string_append_printf(out, " (%u older message%s not shown -- "
+                                    "clawtilla_room_history has them)",
+                               dropped, dropped == 1 ? "" : "s");
+
+    g_string_append(out, ":\n");
+
+    /* Collected newest first, so read back the other way. */
+    for (i = missed->len; i > 0; i--) {
+        ClawtMessage *message = g_ptr_array_index(missed, i - 1);
+
+        g_string_append_printf(out, "\n  %s: %s",
+                               clawt_message_get_sender_id(message),
+                               clawt_message_get_body(message));
+    }
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+/*
  * How many members a delivery preamble names, and how much of each.
  *
  * These fields are operator-editable and, through an imported team,
@@ -748,6 +849,17 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
         if (room_requires_mention) {
             g_autofree gchar *roster =
                 room_roster(self, item_room, agent_id);
+            /*
+             * And what it missed while nobody was naming it, which is
+             * everything else said in the room.  Without this an agent
+             * holds its own corner of the conversation and nothing
+             * else: the transcript has what was said and the model does
+             * not.
+             */
+            g_autofree gchar *catchup = room_catchup(
+                item_room, agent_id, from,
+                clawt_mailbox_item_get_body(item),
+                clawt_room_get_catchup_messages(item_room));
 
             body = g_strdup_printf(
                 "[clawtilla] The following was posted in room '%s', a "
@@ -769,10 +881,12 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
                 "working as intended.\n"
                 "\n@all reaches every member and belongs to your "
                 "operator; if you write it, it reaches nobody. Name "
-                "members individually instead.\n\n%s",
+                "members individually instead.\n"
+                "%s\n%s",
                 clawt_mailbox_item_get_room(item),
                 roster != NULL ? roster
                                : "  nobody else is in it yet\n",
+                catchup != NULL ? catchup : "",
                 clawt_mailbox_item_get_body(item));
         } else if (peer && invites)
             body = g_strdup_printf(

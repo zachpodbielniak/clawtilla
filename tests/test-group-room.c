@@ -1033,6 +1033,167 @@ test_a_reload_drops_a_member_taken_out_of_the_file(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * A member named after missing things is told what it missed.
+ *
+ * A room that requires mentions delivers only what names a member --
+ * which is the point -- and it means an agent's context holds its own
+ * corner of the conversation and nothing else.  The transcript has what
+ * was said; the model does not.
+ */
+static void
+test_a_named_member_is_caught_up_on_what_it_missed(void)
+{
+    RouterFixture fixture = { 0 };
+    ClawtRoom *room;
+    ClawtAgent *bob;
+    g_autofree gchar *delivered = NULL;
+
+    router_setup(&fixture);
+    room = mention_room(&fixture);
+    clawt_room_set_catchup_messages(room, 20);
+
+    bob = clawt_agent_manager_get(fixture.agents, "bob");
+    give_agent_a_link(&fixture, bob);
+
+    /* Four messages bob is not named in... */
+    g_assert_cmpint(post(&fixture, "user", "we are moving the deploy"), ==, 0);
+    g_assert_cmpint(post(&fixture, "alice", "to Thursday?"), ==, 0);
+    g_assert_cmpint(post(&fixture, "user", "Friday"), ==, 0);
+    g_assert_cmpint(post(&fixture, "carol", "noted"), ==, 0);
+
+    /* ...and then one it is. */
+    g_assert_cmpint(post(&fixture, "user", "@bob does that work?"), ==, 1);
+
+    delivered = read_delivered(&fixture);
+    g_assert_nonnull(delivered);
+
+    g_assert_nonnull(strstr(delivered, "since you last did"));
+    g_assert_nonnull(strstr(delivered, "moving the deploy"));
+    g_assert_nonnull(strstr(delivered, "to Thursday?"));
+    g_assert_nonnull(strstr(delivered, "noted"));
+
+    /*
+     * And not the message being delivered, which is already in the
+     * transcript by the time the drain runs -- quoting it above itself
+     * reads as the room having said everything twice.
+     */
+    g_assert_cmpuint(clawt_test_count_substrings(delivered,
+                                                 "does that work?"),
+                     ==, 1);
+
+    router_teardown(&fixture);
+}
+
+/*
+ * Over the cap it says how much it is not showing.
+ *
+ * A silently truncated conversation reads as an agent that was not
+ * paying attention.  Bounded, and the count of what was dropped is
+ * reported rather than hidden.
+ */
+static void
+test_a_long_catchup_says_what_it_dropped(void)
+{
+    RouterFixture fixture = { 0 };
+    ClawtRoom *room;
+    ClawtAgent *bob;
+    g_autofree gchar *delivered = NULL;
+    guint i;
+
+    router_setup(&fixture);
+    room = mention_room(&fixture);
+    clawt_room_set_catchup_messages(room, 3);
+
+    bob = clawt_agent_manager_get(fixture.agents, "bob");
+    give_agent_a_link(&fixture, bob);
+
+    for (i = 0; i < 8; i++) {
+        g_autofree gchar *body = g_strdup_printf("line %u", i);
+
+        g_assert_cmpint(post(&fixture, "alice", body), ==, 0);
+    }
+
+    g_assert_cmpint(post(&fixture, "user", "@bob thoughts?"), ==, 1);
+
+    delivered = read_delivered(&fixture);
+    g_assert_nonnull(delivered);
+
+    /* The newest three, and a count of the rest. */
+    g_assert_nonnull(strstr(delivered, "line 7"));
+    g_assert_nonnull(strstr(delivered, "line 5"));
+    g_assert_null(strstr(delivered, "line 4"));
+    g_assert_nonnull(strstr(delivered, "5 older messages not shown"));
+    g_assert_nonnull(strstr(delivered, "clawtilla_room_history"));
+
+    router_teardown(&fixture);
+}
+
+/*
+ * And it stops at the last thing the member itself said.
+ *
+ * That is the watermark rather than a stored one, because there is
+ * nothing to keep in step: an AI CLI cannot end a turn without writing
+ * something, and in a mention room that text is always posted -- so the
+ * last thing an agent said there is the last time it was looking.
+ */
+static void
+test_the_catchup_stops_where_the_member_last_spoke(void)
+{
+    RouterFixture fixture = { 0 };
+    ClawtRoom *room;
+    ClawtAgent *bob;
+    g_autofree gchar *delivered = NULL;
+
+    router_setup(&fixture);
+    room = mention_room(&fixture);
+    clawt_room_set_catchup_messages(room, 20);
+
+    bob = clawt_agent_manager_get(fixture.agents, "bob");
+    give_agent_a_link(&fixture, bob);
+
+    g_assert_cmpint(post(&fixture, "alice", "old news"), ==, 0);
+    g_assert_cmpint(post(&fixture, "bob", "I was here"), ==, 0);
+    g_assert_cmpint(post(&fixture, "alice", "newer news"), ==, 0);
+    g_assert_cmpint(post(&fixture, "user", "@bob and now?"), ==, 1);
+
+    delivered = read_delivered(&fixture);
+    g_assert_nonnull(delivered);
+
+    g_assert_nonnull(strstr(delivered, "newer news"));
+    g_assert_null(strstr(delivered, "old news"));
+
+    router_teardown(&fixture);
+}
+
+/*
+ * Zero turns it off, and a first delivery does not replay the room.
+ */
+static void
+test_the_catchup_can_be_turned_off(void)
+{
+    RouterFixture fixture = { 0 };
+    ClawtRoom *room;
+    ClawtAgent *bob;
+    g_autofree gchar *delivered = NULL;
+
+    router_setup(&fixture);
+    room = mention_room(&fixture);
+    clawt_room_set_catchup_messages(room, 0);
+
+    bob = clawt_agent_manager_get(fixture.agents, "bob");
+    give_agent_a_link(&fixture, bob);
+
+    g_assert_cmpint(post(&fixture, "alice", "something"), ==, 0);
+    g_assert_cmpint(post(&fixture, "user", "@bob hello"), ==, 1);
+
+    delivered = read_delivered(&fixture);
+    g_assert_nonnull(delivered);
+    g_assert_null(strstr(delivered, "since you last did"));
+
+    router_teardown(&fixture);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1070,6 +1231,14 @@ main(int argc, char **argv)
                     test_the_roster_follows_a_membership_change);
     g_test_add_func("/group/preamble/a-pair-is-unchanged",
                     test_a_pair_still_gets_the_pair_preamble);
+    g_test_add_func("/group/catchup/names-what-was-missed",
+                    test_a_named_member_is_caught_up_on_what_it_missed);
+    g_test_add_func("/group/catchup/says-what-it-dropped",
+                    test_a_long_catchup_says_what_it_dropped);
+    g_test_add_func("/group/catchup/stops-where-the-member-spoke",
+                    test_the_catchup_stops_where_the_member_last_spoke);
+    g_test_add_func("/group/catchup/can-be-turned-off",
+                    test_the_catchup_can_be_turned_off);
     g_test_add_func("/group/routing/member-is-one-conversation-per-room",
                     test_a_group_member_is_one_conversation_per_room);
     g_test_add_func("/group/routing/explicit-wins",
