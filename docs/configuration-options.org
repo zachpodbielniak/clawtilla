@@ -2762,6 +2762,17 @@ job assumes the shape. An explicit value here always wins, and
 dropping the role restores the ordinary default; toggling a role
 never writes this key on your behalf.
 
+A member of a room with more than two members defaults to room
+mode instead, and sender-room is refused for one. That mode gives
+an agent a session per speaker in the same room, and every piece
+of the daemon's per-room turn state is keyed on the room alone --
+the typing indicator carries the room and not the session, so two
+such turns cannot be told apart: the second to start would run
+holding the first one's depth and origin, and the first to finish
+would settle both. It is reported and replaced with room rather
+than refused, because refusing would take the agent out of the
+fleet over a setting.
+
 ** =agents.runtime=
 
 How this agent's libreclaw instance is hosted.

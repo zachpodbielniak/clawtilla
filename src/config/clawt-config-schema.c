@@ -1932,7 +1932,18 @@ static const ClawtSchemaEntry schema[] = {
   "team_role: lead defaults to agent mode, because an orchestrator's\n"
   "job assumes the shape. An explicit value here always wins, and\n"
   "dropping the role restores the ordinary default; toggling a role\n"
-  "never writes this key on your behalf.", "0.2.0" },
+  "never writes this key on your behalf.\n"
+  "\n"
+  "A member of a room with more than two members defaults to room\n"
+  "mode instead, and sender-room is refused for one. That mode gives\n"
+  "an agent a session per speaker in the same room, and every piece\n"
+  "of the daemon's per-room turn state is keyed on the room alone --\n"
+  "the typing indicator carries the room and not the session, so two\n"
+  "such turns cannot be told apart: the second to start would run\n"
+  "holding the first one's depth and origin, and the first to finish\n"
+  "would settle both. It is reported and replaced with room rather\n"
+  "than refused, because refusing would take the agent out of the\n"
+  "fleet over a setting.", "0.2.0" },
 
 { "agents.runtime", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "How this agent's libreclaw instance is hosted.", "0.1.0" },

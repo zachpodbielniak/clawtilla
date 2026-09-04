@@ -1082,9 +1082,45 @@ clawt_config_render_agent(ClawtConfig       *config,
          * the two ends cannot drift apart -- a mode added there shows
          * up here with no list to update.
          */
-        append_key_value(out, 2, "routing_mode",
-                         clawt_agent_config_get_string(
-                             agent, "session.routing_mode"));
+        {
+            const gchar *mode = clawt_agent_config_get_string(
+                agent, "session.routing_mode");
+
+            /*
+             * Except that `sender-room` cannot be honoured for a member
+             * of a group room, and saying so beats writing it.
+             *
+             * That mode gives an agent a session per counterparty *in
+             * the same room*, and every piece of clawtilla's per-room
+             * turn state is keyed on the room alone -- the typing
+             * indicator carries the room and not the session, so the
+             * daemon cannot tell those turns apart at all.  The second
+             * one to start would run holding the first one's depth,
+             * origin and task, and the first to finish would settle
+             * both.
+             *
+             * Reported and replaced rather than refused: refusing would
+             * shadow the agent and take it out of the fleet over a
+             * setting, and this is a fleet edited by hand where
+             * half-built states are ordinary.  Reported rather than
+             * silently replaced, because an explicit value quietly
+             * ignored is the worst of the three.
+             */
+            if (g_strcmp0(mode, "sender-room") == 0 &&
+                clawt_config_agent_is_in_a_group_room(
+                    config, clawt_agent_config_get_id(agent))) {
+                g_warning("agent %s: session.routing_mode: sender-room "
+                          "cannot be used by a member of a room with more "
+                          "than two members -- it gives one agent a "
+                          "session per speaker in the same room, which "
+                          "the daemon's per-room turn state cannot tell "
+                          "apart. Using room instead; set it explicitly "
+                          "to silence this.", clawt_agent_config_get_id(agent));
+                mode = "room";
+            }
+
+            append_key_value(out, 2, "routing_mode", mode);
+        }
 
         /*
          * The turn watchdog, rendered from

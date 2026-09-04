@@ -649,6 +649,124 @@ test_a_pair_still_gets_the_pair_preamble(void)
     router_teardown(&fixture);
 }
 
+
+/* ── How many context windows a member is ────────────────────────── */
+
+/*
+ * A group member defaults to `room` mode, and an orchestrator still
+ * takes `agent`.
+ *
+ * Not a preference.  Under `sender-room` an agent has a session per
+ * speaker *in the same room*, and every piece of the daemon's per-room
+ * turn state is keyed on the room alone -- the typing indicator carries
+ * the room and not the session, so two such turns cannot be told apart
+ * at all.
+ */
+static void
+test_a_group_member_is_one_conversation_per_room(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *alice;
+    ClawtAgentConfig *dave;
+    ClawtAgentConfig *chief;
+
+    config = clawt_config_load_from_string(
+        "agents:\n"
+        "  - id: alice\n"
+        "  - id: bob\n"
+        "  - id: carol\n"
+        "  - id: dave\n"
+        "  - id: chief\n    chief_of_staff: true\n"
+        "rooms:\n"
+        "  - id: standup\n"
+        "    members: [alice, bob, carol, chief]\n"
+        "  - id: pair\n"
+        "    members: [dave, bob]\n",
+        &error);
+    g_assert_no_error(error);
+
+    alice = clawt_config_get_agent(config, "alice");
+    dave = clawt_config_get_agent(config, "dave");
+    chief = clawt_config_get_agent(config, "chief");
+
+    g_assert_cmpstr(clawt_agent_config_get_string(alice,
+                                                  "session.routing_mode"),
+                    ==, "room");
+
+    /* A two-member room is a conversation, and keeps the ordinary default. */
+    g_assert_cmpstr(clawt_agent_config_get_string(dave,
+                                                  "session.routing_mode"),
+                    ==, "sender-room");
+
+    /* And the stronger answer wins for an orchestrator that is also here. */
+    g_assert_cmpstr(clawt_agent_config_get_string(chief,
+                                                  "session.routing_mode"),
+                    ==, "agent");
+}
+
+/*
+ * And an explicit value still wins, except the one that cannot work.
+ */
+static void
+test_an_explicit_routing_mode_wins(void)
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(GError) error = NULL;
+
+    config = clawt_config_load_from_string(
+        "agents:\n"
+        "  - id: alice\n    session:\n      routing_mode: agent\n"
+        "  - id: bob\n"
+        "  - id: carol\n"
+        "rooms:\n"
+        "  - id: standup\n"
+        "    members: [alice, bob, carol]\n",
+        &error);
+    g_assert_no_error(error);
+
+    g_assert_cmpstr(
+        clawt_agent_config_get_string(clawt_config_get_agent(config, "alice"),
+                                      "session.routing_mode"),
+        ==, "agent");
+}
+
+/*
+ * A room that says nothing about mentions follows its shape.
+ *
+ * The schema default is `false`, which is right for a conversation and
+ * wrong for a standup: without a mention rule every member takes a turn
+ * on every remark.  One resolver rather than a default here and a
+ * different answer at each creation site.
+ */
+static void
+test_the_mention_rule_follows_the_room_shape(void)
+{
+    g_autoptr(ClawtRoomManager) rooms = clawt_room_manager_new(NULL);
+    ClawtRoom *pair = clawt_room_manager_create(rooms, "pair", NULL, NULL);
+    ClawtRoom *group = clawt_room_manager_create(rooms, "group", NULL, NULL);
+
+    clawt_room_add_member(pair, "alice");
+    clawt_room_add_member(pair, "bob");
+
+    clawt_room_add_member(group, "alice");
+    clawt_room_add_member(group, "bob");
+    clawt_room_add_member(group, "carol");
+
+    g_assert_false(clawt_room_is_group(pair));
+    g_assert_false(clawt_room_get_require_mention(pair));
+
+    g_assert_true(clawt_room_is_group(group));
+    g_assert_true(clawt_room_get_require_mention(group));
+
+    /* And a room that was told keeps what it was told. */
+    clawt_room_set_require_mention(group, FALSE);
+    g_assert_false(clawt_room_get_require_mention(group));
+
+    clawt_room_set_require_mention(pair, TRUE);
+    g_assert_true(clawt_room_get_require_mention(pair));
+}
+
 int
 main(int argc, char **argv)
 {
@@ -686,6 +804,12 @@ main(int argc, char **argv)
                     test_the_roster_follows_a_membership_change);
     g_test_add_func("/group/preamble/a-pair-is-unchanged",
                     test_a_pair_still_gets_the_pair_preamble);
+    g_test_add_func("/group/routing/member-is-one-conversation-per-room",
+                    test_a_group_member_is_one_conversation_per_room);
+    g_test_add_func("/group/routing/explicit-wins",
+                    test_an_explicit_routing_mode_wins);
+    g_test_add_func("/group/mention/rule-follows-the-room-shape",
+                    test_the_mention_rule_follows_the_room_shape);
 
     status = g_test_run();
 

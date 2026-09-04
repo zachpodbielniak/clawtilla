@@ -1431,4 +1431,16 @@ gboolean clawt_config_remove_trigger(ClawtConfig *self, const gchar *id);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtTrigger, clawt_trigger_unref)
 
+/**
+ * clawt_config_agent_is_in_a_group_room:
+ * @self: a #ClawtConfig
+ * @agent_id: an agent
+ *
+ * Whether @agent_id is declared in any room with more than two members.
+ *
+ * Returns: %TRUE if it is in a group
+ */
+gboolean clawt_config_agent_is_in_a_group_room(ClawtConfig *self,
+                                               const gchar *agent_id);
+
 G_END_DECLS

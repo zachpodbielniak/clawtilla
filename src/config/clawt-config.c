@@ -532,6 +532,50 @@ agent_schema_default(const gchar *key)
  * agents.session.routing_mode; this is the code for it, in the one
  * resolver every reader of the key goes through.
  */
+/*
+ * Whether @agent_id is in a room with more than two members.
+ *
+ * Which decides how many sessions the agent may be partitioned into,
+ * and that is a correctness question rather than a preference.  A group
+ * room is the first room where more than one *other* party speaks, so
+ * under `sender-room` an agent has a session per counterparty in the
+ * same room -- and every piece of clawtilla's per-room turn state is
+ * keyed on the room alone, because until now a room implied one
+ * session.  The typing indicator carries the room and not the session,
+ * so the daemon cannot even tell those turns apart.
+ */
+gboolean
+clawt_config_agent_is_in_a_group_room(ClawtConfig *config,
+                                      const gchar *agent_id)
+{
+    g_autoptr(GPtrArray) rooms = NULL;
+    guint i;
+
+    if (config == NULL || agent_id == NULL)
+        return FALSE;
+
+    rooms = clawt_config_get_rooms(config);
+
+    for (i = 0; rooms != NULL && i < rooms->len; i++) {
+        ClawtRoomSpec *spec = g_ptr_array_index(rooms, i);
+        gsize members = 0;
+        gboolean here = FALSE;
+        gsize j;
+
+        for (j = 0; spec->members != NULL && spec->members[j] != NULL; j++) {
+            members++;
+
+            if (g_strcmp0(spec->members[j], agent_id) == 0)
+                here = TRUE;
+        }
+
+        if (here && members > 2)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
 static const gchar *
 routing_mode_role_default(ClawtAgentConfig *self)
 {
@@ -553,11 +597,25 @@ routing_mode_role_default(ClawtAgentConfig *self)
             g_strcmp0(named, lookup_string(self->node, "id")) == 0;
     }
 
-    if (!orchestrator)
+    /*
+     * A group room takes the middle answer.
+     *
+     * `room` mode is one session per room, which is what every piece of
+     * per-room turn state here already assumes -- and it leaves direct
+     * conversations partitioned, since clawtilla always supplies a room
+     * and `dm:<a>:<b>` is unique per pair.  An orchestrator still wants
+     * `agent`, which subsumes it, so the stronger answer wins.
+     */
+    if (!orchestrator &&
+        !clawt_config_agent_is_in_a_group_room(self->config,
+                                               lookup_string(self->node,
+                                                             "id")))
         return NULL;
 
     cls = g_type_class_ref(LC_TYPE_ROUTING_MODE);
-    nick = g_enum_get_value(cls, LC_ROUTING_MODE_AGENT)->value_nick;
+    nick = g_enum_get_value(cls,
+                            orchestrator ? LC_ROUTING_MODE_AGENT
+                                         : LC_ROUTING_MODE_ROOM)->value_nick;
     g_type_class_unref(cls);
 
     /* The GEnumValue table is static storage; the nick outlives the ref. */
