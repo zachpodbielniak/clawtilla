@@ -3003,6 +3003,175 @@ test_a_room_an_agent_is_not_in_is_not_postable(void)
 }
 
 /*
+ * A room you create is a room you are in.
+ *
+ * clawtilla_create_room had no permission check at all: any agent with
+ * peer comms could name any agents, and the room then showed up in
+ * their conversations and delivered into their mailboxes.
+ */
+static void
+test_creating_a_room_requires_being_in_it(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    const gchar *text;
+    gboolean is_error = FALSE;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "  - id: scribe\n"
+                  "  - id: runner\n");
+
+    response = call_tool(&fixture, "chief", "clawtilla_create_room",
+                         "{\"room_id\": \"theirs\", "
+                         "\"members\": \"scribe, runner\"}");
+    text = response_text(response, &is_error);
+
+    g_assert_true(is_error);
+
+    /* And it says what to do instead rather than only what is refused. */
+    g_assert_nonnull(strstr(text, "chief"));
+    g_assert_nonnull(strstr(text, "clawtilla_delegate"));
+
+    /* Nothing was created. */
+    g_assert_null(clawt_room_manager_get(fixture.rooms, "theirs"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A room the caller is in, with members that exist, is created --
+ * and it says how a message reaches anybody, because a room of three
+ * delivers only what names somebody and an agent that posted a greeting
+ * into one would otherwise conclude it was broken.
+ */
+static void
+test_creating_a_group_says_how_it_delivers(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    const gchar *text;
+    gboolean is_error = FALSE;
+    ClawtRoom *room;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "  - id: scribe\n"
+                  "  - id: runner\n");
+
+    response = call_tool(&fixture, "chief", "clawtilla_create_room",
+                         "{\"room_id\": \"standup\", "
+                         "\"members\": \"chief, scribe, runner\", "
+                         "\"name\": \"Standup\"}");
+    text = response_text(response, &is_error);
+
+    g_assert_false(is_error);
+    g_assert_nonnull(strstr(text, "@their-id"));
+
+    room = clawt_room_manager_get(fixture.rooms, "standup");
+    g_assert_nonnull(room);
+    g_assert_cmpuint(clawt_room_get_members(room)->len, ==, 3);
+
+    /*
+     * And the display name reached the room.  The parameter was
+     * declared and NULL was passed for it, so every room an agent made
+     * was called by its id.
+     */
+    g_assert_cmpstr(clawt_room_get_name(room), ==, "Standup");
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Posting into a group that names nobody says so.
+ *
+ * "Posted to standup." would leave an agent believing it had asked
+ * somebody something.  A selector that matches nothing must not be
+ * silent when the thing it is on then reaches nobody -- and the message
+ * carries the members it could have named, because a caveat that says
+ * only what did not happen sends somebody looking for a mistake.
+ */
+static void
+test_posting_to_nobody_says_so_and_names_who_it_could_have_reached(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    const gchar *text;
+    gboolean is_error = FALSE;
+    ClawtRoom *room;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "  - id: scribe\n"
+                  "  - id: runner\n");
+
+    room = clawt_room_manager_create(fixture.rooms, "standup", NULL, NULL);
+    clawt_room_add_member(room, "chief");
+    clawt_room_add_member(room, "scribe");
+    clawt_room_add_member(room, "runner");
+
+    response = call_tool(&fixture, "chief", "clawtilla_post_room",
+                         "{\"room_id\": \"standup\", "
+                         "\"body\": \"morning\"}");
+    text = response_text(response, &is_error);
+
+    g_assert_false(is_error);
+    g_assert_nonnull(strstr(text, "named nobody"));
+    g_assert_nonnull(strstr(text, "@scribe"));
+    g_assert_nonnull(strstr(text, "@runner"));
+
+    /* And it does not name the caller, who cannot address itself. */
+    g_assert_null(strstr(text, "@chief"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * And `@all` from an agent is refused out loud.
+ *
+ * The router already declines it, but silently.  A refusal about
+ * reaching people that says only what is not allowed reads as being cut
+ * off from one's colleagues, so this one names what is.
+ */
+static void
+test_an_agent_broadcasting_is_refused_with_the_alternative(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    const gchar *text;
+    gboolean is_error = FALSE;
+    ClawtRoom *room;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "  - id: scribe\n"
+                  "  - id: runner\n");
+
+    room = clawt_room_manager_create(fixture.rooms, "standup", NULL, NULL);
+    clawt_room_add_member(room, "chief");
+    clawt_room_add_member(room, "scribe");
+    clawt_room_add_member(room, "runner");
+
+    response = call_tool(&fixture, "chief", "clawtilla_post_room",
+                         "{\"room_id\": \"standup\", "
+                         "\"body\": \"@all please report\"}");
+    text = response_text(response, &is_error);
+
+    g_assert_true(is_error);
+    g_assert_nonnull(strstr(text, "@scribe"));
+    g_assert_nonnull(strstr(text, "@runner"));
+
+    /* Nothing was handed to the deliver hook. */
+    g_assert_null(fixture.last_body);
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * Collects every dotted lowercase word out of @text.
  *
  * The shape a configuration key has when it appears in prose:
@@ -3691,6 +3860,14 @@ main(int argc, char *argv[])
 
     g_test_add_func("/mcp/rooms/history-refuses-a-room-you-are-not-in",
                     test_a_room_an_agent_is_not_in_is_not_readable);
+    g_test_add_func("/mcp/rooms/create-requires-being-in-it",
+                    test_creating_a_room_requires_being_in_it);
+    g_test_add_func("/mcp/rooms/create-says-how-a-group-delivers",
+                    test_creating_a_group_says_how_it_delivers);
+    g_test_add_func("/mcp/rooms/posting-to-nobody-says-so",
+                    test_posting_to_nobody_says_so_and_names_who_it_could_have_reached);
+    g_test_add_func("/mcp/rooms/agent-broadcast-is-refused",
+                    test_an_agent_broadcasting_is_refused_with_the_alternative);
     g_test_add_func("/mcp/rooms/post-refuses-a-room-you-are-not-in",
                     test_a_room_an_agent_is_not_in_is_not_postable);
     g_test_add_func("/mcp/descriptions-name-real-config-keys",

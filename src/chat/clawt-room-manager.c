@@ -214,6 +214,17 @@ clawt_room_manager_create(ClawtRoomManager  *self,
      */
     room = clawt_room_new(room_id, NULL);
 
+    /*
+     * And it is actually called what it was called.
+     *
+     * @name was taken, documented, and then discarded -- every room
+     * created through here, from the IPC verb and from
+     * clawtilla_create_room alike, was displayed by its id.  A
+     * parameter read by nobody looks exactly like one that works.
+     */
+    if (name != NULL && *name != '\0')
+        clawt_room_set_name(room, name);
+
     return insert_room(self, room);
 }
 
