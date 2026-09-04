@@ -11,16 +11,26 @@
 #include "core/clawt-daemon-private.h"
 
 /*
- * How many steps of one room's running turn are kept.
+ * How many of a room's steps are kept, across turns rather than for the
+ * running one.
  *
- * Enough that a client opening a room mid-turn sees what the agent has
- * been doing, and bounded because a turn's step count has no upper
- * limit that anything here controls.  The oldest go first: what an
- * agent did ten minutes ago matters less than what it is doing now, and
- * the alternative -- refusing new steps once full -- would freeze the
- * view at the least useful moment.
+ * They are part of the conversation: the tools an agent reached for are
+ * how its answer came about, so a reader scrolling back wants them
+ * where they happened, not deleted the moment the answer landed.
+ *
+ * Bounded because a room's step count has no upper limit that anything
+ * here controls, and the oldest go first -- refusing new ones once full
+ * would freeze the view at the least useful moment.  A room busy enough
+ * to roll steps off therefore shows them for its recent turns and not
+ * its older ones, which is worth knowing when reading far back: an
+ * older turn drawn with no tool calls may have made some.
+ *
+ * In memory only.  Steps do not survive the daemon stopping, and they
+ * are deliberately not written to the transcript -- the last thing in a
+ * thread is what a finished turn's task result is inferred from, and
+ * "Ran 6 commands" must never become somebody's delegated outcome.
  */
-#define ROOM_STEP_HISTORY 200
+#define ROOM_STEP_HISTORY 500
 
 /*
  * One step, from the agent that produced it to the clients.
@@ -70,8 +80,7 @@ clawt_daemon_note_step(ClawtDaemon *self, ClawtTurnStep *step)
     detail = clawt_redact_secrets(clawt_turn_step_get_detail(step));
 
     /*
-     * Kept for the room, so switching away and back does not throw the
-     * running turn away.  A copy, because the caller owns the step for
+     * Kept for the room.  A copy, because the caller owns the step for
      * the duration of its signal emission only -- and the copy carries
      * the redacted text, so nothing unredacted is retained anywhere.
      */
@@ -124,16 +133,25 @@ clawt_daemon_note_step(ClawtDaemon *self, ClawtTurnStep *step)
     clawt_event_set_detail_int(event, CLAWT_STEP_MEMBER_FAILED,
                                clawt_turn_step_get_failed(step) ? 1 : 0);
 
+    /*
+     * When, so a client rebuilding a conversation can put the step back
+     * where it happened.  Messages and steps are fetched separately and
+     * merged on time; without this every step in a room's history would
+     * pile up at the bottom, under answers it came before.
+     */
+    clawt_event_set_detail_int(event, CLAWT_STEP_MEMBER_TS,
+                               clawt_turn_step_get_timestamp(step));
+
     clawt_event_bus_publish(self->bus, event);
     clawt_event_free(event);
 }
 
 /*
- * What a room's running turn has done so far.
+ * The steps this room has seen, oldest first, across turns.
  *
  * Empty is the ordinary answer and does not mean anything is wrong: a
- * room with no turn running has no steps, and neither does one whose
- * agent has not reached a tool yet.
+ * room nothing has run in yet has no steps, and neither does one whose
+ * agent has not reached a tool.
  *
  * Returns: (transfer container) (element-type ClawtTurnStep): the steps
  */

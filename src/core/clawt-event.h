@@ -183,8 +183,10 @@ ClawtAlertTier clawt_alert_tier_for_event(ClawtEvent *event);
  * task's result -- a retained step would make "Ran 6 commands" the
  * recorded outcome of somebody's delegated work.
  *
- * A client that missed steps is caught up from the room's own live list
- * instead, which is dropped when the turn ends.
+ * A client that missed steps is caught up from `room.steps` instead,
+ * which is the room's own bounded in-memory history and outlives the
+ * turn -- the steps stay in the conversation where they happened. It
+ * is the *event* that is not retained, not the step.
  *
  * Here rather than in the bus and the log separately, because the two
  * had no reason to disagree and every reason to be asked the same

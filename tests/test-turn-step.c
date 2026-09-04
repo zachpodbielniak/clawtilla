@@ -246,6 +246,77 @@ test_a_summary_is_one_line(void)
     g_assert_cmpstr(c, ==, "Read");
 }
 
+/* ── Merging steps back into a transcript ────────────────────────── */
+
+/*
+ * The two stamps are in different units, and this is the function that
+ * knows it.
+ *
+ * A ClawtTurnStep is stamped from ClawtEvent's clock -- g_get_real_time(),
+ * microseconds -- and a ClawtMessage stamps itself in seconds.  Compared
+ * raw, every step is "after" every message by a factor of a million, so
+ * a conversation's whole tool history piles up at the bottom under the
+ * answers it came before -- and that reads as an ordering preference
+ * rather than a bug.
+ */
+static void
+test_a_step_is_placed_by_seconds_not_microseconds(void)
+{
+    g_autoptr(ClawtTurnStep) step = clawt_turn_step_new(
+        CLAWT_STEP_TOOL, "a", "r", NULL, "Bash", "ls", FALSE);
+    gint64 now_seconds = g_get_real_time() / G_USEC_PER_SEC;
+
+    /*
+     * The step was stamped just now, so it precedes a message stamped
+     * now -- and, decisively, it does *not* precede one from an hour
+     * ago.  A raw comparison would fail the second of these, because
+     * the microsecond figure dwarfs any plausible second figure.
+     */
+    g_assert_true(clawt_turn_step_precedes(step, now_seconds));
+    g_assert_false(clawt_turn_step_precedes(step, now_seconds - 3600));
+}
+
+/*
+ * A step from a daemon too old to send a time sorts first rather than
+ * being dropped into the middle of somebody else's turn.
+ */
+static void
+test_an_unstamped_step_sorts_first(void)
+{
+    g_autoptr(JsonObject) object = json_object_new();
+    g_autoptr(ClawtTurnStep) step = NULL;
+
+    json_object_set_string_member(object, CLAWT_STEP_MEMBER_KIND, "tool");
+    json_object_set_string_member(object, CLAWT_STEP_MEMBER_TOOL, "Bash");
+
+    step = clawt_turn_step_new_from_object(object, NULL);
+
+    g_assert_nonnull(step);
+    g_assert_cmpint(clawt_turn_step_get_timestamp(step), ==, 0);
+    g_assert_true(clawt_turn_step_precedes(step, 0));
+}
+
+/*
+ * The timestamp survives the array form, in the unit it was sent in.
+ */
+static void
+test_a_timestamp_round_trips(void)
+{
+    g_autoptr(JsonObject) object = json_object_new();
+    g_autoptr(ClawtTurnStep) step = NULL;
+    gint64 stamp = 1788000000LL * G_USEC_PER_SEC;
+
+    json_object_set_string_member(object, CLAWT_STEP_MEMBER_KIND, "text");
+    json_object_set_int_member(object, CLAWT_STEP_MEMBER_TS, stamp);
+
+    step = clawt_turn_step_new_from_object(object, NULL);
+
+    g_assert_nonnull(step);
+    g_assert_cmpint(clawt_turn_step_get_timestamp(step), ==, stamp);
+    g_assert_true(clawt_turn_step_precedes(step, 1788000000LL));
+    g_assert_false(clawt_turn_step_precedes(step, 1787999999LL));
+}
+
 /* ── What a step must never reach ────────────────────────────────── */
 
 /*
@@ -344,6 +415,12 @@ main(int argc, char *argv[])
                     test_only_a_tool_joins_a_run);
     g_test_add_func("/turn-step/summary-is-one-line",
                     test_a_summary_is_one_line);
+    g_test_add_func("/turn-step/placed-by-seconds",
+                    test_a_step_is_placed_by_seconds_not_microseconds);
+    g_test_add_func("/turn-step/unstamped-sorts-first",
+                    test_an_unstamped_step_sorts_first);
+    g_test_add_func("/turn-step/timestamp-round-trips",
+                    test_a_timestamp_round_trips);
     g_test_add_func("/turn-step/never-retained",
                     test_a_step_is_never_retained);
     g_test_add_func("/turn-step/only-a-step-is-ephemeral",

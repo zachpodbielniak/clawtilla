@@ -1454,17 +1454,18 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
             clawt_gtk_set_activity(self, what);
 
             /*
-             * And the steps of the turn that just ended.
+             * And the steps of the turn that just ended are sealed
+             * where they are, not removed.
              *
-             * Dropped when the indicator falls rather than left in
-             * place: the answer arrives immediately after, and a list
-             * of tool calls sitting under it reads as work still in
-             * flight.  The daemon has dropped its copy at the same
-             * moment, so leaving this would also be the only place the
-             * steps still existed.
+             * They used to be removed, so a turn's tool calls vanished
+             * the moment its answer appeared -- which took away the
+             * working and left the conclusion, and read as text being
+             * deleted from a conversation somebody was reading,
+             * because it was.  The next turn starts a block of its own
+             * underneath.
              */
             if (g_strcmp0(typing, "true") != 0)
-                clawt_gtk_steps_clear(self);
+                clawt_gtk_steps_seal(self);
 
             /*
              * And the button that ends it.  The caps come from the

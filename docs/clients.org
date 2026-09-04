@@ -385,16 +385,24 @@ between them -- appear at the live end of the chat while its turn runs,
 under whatever it has already said.
 
 A run of consecutive tool calls collapses to one line ("Ran 6 commands",
-"Ran 13 commands (1 failed)"); its tooltip lists each command.  Prose
+"Ran 13 commands (1 failed)").  *Click it to open the run* and see every
+command in it, in monospace and selectable so it can be copied.  Prose
 appears as it is written, a paragraph at a time.  Reasoning is marked as
 such, because it is explicitly not what the agent is telling anybody.
 Only a failed tool is coloured -- a colour on every row is a colour that
 has stopped meaning anything.
 
-The block clears when the turn settles and the answer takes its place.
-Steps are never stored, so what you see is the running turn only;
-switching rooms and coming back refetches it from the daemon, and after
-the turn ends there is nothing to refetch.
+The steps *stay* when the turn settles.  The answer appears underneath
+them and the next turn starts a block of its own, so scrolling back
+through a conversation shows how each answer came about rather than
+only the answers.  Switching rooms and coming back rebuilds the same
+thing from the daemon's per-room history, with each stretch of steps
+merged back between the message that prompted it and the answer it
+produced.
+
+That history is in memory and bounded, so a very long conversation
+keeps steps for its recent turns and not its oldest, and a daemon
+restart clears them.
 
 The web client shows the same thing in the same place, refreshed on its
 own SSE event so a turn's tool calls do not re-fetch the whole

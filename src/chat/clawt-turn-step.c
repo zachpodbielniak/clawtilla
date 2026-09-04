@@ -83,7 +83,17 @@ clawt_turn_step_new_from_event(ClawtEvent *event)
         clawt_event_get_detail(event, CLAWT_STEP_MEMBER_DETAIL),
         clawt_event_get_detail_int(event, CLAWT_STEP_MEMBER_FAILED) != 0);
 
-    self->timestamp = clawt_event_get_timestamp(event);
+    /*
+     * The step's own time when it carries one, and the event's
+     * otherwise.  They are the same for a step arriving live; they
+     * differ for one replayed out of a room's history, where the event
+     * is a fresh envelope around an old step.
+     */
+    if (clawt_event_get_detail_int(event, CLAWT_STEP_MEMBER_TS) > 0)
+        self->timestamp = clawt_event_get_detail_int(event,
+                                                     CLAWT_STEP_MEMBER_TS);
+    else
+        self->timestamp = clawt_event_get_timestamp(event);
 
     return self;
 }
@@ -139,6 +149,21 @@ clawt_turn_step_new_from_object(JsonObject *object, const gchar *agent_id)
                                object_string(object, CLAWT_STEP_MEMBER_TOOL),
                                object_string(object, CLAWT_STEP_MEMBER_DETAIL),
                                failed);
+
+    /*
+     * The wire's time, or none at all.
+     *
+     * clawt_turn_step_new() stamps "now", which is right for a step
+     * being created and wrong for one being read back: a step from a
+     * daemon too old to send the member would be given the time it was
+     * *parsed*, so it would sort after every message in the room and
+     * land in a heap at the bottom -- which is the exact failure the
+     * merge exists to avoid, arrived at from the other direction.
+     * Zero sorts first instead, which is the harmless end.
+     */
+    self->timestamp = json_object_has_member(object, CLAWT_STEP_MEMBER_TS)
+        ? json_object_get_int_member(object, CLAWT_STEP_MEMBER_TS)
+        : 0;
 
     return self;
 }
@@ -225,6 +250,64 @@ clawt_turn_step_joins_run(ClawtTurnStep *self)
     g_return_val_if_fail(self != NULL, FALSE);
 
     return self->kind == CLAWT_STEP_TOOL;
+}
+
+gboolean
+clawt_turn_step_precedes(ClawtTurnStep *self, gint64 message_ts)
+{
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    /*
+     * A step with no time at all -- one from a daemon older than the
+     * ts member -- sorts first.  That is the harmless end to be wrong
+     * at: it lands at the top of the conversation rather than being
+     * interleaved into the middle of somebody else's turn.
+     */
+    if (self->timestamp <= 0)
+        return TRUE;
+
+    return (self->timestamp / G_USEC_PER_SEC) <= message_ts;
+}
+
+gboolean
+clawt_turn_step_is_call(ClawtTurnStep *self)
+{
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    return self->kind == CLAWT_STEP_TOOL && !self->failed;
+}
+
+guint
+clawt_turn_step_run_extent(GPtrArray *steps,
+                           guint      from,
+                           guint      end,
+                           guint     *out_calls,
+                           guint     *out_failed)
+{
+    guint calls = 0;
+    guint failed = 0;
+    guint i;
+
+    g_return_val_if_fail(steps != NULL, from);
+
+    for (i = from; i < end; i++) {
+        ClawtTurnStep *step = g_ptr_array_index(steps, i);
+
+        if (!clawt_turn_step_joins_run(step))
+            break;
+
+        if (clawt_turn_step_get_failed(step))
+            failed++;
+        else
+            calls++;
+    }
+
+    if (out_calls != NULL)
+        *out_calls = calls;
+    if (out_failed != NULL)
+        *out_failed = failed;
+
+    return i;
 }
 
 gchar *

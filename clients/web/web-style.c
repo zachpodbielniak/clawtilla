@@ -491,6 +491,24 @@ clawt_web_stylesheet(void)
     ".turn-step{overflow-wrap:anywhere}"
     ".turn-step.bad{color:var(--bad-fg)}"
     /*
+     * A run of tool calls opens to the commands in it.  The marker is
+     * the only affordance saying so, so it keeps the pointer cursor and
+     * the summary stays on one line -- a wrapped summary makes the
+     * triangle look like it belongs to the second line.
+     */
+    ".turn-run{margin:0}"
+    ".turn-run>summary{cursor:pointer;font-size:.85rem;color:var(--muted);"
+    "list-style-position:outside}"
+    ".turn-run.bad>summary{color:var(--bad-fg)}"
+    /*
+     * The commands themselves: monospace because they are command
+     * lines, and each on its own line so a long one wraps rather than
+     * widening the conversation.
+     */
+    ".turn-run-cmd{margin:.1rem 0 .1rem 1rem;font-family:var(--mono);"
+    "font-size:.8rem;color:var(--muted);overflow-wrap:anywhere}"
+    ".turn-run-cmd.bad{color:var(--bad-fg)}"
+    /*
      * A run is consecutive messages from one sender: one header, tight
      * spacing inside, a bigger gap between runs.  That grouping is what
      * makes a stack of paragraphs read as a conversation, and it is the

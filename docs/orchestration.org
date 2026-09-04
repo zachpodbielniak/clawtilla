@@ -381,13 +381,29 @@ agent watching a peer work takes no turn over it, because there is
 nothing to take a turn on.  That is structural, not a flag somebody
 could forget to check.
 
-It follows that steps are never persisted.  They are not written to the
-transcript, not held in the event replay ring, and not written to the
-event log -- which also means the last thing in a thread is still the
-agent's own writing, so a delegated task's inferred result cannot become
-"Ran 6 commands".  A client that opens a room mid-turn asks ~room.steps~
-for the running turn's history; when the turn settles, there is nothing
-left to ask for.
+Steps *stay* once the turn is over.  They are the working behind the
+answer, and deleting them the moment it arrives leaves the conclusion
+with nothing to check it against.  They keep their place too: a client
+rebuilding a room fetches its messages and its steps separately and
+merges them on time, so each stretch lands between the message that
+prompted it and the answer it produced.
+
+What they are *not* is part of the transcript.  The last thing in a
+thread is what ~clawt_task_manager_complete_on_turn_end()~ reads as a
+task's result, and "Ran 6 commands" must never become somebody's
+delegated outcome.  They live in the daemon's own per-room history
+instead -- in memory, bounded at 500 per room, and gone when the daemon
+stops.  A room busy enough to roll steps off shows them for its recent
+turns and not its older ones, so a turn drawn far back with no tool
+calls may well have made some.
+
+The ~turn.step~ *event* is still not retained: delivered live and then
+forgotten, kept out of the replay ring and the event log.  The ring is
+small and shared and a turn makes tens of calls, so keeping them would
+evict real events within one busy turn and tell a resuming client its
+replay was incomplete precisely because an agent had been working.  A
+client that missed some asks ~room.steps~ rather than replaying the
+stream.
 
 Tool arguments appear as a one-line preview with secrets redacted, never
 the whole argument object.  Turn the whole thing off with

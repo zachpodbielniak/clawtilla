@@ -43,10 +43,13 @@ GType clawt_turn_step_get_type(void) G_GNUC_CONST;
  * a delivery, which is a stronger statement than a flag nobody forgot
  * to check.
  *
- * It is also never persisted.  A step is not part of the answer, and a
- * transcript that keeps it would offer the last one as the turn's
- * result to anything that reads the thread's tail -- which is what
- * `clawt_task_manager_complete_on_turn_end()` does.
+ * It is never written to the *transcript*, though.  The last thing in
+ * a thread is what `clawt_task_manager_complete_on_turn_end()` reads as
+ * a task's result, and "Ran 6 commands" must not become somebody's
+ * delegated outcome.  Steps live in the daemon's own bounded per-room
+ * history instead, which a client merges back into the conversation on
+ * time -- so they stay where they happened without ever being one of
+ * the messages that thread is made of.
  */
 typedef struct _ClawtTurnStep ClawtTurnStep;
 
@@ -108,6 +111,19 @@ typedef struct _ClawtTurnStep ClawtTurnStep;
  * a misspelled name, with nothing misspelled in it to notice.
  */
 #define CLAWT_STEP_MEMBER_FAILED "failed"
+
+/**
+ * CLAWT_STEP_MEMBER_TS:
+ *
+ * When the step happened, in microseconds since the epoch -- the same
+ * unit every other timestamp in this tree uses, and the unit
+ * clawt_time_ago_label() takes.
+ *
+ * A client rebuilding a conversation fetches messages and steps
+ * separately and merges them on this; without it a room's steps would
+ * all pile up at the bottom, under the answers they came before.
+ */
+#define CLAWT_STEP_MEMBER_TS     "ts"
 
 
 /**
@@ -196,6 +212,55 @@ gint64         clawt_turn_step_get_timestamp(ClawtTurnStep *self);
 const gchar *clawt_turn_step_tone(ClawtTurnStep *self);
 
 /**
+ * clawt_turn_step_run_extent:
+ * @steps: (element-type ClawtTurnStep): a list of steps
+ * @from: where the run starts
+ * @end: one past the last index to consider
+ * @out_calls: (out): how many tool *calls* the run contains
+ * @out_failed: (out): how many of them failed
+ *
+ * Finds the end of the run of tool steps starting at @from, and counts
+ * what is in it.
+ *
+ * The counting is the part worth having here.  A provider reports a
+ * tool twice -- once when the model asks for it, and again when it
+ * finishes -- and only the first carries the tool's name and arguments,
+ * because Claude Code's finish event carries neither.  So a call is a
+ * step with `failed` clear and an outcome is a step with it set, which
+ * holds because a call is recorded before anyone knows how it went.
+ *
+ * Counting entries instead would say "Ran 2 commands" for one command
+ * that failed, which is not a rounding error: it is a different claim
+ * about what the agent did.  It did exactly that until this existed.
+ *
+ * Both clients collapse runs, so the walk and the counting live in one
+ * place rather than being written twice and diverging on the case
+ * neither author thought about.
+ *
+ * Returns: one past the last index in the run
+ */
+guint clawt_turn_step_run_extent(GPtrArray *steps,
+                                 guint      from,
+                                 guint      end,
+                                 guint     *out_calls,
+                                 guint     *out_failed);
+
+/**
+ * clawt_turn_step_is_call:
+ * @self: a step
+ *
+ * Whether @self is a tool *call* -- something to list when a run is
+ * opened -- rather than the outcome marker that follows a failure.
+ *
+ * An outcome carries no name and no arguments on at least one provider,
+ * so listing it renders a row reading "a tool", which says nothing and
+ * looks like a bug because it is one.
+ *
+ * Returns: %TRUE for a tool call
+ */
+gboolean clawt_turn_step_is_call(ClawtTurnStep *self);
+
+/**
  * clawt_turn_step_run_label:
  * @tools: how many consecutive tool steps are being collapsed
  * @failed: how many of them failed
@@ -237,6 +302,33 @@ gchar *clawt_turn_step_summary(ClawtTurnStep *self);
  * Returns: %TRUE for a tool step
  */
 gboolean clawt_turn_step_joins_run(ClawtTurnStep *self);
+
+/**
+ * clawt_turn_step_precedes:
+ * @self: a step
+ * @message_ts: a #ClawtMessage timestamp, in *seconds*
+ *
+ * Whether @self happened at or before @message_ts, for a client
+ * merging a room's steps back into its transcript.
+ *
+ * Here, and taking the two units by name, because they are not the
+ * same one.  A step is stamped from #ClawtEvent's clock, which is
+ * g_get_real_time() -- microseconds; a #ClawtMessage stamps itself in
+ * seconds.  Comparing them raw puts every step after every message,
+ * which draws a whole conversation's tool calls in a heap at the
+ * bottom under answers they came before -- and it looks like an
+ * ordering preference rather than a bug, so nothing reports it. The
+ * same mismatch rendered `20694d ago` on every task row once.
+ *
+ * At-or-before rather than strictly before: within the one second a
+ * message's stamp resolves to, a step that ties with it came first.
+ * The message that ends a turn is written after the steps that
+ * produced it, and the message that starts one cannot tie with a step
+ * of its own turn.
+ *
+ * Returns: %TRUE if @self belongs before that message
+ */
+gboolean clawt_turn_step_precedes(ClawtTurnStep *self, gint64 message_ts);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtTurnStep, clawt_turn_step_free)
 

@@ -97,88 +97,96 @@ step_row_new(const gchar *text, const gchar *tone, gboolean monospace)
 }
 
 /*
- * Redraws the live block from self->steps.
+ * One collapsed run of tool calls, expandable to the commands in it.
  *
- * Rebuilt wholesale rather than appended to, because a run of tool
- * calls collapses into one line whose text changes as the run grows --
- * "Ran 5 commands" becoming "Ran 6 commands" is an edit to an existing
- * row, not a new one, and tracking which row that was is more state
- * than redrawing a list that is bounded at two hundred entries.
+ * A turn makes tens of calls and a row each buries the prose between
+ * them, which is the part somebody is reading -- but the commands are
+ * exactly what you want when the answer looks wrong, and a tooltip is
+ * a poor place to keep them: it cannot be selected, copied, or kept on
+ * screen while you read the reply beside it.
+ *
+ * A GtkExpander rather than an AdwExpanderRow: this is a row in a plain
+ * box, not a list, and AdwExpanderRow is not an AdwActionRow -- passing
+ * one to adw_action_row_* compiles and then logs two criticals.
  */
-static void
-steps_rebuild(ClawtWindow *self)
+static GtkWidget *
+step_run_new(GPtrArray *steps, guint from, guint to, guint calls, guint failed)
 {
-    GtkWidget *box;
+    GtkWidget *expander = gtk_expander_new(NULL);
+    GtkWidget *label;
+    GtkWidget *inner;
+    g_autofree gchar *text = NULL;
     guint i;
 
-    if (self->transcript == NULL)
-        return;
+    text = clawt_turn_step_run_label(calls, failed);
+    label = step_row_new(text, failed > 0 ? "bad" : "good", FALSE);
 
-    if (self->steps_block != NULL) {
-        gtk_box_remove(self->transcript, self->steps_block);
-        self->steps_block = NULL;
-    }
+    gtk_expander_set_label_widget(GTK_EXPANDER(expander), label);
+    gtk_widget_add_css_class(expander, "clawt-turn-run");
 
-    if (self->steps == NULL || self->steps->len == 0)
-        return;
+    inner = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    gtk_widget_set_margin_start(inner, 12);
+    gtk_widget_set_margin_top(inner, 4);
+    gtk_widget_set_margin_bottom(inner, 4);
 
-    box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
-    gtk_widget_set_margin_start(box, 12);
-    gtk_widget_set_margin_top(box, 6);
-    gtk_widget_set_margin_bottom(box, 6);
-    gtk_widget_add_css_class(box, "clawt-turn-steps");
-
-    for (i = 0; i < self->steps->len; ) {
-        ClawtTurnStep *step = g_ptr_array_index(self->steps, i);
+    for (i = from; i < to; i++) {
+        ClawtTurnStep *step = g_ptr_array_index(steps, i);
+        g_autofree gchar *line = NULL;
+        GtkWidget *row;
 
         /*
-         * A run of tool calls becomes one line.  A turn makes tens of
-         * them, and a row each buries the prose between them -- which
-         * is the part somebody is actually reading.
+         * Calls only.  The outcome marker that follows a failure has
+         * no name and no arguments on at least one provider, so it
+         * renders as a row reading "a tool" -- which says nothing and
+         * reads as a bug.  It is counted, in the summary above; it is
+         * not listed.
          */
+        if (!clawt_turn_step_is_call(step))
+            continue;
+
+        line = clawt_turn_step_summary(step);
+
+        /*
+         * Monospace, because these are command lines and a proportional
+         * font makes a path or a flag harder to read than it needs to
+         * be.  Selectable, because the reason to open this is usually
+         * to copy what ran.
+         */
+        row = step_row_new(line, clawt_turn_step_tone(step), TRUE);
+        gtk_label_set_selectable(GTK_LABEL(row), TRUE);
+        gtk_box_append(GTK_BOX(inner), row);
+    }
+
+    gtk_expander_set_child(GTK_EXPANDER(expander), inner);
+
+    return expander;
+}
+
+/*
+ * Draws @steps into @box: runs collapsed, prose as it was written.
+ *
+ * Shared by the live block and by a conversation being rebuilt from
+ * history, because they are the same thing drawn at different times --
+ * and two renderers for one kind of content drift, which is why the
+ * fix for that here is always to delete one of them.
+ */
+static void
+steps_fill_box(GtkWidget *box, GPtrArray *steps, guint from, guint end)
+{
+    guint i;
+
+    for (i = from; i < end; ) {
+        ClawtTurnStep *step = g_ptr_array_index(steps, i);
+
         if (clawt_turn_step_joins_run(step)) {
-            guint tools = 0;
+            guint run_start = i;
+            guint calls = 0;
             guint failed = 0;
-            g_autofree gchar *label = NULL;
-            g_autoptr(GString) tip = g_string_new(NULL);
 
-            while (i < self->steps->len) {
-                ClawtTurnStep *run = g_ptr_array_index(self->steps, i);
-                g_autofree gchar *line = NULL;
+            i = clawt_turn_step_run_extent(steps, i, end, &calls, &failed);
 
-                if (!clawt_turn_step_joins_run(run))
-                    break;
-
-                tools++;
-                if (clawt_turn_step_get_failed(run))
-                    failed++;
-
-                line = clawt_turn_step_summary(run);
-                g_string_append(tip, line);
-                g_string_append_c(tip, '\n');
-                i++;
-            }
-
-            label = clawt_turn_step_run_label(tools, failed);
-
-            {
-                /*
-                 * The detail is a tooltip rather than a row.  Somebody
-                 * skimming wants the count; somebody debugging wants
-                 * every command, and asking for it should not push the
-                 * conversation off the screen for everyone else.
-                 */
-                GtkWidget *row = step_row_new(
-                    label, failed > 0 ? "bad" : "good", FALSE);
-
-                if (tip->len > 0) {
-                    g_strstrip(tip->str);
-                    gtk_widget_set_tooltip_text(row, tip->str);
-                }
-
-                gtk_box_append(GTK_BOX(box), row);
-            }
-
+            gtk_box_append(GTK_BOX(box),
+                           step_run_new(steps, run_start, i, calls, failed));
             continue;
         }
 
@@ -205,9 +213,86 @@ steps_rebuild(ClawtWindow *self)
             i++;
         }
     }
+}
+
+/*
+ * A container for one stretch of steps, styled and spaced.
+ */
+static GtkWidget *
+steps_box_new(void)
+{
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+
+    gtk_widget_set_margin_start(box, 12);
+    gtk_widget_set_margin_top(box, 6);
+    gtk_widget_set_margin_bottom(box, 6);
+    gtk_widget_add_css_class(box, "clawt-turn-steps");
+
+    return box;
+}
+
+void
+clawt_gtk_steps_append_sealed(ClawtWindow *self, GPtrArray *steps,
+                              guint from, guint end)
+{
+    GtkWidget *box;
+
+    if (self->transcript == NULL || steps == NULL || end <= from)
+        return;
+
+    box = steps_box_new();
+    steps_fill_box(box, steps, from, end);
+    gtk_box_append(self->transcript, box);
+}
+
+/*
+ * Redraws the live block from self->steps.
+ *
+ * Rebuilt wholesale rather than appended to, because a run of tool
+ * calls collapses into one line whose text changes as the run grows --
+ * "Ran 5 commands" becoming "Ran 6 commands" is an edit to an existing
+ * row, not a new one, and tracking which row that was is more state
+ * than redrawing a list that is bounded.
+ */
+static void
+steps_rebuild(ClawtWindow *self)
+{
+    GtkWidget *box;
+
+    if (self->transcript == NULL)
+        return;
+
+    if (self->steps_block != NULL) {
+        gtk_box_remove(self->transcript, self->steps_block);
+        self->steps_block = NULL;
+    }
+
+    if (self->steps == NULL || self->steps->len == 0)
+        return;
+
+    box = steps_box_new();
+    steps_fill_box(box, self->steps, 0, self->steps->len);
 
     gtk_box_append(self->transcript, box);
     self->steps_block = box;
+}
+
+void
+clawt_gtk_steps_seal(ClawtWindow *self)
+{
+    /*
+     * The widget stays in the transcript; only our claim on it goes.
+     *
+     * This used to remove it, so the steps of a turn vanished the
+     * instant its answer arrived -- which took away the working and
+     * left the conclusion, and read as text being deleted out from
+     * under the reader, because it was.  The next turn builds a block
+     * of its own underneath.
+     */
+    self->steps_block = NULL;
+
+    if (self->steps != NULL)
+        g_ptr_array_set_size(self->steps, 0);
 }
 
 void
@@ -219,39 +304,39 @@ clawt_gtk_steps_clear(ClawtWindow *self)
     steps_rebuild(self);
 }
 
-void
-clawt_gtk_steps_load(ClawtWindow *self)
+GPtrArray *
+clawt_gtk_steps_fetch(ClawtWindow *self)
 {
     g_autoptr(JsonNode) reply = NULL;
+    GPtrArray  *steps;
     JsonObject *payload;
     JsonArray  *array;
     guint i;
 
-    if (self->selected_room == NULL) {
-        clawt_gtk_steps_clear(self);
+    steps = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)clawt_turn_step_free);
 
-        return;
-    }
+    if (self->selected_room == NULL)
+        return steps;
 
     /*
-     * Asked for first, and only then is anything cleared.
+     * Returned rather than written into the window's own list.
      *
      * clawt_window_request() iterates the main context while it waits
      * and events are delivered from an idle, so a step -- or another
-     * room switch -- can arrive *inside* this call.  Clearing before
-     * the wait and appending after it would have the inner arrival
-     * land in a list the outer call then appends to, which is how the
-     * chat came back showing two copies of the same tail.  Take the
-     * answer, then replace the list in one go.
+     * room switch -- can arrive *inside* this call.  A function that
+     * cleared shared state and refilled it around that wait would have
+     * the inner arrival land in a list the outer call then appends to,
+     * which is how the chat came back showing two copies of its tail.
+     * Handing the answer back leaves the caller to decide, once, what
+     * to do with it.
      */
     reply = clawt_window_request(
         self, "room.steps",
         clawt_build_payload("room", self->selected_room, NULL));
 
-    clawt_gtk_steps_clear(self);
-
     if (reply == NULL)
-        return;
+        return steps;
 
     /*
      * The payload is asked for as a pointer and checked as one.  A node
@@ -262,16 +347,12 @@ clawt_gtk_steps_load(ClawtWindow *self)
     payload = clawt_payload_of(reply);
 
     if (payload == NULL || !json_object_has_member(payload, "steps"))
-        return;
+        return steps;
 
     array = json_object_get_array_member(payload, "steps");
 
     if (array == NULL)
-        return;
-
-    if (self->steps == NULL)
-        self->steps = g_ptr_array_new_with_free_func(
-            (GDestroyNotify)clawt_turn_step_free);
+        return steps;
 
     for (i = 0; i < json_array_get_length(array); i++) {
         JsonObject *entry = json_array_get_object_element(array, i);
@@ -284,10 +365,10 @@ clawt_gtk_steps_load(ClawtWindow *self)
             entry, clawt_json_string(entry, "agent", NULL));
 
         if (step != NULL)
-            g_ptr_array_add(self->steps, step);
+            g_ptr_array_add(steps, step);
     }
 
-    steps_rebuild(self);
+    return steps;
 }
 
 void
@@ -3542,17 +3623,56 @@ clawt_gtk_load_history(ClawtWindow *self)
     messages = json_object_get_array_member(clawt_payload_of(reply),
                                             "messages");
 
-    for (i = 0; i < json_array_get_length(messages); i++) {
-        JsonObject *message = json_array_get_object_element(messages, i);
-        const gchar *sender = clawt_json_string(message, "sender", "?");
-        const gchar *id = clawt_json_string(message, "id", NULL);
+    /*
+     * Messages and steps, merged on time.
+     *
+     * They are fetched separately -- one is the room's transcript, the
+     * other is what the agent did while producing it -- and appending
+     * the steps afterwards would pile every tool call a room has ever
+     * made at the bottom, underneath answers they came *before*.  A
+     * merge on the timestamp puts each stretch of steps back between
+     * the message that prompted it and the answer it produced, which is
+     * where it happened and the only place it reads correctly.
+     *
+     * Every step drawn here is sealed: it is history by definition.  A
+     * turn still running goes on adding to a fresh live block after
+     * this, so a conversation opened mid-turn shows both.
+     */
+    {
+        g_autoptr(GPtrArray) steps = clawt_gtk_steps_fetch(self);
+        guint s_at = 0;
 
-        if (id != NULL)
-            g_hash_table_add(self->shown, g_strdup(id));
+        for (i = 0; i < json_array_get_length(messages); i++) {
+            JsonObject *message = json_array_get_object_element(messages, i);
+            const gchar *sender = clawt_json_string(message, "sender", "?");
+            const gchar *id = clawt_json_string(message, "id", NULL);
+            gint64 ts = clawt_json_int(message, "ts", 0);
+            guint run = s_at;
 
-        clawt_gtk_append_message(self, sender, clawt_json_string(message, "body", ""),
-                                 g_strcmp0(sender, "user") == 0,
-                                 clawt_json_int(message, "ts", 0));
+            /*
+             * Everything that happened before this message.  The
+             * comparison is clawt_turn_step_precedes(), because the two
+             * stamps are in different units and doing it by hand here
+             * is how every step ends up after every message.
+             */
+            while (run < steps->len &&
+                   clawt_turn_step_precedes(g_ptr_array_index(steps, run),
+                                            ts))
+                run++;
+
+            clawt_gtk_steps_append_sealed(self, steps, s_at, run);
+            s_at = run;
+
+            if (id != NULL)
+                g_hash_table_add(self->shown, g_strdup(id));
+
+            clawt_gtk_append_message(self, sender,
+                                     clawt_json_string(message, "body", ""),
+                                     g_strcmp0(sender, "user") == 0, ts);
+        }
+
+        /* And anything after the last message. */
+        clawt_gtk_steps_append_sealed(self, steps, s_at, steps->len);
     }
 
     /*
@@ -3563,17 +3683,6 @@ clawt_gtk_load_history(ClawtWindow *self)
      */
     if (g_hash_table_remove(self->unread, self->selected_agent))
         clawt_gtk_update_unread_tab(self);
-
-    /*
-     * And whatever the turn running in this room has done so far.
-     *
-     * After the messages, because the block belongs at the live end.
-     * Steps are never persisted, so this is the only way a room opened
-     * mid-turn shows anything but a spinner -- and switching away and
-     * back goes through here too, which is what stops a switch from
-     * losing the running turn.
-     */
-    clawt_gtk_steps_load(self);
 
     clawt_gtk_set_following(self, TRUE);
     clawt_gtk_queue_scroll(self);

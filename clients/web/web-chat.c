@@ -479,7 +479,160 @@ conversation_switcher(ClawtWebApp *app, const gchar *agent_id,
 }
 
 /*
- * What the turn running in this conversation has done so far.
+ * Fetch a room's steps, oldest first.
+ *
+ * @live narrows it to the running turn -- the steps taken since the
+ * room's last message.  The daemon decides where that boundary is,
+ * because this client draws steps in two places and the two must agree
+ * or the turn that just finished appears twice.
+ *
+ * Returns: (transfer full) (element-type ClawtTurnStep)
+ */
+static GPtrArray *
+fetch_steps(ClawtWebApp *app, const gchar *agent_id, const gchar *peer,
+            gboolean live)
+{
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    GPtrArray *steps;
+    JsonArray *array;
+    guint i;
+
+    steps = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)clawt_turn_step_free);
+
+    clawt_web_payload_set(payload, "room", peer != NULL ? peer : agent_id);
+    clawt_web_payload_set(payload, "as", peer != NULL ? agent_id : "user");
+
+    if (live)
+        clawt_web_payload_set(payload, "live", "true");
+
+    reply = clawt_web_app_call(app, "room.steps",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    array = clawt_web_member_array(clawt_web_root(reply), "steps");
+
+    for (i = 0; array != NULL && i < json_array_get_length(array); i++) {
+        JsonObject *entry = json_array_get_object_element(array, i);
+        ClawtTurnStep *step;
+
+        if (entry == NULL)
+            continue;
+
+        step = clawt_turn_step_new_from_object(
+            entry, clawt_web_member(entry, "agent", NULL));
+
+        if (step != NULL)
+            g_ptr_array_add(steps, step);
+    }
+
+    return steps;
+}
+
+/*
+ * One collapsed run of tool calls, expandable to the commands in it.
+ *
+ * A <details> rather than a tooltip: the commands are what you want
+ * when the answer looks wrong, and a tooltip cannot be selected,
+ * copied, or kept on screen while you read the reply beside it.  It is
+ * also the one disclosure widget that needs no script, which matters
+ * for a page that must fetch nothing at load.
+ */
+static HtmxElement *
+step_run_element(GPtrArray *steps, guint from, guint to, guint calls,
+                 guint failed)
+{
+    g_autoptr(HtmxDetails) details = htmx_details_new();
+    g_autoptr(HtmxSummary) summary = NULL;
+    g_autofree gchar *label = clawt_turn_step_run_label(calls, failed);
+    g_autofree gchar *css = NULL;
+    guint i;
+
+    css = g_strdup_printf("turn-step turn-run %s", failed > 0 ? "bad" : "good");
+    htmx_element_add_class(HTMX_ELEMENT(details), css);
+
+    summary = htmx_summary_new_with_text(label);
+    htmx_node_add_child(HTMX_NODE(details), HTMX_NODE(summary));
+
+    for (i = from; i < to; i++) {
+        ClawtTurnStep *step = g_ptr_array_index(steps, i);
+        g_autofree gchar *line = NULL;
+        g_autofree gchar *row_css = NULL;
+
+        /* Calls only -- see the GTK client's twin of this loop. */
+        if (!clawt_turn_step_is_call(step))
+            continue;
+
+        line = clawt_turn_step_summary(step);
+        row_css = g_strdup_printf("turn-run-cmd %s",
+                                  clawt_turn_step_tone(step));
+        clawt_web_add(details, clawt_web_text(line, row_css));
+    }
+
+    return HTMX_ELEMENT(g_steal_pointer(&details));
+}
+
+/*
+ * Draws @steps into @parent: runs collapsed, prose as it was written.
+ *
+ * Shared by the interleaved history and the live tail, because they are
+ * the same content drawn at different times -- and the collapsing rule
+ * itself comes from libclawt, so this client and the GTK one cannot
+ * disagree about where a run begins or what it is called.
+ */
+static void
+fill_steps(gpointer parent, GPtrArray *steps, guint from, guint end)
+{
+    guint i;
+
+    for (i = from; i < end; ) {
+        ClawtTurnStep *step = g_ptr_array_index(steps, i);
+
+        if (clawt_turn_step_joins_run(step)) {
+            guint run_start = i;
+            guint calls = 0;
+            guint failed = 0;
+
+            i = clawt_turn_step_run_extent(steps, i, end, &calls, &failed);
+
+            clawt_web_add(parent,
+                          step_run_element(steps, run_start, i, calls,
+                                           failed));
+            continue;
+        }
+
+        {
+            g_autofree gchar *text = clawt_turn_step_summary(step);
+            g_autofree gchar *marked = NULL;
+            g_autofree gchar *css = NULL;
+
+            if (clawt_turn_step_get_kind(step) == CLAWT_STEP_THINKING)
+                marked = g_strdup_printf("thinking: %s", text);
+
+            css = g_strdup_printf("turn-step %s", clawt_turn_step_tone(step));
+            clawt_web_add(parent, clawt_web_text(
+                marked != NULL ? marked : text, css));
+            i++;
+        }
+    }
+}
+
+/*
+ * A block of steps, for dropping between two messages.
+ */
+static HtmxElement *
+steps_block(GPtrArray *steps, guint from, guint end)
+{
+    g_autoptr(HtmxDiv) box = htmx_div_new();
+
+    htmx_element_add_class(HTMX_ELEMENT(box), "turn-steps");
+    fill_steps(box, steps, from, end);
+
+    return HTMX_ELEMENT(g_steal_pointer(&box));
+}
+
+/*
+ * What the turn running in this conversation is doing right now.
  *
  * Its own region rather than part of the transcript, and listening for
  * `step` rather than `fleet`: a turn produces tens of steps, and
@@ -487,21 +640,16 @@ conversation_switcher(ClawtWebApp *app, const gchar *agent_id,
  * browser pay for the agent working.  Undotted because a dot in an
  * hx-trigger is a class selector.
  *
- * Steps are never persisted, so a page opened mid-turn gets its
- * history from this one call and nowhere else.  Empty is the ordinary
- * answer -- no turn running, or one that has not reached a tool yet --
- * and draws nothing at all rather than an empty box that would sit
- * under every idle conversation.
+ * Only the *running* turn, from the daemon's own definition of that
+ * boundary.  Everything older is drawn interleaved through the
+ * transcript where it happened, and a region that showed those too
+ * would draw the turn that just finished a second time.
  */
 static HtmxElement *
 turn_steps(ClawtWebApp *app, const gchar *agent_id, const gchar *peer)
 {
     g_autoptr(HtmxDiv) box = htmx_div_new();
-    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
-    g_autoptr(JsonNode) reply = NULL;
-    JsonArray *steps;
-    guint i;
-    guint n;
+    g_autoptr(GPtrArray) steps = fetch_steps(app, agent_id, peer, TRUE);
 
     htmx_element_add_class(HTMX_ELEMENT(box), "turn-steps");
     htmx_element_set_id(HTMX_ELEMENT(box), "turn-steps");
@@ -517,80 +665,7 @@ turn_steps(ClawtWebApp *app, const gchar *agent_id, const gchar *peer)
         htmx_element_set_attribute(HTMX_ELEMENT(box), "hx-swap", "outerHTML");
     }
 
-    clawt_web_payload_set(payload, "room", peer != NULL ? peer : agent_id);
-    clawt_web_payload_set(payload, "as", peer != NULL ? agent_id : "user");
-
-    reply = clawt_web_app_call(app, "room.steps",
-                               clawt_web_payload_take(g_steal_pointer(&payload)));
-
-    steps = clawt_web_member_array(clawt_web_root(reply), "steps");
-    n = (steps != NULL) ? json_array_get_length(steps) : 0;
-
-    for (i = 0; i < n; ) {
-        JsonObject *entry = json_array_get_object_element(steps, i);
-        g_autoptr(ClawtTurnStep) step = NULL;
-
-        if (entry == NULL) {
-            i++;
-            continue;
-        }
-
-        step = clawt_turn_step_new_from_object(
-            entry, clawt_web_member(entry, "agent", NULL));
-
-        if (step == NULL) {
-            i++;
-            continue;
-        }
-
-        /*
-         * A run of tool calls becomes one line, exactly as it does in
-         * the GTK client -- the counting and the wording are both
-         * clawt_turn_step_run_label()'s, because a rule two clients
-         * apply separately is a rule they will disagree about.
-         */
-        if (clawt_turn_step_joins_run(step)) {
-            guint tools = 0;
-            guint failed = 0;
-            g_autofree gchar *label = NULL;
-            HtmxP *row;
-
-            while (i < n) {
-                JsonObject *item = json_array_get_object_element(steps, i);
-                g_autoptr(ClawtTurnStep) run = (item != NULL)
-                    ? clawt_turn_step_new_from_object(item, NULL) : NULL;
-
-                if (run == NULL || !clawt_turn_step_joins_run(run))
-                    break;
-
-                tools++;
-                if (clawt_turn_step_get_failed(run))
-                    failed++;
-                i++;
-            }
-
-            label = clawt_turn_step_run_label(tools, failed);
-            row = clawt_web_text(label, failed > 0 ? "turn-step bad"
-                                                   : "turn-step good");
-            clawt_web_add(box, row);
-            continue;
-        }
-
-        {
-            g_autofree gchar *text = clawt_turn_step_summary(step);
-            g_autofree gchar *marked = NULL;
-            g_autofree gchar *css = NULL;
-
-            if (clawt_turn_step_get_kind(step) == CLAWT_STEP_THINKING)
-                marked = g_strdup_printf("thinking: %s", text);
-
-            css = g_strdup_printf("turn-step %s", clawt_turn_step_tone(step));
-
-            clawt_web_add(box, clawt_web_text(
-                marked != NULL ? marked : text, css));
-            i++;
-        }
-    }
+    fill_steps(box, steps, 0, steps->len);
 
     return HTMX_ELEMENT(g_steal_pointer(&box));
 }
@@ -687,10 +762,28 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
             clawt_web_member_object(clawt_web_root(agent_reply), "agent"),
             "has_avatar", FALSE);
 
+        /*
+         * Messages and steps, merged on time.
+         *
+         * They are fetched separately -- one is the room's transcript,
+         * the other is what the agent did producing it -- and appending
+         * the steps afterwards would pile every tool call a room has
+         * made at the bottom, under answers they came *before*.  The
+         * merge puts each stretch back between the message that
+         * prompted it and the answer it produced.
+         *
+         * The comparison is clawt_turn_step_precedes(), from libclawt,
+         * because the two stamps are in different units and because the
+         * GTK client merges the same two lists.
+         */
+        g_autoptr(GPtrArray) steps = fetch_steps(app, agent_id, peer, FALSE);
+        guint s_at = 0;
+
         for (i = 0; messages != NULL && i < json_array_get_length(messages);
              i++) {
             JsonObject *one = json_array_get_object_element(messages, i);
             gint64 ts = clawt_web_member_int(one, "ts", 0);
+            guint run = s_at;
             g_autoptr(GDateTime) when = (ts > 0)
                 ? g_date_time_new_from_unix_local(ts)
                 : g_date_time_new_now_local();
@@ -706,6 +799,16 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
             run_start = clawt_chat_run_is_start(run_sender, run_day, sender,
                                                 day, &new_day);
 
+            while (run < steps->len &&
+                   clawt_turn_step_precedes(g_ptr_array_index(steps, run),
+                                            ts))
+                run++;
+
+            if (run > s_at) {
+                clawt_web_add(inner, steps_block(steps, s_at, run));
+                s_at = run;
+            }
+
             if (new_day)
                 clawt_web_add(inner, day_divider(ts));
 
@@ -718,6 +821,14 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
                           message_element(one, agent_id, has_avatar,
                                           run_start, color));
         }
+
+        /*
+         * And anything after the last message that is not the running
+         * turn -- the live region below draws that, from the daemon's
+         * own boundary, so the two cannot overlap.
+         */
+        if (s_at < steps->len)
+            clawt_web_add(inner, steps_block(steps, s_at, steps->len));
     }
 
     /*

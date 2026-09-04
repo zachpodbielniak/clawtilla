@@ -241,6 +241,51 @@ clawt_daemon_handle_room(
             ? clawt_daemon_room_steps(self, clawt_room_get_id(room))
             : g_ptr_array_new();
 
+        /*
+         * `live` narrows the answer to the running turn: the steps
+         * taken since the room's last message.
+         *
+         * The rule is here rather than in a client because a client
+         * that draws steps in two places -- interleaved through the
+         * transcript, and again as a live tail -- needs the two to
+         * agree about where one ends and the other begins, or the
+         * turn that just finished is drawn twice.  Deciding that from
+         * the room's own last message is the only definition that
+         * moves at the right moment: the answer arriving is exactly
+         * what turns a running turn into history.
+         */
+        if (room != NULL &&
+            clawt_ipc_payload_boolean(payload, "live", FALSE)) {
+            g_autoptr(GPtrArray) recent = clawt_room_get_history(room, 1);
+            gint64 since = (recent != NULL && recent->len > 0)
+                ? clawt_message_get_timestamp(g_ptr_array_index(recent, 0))
+                : 0;
+            g_autoptr(GPtrArray) live = g_ptr_array_new();
+            guint k;
+
+            /*
+             * clawt_turn_step_precedes(), not a comparison written out
+             * here.  A step is stamped in microseconds and a message in
+             * seconds, so `step_ts > message_ts` is true of every step
+             * ever taken -- the filter passed everything, and the web
+             * client drew each turn twice: once interleaved through the
+             * transcript and again as a live tail below it.
+             *
+             * The helper existed and said so in its own documentation
+             * when this was written.  A rule applied at one call site
+             * is a rule about that call site.
+             */
+            for (k = 0; k < steps->len; k++) {
+                ClawtTurnStep *one = g_ptr_array_index(steps, k);
+
+                if (!clawt_turn_step_precedes(one, since))
+                    g_ptr_array_add(live, one);
+            }
+
+            g_clear_pointer(&steps, g_ptr_array_unref);
+            steps = g_steal_pointer(&live);
+        }
+
         json_builder_begin_object(builder);
 
         json_builder_set_member_name(builder, "room");
@@ -286,6 +331,10 @@ clawt_daemon_handle_room(
             json_builder_set_member_name(builder, CLAWT_STEP_MEMBER_FAILED);
             json_builder_add_boolean_value(builder,
                                            clawt_turn_step_get_failed(step));
+
+            json_builder_set_member_name(builder, CLAWT_STEP_MEMBER_TS);
+            json_builder_add_int_value(builder,
+                                       clawt_turn_step_get_timestamp(step));
 
             json_builder_set_member_name(builder, "agent");
             json_builder_add_string_value(builder,

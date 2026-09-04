@@ -351,15 +351,15 @@ struct _ClawtWindow {
      * What the agent is doing right now, drawn at the live end of the
      * transcript while a turn runs.
      *
-     * Steps are never persisted, so this is rebuilt from the daemon's
-     * per-room list whenever the shown room changes -- switching away
-     * and back must not lose the running turn's history, and the client
-     * has nowhere of its own to have kept it.
+     * Only the *running* turn is held here.  Everything older is drawn
+     * straight into the transcript, interleaved with the messages by
+     * time, when the conversation is rebuilt -- so this list is what a
+     * turn is currently adding to and nothing else.
      *
-     * The widget is borrowed; the transcript owns it.  It is dropped
-     * when the turn settles, because the answer that follows is what
-     * the reader wanted and a stale list of tool calls under it reads
-     * as work still in flight.
+     * The widget is borrowed; the transcript owns it.  When the turn
+     * settles the pointer is dropped and the widget stays: the steps
+     * are how the answer came about, and removing them the moment it
+     * arrives takes the working away and leaves the conclusion.
      */
     GtkWidget         *steps_block;      /* borrowed; owned by transcript */
     GPtrArray         *steps;            /* ClawtTurnStep*, the shown room's */
@@ -940,20 +940,53 @@ void clawt_gtk_steps_add(ClawtWindow *self, ClawtTurnStep *step);
  * clawt_gtk_steps_clear:
  * @self: the window
  *
- * Drops the live block and everything in it.  Called when a turn
- * settles and when the shown room changes.
+ * Drops the live block and everything in it.  For a transcript being
+ * rebuilt -- not for a turn ending, which is clawt_gtk_steps_seal().
  */
 void clawt_gtk_steps_clear(ClawtWindow *self);
 
 /**
- * clawt_gtk_steps_load:
+ * clawt_gtk_steps_seal:
  * @self: the window
  *
- * Asks the daemon what the shown room's running turn has done so far
- * and draws it.  A room with no turn running answers with nothing,
- * which is not an error.
+ * Ends the live block without removing it: the steps stay in the
+ * transcript where they happened and the next turn starts a new one.
+ *
+ * The steps of a turn are how its answer came about, so deleting them
+ * when the answer arrives takes away the working and leaves the
+ * conclusion -- and reads as text disappearing from a conversation
+ * somebody is looking at, which is what it is.
  */
-void clawt_gtk_steps_load(ClawtWindow *self);
+void clawt_gtk_steps_seal(ClawtWindow *self);
+
+/**
+ * clawt_gtk_steps_append_sealed:
+ * @self: the window
+ * @steps: (element-type ClawtTurnStep): the steps to draw
+ * @from: first index
+ * @end: one past the last index
+ *
+ * Draws steps [@from, @end) as a finished block at the end of the
+ * transcript.  Used while rebuilding a conversation from history,
+ * where every step already happened.
+ */
+void clawt_gtk_steps_append_sealed(ClawtWindow *self, GPtrArray *steps,
+                                   guint from, guint end);
+
+/**
+ * clawt_gtk_steps_fetch:
+ * @self: the window
+ *
+ * Asks the daemon for the shown room's steps, oldest first.
+ *
+ * Returns them rather than storing them, because the request iterates
+ * the main context and anything it wrote to shared state could be
+ * interleaved with an event that arrived during the wait.
+ *
+ * Returns: (transfer full) (element-type ClawtTurnStep): the steps,
+ *   empty when the room has none -- which is not an error
+ */
+GPtrArray *clawt_gtk_steps_fetch(ClawtWindow *self);
 
 void
 clawt_gtk_set_following(ClawtWindow *self, gboolean following);

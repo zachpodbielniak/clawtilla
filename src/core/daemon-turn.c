@@ -702,11 +702,19 @@ clawt_daemon_turn_settle_room(ClawtDaemon *self, const gchar *room_id)
         g_hash_table_remove(self->room_holder, room_id);
 
     /*
-     * And the steps of the turn that just ended.  They describe work in
-     * flight, and there is no longer any.
+     * The steps of the turn that just ended are *kept*.
+     *
+     * They used to be dropped here, on the reasoning that they describe
+     * work in flight and there is no longer any.  That was wrong about
+     * what a reader wants: the tools an agent reached for are how its
+     * answer came about, and deleting them the moment the answer
+     * arrives takes the working away and leaves the conclusion.  It
+     * also read as a bug, because it is one -- text vanishing from a
+     * conversation you are looking at.
+     *
+     * They stay in the room's bounded history instead, which is what
+     * makes them survive a room switch and a client restart as well.
      */
-    if (self->room_steps != NULL)
-        g_hash_table_remove(self->room_steps, room_id);
 }
 
 void

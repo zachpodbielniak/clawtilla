@@ -605,8 +605,12 @@ means the direct room with that agent, the same way it does for
 ~msg.send~.  Pass ~as~ to say who is asking; it defaults to ~user~.
 
 ~room.steps~ takes the same ~room~ and ~as~ pair, through the same
-resolver, and answers with what the turn running in that room has done
-so far: an array of ~steps~, oldest first, plus the ~room~ it resolved.
+resolver, and answers with the steps that room has seen: an array of
+~steps~, oldest first, plus the ~room~ it resolved.  Pass ~live: true~
+to narrow it to the turn currently running --- the steps taken since the
+room's last message.  A client that draws steps both interleaved through
+a transcript and again as a live tail needs that boundary decided in one
+place, or the turn that just finished is drawn twice.
 
 Each entry carries ~step_kind~ (~text~, ~thinking~, ~tool~ or
 ~status~), ~room_id~, the ~agent~ whose turn it is, and then whichever
@@ -628,10 +632,12 @@ that does not resolve answers the same way rather than refusing, because
 a handler that calls an ordinary condition an error stacks one toast per
 refresh over whatever is underneath it.
 
-The list is *live only*.  It is dropped the moment the room's turn
-settles and is never written to the transcript, so this is the only way
-to catch up on a turn that was already running when a client opened the
-room -- and there is nothing to fetch afterwards.
+The list outlives the turn: steps stay in the conversation where they
+happened, so a client rebuilding a room merges them back in on ~ts~.
+It is *not* the transcript, though --- steps are never messages, because
+the last thing in a thread is what a finished turn's task result is
+inferred from.  It is held in memory, bounded per room, and gone when
+the daemon stops.
 
 *** mailbox.*
 
