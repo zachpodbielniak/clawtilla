@@ -2501,6 +2501,116 @@ a routine (the task events and the clients are their surfacing), a
 cancellation by the delegator itself, and anything on a daemon built
 before notices existed.
 
+** Nobody in a group room answers me
+
+The room requires a mention and you named nobody.  That is the design:
+being in a room does not mean answering everything in it, or five
+members would each take a turn on every remark.
+
+Write ~@their-id~ to reach one, or ~@all~ to reach everybody.  The
+message you already sent is in the transcript and everyone can read it
+--- nothing was lost, and nobody was interrupted.
+
+~require_mention~ defaults to the room's shape, so a room of three has
+it on and a room of two does not.
+
+** Everybody in a room answers everything
+
+~require_mention~ is off on that room.  It defaults to on for three or
+more members, so this is a room where it was set explicitly, or one
+declared before the default existed.
+
+** An agent contradicts itself between messages in the same room
+
+It is in more than one session there.  Under ~sender-room~ an agent gets
+a context per *speaker* in a room, so what you said and what a peer said
+land in different heads --- and the transcript reads as one conversation
+the agent never had.
+
+Members of a group default to ~room~ mode for this reason, and an
+explicit ~sender-room~ on one is reported and replaced.  If you are
+seeing this, check ~agents.session.routing_mode~ and the daemon's log at
+start.
+
+** An agent in a room has no idea what was being discussed
+
+It only receives the messages that name it; the rest are recorded and
+never delivered.  Each delivery carries what that member missed since it
+last spoke, bounded by ~rooms.catchup_messages~ --- raise it, or tell
+the agent to call ~clawtilla_room_history~, which the preamble already
+names.
+
+** ~@all~ from an agent did nothing
+
+It belongs to you.  An agent that could broadcast would turn one reply
+into a turn for every other member, each of which could broadcast again.
+
+~clawtilla_post_room~ refuses it out loud and lists the members that
+could have been named.  On the other path --- the text an agent writes at
+the end of a turn --- there is no call to refuse, so it is recorded and
+reaches nobody.
+
+** The agents in a room keep tagging each other and burning turns
+
+The preamble's "most replies here should name nobody" clause is not
+landing.  That is a wording bug rather than a setting: the text is part
+of the behaviour and is reviewed as code.  ~rooms.max_hops~ is the
+backstop while it is happening.
+
+** An agent will not pull a colleague into a room when asked
+
+It should write ~@their-id~ in its reply --- no tool call, the reply *is*
+the message.  Check that the roster block reached it: every delivery
+into a group lists the other members by id.
+
+** A whole room stopped and says the exchange was ended
+
+The cycle detector caught an agent sending the same body twice into the
+same room within ~orchestration.cycle_seconds~, *and* that message named
+somebody.  A repeat that reaches nobody is not counted --- otherwise one
+member writing "Acknowledged." twice in five minutes would end a
+standup.
+
+Clear it by messaging the room yourself; a person repeating themselves is
+a person, and clawtilla does not end their conversation.
+
+** ~@bob~ used to wake an agent called ~bob~ when I wrote ~@bobby~
+
+It did, and it no longer does.  The matcher was wrong on four counts: the
+~@~ form was an unbounded substring search, the ~@~ itself was not
+required to be at a word boundary (so ~zach@bob.com~ mentioned ~bob~),
+the boundary excluded ~_~ and ~-~ after a name but not before it (so
+~alpha-bob~ matched), and matching was byte-exact against ids that are
+lowercase by construction (so ~Bob~ matched nobody).
+
+** A room disappeared after restarting the daemon
+
+Either it was made before rooms were written to ~clawtilla.yaml~, or its
+~rooms:~ entry was removed.  Its transcript is still on disk under
+~<state_dir>/transcripts/~ --- only ~dm:~ transcripts are reopened at
+start, so a declared room whose entry is gone leaves an orphan.  Recreate
+the room with the same id to pick it up again.
+
+** Messaging an agent opens a room instead
+
+A room was named after that agent.  Every resolver tries a room first and
+falls back to the agent id --- which is what lets a client ask for a
+conversation by naming the agent --- so a room called ~oryx~ hides the
+conversation with ~oryx~.
+
+Creating such a room is refused now; one created before that will need
+renaming in ~clawtilla.yaml~.
+
+** An agent in a busy room stopped being able to delegate
+
+Its hop depth is being folded across every turn it has running, and the
+deepest wins.  That is deliberate for a caller with no room to name ---
+firing ~max_hops~ one hop early costs a delegation, where firing late
+costs the runaway the limit exists to stop.
+
+Pass ~turn_room~ on the call, from the ~[clawtilla]~ line on the message
+being handled.  Every hop tool takes it.
+
 ** Clicks in a guest desktop do nothing while the pointer visibly moves
 
 The pointer sits on the target, hover states and tooltips fire, the

@@ -1315,10 +1315,22 @@ Agent ids in the room. The human is always implicitly a member.
 - Default :: =false=
 - Since :: 0.1.0
 
-Only deliver messages that name an agent.
+Only deliver messages that name a member.
 
-Worth turning on for a busy room: without it every agent takes a turn
-on every message, which is expensive and rarely wanted.
+Defaults to the room's shape when it is not set: off for two members,
+where everything said is for the other one, and on for three or more,
+where delivering every remark to everybody costs a model turn each
+and is never what anybody meant. Setting it explicitly wins either
+way.
+
+A member is named as @its-id or as a bare word; matching ignores
+case, and an agent's display name counts when it is a single word.
+@all reaches everybody and belongs to you -- an agent writing it
+reaches nobody, because one broadcast per reply is how a room of five
+turns one remark into a runaway.
+
+A message that names nobody is still recorded and everyone can read
+it. That is the ordinary way to take part, and each delivery says so.
 
 *** =rooms.max_hops=
 

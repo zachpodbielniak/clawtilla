@@ -42,7 +42,145 @@ member's mailbox except the sender's.
 
 ~require_mention: true~ means an agent only receives messages that name
 it -- worth having in a busy room, so five agents do not each take a turn
-on every remark.
+on every remark.  It *defaults* to the room's shape: off for two members,
+on for three or more.  See *Group rooms* below.
+
+** Group rooms
+
+A room with more than two members is a group, and being in one does not
+mean answering everything said in it.
+
+*** The rule
+
+#+begin_quote
+An @mention is a deliberate address.  It earns one answer, and that
+answer earns none.
+#+end_quote
+
+That is not a new mechanism.  It is the one that already ends a peer
+exchange --- "a deliberate message earns one answer and the answer earns
+none" --- with mentions recognised as the deliberate act they are.
+Writing ~@bob~ in a reply is the same thing ~clawtilla_message_agent~
+does, spelled in the text instead of in a tool call.
+
+So, for a message posted into a group:
+
+1. It is *always recorded*.  The room's transcript is what was said in
+   it, whoever it was addressed to.
+2. It is *delivered only to the members it names*.  Everyone else can
+   read it and nobody else is interrupted.
+3. ~@all~ from you reaches every member.  From an agent it reaches
+   nobody.
+4. It is never delivered to its sender, whatever any rule says.
+
+*** What a group costs
+
+One ~@all~ in a five-member room is *four model turns*.  Each of those
+replies is itself a message in the room, and each could name somebody.
+That number is the reason the mention rule exists, and it is worth
+knowing before building a fleet around a standup.
+
+*** How a name is matched
+
+Four decisions, each of which somebody will otherwise report as a bug:
+
+- *The ~@~ has to be at a word boundary.*  ~zach@bob.com~ does not
+  mention ~bob~ --- otherwise every address in a pasted log wakes
+  somebody, and a pasted log is exactly the sort of thing an agent puts
+  in a room.
+- *Matching ignores case.*  Ids are lowercase by construction and a
+  model writes "Bob, can you check", which is how anybody writes a name.
+  A byte-exact match reached nobody and said nothing about it.
+- *A display name counts when it is a single word.*  ~@Oryx~ finds the
+  agent whose id is ~oryx-research~ and whose name is "Oryx".  "Oryx the
+  Researcher" is not an address --- it would match every message
+  containing the word "the".
+- *There is no syntax awareness.*  A name inside a code fence or a URL
+  still matches.  The alternative is a markdown parser on the routing
+  path, and one extra turn is cheaper than a mention that does not fire
+  for a reason nobody can see.
+
+Both the whole word and the ~@~ form work: ~bob~, ~@bob~ and ~Bob,~ all
+reach ~bob~; ~bobby~, ~alpha-bob~ and ~my_bob~ do not.
+
+*** ~@all~ is yours
+
+An agent that could broadcast would turn one reply into a turn for every
+other member, each of which could broadcast again --- the runaway the
+mention rule exists to prevent, rebuilt out of one word.  So a message
+carrying ~@all~ reaches everybody only when its sender is not an agent:
+you, a routine, a trigger, or the daemon itself.
+
+An agent that calls ~clawtilla_post_room~ with ~@all~ is *refused out
+loud*, with the members it could have named instead.  On the other path
+--- the text an agent writes at the end of a turn --- there is no call to
+refuse, so it is recorded, reaches nobody, and is logged.  The delivery
+preamble tells every member this up front, because a rule an agent
+cannot see is a rule it will violate.
+
+*** What stops two agents naming each other for ever
+
+~orchestration.max_hops~, and *not* the cycle detector.
+
+A reply is sent one hop deeper than the turn that produced it, so a
+mutual-mention exchange climbs and is refused.  The cycle detector
+fingerprints the *body*, so two agents saying genuinely different things
+each time slip straight past it --- do not set a fleet's limits on the
+assumption that it covers this.
+
+Because three agents each reply one hop deeper, an ordinary standup
+reaches the fleet ceiling on its own.  That is what ~rooms.max_hops~ is
+for, and a group is the case it was written for.
+
+*** How many context windows a member is
+
+A group room is the first room where more than one *other* party speaks.
+Under ~sender-room~ --- the default --- that gives an agent a session per
+speaker *in the same room*: it answers you in one context, answers a peer
+in another that has never seen what you said, and the transcript reads as
+a single conversation the agent never had.
+
+So a member of a group defaults to ~room~ mode instead, which is one
+session per room and leaves direct conversations partitioned.  An
+orchestrator still defaults to ~agent~, which subsumes it.  An explicit
+~sender-room~ on such a member is *reported and replaced* rather than
+honoured: the daemon's per-room turn state is keyed on the room, the
+typing indicator carries the room and not the session, and two such
+turns cannot be told apart at all.
+
+*** What an agent does and does not see
+
+It receives only the messages that name it.  Everything else in the room
+is recorded and never delivered, so without help it holds its own corner
+of the conversation and nothing else.
+
+Each delivery therefore carries what that member has missed since it
+last spoke, bounded by ~rooms.catchup_messages~ and truncated with a
+count of what was dropped.  Anything older is
+~clawtilla_room_history~, which the preamble names.
+
+*** What every delivery tells a member
+
+Not a region of its workspace --- membership changes while an agent is
+running, and a file written at start would tell an agent added today
+about it after its next restart, and go on telling a removed one it is
+still a member.  A preamble cannot go stale.  It says:
+
+1. Which room this is, and to pass ~turn_room~ on any clawtilla tool
+   called while handling it.
+2. Who else is in it, by id and by name.
+3. That ~@their-id~ anywhere in the reply is how to reach one of them.
+4. *That naming nobody is the ordinary case.*
+
+The fourth is the one the feature rests on.  An AI CLI cannot end a turn
+without writing something, so a preamble that read as "name somebody"
+would produce an agent that names somebody every time --- which is the
+runaway the mention rule exists to prevent, rebuilt out of prompt text.
+The text says plainly that most replies should name nobody: thinking out
+loud, agreeing, and saying you are done all belong in the room and cost
+nobody anything.
+
+Changing that wording changes behaviour, and it is reviewed as code.
 
 Transcripts persist to ~<state_dir>/transcripts/<room>.ndjson~, written
 on every message rather than at shutdown.  A daemon that is killed rather

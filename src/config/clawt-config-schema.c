@@ -961,10 +961,23 @@ static const ClawtSchemaEntry schema[] = {
 
 { "rooms.require_mention", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "false", NULL,
-  "Only deliver messages that name an agent.\n"
+  "Only deliver messages that name a member.\n"
   "\n"
-  "Worth turning on for a busy room: without it every agent takes a turn\n"
-  "on every message, which is expensive and rarely wanted.", "0.1.0" },
+  "Defaults to the room's shape when it is not set: off for two members,\n"
+  "where everything said is for the other one, and on for three or more,\n"
+  "where delivering every remark to everybody costs a model turn each\n"
+  "and is never what anybody meant. Setting it explicitly wins either\n"
+  "way.\n"
+  "\n"
+  "A member is named as @its-id or as a bare word; matching ignores\n"
+  "case, and an agent's display name counts when it is a single word.\n"
+  "@all reaches everybody and belongs to you -- an agent writing it\n"
+  "reaches nobody, because one broadcast per reply is how a room of five\n"
+  "turns one remark into a runaway.\n"
+  "\n"
+  "A message that names nobody is still recorded and everyone can read\n"
+  "it. That is the ordinary way to take part, and each delivery says so.",
+  "0.1.0" },
 
 { "rooms.max_hops", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Overrides orchestration.max_hops for this room.\n"
