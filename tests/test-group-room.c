@@ -767,6 +767,272 @@ test_the_mention_rule_follows_the_room_shape(void)
     g_assert_true(clawt_room_get_require_mention(pair));
 }
 
+
+/* ── Creating, editing and removing one ──────────────────────────── */
+
+static JsonNode *
+call(Fixture *fixture, const gchar *kind, const gchar *payload_json)
+{
+    g_autoptr(JsonNode) frame = clawt_ipc_request_new(kind, "t1");
+
+    if (payload_json != NULL) {
+        g_autoptr(JsonParser) parser = json_parser_new();
+
+        g_assert_true(json_parser_load_from_data(parser, payload_json, -1,
+                                                 NULL));
+        clawt_ipc_frame_set_payload(
+            frame, json_node_copy(json_parser_get_root(parser)));
+    }
+
+    return clawt_daemon_handle_request(fixture->daemon, frame);
+}
+
+static gboolean
+replied_with_an_error(JsonNode *reply)
+{
+    return json_object_has_member(json_node_get_object(reply), "error");
+}
+
+/*
+ * A room made from a client is in clawtilla.yaml, so it survives.
+ *
+ * room.create used to make a room that lived only in the running
+ * daemon: somebody would create one, use it, restart, and find it gone
+ * -- with its transcript still on disk and nothing that would ever
+ * reopen it, since only `dm:` files are restored from the transcript
+ * directory.
+ */
+static void
+test_a_created_room_is_written_to_the_config(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *saved = NULL;
+
+    fixture_setup(&fixture,
+                  "agents:\n  - id: alice\n  - id: bob\n  - id: carol\n");
+
+    reply = call(&fixture, "room.create",
+                 "{\"room\": \"standup\", \"name\": \"Standup\", "
+                 "\"members\": \"alice,bob,carol\"}");
+
+    g_assert_false(replied_with_an_error(reply));
+
+    g_assert_true(g_file_get_contents(fixture.config_path, &saved, NULL,
+                                      NULL));
+    g_assert_nonnull(strstr(saved, "standup"));
+    g_assert_nonnull(strstr(saved, "Standup"));
+    g_assert_nonnull(strstr(saved, "carol"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A room cannot be named after an agent.
+ *
+ * Every resolver tries a room first and falls back to the agent, which
+ * is what lets a client ask for a conversation by naming the agent --
+ * so a room called `alice` would hide the conversation with alice, and
+ * the symptom is a chat opening on the wrong transcript.
+ */
+static void
+test_a_room_cannot_shadow_an_agent(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(JsonNode) reserved = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: alice\n  - id: bob\n");
+
+    reply = call(&fixture, "room.create",
+                 "{\"room\": \"alice\", \"members\": \"alice,bob\"}");
+    g_assert_true(replied_with_an_error(reply));
+
+    /* Nor after a sender the routing already keys on. */
+    reserved = call(&fixture, "room.create",
+                    "{\"room\": \"clawtilla\", "
+                    "\"members\": \"alice,bob\"}");
+    g_assert_true(replied_with_an_error(reserved));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A derived conversation is not editable or removable.
+ *
+ * room.add would happily put a third member into `dm:alice:user`, and
+ * membership is permission -- so that agent could read and post into
+ * the operator's private conversation with alice.  Only the operator
+ * can reach the verb, so it was a footgun rather than an escalation;
+ * putting room editing in a client is what would make somebody do it by
+ * accident.
+ */
+static void
+test_a_derived_conversation_is_not_editable(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) added = NULL;
+    g_autoptr(JsonNode) removed = NULL;
+    g_autoptr(JsonNode) changed = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: alice\n  - id: bob\n");
+
+    /* Open the operator's conversation with alice so the room exists. */
+    {
+        g_autoptr(JsonNode) history =
+            call(&fixture, "room.history", "{\"room\": \"alice\"}");
+
+        g_assert_false(replied_with_an_error(history));
+    }
+
+    added = call(&fixture, "room.add",
+                 "{\"room\": \"dm:alice:user\", \"agent\": \"bob\"}");
+    g_assert_true(replied_with_an_error(added));
+
+    removed = call(&fixture, "room.remove",
+                   "{\"room\": \"dm:alice:user\"}");
+    g_assert_true(replied_with_an_error(removed));
+
+    changed = call(&fixture, "room.set",
+                   "{\"room\": \"dm:alice:user\", "
+                   "\"members\": \"alice,bob\"}");
+    g_assert_true(replied_with_an_error(changed));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Editing members takes effect, in both directions.
+ *
+ * Adding was the easy half.  The config loader could only ever add, so
+ * a member taken out of the room stayed in it -- still receiving, and
+ * still counted towards whether the room is a group.
+ */
+static void
+test_editing_members_removes_as_well_as_adds(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) created = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    ClawtRoom *room;
+
+    fixture_setup(&fixture,
+                  "agents:\n  - id: alice\n  - id: bob\n  - id: carol\n");
+
+    created = call(&fixture, "room.create",
+                   "{\"room\": \"standup\", "
+                   "\"members\": \"alice,bob,carol\"}");
+    g_assert_false(replied_with_an_error(created));
+
+    reply = call(&fixture, "room.set",
+                 "{\"room\": \"standup\", \"members\": \"alice,bob\"}");
+    g_assert_false(replied_with_an_error(reply));
+
+    room = clawt_room_manager_get(fixture.daemon->rooms, "standup");
+    g_assert_nonnull(room);
+    g_assert_cmpuint(clawt_room_get_members(room)->len, ==, 2);
+    g_assert_false(clawt_room_has_member(room, "carol"));
+
+    /* And it is no longer a group, so it no longer requires a mention. */
+    g_assert_false(clawt_room_is_group(room));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Removing a room keeps its transcript, and says so.
+ *
+ * Removing a room is a configuration change; destroying the record of
+ * what was said in it is not, and is not recoverable.  Said in the
+ * reply because nothing will reopen that file on its own -- only `dm:`
+ * transcripts are restored.
+ */
+static void
+test_removing_a_room_keeps_the_transcript(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) created = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    JsonObject *result;
+
+    fixture_setup(&fixture,
+                  "agents:\n  - id: alice\n  - id: bob\n  - id: carol\n");
+
+    created = call(&fixture, "room.create",
+                   "{\"room\": \"standup\", "
+                   "\"members\": \"alice,bob,carol\"}");
+    g_assert_false(replied_with_an_error(created));
+
+    reply = call(&fixture, "room.remove", "{\"room\": \"standup\"}");
+    g_assert_false(replied_with_an_error(reply));
+
+    result = json_object_get_object_member(json_node_get_object(reply),
+                                           "payload");
+    g_assert_nonnull(result);
+    g_assert_true(json_object_get_boolean_member(result,
+                                                 "transcript_kept"));
+
+    g_assert_null(clawt_room_manager_get(fixture.daemon->rooms, "standup"));
+
+    fixture_teardown(&fixture);
+}
+
+
+/*
+ * And a member taken out of clawtilla.yaml by hand is gone after a
+ * reload.
+ *
+ * The config loader could only ever add.  Editing `rooms:` in the file
+ * and reloading therefore left everybody who had ever been in the room
+ * still in it -- still receiving, and still counted towards whether the
+ * room is a group -- and it only ever looked right because a restart
+ * rebuilt the room from nothing.
+ */
+static void
+test_a_reload_drops_a_member_taken_out_of_the_file(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *edited = NULL;
+    ClawtRoom *room;
+
+    fixture_setup(&fixture,
+                  "agents:\n  - id: alice\n  - id: bob\n  - id: carol\n"
+                  "rooms:\n"
+                  "  - id: standup\n"
+                  "    members: [alice, bob, carol]\n");
+
+    room = clawt_room_manager_get(fixture.daemon->rooms, "standup");
+    g_assert_nonnull(room);
+    g_assert_cmpuint(clawt_room_get_members(room)->len, ==, 3);
+
+    edited = g_strdup_printf(
+        "daemon:\n"
+        "  tailscale: false\n"
+        "  state_dir: \"%s/state\"\n"
+        "  socket: \"%s/daemon.sock\"\n"
+        "  automation_dir: \"%s/pods\"\n"
+        "defaults:\n  workspace_root: \"%s/agents\"\n"
+        "agents:\n  - id: alice\n  - id: bob\n  - id: carol\n"
+        "rooms:\n"
+        "  - id: standup\n"
+        "    members: [alice, bob]\n",
+        fixture.dir, fixture.dir, fixture.dir, fixture.dir);
+
+    g_file_set_contents(fixture.config_path, edited, -1, &error);
+    g_assert_no_error(error);
+
+    g_assert_true(clawt_daemon_reload(fixture.daemon, &error));
+    g_assert_no_error(error);
+
+    room = clawt_room_manager_get(fixture.daemon->rooms, "standup");
+    g_assert_nonnull(room);
+    g_assert_cmpuint(clawt_room_get_members(room)->len, ==, 2);
+    g_assert_false(clawt_room_has_member(room, "carol"));
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -810,6 +1076,18 @@ main(int argc, char **argv)
                     test_an_explicit_routing_mode_wins);
     g_test_add_func("/group/mention/rule-follows-the-room-shape",
                     test_the_mention_rule_follows_the_room_shape);
+    g_test_add_func("/group/config/created-room-is-written",
+                    test_a_created_room_is_written_to_the_config);
+    g_test_add_func("/group/config/cannot-shadow-an-agent",
+                    test_a_room_cannot_shadow_an_agent);
+    g_test_add_func("/group/config/derived-is-not-editable",
+                    test_a_derived_conversation_is_not_editable);
+    g_test_add_func("/group/config/editing-members-removes-too",
+                    test_editing_members_removes_as_well_as_adds);
+    g_test_add_func("/group/config/removing-keeps-the-transcript",
+                    test_removing_a_room_keeps_the_transcript);
+    g_test_add_func("/group/config/reload-drops-a-removed-member",
+                    test_a_reload_drops_a_member_taken_out_of_the_file);
 
     status = g_test_run();
 

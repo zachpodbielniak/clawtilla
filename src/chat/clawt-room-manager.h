@@ -47,6 +47,27 @@ ClawtRoomManager *clawt_room_manager_new(const gchar *transcript_dir);
 guint clawt_room_manager_load(ClawtRoomManager *self, ClawtConfig *config);
 
 /**
+ * clawt_room_manager_set_agents:
+ * @self: a #ClawtRoomManager
+ * @agents: (transfer none) (nullable): the fleet
+ *
+ * Lets room creation refuse a name an agent already has.
+ *
+ * Every resolver in the tree tries a room first and falls back to
+ * treating the id as an agent, which is what lets a client ask for a
+ * conversation by naming the agent -- so a room called `oryx` would
+ * hide the direct conversation with `oryx`, and the symptom is a chat
+ * opening on the wrong transcript rather than anything that looks like
+ * a collision.  Checked in the manager rather than at the two creation
+ * sites, because a third one would not know to ask.
+ *
+ * Borrowed rather than referenced: the daemon owns both and outlives
+ * this, and a reference would close a cycle through the router.
+ */
+void clawt_room_manager_set_agents(ClawtRoomManager  *self,
+                                   ClawtAgentManager *agents);
+
+/**
  * clawt_room_manager_create:
  * @self: a #ClawtRoomManager
  * @room_id: the id

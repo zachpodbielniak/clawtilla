@@ -3105,6 +3105,273 @@ clawt_config_add_agent(ClawtConfig *self, const gchar *id, GError **error)
     return clawt_config_get_agent(self, id);
 }
 
+/* ── Rooms, as the config holds them ─────────────────────────────── */
+
+/*
+ * The `rooms:` entry with this id, or %NULL.
+ *
+ * Returns: (transfer none) (nullable): the mapping node
+ */
+static YamlNode *
+room_entry(ClawtConfig *self, const gchar *id)
+{
+    YamlNode *rooms_node;
+    YamlSequence *sequence;
+    guint i;
+    guint length;
+
+    rooms_node = node_at_path(self->root, "rooms", FALSE);
+
+    if (rooms_node == NULL ||
+        yaml_node_get_node_type(rooms_node) != YAML_NODE_SEQUENCE)
+        return NULL;
+
+    sequence = yaml_node_get_sequence(rooms_node);
+    length = yaml_sequence_get_length(sequence);
+
+    for (i = 0; i < length; i++) {
+        YamlNode *element = yaml_sequence_get_element(sequence, i);
+
+        if (yaml_node_get_node_type(element) != YAML_NODE_MAPPING)
+            continue;
+
+        if (g_strcmp0(member_string(yaml_node_get_mapping(element), "id"),
+                      id) == 0)
+            return element;
+    }
+
+    return NULL;
+}
+
+gboolean
+clawt_config_add_room(ClawtConfig  *self,
+                      const gchar  *id,
+                      const gchar  *name,
+                      const gchar  *members,
+                      GError      **error)
+{
+    YamlNode *rooms_node;
+    g_autoptr(YamlNode) entry = NULL;
+    g_autoptr(YamlNode) id_node = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);
+
+    /*
+     * The same validation the room manager applies, here as well.
+     *
+     * Not because one of them is redundant: this writes a file and that
+     * builds the live object, and a room accepted into `clawtilla.yaml`
+     * that the manager will refuse at the next start is a config that
+     * looks saved and does nothing.  Never accept a value the same
+     * daemon can already prove it will refuse later.
+     */
+    if (!clawt_is_valid_id(id)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "'%s' is not a usable room id: ids may hold only "
+                    "lowercase letters, digits, '-' and '_', and must not "
+                    "start with punctuation", id != NULL ? id : "");
+        return FALSE;
+    }
+
+    if (clawt_agent_id_is_reserved(id)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "'%s' is a sender name clawtilla's own routing keys "
+                    "on, so it cannot also be a room", id);
+        return FALSE;
+    }
+
+    if (clawt_config_get_agent(self, id) != NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_ALREADY_EXISTS,
+                    "'%s' is an agent, and a room of the same name would "
+                    "hide your conversation with it -- pick another name",
+                    id);
+        return FALSE;
+    }
+
+    if (room_entry(self, id) != NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_ALREADY_EXISTS,
+                    "there is already a room called '%s'", id);
+        return FALSE;
+    }
+
+    rooms_node = node_at_path(self->root, "rooms", FALSE);
+
+    if (rooms_node == NULL ||
+        yaml_node_get_node_type(rooms_node) != YAML_NODE_SEQUENCE) {
+        g_autoptr(YamlNode) fresh = yaml_node_new_sequence(NULL);
+
+        yaml_mapping_set_member(yaml_node_get_mapping(self->root),
+                                "rooms", fresh);
+        rooms_node = node_at_path(self->root, "rooms", FALSE);
+        apply_schema_comment(rooms_node, "rooms");
+    }
+
+    entry = yaml_node_new_mapping(NULL);
+    id_node = yaml_node_new_string(id);
+    yaml_mapping_set_member(yaml_node_get_mapping(entry), "id", id_node);
+
+    yaml_sequence_add_element(yaml_node_get_sequence(rooms_node), entry);
+
+    if (name != NULL && *name != '\0')
+        clawt_config_set_room_string(self, id, "name", name);
+
+    if (members != NULL)
+        clawt_config_set_room_members(self, id, members);
+
+    return TRUE;
+}
+
+gboolean
+clawt_config_remove_room(ClawtConfig *self, const gchar *id)
+{
+    YamlNode *rooms_node;
+    YamlSequence *sequence;
+    guint i;
+    guint length;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);
+    g_return_val_if_fail(id != NULL, FALSE);
+
+    rooms_node = node_at_path(self->root, "rooms", FALSE);
+
+    if (rooms_node == NULL ||
+        yaml_node_get_node_type(rooms_node) != YAML_NODE_SEQUENCE)
+        return FALSE;
+
+    sequence = yaml_node_get_sequence(rooms_node);
+    length = yaml_sequence_get_length(sequence);
+
+    for (i = 0; i < length; i++) {
+        YamlNode *element = yaml_sequence_get_element(sequence, i);
+
+        if (yaml_node_get_node_type(element) != YAML_NODE_MAPPING)
+            continue;
+
+        if (g_strcmp0(member_string(yaml_node_get_mapping(element), "id"),
+                      id) != 0)
+            continue;
+
+        yaml_sequence_remove_element(sequence, i);
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+gboolean
+clawt_config_set_room_string(ClawtConfig *self,
+                             const gchar *id,
+                             const gchar *key,
+                             const gchar *value)
+{
+    YamlNode *entry;
+    g_autoptr(YamlNode) node = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);
+
+    entry = room_entry(self, id);
+
+    if (entry == NULL || key == NULL)
+        return FALSE;
+
+    if (value == NULL) {
+        yaml_mapping_remove_member(yaml_node_get_mapping(entry), key);
+        return TRUE;
+    }
+
+    node = yaml_node_new_string(value);
+    yaml_mapping_set_member(yaml_node_get_mapping(entry), key, node);
+
+    return TRUE;
+}
+
+gboolean
+clawt_config_set_room_members(ClawtConfig *self,
+                              const gchar *id,
+                              const gchar *members)
+{
+    YamlNode *entry;
+    g_autoptr(YamlNode) list = NULL;
+    g_auto(GStrv) parts = NULL;
+    gsize i;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);
+
+    entry = room_entry(self, id);
+
+    if (entry == NULL)
+        return FALSE;
+
+    /*
+     * Written as a sequence, because that is what the reader expects.
+     *
+     * A list written as a scalar is accepted, echoed back and read as
+     * the default -- which for members means a room with nobody in it,
+     * reported as saved.
+     */
+    list = yaml_node_new_sequence(NULL);
+    parts = g_strsplit(members != NULL ? members : "", ",", -1);
+
+    for (i = 0; parts[i] != NULL; i++) {
+        const gchar *member = g_strstrip(parts[i]);
+        g_autoptr(YamlNode) node = NULL;
+
+        if (*member == '\0')
+            continue;
+
+        node = yaml_node_new_string(member);
+        yaml_sequence_add_element(yaml_node_get_sequence(list), node);
+    }
+
+    yaml_mapping_set_member(yaml_node_get_mapping(entry), "members", list);
+
+    return TRUE;
+}
+
+gboolean
+clawt_config_set_room_boolean(ClawtConfig *self,
+                              const gchar *id,
+                              const gchar *key,
+                              gboolean     value)
+{
+    YamlNode *entry;
+    g_autoptr(YamlNode) node = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);
+
+    entry = room_entry(self, id);
+
+    if (entry == NULL || key == NULL)
+        return FALSE;
+
+    node = yaml_node_new_boolean(value);
+    yaml_mapping_set_member(yaml_node_get_mapping(entry), key, node);
+
+    return TRUE;
+}
+
+gboolean
+clawt_config_set_room_int(ClawtConfig *self,
+                          const gchar *id,
+                          const gchar *key,
+                          gint64       value)
+{
+    YamlNode *entry;
+    g_autoptr(YamlNode) node = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);
+
+    entry = room_entry(self, id);
+
+    if (entry == NULL || key == NULL)
+        return FALSE;
+
+    node = yaml_node_new_int(value);
+    yaml_mapping_set_member(yaml_node_get_mapping(entry), key, node);
+
+    return TRUE;
+}
+
 gboolean
 clawt_config_remove_agent(ClawtConfig *self, const gchar *id)
 {

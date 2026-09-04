@@ -290,6 +290,100 @@ ClawtAgentConfig *clawt_config_add_agent(ClawtConfig  *self,
 gboolean clawt_config_remove_agent(ClawtConfig *self, const gchar *id);
 
 /**
+ * clawt_config_add_room:
+ * @self: a #ClawtConfig
+ * @id: the room's id
+ * @name: (nullable): display name
+ * @members: (nullable): comma-separated agent ids
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Adds a `rooms:` entry, so a room made from a client survives a
+ * restart.
+ *
+ * Writing the config is not creating the room, exactly as it is not for
+ * an agent: clawt_config_save() and a manager reload are both still
+ * required.
+ *
+ * Returns: %TRUE if it was added
+ */
+gboolean clawt_config_add_room(ClawtConfig  *self,
+                               const gchar  *id,
+                               const gchar  *name,
+                               const gchar  *members,
+                               GError      **error);
+
+/**
+ * clawt_config_remove_room:
+ * @self: a #ClawtConfig
+ * @id: the room
+ *
+ * Removes its `rooms:` entry.  The transcript on disk is left alone --
+ * removing a room is a configuration change, and destroying the record
+ * of what was said in it is not.
+ *
+ * Returns: %TRUE if there was one
+ */
+gboolean clawt_config_remove_room(ClawtConfig *self, const gchar *id);
+
+/**
+ * clawt_config_set_room_string:
+ * @self: a #ClawtConfig
+ * @id: the room
+ * @key: which key
+ * @value: (nullable): the value, or %NULL to remove the key
+ *
+ * Returns: %TRUE if the room exists
+ */
+gboolean clawt_config_set_room_string(ClawtConfig *self,
+                                      const gchar *id,
+                                      const gchar *key,
+                                      const gchar *value);
+
+/**
+ * clawt_config_set_room_members:
+ * @self: a #ClawtConfig
+ * @id: the room
+ * @members: (nullable): comma-separated agent ids
+ *
+ * Written as a YAML sequence, because a list written as a scalar is
+ * accepted, echoed back and read as the default -- which for members is
+ * a room with nobody in it, reported as saved.
+ *
+ * Returns: %TRUE if the room exists
+ */
+gboolean clawt_config_set_room_members(ClawtConfig *self,
+                                       const gchar *id,
+                                       const gchar *members);
+
+/**
+ * clawt_config_set_room_boolean:
+ * @self: a #ClawtConfig
+ * @id: the room
+ * @key: which key
+ * @value: the value
+ *
+ * Returns: %TRUE if the room exists
+ */
+gboolean clawt_config_set_room_boolean(ClawtConfig *self,
+                                       const gchar *id,
+                                       const gchar *key,
+                                       gboolean     value);
+
+/**
+ * clawt_config_set_room_int:
+ * @self: a #ClawtConfig
+ * @id: the room
+ * @key: which key
+ * @value: the value
+ *
+ * Returns: %TRUE if the room exists
+ */
+gboolean clawt_config_set_room_int(ClawtConfig *self,
+                                   const gchar *id,
+                                   const gchar *key,
+                                   gint64       value);
+
+/**
  * clawt_config_adopt_libreclaw:
  * @agent: the agent being imported
  * @config_path: a standalone libreclaw config.yaml, which may not exist

@@ -167,6 +167,46 @@ clawt_room_is_group(ClawtRoom *self)
     return self->members->len > 2;
 }
 
+gboolean
+clawt_room_is_declared(const gchar *room_id)
+{
+    if (room_id == NULL)
+        return FALSE;
+
+    /*
+     * A derived room is one the daemon names for itself, and its
+     * membership follows from who exists rather than from anything
+     * anybody wrote down.  Told apart by the prefixes that already name
+     * them, because those prefixes are the only place the distinction
+     * has ever lived -- and a colon cannot appear in a declared id, so
+     * the two sets cannot overlap.
+     */
+    return !g_str_has_prefix(room_id, "dm:") &&
+           !g_str_has_prefix(room_id, "routine:") &&
+           !g_str_has_prefix(room_id, "trigger:");
+}
+
+gchar *
+clawt_room_member_list(ClawtRoom *self)
+{
+    g_autoptr(GString) out = NULL;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_ROOM(self), NULL);
+
+    out = g_string_new(NULL);
+
+    for (i = 0; i < self->members->len; i++) {
+        if (out->len > 0)
+            g_string_append_c(out, ',');
+
+        g_string_append(out, g_ptr_array_index(self->members, i));
+    }
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+
 guint
 clawt_room_get_max_hops(ClawtRoom *self)
 {

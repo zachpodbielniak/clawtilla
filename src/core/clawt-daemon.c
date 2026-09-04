@@ -5528,6 +5528,12 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
         clawt_agent_manager_get_memory_scopes(self->agents));
 
     self->rooms = clawt_room_manager_new(transcript_dir);
+
+    /*
+     * Before the config's rooms are loaded, so a `rooms:` entry named
+     * after an agent is refused with the rest rather than after them.
+     */
+    clawt_room_manager_set_agents(self->rooms, self->agents);
     clawt_room_manager_load(self->rooms, self->config);
 
     /*

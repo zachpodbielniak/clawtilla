@@ -355,20 +355,191 @@ clawt_daemon_handle_room(
         const gchar *members = clawt_ipc_payload_string(payload, "members");
         ClawtRoom *room;
 
+        if (room_id == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "which room should be created?");
+
+        /*
+         * Written to clawtilla.yaml as well as made.
+         *
+         * A room that lives only in the running daemon is one a person
+         * makes in a client, uses, restarts the daemon, and cannot
+         * find -- with its transcript still on disk and nothing to
+         * reopen it, since clawt_room_manager_load_direct() restores
+         * only the `dm:` files.  The config write comes first so a
+         * refusal there costs nothing.
+         */
+        if (!clawt_config_add_room(self->config, room_id, name, members,
+                                   &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
         room = clawt_room_manager_create(self->rooms, room_id, name, &error);
 
-        if (room == NULL)
+        if (room == NULL) {
+            clawt_config_remove_room(self->config, room_id);
             return clawt_ipc_error_new(request, error->code, error->message);
+        }
 
         if (members != NULL) {
             g_auto(GStrv) parts = g_strsplit(members, ",", -1);
             gsize i;
 
-            for (i = 0; parts[i] != NULL; i++)
-                clawt_room_add_member(room, g_strstrip(parts[i]));
+            for (i = 0; parts[i] != NULL; i++) {
+                const gchar *member = g_strstrip(parts[i]);
+
+                if (*member != '\0')
+                    clawt_room_add_member(room, member);
+            }
         }
 
+        /*
+         * The mention rule, when the caller said anything about it.
+         * Otherwise the room resolves it from its own shape, which is
+         * the answer somebody editing the file by hand also gets.
+         */
+        if (json_object_has_member(payload, "require_mention")) {
+            gboolean require =
+                clawt_ipc_payload_boolean(payload, "require_mention", TRUE);
+
+            clawt_room_set_require_mention(room, require);
+            clawt_config_set_room_boolean(self->config, room_id,
+                                          "require_mention", require);
+        }
+
+        if (!clawt_config_save(self->config, &error))
+            g_warning("room %s was created but not saved: %s", room_id,
+                      error->message);
+
         clawt_event_bus_emit(self->bus, "room.created", room_id);
+
+        return clawt_ipc_response_new(request, NULL);
+    }
+
+    if (g_strcmp0(kind, "room.remove") == 0) {
+        const gchar *room_id = clawt_ipc_payload_string(payload, "room");
+
+        if (room_id == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "which room should be removed?");
+
+        if (!clawt_room_is_declared(room_id))
+            return clawt_ipc_error_new(
+                request, CLAWT_ERROR_INVALID_ARGUMENT,
+                "that conversation is not a room somebody made -- it "
+                "follows from who exists, so there is no entry to remove "
+                "and it would come back the moment they spoke again");
+
+        if (clawt_room_manager_get(self->rooms, room_id) == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "no such room");
+
+        clawt_config_remove_room(self->config, room_id);
+        clawt_room_manager_remove(self->rooms, room_id);
+
+        if (!clawt_config_save(self->config, &error))
+            g_warning("room %s was removed but the config was not saved: "
+                      "%s", room_id, error->message);
+
+        clawt_event_bus_emit(self->bus, "room.changed", room_id);
+
+        /*
+         * The transcript stays.  Removing a room is a configuration
+         * change; destroying the record of what was said in it is not,
+         * and is not recoverable.  Reported, because nothing will
+         * reopen that file on its own.
+         */
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "transcript_kept");
+        json_builder_add_boolean_value(builder, TRUE);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "room.set") == 0) {
+        const gchar *room_id = clawt_ipc_payload_string(payload, "room");
+        const gchar *members = clawt_ipc_payload_string(payload, "members");
+        const gchar *name = clawt_ipc_payload_string(payload, "name");
+        ClawtRoom *room;
+
+        if (room_id == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "which room should be changed?");
+
+        if (!clawt_room_is_declared(room_id))
+            return clawt_ipc_error_new(
+                request, CLAWT_ERROR_INVALID_ARGUMENT,
+                "that conversation's members follow from who exists, so "
+                "there is nothing here to edit");
+
+        room = clawt_room_manager_get(self->rooms, room_id);
+
+        if (room == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "no such room");
+
+        if (name != NULL) {
+            clawt_room_set_name(room, name);
+            clawt_config_set_room_string(self->config, room_id, "name",
+                                         name);
+        }
+
+        if (members != NULL) {
+            g_auto(GStrv) parts = g_strsplit(members, ",", -1);
+            GPtrArray *current = clawt_room_get_members(room);
+            g_autoptr(GPtrArray) stale =
+                g_ptr_array_new_with_free_func(g_free);
+            gsize i;
+            guint k;
+
+            for (i = 0; parts[i] != NULL; i++) {
+                const gchar *member = g_strstrip(parts[i]);
+
+                if (*member != '\0')
+                    clawt_room_add_member(room, member);
+            }
+
+            /*
+             * And the ones no longer named.  Collected before removing,
+             * since removing during the walk frees the strings it is
+             * reading.
+             */
+            for (k = 0; k < current->len; k++) {
+                const gchar *member = g_ptr_array_index(current, k);
+                gboolean listed = FALSE;
+
+                for (i = 0; parts[i] != NULL; i++) {
+                    if (g_strcmp0(g_strstrip(parts[i]), member) == 0) {
+                        listed = TRUE;
+                        break;
+                    }
+                }
+
+                if (!listed)
+                    g_ptr_array_add(stale, g_strdup(member));
+            }
+
+            for (k = 0; k < stale->len; k++)
+                clawt_room_remove_member(room,
+                                         g_ptr_array_index(stale, k));
+
+            clawt_config_set_room_members(self->config, room_id, members);
+        }
+
+        if (json_object_has_member(payload, "require_mention")) {
+            gboolean require =
+                clawt_ipc_payload_boolean(payload, "require_mention", TRUE);
+
+            clawt_room_set_require_mention(room, require);
+            clawt_config_set_room_boolean(self->config, room_id,
+                                          "require_mention", require);
+        }
+
+        if (!clawt_config_save(self->config, &error))
+            g_warning("room %s was changed but not saved: %s", room_id,
+                      error->message);
+
+        clawt_event_bus_emit(self->bus, "room.changed", room_id);
 
         return clawt_ipc_response_new(request, NULL);
     }
@@ -391,7 +562,37 @@ clawt_daemon_handle_room(
             return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
                                        "which agent should be added?");
 
+        /*
+         * And not into a conversation that is derived rather than
+         * declared.
+         *
+         * This would happily add a third member to `dm:oryx:user`, and
+         * room_for() honours membership as permission -- so that agent
+         * could then read and post into the operator's private
+         * conversation with another.  Only the operator can reach this
+         * verb, so it was a footgun rather than an escalation; putting
+         * room editing in a client is exactly what would make somebody
+         * do it by accident.
+         */
+        if (!clawt_room_is_declared(room_id))
+            return clawt_ipc_error_new(
+                request, CLAWT_ERROR_INVALID_ARGUMENT,
+                "that conversation's members follow from who exists -- "
+                "adding somebody to it would give them a private "
+                "conversation that is not theirs");
+
         clawt_room_add_member(room, agent_id);
+
+        {
+            g_autofree gchar *list = clawt_room_member_list(room);
+
+            clawt_config_set_room_members(self->config, room_id, list);
+        }
+
+        if (!clawt_config_save(self->config, &error))
+            g_warning("room %s gained %s but was not saved: %s", room_id,
+                      agent_id, error->message);
+
         clawt_event_bus_emit(self->bus, "room.changed", room_id);
 
         return clawt_ipc_response_new(request, NULL);

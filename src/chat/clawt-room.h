@@ -98,6 +98,38 @@ gboolean clawt_room_get_require_mention(ClawtRoom *self);
 gboolean clawt_room_is_group(ClawtRoom *self);
 
 /**
+ * clawt_room_is_declared:
+ * @room_id: a room id
+ *
+ * Whether this room is one somebody wrote down, as against one the
+ * daemon derives from who exists.
+ *
+ * A direct room, a routine's room and a trigger's room have no config
+ * entry: their members follow from the pair or the owner, so editing
+ * one is meaningless and removing one deletes nothing and comes back
+ * the moment the two speak again.  Told apart by the prefixes that
+ * already name them -- a declared id cannot contain a colon, so the two
+ * sets cannot overlap.
+ *
+ * Takes an id rather than a room because every caller is checking
+ * whether it may act on a name it was handed.
+ *
+ * Returns: %TRUE if it is a room somebody declared
+ */
+gboolean clawt_room_is_declared(const gchar *room_id);
+
+/**
+ * clawt_room_member_list:
+ * @self: a #ClawtRoom
+ *
+ * Its members as one comma-separated string, which is how they cross
+ * IPC and how they are written back to the config.
+ *
+ * Returns: (transfer full): the list, possibly empty
+ */
+gchar *clawt_room_member_list(ClawtRoom *self);
+
+/**
  * clawt_room_message_is_for:
  * @self: a #ClawtRoom
  * @message: (transfer none): a message posted to the room

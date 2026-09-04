@@ -18,6 +18,14 @@ struct _ClawtRoomManager {
     GHashTable *rooms;          /* gchar* -> ClawtRoom* */
     GPtrArray  *order;          /* room ids, creation order */
     gchar      *transcript_dir;
+
+    /*
+     * Borrowed, and only so that a room cannot be named after an agent.
+     * The daemon owns both and outlives this; a reference would be a
+     * cycle, since the agent manager is reachable from the router which
+     * is reachable from here.
+     */
+    ClawtAgentManager *agents;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtRoomManager, clawt_room_manager, G_TYPE_OBJECT)
@@ -178,6 +186,15 @@ insert_room(ClawtRoomManager *self, ClawtRoom *room)
     return room;
 }
 
+void
+clawt_room_manager_set_agents(ClawtRoomManager  *self,
+                              ClawtAgentManager *agents)
+{
+    g_return_if_fail(CLAWT_IS_ROOM_MANAGER(self));
+
+    self->agents = agents;
+}
+
 ClawtRoom *
 clawt_room_manager_create(ClawtRoomManager  *self,
                           const gchar       *room_id,
@@ -199,6 +216,40 @@ clawt_room_manager_create(ClawtRoomManager  *self,
     if (g_hash_table_contains(self->rooms, room_id)) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_ALREADY_EXISTS,
                     "there is already a room called '%s'", room_id);
+        return NULL;
+    }
+
+    /*
+     * And not a name the routing already means something by.
+     *
+     * `user`, `clawtilla`, `routine` and `trigger` are the senders every
+     * routing rule keys on, and nothing checked them here at all -- a
+     * room called `clawtilla` was creatable, and messages in it would
+     * have been read as the daemon's own.
+     */
+    if (clawt_agent_id_is_reserved(room_id)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "'%s' is a sender name clawtilla's own routing keys "
+                    "on, so it cannot also be a room", room_id);
+        return NULL;
+    }
+
+    /*
+     * Nor a name an agent already has.
+     *
+     * Every resolver in the tree tries a room first and falls back to
+     * treating the id as an agent -- which is what lets a client ask for
+     * a conversation by naming the agent.  A room called `oryx` would
+     * therefore shadow the direct conversation with `oryx`, and the
+     * symptom is a chat that opens on the wrong transcript rather than
+     * anything that looks like a naming collision.
+     */
+    if (self->agents != NULL &&
+        clawt_agent_manager_get(self->agents, room_id) != NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_ALREADY_EXISTS,
+                    "'%s' is an agent, and a room of the same name would "
+                    "hide your conversation with it -- pick another name",
+                    room_id);
         return NULL;
     }
 
@@ -503,8 +554,50 @@ clawt_room_manager_load(ClawtRoomManager *self, ClawtConfig *config)
             created++;
         }
 
+        /*
+         * Reconciled, not only added.
+         *
+         * This loop had no way to remove anybody, so taking a member out
+         * of `clawtilla.yaml` and reloading left them in the room --
+         * still receiving, still counted towards whether it is a group.
+         * It only ever looked right because the config was read once at
+         * start and a restart rebuilt the room from nothing.  Editing
+         * members is a routine thing to do now, which turns that from a
+         * latent bug into a constant one.
+         */
         for (j = 0; spec->members != NULL && spec->members[j] != NULL; j++)
             clawt_room_add_member(room, spec->members[j]);
+
+        {
+            GPtrArray *current = clawt_room_get_members(room);
+            g_autoptr(GPtrArray) stale =
+                g_ptr_array_new_with_free_func(g_free);
+            guint k;
+
+            for (k = 0; k < current->len; k++) {
+                const gchar *member = g_ptr_array_index(current, k);
+                gboolean still_listed = FALSE;
+
+                for (j = 0; spec->members != NULL &&
+                            spec->members[j] != NULL; j++) {
+                    if (g_strcmp0(spec->members[j], member) == 0) {
+                        still_listed = TRUE;
+                        break;
+                    }
+                }
+
+                if (!still_listed)
+                    g_ptr_array_add(stale, g_strdup(member));
+            }
+
+            /*
+             * Collected first: removing during the walk would free the
+             * strings being read.
+             */
+            for (k = 0; k < stale->len; k++)
+                clawt_room_remove_member(room,
+                                         g_ptr_array_index(stale, k));
+        }
 
         /*
          * Only when the config actually said so.  Calling the setter
