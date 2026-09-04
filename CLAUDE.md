@@ -510,6 +510,19 @@ critical fired.
   `session.persist_dir`, so the database is `<state_dir>/sessions/libreclaw.db`.
   `clawt_usage_database_path()` is the one spelling, used by the renderer,
   `/reset` and the usage reader.
+- **`ai_cli_client_chat_sync()` cannot stream, and for years nothing else
+  was used.** ai-glib emits a turn as it happens -- `AiEvent` with text,
+  thinking, tool-started, tool-finished and status, translated by all ten
+  providers, on `AiEventSource::event` plus the older `delta`/`tool-use`
+  signals. `grep -rn ai_event_source deps/libreclaw/src/` returned *nothing*:
+  produced by everything, connected by nobody. And wiring the signals up
+  alone would not have helped, because `chat_sync()` collects the child's
+  whole output before parsing any of it, so no event can fire until the turn
+  is over. Every CLI provider implements `AiStreamable` over the same parser
+  and returns the same `AiResponse`; `session_chat_blocking()` takes that
+  route when steps are on and `chat_sync()` otherwise. Events arrive on the
+  **worker thread** either way -- `g_task_run_in_thread()` leaves no
+  thread-default, so capture the context on the main thread and marshal.
 - **It runs one turn per message and never merges them.** `LcSession` holds
   its own `GQueue` and `drain_next_message()` pops a single entry, so a drain
   that hands over five messages is five turns. Anything clawtilla records about
