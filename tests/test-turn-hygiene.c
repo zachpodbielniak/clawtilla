@@ -1044,6 +1044,54 @@ test_a_steer_is_held_out_of_the_transcript(void)
     fixture_teardown(&fixture);
 }
 
+static void
+test_queued_follow_ups_are_visible_in_mailbox(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) listing = NULL;
+    JsonArray *held;
+    guint i;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n  - id: worker\n");
+    mark_busy(&fixture, "chief", TRUE);
+    for (i = 0; i < 5; i++) {
+        g_autofree gchar *body = g_strdup_printf(
+            "{\"target\":\"chief\",\"body\":\"follow-up %u\"}", i);
+        g_autoptr(JsonNode) sent = request(&fixture, "msg.send", body);
+
+        g_assert_false(clawt_ipc_frame_is_error(sent));
+    }
+    for (i = 0; i < 2; i++) {
+        guint j;
+
+        g_clear_pointer(&listing, json_node_unref);
+        listing = request(&fixture, "mailbox.list", "{\"agent\":\"chief\"}");
+        held = json_object_get_array_member(payload_of(listing), "follow_ups");
+        g_assert_cmpuint(json_array_get_length(held), ==, 5);
+        for (j = 0; j < 5; j++) {
+            JsonObject *item = json_array_get_object_element(held, j);
+            g_autofree gchar *expected = g_strdup_printf("follow-up %u", j);
+
+            g_assert_cmpstr(json_object_get_string_member(item, "body"), ==, expected);
+            g_assert_cmpstr(json_object_get_string_member(item, "room"), ==, "dm:chief:user");
+        }
+    }
+    g_assert_cmpuint(history_length(&fixture, "chief"), ==, 0);
+    g_clear_pointer(&listing, json_node_unref);
+    listing = request(&fixture, "mailbox.list", "{\"agent\":\"worker\"}");
+    g_assert_cmpuint(json_array_get_length(json_object_get_array_member(
+        payload_of(listing), "follow_ups")), ==, 0);
+
+    mark_busy(&fixture, "chief", FALSE);
+    clawt_daemon_turn_settle(fixture.daemon, "chief");
+    g_clear_pointer(&listing, json_node_unref);
+    listing = request(&fixture, "mailbox.list", "{\"agent\":\"chief\"}");
+    g_assert_cmpuint(json_array_get_length(json_object_get_array_member(
+        payload_of(listing), "follow_ups")), ==, 0);
+    g_assert_cmpuint(history_length(&fixture, "chief"), ==, 1);
+    fixture_teardown(&fixture);
+}
+
 /*
  * And it arrives exactly once when the turn settles.
  *
@@ -1309,6 +1357,8 @@ main(int argc, char **argv)
     g_test_add_func("/turn-hygiene/two-daemons-do-not-share-a-draft",
                     test_two_daemons_do_not_share_a_draft);
 
+    g_test_add_func("/turn-hygiene/queued-follow-ups-visible-in-mailbox",
+                    test_queued_follow_ups_are_visible_in_mailbox);
     g_test_add_func("/turn-hygiene/a-steer-is-held-out-of-the-transcript",
                     test_a_steer_is_held_out_of_the_transcript);
     g_test_add_func("/turn-hygiene/a-settle-delivers-a-steer-once",

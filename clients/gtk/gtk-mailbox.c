@@ -6,9 +6,7 @@
  *
  * This file is part of clawtilla.
  *
- * What is queued for an agent that is not running.  Empty while it is,
- * because delivery acknowledges at the socket -- which the page says
- * rather than leaving the emptiness to be read as an answer.
+ * Delivery backlog and follow-ups held while an agent is mid-turn.
  *
  * One of the pages split out of clawt-window.c.  Everything it needs
  * from the window -- the instance struct, and the helpers more than one
@@ -84,12 +82,28 @@ add_mailbox_row(ClawtWindow *self, GtkListBox *list, JsonObject *item,
                 gboolean dead)
 {
     GtkWidget *row = adw_action_row_new();
-    GtkWidget *ack = gtk_button_new_with_label("Ack");
+    GtkWidget *ack;
     g_autofree gchar *title = NULL;
 
     title = g_strdup_printf("from %s", clawt_json_string(item, "from", "?"));
     clawt_gtk_set_row_text(row, title, clawt_json_string(item, "body", ""));
 
+    adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(row), 0);
+
+    if (g_strcmp0(clawt_json_string(item, "state", ""),
+                  "queued-follow-up") == 0) {
+        g_autofree gchar *queued_title = g_strdup_printf(
+            "Queued follow-up · %s", clawt_json_string(item, "room", ""));
+
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), queued_title);
+        adw_action_row_add_prefix(ADW_ACTION_ROW(row),
+            clawt_gtk_badge("Queued follow-up", "accent",
+                            clawt_json_string(item, "room", "")));
+        gtk_list_box_append(list, row);
+        return;
+    }
+
+    ack = gtk_button_new_with_label("Ack");
     if (clawt_json_string(item, "last_error", NULL) != NULL) {
         GtkWidget *warn = clawt_gtk_badge("failed", "error",
                                           clawt_json_string(item, "last_error", ""));
@@ -156,6 +170,20 @@ refresh_mailbox_once(ClawtWindow *self)
         add_mailbox_row(self, self->mailbox_list,
                         json_array_get_object_element(items, i), FALSE);
 
+    if (json_object_has_member(clawt_payload_of(reply), "follow_ups")) {
+        JsonArray *held = json_object_get_array_member(
+            clawt_payload_of(reply), "follow_ups");
+        g_autofree gchar *summary = g_strdup_printf(
+            "%" G_GINT64_FORMAT " waiting for delivery · %u queued follow-ups",
+            json_object_get_int_member(clawt_payload_of(reply), "depth"),
+            json_array_get_length(held));
+
+        gtk_label_set_text(self->mailbox_summary, summary);
+        for (i = 0; i < json_array_get_length(held); i++)
+            add_mailbox_row(self, self->mailbox_list,
+                            json_array_get_object_element(held, i), FALSE);
+    }
+
     /*
      * Dead letters in the same list, after the waiting ones.  Nothing is
      * dropped silently, so an item that ran out of attempts has to be
@@ -220,6 +248,8 @@ clawt_gtk_build_mailbox_page(ClawtWindow *self)
     gtk_widget_set_margin_end(GTK_WIDGET(self->mailbox_list), 12);
     gtk_widget_set_margin_bottom(GTK_WIDGET(self->mailbox_list), 12);
 
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll),
                                   GTK_WIDGET(self->mailbox_list));
     gtk_widget_set_vexpand(scroll, TRUE);

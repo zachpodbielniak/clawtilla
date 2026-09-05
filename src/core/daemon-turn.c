@@ -951,6 +951,13 @@ clawt_daemon_turn_settle(ClawtDaemon *self, const gchar *agent_id)
         if (steered == NULL)
             break;
 
+        if (self->bus != NULL) {
+            g_autoptr(ClawtEvent) changed =
+                clawt_event_new("mailbox.follow-ups-changed", agent_id);
+
+            clawt_event_bus_publish(self->bus, changed);
+        }
+
         if (self->router == NULL)
             break;
 
@@ -1107,6 +1114,9 @@ clawt_daemon_turn_steer(ClawtDaemon *self,
         clawt_event_set_detail_int(
             event, "held",
             (gint64)clawt_steer_queue_pending(self->steers, target));
+        clawt_event_bus_publish(self->bus, event);
+        g_clear_pointer(&event, clawt_event_free);
+        event = clawt_event_new("mailbox.follow-ups-changed", target);
         clawt_event_bus_publish(self->bus, event);
     }
 

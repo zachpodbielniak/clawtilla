@@ -279,8 +279,10 @@ This is the single most misleading thing about the queue, and it has cost a sess
 Delivery acknowledges an item the moment it reaches the socket, and the
 message arrives as an ordinary turn.  So the mailbox holds only what
 queued while the agent was *stopped* -- and for an agent that is up and
-connected, the steady state is zero.  An empty mailbox is not evidence
-that nothing arrived.
+connected, the steady state is zero.  An empty delivery queue is not evidence
+that nothing arrived. The client Mailbox view also lists queued follow-ups
+held while the agent is busy; those are separate from this durable queue
+and are described below.
 
 An agent asked to consult a peer went looking in its own mailbox for the
 answer, found nothing, and concluded -- correctly, and uselessly -- that
@@ -422,3 +424,18 @@ and fires on post, ack, dead-lettering, requeue and the expiry sweep.
 It deliberately does not fire on a lease, on a retry, or when an
 abandoned lease is reclaimed: none of those changes the depth, because a
 leased item is counted the same as a pending one.
+
+** Viewing queued follow-ups
+
+The Mailbox page in GTK and web, and ~clawtilla mailbox list <agent>~,
+also show each follow-up you sent while that agent was busy. These entries
+include the full text and conversation and are labelled as queued follow-ups.
+Reading the list leaves them queued; when the turn settles they leave this
+view and enter the conversation together as one follow-up turn per thread.
+
+These follow-ups are held in daemon memory, separately from the durable
+SQLite mailbox. They survive an agent interrupt but not a daemon restart.
+They have no mailbox acknowledgement or requeue action. The ~mailbox.list~
+reply includes them in ~follow_ups~; ~items~ and ~depth~ still describe only
+the durable delivery queue. ~mailbox.follow-ups-changed~ tells clients to
+refresh on enqueue and drain.

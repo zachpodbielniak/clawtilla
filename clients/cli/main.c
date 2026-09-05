@@ -2316,6 +2316,7 @@ cmd_mailbox(int argc, char *argv[])
     if (g_strcmp0(verb, "list") == 0 || g_strcmp0(verb, "dead") == 0) {
         g_autofree gchar *kind = g_strdup_printf("mailbox.%s", verb);
         JsonArray *items;
+        JsonArray *held;
         guint i;
 
         reply = call(client, kind, build_payload("agent", agent_id, NULL));
@@ -2325,7 +2326,18 @@ cmd_mailbox(int argc, char *argv[])
         items = json_object_get_array_member(json_node_get_object(reply),
                                              "items");
 
-        if (json_array_get_length(items) == 0) {
+        held = json_object_has_member(json_node_get_object(reply), "follow_ups")
+            ? json_object_get_array_member(json_node_get_object(reply), "follow_ups")
+            : NULL;
+        for (i = 0; held != NULL && i < json_array_get_length(held); i++) {
+            JsonObject *item = json_array_get_object_element(held, i);
+
+            g_print("Queued follow-up (%s):\n%s\n\n",
+                    member_or(item, "room", ""), member_or(item, "body", ""));
+        }
+
+        if (json_array_get_length(items) == 0 &&
+            (held == NULL || json_array_get_length(held) == 0)) {
             g_print("%s's mailbox is empty.\n", agent_id);
             return EXIT_SUCCESS;
         }
@@ -2343,7 +2355,7 @@ cmd_mailbox(int argc, char *argv[])
                         json_object_get_string_member(item, "last_error"));
         }
 
-        g_print("\n%" G_GINT64_FORMAT " waiting.\n",
+        g_print("\n%" G_GINT64_FORMAT " waiting for delivery.\n",
                 json_object_get_int_member(json_node_get_object(reply),
                                            "depth"));
 

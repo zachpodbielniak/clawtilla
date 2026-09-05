@@ -59,6 +59,16 @@ clawt_daemon_handle_mailbox(
                                           g_ptr_array_index(items, i));
 
         json_builder_end_array(builder);
+        if (g_strcmp0(kind, "mailbox.list") == 0) {
+            JsonNode *steers = json_node_new(JSON_NODE_ARRAY);
+
+            json_node_take_array(steers, self->steers != NULL
+                ? clawt_steer_queue_snapshot(self->steers,
+                    clawt_ipc_payload_string(payload, "agent"))
+                : json_array_new());
+            json_builder_set_member_name(builder, "follow_ups");
+            json_builder_add_value(builder, steers);
+        }
         json_builder_set_member_name(builder, "depth");
         json_builder_add_int_value(builder, clawt_mailbox_depth(mailbox));
         json_builder_end_object(builder);

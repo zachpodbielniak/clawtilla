@@ -42,6 +42,7 @@
 #endif
 
 #include <glib-object.h>
+#include <json-glib/json-glib.h>
 
 #include "clawt-types.h"
 
@@ -76,6 +77,19 @@ guint clawt_steer_queue_add(ClawtSteerQueue *self,
                             const gchar     *thread_id,
                             const gchar     *agent_id,
                             const gchar     *text);
+
+/**
+ * clawt_steer_queue_snapshot:
+ * @self: a #ClawtSteerQueue
+ * @agent_id: the recipient to list
+ *
+ * Copies each held message, including its room and body, in thread order
+ * and send order within each thread. Reading does not drain the queue.
+ *
+ * Returns: (transfer full): an array of queued message objects
+ */
+JsonArray *clawt_steer_queue_snapshot(ClawtSteerQueue *self,
+                                     const gchar *agent_id);
 
 /**
  * clawt_steer_queue_drain:

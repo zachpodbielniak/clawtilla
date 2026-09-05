@@ -35,8 +35,7 @@ item_row(JsonObject *item, const gchar *agent_id, gboolean dead)
     gint64 attempts = clawt_web_member_int(item, "attempts", 0);
     g_autofree gchar *when =
         clawt_web_relative_time(clawt_web_member_int(item, "created_at", 0));
-    g_autofree gchar *body = clawt_web_one_line(
-        clawt_web_member(item, "body", ""), 220);
+    const gchar *body = clawt_web_member(item, "body", "");
     g_autofree gchar *escaped_agent = g_uri_escape_string(agent_id, NULL,
                                                           FALSE);
     g_autofree gchar *escaped_id = g_uri_escape_string(id, NULL, FALSE);
@@ -54,7 +53,9 @@ item_row(JsonObject *item, const gchar *agent_id, gboolean dead)
     }
 
     clawt_web_add(head, clawt_web_badge(priority, priority_tone(priority)));
-    clawt_web_add(head, clawt_web_badge(state, dead ? "bad" : "neutral"));
+    clawt_web_add(head, clawt_web_badge(
+        g_strcmp0(state, "queued-follow-up") == 0 ? "Queued follow-up" : state,
+        dead ? "bad" : "neutral"));
 
     if (attempts > 0) {
         g_autofree gchar *text =
@@ -73,7 +74,13 @@ item_row(JsonObject *item, const gchar *agent_id, gboolean dead)
 
     htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(head));
 
-    clawt_web_add(row, clawt_web_text(body, "list-item-sub"));
+    {
+        HtmxElement *text = HTMX_ELEMENT(clawt_web_text(body, "list-item-sub"));
+
+        htmx_element_set_attribute(text, "style",
+                                   "white-space:pre-wrap;overflow-wrap:anywhere");
+        clawt_web_add(row, text);
+    }
 
     /*
      * Why it failed, verbatim. A dead letter with no reason on it sends
@@ -82,6 +89,12 @@ item_row(JsonObject *item, const gchar *agent_id, gboolean dead)
      */
     if (last_error != NULL)
         clawt_web_add(row, clawt_web_notice(last_error, "bad"));
+
+    if (g_strcmp0(state, "queued-follow-up") == 0) {
+        clawt_web_add(row, clawt_web_text(
+            clawt_web_member(item, "room", ""), "muted small"));
+        return HTMX_ELEMENT(g_steal_pointer(&row));
+    }
 
     {
         g_autoptr(HtmxDiv) actions = htmx_div_new();
@@ -116,6 +129,7 @@ add_list(ClawtWebApp *app, HtmxElement *parent, const gchar *agent_id,
     g_autoptr(HtmxDiv) card = clawt_web_card(title, summary);
     HtmxElement *body = clawt_web_card_body(card);
     JsonArray *items;
+    JsonArray *held;
     guint i;
 
     clawt_web_payload_set(payload, "agent", agent_id);
@@ -124,21 +138,17 @@ add_list(ClawtWebApp *app, HtmxElement *parent, const gchar *agent_id,
                                clawt_web_payload_take(g_steal_pointer(&payload)));
     items = clawt_web_member_array(clawt_web_root(reply), "items");
 
-    if (items == NULL || json_array_get_length(items) == 0) {
+    held = dead ? NULL : clawt_web_member_array(clawt_web_root(reply),
+                                                 "follow_ups");
+
+    if ((items == NULL || json_array_get_length(items) == 0) &&
+        (held == NULL || json_array_get_length(held) == 0)) {
         clawt_web_add(body, clawt_web_empty(
             dead ? "No dead letters" : "The queue is empty",
             dead
             ? "Nothing has run out of attempts."
-            /*
-             * Said outright, because an empty queue for a *running*
-             * agent means nothing at all: delivery acknowledges an item
-             * the moment it reaches the socket and hands it over as an
-             * ordinary turn, so the mailbox only ever holds what queued
-             * while the agent was stopped.
-             */
-            : "A running agent's mailbox is almost always empty -- "
-              "delivery hands each item straight over as a turn. What "
-              "waits here is what arrived while the agent was stopped."));
+            : "No messages are waiting for delivery or for the current "
+              "turn to finish. Delivered messages are in the conversation."));
     }
 
     {
@@ -150,7 +160,12 @@ add_list(ClawtWebApp *app, HtmxElement *parent, const gchar *agent_id,
             clawt_web_add(list, item_row(
                 json_array_get_object_element(items, i), agent_id, dead));
 
-        if (items != NULL && json_array_get_length(items) > 0)
+        for (i = 0; held != NULL && i < json_array_get_length(held); i++)
+            clawt_web_add(list, item_row(
+                json_array_get_object_element(held, i), agent_id, FALSE));
+
+        if ((items != NULL && json_array_get_length(items) > 0) ||
+            (held != NULL && json_array_get_length(held) > 0))
             htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(list));
     }
 
@@ -175,8 +190,8 @@ clawt_web_mailbox_body(ClawtWebApp *app, const gchar *agent_id)
 
     clawt_web_add(pad, clawt_web_section_title("Mailbox"));
     clawt_web_add(pad, clawt_web_text(
-        "A durable queue. Messaging a stopped agent puts the message here, "
-        "and starting it delivers the backlog in order.", "lede"));
+        "Messages waiting for delivery and follow-ups you sent while the agent "
+        "was busy. Queued follow-ups run when its current turn finishes.", "lede"));
 
     add_list(app, HTMX_ELEMENT(pad), agent_id, "mailbox.list",
              "Waiting", NULL, FALSE);

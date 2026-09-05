@@ -91,6 +91,39 @@ clawt_steer_queue_add(ClawtSteerQueue *self,
     return entry->texts->len;
 }
 
+JsonArray *
+clawt_steer_queue_snapshot(ClawtSteerQueue *self, const gchar *agent_id)
+{
+    JsonArray *items;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_STEER_QUEUE(self), NULL);
+    g_return_val_if_fail(agent_id != NULL, NULL);
+
+    items = json_array_new();
+    for (i = 0; i < self->entries->len; i++) {
+        SteerEntry *entry = g_ptr_array_index(self->entries, i);
+        guint j;
+
+        if (g_strcmp0(entry->agent_id, agent_id) != 0)
+            continue;
+
+        for (j = 0; j < entry->texts->len; j++) {
+            JsonObject *item = json_object_new();
+
+            json_object_set_string_member(item, "from", "user");
+            json_object_set_string_member(item, "to", entry->agent_id);
+            json_object_set_string_member(item, "room", entry->thread_id);
+            json_object_set_string_member(item, "body",
+                                           g_ptr_array_index(entry->texts, j));
+            json_object_set_string_member(item, "state", "queued-follow-up");
+            json_array_add_object_element(items, item);
+        }
+    }
+
+    return items;
+}
+
 gchar *
 clawt_steer_queue_drain(ClawtSteerQueue  *self,
                         const gchar      *agent_id,
