@@ -672,6 +672,162 @@ test_an_implemented_room_limit_is_quiet(void)
 }
 
 /*
+ * `members:` written as one comma-separated value names nobody, and is
+ * told so.
+ *
+ * This is the mistake people make, and every consequence of it was
+ * silent and pointed the wrong way.  One member is not three, so the
+ * room is not a group, so the require_mention resolver returns FALSE
+ * and the room answers *everything* -- a typo turning the mention gate
+ * off, which is the opposite of what somebody writing a standup room
+ * asked for.  The only visible trace was a sidebar reading "1 members".
+ *
+ * Asserted on the member list as well as on the warning: a message
+ * nobody acts on is still better than an id no agent can ever have
+ * being matched against on every message into that room for ever.
+ */
+static void
+test_a_comma_separated_member_list_is_refused(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(GPtrArray) rooms = NULL;
+    ClawtRoomSpec *spec;
+
+    config = clawt_config_load_from_string(
+        "rooms:\n"
+        "  - id: standup\n"
+        "    members: alice,bob,oryx-research\n", &error);
+
+    g_assert_no_error(error);
+    g_assert_nonnull(config);
+
+    /* Named, with the value quoted and the remedy given. */
+    g_assert_true(warned_about(config, "standup"));
+    g_assert_true(warned_about(config, "alice,bob,oryx-research"));
+    g_assert_true(warned_about(config, "`members:` takes a YAML list"));
+
+    /* And it reaches no room. */
+    rooms = clawt_config_get_rooms(config);
+    g_assert_cmpuint(rooms->len, ==, 1);
+
+    spec = g_ptr_array_index(rooms, 0);
+    g_assert_cmpuint(
+        (spec->members != NULL) ? g_strv_length(spec->members) : 0, ==, 0);
+}
+
+/*
+ * The same three ids written the documented way are three members, and
+ * are not warned about.
+ *
+ * The half of the check that matters: a refusal that also refused the
+ * correct spelling would be found by nobody, because the symptom is the
+ * same silent one-member room.
+ */
+static void
+test_a_yaml_list_of_members_is_three_members(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(GPtrArray) rooms = NULL;
+    ClawtRoomSpec *spec;
+
+    config = clawt_config_load_from_string(
+        "rooms:\n"
+        "  - id: standup\n"
+        "    members:\n"
+        "      - alice\n"
+        "      - bob\n"
+        "      - oryx-research\n", &error);
+
+    g_assert_no_error(error);
+    g_assert_nonnull(config);
+    g_assert_false(warned_about(config, "is ignored"));
+
+    rooms = clawt_config_get_rooms(config);
+    spec = g_ptr_array_index(rooms, 0);
+
+    g_assert_cmpuint(g_strv_length(spec->members), ==, 3);
+    g_assert_cmpstr(spec->members[2], ==, "oryx-research");
+
+    /*
+     * And the routing consequence, which is the other thing the bad
+     * spelling silently took away: three members is a group, and a
+     * group member does not run under `sender-room`.
+     */
+    g_assert_true(clawt_config_agent_is_in_a_group_room(config, "bob"));
+}
+
+/*
+ * A single member written as a plain scalar is still one member.
+ *
+ * node_to_strv() treats a lone scalar as a list of one on purpose --
+ * `allow_paths: /srv/data` is what people write for a key they have
+ * only ever seen hold one thing, and refusing it once silently emptied
+ * an operator's confinement.  The comma check must not take that with
+ * it, so the ordinary one-member room is asserted here rather than left
+ * to be noticed.
+ */
+static void
+test_a_lone_member_scalar_is_still_a_member(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(GPtrArray) rooms = NULL;
+    ClawtRoomSpec *spec;
+
+    config = clawt_config_load_from_string(
+        "rooms:\n"
+        "  - id: pair\n"
+        "    members: alice\n", &error);
+
+    g_assert_no_error(error);
+    g_assert_nonnull(config);
+    g_assert_false(warned_about(config, "is ignored"));
+
+    rooms = clawt_config_get_rooms(config);
+    spec = g_ptr_array_index(rooms, 0);
+
+    g_assert_cmpuint(g_strv_length(spec->members), ==, 1);
+    g_assert_cmpstr(spec->members[0], ==, "alice");
+}
+
+/*
+ * A member id that is merely malformed gets the id rule, not the comma
+ * sentence -- being told about YAML lists would send somebody looking
+ * at their indentation.
+ */
+static void
+test_a_malformed_member_gets_the_id_rule(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = NULL;
+
+    config = clawt_config_load_from_string(
+        "rooms:\n"
+        "  - id: standup\n"
+        "    members:\n"
+        "      - Alice\n"
+        "      - bob\n", &error);
+
+    g_assert_no_error(error);
+    g_assert_nonnull(config);
+
+    g_assert_true(warned_about(config, "'Alice' is ignored"));
+    g_assert_true(warned_about(config, "lowercase letters"));
+    g_assert_false(warned_about(config, "YAML list"));
+
+    /* bob is untouched by his neighbour being wrong. */
+    {
+        g_autoptr(GPtrArray) rooms = clawt_config_get_rooms(config);
+        ClawtRoomSpec *spec = g_ptr_array_index(rooms, 0);
+
+        g_assert_cmpuint(g_strv_length(spec->members), ==, 1);
+        g_assert_cmpstr(spec->members[0], ==, "bob");
+    }
+}
+
+/*
  * A config that sets nothing inert must say nothing, or the warning is
  * noise people learn to scroll past.
  */
@@ -1817,6 +1973,14 @@ main(int argc, char *argv[])
                     test_an_implemented_jitter_is_quiet);
     g_test_add_func("/config/implemented-room-limit-is-quiet",
                     test_an_implemented_room_limit_is_quiet);
+    g_test_add_func("/config/comma-separated-member-list-is-refused",
+                    test_a_comma_separated_member_list_is_refused);
+    g_test_add_func("/config/yaml-list-of-members-is-three-members",
+                    test_a_yaml_list_of_members_is_three_members);
+    g_test_add_func("/config/lone-member-scalar-is-still-a-member",
+                    test_a_lone_member_scalar_is_still_a_member);
+    g_test_add_func("/config/malformed-member-gets-the-id-rule",
+                    test_a_malformed_member_gets_the_id_rule);
     g_test_add_func("/config/ordinary-config-is-quiet",
                     test_an_ordinary_config_is_quiet);
     g_test_add_func("/config/scalar-written-as-a-list-warns",

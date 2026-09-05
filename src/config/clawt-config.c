@@ -1962,6 +1962,72 @@ clawt_config_remove_team(ClawtConfig *self, const gchar *team_id)
     return FALSE;
 }
 
+/*
+ * Why @member cannot be a room member, or %NULL when it can.
+ *
+ * One predicate for the two places that care: clawt_config_get_rooms()
+ * drops the member so nothing ever matches against it, and
+ * warn_about_rooms() reports it once per load.  Two copies would be two
+ * answers to one question, and the reporting copy is the one nobody
+ * would notice had drifted.
+ *
+ * A comma gets its own sentence because it is the mistake people
+ * actually make, and because the generic message is unhelpful for it:
+ * being told that `alice,bob,oryx-research` may not contain a comma
+ * does not suggest writing three list entries.  It is not *split* here
+ * -- node_to_strv() deliberately does not split a scalar on commas, so
+ * that a path may contain one, and guessing at the intent in this one
+ * key would be the same mistake in the other direction.
+ */
+static const gchar *
+room_member_refusal(const gchar *member)
+{
+    if (member == NULL || *member == '\0')
+        return "an empty member id names nobody";
+
+    if (strchr(member, ',') != NULL)
+        return "this looks like a comma-separated list written as one "
+               "value; `members:` takes a YAML list, one id per entry";
+
+    if (!clawt_is_valid_id(member))
+        return "member ids may hold only lowercase letters, digits, '-' "
+               "and '_', and must not start with punctuation";
+
+    return NULL;
+}
+
+/*
+ * The members of one room, with anything unusable left out.
+ *
+ * Dropped rather than kept, because a member id no agent can ever have
+ * is matched against on every message into that room for the life of
+ * the fleet, and never matches.  What the author lost is reported by
+ * warn_about_rooms(); what is left here is a list every entry of which
+ * could name somebody.
+ */
+static GStrv
+room_members_from_node(YamlNode *node)
+{
+    g_auto(GStrv) raw = node_to_strv(node);
+    GPtrArray *out;
+    gsize i;
+
+    if (raw == NULL)
+        return NULL;
+
+    out = g_ptr_array_new_with_free_func(g_free);
+
+    for (i = 0; raw[i] != NULL; i++) {
+        if (room_member_refusal(raw[i]) != NULL)
+            continue;
+
+        g_ptr_array_add(out, g_strdup(raw[i]));
+    }
+
+    g_ptr_array_add(out, NULL);
+    return (GStrv)g_ptr_array_free(out, FALSE);
+}
+
 GPtrArray *
 clawt_config_get_rooms(ClawtConfig *self)
 {
@@ -2006,7 +2072,8 @@ clawt_config_get_rooms(ClawtConfig *self)
         spec->id = g_strdup(id);
         spec->name = g_strdup(member_string(yaml_node_get_mapping(entry),
                                             "name"));
-        spec->members = node_to_strv(node_at_path(entry, "members", FALSE));
+        spec->members = room_members_from_node(
+                            node_at_path(entry, "members", FALSE));
 
         {
             YamlNode *node = node_at_path(entry, "require_mention", FALSE);
@@ -2655,6 +2722,72 @@ warn_unknown_keys(ClawtConfig *self,
     g_list_free(members);
 }
 
+/*
+ * Reports room members that cannot name anybody.
+ *
+ * Rooms are the one list `warn_unknown_keys()` skips, so nothing looked
+ * at them at all -- and the failure this catches is quiet in the worst
+ * direction.  `members: alice,bob,oryx-research` is one member, not
+ * three, so the room has fewer than three members, so
+ * clawt_room_is_group() is FALSE, so the require_mention resolver
+ * returns FALSE and the room answers *everything*.  A typo turned the
+ * mention gate off, which is the opposite of what the author asked for,
+ * and the only visible trace was a sidebar reading "1 members".  It
+ * also kept clawt_config_agent_is_in_a_group_room() from seeing a
+ * group, so the members never got `room` routing either.
+ *
+ * A warning rather than an error: a fleet is edited by hand and
+ * half-built states are ordinary, and one bad room must not stop the
+ * daemon starting the other nine.
+ */
+static void
+warn_about_rooms(ClawtConfig *self)
+{
+    YamlNode *node;
+    YamlSequence *sequence;
+    guint i;
+    guint length;
+
+    node = node_at_path(self->root, "rooms", FALSE);
+
+    if (node == NULL || yaml_node_get_node_type(node) != YAML_NODE_SEQUENCE)
+        return;
+
+    sequence = yaml_node_get_sequence(node);
+    length = yaml_sequence_get_length(sequence);
+
+    for (i = 0; i < length; i++) {
+        YamlNode *entry = yaml_sequence_get_element(sequence, i);
+        g_auto(GStrv) members = NULL;
+        const gchar *id;
+        gsize j;
+
+        if (entry == NULL ||
+            yaml_node_get_node_type(entry) != YAML_NODE_MAPPING)
+            continue;
+
+        id = member_string(yaml_node_get_mapping(entry), "id");
+        members = node_to_strv(node_at_path(entry, "members", FALSE));
+
+        for (j = 0; members != NULL && members[j] != NULL; j++) {
+            const gchar *refusal = room_member_refusal(members[j]);
+
+            if (refusal == NULL)
+                continue;
+
+            /*
+             * The raw list, not the filtered one: this is the only
+             * place that still knows what was written, and naming the
+             * value is what makes the message actionable.
+             */
+            g_ptr_array_add(self->warnings,
+                g_strdup_printf("room '%s': member '%s' is ignored -- %s",
+                                (id != NULL) ? id : "", members[j],
+                                refusal));
+        }
+    }
+}
+
 static ClawtConfig *
 config_from_parser(YamlParser *parser, const gchar *path, GError **error)
 {
@@ -2687,6 +2820,7 @@ config_from_parser(YamlParser *parser, const gchar *path, GError **error)
     warn_unknown_keys(self, self->root, NULL);
     warn_block_keys(self, self->root, NULL, NULL);
     warn_block_keys_in_lists(self);
+    warn_about_rooms(self);
     reload_agents(self);
     reload_integrations(self);
     reload_routines(self);

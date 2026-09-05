@@ -2520,6 +2520,49 @@ it on and a room of two does not.
 more members, so this is a room where it was set explicitly, or one
 declared before the default existed.
 
+If you did not set it, count the members the daemon actually found ---
+~clawtilla room list~, or the room's subtitle in either sidebar.  A room
+you meant to have three members that reports one is the case below, and
+it is the one that turns the mention gate off without saying so.
+
+** A room has one member and I listed three
+
+~members:~ was written as a single comma-separated value:
+
+#+begin_src yaml
+rooms:
+  - id: standup
+    members: alice,bob,oryx-research    # one member, not three
+#+end_src
+
+It takes a YAML list:
+
+#+begin_src yaml
+rooms:
+  - id: standup
+    members:
+      - alice
+      - bob
+      - oryx-research
+#+end_src
+
+The comma form is not split, deliberately: a lone scalar *is* a list of
+one for every list key in the schema --- ~allow_paths: /srv/data~ is what
+people write --- and a path may legitimately contain a comma, so
+guessing at the intent here would make such a path unwritable.
+
+The daemon warns at load, names the room and the value, and leaves the
+member out rather than storing an id no agent can ever have.  Before that
+warning existed this was silent in the worst direction: one member is not
+three, so the room was not a group, so ~require_mention~ resolved to
+false and the room answered *everything* --- and the members never got
+~room~ routing either, because that also turns on the count.  The only
+visible trace was a sidebar reading "1 members".
+
+The same warning covers a member id that is merely malformed --- ~Alice~
+rather than ~alice~ --- and there it quotes the id rule instead, since
+being told about YAML lists would send you to look at your indentation.
+
 ** An agent contradicts itself between messages in the same room
 
 It is in more than one session there.  Under ~sender-room~ an agent gets
