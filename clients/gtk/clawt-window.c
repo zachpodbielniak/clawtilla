@@ -5829,6 +5829,7 @@ clawt_window_dispose(GObject *object)
     g_clear_pointer(&self->unread, g_hash_table_unref);
     g_clear_pointer(&self->dm_rooms, g_hash_table_unref);
     g_clear_pointer(&self->sidebar_rooms, g_hash_table_unref);
+    g_clear_pointer(&self->room_rosters, g_hash_table_unref);
     g_clear_pointer(&self->alerts, g_ptr_array_unref);
     g_clear_pointer(&self->alerts_agent, g_free);
     g_clear_pointer(&self->pending, g_ptr_array_unref);
@@ -5903,6 +5904,9 @@ clawt_window_init(ClawtWindow *self)
     self->alerts = g_ptr_array_new_with_free_func(alert_free);
     self->dm_rooms = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                            g_free);
+    self->room_rosters = g_hash_table_new_full(
+                             g_str_hash, g_str_equal, g_free,
+                             (GDestroyNotify)g_ptr_array_unref);
     self->sidebar_rooms = g_hash_table_new_full(g_str_hash, g_str_equal,
                                                 g_free, NULL);
     self->pending = g_ptr_array_new_with_free_func(

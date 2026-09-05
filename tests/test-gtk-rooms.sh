@@ -125,4 +125,36 @@ $CLI room history standup 2>/dev/null | grep -q "@bob take this" \
 $CLI mailbox list bob 2>/dev/null | grep -q "waiting" \
     || fail "the named member was not delivered to"
 
+# The `@` completion, end to end: typing "@b" offers the one member
+# whose id starts with it, clicking the row inserts "bob " at the
+# cursor, and the message that arrives names bob.
+#
+# Driven through the window rather than asserted on fill_mention_list()
+# because the two failures worth catching here are not in the matcher:
+# a roster that never reached the window offers nothing, and clicking a
+# row is where the two crashes in this composer were.  Both look like a
+# completion that "just does not work" and neither logs anything.
+DISPLAY="$DISPLAY_NUM" xdotool mousemove --window "$WID" 700 665 click 1
+sleep 1
+DISPLAY="$DISPLAY_NUM" xdotool type --window "$WID" --delay 30 "@b"
+sleep 2
+
+# One candidate, so its row is the only one and sits directly above the
+# composer.
+DISPLAY="$DISPLAY_NUM" xdotool mousemove --window "$WID" 511 608 click 1
+sleep 2
+
+pgrep -x clawtilla-gtk >/dev/null \
+    || fail "the client died when a completion was chosen"
+
+DISPLAY="$DISPLAY_NUM" xdotool type --window "$WID" --delay 30 "via completion"
+sleep 1
+DISPLAY="$DISPLAY_NUM" xdotool key --window "$WID" Return
+sleep 4
+
+# The trailing space is part of the insert: without it the id runs into
+# the next word and names nobody.
+$CLI room history standup 2>/dev/null | grep -q "@bob via completion" \
+    || fail "the completion did not insert the member it offered"
+
 echo "test-gtk-rooms: ok"

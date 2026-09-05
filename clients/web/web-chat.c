@@ -905,9 +905,22 @@ draft_key_for(ClawtWebApp *app, const gchar *agent_id)
     return clawt_draft_key(clawt_web_app_get_connection_name(app), agent_id);
 }
 
+static gboolean
+members_include(JsonArray *members, const gchar *name)
+{
+    guint i;
+
+    for (i = 0; members != NULL && i < json_array_get_length(members); i++) {
+        if (g_strcmp0(json_array_get_string_element(members, i), name) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
 static HtmxElement *
 composer_for(ClawtWebApp *app, const gchar *base, const gchar *target,
-             gboolean busy, gboolean attachments)
+             gboolean busy, gboolean attachments, JsonArray *members)
 {
     g_autoptr(HtmxElement) foot = HTMX_ELEMENT(htmx_footer_new());
     g_autoptr(HtmxDiv) inner = htmx_div_new();
@@ -919,10 +932,21 @@ composer_for(ClawtWebApp *app, const gchar *base, const gchar *target,
     g_autofree gchar *key = draft_key_for(app, agent_id);
     g_autofree gchar *draft = clawt_draft_store_get(NULL, key);
     g_autoptr(HtmxForm) form = clawt_web_form(action);
+    g_autoptr(HtmxDiv) pop = htmx_div_new();
+    g_autoptr(HtmxDiv) pop_inner = htmx_div_new();
     g_autoptr(HtmxTextarea) area = htmx_textarea_new_with_name("body");
 
     htmx_element_add_class(foot, "composer");
     htmx_element_add_class(HTMX_ELEMENT(inner), "composer-inner");
+
+    /*
+     * The completion lists live here rather than inside the entry's
+     * row: they are taller than the composer and sit above it, and the
+     * composer is the box that reserves the transcript's scrollbar
+     * gutter -- which makes it a scroll container, which clips.
+     */
+    htmx_element_add_class(HTMX_ELEMENT(pop), "composer-pop");
+    htmx_element_add_class(HTMX_ELEMENT(pop_inner), "composer-pop-inner");
 
     htmx_element_set_attribute(HTMX_ELEMENT(area), "rows", "1");
     htmx_element_set_attribute(HTMX_ELEMENT(area), "placeholder",
@@ -972,7 +996,74 @@ composer_for(ClawtWebApp *app, const gchar *base, const gchar *target,
         htmx_element_set_attribute(HTMX_ELEMENT(popover), "hx-swap",
                                    "innerHTML");
 
-        htmx_node_add_child(HTMX_NODE(inner), HTMX_NODE(popover));
+        htmx_node_add_child(HTMX_NODE(pop_inner), HTMX_NODE(popover));
+    }
+
+    /*
+     * The `@` completions, rendered whole rather than fetched.
+     *
+     * Unlike the slash commands there is nothing to ask for: the roster
+     * came back with the page, and a room with twenty members is twenty
+     * short list items.  So this costs no request at all, which is what
+     * this client wants on a tailnet with no route out.
+     *
+     * The script only decides what to *offer*.  Whether an `@name`
+     * actually reaches somebody is settled by clawt_mention_names() in
+     * the daemon, so a name offered here that the matcher would not
+     * accept produces a message that reaches nobody -- which is why the
+     * list is built from the room's own members and never from
+     * anything somebody typed.
+     */
+    if (members != NULL && json_array_get_length(members) > 0) {
+        g_autoptr(HtmxDiv) popover = htmx_div_new();
+        guint i;
+
+        htmx_element_add_class(HTMX_ELEMENT(popover), "slash-popover");
+        htmx_element_add_class(HTMX_ELEMENT(popover), "mention-popover");
+        htmx_element_set_id(HTMX_ELEMENT(popover), "mention-popover");
+
+        for (i = 0; i < json_array_get_length(members); i++) {
+            const gchar *member = json_array_get_string_element(members, i);
+            g_autoptr(HtmxButton) item = NULL;
+            g_autofree gchar *label = NULL;
+
+            if (member == NULL || *member == '\0')
+                continue;
+
+            label = g_strconcat("@", member, NULL);
+            item = htmx_button_new_with_label(label);
+            htmx_element_add_class(HTMX_ELEMENT(item), "slash-item");
+            htmx_element_add_class(HTMX_ELEMENT(item), "mention-item");
+            htmx_element_set_attribute(HTMX_ELEMENT(item), "type", "button");
+            htmx_element_set_attribute(HTMX_ELEMENT(item), "data-mention",
+                                       member);
+            htmx_node_add_child(HTMX_NODE(popover), HTMX_NODE(item));
+        }
+
+        /*
+         * `@all` last, because it is the expensive one: it costs every
+         * member a model turn.  Offered here and not to an agent, which
+         * is the whole of the rule -- this client always posts as the
+         * operator.
+         *
+         * Skipped when a member is literally called `all`, which a
+         * hand-edited config can still produce: the broadcast resolver
+         * defers to that member, so a second row spelled the same way
+         * would insert identical text and mean something else.
+         */
+        if (!members_include(members, CLAWT_MENTION_ALL)) {
+            g_autoptr(HtmxButton) item =
+                htmx_button_new_with_label("@" CLAWT_MENTION_ALL);
+
+            htmx_element_add_class(HTMX_ELEMENT(item), "slash-item");
+            htmx_element_add_class(HTMX_ELEMENT(item), "mention-item");
+            htmx_element_set_attribute(HTMX_ELEMENT(item), "type", "button");
+            htmx_element_set_attribute(HTMX_ELEMENT(item), "data-mention",
+                                       CLAWT_MENTION_ALL);
+            htmx_node_add_child(HTMX_NODE(popover), HTMX_NODE(item));
+        }
+
+        htmx_node_add_child(HTMX_NODE(pop_inner), HTMX_NODE(popover));
     }
 
     if (busy)
@@ -989,6 +1080,9 @@ composer_for(ClawtWebApp *app, const gchar *base, const gchar *target,
         htmx_element_set_attribute(HTMX_ELEMENT(send), "type", "submit");
         htmx_node_add_child(HTMX_NODE(inner), HTMX_NODE(send));
     }
+
+    htmx_node_add_child(HTMX_NODE(pop), HTMX_NODE(pop_inner));
+    htmx_node_add_child(HTMX_NODE(foot), HTMX_NODE(pop));
 
     htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(inner));
 
@@ -1078,7 +1172,39 @@ clawt_web_room_body(ClawtWebApp *app, const gchar *room_id)
         htmx_node_add_child(HTMX_NODE(main_el), HTMX_NODE(body));
     }
 
-    clawt_web_add(main_el, composer_for(app, "r", room_id, FALSE, FALSE));
+    /*
+     * The roster, for the `@` completion.  Asked for at render time
+     * rather than cached beside the sidebar's set of room ids: a member
+     * added or removed while somebody has the page open would otherwise
+     * be offered, or missing, until the next fleet listing -- and an
+     * `@name` for somebody who has left reaches nobody with nothing in
+     * the reply to say so.
+     */
+    {
+        g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+        g_autoptr(JsonNode) reply = NULL;
+        JsonArray *rooms;
+        JsonArray *members = NULL;
+        guint i;
+
+        reply = clawt_web_app_call(app, "room.list",
+                                   clawt_web_payload_take(
+                                       g_steal_pointer(&payload)));
+        rooms = clawt_web_member_array(clawt_web_root(reply), "rooms");
+
+        for (i = 0; rooms != NULL && i < json_array_get_length(rooms); i++) {
+            JsonObject *room = json_array_get_object_element(rooms, i);
+
+            if (g_strcmp0(clawt_web_member(room, "id", ""), room_id) != 0)
+                continue;
+
+            members = clawt_web_member_array(room, "members");
+            break;
+        }
+
+        clawt_web_add(main_el,
+                      composer_for(app, "r", room_id, FALSE, FALSE, members));
+    }
 
     return g_steal_pointer(&main_el);
 }
@@ -1156,7 +1282,7 @@ clawt_web_chat_body_full(ClawtWebApp *app, const gchar *agent_id,
                                "interrupt") != NULL;
 
         clawt_web_add(main_el,
-                      composer_for(app, "a", agent_id, busy, TRUE));
+                      composer_for(app, "a", agent_id, busy, TRUE, NULL));
     }
     else
         clawt_web_add(main_el, clawt_web_text(

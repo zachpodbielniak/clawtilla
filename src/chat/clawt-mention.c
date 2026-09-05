@@ -229,3 +229,77 @@ clawt_mention_list(const gchar *body, GPtrArray *candidates)
 
     return named;
 }
+
+gchar *
+clawt_mention_prefix_at(const gchar *body, gsize offset)
+{
+    const gchar *at;
+    const gchar *p;
+
+    if (body == NULL || offset > strlen(body))
+        return NULL;
+
+    /*
+     * Back from the cursor to the `@` that opened the token.
+     *
+     * Anything an id cannot contain ends the search: a mention is one
+     * word, so a space, a newline or punctuation between the `@` and
+     * the cursor means whatever was being typed is no longer a name.
+     */
+    at = NULL;
+
+    for (p = body + offset; p > body; p--) {
+        gchar c = p[-1];
+
+        if (c == '@') {
+            at = p - 1;
+            break;
+        }
+
+        if (!g_ascii_isalnum(c) && c != '_' && c != '-')
+            return NULL;
+    }
+
+    if (at == NULL)
+        return NULL;
+
+    /*
+     * And the same boundary rule delivery applies, so an address does
+     * not open a member list halfway through typing it.
+     */
+    if (!boundary_before(body, at))
+        return NULL;
+
+    return g_strndup(at + 1, (gsize)((body + offset) - (at + 1)));
+}
+
+GPtrArray *
+clawt_mention_candidates(const gchar *prefix, GPtrArray *members)
+{
+    GPtrArray *out = g_ptr_array_new_with_free_func(g_free);
+    gsize length;
+    guint i;
+
+    if (members == NULL)
+        return out;
+
+    length = (prefix != NULL) ? strlen(prefix) : 0;
+
+    for (i = 0; i < members->len; i++) {
+        const gchar *member = g_ptr_array_index(members, i);
+
+        if (member == NULL)
+            continue;
+
+        /*
+         * Case-insensitive, because the `@` form is.  A completion that
+         * offered fewer names than the matcher accepts would send
+         * somebody looking for a member that is right there.
+         */
+        if (length == 0 ||
+            g_ascii_strncasecmp(member, prefix, length) == 0)
+            g_ptr_array_add(out, g_strdup(member));
+    }
+
+    return out;
+}

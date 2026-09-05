@@ -1858,6 +1858,7 @@ refresh_agents_once(ClawtWindow *self)
      */
     g_hash_table_remove_all(self->dm_rooms);
     g_hash_table_remove_all(self->sidebar_rooms);
+    clawt_gtk_forget_room_members(self);
 
     for (i = 0; i < json_array_get_length(agents); i++) {
         JsonObject *agent = json_array_get_object_element(agents, i);
@@ -1881,6 +1882,16 @@ refresh_agents_once(ClawtWindow *self)
         if (clawt_json_boolean(room, "declared", FALSE))
             g_hash_table_add(self->sidebar_rooms,
                              g_strdup(clawt_json_string(room, "id", "")));
+
+        /*
+         * Its roster, for the `@` completion.  Every room rather than
+         * the open one: selecting a room does not fetch a listing, so a
+         * roster kept only for the selection would arrive one unrelated
+         * event too late and the completion would do nothing until
+         * then.
+         */
+        clawt_gtk_note_room_members(self, clawt_json_string(room, "id", ""),
+                                    json_object_get_member(room, "members"));
     }
 
     /*

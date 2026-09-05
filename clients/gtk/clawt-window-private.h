@@ -552,6 +552,24 @@ struct _ClawtWindow {
     GHashTable        *sidebar_rooms;
 
     /*
+     * Every declared room's members, keyed by room id, for the `@`
+     * completion.
+     *
+     * Cached rather than asked for, because the completion is driven
+     * from ::changed on the composer's buffer -- a request per
+     * keystroke would be a synchronous IPC round trip per character,
+     * on the thread drawing the window.
+     *
+     * Every room rather than the open one, because selecting a room
+     * does not fetch a fleet listing: a roster filled only for the
+     * selection would be filled on the listing *after* somebody opened
+     * the room, so the completion did nothing until an unrelated event
+     * arrived.  Rebuilt on every listing, so a member added or removed
+     * reaches it without anybody reselecting anything.
+     */
+    GHashTable        *room_rosters;
+
+    /*
      * Which room the transcript on screen actually is.
      *
      * Not derivable from selected_agent: a chat with an agent is the
@@ -901,6 +919,25 @@ clawt_gtk_persist_draft(ClawtWindow *self, const gchar *agent_id,
 
 gchar *
 clawt_gtk_stored_draft(ClawtWindow *self, const gchar *agent_id);
+
+/*
+ * Records one room's roster for the `@` completion.
+ *
+ * Takes the `members` array straight off a `room.list` entry.  The
+ * table is emptied at the start of each listing rather than merged
+ * into, so a room that has been removed -- or a member who has left --
+ * cannot leave a name behind: completing it would write an `@name` that
+ * reaches nobody, and nothing about the reply would say so.
+ */
+void
+clawt_gtk_note_room_members(ClawtWindow *self, const gchar *room_id,
+                            JsonNode *members);
+
+/*
+ * Forgets every roster.  Called at the start of a fleet listing.
+ */
+void
+clawt_gtk_forget_room_members(ClawtWindow *self);
 
 void
 clawt_gtk_set_row_text(GtkWidget *row, const gchar *title, const gchar *subtitle);
