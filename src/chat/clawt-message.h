@@ -135,6 +135,17 @@ void clawt_message_set_timestamp(ClawtMessage *self, gint64 timestamp);
 void clawt_message_set_depth(ClawtMessage *self, gint depth);
 
 /**
+ * clawt_message_set_room_id:
+ * @self: a #ClawtMessage
+ * @room_id: the resolved destination room
+ *
+ * Sets the conversation used for routing and loop accounting. The router
+ * applies this to a copy, preserving the caller's original address while
+ * giving every spelling of one conversation the same guard identity.
+ */
+void clawt_message_set_room_id(ClawtMessage *self, const gchar *room_id);
+
+/**
  * clawt_message_get_only_for:
  * @self: a #ClawtMessage
  *

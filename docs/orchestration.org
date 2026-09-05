@@ -1458,6 +1458,8 @@ same source ~clawtilla_recall~ has always filtered on.
 
 ** Loop safety
 
+The router checks each message against its resolved room, regardless of whether the sender named an agent or the room itself. A message from ~alice~ to ~bob~ and a post to ~dm:alice:bob~ therefore share the same cycle history and stall. A stall blocks both directions of that pair, leaves ~carol~'s separate conversation with ~bob~ usable, and is cleared when a person speaks in the stalled room. The original address is preserved on the caller's message; ~clawt_message_set_room_id()~ normalizes the guard's copy before accounting.
+
 Four limits, each answering a different failure.  The defaults:
 
 #+begin_src yaml

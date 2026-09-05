@@ -152,6 +152,7 @@ GETTER(parent_id, parent_id)
     }
 
 SETTER(id, id)
+SETTER(room_id, room_id)
 SETTER(sender_name, sender_name)
 SETTER(task_id, task_id)
 SETTER(parent_id, parent_id)

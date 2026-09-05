@@ -521,6 +521,16 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
      */
     if (self->guard != NULL) {
         g_autoptr(GError) refusal = NULL;
+		g_autoptr(ClawtMessage) guarded = clawt_message_copy(message);
+
+		/*
+		 * The destination may still say "bob", while this conversation
+		 * is dm:alice:bob. Fingerprints and stalls must use the resolved
+		 * room: otherwise Carol's mail to Bob shares Alice's stall, a
+		 * room-addressed resend bypasses it, and a person cannot clear it.
+		 * Copy first so routing does not rewrite the caller's message.
+		 */
+		clawt_message_set_room_id(guarded, clawt_room_get_id(room));
 
         /*
          * With the destination room's own hop limit, which is why the
@@ -532,7 +542,7 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
          * a room declaring a limit was counted against the fleet's.  0
          * means the room said nothing and the fleet's applies.
          */
-        if (!clawt_loop_guard_check_in_room(self->guard, message,
+        if (!clawt_loop_guard_check_in_room(self->guard, guarded,
                                             clawt_room_get_max_hops(room),
                                             recipients->len > 0,
                                             &refusal)) {

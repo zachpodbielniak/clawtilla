@@ -303,6 +303,64 @@ router_teardown(RouterFixture *fixture)
     g_clear_pointer(&fixture->dir, g_free);
 }
 
+/*
+ * A direct conversation has one guard identity however it is addressed.
+ * Check both isolation and recovery, so a guard disabled altogether
+ * cannot make this regression pass.
+ */
+static void
+test_direct_room_stall_identity(void)
+{
+	RouterFixture fixture = { 0 };
+	ClawtRoom *room;
+	g_autoptr(ClawtMessage) message = NULL;
+	g_autoptr(GError) error = NULL;
+
+	router_setup(&fixture);
+	message = clawt_message_new("bob", "alice", "Please check the result.");
+	clawt_message_set_depth(message, 1);
+	g_assert_cmpint(clawt_mailbox_router_send(fixture.router, message, &error), ==, 1);
+	g_assert_no_error(error);
+	room = clawt_room_manager_get_direct(fixture.rooms, "alice", "bob");
+
+	/* A canonical resend must see the first agent-addressed message. */
+	g_assert_cmpint(clawt_mailbox_router_send_to(fixture.router, "alice",
+		clawt_room_get_id(room), "Please check the result.", NULL, 1,
+		&error), ==, -1);
+	g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT);
+	g_clear_error(&error);
+	g_assert_cmpint(clawt_loop_guard_get_stall_reason(fixture.guard,
+		clawt_room_get_id(room)), ==, CLAWT_STALL_REPEATED_MESSAGE);
+	g_assert_cmpint(clawt_loop_guard_get_stall_reason(fixture.guard,
+		"bob"), ==, CLAWT_STALL_NONE);
+	g_assert_cmpstr(clawt_message_get_room_id(message), ==, "bob");
+
+	/* Neither another address nor another body reopens the same pair. */
+	g_assert_cmpint(clawt_mailbox_router_send_to(fixture.router, "alice",
+		"bob", "A different question.", NULL, 1, &error), ==, -1);
+	g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT);
+	g_clear_error(&error);
+	g_assert_cmpint(clawt_mailbox_router_send_to(fixture.router, "bob",
+		"alice", "An answer.", NULL, 1, &error), ==, -1);
+	g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT);
+	g_clear_error(&error);
+	g_assert_cmpint(clawt_mailbox_router_send_to(fixture.router, "carol",
+		"bob", "Unrelated work.", NULL, 1, &error), ==, 1);
+	g_assert_no_error(error);
+
+	/* A person reopens exactly this conversation, through its real room. */
+	g_assert_cmpint(clawt_mailbox_router_send_to(fixture.router, "user",
+		clawt_room_get_id(room), "Please resume.", NULL, 0, &error), ==, 2);
+	g_assert_no_error(error);
+	g_assert_cmpint(clawt_mailbox_router_send(fixture.router, message, &error), ==, 1);
+	g_assert_no_error(error);
+	g_assert_cmpint(clawt_mailbox_router_send(fixture.router, message, &error), ==, -1);
+	g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT);
+	g_assert_cmpint(clawt_loop_guard_get_stall_reason(fixture.guard,
+		clawt_room_get_id(room)), ==, CLAWT_STALL_REPEATED_MESSAGE);
+	router_teardown(&fixture);
+}
+
 /* A three-member room that only delivers what names somebody. */
 static ClawtRoom *
 mention_room(RouterFixture *fixture)
@@ -1520,6 +1578,8 @@ main(int argc, char **argv)
                     test_a_repeat_that_reaches_nobody_does_not_stall_the_room);
     g_test_add_func("/group/guard/repeat-to-somebody-still-stalls",
                     test_a_repeat_that_reaches_somebody_still_stalls_the_room);
+    g_test_add_func("/group/router/direct-room-stall-identity",
+                    test_direct_room_stall_identity);
     g_test_add_func("/group/guard/a-stalled-room-refuses-everything",
                     test_a_stalled_room_refuses_even_a_post_naming_nobody);
     g_test_add_func("/group/guard/hops-apply-to-a-post-naming-nobody",
