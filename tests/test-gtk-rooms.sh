@@ -61,6 +61,41 @@ fail () {
     exit 1
 }
 
+# Polls a check until it passes or the deadline runs out.
+#
+# "Sent" and "delivered" are two different moments, and a fixed sleep
+# between them is a race rather than a wait. This one fired: on a loaded
+# machine the four seconds ran out before the router had queued the
+# message, and the test reported a working delivery as a broken one --
+# which is the worse direction, because a red run sends somebody to look
+# at routing.
+wait_for () {
+    seconds="$1"
+    shift
+    waited=0
+
+    while [ "$waited" -lt "$seconds" ]
+    do
+        if "$@"
+        then
+            return 0
+        fi
+
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    return 1
+}
+
+room_says () {
+    $CLI room history standup 2>/dev/null | grep -q "$1"
+}
+
+bob_has_mail () {
+    $CLI mailbox list bob 2>/dev/null | grep -q "waiting"
+}
+
 cat > "$RUN/config.yaml" <<EOF
 daemon:
   tailscale: false
@@ -119,10 +154,10 @@ pgrep -x clawtilla-gtk >/dev/null \
 
 # And the message actually went somewhere: into the room's transcript,
 # and into the mailbox of the one member it named.
-$CLI room history standup 2>/dev/null | grep -q "@bob take this" \
+wait_for 20 room_says "@bob take this" \
     || fail "the message never reached the room"
 
-$CLI mailbox list bob 2>/dev/null | grep -q "waiting" \
+wait_for 20 bob_has_mail \
     || fail "the named member was not delivered to"
 
 # The `@` completion, end to end: typing "@b" offers the one member
@@ -154,7 +189,50 @@ sleep 4
 
 # The trailing space is part of the insert: without it the id runs into
 # the next word and names nobody.
-$CLI room history standup 2>/dev/null | grep -q "@bob via completion" \
+wait_for 20 room_says "@bob via completion" \
     || fail "the completion did not insert the member it offered"
+
+# The keyboard: arrow onto a name and take it with Return.
+#
+# Return is the gesture worth driving rather than asserting about,
+# because it means two things in this box. With a row highlighted it
+# takes the completion; with none it sends the message, which is what
+# typing `/help` and pressing Return has always done. Both are checked,
+# and the second is the one a keyboard completion would quietly break.
+DISPLAY="$DISPLAY_NUM" xdotool mousemove --window "$WID" 700 665 click 1
+sleep 1
+DISPLAY="$DISPLAY_NUM" xdotool type --window "$WID" --delay 30 "@"
+sleep 2
+DISPLAY="$DISPLAY_NUM" xdotool key --window "$WID" Down
+sleep 1
+DISPLAY="$DISPLAY_NUM" xdotool key --window "$WID" Down
+sleep 1
+DISPLAY="$DISPLAY_NUM" xdotool key --window "$WID" Return
+sleep 2
+
+pgrep -x clawtilla-gtk >/dev/null \
+    || fail "the client died taking a completion from the keyboard"
+
+DISPLAY="$DISPLAY_NUM" xdotool type --window "$WID" --delay 30 "by keyboard"
+sleep 1
+DISPLAY="$DISPLAY_NUM" xdotool key --window "$WID" Return
+sleep 4
+
+# Two Downs from nothing is the second member, and the roster is
+# ordered as clawtilla.yaml lists it.
+wait_for 20 room_says "@bob by keyboard" \
+    || fail "Return did not take the highlighted completion"
+
+# And with no row highlighted, Return still sends rather than
+# completing -- the regression a keyboard completion invites.
+DISPLAY="$DISPLAY_NUM" xdotool mousemove --window "$WID" 700 665 click 1
+sleep 1
+DISPLAY="$DISPLAY_NUM" xdotool type --window "$WID" --delay 30 "plain @"
+sleep 2
+DISPLAY="$DISPLAY_NUM" xdotool key --window "$WID" Return
+sleep 4
+
+wait_for 20 room_says "plain @" \
+    || fail "Return stopped sending while a completion list was open"
 
 echo "test-gtk-rooms: ok"

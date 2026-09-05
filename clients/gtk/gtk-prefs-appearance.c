@@ -109,6 +109,23 @@ static const gchar CLAWT_STRUCTURE_CSS[] =
     "  box-shadow: none;\n"
     "}\n"
     /*
+     * The keyboard-highlighted row in a completion list.
+     *
+     * Not the list's own selection, which is what a click sets and what
+     * inserts: arrowing through the names has to be able to pass over a
+     * row without choosing it, and `::row-selected` is the accept.  So
+     * the highlight is drawn here and tracked separately.
+     *
+     * `@accent_bg_color` rather than the theme's `:selected`, because a
+     * row that looked exactly like a selected one would say the choice
+     * had already been made -- which for the completion above a message
+     * you are still writing is the wrong thing to say.
+     */
+    ".clawt-completion-active {\n"
+    "  background-color: alpha(@accent_bg_color, 0.30);\n"
+    "  border-radius: 6px;\n"
+    "}\n"
+    /*
      * The unread pill.  Filled, because everything else in that row is a
      * coloured caption: filled means for you, text means about the
      * agent.

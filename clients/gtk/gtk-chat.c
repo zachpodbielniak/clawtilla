@@ -3125,6 +3125,7 @@ fill_mention_list(ClawtWindow *self)
         return FALSE;
 
     clawt_gtk_clear_list(self->command_list);
+    self->completion_highlight = -1;
 
     for (i = 0; i < candidates->len; i++) {
         const gchar *member = g_ptr_array_index(candidates, i);
@@ -3189,6 +3190,22 @@ insert_mention(ClawtWindow *self, const gchar *member)
     if (prefix == NULL)
         return;
 
+    /*
+     * Built before the delete, because @member does not survive it.
+     *
+     * It points at the chosen row's own data, and deleting from the
+     * buffer emits ::changed, which runs on_entry_changed(), which
+     * refills the list -- destroying every row, and with them the
+     * string being read here.  Reading it afterwards is a
+     * use-after-free that mostly appears to work: the freed bytes are
+     * usually still intact, so a click inserted the right name and the
+     * keyboard path, arriving a moment differently, inserted nothing at
+     * all and left the half-typed name deleted.
+     *
+     * A trailing space, so the next keystroke is the message.
+     */
+    filled = g_strconcat(member, " ", NULL);
+
     gtk_text_buffer_get_iter_at_mark(buffer, &cursor,
                                      gtk_text_buffer_get_insert(buffer));
     start = cursor;
@@ -3196,9 +3213,6 @@ insert_mention(ClawtWindow *self, const gchar *member)
                                  (gint)g_utf8_strlen(prefix, -1));
 
     gtk_text_buffer_delete(buffer, &start, &cursor);
-
-    /* A trailing space, so the next keystroke is the message. */
-    filled = g_strconcat(member, " ", NULL);
     gtk_text_buffer_insert_at_cursor(buffer, filled, -1);
 }
 
@@ -3559,14 +3573,10 @@ run_slash_command(ClawtWindow *self, const gchar *text, gchar **expanded)
 }
 
 static void
-on_command_row_selected(GtkListBox *list, GtkListBoxRow *row,
-                        gpointer user_data)
+completion_apply(ClawtWindow *self, GtkListBoxRow *row)
 {
-    ClawtWindow *self = user_data;
     const gchar *name;
     g_autofree gchar *filled = NULL;
-
-    (void)list;
 
     if (row == NULL)
         return;
@@ -3614,6 +3624,178 @@ on_command_row_selected(GtkListBox *list, GtkListBoxRow *row,
 }
 
 /*
+ * A click chooses a row.
+ *
+ * `::row-selected` rather than `::row-activated`, because an
+ * #AdwActionRow is not activatable and never emits the latter.  That is
+ * also why the keyboard does not move this selection: doing so would
+ * insert on every arrow press.
+ */
+static void
+on_command_row_selected(GtkListBox *list, GtkListBoxRow *row,
+                        gpointer user_data)
+{
+    (void)list;
+    completion_apply(user_data, row);
+}
+
+/* Is a completion list on screen right now? */
+static gboolean
+completion_showing(ClawtWindow *self)
+{
+    return self->command_revealer != NULL &&
+           gtk_revealer_get_reveal_child(GTK_REVEALER(self->command_revealer));
+}
+
+/* How many rows it holds. */
+static guint
+completion_count(ClawtWindow *self)
+{
+    guint n = 0;
+
+    while (gtk_list_box_get_row_at_index(self->command_list, (gint)n) != NULL)
+        n++;
+
+    return n;
+}
+
+/*
+ * Draws the highlight on @index and takes it off everything else.
+ *
+ * Every row is walked rather than just the two that changed, because a
+ * refill can leave the class on a row that has since been reused --
+ * and a list showing two highlighted names is worse than one showing
+ * none, since it is the thing Return acts on.
+ */
+static void
+completion_highlight_set(ClawtWindow *self, gint index)
+{
+    guint count = completion_count(self);
+    guint i;
+
+    self->completion_highlight = index;
+
+    for (i = 0; i < count; i++) {
+        GtkListBoxRow *row =
+            gtk_list_box_get_row_at_index(self->command_list, (gint)i);
+
+        if ((gint)i == index)
+            gtk_widget_add_css_class(GTK_WIDGET(row),
+                                     "clawt-completion-active");
+        else
+            gtk_widget_remove_css_class(GTK_WIDGET(row),
+                                        "clawt-completion-active");
+    }
+
+    if (index < 0 || count == 0)
+        return;
+
+    /*
+     * And bring it into view, by moving the adjustment rather than by
+     * grabbing focus.  A #GtkScrolledWindow scrolls whatever takes the
+     * keyboard focus into view, and focusing the *list* scrolls to its
+     * first row -- so the obvious way to do this would send somebody
+     * back to the top of the names on every arrow press, and take the
+     * keyboard out of the composer they are typing in.
+     */
+    {
+        GtkListBoxRow *row =
+            gtk_list_box_get_row_at_index(self->command_list, index);
+        GtkWidget *scroll = gtk_widget_get_ancestor(
+                                GTK_WIDGET(self->command_list),
+                                GTK_TYPE_SCROLLED_WINDOW);
+        GtkAdjustment *adjustment;
+        graphene_rect_t bounds;
+
+        if (scroll == NULL || row == NULL)
+            return;
+
+        if (!gtk_widget_compute_bounds(GTK_WIDGET(row),
+                                       GTK_WIDGET(self->command_list),
+                                       &bounds))
+            return;
+
+        adjustment = gtk_scrolled_window_get_vadjustment(
+                         GTK_SCROLLED_WINDOW(scroll));
+
+        if (bounds.origin.y < gtk_adjustment_get_value(adjustment))
+            gtk_adjustment_set_value(adjustment, bounds.origin.y);
+        else if (bounds.origin.y + bounds.size.height >
+                 gtk_adjustment_get_value(adjustment) +
+                 gtk_adjustment_get_page_size(adjustment))
+            gtk_adjustment_set_value(adjustment,
+                                     bounds.origin.y + bounds.size.height -
+                                     gtk_adjustment_get_page_size(adjustment));
+    }
+}
+
+/*
+ * Moves the highlight by @delta, wrapping.
+ *
+ * From nothing, Down takes the first row and Up the last -- which is
+ * what makes "open the list, press Up, press Return" reach the bottom
+ * of a long roster without arrowing through it.
+ */
+static gboolean
+completion_move(ClawtWindow *self, gint delta)
+{
+    guint count = completion_count(self);
+    gint next;
+
+    if (count == 0)
+        return FALSE;
+
+    if (self->completion_highlight < 0)
+        next = (delta > 0) ? 0 : (gint)count - 1;
+    else
+        next = ((self->completion_highlight + delta) + (gint)count) %
+               (gint)count;
+
+    completion_highlight_set(self, next);
+    return TRUE;
+}
+
+/*
+ * Chooses the highlighted row, or @fallback_first when nothing is
+ * highlighted.
+ *
+ * Tab passes TRUE: it is unambiguously the completion key, so it means
+ * "the obvious one" even before anybody has arrowed.  Return passes
+ * FALSE, because with nothing highlighted Return has always sent the
+ * message and taking that over would break every `/command` anybody
+ * types.
+ */
+static gboolean
+completion_take(ClawtWindow *self, gboolean fallback_first)
+{
+    gint index = self->completion_highlight;
+
+    if (index < 0) {
+        if (!fallback_first || completion_count(self) == 0)
+            return FALSE;
+
+        index = 0;
+    }
+
+    {
+        GtkListBoxRow *row =
+            gtk_list_box_get_row_at_index(self->command_list, index);
+
+        /*
+         * FALSE when there is no such row, so the key keeps its own
+         * meaning.  Answering TRUE here would swallow Return and do
+         * nothing with it: no completion, and no message sent either.
+         */
+        if (row == NULL)
+            return FALSE;
+
+        completion_apply(self, row);
+    }
+
+    return TRUE;
+}
+
+/*
  * Shows the matching commands as the person types "/".
  *
  * Discoverability, not completion: the list is there to be read, and
@@ -3639,6 +3821,14 @@ on_entry_changed(GtkTextBuffer *buffer, gpointer user_data)
                                       fill_mention_list(self));
 
         /*
+         * Whatever was highlighted described rows that no longer exist.
+         * Left alone, Return would take row 3 of a list that has since
+         * been refilled with different names.
+         */
+        if (self->completion_highlight >= 0 && !completion_showing(self))
+            completion_highlight_set(self, -1);
+
+        /*
          * Dropped when the line stops being a command, so the next `/`
          * asks again. A skill can be enabled while this window is open,
          * and a cache held for the life of the window would be right
@@ -3649,6 +3839,7 @@ on_entry_changed(GtkTextBuffer *buffer, gpointer user_data)
     }
 
     clawt_gtk_clear_list(self->command_list);
+    self->completion_highlight = -1;
 
     for (i = 0; i < G_N_ELEMENTS(slash_commands); i++) {
         GtkWidget *row;
@@ -3739,6 +3930,47 @@ on_entry_key(GtkEventControllerKey *controller, guint keyval, guint keycode,
 
     (void)controller;
     (void)keycode;
+
+    /*
+     * The completion list, while one is open.
+     *
+     * Handled before everything else and only while it is showing, so
+     * that every one of these keys does exactly what it did before as
+     * soon as it closes -- a completion that swallowed Escape or Tab
+     * for the rest of the session would be a worse bug than having no
+     * completion at all.
+     */
+    if (completion_showing(self)) {
+        if (keyval == GDK_KEY_Down || keyval == GDK_KEY_KP_Down)
+            return completion_move(self, 1) ? GDK_EVENT_STOP
+                                            : GDK_EVENT_PROPAGATE;
+
+        if (keyval == GDK_KEY_Up || keyval == GDK_KEY_KP_Up)
+            return completion_move(self, -1) ? GDK_EVENT_STOP
+                                             : GDK_EVENT_PROPAGATE;
+
+        if (keyval == GDK_KEY_Tab || keyval == GDK_KEY_ISO_Left_Tab)
+            return completion_take(self, TRUE) ? GDK_EVENT_STOP
+                                               : GDK_EVENT_PROPAGATE;
+
+        if (keyval == GDK_KEY_Escape) {
+            gtk_revealer_set_reveal_child(
+                GTK_REVEALER(self->command_revealer), FALSE);
+            completion_highlight_set(self, -1);
+            return GDK_EVENT_STOP;
+        }
+
+        /*
+         * Return takes the highlighted row and nothing else.  With none
+         * highlighted it falls through to the send below, because
+         * typing `/help` and pressing Return has always sent it and the
+         * list being open is not a reason to change that.
+         */
+        if ((keyval == GDK_KEY_Return || keyval == GDK_KEY_KP_Enter) &&
+            (state & GDK_SHIFT_MASK) == 0 &&
+            completion_take(self, FALSE))
+            return GDK_EVENT_STOP;
+    }
 
     /*
      * Enter sends; Shift+Enter is a newline.  A multi-line box needs

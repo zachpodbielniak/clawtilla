@@ -895,6 +895,14 @@ clawt_web_stylesheet(void)
       "font-family:var(--sans);font-size:13px;text-align:left;"
       "cursor:pointer}"
     ".slash-item:hover{background:var(--canvas)}"
+    /*
+     * The keyboard-highlighted row.  Not the same as :hover, which
+     * follows the pointer and would fight with it: arrowing down a list
+     * while the pointer happens to rest over row three has to leave no
+     * doubt which one Return takes.
+     */
+    ".slash-item.completion-active{background:var(--canvas);"
+      "box-shadow:inset 2px 0 0 var(--info-fg)}"
     ".slash-name{font-family:var(--mono);color:var(--info-fg);"
       "white-space:nowrap}"
     ".slash-hint{color:var(--muted);font-size:12px;overflow:hidden;"

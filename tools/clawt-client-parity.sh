@@ -331,6 +331,11 @@ declare -A AFFORDANCES=(
     # library and both clients would match it, so a client that lost
     # its completion entirely would still report OK.
     ["mention completion"]="fill_mention_list|mention-popover"
+    # Arrowing through a completion list and taking one with Return or
+    # Tab. A separate affordance from the list itself, because a client
+    # can perfectly well draw the names and offer no way to reach them
+    # without the mouse -- which is what both did until it was added.
+    ["completion keyboard navigation"]="completion_move|cmp_move"
     ["skill command expansion"]="clawt_gtk_skill_expand|skill.expand"
     ["skills library"]="clawt_gtk_refresh_skills|clawt_web_skills_body"
     ["skill provenance"]="Provenance|sha256"

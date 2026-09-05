@@ -349,6 +349,24 @@ last.  Choosing one inserts it where you are typing --- the rest of the
 message is left alone, unlike a slash command, which replaces the whole
 box because it has to be the first thing on the line.
 
+*Up* and *Down* walk the list, wrapping --- so Up on a freshly opened
+one reaches the last name without arrowing through the rest.  *Return*
+takes the highlighted row, *Tab* takes the highlighted row or the first
+one if you have not moved yet, and *Escape* closes the list without
+choosing.
+
+Nothing is highlighted until you press an arrow, and that is deliberate:
+with a row highlighted from the moment the list opened, Return would
+take it --- and typing =/help= and pressing Return has always sent the
+message.  So Return keeps sending until you have actually moved onto a
+name.  Tab is different because it is unambiguously the completion key
+and does nothing else in this box.
+
+The highlight is not the list's selection.  =::row-selected= is what a
+click uses, and it *inserts*, so moving the selection with an arrow key
+would choose a name on every press; the keyboard tracks its own index
+and draws it with a CSS class instead.
+
 It shares the slash commands' list rather than opening a second popover.
 Two surfaces would be two sets of rules about when a completion is
 showing, and ~/~ and ~@~ cannot both begin the word under the cursor, so

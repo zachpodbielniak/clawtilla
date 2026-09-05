@@ -257,6 +257,20 @@ wants on a tailnet with no route out.  It is asked for when the room
 page renders rather than cached beside the sidebar, so a member added or
 removed while the page is open is not offered from a stale copy.
 
+*Up* and *Down* walk whichever list is open, wrapping; *Return* takes the
+highlighted row, *Tab* takes the highlighted row or the first one, and
+*Escape* closes it.  Only the rows still visible after filtering are
+walked, since the lists narrow by hiding rows rather than removing them.
+
+The two lists can never both be open --- ~/~ and ~@~ cannot both begin
+the word under the cursor --- so "the open one" is a complete answer and
+there is no notion of which list has focus.
+
+As in the GTK client, nothing is highlighted until you press an arrow,
+so Return goes on doing what it did before the list existed.  In this
+box that is a newline rather than a send, which is a difference between
+the two composers and not between the two completions.
+
 Both lists hang off ~.composer~ rather than off the entry's row, and
 ~.composer~ no longer clips.  It used to: the transcript above it is the
 page's scroller and reserves a scrollbar gutter, so the composer

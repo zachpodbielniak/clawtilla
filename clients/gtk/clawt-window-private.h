@@ -570,6 +570,19 @@ struct _ClawtWindow {
     GHashTable        *room_rosters;
 
     /*
+     * Which row of the open completion list the keyboard is on, or -1
+     * for none.
+     *
+     * Separate from the list's own selection because the two mean
+     * different things: `::row-selected` is the accept, so moving the
+     * selection with an arrow key would insert on every press.  -1 to
+     * start, and that is load-bearing -- with a row highlighted from
+     * the moment the list opens, Return would accept it, and typing
+     * `/help` and pressing Return has always sent the message.
+     */
+    gint               completion_highlight;
+
+    /*
      * Which room the transcript on screen actually is.
      *
      * Not derivable from selected_agent: a chat with an agent is the

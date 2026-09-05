@@ -1226,13 +1226,7 @@ open_document(HtmxBuilder *builder, const gchar *title,
         "for(var i=0;i<items.length;i++){"
         "var n=(items[i].dataset.command||'').slice(1).toLowerCase();"
         "items[i].style.display=n.indexOf(q)===0?'':'none';}});"
-        "document.addEventListener('click',function(e){"
-        "var it=e.target.closest?e.target.closest('.slash-item'):null;"
-        "if(!it||!it.dataset.command){return;}"
-        "e.preventDefault();"
-        "var a=document.getElementById('composer-body');"
-        "if(a){a.value=(it.dataset.command||'')+' ';a.focus();}"
-        "var p=slash();if(p){p.classList.remove('on');}});"
+
         /*
          * The `@` completions.
          *
@@ -1291,18 +1285,116 @@ open_document(HtmxBuilder *builder, const gchar *title,
         "items[i].style.display=on?'':'none';if(on){shown++;}}"
         "if(shown){p.classList.add('on');}"
         "else{p.classList.remove('on');}});"
-        "document.addEventListener('click',function(e){"
-        "var it=e.target.closest?e.target.closest('.mention-item'):null;"
-        "if(!it){return;}"
-        "e.preventDefault();"
+        /*
+         * Every name here carries a `cmp_` prefix, because this whole
+         * script is one IIFE and its scope is shared.  A plain
+         * `function mark()` was silently replaced by the transcript's
+         * `var mark=false` -- the declaration hoists, the assignment
+         * then runs over it, and the only symptom was a completion list
+         * that would not move under the arrow keys, with one
+         * "mark is not a function" in a console nobody had open.
+         *
+         * Choosing one, from a click or from the keyboard.
+         *
+         * One function for both kinds of row and both ways of picking
+         * one, because the alternative is four copies of "what does
+         * choosing this mean" and they drift.  A command replaces the
+         * whole box -- it has to be the first thing on the line -- and
+         * a mention replaces only the half-typed name, so that
+         * completing an `@` in the middle of a written message leaves
+         * the rest of it alone.
+         */
+        "function cmp_choose(it){"
         "var a=document.getElementById('composer-body');"
-        "var p=mentions();if(p){p.classList.remove('on');}"
-        "if(!a){return;}"
-        "var q=at_prefix(a);if(q===null){return;}"
-        "var i=a.selectionStart,name=(it.dataset.mention||'')+' ';"
+        "if(!it||!a){return false;}"
+        "if(it.dataset.command){"
+        "a.value=it.dataset.command+' ';a.focus();"
+        "var s=slash();if(s){s.classList.remove('on');}"
+        "return true;}"
+        "if(!it.dataset.mention){return false;}"
+        "var q=at_prefix(a);if(q===null){return false;}"
+        "var i=a.selectionStart,name=it.dataset.mention+' ';"
         "a.value=a.value.slice(0,i-q.length)+name+a.value.slice(i);"
         "a.focus();"
-        "a.selectionStart=a.selectionEnd=i-q.length+name.length;});"
+        "a.selectionStart=a.selectionEnd=i-q.length+name.length;"
+        "var m=mentions();if(m){m.classList.remove('on');}"
+        "return true;}"
+        "document.addEventListener('click',function(e){"
+        "var it=e.target.closest?"
+        "e.target.closest('.slash-item,.mention-item'):null;"
+        "if(!it){return;}"
+        "e.preventDefault();cmp_choose(it);});"
+        /*
+         * Keyboard navigation, over whichever list is open.
+         *
+         * The two cannot both be open -- `/` and `@` cannot both begin
+         * the word under the cursor -- so "the open one" is a complete
+         * answer and there is no notion of which list has focus.
+         *
+         * Only the *visible* items are walked: the lists are filtered
+         * by hiding rows, so counting all of them would arrow through
+         * names that are not on screen.
+         */
+        "function cmp_open(){"
+        "var l=[slash(),mentions()];"
+        "for(var i=0;i<l.length;i++){"
+        "if(l[i]&&l[i].classList.contains('on')){return l[i];}}"
+        "return null;}"
+        "function cmp_shown(p){"
+        "var all=p.querySelectorAll('.slash-item,.mention-item'),out=[];"
+        "for(var i=0;i<all.length;i++){"
+        "if(all[i].style.display!=='none'){out.push(all[i]);}}"
+        "return out;}"
+        "function cmp_active(p){return p.querySelector('.completion-active');}"
+        "function cmp_mark(items,n){"
+        "for(var i=0;i<items.length;i++){"
+        "items[i].classList.toggle('completion-active',i===n);}"
+        "if(items[n]&&items[n].scrollIntoView){"
+        "items[n].scrollIntoView({block:'nearest'});}}"
+        /*
+         * Down from nothing takes the first and Up takes the last, so
+         * "open the list, press Up, press Return" reaches the bottom of
+         * a long roster without arrowing through it.
+         */
+        "function cmp_move(p,d){"
+        "var items=cmp_shown(p);if(!items.length){return false;}"
+        "var cur=items.indexOf(cmp_active(p));"
+        "var n=cur<0?(d>0?0:items.length-1)"
+        ":((cur+d)+items.length)%items.length;"
+        "cmp_mark(items,n);return true;}"
+        "document.addEventListener('keydown',function(e){"
+        "var a=e.target;if(!a||a.id!=='composer-body'){return;}"
+        "var p=cmp_open();if(!p){return;}"
+        "if(e.key==='ArrowDown'){"
+        "if(cmp_move(p,1)){e.preventDefault();}return;}"
+        "if(e.key==='ArrowUp'){"
+        "if(cmp_move(p,-1)){e.preventDefault();}return;}"
+        "if(e.key==='Escape'){"
+        "p.classList.remove('on');cmp_mark(cmp_shown(p),-1);"
+        "e.preventDefault();return;}"
+        "if(e.key==='Tab'){"
+        "var items=cmp_shown(p),it=cmp_active(p)||items[0];"
+        "if(cmp_choose(it)){e.preventDefault();}return;}"
+        /*
+         * Return takes the highlighted row and nothing else.  With none
+         * highlighted it is left alone, so Return goes on doing what it
+         * did before the list existed -- which in this box is a
+         * newline, and in the GTK client is a send.  Either way, the
+         * list being open is not a reason to change it.
+         */
+        "if(e.key==='Enter'&&!e.shiftKey){"
+        "if(cmp_choose(cmp_active(p))){e.preventDefault();}}});"
+        /*
+         * Refiltering invalidates the highlight: it described a row
+         * that may now be hidden, or a different name.
+         */
+        "document.addEventListener('input',function(e){"
+        "var a=e.target;if(!a||a.id!=='composer-body'){return;}"
+        "var l=[slash(),mentions()];"
+        "for(var i=0;i<l.length;i++){"
+        "if(!l[i]){continue;}"
+        "var act=l[i].querySelector('.completion-active');"
+        "if(act){act.classList.remove('completion-active');}}});"
         /*
          * A profile picture, larger.
          *

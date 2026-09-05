@@ -5904,6 +5904,13 @@ clawt_window_init(ClawtWindow *self)
     self->alerts = g_ptr_array_new_with_free_func(alert_free);
     self->dm_rooms = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                            g_free);
+    /*
+     * Nothing highlighted.  Both fill paths reset this too, but a zero
+     * here would mean "row 0" -- and the whole point of -1 is that
+     * Return sends until somebody has actually arrowed onto a name.
+     */
+    self->completion_highlight = -1;
+
     self->room_rosters = g_hash_table_new_full(
                              g_str_hash, g_str_equal, g_free,
                              (GDestroyNotify)g_ptr_array_unref);
