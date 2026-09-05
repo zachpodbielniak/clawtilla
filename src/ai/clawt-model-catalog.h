@@ -53,8 +53,9 @@ typedef struct {
  *
  * @agent is whether libreclaw can drive it.  libreclaw's provider table
  * is command-line only -- lc_provider_type_normalize() knows
- * claude-code, claude-tmux, opencode, grok-build, antigravity and
- * cursor, and turns anything else into claude-code with a warning.  Offering "OpenAI" as an agent's
+ * claude-code, claude-tmux, opencode, grok-build, antigravity, cursor
+ * and codex-cli, and turns anything else into claude-code with a
+ * warning.  Offering "OpenAI" as an agent's
  * provider therefore did not run OpenAI: it ran Claude Code and handed
  * it "gpt-4o" as a model name.
  *

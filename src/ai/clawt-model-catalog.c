@@ -198,6 +198,25 @@ static const ClawtProviderInfo providers[] = {
       "needs an API key",
       openai_models, G_N_ELEMENTS(openai_models), TRUE, FALSE, TRUE },
 
+    /*
+     * Anything speaking OpenAI's Chat Completions protocol: a local
+     * llama.cpp or vLLM, a gateway, a hosted service that copied the
+     * shape.
+     *
+     * No model list at all, rather than a guessed one.  ai-glib
+     * documents that this provider has no built-in model id because the
+     * names belong to whatever is deployed behind the URL -- and its
+     * client refuses to build a request without one, so a plausible
+     * default here would be a name somebody's endpoint rejects.
+     * open_ended is what makes a client offer somewhere to type it.
+     */
+    { "openai-compatible", "OpenAI-compatible",
+      "any endpoint speaking OpenAI's Chat Completions protocol -- a "
+      "local server, a gateway, a hosted clone. Needs a base URL and a "
+      "model name from your own deployment; there is no default for "
+      "either",
+      NULL, 0, TRUE, FALSE, TRUE },
+
     { "gemini", "Google Gemini",
       "needs an API key",
       gemini_models, G_N_ELEMENTS(gemini_models), TRUE, FALSE, TRUE },
