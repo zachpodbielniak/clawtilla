@@ -918,6 +918,50 @@ members_include(JsonArray *members, const gchar *name)
     return FALSE;
 }
 
+/* ── Slash commands ──────────────────────────────────────────────── */
+
+/*
+ * The same nineteen the GTK composer answers, with the same names.
+ *
+ * They are handled here rather than sent to the agent for the reason they
+ * are there: /reset and /stop are things to do *to* an agent, and a chat
+ * that forwarded them would be asking the agent to reset itself, which it
+ * cannot do.
+ *
+ * Three of them mean something slightly different in a browser, and the
+ * table says so rather than leaving somebody to find out: /compose opens
+ * a full-page box instead of $EDITOR, /copy shows the text to select
+ * instead of reaching a clipboard on a machine that may not be yours, and
+ * /edit opens the file in the page for the same reason.
+ */
+static const struct {
+    const gchar *name;
+    const gchar *argument;
+    const gchar *summary;
+} commands[] = {
+    { "/help",    NULL,      "list these commands" },
+    { "/start",   NULL,      "start this agent" },
+    { "/stop",    NULL,      "stop this agent" },
+    { "/restart", NULL,      "restart this agent" },
+    { "/interrupt", NULL,    "stop what it is doing now, without stopping it" },
+    { "/attach",  NULL,      "send a file with the next message" },
+    { "/compose", NULL,      "write the message in a full-page box" },
+    { "/edit",    "[file]",  "open a workspace file to edit here" },
+    { "/files",   NULL,      "list this agent's workspace files" },
+    { "/memory",  "<query>", "search what this agent has remembered" },
+    { "/recall",  "<query>", "search what was said, in every room and "
+                             "every session" },
+    { "/agents",  NULL,      "who is in the fleet" },
+    { "/flow",    NULL,      "go to the conversations between agents" },
+    { "/tasks",   NULL,      "go to the task board" },
+    { "/reset",   NULL,      "start the agent's AI session again, from nothing" },
+    { "/retry",   NULL,      "send your last message again" },
+    { "/export",  "[org]",   "download the conversation: text, markdown or org" },
+    { "/copy",    "[org]",   "show the conversation to copy: text, markdown or org" },
+    { "/clear",   NULL,      "clear this transcript on screen only" },
+    { "/new",     NULL,      "create an agent" }
+};
+
 static HtmxElement *
 composer_for(ClawtWebApp *app, const gchar *base, const gchar *target,
              gboolean busy, gboolean attachments, JsonArray *members)
@@ -983,18 +1027,72 @@ composer_for(ClawtWebApp *app, const gchar *base, const gchar *target,
      */
     {
         g_autoptr(HtmxDiv) popover = htmx_div_new();
-        g_autofree gchar *commands =
-            g_strdup_printf("/a/%s/commands", escaped);
+        gsize c;
 
         htmx_element_add_class(HTMX_ELEMENT(popover), "slash-popover");
         htmx_element_set_id(HTMX_ELEMENT(popover), "slash-popover");
-        htmx_element_set_attribute(HTMX_ELEMENT(popover), "hx-get", commands);
-        htmx_element_set_attribute(HTMX_ELEMENT(popover), "hx-trigger",
-                                   "clawtilla:slash");
-        htmx_element_set_attribute(HTMX_ELEMENT(popover), "hx-target",
-                                   "this");
-        htmx_element_set_attribute(HTMX_ELEMENT(popover), "hx-swap",
-                                   "innerHTML");
+
+        /*
+         * The built-in commands, rendered rather than fetched.
+         *
+         * They are in the table above and reached this list from
+         * nowhere: it was filled entirely from `skill.commands`, so what
+         * somebody saw after typing `/` was their skills and not one of
+         * the twenty commands the composer actually answers -- no
+         * `/help`, no `/stop`, no `/export` -- while the GTK list has
+         * shown both all along.
+         *
+         * Rendered, so it costs no request; which is also what makes it
+         * work in a room, where there is no agent to ask.
+         */
+        for (c = 0; c < G_N_ELEMENTS(commands); c++) {
+            g_autoptr(HtmxButton) item = NULL;
+            g_autoptr(HtmxSpan) label = htmx_span_new();
+            g_autoptr(HtmxSpan) hint = htmx_span_new();
+            g_autofree gchar *shown = commands[c].argument != NULL
+                ? g_strdup_printf("%s %s", commands[c].name,
+                                  commands[c].argument)
+                : g_strdup(commands[c].name);
+
+            item = htmx_button_new();
+            htmx_element_add_class(HTMX_ELEMENT(item), "slash-item");
+            htmx_element_set_attribute(HTMX_ELEMENT(item), "type", "button");
+            htmx_element_set_attribute(HTMX_ELEMENT(item), "data-command",
+                                       commands[c].name);
+
+            htmx_element_add_class(HTMX_ELEMENT(label), "slash-name");
+            htmx_node_set_text_content(HTMX_NODE(label), shown);
+            clawt_web_add(item, g_steal_pointer(&label));
+
+            htmx_element_add_class(HTMX_ELEMENT(hint), "slash-hint");
+            htmx_node_set_text_content(HTMX_NODE(hint), commands[c].summary);
+            clawt_web_add(item, g_steal_pointer(&hint));
+
+            htmx_node_add_child(HTMX_NODE(popover), HTMX_NODE(item));
+        }
+
+        /*
+         * And the agent's own skills, appended when somebody first types
+         * a slash.  `beforeend`, not `innerHTML`: replacing would throw
+         * away every built-in above.
+         *
+         * Asked for only when there is an agent.  `skill.commands`
+         * requires one and answers "no such agent" for anything else --
+         * so a room asking with its own id, which is what this did, got
+         * an empty list and drew nothing at all.
+         */
+        if (g_strcmp0(base, "a") == 0) {
+            g_autofree gchar *url =
+                g_strdup_printf("/a/%s/commands", escaped);
+
+            htmx_element_set_attribute(HTMX_ELEMENT(popover), "hx-get", url);
+            htmx_element_set_attribute(HTMX_ELEMENT(popover), "hx-trigger",
+                                       "clawtilla:slash");
+            htmx_element_set_attribute(HTMX_ELEMENT(popover), "hx-target",
+                                       "this");
+            htmx_element_set_attribute(HTMX_ELEMENT(popover), "hx-swap",
+                                       "beforeend");
+        }
 
         htmx_node_add_child(HTMX_NODE(pop_inner), HTMX_NODE(popover));
     }
@@ -1298,49 +1396,6 @@ clawt_web_chat_body(ClawtWebApp *app, const gchar *agent_id)
     return clawt_web_chat_body_full(app, agent_id, FALSE, NULL);
 }
 
-/* ── Slash commands ──────────────────────────────────────────────── */
-
-/*
- * The same nineteen the GTK composer answers, with the same names.
- *
- * They are handled here rather than sent to the agent for the reason they
- * are there: /reset and /stop are things to do *to* an agent, and a chat
- * that forwarded them would be asking the agent to reset itself, which it
- * cannot do.
- *
- * Three of them mean something slightly different in a browser, and the
- * table says so rather than leaving somebody to find out: /compose opens
- * a full-page box instead of $EDITOR, /copy shows the text to select
- * instead of reaching a clipboard on a machine that may not be yours, and
- * /edit opens the file in the page for the same reason.
- */
-static const struct {
-    const gchar *name;
-    const gchar *argument;
-    const gchar *summary;
-} commands[] = {
-    { "/help",    NULL,      "list these commands" },
-    { "/start",   NULL,      "start this agent" },
-    { "/stop",    NULL,      "stop this agent" },
-    { "/restart", NULL,      "restart this agent" },
-    { "/interrupt", NULL,    "stop what it is doing now, without stopping it" },
-    { "/attach",  NULL,      "send a file with the next message" },
-    { "/compose", NULL,      "write the message in a full-page box" },
-    { "/edit",    "[file]",  "open a workspace file to edit here" },
-    { "/files",   NULL,      "list this agent's workspace files" },
-    { "/memory",  "<query>", "search what this agent has remembered" },
-    { "/recall",  "<query>", "search what was said, in every room and "
-                             "every session" },
-    { "/agents",  NULL,      "who is in the fleet" },
-    { "/flow",    NULL,      "go to the conversations between agents" },
-    { "/tasks",   NULL,      "go to the task board" },
-    { "/reset",   NULL,      "start the agent's AI session again, from nothing" },
-    { "/retry",   NULL,      "send your last message again" },
-    { "/export",  "[org]",   "download the conversation: text, markdown or org" },
-    { "/copy",    "[org]",   "show the conversation to copy: text, markdown or org" },
-    { "/clear",   NULL,      "clear this transcript on screen only" },
-    { "/new",     NULL,      "create an agent" }
-};
 
 /*
  * One frame, one agent, one sentence afterwards.
@@ -1447,7 +1502,7 @@ conversation_document(ClawtWebApp *app, const gchar *agent_id,
 
 static HtmxResponse *
 run_command(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
-            const gchar *text)
+            const gchar *room_id, const gchar *text)
 {
     g_autofree gchar *argument = command_argument(text);
     g_autofree gchar *verb = NULL;
@@ -1457,6 +1512,140 @@ run_command(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
 
         verb = (space != NULL) ? g_strndup(text, (gsize)(space - text))
                                : g_strdup(text);
+    }
+
+    /*
+     * ── The fleet-wide ones, which need no agent ──
+     *
+     * Hoisted above the guard below so that they answer in a room too.
+     * Each goes to a page that is about the fleet rather than about one
+     * agent: /help is this table, /agents lists everybody, and /recall
+     * searches every room -- its own comment in the GTK client says it
+     * "is not about one agent", which was true there while the command
+     * was nonetheless refused in a room.
+     */
+    if (g_strcmp0(verb, "/flow") == 0) {
+        g_autofree gchar *url = clawt_web_agent_url(agent_id,
+                                                    CLAWT_PAGE_FLOW);
+
+        return clawt_web_redirect(request, url);
+    }
+
+    if (g_strcmp0(verb, "/tasks") == 0) {
+        g_autofree gchar *url = clawt_web_agent_url(agent_id,
+                                                    CLAWT_PAGE_TASKS);
+
+        return clawt_web_redirect(request, url);
+    }
+
+    if (g_strcmp0(verb, "/new") == 0)
+        return clawt_web_redirect(request, "/new");
+
+    if (g_strcmp0(verb, "/agents") == 0)
+        return clawt_web_redirect(request, "/fleet");
+
+    if (g_strcmp0(verb, "/recall") == 0) {
+        g_autofree gchar *query = (argument != NULL)
+            ? g_uri_escape_string(argument, NULL, FALSE) : NULL;
+        g_autofree gchar *url = g_strdup_printf(
+            "/memory?q=%s", query != NULL ? query : "");
+
+        return clawt_web_redirect(request, url);
+    }
+
+    if (g_strcmp0(verb, "/help") == 0) {
+        g_autoptr(HtmxElement) view = HTMX_ELEMENT(htmx_main_new());
+        g_autoptr(HtmxDiv) pad = htmx_div_new();
+        g_autoptr(HtmxDiv) card = clawt_web_card(
+            "Commands",
+            "Typed into the message box. They act on the agent or on this "
+            "page; nothing here is sent to the agent.");
+        HtmxElement *body = clawt_web_card_body(card);
+        g_autofree gchar *html = NULL;
+        guint i;
+
+        htmx_element_add_class(view, "view");
+        htmx_element_add_class(HTMX_ELEMENT(pad), "view-pad");
+
+        for (i = 0; i < G_N_ELEMENTS(commands); i++) {
+            g_autofree gchar *name = commands[i].argument != NULL
+                ? g_strdup_printf("%s %s", commands[i].name,
+                                  commands[i].argument)
+                : g_strdup(commands[i].name);
+
+            clawt_web_add(body, clawt_web_row(name, commands[i].summary));
+        }
+
+        {
+            /*
+             * Back to wherever this was typed.  A room has no agent
+             * URL, and clawt_web_agent_url(NULL) would send somebody to
+             * a chat with nobody in it rather than to the conversation
+             * they were reading.
+             */
+            g_autofree gchar *escaped = (agent_id == NULL && room_id != NULL)
+                ? g_uri_escape_string(room_id, NULL, FALSE) : NULL;
+            g_autofree gchar *back = (escaped != NULL)
+                ? g_strdup_printf("/r/%s", escaped)
+                : clawt_web_agent_url(agent_id, CLAWT_PAGE_CHAT);
+            g_autoptr(HtmxA) link = htmx_a_new_with_href(back);
+
+            htmx_element_add_class(HTMX_ELEMENT(link), "btn");
+            htmx_node_set_text_content(HTMX_NODE(link), "Back to the chat");
+            htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(link));
+        }
+
+        htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(card));
+        htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
+
+        html = clawt_web_page(app, agent_id, CLAWT_PAGE_CHAT, view,
+                              request);
+
+        return clawt_web_html_response(html);
+    }
+
+    /*
+     * ── Everything else is about one agent ──
+     *
+     * The same sentence the GTK client uses, because it is the same
+     * refusal: a room is several agents, and a command that acts on one
+     * has nobody to act on.  Said on the room's own page rather than by
+     * redirecting somewhere -- being moved off the conversation is not
+     * an explanation.
+     */
+    if (agent_id == NULL) {
+        gsize k;
+        gboolean known = FALSE;
+
+        if (room_id == NULL)
+            return clawt_web_redirect(request, "/");
+
+        for (k = 0; k < G_N_ELEMENTS(commands); k++) {
+            if (g_strcmp0(commands[k].name, verb) == 0) {
+                known = TRUE;
+                break;
+            }
+        }
+
+        /*
+         * A typo is a typo wherever it was typed, and saying it is
+         * about one agent would send somebody looking for an agent to
+         * run `/halp` on.  Checked only here, so that an agent page
+         * answers exactly as it did -- there, a verb missing from this
+         * table may still be one of that agent's skills.
+         */
+        if (!known) {
+            g_autofree gchar *unknown = g_strdup_printf(
+                "No such command: %s. Try /help.", verb);
+
+            return clawt_web_room_notice(app, request, room_id, unknown,
+                                         "bad");
+        }
+
+        return clawt_web_room_notice(
+            app, request, room_id,
+            "That command is about one agent, and a room is several. "
+            "Pick an agent from the sidebar.", "bad");
     }
 
     /* ── Things to do to the agent ── */
@@ -1481,40 +1670,6 @@ run_command(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
                                    "Session cleared.");
 
     /* ── Going somewhere ── */
-
-    if (g_strcmp0(verb, "/flow") == 0) {
-        g_autofree gchar *url = clawt_web_agent_url(agent_id,
-                                                    CLAWT_PAGE_FLOW);
-
-        return clawt_web_redirect(request, url);
-    }
-
-    if (g_strcmp0(verb, "/tasks") == 0) {
-        g_autofree gchar *url = clawt_web_agent_url(agent_id,
-                                                    CLAWT_PAGE_TASKS);
-
-        return clawt_web_redirect(request, url);
-    }
-
-    if (g_strcmp0(verb, "/new") == 0)
-        return clawt_web_redirect(request, "/new");
-
-    if (g_strcmp0(verb, "/agents") == 0)
-        return clawt_web_redirect(request, "/fleet");
-
-    /*
-     * Recall is not under the agent, because it is not about one: it
-     * searches every room in the fleet, and the results say which room
-     * each line came from.
-     */
-    if (g_strcmp0(verb, "/recall") == 0) {
-        g_autofree gchar *query = (argument != NULL)
-            ? g_uri_escape_string(argument, NULL, FALSE) : NULL;
-        g_autofree gchar *url = g_strdup_printf(
-            "/memory?q=%s", query != NULL ? query : "");
-
-        return clawt_web_redirect(request, url);
-    }
 
     if (g_strcmp0(verb, "/files") == 0 || g_strcmp0(verb, "/memory") == 0 ||
         g_strcmp0(verb, "/edit") == 0) {
@@ -1623,55 +1778,18 @@ run_command(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
 
     /* ── Help ── */
 
-    if (g_strcmp0(verb, "/help") == 0) {
-        g_autoptr(HtmxElement) view = HTMX_ELEMENT(htmx_main_new());
-        g_autoptr(HtmxDiv) pad = htmx_div_new();
-        g_autoptr(HtmxDiv) card = clawt_web_card(
-            "Commands",
-            "Typed into the message box. They act on the agent or on this "
-            "page; nothing here is sent to the agent.");
-        HtmxElement *body = clawt_web_card_body(card);
-        g_autofree gchar *html = NULL;
-        guint i;
-
-        htmx_element_add_class(view, "view");
-        htmx_element_add_class(HTMX_ELEMENT(pad), "view-pad");
-
-        for (i = 0; i < G_N_ELEMENTS(commands); i++) {
-            g_autofree gchar *name = commands[i].argument != NULL
-                ? g_strdup_printf("%s %s", commands[i].name,
-                                  commands[i].argument)
-                : g_strdup(commands[i].name);
-
-            clawt_web_add(body, clawt_web_row(name, commands[i].summary));
-        }
-
-        {
-            g_autofree gchar *back = clawt_web_agent_url(agent_id,
-                                                         CLAWT_PAGE_CHAT);
-            g_autoptr(HtmxA) link = htmx_a_new_with_href(back);
-
-            htmx_element_add_class(HTMX_ELEMENT(link), "btn");
-            htmx_node_set_text_content(HTMX_NODE(link), "Back to the chat");
-            htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(link));
-        }
-
-        htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(card));
-        htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
-
-        html = clawt_web_page(app, agent_id, CLAWT_PAGE_CHAT, view,
-                              request);
-
-        return clawt_web_html_response(html);
-    }
-
-    {
-        g_autofree gchar *unknown = g_strdup_printf(
-            "No such command: %s. Try /help.", verb);
-
-        return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_PAGE_CHAT, unknown);
-    }
+    /*
+     * Not in the table, so it may be one of this agent's skills.
+     *
+     * The list under the composer offers them, and sending one landed
+     * here and was answered "No such command" -- so every entry the
+     * popover held was one that could not be run, which for a while was
+     * every entry it held at all.  The expansion is the daemon's, and
+     * an unknown name comes back from it as an error naming the command
+     * rather than as a message to the agent.
+     */
+    return clawt_web_run_skill_command(app, request, agent_id, verb + 1,
+                                       argument);
 }
 
 /* ── Routes ──────────────────────────────────────────────────────── */
@@ -1961,6 +2079,18 @@ on_room_send(HtmxRequest *request, GHashTable *params, gpointer user_data)
     if (*trimmed == '\0')
         return room_redirect(room_id);
 
+    /*
+     * A command is run, not posted.
+     *
+     * Without this every slash command typed in a room went to
+     * msg.send: `/help` arrived in the transcript as a message reading
+     * "/help", addressed to nobody, and stayed there.  The agent chat
+     * has always dispatched them; the room composer is the same box and
+     * had no reason to behave differently.
+     */
+    if (trimmed[0] == '/')
+        return run_command(app, request, NULL, room_id, trimmed);
+
     payload = clawt_web_payload_new();
     clawt_web_payload_set(payload, "target", room_id);
     clawt_web_payload_set(payload, "body", trimmed);
@@ -2026,7 +2156,7 @@ on_send(HtmxRequest *request, GHashTable *params, gpointer user_data)
                                       CLAWT_PAGE_CHAT, NULL);
 
     if (trimmed[0] == '/')
-        return run_command(app, request, agent_id, trimmed);
+        return run_command(app, request, agent_id, NULL, trimmed);
 
     return clawt_web_send_message(app, request, agent_id, trimmed);
 }

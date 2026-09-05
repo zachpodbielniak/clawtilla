@@ -244,6 +244,77 @@ is the one that clears a session, and it says so.
 function the GTK client uses, so the two produce the same bytes.  Three
 formats: markdown, org, plain.
 
+**** In a room
+
+Six of them are about the fleet rather than about one agent, and those
+run in a group room as well: =/help=, =/agents=, =/flow=, =/tasks=,
+=/recall= and =/new=.  Anything else is answered with the sentence the
+GTK client uses --- /"That command is about one agent, and a room is
+several. Pick an agent from the sidebar."/ --- on the room's own page,
+because being moved somewhere else is not an explanation.
+
+A misspelling is reported as a misspelling even in a room.  Telling
+somebody that =/halp= is "about one agent" would send them looking for
+an agent to run it on.
+
+Until this worked, a slash command typed in a room went to ~msg.send~
+like any other text: =/help= arrived in the conversation as a message
+reading "/help", addressed to nobody, and stayed in the transcript.
+
+**** What the list holds
+
+The built-in commands are rendered into the page, and the agent's own
+skills are appended to them when somebody first types =/=.
+
+They were not always both there.  The list used to be filled *only*
+from ~skill.commands~, so what it showed were an agent's skills and not
+one of the twenty commands the composer answers --- no =/help=, no
+=/stop=, no =/export= --- while the GTK list has shown both all along.
+And on a room page it asked ~/a/<room-id>/commands~, which is an agent
+route holding a room id: ~skill.commands~ answers "no such agent", so
+the list came back empty and typing =/= in a room drew nothing.
+
+Rendering the built-ins costs no request, which is what makes them work
+in a room, where there is no agent to ask.  The skills are still
+fetched, with ~hx-swap="beforeend"~ so that arriving does not replace
+the built-ins, and only on an agent page.
+
+**** Running one of an agent's skills
+
+A command that is neither built in nor a room refusal is handed to
+~skill.expand~ and the result sent as an ordinary message.  The
+substitution is the daemon's, never the client's, which is what makes
+this client and the GTK one send identical text for the same
+=/name args=.
+
+This did not work at all, in either of the two places it could be
+reached from:
+
+- ~run_command()~ had no skill branch, so sending one from the composer
+  answered /"No such command"/ --- and since the list held nothing else
+  at the time, every entry it offered was one that could not be run.
+- The skills page's own route expanded correctly and then built a frame
+  it called ~message.send~.  No handler answers that; the daemon's kind
+  is ~msg.send~, and that spelling appeared exactly once in the tree.
+  So the command expanded, went nowhere, and the page reported that it
+  had happened.
+
+Both go through ~clawt_web_run_skill_command()~ now, and it sends
+through ~clawt_web_send_message()~ rather than assembling a frame of
+its own --- which also picks up the two things the second copy never
+did: clearing the draft, and saying so when a message is held because
+the agent is mid-turn.
+
+~make parity~ could not have caught the wrong kind.  Its first layer
+intersects each client's frame kinds with the daemon's, which compares
+the two clients against each other; a kind that neither client shares
+with the daemon is invisible to it.
+
+A command that is neither built in nor a skill is answered /"There is no
+/foo. Type /help for the list."/ --- the GTK client's sentence, word for
+word, because both reach the conclusion the same way: ask the daemon to
+expand it, and read a refusal as there being no such command.
+
 *** The ~@~ completion
 
 Typing ~@~ in a group's composer offers the room's members, and ~@all~

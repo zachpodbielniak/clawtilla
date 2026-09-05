@@ -333,6 +333,17 @@ neither who is in the room nor who a message reaches.  Both kinds of row
 send one ~fleet.reorder~ frame describing the whole arrangement, so a
 view that was a moment stale cannot produce a half-applied reorder.
 
+*Fleet-wide commands work in a room.*  =/help=, =/agents=, =/flow=,
+=/tasks=, =/recall= and =/new= are about the fleet, not about one agent,
+so they answer wherever they are typed.  Anything else says /"That
+command is about one agent, and a room is several. Pick an agent from
+the sidebar."/
+
+=/agents= and =/recall= were refused in a room until recently, and
+neither had a reason to be: neither reads the selected agent, and
+=/recall='s own comment says it searches every room and is "not about
+one agent".  They were simply on the wrong side of the guard.
+
 *A room has exactly one view.*  Every other page --- the computer, the
 mailbox, its memories --- is scoped to an agent and means nothing for a
 room, so selecting one shows the chat and hides the rest.

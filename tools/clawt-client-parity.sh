@@ -336,6 +336,14 @@ declare -A AFFORDANCES=(
     # can perfectly well draw the names and offer no way to reach them
     # without the mouse -- which is what both did until it was added.
     ["completion keyboard navigation"]="completion_move|cmp_move"
+    # Slash commands answered in a room. Both clients run the fleet-wide
+    # ones there and refuse the agent-scoped ones with the same
+    # sentence; the web one used to post them into the room as messages
+    # instead, so `/help` arrived as a message reading "/help".
+    # The marker is a fragment both sources hold on one line: the GTK
+    # sentence is split across two string literals, so a longer phrase
+    # matches in the web client and nowhere in the other.
+    ["commands in a room"]="about one agent|about one agent"
     ["skill command expansion"]="clawt_gtk_skill_expand|skill.expand"
     ["skills library"]="clawt_gtk_refresh_skills|clawt_web_skills_body"
     ["skill provenance"]="Provenance|sha256"

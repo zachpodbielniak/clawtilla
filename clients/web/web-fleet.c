@@ -1209,8 +1209,9 @@ clawt_web_view_body(ClawtWebApp *app, const gchar *agent_id, ClawtPage view)
 /* ── Responses after an action ───────────────────────────────────── */
 
 static HtmxResponse *
-page_with_banner(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
-                 ClawtPage view, const gchar *text, const gchar *tone)
+banner_around(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
+              ClawtPage view, HtmxElement *body, const gchar *text,
+              const gchar *tone)
 {
     /*
      * Copied before anything else happens.
@@ -1224,11 +1225,9 @@ page_with_banner(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
      * inspector's group table.
      */
     g_autofree gchar *said = g_strdup(text);
-    g_autoptr(HtmxElement) body = NULL;
+    g_autoptr(HtmxElement) owned = body;
     g_autoptr(HtmxDiv) wrap = htmx_div_new();
     g_autofree gchar *html = NULL;
-
-    body = clawt_web_view_body(app, agent_id, view);
 
     if (said != NULL) {
         g_autoptr(HtmxDiv) toast = htmx_div_new();
@@ -1242,11 +1241,42 @@ page_with_banner(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
         htmx_node_add_child(HTMX_NODE(wrap), HTMX_NODE(toast));
     }
 
-    htmx_node_add_child(HTMX_NODE(wrap), HTMX_NODE(body));
+    htmx_node_add_child(HTMX_NODE(wrap), HTMX_NODE(owned));
 
     html = clawt_web_page(app, agent_id, view, HTMX_ELEMENT(wrap), request);
 
     return clawt_web_html_response(html);
+}
+
+/*
+ * The agent page, with a note over it.
+ */
+static HtmxResponse *
+page_with_banner(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
+                 ClawtPage view, const gchar *text, const gchar *tone)
+{
+    return banner_around(app, request, agent_id, view,
+                         clawt_web_view_body(app, agent_id, view),
+                         text, tone);
+}
+
+/*
+ * And a room's, with a note over it.
+ *
+ * A room needed one the moment slash commands started working there: a
+ * command about one agent has to say so, and the only place to say it
+ * is the page the person is standing on.  Through the same wrapper as
+ * the agent version rather than a second copy of it -- the two differ
+ * only in which body they wrap, and a second copy of the banner is a
+ * second answer to how a note is drawn.
+ */
+HtmxResponse *
+clawt_web_room_notice(ClawtWebApp *app, HtmxRequest *request,
+                      const gchar *room_id, const gchar *text,
+                      const gchar *tone)
+{
+    return banner_around(app, request, NULL, CLAWT_PAGE_CHAT,
+                         clawt_web_room_body(app, room_id), text, tone);
 }
 
 HtmxResponse *

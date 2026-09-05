@@ -361,6 +361,49 @@ HtmxResponse *clawt_web_after_action(ClawtWebApp  *app,
                                      const gchar  *toast);
 
 /**
+ * clawt_web_room_notice:
+ * @app: a #ClawtWebApp
+ * @request: the request being answered
+ * @room_id: the room to draw underneath
+ * @text: (nullable): what to say
+ * @tone: (nullable): "bad" for a refusal, %NULL for a plain note
+ *
+ * The same, for a room.
+ *
+ * A room has no agent, so clawt_web_after_action() cannot draw it: that
+ * one renders the agent view, and passing %NULL leaves somebody looking
+ * at "no agent selected" instead of the conversation they were in.
+ *
+ * Returns: (transfer full): the response
+ */
+/**
+ * clawt_web_run_skill_command:
+ * @app: a #ClawtWebApp
+ * @request: the request being answered
+ * @agent_id: whose skill it is
+ * @name: the command, without its leading slash
+ * @arguments: (nullable): the rest of the line
+ *
+ * Expands one of an agent's skill commands and sends the result.
+ *
+ * The expansion is the daemon's, never the client's, so both clients
+ * send identical text for the same `/name args`.
+ *
+ * Returns: (transfer full): the response
+ */
+HtmxResponse *clawt_web_run_skill_command(ClawtWebApp  *app,
+                                          HtmxRequest  *request,
+                                          const gchar  *agent_id,
+                                          const gchar  *name,
+                                          const gchar  *arguments);
+
+HtmxResponse *clawt_web_room_notice(ClawtWebApp  *app,
+                                    HtmxRequest  *request,
+                                    const gchar  *room_id,
+                                    const gchar  *text,
+                                    const gchar  *tone);
+
+/**
  * clawt_web_error_page:
  * @app: a #ClawtWebApp
  * @request: the request being answered

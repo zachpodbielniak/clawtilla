@@ -472,17 +472,13 @@ on_commands(HtmxRequest *request, GHashTable *params, gpointer user_data)
  * same text for the same `/name args` because there is one
  * implementation of the substitution, in the daemon.
  */
-static HtmxResponse *
-on_expand(HtmxRequest *request, GHashTable *params, gpointer user_data)
+HtmxResponse *
+clawt_web_run_skill_command(ClawtWebApp *app, HtmxRequest *request,
+                            const gchar *agent_id, const gchar *name,
+                            const gchar *arguments)
 {
-    ClawtWebApp *app = user_data;
-    g_autofree gchar *agent_id = clawt_web_param(params, "id");
-    const gchar *name = clawt_web_form_value(request, "command");
-    const gchar *arguments = clawt_web_form_value(request, "arguments");
     g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
     g_autoptr(JsonNode) reply = NULL;
-    g_autoptr(ClawtWebPayload) send = NULL;
-    g_autoptr(JsonNode) sent = NULL;
     const gchar *prompt;
 
     if (name == NULL || *name == '\0')
@@ -498,9 +494,18 @@ on_expand(HtmxRequest *request, GHashTable *params, gpointer user_data)
                                clawt_web_payload_take(
                                    g_steal_pointer(&payload)));
 
+    /*
+     * The GTK client's sentence, word for word.
+     *
+     * It reaches the same conclusion the same way -- ask the daemon to
+     * expand it, and treat a refusal as "there is no such command" --
+     * so the two must say the same thing.  The daemon's own wording is
+     * accurate and stops short of the useful half: which is that the
+     * list of what does exist is one command away.
+     */
     if (reply == NULL) {
-        g_autofree gchar *message =
-            g_strdup(clawt_web_app_last_error(app));
+        g_autofree gchar *message = g_strdup_printf(
+            "There is no /%s. Type /help for the list.", name);
 
         return clawt_web_error_page(app, request, agent_id,
                                     CLAWT_PAGE_CHAT, message);
@@ -513,23 +518,38 @@ on_expand(HtmxRequest *request, GHashTable *params, gpointer user_data)
                                     CLAWT_PAGE_CHAT,
                                     "that command expanded to nothing");
 
-    send = clawt_web_payload_new();
-    clawt_web_payload_set(send, "agent", agent_id);
-    clawt_web_payload_set(send, "body", prompt);
+    /*
+     * Sent through the one function that sends a message.
+     *
+     * This built its own frame and named it `message.send`, which no
+     * handler answers -- the daemon's kind is `msg.send`, and that
+     * spelling appeared exactly once in the tree.  So a skill command
+     * expanded correctly and then went nowhere, and the page said the
+     * action had happened.  `make parity` could not see it either: it
+     * intersects the two clients' kinds with the daemon's, which
+     * compares the clients against each other and says nothing about a
+     * kind neither of them shares with the daemon.
+     *
+     * Going through clawt_web_send_message() also picks up the two
+     * things this copy never did: clearing the draft, and saying so
+     * when the message was held because the agent is mid-turn.
+     */
+    return clawt_web_send_message(app, request, agent_id, prompt);
+}
 
-    sent = clawt_web_app_call(app, "message.send",
-                              clawt_web_payload_take(g_steal_pointer(&send)));
+/*
+ * The same, from the skills page's own form.
+ */
+static HtmxResponse *
+on_expand(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
 
-    if (sent == NULL) {
-        g_autofree gchar *message =
-            g_strdup(clawt_web_app_last_error(app));
-
-        return clawt_web_error_page(app, request, agent_id,
-                                    CLAWT_PAGE_CHAT, message);
-    }
-
-    return clawt_web_after_action(app, request, agent_id,
-                                  CLAWT_PAGE_CHAT, NULL);
+    return clawt_web_run_skill_command(
+               app, request, agent_id,
+               clawt_web_form_value(request, "command"),
+               clawt_web_form_value(request, "arguments"));
 }
 
 /* ── Actions ─────────────────────────────────────────────────────── */

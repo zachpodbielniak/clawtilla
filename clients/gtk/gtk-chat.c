@@ -3319,6 +3319,48 @@ run_slash_command(ClawtWindow *self, const gchar *text, gchar **expanded)
         return TRUE;
     }
 
+    if (g_strcmp0(name, "/agents") == 0) {
+        g_autoptr(JsonNode) reply = clawt_window_request(self, "agent.list",
+                                                          NULL);
+        g_autoptr(GString) out = g_string_new(NULL);
+        JsonArray *agents;
+        guint j;
+
+        if (reply == NULL)
+            return TRUE;
+
+        agents = json_object_get_array_member(clawt_payload_of(reply),
+                                              "agents");
+
+        for (j = 0; j < json_array_get_length(agents); j++) {
+            JsonObject *one = json_array_get_object_element(agents, j);
+
+            g_string_append_printf(out, "%-20s %-10s %s\n",
+                                   clawt_json_string(one, "id", "?"),
+                                   clawt_json_string(one, "state", "?"),
+                                   clawt_json_string(one, "description", ""));
+        }
+
+        append_local(self, out->str);
+        return TRUE;
+    }
+
+    /*
+     * Recall is not about one agent, so it goes to the memory page
+     * rather than printing into this transcript: a result names the room
+     * it came from, and a list of rooms rendered inside one of them
+     * reads as that conversation having said all of it.
+     */
+    if (g_strcmp0(name, "/recall") == 0) {
+        if (self->recall_entry != NULL)
+            gtk_editable_set_text(GTK_EDITABLE(self->recall_entry),
+                                  rest != NULL ? rest : "");
+
+        clawt_gtk_show_page(self, CLAWT_PAGE_MEMORY);
+        clawt_gtk_refresh_recall(self);
+        return TRUE;
+    }
+
     if (self->selected_agent == NULL) {
         append_local(self,
                      (self->selected_room_entry != NULL)
@@ -3428,32 +3470,6 @@ run_slash_command(ClawtWindow *self, const gchar *text, gchar **expanded)
         return TRUE;
     }
 
-    if (g_strcmp0(name, "/agents") == 0) {
-        g_autoptr(JsonNode) reply = clawt_window_request(self, "agent.list",
-                                                          NULL);
-        g_autoptr(GString) out = g_string_new(NULL);
-        JsonArray *agents;
-        guint j;
-
-        if (reply == NULL)
-            return TRUE;
-
-        agents = json_object_get_array_member(clawt_payload_of(reply),
-                                              "agents");
-
-        for (j = 0; j < json_array_get_length(agents); j++) {
-            JsonObject *one = json_array_get_object_element(agents, j);
-
-            g_string_append_printf(out, "%-20s %-10s %s\n",
-                                   clawt_json_string(one, "id", "?"),
-                                   clawt_json_string(one, "state", "?"),
-                                   clawt_json_string(one, "description", ""));
-        }
-
-        append_local(self, out->str);
-        return TRUE;
-    }
-
     if (g_strcmp0(name, "/files") == 0 || g_strcmp0(name, "/edit") == 0) {
         g_autoptr(JsonNode) reply = NULL;
         JsonArray *files;
@@ -3509,22 +3525,6 @@ run_slash_command(ClawtWindow *self, const gchar *text, gchar **expanded)
             append_local(self, message);
         }
 
-        return TRUE;
-    }
-
-    /*
-     * Recall is not about one agent, so it goes to the memory page
-     * rather than printing into this transcript: a result names the room
-     * it came from, and a list of rooms rendered inside one of them
-     * reads as that conversation having said all of it.
-     */
-    if (g_strcmp0(name, "/recall") == 0) {
-        if (self->recall_entry != NULL)
-            gtk_editable_set_text(GTK_EDITABLE(self->recall_entry),
-                                  rest != NULL ? rest : "");
-
-        clawt_gtk_show_page(self, CLAWT_PAGE_MEMORY);
-        clawt_gtk_refresh_recall(self);
         return TRUE;
     }
 
