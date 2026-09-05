@@ -61,6 +61,9 @@ static const gchar *SCHEMA_SQL =
     "  room TEXT,"
     "  task_id TEXT,"
     "  reply_to TEXT,"
+	"  request_room TEXT,"
+	"  request_origin TEXT,"
+	"  request_task TEXT,"
     "  subject TEXT,"
     "  idempotency_key TEXT,"
     "  last_error TEXT,"
@@ -151,6 +154,11 @@ has_column(sqlite3 *db, const gchar *table, const gchar *column)
 static gboolean
 apply_schema(sqlite3 *db, GError **error)
 {
+	static const gchar *context_columns[] = {
+		"request_room", "request_origin", "request_task"
+	};
+	guint i;
+
     if (db == NULL) {
         g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
                             "the mailbox database is not open");
@@ -171,6 +179,20 @@ apply_schema(sqlite3 *db, GError **error)
         set_sqlite_error(error, db, "adding invites_reply to the mailbox");
         return FALSE;
     }
+
+	/* Existing mailboxes must retain their queued work when upgraded. */
+	for (i = 0; i < G_N_ELEMENTS(context_columns); i++) {
+		g_autofree gchar *sql = NULL;
+
+		if (has_column(db, "items", context_columns[i]))
+			continue;
+		sql = g_strdup_printf("ALTER TABLE items ADD COLUMN %s TEXT",
+			context_columns[i]);
+		if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) {
+			set_sqlite_error(error, db, "adding request context to the mailbox");
+			return FALSE;
+		}
+	}
 
     return TRUE;
 }
@@ -211,6 +233,8 @@ item_from_row(sqlite3_stmt *stmt)
     clawt_mailbox_item_set_expires_at(item, sqlite3_column_int64(stmt, 16));
     clawt_mailbox_item_set_invites_reply(item,
         sqlite3_column_int(stmt, 17) != 0);
+	clawt_mailbox_item_set_request_context(item, column_text(stmt, 18),
+		column_text(stmt, 19), column_text(stmt, 20));
 
     return item;
 }
@@ -218,7 +242,8 @@ item_from_row(sqlite3_stmt *stmt)
 #define SELECT_COLUMNS \
     "id, sender, recipient, body, room, task_id, reply_to, subject, " \
     "idempotency_key, last_error, priority, state, depth, attempts, " \
-    "created_at, not_before, expires_at, invites_reply"
+    "created_at, not_before, expires_at, invites_reply, " \
+	"request_room, request_origin, request_task"
 
 /* ── Depth ───────────────────────────────────────────────────────── */
 
@@ -548,8 +573,9 @@ clawt_mailbox_post(ClawtMailbox *self, ClawtMailboxItem *item, GError **error)
     if (sqlite3_prepare_v2(self->db,
             "INSERT INTO items (id, sender, recipient, body, room, task_id,"
             " reply_to, subject, idempotency_key, priority, state, depth,"
-            " attempts, created_at, not_before, expires_at, invites_reply)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " attempts, created_at, not_before, expires_at, invites_reply,"
+			" request_room, request_origin, request_task)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             -1, &stmt, NULL) != SQLITE_OK) {
         set_sqlite_error(error, self->db, "queueing a message");
         return NULL;
@@ -581,6 +607,12 @@ clawt_mailbox_post(ClawtMailbox *self, ClawtMailboxItem *item, GError **error)
     sqlite3_bind_int64(stmt, 16, expires_at);
     sqlite3_bind_int(stmt, 17,
                      clawt_mailbox_item_get_invites_reply(item) ? 1 : 0);
+	sqlite3_bind_text(stmt, 18, clawt_mailbox_item_get_request_room(item),
+		-1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 19, clawt_mailbox_item_get_request_origin(item),
+		-1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 20, clawt_mailbox_item_get_request_task(item),
+		-1, SQLITE_TRANSIENT);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);

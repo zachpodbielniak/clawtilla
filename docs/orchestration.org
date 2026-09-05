@@ -1184,7 +1184,7 @@ time.
 ~clawtilla_message_user~ posts into the room between that agent and the
 user, which is the room the client is already watching.
 
-**** It is refused during a turn another agent started
+**** Responsibility follows the request, including its answer
 
 Work handed down a chain comes back up the same one.  A chief of staff
 delegates to a lead, the lead delegates to a member; if each of them
@@ -1192,10 +1192,15 @@ reports to the operator directly, the operator gets three separate
 answers arriving in the middle of a conversation they were not part of
 --- and whoever asked the question gets no answer at all.
 
-So an agent whose current turn was started by a peer is refused, and the
-refusal names who is waiting and how to reach them.  Answer that agent;
-they will pass it on.  The chief of staff is not a special case: its
-turns come from the operator, so it never meets this.
+An agent working on a peer's request is refused, and the refusal names that requester and how to reach them. This remains true when the agent consults another peer: the answer is information for the enclosing work, not permission to bypass whoever delegated it.
+
+An operator's question is the other case. If you ask the chief, the chief calls ~clawtilla_ask_agent~ or ~clawtilla_message_agent~, and a worker answers, the chief may report that answer with ~clawtilla_message_user~. The worker supplied an answer; it did not become the requester. Treating every peer-origin delivery as a new assignment used to refuse that report and recommend messaging the worker again, reopening the exchange instead of reporting to you.
+
+Each direct question now carries a snapshot of the calling conversation, its requester, and its enclosing task through the durable mailbox. The worker's turn retains its exact input, and its ordinary answer echoes the snapshot with the answered delivery's identifier. Delivery of that answer restores the original requester and task while keeping the exchange closed. Questions to the same peer cannot exchange responsibility when priority changes their delivery order, and answering a nested question does not detach later delegation from its parent task. The answer still arrives in the peer conversation; its preamble names the originating room and explains who is waiting for the report.
+
+Incoming peer requests, uncorrelated replies, and rows queued by an older build retain the conservative peer-origin rule. A daemon cannot reconstruct the caller of an old question by guessing. New mailbox columns migrate without discarding queued items, and the context survives a restart while either the question or its answer is queued. If a harness omits its room while several turns are active, no return context is guessed. An unambiguous last turn supplies the fallback for older harnesses.
+
+For embedders, ~clawt_mcp_tools_set_deliver_turn_func()~ installs the delivery callback that receives the caller's room; ~clawt_mcp_tools_set_deliver_func()~ remains source-compatible. ~clawt_message_set_request_context()~ and ~clawt_mailbox_item_set_request_context()~ carry the snapshot, and ~clawt_agent_deliver_item()~ preserves it with each turn. ~clawt_agent_get_turn_input_in()~ identifies the exact delivered question when its answer arrives after the typing indicator falls.
 
 Refused rather than redirected on purpose.  A redirect would deliver a
 message written for the operator to somebody else --- addressed to the

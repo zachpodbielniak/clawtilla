@@ -65,6 +65,40 @@ const gchar *clawt_mailbox_item_get_subject(ClawtMailboxItem *self);
 const gchar *clawt_mailbox_item_get_idempotency_key(ClawtMailboxItem *self);
 const gchar *clawt_mailbox_item_get_last_error(ClawtMailboxItem *self);
 
+/**
+ * clawt_mailbox_item_set_request_context:
+ * @self: a #ClawtMailboxItem
+ * @room: (nullable): where the original peer question was asked
+ * @origin: (nullable): who requested that enclosing work
+ * @task_id: (nullable): the requester's enclosing task
+ *
+ * Persists the originating turn with a request and its answer. Old items
+ * with no snapshot retain ordinary peer-origin behavior.
+ */
+void clawt_mailbox_item_set_request_context(ClawtMailboxItem *self,
+	const gchar *room, const gchar *origin, const gchar *task_id);
+
+/**
+ * clawt_mailbox_item_get_request_room:
+ * @self: a #ClawtMailboxItem
+ * Returns: (transfer none) (nullable): the originating conversation
+ */
+const gchar *clawt_mailbox_item_get_request_room(ClawtMailboxItem *self);
+
+/**
+ * clawt_mailbox_item_get_request_origin:
+ * @self: a #ClawtMailboxItem
+ * Returns: (transfer none) (nullable): who requested the enclosing work
+ */
+const gchar *clawt_mailbox_item_get_request_origin(ClawtMailboxItem *self);
+
+/**
+ * clawt_mailbox_item_get_request_task:
+ * @self: a #ClawtMailboxItem
+ * Returns: (transfer none) (nullable): the enclosing task's identifier
+ */
+const gchar *clawt_mailbox_item_get_request_task(ClawtMailboxItem *self);
+
 ClawtPriority     clawt_mailbox_item_get_priority(ClawtMailboxItem *self);
 ClawtMailboxState clawt_mailbox_item_get_state(ClawtMailboxItem *self);
 

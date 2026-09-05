@@ -21,6 +21,10 @@ struct _ClawtMessage {
     gchar *task_id;
     gchar *parent_id;
     gchar *only_for;
+	gchar *reply_to;
+	gchar *request_room;
+	gchar *request_origin;
+	gchar *request_task;
 
     gint64        timestamp;
     gint          depth;
@@ -95,6 +99,10 @@ clawt_message_copy(ClawtMessage *self)
     copy->task_id = g_strdup(self->task_id);
     copy->parent_id = g_strdup(self->parent_id);
     copy->only_for = g_strdup(self->only_for);
+	copy->reply_to = g_strdup(self->reply_to);
+	copy->request_room = g_strdup(self->request_room);
+	copy->request_origin = g_strdup(self->request_origin);
+	copy->request_task = g_strdup(self->request_task);
     copy->timestamp = self->timestamp;
     copy->depth = self->depth;
     copy->priority = self->priority;
@@ -120,6 +128,10 @@ clawt_message_free(ClawtMessage *self)
     g_free(self->task_id);
     g_free(self->parent_id);
     g_free(self->only_for);
+	g_free(self->reply_to);
+	g_free(self->request_room);
+	g_free(self->request_origin);
+	g_free(self->request_task);
     g_free(self);
 }
 
@@ -138,6 +150,10 @@ GETTER(sender_name, sender_name)
 GETTER(body, body)
 GETTER(task_id, task_id)
 GETTER(parent_id, parent_id)
+GETTER(reply_to, reply_to)
+GETTER(request_room, request_room)
+GETTER(request_origin, request_origin)
+GETTER(request_task, request_task)
 
 #undef GETTER
 
@@ -157,8 +173,23 @@ SETTER(sender_name, sender_name)
 SETTER(task_id, task_id)
 SETTER(parent_id, parent_id)
 SETTER(only_for, only_for)
+SETTER(reply_to, reply_to)
 
 #undef SETTER
+
+/* Keep the originating turn together when a request or answer is copied. */
+void
+clawt_message_set_request_context(ClawtMessage *self, const gchar *room,
+	const gchar *origin, const gchar *task_id)
+{
+	g_return_if_fail(self != NULL);
+	g_free(self->request_room);
+	g_free(self->request_origin);
+	g_free(self->request_task);
+	self->request_room = g_strdup(room);
+	self->request_origin = g_strdup(origin);
+	self->request_task = g_strdup(task_id);
+}
 
 const gchar *
 clawt_message_get_only_for(ClawtMessage *self)

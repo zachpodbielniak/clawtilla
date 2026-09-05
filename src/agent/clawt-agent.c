@@ -132,6 +132,7 @@ typedef struct {
     gboolean  replies;
     gchar    *origin;
     gchar    *task_id;
+    ClawtMailboxItem *input; /* The exact delivery, including return context. */
 } TurnSetup;
 
 
@@ -143,6 +144,7 @@ turn_setup_free(gpointer data)
     g_free(setup->room);
     g_free(setup->origin);
     g_free(setup->task_id);
+	g_clear_pointer(&setup->input, clawt_mailbox_item_free);
     g_free(setup);
 }
 
@@ -946,6 +948,47 @@ clawt_agent_close_turn_exchange(ClawtAgent *self, const gchar *room_id)
 
     if (setup != NULL)
         setup->replies = FALSE;
+}
+
+/*
+ * Keep the exact input with its turn. Only a correlated, closed answer
+ * restores responsibility; an incoming question is still the peer's ask.
+ */
+void
+clawt_agent_deliver_item(ClawtAgent *self, ClawtMailboxItem *item,
+	gboolean replies)
+{
+	const gchar *origin;
+	const gchar *task_id;
+	TurnSetup *setup;
+
+	g_return_if_fail(CLAWT_IS_AGENT(self));
+	g_return_if_fail(item != NULL);
+	origin = clawt_mailbox_item_get_from(item);
+	task_id = clawt_mailbox_item_get_task_id(item);
+	if (!clawt_mailbox_item_get_invites_reply(item) &&
+		clawt_mailbox_item_get_reply_to(item) != NULL &&
+		clawt_mailbox_item_get_request_room(item) != NULL) {
+		origin = clawt_mailbox_item_get_request_origin(item);
+		task_id = clawt_mailbox_item_get_request_task(item);
+	}
+	clawt_agent_deliver_turn(self, clawt_mailbox_item_get_room(item),
+		clawt_mailbox_item_get_depth(item), replies, origin, task_id);
+	setup = g_queue_peek_tail(self->pending);
+	setup->input = clawt_mailbox_item_copy(item);
+}
+
+/* The original delivery remains available after typing falls. */
+ClawtMailboxItem *
+clawt_agent_get_turn_input_in(ClawtAgent *self, const gchar *room_id)
+{
+	TurnSetup *setup;
+
+	g_return_val_if_fail(CLAWT_IS_AGENT(self), NULL);
+	setup = turn_in(self, room_id);
+	if (setup == NULL && room_id == NULL)
+		setup = latest_turn(self);
+	return setup != NULL ? setup->input : NULL;
 }
 
 void

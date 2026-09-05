@@ -146,6 +146,57 @@ void clawt_message_set_depth(ClawtMessage *self, gint depth);
 void clawt_message_set_room_id(ClawtMessage *self, const gchar *room_id);
 
 /**
+ * clawt_message_set_request_context:
+ * @self: a #ClawtMessage
+ * @room: (nullable): the conversation in which the request was made
+ * @origin: (nullable): who asked the requester to do the work
+ * @task_id: (nullable): the requester's enclosing task
+ *
+ * Records daemon-owned return context for a direct peer question. A reply
+ * echoes this snapshot, so concurrent requests cannot exchange origins.
+ */
+void clawt_message_set_request_context(ClawtMessage *self, const gchar *room,
+	const gchar *origin, const gchar *task_id);
+
+/**
+ * clawt_message_get_request_room:
+ * @self: a #ClawtMessage
+ * Returns: (transfer none) (nullable): the originating conversation
+ */
+const gchar *clawt_message_get_request_room(ClawtMessage *self);
+
+/**
+ * clawt_message_get_request_origin:
+ * @self: a #ClawtMessage
+ * Returns: (transfer none) (nullable): who requested the enclosing work
+ */
+const gchar *clawt_message_get_request_origin(ClawtMessage *self);
+
+/**
+ * clawt_message_get_request_task:
+ * @self: a #ClawtMessage
+ * Returns: (transfer none) (nullable): the enclosing task's identifier
+ */
+const gchar *clawt_message_get_request_task(ClawtMessage *self);
+
+/**
+ * clawt_message_set_reply_to:
+ * @self: a #ClawtMessage
+ * @item_id: (nullable): the mailbox delivery this answer came from
+ *
+ * Marks an actual answer. This is separate from parent_id, which controls
+ * transcript branches rather than request correlation.
+ */
+void clawt_message_set_reply_to(ClawtMessage *self, const gchar *item_id);
+
+/**
+ * clawt_message_get_reply_to:
+ * @self: a #ClawtMessage
+ * Returns: (transfer none) (nullable): the answered delivery's identifier
+ */
+const gchar *clawt_message_get_reply_to(ClawtMessage *self);
+
+/**
  * clawt_message_get_only_for:
  * @self: a #ClawtMessage
  *

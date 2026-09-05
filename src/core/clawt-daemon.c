@@ -52,6 +52,7 @@ static gboolean deliver_for_tools(const gchar   *from_agent,
                                   const gchar   *task_id,
                                   gint           depth,
                                   ClawtPriority  priority,
+                                  const gchar   *turn_room,
                                   gpointer       user_data,
                                   GError       **error);
 
@@ -1945,6 +1946,26 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
      */
     {
         ClawtAgent *sender = clawt_agent_manager_get(self->agents, agent_id);
+		ClawtMailboxItem *input = sender != NULL
+			? clawt_agent_get_turn_input_in(sender, room_id) : NULL;
+
+		/*
+		 * Correlate a direct answer with the exact input this turn took.
+		 * Context is daemon-owned mailbox data, never a model-supplied
+		 * claim. A reply to a reply does not inherit it, and changing
+		 * rooms cannot carry another conversation's reporting authority.
+		 */
+		if (input != NULL &&
+			clawt_mailbox_item_get_invites_reply(input) &&
+			clawt_mailbox_item_get_request_room(input) != NULL &&
+			clawt_mailbox_item_get_task_id(input) == NULL &&
+			g_strcmp0(clawt_mailbox_item_get_room(input), destination) == 0) {
+			clawt_message_set_reply_to(message, clawt_mailbox_item_get_id(input));
+			clawt_message_set_request_context(message,
+				clawt_mailbox_item_get_request_room(input),
+				clawt_mailbox_item_get_request_origin(input),
+				clawt_mailbox_item_get_request_task(input));
+		}
 
         clawt_message_set_depth(
             message,
@@ -2723,13 +2744,43 @@ create_agent_for_tools(const gchar  *agent_id,
 static gboolean
 deliver_for_tools(const gchar *from_agent, const gchar *target,
                   const gchar *body, const gchar *task_id, gint depth,
-                  ClawtPriority priority, gpointer user_data, GError **error)
+                  ClawtPriority priority, const gchar *turn_room,
+				  gpointer user_data, GError **error)
 {
     ClawtDaemon *self = user_data;
+	g_autoptr(ClawtMessage) message = NULL;
+	ClawtAgent *sender = clawt_agent_manager_get(self->agents, from_agent);
 
-    if (clawt_mailbox_router_send_to_full(self->router, from_agent, target,
-                                          body, task_id, depth, priority,
-                                          error) < 0)
+	message = clawt_message_new(target, from_agent, body);
+	clawt_message_set_task_id(message, task_id);
+	clawt_message_set_depth(message, depth);
+	clawt_message_set_priority(message, priority);
+
+	/*
+	 * Questions carry a snapshot of the calling turn through the peer's
+	 * durable mailbox. Neither task assignments nor room posts need it:
+	 * tasks already have settlement notices, and room posts are not
+	 * requests to one peer. Do not guess between concurrent callers
+	 * when an older harness provides no room.
+	 */
+	if (sender != NULL && task_id == NULL &&
+		clawt_agent_manager_get(self->agents, target) != NULL) {
+		const gchar *request_room = turn_room;
+
+		if (request_room == NULL && clawt_agent_get_typing_rooms(sender) <= 1) {
+			request_room = clawt_agent_get_last_turn_room(sender);
+			/* A newer, ended room must not stand in for the one still live. */
+			if (clawt_agent_get_typing_rooms(sender) != 0 &&
+				!clawt_agent_is_typing_in(sender, request_room))
+				request_room = NULL;
+		}
+		if (request_room != NULL)
+			clawt_message_set_request_context(message, request_room,
+				clawt_agent_get_turn_origin_in(sender, request_room),
+				clawt_agent_get_turn_task_id_in(sender, request_room));
+	}
+
+    if (clawt_mailbox_router_send(self->router, message, error) < 0)
         return FALSE;
 
     /*
@@ -5692,7 +5743,7 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      */
     clawt_mcp_tools_set_main_context(self->mcp_tools, self->main_context);
 
-    clawt_mcp_tools_set_deliver_func(self->mcp_tools, deliver_for_tools,
+    clawt_mcp_tools_set_deliver_turn_func(self->mcp_tools, deliver_for_tools,
                                      self, NULL);
 
     /*

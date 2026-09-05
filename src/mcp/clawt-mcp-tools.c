@@ -669,6 +669,7 @@ struct _ClawtMcpTools {
     GPtrArray *tool_providers;  /* GObject*, unowned */
 
     ClawtMcpDeliverFunc deliver;
+	ClawtMcpDeliverTurnFunc deliver_turn;
     gpointer            deliver_data;
     GDestroyNotify      deliver_destroy;
 
@@ -843,8 +844,43 @@ clawt_mcp_tools_set_deliver_func(ClawtMcpTools       *self,
         self->deliver_destroy(self->deliver_data);
 
     self->deliver = func;
+	self->deliver_turn = NULL;
     self->deliver_data = user_data;
     self->deliver_destroy = destroy;
+}
+
+/* Both callback versions own the same slot and the same lifetime. */
+void
+clawt_mcp_tools_set_deliver_turn_func(ClawtMcpTools *self,
+	ClawtMcpDeliverTurnFunc func, gpointer user_data, GDestroyNotify destroy)
+{
+	g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+	clawt_mcp_tools_set_deliver_func(self, NULL, user_data, destroy);
+	self->deliver_turn = func;
+}
+
+/* Old embedders can still deliver; the daemon supplies the richer hook. */
+static gboolean
+can_deliver(ClawtMcpTools *self)
+{
+	return self->deliver_turn != NULL || self->deliver != NULL;
+}
+
+/* Keep compatibility handling out of the individual tool implementations. */
+static gboolean
+dispatch_delivery(ClawtMcpTools *self, const gchar *from_agent,
+	const gchar *target, const gchar *body, const gchar *task_id,
+	gint depth, ClawtPriority priority, const gchar *turn_room, GError **error)
+{
+	if (self->deliver_turn != NULL)
+		return self->deliver_turn(from_agent, target, body, task_id, depth,
+			priority, turn_room, self->deliver_data, error);
+	if (self->deliver != NULL)
+		return self->deliver(from_agent, target, body, task_id, depth,
+			priority, self->deliver_data, error);
+	g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+		"Messaging is not available.");
+	return FALSE;
 }
 
 void
@@ -2768,7 +2804,7 @@ tool_message_agent(ClawtMcpTools *self,
         return g_steal_pointer(&refusal);
     }
 
-    if (self->deliver == NULL) {
+    if (!can_deliver(self)) {
         *is_error = TRUE;
         return g_strdup("Messaging is not available.");
     }
@@ -2790,9 +2826,10 @@ tool_message_agent(ClawtMcpTools *self,
                                target);
     }
 
-    if (!self->deliver(agent_id, target, body, NULL,
+    if (!dispatch_delivery(self, agent_id, target, body, NULL,
                        outbound_depth(self, agent_id, turn_room), priority,
-                       self->deliver_data, &error)) {
+                       turn_room,
+                       &error)) {
         *is_error = TRUE;
         return g_strdup(error->message);
     }
@@ -2835,7 +2872,7 @@ tool_delegate(ClawtMcpTools *self,
         return g_strdup("agent_id and task are both required.");
     }
 
-    if (self->tasks == NULL || self->deliver == NULL) {
+    if (self->tasks == NULL || !can_deliver(self)) {
         *is_error = TRUE;
         return g_strdup("Delegation is not available.");
     }
@@ -2900,11 +2937,12 @@ tool_delegate(ClawtMcpTools *self,
             clawt_task_assignment_guidance(clawt_task_get_id(task));
         g_autofree gchar *delivered = g_strconcat(work, guidance, NULL);
 
-        if (!self->deliver(agent_id, assignee, delivered,
+        if (!dispatch_delivery(self, agent_id, assignee, delivered,
                            clawt_task_get_id(task),
                            outbound_depth(self, agent_id, turn_room),
                            CLAWT_PRIORITY_NORMAL,
-                           self->deliver_data, &error)) {
+                           turn_room,
+                           &error)) {
             /*
              * The task is failed rather than left pending.  A task nobody
              * was ever told about would sit in the list for ever looking
@@ -4116,7 +4154,7 @@ tool_message_user(ClawtMcpTools *self, const gchar *agent_id,
         return g_strdup("A message needs a body.");
     }
 
-    if (self->room_manager == NULL || self->deliver == NULL) {
+    if (self->room_manager == NULL || !can_deliver(self)) {
         *is_error = TRUE;
         return g_strdup("There is no way to reach your operator from here.");
     }
@@ -4136,8 +4174,9 @@ tool_message_user(ClawtMcpTools *self, const gchar *agent_id,
      * Refused rather than redirected. A redirect would deliver a message
      * written for the operator to somebody else, addressed to the wrong
      * reader; the refusal names who is waiting so the next attempt is
-     * written for them. The chief of staff is not a special case: its
-     * turns come from the operator, so it never sees this.
+     * written for them. A correlated peer answer restores the original
+     * requester's origin during delivery: it is an answer to their work,
+     * not a new assignment from the peer supplying the answer.
      */
     {
         ClawtAgent *me = (self->agents != NULL)
@@ -4226,9 +4265,10 @@ tool_message_user(ClawtMcpTools *self, const gchar *agent_id,
     room = clawt_room_manager_get_direct(self->room_manager, agent_id,
                                          "user");
 
-    if (!self->deliver(agent_id, clawt_room_get_id(room), body, NULL,
+    if (!dispatch_delivery(self, agent_id, clawt_room_get_id(room), body, NULL,
                        outbound_depth(self, agent_id, turn_room), CLAWT_PRIORITY_NORMAL,
-                       self->deliver_data, &error)) {
+                       turn_room,
+                       &error)) {
         *is_error = TRUE;
         return g_strdup_printf("Could not reach your operator: %s",
                                error != NULL ? error->message : "unknown");
@@ -4795,7 +4835,7 @@ tool_post_room(ClawtMcpTools *self, const gchar *agent_id,
         return g_strdup_printf("There is no room called '%s'.", room_id);
     }
 
-    if (self->deliver == NULL) {
+    if (!can_deliver(self)) {
         *is_error = TRUE;
         return g_strdup("Posting is not available.");
     }
@@ -4822,9 +4862,10 @@ tool_post_room(ClawtMcpTools *self, const gchar *agent_id,
             names != NULL ? names : "there is nobody else in this room");
     }
 
-    if (!self->deliver(agent_id, room_id, body, NULL,
+    if (!dispatch_delivery(self, agent_id, room_id, body, NULL,
                        outbound_depth(self, agent_id, turn_room), CLAWT_PRIORITY_NORMAL,
-                       self->deliver_data, &error)) {
+                       turn_room,
+                       &error)) {
         *is_error = TRUE;
         return g_strdup(error->message);
     }
@@ -5114,15 +5155,16 @@ tool_mailbox_reply(ClawtMcpTools *self, const gchar *agent_id,
                                message_id);
     }
 
-    if (self->deliver == NULL) {
+    if (!can_deliver(self)) {
         *is_error = TRUE;
         return g_strdup("Replying is not available.");
     }
 
-    if (!self->deliver(agent_id, clawt_mailbox_item_get_from(item), body,
+    if (!dispatch_delivery(self, agent_id, clawt_mailbox_item_get_from(item), body,
                        clawt_mailbox_item_get_task_id(item),
                        outbound_depth(self, agent_id, turn_room), CLAWT_PRIORITY_NORMAL,
-                       self->deliver_data, &error)) {
+                       turn_room,
+                       &error)) {
         *is_error = TRUE;
         return g_strdup(error->message);
     }

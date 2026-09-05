@@ -90,6 +90,41 @@ void clawt_mcp_tools_set_deliver_func(ClawtMcpTools       *self,
                                       GDestroyNotify       destroy);
 
 /**
+ * ClawtMcpDeliverTurnFunc:
+ * @from_agent: who is sending
+ * @target: an agent id or a room id
+ * @body: the message
+ * @task_id: (nullable): the task it belongs to
+ * @depth: how far the message is from the original request
+ * @priority: the delivery band
+ * @turn_room: (nullable): the caller's conversation
+ * @user_data: data passed when the callback was installed
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Delivers with the calling conversation available for reply correlation.
+ * The older #ClawtMcpDeliverFunc remains supported for existing embedders.
+ *
+ * Returns: %TRUE if accepted for delivery
+ */
+typedef gboolean (*ClawtMcpDeliverTurnFunc)(const gchar *from_agent,
+	const gchar *target, const gchar *body, const gchar *task_id,
+	gint depth, ClawtPriority priority, const gchar *turn_room,
+	gpointer user_data, GError **error);
+
+/**
+ * clawt_mcp_tools_set_deliver_turn_func:
+ * @self: a #ClawtMcpTools
+ * @func: (nullable) (scope notified): delivery with the calling conversation
+ * @user_data: data for @func
+ * @destroy: (nullable): called when the callback is replaced
+ *
+ * Replaces either delivery callback. Installing the older callback with
+ * clawt_mcp_tools_set_deliver_func() likewise replaces this one.
+ */
+void clawt_mcp_tools_set_deliver_turn_func(ClawtMcpTools *self,
+	ClawtMcpDeliverTurnFunc func, gpointer user_data, GDestroyNotify destroy);
+
+/**
  * ClawtMcpCreateRoomFunc:
  * @room_id: the id for the new room
  * @name: (nullable): its display name

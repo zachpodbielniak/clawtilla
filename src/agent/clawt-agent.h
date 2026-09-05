@@ -373,6 +373,29 @@ void clawt_agent_deliver_turn(ClawtAgent  *self,
                               const gchar *task_id);
 
 /**
+ * clawt_agent_deliver_item:
+ * @self: a #ClawtAgent
+ * @item: (transfer none): the exact mailbox delivery
+ * @replies: whether this turn's closing text may be delivered
+ *
+ * Queues a turn with a copy of its input. Correlated answers restore the
+ * requester's original origin and enclosing task without reopening the
+ * exchange. Ordinary peer messages retain their sender as origin.
+ */
+void clawt_agent_deliver_item(ClawtAgent *self, ClawtMailboxItem *item,
+	gboolean replies);
+
+/**
+ * clawt_agent_get_turn_input_in:
+ * @self: a #ClawtAgent
+ * @room_id: (nullable): the replying room, or the latest turn if unnamed
+ *
+ * Returns: (transfer none) (nullable): the delivery this turn is answering
+ */
+ClawtMailboxItem *clawt_agent_get_turn_input_in(ClawtAgent *self,
+	const gchar *room_id);
+
+/**
  * clawt_agent_set_turn_origin:
  * @self: a #ClawtAgent
  * @from: (nullable): who the message being delivered came from

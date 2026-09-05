@@ -16,6 +16,7 @@
 #include <gio/gunixsocketaddress.h>
 #include <glib/gstdio.h>
 #include <signal.h>
+#include <sys/socket.h>
 #include <utime.h>
 
 #include "clawt-test-util.h"
@@ -4897,6 +4898,146 @@ test_parallel_room_completion(void)
 	g_assert_cmpstr(clawt_task_get_result(second), ==, "Storage reviewed.");
 	g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(chief)), ==, 1);
 	g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(peer)), ==, 1);
+	fixture_teardown(&fixture);
+}
+
+/* Connect a test agent to the actual router without starting a model. */
+static GSocket *
+request_context_link(ClawtAgent *agent)
+{
+	gint sockets[2];
+	g_autoptr(GSocket) near_end = NULL;
+	g_autoptr(GSocketConnection) connection = NULL;
+	g_autoptr(ClawtLink) link = NULL;
+
+	g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets), ==, 0);
+	near_end = g_socket_new_from_fd(sockets[0], NULL);
+	g_assert_nonnull(near_end);
+	connection = g_socket_connection_factory_create_connection(near_end);
+	link = clawt_link_new(connection);
+	clawt_agent_set_link(agent, link);
+	return g_socket_new_from_fd(sockets[1], NULL);
+}
+
+/* Call the installed daemon hook, so the test covers real delivery. */
+static gchar *
+request_context_tool(Fixture *fixture, const gchar *room_id,
+	const gchar *tool_name, const gchar *arguments, gboolean *is_error)
+{
+	g_autoptr(JsonParser) parser = json_parser_new();
+	g_autoptr(JsonNode) response = NULL;
+	g_autofree gchar *wire = NULL;
+	JsonObject *result;
+	JsonArray *content;
+
+	wire = g_strdup_printf(
+		"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
+		"\"params\":{\"name\":\"%s\",\"arguments\":%s}}", tool_name, arguments);
+	g_assert_true(json_parser_load_from_data(parser, wire, -1, NULL));
+	response = clawt_mcp_tools_call(fixture->daemon->mcp_tools,
+		"chief", room_id, json_parser_get_root(parser));
+	result = json_object_get_object_member(json_node_get_object(response), "result");
+	*is_error = json_object_get_boolean_member(result, "isError");
+	content = json_object_get_array_member(result, "content");
+	return g_strdup(json_object_get_string_member(
+		json_array_get_object_element(content, 0), "text"));
+}
+
+/*
+ * Two questions to one peer retain their individual requesters even when
+ * priority reverses their delivery order. A peer's answer must allow a
+ * report to the operator only for the question the operator asked.
+ */
+static void
+test_peer_request_context(void)
+{
+	Fixture fixture = { 0 };
+	ClawtAgent *chief;
+	ClawtAgent *worker;
+	ClawtLinkServer *links;
+	ClawtTask *parent;
+	ClawtRoom *operator_room;
+	ClawtRoom *parent_room;
+	ClawtRoom *peer_room;
+	g_autoptr(GSocket) chief_socket = NULL;
+	g_autoptr(GSocket) worker_socket = NULL;
+	g_autoptr(GPtrArray) receipts = NULL;
+	g_autoptr(GPtrArray) history = NULL;
+	g_autofree gchar *text = NULL;
+	gboolean is_error;
+	ClawtMailboxFilter all_items = { -1, 0, TRUE };
+
+	fixture_setup(&fixture,
+		"agents:\n  - id: chief\n    chief_of_staff: true\n"
+		"  - id: worker\n  - id: peer\n");
+	g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+	chief = clawt_agent_manager_get(fixture.daemon->agents, "chief");
+	worker = clawt_agent_manager_get(fixture.daemon->agents, "worker");
+	links = fixture.daemon->link_server;
+	operator_room = clawt_room_manager_get_direct(fixture.daemon->rooms, "chief", "user");
+	parent_room = clawt_room_manager_get_direct(fixture.daemon->rooms, "chief", "peer");
+	peer_room = clawt_room_manager_get_direct(fixture.daemon->rooms, "chief", "worker");
+	parent = clawt_task_manager_create(fixture.daemon->tasks, "peer", "chief",
+		"Investigate the peer's issue", NULL, NULL);
+	chief_socket = request_context_link(chief);
+
+	clawt_agent_deliver_turn(chief, clawt_room_get_id(operator_room), 0,
+		TRUE, "user", NULL);
+	g_signal_emit_by_name(links, "typing", "chief", clawt_room_get_id(operator_room), TRUE);
+	text = request_context_tool(&fixture, clawt_room_get_id(operator_room),
+		"clawtilla_ask_agent", "{\"agent_id\":\"worker\",\"message\":\"Operator question\"}", &is_error);
+	g_assert_false(is_error);
+	g_clear_pointer(&text, g_free);
+
+	clawt_agent_deliver_turn(chief, clawt_room_get_id(parent_room), 1,
+		TRUE, "peer", clawt_task_get_id(parent));
+	g_signal_emit_by_name(links, "typing", "chief", clawt_room_get_id(parent_room), TRUE);
+	text = request_context_tool(&fixture, clawt_room_get_id(parent_room),
+		"clawtilla_message_agent",
+		"{\"agent_id\":\"worker\",\"body\":\"Peer question\",\"priority\":\"urgent\"}", &is_error);
+	g_assert_false(is_error);
+	g_clear_pointer(&text, g_free);
+	g_signal_emit_by_name(links, "typing", "chief", clawt_room_get_id(operator_room), FALSE);
+	g_signal_emit_by_name(links, "typing", "chief", clawt_room_get_id(parent_room), FALSE);
+
+	/* The stopped worker receives the urgent question first on reconnect. */
+	worker_socket = request_context_link(worker);
+	g_assert_cmpuint(clawt_mailbox_router_drain(fixture.daemon->router, "worker"), ==, 2);
+	g_signal_emit_by_name(links, "typing", "worker", clawt_room_get_id(peer_room), TRUE);
+	g_signal_emit_by_name(links, "typing", "worker", clawt_room_get_id(peer_room), FALSE);
+	g_signal_emit_by_name(links, "message", "worker", clawt_room_get_id(peer_room), "Peer answer.", NULL);
+	g_signal_emit_by_name(links, "typing", "chief", clawt_room_get_id(peer_room), TRUE);
+	text = request_context_tool(&fixture, clawt_room_get_id(peer_room),
+		"clawtilla_message_user", "{\"body\":\"This belongs to the peer.\"}", &is_error);
+	g_assert_true(is_error);
+	g_assert_nonnull(strstr(text, "'peer'"));
+	g_assert_null(strstr(text, "'worker'"));
+	g_assert_cmpstr(clawt_agent_get_turn_task_id_in(chief,
+		clawt_room_get_id(peer_room)), ==, clawt_task_get_id(parent));
+	g_clear_pointer(&text, g_free);
+	g_signal_emit_by_name(links, "typing", "chief", clawt_room_get_id(peer_room), FALSE);
+	g_signal_emit_by_name(links, "message", "chief", clawt_room_get_id(peer_room), "Read the answer.", NULL);
+
+	/* The next answer belongs to the operator, despite sharing the peer. */
+	g_signal_emit_by_name(links, "typing", "worker", clawt_room_get_id(peer_room), TRUE);
+	g_signal_emit_by_name(links, "typing", "worker", clawt_room_get_id(peer_room), FALSE);
+	g_signal_emit_by_name(links, "message", "worker", clawt_room_get_id(peer_room), "Operator answer.", NULL);
+	g_signal_emit_by_name(links, "typing", "chief", clawt_room_get_id(peer_room), TRUE);
+	text = request_context_tool(&fixture, clawt_room_get_id(peer_room),
+		"clawtilla_message_user", "{\"body\":\"Here is the operator's result.\"}", &is_error);
+	g_assert_false(is_error);
+	g_assert_null(clawt_agent_get_turn_task_id_in(chief, clawt_room_get_id(peer_room)));
+	g_assert_false(clawt_agent_get_turn_replies_in(chief, clawt_room_get_id(peer_room)));
+	g_signal_emit_by_name(links, "typing", "chief", clawt_room_get_id(peer_room), FALSE);
+	g_signal_emit_by_name(links, "message", "chief", clawt_room_get_id(peer_room), "Report delivered.", NULL);
+
+	history = clawt_room_get_history(operator_room, 0);
+	g_assert_cmpuint(history->len, ==, 1);
+	g_assert_cmpstr(clawt_message_get_body(g_ptr_array_index(history, 0)), ==,
+		"Here is the operator's result.");
+	receipts = clawt_mailbox_list(clawt_agent_get_mailbox(worker), &all_items);
+	g_assert_cmpuint(receipts->len, ==, 2);
+	g_assert_cmpint(clawt_task_get_state(parent), ==, CLAWT_TASK_RUNNING);
 	fixture_teardown(&fixture);
 }
 
@@ -10364,6 +10505,8 @@ main(int argc, char *argv[])
                     test_an_assignees_report_crosses_a_closed_exchange);
     g_test_add_func("/daemon/task/parallel-room-completion",
                     test_parallel_room_completion);
+    g_test_add_func("/daemon/peer-request-context",
+                    test_peer_request_context);
     g_test_add_func("/daemon/task/an-unknown-thread-still-routes",
                     test_a_thread_naming_no_task_still_routes);
     g_test_add_func("/daemon/task/a-settled-task-notifies-its-delegator",

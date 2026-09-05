@@ -612,6 +612,11 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
          */
         clawt_mailbox_item_set_invites_reply(
             item, clawt_message_get_invites_reply(message));
+		clawt_mailbox_item_set_reply_to(item, clawt_message_get_reply_to(message));
+		clawt_mailbox_item_set_request_context(item,
+			clawt_message_get_request_room(message),
+			clawt_message_get_request_origin(message),
+			clawt_message_get_request_task(message));
 
         item_id = clawt_mailbox_post(mailbox, item, &local);
 
@@ -931,6 +936,41 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
                 "they may answer once.\n\n%s",
                 from, from, clawt_mailbox_item_get_body(item));
 
+		/*
+		 * An answer resumes the requester's work, not work for the peer
+		 * who supplied the answer. Say who is actually waiting instead
+		 * of teaching the requester to ask the answering peer again.
+		 */
+		if (peer && !invites && body != NULL &&
+			clawt_mailbox_item_get_reply_to(item) != NULL &&
+			clawt_mailbox_item_get_request_room(item) != NULL) {
+			const gchar *origin = clawt_mailbox_item_get_request_origin(item);
+			const gchar *task_id = clawt_mailbox_item_get_request_task(item);
+			g_autoptr(GString) context = g_string_new(body);
+
+			g_string_append_printf(context,
+				"\n\n[clawtilla] This answers your request from room '%s'. ",
+				clawt_mailbox_item_get_request_room(item));
+			if (origin != NULL && clawt_agent_manager_get(self->agents, origin) != NULL)
+				g_string_append_printf(context,
+					"'%s' is waiting for your work, not '%s'. Use "
+					"clawtilla_message_agent to report to '%s' when ready. ",
+					origin, from, origin);
+			else
+				g_string_append(context,
+					"If your operator is waiting, report the result now with "
+					"clawtilla_message_user. ");
+			if (task_id != NULL)
+				g_string_append_printf(context,
+					"Your enclosing task is %s; complete it with "
+					"clawtilla_task_complete when the work is done. ", task_id);
+			g_string_append(context,
+				"Your closing text still goes nowhere; do not reopen the "
+				"exchange merely to acknowledge this answer.");
+			g_free(body);
+			body = g_string_free(g_steal_pointer(&context), FALSE);
+		}
+
         /*
          * And which conversation it is, named so the agent can say so.
          *
@@ -1080,12 +1120,9 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
          * fire: relaying a settled task's result to the operator is
          * precisely what a notice's turn is for.
          */
-        clawt_agent_deliver_turn(agent, clawt_mailbox_item_get_room(item),
-                                 clawt_mailbox_item_get_depth(item),
+        clawt_agent_deliver_item(agent, item,
                                  turn_replies(system, peer, invites,
-                                              room_requires_mention),
-                                 from,
-                                 clawt_mailbox_item_get_task_id(item));
+                                              room_requires_mention));
 
         /*
          * And who this turn is for.  Delivery is the only moment that

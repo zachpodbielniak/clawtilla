@@ -23,6 +23,9 @@ struct _ClawtMailboxItem {
     gchar *subject;
     gchar *idempotency_key;
     gchar *last_error;
+	gchar *request_room;
+	gchar *request_origin;
+	gchar *request_task;
 
     ClawtPriority     priority;
     ClawtMailboxState state;
@@ -94,6 +97,9 @@ clawt_mailbox_item_copy(ClawtMailboxItem *self)
     copy->subject = g_strdup(self->subject);
     copy->idempotency_key = g_strdup(self->idempotency_key);
     copy->last_error = g_strdup(self->last_error);
+	copy->request_room = g_strdup(self->request_room);
+	copy->request_origin = g_strdup(self->request_origin);
+	copy->request_task = g_strdup(self->request_task);
 
     copy->priority = self->priority;
     copy->state = self->state;
@@ -126,6 +132,9 @@ clawt_mailbox_item_free(ClawtMailboxItem *self)
     g_free(self->subject);
     g_free(self->idempotency_key);
     g_free(self->last_error);
+	g_free(self->request_room);
+	g_free(self->request_origin);
+	g_free(self->request_task);
     g_free(self);
 }
 
@@ -147,6 +156,9 @@ GETTER_STR(reply_to, reply_to)
 GETTER_STR(subject, subject)
 GETTER_STR(idempotency_key, idempotency_key)
 GETTER_STR(last_error, last_error)
+GETTER_STR(request_room, request_room)
+GETTER_STR(request_origin, request_origin)
+GETTER_STR(request_task, request_task)
 
 #undef GETTER_STR
 
@@ -169,6 +181,20 @@ SETTER_STR(last_error, last_error)
 SETTER_STR(idempotency_key, idempotency_key)
 
 #undef SETTER_STR
+
+/* This snapshot travels with the queued item, including across restarts. */
+void
+clawt_mailbox_item_set_request_context(ClawtMailboxItem *self,
+	const gchar *room, const gchar *origin, const gchar *task_id)
+{
+	g_return_if_fail(self != NULL);
+	g_free(self->request_room);
+	g_free(self->request_origin);
+	g_free(self->request_task);
+	self->request_room = g_strdup(room);
+	self->request_origin = g_strdup(origin);
+	self->request_task = g_strdup(task_id);
+}
 
 ClawtPriority
 clawt_mailbox_item_get_priority(ClawtMailboxItem *self)

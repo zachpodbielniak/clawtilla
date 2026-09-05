@@ -107,10 +107,15 @@ test_the_flag_survives_a_restart(void)
 
         quiet = clawt_mailbox_item_new("alpha", "beta", "that is all");
         clawt_mailbox_item_set_invites_reply(quiet, FALSE);
+		clawt_mailbox_item_set_reply_to(quiet, "original-question");
+		clawt_mailbox_item_set_request_context(quiet, "dm:beta:user",
+			"user", NULL);
         quiet_id = clawt_mailbox_post(mailbox, quiet, &error);
         g_assert_no_error(error);
 
         loud = clawt_mailbox_item_new("alpha", "beta", "what do you think?");
+		clawt_mailbox_item_set_request_context(loud, "dm:alpha:chief",
+			"chief", "parent-task");
         loud_id = clawt_mailbox_post(mailbox, loud, &error);
         g_assert_no_error(error);
     }
@@ -127,10 +132,17 @@ test_the_flag_survives_a_restart(void)
         quiet = clawt_mailbox_get(mailbox, quiet_id);
         g_assert_nonnull(quiet);
         g_assert_false(clawt_mailbox_item_get_invites_reply(quiet));
+		g_assert_cmpstr(clawt_mailbox_item_get_reply_to(quiet), ==, "original-question");
+		g_assert_cmpstr(clawt_mailbox_item_get_request_room(quiet), ==, "dm:beta:user");
+		g_assert_cmpstr(clawt_mailbox_item_get_request_origin(quiet), ==, "user");
+		g_assert_null(clawt_mailbox_item_get_request_task(quiet));
 
         loud = clawt_mailbox_get(mailbox, loud_id);
         g_assert_nonnull(loud);
         g_assert_true(clawt_mailbox_item_get_invites_reply(loud));
+		g_assert_cmpstr(clawt_mailbox_item_get_request_room(loud), ==, "dm:alpha:chief");
+		g_assert_cmpstr(clawt_mailbox_item_get_request_origin(loud), ==, "chief");
+		g_assert_cmpstr(clawt_mailbox_item_get_request_task(loud), ==, "parent-task");
     }
 
     clawt_test_remove_tree(dir);
@@ -193,6 +205,9 @@ test_a_mailbox_from_an_older_build_migrates(void)
     g_assert_nonnull(item);
     g_assert_cmpstr(clawt_mailbox_item_get_body(item), ==, "from before");
     g_assert_true(clawt_mailbox_item_get_invites_reply(item));
+	g_assert_null(clawt_mailbox_item_get_request_room(item));
+	g_assert_null(clawt_mailbox_item_get_request_origin(item));
+	g_assert_null(clawt_mailbox_item_get_request_task(item));
 
     /* And the migrated file takes new items with the flag intact. */
     {
@@ -202,12 +217,17 @@ test_a_mailbox_from_an_older_build_migrates(void)
         g_autoptr(ClawtMailboxItem) read_back = NULL;
 
         clawt_mailbox_item_set_invites_reply(fresh, FALSE);
+		clawt_mailbox_item_set_request_context(fresh, "dm:alpha:user",
+			"user", "new-parent");
         id = clawt_mailbox_post(mailbox, fresh, &error);
         g_assert_no_error(error);
 
         read_back = clawt_mailbox_get(mailbox, id);
         g_assert_nonnull(read_back);
         g_assert_false(clawt_mailbox_item_get_invites_reply(read_back));
+		g_assert_cmpstr(clawt_mailbox_item_get_request_room(read_back), ==, "dm:alpha:user");
+		g_assert_cmpstr(clawt_mailbox_item_get_request_origin(read_back), ==, "user");
+		g_assert_cmpstr(clawt_mailbox_item_get_request_task(read_back), ==, "new-parent");
     }
 
     clawt_test_remove_tree(dir);
