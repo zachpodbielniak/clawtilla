@@ -203,13 +203,16 @@ clawtilla agent show scribe | grep identity
 | =grok-build=   | =--system-prompt-override=    | *yes*   |
 | =antigravity=  | stdin, in ~<system>~ tags     | no      |
 | =cursor=       | stdin, in ~<system>~ tags     | no      |
+| =codex-cli=    | stdin, prepended to the turn  | no      |
 | =claude-tmux=  | not sent at all               | n/a     |
 
 ai-glib spills the prompt to a 0600 temporary for the Claude Code
 client, so the default backend has no practical ceiling.  =antigravity=
 and =cursor= pipe it on stdin the way =opencode= does --- and both send
 it only on a *fresh* session, since a resumed one already has it ---
-which is unbounded for the same reason.  =grok-build=
+which is unbounded for the same reason.  =codex-cli= has no separate system-prompt flag at all --- ai-glib folds
+it into the prompt that goes down stdin --- so it is unbounded for the
+same reason.  =grok-build=
 has no file-taking flag, so there the limit is real --- and
 =ai_cli_client_spawn()= refuses an over-long word up front, naming the
 flag, the size and the limit, rather than letting =execve= answer

@@ -56,7 +56,27 @@ static const struct {
      * not loaded.  Using the mechanism the vendor built is the durable
      * answer.
      */
-    { "antigravity",  "antigravity", TRUE }
+    { "antigravity",  "antigravity", TRUE },
+
+    /*
+     * Codex has an origin here and no directories behind it, and that
+     * is the answer rather than an omission.
+     *
+     * ai-glib's resource registry declares no paths for codex, and its
+     * provider documentation describes none -- `codex exec` takes its
+     * whole prompt on stdin, with no separate system-prompt flag and no
+     * customization root.  So the registry truthfully answers "nothing"
+     * and provisioning does nothing.
+     *
+     * The row exists precisely so that it does.  Without it codex falls
+     * through to "claude" below, which would link every skill into
+     * `.claude/skills` inside a codex agent's workspace -- a directory
+     * that CLI has never read, holding files nothing loads, and no
+     * message anywhere saying so.  An origin that resolves to no paths
+     * is a harness with no skills concept; the claude fallback is a
+     * claim that it has Claude's.
+     */
+    { "codex-cli",    "codex",       FALSE }
 };
 
 /*

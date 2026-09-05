@@ -103,6 +103,23 @@ static const ClawtModelInfo cursor_models[] = {
 };
 
 /*
+ * Codex's own ids, from ai-glib's AI_CODEX_CLI_MODEL_* defines.
+ *
+ * `gpt-6-astra` first because it is ai-glib's
+ * AI_CODEX_CLI_DEFAULT_MODEL, which is what an agent gets when nobody
+ * names one.
+ */
+static const ClawtModelInfo codex_models[] = {
+    { "gpt-6-astra",         "GPT-6 Astra",   "the CLI's default" },
+    { "gpt-5.6-sol",         "GPT-5.6 Sol",   NULL },
+    { "gpt-5.6-terra",       "GPT-5.6 Terra", NULL },
+    { "gpt-5.6-luna",        "GPT-5.6 Luna",  NULL },
+    { "gpt-5.5",             "GPT-5.5",       NULL },
+    { "gpt-5.4-mini",        "GPT-5.4 mini",  "smaller and cheaper" },
+    { "gpt-5.3-codex-spark", "GPT-5.3 Codex Spark", NULL }
+};
+
+/*
  * Ollama runs whatever has been pulled locally, so these are only the
  * common ones.  open_ended is TRUE so a client offers a way to type a
  * name that is not here.
@@ -129,7 +146,7 @@ static const ClawtModelInfo ollama_models[] = {
  * not for being one.
  */
 static const ClawtProviderInfo providers[] = {
-    /* ── can back an agent: libreclaw's six CLI backends ─────────── */
+    /* ── can back an agent: libreclaw's seven CLI backends ───────── */
     { "claude-code", "Claude Code",
       "the CLI, billed against your subscription",
       claude_code_models, G_N_ELEMENTS(claude_code_models),
@@ -161,6 +178,14 @@ static const ClawtProviderInfo providers[] = {
       "Cursor's cursor-agent CLI in print mode; over two hundred models, "
       "so this list is a starting point and the CLI has the rest",
       cursor_models, G_N_ELEMENTS(cursor_models),
+      TRUE, TRUE, FALSE },
+
+    { "codex-cli", "Codex",
+      "OpenAI's codex CLI via `codex exec`; it edits files and runs "
+      "commands, and authenticates itself rather than taking a key from "
+      "here. The one backend that keeps a sandbox: it is confined to "
+      "the agent's workspace rather than run with approvals bypassed",
+      codex_models, G_N_ELEMENTS(codex_models),
       TRUE, TRUE, FALSE },
 
     /* ── can design an agent: ai-glib's HTTP providers ───────────── */

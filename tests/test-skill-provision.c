@@ -140,7 +140,17 @@ static const struct {
     { "opencode",    ".opencode/skill",  ".opencode/command", FALSE },
     { "grok-build",  ".grok/skills",     NULL,                FALSE },
     { "cursor",      ".cursor/skills",   ".cursor/commands",  FALSE },
-    { "antigravity", ".agents/skills",   NULL,                TRUE }
+    { "antigravity", ".agents/skills",   NULL,                TRUE },
+
+    /*
+     * Codex has neither.  ai-glib registers no directories for it and
+     * its docs describe none, so the assertion is that clawtilla writes
+     * nowhere -- not that it writes somewhere harmless.  Without the
+     * row in PROVIDER_ORIGINS this provider falls through to claude and
+     * this line fails with `.claude/skills`, which is the whole point
+     * of having it.
+     */
+    { "codex-cli",   NULL,               NULL,                FALSE }
 };
 
 static void
@@ -159,13 +169,25 @@ test_each_provider_gets_its_own_paths(void)
         workspace = clawt_agent_config_get_workspace(builder(&fixture));
 
         skills = clawt_skill_provision_paths(builder(&fixture), FALSE);
-        g_assert_nonnull(skills);
 
-        want = g_build_filename(workspace, EXPECTED[i].skill_dir, NULL);
+        if (EXPECTED[i].skill_dir == NULL) {
+            /*
+             * A harness with no skills concept at all. Writing into a
+             * plausible directory would be worse than writing nowhere:
+             * the files would look provisioned and be read by nothing.
+             */
+            if (skills != NULL && skills[0] != NULL)
+                g_error("%s should have no skills directory, got %s",
+                        EXPECTED[i].provider, skills[0]);
+        } else {
+            g_assert_nonnull(skills);
 
-        if (g_strcmp0(skills[0], want) != 0)
-            g_error("%s: skills at %s, expected %s", EXPECTED[i].provider,
-                    skills[0], want);
+            want = g_build_filename(workspace, EXPECTED[i].skill_dir, NULL);
+
+            if (g_strcmp0(skills[0], want) != 0)
+                g_error("%s: skills at %s, expected %s",
+                        EXPECTED[i].provider, skills[0], want);
+        }
 
         commands = clawt_skill_provision_paths(builder(&fixture), TRUE);
 
@@ -225,6 +247,7 @@ test_an_unknown_provider_follows_libreclaw(void)
     g_assert_cmpstr(clawt_skill_provider_origin("agy"), ==, "antigravity");
     g_assert_cmpstr(clawt_skill_provider_origin("cursor-agent"), ==,
                     "cursor");
+    g_assert_cmpstr(clawt_skill_provider_origin("codex"), ==, "codex");
     g_assert_cmpstr(clawt_skill_provider_origin("claude-code-tmux"), ==,
                     "claude");
 

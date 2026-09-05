@@ -107,12 +107,27 @@ workspace.  What that produces today:
 | ~grok-build~ | ~<ws>/.grok/skills/<name>~ | *none* |
 | ~cursor~ | ~<ws>/.cursor/skills/<name>~ | ~<ws>/.cursor/commands/<name>.md~ |
 | ~antigravity~ | ~<ws>/.agents/skills.json~ | *none* |
+| ~codex-cli~ | *none* | *none* |
 
-Two rows there are worth reading twice.
+Three rows there are worth reading twice.
 
 *grok has no commands directory at all.*  Its entire slash mechanism
 *is* skills, so a command file would be a file nothing ever reads.
 Antigravity has no commands concept either.
+
+*Codex has neither, and clawtilla writes nothing for it.*  ai-glib
+registers no resource directories for =codex-cli= and its provider
+documentation describes none --- =codex exec= takes its whole prompt on
+stdin, with no customization root to link into.  So the origin resolves
+to no paths and provisioning does nothing.
+
+That row exists in ~PROVIDER_ORIGINS~ *so that* it does nothing.  A
+backend missing from that table falls through to =claude=, which would
+link every skill into ~<ws>/.claude/skills~ inside a codex agent's
+workspace: a directory that CLI has never read, holding files nothing
+loads, with no message anywhere saying so.  An origin resolving to no
+paths says "this harness has no skills concept"; the claude fallback
+would say "it has Claude's".
 
 *Antigravity is not a symlink.*  Symlink support there is undocumented
 and untestable, and the vendor shipped a first-class indirection
