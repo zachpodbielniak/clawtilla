@@ -541,6 +541,17 @@ struct _ClawtWindow {
     gchar             *selected_room_entry;
 
     /*
+     * Every conversation the sidebar draws a row for: each agent's room
+     * with the operator, and each declared room.
+     *
+     * It is what makes an unread count clearable -- a number against a
+     * room with no row can only ever climb, which is how peer traffic
+     * and routine rooms used to inflate the Chat tab.  Rebuilt on every
+     * fleet listing so a removed agent or room cannot leave one behind.
+     */
+    GHashTable        *sidebar_rooms;
+
+    /*
      * Which room the transcript on screen actually is.
      *
      * Not derivable from selected_agent: a chat with an agent is the

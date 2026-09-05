@@ -88,9 +88,14 @@ Four decisions, each of which somebody will otherwise report as a bug:
   mention ~bob~ --- otherwise every address in a pasted log wakes
   somebody, and a pasted log is exactly the sort of thing an agent puts
   in a room.
-- *Matching ignores case.*  Ids are lowercase by construction and a
-  model writes "Bob, can you check", which is how anybody writes a name.
-  A byte-exact match reached nobody and said nothing about it.
+- *The ~@~ form ignores case; a bare word does not.*  ~@Bob~ plainly
+  means ~bob~, and a mention that failed on a capital would reach nobody
+  and say nothing about it.  A *bare* name is not an address though ---
+  it is a word that happens to be spelled like an id --- so it must
+  match exactly.  Folding its case charged an agent called ~writer~ a
+  model turn for "Writer's block on section 2", and one called
+  ~research~ for any sentence opening with "Research".  A missed bare
+  name costs you one ~@~; a false one costs a turn nobody asked for.
 - *A display name counts when it is a single word.*  ~@Oryx~ finds the
   agent whose id is ~oryx-research~ and whose name is "Oryx".  "Oryx the
   Researcher" is not an address --- it would match every message
@@ -100,8 +105,10 @@ Four decisions, each of which somebody will otherwise report as a bug:
   path, and one extra turn is cheaper than a mention that does not fire
   for a reason nobody can see.
 
-Both the whole word and the ~@~ form work: ~bob~, ~@bob~ and ~Bob,~ all
-reach ~bob~; ~bobby~, ~alpha-bob~ and ~my_bob~ do not.
+Both the whole word and the ~@~ form work: ~bob~, ~@bob~ and ~@Bob~ all
+reach ~bob~; ~bobby~, ~alpha-bob~, ~my_bob~, ~bob@example.com~ and a
+capitalised ~Bob~ do not.  A letter is a letter whatever it is encoded
+as, so "hasta mañana" does not reach an agent called ~ana~.
 
 *** ~@all~ is yours
 
@@ -131,6 +138,25 @@ assumption that it covers this.
 Because three agents each reply one hop deeper, an ordinary standup
 reaches the fleet ceiling on its own.  That is what ~rooms.max_hops~ is
 for, and a group is the case it was written for.
+
+*A message that reaches nobody is still measured by the stall and hop
+checks*, and only escapes the rate limit and the cycle detector --- the
+two that are about what a sender spends of other agents' time.  A room
+that has been ended stops accepting posts into its transcript, and a
+message past ~max_hops~ is refused whether or not it named anybody.
+
+*** When one member holds a room too long
+
+~rooms.turn_timeout_seconds~ is a budget *per member*, not per room.
+When it runs out the member's turn is stopped and the room is told, in a
+note that costs nobody a turn.
+
+The room itself is only *stalled* --- ended, needing a person to restart
+it --- when it holds two members.  There the exchange is the two of
+them, and ending it is the only thing that stops a member spending every
+budget the same way.  In a group it would freeze everybody: one slow
+agent refusing four other members' posts and stalling every task they
+hold.
 
 *** How many context windows a member is
 

@@ -533,18 +533,30 @@ clawt_gtk_select_agent(ClawtWindow *self, const gchar *agent_id)
         return;
     }
 
-    /* Keep what was being written to the agent we are leaving. */
-    if (self->selected_agent != NULL) {
-        g_autofree gchar *draft = clawt_gtk_entry_text(self);
+    /*
+     * Keep what was being written wherever we are leaving -- an agent or
+     * a room.
+     *
+     * This tested `selected_agent` alone, so clicking an agent while a
+     * group was open threw that group's half-typed message away.  The
+     * room path already handled both directions; the agent one handled
+     * one, which is the shape two copies of a rule always drift into.
+     */
+    {
+        const gchar *leaving = (self->selected_room_entry != NULL)
+            ? self->selected_room_entry : self->selected_agent;
 
-        clawt_gtk_persist_draft(self, self->selected_agent, draft);
+        if (leaving != NULL) {
+            g_autofree gchar *draft = clawt_gtk_entry_text(self);
 
-        if (draft != NULL && draft[0] != '\0')
-            g_hash_table_insert(self->drafts,
-                                g_strdup(self->selected_agent),
-                                g_steal_pointer(&draft));
-        else
-            g_hash_table_remove(self->drafts, self->selected_agent);
+            clawt_gtk_persist_draft(self, leaving, draft);
+
+            if (draft != NULL && draft[0] != '\0')
+                g_hash_table_insert(self->drafts, g_strdup(leaving),
+                                    g_steal_pointer(&draft));
+            else
+                g_hash_table_remove(self->drafts, leaving);
+        }
     }
 
     g_free(self->selected_agent);
@@ -3669,6 +3681,7 @@ forget_daemon_state(ClawtWindow *self)
     g_hash_table_remove_all(self->drafts);
     g_hash_table_remove_all(self->unread);
     g_hash_table_remove_all(self->dm_rooms);
+    g_hash_table_remove_all(self->sidebar_rooms);
 
     /* Whatever the next daemon replays belongs to before we got here. */
     self->connected_at = g_get_real_time();
@@ -5815,6 +5828,7 @@ clawt_window_dispose(GObject *object)
     g_clear_pointer(&self->selected_room_entry, g_free);
     g_clear_pointer(&self->unread, g_hash_table_unref);
     g_clear_pointer(&self->dm_rooms, g_hash_table_unref);
+    g_clear_pointer(&self->sidebar_rooms, g_hash_table_unref);
     g_clear_pointer(&self->alerts, g_ptr_array_unref);
     g_clear_pointer(&self->alerts_agent, g_free);
     g_clear_pointer(&self->pending, g_ptr_array_unref);
@@ -5889,6 +5903,8 @@ clawt_window_init(ClawtWindow *self)
     self->alerts = g_ptr_array_new_with_free_func(alert_free);
     self->dm_rooms = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                            g_free);
+    self->sidebar_rooms = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                                g_free, NULL);
     self->pending = g_ptr_array_new_with_free_func(
         (GDestroyNotify)clawt_gtk_attachment_free);
 

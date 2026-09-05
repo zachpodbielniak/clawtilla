@@ -281,7 +281,8 @@ guint clawt_web_app_open_decisions(ClawtWebApp *self);
  * handler: a request issued from there would run while a page render is
  * blocked inside its own request on the same context.
  */
-void clawt_web_app_note_fleet(ClawtWebApp *self, JsonArray *agents);
+void clawt_web_app_note_fleet(ClawtWebApp *self, JsonArray *agents,
+                              JsonArray *rooms);
 
 /**
  * clawt_web_app_note_connection_status:

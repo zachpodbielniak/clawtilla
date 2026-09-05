@@ -219,6 +219,16 @@ declare -A AFFORDANCES=(
     ["rooms in the sidebar"]="room_row|room_row"
     ["making a room"]="clawt_gtk_on_new_room|on_new_room_submit"
     ["a room says how it delivers"]="answers when named|answers when named"
+    #
+    # Putting a room in a team's group.
+    #
+    # The web route for this existed and nothing on the page posted to
+    # it, so a GTK operator could drag a room onto a heading and a web
+    # operator could not do it at all -- and layer 1 saw `room.set` in
+    # both clients, because GTK sends it for a rename too.  A dead route
+    # is exactly what layer 5 is for.
+    #
+    ["moving a room to a team"]="move_room_to_team|team_picker_for(\"r\""
     ["picture editor"]="build_avatar_group|on_avatar_set"
     #
     # A description under each agent's name, and the setting that keeps

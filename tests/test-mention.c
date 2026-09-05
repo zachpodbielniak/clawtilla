@@ -50,6 +50,8 @@ test_an_address_is_not_a_mention(void)
 {
     g_assert_false(clawt_mention_names("mail zach@bob.com", "bob", NULL));
     g_assert_false(clawt_mention_names("from user@bob", "bob", NULL));
+    g_assert_false(clawt_mention_names("mail bob@example.com", "bob",
+                                       NULL));
 
     g_assert_true(clawt_mention_names("hi @bob", "bob", NULL));
     g_assert_true(clawt_mention_names("(@bob)", "bob", NULL));
@@ -74,18 +76,67 @@ test_the_boundary_is_symmetric(void)
 }
 
 /*
- * Case does not decide who gets a message.
+ * The `@` form ignores case; a bare word does not.
  *
- * Ids are lowercase by construction and a model writes "Bob, can you
- * check" -- so a byte-exact match reached nobody, silently, which is
- * the worst way for this to be wrong.
+ * `@name` is the deliberate address -- it is what the delivery preamble
+ * tells every member to write -- so somebody typing `@Bob` plainly
+ * meant `bob`, and failing on a capital would reach nobody and say
+ * nothing about it.
+ *
+ * A bare name is not an address, it is a word that happens to be spelled
+ * like an id.  Folding its case charged an agent called `writer` a whole
+ * model turn for "Writer's block on section 2", and one called
+ * `research` for any sentence opening with "Research".  A missed bare
+ * name costs a person one `@`; a false one costs a turn nobody asked
+ * for.
  */
 static void
-test_matching_ignores_case(void)
+test_the_at_form_ignores_case_and_a_bare_word_does_not(void)
 {
-    g_assert_true(clawt_mention_names("Bob, can you check", "bob", NULL));
     g_assert_true(clawt_mention_names("@Bob please", "bob", NULL));
     g_assert_true(clawt_mention_names("@BOB please", "bob", NULL));
+    g_assert_true(clawt_mention_names("bob, can you check", "bob", NULL));
+
+    g_assert_false(clawt_mention_names("Bob, can you check", "bob", NULL));
+    g_assert_false(clawt_mention_names("Writer's block on section 2",
+                                       "writer", NULL));
+    g_assert_false(clawt_mention_names("Research says otherwise",
+                                       "research", NULL));
+}
+
+/*
+ * A letter is a letter whatever it is encoded as.
+ *
+ * g_ascii_isalnum() answers FALSE for every byte of a multi-byte
+ * character, so a byte test read the second byte of `ñ` as a word
+ * boundary and "hasta mañana" addressed an agent called `ana`.
+ */
+static void
+test_a_multibyte_letter_is_not_a_boundary(void)
+{
+    g_assert_false(clawt_mention_names("hasta ma\xc3\xb1" "ana", "ana",
+                                       NULL));
+    g_assert_false(clawt_mention_names("\xc3\x9c" "bob", "bob", NULL));
+    g_assert_false(clawt_mention_names("caf\xc3\xa9" "bob", "bob", NULL));
+
+    /* And a real boundary next to one still matches. */
+    g_assert_true(clawt_mention_names("ma\xc3\xb1" "ana, ana here", "ana",
+                                      NULL));
+}
+
+/*
+ * The `@` rule is symmetric.
+ *
+ * `@` was excluded before a name and not after it, so the `@` form
+ * correctly refused `bob@example.com` and then the bare form took the
+ * same `bob` from the other end.
+ */
+static void
+test_an_address_is_refused_from_both_ends(void)
+{
+    g_assert_false(clawt_mention_names("mail bob@example.com", "bob",
+                                       NULL));
+    g_assert_false(clawt_mention_names("mail zach@bob.com", "bob", NULL));
 }
 
 /* ── Boundaries in detail ────────────────────────────────────────── */
@@ -272,7 +323,12 @@ main(int argc, char **argv)
                     test_an_address_is_not_a_mention);
     g_test_add_func("/mention/boundary-is-symmetric",
                     test_the_boundary_is_symmetric);
-    g_test_add_func("/mention/ignores-case", test_matching_ignores_case);
+    g_test_add_func("/mention/at-form-folds-case-bare-does-not",
+                    test_the_at_form_ignores_case_and_a_bare_word_does_not);
+    g_test_add_func("/mention/multibyte-letter-is-not-a-boundary",
+                    test_a_multibyte_letter_is_not_a_boundary);
+    g_test_add_func("/mention/an-address-is-refused-from-both-ends",
+                    test_an_address_is_refused_from_both_ends);
     g_test_add_func("/mention/punctuation-is-a-boundary",
                     test_punctuation_is_a_boundary);
     g_test_add_func("/mention/multibyte-neighbour-is-a-boundary",

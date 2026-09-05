@@ -123,10 +123,16 @@ clawt_gtk_note_unread(ClawtWindow *self, ClawtEvent *event, const gchar *from)
      * The rule is clawt_unread_should_count(), in libclawt, because the
      * web client applies the same one -- and two implementations of it
      * would differ exactly once, on the case nobody looked at.
+     *
+     * `sidebar_rooms` is the set of conversations this client draws a
+     * row for.  It is what keeps peer traffic and routine rooms out of
+     * the count: there is no row to click to clear those, so a number
+     * against one could only ever climb.
      */
     if (!clawt_unread_should_count(room_id, self->selected_room, from,
                                    clawt_event_get_timestamp(event),
-                                   self->connected_at))
+                                   self->connected_at,
+                                   self->sidebar_rooms))
         return;
 
     /*
@@ -1729,6 +1735,19 @@ append_rooms_for_team(ClawtWindow *self, JsonArray *rooms,
     if (rooms == NULL)
         return;
 
+    /*
+     * The collapse rule lives here rather than at each call site.
+     *
+     * Two of the three flushes checked it and the third -- the sweep for
+     * teams that hold no agents -- did not, and a room skipped by a
+     * collapsed team was never entered into @emitted.  So folding a team
+     * *moved* its rooms to the bottom of the sidebar instead of hiding
+     * them, under whatever heading happened to be last.  A rule applied
+     * at two of three call sites is a rule about those two call sites.
+     */
+    if (team_is_collapsed(self, team != NULL ? team : ""))
+        return;
+
     for (i = 0; i < json_array_get_length(rooms); i++) {
         JsonObject *room = json_array_get_object_element(rooms, i);
         const gchar *id = clawt_json_string(room, "id", "");
@@ -1838,14 +1857,47 @@ refresh_agents_once(ClawtWindow *self)
      * arriving message at somebody who is not there.
      */
     g_hash_table_remove_all(self->dm_rooms);
+    g_hash_table_remove_all(self->sidebar_rooms);
 
     for (i = 0; i < json_array_get_length(agents); i++) {
         JsonObject *agent = json_array_get_object_element(agents, i);
         const gchar *dm = clawt_json_string(agent, "dm_room", NULL);
 
-        if (dm != NULL)
+        if (dm != NULL) {
             g_hash_table_insert(self->dm_rooms, g_strdup(dm),
                                 g_strdup(clawt_json_string(agent, "id", "")));
+            g_hash_table_add(self->sidebar_rooms, g_strdup(dm));
+        }
+    }
+
+    /*
+     * And the declared rooms, which have rows of their own.  Rebuilt
+     * from the listing every time rather than kept, so a room removed
+     * cannot leave a countable key behind that nothing can clear.
+     */
+    for (i = 0; rooms != NULL && i < json_array_get_length(rooms); i++) {
+        JsonObject *room = json_array_get_object_element(rooms, i);
+
+        if (clawt_json_boolean(room, "declared", FALSE))
+            g_hash_table_add(self->sidebar_rooms,
+                             g_strdup(clawt_json_string(room, "id", "")));
+    }
+
+    /*
+     * Anything the sidebar no longer draws stops being counted.  Without
+     * this a removed agent's -- or a removed room's -- number stays in
+     * the Chat tab total for ever, pointing at a row nobody can open.
+     */
+    {
+        GHashTableIter iter;
+        gpointer key;
+
+        g_hash_table_iter_init(&iter, self->unread);
+
+        while (g_hash_table_iter_next(&iter, &key, NULL)) {
+            if (!g_hash_table_contains(self->sidebar_rooms, key))
+                g_hash_table_iter_remove(&iter);
+        }
     }
 
     clawt_gtk_update_unread_tab(self);
@@ -1893,9 +1945,7 @@ refresh_agents_once(ClawtWindow *self)
              * the floor -- so a room sits under the team it was put in
              * rather than at the end of the list.
              */
-            if (i > 0 && !team_is_collapsed(self,
-                                            shown_team != NULL
-                                                ? shown_team : ""))
+            if (i > 0)
                 append_rooms_for_team(self, rooms, shown_team,
                                       rooms_emitted);
 
@@ -1971,8 +2021,7 @@ refresh_agents_once(ClawtWindow *self)
     }
 
     /* The last team's rooms, which no following header will flush. */
-    if (!team_is_collapsed(self, shown_team != NULL ? shown_team : ""))
-        append_rooms_for_team(self, rooms, shown_team, rooms_emitted);
+    append_rooms_for_team(self, rooms, shown_team, rooms_emitted);
 
     /* Whatever the fleet declares and nobody is on yet, at the bottom. */
     emit_empty_headers_before(self, teams, agents, NULL, &emitted);

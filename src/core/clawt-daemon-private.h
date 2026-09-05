@@ -1053,6 +1053,14 @@ void clawt_daemon_turn_settle(ClawtDaemon *self, const gchar *agent_id);
  */
 void clawt_daemon_turn_begin_room(ClawtDaemon *self, const gchar *agent_id,
                                   const gchar *room_id);
+ClawtRoom *clawt_daemon_create_room(ClawtDaemon  *self,
+                                    const gchar  *room_id,
+                                    const gchar  *name,
+                                    const gchar  *members,
+                                    GError      **error);
+
+void clawt_daemon_turn_sweep_now(ClawtDaemon *self);
+
 void clawt_daemon_turn_settle_room(ClawtDaemon *self, const gchar *agent_id,
                                    const gchar *room_id);
 

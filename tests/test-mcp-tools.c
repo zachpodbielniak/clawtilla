@@ -63,6 +63,44 @@ fake_deliver(const gchar   *from_agent,
     return TRUE;
 }
 
+/*
+ * Standing in for the daemon's create_room hook.
+ *
+ * The tool goes through a hook rather than reaching the room manager,
+ * because making a room is also writing the `rooms:` entry that lets it
+ * survive a restart -- and #ClawtMcpTools holds no #ClawtConfig.  This
+ * fixture has no config either, so it does the half it can: make the
+ * room and add the members, exactly as the daemon's hook then does on
+ * top of the config write.
+ */
+static gboolean
+fake_create_room(const gchar  *room_id,
+                 const gchar  *name,
+                 const gchar  *members,
+                 gpointer      user_data,
+                 GError      **error)
+{
+    Fixture *fixture = user_data;
+    ClawtRoom *room = clawt_room_manager_create(fixture->rooms, room_id,
+                                                name, error);
+    g_auto(GStrv) parts = NULL;
+    gsize i;
+
+    if (room == NULL)
+        return FALSE;
+
+    parts = g_strsplit(members != NULL ? members : "", ",", -1);
+
+    for (i = 0; parts[i] != NULL; i++) {
+        const gchar *member = g_strstrip(parts[i]);
+
+        if (*member != '\0')
+            clawt_room_add_member(room, member);
+    }
+
+    return TRUE;
+}
+
 static void
 fixture_setup(Fixture *fixture, const gchar *agents_yaml)
 {
@@ -102,6 +140,8 @@ fixture_setup(Fixture *fixture, const gchar *agents_yaml)
 
     clawt_mcp_tools_set_deliver_func(fixture->tools, fake_deliver, fixture,
                                      NULL);
+    clawt_mcp_tools_set_create_room_func(fixture->tools, fake_create_room,
+                                         fixture, NULL);
 }
 
 static void

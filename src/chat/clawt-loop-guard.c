@@ -653,13 +653,14 @@ clawt_loop_guard_check(ClawtLoopGuard  *self,
                        ClawtMessage    *message,
                        GError         **error)
 {
-    return clawt_loop_guard_check_in_room(self, message, 0, error);
+    return clawt_loop_guard_check_in_room(self, message, 0, TRUE, error);
 }
 
 gboolean
 clawt_loop_guard_check_in_room(ClawtLoopGuard  *self,
                                ClawtMessage    *message,
                                guint            room_max_hops,
+                               gboolean         reaches_anybody,
                                GError         **error)
 {
     g_return_val_if_fail(CLAWT_IS_LOOP_GUARD(self), FALSE);
@@ -698,6 +699,29 @@ clawt_loop_guard_check_in_room(ClawtLoopGuard  *self,
 
     if (!check_budget(self, message, error))
         return FALSE;
+
+    /*
+     * The last two are about *cost*, so a message that reaches nobody is
+     * not measured by them.
+     *
+     * In a room that requires mentions most messages reach nobody by
+     * design -- a member thinking out loud, agreeing, noting something.
+     * The rate limit counts what a sender spends of other agents' time,
+     * and the cycle detector ends an exchange between two of them: one
+     * member writing "Acknowledged." twice inside cycle_seconds would
+     * otherwise stall a whole standup over two remarks nobody received.
+     *
+     * The three above still run, and that is the half the caller used to
+     * get wrong.  This was a `recipients->len > 0` test around the whole
+     * predicate, which also skipped the stall check -- so a room that had
+     * been ended went on accepting posts into its transcript, invisibly
+     * -- and the hop check, so a message past max_hops that named nobody
+     * was recorded instead of refused.  The rule is about which limits a
+     * costless message escapes, so it belongs in the function that knows
+     * what each limit is for.
+     */
+    if (!reaches_anybody)
+        return TRUE;
 
     /*
      * Rate before cycle, because the cycle check records as a side

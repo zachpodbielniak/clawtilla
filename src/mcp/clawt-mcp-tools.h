@@ -90,6 +90,32 @@ void clawt_mcp_tools_set_deliver_func(ClawtMcpTools       *self,
                                       GDestroyNotify       destroy);
 
 /**
+ * ClawtMcpCreateRoomFunc:
+ * @room_id: the id for the new room
+ * @name: (nullable): its display name
+ * @members: comma-separated agent ids
+ * @user_data: as supplied
+ * @error: return location for a #GError
+ *
+ * Creates a room on behalf of an agent that asked.
+ *
+ * A hook rather than a call into the room manager, for the reason the
+ * tools take one for creating an agent: making a room is not only
+ * making the object.  It is also writing the `rooms:` entry that lets
+ * it survive a restart and publishing the event both clients redraw
+ * on -- and #ClawtMcpTools holds no #ClawtConfig, so a tool that
+ * reached the manager directly made a room that vanished on the next
+ * restart with its transcript orphaned on disk.
+ *
+ * Returns: %TRUE if the room was created
+ */
+typedef gboolean (*ClawtMcpCreateRoomFunc)(const gchar  *room_id,
+                                           const gchar  *name,
+                                           const gchar  *members,
+                                           gpointer      user_data,
+                                           GError      **error);
+
+/**
  * ClawtMcpCreateAgentFunc:
  * @agent_id: the id for the new agent
  * @purpose: (nullable): the persona, in prose, for the new agent's
@@ -259,6 +285,21 @@ void clawt_mcp_tools_set_create_agent_func(ClawtMcpTools           *self,
                                            ClawtMcpCreateAgentFunc  func,
                                            gpointer                 user_data,
                                            GDestroyNotify           destroy);
+
+/**
+ * clawt_mcp_tools_set_create_room_func:
+ * @self: a #ClawtMcpTools
+ * @func: (nullable) (scope notified): the hook
+ * @user_data: passed to @func
+ * @destroy: frees @user_data
+ *
+ * Without this clawtilla_create_room refuses rather than making a room
+ * that only exists until the daemon restarts.
+ */
+void clawt_mcp_tools_set_create_room_func(ClawtMcpTools          *self,
+                                          ClawtMcpCreateRoomFunc  func,
+                                          gpointer                user_data,
+                                          GDestroyNotify          destroy);
 
 /**
  * clawt_mcp_tools_set_image_store:

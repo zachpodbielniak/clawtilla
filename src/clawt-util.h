@@ -601,6 +601,13 @@ gchar *clawt_command_shell_syntax_refusal(const gchar *command);
 gboolean clawt_log_level_permits(ClawtLogLevel  ceiling,
                                  GLogLevelFlags level);
 
+/*
+ * clawt_clip_line: one line, clipped on a character boundary.
+ *
+ * The gtk-doc block is in clawt-util.c beside the code, as it is for
+ * every other symbol here -- two blocks for one identifier is a fatal
+ * introspection warning, which is how this was caught.
+ */
 gchar *clawt_clip_line(const gchar *value, glong limit);
 
 G_END_DECLS

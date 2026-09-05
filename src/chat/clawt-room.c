@@ -220,6 +220,41 @@ clawt_room_set_catchup_messages(ClawtRoom *self, guint messages)
 }
 
 gboolean
+clawt_room_names_any_member(ClawtRoom         *self,
+                            const gchar       *body,
+                            ClawtAgentManager *agents)
+{
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_ROOM(self), FALSE);
+
+    if (body == NULL)
+        return FALSE;
+
+    for (i = 0; i < self->members->len; i++) {
+        const gchar *member = g_ptr_array_index(self->members, i);
+        ClawtAgent *agent = (agents != NULL)
+            ? clawt_agent_manager_get(agents, member) : NULL;
+
+        /*
+         * With the member's display name, exactly as delivery resolves
+         * it.  Two private copies of this walk passed NULL there, so a
+         * post saying "@Oryx take it" was *delivered* to the agent whose
+         * name is Oryx and simultaneously reported to its sender as
+         * having named nobody -- and marked as inviting no answer, so
+         * the reply it earned was dropped as a sign-off.  One walk, one
+         * answer.
+         */
+        if (clawt_mention_names(body, member,
+                                (agent != NULL) ? clawt_agent_get_name(agent)
+                                                : NULL))
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+gboolean
 clawt_room_is_declared(const gchar *room_id)
 {
     if (room_id == NULL)

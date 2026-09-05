@@ -13,6 +13,10 @@
 # This adds the missing half of the claim: "and roughly everything we
 # expected to run, ran."  Raise TEST_FLOOR whenever the suite grows.
 #
+# It counts *binaries*, not tests: a `tests/test-*.sh` adds none, so
+# raising the floor for one turns every later run red for a shell script
+# that ran perfectly.
+#
 # Usage: clawt-test-floor.sh <number-of-test-binaries-that-ran>
 
 set -eu

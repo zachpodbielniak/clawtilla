@@ -676,6 +676,10 @@ struct _ClawtMcpTools {
     gpointer                create_agent_data;
     GDestroyNotify          create_agent_destroy;
 
+    ClawtMcpCreateRoomFunc  create_room;
+    gpointer                create_room_data;
+    GDestroyNotify          create_room_destroy;
+
     ClawtMcpAskDecisionFunc ask_decision;
     gpointer                ask_decision_data;
     GDestroyNotify          ask_decision_destroy;
@@ -734,6 +738,22 @@ clawt_mcp_tools_set_create_agent_func(ClawtMcpTools           *self,
     self->create_agent = func;
     self->create_agent_data = user_data;
     self->create_agent_destroy = destroy;
+}
+
+void
+clawt_mcp_tools_set_create_room_func(ClawtMcpTools          *self,
+                                     ClawtMcpCreateRoomFunc  func,
+                                     gpointer                user_data,
+                                     GDestroyNotify          destroy)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    if (self->create_room_destroy != NULL && self->create_room_data != NULL)
+        self->create_room_destroy(self->create_room_data);
+
+    self->create_room = func;
+    self->create_room_data = user_data;
+    self->create_room_destroy = destroy;
 }
 
 void
@@ -4710,32 +4730,6 @@ room_for(ClawtMcpTools *self, const gchar *room_id, const gchar *caller)
 }
 
 /*
- * Whether @body addresses anybody who is in @room.
- *
- * Asked of the members rather than of the text: naming somebody who is
- * not in the room has addressed nobody, and reporting it as a delivery
- * would be worse than reporting nothing.
- */
-static gboolean
-names_a_member(ClawtRoom *room, const gchar *body)
-{
-    GPtrArray *members;
-    guint i;
-
-    if (room == NULL || body == NULL)
-        return FALSE;
-
-    members = clawt_room_get_members(room);
-
-    for (i = 0; i < members->len; i++) {
-        if (clawt_mention_names(body, g_ptr_array_index(members, i), NULL))
-            return TRUE;
-    }
-
-    return FALSE;
-}
-
-/*
  * The members of @room an agent could have named, as `@id` spellings.
  *
  * A refusal or a caveat that says only what did not happen sends
@@ -4846,7 +4840,8 @@ tool_post_room(ClawtMcpTools *self, const gchar *agent_id,
      * selector that matches nothing must not be silent when the thing
      * it is on then reaches nobody.
      */
-    if (clawt_room_get_require_mention(room) && !names_a_member(room, body)) {
+    if (clawt_room_get_require_mention(room) &&
+        !clawt_room_names_any_member(room, body, self->agents)) {
         g_autofree gchar *names = addressable_members(self, room, agent_id);
 
         return g_strdup_printf(
@@ -4878,7 +4873,7 @@ tool_create_room(ClawtMcpTools *self, const gchar *agent_id,
         return g_strdup("room_id and members are both required.");
     }
 
-    if (self->room_manager == NULL) {
+    if (self->room_manager == NULL || self->create_room == NULL) {
         *is_error = TRUE;
         return g_strdup("Rooms cannot be created from here.");
     }
@@ -4942,19 +4937,29 @@ tool_create_room(ClawtMcpTools *self, const gchar *agent_id,
             "to somebody with clawtilla_delegate instead.", agent_id);
     }
 
-    room = clawt_room_manager_create(self->room_manager, room_id, name,
-                                     &error);
-
-    if (room == NULL) {
+    /*
+     * Through the daemon's own hook rather than the room manager.
+     *
+     * Making a room is not only making the object: it is writing the
+     * `rooms:` entry that lets it survive a restart and publishing the
+     * event both clients redraw on.  This tool reached the manager
+     * directly, and #ClawtMcpTools holds no #ClawtConfig -- so a room an
+     * agent made was gone at the next restart, with its transcript
+     * orphaned on disk and every later edit to it reporting success
+     * while writing nothing.  That is the exact failure the IPC handler
+     * documents persistence as preventing.
+     */
+    if (!self->create_room(room_id, name, members, self->create_room_data,
+                           &error)) {
         *is_error = TRUE;
         return g_strdup(error->message);
     }
 
-    for (i = 0; parts[i] != NULL; i++) {
-        const gchar *member = g_strstrip(parts[i]);
+    room = clawt_room_manager_get(self->room_manager, room_id);
 
-        if (*member != '\0')
-            clawt_room_add_member(room, member);
+    if (room == NULL) {
+        *is_error = TRUE;
+        return g_strdup_printf("'%s' was not created.", room_id);
     }
 
     /*
