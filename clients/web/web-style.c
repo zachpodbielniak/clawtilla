@@ -816,7 +816,38 @@ clawt_web_stylesheet(void)
     ".chat-body{position:relative;display:flex;flex-direction:column;"
       "flex:1;min-height:0}"
     ".composer{border-top:1px solid var(--line);background:var(--surface);"
-      "overflow:hidden;scrollbar-gutter:stable;padding:16px 32px}"
+      "position:relative;padding:16px 32px}"
+    /*
+     * The reserved scrollbar gutter is on the form, not on the
+     * composer.
+     *
+     * It has to be somewhere: the transcript above is the scroller and
+     * reserves one, so a composer that did not would put the entry 15px
+     * wider than the text over it -- close enough to look like a
+     * rendering fault rather than a difference.  But `scrollbar-gutter`
+     * only applies to a scroll container, and a scroll container clips:
+     * on the composer it clipped the completion lists, which sit above
+     * the entry and therefore outside it.  Both were affected, and the
+     * slash list had been clipped since it was written -- visible as a
+     * sliver at the left, which reads as a stylesheet bug rather than
+     * as an element that is 122px tall inside a 74px box.
+     *
+     * On the form the reservation still reaches `.composer-inner`, so
+     * the column lines up exactly as before, and the lists hang off
+     * `.composer` instead, which no longer clips anything.
+     */
+    ".composer-form{overflow:hidden;scrollbar-gutter:stable}"
+    /*
+     * The completion lists, in the entry's column rather than the
+     * composer's full width.  Same two variables `.composer-inner`
+     * uses, so the two cannot drift apart; the padding is the
+     * composer's own, which the absolute positioning would otherwise
+     * escape.
+     */
+    ".composer-pop{position:absolute;left:0;right:0;bottom:100%;"
+      "padding:0 32px}"
+    ".composer-pop-inner{max-width:var(--chat-measure);margin:0 auto;"
+      "padding-left:var(--chat-gutter);position:relative}"
     /*
      * The composer follows the transcript's column.  A full-width entry
      * under a narrow column of text reads as a rendering fault rather
@@ -854,8 +885,8 @@ clawt_web_stylesheet(void)
      * drawn under every composer would take a row of height from the
      * conversation for something nobody has asked for.
      */
-    ".slash-popover{display:none;position:absolute;bottom:100%;left:0;"
-      "right:0;z-index:6;max-height:16rem;overflow-y:auto;margin-bottom:6px;"
+    ".slash-popover{display:none;z-index:6;"
+      "max-height:16rem;overflow-y:auto;margin-bottom:6px;"
       "border:1px solid var(--line);border-radius:8px;"
       "background:var(--surface);box-shadow:0 2px 12px rgba(0,0,0,0.14)}"
     ".slash-popover.on{display:block}"

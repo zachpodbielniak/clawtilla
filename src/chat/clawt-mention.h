@@ -101,4 +101,44 @@ gboolean clawt_mention_is_broadcast(const gchar *body);
  */
 GPtrArray *clawt_mention_list(const gchar *body, GPtrArray *candidates);
 
+/**
+ * clawt_mention_prefix_at:
+ * @body: (nullable): what has been typed into a composer
+ * @offset: where the cursor is, in bytes from the start of @body
+ *
+ * The `@name` being typed at @offset, without its `@`, or %NULL when
+ * the cursor is not inside one.
+ *
+ * An empty string is a real answer and means the `@` has just been
+ * typed: every member is still a candidate, which is the moment a
+ * completion is most worth offering.  %NULL means there is nothing to
+ * complete, and the two must not be confused -- returning "" for both
+ * would pop a list open on every keystroke.
+ *
+ * The `@` has to be at a word boundary, the same rule delivery applies,
+ * so typing an email address does not open a member list.
+ *
+ * Here rather than in either client because both ask it, and a
+ * completion that offered a name delivery would not match is worse than
+ * no completion at all.
+ *
+ * Returns: (transfer full) (nullable): the partial name, or %NULL
+ */
+gchar *clawt_mention_prefix_at(const gchar *body, gsize offset);
+
+/**
+ * clawt_mention_candidates:
+ * @prefix: (nullable): what has been typed after the `@`
+ * @members: (element-type utf8): the ids that could be named
+ *
+ * Which of @members a partial mention could still become, in the order
+ * @members gives.
+ *
+ * Case-insensitive, because the `@` form is -- so a completion offers
+ * what the matcher would actually accept.
+ *
+ * Returns: (transfer full) (element-type utf8): the candidates
+ */
+GPtrArray *clawt_mention_candidates(const gchar *prefix, GPtrArray *members);
+
 G_END_DECLS

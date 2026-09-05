@@ -326,6 +326,11 @@ declare -A AFFORDANCES=(
     # entirely.
     #
     ["skill commands in the composer"]="clawt_gtk_skill_commands|slash-popover"
+    # The `@` completion. Both markers name the thing that offers the
+    # names, not the matcher: clawt_mention_prefix_at() is in the
+    # library and both clients would match it, so a client that lost
+    # its completion entirely would still report OK.
+    ["mention completion"]="fill_mention_list|mention-popover"
     ["skill command expansion"]="clawt_gtk_skill_expand|skill.expand"
     ["skills library"]="clawt_gtk_refresh_skills|clawt_web_skills_body"
     ["skill provenance"]="Provenance|sha256"

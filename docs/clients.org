@@ -342,6 +342,30 @@ where typing would post as you into a room you are not part of; a room
 you made is the opposite of that case, and the daemon lets you post to
 any room whether or not you are listed in it.
 
+*** The ~@~ completion
+
+Typing ~@~ in a group's composer offers the room's members, and ~@all~
+last.  Choosing one inserts it where you are typing --- the rest of the
+message is left alone, unlike a slash command, which replaces the whole
+box because it has to be the first thing on the line.
+
+It shares the slash commands' list rather than opening a second popover.
+Two surfaces would be two sets of rules about when a completion is
+showing, and ~/~ and ~@~ cannot both begin the word under the cursor, so
+only one can ever be open.
+
+The roster comes from ~room.list~ and is refilled on every fleet
+listing, so a member added or removed while you have the room open
+reaches the completion without your reselecting anything.  A DM has no
+roster and offers nothing: there is one other party and naming them
+changes nothing about delivery.
+
+The completion decides only what to *offer*.  Whether an ~@name~ reaches
+anybody is settled by ~clawt_mention_names()~ in the daemon --- which is
+why the list is built from the room's own members and never assembled
+from what you typed.  ~@all~ is offered here because a client always
+posts as the operator; an agent writing it reaches nobody.
+
 *** Six sections, not eleven tabs
 
 There are eleven pages and a header bar is not eleven buttons wide.  An

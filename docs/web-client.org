@@ -244,6 +244,47 @@ is the one that clears a session, and it says so.
 function the GTK client uses, so the two produce the same bytes.  Three
 formats: markdown, org, plain.
 
+*** The ~@~ completion
+
+Typing ~@~ in a group's composer offers the room's members, and ~@all~
+last.  Choosing one inserts it at the cursor and leaves the rest of the
+message alone --- unlike a slash command, which replaces the whole box.
+
+Unlike the slash list, this one is *not fetched*.  The roster came back
+with the page and a room with twenty members is twenty short list items,
+so the completion costs no request at all --- which is what this client
+wants on a tailnet with no route out.  It is asked for when the room
+page renders rather than cached beside the sidebar, so a member added or
+removed while the page is open is not offered from a stale copy.
+
+Both lists hang off ~.composer~ rather than off the entry's row, and
+~.composer~ no longer clips.  It used to: the transcript above it is the
+page's scroller and reserves a scrollbar gutter, so the composer
+reserved one too --- otherwise the entry is fifteen pixels wider than
+the text over it, which reads as a rendering fault.  But
+~scrollbar-gutter~ only applies to a scroll container and a scroll
+container clips, so a 122-pixel list inside a 74-pixel composer was cut
+down to a sliver at the left edge.  The slash list had been like that
+since it was written; it looked like a stylesheet bug rather than an
+element outside its box.  The reservation is on ~.composer-form~ now,
+which still reaches ~.composer-inner~, so the column lines up exactly as
+before.
+
+The markup is the slash list's, so one stylesheet rule paints both.  The
+two things a mention cannot share are in the script: the prefix is taken
+at the cursor rather than at the start of the line, because somebody
+correcting an earlier ~@~ is typing in the middle of a written message;
+and choosing one inserts rather than replaces.
+
+The script decides only what to offer.  Whether an ~@name~ reaches
+anybody is settled by ~clawt_mention_names()~ in the daemon.  That means
+the prefix rule exists twice --- once in ~clawt_mention_prefix_at()~ for
+the GTK client and once in JavaScript here --- because the library is C
+and a browser cannot call it.  The duplication is bounded to *what to
+offer*: the worst a disagreement can do is show a name that would not
+have matched, or fail to show one that would.  It cannot change what a
+sent message does.
+
 *** Editing workspace files
 
 The GTK client opens them in =$EDITOR=, which is a program on the machine

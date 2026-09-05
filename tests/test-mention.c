@@ -312,6 +312,109 @@ test_nothing_named_lists_nobody(void)
     g_assert_false(clawt_mention_names("", "alice", NULL));
 }
 
+/* ── Completing one as it is typed ───────────────────────────────── */
+
+/*
+ * The `@` alone is a real answer, and it is the moment a completion is
+ * most worth offering: nothing has been narrowed yet, so every member
+ * is still a candidate.
+ *
+ * It must not be confused with "not typing a mention".  Returning ""
+ * for both would pop a member list open on every keystroke.
+ */
+static void
+test_a_bare_at_is_an_empty_prefix_not_nothing(void)
+{
+    g_autofree gchar *just_at = clawt_mention_prefix_at("hello @", 7);
+    g_autofree gchar *partial = clawt_mention_prefix_at("hello @al", 9);
+    g_autofree gchar *nothing = clawt_mention_prefix_at("hello", 5);
+
+    g_assert_nonnull(just_at);
+    g_assert_cmpstr(just_at, ==, "");
+
+    g_assert_cmpstr(partial, ==, "al");
+
+    g_assert_null(nothing);
+}
+
+/*
+ * A space between the `@` and the cursor ends it: a mention is one
+ * word, so what is being typed is no longer a name.
+ */
+static void
+test_a_word_break_ends_the_prefix(void)
+{
+    g_autofree gchar *after_space = clawt_mention_prefix_at("@al ready", 9);
+    g_autofree gchar *after_newline = clawt_mention_prefix_at("@al\nnext", 8);
+    g_autofree gchar *after_comma = clawt_mention_prefix_at("@al, and", 8);
+
+    g_assert_null(after_space);
+    g_assert_null(after_newline);
+    g_assert_null(after_comma);
+}
+
+/*
+ * And the same boundary rule delivery applies, so typing an address
+ * does not open a member list halfway through.
+ */
+static void
+test_an_address_does_not_open_a_completion(void)
+{
+    g_autofree gchar *in_address = clawt_mention_prefix_at("zach@bo", 7);
+    g_autofree gchar *real = clawt_mention_prefix_at("cc @bo", 6);
+
+    g_assert_null(in_address);
+    g_assert_cmpstr(real, ==, "bo");
+}
+
+/*
+ * The cursor is where the completion is, not the end of the line.
+ * Somebody who went back to fix a name mid-sentence is still typing it.
+ */
+static void
+test_the_prefix_is_taken_at_the_cursor(void)
+{
+    g_autofree gchar *mid = clawt_mention_prefix_at("@ali and more", 4);
+
+    g_assert_cmpstr(mid, ==, "ali");
+}
+
+static void
+test_candidates_narrow_as_you_type(void)
+{
+    g_autoptr(GPtrArray) members =
+        ids("alice", "alfred", "bob", "carol", NULL);
+    g_autoptr(GPtrArray) all = clawt_mention_candidates("", members);
+    g_autoptr(GPtrArray) al = clawt_mention_candidates("al", members);
+    g_autoptr(GPtrArray) ali = clawt_mention_candidates("ali", members);
+    g_autoptr(GPtrArray) none = clawt_mention_candidates("zz", members);
+
+    g_assert_cmpuint(all->len, ==, 4);
+    g_assert_cmpuint(al->len, ==, 2);
+    g_assert_cmpuint(ali->len, ==, 1);
+    g_assert_cmpstr(g_ptr_array_index(ali, 0), ==, "alice");
+    g_assert_cmpuint(none->len, ==, 0);
+}
+
+/*
+ * Offered case-insensitively, because the `@` form is.
+ *
+ * A completion that showed fewer names than the matcher accepts would
+ * send somebody looking for a member that is right in front of them.
+ */
+static void
+test_candidates_ignore_case_because_the_at_form_does(void)
+{
+    g_autoptr(GPtrArray) members = ids("alice", "bob", NULL);
+    g_autoptr(GPtrArray) upper = clawt_mention_candidates("AL", members);
+
+    g_assert_cmpuint(upper->len, ==, 1);
+    g_assert_cmpstr(g_ptr_array_index(upper, 0), ==, "alice");
+
+    /* And what it offers is what delivery would then accept. */
+    g_assert_true(clawt_mention_names("@ALice hello", "alice", NULL));
+}
+
 int
 main(int argc, char **argv)
 {
@@ -345,6 +448,18 @@ main(int argc, char **argv)
                     test_a_listing_counts_a_name_once);
     g_test_add_func("/mention/nothing-named-lists-nobody",
                     test_nothing_named_lists_nobody);
+    g_test_add_func("/mention/a-bare-at-is-an-empty-prefix",
+                    test_a_bare_at_is_an_empty_prefix_not_nothing);
+    g_test_add_func("/mention/a-word-break-ends-the-prefix",
+                    test_a_word_break_ends_the_prefix);
+    g_test_add_func("/mention/an-address-opens-no-completion",
+                    test_an_address_does_not_open_a_completion);
+    g_test_add_func("/mention/prefix-is-taken-at-the-cursor",
+                    test_the_prefix_is_taken_at_the_cursor);
+    g_test_add_func("/mention/candidates-narrow-as-you-type",
+                    test_candidates_narrow_as_you_type);
+    g_test_add_func("/mention/candidates-ignore-case",
+                    test_candidates_ignore_case_because_the_at_form_does);
 
     return g_test_run();
 }

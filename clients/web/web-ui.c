@@ -1228,11 +1228,81 @@ open_document(HtmxBuilder *builder, const gchar *title,
         "items[i].style.display=n.indexOf(q)===0?'':'none';}});"
         "document.addEventListener('click',function(e){"
         "var it=e.target.closest?e.target.closest('.slash-item'):null;"
-        "if(!it){return;}"
+        "if(!it||!it.dataset.command){return;}"
         "e.preventDefault();"
         "var a=document.getElementById('composer-body');"
         "if(a){a.value=(it.dataset.command||'')+' ';a.focus();}"
         "var p=slash();if(p){p.classList.remove('on');}});"
+        /*
+         * The `@` completions.
+         *
+         * Same delegation and the same reason as the slash list, and
+         * deliberately the same markup, so one stylesheet rule paints
+         * both.  What differs is the two things a mention cannot share:
+         * the prefix is taken at the cursor rather than at the start of
+         * the line, because somebody who goes back to correct an `@` is
+         * typing in the middle of a written message; and choosing one
+         * *inserts*, where a command replaces the whole box.  Replacing
+         * here would throw away the message somebody is halfway through.
+         *
+         * This decides what to offer and nothing else.  Whether an
+         * `@name` reaches anybody is settled by clawt_mention_names() in
+         * the daemon -- which is why the list is rendered from the
+         * room's members and never assembled from what was typed.
+         */
+        "function mentions(){"
+        "return document.getElementById('mention-popover');}"
+        /*
+         * The half-written name to the left of the cursor, or null when
+         * the cursor is not in one.  An empty string is not null: it is
+         * an `@` that has just been typed, and reading the two as the
+         * same thing would keep the list shut until a letter followed --
+         * which is exactly when somebody has stopped needing the names.
+         *
+         * The two character classes are not the same class, and neither
+         * is a typo.  What may precede the `@` is whatever
+         * `character_joins_a_word()` accepts, which is Unicode-aware --
+         * hence \p{L}\p{N} rather than A-Za-z0-9, so that a name typed
+         * after an accented word is judged here the way the daemon
+         * judges it.  What may follow it is what an id may contain,
+         * which is ASCII.
+         */
+        "function at_prefix(a){"
+        "var v=a.value,i=a.selectionStart,j=i;"
+        "if(a.selectionEnd!==i){return null;}"
+        "while(j>0){var c=v.charAt(j-1);"
+        "if(c==='@'){"
+        "var b=j>1?v.charAt(j-2):'';"
+        "if(b&&/[\\p{L}\\p{N}_@-]/u.test(b)){return null;}"
+        "return v.slice(j,i);}"
+        "if(!/[A-Za-z0-9_-]/.test(c)){return null;}"
+        "j--;}"
+        "return null;}"
+        "document.addEventListener('input',function(e){"
+        "var a=e.target;if(!a||a.id!=='composer-body'){return;}"
+        "var p=mentions();if(!p){return;}"
+        "var q=at_prefix(a);"
+        "if(q===null){p.classList.remove('on');return;}"
+        "q=q.toLowerCase();"
+        "var items=p.querySelectorAll('.mention-item'),shown=0;"
+        "for(var i=0;i<items.length;i++){"
+        "var n=(items[i].dataset.mention||'').toLowerCase();"
+        "var on=n.indexOf(q)===0;"
+        "items[i].style.display=on?'':'none';if(on){shown++;}}"
+        "if(shown){p.classList.add('on');}"
+        "else{p.classList.remove('on');}});"
+        "document.addEventListener('click',function(e){"
+        "var it=e.target.closest?e.target.closest('.mention-item'):null;"
+        "if(!it){return;}"
+        "e.preventDefault();"
+        "var a=document.getElementById('composer-body');"
+        "var p=mentions();if(p){p.classList.remove('on');}"
+        "if(!a){return;}"
+        "var q=at_prefix(a);if(q===null){return;}"
+        "var i=a.selectionStart,name=(it.dataset.mention||'')+' ';"
+        "a.value=a.value.slice(0,i-q.length)+name+a.value.slice(i);"
+        "a.focus();"
+        "a.selectionStart=a.selectionEnd=i-q.length+name.length;});"
         /*
          * A profile picture, larger.
          *

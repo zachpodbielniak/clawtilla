@@ -515,6 +515,95 @@ test_the_palette_is_defined_outside_a_media_query(void)
 }
 
 /*
+ * The box that reserves the scrollbar gutter is not the box the
+ * completion lists hang off.
+ *
+ * The composer has to reserve one: the transcript above it is the
+ * scroller and reserves a gutter, so an entry that did not would be
+ * fifteen pixels wider than the text over it.  But `scrollbar-gutter`
+ * only applies to a scroll container, and a scroll container clips --
+ * so while that reservation was on `.composer`, every completion list
+ * was clipped to the composer's own 74 pixels while being 122 tall.
+ * The visible result was a two-pixel sliver at the left edge, which
+ * reads as a stylesheet bug rather than as an element outside its box,
+ * and the slash list shipped that way from the day it was written.
+ *
+ * Asserted on the stylesheet because that is where the mistake is
+ * expressible: `.composer-pop` is positioned against `.composer`, so
+ * giving `.composer` any clipping overflow puts it back.
+ */
+static void
+test_the_composer_does_not_clip_its_completions(void)
+{
+    const gchar *css = clawt_web_stylesheet();
+    const gchar *composer = strstr(css, ".composer{");
+    const gchar *end;
+
+    g_assert_nonnull(composer);
+    g_assert_nonnull(strstr(css, ".composer-pop{"));
+
+    end = strchr(composer, '}');
+    g_assert_nonnull(end);
+
+    {
+        gsize length = (gsize)(end - composer);
+
+        /*
+         * Any overflow but `visible` on this rule clips, and the
+         * default is visible -- so the rule must not name one at all.
+         */
+        g_assert_null(g_strstr_len(composer, length, "overflow"));
+
+        /* And it is the containing block the lists are placed against. */
+        g_assert_nonnull(g_strstr_len(composer, length, "position:relative"));
+    }
+
+    /*
+     * The reservation still has to exist somewhere, or the entry stops
+     * lining up with the transcript and nothing says so.
+     */
+    {
+        const gchar *form = strstr(css, ".composer-form{");
+        gsize length;
+
+        g_assert_nonnull(form);
+        length = (gsize)(strchr(form, '}') - form);
+
+        g_assert_nonnull(g_strstr_len(form, length, "scrollbar-gutter:stable"));
+    }
+}
+
+/*
+ * The lists keep the entry's column rather than the composer's width,
+ * and they do it with the same two variables the entry itself uses.
+ * A second copy of the clamp is a second answer that drifts.
+ */
+static void
+test_the_completion_column_is_the_entry_column(void)
+{
+    const gchar *css = clawt_web_stylesheet();
+    const gchar *pop = strstr(css, ".composer-pop-inner{");
+    const gchar *inner = strstr(css, ".composer-inner{");
+    gsize pop_length;
+    gsize inner_length;
+
+    g_assert_nonnull(pop);
+    g_assert_nonnull(inner);
+
+    pop_length = (gsize)(strchr(pop, '}') - pop);
+    inner_length = (gsize)(strchr(inner, '}') - inner);
+
+    g_assert_nonnull(g_strstr_len(pop, pop_length,
+                                  "max-width:var(--chat-measure)"));
+    g_assert_nonnull(g_strstr_len(inner, inner_length,
+                                  "max-width:var(--chat-measure)"));
+    g_assert_nonnull(g_strstr_len(pop, pop_length,
+                                  "padding-left:var(--chat-gutter)"));
+    g_assert_nonnull(g_strstr_len(inner, inner_length,
+                                  "padding-left:var(--chat-gutter)"));
+}
+
+/*
  * The dark palette is reachable both ways: by the system preference for
  * somebody who has chosen nothing, and by the explicit choice for
  * somebody who has. Only one of the two and the toggle appears to do
@@ -1874,6 +1963,10 @@ main(int argc, char *argv[])
                     test_the_narrow_sidebar_is_a_drawer);
     g_test_add_func("/web/the-palette-is-defined-outside-a-media-query",
                     test_the_palette_is_defined_outside_a_media_query);
+    g_test_add_func("/web/the-composer-does-not-clip-its-completions",
+                    test_the_composer_does_not_clip_its_completions);
+    g_test_add_func("/web/the-completion-column-is-the-entry-column",
+                    test_the_completion_column_is_the_entry_column);
     g_test_add_func("/web/dark-is-reachable-by-preference-and-by-choice",
                     test_dark_is_reachable_by_preference_and_by_choice);
     g_test_add_func("/web/composer-stands-on-the-message-column",

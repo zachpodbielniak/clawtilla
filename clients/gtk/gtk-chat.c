@@ -3012,6 +3012,196 @@ show_command_help(ClawtWindow *self)
     append_local(self, out->str);
 }
 
+void
+clawt_gtk_forget_room_members(ClawtWindow *self)
+{
+    g_hash_table_remove_all(self->room_rosters);
+}
+
+void
+clawt_gtk_note_room_members(ClawtWindow *self, const gchar *room_id,
+                            JsonNode *members)
+{
+    GPtrArray *roster;
+    JsonArray *array;
+    guint i;
+
+    if (room_id == NULL || *room_id == '\0')
+        return;
+
+    if (members == NULL || !JSON_NODE_HOLDS_ARRAY(members))
+        return;
+
+    array = json_node_get_array(members);
+
+    if (array == NULL)
+        return;
+
+    roster = g_ptr_array_new_with_free_func(g_free);
+
+    for (i = 0; i < json_array_get_length(array); i++) {
+        const gchar *member = json_array_get_string_element(array, i);
+
+        if (member != NULL && *member != '\0')
+            g_ptr_array_add(roster, g_strdup(member));
+    }
+
+    g_hash_table_insert(self->room_rosters, g_strdup(room_id), roster);
+}
+
+/*
+ * The text in the composer up to the cursor.
+ *
+ * The whole buffer would answer a different question: somebody who
+ * goes back to correct an earlier `@` is typing there, not at the end,
+ * and a completion taken from the end would offer names for a mention
+ * they are not writing.  Bytes, because clawt_mention_prefix_at() reads
+ * a byte offset and a character count is not one.
+ */
+static gchar *
+entry_text_to_cursor(ClawtWindow *self)
+{
+    GtkTextBuffer *buffer = gtk_text_view_get_buffer(self->entry);
+    GtkTextIter start;
+    GtkTextIter cursor;
+
+    gtk_text_buffer_get_start_iter(buffer, &start);
+    gtk_text_buffer_get_iter_at_mark(buffer, &cursor,
+                                     gtk_text_buffer_get_insert(buffer));
+
+    return gtk_text_buffer_get_text(buffer, &start, &cursor, FALSE);
+}
+
+/*
+ * Offers the room's members as the person types "@".
+ *
+ * Returns TRUE when it put something in the list, so the caller knows
+ * whether to reveal it.  Same surface as the slash commands, and for
+ * the same reason: a second popover would be a second set of rules
+ * about when a completion is showing, and the two would differ exactly
+ * once.  It follows that only one can be open, which is right -- "/"
+ * and "@" cannot both start the word being typed.
+ */
+static gboolean
+fill_mention_list(ClawtWindow *self)
+{
+    g_autofree gchar *to_cursor = NULL;
+    g_autofree gchar *prefix = NULL;
+    g_autoptr(GPtrArray) candidates = NULL;
+    GPtrArray *members;
+    guint i;
+
+    /*
+     * A DM has no roster and needs no completion: there is exactly one
+     * other party and naming them changes nothing about delivery.  The
+     * lookup answers that on its own -- an agent selection has no room
+     * id to find, so nothing has to be cleared when one is made.
+     */
+    if (self->selected_room_entry == NULL)
+        return FALSE;
+
+    members = g_hash_table_lookup(self->room_rosters,
+                                  self->selected_room_entry);
+
+    if (members == NULL || members->len == 0)
+        return FALSE;
+
+    to_cursor = entry_text_to_cursor(self);
+    prefix = clawt_mention_prefix_at(to_cursor,
+                                     to_cursor != NULL ? strlen(to_cursor) : 0);
+
+    /*
+     * NULL is "not writing a mention" and "" is "the @ has just been
+     * typed".  Reading the second as the first would mean the list only
+     * ever appeared once a letter followed, which is exactly when
+     * somebody no longer needs to be told the names.
+     */
+    if (prefix == NULL)
+        return FALSE;
+
+    candidates = clawt_mention_candidates(prefix, members);
+
+    if (candidates->len == 0)
+        return FALSE;
+
+    clawt_gtk_clear_list(self->command_list);
+
+    for (i = 0; i < candidates->len; i++) {
+        const gchar *member = g_ptr_array_index(candidates, i);
+        GtkWidget *row;
+        g_autofree gchar *label = g_strconcat("@", member, NULL);
+
+        row = adw_action_row_new();
+        clawt_gtk_set_row_text(row, label, NULL);
+        g_object_set_data_full(G_OBJECT(row), "mention", g_strdup(member),
+                               g_free);
+        gtk_list_box_append(self->command_list, row);
+    }
+
+    /*
+     * `@all` last rather than first, and only for the operator, who is
+     * the only sender it works for: an agent writing it reaches nobody.
+     * Offered only on a bare `@` or a prefix it actually starts with,
+     * so it does not sit under every name somebody types.
+     *
+     * And not at all when a member is literally called `all`, which a
+     * hand-edited config can still produce: the broadcast resolver
+     * defers to that member, so a second row spelled the same way
+     * would be two rows that insert identical text and mean different
+     * things.
+     */
+    if (g_ascii_strncasecmp(CLAWT_MENTION_ALL, prefix, strlen(prefix)) == 0 &&
+        !g_ptr_array_find_with_equal_func(candidates, CLAWT_MENTION_ALL,
+                                          g_str_equal, NULL)) {
+        GtkWidget *row = adw_action_row_new();
+
+        clawt_gtk_set_row_text(row, "@" CLAWT_MENTION_ALL,
+                               "Everybody in this room. One turn each.");
+        g_object_set_data_full(G_OBJECT(row), "mention",
+                               g_strdup(CLAWT_MENTION_ALL), g_free);
+        gtk_list_box_append(self->command_list, row);
+    }
+
+    return TRUE;
+}
+
+/*
+ * Replaces the half-typed `@name` at the cursor with the chosen one.
+ *
+ * Only the prefix is deleted, so the `@` somebody already typed stays
+ * where it is and the rest of the line is untouched -- a completion
+ * that rewrote the whole buffer the way the command list does would
+ * throw away a message somebody was halfway through writing.
+ */
+static void
+insert_mention(ClawtWindow *self, const gchar *member)
+{
+    GtkTextBuffer *buffer = gtk_text_view_get_buffer(self->entry);
+    g_autofree gchar *to_cursor = entry_text_to_cursor(self);
+    g_autofree gchar *prefix = NULL;
+    g_autofree gchar *filled = NULL;
+    GtkTextIter cursor;
+    GtkTextIter start;
+
+    prefix = clawt_mention_prefix_at(to_cursor,
+                                     to_cursor != NULL ? strlen(to_cursor) : 0);
+
+    if (prefix == NULL)
+        return;
+
+    gtk_text_buffer_get_iter_at_mark(buffer, &cursor,
+                                     gtk_text_buffer_get_insert(buffer));
+    start = cursor;
+    gtk_text_iter_backward_chars(&start,
+                                 (gint)g_utf8_strlen(prefix, -1));
+
+    gtk_text_buffer_delete(buffer, &start, &cursor);
+
+    /* A trailing space, so the next keystroke is the message. */
+    filled = g_strconcat(member, " ", NULL);
+    gtk_text_buffer_insert_at_cursor(buffer, filled, -1);
+}
+
 /*
  * Runs a slash command.
  *
@@ -3381,6 +3571,29 @@ on_command_row_selected(GtkListBox *list, GtkListBoxRow *row,
     if (row == NULL)
         return;
 
+    /*
+     * One list, two kinds of row.  Checked before the command key
+     * rather than after, because a mention row carries no "command"
+     * and would otherwise fall out of the early return in silence.
+     */
+    name = g_object_get_data(G_OBJECT(row), "mention");
+
+    if (name != NULL) {
+        gtk_revealer_set_reveal_child(GTK_REVEALER(self->command_revealer),
+                                      FALSE);
+        insert_mention(self, name);
+
+        /*
+         * A plain focus grab, not entry_focus_end(): the insert leaves
+         * the cursor after the name it wrote, and the command list can
+         * jump to the end only because it replaces the whole line.
+         * Completing an `@` in the middle of a written message must
+         * not move somebody to the end of it.
+         */
+        gtk_widget_grab_focus(GTK_WIDGET(self->entry));
+        return;
+    }
+
     name = g_object_get_data(G_OBJECT(row), "command");
 
     if (name == NULL)
@@ -3423,7 +3636,7 @@ on_entry_changed(GtkTextBuffer *buffer, gpointer user_data)
 
     if (text == NULL || text[0] != '/' || strchr(text, ' ') != NULL) {
         gtk_revealer_set_reveal_child(GTK_REVEALER(self->command_revealer),
-                                      FALSE);
+                                      fill_mention_list(self));
 
         /*
          * Dropped when the line stops being a command, so the next `/`
