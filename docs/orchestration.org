@@ -789,13 +789,9 @@ clawtilla mailbox list writer      # what is waiting (usually nothing)
 clawtilla cost                     # what it has cost so far
 #+end_src
 
-A reply that carries a task id completes it *only* on the last message of
-the turn, while the agent is no longer busy, with nothing it handed on
-still running, and with no progress note held against it this turn.  The
-busy check is what stops libreclaw's own progress notes -- "Still
-working... (5m elapsed)" -- from completing a task seconds after it
-started and reporting the note as the result; the other two stop a turn
-that ended for other reasons from doing the same thing more quietly.
+A reply that carries a task id completes it *only* after that room's typing indicator falls, with nothing it handed on still running and with no progress note holding the task open. The room's typing check stops libreclaw's own progress notes -- "Still working... (5m elapsed)" -- from completing a task seconds after it started. An agent can work in several rooms at once: finishing room A reports A's result immediately, even while room B is still typing. Checking the whole agent's busy flag here would discard A's final answer as progress and leave its delegator waiting after both turns ended.
+
+A reply with no room keeps the conservative agent-wide busy check because the frame cannot identify which turn ended. An agent that never sends typing indicators can still finish a task with its answer, as before.
 
 ** The tools agents get
 

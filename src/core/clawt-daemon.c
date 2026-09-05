@@ -2002,7 +2002,7 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
      * The turn is what separates them.  libreclaw brackets a turn with
      * its typing indicator and stops it in on_process_message_finish()
      * *before* the answer is posted, so a message that arrives while the
-     * agent is still marked busy is by construction not the answer.  An
+     * replying room is still typing is by construction not the answer. An
      * agent that never sends the indicator -- it needs a room, and is
      * skipped without one -- is busy=FALSE throughout and completes as
      * it always did, which is the safe way round: a task that ends late
@@ -2018,7 +2018,17 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
     if (thread_id != NULL) {
         ClawtAgent *replier = clawt_agent_manager_get(self->agents, agent_id);
 
-        if (replier != NULL && clawt_agent_get_busy(replier)) {
+		/*
+		 * A named room owns its own turn. Another room can still be
+		 * running after this one posts its final answer; the agent-wide
+		 * busy flag would classify that answer as progress and lose the
+		 * only completion notification. Without a room, retain the
+		 * conservative agent-wide check rather than guess at a turn.
+		 */
+        if (replier != NULL &&
+            (room_id != NULL
+                ? clawt_agent_is_typing_in(replier, room_id)
+                : clawt_agent_get_busy(replier))) {
             ClawtTask *task = clawt_task_manager_get(self->tasks, thread_id);
 
             g_info("daemon: %s is still working, so this is not the answer "

@@ -4824,6 +4824,83 @@ test_a_progress_note_does_not_finish_a_task(void)
 }
 
 /*
+ * Finishing one room must report its task while another room stays busy.
+ * The progress control matters: using the room's falling edge must not
+ * turn an actual mid-turn note into the result instead.
+ */
+static void
+test_parallel_room_completion(void)
+{
+	Fixture fixture = { 0 };
+	ClawtLinkServer *links;
+	ClawtAgent *worker;
+	ClawtAgent *chief;
+	ClawtAgent *peer;
+	ClawtTask *first;
+	ClawtTask *second;
+	ClawtRoom *first_room;
+	ClawtRoom *second_room;
+
+	fixture_setup(&fixture,
+		"agents:\n  - id: chief\n  - id: worker\n  - id: peer\n");
+	g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+	links = clawt_daemon_get_link_server(fixture.daemon);
+	worker = clawt_agent_manager_get(fixture.daemon->agents, "worker");
+	chief = clawt_agent_manager_get(fixture.daemon->agents, "chief");
+	peer = clawt_agent_manager_get(fixture.daemon->agents, "peer");
+	first_room = clawt_room_manager_get_direct(fixture.daemon->rooms,
+		"chief", "worker");
+	second_room = clawt_room_manager_get_direct(fixture.daemon->rooms,
+		"peer", "worker");
+	first = clawt_task_manager_create(fixture.daemon->tasks, "chief",
+		"worker", "Review routing", NULL, NULL);
+	second = clawt_task_manager_create(fixture.daemon->tasks, "peer",
+		"worker", "Review storage", NULL, NULL);
+	g_assert_nonnull(first);
+	g_assert_nonnull(second);
+
+	clawt_agent_deliver_turn(worker, clawt_room_get_id(first_room), 1,
+		TRUE, "chief", clawt_task_get_id(first));
+	clawt_agent_deliver_turn(worker, clawt_room_get_id(second_room), 1,
+		TRUE, "peer", clawt_task_get_id(second));
+	g_signal_emit_by_name(links, "typing", "worker",
+		clawt_room_get_id(first_room), TRUE);
+	g_signal_emit_by_name(links, "typing", "worker",
+		clawt_room_get_id(second_room), TRUE);
+	g_signal_emit_by_name(links, "message", "worker",
+		clawt_room_get_id(first_room), "Still reviewing routing.",
+		clawt_task_get_id(first));
+	g_assert_cmpint(clawt_task_get_state(first), ==, CLAWT_TASK_RUNNING);
+	g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(chief)), ==, 0);
+
+	/* A final answer follows its own falling edge, not the agent's. */
+	g_signal_emit_by_name(links, "typing", "worker",
+		clawt_room_get_id(first_room), FALSE);
+	g_signal_emit_by_name(links, "message", "worker",
+		clawt_room_get_id(first_room), "Routing reviewed.",
+		clawt_task_get_id(first));
+	g_assert_true(clawt_agent_get_busy(worker));
+	g_assert_cmpint(clawt_task_get_state(first), ==, CLAWT_TASK_COMPLETED);
+	g_assert_cmpstr(clawt_task_get_result(first), ==, "Routing reviewed.");
+	g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(chief)), ==, 1);
+	g_assert_cmpint(clawt_task_get_state(second), ==, CLAWT_TASK_RUNNING);
+	g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(peer)), ==, 0);
+
+	/* The remaining task reports independently and neither result repeats. */
+	g_signal_emit_by_name(links, "typing", "worker",
+		clawt_room_get_id(second_room), FALSE);
+	g_signal_emit_by_name(links, "message", "worker",
+		clawt_room_get_id(second_room), "Storage reviewed.",
+		clawt_task_get_id(second));
+	g_assert_false(clawt_agent_get_busy(worker));
+	g_assert_cmpint(clawt_task_get_state(second), ==, CLAWT_TASK_COMPLETED);
+	g_assert_cmpstr(clawt_task_get_result(second), ==, "Storage reviewed.");
+	g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(chief)), ==, 1);
+	g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(peer)), ==, 1);
+	fixture_teardown(&fixture);
+}
+
+/*
  * A delegator's sign-off in a task's thread goes nowhere, and decides
  * nothing.
  *
@@ -10285,6 +10362,8 @@ main(int argc, char *argv[])
                     test_a_delegators_threaded_sign_off_goes_nowhere);
     g_test_add_func("/daemon/task/a-report-crosses-a-closed-exchange",
                     test_an_assignees_report_crosses_a_closed_exchange);
+    g_test_add_func("/daemon/task/parallel-room-completion",
+                    test_parallel_room_completion);
     g_test_add_func("/daemon/task/an-unknown-thread-still-routes",
                     test_a_thread_naming_no_task_still_routes);
     g_test_add_func("/daemon/task/a-settled-task-notifies-its-delegator",
