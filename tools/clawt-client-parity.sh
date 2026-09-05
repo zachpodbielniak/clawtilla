@@ -344,6 +344,12 @@ declare -A AFFORDANCES=(
     # sentence is split across two string literals, so a longer phrase
     # matches in the web client and nowhere in the other.
     ["commands in a room"]="about one agent|about one agent"
+    # Return sends and Shift+Return is a newline. The web composer is a
+    # textarea, which does not submit its form on Return the way a
+    # single-line input does, so this had to be written rather than
+    # inherited -- until it was, the only way to send from that client
+    # was the mouse, and Shift+Return did the same thing as Return.
+    ["enter sends, shift+enter newlines"]="GDK_SHIFT_MASK|shiftKey"
     ["skill command expansion"]="clawt_gtk_skill_expand|skill.expand"
     ["skills library"]="clawt_gtk_refresh_skills|clawt_web_skills_body"
     ["skill provenance"]="Provenance|sha256"

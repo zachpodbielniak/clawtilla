@@ -1385,6 +1385,48 @@ open_document(HtmxBuilder *builder, const gchar *title,
         "if(e.key==='Enter'&&!e.shiftKey){"
         "if(cmp_choose(cmp_active(p))){e.preventDefault();}}});"
         /*
+         * Return sends; Shift+Return is a newline.
+         *
+         * The GTK composer has always worked this way and this one
+         * never did: a textarea does not submit its form on Return the
+         * way a single-line input does, so the only way to send from
+         * here was to reach for the mouse -- and Shift+Return, the
+         * gesture people use to avoid sending, did the same thing as
+         * Return, which is the confusing half.
+         *
+         * Registered after the completion handler and deferring to it
+         * through `defaultPrevented`: both listen on `document`, and
+         * preventing the default does not stop the event reaching the
+         * next listener.  So a Return that took a highlighted name must
+         * not also send the half-written message it just completed.
+         */
+        "document.addEventListener('keydown',function(e){"
+        "var a=e.target;"
+        "if(!a||a.id!=='composer-body'||a.tagName!=='TEXTAREA'){return;}"
+        "if(e.key!=='Enter'||e.shiftKey||e.ctrlKey||e.metaKey||e.altKey){"
+        "return;}"
+        /*
+         * Mid-composition Return chooses a candidate; it is not a
+         * send.  Without this an IME user cannot type a message at
+         * all, because the first character they confirm posts it.
+         * `keyCode===229` is the older browsers' spelling of the same
+         * thing and costs one comparison.
+         */
+        "if(e.isComposing||e.keyCode===229){return;}"
+        "if(e.defaultPrevented){return;}"
+        "var f=a.form;if(!f){return;}"
+        "e.preventDefault();"
+        /*
+         * The Send button rather than the form: this form is both a
+         * native POST and an htmx one, and clicking the button somebody
+         * could have clicked themselves goes down whichever path is
+         * actually wired -- where requestSubmit() would depend on htmx
+         * seeing the synthetic submit event.
+         */
+        "var b=f.querySelector('button[type=\"submit\"]');"
+        "if(b){b.click();}"
+        "else if(f.requestSubmit){f.requestSubmit();}});"
+        /*
          * Refiltering invalidates the highlight: it described a row
          * that may now be hidden, or a different name.
          */

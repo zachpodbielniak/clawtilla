@@ -244,6 +244,30 @@ is the one that clears a session, and it says so.
 function the GTK client uses, so the two produce the same bytes.  Three
 formats: markdown, org, plain.
 
+**** Sending
+
+Return sends; Shift+Return is a newline.  The same as the GTK composer,
+and it had to be written rather than inherited: this box is a
+~<textarea>~, which --- unlike a single-line ~<input>~ --- does not
+submit its form on Return.  So the only way to send from this client was
+the Send button, and Shift+Return, the gesture people reach for
+*because* they do not want to send, did exactly what Return did.
+
+Three things are deliberately left alone: Ctrl, Meta and Alt with
+Return, which belong to the browser and the desktop; a Return arriving
+mid-composition, because an IME uses it to choose a candidate and
+sending on it means somebody using one cannot type a message at all;
+and a Return the completion list has already taken, which is checked
+through ~defaultPrevented~ --- both listen on ~document~, and preventing
+a default does not stop the event reaching the next listener, so without
+that check taking a name from the list would also send the half-written
+message it had just completed.
+
+It clicks the Send button rather than calling ~requestSubmit()~.  The
+form is both a native POST and an htmx one, and clicking the button
+somebody could have clicked themselves goes down whichever path is
+actually wired.
+
 **** In a room
 
 Six of them are about the fleet rather than about one agent, and those
