@@ -14,6 +14,7 @@
  */
 
 #include <clawtilla.h>
+#include "backup.h"
 
 #include <unistd.h>
 #include <termios.h>
@@ -7604,6 +7605,7 @@ typedef struct {
  * dispatcher matches on the name and find_verb() scans the whole table.
  */
 static const ClawtVerb verbs[] = {
+    { "backup", "<create|verify|preview|restore>", "Offline verified state archives", clawt_cli_backup },
     { "daemon",  "[token]",  "Run the daemon, or print its token",
       cmd_daemon },
     { "remote",  "<verb>",   "Saved connections to other machines",

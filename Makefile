@@ -61,6 +61,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/clawt-enums.h \
 	$(SRCDIR)/clawt-error.h \
 	$(SRCDIR)/clawt-util.h \
+	$(SRCDIR)/clawt-backup.h \
 	$(SRCDIR)/config/clawt-config-schema.h \
 	$(SRCDIR)/config/clawt-appearance.h \
 	$(SRCDIR)/config/clawt-secret-ref.h \
@@ -191,6 +192,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/clawt-enums.c \
 	$(SRCDIR)/clawt-error.c \
 	$(SRCDIR)/clawt-util.c \
+	$(SRCDIR)/clawt-backup.c \
 	$(SRCDIR)/config/clawt-config-schema.c \
 	$(SRCDIR)/config/clawt-appearance.c \
 	$(SRCDIR)/config/clawt-schema-render.c \
@@ -788,6 +790,9 @@ endif
 #
 .PHONY: tests  ## Build the test suite without running it -- the zero-warning check
 tests: $(TEST_BINARIES) test-plugins plugins
+
+# Backup tests exercise the offline CLI dispatcher as well as the library.
+$(OUTDIR)/tests/test-backup: $(CLI_BIN_TARGET)
 
 .PHONY: test  ## Build and run the hermetic test suite
 test: $(TEST_BINARIES) test-plugins plugins

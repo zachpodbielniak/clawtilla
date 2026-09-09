@@ -849,3 +849,26 @@ changes it.  Minor and micro releases install over the same soname and
 anything linked against it keeps working, which is the contract worth
 being deliberate about: an incompatible change to a public struct or a
 removed symbol is a major bump, whatever else the release contains.
+
+* Verified offline state archives
+
+~clawtilla backup~ is the library-backed alternative to the manual tar procedure above. No additional Fedora packages are required: it uses the existing ~glib2-devel~ dependency and Linux descriptor-relative filesystem operations. Stop the daemon yourself before creation; the command never stops or connects to a running daemon. It takes the same exclusive ~daemon.lock~ flock as the daemon and holds it until writing finishes, so a daemon cannot start during the snapshot. This excludes the daemon, not unrelated workspace writers: stop those too.
+
+#+begin_src bash
+systemctl --user stop clawtilla
+clawtilla backup create ~/.clawtilla ~/fleet.clawt
+clawtilla backup verify ~/fleet.clawt
+clawtilla backup preview ~/fleet.clawt
+clawtilla backup restore ~/fleet.clawt ~/restored-fleet
+systemctl --user start clawtilla
+#+end_src
+
+~verify~ and ~preview~ both validate the entire archive and print its relative file manifest without writing anything. ~restore~ performs the same validation before creating a new directory; it refuses any existing destination, including an empty directory or symlink. It never overwrites the current fleet. Inspect the restored tree and its ~config.yaml~ before deliberately switching the daemon's state directory; configuration may still reference the original absolute paths. Reauthorize connectors and provision external credentials before starting the restored fleet. This is an offline command and needs no IPC socket. Exit status is 0 on success, 1 on archive/filesystem failure, or 2 for invalid command arguments. ~backup --help~ includes examples; ~backup --license~ prints the AGPL identifier.
+
+The root fleet ~config.yaml~ is retained, including its secret references. Generated ~agents/<id>/config.yaml~ files are excluded because they may hold resolved secrets; project configuration files inside workspaces are retained. Names ~secrets~, ~credentials~, ~token~, ~tcp-token~, ~daemon.lock~, ~sessions~, ~.git~, ~.env~, ~.ssh~ and ~.mcp.json~ are excluded at every depth; other hidden files are retained. Sockets and other nonregular files are skipped, and symlinks outside these excluded locations cause creation to fail rather than following their targets. Empty directories are not retained; parents of restored files are recreated. Files restore as 0600 and directories as 0700, so executable workspace scripts need their executable bit restored explicitly. Neither ownership nor timestamps are preserved.
+
+This is a state-directory backup, not a machine image: external workspaces, secret stores, XDG data, VM disks and custom config files outside the source directory require separate backups. Known credential locations are excluded by default, but arbitrary files and message history can still contain sensitive text; the command does not scan or redact content. An archive is private (0600), not encrypted. Protect its storage accordingly. No credentials-inclusion switch is provided.
+
+The version-1 format is a bounded binary GVariant ~a(ssay)~ manifest: each entry carries a UTF-8 relative path, a SHA256 checksum and file bytes. The ~CLAWT-BACKUP-1~ header carries a SHA256 checksum over the whole serialized manifest; this detects corruption, not malicious replacement by someone able to rewrite the checksums. Verification rejects malformed serialization, checksum mismatches, duplicate entries, file/parent collisions, unsafe paths and excluded credential paths before restoring. Archives are limited to 256 MiB, individual files to 64 MiB, entries to 100000 and directory nesting to 64 levels; use the manual tar workflow for larger fleets. Creation never overwrites an archive. Restore writes through directory descriptors with no symlink following and exclusive file creation. A disk-full or other I/O failure can leave a partial destination for inspection; it is never reported as successful, and retry requires a new destination.
+
+The public APIs are ~clawt_backup_create()~ and ~clawt_backup_restore()~; passing NULL as the latter's destination performs verification and preview. Hermetic GTests cover round trips, known credential exclusion, live daemon-lock refusal, source symlinks, checksum corruption, hostile archive paths and existing destinations.
