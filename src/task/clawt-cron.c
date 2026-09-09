@@ -147,9 +147,9 @@ parse_number(const gchar *text, gint min, gint max, gboolean names_are_months,
 /*
  * One field, into a bitmask.
  *
- * @out_restricted says whether the field was anything other than `*`,
- * which is the only thing the two day fields need to know about each
- * other.
+ * @out_restricted tracks a leading wildcard, including wildcard steps.
+ * The day-field combination rule depends on syntax, not mask coverage:
+ * A wildcard with step one is unrestricted; an explicit full range is not.
  */
 static gboolean
 parse_field(const gchar *text, gint min, gint max, gboolean months,
@@ -161,7 +161,7 @@ parse_field(const gchar *text, gint min, gint max, gboolean months,
     guint i;
 
     if (out_restricted != NULL)
-        *out_restricted = g_strcmp0(text, "*") != 0;
+        *out_restricted = text[0] != '*';
 
     items = g_strsplit(text, ",", -1);
 

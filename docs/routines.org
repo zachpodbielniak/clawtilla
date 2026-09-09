@@ -145,6 +145,8 @@ day-of-week.  So:
 Vixie's has behaved, and getting it backwards is wrong in a way nobody
 notices until the month a routine did not run.
 
+A day field beginning with =*= retains wildcard semantics when a step follows it. Thus =0 9 */1 * mon= runs only on Mondays, and =0 9 */2 * mon= runs on Mondays whose day of month is odd. An explicit range such as =1-31= is still a restricted field and uses the usual OR rule when the weekday field is also restricted.
+
 *** What is refused, and when
 
 A bad expression is refused *while you are still looking at what you

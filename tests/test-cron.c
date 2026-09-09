@@ -148,6 +148,20 @@ test_both_day_fields_are_an_or(void)
     check_next("0 0 * * 5", start, "2026-11-06 00:00");
 }
 
+/* Wildcard steps intersect the other day field instead of activating OR. */
+static void
+test_wildcard_day_steps(void)
+{
+	g_autoptr(GDateTime) tuesday = at(2026, 8, 25, 8, 30);
+
+	check_next("0 9 */1 * mon", tuesday, "2026-08-31 09:00");
+	check_next("0 9 13 * */1", tuesday, "2026-09-13 09:00");
+	check_next("0 9 */2 * mon", tuesday, "2026-08-31 09:00");
+	check_next("0 9 13 * */2", tuesday, "2026-09-13 09:00");
+	/* An explicit full range still counts as a restricted cron field. */
+	check_next("0 9 1-31 * mon", tuesday, "2026-08-25 09:00");
+}
+
 /*
  * A date that exists only every fourth year has to be found, which is
  * why the search runs for four of them rather than one.
@@ -307,6 +321,7 @@ main(int argc, char *argv[])
 	g_test_add_func("/cron/sunday-ranges", test_sunday_range_endpoints);
     g_test_add_func("/cron/nonsense", test_nonsense_is_refused);
     g_test_add_func("/cron/both-day-fields", test_both_day_fields_are_an_or);
+	g_test_add_func("/cron/wildcard-day-steps", test_wildcard_day_steps);
     g_test_add_func("/cron/leap-day", test_the_twenty_ninth_of_february);
     g_test_add_func("/cron/impossible", test_a_date_that_cannot_happen);
     g_test_add_func("/cron/wrapping-range", test_a_wrapping_range);
