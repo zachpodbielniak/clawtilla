@@ -184,6 +184,9 @@ main () {
     echo
 
     echo "The rest of the surface:"
+    expect_get '/navigate' 'class="navigation-search"' 'destination search'
+    expect_get "/navigate?agent=${AGENT}&q=mailbox" 'class="navigation-result"' 'page search'
+    expect_get '/navigate?q=clawtilla-no-such-destination-9f02' 'No matches' 'empty search'
     expect_get '/fleet'                     'The fleet'      'the fleet table'
     expect_get '/new'                       'Design one'     'agent creation'
     expect_get '/import'                    'From a directory' 'import'

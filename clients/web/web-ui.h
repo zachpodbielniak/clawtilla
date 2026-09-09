@@ -499,4 +499,10 @@ gboolean clawt_web_write_is_cross_site(HtmxMethod   method,
                                        const gchar *referer,
                                        const gchar *host);
 
+
+/* Append an escaped destination if it matches; return 1 when appended. */
+guint clawt_web_navigation_result(HtmxElement *list, const gchar *query,
+                                  const gchar *name, const gchar *detail,
+                                  const gchar *id, const gchar *url);
+
 G_END_DECLS

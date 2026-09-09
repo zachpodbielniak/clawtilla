@@ -58,6 +58,13 @@ static gchar          *appearance_code_font = NULL;
  * and this follows it for free.
  */
 static const gchar CLAWT_STRUCTURE_CSS[] =
+    ".clawt-navigation-button { min-height: 34px; font-weight: 500; }\n"
+    "#clawt-sidebar .navigation-sidebar > row { margin: 2px 6px; border-radius: 8px; }\n"
+    "#clawt-sidebar .navigation-sidebar > row:selected { background: alpha(@accent_bg_color, 0.16); }\n"
+    ".clawt-section-switcher { margin: 4px 8px; }\n"
+    /* Reserve readable labels inside the independently scrolling row.
+     * em follows the user's interface font instead of assuming 14px. */
+    "#clawt-page-switcher { min-width: 64em; }\n"
     /*
      * A coloured caption badge -- HOST, CHIEF, a task's state.
      *

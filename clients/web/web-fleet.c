@@ -814,6 +814,21 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view,
 
     htmx_node_add_child(HTMX_NODE(aside), HTMX_NODE(head));
 
+    /* A stable destination rather than an input in a frequently swapped
+     * sidebar: incoming fleet events must not interrupt a search. */
+    {
+        g_autofree gchar *escaped = g_uri_escape_string(selected != NULL ? selected : "", NULL, FALSE);
+        g_autofree gchar *room = g_uri_escape_string(selected_room != NULL ? selected_room : "", NULL, FALSE);
+        g_autofree gchar *url = g_strdup_printf("/navigate?agent=%s&room=%s", escaped, room);
+        HtmxA *link = htmx_a_new_with_href(url);
+
+        htmx_element_set_id(HTMX_ELEMENT(link), "navigation-link");
+        htmx_element_add_class(HTMX_ELEMENT(link), "navigation-launch");
+        htmx_element_set_attribute(HTMX_ELEMENT(link), "aria-keyshortcuts", "Control+k");
+        htmx_node_set_text_content(HTMX_NODE(link), "Go to…  Ctrl+K");
+        clawt_web_add(aside, link);
+    }
+
     htmx_element_add_class(HTMX_ELEMENT(scroll), "sidebar-scroll");
 
     reply = clawt_web_app_call(app, "agent.list", NULL);
@@ -1070,7 +1085,7 @@ clawt_web_topbar(ClawtWebApp *app, const gchar *agent_id, ClawtPage view)
 
         htmx_element_add_class(HTMX_ELEMENT(nav), "nav-button");
         htmx_element_set_attribute(HTMX_ELEMENT(nav), "aria-label",
-                                   "Show the agent list");
+                                   "Show conversations");
         /* U+2630 TRIGRAM FOR HEAVEN, as octal bytes: gnu89 has no \u. */
         htmx_node_set_text_content(HTMX_NODE(nav), "\342\230\260");
         htmx_node_add_child(HTMX_NODE(bar), HTMX_NODE(nav));
@@ -1820,6 +1835,7 @@ void
 clawt_web_register_fleet(HtmxRouter *router, ClawtWebApp *app)
 {
     htmx_router_get(router, "/", on_index, app);
+    clawt_web_register_navigation(router, app);
     htmx_router_get(router, "/a/:id", on_agent_root, app);
     htmx_router_get(router, "/f/sidebar", on_sidebar_fragment, app);
 

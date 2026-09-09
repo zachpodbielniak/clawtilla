@@ -237,12 +237,14 @@ clawt_web_tasks_body(ClawtWebApp *app, const gchar *agent_id)
 
     tasks = clawt_web_member_array(clawt_web_root(reply), "tasks");
 
-    if (tasks == NULL || json_array_get_length(tasks) == 0) {
+    if (reply == NULL) {
         clawt_web_add(pad, clawt_web_empty(
-            "No tasks",
-            "A task is delegated work -- one agent handing another a job, "
-            "with its own libreclaw session so one job never contaminates "
-            "the next."));
+            "Tasks are unavailable",
+            "Check the daemon connection, then reopen Tasks to retry."));
+    } else if (tasks == NULL || json_array_get_length(tasks) == 0) {
+        clawt_web_add(pad, clawt_web_empty(
+            "No tasks yet",
+            "Ask an agent to delegate work. Its progress and result will appear here."));
     } else {
         g_autoptr(HtmxDiv) list = htmx_div_new();
 

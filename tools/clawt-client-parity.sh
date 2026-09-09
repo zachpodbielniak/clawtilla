@@ -150,6 +150,7 @@ declare -A VOCABULARIES=(
 #
 # shellcheck disable=SC2034
 declare -A AFFORDANCES=(
+    ["searchable navigation"]="clawt_gtk_build_navigation|navigation-search"
     ["unread marker"]="unread_marker|unread-rule"
     ["live turn steps"]="clawt_gtk_steps_add|turn_steps"
     ["tool run collapsing"]="clawt_turn_step_run_summary|clawt_turn_step_run_summary"

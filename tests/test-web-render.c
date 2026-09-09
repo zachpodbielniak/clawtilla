@@ -27,6 +27,26 @@
 
 #include "../clients/web/web-ui.c"
 #include "../clients/web/web-style.c"
+/* A matching hostile name is escaped, its URL remains an attribute, and
+ * an unmatched row never appears. Checking just CSS would prove none of this. */
+static void
+test_navigation_result(void)
+{
+    g_autoptr(HtmxDiv) list = htmx_div_new();
+    g_autofree gchar *html = NULL;
+
+    g_assert_cmpuint(clawt_web_navigation_result(HTMX_ELEMENT(list), "alice",
+        "Alice <script>bad()</script>", "Agent · alice · research",
+        "alice", "/a/alice/chat"), ==, 1);
+    g_assert_cmpuint(clawt_web_navigation_result(HTMX_ELEMENT(list), "alice",
+        "Bob", "Agent · bob", "bob", "/a/bob/chat"), ==, 0);
+    html = htmx_element_render(HTMX_ELEMENT(list));
+    g_assert_nonnull(strstr(html, "class=\"navigation-result\""));
+    g_assert_nonnull(strstr(html, "href=\"/a/alice/chat\""));
+    g_assert_nonnull(strstr(html, "&lt;script&gt;"));
+    g_assert_null(strstr(html, "<script>"));
+    g_assert_null(strstr(html, "/a/bob/chat"));
+}
 
 /*
  * The frame, which needs a daemon to draw. Stubbed so the renderers can
@@ -1897,6 +1917,7 @@ int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
+    g_test_add_func("/web/navigation-result", test_navigation_result);
 
     g_test_add_func("/web/connection-banner-when-there-is-something-to-say",
                     test_the_connection_banner_is_drawn_when_there_is_something_to_say);
