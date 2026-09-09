@@ -805,3 +805,11 @@ emit a channel block, an MCP server entry or a notification.  One row per
 type in =src/integration/clawt-integration.c=, carrying its id, its kind,
 its required and credential keys, its identity keys, the ~channels:~ name
 it renders as, and whether an agent may have more than one.
+
+* Incoming webhook body limits
+
+The webhook listener enforces its configured body limit while receiving data, before authentication or delivery dispatch. An oversized =Content-Length= is rejected at the headers. Chunked uploads are counted as their decoded bytes arrive and receive HTTP 413 as soon as they exceed the cap, even if the sender never finishes the request. Accepted bodies at or below the cap retain their exact bytes for signature verification; HTTP chunk framing does not count toward the limit.
+
+The default webhook regression suite uses an isolated loopback listener and an unfinished chunked upload to verify early refusal, plus fixed-length and chunked requests at the exact limit to verify successful delivery.
+
+After sending HTTP 413, the listener discards in-flight upload bytes through a fixed 8 KiB buffer for at most one second before closing. This short drain lets ordinary upload clients receive the HTTP error instead of a TCP reset. The deadline covers both the error response and the drain, including senders that remain idle or never finish their request; discarded bytes are never delivered or retained as a request body.

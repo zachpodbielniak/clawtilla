@@ -9,12 +9,12 @@
  * What this listener serves is the one question about it worth being
  * sure of, because it is the only part of clawtilla a stranger can
  * reach.  The routing is a pure function precisely so that question is
- * answerable without opening a port -- `make test` opens no network
- * socket at all, and a test that had to be skipped for that reason would
- * be a test of the most important thing in the file that nobody runs.
+ * answerable without opening a port. The streaming-size regression also
+ * runs by default against an isolated loopback listener: a pure routing
+ * test cannot prove that an unfinished oversized upload is stopped.
  *
- * The one case that genuinely needs a socket -- that it binds the
- * loopback and not the world -- sits behind CLAWT_TEST_INTEGRATION,
+ * The daemon delivery and binding integration tests sit behind
+ * CLAWT_TEST_INTEGRATION,
  * beside the OAuth loopback tests that made the same trade.
  */
 
@@ -206,7 +206,7 @@ test_an_unstarted_ingress_is_listening_nowhere(void)
  * `on_delivery()` is static inside daemon-trigger.c and takes the whole
  * daemon, so the only honest way to exercise it is to start one and
  * knock. That needs a listener, so it sits behind
- * CLAWT_TEST_INTEGRATION -- `make test` opens no network socket at all.
+ * CLAWT_TEST_INTEGRATION; the default suite runs only isolated ingress.
  * Recorded here rather than left undone: the alternative is a rule
  * defended only by the comments beside it.
  */
@@ -699,10 +699,202 @@ test_a_capability_url_opens_a_generic_trigger(void)
     end_to_end_teardown(&fixture);
 }
 
+/*
+ * StreamingLimits:
+ * @calls: deliveries accepted by the isolated listener
+ * @expected: exact body expected after HTTP chunk framing is removed
+ *
+ * The callback checks the bytes, not just the status: disabling libsoup's
+ * accumulation must not silently hand an empty body to signature checks.
+ */
+typedef struct {
+	guint calls;
+	const gchar *expected;
+} StreamingLimits;
+
+static gchar *
+streaming_deliver(const gchar *endpoint, GHashTable *headers,
+	const gchar *presented, const guchar *body, gsize length,
+	gpointer user_data, guint *status)
+{
+	StreamingLimits *fixture = user_data;
+
+	(void)headers;
+	(void)presented;
+	g_assert_cmpstr(endpoint, ==, "test");
+	g_assert_cmpuint(length, ==, strlen(fixture->expected));
+	g_assert_cmpmem(body, length, fixture->expected, strlen(fixture->expected));
+	fixture->calls++;
+	*status = SOUP_STATUS_OK;
+	return g_strdup("accepted\n");
+}
+
+/*
+ * streaming_exchange:
+ * @ingress: loopback-only listener
+ * @request: raw HTTP request, optionally deliberately unfinished
+ *
+ * Iterate the server while polling a nonblocking client. The deadline
+ * makes waiting for an absent terminal chunk a test failure, not a hang.
+ */
+static gchar *
+streaming_exchange(ClawtWebhookIngress *ingress, const gchar *request)
+{
+	g_autoptr(GSocketClient) client = g_socket_client_new();
+	g_autoptr(GSocketConnection) connection = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GString) response = g_string_new(NULL);
+	GSocket *socket;
+	gint64 deadline;
+	gboolean saw_eof = FALSE;
+
+	g_socket_client_set_timeout(client, 3);
+	g_socket_client_set_enable_proxy(client, FALSE);
+	connection = g_socket_client_connect_to_host(client, "127.0.0.1",
+		clawt_webhook_ingress_get_port(ingress), NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(connection);
+	g_assert_true(g_output_stream_write_all(
+		g_io_stream_get_output_stream(G_IO_STREAM(connection)),
+		request, strlen(request), NULL, NULL, &error));
+	g_assert_no_error(error);
+	socket = g_socket_connection_get_socket(connection);
+	g_socket_set_blocking(socket, FALSE);
+	deadline = g_get_monotonic_time() + 3 * G_USEC_PER_SEC;
+	while (g_get_monotonic_time() < deadline) {
+		gchar buffer[1024];
+		gssize count;
+
+		while (g_main_context_iteration(NULL, FALSE))
+			;
+		count = g_socket_receive(socket, buffer, sizeof(buffer), NULL, &error);
+		if (count > 0) {
+			g_string_append_len(response, buffer, count);
+
+		} else if (count == 0) {
+			saw_eof = TRUE;
+			break;
+		} else {
+			g_assert_error(error, G_IO_ERROR, G_IO_ERROR_WOULD_BLOCK);
+			g_clear_error(&error);
+		}
+		g_usleep(1000);
+	}
+	/* Even an idle unfinished sender must lose its connection promptly. */
+	g_assert_true(saw_eof);
+	return g_string_free(g_steal_pointer(&response), FALSE);
+}
+
+/*
+ * test_streaming_body_limit:
+ *
+ * Reserve a kernel-selected loopback port, then transfer it to ingress.
+ * The unfinished oversized request is the regression: a post-body check
+ * never answers it. Valid fixed-length and chunked bodies, including the
+ * exact cap, must still reach the callback byte-for-byte.
+ */
+static void
+test_streaming_body_limit(void)
+{
+	g_autoptr(GSocket) reservation = NULL;
+	g_autoptr(GInetAddress) inet = g_inet_address_new_loopback(G_SOCKET_FAMILY_IPV4);
+	g_autoptr(GSocketAddress) bind_address = g_inet_socket_address_new(inet, 0);
+	g_autoptr(GSocketAddress) bound = NULL;
+	g_autoptr(ClawtWebhookIngress) ingress = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *response = NULL;
+	StreamingLimits fixture = { 0, "abcdefgh" };
+	guint16 port;
+
+	reservation = g_socket_new(G_SOCKET_FAMILY_IPV4, G_SOCKET_TYPE_STREAM,
+		G_SOCKET_PROTOCOL_TCP, &error);
+	g_assert_no_error(error);
+	g_assert_true(g_socket_bind(reservation, bind_address, FALSE, &error));
+	g_assert_no_error(error);
+	bound = g_socket_get_local_address(reservation, &error);
+	g_assert_no_error(error);
+	port = g_inet_socket_address_get_port(G_INET_SOCKET_ADDRESS(bound));
+	g_assert_true(g_socket_close(reservation, &error));
+	g_assert_no_error(error);
+	ingress = clawt_webhook_ingress_new(port, 8);
+	clawt_webhook_ingress_set_deliver_func(ingress, streaming_deliver, &fixture);
+	g_assert_true(clawt_webhook_ingress_start(ingress, FALSE, &error));
+	g_assert_no_error(error);
+
+	/* A normal HTTP client must receive 413 even while uploading its body. */
+	{
+		g_autoptr(SoupSession) session = soup_session_new();
+		g_autofree gchar *huge = g_strnfill(2 * 1024 * 1024, 'x');
+		EndToEnd exchange = { 0 };
+
+		exchange.session = session;
+		exchange.port = port;
+		g_assert_cmpuint(post(&exchange, "/hooks/test", NULL, huge), ==,
+			SOUP_STATUS_REQUEST_ENTITY_TOO_LARGE);
+		g_assert_cmpuint(fixture.calls, ==, 0);
+	}
+
+	response = streaming_exchange(ingress,
+		"POST /hooks/test HTTP/1.1\r\nHost: localhost\r\n"
+		"Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+		"4\r\nabcd\r\n4\r\nefgh\r\n1\r\ni\r\n");
+	g_assert_nonnull(strstr(response, " 413 "));
+	g_assert_cmpuint(fixture.calls, ==, 0);
+	g_clear_pointer(&response, g_free);
+
+	/* A huge HTTP chunk must be limited before that chunk is complete. */
+	response = streaming_exchange(ingress,
+		"POST /hooks/test HTTP/1.1\r\nHost: localhost\r\n"
+		"Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+		"100000000\r\nabcdefghi");
+	g_assert_nonnull(strstr(response, " 413 "));
+	g_assert_cmpuint(fixture.calls, ==, 0);
+	g_clear_pointer(&response, g_free);
+
+	response = streaming_exchange(ingress,
+		"POST /hooks/test HTTP/1.1\r\nHost: localhost\r\n"
+		"Content-Length: 9\r\nConnection: close\r\n\r\n");
+	g_assert_nonnull(strstr(response, " 413 "));
+	g_assert_cmpuint(fixture.calls, ==, 0);
+	g_clear_pointer(&response, g_free);
+
+	response = streaming_exchange(ingress,
+		"POST /hooks/test HTTP/1.1\r\nHost: localhost\r\n"
+		"Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+		"4\r\nabcd\r\n4\r\nefgh\r\n0\r\n\r\n");
+	g_assert_nonnull(strstr(response, " 200 "));
+	g_assert_cmpuint(fixture.calls, ==, 1);
+	g_clear_pointer(&response, g_free);
+
+	response = streaming_exchange(ingress,
+		"POST /hooks/test HTTP/1.1\r\nHost: localhost\r\n"
+		"Content-Length: 8\r\nConnection: close\r\n\r\nabcdefgh");
+	g_assert_nonnull(strstr(response, " 200 "));
+	g_assert_cmpuint(fixture.calls, ==, 2);
+	g_clear_pointer(&response, g_free);
+	fixture.expected = "abc";
+	response = streaming_exchange(ingress,
+		"POST /hooks/test HTTP/1.1\r\nHost: localhost\r\n"
+		"Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+		"3\r\nabc\r\n0\r\n\r\n");
+	g_assert_nonnull(strstr(response, " 200 "));
+	g_assert_cmpuint(fixture.calls, ==, 3);
+	g_clear_pointer(&response, g_free);
+	response = streaming_exchange(ingress,
+		"POST /hooks/test HTTP/1.1\r\nHost: localhost\r\n"
+		"Content-Length: 3\r\nConnection: close\r\n\r\nabc");
+	g_assert_nonnull(strstr(response, " 200 "));
+	g_assert_cmpuint(fixture.calls, ==, 4);
+	clawt_webhook_ingress_stop(ingress);
+	while (g_main_context_iteration(NULL, FALSE))
+		;
+}
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
+	g_test_add_func("/webhook/streaming-body-limit", test_streaming_body_limit);
 
     g_test_add_func("/webhook/only-two-paths",
                     test_only_health_and_hooks_are_served);
