@@ -112,6 +112,21 @@ test_nonsense_is_refused(void)
     refuse("*/0 * * * *");        /* a step of nothing */
 }
 
+/* Expand Sunday aliases after ranges and their steps have been applied. */
+static void
+test_sunday_range_endpoints(void)
+{
+	g_autoptr(GDateTime) monday = at(2026, 8, 24, 8, 30);
+	g_autoptr(GDateTime) saturday = at(2026, 8, 29, 9, 0);
+
+	check_next("0 9 * * 0-7", monday, "2026-08-24 09:00");
+	check_next("0 9 * * 1-7", monday, "2026-08-24 09:00");
+	check_next("0 9 * * 0-7/2", monday, "2026-08-25 09:00");
+	check_next("0 9 * * 1-7/2", saturday, "2026-08-30 09:00");
+	check_next("0 9 * * 7-1", monday, "2026-08-24 09:00");
+	check_next("0 9 * * fri-mon", saturday, "2026-08-30 09:00");
+}
+
 /* ── The one everybody gets wrong ────────────────────────────────── */
 
 /*
@@ -289,6 +304,7 @@ main(int argc, char *argv[])
     g_test_add_func("/cron/ordinary", test_the_ordinary_forms);
     g_test_add_func("/cron/names", test_names_are_accepted);
     g_test_add_func("/cron/sunday", test_sunday_has_two_numbers);
+	g_test_add_func("/cron/sunday-ranges", test_sunday_range_endpoints);
     g_test_add_func("/cron/nonsense", test_nonsense_is_refused);
     g_test_add_func("/cron/both-day-fields", test_both_day_fields_are_an_or);
     g_test_add_func("/cron/leap-day", test_the_twenty_ninth_of_february);

@@ -117,6 +117,8 @@ Five fields: minute, hour, day-of-month, month, day-of-week.  Ranges,
 lists and steps all work (=15,45=, =1-5=, =*/15=, =9-17/2=), months and
 weekdays may be named (=jan=, =mon=), and Sunday is both =0= and =7=.
 
+Weekday range endpoints retain their numeric position until the range and its step are expanded: =0-7= and =1-7= cover every weekday, while =0-7/2= selects Sunday, Tuesday, Thursday and Saturday. Only then is =7= treated as Sunday.
+
 A range that wraps -- =22-2=, =fri-mon= -- means what it looks like.
 Vixie cron refuses those; refusing something whose meaning is obvious
 helps nobody.

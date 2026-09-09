@@ -133,7 +133,7 @@ parse_number(const gchar *text, gint min, gint max, gboolean names_are_months,
      * Sunday is 0 and also 7.  Both spellings are in the wild and both
      * mean the same day.
      */
-    if (names_are_weekdays && value == 7)
+    if (names_are_weekdays && value == 7 && max == 6)
         value = 0;
 
     if (value < min || value > max)
@@ -199,7 +199,7 @@ parse_field(const gchar *text, gint min, gint max, gboolean months,
         } else {
             range_parts = g_strsplit(range, "-", 2);
 
-            if (!parse_number(range_parts[0], min, max, months, weekdays,
+            if (!parse_number(range_parts[0], min, weekdays ? 7 : max, months, weekdays,
                               &first)) {
                 g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
                             "'%s' is not a value between %d and %d",
@@ -209,7 +209,7 @@ parse_field(const gchar *text, gint min, gint max, gboolean months,
 
             if (range_parts[1] == NULL) {
                 last = first;
-            } else if (!parse_number(range_parts[1], min, max, months,
+            } else if (!parse_number(range_parts[1], min, weekdays ? 7 : max, months,
                                      weekdays, &last)) {
                 g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
                             "'%s' is not a value between %d and %d",
@@ -242,6 +242,12 @@ parse_field(const gchar *text, gint min, gint max, gboolean months,
                     "'%s' matches nothing", text);
         return FALSE;
     }
+
+	/* Keep endpoint 7 until ranges and steps are expanded, then alias Sunday. */
+	if (weekdays && (mask & (G_GUINT64_CONSTANT(1) << 7)) != 0) {
+		mask |= 1;
+		mask &= ~(G_GUINT64_CONSTANT(1) << 7);
+	}
 
     *out_mask = mask;
 
