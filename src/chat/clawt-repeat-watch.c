@@ -180,6 +180,8 @@ clawt_repeat_key(const gchar *tool, const gchar *args)
     const gchar *p;
     gboolean in_space = FALSE;
     gboolean any = FALSE;
+	gchar quote = '\0';
+	gboolean escaped = FALSE;
 
     if (tool == NULL || *tool == '\0')
         return NULL;
@@ -198,7 +200,7 @@ clawt_repeat_key(const gchar *tool, const gchar *args)
     out = g_string_new(NULL);
 
     for (p = args; *p != '\0'; p++) {
-        if (g_ascii_isspace(*p)) {
+        if (quote == '\0' && !escaped && g_ascii_isspace(*p)) {
             in_space = TRUE;
             continue;
         }
@@ -209,6 +211,20 @@ clawt_repeat_key(const gchar *tool, const gchar *args)
         in_space = FALSE;
         any = TRUE;
         g_string_append_c(out, *p);
+
+		/* Preserve literal values in JSON strings and quoted shell text.
+		 * A backslash escapes the next byte outside single quotes; tracking
+		 * it also prevents an escaped quote from ending a JSON string. */
+		if (escaped) {
+			escaped = FALSE;
+		} else if (*p == '\\' && quote != '\'') {
+			escaped = TRUE;
+		} else if (quote != '\0') {
+			if (*p == quote)
+				quote = '\0';
+		} else if (*p == '\"' || *p == '\'') {
+			quote = *p;
+		}
     }
 
     if (!any)

@@ -101,6 +101,33 @@ test_the_key_collapses_whitespace(void)
     g_assert_cmpstr(spaced, !=, joined);
 }
 
+/* Literal whitespace is an argument value, including after escaped quotes. */
+static void
+test_repeat_keys_preserve_quoted_whitespace(void)
+{
+	static const gchar *const distinct[][2] = {
+		{ "{\"path\":\"a  b\"}", "{\"path\":\"a b\"}" },
+		{ "{\"path\":\"a\\\"  b\"}", "{\"path\":\"a\\\" b\"}" },
+		{ "printf 'a  b'", "printf 'a b'" },
+		{ "printf \"a\tb\"", "printf \"a b\"" },
+		{ "read a\\  b", "read a\\ b" }
+	};
+	g_autoptr(ClawtRepeatWatch) watch = clawt_repeat_watch_new();
+	guint i;
+
+	for (i = 0; i < G_N_ELEMENTS(distinct); i++) {
+		g_autofree gchar *first = clawt_repeat_key("exec", distinct[i][0]);
+		g_autofree gchar *second = clawt_repeat_key("exec", distinct[i][1]);
+
+		g_assert_cmpstr(first, !=, second);
+	}
+	/* Distinct reads must not collectively reach the repeat threshold. */
+	clawt_repeat_watch_set_thresholds(watch, "2");
+	g_assert_cmpuint(clawt_repeat_watch_note(watch, "turn", "read", distinct[0][0]), ==, 0);
+	g_assert_cmpuint(clawt_repeat_watch_note(watch, "turn", "read", distinct[0][1]), ==, 0);
+	g_assert_cmpuint(clawt_repeat_watch_note(watch, "turn", "read", distinct[0][0]), ==, 2);
+}
+
 /*
  * The thresholds fire on the count that lands on them and on no other.
  *
@@ -1303,6 +1330,7 @@ main(int argc, char **argv)
                     test_a_bare_tool_name_is_not_a_key);
     g_test_add_func("/turn-hygiene/the-key-collapses-whitespace",
                     test_the_key_collapses_whitespace);
+	g_test_add_func("/turn-hygiene/quoted-whitespace", test_repeat_keys_preserve_quoted_whitespace);
     g_test_add_func("/turn-hygiene/thresholds-fire-exactly-on-5-10-20",
                     test_thresholds_fire_exactly_on_5_10_and_20);
     g_test_add_func("/turn-hygiene/the-lru-evicts-the-least-recently-seen",

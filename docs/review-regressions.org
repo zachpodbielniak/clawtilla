@@ -11,3 +11,9 @@
 An attachment id is a single filename inside the attachment store. Adjacent dots inside that filename are valid, so files such as =report..txt= remain downloadable and retain their display names. Previously stored ids use the same rule. Leading dots, path separators, empty ids and parent-directory traversal remain rejected.
 
 =tests/test-attachment.c= stores files with adjacent and leading dots in their original names, resolves the generated ids, reads back their bytes and checks the displayed names. The hostile-id tests continue to enforce the store boundary.
+
+* Repeat detection
+
+Tool-call keys normalize whitespace outside quoted values while preserving every byte inside JSON strings and single- or double-quoted command arguments. Escaped quotes and escaped whitespace do not accidentally end the literal value. Reads of filenames that differ only in literal spaces therefore have separate repeat counters, while pretty-printed argument formatting still normalizes.
+
+=tests/test-turn-hygiene.c= checks literal spaces, tabs, escaped quotes, shell quoting, escaped spaces, and the actual repeat threshold across distinct reads.
