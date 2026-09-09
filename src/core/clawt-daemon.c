@@ -279,6 +279,26 @@ on_agent_mcp_request(ClawtLink *link, JsonNode *request, gpointer user_data)
                                 request);
 }
 
+/* Snapshot historical costs before any startup hook or mailbox can run work.
+ * Priming is idempotent, so a reconnect cannot discard pending current costs. */
+static void
+prime_agent_usage(ClawtDaemon *self, const gchar *agent_id)
+{
+	g_autofree gchar *state_dir = NULL;
+	g_autofree gchar *db_path = NULL;
+	g_autoptr(GError) error = NULL;
+
+	if (self->usage == NULL)
+		return;
+	state_dir = clawt_config_agent_state_dir(self->config, agent_id);
+	if (state_dir == NULL)
+		return;
+	db_path = clawt_usage_database_path(state_dir);
+	if (!clawt_usage_prime(self->usage, agent_id, db_path, &error))
+		g_warning("usage: cannot establish the baseline for %s: %s", agent_id,
+			error != NULL ? error->message : "unknown database error");
+}
+
 static void
 on_link_added(ClawtLinkServer *server, const gchar *agent_id,
               gpointer user_data)
@@ -290,9 +310,11 @@ on_link_added(ClawtLinkServer *server, const gchar *agent_id,
     (void)server;
 
     agent = clawt_agent_manager_get(self->agents, agent_id);
-    if (agent == NULL)
+    if (agent == NULL) {
         return;
+    }
 
+	prime_agent_usage(self, agent_id);
     link = clawt_link_server_get_link(self->link_server, agent_id);
     clawt_agent_set_link(agent, link);
 
@@ -3601,6 +3623,7 @@ start_agent_launch(ClawtDaemon *self, const gchar *agent_id,
                 runtime, clawt_hold_covers(self->hold, agent_id));
     }
 
+	prime_agent_usage(self, agent_id);
     if (!clawt_agent_start(agent, error))
         return FALSE;
 
@@ -5629,6 +5652,14 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     self->tasks = clawt_task_manager_new();
     self->guard = clawt_loop_guard_new();
     self->usage = clawt_usage_new();
+	{
+		GPtrArray *loaded = clawt_agent_manager_list(self->agents);
+		guint index;
+
+		/* This precedes routine catch-up, listeners and agent autostart. */
+		for (index = 0; loaded != NULL && index < loaded->len; index++)
+			prime_agent_usage(self, clawt_agent_get_id(g_ptr_array_index(loaded, index)));
+	}
     configure_limits(self);
 
     self->notifier = clawt_notifier_new(self->config);

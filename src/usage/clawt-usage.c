@@ -223,6 +223,48 @@ clawt_usage_new(void)
     return g_object_new(CLAWT_TYPE_USAGE, NULL);
 }
 
+gboolean
+clawt_usage_prime(ClawtUsage *self, const gchar *agent_id,
+				  const gchar *db_path, GError **error)
+{
+	AgentWatermark *mark;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GError) local = NULL;
+	ClawtUsageTotals totals = { 0, 0, 0, 0 };
+
+	g_return_val_if_fail(CLAWT_IS_USAGE(self), FALSE);
+	g_return_val_if_fail(agent_id != NULL, FALSE);
+	g_return_val_if_fail(db_path != NULL, FALSE);
+
+	mark = g_hash_table_lookup(self->watermarks, agent_id);
+	if (mark == NULL) {
+		mark = g_new0(AgentWatermark, 1);
+		g_hash_table_insert(self->watermarks, g_strdup(agent_id), mark);
+	}
+	/* Reconnects must not consume costs that have not reached a reply yet. */
+	if (mark->primed)
+		return TRUE;
+	if (mark->db == NULL) {
+		mark->db = open_agent_database(db_path, &local);
+		if (mark->db == NULL) {
+			if (local != NULL) {
+				g_propagate_error(error, g_steal_pointer(&local));
+				return FALSE;
+			}
+			/* Known empty, but leave the handle retryable when the agent
+			 * creates its database and records its first paid turn. */
+			mark->primed = TRUE;
+			return TRUE;
+		}
+	}
+	rows = lc_database_query_token_usage(mark->db, NULL, NULL, 0, 0, error);
+	if (rows == NULL)
+		return FALSE;
+	accumulate_rows(rows, 0, &totals, &mark->last_id, &mark->last_recorded_at);
+	mark->primed = TRUE;
+	return TRUE;
+}
+
 gint64
 clawt_usage_drain(ClawtUsage *self, const gchar *agent_id,
                   const gchar *db_path)

@@ -390,6 +390,58 @@ test_sub_cent_costs_keep_their_digits(void)
     g_assert_cmpstr(nothing, ==, "$0.00");
 }
 
+/* A new fleet may have no database until its first turn finishes. */
+static void
+test_prime_missing_database_charges_first_turn(void)
+{
+	Fixture fixture;
+	g_autoptr(ClawtUsage) usage = clawt_usage_new();
+	g_autofree gchar *state_dir = NULL;
+	g_autofree gchar *db_path = NULL;
+	g_autofree gchar *created = NULL;
+	g_autoptr(GError) error = NULL;
+
+	fixture_setup(&fixture);
+	state_dir = g_build_filename(fixture.dir, "worker", NULL);
+	db_path = clawt_usage_database_path(state_dir);
+	g_assert_true(clawt_usage_prime(usage, "worker", db_path, &error));
+	g_assert_no_error(error);
+	g_assert_false(g_file_test(db_path, G_FILE_TEST_EXISTS));
+	created = make_agent_with_turns(&fixture, "worker", 1, 125000,
+		g_get_real_time() / G_USEC_PER_SEC);
+	g_assert_cmpint(clawt_usage_drain(usage, "worker", db_path), ==, 125000);
+	g_assert_cmpint(clawt_usage_drain(usage, "worker", db_path), ==, 0);
+	fixture_teardown(&fixture);
+}
+
+/* Re-priming on a reconnect must not advance the original historical baseline. */
+static void
+test_prime_preserves_pending_spend(void)
+{
+	Fixture fixture;
+	g_autoptr(ClawtUsage) usage = clawt_usage_new();
+	g_autofree gchar *state_dir = NULL;
+	g_autofree gchar *db_path = NULL;
+	g_autoptr(LcDatabase) db = LC_DATABASE(lc_sqlite_database_new());
+	g_autoptr(GError) error = NULL;
+	gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+
+	fixture_setup(&fixture);
+	state_dir = make_agent_with_turns(&fixture, "worker", 3, 1000000, now);
+	db_path = clawt_usage_database_path(state_dir);
+	g_assert_true(clawt_usage_prime(usage, "worker", db_path, &error));
+	g_assert_no_error(error);
+	g_assert_true(lc_database_open(db, db_path, &error));
+	g_assert_true(lc_database_add_token_usage(db, "new", "clawtilla", "room",
+		"model", "model", 1, 1, 250000, now, &error));
+	g_assert_no_error(error);
+	lc_database_close(db);
+	g_assert_true(clawt_usage_prime(usage, "worker", db_path, &error));
+	g_assert_cmpint(clawt_usage_drain(usage, "worker", db_path), ==, 250000);
+	g_assert_cmpint(clawt_usage_drain(usage, "worker", db_path), ==, 0);
+	fixture_teardown(&fixture);
+}
+
 static void
 test_totals_add_accumulates_every_field(void)
 {
@@ -462,6 +514,8 @@ main(int argc, char *argv[])
                     test_since_excludes_older_turns);
     g_test_add_func("/usage/first-drain-primes",
                     test_the_first_drain_only_sets_the_watermark);
+	g_test_add_func("/usage/prime-missing-database", test_prime_missing_database_charges_first_turn);
+	g_test_add_func("/usage/prime-preserves-pending", test_prime_preserves_pending_spend);
     g_test_add_func("/usage/drain-charges-each-turn-once",
                     test_a_drain_charges_each_turn_once);
     g_test_add_func("/usage/forget-allows-a-replaced-database",

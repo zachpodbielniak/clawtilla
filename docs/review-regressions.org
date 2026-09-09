@@ -29,3 +29,11 @@ Both debug and release builds track compiler and linker flags in their own =.bui
 Routine updates validate the proposed schedule before modifying the live mapping. Invalid times, custom expressions and weekdays leave the existing schedule, accompanying instruction or enabled changes, and YAML comments untouched. Validation combines submitted fields with the existing routine; explicitly clearing an override uses its schema default.
 
 =tests/test-daemon.c= sends invalid updates directly through the routine handler and compares the complete serialized configuration before and after each refusal.
+
+* Usage baselines
+
+The daemon establishes each loaded agent's usage watermark before timers, listeners or autostart can deliver work. Starting or connecting an agent also primes its watermark, covering newly added and reset agents. Priming is idempotent: a reconnect cannot discard costs that are waiting for the next reply to charge them.
+
+A missing database establishes an empty baseline without creating a database file. When the agent later creates the file, its first recorded turn is chargeable. Existing history is excluded using row ids as well as timestamps, so old and new turns recorded in the same second remain distinguishable. Read failures remain errors instead of successful empty baselines.
+
+=tests/test-usage.c= covers empty databases, historical baselines and repeated priming. =tests/test-daemon.c= drives reply events for new and existing agents, including reconnects, and verifies both the recorded task spend and the budget refusal after the first paid turn.

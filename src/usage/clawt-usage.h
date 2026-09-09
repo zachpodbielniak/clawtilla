@@ -139,6 +139,23 @@ gboolean clawt_usage_read_totals(const gchar       *db_path,
 ClawtUsage *clawt_usage_new(void);
 
 /**
+ * clawt_usage_prime:
+ * @self: a #ClawtUsage
+ * @agent_id: whose baseline to establish
+ * @db_path: that agent's libreclaw database
+ * @error: (out) (optional): return location for an error
+ *
+ * Establishes the historical baseline before an agent can do new work.
+ * A missing database is an empty baseline and is not created. Repeated
+ * calls preserve any spending accumulated since the original baseline.
+ * Call again after clawt_usage_forget() when replacing a database.
+ *
+ * Returns: %TRUE if a baseline is available
+ */
+gboolean clawt_usage_prime(ClawtUsage *self, const gchar *agent_id,
+						  const gchar *db_path, GError **error);
+
+/**
  * clawt_usage_drain:
  * @self: a #ClawtUsage
  * @agent_id: whose usage to read
@@ -147,7 +164,8 @@ ClawtUsage *clawt_usage_new(void);
  * Returns what @agent_id has spent since the last call, and remembers
  * that it has been handed over.
  *
- * The first call on an agent returns 0 and only sets the watermark. A
+ * Without a preceding clawt_usage_prime(), the first call returns 0 and
+ * only sets the watermark. The daemon must prime before new work begins. A
  * daemon restarted mid-task must not charge that task for every turn the
  * agent has ever taken -- which for an agent with a long history would
  * exhaust any budget instantly, on work that was already paid for.

@@ -10245,6 +10245,70 @@ test_invalid_routine_update_is_atomic(void)
 	}
 }
 
+/* Prime before work, then exercise the real reply-to-budget wiring. */
+static void
+test_first_turn_usage_is_charged(gconstpointer data)
+{
+	guint flags = GPOINTER_TO_UINT(data);
+	Fixture fixture = { 0 };
+	g_autoptr(ClawtConfig) config = NULL;
+	g_autofree gchar *state_dir = NULL;
+	g_autofree gchar *db_path = NULL;
+	g_autofree gchar *sessions = NULL;
+	g_autoptr(LcDatabase) db = LC_DATABASE(lc_sqlite_database_new());
+	g_autoptr(GError) error = NULL;
+	g_autoptr(ClawtMessage) next = NULL;
+	ClawtTask *task;
+	ClawtLinkServer *links;
+	gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+
+	fixture_setup(&fixture, "orchestration:\n  task_budget_usd: 0.5\n"
+		"agents:\n  - id: worker\n");
+	config = clawt_config_load(fixture.config_path, &error);
+	g_assert_no_error(error);
+	state_dir = clawt_config_agent_state_dir(config, "worker");
+	db_path = clawt_usage_database_path(state_dir);
+	sessions = g_path_get_dirname(db_path);
+	g_assert_cmpint(g_mkdir_with_parents(sessions, 0700), ==, 0);
+	if ((flags & 1) != 0) {
+		g_assert_true(lc_database_open(db, db_path, &error));
+		g_assert_true(lc_database_add_token_usage(db, "old", "clawtilla", "room",
+			"model", "model", 1, 1, 9000000, now, &error));
+		g_assert_no_error(error);
+		lc_database_close(db);
+	}
+	g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+	g_assert_no_error(error);
+	links = clawt_daemon_get_link_server(fixture.daemon);
+	g_assert_nonnull(clawt_room_manager_get_direct(fixture.daemon->rooms, "user", "worker"));
+	if ((flags & 2) != 0) {
+		/* A new connection after reset must establish its baseline before mail. */
+		clawt_usage_forget(fixture.daemon->usage, "worker");
+		g_signal_emit_by_name(links, "link-added", "worker");
+	}
+	task = clawt_task_manager_create(fixture.daemon->tasks, "user", "worker",
+		"budgeted task", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(task);
+	g_assert_true(clawt_task_manager_start(fixture.daemon->tasks, clawt_task_get_id(task)));
+	g_assert_true(lc_database_open(db, db_path, &error));
+	g_assert_true(lc_database_add_token_usage(db, "new", "clawtilla", "room",
+		"model", "model", 1, 1, 750000, now, &error));
+	g_assert_no_error(error);
+	lc_database_close(db);
+	if ((flags & 2) != 0)
+		g_signal_emit_by_name(links, "link-added", "worker");
+	g_signal_emit_by_name(links, "message", "worker", "dm:user:worker",
+		"Done", clawt_task_get_id(task));
+	g_assert_cmpfloat(clawt_loop_guard_get_task_spend(fixture.daemon->guard,
+		clawt_task_get_id(task)), ==, 0.75);
+	next = clawt_message_new("dm:user:worker", "worker", "another turn");
+	clawt_message_set_task_id(next, clawt_task_get_id(task));
+	g_assert_false(clawt_loop_guard_check(fixture.daemon->guard, next, &error));
+	g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT);
+	fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -10261,6 +10325,10 @@ main(int argc, char *argv[])
 
     g_test_init(&argc, &argv, NULL);
 	g_test_add_func("/daemon/routine/invalid-update-is-atomic", test_invalid_routine_update_is_atomic);
+	g_test_add_data_func("/daemon/usage/first-turn", GUINT_TO_POINTER(0), test_first_turn_usage_is_charged);
+	g_test_add_data_func("/daemon/usage/excludes-history", GUINT_TO_POINTER(1), test_first_turn_usage_is_charged);
+	g_test_add_data_func("/daemon/usage/new-link", GUINT_TO_POINTER(2), test_first_turn_usage_is_charged);
+	g_test_add_data_func("/daemon/usage/reconnect-keeps-pending", GUINT_TO_POINTER(3), test_first_turn_usage_is_charged);
 
     g_test_add_func("/daemon/starts", test_starts_with_an_empty_config);
     g_test_add_func("/daemon/correcting-a-shadow-key-clears-it",
