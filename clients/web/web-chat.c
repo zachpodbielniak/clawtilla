@@ -539,12 +539,11 @@ fetch_steps(ClawtWebApp *app, const gchar *agent_id, const gchar *peer,
  * for a page that must fetch nothing at load.
  */
 static HtmxElement *
-step_run_element(GPtrArray *steps, guint from, guint to, guint calls,
-                 guint failed)
+step_run_element(GPtrArray *steps, guint from, guint to, guint failed)
 {
     g_autoptr(HtmxDetails) details = htmx_details_new();
     g_autoptr(HtmxSummary) summary = NULL;
-    g_autofree gchar *label = clawt_turn_step_run_label(calls, failed);
+    g_autofree gchar *label = clawt_turn_step_run_summary(steps, from, to);
     g_autofree gchar *css = NULL;
     guint i;
 
@@ -590,14 +589,12 @@ fill_steps(gpointer parent, GPtrArray *steps, guint from, guint end)
 
         if (clawt_turn_step_joins_run(step)) {
             guint run_start = i;
-            guint calls = 0;
             guint failed = 0;
 
-            i = clawt_turn_step_run_extent(steps, i, end, &calls, &failed);
+            i = clawt_turn_step_run_extent(steps, i, end, NULL, &failed);
 
             clawt_web_add(parent,
-                          step_run_element(steps, run_start, i, calls,
-                                           failed));
+                          step_run_element(steps, run_start, i, failed));
             continue;
         }
 

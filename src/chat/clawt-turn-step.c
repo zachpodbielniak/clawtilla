@@ -8,6 +8,7 @@
 #include "clawtilla.h"
 
 #include "chat/clawt-turn-step.h"
+#include <ai-glib.h>
 
 #include <string.h>
 
@@ -324,16 +325,91 @@ clawt_turn_step_run_label(guint tools, guint failed)
 }
 
 gchar *
+clawt_turn_step_run_summary(
+	GPtrArray *steps,
+	guint      from,
+	guint      to
+){
+	static const AiToolCategory categories[] = {
+		AI_TOOL_CATEGORY_FILE_READ, AI_TOOL_CATEGORY_FILE_WRITE,
+		AI_TOOL_CATEGORY_COMMAND, AI_TOOL_CATEGORY_SEARCH,
+		AI_TOOL_CATEGORY_NETWORK, AI_TOOL_CATEGORY_TASK,
+		AI_TOOL_CATEGORY_OTHER
+	};
+	guint counts[G_N_ELEMENTS(categories)] = { 0 };
+	guint failed = 0;
+	guint i;
+	guint j;
+	g_autoptr(GString) label = g_string_new(NULL);
+
+	g_return_val_if_fail(steps != NULL, g_strdup(""));
+	g_return_val_if_fail(from <= to && to <= steps->len, g_strdup(""));
+
+	/* Failed outcomes follow their calls. Count them separately so one
+	 * failed invocation never becomes two calls in the collapsed label. */
+	for (i = from; i < to; i++) {
+		ClawtTurnStep *step = g_ptr_array_index(steps, i);
+		const AiToolStyle *style;
+		AiToolCategory category;
+
+		if (step == NULL || step->kind != CLAWT_STEP_TOOL)
+			continue;
+		if (step->failed) {
+			failed++;
+			continue;
+		}
+
+		style = ai_tool_style_lookup(step->tool_name);
+		category = style != NULL ? style->category : AI_TOOL_CATEGORY_OTHER;
+		for (j = 0; j + 1 < G_N_ELEMENTS(categories); j++) {
+			if (categories[j] == category)
+				break;
+		}
+		counts[j]++;
+	}
+
+	/* Use ai-glib's provider vocabulary, with a generic final bucket for
+	 * custom tools. Never infer that an unknown tool executed a command. */
+	for (j = 0; j < G_N_ELEMENTS(categories); j++) {
+		if (counts[j] == 0)
+			continue;
+		if (label->len != 0)
+			g_string_append(label, ", ");
+		g_string_append_printf(label, "%s %u %s",
+			ai_tool_category_verb(categories[j]), counts[j],
+			ai_tool_category_noun(categories[j], counts[j] != 1));
+	}
+	if (label->len == 0)
+		g_string_append(label, "No tool calls");
+	if (failed != 0)
+		g_string_append_printf(label, " (%u failed)", failed);
+	return g_string_free(g_steal_pointer(&label), FALSE);
+}
+
+gchar *
 clawt_turn_step_summary(ClawtTurnStep *self)
 {
     g_return_val_if_fail(self != NULL, g_strdup(""));
 
     if (self->kind == CLAWT_STEP_TOOL) {
+        const AiToolStyle *style = ai_tool_style_lookup(self->tool_name);
         const gchar *name = (self->tool_name != NULL && self->tool_name[0] != '\0')
             ? self->tool_name : "a tool";
+        g_autofree gchar *detail = NULL;
 
-        if (self->detail != NULL && self->detail[0] != '\0')
-            return g_strdup_printf("%s: %s", name, self->detail);
+        /* IPC and replay may supply multiline previews. Enforce the
+         * single-line contract here for both graphical clients. */
+        if (self->detail != NULL)
+            detail = g_strndup(self->detail, strcspn(self->detail, "\r\n"));
+
+        if (style != NULL && !self->failed) {
+            if (detail != NULL && detail[0] != '\0')
+                return g_strdup_printf("%s %s", style->verb, detail);
+            return g_strdup_printf("%s 1 %s", style->verb, style->noun_singular);
+        }
+
+        if (detail != NULL && detail[0] != '\0')
+            return g_strdup_printf("%s: %s", name, detail);
 
         return g_strdup(name);
     }

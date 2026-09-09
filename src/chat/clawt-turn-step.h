@@ -282,11 +282,27 @@ gboolean clawt_turn_step_is_call(ClawtTurnStep *self);
 gchar *clawt_turn_step_run_label(guint tools, guint failed);
 
 /**
+ * clawt_turn_step_run_summary:
+ * @steps: (element-type ClawtTurnStep): transcript steps
+ * @from: first step to include
+ * @to: exclusive end, no greater than the array length
+ *
+ * Groups tool calls by ai-glib's provider-aware categories, for example
+ * "Read 2 files, Ran 1 command". Counts calls rather than unique targets.
+ * Unknown tools remain visible, and failed outcome markers contribute
+ * only to the failure count. Non-tool steps are ignored.
+ *
+ * Returns: (transfer full): the collapsed label
+ */
+gchar *clawt_turn_step_run_summary(GPtrArray *steps, guint from, guint to);
+
+/**
  * clawt_turn_step_summary:
  * @self: a step
  *
  * A single line describing @self, for a client with one line to spend:
- * `Bash: ls -la`, `Read`, or the first line of the prose.
+ * `Ran ls -la`, `Read 1 file`, or the first line of the prose. Unknown
+ * tools retain their original name and preview.
  *
  * Returns: (transfer full): the summary
  */

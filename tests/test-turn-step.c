@@ -242,8 +242,69 @@ test_a_summary_is_one_line(void)
 
     g_assert_cmpstr(a, ==, "first line");
     g_assert_null(strchr(a, '\n'));
-    g_assert_cmpstr(b, ==, "Bash: make test");
-    g_assert_cmpstr(c, ==, "Read");
+    g_assert_cmpstr(b, ==, "Ran make test");
+    g_assert_cmpstr(c, ==, "Read 1 file");
+}
+
+/* The same activity has different names in Claude, Codex and Grok.
+ * Outcomes and prose must not inflate the count of actual calls. */
+static void
+test_provider_aware_run(void)
+{
+	const gchar *names[] = {
+		"Read", "read_file", "ReadFile", "file_change", "search_replace",
+		"Bash", "command_execution", "run_terminal_command", "search_tool",
+		"my_private_tool", "web_fetch", "agent_spawn"
+	};
+	g_autoptr(GPtrArray) steps = g_ptr_array_new_with_free_func(
+		(GDestroyNotify)clawt_turn_step_free);
+	g_autofree gchar *label = NULL;
+	g_autofree gchar *slice = NULL;
+	g_autofree gchar *empty = NULL;
+	g_autofree gchar *failure_only = NULL;
+	guint i;
+
+	for (i = 0; i < G_N_ELEMENTS(names); i++)
+		g_ptr_array_add(steps, clawt_turn_step_new(CLAWT_STEP_TOOL,
+			"a", "r", NULL, names[i], NULL, FALSE));
+	g_ptr_array_add(steps, clawt_turn_step_new(CLAWT_STEP_TOOL,
+		"a", "r", NULL, "Bash", NULL, TRUE));
+	g_ptr_array_add(steps, clawt_turn_step_new(CLAWT_STEP_TEXT,
+		"a", "r", "done", NULL, NULL, FALSE));
+	label = clawt_turn_step_run_summary(steps, 0, steps->len);
+	slice = clawt_turn_step_run_summary(steps, 5, 8);
+	empty = clawt_turn_step_run_summary(steps, 0, 0);
+	failure_only = clawt_turn_step_run_summary(steps, G_N_ELEMENTS(names), steps->len);
+	g_assert_cmpstr(label, ==,
+		"Read 3 files, Changed 2 files, Ran 3 commands, Searched 1 query, Fetched 1 page, Delegated 1 task, Used 1 tool (1 failed)");
+	g_assert_cmpstr(slice, ==, "Ran 3 commands");
+	g_assert_cmpstr(empty, ==, "No tool calls");
+	g_assert_cmpstr(failure_only, ==, "No tool calls (1 failed)");
+}
+
+/* Provider aliases share wording; unknown tools keep their identity and
+ * replayed multiline inputs cannot expand a one-line transcript row. */
+static void
+test_provider_aware_previews(void)
+{
+	const gchar *names[] = { "Bash", "command_execution", "run_terminal_command" };
+	guint i;
+	g_autoptr(ClawtTurnStep) unknown = clawt_turn_step_new(
+		CLAWT_STEP_TOOL, "a", "r", NULL, "private_tool", "first\r\nsecond", FALSE);
+	g_autoptr(ClawtTurnStep) edit = clawt_turn_step_new(
+		CLAWT_STEP_TOOL, "a", "r", NULL, "search_replace", "src/main.c", FALSE);
+	g_autofree gchar *fallback = clawt_turn_step_summary(unknown);
+	g_autofree gchar *edited = clawt_turn_step_summary(edit);
+
+	for (i = 0; i < G_N_ELEMENTS(names); i++) {
+		g_autoptr(ClawtTurnStep) step = clawt_turn_step_new(
+			CLAWT_STEP_TOOL, "a", "r", NULL, names[i], "make tests\nsecond", FALSE);
+		g_autofree gchar *label = clawt_turn_step_summary(step);
+
+		g_assert_cmpstr(label, ==, "Ran make tests");
+	}
+	g_assert_cmpstr(fallback, ==, "private_tool: first");
+	g_assert_cmpstr(edited, ==, "Edited src/main.c");
 }
 
 /* ── Merging steps back into a transcript ────────────────────────── */
@@ -415,6 +476,8 @@ main(int argc, char *argv[])
                     test_only_a_tool_joins_a_run);
     g_test_add_func("/turn-step/summary-is-one-line",
                     test_a_summary_is_one_line);
+	g_test_add_func("/turn-step/provider-run", test_provider_aware_run);
+	g_test_add_func("/turn-step/provider-previews", test_provider_aware_previews);
     g_test_add_func("/turn-step/placed-by-seconds",
                     test_a_step_is_placed_by_seconds_not_microseconds);
     g_test_add_func("/turn-step/unstamped-sorts-first",

@@ -2843,3 +2843,11 @@ created inside a callback completes on a loop nobody runs.  Push the
 context explicitly around the ~g_task_new()~.  The general rule:
 anything that captures "the current context" is a bug in an embedded
 daemon unless it was told which one.
+
+* Tool activity summaries
+
+GTK and web group consecutive tool calls by activity using ai-glib's shared provider vocabulary. A group can read =Read 3 files, Changed 2 files, Ran 1 command= instead of labelling every operation a command. Counts represent tool invocations, not distinct files or commands. A failed outcome adds =(1 failed)= without counting its originating call twice, and a failure-only group still displays that failure.
+
+Expanded rows use the same wording across providers: Claude Code's =Bash=, Codex's =command_execution= and Grok Build's =run_terminal_command= display =Ran make tests= for the same preview. Reads, edits, searches, network access and delegated work use their corresponding categories. Unknown tools remain visible by name in expanded rows and count as generic tools in the group. Previews stop at the first carriage return or newline, including steps replayed from history.
+
+This is a presentation change shared by both clients. Stored steps and IPC fields retain the original tool names and detail, and daemon-side secret redaction still runs before steps are stored or published.

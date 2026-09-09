@@ -110,7 +110,7 @@ step_row_new(const gchar *text, const gchar *tone, gboolean monospace)
  * one to adw_action_row_* compiles and then logs two criticals.
  */
 static GtkWidget *
-step_run_new(GPtrArray *steps, guint from, guint to, guint calls, guint failed)
+step_run_new(GPtrArray *steps, guint from, guint to, guint failed)
 {
     GtkWidget *expander = gtk_expander_new(NULL);
     GtkWidget *label;
@@ -118,7 +118,7 @@ step_run_new(GPtrArray *steps, guint from, guint to, guint calls, guint failed)
     g_autofree gchar *text = NULL;
     guint i;
 
-    text = clawt_turn_step_run_label(calls, failed);
+    text = clawt_turn_step_run_summary(steps, from, to);
     label = step_row_new(text, failed > 0 ? "bad" : "good", FALSE);
 
     gtk_expander_set_label_widget(GTK_EXPANDER(expander), label);
@@ -180,13 +180,12 @@ steps_fill_box(GtkWidget *box, GPtrArray *steps, guint from, guint end)
 
         if (clawt_turn_step_joins_run(step)) {
             guint run_start = i;
-            guint calls = 0;
             guint failed = 0;
 
-            i = clawt_turn_step_run_extent(steps, i, end, &calls, &failed);
+            i = clawt_turn_step_run_extent(steps, i, end, NULL, &failed);
 
             gtk_box_append(GTK_BOX(box),
-                           step_run_new(steps, run_start, i, calls, failed));
+                           step_run_new(steps, run_start, i, failed));
             continue;
         }
 
