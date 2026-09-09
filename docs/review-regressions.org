@@ -17,3 +17,9 @@ An attachment id is a single filename inside the attachment store. Adjacent dots
 Tool-call keys normalize whitespace outside quoted values while preserving every byte inside JSON strings and single- or double-quoted command arguments. Escaped quotes and escaped whitespace do not accidentally end the literal value. Reads of filenames that differ only in literal spaces therefore have separate repeat counters, while pretty-printed argument formatting still normalizes.
 
 =tests/test-turn-hygiene.c= checks literal spaces, tabs, escaped quotes, shell quoting, escaped spaces, and the actual repeat threshold across distinct reads.
+
+* Build flag changes
+
+Both debug and release builds track compiler and linker flags in their own =.build-flags= stamp. Changing flags, including enabling or disabling sanitizers, invalidates the corresponding objects without requiring a manual clean. An unchanged invocation retains the existing objects.
+
+=tests/test-build-flags.sh= compiles a disposable C program with the actual =config.mk= and =rules.mk=, changes a preprocessor value without touching its source, and checks the new executable in both modes. It also verifies that unchanged flags do not recompile the object.
