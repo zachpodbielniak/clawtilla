@@ -283,6 +283,16 @@ agent_row(ClawtWindow *self, JsonObject *agent, guint unread)
         if (!show_descriptions && *description != '\0')
             gtk_widget_set_tooltip_text(row, description);
 
+        /* Keep a long description from consuming the whole navigation
+         * pane, while retaining the complete text on hover. */
+        adw_action_row_set_title_lines(ADW_ACTION_ROW(row), 1);
+        adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(row), 2);
+        {
+            g_autofree gchar *tip = g_strdup_printf("%s\n%s", name,
+                activity != NULL ? activity : description);
+            gtk_widget_set_tooltip_text(row, tip);
+        }
+
         /*
          * A spinner beside the dot, because a colour that means "busy"
          * is a colour somebody has to learn and movement is not.

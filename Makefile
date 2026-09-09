@@ -520,6 +520,7 @@ WEB_SMOKE_AGENT ?=
 include rules.mk
 
 $(OUTDIR)/tests/test-web-render: $(WEB_SRCDIR)/web-ui.c \
+                                 $(WEB_SRCDIR)/web-navigation.c \
                                  $(WEB_SRCDIR)/web-style.c \
                                  $(WEB_SRCDIR)/web-ui.h \
                                  $(WEB_SRCDIR)/web-pages.h \
@@ -919,3 +920,20 @@ version:
 	@echo "$(PROJECT_NAME) $(VERSION) ($(GIT_SHA))"
 
 endif # __MIXED
+
+# Explicit integration target: the hermetic suite must never need a display
+# or a running daemon. See docs/ui-usability.org for the isolated fixture.
+.PHONY: test-gtk-navigation
+ifeq ($(GTK_AVAILABLE),1)
+$(OUTDIR)/test-gtk-navigation: tests/integration/test-gtk-navigation.c $(GTK_SOURCES) $(wildcard clients/gtk/*.h) $(LIB_STATIC) | $(OUTDIR) $(OUTDIR)/clawt-version.h
+	$(CC) $(CFLAGS) $(GTK_PKG_CFLAGS) -I$(GTK_SRCDIR) $< \
+		$(filter-out $(GTK_SRCDIR)/main.c $(GTK_SRCDIR)/gtk-navigation.c,$(GTK_SOURCES)) \
+		-o $@ $(LIB_STATIC) $(GTK_PKG_LIBS) $(LDFLAGS)
+
+test-gtk-navigation: $(OUTDIR)/test-gtk-navigation
+	$(OUTDIR)/test-gtk-navigation
+else
+test-gtk-navigation:
+	@echo 'GTK navigation test requires gtk4-devel and libadwaita-devel.' >&2
+	@exit 1
+endif

@@ -4767,6 +4767,10 @@ on_settings_closed(AdwDialog *dialog, gpointer user_data)
 static void
 on_page_shown(ClawtWindow *self)
 {
+    if (clawt_gtk_current_page(self) == CLAWT_PAGE_TASKS) {
+        clawt_gtk_refresh_tasks(self);
+        return;
+    }
     if (clawt_gtk_current_page(self) != CLAWT_PAGE_MEMORY)
         return;
 
@@ -5240,6 +5244,8 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
                      G_CALLBACK(clawt_gtk_on_row_selected), self);
 
     sidebar_scroll = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sidebar_scroll),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(sidebar_scroll),
                                   GTK_WIDGET(self->sidebar));
     gtk_widget_set_vexpand(sidebar_scroll, TRUE);
@@ -5253,7 +5259,7 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
 
     sidebar_header = adw_header_bar_new();
     adw_header_bar_set_title_widget(ADW_HEADER_BAR(sidebar_header),
-                                    adw_window_title_new("Agents", NULL));
+                                    adw_window_title_new("Conversations", NULL));
 
     /*
      * Packed before the + button, and therefore drawn to the right of it:
@@ -5315,7 +5321,7 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
                                       "open-menu-symbolic");
         gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(menu_button),
                                        G_MENU_MODEL(menu));
-        gtk_widget_set_tooltip_text(menu_button, "Settings");
+        gtk_widget_set_tooltip_text(menu_button, "Fleet actions and settings");
         adw_header_bar_pack_end(ADW_HEADER_BAR(sidebar_header), menu_button);
 
         g_signal_connect(settings_action, "activate",
@@ -5388,6 +5394,7 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
 
     sidebar_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_box_append(GTK_BOX(sidebar_box), sidebar_header);
+    clawt_gtk_build_navigation(self, sidebar_box);
     gtk_box_append(GTK_BOX(sidebar_box), sidebar_scroll);
     gtk_widget_set_name(sidebar_box, "clawt-sidebar");
 
@@ -5401,6 +5408,7 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
     g_object_set_data(G_OBJECT(self), "title", title);
 
     sidebar_button = gtk_toggle_button_new();
+    gtk_widget_set_tooltip_text(sidebar_button, "Show conversations");
     gtk_button_set_icon_name(GTK_BUTTON(sidebar_button),
                              "sidebar-show-symbolic");
     adw_header_bar_pack_start(ADW_HEADER_BAR(header), sidebar_button);
@@ -5527,7 +5535,6 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
     gtk_widget_set_name(switcher, "clawt-page-switcher");
     adw_view_switcher_set_policy(ADW_VIEW_SWITCHER(switcher),
                                  ADW_VIEW_SWITCHER_POLICY_WIDE);
-    adw_header_bar_pack_end(ADW_HEADER_BAR(header), switcher);
 
     /*
      * The bell, at the header's end, bound to the alerts panel exactly
@@ -5567,6 +5574,29 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
 
     content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_box_append(GTK_BOX(content), header);
+
+    /* Give destinations their own row. Sharing the title bar squeezed
+     * six section labels into ellipses even at ordinary laptop widths.
+     * Horizontal scrolling preserves complete labels at narrow widths. */
+    {
+        GtkWidget *navigation = gtk_scrolled_window_new();
+
+        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(navigation),
+                                       GTK_POLICY_AUTOMATIC, GTK_POLICY_NEVER);
+        gtk_scrolled_window_set_overlay_scrolling(GTK_SCROLLED_WINDOW(navigation), FALSE);
+        gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(navigation), 48);
+        /* The non-overlay scrollbar needs its own vertical space; the
+         * scroller's content minimum alone does not reserve that space. */
+        gtk_widget_set_size_request(navigation, -1, 64);
+        gtk_scrolled_window_set_propagate_natural_height(
+            GTK_SCROLLED_WINDOW(navigation), TRUE);
+        gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(navigation), switcher);
+        gtk_widget_set_margin_start(switcher, 8);
+        gtk_widget_set_margin_end(switcher, 8);
+        gtk_widget_set_margin_top(switcher, 4);
+        gtk_widget_set_margin_bottom(switcher, 4);
+        gtk_box_append(GTK_BOX(content), navigation);
+    }
 
     /*
      * Under the header and over the content, which is where libadwaita
@@ -5654,18 +5684,6 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sidebar_button), TRUE);
 
     /*
-     * Below 800px the sidebar becomes a drawer.  Without this the agent
-     * list eats a phone-sized window and the conversation has nowhere to
-     * go.
-     */
-    breakpoint = adw_breakpoint_new(
-        adw_breakpoint_condition_parse("max-width: 800px"));
-    adw_breakpoint_add_setters(breakpoint, G_OBJECT(self->split),
-                               "collapsed", TRUE, NULL);
-    adw_application_window_add_breakpoint(ADW_APPLICATION_WINDOW(self),
-                                          breakpoint);
-
-    /*
      * And below 1150px the alerts panel overlays rather than pushes.
      *
      * Derived from what is left for the transcript once the agent list
@@ -5699,6 +5717,19 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
 
     adw_breakpoint_add_setters(breakpoint, G_OBJECT(self->alerts_split),
                                "collapsed", TRUE, NULL);
+    adw_application_window_add_breakpoint(ADW_APPLICATION_WINDOW(self),
+                                          breakpoint);
+
+    /* Only the last matching breakpoint applies; they are not cumulative.
+     * Put the narrowest last and include both panes. The previous order
+     * left the conversation list expanded at 600px, requesting 762px
+     * of content and cutting off controls beyond the window edge. */
+    breakpoint = adw_breakpoint_new(
+        adw_breakpoint_condition_parse("max-width: 800px"));
+    adw_breakpoint_add_setters(breakpoint,
+                               G_OBJECT(self->split), "collapsed", TRUE,
+                               G_OBJECT(self->alerts_split), "collapsed", TRUE,
+                               NULL);
     adw_application_window_add_breakpoint(ADW_APPLICATION_WINDOW(self),
                                           breakpoint);
 

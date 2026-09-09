@@ -1424,3 +1424,23 @@ clawt_clip_line(const gchar *value, glong limit)
         return g_strdup_printf("%s...", cut);
     }
 }
+
+/**
+ * clawt_navigation_matches:
+ * @query: (nullable): space-separated search terms
+ * @text: (nullable): the destination name, identifier and context
+ *
+ * Match word prefixes without case sensitivity, including ASCII
+ * transliterations of accented names. Both clients use the same rule.
+ *
+ * Returns: %TRUE when every query term matches, or the query is empty
+ */
+gboolean
+clawt_navigation_matches(const gchar *query, const gchar *text)
+{
+	g_autofree gchar *trimmed = g_strdup(query != NULL ? query : "");
+
+	g_strstrip(trimmed);
+	return *trimmed == '\0' ||
+		(text != NULL && g_str_match_string(trimmed, text, TRUE));
+}

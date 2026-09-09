@@ -1426,4 +1426,8 @@ clawt_gtk_build_task_page(ClawtWindow *self);
 void
 clawt_gtk_refresh_tasks(ClawtWindow *self);
 
+
+/* Build the searchable destination picker and its window action. */
+void clawt_gtk_build_navigation(ClawtWindow *self, GtkWidget *parent);
+
 G_END_DECLS

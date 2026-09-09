@@ -610,4 +610,7 @@ gboolean clawt_log_level_permits(ClawtLogLevel  ceiling,
  */
 gchar *clawt_clip_line(const gchar *value, glong limit);
 
+/* Search behavior is documented with its implementation in clawt-util.c. */
+gboolean clawt_navigation_matches(const gchar *query, const gchar *text);
+
 G_END_DECLS

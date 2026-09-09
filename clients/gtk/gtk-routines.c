@@ -710,5 +710,8 @@ clawt_gtk_build_routine_page(ClawtWindow *self)
 
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), box);
 
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+
     return scroll;
 }

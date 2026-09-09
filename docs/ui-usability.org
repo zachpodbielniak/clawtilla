@@ -1,0 +1,62 @@
+#+title: GTK and web usability review
+#+description: Searchable navigation, readable section tabs, and verification of the desktop and browser clients.
+#+authors: clawtilla contributors
+#+categories: clients usability
+#+created: 2026-09-09T10:01:31-04:00
+#+updated: 2026-09-09T10:19:17-04:00
+#+version: 1
+
+* Navigation
+
+Both clients offer =Go to…= beside the conversation list. =Ctrl+K= opens it from the main window or browser conversation page. It finds agents by name, ID and team, declared group rooms by name, ID and team, and pages by their name or section. Search matches word prefixes without case sensitivity and accepts ASCII transliterations of accented names; for example, =elodie= finds =Élodie=. Multiple words can narrow a search, such as =research ali=. Clearing the query shows all destinations available in the current context.
+
+The GTK picker searches a snapshot locally as you type. =Enter= opens the first result, =Tab= reaches result rows for ordinary keyboard activation, and =Esc= closes the picker. A destination in a collapsed team is still searchable; opening it expands that team and updates the sidebar selection. Agent and room destinations open Chat. Pages operate on the selected agent, while Memory remains available without an agent selected. Drafts stay attached to the conversation they belong to.
+
+The web picker is a dedicated =/navigate= page. Its ordinary GET form works without JavaScript, and a search URL can be bookmarked. Submit a query with =Enter= or Search, then activate a result. =Ctrl+K= focuses and selects the query when already on the picker page. On conversation pages, the shortcut and the Go to link wait for the current draft to save before leaving; a failed save keeps the conversation open and reports the failure inline. The browser's standard modified-click behavior is preserved. The Back to conversations link returns to the selected agent's Chat, or to the selected group room; without either, it returns to the fleet.
+
+If the daemon is unavailable, both pickers explicitly report incomplete destinations and keep page navigation available. Reopen the GTK picker or submit another web search to retry. Neither picker changes daemon configuration or starts agents.
+
+* Review findings and changes
+
+** Section labels need their own space
+
+The rendered GTK header squeezed six sections beside the connection selector, conversation title, alert control and window controls. At an ordinary 1024-pixel window, several sections appeared as ellipses. Section navigation now has its own row beneath the header, preserving the title and connection controls. At narrow widths the section row scrolls horizontally rather than discarding labels; Go to also provides direct access to individual pages. Section badges and the existing page groups are preserved.
+
+** Conversation lists need a clear current destination
+
+The sidebar heading is now Conversations, reflecting that it contains both agents and group rooms. Rows have consistent inset spacing and rounded selection surfaces, with selection using the active native accent color. The sidebar does not scroll horizontally. Existing appearance settings, desktop fonts and custom palettes remain authoritative. Tooltips distinguish the fleet menu from Settings alone and identify the conversation drawer control. The web client's team labels use readable sentence-case styling, and keyboard focus is explicit across controls. Reduced-motion preferences disable web animations and transitions.
+
+** Empty and unavailable tasks are different states
+
+GTK previously displayed a blank task list when no work had been delegated. Both clients now explain how tasks appear. Connection failure has a distinct unavailable state. GTK refreshes Tasks when the page opens, so reopening it really retries. Its list fits its content and wraps long prompts within the viewport. Routine scrollers also constrain their content horizontally.
+
+* Build and checks
+
+No new application dependency is introduced. Required Fedora development packages are =gcc=, =make=, =pkgconf-pkg-config=, =glib2-devel=, =libsoup3-devel=, =json-glib-devel=, =cmark-devel=, =sqlite-devel=, =libetpan-devel=, =libpq-devel=, =libdex-devel=, =libyaml-devel=, =libxml2-devel=, =gtk4-devel=, =libadwaita-devel= and =libvirt-devel=. Introspection additionally uses =gobject-introspection-devel=. The existing vendored dependency build may need the packages documented by libreclaw. Use the existing image-provided dependencies; this change does not install packages or modify the host image.
+
+From the repository root:
+
+#+begin_src bash
+bash tools/clawt-ui-check.sh
+make parity docs-check
+#+end_src
+
+The first command performs sequential clean application and test builds, runs the hermetic test suite, restores application binaries, and rejects compiler warnings. It prints its retained log path. The shared matcher tests include mixed case, accented names, multiple terms, empty queries and negative controls. Web renderer tests verify actual destination links, escaping and exclusion of unmatched rows. The parity check declares searchable navigation as an affordance; it does not prove interactive behavior or layout.
+
+** GTK interaction test
+
+=make test-gtk-navigation= is a separate integration target. It links the real GTK client and tests actual filtering, activation, sidebar selection, expansion of a collapsed team, draft restoration, room transitions, page navigation and no-results behavior. It requires an isolated test daemon with agents =alice= and =bob= in team =engineering=, plus a declared room =standup= containing both. Set =CLAWT_UI_TEST_SOCKET= to that daemon's socket. Do not point it at a personal fleet: it changes the test client's local draft and view state.
+
+A fixture configuration should put its daemon state, socket, automation directory and agent workspaces under a temporary directory, set =defaults.autostart= to false, and disable network listeners with =clawtillad --no-bind=. Set =XDG_CONFIG_HOME=, =XDG_DATA_HOME= and =XDG_CACHE_HOME= to isolated test directories for every fixture process. On a headless machine with GTK Broadway support, start =gtk4-broadwayd= on a private display, then run:
+
+#+begin_src bash
+GDK_BACKEND=broadway BROADWAY_DISPLAY=:11 \
+    CLAWT_UI_TEST_SOCKET=/tmp/clawt-ui-review/daemon.sock \
+    make test-gtk-navigation
+#+end_src
+
+Visual inspection additionally needs an active Broadway browser connection or a normal display. Check section labels, the picker, Tasks, long labels, keyboard focus, and light and dark palettes at laptop and narrow window sizes. A hermetic test cannot prove a widget's visible allocation, and Broadway does not validate compositor-specific Wayland behavior.
+
+** Narrow pane breakpoints
+
+libadwaita applies only the last matching breakpoint; breakpoint setters are not cumulative. The previous registration order let the alerts breakpoint override the conversation breakpoint at 600 pixels. The conversation list stayed expanded and the window requested more content width than it had, cutting off controls. The narrowest breakpoint is now registered last and collapses both panes. The GTK integration test allocates the real window at 600, 1000 and 1280 pixels and verifies the two panes' states; visual inspection checks the resulting content as well.

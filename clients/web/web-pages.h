@@ -519,4 +519,8 @@ gboolean clawt_web_move_entry(ClawtWebApp  *app,
                               const gchar  *direction,
                               const gchar **message);
 
+
+/* Register the shared destination search entry point. */
+void clawt_web_register_navigation(HtmxRouter *router, ClawtWebApp *app);
+
 G_END_DECLS

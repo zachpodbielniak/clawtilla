@@ -49,10 +49,24 @@ refresh_tasks_once(ClawtWindow *self)
 
     reply = clawt_window_request(self, "task.list", NULL);
 
-    if (reply == NULL)
+    if (reply == NULL) {
+        GtkWidget *row = adw_action_row_new();
+
+        clawt_gtk_set_row_text(row, "Tasks are unavailable",
+                              "Check the daemon connection, then reopen Tasks to retry.");
+        gtk_list_box_append(self->task_list, row);
         return;
+    }
 
     tasks = json_object_get_array_member(clawt_payload_of(reply), "tasks");
+
+    if (json_array_get_length(tasks) == 0) {
+        GtkWidget *row = adw_action_row_new();
+
+        clawt_gtk_set_row_text(row, "No tasks yet",
+                              "Ask an agent to delegate work. Its progress and result will appear here.");
+        gtk_list_box_append(self->task_list, row);
+    }
 
     for (i = 0; i < json_array_get_length(tasks); i++) {
         JsonObject *task = json_array_get_object_element(tasks, i);
@@ -143,12 +157,17 @@ clawt_gtk_build_task_page(ClawtWindow *self)
     self->task_list = GTK_LIST_BOX(gtk_list_box_new());
     gtk_list_box_set_selection_mode(self->task_list, GTK_SELECTION_NONE);
     gtk_widget_add_css_class(GTK_WIDGET(self->task_list), "boxed-list");
+    gtk_widget_set_valign(GTK_WIDGET(self->task_list), GTK_ALIGN_START);
     gtk_widget_set_margin_top(GTK_WIDGET(self->task_list), 12);
     gtk_widget_set_margin_start(GTK_WIDGET(self->task_list), 12);
     gtk_widget_set_margin_end(GTK_WIDGET(self->task_list), 12);
 
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll),
                                   GTK_WIDGET(self->task_list));
+    /* Constrain long prompts to the viewport so they wrap instead of
+     * making their action buttons disappear beyond the right edge. */
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
 
     return scroll;
 }

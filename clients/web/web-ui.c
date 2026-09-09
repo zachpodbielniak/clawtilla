@@ -1142,6 +1142,32 @@ open_document(HtmxBuilder *builder, const gchar *title,
          * so on the first real page load.
          */
         "(function(){"
+        /* Save the composer before leaving: its ordinary one-second draft
+         * debounce has not fired when somebody types and immediately jumps. */
+        "var navigating=false;"
+        "async function navigation_go(url){if(navigating){return;}navigating=true;"
+        "var a=document.getElementById('composer-body');"
+        "try{if(a&&a.getAttribute('hx-post')){"
+        "var r=await fetch(a.getAttribute('hx-post'),{method:'POST',"
+        "body:new URLSearchParams({body:a.value})});"
+        "if(!r.ok){throw new Error('draft');}}window.location.href=url;"
+        "}catch(error){navigating=false;"
+        "var n=document.getElementById('navigation-error');"
+        "if(!n){n=document.createElement('p');n.id='navigation-error';"
+        "n.setAttribute('role','alert');a.parentNode.appendChild(n);}"
+        "n.textContent='Could not save your draft. Try Go to again.';}}"
+        "document.addEventListener('click',function(e){"
+        "var a=e.target.closest?e.target.closest('#navigation-link'):null;"
+        "if(a&&e.button===0&&!e.ctrlKey&&!e.metaKey&&!e.shiftKey&&!e.altKey){"
+        "e.preventDefault();navigation_go(a.href);}});"
+        /* Keyboard access survives fragment replacements through delegation. */
+        "document.addEventListener('keydown',function(e){"
+        "if(e.ctrlKey&&!e.altKey&&!e.shiftKey&&e.key.toLowerCase()==='k'){"
+        "var q=document.getElementById('navigation-query');"
+        "var a=document.getElementById('navigation-link');if(!q&&!a){return;}"
+        "e.preventDefault();"
+        "if(q){q.focus();q.select();return;}"
+        "if(a){navigation_go(a.href);}}});"
         "var seen=-1,mark=false,keep=0;"
         "function box(){return document.getElementById('transcript');}"
         "function pill(){return document.getElementById('jump-pill');}"
@@ -1555,6 +1581,8 @@ clawt_web_page(ClawtWebApp *app, const gchar *agent_id, ClawtPage view,
         HtmxInput *nav = htmx_input_new(HTMX_INPUT_CHECKBOX);
 
         htmx_element_set_id(HTMX_ELEMENT(nav), "nav-open");
+        htmx_element_set_attribute(HTMX_ELEMENT(nav), "aria-label", "Show conversations");
+        htmx_element_set_attribute(HTMX_ELEMENT(nav), "aria-controls", "sidebar");
         htmx_element_add_class(HTMX_ELEMENT(nav), "nav-toggle");
         clawt_web_add(frame, nav);
     }
@@ -1682,4 +1710,22 @@ clawt_web_redirect(HtmxRequest *request, const gchar *location)
     htmx_response_add_header(response, "Location", location);
 
     return response;
+}
+/* Typed nodes escape names and URLs independently: a destination's label
+ * must never become markup, even when its name came from a workspace. */
+guint
+clawt_web_navigation_result(HtmxElement *list, const gchar *query, const gchar *name,
+                  const gchar *detail, const gchar *id, const gchar *url)
+{
+	g_autofree gchar *search = g_strdup_printf("%s %s %s", name, detail, id);
+	g_autoptr(HtmxA) link = NULL;
+
+	if (!clawt_navigation_matches(query, search))
+		return 0;
+	link = htmx_a_new_with_href(url);
+	htmx_element_add_class(HTMX_ELEMENT(link), "navigation-result");
+	clawt_web_add(link, clawt_web_text(name, "navigation-name"));
+	clawt_web_add(link, clawt_web_text(detail, "muted"));
+	htmx_node_add_child(HTMX_NODE(list), HTMX_NODE(link));
+	return 1;
 }
