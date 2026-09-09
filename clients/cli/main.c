@@ -6807,6 +6807,29 @@ print_secret_once(JsonObject *reply)
             "this.\n");
 }
 
+/* A partial fan-out failure must stay visible even when its primary ran. */
+static gint
+print_trigger_results(JsonObject *root)
+{
+    JsonArray *results;
+    guint i;
+    gboolean failed = FALSE;
+
+    if (!json_object_has_member(root, "results")) {
+        g_print("Started as task %s.\n", member_or(root, "task", "?"));
+        return EXIT_SUCCESS;
+    }
+    results = json_object_get_array_member(root, "results");
+    for (i = 0; i < json_array_get_length(results); i++) {
+        JsonObject *row = json_array_get_object_element(results, i);
+        gboolean bad = json_object_has_member(row, "error");
+        failed |= bad;
+        g_print("%s: %s %s\n", member_or(row, "agent", "?"),
+                bad ? "failed:" : "task", member_or(row, bad ? "error" : "task", "?"));
+    }
+    return failed ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+
 static gint
 cmd_trigger(int argc, char *argv[])
 {
@@ -7071,12 +7094,10 @@ cmd_trigger(int argc, char *argv[])
 
         root = json_node_get_object(reply);
 
-        if (run) {
-            g_print("Started as task %s.\n", member_or(root, "task", "?"));
-            return EXIT_SUCCESS;
-        }
+        if (run)
+            return print_trigger_results(root);
 
-        g_print("%s\n", member_or(root, "prompt", ""));
+        g_print("%s\n", member_or(root, "report", member_or(root, "prompt", "")));
         g_print("\nThat is what the agent would be asked. "
                 "`--run` sends it.\n");
 
@@ -7122,7 +7143,7 @@ cmd_trigger(int argc, char *argv[])
         root = json_node_get_object(reply);
         g_print("%s\n", member_or(root, "report", ""));
         if (run)
-            g_print("Started as task %s.\n", member_or(root, "task", "?"));
+            return print_trigger_results(root);
         else
             g_print("\nPreview only. Repeat with the receipt number and --run to execute once.\n");
         return EXIT_SUCCESS;

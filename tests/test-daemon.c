@@ -9815,6 +9815,18 @@ test_rotating_changes_the_secret_and_the_address(void)
 /* Exercise the actual IPC handler with a durable authenticated receipt.
  * An inspection must not queue work, filtering must still apply, and a
  * repeated explicit request must never queue a second task. */
+static guint
+trigger_fired_count(ClawtDaemon *daemon)
+{
+    g_autoptr(GPtrArray) events = clawt_event_bus_replay(clawt_daemon_get_event_bus(daemon), 0, NULL);
+    guint i, count = 0;
+    for (i = 0; events != NULL && i < events->len; i++) {
+        if (g_strcmp0(clawt_event_get_kind(g_ptr_array_index(events, i)), "trigger.fired") == 0)
+            count++;
+    }
+    return count;
+}
+
 static void
 test_replay_is_explicit_filtered_and_durable(void)
 {
@@ -9828,8 +9840,10 @@ test_replay_is_explicit_filtered_and_durable(void)
     gint64 receipt;
 
     fixture_setup(&fixture,
-        "agents:\n  - id: builder\n"
+        "agents:\n  - id: builder\n  - id: reviewer\n"
         "triggers:\n  - id: ci\n    agent: builder\n    enabled: true\n"
+        "    agents: [reviewer, builder, missing, reviewer]\n"
+        "    isolate: true\n"
         "    events: [push]\n    repo: mine/project\n    branch: main\n"
         "    instructions: 'Review {{repo}} by {{actor}}'\n");
     g_assert_true(clawt_daemon_start(fixture.daemon, &error));
@@ -9860,6 +9874,13 @@ test_replay_is_explicit_filtered_and_durable(void)
     reply = request(&fixture, "trigger.replay", payload);
     g_assert_false(clawt_ipc_frame_is_error(reply));
     g_assert_true(json_object_has_member(payload_of(reply), "task"));
+    g_assert_cmpuint(json_array_get_length(json_object_get_array_member(payload_of(reply), "results")), ==, 3);
+    g_assert_cmpint(json_object_get_int_member(payload_of(reply), "failed"), ==, 1);
+    g_assert_cmpuint(clawt_trigger_store_count_unfinished(store, "ci"), ==, 2);
+    g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(
+        clawt_agent_manager_get(fixture.daemon->agents, "builder"))), ==, 1);
+    g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(
+        clawt_agent_manager_get(fixture.daemon->agents, "reviewer"))), ==, 1);
     g_clear_pointer(&reply, json_node_unref);
     reply = request(&fixture, "trigger.replay", payload);
     g_assert_true(clawt_ipc_frame_is_error(reply));
@@ -9878,7 +9899,55 @@ test_replay_is_explicit_filtered_and_durable(void)
     g_clear_pointer(&reply, json_node_unref);
     reply = request(&fixture, "trigger.replay", payload);
     g_assert_true(clawt_ipc_frame_is_error(reply));
+
+    /* All-failed outcomes remain inspectable, but cannot claim a fired event. */
+    {
+        ClawtTrigger *trigger = clawt_config_get_trigger(fixture.daemon->config, "ci");
+        guint fired = trigger_fired_count(fixture.daemon);
+        clawt_trigger_set_string(trigger, "agent", "absent");
+        clawt_trigger_set_string_list(trigger, "agents", NULL);
+        clawt_trigger_event_set_identity(event, "push", "all-fail");
+        clawt_trigger_event_set_ref(event, "refs/heads/main");
+        clawt_trigger_store_record(store, "ci", event, CLAWT_DELIVERY_CAPTURED, NULL, NULL);
+        g_clear_pointer(&reply, json_node_unref);
+        reply = request(&fixture, "trigger.replay", "{\"id\":\"ci\"}");
+        receipt = json_object_get_int_member(payload_of(reply), "receipt");
+        g_free(payload);
+        payload = g_strdup_printf("{\"id\":\"ci\",\"receipt\":%" G_GINT64_FORMAT ",\"run\":true}", receipt);
+        g_clear_pointer(&reply, json_node_unref);
+        reply = request(&fixture, "trigger.replay", payload);
+        g_assert_false(clawt_ipc_frame_is_error(reply));
+        g_assert_cmpint(json_object_get_int_member(payload_of(reply), "failed"), ==, 1);
+        g_assert_false(json_object_has_member(payload_of(reply), "task"));
+        g_assert_cmpuint(trigger_fired_count(fixture.daemon), ==, fired);
+    }
     g_clear_object(&store);
+    fixture_teardown(&fixture);
+}
+
+/* Synthetic execution uses the same reservations and cap as live/replayed
+ * events, including an unavailable recipient between two available agents. */
+static void
+test_synthetic_fanout(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    fixture_setup(&fixture,
+        "agents:\n  - id: builder\n  - id: reviewer\n"
+        "triggers:\n  - id: ci\n    agent: builder\n"
+        "    agents: [missing, reviewer, builder]\n    isolate: true\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+    reply = request(&fixture, "trigger.test", "{\"id\":\"ci\",\"run\":true}");
+    g_assert_false(clawt_ipc_frame_is_error(reply));
+    g_assert_cmpuint(json_array_get_length(json_object_get_array_member(payload_of(reply), "results")), ==, 3);
+    g_assert_cmpint(json_object_get_int_member(payload_of(reply), "failed"), ==, 1);
+    g_assert_cmpuint(clawt_trigger_store_count_unfinished(fixture.daemon->trigger_store, "ci"), ==, 2);
+    g_clear_pointer(&reply, json_node_unref);
+    reply = request(&fixture, "trigger.test", "{\"id\":\"ci\",\"run\":true}");
+    g_assert_true(clawt_ipc_frame_is_error(reply));
+    g_assert_cmpuint(clawt_trigger_store_count_unfinished(fixture.daemon->trigger_store, "ci"), ==, 2);
     fixture_teardown(&fixture);
 }
 
@@ -10654,6 +10723,7 @@ main(int argc, char *argv[])
     g_test_add_func("/daemon/trigger/test-previews",
                     test_testing_a_trigger_previews_rather_than_runs);
     g_test_add_func("/daemon/trigger/replay", test_replay_is_explicit_filtered_and_durable);
+    g_test_add_func("/daemon/trigger/synthetic-fanout", test_synthetic_fanout);
     g_test_add_func("/daemon/trigger/not-listening",
                     test_the_listing_says_when_nothing_is_listening);
 

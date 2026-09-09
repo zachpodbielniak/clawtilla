@@ -1109,10 +1109,41 @@ clawtilla trigger replay ci 42
 clawtilla trigger replay ci 42 --run
 #+end_src
 
-The first three commands do not enqueue work. The receipt column identifies a durable event snapshot; omitting the number previews the latest replayable receipt. The explanation applies the current event, repository and branch filters, expands the current instruction template, and reports disabled, unverified, missing-agent, duplicate-replay, rate-limit and in-flight-limit conditions. Both graphical clients offer /Explain latest delivery/. Their action is also a preview.
+The first three commands do not enqueue work. The receipt column identifies a durable event snapshot; omitting the number previews the latest replayable receipt. The explanation applies the current event, repository and branch filters, expands the current instruction template, and reports disabled, unverified, absent-primary-name, duplicate-replay, rate-limit and whole-batch in-flight-limit conditions. A named agent that is unavailable is reported as a per-recipient execution failure; it does not suppress available siblings. Both graphical clients offer /Explain latest delivery/. Their action is also a preview.
 
 Execution requires both an explicit receipt number and ~--run~. It requires the trigger to be enabled and verified, the current filters to match, and admission limits to allow new work. It uses the normal task and mailbox path. It does not contact the forge or reauthenticate a historical signature: only a previously authenticated normalized snapshot is eligible. A change to the configured provider does not reinterpret the historical snapshot.
 
 Each receipt can be explicitly replayed once. A durable ~replay:<receipt>~ reservation is written before task creation, so repeated commands and daemon restarts cannot duplicate that replay. A failed or interrupted replay retains its reservation; inspect tasks and the delivery detail before arranging further work manually. The original forge delivery remains deduplicated separately. This is at-most-once admission, not a promise of exactly-once external side effects.
 
 New receipts retain the normalized event fields and payload in the mode-0600 trigger database under the existing seven-day receipt retention. Authentication headers and resolved trigger credentials are never part of the snapshot. Payloads can contain sensitive sender data, just as the first-delivery capture can; protect this database and its backups accordingly. Receipts written by older builds, refused authentication attempts and replay-reservation rows have no snapshot and cannot be replayed. The schema migration preserves existing receipts and their deduplication keys.
+
+* One delivery, multiple recipients
+
+Keep ~agent~ as the primary recipient and optionally name additional agent IDs in ~agents~. The library removes duplicate and blank names, preserving the primary followed by the configured order. Each distinct recipient receives the same expanded prompt through its own durable task. CLI, GTK and web editing support the additional list; GTK retains its primary-agent selector and provides an additional-agents entry.
+
+#+begin_src yaml
+triggers:
+  - id: review
+    agent: builder
+    agents: [reviewer, security, builder]
+    instructions: 'Review {{repo}} at {{ref}}'
+#+end_src
+
+#+begin_src bash
+clawtilla trigger set review agents=reviewer,security,builder
+clawtilla trigger test review
+clawtilla trigger test review --run
+clawtilla trigger replay review
+clawtilla trigger replay review 42 --run
+clawtilla trigger deliveries review
+#+end_src
+
+That example runs builder, reviewer and security once each. ~agent~ is still required, so existing single-agent configurations and the primary task response remain compatible. When ~isolate~ is enabled the primary keeps its existing ~trigger:<id>~ room; additional recipients use ~trigger:<id>:<agent>~, preventing room routing from delivering all tasks to the primary agent.
+
+A batch must fit all four unfinished-run slots before any work starts: three recipients with two runs already in flight are refused in full. More than four distinct recipients are likewise refused before creating any task. The store atomically reserves all recipients in one SQLite transaction, including their capacity, before invoking a runner. Each successful recipient remains unfinished until its task settles, and a failed recipient releases its slot. A crash between reservation and outcome recording leaves uncertain reservations that suppress duplicate execution and continue to occupy slots; inspect deliveries and tasks before taking recovery action. The normal seven-day receipt retention still bounds deduplication.
+
+A missing or failing recipient does not prevent its siblings from receiving the event. Every recipient has a durable outcome row, including its agent name and a link to the primary delivery key. Retrying the same webhook delivery ID never requeues successful siblings after a partial failure. The HTTP response acknowledges the recorded batch; inspect ~trigger deliveries~ for per-agent failures. A new batch that cannot fit returns HTTP 429 without consuming its delivery ID, allowing a later retry when capacity becomes available. Senders without delivery IDs cannot provide retry deduplication.
+
+Synthetic ~test --run~, stored ~replay --run~ and authenticated webhook delivery all use the same dispatcher and capacity accounting. Synthetic execution remains an explicit operator action that can test a disabled trigger; replay preserves its enablement, verification and filter checks. Replaying a receipt intentionally creates a new batch once, even if the source event already ran; repeating that same explicit receipt does not create another batch. Preview names the recipients and queues nothing. CLI execution prints every recipient's task or error, exiting nonzero for partial failures. IPC exposes the complete ~results~ array and ~failed~ count; its legacy top-level ~task~ describes only the primary recipient.
+
+No additional Fedora build packages are needed. Hermetic tests cover stable deduplication, atomic reservations observed from another store connection, restart/retry suppression after partial failure, capacity refusal without consuming a receipt, per-recipient completion, synthetic execution and replay through daemon IPC, and isolated-room mailbox routing. The existing opt-in loopback webhook integration test also exercises real authenticated fan-out, partial failure, retry deduplication and whole-batch throttling.

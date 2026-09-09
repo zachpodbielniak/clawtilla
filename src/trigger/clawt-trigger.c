@@ -317,3 +317,73 @@ clawt_trigger_secret_path(const gchar *secrets_dir, const gchar *trigger_id)
 
     return g_build_filename(secrets_dir, file, NULL);
 }
+
+/* Stable deduplication prevents agent=builder plus agents=[builder] from
+ * quietly billing and queueing the same work twice. */
+gchar **
+clawt_trigger_get_recipients(ClawtTrigger *self)
+{
+	g_autoptr(GPtrArray) out = g_ptr_array_new_with_free_func(g_free);
+	g_autoptr(GHashTable) seen = g_hash_table_new(g_str_hash, g_str_equal);
+	g_auto(GStrv) additional = clawt_trigger_get_string_list(self, "agents");
+	g_autofree gchar *primary = g_strdup(clawt_trigger_get_string(self, "agent"));
+	guint i;
+
+	if (primary != NULL)
+		g_strstrip(primary);
+	if (primary != NULL && *primary != '\0') {
+		g_ptr_array_add(out, g_steal_pointer(&primary));
+		g_hash_table_add(seen, g_ptr_array_index(out, 0));
+		for (i = 0; additional != NULL && additional[i] != NULL; i++) {
+			gchar *name = g_strstrip(additional[i]);
+			if (*name != '\0' && !g_hash_table_contains(seen, name)) {
+				gchar *owned = g_strdup(name);
+				g_ptr_array_add(out, owned);
+				g_hash_table_add(seen, owned);
+			}
+		}
+	}
+	g_ptr_array_add(out, NULL);
+	return (gchar **)g_ptr_array_free(g_steal_pointer(&out), FALSE);
+}
+
+JsonNode *
+clawt_trigger_dispatch(ClawtTrigger *self, ClawtTriggerStore *store,
+	ClawtTriggerEvent *event, const gchar *key, ClawtRoutineRunFunc run,
+	gpointer user_data, GError **error)
+{
+	g_auto(GStrv) recipients = clawt_trigger_get_recipients(self);
+	g_auto(GStrv) keys = NULL;
+	g_autofree gchar *prompt = clawt_trigger_build_prompt(self, event);
+	g_autoptr(JsonBuilder) builder = json_builder_new();
+	const gchar *id = clawt_trigger_get_id(self);
+	guint i;
+
+	keys = clawt_trigger_store_claim_batch(store, id, event, key,
+		(const gchar * const *)recipients, CLAWT_TRIGGER_MAX_UNFINISHED, error);
+	if (keys == NULL)
+		return NULL;
+	json_builder_begin_array(builder);
+	for (i = 0; recipients[i] != NULL; i++) {
+		g_autoptr(GError) delivery_error = NULL;
+		g_autofree gchar *detail = NULL;
+		const gchar *task;
+
+		/* Continue after one recipient fails: the reservation suppresses
+		 * retries of successful siblings, and every outcome stays inspectable. */
+		task = run(id, recipients[i], prompt, user_data, &delivery_error);
+		detail = g_strdup_printf("agent %s: %s", recipients[i],
+			delivery_error != NULL ? delivery_error->message :
+			(task != NULL ? "queued" : "could not start"));
+		if (!clawt_trigger_store_finish_replay(store, id, keys[i], task, detail, error))
+			return NULL;
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "agent");
+		json_builder_add_string_value(builder, recipients[i]);
+		json_builder_set_member_name(builder, task != NULL ? "task" : "error");
+		json_builder_add_string_value(builder, task != NULL ? task : detail);
+		json_builder_end_object(builder);
+	}
+	json_builder_end_array(builder);
+	return json_builder_get_root(builder);
+}

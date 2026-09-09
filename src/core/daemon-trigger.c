@@ -53,7 +53,7 @@
  * retrying a delivery clawtilla already accepted must stay idempotent
  * even when the queue is full, so only new work consumes a slot.
  */
-#define MAX_UNFINISHED_RUNS (4)
+#define MAX_UNFINISHED_RUNS CLAWT_TRIGGER_MAX_UNFINISHED
 
 /* ── Running ─────────────────────────────────────────────────────── */
 
@@ -64,6 +64,42 @@ trigger_is_isolated(ClawtDaemon *self, const gchar *trigger_id)
                                                      trigger_id);
 
     return trigger != NULL && clawt_trigger_get_boolean(trigger, "isolate");
+}
+
+/* All clients get every result, while the primary task keeps the original
+ * single-agent response member for existing consumers. */
+static void
+append_results(JsonBuilder *builder, JsonNode *results)
+{
+    JsonArray *array = json_node_get_array(results);
+    guint i, failed = 0;
+
+    for (i = 0; i < json_array_get_length(array); i++) {
+        JsonObject *row = json_array_get_object_element(array, i);
+        if (json_object_has_member(row, "error"))
+            failed++;
+        if (i == 0 && json_object_has_member(row, "task")) {
+            json_builder_set_member_name(builder, "task");
+            json_builder_add_string_value(builder, json_object_get_string_member(row, "task"));
+        }
+    }
+    json_builder_set_member_name(builder, "failed");
+    json_builder_add_int_value(builder, failed);
+    json_builder_set_member_name(builder, "results");
+    json_builder_add_value(builder, json_node_copy(results));
+}
+
+/* A recorded batch with no queued tasks is not a fired trigger. */
+static gboolean
+results_started(JsonNode *results)
+{
+    JsonArray *array = json_node_get_array(results);
+    guint i;
+    for (i = 0; i < json_array_get_length(array); i++) {
+        if (json_object_has_member(json_array_get_object_element(array, i), "task"))
+            return TRUE;
+    }
+    return FALSE;
 }
 
 /*
@@ -97,8 +133,12 @@ run_trigger(const gchar *trigger_id, const gchar *agent_id,
      * session key is channel, room and sender together.
      */
     if (trigger_is_isolated(self, trigger_id)) {
+        ClawtTrigger *trigger = clawt_config_get_trigger(self->config, trigger_id);
+        g_autofree gchar *owner = g_strcmp0(agent_id,
+            clawt_trigger_get_string(trigger, "agent")) == 0
+            ? g_strdup(trigger_id) : g_strdup_printf("%s:%s", trigger_id, agent_id);
         ClawtRoom *room = clawt_room_manager_get_trigger(self->rooms,
-                                                         trigger_id,
+                                                         owner,
                                                          agent_id);
 
         if (room != NULL) {
@@ -259,8 +299,7 @@ on_delivery(const gchar  *endpoint,
     g_autoptr(ClawtTriggerEvent) event = NULL;
     g_autoptr(GError) error = NULL;
     g_autofree gchar *reason = NULL;
-    const gchar *agent;
-    const gchar *task_id;
+    g_autoptr(JsonNode) results = NULL;
 
     if (self->trigger_store == NULL)
         return finish((Answer){ 503,
@@ -448,47 +487,14 @@ on_delivery(const gchar  *endpoint,
         return finish((Answer){ 200, "captured\n" }, out_status);
     }
 
-    if (clawt_trigger_store_count_unfinished(self->trigger_store, trigger_id)
-        >= MAX_UNFINISHED_RUNS) {
-        clawt_trigger_store_record(self->trigger_store, trigger_id, event,
-                                   CLAWT_DELIVERY_FAILED,
-                                   "this trigger already has as many runs "
-                                   "in flight as it is allowed", NULL);
+    results = clawt_trigger_dispatch(trigger, self->trigger_store, event,
+        clawt_trigger_event_get_delivery_id(event), run_trigger, self, &error);
+    if (results == NULL)
+        return finish((Answer){ error != NULL && error->code == CLAWT_ERROR_LOOP_LIMIT ? 429 : 503,
+                                "batch could not be reserved or recorded; inspect deliveries\n" }, out_status);
 
-        return finish((Answer){ 429, "too much already running\n" },
-                      out_status);
-    }
-
-    agent = clawt_trigger_get_string(trigger, "agent");
-
-    if (agent == NULL || *agent == '\0') {
-        clawt_trigger_store_record(self->trigger_store, trigger_id, event,
-                                   CLAWT_DELIVERY_FAILED,
-                                   "no agent is set", NULL);
-
-        return finish((Answer){ 200, "misconfigured\n" },
-                      out_status);
-    }
-
-    {
-        g_autofree gchar *prompt = clawt_trigger_build_prompt(trigger, event);
-
-        task_id = run_trigger(trigger_id, agent, prompt, self, &error);
-    }
-
-    if (task_id == NULL) {
-        clawt_trigger_store_record(self->trigger_store, trigger_id, event,
-                                   CLAWT_DELIVERY_FAILED,
-                                   error != NULL ? error->message
-                                                 : "it did not start", NULL);
-
-        return finish((Answer){ 200, "could not start\n" },
-                      out_status);
-    }
-
-    clawt_trigger_store_record(self->trigger_store, trigger_id, event,
-                               CLAWT_DELIVERY_RAN, NULL, task_id);
-
+    if (!results_started(results))
+        return finish((Answer){ 200, "no recipients started; inspect deliveries\n" }, out_status);
     clawt_event_bus_emit(self->bus, "trigger.fired", trigger_id);
 
     return finish((Answer){ 200, "accepted\n" }, out_status);
@@ -1090,8 +1096,9 @@ clawt_daemon_handle_trigger(
         g_autofree gchar *key = NULL;
         g_autofree gchar *prompt = NULL;
         g_autofree gchar *report = NULL;
-        const gchar *agent;
-        const gchar *task_id = NULL;
+        g_autofree gchar *recipient_names = NULL;
+        g_auto(GStrv) recipients = NULL;
+        g_autoptr(JsonNode) results = NULL;
         gboolean matches;
         gboolean duplicate;
 
@@ -1112,17 +1119,18 @@ clawt_daemon_handle_trigger(
             reason = g_strdup("the event is not in this trigger's events list");
         else
             matches = clawt_trigger_accepts_delivery(trigger, event, &reason);
-        agent = clawt_trigger_get_string(trigger, "agent");
+        recipients = clawt_trigger_get_recipients(trigger);
         if (reason == NULL && !clawt_trigger_get_boolean(trigger, "enabled"))
             reason = g_strdup("trigger is disabled");
         if (reason == NULL && clawt_trigger_store_is_pending_verification(self->trigger_store, id))
             reason = g_strdup("trigger is waiting for verification");
-        if (reason == NULL && (agent == NULL || clawt_agent_manager_get(self->agents, agent) == NULL))
-            reason = g_strdup("trigger has no available agent");
+        if (reason == NULL && recipients[0] == NULL)
+            reason = g_strdup("trigger has no primary agent");
         if (reason == NULL && duplicate)
             reason = g_strdup("this receipt already has a replay reservation; inspect deliveries");
-        if (reason == NULL && clawt_trigger_store_count_unfinished(self->trigger_store, id) >= MAX_UNFINISHED_RUNS)
-            reason = g_strdup("trigger has reached its in-flight limit");
+        if (reason == NULL && clawt_trigger_store_count_unfinished(self->trigger_store, id) +
+                g_strv_length(recipients) > MAX_UNFINISHED_RUNS)
+            reason = g_strdup("recipient batch does not fit the four in-flight slots");
         if (reason == NULL && clawt_trigger_store_recent_count(self->trigger_store, id,
                 RATE_WINDOW_SECONDS) >= RATE_MAX_DELIVERIES)
             reason = g_strdup("trigger has reached its delivery rate limit");
@@ -1130,23 +1138,18 @@ clawt_daemon_handle_trigger(
         if (execute) {
             if (reason != NULL)
                 return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED, reason);
-            if (!clawt_trigger_store_claim_replay(self->trigger_store, id, key, &error))
+            results = clawt_trigger_dispatch(trigger, self->trigger_store, event,
+                key, run_trigger, self, &error);
+            if (results == NULL)
                 return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED, error->message);
-            task_id = run_trigger(id, agent, prompt, self, &error);
-            {
-                g_autoptr(GError) saved = NULL;
-                if (!clawt_trigger_store_finish_replay(self->trigger_store, id, key,
-                        task_id, error != NULL ? error->message : "explicit operator replay", &saved))
-                    return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
-                        "replay reserved but result could not be saved; inspect tasks before taking further action");
-            }
-            if (task_id == NULL)
-                return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
-                    error != NULL ? error->message : "replay did not start");
-            clawt_event_bus_emit(self->bus, "trigger.fired", id);
+            if (results_started(results))
+                clawt_event_bus_emit(self->bus, "trigger.fired", id);
         }
-        report = g_strdup_printf("Receipt %" G_GINT64_FORMAT ": %s\n\n%s",
-            receipt, reason != NULL ? reason : "matches current filters; ready for explicit replay", prompt);
+        recipient_names = g_strjoinv(", ", recipients);
+        report = g_strdup_printf("Receipt %" G_GINT64_FORMAT ": %s\nRecipients: %s\n\n%s",
+            receipt, reason != NULL ? reason :
+                (execute ? "batch execution recorded; inspect recipient results" : "matches current filters; ready for explicit replay"),
+            recipient_names, prompt);
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "receipt");
         json_builder_add_int_value(builder, receipt);
@@ -1164,10 +1167,16 @@ clawt_daemon_handle_trigger(
             json_builder_set_member_name(builder, "reason");
             json_builder_add_string_value(builder, reason);
         }
-        if (task_id != NULL) {
-            json_builder_set_member_name(builder, "task");
-            json_builder_add_string_value(builder, task_id);
+        if (results != NULL)
+            append_results(builder, results);
+        json_builder_set_member_name(builder, "recipients");
+        json_builder_begin_array(builder);
+        {
+            guint recipient;
+            for (recipient = 0; recipients[recipient] != NULL; recipient++)
+                json_builder_add_string_value(builder, recipients[recipient]);
         }
+        json_builder_end_array(builder);
         json_builder_end_object(builder);
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
@@ -1177,16 +1186,14 @@ clawt_daemon_handle_trigger(
         ClawtTrigger *trigger = (id != NULL)
             ? clawt_config_get_trigger(self->config, id) : NULL;
         g_autoptr(ClawtTriggerEvent) event = NULL;
-        const gchar *agent;
-        const gchar *task_id;
+        g_auto(GStrv) recipients = NULL;
 
         if (trigger == NULL)
             return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
                                        "there is no trigger called that");
 
-        agent = clawt_trigger_get_string(trigger, "agent");
-
-        if (agent == NULL || *agent == '\0')
+        recipients = clawt_trigger_get_recipients(trigger);
+        if (recipients[0] == NULL)
             return clawt_ipc_error_new(request, CLAWT_ERROR_CONFIG_INVALID,
                                        "that trigger has no agent");
 
@@ -1230,24 +1237,35 @@ clawt_daemon_handle_trigger(
         json_builder_add_string_value(builder, id);
 
         if (clawt_ipc_payload_boolean(payload, "run", FALSE)) {
-            g_autofree gchar *prompt =
-                clawt_trigger_build_prompt(trigger, event);
-
-            task_id = run_trigger(id, agent, prompt, self, &error);
-
-            if (task_id == NULL)
+            g_autoptr(JsonNode) results = NULL;
+            if (self->trigger_store == NULL)
+                return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED, "trigger store unavailable");
+            results = clawt_trigger_dispatch(trigger, self->trigger_store, event,
+                NULL, run_trigger, self, &error);
+            if (results == NULL)
                 return clawt_ipc_error_new(request, error->code,
                                            error->message);
-
-            json_builder_set_member_name(builder, "task");
-            json_builder_add_string_value(builder, task_id);
+            append_results(builder, results);
         } else {
             g_autofree gchar *prompt =
                 clawt_trigger_build_prompt(trigger, event);
+            g_autofree gchar *names = g_strjoinv(", ", recipients);
+            g_autofree gchar *report = g_strdup_printf("Recipients: %s\n\n%s", names, prompt);
 
             json_builder_set_member_name(builder, "prompt");
             json_builder_add_string_value(builder, prompt);
+            json_builder_set_member_name(builder, "report");
+            json_builder_add_string_value(builder, report);
         }
+
+        json_builder_set_member_name(builder, "recipients");
+        json_builder_begin_array(builder);
+        {
+            guint recipient;
+            for (recipient = 0; recipients[recipient] != NULL; recipient++)
+                json_builder_add_string_value(builder, recipients[recipient]);
+        }
+        json_builder_end_array(builder);
 
         json_builder_end_object(builder);
 

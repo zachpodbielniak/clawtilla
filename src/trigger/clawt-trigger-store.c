@@ -181,6 +181,14 @@ apply_schema(sqlite3 *db, GError **error)
         return FALSE;
     }
 
+    if ((!has_column(db, "deliveries", "agent_id") &&
+         sqlite3_exec(db, "ALTER TABLE deliveries ADD COLUMN agent_id TEXT", NULL, NULL, NULL) != SQLITE_OK) ||
+        (!has_column(db, "deliveries", "parent_key") &&
+         sqlite3_exec(db, "ALTER TABLE deliveries ADD COLUMN parent_key TEXT", NULL, NULL, NULL) != SQLITE_OK)) {
+        set_sqlite_error(error, db, "adding fan-out recipients");
+        return FALSE;
+    }
+
     return TRUE;
 }
 
@@ -809,10 +817,10 @@ clawt_trigger_store_list_deliveries(ClawtTriggerStore *self,
 
     sql = (trigger_id != NULL)
         ? "SELECT trigger_id, delivery_id, event_name, repo, branch, actor,"
-          " outcome, detail, task_id, created_at, id FROM deliveries"
+          " outcome, detail, task_id, created_at, id, agent_id, parent_key FROM deliveries"
           " WHERE trigger_id = ? ORDER BY created_at DESC, id DESC LIMIT ?"
         : "SELECT trigger_id, delivery_id, event_name, repo, branch, actor,"
-          " outcome, detail, task_id, created_at, id FROM deliveries"
+          " outcome, detail, task_id, created_at, id, agent_id, parent_key FROM deliveries"
           " ORDER BY created_at DESC, id DESC LIMIT ?";
 
     if (sqlite3_prepare_v2(self->db, sql, -1, &stmt, NULL) != SQLITE_OK)
@@ -841,6 +849,8 @@ clawt_trigger_store_list_deliveries(ClawtTriggerStore *self,
         put(row, "detail", (const gchar *)sqlite3_column_text(stmt, 7));
         put(row, "task", (const gchar *)sqlite3_column_text(stmt, 8));
         put(row, "receipt", (const gchar *)sqlite3_column_text(stmt, 10));
+        put(row, "agent", (const gchar *)sqlite3_column_text(stmt, 11));
+        put(row, "parent", (const gchar *)sqlite3_column_text(stmt, 12));
 
         {
             g_autofree gchar *at =
@@ -918,7 +928,7 @@ clawt_trigger_store_recent_count(ClawtTriggerStore *self,
 
     if (sqlite3_prepare_v2(self->db,
                            "SELECT COUNT(*) FROM deliveries"
-                           " WHERE trigger_id = ? AND created_at >= ?",
+                           " WHERE trigger_id = ? AND created_at >= ? AND parent_key IS NULL",
                            -1, &stmt, NULL) != SQLITE_OK)
         return 0;
 
@@ -953,4 +963,95 @@ clawt_trigger_store_prune(ClawtTriggerStore *self, gint64 retain_seconds)
                        (g_get_real_time() / G_USEC_PER_SEC) - retain_seconds);
     sqlite3_step(stmt);
     sqlite3_finalize(stmt);
+}
+
+/* BEGIN IMMEDIATE serializes both capacity checks and reservations with other
+ * store connections. No task is created until every row commits successfully. */
+gchar **
+clawt_trigger_store_claim_batch(ClawtTriggerStore *self,
+	const gchar *trigger_id, ClawtTriggerEvent *event, const gchar *key,
+	const gchar * const *recipients, guint limit, GError **error)
+{
+	g_auto(GStrv) keys = NULL;
+	g_autofree gchar *nonce = g_uuid_string_random();
+	g_autofree gchar *snapshot = NULL;
+	g_autoptr(GHashTable) seen = g_hash_table_new(g_str_hash, g_str_equal);
+	sqlite3_stmt *stmt = NULL;
+	guint count = 0, i;
+	gboolean ok = FALSE;
+
+	while (recipients != NULL && recipients[count] != NULL) {
+		if (*recipients[count] == '\0' || g_hash_table_contains(seen, recipients[count])) {
+			g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+				"recipient ids must be nonempty and unique");
+			return NULL;
+		}
+		g_hash_table_add(seen, (gpointer)recipients[count]);
+		count++;
+	}
+	if (count == 0 || count > limit) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT,
+			"recipient batch must contain 1 to %u unique agents", limit);
+		return NULL;
+	}
+	keys = g_new0(gchar *, count + 1);
+	keys[0] = key != NULL && *key != '\0' ? g_strdup(key) : g_strdup_printf("batch:%s", nonce);
+	for (i = 1; i < count; i++)
+		keys[i] = g_strdup_printf("recipient:%s:%u", nonce, i);
+	if (sqlite3_exec(self->db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
+		set_sqlite_error(error, self->db, "beginning fan-out reservation");
+		return NULL;
+	}
+	if (sqlite3_prepare_v2(self->db,
+		"SELECT COUNT(*) FROM deliveries WHERE trigger_id = ? AND finished = 0",
+		-1, &stmt, NULL) != SQLITE_OK)
+		goto done;
+	sqlite3_bind_text(stmt, 1, trigger_id, -1, SQLITE_TRANSIENT);
+	if (sqlite3_step(stmt) != SQLITE_ROW)
+		goto done;
+	if ((guint64)sqlite3_column_int64(stmt, 0) + count > limit) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT,
+			"recipient batch does not fit the %u unfinished-run slots", limit);
+		goto done;
+	}
+	sqlite3_finalize(stmt);
+	stmt = NULL;
+	snapshot = event_snapshot(event);
+	if (sqlite3_prepare_v2(self->db,
+		"INSERT INTO deliveries(trigger_id, delivery_id, agent_id, parent_key,"
+		" event_json, event_name, repo, branch, actor, outcome, detail, finished, created_at)"
+		" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved; outcome not yet recorded', 0, ?)",
+		-1, &stmt, NULL) != SQLITE_OK)
+		goto done;
+	for (i = 0; i < count; i++) {
+		sqlite3_reset(stmt);
+		sqlite3_clear_bindings(stmt);
+		sqlite3_bind_text(stmt, 1, trigger_id, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 2, keys[i], -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 3, recipients[i], -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 4, i > 0 ? keys[0] : NULL, -1, SQLITE_TRANSIENT);
+        /* A child or replay result must not masquerade as a new source
+         * event. ID-less webhook and synthetic source events remain inspectable. */
+        sqlite3_bind_text(stmt, 5, i == 0 && (key == NULL ||
+            g_strcmp0(key, clawt_trigger_event_get_delivery_id(event)) == 0) ? snapshot : NULL,
+			-1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 6, clawt_trigger_event_get_name(event), -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 7, clawt_trigger_event_get_repo(event), -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 8, clawt_trigger_event_get_branch(event), -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 9, clawt_trigger_event_get_actor(event), -1, SQLITE_TRANSIENT);
+		sqlite3_bind_int(stmt, 10, CLAWT_DELIVERY_FAILED);
+		sqlite3_bind_int64(stmt, 11, g_get_real_time() / G_USEC_PER_SEC);
+		if (sqlite3_step(stmt) != SQLITE_DONE)
+			goto done;
+	}
+	ok = sqlite3_exec(self->db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK;
+ done:
+	if (!ok) {
+		if (error == NULL || *error == NULL)
+			set_sqlite_error(error, self->db, "reserving fan-out (duplicate key or store unavailable)");
+		sqlite3_exec(self->db, "ROLLBACK", NULL, NULL, NULL);
+	}
+	if (stmt != NULL)
+		sqlite3_finalize(stmt);
+	return ok ? g_steal_pointer(&keys) : NULL;
 }

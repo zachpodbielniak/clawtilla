@@ -8,12 +8,13 @@
 
 * The client protocol
 
+What ~clawtilla~, ~clawtilla-gtk~, ~clawtilla-web~ and any other client speak to the daemon.
+
 ** Stored trigger replay
 
 ~trigger.replay~ accepts ~id~, optional positive integer ~receipt~ (zero or absent previews the latest snapshot), and boolean ~run~ (default false). Execution requires a positive explicit receipt. It returns integer ~receipt~, booleans ~matches~, ~eligible~, ~duplicate~, strings ~prompt~ and ~report~, optional ~reason~, and ~task~ only after an explicit successful execution. ~trigger.deliveries~ now includes each row's ~receipt~ as a decimal string. The request uses current filters and normal task delivery; see [[file:triggers.org][triggers.org]] for durable reservation semantics and retention.
 
-What ~clawtilla~, ~clawtilla-gtk~, ~clawtilla-web~ and any other client
-speak to the daemon.
+With trigger fan-out, ~trigger.replay~ and ~trigger.test~ include a ~recipients~ array in stable execution order. Explicit execution adds a ~results~ array of objects, each with ~agent~ and either ~task~ or ~error~, plus integer ~failed~. The legacy top-level ~task~ remains the primary recipient's successful task only. A successful IPC envelope means the batch outcomes were recorded; callers must inspect ~failed~ and all ~results~ to detect partial failure. Reservations or persistence failures return an IPC error, which can represent an uncertain result requiring inspection before further action. Delivery rows additionally expose ~agent~ and ~parent~ strings, with child rows pointing at the primary delivery key. Only source-event rows carry replay snapshots; child and replay-result rows cannot be replayed as fresh source events. Rate counting treats a whole batch as one delivery, while unfinished-run accounting counts each reserved or running recipient.
 
 ** Framing
 

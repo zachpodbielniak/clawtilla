@@ -1677,7 +1677,13 @@ static const ClawtSchemaEntry schema[] = {
 
 { "triggers.agent", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED,
   NULL, NULL,
-  "Which agent runs when it fires.", "0.2.0" },
+  "Primary agent to run when it fires.", "0.2.0" },
+
+{ "triggers.agents", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Additional recipients for the same delivery. The primary agent runs first;\n"
+  "duplicates are removed in order. Every recipient has a separate durable\n"
+  "task and outcome. A batch must fit the four unfinished-run slots in full.", "0.2.0" },
 
 { "triggers.room", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Where the run reports, if not the agent's own conversation.",

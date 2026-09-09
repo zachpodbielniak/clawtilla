@@ -1515,9 +1515,14 @@ triggers:
     # What this trigger is for, in a line.
     description: null
 
-    # Which agent runs when it fires.
+    # Primary agent to run when it fires.
     # Required.
     agent: null
+
+    # Additional recipients for the same delivery. The primary agent runs first;
+    # duplicates are removed in order. Every recipient has a separate durable
+    # task and outcome. A batch must fit the four unfinished-run slots in full.
+    agents: []
 
     # Where the run reports, if not the agent's own conversation.
     room: null

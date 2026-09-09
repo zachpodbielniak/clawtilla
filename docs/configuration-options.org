@@ -2366,7 +2366,17 @@ What this trigger is for, in a line.
 - Required :: yes
 - Since :: 0.2.0
 
-Which agent runs when it fires.
+Primary agent to run when it fires.
+
+*** =triggers.agents=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.2.0
+
+Additional recipients for the same delivery. The primary agent runs first;
+duplicates are removed in order. Every recipient has a separate durable
+task and outcome. A batch must fit the four unfinished-run slots in full.
 
 *** =triggers.room=
 

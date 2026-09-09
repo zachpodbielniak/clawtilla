@@ -30,6 +30,7 @@ typedef struct {
     GtkWidget   *description_row;
     GtkTextView *instructions;
     GtkWidget   *agent_row;
+    GtkWidget   *agents_row;
     GStrv        agent_ids;
     GtkWidget   *room_row;
     GtkWidget   *provider_row;
@@ -210,6 +211,9 @@ on_trigger_saved(GtkButton *button, gpointer user_data)
     json_builder_set_member_name(builder, "events");
     json_builder_add_string_value(
         builder, gtk_editable_get_text(GTK_EDITABLE(dialog->events_row)));
+    json_builder_set_member_name(builder, "agents");
+    json_builder_add_string_value(
+        builder, gtk_editable_get_text(GTK_EDITABLE(dialog->agents_row)));
     json_builder_set_member_name(builder, "repo");
     json_builder_add_string_value(
         builder, gtk_editable_get_text(GTK_EDITABLE(dialog->repo_row)));
@@ -383,8 +387,8 @@ on_trigger_test(GtkButton *button, gpointer user_data)
     if (reply == NULL)
         return;
 
-    prompt = clawt_json_string(clawt_payload_of(reply),
-        g_object_get_data(G_OBJECT(button), "replay") != NULL ? "report" : "prompt", "");
+    prompt = clawt_json_string(clawt_payload_of(reply), "report",
+        clawt_json_string(clawt_payload_of(reply), "prompt", ""));
 
     window = adw_dialog_new();
     adw_dialog_set_title(window, "What the agent would be asked");
@@ -610,6 +614,23 @@ open_trigger_editor(ClawtWindow *self, JsonObject *existing)
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(where),
                               dialog->agent_row);
 
+    {
+        g_autoptr(GString) joined = g_string_new(NULL);
+        if (existing != NULL && json_object_has_member(existing, "agents") &&
+            JSON_NODE_HOLDS_ARRAY(json_object_get_member(existing, "agents"))) {
+            JsonArray *array = json_object_get_array_member(existing, "agents");
+            guint recipient;
+            for (recipient = 0; recipient < json_array_get_length(array); recipient++) {
+                if (joined->len > 0)
+                    g_string_append(joined, ", ");
+                g_string_append(joined, json_array_get_string_element(array, recipient));
+            }
+        }
+        dialog->agents_row = clawt_gtk_add_entry(where, "Additional agents", joined->str);
+        clawt_gtk_set_row_hint(dialog->agents_row,
+            "Comma separated agent IDs. The primary runs first; duplicates are removed. Four unfinished runs maximum.");
+    }
+
     dialog->room_row = clawt_gtk_add_entry(
         where, "Room",
         existing != NULL ? clawt_json_string(existing, "room", "") : "");
@@ -679,6 +700,7 @@ open_trigger_editor(ClawtWindow *self, JsonObject *existing)
     gtk_box_append(GTK_BOX(buttons), save);
 
     if (!dialog->creating) {
+        GtkWidget *inspection = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
         GtkWidget *preview = gtk_button_new_with_label("Preview prompt");
         GtkWidget *replay = gtk_button_new_with_label("Explain latest delivery");
         GtkWidget *capture = gtk_button_new_with_label("First delivery");
@@ -687,16 +709,21 @@ open_trigger_editor(ClawtWindow *self, JsonObject *existing)
 
         g_object_set_data(G_OBJECT(replay), "replay", GINT_TO_POINTER(1));
         g_signal_connect(replay, "clicked", G_CALLBACK(on_trigger_test), dialog);
-        gtk_box_append(GTK_BOX(buttons), replay);
+        gtk_widget_set_hexpand(replay, TRUE);
+        gtk_box_append(GTK_BOX(inspection), replay);
         gtk_widget_set_hexpand(preview, TRUE);
         g_signal_connect(preview, "clicked", G_CALLBACK(on_trigger_test),
                          dialog);
-        gtk_box_append(GTK_BOX(buttons), preview);
+        gtk_box_append(GTK_BOX(inspection), preview);
 
         gtk_widget_set_hexpand(capture, TRUE);
         g_signal_connect(capture, "clicked", G_CALLBACK(on_trigger_capture),
                          dialog);
-        gtk_box_append(GTK_BOX(buttons), capture);
+        gtk_box_append(GTK_BOX(inspection), capture);
+        /* Inspection actions get their own row so six labels cannot
+         * force the 620-pixel editor wider than a small laptop window. */
+        gtk_widget_set_margin_top(inspection, 12);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(actions), inspection);
 
         gtk_widget_set_hexpand(rotate, TRUE);
         g_signal_connect(rotate, "clicked", G_CALLBACK(on_trigger_rotated),

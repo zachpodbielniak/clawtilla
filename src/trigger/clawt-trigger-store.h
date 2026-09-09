@@ -41,6 +41,24 @@
 G_BEGIN_DECLS
 
 /**
+ * clawt_trigger_store_claim_batch:
+ * @self: durable store
+ * @trigger_id: trigger id
+ * @event: normalized snapshot for the parent receipt
+ * @key: (nullable): parent deduplication key, or NULL for a fresh batch
+ * @recipients: (array zero-terminated=1): unique recipient ids
+ * @limit: maximum total unfinished recipient runs
+ * @error: (out) (optional): error location
+ *
+ * Atomically reserves all recipients and capacity before side effects. The
+ * primary row retains @key; child rows link to it and each carry an agent id.
+ * Returns: (transfer full) (array zero-terminated=1) (nullable): reserved keys
+ */
+gchar **clawt_trigger_store_claim_batch(ClawtTriggerStore *self,
+    const gchar *trigger_id, ClawtTriggerEvent *event, const gchar *key,
+    const gchar * const *recipients, guint limit, GError **error);
+
+/**
  * clawt_trigger_store_read_event:
  * @self: the store
  * @trigger_id: owning trigger

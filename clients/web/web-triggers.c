@@ -613,8 +613,8 @@ on_trigger_test(HtmxRequest *request, GHashTable *params, gpointer user_data)
     }
 
     return triggers_page(app, request,
-                         clawt_web_member(clawt_web_root(reply), "prompt",
-                                          ""),
+                         clawt_web_member(clawt_web_root(reply), "report",
+                             clawt_web_member(clawt_web_root(reply), "prompt", "")),
                          FALSE);
 }
 

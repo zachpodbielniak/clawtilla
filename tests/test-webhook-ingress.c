@@ -249,7 +249,7 @@ end_to_end_setup(EndToEnd *fixture, const gchar *trigger_yaml)
         "  webhook_port: %u\n"
         "secrets:\n  dir: \"%s/secrets\"\n"
         "defaults:\n  workspace_root: \"%s/agents\"\n"
-        "agents:\n  - id: builder\n"
+        "agents:\n  - id: builder\n  - id: reviewer\n"
         "%s",
         fixture->dir, fixture->dir, fixture->dir, (guint)fixture->port,
         fixture->dir, fixture->dir,
@@ -563,6 +563,42 @@ test_the_delivery_path_end_to_end(void)
             g_assert_cmpuint(post(&fixture, path, headers, body), ==,
                              SOUP_STATUS_NOT_FOUND);
         }
+    }
+
+    /* An enabled batch queues each unique recipient once. A missing agent
+     * records its own failure without retrying either successful sibling. */
+    {
+        g_autoptr(JsonNode) frame = clawt_ipc_request_new("trigger.update", "fanout");
+        g_autoptr(JsonParser) parser = json_parser_new();
+        g_autoptr(JsonNode) reply = NULL;
+        g_autofree gchar *path = g_strdup_printf("/hooks/%s", endpoint);
+        g_autofree gchar *store_path = g_build_filename(fixture.dir, "state", "triggers.db", NULL);
+        g_autoptr(ClawtTriggerStore) store = NULL;
+        g_autoptr(GHashTable) headers = signed_headers(secret, body, "fanout-1");
+        ClawtAgentManager *agents;
+
+        g_assert_true(json_parser_load_from_data(parser,
+            "{\"id\":\"ci\",\"enabled\":true,\"isolate\":true,"
+            "\"agents\":[\"reviewer\",\"builder\",\"missing\",\"reviewer\"]}", -1, NULL));
+        clawt_ipc_frame_set_payload(frame, json_node_copy(json_parser_get_root(parser)));
+        reply = clawt_daemon_handle_request(fixture.daemon, frame);
+        if (clawt_ipc_frame_is_error(reply)) {
+            g_autofree gchar *failure = json_to_string(reply, FALSE);
+            g_test_message("fan-out setup failed: %s", failure);
+        }
+        g_assert_false(clawt_ipc_frame_is_error(reply));
+        agents = clawt_daemon_get_agents(fixture.daemon);
+        g_assert_cmpuint(post(&fixture, path, headers, body), ==, SOUP_STATUS_OK);
+        store = clawt_trigger_store_new(store_path, NULL);
+        g_assert_nonnull(store);
+        g_assert_cmpuint(clawt_trigger_store_count_unfinished(store, "ci"), ==, 2);
+        g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(clawt_agent_manager_get(agents, "builder"))), ==, 1);
+        g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(clawt_agent_manager_get(agents, "reviewer"))), ==, 1);
+        g_assert_cmpuint(post(&fixture, path, headers, body), ==, SOUP_STATUS_OK);
+        g_assert_cmpuint(clawt_trigger_store_count_unfinished(store, "ci"), ==, 2);
+        g_hash_table_replace(headers, g_strdup("x-forgejo-delivery"), g_strdup("fanout-2"));
+        g_assert_cmpuint(post(&fixture, path, headers, body), ==, 429);
+        g_assert_false(clawt_trigger_store_seen_delivery(store, "ci", "fanout-2"));
     }
 
     /* Every one of those left a receipt saying which it was. */

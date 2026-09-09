@@ -27,12 +27,52 @@
 #endif
 
 #include <glib-object.h>
+#include <json-glib/json-glib.h>
 
 #include "clawt-types.h"
 #include "config/clawt-config.h"
 #include "trigger/clawt-trigger-event.h"
+#include "task/clawt-routine-runner.h"
 
 G_BEGIN_DECLS
+
+/**
+ * CLAWT_TRIGGER_MAX_UNFINISHED:
+ *
+ * Maximum reserved or unfinished recipient runs for one trigger.
+ */
+#define CLAWT_TRIGGER_MAX_UNFINISHED (4)
+
+/**
+ * clawt_trigger_get_recipients:
+ * @self: trigger configuration
+ *
+ * The primary agent followed by additional agents, with blank entries and
+ * duplicate names removed. An absent primary agent produces an empty list.
+ * Returns: (transfer full) (array zero-terminated=1): ordered recipient ids
+ */
+gchar **clawt_trigger_get_recipients(ClawtTrigger *self);
+
+/**
+ * clawt_trigger_dispatch:
+ * @self: trigger configuration
+ * @store: durable trigger store
+ * @event: normalized event
+ * @key: (nullable): parent deduplication key; NULL generates a new one
+ * @run: (scope call) (closure user_data): callback that queues one recipient
+ * @user_data: callback context
+ * @error: (out) (optional): reservation or persistence error
+ *
+ * Reserves the whole batch atomically before invoking any callbacks, checks
+ * the four-run cap, then records each result independently. Recipient errors
+ * appear in the result array; they do not prevent other recipients running.
+ * A repeated key never invokes the callback again, including after failures.
+ * Callers enforce authentication, filters and enablement before dispatch.
+ * Returns: (transfer full) (nullable): JSON array of agent/task/error results
+ */
+JsonNode *clawt_trigger_dispatch(ClawtTrigger *self, ClawtTriggerStore *store,
+    ClawtTriggerEvent *event, const gchar *key, ClawtRoutineRunFunc run,
+    gpointer user_data, GError **error);
 
 /**
  * clawt_trigger_endpoint_new:
