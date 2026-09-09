@@ -32,7 +32,7 @@ FAIL=0
 
 check_public_headers () {
     local_headers=$(grep -E '^\s+\$\(SRCDIR\)/.*\.h' Makefile 2>/dev/null \
-        | sed 's|.*\$(SRCDIR)/||; s|[[:space:]]*\\*$||' || true)
+        | awk '{ sub(/.*\$\(SRCDIR\)\//, ""); sub(/[[:space:]\\]*$/, ""); print }' || true)
 
     for local_h in ${local_headers}
     do
@@ -95,7 +95,7 @@ check_public_headers () {
 #
 LIBRECLAW_SECTIONS="agent ai session database skills channels tools
                     memory logging otel plugins"
-LIBRECLAW_DEFAULTS="deps/libreclaw/data/default-config.yaml"
+LIBRECLAW_DEFAULTS="${LIBRECLAW_DEFAULTS:-deps/libreclaw/data/default-config.yaml}"
 
 # POSIX sh throughout, like the rest of this script: it runs from make
 # and has no reason to need bash.
@@ -135,7 +135,13 @@ check_doc_config_keys () {
     for local_key in $(grep -rhoE '=[a-z_]+(\.[a-z_]+)+=' docs/ 2>/dev/null \
                        | tr -d '=' | sort -u)
     do
-        if grep -q "\"${local_key}\"" src/config/clawt-config-schema.c
+        # Org verbatim also names the build's real make fragments. Do not
+        # exempt arbitrary *.mk strings: a missing file still needs review.
+        case "${local_key}" in
+            *.mk) [ ! -f "${local_key}" ] || continue ;;
+        esac
+
+        if grep -qF "\"${local_key}\"" src/config/clawt-config-schema.c
         then
             continue
         fi
@@ -164,8 +170,9 @@ check_doc_tool_names () {
     [ -f src/mcp/clawt-mcp-tools.c ] || return 0
     [ -d docs ] || return 0
 
-    for local_tool in $(grep -rhoE 'clawtilla_[a-z_]+' docs/ README.org \
+    known_tools=$(grep -rhoE 'clawtilla_[a-z_]+' docs/ README.org \
                         2>/dev/null | sort -u)
+    for local_tool in ${known_tools}
     do
         case "${local_tool}" in
             *_) continue ;;
@@ -259,9 +266,10 @@ check_tool_coverage () {
     [ -f src/mcp/clawt-mcp-tools.c ] || return 0
     [ -d docs ] || return 0
 
-    for local_tool in $(grep -oE 'TOOL\("clawtilla_[a-z_]+"' \
+    known_tools=$(grep -oE 'TOOL\("clawtilla_[a-z_]+"' \
                             src/mcp/clawt-mcp-tools.c \
                         | sed 's/.*"\(.*\)"/\1/' | sort -u)
+    for local_tool in ${known_tools}
     do
         if ! grep -rqF "${local_tool}" docs/ README.org 2>/dev/null
         then
@@ -279,9 +287,10 @@ check_cli_verb_coverage () {
     [ -f clients/cli/main.c ] || return 0
     [ -d docs ] || return 0
 
-    for local_verb in $(grep -oE 'g_strcmp0\(argv\[1\], "[a-z-]+"\)' \
+    known_verbs=$(grep -oE 'g_strcmp0\(argv\[1\], "[a-z-]+"\)' \
                             clients/cli/main.c \
                         | sed 's/.*"\(.*\)".*/\1/' | sort -u)
+    for local_verb in ${known_verbs}
     do
         # Either spelled out in prose, or as a row in the CLI reference
         # table, which drops the program name -- requiring "clawtilla foo"
@@ -314,11 +323,12 @@ check_ipc_kind_coverage () {
     # The dispatch is one file per verb family, so this reads the glob
     # rather than a name: after the split, clawt-daemon.c on its own held
     # no kinds at all and this reported nothing missing.
-    for local_kind in $(grep -rhoE 'g_strcmp0\(kind, "[a-z_.]+"\)' \
+    known_kinds=$(grep -rhoE 'g_strcmp0\(kind, "[a-z_.]+"\)' \
                             src/core/clawt-daemon.c src/core/daemon-*.c \
                             src/ipc/clawt-ipc-server.c \
                             2>/dev/null \
                         | sed 's/.*"\(.*\)".*/\1/' | sort -u)
+    for local_kind in ${known_kinds}
     do
         if ! grep -qF "${local_kind}" docs/ipc-protocol.org
         then

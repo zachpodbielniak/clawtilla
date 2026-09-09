@@ -779,9 +779,25 @@ emitter writes; the value is unchanged.
 
 ** Validation
 
+Validate a candidate file before starting or reloading the daemon:
+
+#+begin_src bash
+clawtilla config validate --file ./candidate.yaml
+clawtilla config validate --file ./candidate.yaml --strict
+clawtilla config validate --help
+#+end_src
+
+~--file~ (or ~-f~) selects offline validation using the same library parser and validation rules as daemon startup. The file must exist and be readable; a missing candidate is an error, even though normal first-run daemon loading permits an absent configuration. The command does not connect to a daemon, start agents, save the candidate, or create state and workspaces. It checks configuration semantics, not whether external services, credentials or computers are available at runtime. Existing validator limitations described below still apply.
+
+Warnings go to stderr. Exit status is 0 for a usable candidate and 1 for read, parse, validation or argument errors. ~--strict~ also returns 1 for any warning, including unknown keys, skipped entries and shadow agents; diagnostics are printed before the strict-policy failure. This makes it suitable for preflight checks in scripts. ~--strict~ requires ~--file~. ~--help~ includes examples and ~--license~ prints the license.
+
+Without options, the existing command checks the running daemon's loaded configuration:
+
 #+begin_src bash
 clawtilla config validate
 #+end_src
+
+The global ~-c~ / ~--config~ option does not select offline validation. Use ~--file~ after ~config validate~ to choose the candidate explicitly; it takes precedence over any global config path for this check. The ordinary command continues to query the selected daemon, including a remote daemon.
 
 Reports every unknown key by its full path, every list entry it had to
 skip (~agents[2] has no id~), every duplicate id, and every agent that

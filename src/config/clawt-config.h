@@ -145,6 +145,26 @@ gboolean clawt_config_validate(ClawtConfig  *self,
  */
 GPtrArray *clawt_config_get_warnings(ClawtConfig *self);
 
+/**
+ * clawt_config_validate_file:
+ * @path: candidate YAML filename; must exist
+ * @strict: fail when loading produces warnings, including shadow agents
+ * @warnings: (out) (optional) (transfer full) (element-type utf8): diagnostics
+ * @error: (out) (optional): first fatal problem
+ *
+ * Reads and validates a candidate without creating state, contacting a daemon,
+ * or activating agents. Uses the same parser and validation as daemon startup.
+ * Unlike clawt_config_load(), a missing file is an error, not an empty fleet.
+ * Warnings remain available even when validation fails. Runtime availability
+ * of credentials, computers and external services is not checked.
+ *
+ * Returns: %TRUE when valid under the requested warning policy
+ */
+gboolean clawt_config_validate_file(const gchar *path,
+                                    gboolean strict,
+                                    GPtrArray **warnings,
+                                    GError **error);
+
 /* ── Reading values ──────────────────────────────────────────────── */
 
 /**

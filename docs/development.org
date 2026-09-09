@@ -105,6 +105,8 @@ build type" and is not.
 
 ** The three-file build system
 
+For an isolated worktree reusing a built dependency checkout, pass ~LIBRECLAW_DIR=/absolute/path/to/libreclaw~. Tests normalize the pod module directory to an absolute path, and ~make docs-check~ checks upstream configuration references against that checkout's defaults. The documentation checker distinguishes existing ~.mk~ files from configuration keys; it still rejects missing filenames and unknown keys. ~tests/test-docs-check.sh~ exercises both accepted references and deliberate errors in a disposable tree.
+
 Same shape as libreclaw, deliberately.
 
 | File | What is in it |

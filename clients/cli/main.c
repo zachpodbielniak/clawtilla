@@ -3956,6 +3956,63 @@ report_reload(JsonNode *reply)
     return EXIT_SUCCESS;
 }
 
+/* Parse the offline verb before connecting: validation must work when the
+ * daemon cannot start because the very file being checked is broken. */
+static gint
+cmd_config_validate_file(int argc, char *argv[])
+{
+	g_autoptr(GOptionContext) context = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GPtrArray) warnings = NULL;
+	g_autofree gchar *path = NULL;
+	gboolean strict = FALSE;
+	gboolean license = FALSE;
+	gboolean valid;
+	guint i;
+	GOptionEntry options[] = {
+		{ "file", 'f', 0, G_OPTION_ARG_FILENAME, &path,
+		  "Validate an existing local YAML file without a daemon", "PATH" },
+		{ "strict", 0, 0, G_OPTION_ARG_NONE, &strict,
+		  "Treat warnings as errors (requires --file)", NULL },
+		{ "license", 0, 0, G_OPTION_ARG_NONE, &license,
+		  "Print the license", NULL },
+		{ NULL }
+	};
+
+	context = g_option_context_new("--file PATH [--strict]");
+	g_option_context_add_main_entries(context, options, NULL);
+	g_option_context_set_description(context,
+		"Examples:\n"
+		"  clawtilla config validate --file candidate.yaml\n"
+		"  clawtilla config validate --file candidate.yaml --strict\n\n"
+		"Without options, validate checks the running daemon. Global -c does\n"
+		"not select offline mode; use --file explicitly. No state is written.");
+	argc -= 2;
+	argv += 2;
+	if (!g_option_context_parse(context, &argc, &argv, &error)) {
+		g_printerr("clawtilla: %s\n", error->message);
+		return EXIT_FAILURE;
+	}
+	if (license) {
+		print_license();
+		return EXIT_SUCCESS;
+	}
+	if (argc != 1 || path == NULL || *path == '\0') {
+		g_printerr("Usage: clawtilla config validate --file PATH [--strict]\n");
+		return EXIT_FAILURE;
+	}
+	valid = clawt_config_validate_file(path, strict, &warnings, &error);
+	for (i = 0; warnings != NULL && i < warnings->len; i++)
+		g_printerr("warning: %s\n",
+		           (const gchar *)g_ptr_array_index(warnings, i));
+	if (!valid) {
+		g_printerr("invalid: %s\n", error->message);
+		return EXIT_FAILURE;
+	}
+	g_print("Configuration is valid (%u warning(s)).\n", warnings->len);
+	return EXIT_SUCCESS;
+}
+
 static gint
 cmd_config(int argc, char *argv[])
 {
@@ -3969,6 +4026,9 @@ cmd_config(int argc, char *argv[])
                    "<show|validate|render|edit|reload>\n");
         return EXIT_FAILURE;
     }
+
+	if (g_strcmp0(verb, "validate") == 0 && argc > 3)
+		return cmd_config_validate_file(argc, argv);
 
     /*
      * Reload without an editor.

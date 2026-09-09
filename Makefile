@@ -673,7 +673,8 @@ adw-row-cast:
 	@bash $(TOOLSDIR)/clawt-adw-row-cast.sh
 
 docs-check: $(GENCONFIG_BIN)
-	@sh $(TOOLSDIR)/clawt-docs-check.sh
+	@LIBRECLAW_DEFAULTS="$(LIBRECLAW_DIR)/data/default-config.yaml" \
+		sh $(TOOLSDIR)/clawt-docs-check.sh
 	@bash $(TOOLSDIR)/clawt-client-parity.sh
 	@bash $(TOOLSDIR)/clawt-adw-row-cast.sh
 
@@ -793,6 +794,8 @@ tests: $(TEST_BINARIES) test-plugins plugins
 
 # Backup tests exercise the offline CLI dispatcher as well as the library.
 $(OUTDIR)/tests/test-backup: $(CLI_BIN_TARGET)
+# The offline validator test exercises argument parsing in the real CLI.
+$(OUTDIR)/tests/test-config-offline: $(CLI_BIN_TARGET)
 
 .PHONY: test  ## Build and run the hermetic test suite
 test: $(TEST_BINARIES) test-plugins plugins

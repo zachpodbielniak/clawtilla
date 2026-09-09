@@ -2932,6 +2932,48 @@ clawt_config_get_warnings(ClawtConfig *self)
 }
 
 gboolean
+clawt_config_validate_file(const gchar *path,
+                          gboolean strict,
+                          GPtrArray **warnings,
+                          GError **error)
+{
+	g_autoptr(YamlParser) parser = NULL;
+	g_autoptr(ClawtConfig) config = NULL;
+	g_autofree gchar *resolved = NULL;
+	guint i;
+
+	g_return_val_if_fail(path != NULL, FALSE);
+
+	if (warnings != NULL)
+		*warnings = g_ptr_array_new_with_free_func(g_free);
+	resolved = clawt_expand_path(path);
+	parser = yaml_parser_new();
+	yaml_parser_set_capture_comments(parser, TRUE);
+	/* Read directly: probing existence first introduces a missing-file race. */
+	if (!yaml_parser_load_from_file(parser, resolved, error)) {
+		g_prefix_error(error, "%s: ", resolved);
+		return FALSE;
+	}
+	config = config_from_parser(parser, resolved, error);
+	if (config == NULL)
+		return FALSE;
+	if (warnings != NULL) {
+		for (i = 0; i < config->warnings->len; i++)
+			g_ptr_array_add(*warnings,
+				g_strdup(g_ptr_array_index(config->warnings, i)));
+	}
+	if (!clawt_config_validate(config, error))
+		return FALSE;
+	if (strict && config->warnings->len > 0) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+		            "strict validation rejected %u warning(s)",
+		            config->warnings->len);
+		return FALSE;
+	}
+	return TRUE;
+}
+
+gboolean
 clawt_config_validate(ClawtConfig *self, GError **error)
 {
     const gchar *socket_path;
