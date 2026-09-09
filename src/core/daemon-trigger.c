@@ -1079,6 +1079,99 @@ clawt_daemon_handle_trigger(
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
 
+    if (g_strcmp0(kind, "trigger.replay") == 0) {
+        const gchar *id = clawt_ipc_payload_string(payload, "id");
+        ClawtTrigger *trigger = id != NULL
+            ? clawt_config_get_trigger(self->config, id) : NULL;
+        gint64 receipt = clawt_ipc_payload_int(payload, "receipt", 0);
+        gboolean execute = clawt_ipc_payload_boolean(payload, "run", FALSE);
+        g_autoptr(ClawtTriggerEvent) event = NULL;
+        g_autofree gchar *reason = NULL;
+        g_autofree gchar *key = NULL;
+        g_autofree gchar *prompt = NULL;
+        g_autofree gchar *report = NULL;
+        const gchar *agent;
+        const gchar *task_id = NULL;
+        gboolean matches;
+        gboolean duplicate;
+
+        if (trigger == NULL || self->trigger_store == NULL || receipt < 0)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "no trigger or invalid receipt");
+        if (execute && receipt == 0)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                       "execution requires the receipt number shown by a preview");
+        event = clawt_trigger_store_read_event(self->trigger_store, id,
+                                               &receipt, &error);
+        if (event == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED, error->message);
+        key = g_strdup_printf("replay:%" G_GINT64_FORMAT, receipt);
+        duplicate = clawt_trigger_store_seen_delivery(self->trigger_store, id, key);
+        matches = clawt_trigger_accepts_event(trigger, clawt_trigger_event_get_name(event));
+        if (!matches)
+            reason = g_strdup("the event is not in this trigger's events list");
+        else
+            matches = clawt_trigger_accepts_delivery(trigger, event, &reason);
+        agent = clawt_trigger_get_string(trigger, "agent");
+        if (reason == NULL && !clawt_trigger_get_boolean(trigger, "enabled"))
+            reason = g_strdup("trigger is disabled");
+        if (reason == NULL && clawt_trigger_store_is_pending_verification(self->trigger_store, id))
+            reason = g_strdup("trigger is waiting for verification");
+        if (reason == NULL && (agent == NULL || clawt_agent_manager_get(self->agents, agent) == NULL))
+            reason = g_strdup("trigger has no available agent");
+        if (reason == NULL && duplicate)
+            reason = g_strdup("this receipt already has a replay reservation; inspect deliveries");
+        if (reason == NULL && clawt_trigger_store_count_unfinished(self->trigger_store, id) >= MAX_UNFINISHED_RUNS)
+            reason = g_strdup("trigger has reached its in-flight limit");
+        if (reason == NULL && clawt_trigger_store_recent_count(self->trigger_store, id,
+                RATE_WINDOW_SECONDS) >= RATE_MAX_DELIVERIES)
+            reason = g_strdup("trigger has reached its delivery rate limit");
+        prompt = clawt_trigger_build_prompt(trigger, event);
+        if (execute) {
+            if (reason != NULL)
+                return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED, reason);
+            if (!clawt_trigger_store_claim_replay(self->trigger_store, id, key, &error))
+                return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED, error->message);
+            task_id = run_trigger(id, agent, prompt, self, &error);
+            {
+                g_autoptr(GError) saved = NULL;
+                if (!clawt_trigger_store_finish_replay(self->trigger_store, id, key,
+                        task_id, error != NULL ? error->message : "explicit operator replay", &saved))
+                    return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                        "replay reserved but result could not be saved; inspect tasks before taking further action");
+            }
+            if (task_id == NULL)
+                return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                    error != NULL ? error->message : "replay did not start");
+            clawt_event_bus_emit(self->bus, "trigger.fired", id);
+        }
+        report = g_strdup_printf("Receipt %" G_GINT64_FORMAT ": %s\n\n%s",
+            receipt, reason != NULL ? reason : "matches current filters; ready for explicit replay", prompt);
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "receipt");
+        json_builder_add_int_value(builder, receipt);
+        json_builder_set_member_name(builder, "matches");
+        json_builder_add_boolean_value(builder, matches);
+        json_builder_set_member_name(builder, "eligible");
+        json_builder_add_boolean_value(builder, reason == NULL);
+        json_builder_set_member_name(builder, "duplicate");
+        json_builder_add_boolean_value(builder, duplicate);
+        json_builder_set_member_name(builder, "report");
+        json_builder_add_string_value(builder, report);
+        json_builder_set_member_name(builder, "prompt");
+        json_builder_add_string_value(builder, prompt);
+        if (reason != NULL) {
+            json_builder_set_member_name(builder, "reason");
+            json_builder_add_string_value(builder, reason);
+        }
+        if (task_id != NULL) {
+            json_builder_set_member_name(builder, "task");
+            json_builder_add_string_value(builder, task_id);
+        }
+        json_builder_end_object(builder);
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
     if (g_strcmp0(kind, "trigger.test") == 0) {
         const gchar *id = clawt_ipc_payload_string(payload, "id");
         ClawtTrigger *trigger = (id != NULL)
@@ -1182,7 +1275,7 @@ clawt_daemon_handle_trigger(
             GHashTable *row = g_ptr_array_index(rows, i);
             static const gchar *columns[] = {
                 "trigger", "delivery", "event", "repo", "branch", "actor",
-                "outcome", "detail", "task", "at"
+                "outcome", "detail", "task", "at", "receipt"
             };
             gsize c;
 

@@ -245,6 +245,10 @@ add_trigger_form(HtmxElement *parent, JsonObject *existing)
                                                      escaped);
             g_autofree gchar *capture =
                 g_strdup_printf("/triggers/%s/capture", escaped);
+            g_autofree gchar *replay =
+                g_strdup_printf("/triggers/%s/replay", escaped);
+            clawt_web_add(row, clawt_web_post_button("Explain latest delivery",
+                                                     replay, "default", NULL));
             g_autofree gchar *rotate = g_strdup_printf("/triggers/%s/rotate",
                                                        escaped);
             g_autofree gchar *remove = g_strdup_printf("/triggers/%s/remove",
@@ -614,6 +618,25 @@ on_trigger_test(HtmxRequest *request, GHashTable *params, gpointer user_data)
                          FALSE);
 }
 
+/* The persisted snapshot uses the same filters as a live delivery;
+ * this action only explains it. Execution requires the CLI's --run. */
+static HtmxResponse *
+on_trigger_replay(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *id = clawt_web_param(params, "trigger");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+
+    clawt_web_payload_set(payload, "id", id);
+    reply = clawt_web_app_call(app, "trigger.replay",
+        clawt_web_payload_take(g_steal_pointer(&payload)));
+    if (reply == NULL)
+        return triggers_page(app, request, "No replayable delivery is available.", TRUE);
+    return triggers_page(app, request,
+        clawt_web_member(clawt_web_root(reply), "report", ""), FALSE);
+}
+
 static HtmxResponse *
 on_trigger_capture(HtmxRequest *request, GHashTable *params,
                    gpointer user_data)
@@ -661,6 +684,7 @@ clawt_web_register_triggers(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_post(router, "/triggers/:trigger/remove", on_trigger_remove,
                      app);
     htmx_router_post(router, "/triggers/:trigger/test", on_trigger_test, app);
+    htmx_router_post(router, "/triggers/:trigger/replay", on_trigger_replay, app);
     htmx_router_post(router, "/triggers/:trigger/capture", on_trigger_capture,
                      app);
 }

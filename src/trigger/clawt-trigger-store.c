@@ -163,13 +163,7 @@ apply_schema(sqlite3 *db, GError **error)
         return FALSE;
     }
 
-    /*
-     * Nothing has been added since 0.2.0 yet.  The check is here rather
-     * than added with the first new column, because the migration that
-     * is written when it is needed is the one that gets forgotten -- and
-     * has_column() failing loudly on an unwritable file is the whole
-     * value of the pattern.
-     */
+    /* Additive migrations preserve receipt ids and deduplication keys. */
     if (!has_column(db, "deliveries", "finished")) {
         if (sqlite3_exec(db,
                          "ALTER TABLE deliveries ADD COLUMN finished"
@@ -180,7 +174,185 @@ apply_schema(sqlite3 *db, GError **error)
         }
     }
 
+    if (!has_column(db, "deliveries", "event_json") &&
+        sqlite3_exec(db, "ALTER TABLE deliveries ADD COLUMN event_json TEXT",
+                     NULL, NULL, NULL) != SQLITE_OK) {
+        set_sqlite_error(error, db, "adding replay snapshots");
+        return FALSE;
+    }
+
     return TRUE;
+}
+
+/* Persist normalized fields, never authentication headers or secrets.
+ * Normalization can depend on headers that must not be retained, so
+ * replaying the body alone would silently change the event's identity. */
+static gchar *
+event_snapshot(ClawtTriggerEvent *event)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autoptr(JsonNode) root = NULL;
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "provider");
+    json_builder_add_int_value(builder, clawt_trigger_event_get_provider(event));
+#define SNAPSHOT_FIELD(field) \
+    json_builder_set_member_name(builder, #field); \
+    json_builder_add_string_value(builder, clawt_trigger_event_get_##field(event))
+    SNAPSHOT_FIELD(name);
+    SNAPSHOT_FIELD(delivery_id);
+    SNAPSHOT_FIELD(repo);
+    SNAPSHOT_FIELD(ref);
+    SNAPSHOT_FIELD(actor);
+    SNAPSHOT_FIELD(title);
+    SNAPSHOT_FIELD(url);
+    SNAPSHOT_FIELD(number);
+    SNAPSHOT_FIELD(payload);
+#undef SNAPSHOT_FIELD
+    json_builder_end_object(builder);
+    root = json_builder_get_root(builder);
+    return json_to_string(root, FALSE);
+}
+
+ClawtTriggerEvent *
+clawt_trigger_store_read_event(ClawtTriggerStore *self, const gchar *trigger_id,
+                              gint64 *receipt, GError **error)
+{
+    sqlite3_stmt *stmt = NULL;
+    g_autoptr(JsonParser) parser = json_parser_new();
+    ClawtTriggerEvent *event;
+    JsonObject *object;
+    gint rc;
+    const gchar *sql = *receipt == 0
+        ? "SELECT id, event_json FROM deliveries WHERE trigger_id = ?"
+          " AND event_json IS NOT NULL ORDER BY id DESC LIMIT 1"
+        : "SELECT id, event_json FROM deliveries WHERE trigger_id = ? AND id = ?";
+
+    if (sqlite3_prepare_v2(self->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        set_sqlite_error(error, self->db, "reading replay snapshot");
+        return NULL;
+    }
+    sqlite3_bind_text(stmt, 1, trigger_id, -1, SQLITE_TRANSIENT);
+    if (*receipt != 0)
+        sqlite3_bind_int64(stmt, 2, *receipt);
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW || sqlite3_column_type(stmt, 1) == SQLITE_NULL) {
+        if (rc != SQLITE_ROW && rc != SQLITE_DONE)
+            set_sqlite_error(error, self->db, "reading replay snapshot");
+        else
+            g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                                "no replay snapshot for that receipt; old and unauthenticated receipts cannot be replayed");
+        sqlite3_finalize(stmt);
+        return NULL;
+    }
+    *receipt = sqlite3_column_int64(stmt, 0);
+    if (!json_parser_load_from_data(parser,
+            (const gchar *)sqlite3_column_text(stmt, 1), -1, error)) {
+        sqlite3_finalize(stmt);
+        return NULL;
+    }
+    sqlite3_finalize(stmt);
+    if (!JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser))) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                            "invalid replay snapshot");
+        return NULL;
+    }
+    object = json_node_get_object(json_parser_get_root(parser));
+    {
+        static const gchar *fields[] = {
+            "name", "delivery_id", "repo", "ref", "actor",
+            "title", "url", "number", "payload"
+        };
+        JsonNode *provider = json_object_get_member(object, "provider");
+        guint i;
+        gboolean valid = provider != NULL && JSON_NODE_HOLDS_VALUE(provider) &&
+            json_node_get_value_type(provider) == G_TYPE_INT64 &&
+            json_node_get_int(provider) >= CLAWT_TRIGGER_PROVIDER_GENERIC &&
+            json_node_get_int(provider) <= CLAWT_TRIGGER_PROVIDER_GITLAB;
+
+        /* A corrupt archive/database must return an error, never trigger
+         * JSON-GLib criticals or reinterpret missing fields as defaults. */
+        for (i = 0; valid && i < G_N_ELEMENTS(fields); i++) {
+            JsonNode *node = json_object_get_member(object, fields[i]);
+            valid = node != NULL && (JSON_NODE_HOLDS_NULL(node) ||
+                (JSON_NODE_HOLDS_VALUE(node) && json_node_get_value_type(node) == G_TYPE_STRING));
+        }
+        if (!valid) {
+            g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED, "invalid replay snapshot fields");
+            return NULL;
+        }
+    }
+    event = clawt_trigger_event_new(
+        (ClawtTriggerProvider)json_object_get_int_member(object, "provider"),
+        json_object_get_string_member(object, "name"),
+        json_object_get_string_member(object, "delivery_id"));
+#define RESTORE_FIELD(field) \
+    clawt_trigger_event_set_##field(event, json_object_get_string_member(object, #field))
+    RESTORE_FIELD(repo);
+    RESTORE_FIELD(ref);
+    RESTORE_FIELD(actor);
+    RESTORE_FIELD(title);
+    RESTORE_FIELD(url);
+    RESTORE_FIELD(number);
+    RESTORE_FIELD(payload);
+#undef RESTORE_FIELD
+    return event;
+}
+
+gboolean
+clawt_trigger_store_claim_replay(ClawtTriggerStore *self, const gchar *trigger_id,
+                                const gchar *key, GError **error)
+{
+    sqlite3_stmt *stmt = NULL;
+    gboolean ok;
+
+    /* Reserve before creating any task. A crash leaves an uncertain
+     * reservation, never permission to execute the side effect twice. */
+    if (sqlite3_prepare_v2(self->db,
+            "INSERT INTO deliveries(trigger_id, delivery_id, outcome, detail, finished, created_at)"
+            " VALUES (?, ?, ?, 'replay reserved; completion not recorded', 1, ?)",
+            -1, &stmt, NULL) != SQLITE_OK) {
+        set_sqlite_error(error, self->db, "reserving replay");
+        return FALSE;
+    }
+    sqlite3_bind_text(stmt, 1, trigger_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, key, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 3, CLAWT_DELIVERY_FAILED);
+    sqlite3_bind_int64(stmt, 4, g_get_real_time() / G_USEC_PER_SEC);
+    ok = sqlite3_step(stmt) == SQLITE_DONE;
+    if (!ok)
+        set_sqlite_error(error, self->db, "reserving replay (already reserved or store unavailable)");
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
+gboolean
+clawt_trigger_store_finish_replay(ClawtTriggerStore *self, const gchar *trigger_id,
+                                 const gchar *key, const gchar *task_id,
+                                 const gchar *detail, GError **error)
+{
+    sqlite3_stmt *stmt = NULL;
+    gboolean ok;
+
+    /* The reservation remains even on delivery failure; an operator can
+     * inspect the recorded result without an automatic retry duplicating work. */
+    if (sqlite3_prepare_v2(self->db,
+            "UPDATE deliveries SET task_id = ?, detail = ?, outcome = ?, finished = ?"
+            " WHERE trigger_id = ? AND delivery_id = ?", -1, &stmt, NULL) != SQLITE_OK) {
+        set_sqlite_error(error, self->db, "finishing replay");
+        return FALSE;
+    }
+    sqlite3_bind_text(stmt, 1, task_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, detail, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 3, task_id != NULL ? CLAWT_DELIVERY_RAN : CLAWT_DELIVERY_FAILED);
+    sqlite3_bind_int(stmt, 4, task_id == NULL);
+    sqlite3_bind_text(stmt, 5, trigger_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 6, key, -1, SQLITE_TRANSIENT);
+    ok = sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(self->db) == 1;
+    if (!ok)
+        set_sqlite_error(error, self->db, "finishing replay");
+    sqlite3_finalize(stmt);
+    return ok;
 }
 
 static void
@@ -548,9 +720,13 @@ clawt_trigger_store_record(ClawtTriggerStore    *self,
                            const gchar          *task_id)
 {
     sqlite3_stmt *stmt = NULL;
+    g_autofree gchar *snapshot = NULL;
 
     g_return_if_fail(CLAWT_IS_TRIGGER_STORE(self));
     g_return_if_fail(trigger_id != NULL);
+
+    if (event != NULL && outcome != CLAWT_DELIVERY_REFUSED)
+        snapshot = event_snapshot(event);
 
     /*
      * OR IGNORE, so a receipt that collides with the partial unique
@@ -562,8 +738,8 @@ clawt_trigger_store_record(ClawtTriggerStore    *self,
                            "INSERT OR IGNORE INTO deliveries"
                            " (trigger_id, delivery_id, event_name, repo,"
                            "  branch, actor, outcome, detail, task_id,"
-                           "  finished, created_at)"
-                           " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                           "  finished, created_at, event_json)"
+                           " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                            -1, &stmt, NULL) != SQLITE_OK) {
         g_warning("triggers: a receipt for '%s' could not be written: %s",
                   trigger_id, sqlite3_errmsg(self->db));
@@ -602,6 +778,7 @@ clawt_trigger_store_record(ClawtTriggerStore    *self,
      */
     sqlite3_bind_int(stmt, 10, outcome == CLAWT_DELIVERY_RAN ? 0 : 1);
     sqlite3_bind_int64(stmt, 11, g_get_real_time() / G_USEC_PER_SEC);
+    sqlite3_bind_text(stmt, 12, snapshot, -1, SQLITE_TRANSIENT);
 
     if (sqlite3_step(stmt) != SQLITE_DONE)
         g_warning("triggers: a receipt for '%s' could not be written: %s",
@@ -632,10 +809,10 @@ clawt_trigger_store_list_deliveries(ClawtTriggerStore *self,
 
     sql = (trigger_id != NULL)
         ? "SELECT trigger_id, delivery_id, event_name, repo, branch, actor,"
-          " outcome, detail, task_id, created_at FROM deliveries"
+          " outcome, detail, task_id, created_at, id FROM deliveries"
           " WHERE trigger_id = ? ORDER BY created_at DESC, id DESC LIMIT ?"
         : "SELECT trigger_id, delivery_id, event_name, repo, branch, actor,"
-          " outcome, detail, task_id, created_at FROM deliveries"
+          " outcome, detail, task_id, created_at, id FROM deliveries"
           " ORDER BY created_at DESC, id DESC LIMIT ?";
 
     if (sqlite3_prepare_v2(self->db, sql, -1, &stmt, NULL) != SQLITE_OK)
@@ -663,6 +840,7 @@ clawt_trigger_store_list_deliveries(ClawtTriggerStore *self,
                                sqlite3_column_int(stmt, 6)));
         put(row, "detail", (const gchar *)sqlite3_column_text(stmt, 7));
         put(row, "task", (const gchar *)sqlite3_column_text(stmt, 8));
+        put(row, "receipt", (const gchar *)sqlite3_column_text(stmt, 10));
 
         {
             g_autofree gchar *at =

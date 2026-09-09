@@ -6691,6 +6691,7 @@ print_trigger_usage(gboolean asked_for)
         "  rm <id>                        remove it\n"
         "  rotate <id>                    new secret and new address\n"
         "  test <id> [--run]              show the prompt, or run it\n"
+        "  replay <id> [receipt] [--run]  explain a stored event; explicitly replay once\n"
         "  capture <id>                   the first delivery, as it arrived\n"
         "  deliveries [id]                what has been sent, and what came\n"
         "                                 of it\n"
@@ -7021,6 +7022,51 @@ cmd_trigger(int argc, char *argv[])
         return EXIT_SUCCESS;
     }
 
+    if (g_strcmp0(verb, "replay") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        gint64 receipt = 0;
+        gboolean run = FALSE;
+        JsonObject *root;
+
+        /* Pin execution to a receipt shown by the preview. Latest is
+         * useful for inspection but could change before a subsequent run. */
+        if (id == NULL) {
+            g_printerr("Usage: clawtilla trigger replay <id> [receipt] [--run]\n");
+            return EXIT_FAILURE;
+        }
+        for (i = 4; i < (guint)argc; i++) {
+            if (g_strcmp0(argv[i], "--run") == 0)
+                run = TRUE;
+            else if (receipt != 0 ||
+                     !g_ascii_string_to_signed(argv[i], 10, 1, G_MAXINT64, &receipt, NULL)) {
+                g_printerr("Expected a positive receipt number or --run.\n");
+                return EXIT_FAILURE;
+            }
+        }
+        if (run && receipt == 0) {
+            g_printerr("Preview first, then name its receipt number with --run.\n");
+            return EXIT_FAILURE;
+        }
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "id");
+        json_builder_add_string_value(builder, id);
+        json_builder_set_member_name(builder, "receipt");
+        json_builder_add_int_value(builder, receipt);
+        json_builder_set_member_name(builder, "run");
+        json_builder_add_boolean_value(builder, run);
+        json_builder_end_object(builder);
+        reply = call(client, "trigger.replay", json_builder_get_root(builder));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        root = json_node_get_object(reply);
+        g_print("%s\n", member_or(root, "report", ""));
+        if (run)
+            g_print("Started as task %s.\n", member_or(root, "task", "?"));
+        else
+            g_print("\nPreview only. Repeat with the receipt number and --run to execute once.\n");
+        return EXIT_SUCCESS;
+    }
+
     if (g_strcmp0(verb, "deliveries") == 0) {
         JsonArray *deliveries;
         JsonObject *root;
@@ -7040,7 +7086,7 @@ cmd_trigger(int argc, char *argv[])
             return EXIT_SUCCESS;
         }
 
-        g_print("%-20s %-16s %-14s %-10s %s\n", "WHEN", "TRIGGER", "EVENT",
+        g_print("%-8s %-20s %-16s %-14s %-10s %s\n", "RECEIPT", "WHEN", "TRIGGER", "EVENT",
                 "OUTCOME", "DETAIL");
 
         for (i = 0; i < json_array_get_length(deliveries); i++) {
@@ -7051,7 +7097,8 @@ cmd_trigger(int argc, char *argv[])
                 (when != NULL) ? g_date_time_format(when, "%a %d %b %H:%M")
                                : g_strdup("-");
 
-            g_print("%-20s %-16s %-14s %-10s %s\n", stamp,
+            g_print("%-8s %-20s %-16s %-14s %-10s %s\n",
+                    member_or(row, "receipt", "?"), stamp,
                     member_or(row, "trigger", "?"),
                     member_or(row, "event", "-"),
                     member_or(row, "outcome", "?"),

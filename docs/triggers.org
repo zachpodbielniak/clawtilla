@@ -1094,12 +1094,25 @@ while you are looking at it shows up on the next load.
 
 ** What is not there yet
 
-There is no way to replay a stored delivery through the real path.
-~trigger test~ builds a synthetic event rather than re-running a
-captured body, so "would this exact payload have been filtered" is a
-question you answer by reading the receipt rather than by re-running
-it.
+Stored authenticated deliveries can be explained and explicitly replayed; see the replay section below. Synthetic ~trigger test~ remains useful before any delivery has arrived.
 
 A trigger cannot fan out to more than one agent.  =triggers.agent= is
 one name, and two agents on one push is two triggers on two endpoints
 registered twice with the forge.
+
+** Explain and replay a delivery
+
+#+begin_src bash
+clawtilla trigger deliveries ci
+clawtilla trigger replay ci
+clawtilla trigger replay ci 42
+clawtilla trigger replay ci 42 --run
+#+end_src
+
+The first three commands do not enqueue work. The receipt column identifies a durable event snapshot; omitting the number previews the latest replayable receipt. The explanation applies the current event, repository and branch filters, expands the current instruction template, and reports disabled, unverified, missing-agent, duplicate-replay, rate-limit and in-flight-limit conditions. Both graphical clients offer /Explain latest delivery/. Their action is also a preview.
+
+Execution requires both an explicit receipt number and ~--run~. It requires the trigger to be enabled and verified, the current filters to match, and admission limits to allow new work. It uses the normal task and mailbox path. It does not contact the forge or reauthenticate a historical signature: only a previously authenticated normalized snapshot is eligible. A change to the configured provider does not reinterpret the historical snapshot.
+
+Each receipt can be explicitly replayed once. A durable ~replay:<receipt>~ reservation is written before task creation, so repeated commands and daemon restarts cannot duplicate that replay. A failed or interrupted replay retains its reservation; inspect tasks and the delivery detail before arranging further work manually. The original forge delivery remains deduplicated separately. This is at-most-once admission, not a promise of exactly-once external side effects.
+
+New receipts retain the normalized event fields and payload in the mode-0600 trigger database under the existing seven-day receipt retention. Authentication headers and resolved trigger credentials are never part of the snapshot. Payloads can contain sensitive sender data, just as the first-delivery capture can; protect this database and its backups accordingly. Receipts written by older builds, refused authentication attempts and replay-reservation rows have no snapshot and cannot be replayed. The schema migration preserves existing receipts and their deduplication keys.

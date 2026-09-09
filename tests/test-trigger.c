@@ -1492,10 +1492,61 @@ test_a_trigger_room_is_not_a_routine_room(void)
     clawt_test_remove_tree(dir);
 }
 
+/* Snapshots and reservations must survive process lifetime; an
+ * unauthenticated or legacy receipt must never acquire a replay body. */
+static void
+test_replay_snapshot_and_reservation_survive_reopen(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtTriggerEvent) event = filled_event();
+    g_autoptr(ClawtTriggerEvent) restored = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *path = NULL;
+    gint64 receipt = 0;
+
+    fixture_setup(&fixture);
+    clawt_trigger_event_set_payload(event, "{\"actual\":\"body\"}");
+    clawt_trigger_store_record(fixture.store, "t", event, CLAWT_DELIVERY_CAPTURED, NULL, NULL);
+    g_assert_true(clawt_trigger_store_claim_replay(fixture.store, "t", "replay:1", &error));
+    g_assert_no_error(error);
+    path = g_build_filename(fixture.dir, "triggers.db", NULL);
+    g_clear_object(&fixture.store);
+    fixture.store = clawt_trigger_store_new(path, &error);
+    g_assert_no_error(error);
+    restored = clawt_trigger_store_read_event(fixture.store, "t", &receipt, &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(restored);
+    g_assert_cmpstr(clawt_trigger_event_get_payload(restored), ==, clawt_trigger_event_get_payload(event));
+    g_assert_cmpstr(clawt_trigger_event_get_ref(restored), ==, clawt_trigger_event_get_ref(event));
+    g_assert_cmpstr(clawt_trigger_event_get_name(restored), ==, clawt_trigger_event_get_name(event));
+    g_assert_cmpstr(clawt_trigger_event_get_delivery_id(restored), ==, clawt_trigger_event_get_delivery_id(event));
+    g_assert_cmpint(clawt_trigger_event_get_provider(restored), ==, clawt_trigger_event_get_provider(event));
+    g_assert_false(clawt_trigger_store_claim_replay(fixture.store, "t", "replay:1", &error));
+    g_assert_nonnull(error);
+    g_clear_error(&error);
+    g_assert_true(clawt_trigger_store_finish_replay(fixture.store, "t", "replay:1", "task-1", "operator replay", &error));
+    g_assert_no_error(error);
+    g_assert_cmpuint(clawt_trigger_store_count_unfinished(fixture.store, "t"), ==, 1);
+    clawt_trigger_store_finish(fixture.store, "task-1");
+    g_assert_cmpuint(clawt_trigger_store_count_unfinished(fixture.store, "t"), ==, 0);
+    g_clear_pointer(&restored, clawt_trigger_event_free);
+    receipt = 0;
+    restored = clawt_trigger_store_read_event(fixture.store, "another-trigger", &receipt, &error);
+    g_assert_null(restored);
+    g_assert_nonnull(error);
+    g_clear_error(&error);
+    clawt_trigger_store_record(fixture.store, "refused", event, CLAWT_DELIVERY_REFUSED, NULL, NULL);
+    restored = clawt_trigger_store_read_event(fixture.store, "refused", &receipt, &error);
+    g_assert_null(restored);
+    g_assert_nonnull(error);
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
+    g_test_add_func("/trigger/replay-store", test_replay_snapshot_and_reservation_survive_reopen);
 
     g_test_add_func("/trigger/secure-equals",
                     test_secure_equals_answers_like_a_comparison);

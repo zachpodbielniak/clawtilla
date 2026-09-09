@@ -41,6 +41,53 @@
 G_BEGIN_DECLS
 
 /**
+ * clawt_trigger_store_read_event:
+ * @self: the store
+ * @trigger_id: owning trigger
+ * @receipt: (inout): receipt number, or zero for latest replayable event
+ * @error: (out) (optional): error location
+ *
+ * Read the authenticated normalized snapshot. Old receipts without a
+ * snapshot are refused, rather than reconstructed from incomplete fields.
+ *
+ * Returns: (transfer full) (nullable): persisted event
+ */
+ClawtTriggerEvent *clawt_trigger_store_read_event(ClawtTriggerStore *self,
+    const gchar *trigger_id, gint64 *receipt, GError **error);
+
+/**
+ * clawt_trigger_store_claim_replay:
+ * @self: the store
+ * @trigger_id: owning trigger
+ * @key: stable replay idempotency key
+ * @error: (out) (optional): error location
+ *
+ * Reserve a replay before performing side effects. Reservations survive
+ * restart; duplicate keys fail without running anything.
+ *
+ * Returns: whether the caller owns this replay
+ */
+gboolean clawt_trigger_store_claim_replay(ClawtTriggerStore *self,
+    const gchar *trigger_id, const gchar *key, GError **error);
+
+/**
+ * clawt_trigger_store_finish_replay:
+ * @self: the store
+ * @trigger_id: owning trigger
+ * @key: reserved key
+ * @task_id: (nullable): started task, or NULL on failure
+ * @detail: (nullable): result explanation
+ * @error: (out) (optional): error location
+ *
+ * Record the result without removing the durable reservation.
+ *
+ * Returns: whether the result was saved
+ */
+gboolean clawt_trigger_store_finish_replay(ClawtTriggerStore *self,
+    const gchar *trigger_id, const gchar *key, const gchar *task_id,
+    const gchar *detail, GError **error);
+
+/**
  * ClawtDeliveryOutcome:
  * @CLAWT_DELIVERY_RAN: it started a run
  * @CLAWT_DELIVERY_DUPLICATE: the same delivery id had been seen before

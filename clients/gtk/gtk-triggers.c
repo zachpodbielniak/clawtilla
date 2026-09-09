@@ -375,13 +375,16 @@ on_trigger_test(GtkButton *button, gpointer user_data)
 
     (void)button;
 
-    reply = clawt_window_request(dialog->window, "trigger.test",
+    reply = clawt_window_request(dialog->window,
+                                 g_object_get_data(G_OBJECT(button), "replay") != NULL
+                                     ? "trigger.replay" : "trigger.test",
                                  clawt_build_payload("id", dialog->id, NULL));
 
     if (reply == NULL)
         return;
 
-    prompt = clawt_json_string(clawt_payload_of(reply), "prompt", "");
+    prompt = clawt_json_string(clawt_payload_of(reply),
+        g_object_get_data(G_OBJECT(button), "replay") != NULL ? "report" : "prompt", "");
 
     window = adw_dialog_new();
     adw_dialog_set_title(window, "What the agent would be asked");
@@ -677,10 +680,14 @@ open_trigger_editor(ClawtWindow *self, JsonObject *existing)
 
     if (!dialog->creating) {
         GtkWidget *preview = gtk_button_new_with_label("Preview prompt");
+        GtkWidget *replay = gtk_button_new_with_label("Explain latest delivery");
         GtkWidget *capture = gtk_button_new_with_label("First delivery");
         GtkWidget *rotate = gtk_button_new_with_label("Rotate secret");
         GtkWidget *remove = gtk_button_new_with_label("Remove");
 
+        g_object_set_data(G_OBJECT(replay), "replay", GINT_TO_POINTER(1));
+        g_signal_connect(replay, "clicked", G_CALLBACK(on_trigger_test), dialog);
+        gtk_box_append(GTK_BOX(buttons), replay);
         gtk_widget_set_hexpand(preview, TRUE);
         g_signal_connect(preview, "clicked", G_CALLBACK(on_trigger_test),
                          dialog);

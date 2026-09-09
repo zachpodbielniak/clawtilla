@@ -9812,6 +9812,76 @@ test_rotating_changes_the_secret_and_the_address(void)
  * default has to be a preview, and running has to be the thing you ask
  * for.
  */
+/* Exercise the actual IPC handler with a durable authenticated receipt.
+ * An inspection must not queue work, filtering must still apply, and a
+ * repeated explicit request must never queue a second task. */
+static void
+test_replay_is_explicit_filtered_and_durable(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtTriggerStore) store = NULL;
+    g_autoptr(ClawtTriggerEvent) event = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *payload = NULL;
+    gint64 receipt;
+
+    fixture_setup(&fixture,
+        "agents:\n  - id: builder\n"
+        "triggers:\n  - id: ci\n    agent: builder\n    enabled: true\n"
+        "    events: [push]\n    repo: mine/project\n    branch: main\n"
+        "    instructions: 'Review {{repo}} by {{actor}}'\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+    path = g_build_filename(fixture.dir, "state", "triggers.db", NULL);
+    store = clawt_trigger_store_new(path, &error);
+    g_assert_no_error(error);
+    event = clawt_trigger_event_new(CLAWT_TRIGGER_PROVIDER_GITHUB, "push", "delivery-1");
+    clawt_trigger_event_set_repo(event, "mine/project");
+    clawt_trigger_event_set_ref(event, "refs/heads/main");
+    clawt_trigger_event_set_actor(event, "alice");
+    clawt_trigger_event_set_payload(event, "{\"real\":true}");
+    g_assert_true(clawt_trigger_store_capture(store, "ci", event, &error));
+    g_assert_no_error(error);
+    clawt_trigger_store_record(store, "ci", event, CLAWT_DELIVERY_CAPTURED, NULL, NULL);
+    reply = request(&fixture, "trigger.replay", "{\"id\":\"ci\"}");
+    g_assert_false(clawt_ipc_frame_is_error(reply));
+    g_assert_true(json_object_get_boolean_member(payload_of(reply), "matches"));
+    g_assert_true(json_object_get_boolean_member(payload_of(reply), "eligible"));
+    g_assert_false(json_object_has_member(payload_of(reply), "task"));
+    g_assert_nonnull(strstr(json_object_get_string_member(payload_of(reply), "prompt"), "alice"));
+    receipt = json_object_get_int_member(payload_of(reply), "receipt");
+    g_clear_pointer(&reply, json_node_unref);
+    reply = request(&fixture, "trigger.replay", "{\"id\":\"ci\",\"run\":true}");
+    g_assert_true(clawt_ipc_frame_is_error(reply));
+    payload = g_strdup_printf("{\"id\":\"ci\",\"receipt\":%" G_GINT64_FORMAT ",\"run\":true}", receipt);
+    g_clear_pointer(&reply, json_node_unref);
+    reply = request(&fixture, "trigger.replay", payload);
+    g_assert_false(clawt_ipc_frame_is_error(reply));
+    g_assert_true(json_object_has_member(payload_of(reply), "task"));
+    g_clear_pointer(&reply, json_node_unref);
+    reply = request(&fixture, "trigger.replay", payload);
+    g_assert_true(clawt_ipc_frame_is_error(reply));
+
+    /* A stored authenticated event outside today's filters stays inert. */
+    clawt_trigger_event_set_identity(event, "push", "delivery-2");
+    clawt_trigger_event_set_ref(event, "refs/heads/other");
+    clawt_trigger_store_record(store, "ci", event, CLAWT_DELIVERY_IGNORED, NULL, NULL);
+    g_clear_pointer(&reply, json_node_unref);
+    reply = request(&fixture, "trigger.replay", "{\"id\":\"ci\"}");
+    g_assert_false(clawt_ipc_frame_is_error(reply));
+    g_assert_false(json_object_get_boolean_member(payload_of(reply), "matches"));
+    receipt = json_object_get_int_member(payload_of(reply), "receipt");
+    g_free(payload);
+    payload = g_strdup_printf("{\"id\":\"ci\",\"receipt\":%" G_GINT64_FORMAT ",\"run\":true}", receipt);
+    g_clear_pointer(&reply, json_node_unref);
+    reply = request(&fixture, "trigger.replay", payload);
+    g_assert_true(clawt_ipc_frame_is_error(reply));
+    g_clear_object(&store);
+    fixture_teardown(&fixture);
+}
+
 static void
 test_testing_a_trigger_previews_rather_than_runs(void)
 {
@@ -10583,6 +10653,7 @@ main(int argc, char *argv[])
                     test_rotating_changes_the_secret_and_the_address);
     g_test_add_func("/daemon/trigger/test-previews",
                     test_testing_a_trigger_previews_rather_than_runs);
+    g_test_add_func("/daemon/trigger/replay", test_replay_is_explicit_filtered_and_durable);
     g_test_add_func("/daemon/trigger/not-listening",
                     test_the_listing_says_when_nothing_is_listening);
 
