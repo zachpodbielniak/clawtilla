@@ -197,6 +197,7 @@ typedef struct {
     GMainLoop   *loop;
     gboolean     timed_out;
     GSource     *timeout_source;
+	GAsyncResult *result;
 } CommandWait;
 
 static gboolean
@@ -216,7 +217,8 @@ on_command_done(GObject *source, GAsyncResult *result, gpointer user_data)
     CommandWait *wait = user_data;
 
     (void)source;
-    (void)result;
+	/* The callback's borrowed result must outlive this callback. */
+	wait->result = g_object_ref(result);
 
     g_main_loop_quit(wait->loop);
 }
@@ -237,10 +239,13 @@ resolve_command(const gchar *locator,
     g_autoptr(GSubprocess) proc = NULL;
     g_autoptr(GMainContext) context = NULL;
     g_autoptr(GMainLoop) loop = NULL;
+	g_autoptr(GAsyncResult) result = NULL;
+	g_autoptr(GError) command_error = NULL;
     g_autofree gchar *stdout_buf = NULL;
     g_auto(GStrv) argv = NULL;
     CommandWait wait;
     gsize length;
+	gboolean communicated;
 
     if (!g_shell_parse_argv(locator, NULL, &argv, error)) {
         g_prefix_error(error, "secret command is not parseable: ");
@@ -264,6 +269,7 @@ resolve_command(const gchar *locator,
     wait.loop = loop;
     wait.timed_out = FALSE;
     wait.timeout_source = NULL;
+	wait.result = NULL;
 
     /*
      * Attached to the context we pushed, not added with
@@ -289,6 +295,10 @@ resolve_command(const gchar *locator,
     }
 
     g_main_context_pop_thread_default(context);
+	result = g_steal_pointer(&wait.result);
+	/* Finish every completed operation once, including timed-out commands. */
+	communicated = g_subprocess_communicate_utf8_finish(proc, result,
+		&stdout_buf, NULL, &command_error);
 
     if (wait.timed_out) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_TIMEOUT,
@@ -297,8 +307,8 @@ resolve_command(const gchar *locator,
         return NULL;
     }
 
-    if (!g_subprocess_communicate_utf8_finish(proc, NULL, &stdout_buf, NULL,
-                                              error)) {
+    if (!communicated) {
+		g_propagate_error(error, g_steal_pointer(&command_error));
         g_prefix_error(error, "secret command failed: ");
         return NULL;
     }
