@@ -10208,6 +10208,43 @@ test_a_matrix_login_checks_the_agent_id(void)
     fixture_teardown(&fixture);
 }
 
+/* A rejected edit must not alter scheduling or any accompanying fields. */
+static void
+test_invalid_routine_update_is_atomic(void)
+{
+	static const gchar *const updates[] = {
+		"{\"id\":\"daily\",\"at\":\"25:00\",\"enabled\":false,\"instructions\":\"changed\"}",
+		"{\"id\":\"daily\",\"schedule\":\"custom\",\"cron\":\"bad\",\"jitter_seconds\":99}",
+		"{\"id\":\"daily\",\"schedule\":\"weekly\",\"weekday\":\"noday\"}"
+	};
+	guint i;
+
+	for (i = 0; i < G_N_ELEMENTS(updates); i++) {
+		g_autoptr(ClawtDaemon) daemon = g_object_new(CLAWT_TYPE_DAEMON, NULL);
+		g_autoptr(JsonParser) parser = json_parser_new();
+		g_autoptr(JsonNode) frame = clawt_ipc_request_new("routine.update", "atomic");
+		g_autoptr(JsonNode) response = NULL;
+		g_autofree gchar *before = NULL;
+		g_autofree gchar *after = NULL;
+		g_autoptr(GError) error = NULL;
+		gboolean handled = FALSE;
+
+		daemon->config = clawt_config_load_from_string(
+			"routines:\n  - id: daily\n    schedule: daily\n    at: '09:00'\n"
+			"    instructions: original\n", &error);
+		g_assert_no_error(error);
+		before = clawt_config_to_string(daemon->config);
+		g_assert_true(json_parser_load_from_data(parser, updates[i], -1, &error));
+		g_assert_no_error(error);
+		response = clawt_daemon_handle_routine(daemon, "routine.update", frame,
+			json_node_get_object(json_parser_get_root(parser)), &handled);
+		g_assert_true(handled);
+		g_assert_true(clawt_ipc_frame_is_error(response));
+		after = clawt_config_to_string(daemon->config);
+		g_assert_cmpstr(after, ==, before);
+	}
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -10223,6 +10260,7 @@ main(int argc, char *argv[])
     g_setenv("XDG_DATA_HOME", data_dir, TRUE);
 
     g_test_init(&argc, &argv, NULL);
+	g_test_add_func("/daemon/routine/invalid-update-is-atomic", test_invalid_routine_update_is_atomic);
 
     g_test_add_func("/daemon/starts", test_starts_with_an_empty_config);
     g_test_add_func("/daemon/correcting-a-shadow-key-clears-it",

@@ -15,6 +15,27 @@
 #include "core/clawt-daemon.h"
 #include "core/clawt-daemon-private.h"
 
+/* Read the proposed effective value without changing the live YAML mapping.
+ * Explicit null removes an override, so validate the schema default in that
+ * case, exactly as the routine getter will after applying the update. */
+static const gchar *
+requested_routine_string(ClawtRoutine *routine, JsonObject *payload,
+						 const gchar *key)
+{
+	const gchar *value;
+	g_autofree gchar *schema_key = NULL;
+	const ClawtSchemaEntry *entry;
+
+	if (!json_object_has_member(payload, key))
+		return clawt_routine_get_string(routine, key);
+	value = clawt_ipc_payload_string(payload, key);
+	if (value != NULL)
+		return value;
+	schema_key = g_strconcat("routines.", key, NULL);
+	entry = clawt_config_schema_lookup(schema_key);
+	return entry != NULL ? entry->default_value : NULL;
+}
+
 JsonNode *
 clawt_daemon_handle_routine(
     ClawtDaemon  *self,
@@ -178,6 +199,24 @@ clawt_daemon_handle_routine(
                                            "that");
         }
 
+        /* Validate the complete proposed schedule before touching any field.
+         * A failed validation must preserve unrelated edits and YAML comments
+         * too; applying and then restoring individual values would not. */
+		{
+			g_autofree gchar *expression = clawt_cron_from_preset(
+				requested_routine_string(routine, payload, "schedule"),
+				requested_routine_string(routine, payload, "at"),
+				requested_routine_string(routine, payload, "weekday"),
+				requested_routine_string(routine, payload, "cron"), &error);
+
+			if (expression == NULL && error != NULL) {
+				if (adding)
+					clawt_config_remove_routine(self->config, id);
+				return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+										   error->message);
+			}
+		}
+
         entries = clawt_config_schema_get(&n_entries);
 
         for (i = 0; i < n_entries; i++) {
@@ -208,27 +247,6 @@ clawt_daemon_handle_routine(
                 clawt_routine_set_string(
                     routine, leaf, clawt_ipc_payload_string(payload, leaf));
                 break;
-            }
-        }
-
-        /*
-         * The schedule is checked here, while somebody is still looking
-         * at what they typed -- rather than at the next tick, in a
-         * warning nobody is watching for.
-         */
-        {
-            g_autofree gchar *expression = NULL;
-            g_autoptr(GError) cron_error = NULL;
-
-            expression = clawt_routine_get_cron(routine, &cron_error);
-
-            if (expression == NULL && cron_error != NULL) {
-                if (adding)
-                    clawt_config_remove_routine(self->config, id);
-
-                return clawt_ipc_error_new(request,
-                                           CLAWT_ERROR_INVALID_ARGUMENT,
-                                           cron_error->message);
             }
         }
 

@@ -23,3 +23,9 @@ Tool-call keys normalize whitespace outside quoted values while preserving every
 Both debug and release builds track compiler and linker flags in their own =.build-flags= stamp. Changing flags, including enabling or disabling sanitizers, invalidates the corresponding objects without requiring a manual clean. An unchanged invocation retains the existing objects.
 
 =tests/test-build-flags.sh= compiles a disposable C program with the actual =config.mk= and =rules.mk=, changes a preprocessor value without touching its source, and checks the new executable in both modes. It also verifies that unchanged flags do not recompile the object.
+
+* Rejected routine schedules
+
+Routine updates validate the proposed schedule before modifying the live mapping. Invalid times, custom expressions and weekdays leave the existing schedule, accompanying instruction or enabled changes, and YAML comments untouched. Validation combines submitted fields with the existing routine; explicitly clearing an override uses its schema default.
+
+=tests/test-daemon.c= sends invalid updates directly through the routine handler and compares the complete serialized configuration before and after each refusal.
