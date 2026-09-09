@@ -620,6 +620,18 @@ static const ClawtSchemaEntry schema[] = {
   "30", NULL,
   "Messages one agent may send per minute. 0 disables the limit.", "0.1.0" },
 
+{ "orchestration.daily_fleet_budget_micros", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "0", NULL,
+  "Daily fleet admission cap in integer millionths of USD; 0 disables.\n"
+  "Uses recorded usage since local midnight, including reset archives.\n"
+  "Already running work can overshoot; new deliveries wait until reset.", "0.1.0" },
+
+{ "orchestration.daily_agent_budget_micros", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_PER_AGENT,
+  "0", NULL,
+  "Daily admission cap per agent in integer millionths of USD; 0 disables.\n"
+  "Override with daily_agent_budget_micros on an agent.\n"
+  "Uses local midnight and persisted usage; in-flight work can overshoot.", "0.1.0" },
+
 { "orchestration.task_budget_usd", CLAWT_SCHEMA_DOUBLE, CLAWT_SCHEMA_FLAG_NONE,
   "5.0", NULL,
   "Spend cap for one delegated task and everything it spawns.\n"
@@ -3064,6 +3076,7 @@ clawt_config_schema_get(gsize *n_entries)
  * here is a test failure rather than an option nobody can set.
  */
 static const ClawtSchemaAgentKey agent_keys[] = {
+    { "daily_agent_budget_micros", "orchestration.daily_agent_budget_micros" },
     /*
      * Fleet policy an agent may override. The `orchestration.` section
      * is the fleet's own, so the per-agent form drops it.

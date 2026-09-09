@@ -31,6 +31,25 @@ G_DECLARE_FINAL_TYPE(ClawtMailboxRouter, clawt_mailbox_router, CLAWT,
                      MAILBOX_ROUTER, GObject)
 
 /**
+ * clawt_mailbox_router_check_daily_budget:
+ * @self: a #ClawtMailboxRouter
+ * @agent_id: recipient whose next delivery is being admitted
+ * @now: current Unix seconds (converted to the local calendar day)
+ * @error: (out) (optional): refusal or accounting error
+ *
+ * Checks persisted usage before admission, including reset archives. A failed
+ * read refuses work. Calls belong on the router's owning main context, like
+ * send and drain. Already admitted requests reserve no estimated cost and may
+ * overshoot. Publishes spending.limit-reached once per scope/day per router.
+ *
+ * Returns: %TRUE when both the fleet and recipient are below their caps
+ */
+gboolean clawt_mailbox_router_check_daily_budget(ClawtMailboxRouter *self,
+                                                const gchar *agent_id,
+                                                gint64 now,
+                                                GError **error);
+
+/**
  * clawt_mailbox_router_new:
  * @agents: (transfer none): the fleet
  * @rooms: (transfer none): the rooms
@@ -228,6 +247,8 @@ guint clawt_mailbox_router_drain_all(ClawtMailboxRouter *self);
  * @self: a #ClawtMailboxRouter
  *
  * Expires old items and returns abandoned leases to the queue.
+ * Retries deliveries previously held by a daily spending limit, allowing
+ * midnight or a raised cap to resume pending work without another send.
  *
  * Returns: how many items were affected
  */

@@ -250,4 +250,25 @@ line reading =task_budget_usd: 0= is the case that disables it.
 
 Then check the work is actually a *task*.  Spend is booked against a task
 id, and an ordinary chat has none -- so ordinary conversation is
-deliberately uncapped, and only delegated work is bounded.
+outside the task budget. The optional daily admission limits below also cover ordinary routed conversation.
+
+* Daily fleet and agent admission limits
+
+Set =orchestration.daily_fleet_budget_micros= to cap the configured fleet's recorded daily spend, and =orchestration.daily_agent_budget_micros= for the default per-agent cap. Both are nonnegative integer millionths of a US dollar: =1000000= is $1, and =0= disables that cap. An agent's =daily_agent_budget_micros= overrides the default, including =0= to disable its individual cap. The fleet cap still applies.
+
+#+begin_src yaml
+orchestration:
+  daily_fleet_budget_micros: 20000000
+  daily_agent_budget_micros: 5000000
+agents:
+  - id: researcher
+    daily_agent_budget_micros: 8000000
+#+end_src
+
+The library mailbox router checks every actual recipient before queueing a message, and checks again before leasing each pending delivery. Chat, delegation, routines, triggers and peer messages using the router share this check. A refused send returns an error without enqueueing any recipient. Previously queued messages remain pending while spending is at or above either cap; the next drain after the cap is raised or the day changes can deliver them. Transcript-only notes require no AI turn and remain available.
+
+Accounting uses persisted libreclaw usage since midnight in the daemon's local timezone, recalculating the calendar boundary for daylight-saving changes. Restarting the daemon does not reset spend. =sessions.reset-*= archives count too, so resetting a conversation does not restore today's allowance. Missing databases mean no recorded usage; unreadable existing databases refuse admission. Fleet totals include agents currently in the configuration; removing an agent or deleting its databases removes that accounting history. Keep usage history for the whole day when relying on these limits.
+
+These are admission limits, not provider-side hard billing ceilings. Admissions run on the router's owning main context; several requests can be delivered while recorded spend is still below the cap. No speculative amount is reserved for queued or in-flight requests, and an already running request can exceed either limit before its usage is recorded. Internal model/tool iterations and provider calls outside mailbox routing are not interrupted by this mechanism. Task budgets remain an additional independent guard.
+
+On the first blocked check per scope and local day, the existing event bus publishes =spending.limit-reached= with subject =fleet= or =agent:<id>= and integer =cost_micros= and =limit_micros= details. Repeated checks do not flood the event stream. Alert deduplication lasts for the router lifetime, so a daemon restart can announce an already exhausted cap again. Alerts are evaluated when new work is attempted or pending work drains; there is no billing poll when no work is waiting. Inspect the existing event stream with =clawtilla event list=.

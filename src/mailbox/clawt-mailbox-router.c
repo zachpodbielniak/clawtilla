@@ -10,6 +10,10 @@
 #include "clawtilla.h"
 #include "mailbox/clawt-mailbox-router.h"
 
+#include <errno.h>
+#include <glib/gstdio.h>
+#include <string.h>
+
 struct _ClawtMailboxRouter {
     GObject parent_instance;
 
@@ -20,9 +24,163 @@ struct _ClawtMailboxRouter {
 
     /* Where every routed message is indexed for recall.  Owned. */
     ClawtTranscriptIndex *transcripts;
+    GHashTable *budget_alerts;
+    GHashTable *budget_waiting;
+    gint64 budget_day;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtMailboxRouter, clawt_mailbox_router, G_TYPE_OBJECT)
+
+/* Reporting treats inaccessible paths as absent; admission must fail closed. */
+static gboolean
+daily_read_totals(const gchar *path, gint64 since,
+                  ClawtUsageTotals *totals, GError **error)
+{
+	GStatBuf status;
+
+	if (g_stat(path, &status) != 0) {
+		gint saved_errno = errno;
+
+		if (saved_errno == ENOENT) {
+			memset(totals, 0, sizeof(*totals));
+			return TRUE;
+		}
+		g_set_error(error, CLAWT_ERROR,
+			saved_errno == EACCES || saved_errno == EPERM
+				? CLAWT_ERROR_PERMISSION_DENIED : CLAWT_ERROR_FAILED,
+			"Cannot inspect daily spending database %s: %s", path,
+			g_strerror(saved_errno));
+		return FALSE;
+	}
+	return clawt_usage_read_totals(path, since, totals, error);
+}
+
+/* Include reset archives: resetting a conversation must not reset its cap. */
+static gboolean
+daily_cost(ClawtConfig *config, const gchar *id, gint64 since,
+           gint64 *cost, GError **error)
+{
+	g_autofree gchar *state = clawt_config_agent_state_dir(config, id);
+	g_autofree gchar *path = clawt_usage_database_path(state);
+	g_autoptr(GDir) dir = NULL;
+	ClawtUsageTotals totals;
+	const gchar *name;
+
+	*cost = 0;
+	if (!daily_read_totals(path, since, &totals, error))
+		return FALSE;
+	*cost = MAX(totals.cost_micros, 0);
+	if (!g_file_test(state, G_FILE_TEST_EXISTS))
+		return TRUE;
+	dir = g_dir_open(state, 0, error);
+	if (dir == NULL)
+		return FALSE;
+	while ((name = g_dir_read_name(dir)) != NULL) {
+		g_autofree gchar *archive = NULL;
+
+		if (!g_str_has_prefix(name, "sessions.reset-"))
+			continue;
+		archive = g_build_filename(state, name, "libreclaw.db", NULL);
+		if (!daily_read_totals(archive, since, &totals, error))
+			return FALSE;
+		/* Saturation keeps corrupt/extreme totals from reopening admission. */
+		if (totals.cost_micros > G_MAXINT64 - *cost)
+			*cost = G_MAXINT64;
+		else
+			*cost += MAX(totals.cost_micros, 0);
+	}
+	return TRUE;
+}
+
+/* An edge is retained until midnight, even if an operator raises the cap. */
+static void
+budget_alert(ClawtMailboxRouter *self, const gchar *scope,
+             gint64 cost, gint64 cap)
+{
+	g_autoptr(ClawtEvent) event = NULL;
+	g_autofree gchar *spent = g_strdup_printf("%" G_GINT64_FORMAT, cost);
+	g_autofree gchar *limit = g_strdup_printf("%" G_GINT64_FORMAT, cap);
+
+	if (!g_hash_table_add(self->budget_alerts, g_strdup(scope)))
+		return;
+	if (self->bus == NULL)
+		return;
+	event = clawt_event_new("spending.limit-reached", scope);
+	clawt_event_set_detail(event, "cost_micros", spent);
+	clawt_event_set_detail(event, "limit_micros", limit);
+	clawt_event_bus_publish(self->bus, event);
+}
+
+gboolean
+clawt_mailbox_router_check_daily_budget(ClawtMailboxRouter *self,
+                                       const gchar *agent_id,
+                                       gint64 now, GError **error)
+{
+	ClawtConfig *config;
+	ClawtAgentConfig *recipient;
+	GPtrArray *agents;
+	g_autoptr(GDateTime) local = NULL;
+	g_autoptr(GDateTime) midnight = NULL;
+	gint64 fleet_cap, agent_cap, fleet_cost = 0, agent_cost = 0, since;
+	guint i;
+	gboolean blocked = FALSE;
+
+	g_return_val_if_fail(CLAWT_IS_MAILBOX_ROUTER(self), FALSE);
+	config = clawt_agent_manager_get_config(self->agents);
+	recipient = clawt_config_get_agent(config, agent_id);
+	fleet_cap = clawt_config_get_int(config, "orchestration.daily_fleet_budget_micros");
+	agent_cap = recipient != NULL ? clawt_agent_config_get_int(recipient,
+		"daily_agent_budget_micros") : 0;
+	if (fleet_cap == 0 && agent_cap == 0)
+		return TRUE;
+	if (fleet_cap < 0 || agent_cap < 0) {
+		g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+			"Daily spending limits must be nonnegative integer micro-dollars");
+		return FALSE;
+	}
+	local = g_date_time_new_from_unix_local(now);
+	if (local == NULL) {
+		g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID, "Invalid budget clock");
+		return FALSE;
+	}
+	midnight = g_date_time_new_local(g_date_time_get_year(local),
+		g_date_time_get_month(local), g_date_time_get_day_of_month(local), 0, 0, 0);
+	since = g_date_time_to_unix(midnight);
+	if (self->budget_day != since) {
+		g_hash_table_remove_all(self->budget_alerts);
+		self->budget_day = since;
+	}
+	agents = clawt_config_get_agents(config);
+	for (i = 0; i < agents->len; i++) {
+		const gchar *id = clawt_agent_config_get_id(g_ptr_array_index(agents, i));
+		gint64 cost;
+		g_autoptr(GError) read_error = NULL;
+
+		if (fleet_cap == 0 && g_strcmp0(id, agent_id) != 0)
+			continue;
+		if (!daily_cost(config, id, since, &cost, &read_error)) {
+			g_propagate_error(error, g_steal_pointer(&read_error));
+			return FALSE;
+		}
+		fleet_cost = cost > G_MAXINT64 - fleet_cost ? G_MAXINT64 : fleet_cost + cost;
+		if (g_strcmp0(id, agent_id) == 0)
+			agent_cost = cost;
+	}
+	if (fleet_cap > 0 && fleet_cost >= fleet_cap) {
+		budget_alert(self, "fleet", fleet_cost, fleet_cap);
+		blocked = TRUE;
+	}
+	if (agent_cap > 0 && agent_cost >= agent_cap) {
+		g_autofree gchar *scope = g_strconcat("agent:", agent_id, NULL);
+		budget_alert(self, scope, agent_cost, agent_cap);
+		blocked = TRUE;
+	}
+	if (blocked)
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT,
+			"Daily spending limit reached for %s; retry after local midnight or raise the cap",
+			agent_id);
+	return !blocked;
+}
 
 ClawtMailboxRouter *
 clawt_mailbox_router_new(ClawtAgentManager *agents,
@@ -503,6 +661,14 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
         g_ptr_array_add(recipients, agent);
     }
 
+	/* Refuse the complete recipient set before recording or queueing any part. */
+	for (i = 0; i < recipients->len; i++) {
+		ClawtAgent *recipient = g_ptr_array_index(recipients, i);
+		if (!clawt_mailbox_router_check_daily_budget(self,
+			clawt_agent_get_id(recipient), g_get_real_time() / G_USEC_PER_SEC, error))
+			return -1;
+	}
+
     /*
      * Checked before anything is written.  A runaway fan-out has to be
      * stopped at the source: by delivery time the messages already exist,
@@ -794,6 +960,14 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
         gboolean peer;
         gboolean system;
         gboolean invites;
+
+		/* Queued work survives a cap: never lease/ack it while blocked. */
+		if (!clawt_mailbox_router_check_daily_budget(self, agent_id,
+			g_get_real_time() / G_USEC_PER_SEC, &error)) {
+			g_hash_table_add(self->budget_waiting, g_strdup(agent_id));
+			break;
+		}
+		g_hash_table_remove(self->budget_waiting, agent_id);
 
         item = clawt_mailbox_lease(mailbox, 0);
         if (item == NULL)
@@ -1189,6 +1363,9 @@ clawt_mailbox_router_sweep(ClawtMailboxRouter *self)
 
         affected += clawt_mailbox_purge_expired(mailbox);
         affected += clawt_mailbox_reclaim_expired_leases(mailbox);
+		/* Reconsider held deliveries after midnight or a config reload. */
+		if (g_hash_table_contains(self->budget_waiting, clawt_agent_get_id(agent)))
+			clawt_mailbox_router_drain(self, clawt_agent_get_id(agent));
     }
 
     return affected;
@@ -1203,6 +1380,8 @@ clawt_mailbox_router_dispose(GObject *object)
     g_clear_object(&self->rooms);
     g_clear_object(&self->guard);
     g_clear_object(&self->transcripts);
+	g_clear_pointer(&self->budget_alerts, g_hash_table_unref);
+	g_clear_pointer(&self->budget_waiting, g_hash_table_unref);
 
     G_OBJECT_CLASS(clawt_mailbox_router_parent_class)->dispose(object);
 }
@@ -1216,5 +1395,6 @@ clawt_mailbox_router_class_init(ClawtMailboxRouterClass *klass)
 static void
 clawt_mailbox_router_init(ClawtMailboxRouter *self)
 {
-    (void)self;
+	self->budget_alerts = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	self->budget_waiting = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 }

@@ -465,6 +465,16 @@ orchestration:
   # Messages one agent may send per minute. 0 disables the limit.
   rate_limit_per_minute: 30
 
+  # Daily fleet admission cap in integer millionths of USD; 0 disables.
+  # Uses recorded usage since local midnight, including reset archives.
+  # Already running work can overshoot; new deliveries wait until reset.
+  daily_fleet_budget_micros: 0
+
+  # Daily admission cap per agent in integer millionths of USD; 0 disables.
+  # Override with daily_agent_budget_micros on an agent.
+  # Uses local midnight and persisted usage; in-flight work can overshoot.
+  daily_agent_budget_micros: 0
+
   # Spend cap for one delegated task and everything it spawns.
   # 0 disables the cap.
   task_budget_usd: 5.0

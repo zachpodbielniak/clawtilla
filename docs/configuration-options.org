@@ -831,6 +831,26 @@ much beyond that is usually a loop rather than a plan.
 
 Messages one agent may send per minute. 0 disables the limit.
 
+*** =orchestration.daily_fleet_budget_micros=
+
+- Type :: integer
+- Default :: =0=
+- Since :: 0.1.0
+
+Daily fleet admission cap in integer millionths of USD; 0 disables.
+Uses recorded usage since local midnight, including reset archives.
+Already running work can overshoot; new deliveries wait until reset.
+
+*** =orchestration.daily_agent_budget_micros=
+
+- Type :: integer
+- Default :: =0=
+- Since :: 0.1.0
+
+Daily admission cap per agent in integer millionths of USD; 0 disables.
+Override with daily_agent_budget_micros on an agent.
+Uses local midnight and persisted usage; in-flight work can overshoot.
+
 *** =orchestration.task_budget_usd=
 
 - Type :: number

@@ -2931,6 +2931,21 @@ clawt_config_get_warnings(ClawtConfig *self)
     return self->warnings;
 }
 
+/* Thresholds must have one exact value; reject signs, fractions and overflow. */
+static gboolean
+validate_daily_limit(const gchar *value, const gchar *key, GError **error)
+{
+	guint64 parsed;
+
+	if (value != NULL && g_ascii_string_to_unsigned(value, 10, 0, G_MAXINT64,
+		&parsed, NULL))
+		return TRUE;
+	g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+		"%s must be a nonnegative integer micro-dollar amount no greater than %"
+		G_GINT64_FORMAT, key, G_MAXINT64);
+	return FALSE;
+}
+
 gboolean
 clawt_config_validate_file(const gchar *path,
                           gboolean strict,
@@ -2977,8 +2992,24 @@ gboolean
 clawt_config_validate(ClawtConfig *self, GError **error)
 {
     const gchar *socket_path;
+	guint i;
 
     g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);
+	if (!validate_daily_limit(clawt_config_get_string(self,
+		"orchestration.daily_fleet_budget_micros"),
+		"orchestration.daily_fleet_budget_micros", error) ||
+		!validate_daily_limit(clawt_config_get_string(self,
+		"orchestration.daily_agent_budget_micros"),
+		"orchestration.daily_agent_budget_micros", error))
+		return FALSE;
+	for (i = 0; i < self->agents->len; i++) {
+		ClawtAgentConfig *agent = g_ptr_array_index(self->agents, i);
+		g_autofree gchar *key = g_strdup_printf("agent %s daily_agent_budget_micros",
+			clawt_agent_config_get_id(agent));
+		if (!validate_daily_limit(clawt_agent_config_get_string(agent,
+			"daily_agent_budget_micros"), key, error))
+			return FALSE;
+	}
 
     socket_path = clawt_config_get_string(self, "daemon.socket");
     if (socket_path == NULL || *socket_path == '\0') {
