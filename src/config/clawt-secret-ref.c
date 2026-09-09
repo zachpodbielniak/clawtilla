@@ -12,6 +12,8 @@
 
 #include <yaml-glib.h>
 #include <string.h>
+#include <signal.h>
+#include <unistd.h>
 
 struct _ClawtSecretRef {
     ClawtSecretBackend  backend;
@@ -198,7 +200,25 @@ typedef struct {
     gboolean     timed_out;
     GSource     *timeout_source;
 	GAsyncResult *result;
+	GCancellable *cancellable;
+	pid_t process_group;
+	gboolean result_released;
 } CommandWait;
+
+/**
+ * command_child_setup:
+ * @user_data: unused
+ *
+ * Isolate the command and its children for deadline cleanup. Only
+ * async-signal-safe operations are permitted between fork and exec.
+ */
+static void
+command_child_setup(gpointer user_data)
+{
+	(void)user_data;
+	if (setpgid(0, 0) != 0)
+		_exit(127);
+}
 
 static gboolean
 on_command_timeout(gpointer user_data)
@@ -206,7 +226,12 @@ on_command_timeout(gpointer user_data)
     CommandWait *wait = user_data;
 
     wait->timed_out = TRUE;
+	/* Kill descendants too, including when the direct child already exited. */
+	if (wait->process_group > 0)
+		(void)kill(-wait->process_group, SIGKILL);
     g_subprocess_force_exit(wait->proc);
+	/* An escaped descendant may retain stdout; cancellation bounds the read. */
+	g_cancellable_cancel(wait->cancellable);
 
     return G_SOURCE_REMOVE;
 }
@@ -223,6 +248,26 @@ on_command_done(GObject *source, GAsyncResult *result, gpointer user_data)
     g_main_loop_quit(wait->loop);
 }
 
+/**
+ * on_command_result_released:
+ * @user_data: command whose cancelled operations are settling
+ * @object: finalized completion result
+ *
+ * Communicate may report its first error before its sibling read/wait
+ * callbacks finish. Those callbacks retain the result; keep their private
+ * context running until the final reference is released. Cancellation
+ * covers both operations, so this never waits for a descendant's pipe EOF.
+ */
+static void
+on_command_result_released(gpointer user_data, GObject *object)
+{
+	CommandWait *wait = user_data;
+
+	(void)object;
+	wait->result_released = TRUE;
+	g_main_loop_quit(wait->loop);
+}
+
 /*
  * Runs a command and takes its stdout.
  *
@@ -237,6 +282,8 @@ resolve_command(const gchar *locator,
                 GError     **error)
 {
     g_autoptr(GSubprocess) proc = NULL;
+	g_autoptr(GSubprocessLauncher) launcher = NULL;
+	g_autoptr(GCancellable) cancellable = NULL;
     g_autoptr(GMainContext) context = NULL;
     g_autoptr(GMainLoop) loop = NULL;
 	g_autoptr(GAsyncResult) result = NULL;
@@ -246,16 +293,19 @@ resolve_command(const gchar *locator,
     CommandWait wait;
     gsize length;
 	gboolean communicated;
+	const gchar *identifier;
 
     if (!g_shell_parse_argv(locator, NULL, &argv, error)) {
         g_prefix_error(error, "secret command is not parseable: ");
         return NULL;
     }
 
-    proc = g_subprocess_newv((const gchar * const *)argv,
-                             G_SUBPROCESS_FLAGS_STDOUT_PIPE |
-                             G_SUBPROCESS_FLAGS_STDERR_SILENCE,
-                             error);
+	launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE |
+		G_SUBPROCESS_FLAGS_STDERR_SILENCE);
+	g_subprocess_launcher_set_child_setup(launcher, command_child_setup,
+		NULL, NULL);
+	proc = g_subprocess_launcher_spawnv(launcher,
+		(const gchar * const *)argv, error);
     if (proc == NULL) {
         g_prefix_error(error, "secret command failed to start: ");
         return NULL;
@@ -266,10 +316,17 @@ resolve_command(const gchar *locator,
     loop = g_main_loop_new(context, FALSE);
 
     wait.proc = proc;
+	cancellable = g_cancellable_new();
+	wait.cancellable = cancellable;
+	/* An already-reaped child has no identifier; never signal group zero. */
+	identifier = g_subprocess_get_identifier(proc);
+	wait.process_group = identifier != NULL ?
+		(pid_t)g_ascii_strtoll(identifier, NULL, 10) : 0;
     wait.loop = loop;
     wait.timed_out = FALSE;
     wait.timeout_source = NULL;
 	wait.result = NULL;
+	wait.result_released = FALSE;
 
     /*
      * Attached to the context we pushed, not added with
@@ -279,13 +336,16 @@ resolve_command(const gchar *locator,
      * would have with no timeout at all.
      */
     if (timeout_seconds > 0) {
-        wait.timeout_source = g_timeout_source_new_seconds(timeout_seconds);
+		/* Use an exact monotonic deadline without seconds-source coalescing. */
+		wait.timeout_source = g_timeout_source_new(0);
+		g_source_set_ready_time(wait.timeout_source,
+			g_get_monotonic_time() + (gint64)timeout_seconds * G_USEC_PER_SEC);
         g_source_set_callback(wait.timeout_source, on_command_timeout,
                               &wait, NULL);
         g_source_attach(wait.timeout_source, context);
     }
 
-    g_subprocess_communicate_utf8_async(proc, NULL, NULL,
+    g_subprocess_communicate_utf8_async(proc, NULL, cancellable,
                                         on_command_done, &wait);
     g_main_loop_run(loop);
 
@@ -294,11 +354,16 @@ resolve_command(const gchar *locator,
         g_source_unref(wait.timeout_source);
     }
 
-    g_main_context_pop_thread_default(context);
 	result = g_steal_pointer(&wait.result);
 	/* Finish every completed operation once, including timed-out commands. */
 	communicated = g_subprocess_communicate_utf8_finish(proc, result,
 		&stdout_buf, NULL, &command_error);
+	/* Do not abandon the context while cancelled sibling tasks still own it. */
+	g_object_weak_ref(G_OBJECT(result), on_command_result_released, &wait);
+	g_clear_object(&result);
+	if (!wait.result_released)
+		g_main_loop_run(loop);
+	g_main_context_pop_thread_default(context);
 
     if (wait.timed_out) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_TIMEOUT,

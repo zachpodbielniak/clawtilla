@@ -282,6 +282,8 @@ credentials:
 - the command backend has a timeout, because a locked password manager
   blocks rather than fails and would otherwise block daemon startup
 - command credentials retain the asynchronous completion result until it is consumed; successful stdout has trailing CR/LF removed, while nonzero exits and empty output fail resolution
+- a command runs in its own process group, which is killed on timeout; output collection is also cancelled so even a descendant that leaves the group cannot hold startup open through an inherited stdout pipe
+- cancelled command reads and waits finish releasing their shared completion result before its private event context is discarded, preventing repeated timeouts from leaking context descriptors
 - IPC responses carry the *reference*, never the value: a client can say
   "a Matrix token is configured" without the token crossing the socket
 - error messages name secrets by reference too
