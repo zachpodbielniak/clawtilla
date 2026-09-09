@@ -1,0 +1,13 @@
+#+title: Review regression guarantees
+#+description: Behavioral guarantees covered by the September 2026 bug regressions.
+#+authors: Clawtilla contributors
+#+categories: development testing
+#+created: 2026-09-09T00:00:00-04:00
+#+updated: 2026-09-09T00:00:00-04:00
+#+version: 1
+
+* Attachment names
+
+An attachment id is a single filename inside the attachment store. Adjacent dots inside that filename are valid, so files such as =report..txt= remain downloadable and retain their display names. Previously stored ids use the same rule. Leading dots, path separators, empty ids and parent-directory traversal remain rejected.
+
+=tests/test-attachment.c= stores files with adjacent and leading dots in their original names, resolves the generated ids, reads back their bytes and checks the displayed names. The hostile-id tests continue to enforce the store boundary.

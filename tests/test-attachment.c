@@ -207,6 +207,41 @@ test_a_missing_file_is_refused(void)
     g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND);
 }
 
+/* Every ordinary basename, including adjacent dots, must remain downloadable. */
+static void
+test_dotted_names_round_trip(void)
+{
+	static const gchar *const names[] = { "report..txt", "...", ".hidden..txt", NULL };
+	Fixture fixture = { 0 };
+	g_autofree gchar *store = NULL;
+	guint i;
+
+	fixture_setup(&fixture);
+	store = g_build_filename(fixture.dir, "attachments", NULL);
+	for (i = 0; names[i] != NULL; i++) {
+		g_autofree gchar *source = g_build_filename(fixture.dir, names[i], NULL);
+		g_autofree gchar *id = NULL;
+		g_autofree gchar *path = NULL;
+		g_autofree gchar *name = NULL;
+		g_autofree gchar *contents = NULL;
+		g_autoptr(GError) error = NULL;
+
+		g_assert_true(g_file_set_contents(source, "attachment bytes", -1, &error));
+		g_assert_no_error(error);
+		id = clawt_attachment_store(store, source, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(id);
+		path = clawt_attachment_path(store, id);
+		g_assert_nonnull(path);
+		g_assert_true(g_file_get_contents(path, &contents, NULL, &error));
+		g_assert_no_error(error);
+		g_assert_cmpstr(contents, ==, "attachment bytes");
+		name = clawt_attachment_name(id);
+		g_assert_cmpstr(name, ==, names[i]);
+	}
+	fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -221,6 +256,7 @@ main(int argc, char *argv[])
                     test_an_id_from_the_wire_is_checked);
     g_test_add_func("/attachment/missing-file",
                     test_a_missing_file_is_refused);
+	g_test_add_func("/attachment/dotted-names-round-trip", test_dotted_names_round_trip);
 
     return g_test_run();
 }

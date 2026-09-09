@@ -20,7 +20,8 @@
  * second field to keep in step, and it is sanitised on the way in rather
  * than escaped at each use -- the same rule agent ids follow.  Every
  * character outside the safe set becomes "_", which cannot produce a
- * separator, a "..", or a leading dot.
+ * separator. The random prefix prevents the resulting id from being a
+ * dot component, even when the original basename starts with dots.
  */
 static gchar *
 safe_name(const gchar *path)
@@ -106,13 +107,13 @@ id_is_ours(const gchar *id)
             return FALSE;
     }
 
-    /*
-     * "-" and "." are in the set, so ".." would pass the loop.  It
-     * cannot begin with a dot (checked above) and cannot contain a
-     * separator, but a component of ".." inside the name is still worth
-     * refusing outright rather than reasoning about.
-     */
-    return strstr(id, "..") == NULL;
+	/*
+	 * Adjacent dots inside a basename are ordinary filename bytes, not a
+	 * parent-directory component. Leading dots and both separators were
+	 * rejected above. Accepting these also repairs ids already stored by
+	 * older versions, whose writer has always preserved dots in names.
+	 */
+	return TRUE;
 }
 
 gchar *
