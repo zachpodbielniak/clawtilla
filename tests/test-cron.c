@@ -310,10 +310,74 @@ test_a_bad_preset_says_what_the_choices_are(void)
     g_assert_nonnull(error);
 }
 
+/* Assert real instants and expression matches across local-time discontinuities. */
+static void
+check_next_in_zone(const gchar *zone_name, const gchar *expression,
+	const gchar *from, const gchar *expected)
+{
+	g_autofree gchar *saved_tz = g_strdup(g_getenv("TZ"));
+	g_autoptr(ClawtCron) cron = clawt_cron_parse(expression, NULL);
+	g_autoptr(GDateTime) start = g_date_time_new_from_iso8601(from, NULL);
+	g_autoptr(GDateTime) want = g_date_time_new_from_iso8601(expected, NULL);
+	g_autoptr(GDateTime) next = NULL;
+
+	g_setenv("TZ", zone_name, TRUE);
+	next = clawt_cron_next(cron, start);
+	if (saved_tz != NULL)
+		g_setenv("TZ", saved_tz, TRUE);
+	else
+		g_unsetenv("TZ");
+
+	g_assert_nonnull(next);
+	g_assert_true(g_date_time_equal(next, want));
+	g_assert_cmpint(g_date_time_compare(next, start), >, 0);
+	g_assert_true(clawt_cron_matches(cron, next));
+	g_assert_cmpfloat(g_date_time_get_seconds(next), ==, 0);
+}
+
+/* A missing wall minute must not silently become the next valid hour. */
+static void
+test_dst_gap(void)
+{
+	check_next_in_zone("America/New_York", "30 2 * * *",
+		"2026-03-08T00:00:00-05:00", "2026-03-09T02:30:00-04:00");
+	check_next_in_zone("Australia/Lord_Howe", "15 2 * * *",
+		"2026-10-04T00:00:00+10:30", "2026-10-05T02:15:00+11:00");
+}
+
+/* Both real occurrences count, including searches late in the first hour. */
+static void
+test_dst_fold(void)
+{
+	check_next_in_zone("America/New_York", "30 1 * * *",
+		"2026-11-01T00:00:00-04:00", "2026-11-01T01:30:00-04:00");
+	check_next_in_zone("America/New_York", "30 1 * * *",
+		"2026-11-01T01:30:00-04:00", "2026-11-01T01:30:00-05:00");
+	check_next_in_zone("America/New_York", "30 1 * * *",
+		"2026-11-01T01:45:00-04:00", "2026-11-01T01:30:00-05:00");
+	check_next_in_zone("America/New_York", "30 1 * * *",
+		"2026-11-01T01:30:00-05:00", "2026-11-02T01:30:00-05:00");
+	check_next_in_zone("Australia/Lord_Howe", "45 1 * * *",
+		"2026-04-05T01:45:00+11:00", "2026-04-05T01:45:00+10:30");
+}
+
+/* Input offsets and fractional seconds cannot move the exclusive boundary. */
+static void
+test_local_zone_and_fractional_boundary(void)
+{
+	check_next_in_zone("America/New_York", "0 9 * * *",
+		"2026-08-24T12:59:59.500Z", "2026-08-24T09:00:00-04:00");
+	check_next_in_zone("America/New_York", "0 9 * * *",
+		"2026-08-24T13:00:00.500Z", "2026-08-25T09:00:00-04:00");
+}
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
+	g_test_add_func("/cron/dst-gap", test_dst_gap);
+	g_test_add_func("/cron/dst-fold", test_dst_fold);
+	g_test_add_func("/cron/local-boundary", test_local_zone_and_fractional_boundary);
 
     g_test_add_func("/cron/ordinary", test_the_ordinary_forms);
     g_test_add_func("/cron/names", test_names_are_accepted);

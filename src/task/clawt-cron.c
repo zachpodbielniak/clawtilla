@@ -368,97 +368,86 @@ clawt_cron_matches(ClawtCron *self, GDateTime *when)
 GDateTime *
 clawt_cron_next(ClawtCron *self, GDateTime *after)
 {
-    g_autoptr(GDateTime) cursor = NULL;
-    gint searched;
+	g_autoptr(GTimeZone) zone = NULL;
+	g_autoptr(GDateTime) local_after = NULL;
+	g_autoptr(GDateTime) day = NULL;
+	gint64 after_seconds;
+	gint searched;
 
-    g_return_val_if_fail(self != NULL, NULL);
-    g_return_val_if_fail(after != NULL, NULL);
+	g_return_val_if_fail(self != NULL, NULL);
+	g_return_val_if_fail(after != NULL, NULL);
 
-    /*
-     * Strictly after, and on a minute boundary.  Without the truncation
-     * a routine that fired at 09:00:30 would be handed 09:00 again and
-     * run twice.
-     */
-    cursor = g_date_time_add_seconds(after,
-                                     60 - g_date_time_get_seconds(after));
+	/* Use UTC only as a calendar counter; actual firings use local time. */
+	zone = g_time_zone_new_local();
+	local_after = g_date_time_to_timezone(after, zone);
+	after_seconds = g_date_time_to_unix(after);
+	day = g_date_time_new_utc(g_date_time_get_year(local_after),
+		g_date_time_get_month(local_after),
+		g_date_time_get_day_of_month(local_after), 0, 0, 0);
 
-    {
-        g_autoptr(GDateTime) truncated = g_date_time_new_local(
-            g_date_time_get_year(cursor), g_date_time_get_month(cursor),
-            g_date_time_get_day_of_month(cursor),
-            g_date_time_get_hour(cursor), g_date_time_get_minute(cursor), 0);
+	for (searched = 0; searched < SEARCH_DAYS && day != NULL; searched++) {
+		g_autoptr(GDateTime) tomorrow = NULL;
 
-        if (truncated != NULL) {
-            g_date_time_unref(cursor);
-            cursor = g_date_time_ref(truncated);
-        }
-    }
+		/* Skip whole calendar dates, keeping leap-day searches inexpensive. */
+		if (day_matches(self, day)) {
+			gint64 midnight = g_date_time_to_unix(day);
+			gint64 best = G_MAXINT64;
+			gint first_interval;
+			gint last_interval;
+			gint interval;
 
-    for (searched = 0; searched < SEARCH_DAYS; searched++) {
-        gint hour;
+			/*
+			 * UTC offsets are less than a day. Enumerate every timezone
+			 * interval that could contain this local date, including both
+			 * sides of a fold. Unlike constructing a local GDateTime, this
+			 * neither normalizes a gap nor silently chooses one occurrence.
+			 */
+			first_interval = g_time_zone_find_interval(zone,
+				G_TIME_TYPE_UNIVERSAL, midnight - 86400);
+			last_interval = g_time_zone_find_interval(zone,
+				G_TIME_TYPE_UNIVERSAL, midnight + 2 * 86400);
 
-        if (!day_matches(self, cursor)) {
-            g_autoptr(GDateTime) tomorrow = g_date_time_add_days(cursor, 1);
-            g_autoptr(GDateTime) midnight = NULL;
+			for (interval = first_interval; interval <= last_interval;
+				 interval++) {
+				gint offset = g_time_zone_get_offset(zone, interval);
+				gint hour;
 
-            if (tomorrow == NULL)
-                return NULL;
+				for (hour = 0; hour < 24; hour++) {
+					gint minute;
 
-            midnight = g_date_time_new_local(
-                g_date_time_get_year(tomorrow),
-                g_date_time_get_month(tomorrow),
-                g_date_time_get_day_of_month(tomorrow), 0, 0, 0);
+					if ((self->hours & (1u << hour)) == 0)
+						continue;
 
-            if (midnight == NULL)
-                return NULL;
+					for (minute = 0; minute < 60; minute++) {
+						gint64 candidate;
 
-            g_date_time_unref(cursor);
-            cursor = g_date_time_ref(midnight);
-            continue;
-        }
+						if ((self->minutes &
+							 (G_GUINT64_CONSTANT(1) << minute)) == 0)
+							continue;
 
-        for (hour = g_date_time_get_hour(cursor); hour < 24; hour++) {
-            gint minute;
+						candidate = midnight + hour * 3600 + minute * 60 - offset;
+						/* Interval membership rejects nonexistent wall times. */
+						if (candidate > after_seconds && candidate < best &&
+							g_time_zone_find_interval(zone, G_TIME_TYPE_UNIVERSAL,
+								candidate) == interval)
+							best = candidate;
+					}
+				}
+			}
 
-            if ((self->hours & (1u << hour)) == 0)
-                continue;
+			if (best != G_MAXINT64) {
+				g_autoptr(GDateTime) utc = g_date_time_new_from_unix_utc(best);
 
-            minute = (hour == g_date_time_get_hour(cursor))
-                ? g_date_time_get_minute(cursor) : 0;
+				return utc != NULL ? g_date_time_to_timezone(utc, zone) : NULL;
+			}
+		}
 
-            for (; minute < 60; minute++) {
-                if ((self->minutes &
-                     (G_GUINT64_CONSTANT(1) << minute)) == 0)
-                    continue;
+		tomorrow = g_date_time_add_days(day, 1);
+		g_clear_pointer(&day, g_date_time_unref);
+		day = g_steal_pointer(&tomorrow);
+	}
 
-                return g_date_time_new_local(
-                    g_date_time_get_year(cursor),
-                    g_date_time_get_month(cursor),
-                    g_date_time_get_day_of_month(cursor), hour, minute, 0);
-            }
-        }
-
-        {
-            g_autoptr(GDateTime) tomorrow = g_date_time_add_days(cursor, 1);
-            g_autoptr(GDateTime) midnight = NULL;
-
-            if (tomorrow == NULL)
-                return NULL;
-
-            midnight = g_date_time_new_local(
-                g_date_time_get_year(tomorrow),
-                g_date_time_get_month(tomorrow),
-                g_date_time_get_day_of_month(tomorrow), 0, 0, 0);
-
-            if (midnight == NULL)
-                return NULL;
-
-            g_date_time_unref(cursor);
-            cursor = g_date_time_ref(midnight);
-        }
-    }
-
-    return NULL;
+	return NULL;
 }
 
 /* ── Presets ─────────────────────────────────────────────────────── */

@@ -240,6 +240,8 @@ fires twice.  Both are what every other cron does, and the alternative --
 silently running everything in UTC -- is a schedule that is an hour wrong
 for half the year.
 
+The scheduler considers every timezone interval that can contain a matching local date, then maps each selected wall minute back to its real instant. A minute in a spring gap belongs to no interval and is skipped; a minute in an autumn fold belongs to two intervals and fires at both instants, including half-hour transitions. Searches are strictly after the supplied instant, and skip whole dates that do not match so leap-day schedules remain inexpensive.
+
 ** When the machine was asleep
 
 Routines only fire while the daemon is running.  A machine that was
