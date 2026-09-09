@@ -1,0 +1,35 @@
+#+title: Recursive dependency refresh
+#+description: Dependency baseline and validation for the September 2026 refresh
+#+authors: Zach Podbielniak
+#+categories: development dependencies
+#+created: 2026-09-08T23:42:59-04:00
+#+updated: 2026-09-09T00:01:00-04:00
+#+version: 1
+
+* Original pins
+
+Before this refresh, clawtilla master was at =542747f= and libreclaw was pinned to =002fc29321c95bc881458dd772f65115c7103be6=.
+
+Both copies of ai-glib were pinned to =6c079cb30dd957c83ba309b45d5ea49ed746e1df=: =deps/libreclaw/deps/ai-glib= and =deps/libreclaw/deps/podomation/deps/ai-glib=. Preserve this commit as the rollback reference.
+
+* Updated upstream revisions
+
+The recursive fetch updated ai-glib to =b2231d4f6d3512d8dc84a935916e1c9bee9de0b2=, bacon to =bae1399dd7c36dd575c772836488828b6c83e77e=, crispy to =2625b7af0762a4cecbfdc66bd344c03ff7887a9c=, and podomation to =c87d02ee66f7a1ec01839dbcf54ca00301558b50= before applying the fixes below. yaml-glib was already current at =89a835be02757526b61266a39f728afff3707eee= in all five copies. The committed gitlinks record the final revisions, including follow-up fixes.
+
+* Fixes required by validation
+
+The initial clean build exposed libreclaw GIR warnings: duplicate gtk-doc blocks, unresolved external namespaces, missing ownership annotations, and unregistered result records. Existing local introspection fixes from libreclaw =24055e9=, podomation =1b8df7d=, and mcp-glib =aaba1fd= were applied to current master and validated with their ownership and metadata regression tests. The scanner now rejects warnings rather than silently emitting incomplete bindings. Clawtilla searches libreclaw's build directory for the bundled namespaces, as in the existing local integration fix =3292689=.
+
+The htmx-glib element and upload tests used =g_unlink()= without including =glib/gstdio.h=. Adding that header removes the implicit-declaration warnings without weakening compiler diagnostics.
+
+* Fedora build packages
+
+The build uses =gcc=, =make=, =pkgconf-pkg-config=, =glib2-devel=, =libsoup3-devel=, =json-glib-devel=, =cmark-devel=, =sqlite-devel=, =libetpan-devel=, =libpq-devel=, =libdex-devel=, =libxml2-devel=, =libyaml-devel=, =gtk4-devel=, =libadwaita-devel=, =readline-devel=, =ncurses-devel=, =gobject-introspection-devel=, =libgudev-devel=, =systemd-devel=, and =libvirt-devel=. Existing host packages were used; no host package or image configuration changes were required.
+
+* Validation
+
+All 15 recursive dependency checkouts passed their =make -j8 test= suites, including repeated copies. After the fixes, =make -j8 clean-all all= completed without compiler or GIR warnings. The affected podomation and libreclaw suites were rerun against the final sources, along with podomation's fresh =check-gir= and mcp-glib's =test-gir= metadata regression.
+
+Clawtilla passed =make -j8 clean tests=, followed by =make -j8 all= and =make -j8 test=. The application suite ran 81 C test binaries and four shell checks. The GTK and web room integration scripts explicitly skipped because =CLAWT_TEST_INTEGRATION=1= was not enabled; live podman, libvirt, gowl, and GUI integration were not exercised. Runtime warnings deliberately triggered by negative test cases are distinct from compiler and GIR diagnostics, which were absent from the final builds.
+
+Final dependency commits published by this refresh are htmx-glib =d2f0e625c877e27083491ed58c9cb7b7b8ed1268=, mcp-glib =a6bd81177e9fe55df8941462be5442791bccd6f5=, podomation =ad472271365efd847135439e8b0f2c223e1f5233=, and libreclaw =baf41762248eaf96ce136f54ca72839ef82c8f79=. Both copies of mcp-glib use the fixed revision. All commits use Conventional Commits and were pushed to master in dependency order.

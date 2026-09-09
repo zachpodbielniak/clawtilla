@@ -503,3 +503,9 @@ Conventional Commits.  ~feat~, ~fix~, ~docs~, ~refactor~, ~perf~,
 
 Docs ship in the same commit as the code they describe.  A doc written
 "later" is a doc written never.
+
+** Bundled introspection namespaces
+
+The default release build generates warning-fatal GIR metadata for clawtilla and libreclaw. Libreclaw also supplies metadata for its bundled =AiGlib=, =Podomation= and =Mcp= namespaces; clawtilla's scanner and typelib compiler search =deps/libreclaw/build/release= to resolve those transitive includes. The dependency metadata describes the revisions actually linked into =liblc=, rather than an unrelated system installation.
+
+Libreclaw's =make test= verifies database boxed-row lifetimes, public API availability in the GIR, and resolution of advertised dependency symbols from its shared library. Its scanner-policy regression verifies that =--warn-error= applies to the =Lc= namespace itself; flags on nested dependency scans cannot satisfy that check. An explicit =GIR=0= build skips metadata checks while retaining C ownership tests.

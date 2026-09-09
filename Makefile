@@ -744,6 +744,7 @@ $(GIR_FILE): $(LIB_SHARED) $(PUBLIC_HEADERS) | $(OUTDIR)
 		--include=Gio-2.0 \
 		--include=Json-1.0 \
 		--include-uninstalled=$(LIBRECLAW_OUTDIR)/Lc-1.0.gir \
+		--add-include-path=$(LIBRECLAW_OUTDIR) \
 		--pkg glib-2.0 --pkg gobject-2.0 --pkg gio-2.0 \
 		--pkg json-glib-1.0 --pkg libsoup-3.0 \
 		-I$(SRCDIR) -I$(OUTDIR) \
