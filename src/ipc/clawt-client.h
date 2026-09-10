@@ -73,6 +73,22 @@ void clawt_client_set_tls(ClawtClient *self,
  * Returns: %TRUE if connected
  */
 gboolean clawt_client_connect(ClawtClient *self, GError **error);
+/*
+ * The non-blocking form, for a host that has lent us its main loop.
+ *
+ * clawt_client_connect() blocks in the socket connect and then turns the
+ * context while the handshake is in flight.  A host whose loop that is --
+ * cmacs, whose loop is also the editor's and, under `--gowl', the
+ * compositor's -- cannot afford either: a remote daemon that is slow to
+ * answer would freeze the desktop for as long as DNS and TLS take.
+ */
+void     clawt_client_connect_async(ClawtClient         *self,
+                                    GCancellable        *cancellable,
+                                    GAsyncReadyCallback  callback,
+                                    gpointer             user_data);
+gboolean clawt_client_connect_finish(ClawtClient   *self,
+                                     GAsyncResult  *result,
+                                     GError       **error);
 
 void     clawt_client_disconnect(ClawtClient *self);
 gboolean clawt_client_is_connected(ClawtClient *self);

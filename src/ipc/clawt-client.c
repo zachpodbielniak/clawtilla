@@ -743,6 +743,85 @@ say_hello(ClawtClient *self, GError **error)
     return reply != NULL;
 }
 
+/*
+ * The socket client, configured but not yet used.
+ *
+ * Shared by the blocking and the async connect so the TLS decision --
+ * and, more to the point, the deliberate per-connection acceptance of an
+ * unvalidated certificate -- is made in exactly one place.  Two copies of
+ * that is how one path ends up validating and the other not.
+ */
+static GSocketClient *
+make_socket_client(ClawtClient *self)
+{
+    GSocketClient *socket_client = g_socket_client_new();
+
+    if (self->socket_path == NULL && self->tls) {
+        g_socket_client_set_tls(socket_client, TRUE);
+
+        /*
+         * Accepting an unvalidated certificate is done by answering the
+         * handshake rather than by clearing a validation-flags field,
+         * which GLib deprecated precisely because clearing it silently
+         * accepted everything for ever.  Here the decision is made per
+         * connection and only when explicitly asked for.
+         */
+        if (self->accept_unknown_certificate)
+            g_signal_connect(socket_client, "event",
+                             G_CALLBACK(on_socket_client_event), self);
+    }
+
+    return socket_client;
+}
+
+/*
+ * A network connection is armed with keepalive; a unix one has nothing
+ * to arm.
+ *
+ * Without it a route that goes away -- a laptop that suspends, a tailnet
+ * that reconnects somewhere else -- leaves this end holding a read that
+ * will never complete.  Nothing fails, so handle_disconnect() never
+ * runs, so the reconnect this client already knows how to do never
+ * happens: the window stays connected, shows no new message for the rest
+ * of the day, and the next thing typed into it waits out the request
+ * timeout and is lost.  Measured against a black-holed proxy: 150
+ * seconds with `connected=yes` throughout and not one of the events sent
+ * in that time.
+ */
+static void
+arm_keepalive(ClawtClient *self, GSocketConnection *connection)
+{
+    GSocket *socket = g_socket_connection_get_socket(connection);
+    g_autoptr(GError) local = NULL;
+
+    if (socket != NULL && !clawt_ipc_socket_keepalive(socket, &local))
+        g_warning("ipc: %s; a connection to %s:%u that goes away "
+                  "may not be noticed", local->message, self->host,
+                  self->port);
+}
+
+/*
+ * Everything between having a connection and having said hello.
+ *
+ * The reader starts before the handshake, and the handshake goes through
+ * it like every other request.  One reader owns the stream for the whole
+ * life of the connection; nothing else ever reads it.
+ */
+static void
+adopt_connection(ClawtClient *self, GSocketConnection *connection)
+{
+    self->stream = G_IO_STREAM(g_object_ref(connection));
+    self->connection = g_object_ref(connection);
+    self->input = g_data_input_stream_new(
+        g_io_stream_get_input_stream(self->stream));
+    g_data_input_stream_set_newline_type(self->input,
+                                         G_DATA_STREAM_NEWLINE_TYPE_ANY);
+    self->output = g_io_stream_get_output_stream(self->stream);
+
+    ensure_context(self);
+    read_next(self);
+}
+
 gboolean
 clawt_client_connect(ClawtClient *self, GError **error)
 {
@@ -755,7 +834,7 @@ clawt_client_connect(ClawtClient *self, GError **error)
     if (self->stream != NULL)
         return TRUE;
 
-    socket_client = g_socket_client_new();
+    socket_client = make_socket_client(self);
 
     if (self->socket_path != NULL) {
         address = g_unix_socket_address_new(self->socket_path);
@@ -774,24 +853,7 @@ clawt_client_connect(ClawtClient *self, GError **error)
                            self->socket_path);
             return FALSE;
         }
-
-        self->stream = G_IO_STREAM(g_object_ref(connection));
     } else {
-        if (self->tls) {
-            g_socket_client_set_tls(socket_client, TRUE);
-
-            /*
-             * Accepting an unvalidated certificate is done by answering
-             * the handshake rather than by clearing a validation-flags
-             * field, which GLib deprecated precisely because clearing it
-             * silently accepted everything for ever.  Here the decision is
-             * made per connection and only when explicitly asked for.
-             */
-            if (self->accept_unknown_certificate)
-                g_signal_connect(socket_client, "event",
-                                 G_CALLBACK(on_socket_client_event), self);
-        }
-
         connection = g_socket_client_connect_to_host(socket_client,
                                                      self->host, self->port,
                                                      NULL, error);
@@ -802,50 +864,10 @@ clawt_client_connect(ClawtClient *self, GError **error)
             return FALSE;
         }
 
-        /*
-         * A network connection is armed with keepalive; a unix one has
-         * nothing to arm.
-         *
-         * Without it a route that goes away -- a laptop that suspends, a
-         * tailnet that reconnects somewhere else -- leaves this end
-         * holding a read that will never complete.  Nothing fails, so
-         * handle_disconnect() never runs, so the reconnect this client
-         * already knows how to do never happens: the window stays
-         * connected, shows no new message for the rest of the day, and
-         * the next thing typed into it waits out the request timeout and
-         * is lost.  Measured against a black-holed proxy: 150 seconds
-         * with `connected=yes` throughout and not one of the events sent
-         * in that time.
-         */
-        {
-            GSocket *socket = g_socket_connection_get_socket(connection);
-            g_autoptr(GError) local = NULL;
-
-            if (socket != NULL &&
-                !clawt_ipc_socket_keepalive(socket, &local))
-                g_warning("ipc: %s; a connection to %s:%u that goes away "
-                          "may not be noticed", local->message, self->host,
-                          self->port);
-        }
-
-        self->stream = G_IO_STREAM(g_object_ref(connection));
+        arm_keepalive(self, connection);
     }
 
-    self->connection = g_object_ref(connection);
-    self->input = g_data_input_stream_new(
-        g_io_stream_get_input_stream(self->stream));
-    g_data_input_stream_set_newline_type(self->input,
-                                         G_DATA_STREAM_NEWLINE_TYPE_ANY);
-    self->output = g_io_stream_get_output_stream(self->stream);
-
-    /*
-     * The reader starts before the handshake, and the handshake goes
-     * through it like every other request.  One reader owns the stream
-     * for the whole life of the connection; nothing else ever reads it.
-     *
-     */
-    ensure_context(self);
-    read_next(self);
+    adopt_connection(self, connection);
 
     if (!say_hello(self, error)) {
         clawt_client_disconnect(self);
@@ -855,6 +877,185 @@ clawt_client_connect(ClawtClient *self, GError **error)
     g_signal_emit(self, signals[SIGNAL_CONNECTED], 0);
 
     return TRUE;
+}
+
+/* ── Connecting without blocking ─────────────────────────────────── */
+
+/*
+ * clawt_client_connect() blocks in g_socket_client_connect*(), and
+ * clawt_client_request() -- which the handshake goes through -- turns the
+ * context while it waits.  Both are fine for a process whose whole job is
+ * this client, and neither is fine for a host that has borrowed its main
+ * loop to us.
+ *
+ * In cmacs the loop being turned is the editor's, and turning it from
+ * inside a primitive re-enters Lisp at a point Emacs does not expect; a
+ * `--gowl' session is also the compositor, so a remote host that is slow
+ * to answer -- DNS, a TLS handshake, a tailnet that has moved -- freezes
+ * the desktop for as long as it takes.
+ *
+ * So the whole sequence has an async form: connect, then handshake, then
+ * the `connected' signal, with nothing turning a loop that is not ours.
+ */
+
+typedef struct {
+    ClawtClient   *client;
+    GSocketClient *socket_client;   /* kept alive across the connect */
+} ConnectAttempt;
+
+static void
+connect_attempt_free(gpointer data)
+{
+    ConnectAttempt *attempt = data;
+
+    g_clear_object(&attempt->socket_client);
+    g_free(attempt);
+}
+
+static void
+on_hello_finished(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    ClawtClient *self = CLAWT_CLIENT(source);
+    g_autoptr(GTask) task = user_data;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GError) error = NULL;
+
+    reply = clawt_client_request_finish(self, result, &error);
+
+    if (reply == NULL) {
+        /*
+         * A refused handshake leaves a live socket the caller never
+         * learns about, so it is dropped here rather than left for a
+         * later connect() to find already set.
+         */
+        clawt_client_disconnect(self);
+        g_task_return_error(task, g_steal_pointer(&error));
+        return;
+    }
+
+    g_signal_emit(self, signals[SIGNAL_CONNECTED], 0);
+    g_task_return_boolean(task, TRUE);
+}
+
+static void
+on_connected(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    GSocketClient *socket_client = G_SOCKET_CLIENT(source);
+    g_autoptr(GTask) task = user_data;
+    ClawtClient *self = g_task_get_source_object(task);
+    g_autoptr(GSocketConnection) connection = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) payload = NULL;
+    GCancellable *cancellable;
+
+    if (self->socket_path != NULL)
+        connection = g_socket_client_connect_finish(socket_client, result,
+                                                    &error);
+    else
+        connection = g_socket_client_connect_to_host_finish(socket_client,
+                                                            result, &error);
+
+    if (connection == NULL) {
+        if (self->socket_path != NULL)
+            g_prefix_error(&error, "could not reach the daemon at %s "
+                                   "(is clawtillad running?): ",
+                           self->socket_path);
+        else
+            g_prefix_error(&error, "could not reach the daemon at %s:%u: ",
+                           self->host, self->port);
+
+        g_task_return_error(task, g_steal_pointer(&error));
+        return;
+    }
+
+    if (self->socket_path == NULL)
+        arm_keepalive(self, connection);
+
+    adopt_connection(self, connection);
+
+    if (self->token != NULL) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "token");
+        json_builder_add_string_value(builder, self->token);
+        json_builder_end_object(builder);
+
+        payload = json_builder_get_root(builder);
+    }
+
+    /*
+     * The cancellable is read into a local first.  Argument evaluation
+     * order is unspecified, so g_task_get_cancellable(task) sharing an
+     * argument list with g_steal_pointer(&task) is free to run second and
+     * be handed the NULL the steal just left behind -- which is a
+     * GLib-GIO-FATAL-CRITICAL, not a quiet wrong answer.
+     */
+    cancellable = g_task_get_cancellable(task);
+
+    clawt_client_request_async(self, "control.hello",
+                               g_steal_pointer(&payload), cancellable,
+                               on_hello_finished, g_steal_pointer(&task));
+}
+
+void
+clawt_client_connect_async(ClawtClient         *self,
+                           GCancellable        *cancellable,
+                           GAsyncReadyCallback  callback,
+                           gpointer             user_data)
+{
+    g_autoptr(GTask) task = NULL;
+    ConnectAttempt *attempt;
+
+    g_return_if_fail(CLAWT_IS_CLIENT(self));
+
+    task = g_task_new(self, cancellable, callback, user_data);
+    g_task_set_source_tag(task, clawt_client_connect_async);
+
+    if (self->stream != NULL) {
+        g_task_return_boolean(task, TRUE);
+        return;
+    }
+
+    /*
+     * The reader is armed on this client's own context, and the context
+     * is whatever was thread-default when the connection was adopted.
+     * Deciding it here instead means an async connect started from a
+     * timeout callback -- which pushes nothing -- still lands on the
+     * caller's loop rather than on the global default.
+     */
+    ensure_context(self);
+
+    attempt = g_new0(ConnectAttempt, 1);
+    attempt->client = self;
+    attempt->socket_client = make_socket_client(self);
+    g_task_set_task_data(task, attempt, connect_attempt_free);
+
+    if (self->socket_path != NULL) {
+        g_autoptr(GSocketAddress) address =
+            g_unix_socket_address_new(self->socket_path);
+
+        g_socket_client_connect_async(attempt->socket_client,
+                                      G_SOCKET_CONNECTABLE(address),
+                                      cancellable, on_connected,
+                                      g_steal_pointer(&task));
+    } else {
+        g_socket_client_connect_to_host_async(attempt->socket_client,
+                                              self->host, self->port,
+                                              cancellable, on_connected,
+                                              g_steal_pointer(&task));
+    }
+}
+
+gboolean
+clawt_client_connect_finish(ClawtClient   *self,
+                            GAsyncResult  *result,
+                            GError       **error)
+{
+    g_return_val_if_fail(CLAWT_IS_CLIENT(self), FALSE);
+    g_return_val_if_fail(g_task_is_valid(result, self), FALSE);
+
+    return g_task_propagate_boolean(G_TASK(result), error);
 }
 
 void

@@ -1660,6 +1660,166 @@ test_a_probe_leaves_the_callers_context_alone(void)
     clawt_test_remove_tree(dir);
 }
 
+
+/* ── Connecting without turning the caller's loop ────────────────── */
+
+typedef struct {
+    gboolean  finished;
+    gboolean  ok;
+    GError   *error;
+    guint     connected;
+} AsyncConnect;
+
+static void
+note_async_connected(ClawtClient *client, gpointer user_data)
+{
+    AsyncConnect *state = user_data;
+
+    (void)client;
+    state->connected++;
+}
+
+static void
+on_async_connect_done(GObject *source, GAsyncResult *result,
+                      gpointer user_data)
+{
+    AsyncConnect *state = user_data;
+
+    state->ok = clawt_client_connect_finish(CLAWT_CLIENT(source), result,
+                                            &state->error);
+    state->finished = TRUE;
+}
+
+static gboolean
+async_connect_finished(gpointer data)
+{
+    const AsyncConnect *state = data;
+
+    return state->finished;
+}
+
+/*
+ * The point of the async connect, stated as an assertion.
+ *
+ * clawt_client_connect() is finished by the time it returns, because it
+ * blocks in the socket connect and then turns the context while the
+ * handshake is in flight.  For a host that lent us its loop -- cmacs,
+ * whose loop is the editor's and, under `--gowl', the compositor's --
+ * that is the whole problem: a remote daemon slow to answer freezes the
+ * desktop for as long as DNS and TLS take.
+ *
+ * So the discriminating check is not that it eventually connects; a
+ * blocking call does that too.  It is that it has NOT connected at the
+ * moment control comes back.  Written the other way round, this test
+ * passes against the very implementation it exists to rule out.
+ */
+static void
+test_connect_async_returns_before_it_has_connected(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-async-XXXXXX", NULL);
+    g_autoptr(GMainContext) context = g_main_context_new();
+    g_autoptr(ClawtClient) client = NULL;
+    FakeDaemon *fake = fake_daemon_start(dir);
+    AsyncConnect state = { 0 };
+
+    client = clawt_client_new(fake->path);
+    g_signal_connect(client, "connected", G_CALLBACK(note_async_connected),
+                     &state);
+
+    g_main_context_push_thread_default(context);
+    clawt_client_connect_async(client, NULL, on_async_connect_done, &state);
+
+    g_assert_false(state.finished);
+    g_assert_false(clawt_client_is_connected(client));
+    g_assert_cmpuint(state.connected, ==, 0);
+
+    g_assert_true(pump_until(context, async_connect_finished, &state, 15));
+    g_main_context_pop_thread_default(context);
+
+    g_assert_true(state.finished);
+    g_assert_no_error(state.error);
+    g_assert_true(state.ok);
+    g_assert_true(clawt_client_is_connected(client));
+
+    /* Once, not once per stage of the sequence. */
+    g_assert_cmpuint(state.connected, ==, 1);
+
+    clawt_client_disconnect(client);
+    fake_daemon_stop(fake);
+    g_rmdir(dir);
+}
+
+/*
+ * A failure still names the daemon and the likely cause, because the
+ * async path builds its own error rather than sharing the blocking
+ * one's -- so the two can disagree, and the way to notice is to check.
+ */
+static void
+test_connect_async_names_a_daemon_that_is_not_there(void)
+{
+    g_autoptr(GMainContext) context = g_main_context_new();
+    g_autoptr(ClawtClient) client =
+        clawt_client_new("/nonexistent/clawt-async.sock");
+    AsyncConnect state = { 0 };
+
+    g_main_context_push_thread_default(context);
+    clawt_client_connect_async(client, NULL, on_async_connect_done, &state);
+    g_assert_true(pump_until(context, async_connect_finished, &state, 15));
+    g_main_context_pop_thread_default(context);
+
+    g_assert_true(state.finished);
+    g_assert_false(state.ok);
+    g_assert_nonnull(state.error);
+    g_assert_nonnull(strstr(state.error->message, "clawtillad"));
+    g_assert_nonnull(strstr(state.error->message,
+                            "/nonexistent/clawt-async.sock"));
+    g_assert_false(clawt_client_is_connected(client));
+
+    g_clear_error(&state.error);
+}
+
+/*
+ * Connecting a connected client answers straight away and does not open
+ * a second socket.  The blocking form returns TRUE for this case, and a
+ * caller that has to care which form it called has been given two APIs
+ * rather than one.
+ */
+static void
+test_connect_async_on_a_connected_client_is_immediate(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-async2-XXXXXX", NULL);
+    g_autoptr(GMainContext) context = g_main_context_new();
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(GError) error = NULL;
+    FakeDaemon *fake = fake_daemon_start(dir);
+    AsyncConnect state = { 0 };
+
+    client = clawt_client_new(fake->path);
+
+    g_main_context_push_thread_default(context);
+    g_assert_true(clawt_client_connect(client, &error));
+    g_assert_no_error(error);
+
+    clawt_client_connect_async(client, NULL, on_async_connect_done, &state);
+
+    /*
+     * A GTask completing "immediately" still returns through an idle on
+     * this context, so one turn is the fast path -- as against the many
+     * a real connect needs.
+     */
+    g_main_context_iteration(context, FALSE);
+    g_main_context_pop_thread_default(context);
+
+    g_assert_true(state.finished);
+    g_assert_true(state.ok);
+    g_assert_no_error(state.error);
+
+    clawt_client_disconnect(client);
+    fake_daemon_stop(fake);
+    g_rmdir(dir);
+}
+
+
 int
 main(int argc, char *argv[])
 {
@@ -1726,6 +1886,12 @@ main(int argc, char *argv[])
     g_test_add_func("/connection/creates-a-client",
                     test_a_client_is_built_from_the_profile);
     g_test_add_func("/connection/copy", test_a_copy_is_independent);
+    g_test_add_func("/connection/connect-async-does-not-block",
+                    test_connect_async_returns_before_it_has_connected);
+    g_test_add_func("/connection/connect-async-names-the-socket",
+                    test_connect_async_names_a_daemon_that_is_not_there);
+    g_test_add_func("/connection/connect-async-when-connected",
+                    test_connect_async_on_a_connected_client_is_immediate);
 
     return g_test_run();
 }

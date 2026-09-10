@@ -2806,6 +2806,51 @@ The things to know when embedding:
   context you handed to ~clawt_daemon_new()~, and the obvious GLib calls
   do not.
 
+*** Connecting without blocking the host's loop
+
+~clawt_client_connect()~ blocks in the socket connect, and the handshake
+it then performs goes through ~clawt_client_request()~, which /turns the
+context/ while it waits.  Both are right for a process whose whole job is
+being this client.  Neither is right for a host that has lent us its main
+loop.
+
+In cmacs the loop being turned is the editor's, and turning it from
+inside a primitive re-enters Lisp where Emacs does not expect it; a
+~--gowl~ session is also the compositor, so a remote daemon that is slow
+to answer -- DNS, a TLS handshake, a tailnet that has moved -- freezes the
+whole desktop for as long as that takes.
+
+So the sequence has an async form, and an embedder should use it:
+
+#+begin_src c
+clawt_client_connect_async(client, NULL, on_connected, self);
+
+static void
+on_connected(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    g_autoptr(GError) error = NULL;
+
+    if (!clawt_client_connect_finish(CLAWT_CLIENT(source), result, &error)) {
+        /* the message names the socket or the host:port, and why */
+        return;
+    }
+}
+#+end_src
+
+It connects, hands the ~control.hello~ handshake to
+~clawt_client_request_async()~, and only then emits ~connected~ -- once,
+not once per stage.  A client that is already connected answers straight
+away, so a caller never has to know which state it was in.  A refused
+handshake drops the socket rather than leaving a live one the caller
+never learned about.
+
+*The test for it asserts what has NOT happened.*  That it eventually
+connects is true of the blocking call too, so the discriminating check is
+that ~clawt_client_is_connected()~ is still =FALSE= at the moment control
+comes back.  Written the other way round the test passes against the very
+implementation it exists to rule out --- verified by pointing
+~connect_async~ at the blocking path and watching it fail.
+
 *** Timers and idles attach to the wrong context by default
 
 ~g_timeout_add_seconds()~ and ~g_idle_add()~ attach to the *global
