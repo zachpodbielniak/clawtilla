@@ -232,6 +232,16 @@ gboolean clawt_client_subscribe(ClawtClient  *self,
                                 guint64       cursor,
                                 gboolean     *out_resumed,
                                 GError      **error);
+/* Non-blocking, for the same reason clawt_client_connect_async() is. */
+void     clawt_client_subscribe_async(ClawtClient         *self,
+                                      guint64              cursor,
+                                      GCancellable        *cancellable,
+                                      GAsyncReadyCallback  callback,
+                                      gpointer             user_data);
+gboolean clawt_client_subscribe_finish(ClawtClient   *self,
+                                       GAsyncResult  *result,
+                                       gboolean      *out_resumed,
+                                       GError       **error);
 
 /**
  * clawt_client_get_cursor:

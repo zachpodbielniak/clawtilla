@@ -2851,6 +2851,18 @@ comes back.  Written the other way round the test passes against the very
 implementation it exists to rule out --- verified by pointing
 ~connect_async~ at the blocking path and watching it fail.
 
+*** Subscribing is the other half of it
+
+~clawt_client_subscribe()~ goes through the same blocking request, and a
+client subscribes immediately after it connects -- so an embedder that
+took the async connect and then the blocking subscribe would have its
+loop turned anyway, and the fix would look complete without being it.
+
+~clawt_client_subscribe_async()~ / ~_finish()~ are the pair.  The finish
+reports success through the ~GError~ and hands ~resumed~ back through an
+out-parameter, because a subscribe that resumed nothing still succeeded
+and the two must not share one boolean.
+
 *** Timers and idles attach to the wrong context by default
 
 ~g_timeout_add_seconds()~ and ~g_idle_add()~ attach to the *global

@@ -1322,6 +1322,109 @@ clawt_client_subscribe(ClawtClient  *self,
     return TRUE;
 }
 
+/*
+ * The same, for a host that cannot afford to have its loop turned.
+ *
+ * clawt_client_subscribe() goes through the blocking request, which
+ * iterates the context while it waits -- the second half of the problem
+ * clawt_client_connect_async() solves, and just as reachable: a client
+ * subscribes immediately after connecting, so an embedder that took the
+ * async connect and then this would be blocked anyway.
+ *
+ * `subscribe_wanted' is set before the request goes out, not after the
+ * reply arrives, so a disconnect in between still re-subscribes on
+ * reconnect.  That is deliberate and matches the blocking form.
+ */
+static void
+on_subscribe_finished(GObject *source, GAsyncResult *result,
+                      gpointer user_data)
+{
+    ClawtClient *self = CLAWT_CLIENT(source);
+    g_autoptr(GTask) task = user_data;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GError) error = NULL;
+    JsonObject *object;
+    gboolean resumed;
+
+    reply = clawt_client_request_finish(self, result, &error);
+
+    if (reply == NULL) {
+        g_task_return_error(task, g_steal_pointer(&error));
+        return;
+    }
+
+    object = json_node_get_object(reply);
+
+    /*
+     * Absent means resumed: a daemon too old to say has not lost
+     * anything, and reporting a gap it never had would send a client
+     * refetching history on every subscribe.
+     */
+    resumed = (object != NULL && json_object_has_member(object, "resumed"))
+              ? json_object_get_boolean_member(object, "resumed")
+              : TRUE;
+
+    g_task_return_boolean(task, resumed);
+}
+
+void
+clawt_client_subscribe_async(ClawtClient         *self,
+                             guint64              cursor,
+                             GCancellable        *cancellable,
+                             GAsyncReadyCallback  callback,
+                             gpointer             user_data)
+{
+    g_autoptr(GTask) task = NULL;
+    g_autoptr(JsonBuilder) builder = NULL;
+
+    g_return_if_fail(CLAWT_IS_CLIENT(self));
+
+    task = g_task_new(self, cancellable, callback, user_data);
+    g_task_set_source_tag(task, clawt_client_subscribe_async);
+
+    builder = json_builder_new();
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "cursor");
+    json_builder_add_int_value(builder, (gint64)cursor);
+    json_builder_end_object(builder);
+
+    self->subscribe_wanted = TRUE;
+
+    clawt_client_request_async(self, "control.subscribe",
+                               json_builder_get_root(builder), cancellable,
+                               on_subscribe_finished, g_steal_pointer(&task));
+}
+
+gboolean
+clawt_client_subscribe_finish(ClawtClient   *self,
+                              GAsyncResult  *result,
+                              gboolean      *out_resumed,
+                              GError       **error)
+{
+    GError *local = NULL;
+    gboolean resumed;
+
+    g_return_val_if_fail(CLAWT_IS_CLIENT(self), FALSE);
+    g_return_val_if_fail(g_task_is_valid(result, self), FALSE);
+
+    /*
+     * The boolean the task carries is `resumed', not success -- a
+     * subscribe that resumed nothing still succeeded -- so failure is
+     * read off the error rather than off the return.
+     */
+    resumed = g_task_propagate_boolean(G_TASK(result), &local);
+
+    if (local != NULL) {
+        g_propagate_error(error, local);
+        return FALSE;
+    }
+
+    if (out_resumed != NULL)
+        *out_resumed = resumed;
+
+    return TRUE;
+}
+
 static void
 clawt_client_dispose(GObject *object)
 {

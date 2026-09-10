@@ -1820,6 +1820,73 @@ test_connect_async_on_a_connected_client_is_immediate(void)
 }
 
 
+
+typedef struct {
+    gboolean  finished;
+    gboolean  ok;
+    gboolean  resumed;
+    GError   *error;
+} AsyncSubscribe;
+
+static gboolean
+async_subscribe_finished(gpointer data)
+{
+    const AsyncSubscribe *state = data;
+
+    return state->finished;
+}
+
+static void
+on_async_subscribe_done(GObject *source, GAsyncResult *result,
+                        gpointer user_data)
+{
+    AsyncSubscribe *state = user_data;
+
+    state->ok = clawt_client_subscribe_finish(CLAWT_CLIENT(source), result,
+                                              &state->resumed, &state->error);
+    state->finished = TRUE;
+}
+
+/*
+ * Subscribing is the other half of the connect problem.
+ *
+ * A client subscribes immediately after connecting, so an embedder that
+ * took the async connect and then the blocking subscribe would have its
+ * loop turned anyway -- the fix would look complete and not be.  Same
+ * discriminating assertion: not finished when control comes back.
+ */
+static void
+test_subscribe_async_returns_before_it_has_subscribed(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-sub-XXXXXX", NULL);
+    g_autoptr(GMainContext) context = g_main_context_new();
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(GError) error = NULL;
+    FakeDaemon *fake = fake_daemon_start(dir);
+    AsyncSubscribe state = { 0 };
+
+    client = clawt_client_new(fake->path);
+
+    g_main_context_push_thread_default(context);
+    g_assert_true(clawt_client_connect(client, &error));
+    g_assert_no_error(error);
+
+    clawt_client_subscribe_async(client, 0, NULL, on_async_subscribe_done,
+                                 &state);
+    g_assert_false(state.finished);
+
+    g_assert_true(pump_until(context, async_subscribe_finished, &state, 15));
+    g_main_context_pop_thread_default(context);
+
+    g_assert_no_error(state.error);
+    g_assert_true(state.ok);
+
+    clawt_client_disconnect(client);
+    fake_daemon_stop(fake);
+    g_rmdir(dir);
+}
+
+
 int
 main(int argc, char *argv[])
 {
@@ -1892,6 +1959,8 @@ main(int argc, char *argv[])
                     test_connect_async_names_a_daemon_that_is_not_there);
     g_test_add_func("/connection/connect-async-when-connected",
                     test_connect_async_on_a_connected_client_is_immediate);
+    g_test_add_func("/connection/subscribe-async-does-not-block",
+                    test_subscribe_async_returns_before_it_has_subscribed);
 
     return g_test_run();
 }
