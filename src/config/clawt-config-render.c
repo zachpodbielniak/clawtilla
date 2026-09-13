@@ -1020,6 +1020,10 @@ clawt_config_render_agent(ClawtConfig       *config,
 
     /* ── ai ── */
     g_string_append(out, "ai:\n");
+    /* Disabling the watchdog alone leaves ai-glib's subprocess cap active.
+     * Write zero explicitly as well as any user-selected deadline. */
+    append_key_int(out, 2, "process_timeout_ms",
+                   clawt_agent_config_get_int(agent, "runtime.process_timeout_ms"));
     append_key_value(out, 2, "provider",
                      clawt_agent_config_get_string(agent, "model.provider"));
     append_key_value(out, 2, "model",
@@ -1122,25 +1126,9 @@ clawt_config_render_agent(ClawtConfig       *config,
             append_key_value(out, 2, "routing_mode", mode);
         }
 
-        /*
-         * The turn watchdog, rendered from
-         * `agents.runtime.turn_timeout_seconds`.
-         *
-         * It has been in libreclaw since 0.23.3 with a default of 1200
-         * seconds and clawtilla had never set it, so the one control an
-         * operator had over a wedged turn reached nothing.  Written even
-         * when it matches the library default, because a config that
-         * states the value is a config somebody can read the answer out
-         * of -- and 0 has to be rendered too, since 0 is what turns the
-         * watchdog off and leaving the key out would restore the default
-         * instead.
-         *
-         * The daemon watches the same budget from the outside, and
-         * watches *activity* rather than duration.  Two watchers is
-         * deliberate: this one unwinds a turn that is wedged somewhere
-         * the daemon cannot see, and the daemon's ends the exchange,
-         * tells the clients and fails whatever was waiting.
-         */
+        /* Both watchdogs are opt-in. Write the resolved budget explicitly
+         * so generated configs state the policy, including disabled zero.
+         * The daemon measures inactivity; libreclaw measures duration. */
         append_key_int(out, 2, "watchdog_timeout_seconds",
                        MAX(clawt_agent_config_get_int(
                                agent, "runtime.turn_timeout_seconds"), 0));

@@ -575,10 +575,24 @@ the whole argument object.  Turn the whole thing off with
 ~agents.<id>.runtime~ -- for a fleet where even a redacted command line
 should not reach whoever can open the chat.
 
-**** The two turn timeouts are off by default
+**** Execution timeouts are off by default
 
 Both ~agents.runtime.turn_timeout_seconds~ and
 ~rooms.turn_timeout_seconds~ default to 0, which disables them.
+The subprocess duration limit is also off by default. Each agent explicitly
+gets libreclaw ~ai.process_timeout_ms: 0~, so disabling the watchdog no
+longer leaves a hidden thirty-minute cap on synchronous or streaming work.
+Set ~agents.runtime.process_timeout_ms~ to a positive millisecond budget
+if a particular agent needs a total subprocess limit. For example:
+
+#+begin_src yaml
+agents:
+  - id: builder
+    runtime:
+      process_timeout_ms: 14400000  # optional four-hour subprocess limit
+#+end_src
+
+The tmux provider retains its own command and inactivity bounds.
 
 They used to default to twenty and five minutes, and both numbers were
 guesses that were wrong in the expensive direction.  A long refactor or
@@ -1938,15 +1952,15 @@ between rooms for months does not grow one.
 
 *** The turn watchdog
 
-~agents.runtime.turn_timeout_seconds~ (default 1200) bounds a turn that
+~agents.runtime.turn_timeout_seconds~ (default 0, disabled) bounds a turn that
 has stopped producing anything.
 
 **Activity, not duration.**  A turn may legitimately run for an hour
 while things keep happening; a turn that has emitted nothing at all for
 the whole budget is wedged.  What counts as activity is a message the
-agent sent or a ~clawtilla_*~ tool call it made --- an agent's own
-~bash~ and ~read~ belong to the CLI and never reach the daemon, so those
-two are the whole of what the daemon can honestly observe.
+agent sent, a ~clawtilla_*~ tool call it made, or a streamed step from
+its CLI. With step streaming disabled, the daemon cannot observe the
+CLI's own ~bash~ and ~read~ calls.
 
 **A turn parked on an open decision is exempt.**  Waiting for a person is
 not a stall, and stopping a turn under an unanswered question
@@ -1962,12 +1976,14 @@ stop, and without it a second turn overlaps the one being stopped.
 
 The same number is also rendered into the agent's own libreclaw config as
 ~session.watchdog_timeout_seconds~, so a turn wedged somewhere the daemon
-cannot see is still unwound from inside.  Two watchers on purpose: this
-one ends the exchange and tells the clients, that one unwinds the worker.
+cannot see is still unwound from inside. This inner watchdog measures
+total duration, including time spent producing output or waiting on a
+decision. A positive value therefore imposes that duration ceiling as well
+as the daemon's inactivity check; zero disables both.
 
 *** The room's turn
 
-~rooms.turn_timeout_seconds~ (default 300, floored at 60) bounds how long
+~rooms.turn_timeout_seconds~ (default 0, disabled; positive values floored at 60) bounds how long
 one member may hold a room's turn.
 
 Counted in *work*, not wall time: the clock holds while the turn is

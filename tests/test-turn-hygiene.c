@@ -23,6 +23,7 @@
  */
 
 #include <clawtilla.h>
+#include <libreclaw.h>
 
 #include <glib/gstdio.h>
 #include <string.h>
@@ -736,8 +737,8 @@ test_two_threads_drain_as_two_turns(void)
  * `agents.runtime.turn_timeout_seconds` reaches libreclaw's own
  * watchdog.
  *
- * libreclaw has had `lc_session_set_watchdog_timeout()` since 0.23.3
- * with a default of 1200 seconds, and clawtilla never set it -- so the
+ * libreclaw introduced `lc_session_set_watchdog_timeout()` in 0.23.3
+ * with a default of 1200 seconds, and clawtilla did not set it -- so the
  * one control an operator had over a wedged turn reached nothing at all.
  * This is the wire; grep for the caller, not the implementation.
  */
@@ -768,9 +769,8 @@ test_the_watchdog_reaches_the_agents_config(void)
     g_assert_nonnull(strstr(patient, "watchdog_timeout_seconds: 5400"));
 
     /*
-     * Zero is written too. It is what turns the watchdog off, and
-     * leaving the key out would restore libreclaw's default instead --
-     * which is the opposite of what was asked for.
+     * Zero is written too, so the generated configuration states that
+     * the watchdog is disabled regardless of the library's default.
      */
     unbounded = clawt_config_render_agent(config,
                                           g_ptr_array_index(agents, 1),
@@ -801,6 +801,81 @@ test_the_watchdog_reaches_the_agents_config(void)
         expected = g_strdup_printf("watchdog_timeout_seconds: %s",
                                    entry->default_value);
         g_assert_nonnull(strstr(ordinary, expected));
+    }
+}
+
+/* Read the generated YAML through libreclaw and tune a real client:
+ * searching for the number cannot detect a key under the wrong section. */
+static void
+test_process_timeout_reaches_libreclaw(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+        "agents:\n"
+        "  - id: patient\n"
+        "    runtime: {type: process, process_timeout_ms: 14400000}\n"
+        "  - id: unbounded\n"
+        "    runtime: {type: embedded, process_timeout_ms: 0}\n"
+        "  - id: ordinary\n"
+        "    runtime: {type: process}\n"
+        "  - id: embedded\n"
+        "    runtime: {type: embedded}\n", &error);
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-timeouts-XXXXXX", NULL);
+    g_autofree gchar *path = g_build_filename(dir, "config.yaml", NULL);
+    GPtrArray *agents;
+    guint i;
+
+    g_assert_no_error(error);
+    g_assert_nonnull(dir);
+    agents = clawt_config_get_agents(config);
+    g_assert_cmpuint(agents->len, ==, 4);
+    for (i = 0; i < agents->len; i++) {
+        ClawtAgentConfig *agent = g_ptr_array_index(agents, i);
+        g_autofree gchar *yaml = clawt_config_render_agent(
+            config, agent, "/tmp/s.sock", dir, &error);
+        g_autoptr(LcConfig) lc = lc_config_new();
+        g_autoptr(AiCliClient) client = lc_client_factory_new(
+            "claude-code", "sonnet", NULL, dir, FALSE);
+        gint expected = i == 0 ? 14400000 : 0;
+
+        g_assert_no_error(error);
+        g_assert_nonnull(yaml);
+        g_assert_nonnull(strstr(yaml, "process_timeout_ms:"));
+        g_assert_true(g_file_set_contents(path, yaml, -1, &error));
+        g_assert_no_error(error);
+        g_assert_true(lc_config_load_from_path(lc, path, &error));
+        g_assert_no_error(error);
+        g_assert_cmpint(lc_config_get_ai_process_timeout_ms(lc), ==, expected);
+        g_assert_cmpint(lc_config_get_session_watchdog_timeout_seconds(lc), ==, 0);
+        ai_cli_client_set_process_timeout_ms(client, 1);
+        lc_client_factory_apply_config(client, lc);
+        g_assert_cmpint(ai_cli_client_get_process_timeout_ms(client), ==, expected);
+    }
+    clawt_test_remove_tree(dir);
+}
+
+static void
+test_invalid_process_timeout_is_refused(void)
+{
+    static const gchar *values[] = { "-1", "2147483648", "1.5", "oops" };
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS(values); i++) {
+        g_autofree gchar *yaml = g_strdup_printf(
+            "agents:\n  - id: worker\n"
+            "    runtime: {process_timeout_ms: %s}\n", values[i]);
+        g_autoptr(GError) error = NULL;
+        g_autoptr(ClawtConfig) config = clawt_config_load_from_string(yaml, &error);
+        ClawtAgentConfig *agent;
+
+        g_assert_no_error(error);
+        agent = g_ptr_array_index(clawt_config_get_agents(config), 0);
+        g_assert_true(clawt_agent_config_is_shadow(agent));
+        g_assert_nonnull(strstr(clawt_agent_config_get_shadow_reason(agent),
+                               "runtime.process_timeout_ms"));
+        g_assert_null(clawt_config_render_agent(config, agent,
+                      "/tmp/s.sock", "/tmp/state", &error));
+        g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_AGENT_STATE);
     }
 }
 
@@ -1375,6 +1450,10 @@ main(int argc, char **argv)
 
     g_test_add_func("/turn-hygiene/the-watchdog-reaches-the-agents-config",
                     test_the_watchdog_reaches_the_agents_config);
+    g_test_add_func("/turn-hygiene/process-timeout/libreclaw",
+                    test_process_timeout_reaches_libreclaw);
+    g_test_add_func("/turn-hygiene/process-timeout/invalid",
+                    test_invalid_process_timeout_is_refused);
 
     g_test_add_func("/turn-hygiene/a-multi-line-draft-round-trips",
                     test_a_multi_line_draft_round_trips);

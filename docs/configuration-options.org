@@ -2919,6 +2919,20 @@ restarted again. 0 means never give up.
 Report this agent's steps while its turn runs. Defaults to
 defaults.stream_steps.
 
+*** =agents.runtime.process_timeout_ms=
+
+- Type :: integer
+- Default :: =0=
+- Since :: 0.2.0
+
+Maximum elapsed milliseconds for one AI CLI subprocess, including
+streaming turns. 0, the default, disables the limit so an agent can
+work for several hours. Set a positive integer to opt into a deadline.
+Rendered explicitly as libreclaw ai.process_timeout_ms for every agent.
+The tmux provider uses its own command and inactivity bounds instead.
+This is a duration limit; runtime.turn_timeout_seconds separately
+controls the turn watchdog. Values must be between 0 and 2147483647.
+
 *** =agents.runtime.turn_timeout_seconds=
 
 - Type :: integer
@@ -2943,8 +2957,9 @@ person is not a stall.
 
 Watched in two places, on purpose. The daemon watches activity and
 publishes turn.timed_out; the same number is rendered into the
-agent's own session.watchdog_timeout_seconds, so a turn wedged
-somewhere the daemon cannot see is still unwound from inside.
+agent's own session.watchdog_timeout_seconds. That inner watchdog
+measures total duration, even while output arrives or a decision is
+pending; a positive value therefore also caps the whole turn.
 
 ** =agents.computer=
 

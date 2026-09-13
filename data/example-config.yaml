@@ -1849,6 +1849,15 @@ agents:
       # defaults.stream_steps.
       stream_steps: null
 
+      # Maximum elapsed milliseconds for one AI CLI subprocess, including
+      # streaming turns. 0, the default, disables the limit so an agent can
+      # work for several hours. Set a positive integer to opt into a deadline.
+      # Rendered explicitly as libreclaw ai.process_timeout_ms for every agent.
+      # The tmux provider uses its own command and inactivity bounds instead.
+      # This is a duration limit; runtime.turn_timeout_seconds separately
+      # controls the turn watchdog. Values must be between 0 and 2147483647.
+      process_timeout_ms: 0
+
       # How long a turn may go without producing anything before it is
       # cancelled. 0, the default, disables it.
       #
@@ -1867,8 +1876,9 @@ agents:
       #
       # Watched in two places, on purpose. The daemon watches activity and
       # publishes turn.timed_out; the same number is rendered into the
-      # agent's own session.watchdog_timeout_seconds, so a turn wedged
-      # somewhere the daemon cannot see is still unwound from inside.
+      # agent's own session.watchdog_timeout_seconds. That inner watchdog
+      # measures total duration, even while output arrives or a decision is
+      # pending; a positive value therefore also caps the whole turn.
       turn_timeout_seconds: 0
 
     # What the agent can run commands on.

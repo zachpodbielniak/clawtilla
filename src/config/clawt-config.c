@@ -307,6 +307,22 @@ agent_validate(ClawtAgentConfig *self)
         }
     }
 
+    {
+        const gchar *timeout = clawt_agent_config_get_string(
+            self, "runtime.process_timeout_ms");
+        guint64 parsed;
+
+        /* An out-of-range deadline must not become libreclaw's disabled
+         * default after the agent has been reported as configured. */
+        if (timeout == NULL || !g_ascii_string_to_unsigned(
+                timeout, 10, 0, G_MAXINT, &parsed, NULL)) {
+            agent_mark_shadow(self,
+                              "runtime.process_timeout_ms must be an integer "
+                              "between 0 and %d (0 disables)", G_MAXINT);
+            return;
+        }
+    }
+
     computer_type = clawt_agent_config_get_string(self, "computer.type");
     if (computer_type != NULL &&
         !clawt_enum_from_nick(CLAWT_TYPE_COMPUTER_TYPE, computer_type,

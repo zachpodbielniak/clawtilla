@@ -732,7 +732,8 @@ instead, that build refuses without ending.
 
 ** A turn was stopped and the agent says it produced nothing
 
-~agents.runtime.turn_timeout_seconds~ (default 1200) fired.
+An explicitly enabled ~agents.runtime.turn_timeout_seconds~ fired.
+It defaults to ~0~ (disabled).
 
 #+begin_example
 [clawtilla] This turn produced nothing for 1200 seconds and was stopped.
@@ -742,9 +743,9 @@ than elapsed time -- a turn may run for an hour while it is doing things.
 
 *** What counts as activity
 
-A message the agent sent, or a ~clawtilla_*~ tool call it made.  **Not**
-its own ~bash~, ~read~ or ~write~: those belong to the CLI and never
-reach the daemon.
+A message the agent sent, a ~clawtilla_*~ tool call it made, or a streamed
+CLI step. With step streaming disabled, its own ~bash~, ~read~ and ~write~
+calls are not visible to the daemon.
 
 So an agent that spends twenty minutes inside one long build, without
 saying anything and without calling a clawtilla tool, looks silent from
@@ -760,6 +761,10 @@ agents:
 
 ~0~ turns it off entirely.  Note that libreclaw applies its own watchdog
 to the same value as a *duration*, so turning this off removes both.
+If the error instead says the CLI process exceeded a millisecond deadline,
+check ~agents.runtime.process_timeout_ms~. That separate subprocess limit
+also defaults to ~0~ and covers both synchronous and streaming turns.
+Generated agent configs explicitly disable it unless you set a positive value.
 
 *** A turn waiting on a decision is not stalled
 

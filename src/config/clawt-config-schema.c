@@ -2039,6 +2039,17 @@ static const ClawtSchemaEntry schema[] = {
   "Report this agent's steps while its turn runs. Defaults to\n"
   "defaults.stream_steps.", "0.2.0" },
 
+{ "agents.runtime.process_timeout_ms", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_NONE, "0", NULL,
+  "Maximum elapsed milliseconds for one AI CLI subprocess, including\n"
+  "streaming turns. 0, the default, disables the limit so an agent can\n"
+  "work for several hours. Set a positive integer to opt into a deadline.\n"
+  "Rendered explicitly as libreclaw ai.process_timeout_ms for every agent.\n"
+  "The tmux provider uses its own command and inactivity bounds instead.\n"
+  "This is a duration limit; runtime.turn_timeout_seconds separately\n"
+  "controls the turn watchdog. Values must be between 0 and 2147483647.",
+  "0.2.0" },
+
 { "agents.runtime.turn_timeout_seconds", CLAWT_SCHEMA_INT,
   CLAWT_SCHEMA_FLAG_NONE, "0", NULL,
   "How long a turn may go without producing anything before it is\n"
@@ -2059,8 +2070,9 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "Watched in two places, on purpose. The daemon watches activity and\n"
   "publishes turn.timed_out; the same number is rendered into the\n"
-  "agent's own session.watchdog_timeout_seconds, so a turn wedged\n"
-  "somewhere the daemon cannot see is still unwound from inside.",
+  "agent's own session.watchdog_timeout_seconds. That inner watchdog\n"
+  "measures total duration, even while output arrives or a decision is\n"
+  "pending; a positive value therefore also caps the whole turn.",
   "0.2.0" },
 
 /* ── agents.computer ─────────────────────────────────────────────── */
