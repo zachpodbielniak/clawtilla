@@ -2004,6 +2004,23 @@ static const ClawtSchemaEntry schema[] = {
   "than refused, because refusing would take the agent out of the\n"
   "fleet over a setting.", "0.2.0" },
 
+{ "agents.session.timeout_minutes", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "30", NULL,
+  "Minutes of inactivity before libreclaw drops this agent's session.\n"
+  "\n"
+  "The next message after the timeout starts a fresh context rather\n"
+  "than continuing the old one. -1 means never expire: the session\n"
+  "lives as long as the agent does, and the tradeoff is one context\n"
+  "that only ever grows until the provider compacts it or somebody\n"
+  "runs /reset. 0 and anything below -1 are meaningless to libreclaw's\n"
+  "own session manager, which takes only a positive number of minutes\n"
+  "or -1: `clawtilla config validate` rejects such a value, and if one\n"
+  "reaches the daemon anyway it is reported with a warning and\n"
+  "replaced with 30 in the rendered config.\n"
+  "\n"
+  "This is libreclaw's own value (its session.timeout_minutes); the\n"
+  "daemon renders this straight through.", "0.2.0" },
+
 { "agents.runtime", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "How this agent's libreclaw instance is hosted.", "0.1.0" },
 

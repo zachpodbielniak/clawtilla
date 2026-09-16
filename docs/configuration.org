@@ -308,6 +308,10 @@ agents:
 
     workspace: "~/agents/researcher"
 
+    session:
+      routing_mode: sender-room
+      timeout_minutes: 60
+
     runtime:
       type: process          # process | embedded
       autostart: true
@@ -348,9 +352,15 @@ agents:
       max_depth: 200
 
     libreclaw:
-      # Anything here is copied into the rendered config verbatim.
-      session:
-        timeout_minutes: 60
+      # Anything here is copied into the rendered config verbatim,
+      # except for a handful of sections clawtilla renders itself --
+      # session: is one, so session.timeout_minutes above is set as a
+      # first-class agent key rather than through this passthrough.
+      # channels: is not on that list, so it merges in here instead:
+      channels:
+        webhook:
+          endpoints:
+            - path: "/hook"
 #+end_src
 
 *** description is load-bearing
@@ -467,6 +477,29 @@ An AI CLI lists its tools once, when its session starts, so a permission
 changed under a running agent reaches its files and not its session.
 ~agent.set~ reports ~restart_required~ for exactly this, and both
 graphical clients say so.
+
+*** Session idle timeout
+
+~session.timeout_minutes~ is libreclaw's own idle timeout, rendered
+straight through into ~session.timeout_minutes~ in the agent's
+~config.yaml~.  It is minutes of inactivity before libreclaw drops the
+session; the next message after that starts a fresh context rather than
+continuing the old one.  The default is ~30~.  ~-1~ means never expire --
+the session lives as long as the agent does, and the tradeoff is one
+context that only ever grows until the provider compacts it or somebody
+runs ~/reset~.
+
+~0~ and anything below ~-1~ are meaningless to libreclaw's own session
+manager, which takes only a positive number of minutes or ~-1~.
+~clawtilla config validate~ rejects such a value.  If one reaches the
+daemon anyway -- ~clawtilla config validate~ is not run automatically on
+load or reload -- it is reported with a warning and replaced with ~30~
+in the rendered config, rather than taking the agent out of the fleet
+over a setting.
+
+Set it as a first-class agent key, *not* through the ~libreclaw:~
+passthrough below -- ~session:~ is one of the sections clawtilla renders
+itself, and a passthrough that redeclares it is refused (see below).
 
 *** The libreclaw passthrough
 
