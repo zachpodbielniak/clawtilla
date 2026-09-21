@@ -47,14 +47,14 @@ static const ClawtModelInfo gemini_models[] = {
  * A fallback for when there is no key to ask with.
  *
  * xAI ships new models faster than a hardcoded table can track -- this
- * one still said grok-3 and grok-4 well after 4.5 and 4.6 had landed --
- * so `model.list refresh: true` asks the provider and these are only
- * what is offered when that cannot be done.
+ * one still said grok-3 and grok-4 well after newer flagships had
+ * landed -- so `model.list refresh: true` asks the provider and these
+ * are only what is offered when that cannot be done.
  */
 static const ClawtModelInfo grok_models[] = {
+    { "grok-4.7", "Grok 4.7", "the API default" },
     { "grok-4.6", "Grok 4.6", NULL },
-    { "grok-4.5", "Grok 4.5", NULL },
-    { "grok-4",   "Grok 4",   "previous generation" }
+    { "grok-4.5", "Grok 4.5", NULL }
 };
 
 /*
@@ -64,8 +64,11 @@ static const ClawtModelInfo grok_models[] = {
  * enumerate models with.
  */
 static const ClawtModelInfo grok_build_models[] = {
-    { "grok-4.6", "Grok 4.6", "the CLI's default" },
-    { "grok-4.5", "Grok 4.5", "previous release" }
+    { "grok-4.7",            "Grok 4.7",            "the CLI's default" },
+    { "grok-4.7-build-fast", "Grok 4.7 build-fast",
+      "the same model on faster infrastructure" },
+    { "grok-4.6",            "Grok 4.6",            "previous release" },
+    { "grok-4.5",            "Grok 4.5",            NULL }
 };
 
 /*

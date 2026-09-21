@@ -1600,7 +1600,7 @@ GTK client's /Designed by/ list shows exactly those; the CLI accepts
 them by name:
 
 #+begin_src bash
-clawtilla agent new --designer grok --designer-model grok-4
+clawtilla agent new --designer grok --designer-model grok-4.7
 #+end_src
 
 Each needs its key in the daemon's environment, the same as an agent
