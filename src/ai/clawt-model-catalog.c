@@ -114,6 +114,8 @@ static const ClawtModelInfo cursor_models[] = {
  */
 static const ClawtModelInfo codex_models[] = {
     { "gpt-6-astra",         "GPT-6 Astra",   "the CLI's default" },
+    { "gpt-6-sol",           "GPT-6 Sol",     NULL },
+    { "gpt-6-luna",          "GPT-6 Luna",    NULL },
     { "gpt-5.6-sol",         "GPT-5.6 Sol",   NULL },
     { "gpt-5.6-terra",       "GPT-5.6 Terra", NULL },
     { "gpt-5.6-luna",        "GPT-5.6 Luna",  NULL },
