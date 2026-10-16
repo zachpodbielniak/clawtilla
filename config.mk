@@ -44,8 +44,13 @@ CFLAGS_BASE = $(CSTD) $(WARNINGS) -fPIC
 # libxml-2.0 is ours rather than libreclaw's: ai-glib's HTML-parsing search
 # providers pull it in, and clawtilla is the first thing here to link
 # AiToolExecutor, which drags them along.  Fedora package: libxml2-devel.
+#
+# gstreamer-1.0 and gstreamer-app-1.0 are ai-glib's too: its voice
+# sessions (0.6) run on GStreamer, and the archive linked here names gst_*
+# symbols.  Fedora package: gstreamer1-devel and gstreamer1-plugins-base-devel.
 PKG_DEPS = glib-2.0 gobject-2.0 gio-2.0 gio-unix-2.0 gmodule-2.0 libsoup-3.0 \
-           json-glib-1.0 libcmark sqlite3 libetpan libpq libdex-1 libxml-2.0
+           json-glib-1.0 libcmark sqlite3 libetpan libpq libdex-1 libxml-2.0 \
+           gstreamer-1.0 gstreamer-app-1.0
 
 PKG_CFLAGS := $(shell pkg-config --cflags $(PKG_DEPS))
 PKG_LIBS := $(shell pkg-config --libs $(PKG_DEPS))
