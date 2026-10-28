@@ -10,7 +10,11 @@
 #include "clawtilla.h"
 
 #include <signal.h>
+#if defined(__linux__)
 #include <sys/prctl.h>
+#elif defined(__FreeBSD__)
+#include <sys/procctl.h>
+#endif
 #include "agent/clawt-process-runtime.h"
 
 #include <string.h>
@@ -239,7 +243,8 @@ on_process_exited(GObject *source, GAsyncResult *result, gpointer user_data)
  * Asks the kernel to signal the child if this process disappears.
  *
  * Runs in the child between fork and exec, so it must be
- * async-signal-safe -- prctl is.
+ * async-signal-safe -- prctl(2) on Linux and procctl(2) on FreeBSD are
+ * both plain syscalls.
  *
  * A daemon stopped cleanly stops its agents itself, but one that is
  * killed outright runs no handler at all, and its agents were then
@@ -252,7 +257,13 @@ on_process_exited(GObject *source, GAsyncResult *result, gpointer user_data)
 static void
 die_with_parent(gpointer user_data)
 {
+#if defined(__linux__)
     prctl(PR_SET_PDEATHSIG, SIGTERM);
+#elif defined(__FreeBSD__)
+    int sig = SIGTERM;
+
+    procctl(P_PID, 0, PROC_PDEATHSIG_CTL, &sig);
+#endif
 }
 
 /*
