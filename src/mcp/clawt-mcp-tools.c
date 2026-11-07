@@ -778,6 +778,8 @@ struct _ClawtMcpTools {
     gpointer                policy_data;
     GDestroyNotify          policy_destroy;
 
+    GHashTable             *read_only_rooms;   /* room id set */
+
     /*
      * Read-only here.  The daemon writes receipts; the tools only need
      * to answer "what became of the task I handed over", which is the
@@ -828,6 +830,31 @@ clawt_mcp_tools_set_create_agent_func(ClawtMcpTools           *self,
     self->create_agent = func;
     self->create_agent_data = user_data;
     self->create_agent_destroy = destroy;
+}
+
+void
+clawt_mcp_tools_set_room_read_only(ClawtMcpTools *self, const gchar *room_id,
+                                   gboolean read_only)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+    g_return_if_fail(room_id != NULL);
+
+    if (self->read_only_rooms == NULL)
+        self->read_only_rooms = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+
+    if (read_only)
+        g_hash_table_add(self->read_only_rooms, g_strdup(room_id));
+    else
+        g_hash_table_remove(self->read_only_rooms, room_id);
+}
+
+gboolean
+clawt_mcp_tools_room_is_read_only(ClawtMcpTools *self, const gchar *room_id)
+{
+    g_return_val_if_fail(CLAWT_IS_MCP_TOOLS(self), FALSE);
+
+    return room_id != NULL && self->read_only_rooms != NULL &&
+           g_hash_table_contains(self->read_only_rooms, room_id);
 }
 
 void
@@ -1338,9 +1365,12 @@ clawt_mcp_tools_action_class(const gchar *tool, ClawtActionClass *out_action)
  * What the agent's action rules say about one call.  A plugin's tool has
  * no definition here and is classed external.
  */
+#define READ_ONLY_RULE "this is a read-only routine run; report what you find " \
+                       "with clawtilla_ask_decision instead of acting on it"
+
 static ClawtPolicyMode
-policy_mode(ClawtMcpTools *self, const gchar *agent_id, const gchar *tool,
-            ClawtActionClass *out_action, gchar **out_rule)
+policy_mode(ClawtMcpTools *self, const gchar *agent_id, const gchar *room_id,
+            const gchar *tool, ClawtActionClass *out_action, gchar **out_rule)
 {
     ClawtAgent *agent = clawt_agent_manager_get(self->agents, agent_id);
     ClawtActionClass action = CLAWT_ACTION_EXTERNAL;
@@ -1348,6 +1378,13 @@ policy_mode(ClawtMcpTools *self, const gchar *agent_id, const gchar *tool,
     clawt_mcp_tools_action_class(tool, &action);
     if (out_action != NULL)
         *out_action = action;
+
+    /* A read-only run outranks every rule: it is what the routine is. */
+    if (action != CLAWT_ACTION_READ && clawt_mcp_tools_room_is_read_only(self, room_id)) {
+        if (out_rule != NULL)
+            *out_rule = g_strdup(READ_ONLY_RULE);
+        return CLAWT_POLICY_DENY;
+    }
 
     return clawt_policy_mode_for(agent != NULL ? clawt_agent_get_config(agent) : NULL,
                                  tool, action, out_rule);
@@ -1994,10 +2031,20 @@ clawt_mcp_tools_describe_for_agent(ClawtMcpTools *self, const gchar *agent_id)
 JsonNode *
 clawt_mcp_tools_list(ClawtMcpTools *self, const gchar *agent_id)
 {
+    return clawt_mcp_tools_list_in_room(self, agent_id, NULL);
+}
+
+JsonNode *
+clawt_mcp_tools_list_in_room(ClawtMcpTools *self, const gchar *agent_id,
+                             const gchar *room_id)
+{
     g_autoptr(JsonBuilder) builder = json_builder_new();
+    gboolean read_only;
     gsize i;
 
     g_return_val_if_fail(CLAWT_IS_MCP_TOOLS(self), NULL);
+
+    read_only = clawt_mcp_tools_room_is_read_only(self, room_id);
 
     json_builder_begin_object(builder);
     json_builder_set_member_name(builder, "tools");
@@ -2007,6 +2054,10 @@ clawt_mcp_tools_list(ClawtMcpTools *self, const gchar *agent_id)
         g_autoptr(JsonNode) schema = NULL;
 
         if (!clawt_mcp_tools_is_permitted(self, agent_id, tools[i].name))
+            continue;
+
+        /* A tool a read-only run would be refused is not offered at all. */
+        if (read_only && tools[i].action != CLAWT_ACTION_READ)
             continue;
 
         json_builder_begin_object(builder);
@@ -5438,7 +5489,7 @@ clawt_mcp_tools_call_defers(ClawtMcpTools *self,
          * Any tool defers when a rule says somebody must look first: the
          * answer is minutes away, and only the deferred path can wait.
          */
-        if (policy_waits(policy_mode(self, agent_id, tool_name, NULL, NULL)))
+        if (policy_waits(policy_mode(self, agent_id, NULL, tool_name, NULL, NULL)))
             return clawt_mcp_tools_is_permitted(self, agent_id, tool_name);
         return FALSE;
     }
@@ -5773,7 +5824,7 @@ clawt_mcp_tools_call_async(ClawtMcpTools       *self,
         const gchar *tool = argument_string(params, "name");
         g_autofree gchar *rule = NULL;
         ClawtActionClass action = CLAWT_ACTION_EXTERNAL;
-        ClawtPolicyMode mode = policy_mode(self, agent_id, tool, &action, &rule);
+        ClawtPolicyMode mode = policy_mode(self, agent_id, room_id, tool, &action, &rule);
 
         if (mode == CLAWT_POLICY_DENY || (policy_waits(mode) && self->policy == NULL)) {
             g_autofree gchar *message = mode == CLAWT_POLICY_DENY
@@ -5980,7 +6031,7 @@ tools_call(ClawtMcpTools *self,
         params = json_object_get_object_member(root, "params");
 
     if (g_strcmp0(method, "tools/list") == 0) {
-        g_autoptr(JsonNode) listing = clawt_mcp_tools_list(self, agent_id);
+        g_autoptr(JsonNode) listing = clawt_mcp_tools_list_in_room(self, agent_id, room_id);
         g_autoptr(JsonBuilder) builder = json_builder_new();
 
         json_builder_begin_object(builder);
@@ -6042,7 +6093,7 @@ tools_call(ClawtMcpTools *self,
      */
     if (!policy_done) {
         g_autofree gchar *rule = NULL;
-        ClawtPolicyMode mode = policy_mode(self, agent_id, tool_name, NULL, &rule);
+        ClawtPolicyMode mode = policy_mode(self, agent_id, room_id, tool_name, NULL, &rule);
 
         if (mode == CLAWT_POLICY_DENY || policy_waits(mode)) {
             g_autofree gchar *message = mode == CLAWT_POLICY_DENY
@@ -6306,6 +6357,7 @@ clawt_mcp_tools_dispose(GObject *object)
         self->policy_data = NULL;
     }
     self->policy = NULL;
+    g_clear_pointer(&self->read_only_rooms, g_hash_table_unref);
 
     self->handoff = NULL;
     self->handoff_store = NULL;

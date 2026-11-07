@@ -370,6 +370,45 @@ gboolean clawt_mcp_tools_action_class(const gchar      *tool,
                                       ClawtActionClass *out_action);
 
 /**
+ * clawt_mcp_tools_set_room_read_only:
+ * @self: a #ClawtMcpTools
+ * @room_id: a room
+ * @read_only: whether turns in it may only read
+ *
+ * Marks the room a read-only routine runs in. Every turn there is offered
+ * only tools whose class is `read`, and any other call is refused, whatever
+ * the agent's action rules say.
+ */
+void clawt_mcp_tools_set_room_read_only(ClawtMcpTools *self,
+                                        const gchar   *room_id,
+                                        gboolean       read_only);
+
+/**
+ * clawt_mcp_tools_room_is_read_only:
+ * @self: a #ClawtMcpTools
+ * @room_id: (nullable): a room
+ *
+ * Returns: %TRUE for a room marked read-only
+ */
+gboolean clawt_mcp_tools_room_is_read_only(ClawtMcpTools *self,
+                                           const gchar   *room_id);
+
+/**
+ * clawt_mcp_tools_list_in_room:
+ * @self: a #ClawtMcpTools
+ * @agent_id: the agent
+ * @room_id: (nullable): the room the listing is for
+ *
+ * clawt_mcp_tools_list() for one of the agent's conversations: in a
+ * read-only room only the read tools are listed.
+ *
+ * Returns: (transfer full): the listing
+ */
+JsonNode *clawt_mcp_tools_list_in_room(ClawtMcpTools *self,
+                                       const gchar   *agent_id,
+                                       const gchar   *room_id);
+
+/**
  * clawt_mcp_tools_set_handoff_store:
  * @self: a #ClawtMcpTools
  * @store: (nullable): where handoff receipts are kept

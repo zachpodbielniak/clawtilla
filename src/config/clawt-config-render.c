@@ -1052,7 +1052,7 @@ clawt_config_render_agent(ClawtConfig       *config,
      * agent's action rules -- named only when there are rules, the same
      * condition that writes the file.
      */
-    if (clawt_policy_agent_has_rules(agent) && state_dir != NULL) {
+    if (clawt_policy_agent_needs_hook(agent) && state_dir != NULL) {
         g_autofree gchar *settings = clawt_workspace_claude_settings_path(state_dir);
 
         g_string_append(out, "  claude:\n");

@@ -79,6 +79,26 @@ ClawtPolicyMode clawt_policy_mode_for(ClawtAgentConfig  *agent,
 gboolean clawt_policy_agent_has_rules(ClawtAgentConfig *agent);
 
 /**
+ * clawt_policy_agent_needs_hook:
+ * @agent: an agent
+ *
+ * Whether the agent's CLI must be handed the PreToolUse hook: it has
+ * action rules, or a read-only routine runs on it. Either is a promise
+ * about the CLI's own tools that only the hook can keep.
+ *
+ * Returns: %TRUE when the hook is needed
+ */
+gboolean clawt_policy_agent_needs_hook(ClawtAgentConfig *agent);
+
+/**
+ * clawt_policy_routine_is_read_only:
+ * @routine: a routine
+ *
+ * Returns: %TRUE for a read-only or proactive routine
+ */
+gboolean clawt_policy_routine_is_read_only(ClawtRoutine *routine);
+
+/**
  * clawt_policy_class_for_native_tool:
  * @tool: a tool name as an agent CLI reports it (Claude Code's `Bash`,
  *   `Write`, `mcp__server__tool`, ...)
@@ -90,6 +110,19 @@ gboolean clawt_policy_agent_has_rules(ClawtAgentConfig *agent);
  * Returns: the class
  */
 ClawtActionClass clawt_policy_class_for_native_tool(const gchar *tool);
+
+/**
+ * clawt_policy_provider_gates_native_tools:
+ * @provider: an agent's provider, as configured
+ *
+ * Whether the action rules reach the CLI's own tools on @provider: true
+ * only for Claude Code and its tmux variant, which take the PreToolUse
+ * hook. Every other CLI runs its own tools where nothing can intercept
+ * them, and a feature that relies on refusing them must refuse itself.
+ *
+ * Returns: %TRUE when the CLI's own tools are gated
+ */
+gboolean clawt_policy_provider_gates_native_tools(const gchar *provider);
 
 /**
  * clawt_policy_native_is_clawtilla:

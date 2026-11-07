@@ -633,6 +633,16 @@ clawt_daemon_handle_misc(
             else if (!clawt_mcp_tools_action_class(tool, &action))
                 action = clawt_policy_class_for_native_tool(tool);
             mode = clawt_policy_mode_for(config, tool, action, &rule);
+
+            /* A read-only routine's room outranks every rule. */
+            if (action != CLAWT_ACTION_READ &&
+                clawt_mcp_tools_room_is_read_only(self->mcp_tools,
+                                                  clawt_ipc_payload_string(payload, "room"))) {
+                g_free(rule);
+                rule = g_strdup("this is a read-only routine run; report what you find "
+                                "with clawtilla_ask_decision instead of acting on it");
+                mode = CLAWT_POLICY_DENY;
+            }
         }
 
         if (mode == CLAWT_POLICY_ALLOW || mode == CLAWT_POLICY_DENY) {

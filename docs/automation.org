@@ -20,6 +20,8 @@ researcher->on_agent_state => clawtilla->notify(title: "the researcher changed s
 
 Every ~*.pod~ in ~daemon.automation_dir~ is loaded at start.
 
+For work that should only look -- a morning sweep of what needs attention -- a read-only or proactive routine ([[file:routines.org][routines.org]]) is the simpler tool: no podomation needed, and the run cannot act on what it finds.
+
 ** Why it lives here and not upstream
 
 podomation lets an embedding application register an already-instantiated

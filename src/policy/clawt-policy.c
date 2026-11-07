@@ -16,6 +16,7 @@
 #include "policy/clawt-policy.h"
 
 #include <string.h>
+#include <libreclaw.h>
 
 gboolean
 clawt_policy_parse_rule(const gchar      *rule,
@@ -136,6 +137,38 @@ clawt_policy_agent_has_rules(ClawtAgentConfig *agent)
     return rules != NULL && rules[0] != NULL;
 }
 
+gboolean
+clawt_policy_routine_is_read_only(ClawtRoutine *routine)
+{
+    return routine != NULL &&
+           (clawt_routine_get_boolean(routine, "read_only") ||
+            clawt_routine_get_boolean(routine, "proactive"));
+}
+
+gboolean
+clawt_policy_agent_needs_hook(ClawtAgentConfig *agent)
+{
+    ClawtConfig *fleet;
+    GPtrArray *routines;
+    guint i;
+
+    if (clawt_policy_agent_has_rules(agent))
+        return TRUE;
+
+    fleet = agent != NULL ? clawt_agent_config_get_config(agent) : NULL;
+    routines = fleet != NULL ? clawt_config_get_routines(fleet) : NULL;
+    for (i = 0; routines != NULL && i < routines->len; i++) {
+        ClawtRoutine *routine = g_ptr_array_index(routines, i);
+
+        if (clawt_policy_routine_is_read_only(routine) &&
+            g_strcmp0(clawt_routine_get_string(routine, "agent"),
+                      clawt_agent_config_get_id(agent)) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
 /*
  * Claude Code's own tool names. This is the one list here, because the
  * names are the CLI's and nothing in clawtilla can enumerate them; an
@@ -178,6 +211,15 @@ clawt_policy_class_for_native_tool(const gchar *tool)
         return CLAWT_ACTION_EXTERNAL;
 
     return CLAWT_ACTION_EXEC;
+}
+
+gboolean
+clawt_policy_provider_gates_native_tools(const gchar *provider)
+{
+    /* Normalised as libreclaw does, since that decides which CLI runs. */
+    const gchar *cli = lc_provider_type_normalize(provider, "agent");
+
+    return g_strcmp0(cli, "claude-code") == 0 || g_strcmp0(cli, "claude-tmux") == 0;
 }
 
 gboolean

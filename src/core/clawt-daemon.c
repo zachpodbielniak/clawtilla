@@ -1012,6 +1012,19 @@ pod_action(const gchar *action, GHashTable *params, GHashTable **out_result,
  * takes effect at the next run rather than at the next daemon start --
  * which is when somebody would look for it, having just changed it.
  */
+static ClawtRoutine *
+routine_by_id(ClawtDaemon *self, const gchar *routine_id)
+{
+    GPtrArray *routines = clawt_config_get_routines(self->config);
+    guint i;
+
+    for (i = 0; routines != NULL && i < routines->len; i++)
+        if (g_strcmp0(clawt_routine_get_id(g_ptr_array_index(routines, i)), routine_id) == 0)
+            return g_ptr_array_index(routines, i);
+
+    return NULL;
+}
+
 static gboolean
 routine_is_isolated(ClawtDaemon *self, const gchar *routine_id)
 {
@@ -1058,6 +1071,7 @@ run_routine(const gchar *routine_id, const gchar *agent_id,
     g_autofree gchar *room_id = NULL;
     const gchar *sender = "user";
     const gchar *target = agent_id;
+    gboolean read_only = FALSE;
 
     if (clawt_agent_manager_get(self->agents, agent_id) == NULL) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
@@ -1080,7 +1094,27 @@ run_routine(const gchar *routine_id, const gchar *agent_id,
      * between a routine's own runs is the thing worth having, since it
      * is what lets Tuesday's brief know what Monday's said.
      */
-    if (routine_is_isolated(self, routine_id)) {
+    /*
+     * A read-only run must be told apart from the operator's turns, so it
+     * always gets its own room -- and runs only where the CLI's own tools
+     * can be refused at all.
+     */
+    {
+        ClawtRoutine *routine = routine_by_id(self, routine_id);
+        ClawtAgentConfig *config = clawt_config_get_agent(self->config, agent_id);
+
+        read_only = clawt_policy_routine_is_read_only(routine);
+        if (read_only && (config == NULL || !clawt_policy_provider_gates_native_tools(
+                              clawt_agent_config_get_string(config, "model.provider")))) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                        "routine '%s' is read-only, and '%s' runs a CLI whose own tools "
+                        "clawtilla cannot refuse (only claude-code and claude-tmux take "
+                        "the hook); it was not run", routine_id, agent_id);
+            return NULL;
+        }
+    }
+
+    if (read_only || routine_is_isolated(self, routine_id)) {
         ClawtRoom *room = clawt_room_manager_get_routine(self->rooms,
                                                          routine_id,
                                                          agent_id);
@@ -1089,6 +1123,14 @@ run_routine(const gchar *routine_id, const gchar *agent_id,
             room_id = g_strdup(clawt_room_get_id(room));
             sender = "routine";
             target = room_id;
+            /* Set either way, so a routine made writable again is. */
+            if (self->mcp_tools != NULL)
+                clawt_mcp_tools_set_room_read_only(self->mcp_tools, room_id, read_only);
+        } else if (read_only) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                        "routine '%s' is read-only and its room could not be made, so "
+                        "it was not run", routine_id);
+            return NULL;
         }
     }
 

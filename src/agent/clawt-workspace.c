@@ -1107,7 +1107,7 @@ write_claude_settings(ClawtAgentConfig *agent, const gchar *daemon_socket,
     g_autoptr(JsonNode) root = NULL;
     gint timeout;
 
-    if (!clawt_policy_agent_has_rules(agent)) {
+    if (!clawt_policy_agent_needs_hook(agent)) {
         if (g_file_test(path, G_FILE_TEST_EXISTS))
             g_unlink(path);
         return TRUE;

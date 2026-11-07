@@ -1690,6 +1690,27 @@ static const ClawtSchemaEntry schema[] = {
   "to them silently. Pointing the routine at an agent nobody talks to\n"
   "solves the same problem and needs no setting.", "0.1.0" },
 
+{ "routines.read_only", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "false", NULL,
+  "Run with read-only tools: the agent may look at anything it can reach\n"
+  "and change nothing -- no messages, no writes, no commands, no screen.\n"
+  "\n"
+  "The run gets a room of its own (as routines.isolate does) and every\n"
+  "turn in that room is offered only clawtilla's read tools; its own\n"
+  "tools are refused through the PreToolUse hook. That hook exists only\n"
+  "for claude-code and claude-tmux, so a read-only routine on any other\n"
+  "backend is refused rather than run with its own tools unchecked.\n"
+  "What it finds it reports with clawtilla_ask_decision.", "0.4.0" },
+
+{ "routines.proactive", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "false", NULL,
+  "Look for ways to help, unasked, and report them without acting.\n"
+  "\n"
+  "Implies read_only. With no instructions, the agent is told to go\n"
+  "through what it is connected to -- its integrations and connectors --\n"
+  "for anything that needs attention, and to file each finding as a\n"
+  "decision for the operator rather than acting on it.", "0.4.0" },
+
 { "routines.catch_up", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "false", NULL,
   "Run once at startup when its time passed while the daemon was down.\n"

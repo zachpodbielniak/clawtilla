@@ -5234,6 +5234,27 @@ reload_routines(ClawtConfig *self)
                         clawt_routine_new(self, id, element));
 
         /*
+         * Said at load, as well as refused at run time: a read-only
+         * routine on a CLI whose own tools cannot be refused would run
+         * them unchecked, so it never runs -- and a silent never is the
+         * failure the fleet rule about selectors exists for.
+         */
+        {
+            ClawtRoutine *added = g_ptr_array_index(self->routines, self->routines->len - 1);
+            const gchar *agent_id = clawt_routine_get_string(added, "agent");
+            ClawtAgentConfig *agent = agent_id != NULL
+                ? clawt_config_get_agent(self, agent_id) : NULL;
+
+            if (clawt_policy_routine_is_read_only(added) && agent != NULL &&
+                !clawt_policy_provider_gates_native_tools(
+                    clawt_agent_config_get_string(agent, "model.provider")))
+                g_ptr_array_add(self->warnings, g_strdup_printf(
+                    "routine '%s' is read-only, and '%s' runs a CLI whose own tools "
+                    "clawtilla cannot refuse; it will not run until it is on "
+                    "claude-code or claude-tmux", id, agent_id));
+        }
+
+        /*
          * And whether the schedule it names can be turned into one.
          *
          * Checked here because a value that cannot be parsed is a

@@ -796,6 +796,10 @@ A rule that does not parse makes the agent a shadow, with the rule in the reason
 
 The last row is the honest gap. codex, grok, opencode, cursor and antigravity run their own tools inside their own process with nothing clawtilla can intercept, so a rule about ~exec~ on a codex agent governs ~clawtilla_computer_exec~ and nothing else. It is said here rather than implied away.
 
+*** Read-only routine runs
+
+A routine with ~read_only~ or ~proactive~ set runs in a room where every non-~read~ call is refused, ahead of any rule: see [[file:routines.org][routines.org]]. It runs only on claude-code and claude-tmux, because the refusal of the CLI's own tools depends on the hook below.
+
 *** The Claude hook
 
 For an agent with any rules, the daemon writes =<state_dir>/claude-settings.json= with a =PreToolUse= hook and names it as ~ai.claude.settings_path~ in the agent's generated config; libreclaw hands it to claude-code as =--settings= and merges it into claude-tmux's own settings. With no rules, no file is written and nothing runs per call.

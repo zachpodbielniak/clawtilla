@@ -44,6 +44,8 @@ typedef struct {
     GtkWidget   *worktree_row;
     GtkWidget   *enabled_row;
     GtkWidget   *catch_up_row;
+    GtkWidget   *read_only_row;
+    GtkWidget   *proactive_row;
     GtkWidget   *jitter_row;
 
     GtkWidget   *schedule_row;
@@ -210,6 +212,14 @@ on_routine_saved(GtkButton *button, gpointer user_data)
     json_builder_add_boolean_value(
         builder, adw_switch_row_get_active(
                      ADW_SWITCH_ROW(dialog->catch_up_row)));
+    json_builder_set_member_name(builder, "read_only");
+    json_builder_add_boolean_value(
+        builder, adw_switch_row_get_active(
+                     ADW_SWITCH_ROW(dialog->read_only_row)));
+    json_builder_set_member_name(builder, "proactive");
+    json_builder_add_boolean_value(
+        builder, adw_switch_row_get_active(
+                     ADW_SWITCH_ROW(dialog->proactive_row)));
     json_builder_set_member_name(builder, "jitter_seconds");
     json_builder_add_int_value(
         builder, g_ascii_strtoll(
@@ -496,6 +506,36 @@ open_routine_editor(ClawtWindow *self, JsonObject *existing)
         json_object_get_boolean_member(existing, "catch_up"));
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(when),
                               dialog->catch_up_row);
+
+    /*
+     * Read-only and proactive: the two ways a routine looks without
+     * acting. Subtitles say what each costs, because "read-only" on a
+     * codex agent means "will not run", and the daemon's warning is
+     * somewhere else on screen.
+     */
+    dialog->read_only_row = adw_switch_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->read_only_row),
+                                  "Read-only");
+    adw_action_row_set_subtitle(
+        ADW_ACTION_ROW(dialog->read_only_row),
+        "Looks, changes nothing, reports as decisions. Claude Code agents only.");
+    adw_switch_row_set_active(
+        ADW_SWITCH_ROW(dialog->read_only_row),
+        existing != NULL && json_object_has_member(existing, "read_only") &&
+        json_object_get_boolean_member(existing, "read_only"));
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(when), dialog->read_only_row);
+
+    dialog->proactive_row = adw_switch_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->proactive_row),
+                                  "Proactive");
+    adw_action_row_set_subtitle(
+        ADW_ACTION_ROW(dialog->proactive_row),
+        "Looks for what needs attention, unasked. Implies read-only.");
+    adw_switch_row_set_active(
+        ADW_SWITCH_ROW(dialog->proactive_row),
+        existing != NULL && json_object_has_member(existing, "proactive") &&
+        json_object_get_boolean_member(existing, "proactive"));
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(when), dialog->proactive_row);
 
     /*
      * Offered here because the option now does something.

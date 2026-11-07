@@ -88,6 +88,28 @@ is why it is off by default: moving somebody's output is not a thing to
 do to them silently, and pointing the routine at an agent nobody talks to
 solves the same problem with no setting at all.
 
+** Read-only and proactive routines
+
+A routine can look without acting. ~read_only: true~ runs it with tools that look and nothing else; ~proactive: true~ implies that and, when the routine has no instructions of its own, tells the agent what to look for: go through its integrations, connectors, mailbox and tasks for anything overdue, failed, unanswered or conflicting, and file each finding as a decision for the operator rather than act on it. It is the always-on helper ChatGPT's dots and Grok Bot offer, without the part where it acts on its own.
+
+#+begin_src yaml
+routines:
+  - id: morning-sweep
+    agent: assistant
+    proactive: true
+    schedule: daily
+    at: "07:30"
+#+end_src
+
+How it holds:
+
+- *A room of its own.* A read-only run always goes to the routine's own room (=routine:<id>=), as ~isolate~ would make it, and that room is marked read-only for every turn in it. The operator's own conversation with the same agent keeps every tool.
+- *Only read tools offered.* =tools/list= in that room lists only the tools whose action class is ~read~ -- the listing, search, recall and ~clawtilla_web_*~ tools, and ~clawtilla_ask_decision~ to report with. Anything else that arrives there anyway is refused, whatever the agent's action rules say.
+- *The CLI's own tools refused through the hook.* ~Write~, ~Bash~ and the rest are refused by the Claude Code =PreToolUse= hook, which an agent with a read-only routine is given even when it has no action rules.
+- *Only where that can hold.* The hook exists only for claude-code and claude-tmux. On any other backend a read-only routine would run its CLI's own tools unchecked, so it is refused instead: the run fails with that reason, and loading the config warns about it.
+
+What it finds arrives in the decision inbox, one decision per finding with what the agent would do as the default -- which is also how a finding nobody gets to settles itself, as *defaulted*, rather than piling up. See [[file:security.org][security.org]], "Action policy", for the classes.
+
 ** Presets are cron
 
 Every schedule becomes a cron expression, including the friendly ones:

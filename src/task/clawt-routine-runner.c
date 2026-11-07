@@ -498,6 +498,21 @@ build_prompt(ClawtRoutine *routine)
         clawt_routine_get_string(routine, "instructions");
     const gchar *directory = clawt_routine_get_string(routine, "directory");
 
+    /*
+     * A proactive routine nobody wrote instructions for still has a job:
+     * the same one ChatGPT's dots and Grok Bot do unasked, done here
+     * without acting on anything.
+     */
+    if ((instructions == NULL || *instructions == '\0') &&
+        clawt_routine_get_boolean(routine, "proactive"))
+        instructions = "Go through what you are connected to -- your integrations, "
+                       "your connectors, your mailbox, your tasks -- and look for "
+                       "anything that needs attention: something overdue, something "
+                       "that failed, something somebody asked for and nobody answered, "
+                       "a conflict, a deadline. File each finding as a decision for the "
+                       "operator with clawtilla_ask_decision, saying what you saw and "
+                       "what you would do. Do not act on any of it.";
+
     g_string_append(out, instructions != NULL ? instructions : "");
     g_string_append(out, "\n\n---\n");
     g_string_append_printf(out,
@@ -507,6 +522,13 @@ build_prompt(ClawtRoutine *routine)
         "you have, and if something is genuinely blocking, say so with "
         "clawtilla_message_user and stop.\n",
         clawt_routine_get_id(routine));
+
+    if (clawt_policy_routine_is_read_only(routine))
+        g_string_append(out,
+            "\nThis run is read-only. You have only tools that look; anything that "
+            "would send, write, delete, run a program or touch a screen is refused. "
+            "Report what you find with clawtilla_ask_decision -- one decision per "
+            "finding, with what you would do as the default -- and change nothing.\n");
 
     if (directory != NULL && *directory != '\0') {
         if (clawt_routine_get_boolean(routine, "worktree"))

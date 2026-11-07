@@ -1531,6 +1531,25 @@ routines:
     # solves the same problem and needs no setting.
     isolate: false
 
+    # Run with read-only tools: the agent may look at anything it can reach
+    # and change nothing -- no messages, no writes, no commands, no screen.
+    #
+    # The run gets a room of its own (as routines.isolate does) and every
+    # turn in that room is offered only clawtilla's read tools; its own
+    # tools are refused through the PreToolUse hook. That hook exists only
+    # for claude-code and claude-tmux, so a read-only routine on any other
+    # backend is refused rather than run with its own tools unchecked.
+    # What it finds it reports with clawtilla_ask_decision.
+    read_only: false
+
+    # Look for ways to help, unasked, and report them without acting.
+    #
+    # Implies read_only. With no instructions, the agent is told to go
+    # through what it is connected to -- its integrations and connectors --
+    # for anything that needs attention, and to file each finding as a
+    # decision for the operator rather than acting on it.
+    proactive: false
+
     # Run once at startup when its time passed while the daemon was down.
     #
     # Off by default, and worth leaving off for anything that talks to
