@@ -2770,6 +2770,12 @@ clawtilla computer exec <agent-id> -- cat /var/lib/clawtilla/desktop-update.stat
 
 It names an account it cannot use: one not declared under =accounts:=, one for another CLI (=is a claude-code login and this agent runs codex-cli=), or one on a CLI that keeps its login under =$HOME= (cursor, antigravity). Point it at another account or clear it with =clawtilla agent set <agent> model.account ""=. See [[file:agents.org][agents.org]], under Accounts.
 
+** A codex agent answers "The 'X' model is not supported when using Codex with a ChatGPT account."
+
+The model is real; the login is the limit. A codex signed in with a ChatGPT account may use only the models that plan offers, which can be just codex's own default. Set ~model.model~ to one it accepts, or leave it empty for codex's default, or give the agent an account signed in with an API key (~model.account~; see [[file:agents.org][agents.org]], under Accounts).
+
+Before clawtilla 0.6.2 (ai-glib 0.10.2) the same failure read "Model metadata for `X` not found. Defaulting to fallback metadata". That is a warning codex prints for any model it has no metadata for, and it does not fail a turn on its own; the refusal came two lines later and was not read.
+
 ** The web tools answer "is unreachable", 401, 403 or 404
 
 The libresearch server named by the agent's =libresearch= integration is not answering, wants a token, has LQL switched off, or has no research module. [[file:research.org][research.org]] has the table, under "When it does not work".
