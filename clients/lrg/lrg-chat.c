@@ -357,8 +357,9 @@ texture_from_bytes(const guchar *data, gsize length, gint max_width,
     if (mime == NULL)
         return NULL;
 
-    template = g_strdup_printf("clawtilla-picture-XXXXXX%s",
-                               clawt_avatar_extension_for_mime_type(mime));
+    template = clawt_lrg_image_template("clawtilla-picture", mime);
+    if (template == NULL)
+        return NULL;
     fd = g_file_open_tmp(template, &path, NULL);
 
     if (fd < 0)

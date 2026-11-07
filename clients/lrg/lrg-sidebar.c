@@ -1030,17 +1030,23 @@ agent_row(ClawtLrgApp *app, const ClawtLrgSidebarEntry *entry)
         entry->object, app->unread, app->typing,
         clawt_appearance_get_show_descriptions(app->appearance));
     LrgWidget *content = clawt_lrg_row(agent->name, agent->subtitle);
+    LrgWidget *badges = clawt_lrg_vbox(4.0f);
     LrgWidget *row;
     g_autofree gchar *token = clawt_lrg_entry_token(entry);
 
     lrg_container_set_padding(LRG_CONTAINER(content), 8.0f);
 
     /*
-     * What the sidebar's 312 leaves after the face and the state and
-     * unread badges, so a long description wraps under the name rather
-     * than pushing the badges off the edge.
+     * The badges stack, one above the other, rather than sit in a row:
+     * HOST beside CHIEF beside "stopped" is wider than what the sidebar
+     * has after a face, and the last of them was cut by the sidebar's
+     * edge.  The text column is the row's flexible child, so it takes
+     * whatever the face and the widest badge leave (libregnum 0.8.6); it
+     * used to be capped at a fixed 160, which wrapped a description into
+     * a narrow strip even beside one short badge.
      */
-    clawt_lrg_row_set_text_width(content, 160.0f * (gfloat)app->scale);
+    lrg_widget_set_halign(badges, LRG_ALIGN_END);
+    lrg_widget_set_valign(badges, LRG_ALIGN_CENTER);
 
     /*
      * The face, so picking an agent out starts with recognising it rather
@@ -1058,11 +1064,11 @@ agent_row(ClawtLrgApp *app, const ClawtLrgSidebarEntry *entry)
      * you -- which is in the subtitle instead.
      */
     if (agent->unread > 0)
-        clawt_lrg_row_add_suffix(content, unread_pill(agent->unread));
+        clawt_lrg_take(badges, unread_pill(agent->unread));
 
     /* an agent that can run commands on this machine looks different */
     if (agent->host)
-        clawt_lrg_row_add_suffix(content, clawt_lrg_badge("HOST", "bad"));
+        clawt_lrg_take(badges, clawt_lrg_badge("HOST", "bad"));
 
     /*
      * Which standing, from the library, and never both.  No `default:`,
@@ -1071,10 +1077,10 @@ agent_row(ClawtLrgApp *app, const ClawtLrgSidebarEntry *entry)
      */
     switch (agent->standing) {
     case CLAWT_TEAM_BADGE_CHIEF:
-        clawt_lrg_row_add_suffix(content, clawt_lrg_badge("CHIEF", "info"));
+        clawt_lrg_take(badges, clawt_lrg_badge("CHIEF", "info"));
         break;
     case CLAWT_TEAM_BADGE_LEAD:
-        clawt_lrg_row_add_suffix(content, clawt_lrg_badge("LEAD", "good"));
+        clawt_lrg_take(badges, clawt_lrg_badge("LEAD", "good"));
         break;
     case CLAWT_TEAM_BADGE_NONE:
         break;
@@ -1085,9 +1091,22 @@ agent_row(ClawtLrgApp *app, const ClawtLrgSidebarEntry *entry)
      * colour, and a colour is never the only signal.
      */
     if (!agent->live)
-        clawt_lrg_row_add_suffix(content,
-                                 clawt_lrg_badge(agent->state,
-                                                 agent->state_tone));
+        clawt_lrg_take(badges, clawt_lrg_badge(agent->state,
+                                              agent->state_tone));
+
+    /* each badge its natural width, flush right, however many there are */
+    {
+        GList *l;
+
+        for (l = lrg_container_get_children(LRG_CONTAINER(badges)); l != NULL;
+             l = l->next)
+            lrg_widget_set_halign(l->data, LRG_ALIGN_END);
+    }
+
+    if (lrg_container_get_children(LRG_CONTAINER(badges)) != NULL)
+        clawt_lrg_row_add_suffix(content, badges);
+    else
+        g_object_unref(badges);
 
     row = clickable_new(app, content, on_agent_clicked, g_strdup(agent->id),
                         g_free);
@@ -1117,7 +1136,6 @@ room_row(ClawtLrgApp *app, const ClawtLrgSidebarEntry *entry)
     LrgWidget *content = clawt_lrg_row(entry->title, entry->subtitle);
     LrgWidget *glyph = clawt_lrg_badge("#", "info");
 
-    clawt_lrg_row_set_text_width(content, 200.0f * (gfloat)app->scale);
     LrgWidget *row;
     g_autofree gchar *token = clawt_lrg_entry_token(entry);
     guint unread = clawt_lrg_unread_count(app->unread, entry->id);

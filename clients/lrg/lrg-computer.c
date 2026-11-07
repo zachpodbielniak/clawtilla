@@ -510,8 +510,9 @@ decode_frame(const guchar *data, gsize length)
     if (mime == NULL)
         return NULL;
 
-    template = g_strdup_printf("clawtilla-frame-XXXXXX%s",
-                               clawt_avatar_extension_for_mime_type(mime));
+    template = clawt_lrg_image_template("clawtilla-frame", mime);
+    if (template == NULL)
+        return NULL;
     fd = g_file_open_tmp(template, &path, &error);
 
     if (fd < 0) {

@@ -117,6 +117,15 @@ clawt_lrg_paragraph(const gchar *text, const gchar *style_class)
     return LRG_WIDGET(label);
 }
 
+void
+clawt_lrg_paragraph_set_text(LrgWidget *paragraph, const gchar *text)
+{
+    g_autofree gchar *escaped = clawt_lrg_markdown_escape(text);
+
+    g_return_if_fail(LRG_IS_MARKDOWN_LABEL(paragraph));
+    lrg_markdown_label_set_markdown(LRG_MARKDOWN_LABEL(paragraph), escaped);
+}
+
 static void
 on_link_activated(LrgMarkdownLabel *label, const gchar *url, gpointer user_data)
 {
@@ -396,19 +405,18 @@ clawt_lrg_row(const gchar *title, const gchar *subtitle)
     return row;
 }
 
-void
-clawt_lrg_row_set_text_width(LrgWidget *row, gfloat width)
+LrgWidget *
+clawt_lrg_row_subtitle(LrgWidget *row)
 {
     LrgWidget *text = g_object_get_data(G_OBJECT(row), ROW_TEXT_KEY);
+    GList *children;
 
-    g_return_if_fail(text != NULL);
+    g_return_val_if_fail(text != NULL, NULL);
 
-    /*
-     * In a column of fixed width the text must give way, or its natural
-     * width pushes the suffix -- a state badge, a count -- past the edge.
-     * A box never shrinks a child below its natural width on its own.
-     */
-    lrg_widget_set_max_size(text, width, -1.0f);
+    /* the title is first; a subtitle, when there is one, is second */
+    children = lrg_container_get_children(LRG_CONTAINER(text));
+    return (children != NULL && children->next != NULL)
+        ? LRG_WIDGET(children->next->data) : NULL;
 }
 
 void

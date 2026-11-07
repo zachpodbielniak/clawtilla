@@ -227,8 +227,14 @@ draw_glance(ClawtLrgApp *app, JsonNode *reply)
             g_strcmp0(clawt_lrg_agent_identity_tone(identity), "bad") == 0
                 ? "too large" : "filling up",
             clawt_lrg_agent_identity_tone(identity)));
-        clawt_lrg_take(note, clawt_lrg_paragraph(
-            clawt_ipc_payload_string(identity, "verdict"), NULL));
+        {
+            LrgWidget *verdict = clawt_lrg_paragraph(
+                clawt_ipc_payload_string(identity, "verdict"), NULL);
+
+            /* the part of the row that wraps, so it is the part that gives way */
+            lrg_widget_set_fill_weight(verdict, 1.0f);
+            clawt_lrg_take(note, verdict);
+        }
         clawt_lrg_take(ins.glance, note);
     }
 
@@ -273,10 +279,13 @@ on_usage(ClawtLrgApp *app, JsonNode *reply, const GError *error,
     if (label == NULL)
         return;
 
-    lrg_label_set_text(LRG_LABEL(label),
-                       said != NULL ? said
-                       : reply == NULL ? "could not be read"
-                                       : "nothing recorded");
+    {
+        g_autofree gchar *escaped = clawt_lrg_markdown_escape(
+            said != NULL ? said
+            : reply == NULL ? "could not be read" : "nothing recorded");
+
+        lrg_markdown_label_set_markdown(LRG_MARKDOWN_LABEL(label), escaped);
+    }
     clawt_lrg_app_wake(app);
 }
 
@@ -313,17 +322,19 @@ draw_usage(ClawtLrgApp *app, guint index)
         "the CLI did not report is said, never shown as free.", index);
     LrgWidget *row;
 
-    row = clawt_lrg_row("Today", NULL);
-    ins.usage_today = clawt_lrg_label("\xe2\x80\xa6", "muted");
-    clawt_lrg_row_add_suffix(row, g_object_ref(ins.usage_today));
+    /*
+     * The figures are the row's wrapping subtitle, not a suffix: "$13.38
+     * across 412 turns, 1.2M tokens in…" is a sentence, and as a one-line
+     * suffix it was the one thing in the row that could not give way, so
+     * a narrow window ran it past the card's edge.
+     */
+    row = clawt_lrg_row("Today", "\xe2\x80\xa6");
+    ins.usage_today = clawt_lrg_row_subtitle(row);
     clawt_lrg_take(box, row);
-    g_object_unref(ins.usage_today);
 
-    row = clawt_lrg_row("All time", NULL);
-    ins.usage_total = clawt_lrg_label("\xe2\x80\xa6", "muted");
-    clawt_lrg_row_add_suffix(row, g_object_ref(ins.usage_total));
+    row = clawt_lrg_row("All time", "\xe2\x80\xa6");
+    ins.usage_total = clawt_lrg_row_subtitle(row);
     clawt_lrg_take(box, row);
-    g_object_unref(ins.usage_total);
 
     clawt_lrg_request(app, "usage.summary", usage_payload(TRUE),
                       CLAWT_LRG_GUARDED | CLAWT_LRG_QUIET, on_usage,
@@ -1104,9 +1115,15 @@ build_form(ClawtLrgApp *app, guint index)
                                     G_CALLBACK(on_save), app);
         clawt_lrg_add(box, ins.save);
         g_object_unref(ins.save);
-        clawt_lrg_take(box, clawt_lrg_paragraph(
-            "Only what you changed is sent. The model and the computer take "
-            "effect when the agent next starts.", "muted"));
+        {
+            LrgWidget *note = clawt_lrg_paragraph(
+                "Only what you changed is sent. The model and the computer "
+                "take effect when the agent next starts.", "muted");
+
+            /* beside a button, the paragraph is what gives way */
+            lrg_widget_set_fill_weight(note, 1.0f);
+            clawt_lrg_take(box, note);
+        }
 
         card = clawt_lrg_card(box);
         clawt_lrg_appear(app, card, index++);

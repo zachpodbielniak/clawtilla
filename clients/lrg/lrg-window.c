@@ -565,12 +565,12 @@ clawt_lrg_update_banner(ClawtLrgApp *app)
                 : "Not connected to %s",
             where);
 
-        lrg_label_set_text(LRG_LABEL(shell.banner_label), text);
+        clawt_lrg_paragraph_set_text(shell.banner_label, text);
         lrg_button_set_text(LRG_BUTTON(shell.banner_action), "Connections…");
         lrg_widget_add_class(app->banner, "clawt-banner-bad");
         lrg_widget_set_visible(app->banner, TRUE);
     } else if (app->held) {
-        lrg_label_set_text(LRG_LABEL(shell.banner_label),
+        clawt_lrg_paragraph_set_text(shell.banner_label,
                            "The fleet is paused: nothing is delivered and no "
                            "routine runs until it is resumed");
         lrg_button_set_text(LRG_BUTTON(shell.banner_action), "Resume");
@@ -589,7 +589,7 @@ clawt_lrg_update_banner(ClawtLrgApp *app)
             app->daemon_update);
 
         if (notice != NULL) {
-            lrg_label_set_text(LRG_LABEL(shell.banner_label), notice);
+            clawt_lrg_paragraph_set_text(shell.banner_label, notice);
             lrg_button_set_text(LRG_BUTTON(shell.banner_action),
                                 "Connections…");
             lrg_widget_remove_class(app->banner, "clawt-banner-bad");
@@ -796,7 +796,7 @@ build_header(ClawtLrgApp *app)
 {
     LrgWidget *header = clawt_lrg_hbox(14.0f);
     LrgWidget *titles = clawt_lrg_vbox(0.0f);
-    LrgWidget *tabs = clawt_lrg_hbox(4.0f);
+    LrgWidget *tabs = LRG_WIDGET(lrg_wrap_box_new());
     LrgIsland *island = lrg_island_new();
     guint n = clawt_section_count();
     guint s;
@@ -810,6 +810,17 @@ build_header(ClawtLrgApp *app)
 
     shell.header_title = clawt_lrg_label("clawtilla", "heading");
     shell.header_subtitle = clawt_lrg_label("", "muted");
+    /*
+     * Cut with "…" rather than drawn on.  The subtitle is the agent's
+     * whole description on one line, and a chief of staff's runs past
+     * a 1300-pixel window; before libregnum 0.8.6 the header's box gave
+     * it its full width anyway, and the island, the alerts and the menu
+     * went past the right edge.  The titles are the flexible child, so
+     * a header short of room takes it from them, and these say what to
+     * draw with less.
+     */
+    lrg_label_set_ellipsize(LRG_LABEL(shell.header_title), TRUE);
+    lrg_label_set_ellipsize(LRG_LABEL(shell.header_subtitle), TRUE);
     clawt_lrg_take(titles, shell.header_title);
     clawt_lrg_take(titles, shell.header_subtitle);
     lrg_widget_set_valign(titles, LRG_ALIGN_CENTER);
@@ -836,7 +847,17 @@ build_header(ClawtLrgApp *app)
      * island off the right edge, where nothing said it had gone.
      */
     shell.section_bar = tabs;
-    lrg_widget_set_halign(tabs, LRG_ALIGN_CENTER);
+
+    /*
+     * Wrapped, not a row: six tabs beside a 340-pixel sidebar need more
+     * than a 900-pixel window has, and a row ran its last tabs off the
+     * right edge.  Centred lines, filling the strip so there is a width
+     * to wrap at.
+     */
+    lrg_container_set_spacing(LRG_CONTAINER(tabs), 4.0f);
+    lrg_wrap_box_set_line_spacing(LRG_WRAP_BOX(tabs), 4.0f);
+    lrg_wrap_box_set_justify(LRG_WRAP_BOX(tabs), LRG_WRAP_JUSTIFY_CENTER);
+    lrg_widget_set_halign(tabs, LRG_ALIGN_FILL);
 
     /* the island: one line compact, the activity summary expanded */
     shell.island_compact = clawt_lrg_label("Connecting…", NULL);
@@ -908,9 +929,14 @@ clawt_lrg_window_build(ClawtLrgApp *app)
     }
 
     /* the inner tab row for multi-page sections */
-    shell.page_bar = clawt_lrg_hbox(4.0f);
+    /* wrapped for the same reason as the section tabs */
+    shell.page_bar = LRG_WIDGET(lrg_wrap_box_new());
+    lrg_container_set_spacing(LRG_CONTAINER(shell.page_bar), 4.0f);
+    lrg_wrap_box_set_line_spacing(LRG_WRAP_BOX(shell.page_bar), 4.0f);
+    lrg_wrap_box_set_justify(LRG_WRAP_BOX(shell.page_bar),
+                             LRG_WRAP_JUSTIFY_CENTER);
     lrg_container_set_padding(LRG_CONTAINER(shell.page_bar), 4.0f);
-    lrg_widget_set_halign(shell.page_bar, LRG_ALIGN_CENTER);
+    lrg_widget_set_halign(shell.page_bar, LRG_ALIGN_FILL);
     lrg_widget_set_visible(shell.page_bar, FALSE);
 
     for (i = 0; i < n && i < N_PAGES; i++) {
@@ -933,7 +959,14 @@ clawt_lrg_window_build(ClawtLrgApp *app)
 
         lrg_widget_set_margin(banner, &margin);
     }
-    shell.banner_label = clawt_lrg_label("", NULL);
+    /*
+     * A paragraph, not a one-line label: the version notice is a whole
+     * sentence ("This daemon is clawtilla 0.7.3 and this client is
+     * 0.7.4. The daemon is older, so...") and as one line it ran under
+     * the Connections button and off the window.  It wraps beside the
+     * button instead, being the banner's flexible child.
+     */
+    shell.banner_label = clawt_lrg_paragraph("", NULL);
     lrg_widget_set_fill_weight(shell.banner_label, 1.0f);
     lrg_widget_set_valign(shell.banner_label, LRG_ALIGN_CENTER);
     shell.banner_action = clawt_lrg_button("", NULL,

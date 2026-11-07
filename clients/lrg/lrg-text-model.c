@@ -12,6 +12,17 @@
 #include <string.h>
 
 gchar *
+clawt_lrg_image_template(const gchar *prefix, const gchar *mime)
+{
+    const gchar *extension = clawt_avatar_extension_for_mime_type(mime);
+
+    if (prefix == NULL || extension == NULL)
+        return NULL;
+
+    return g_strdup_printf("%s-XXXXXX.%s", prefix, extension);
+}
+
+gchar *
 clawt_lrg_markdown_escape(const gchar *text)
 {
     /*

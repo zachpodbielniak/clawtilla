@@ -192,6 +192,23 @@ void clawt_lrg_island_fold_activity(ClawtLrgIslandState *state,
  */
 gchar *clawt_lrg_markdown_escape(const gchar *text);
 
+/**
+ * clawt_lrg_image_template:
+ * @prefix: what the file is for ("clawtilla-avatar")
+ * @mime: (nullable): a type clawt_avatar_sniff_mime_type() returned
+ *
+ * A g_file_open_tmp() template for image bytes that graylib must load:
+ * graylib picks the decoder from the file's extension, so the template
+ * ends in ".<ext>".  All three callers once wrote "XXXXXX%s" with the
+ * bare extension -- "clawtilla-avatar-YEW1X3jpg" -- and every avatar,
+ * chat picture and screen frame failed to load with "Missing file
+ * extension", drawing initials and an empty Screen panel instead.
+ *
+ * Returns: (transfer full) (nullable): the template, or %NULL for a type
+ *   with no extension (which graylib could not load either)
+ */
+gchar *clawt_lrg_image_template(const gchar *prefix, const gchar *mime);
+
 /* ── Requests (lrg-text-model.c) ──────────────────────────────────── */
 
 /**

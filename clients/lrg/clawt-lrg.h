@@ -42,12 +42,24 @@
  * markdown label through its layout cache.  Before it, every message in
  * a scrolled transcript was laid out and recorded every frame, and
  * loading one re-wrapped every message per message added: 3 fps and a
- * pegged core on a real fleet.  No symbol changed, so
- * LRG_REQUIRED_SYMBOLS cannot see it; the version can.
+ * pegged core on a real fleet.
+ *
+ * 0.8.6 lets a box short of room take width back from its flexible
+ * children.  Before it, one long one-line label -- a chief of staff's
+ * description in the header -- ran the island, the alerts and the menu
+ * off the right edge, and a transcript laid out wide never came back in
+ * after the window shrank.
+ *
+ * Neither is a new symbol LRG_REQUIRED_SYMBOLS could look for, so the
+ * version is the check.
  */
-#if !LRG_CHECK_VERSION(0, 8, 5)
-#error "clawtilla-lrg needs libregnum 0.8.5 or newer; update the checkout at LRG_DIR"
+#if !LRG_CHECK_VERSION(0, 8, 6)
+#error "clawtilla-lrg needs libregnum 0.8.6 or newer; update the checkout at LRG_DIR"
 #endif
+
+/* The smallest window the client allows; every page is tested to fit it. */
+#define CLAWT_LRG_MIN_WIDTH  (960)
+#define CLAWT_LRG_MIN_HEIGHT (600)
 
 #include "clawt-lrg-model.h"
 
@@ -383,7 +395,10 @@ void       clawt_lrg_avatar_invalidate(const gchar *agent_id);
 LrgWidget *clawt_lrg_row(const gchar *title, const gchar *subtitle);
 void       clawt_lrg_row_add_prefix(LrgWidget *row, LrgWidget *prefix);
 /* Caps the title/subtitle column so the suffixes stay inside a narrow row. */
-void       clawt_lrg_row_set_text_width(LrgWidget *row, gfloat width);
+/* Sets a clawt_lrg_paragraph()'s text, escaped as the constructor does. */
+void       clawt_lrg_paragraph_set_text(LrgWidget *paragraph, const gchar *text);
+/* The row's wrapping subtitle, or NULL when it was made without one. */
+LrgWidget *clawt_lrg_row_subtitle(LrgWidget *row);
 void       clawt_lrg_row_add_suffix(LrgWidget *row, LrgWidget *suffix);
 
 /* A page: heading, optional subtitle, a toolbar slot and a scrolling body. */

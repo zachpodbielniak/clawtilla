@@ -408,6 +408,22 @@ test_guarded_replies_follow_the_selection(void)
     g_assert_false(clawt_lrg_reply_is_current(TRUE, G_MAXUINT, 0));
 }
 
+/* graylib picks a decoder by extension: "XXXXXXjpg" has none */
+static void
+test_image_template_has_a_dot(void)
+{
+    g_autofree gchar *png = clawt_lrg_image_template("clawtilla-avatar",
+                                                     "image/png");
+    g_autofree gchar *jpg = clawt_lrg_image_template("clawtilla-frame",
+                                                     "image/jpeg");
+    g_autofree gchar *unknown = clawt_lrg_image_template("clawtilla-frame",
+                                                         "text/plain");
+
+    g_assert_cmpstr(png, ==, "clawtilla-avatar-XXXXXX.png");
+    g_assert_cmpstr(jpg, ==, "clawtilla-frame-XXXXXX.jpg");
+    g_assert_null(unknown);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -441,6 +457,8 @@ main(int argc, char *argv[])
     g_test_add_func("/lrg-models/island/agents-not-running-turns",
                     test_island_counts_agents_not_running_turns);
     g_test_add_func("/lrg-models/text/escape", test_escape_shows_text_as_written);
+    g_test_add_func("/lrg-models/text/image-template",
+                    test_image_template_has_a_dot);
     g_test_add_func("/lrg-models/requests/guard",
                     test_guarded_replies_follow_the_selection);
 

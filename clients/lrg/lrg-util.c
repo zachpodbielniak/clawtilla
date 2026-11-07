@@ -88,7 +88,6 @@ static GrlTexture *
 decode_texture(const guchar *data, gsize length)
 {
     const gchar *mime = clawt_avatar_sniff_mime_type(data, length);
-    const gchar *extension;
     g_autofree gchar *template = NULL;
     g_autofree gchar *path = NULL;
     g_autoptr(GError) error = NULL;
@@ -99,8 +98,9 @@ decode_texture(const guchar *data, gsize length)
     if (mime == NULL)
         return NULL;
 
-    extension = clawt_avatar_extension_for_mime_type(mime);
-    template = g_strdup_printf("clawtilla-avatar-XXXXXX%s", extension);
+    template = clawt_lrg_image_template("clawtilla-avatar", mime);
+    if (template == NULL)
+        return NULL;
     fd = g_file_open_tmp(template, &path, &error);
 
     if (fd < 0) {

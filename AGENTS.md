@@ -729,7 +729,22 @@ critical fired.
   unset `XDG_SESSION_TYPE`; GLFW then falls back to X11.
 - **graylib loads images by filename** and picks the decoder from the
   extension; bytes from the daemon go through a temporary file named for
-  their own magic number (`clawt_avatar_sniff_mime_type()`).
+  their own magic number (`clawt_avatar_sniff_mime_type()`), from
+  `clawt_lrg_image_template()`.  Three call sites each wrote
+  `"XXXXXX%s"` with an extension that has no dot, and every avatar, chat
+  picture and screen frame in this client failed to load -- logged by
+  raylib at WARNING, drawn as initials and an empty panel, and shipped in
+  0.7.0 because no fixture agent had a picture.
+- **A box short of room used to overflow, not shrink.**  Before libregnum
+  0.8.6 a deficit was ignored, so one long one-line label in a row (the
+  header's agent description) pushed everything after it off the window,
+  and a markdown label -- whose natural width is the width it was last
+  given -- kept a wide transcript wide after a shrink.  0.8.6 takes the
+  deficit from flexible children only, so in a row the text beside
+  something fixed must be the child with a fill weight (and a one-line
+  label there must ellipsize).  `/lrgui/widgets/every-page-fits` shrinks
+  every page to the minimum window; `CLAWT_LRG_SELF_TEST_SIZES` does the
+  same against a live fleet's data.
 - **A frame must cost what is on screen, not what is loaded.**  Before
   libregnum 0.8.5 nothing was culled: a 300-message transcript was laid
   out and recorded every frame, and `LrgMarkdownLabel` re-wrapped on

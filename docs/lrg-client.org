@@ -87,11 +87,11 @@ Before the client links, ~make lrg-lib~ (run automatically) looks at ~$(LRG_DIR)
 
 - the archive does not exist;
 - any ~.c~ or ~.h~ under ~$(LRG_DIR)/src~ or its graylib is newer than the archive;
-- the archive lacks one of ~LRG_REQUIRED_SYMBOLS~ (in ~config.mk~) -- ~lrg_canvas_new~, ~lrg_island_new~, ~lrg_text_editor_new~, ~lrg_markdown_label_new~, ~lrg_table_new~, ~lrg_node_graph_new~, ~lrg_toast_queue_new~, ~lrg_header_bar_new~, ~lrg_switcher_new~, ~lrg_timeline_view_new~, ~lrg_property_grid_new~.  An archive from before the widget set links nothing useful, and the symptom would otherwise be a wall of undefined references.
+- the archive lacks one of ~LRG_REQUIRED_SYMBOLS~ (in ~config.mk~) -- ~lrg_canvas_new~, ~lrg_island_new~, ~lrg_text_editor_new~, ~lrg_markdown_label_new~, ~lrg_table_new~, ~lrg_node_graph_new~, ~lrg_toast_queue_new~, ~lrg_header_bar_new~, ~lrg_switcher_new~, ~lrg_timeline_view_new~, ~lrg_property_grid_new~, ~lrg_label_set_ellipsize~.  An archive from before the widget set links nothing useful, and the symptom would otherwise be a wall of undefined references.
 
 The rebuild runs libregnum's own ~deps~ and ~lib~ targets with ~DEBUG=0~ and *none* of clawtilla's command-line variables: a ~DEBUG~, ~ASAN~ or ~BUILDDIR~ given to clawtilla reaches every nested make through ~MAKEFLAGS~, which is how libreclaw's release tree was once built with ASan.  It uses libregnum's default options, so an archive another project links (cmacs, gsurf) is rebuilt as itself, not as a cut-down variant that would break them.  The logic is ~tools/clawt-lrg-lib.sh~.
 
-The checkout itself must be libregnum 0.8.5 or later.  That is a behaviour, not a symbol -- clip culling and a cached markdown measure, without which a long conversation costs every frame (see [[#lrg-loop][the frame loop]]) -- so ~clients/lrg/clawt-lrg.h~ checks ~LRG_CHECK_VERSION(0, 8, 5)~ and stops the build with an ~#error~ naming ~LRG_DIR~.  Pull the checkout and build again.
+The checkout itself must be libregnum 0.8.6 or later.  Those are behaviours, not symbols -- 0.8.5's clip culling and cached markdown measure, without which a long conversation costs every frame (see [[#lrg-loop][the frame loop]]), and 0.8.6's boxes that take width back from flexible children, without which the window does not fit (see [[#lrg-fit][fitting the window]]) -- so ~clients/lrg/clawt-lrg.h~ checks ~LRG_CHECK_VERSION(0, 8, 6)~ and stops the build with an ~#error~ naming ~LRG_DIR~.  Pull the checkout and build again.
 
 The first build takes a few minutes (libregnum is large); later ones only relink.
 
@@ -931,6 +931,25 @@ The fourth keeps an idle client from costing a core.  A frame with no input, no 
 
 A frame's cost has to follow what is on screen, not what has been loaded.  libregnum 0.8.5 and later record nothing for a widget wholly outside the current clip (a scroll box's viewport, less a margin for shadows and focus rings), and measure a markdown label through the same layout cache it paints from.  Before that, a 300-message transcript was laid out and recorded in full every frame to draw the ten messages that fit -- 8 ms a frame on a fast machine and 3 fps on a real fleet -- and loading it re-wrapped every message once per message added, three seconds in a single frame.  ~clients/lrg/clawt-lrg.h~ refuses to build against an older libregnum, because no symbol changed and ~LRG_REQUIRED_SYMBOLS~ cannot tell the two apart.
 
+** Fitting the window
+:PROPERTIES:
+:CUSTOM_ID: lrg-fit
+:END:
+
+Everything has to fit the window at the size it opens at and after any resize down to the minimum, ~CLAWT_LRG_MIN_WIDTH~ x ~CLAWT_LRG_MIN_HEIGHT~ (960 x 600).  Three rules make it so:
+
+- *The main column is capped* at the window less the sidebar and the alerts drawer, by ~clawt_lrg_window_resize()~, and only when that changes (the setter queues a layout).
+- *Inside it, whatever can give width is flexible.*  libregnum 0.8.6 boxes take a deficit back from their children with a fill weight, in proportion, never below a minimum; a fixed child is never squashed.  So in any row that holds a paragraph, a title or a sentence beside something fixed (a button, a badge), the text is the child with ~lrg_widget_set_fill_weight()~.  A one-line label in that place also gets ~lrg_label_set_ellipsize()~, so less width draws "…" rather than text over its neighbour -- the header's title and subtitle are the case that found this: a chief of staff's one-line description ran the island, Alerts and the menu off a 1300-pixel window.
+- *A row of things that cannot shrink wraps.*  The section and page tabs are an =LrgWrapBox=, so six tabs beside the sidebar take a second line rather than leaving the window.
+
+Shrinking is the case that matters, not opening small: a markdown label reports the width it was last given as its natural width, so a transcript laid out wide stayed wide when the window narrowed until its row was flexible.  ~tests/test-lrgui-widgets.c~ (=/lrgui/widgets/every-page-fits=) shows every page at 1600 wide and then shrinks to the minimum, with a room id long enough to overflow any header, and fails naming the first widget that reaches past the edge.  It runs disconnected, so it sees the shell and the pages' empty states; a page's rows full of a real fleet's data are checked against a live daemon with ~CLAWT_LRG_SELF_TEST_SIZES~:
+
+#+begin_src bash
+CLAWT_LRG_SELF_TEST_SIZES=1600x900,960x600 clawtilla-lrg --profile srv-zach --self-test agent:gnuisaince
+#+end_src
+
+which lays out at each size in turn and prints the last as ~--self-test~ does; any rect in ~tree~ whose ~x + width~ passes the last width is off screen.
+
 ** Requests are async, always
 :PROPERTIES:
 :CUSTOM_ID: lrg-async
@@ -983,7 +1002,7 @@ The lists the shell keeps (~agent.list~, ~room.list~, ~activity.list~, ~decision
 :CUSTOM_ID: lrg-avatars
 :END:
 
-An avatar is a disc in the agent's colour with its initials (ink chosen by ~clawt_color_ink()~), and the picture over it when the agent has one.  The picture is fetched once per agent (~agent.avatar~, quiet), decoded at 128 px and shared by every avatar of that agent on screen; ~agent.changed~ invalidates it.  A running agent's disc glows in its own colour.  graylib loads images by filename, so the bytes go through a temporary file whose extension comes from the bytes' own magic number (~clawt_avatar_sniff_mime_type()~), never from anything the daemon claimed.
+An avatar is a disc in the agent's colour with its initials (ink chosen by ~clawt_color_ink()~), and the picture over it when the agent has one.  The picture is fetched once per agent (~agent.avatar~, quiet), decoded at 128 px and shared by every avatar of that agent on screen; ~agent.changed~ invalidates it.  A running agent's disc glows in its own colour.  graylib loads images by filename, so the bytes go through a temporary file whose extension comes from the bytes' own magic number (~clawt_avatar_sniff_mime_type()~), never from anything the daemon claimed.  The template is ~clawt_lrg_image_template()~ -- one spelling for avatars, chat pictures and screen frames, and tested -- because all three once wrote ~XXXXXX%s~ with a bare extension: ~clawtilla-avatar-YEW1X3jpg~ has no extension, graylib logged "Missing file extension", and before 0.7.4 every picture in this client drew as initials and every Screen panel stayed empty.
 
 * Parity
 :PROPERTIES:
@@ -1075,6 +1094,8 @@ Run with ~CLAWT_LRG_FPS=1~: every two seconds the client prints its frame rate a
 #+begin_src bash
 CLAWT_LRG_FPS=1 clawtilla-lrg --profile srv-zach
 #+end_src
+
+The report also gives the window (~screen~), the framebuffer (~render~), the monitor's DPI scale and the UI scale.  A layout that runs off the window and a canvas that is not the window's size look the same on screen; these say which.
 
 An idle window draws at about 30 fps while an animated background is showing and well under that without one; a frame should take a millisecond or two.  A mean that grows with the length of the conversation on screen means the libregnum archive predates 0.8.5 (see [[#lrg-loop][the frame loop]]).  Frames that are cheap while the rate is still low point at software rendering: check ~glxinfo -B~ for llvmpipe, and try ~lrg_background: none~.
 

@@ -351,7 +351,7 @@ on_operator(ClawtLrgApp *app, JsonNode *reply, const GError *error,
     clawt_lrg_clear(state.operator_learned);
 
     if (reply == NULL) {
-        lrg_label_set_text(LRG_LABEL(state.operator_banner_label),
+        clawt_lrg_paragraph_set_text(state.operator_banner_label,
                            error != NULL ? error->message
                                          : "The operator profile did not "
                                            "answer.");
@@ -386,7 +386,7 @@ on_operator(ClawtLrgApp *app, JsonNode *reply, const GError *error,
      * somebody changes a setting: text typed into a profile nobody reads
      * is worse than an empty page.
      */
-    lrg_label_set_text(LRG_LABEL(state.operator_banner_label),
+    clawt_lrg_paragraph_set_text(state.operator_banner_label,
                        CLAWT_LRG_OPERATOR_OFF);
     lrg_widget_set_visible(state.operator_banner,
                            !clawt_ipc_payload_boolean(payload, "enabled",
@@ -547,7 +547,8 @@ build(ClawtLrgApp *app)
     g_object_unref(state.memory_list);
 
     /* ── The operator profile ── */
-    state.operator_banner_label = clawt_lrg_label("", NULL);
+    /* wraps, as the window's banner does: these are sentences */
+    state.operator_banner_label = clawt_lrg_paragraph("", NULL);
     state.operator_banner = banner(state.operator_banner_label);
     lrg_widget_set_visible(state.operator_banner, FALSE);
     clawt_lrg_add(body, state.operator_banner);

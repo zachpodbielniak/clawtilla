@@ -153,6 +153,109 @@ shows(ClawtLrgApp *app, const gchar *needle)
     return FALSE;
 }
 
+/*
+ * The first visible widget that reaches past @right, or NULL.  Hidden
+ * widgets are skipped with everything under them, since a switcher's
+ * other pages are laid out wherever they were left.
+ */
+static LrgWidget *
+first_past(LrgWidget *widget, gfloat right)
+{
+    GList *l;
+
+    if (!lrg_widget_get_visible(widget))
+        return NULL;
+
+    if (lrg_widget_get_world_x(widget) + lrg_widget_get_width(widget) >
+        right + 0.5f)
+        return widget;
+
+    if (!LRG_IS_CONTAINER(widget))
+        return NULL;
+
+    for (l = lrg_container_get_children(LRG_CONTAINER(widget)); l != NULL;
+         l = l->next) {
+        LrgWidget *found = first_past(l->data, right);
+
+        if (found != NULL)
+            return found;
+    }
+
+    return NULL;
+}
+
+/* Lays the window out at @width x @height, as a resize to it would. */
+static void
+resize_to(ClawtLrgApp *app, gfloat width, gfloat height)
+{
+    lrg_widget_set_size(LRG_WIDGET(app->canvas), width, height);
+    lrg_widget_set_size(app->backdrop, width, height);
+    lrg_widget_set_size(app->root, width, height);
+    clawt_lrg_window_resize(app, width, height);
+    lrg_widget_layout(LRG_WIDGET(app->canvas));
+    lrg_widget_layout(LRG_WIDGET(app->canvas));
+}
+
+/*
+ * Every page fits the window: at the size it opens at, and after being
+ * shrunk to the smallest the window allows.  The header once took a
+ * chief of staff's whole one-line description and ran the island, the
+ * alerts and the menu off the right edge; a box never took space back
+ * from a child, and a label kept the width it had before a shrink.
+ * Shrinking is part of the test because that is where the second
+ * happened -- a window that opened small was fine.
+ */
+static void
+test_every_page_fits_the_window(Fixture *fixture, gconstpointer data)
+{
+    ClawtLrgApp *app = fixture->app;
+    guint n = clawt_page_count();
+    guint i;
+
+    /*
+     * A header with more to say than the window has room for: a room
+     * with no agent is titled by its id, which nothing bounds.  With a
+     * daemon this is the selected agent's description; disconnected, a
+     * long room id is the same one-line label at the same width.
+     */
+    clawt_lrg_select_room(app, "a-room-whose-name-goes-on-for-much-longer-"
+                               "than-any-window-is-wide-because-somebody-"
+                               "typed-a-whole-sentence-into-the-id-field-"
+                               "and-the-header-must-cut-it-short-not-run-"
+                               "the-island-and-the-menu-off-the-edge");
+    drain(app);
+
+    for (i = 0; i < n; i++) {
+        ClawtPage page = (ClawtPage)i;
+        LrgWidget *past;
+
+        clawt_lrg_show_page(app, page);
+        drain(app);
+
+        resize_to(app, 1600.0f, 900.0f);
+        past = first_past(LRG_WIDGET(app->canvas), 1600.0f);
+        if (past != NULL)
+            g_error("%s: a %s ends at %.0f in a 1600-wide window",
+                    clawt_page_nick(page), G_OBJECT_TYPE_NAME(past),
+                    lrg_widget_get_world_x(past) + lrg_widget_get_width(past));
+
+        resize_to(app, (gfloat)CLAWT_LRG_MIN_WIDTH,
+                  (gfloat)CLAWT_LRG_MIN_HEIGHT);
+        past = first_past(LRG_WIDGET(app->canvas),
+                          (gfloat)CLAWT_LRG_MIN_WIDTH);
+        if (past != NULL)
+            g_error("%s: a %s ends at %.0f after shrinking to %d",
+                    clawt_page_nick(page), G_OBJECT_TYPE_NAME(past),
+                    lrg_widget_get_world_x(past) + lrg_widget_get_width(past),
+                    CLAWT_LRG_MIN_WIDTH);
+    }
+
+    /* back to the size, and the selection, the other tests expect */
+    clawt_lrg_select_room(app, NULL);
+    drain(app);
+    resize_to(app, 1280.0f, 800.0f);
+}
+
 static void
 test_section_tabs_walk_the_library(Fixture *fixture, gconstpointer data)
 {
@@ -285,6 +388,8 @@ main(int argc, char *argv[])
 
     g_test_add("/lrgui/widgets/every-page", Fixture, NULL, fixture_set_up,
                test_every_page_builds_and_lays_out, fixture_tear_down);
+    g_test_add("/lrgui/widgets/every-page-fits", Fixture, NULL, fixture_set_up,
+               test_every_page_fits_the_window, fixture_tear_down);
     g_test_add("/lrgui/widgets/section-tabs", Fixture, NULL, fixture_set_up,
                test_section_tabs_walk_the_library, fixture_tear_down);
     g_test_add("/lrgui/widgets/disconnected", Fixture, NULL, fixture_set_up,

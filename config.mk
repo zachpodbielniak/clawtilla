@@ -11,7 +11,7 @@
 PROJECT_NAME = clawtilla
 VERSION_MAJOR = 0
 VERSION_MINOR = 7
-VERSION_MICRO = 3
+VERSION_MICRO = 4
 VERSION = $(VERSION_MAJOR).$(VERSION_MINOR).$(VERSION_MICRO)
 
 # Installation paths
@@ -162,7 +162,8 @@ LRG_YAML_DIR = $(LRG_DIR)/deps/yaml-glib
 LRG_REQUIRED_SYMBOLS = lrg_canvas_new lrg_island_new lrg_text_editor_new \
                        lrg_markdown_label_new lrg_table_new lrg_node_graph_new \
                        lrg_toast_queue_new lrg_header_bar_new lrg_switcher_new \
-                       lrg_timeline_view_new lrg_property_grid_new
+                       lrg_timeline_view_new lrg_property_grid_new \
+                       lrg_label_set_ellipsize
 
 ifeq ($(LRG_BACKEND),1)
 LRG_AVAILABLE := $(shell test -f $(LRG_DIR)/src/libregnum.h && echo 1 || echo 0)

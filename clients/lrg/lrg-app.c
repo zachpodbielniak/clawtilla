@@ -33,6 +33,7 @@
 #include <graylib.h>
 #include <raylib.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 /* How long an idle frame may wait for GLib work, by background. */
@@ -643,11 +644,39 @@ run_self_test(ClawtLrgApp *app, const gchar *spec)
 
     settle(app, 1200);
 
-    lrg_widget_set_size(LRG_WIDGET(app->canvas), 1280.0f, 800.0f);
-    lrg_widget_set_size(app->backdrop, 1280.0f, 800.0f);
-    lrg_widget_set_size(app->root, 1280.0f, 800.0f);
-    clawt_lrg_window_resize(app, 1280.0f, 800.0f);
-    lrg_widget_layout(LRG_WIDGET(app->canvas));
+    /*
+     * CLAWT_LRG_SELF_TEST_SIZES="1360x860,1100x700": lay out at each size
+     * in turn and report the last -- a window that is resized, not one
+     * that opened at its final size.  Shrinking is where a layout goes
+     * wrong (a label keeps the width it had), and a single size cannot
+     * show it.  Default 1280x800.
+     */
+    {
+        const gchar *sizes = g_getenv("CLAWT_LRG_SELF_TEST_SIZES");
+        g_auto(GStrv) each = g_strsplit((sizes != NULL && *sizes != '\0')
+                                            ? sizes : "1280x800", ",", -1);
+        guint k;
+
+        for (k = 0; each[k] != NULL; k++) {
+            gfloat w = 0.0f;
+            gfloat h = 0.0f;
+
+            if (sscanf(each[k], "%fx%f", &w, &h) != 2 || w < 1.0f ||
+                h < 1.0f) {
+                g_printerr("%s: CLAWT_LRG_SELF_TEST_SIZES: '%s' is not "
+                           "WIDTHxHEIGHT\n", CLAWT_LRG_BIN_NAME, each[k]);
+                return 2;
+            }
+
+            lrg_widget_set_size(LRG_WIDGET(app->canvas), w, h);
+            lrg_widget_set_size(app->backdrop, w, h);
+            lrg_widget_set_size(app->root, w, h);
+            clawt_lrg_window_resize(app, w, h);
+            lrg_widget_layout(LRG_WIDGET(app->canvas));
+            /* a second pass, as the next frame would make */
+            lrg_widget_layout(LRG_WIDGET(app->canvas));
+        }
+    }
 
     /*
      * {"page", "texts": [...], "tree": <inspector snapshot>}.  The
@@ -761,7 +790,13 @@ clawt_lrg_app_run(ClawtLrgApp *app, const gchar *self_test_page)
                        FLAG_WINDOW_HIGHDPI | FLAG_VSYNC_HINT);
         SetTraceLogLevel(LOG_WARNING);
         window = grl_window_new(1360, 860, "clawtilla");
-        SetWindowMinSize(720, 480);
+        /*
+         * The narrowest window every page fits: a 340-pixel sidebar, and a
+         * header of avatar, island, Alerts and menu beside it.  At 720 the
+         * header alone was wider than what was left, whatever shrank.
+         * tests/test-lrgui-widgets.c lays every page out at this size.
+         */
+        SetWindowMinSize(CLAWT_LRG_MIN_WIDTH, CLAWT_LRG_MIN_HEIGHT);
         SetExitKey(KEY_NULL);
         grl_window_set_target_fps(window, 0);
     }
@@ -836,12 +871,23 @@ clawt_lrg_app_run(ClawtLrgApp *app, const gchar *self_test_page)
             report_worst = MAX(report_worst, took);
 
             if (now - report_since >= 2 * G_USEC_PER_SEC) {
-                g_printerr("%s: %.1f fps, frame %.1f ms mean, %.1f ms worst\n",
+                Vector2 dpi = GetWindowScaleDPI();
+
+                /*
+                 * The sizes too: a window that does not fit is either a
+                 * layout that overflows the canvas or a canvas that is
+                 * not the window, and these say which.
+                 */
+                g_printerr("%s: %.1f fps, frame %.1f ms mean, %.1f ms worst; "
+                           "screen %dx%d, render %dx%d, dpi %.2f, ui scale %.2f\n",
                            CLAWT_LRG_BIN_NAME,
                            (gdouble)report_frames * G_USEC_PER_SEC /
                                (gdouble)(now - report_since),
                            (gdouble)report_busy / report_frames / 1000.0,
-                           (gdouble)report_worst / 1000.0);
+                           (gdouble)report_worst / 1000.0,
+                           GetScreenWidth(), GetScreenHeight(),
+                           GetRenderWidth(), GetRenderHeight(),
+                           (gdouble)dpi.x, app->scale);
                 report_since = now;
                 report_frames = 0;
                 report_busy = 0;
