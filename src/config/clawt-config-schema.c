@@ -1760,6 +1760,16 @@ static const ClawtSchemaEntry schema[] = {
   "need to be later still.",
   "0.2.0" },
 
+{ "routines.locked", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "false", NULL,
+  "Keep the agent from changing or removing this routine.\n"
+  "\n"
+  "An agent with tools.schedule may adjust the routines that run on it --\n"
+  "move a check, split one, drop one it no longer needs. Lock the ones\n"
+  "that are yours to decide: it can still read a locked routine, and it\n"
+  "is told why a change was refused rather than left guessing. Only a\n"
+  "client or the config can set or clear this; an agent cannot.", "0.7.1" },
+
 /* ── agents ──────────────────────────────────────────────────────── */
 /* ── triggers ────────────────────────────────────────────────────── */
 { "triggers", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
@@ -3192,6 +3202,42 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "Intended for a chief-of-staff you talk to about what the fleet needs.",
   "0.1.0" },
+
+{ "agents.tools.schedule", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "true", NULL,
+  "Whether this agent may schedule its own routines.\n"
+  "\n"
+  "With it on, the agent is offered clawtilla_routine_add, _update and\n"
+  "_remove: it can set up a check on something for itself, move one to a\n"
+  "better time, or split a long watchlist into several -- the way you\n"
+  "would ask a colleague to remind themselves rather than doing it for\n"
+  "them. Only ever routines that run on this agent, never another's,\n"
+  "and never one you marked `locked`.\n"
+  "\n"
+  "On by default because a routine opens nothing -- unlike a trigger,\n"
+  "which is an address on your network and stays yours to create. What\n"
+  "it can cost is bounded by `tools.schedule_limit` and\n"
+  "`tools.schedule_min_minutes`.", "0.7.1" },
+
+{ "agents.tools.schedule_limit", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "8", NULL,
+  "How many routines may run on this agent before it can add no more\n"
+  "of its own.\n"
+  "\n"
+  "Counts every routine whose agent is this one, including those you\n"
+  "wrote: the bound is on how often the agent is woken, not on who\n"
+  "arranged it. Routines you add are never refused for it.", "0.7.1" },
+
+{ "agents.tools.schedule_min_minutes", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_NONE, "15", NULL,
+  "The shortest gap between two runs of a routine this agent schedules,\n"
+  "in minutes.\n"
+  "\n"
+  "An agent that writes `*/1 * * * *` has written itself a turn a\n"
+  "minute, which is a bill rather than a schedule. Checked over the\n"
+  "schedule's next runs, so a cron expression whose runs bunch up --\n"
+  "`0,1,2 9 * * *` -- is refused as well as one that is simply too\n"
+  "frequent. Applies only to what an agent schedules for itself.", "0.7.1" },
 
 { "agents.mailbox", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Per-agent overrides of orchestration.mailbox.", "0.1.0" },

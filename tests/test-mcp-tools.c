@@ -3772,6 +3772,327 @@ test_the_exec_timeout_is_bounded(void)
 }
 
 
+
+/* ── An agent's own routines ─────────────────────────────────────── */
+
+/*
+ * Standing in for the daemon's routine hook: applies the payload to the
+ * fixture's config the way clawt_daemon_routine_save() does, minus the
+ * file write and the reload.  What is tested here is the tools' rules --
+ * whose routine, locked, how many, how often, which fields -- which all
+ * run before the hook is called.
+ */
+static gboolean
+fake_routine(const gchar *verb, const gchar *id, JsonObject *payload,
+             gpointer user_data, GError **error)
+{
+    Fixture *fixture = user_data;
+    ClawtRoutine *routine;
+    GList *members;
+    GList *l;
+
+    if (g_strcmp0(verb, "remove") == 0)
+        return clawt_config_remove_routine(fixture->config, id);
+
+    routine = (g_strcmp0(verb, "add") == 0)
+        ? clawt_config_add_routine(fixture->config, id, error)
+        : clawt_config_get_routine(fixture->config, id);
+
+    if (routine == NULL)
+        return FALSE;
+
+    members = json_object_get_members(payload);
+
+    for (l = members; l != NULL; l = l->next) {
+        const gchar *key = l->data;
+        JsonNode *node = json_object_get_member(payload, key);
+        GType type = json_node_get_value_type(node);
+
+        if (type == G_TYPE_BOOLEAN)
+            clawt_routine_set_boolean(routine, key,
+                                      json_node_get_boolean(node));
+        else if (type == G_TYPE_INT64)
+            clawt_routine_set_int(routine, key, json_node_get_int(node));
+        else
+            clawt_routine_set_string(routine, key, json_node_get_string(node));
+    }
+
+    g_list_free(members);
+    return TRUE;
+}
+
+static void
+schedule_fixture(Fixture *fixture, const gchar *extra_yaml)
+{
+    g_autofree gchar *yaml = g_strdup_printf(
+        "agents:\n"
+        "  - id: hornbill\n%s"
+        "  - id: kestrel\n"
+        "routines:\n"
+        "  - id: morning\n"
+        "    agent: hornbill\n"
+        "    instructions: Check the watchlist.\n"
+        "    schedule: daily\n"
+        "    at: \"09:00\"\n"
+        "  - id: pinned\n"
+        "    agent: hornbill\n"
+        "    instructions: The operator's own check.\n"
+        "    locked: true\n"
+        "  - id: theirs\n"
+        "    agent: kestrel\n"
+        "    instructions: Not hornbill's.\n",
+        extra_yaml != NULL ? extra_yaml : "");
+
+    fixture_setup(fixture, yaml);
+    clawt_mcp_tools_set_routine_func(fixture->tools, fake_routine, fixture,
+                                     NULL);
+}
+
+static void
+test_scheduling_is_offered_by_default_and_can_be_withheld(void)
+{
+    Fixture fixture = { 0 };
+    Fixture off = { 0 };
+
+    schedule_fixture(&fixture, NULL);
+    g_assert_true(clawt_mcp_tools_is_permitted(fixture.tools, "hornbill",
+                                               "clawtilla_routine_add"));
+    g_assert_true(clawt_mcp_tools_is_permitted(fixture.tools, "hornbill",
+                                               "clawtilla_routine_list"));
+    fixture_teardown(&fixture);
+
+    schedule_fixture(&off, "    tools:\n      schedule: false\n");
+    g_assert_false(clawt_mcp_tools_is_permitted(off.tools, "hornbill",
+                                                "clawtilla_routine_add"));
+    g_assert_false(clawt_mcp_tools_is_permitted(off.tools, "hornbill",
+                                                "clawtilla_routine_remove"));
+    /* reading its own schedule is never withheld */
+    g_assert_true(clawt_mcp_tools_is_permitted(off.tools, "hornbill",
+                                               "clawtilla_routine_list"));
+    fixture_teardown(&off);
+}
+
+static void
+test_scheduling_needs_somewhere_to_save(void)
+{
+    Fixture fixture = { 0 };
+
+    /* no hook: a library embedded without a daemon */
+    fixture_setup(&fixture, "agents:\n  - id: hornbill\n");
+    g_assert_false(clawt_mcp_tools_is_permitted(fixture.tools, "hornbill",
+                                                "clawtilla_routine_add"));
+    fixture_teardown(&fixture);
+}
+
+static void
+test_an_added_routine_runs_on_its_author(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    gboolean is_error = TRUE;
+    ClawtRoutine *routine;
+
+    schedule_fixture(&fixture, NULL);
+
+    /*
+     * agent, locked and directory are not the agent's to set: the tool's
+     * table leaves them out, so they never reach the routine.
+     */
+    response = call_tool(&fixture, "hornbill", "clawtilla_routine_add",
+        "{\"id\": \"watch-b\", \"instructions\": \"Check the second half.\","
+        " \"schedule\": \"daily\", \"at\": \"18:00\", \"agent\": \"kestrel\","
+        " \"locked\": true, \"directory\": \"/etc\"}");
+    response_text(response, &is_error);
+    g_assert_false(is_error);
+
+    routine = clawt_config_get_routine(fixture.config, "watch-b");
+    g_assert_nonnull(routine);
+    g_assert_cmpstr(clawt_routine_get_string(routine, "agent"), ==,
+                    "hornbill");
+    g_assert_cmpstr(clawt_routine_get_string(routine, "at"), ==, "18:00");
+    g_assert_false(clawt_routine_get_boolean(routine, "locked"));
+    g_assert_null(clawt_routine_get_string(routine, "directory"));
+
+    fixture_teardown(&fixture);
+}
+
+static void
+test_a_schedule_that_wakes_too_often_is_refused(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) every_five = NULL;
+    g_autoptr(JsonNode) bunched = NULL;
+    g_autoptr(JsonNode) every_half_hour = NULL;
+    gboolean is_error = FALSE;
+    const gchar *text;
+
+    schedule_fixture(&fixture, NULL);
+
+    every_five = call_tool(&fixture, "hornbill", "clawtilla_routine_add",
+        "{\"id\": \"fast\", \"instructions\": \"x\", \"schedule\": \"custom\","
+        " \"cron\": \"*/5 * * * *\"}");
+    text = response_text(every_five, &is_error);
+    g_assert_true(is_error);
+    g_assert_nonnull(strstr(text, "schedule_min_minutes"));
+    g_assert_null(clawt_config_get_routine(fixture.config, "fast"));
+
+    /* once a day by its hour, every minute by its minutes */
+    bunched = call_tool(&fixture, "hornbill", "clawtilla_routine_add",
+        "{\"id\": \"bunched\", \"instructions\": \"x\", \"schedule\": "
+        "\"custom\", \"cron\": \"0,1,2 9 * * *\"}");
+    response_text(bunched, &is_error);
+    g_assert_true(is_error);
+
+    every_half_hour = call_tool(&fixture, "hornbill", "clawtilla_routine_add",
+        "{\"id\": \"half\", \"instructions\": \"x\", \"schedule\": \"custom\","
+        " \"cron\": \"*/30 * * * *\"}");
+    response_text(every_half_hour, &is_error);
+    g_assert_false(is_error);
+
+    fixture_teardown(&fixture);
+}
+
+static void
+test_the_limit_counts_every_routine_on_the_agent(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    gboolean is_error = FALSE;
+    const gchar *text;
+
+    /* two already run on hornbill (morning, pinned), both the operator's */
+    schedule_fixture(&fixture, "    tools:\n      schedule_limit: 2\n");
+
+    response = call_tool(&fixture, "hornbill", "clawtilla_routine_add",
+        "{\"id\": \"third\", \"instructions\": \"x\"}");
+    text = response_text(response, &is_error);
+    g_assert_true(is_error);
+    g_assert_nonnull(strstr(text, "schedule_limit"));
+    g_assert_null(clawt_config_get_routine(fixture.config, "third"));
+
+    fixture_teardown(&fixture);
+}
+
+static void
+test_only_its_own_unlocked_routines_change(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) own = NULL;
+    g_autoptr(JsonNode) locked = NULL;
+    g_autoptr(JsonNode) other = NULL;
+    g_autoptr(JsonNode) remove_locked = NULL;
+    g_autoptr(JsonNode) remove_own = NULL;
+    gboolean is_error = FALSE;
+    const gchar *text;
+
+    schedule_fixture(&fixture, NULL);
+
+    /* the operator's routine, unlocked: the agent may move it */
+    own = call_tool(&fixture, "hornbill", "clawtilla_routine_update",
+        "{\"id\": \"morning\", \"at\": \"07:30\"}");
+    response_text(own, &is_error);
+    g_assert_false(is_error);
+    g_assert_cmpstr(clawt_routine_get_string(
+                        clawt_config_get_routine(fixture.config, "morning"),
+                        "at"), ==, "07:30");
+
+    locked = call_tool(&fixture, "hornbill", "clawtilla_routine_update",
+        "{\"id\": \"pinned\", \"enabled\": false}");
+    text = response_text(locked, &is_error);
+    g_assert_true(is_error);
+    g_assert_nonnull(strstr(text, "locked"));
+    g_assert_true(clawt_routine_get_boolean(
+        clawt_config_get_routine(fixture.config, "pinned"), "enabled"));
+
+    other = call_tool(&fixture, "hornbill", "clawtilla_routine_update",
+        "{\"id\": \"theirs\", \"enabled\": false}");
+    text = response_text(other, &is_error);
+    g_assert_true(is_error);
+    g_assert_nonnull(strstr(text, "another agent"));
+
+    remove_locked = call_tool(&fixture, "hornbill", "clawtilla_routine_remove",
+                              "{\"id\": \"pinned\"}");
+    response_text(remove_locked, &is_error);
+    g_assert_true(is_error);
+    g_assert_nonnull(clawt_config_get_routine(fixture.config, "pinned"));
+
+    remove_own = call_tool(&fixture, "hornbill", "clawtilla_routine_remove",
+                           "{\"id\": \"morning\"}");
+    response_text(remove_own, &is_error);
+    g_assert_false(is_error);
+    g_assert_null(clawt_config_get_routine(fixture.config, "morning"));
+
+    fixture_teardown(&fixture);
+}
+
+static void
+test_the_list_shows_only_its_own(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) response = NULL;
+    const gchar *text;
+
+    schedule_fixture(&fixture, NULL);
+    response = call_tool(&fixture, "hornbill", "clawtilla_routine_list", "{}");
+    text = response_text(response, NULL);
+
+    g_assert_nonnull(strstr(text, "morning"));
+    g_assert_nonnull(strstr(text, "pinned"));
+    g_assert_nonnull(strstr(text, "locked"));
+    g_assert_null(strstr(text, "theirs"));
+
+    fixture_teardown(&fixture);
+}
+
+static void
+test_what_an_agent_may_set_is_a_routine_field(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) listing = NULL;
+    JsonArray *tools;
+    guint i;
+
+    schedule_fixture(&fixture, NULL);
+    listing = clawt_mcp_tools_list(fixture.tools, "hornbill");
+    tools = json_object_get_array_member(json_node_get_object(listing),
+                                         "tools");
+
+    /*
+     * Every parameter of the two tools is a real routines.* key -- a
+     * misspelt one would be copied into the routine under a name nothing
+     * reads -- and the operator's keys are not among them.
+     */
+    for (i = 0; i < json_array_get_length(tools); i++) {
+        JsonObject *tool = json_array_get_object_element(tools, i);
+        const gchar *name = json_object_get_string_member(tool, "name");
+        JsonObject *properties;
+        GList *members;
+        GList *l;
+
+        if (g_strcmp0(name, "clawtilla_routine_add") != 0 &&
+            g_strcmp0(name, "clawtilla_routine_update") != 0)
+            continue;
+
+        properties = json_object_get_object_member(
+            json_object_get_object_member(tool, "inputSchema"), "properties");
+        members = json_object_get_members(properties);
+
+        for (l = members; l != NULL; l = l->next) {
+            g_autofree gchar *key = g_strconcat("routines.", l->data, NULL);
+
+            g_assert_nonnull(clawt_config_schema_lookup(key));
+            g_assert_cmpstr(l->data, !=, "agent");
+            g_assert_cmpstr(l->data, !=, "locked");
+            g_assert_cmpstr(l->data, !=, "directory");
+            g_assert_cmpstr(l->data, !=, "worktree");
+        }
+
+        g_list_free(members);
+    }
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -3928,6 +4249,22 @@ main(int argc, char *argv[])
 
     g_test_add_func("/mcp-tools/waiting-tool-is-named-and-refusable",
                     test_the_waiting_tool_is_named_and_refusable);
+    g_test_add_func("/mcp-tools/routines/offered-by-default",
+                    test_scheduling_is_offered_by_default_and_can_be_withheld);
+    g_test_add_func("/mcp-tools/routines/needs-a-hook",
+                    test_scheduling_needs_somewhere_to_save);
+    g_test_add_func("/mcp-tools/routines/runs-on-its-author",
+                    test_an_added_routine_runs_on_its_author);
+    g_test_add_func("/mcp-tools/routines/too-often",
+                    test_a_schedule_that_wakes_too_often_is_refused);
+    g_test_add_func("/mcp-tools/routines/limit",
+                    test_the_limit_counts_every_routine_on_the_agent);
+    g_test_add_func("/mcp-tools/routines/own-and-unlocked",
+                    test_only_its_own_unlocked_routines_change);
+    g_test_add_func("/mcp-tools/routines/list-is-its-own",
+                    test_the_list_shows_only_its_own);
+    g_test_add_func("/mcp-tools/routines/fields-are-routine-keys",
+                    test_what_an_agent_may_set_is_a_routine_field);
     g_test_add_func("/mcp-tools/exec-timeout-is-bounded",
                     test_the_exec_timeout_is_bounded);
 

@@ -36,6 +36,158 @@ requested_routine_string(ClawtRoutine *routine, JsonObject *payload,
 	return entry != NULL ? entry->default_value : NULL;
 }
 
+/*
+ * Adds or changes a routine from a payload of its schema fields, saves
+ * the config and reloads, so the scheduler sees it at once.
+ *
+ * One function for the routine.add/update frames and for an agent
+ * scheduling its own (clawtilla_routine_add/_update): two copies of
+ * "validate, apply, save, reload, announce" would differ the first time
+ * one of them learned something.  The whole schedule is validated before
+ * any field changes, so a refused edit leaves the routine -- and the
+ * file's comments -- as they were.
+ */
+gboolean
+clawt_daemon_routine_save(ClawtDaemon *self, const gchar *id,
+                          JsonObject *payload, gboolean adding,
+                          GError **error)
+{
+    ClawtRoutine *routine;
+    const ClawtSchemaEntry *entries;
+    gsize n_entries = 0;
+    gsize i;
+
+    g_return_val_if_fail(CLAWT_IS_DAEMON(self), FALSE);
+    g_return_val_if_fail(payload != NULL, FALSE);
+
+    if (adding) {
+        routine = clawt_config_add_routine(self->config, id, error);
+
+        if (routine == NULL)
+            return FALSE;
+    } else {
+        routine = (id != NULL) ? clawt_config_get_routine(self->config, id)
+                               : NULL;
+
+        if (routine == NULL) {
+            g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                                "there is no routine called that");
+            return FALSE;
+        }
+    }
+
+    {
+        g_autoptr(GError) invalid = NULL;
+        g_autofree gchar *expression = clawt_cron_from_preset(
+            requested_routine_string(routine, payload, "schedule"),
+            requested_routine_string(routine, payload, "at"),
+            requested_routine_string(routine, payload, "weekday"),
+            requested_routine_string(routine, payload, "cron"), &invalid);
+
+        if (expression == NULL && invalid != NULL) {
+            if (adding)
+                clawt_config_remove_routine(self->config, id);
+
+            g_set_error_literal(error, CLAWT_ERROR,
+                                CLAWT_ERROR_INVALID_ARGUMENT, invalid->message);
+            return FALSE;
+        }
+    }
+
+    entries = clawt_config_schema_get(&n_entries);
+
+    for (i = 0; i < n_entries; i++) {
+        const gchar *leaf;
+
+        if (!g_str_has_prefix(entries[i].key, "routines."))
+            continue;
+
+        leaf = entries[i].key + strlen("routines.");
+
+        if (strchr(leaf, '.') != NULL || g_strcmp0(leaf, "id") == 0 ||
+            !json_object_has_member(payload, leaf))
+            continue;
+
+        switch (entries[i].type) {
+        case CLAWT_SCHEMA_BOOLEAN:
+            clawt_routine_set_boolean(
+                routine, leaf, clawt_ipc_payload_boolean(payload, leaf, FALSE));
+            break;
+
+        case CLAWT_SCHEMA_INT:
+            clawt_routine_set_int(routine, leaf,
+                                  clawt_ipc_payload_int(payload, leaf, 0));
+            break;
+
+        default:
+            clawt_routine_set_string(routine, leaf,
+                                     clawt_ipc_payload_string(payload, leaf));
+            break;
+        }
+    }
+
+    if (!clawt_config_save(self->config, error)) {
+        if (adding)
+            clawt_config_remove_routine(self->config, id);
+
+        return FALSE;
+    }
+
+    if (!clawt_daemon_reload(self, error))
+        return FALSE;
+
+    clawt_event_bus_emit(self->bus, "routine.changed", id);
+    return TRUE;
+}
+
+/* Removes a routine, saves and reloads; shared like the function above. */
+gboolean
+clawt_daemon_routine_delete(ClawtDaemon *self, const gchar *id,
+                            GError **error)
+{
+    g_return_val_if_fail(CLAWT_IS_DAEMON(self), FALSE);
+
+    if (id == NULL || !clawt_config_remove_routine(self->config, id)) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                            "there is no routine called that");
+        return FALSE;
+    }
+
+    if (!clawt_config_save(self->config, error))
+        return FALSE;
+
+    if (!clawt_daemon_reload(self, error))
+        return FALSE;
+
+    clawt_event_bus_emit(self->bus, "routine.changed", id);
+    return TRUE;
+}
+
+/*
+ * An agent's change to its own routines, already checked by the tools
+ * (ownership, lock, limit, frequency); persisted through the same two
+ * functions the client frames use.
+ */
+gboolean
+clawt_daemon_routine_for_tools(const gchar *verb, const gchar *id,
+                               JsonObject *payload, gpointer user_data,
+                               GError **error)
+{
+    ClawtDaemon *self = user_data;
+
+    if (g_strcmp0(verb, "remove") == 0)
+        return clawt_daemon_routine_delete(self, id, error);
+
+    if (payload == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "nothing to save");
+        return FALSE;
+    }
+
+    return clawt_daemon_routine_save(self, id, payload,
+                                     g_strcmp0(verb, "add") == 0, error);
+}
+
 JsonNode *
 clawt_daemon_handle_routine(
     ClawtDaemon  *self,
@@ -177,90 +329,11 @@ clawt_daemon_handle_routine(
     if (g_strcmp0(kind, "routine.add") == 0 ||
         g_strcmp0(kind, "routine.update") == 0) {
         const gchar *id = clawt_ipc_payload_string(payload, "id");
-        gboolean adding = g_strcmp0(kind, "routine.add") == 0;
-        ClawtRoutine *routine;
-        const ClawtSchemaEntry *entries;
-        gsize n_entries = 0;
-        gsize i;
 
-        if (adding) {
-            routine = clawt_config_add_routine(self->config, id, &error);
-
-            if (routine == NULL)
-                return clawt_ipc_error_new(request, error->code,
-                                           error->message);
-        } else {
-            routine = (id != NULL)
-                ? clawt_config_get_routine(self->config, id) : NULL;
-
-            if (routine == NULL)
-                return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                           "there is no routine called "
-                                           "that");
-        }
-
-        /* Validate the complete proposed schedule before touching any field.
-         * A failed validation must preserve unrelated edits and YAML comments
-         * too; applying and then restoring individual values would not. */
-		{
-			g_autofree gchar *expression = clawt_cron_from_preset(
-				requested_routine_string(routine, payload, "schedule"),
-				requested_routine_string(routine, payload, "at"),
-				requested_routine_string(routine, payload, "weekday"),
-				requested_routine_string(routine, payload, "cron"), &error);
-
-			if (expression == NULL && error != NULL) {
-				if (adding)
-					clawt_config_remove_routine(self->config, id);
-				return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-										   error->message);
-			}
-		}
-
-        entries = clawt_config_schema_get(&n_entries);
-
-        for (i = 0; i < n_entries; i++) {
-            const gchar *leaf;
-
-            if (!g_str_has_prefix(entries[i].key, "routines."))
-                continue;
-
-            leaf = entries[i].key + strlen("routines.");
-
-            if (strchr(leaf, '.') != NULL || g_strcmp0(leaf, "id") == 0 ||
-                !json_object_has_member(payload, leaf))
-                continue;
-
-            switch (entries[i].type) {
-            case CLAWT_SCHEMA_BOOLEAN:
-                clawt_routine_set_boolean(
-                    routine, leaf,
-                    clawt_ipc_payload_boolean(payload, leaf, FALSE));
-                break;
-
-            case CLAWT_SCHEMA_INT:
-                clawt_routine_set_int(routine, leaf,
-                                      clawt_ipc_payload_int(payload, leaf, 0));
-                break;
-
-            default:
-                clawt_routine_set_string(
-                    routine, leaf, clawt_ipc_payload_string(payload, leaf));
-                break;
-            }
-        }
-
-        if (!clawt_config_save(self->config, &error)) {
-            if (adding)
-                clawt_config_remove_routine(self->config, id);
-
+        if (!clawt_daemon_routine_save(self, id, payload,
+                                       g_strcmp0(kind, "routine.add") == 0,
+                                       &error))
             return clawt_ipc_error_new(request, error->code, error->message);
-        }
-
-        if (!clawt_daemon_reload(self, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        clawt_event_bus_emit(self->bus, "routine.changed", id);
 
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "id");
@@ -271,19 +344,9 @@ clawt_daemon_handle_routine(
     }
 
     if (g_strcmp0(kind, "routine.remove") == 0) {
-        const gchar *id = clawt_ipc_payload_string(payload, "id");
-
-        if (id == NULL || !clawt_config_remove_routine(self->config, id))
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "there is no routine called that");
-
-        if (!clawt_config_save(self->config, &error))
+        if (!clawt_daemon_routine_delete(
+                self, clawt_ipc_payload_string(payload, "id"), &error))
             return clawt_ipc_error_new(request, error->code, error->message);
-
-        if (!clawt_daemon_reload(self, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        clawt_event_bus_emit(self->bus, "routine.changed", id);
 
         return clawt_ipc_response_new(request, NULL);
     }

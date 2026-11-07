@@ -5911,6 +5911,9 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
                                           create_agent_for_tools, self, NULL);
     clawt_mcp_tools_set_create_room_func(self->mcp_tools,
                                          create_room_for_tools, self, NULL);
+    clawt_mcp_tools_set_routine_func(self->mcp_tools,
+                                     clawt_daemon_routine_for_tools, self,
+                                     NULL);
     clawt_mcp_tools_set_ask_decision_func(self->mcp_tools,
                                           file_decision_for_tools, self,
                                           NULL);

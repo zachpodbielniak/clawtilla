@@ -80,6 +80,25 @@ void       clawt_cron_free(ClawtCron *self);
 GDateTime *clawt_cron_next(ClawtCron *self, GDateTime *after);
 
 /**
+ * clawt_cron_shortest_gap:
+ * @self: a #ClawtCron
+ * @after: where to start looking, exclusive
+ * @runs: how many runs to look across (at least 2 to find a gap)
+ *
+ * The shortest time between two consecutive runs among the next @runs.
+ *
+ * Over runs rather than from the expression's fields, because the fields
+ * do not say it: `0,1,2 9 * * *` is once a day by its hour and every
+ * minute by its minutes, and `*&#47;7` wraps at the hour into a 4-minute
+ * gap.  This is what a limit on how often something may wake is actually
+ * about.
+ *
+ * Returns: the gap in seconds, or %G_MAXINT64 when fewer than two runs
+ *   happen at all (a schedule for 30 February)
+ */
+gint64 clawt_cron_shortest_gap(ClawtCron *self, GDateTime *after, guint runs);
+
+/**
  * clawt_cron_matches:
  * @self: a #ClawtCron
  * @when: a time

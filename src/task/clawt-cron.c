@@ -574,3 +574,32 @@ clawt_cron_from_preset(const gchar  *preset,
 
     return NULL;
 }
+
+gint64
+clawt_cron_shortest_gap(ClawtCron *self, GDateTime *after, guint runs)
+{
+    g_autoptr(GDateTime) previous = NULL;
+    gint64 shortest = G_MAXINT64;
+    guint i;
+
+    g_return_val_if_fail(self != NULL, G_MAXINT64);
+    g_return_val_if_fail(after != NULL, G_MAXINT64);
+
+    previous = clawt_cron_next(self, after);
+
+    for (i = 1; previous != NULL && i < runs; i++) {
+        g_autoptr(GDateTime) next = clawt_cron_next(self, previous);
+        gint64 gap;
+
+        if (next == NULL)
+            break;
+
+        gap = g_date_time_difference(next, previous) / G_USEC_PER_SEC;
+        shortest = MIN(shortest, gap);
+
+        g_date_time_unref(previous);
+        previous = g_steal_pointer(&next);
+    }
+
+    return shortest;
+}

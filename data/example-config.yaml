@@ -1595,6 +1595,15 @@ routines:
     # need to be later still.
     jitter_seconds: 0
 
+    # Keep the agent from changing or removing this routine.
+    #
+    # An agent with tools.schedule may adjust the routines that run on it --
+    # move a check, split one, drop one it no longer needs. Lock the ones
+    # that are yours to decide: it can still read a locked routine, and it
+    # is told why a change was refused rather than left guessing. Only a
+    # client or the config can set or clear this; an agent cannot.
+    locked: false
+
 # Work started by something happening elsewhere.
 #
 # A routine is a clock; a trigger is an event. Both end in the same
@@ -2889,6 +2898,39 @@ agents:
       # Intended for a chief-of-staff you talk to about what the fleet needs.
       # DANGEROUS: read docs/security.org before enabling this.
       manage_fleet: false
+
+      # Whether this agent may schedule its own routines.
+      #
+      # With it on, the agent is offered clawtilla_routine_add, _update and
+      # _remove: it can set up a check on something for itself, move one to a
+      # better time, or split a long watchlist into several -- the way you
+      # would ask a colleague to remind themselves rather than doing it for
+      # them. Only ever routines that run on this agent, never another's,
+      # and never one you marked `locked`.
+      #
+      # On by default because a routine opens nothing -- unlike a trigger,
+      # which is an address on your network and stays yours to create. What
+      # it can cost is bounded by `tools.schedule_limit` and
+      # `tools.schedule_min_minutes`.
+      schedule: true
+
+      # How many routines may run on this agent before it can add no more
+      # of its own.
+      #
+      # Counts every routine whose agent is this one, including those you
+      # wrote: the bound is on how often the agent is woken, not on who
+      # arranged it. Routines you add are never refused for it.
+      schedule_limit: 8
+
+      # The shortest gap between two runs of a routine this agent schedules,
+      # in minutes.
+      #
+      # An agent that writes `*/1 * * * *` has written itself a turn a
+      # minute, which is a bill rather than a schedule. Checked over the
+      # schedule's next runs, so a cron expression whose runs bunch up --
+      # `0,1,2 9 * * *` -- is refused as well as one that is simply too
+      # frequent. Applies only to what an agent schedules for itself.
+      schedule_min_minutes: 15
 
     # Per-agent overrides of orchestration.mailbox.
     mailbox:

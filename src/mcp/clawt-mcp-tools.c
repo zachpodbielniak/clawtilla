@@ -34,7 +34,8 @@ typedef enum {
     NEEDS_SKILLS,
     NEEDS_SCREEN,
     NEEDS_HANDOFF,
-    NEEDS_WEB_RESEARCH
+    NEEDS_WEB_RESEARCH,
+    NEEDS_SCHEDULE
 } ToolRequirement;
 
 typedef struct {
@@ -407,6 +408,59 @@ static const ClawtParamInfo request_hands_params[] = {
       "than describing the problem.", TRUE }
 };
 
+/*
+ * What an agent may set on a routine of its own.  This table is the
+ * allow-list: only these members are copied into the routine, so `agent`,
+ * `locked`, `directory` and `worktree` stay the operator's by construction
+ * rather than by a check somebody could forget.  tests/test-mcp-tools.c
+ * requires every name here but `id` to be a `routines.*` schema key.
+ */
+static const ClawtParamInfo routine_add_params[] = {
+    { "id", "string", "A short name for it, unique in the fleet, e.g. "
+                      "\"hornbill-watchlist-a\".", TRUE },
+    { "instructions", "string", "What you will be asked to do when it "
+      "fires, in full. Write it as an instruction to yourself with no "
+      "memory of this conversation.", TRUE },
+    { "description", "string", "One line about what it is for.", FALSE },
+    { "schedule", "string", "manual, hourly, daily, weekdays, weekly or "
+      "custom. Defaults to daily.", FALSE },
+    { "at", "string", "Time of day, HH:MM local, for daily, weekdays and "
+      "weekly; with hourly only the minute is used.", FALSE },
+    { "weekday", "string", "Which day, for weekly.", FALSE },
+    { "cron", "string", "minute hour day-of-month month day-of-week, for "
+      "custom.", FALSE },
+    { "enabled", "boolean", "Whether it runs on its schedule. Defaults to "
+      "true.", FALSE },
+    { "isolate", "boolean", "Run in a conversation of its own rather than "
+      "the operator's.", FALSE },
+    { "read_only", "boolean", "Run with read-only tools: look, and change "
+      "nothing.", FALSE },
+    { "catch_up", "boolean", "Run once at startup if its time passed while "
+      "the daemon was down.", FALSE },
+    { "jitter_seconds", "integer", "Delay each run by up to this many "
+      "seconds.", FALSE }
+};
+
+static const ClawtParamInfo routine_update_params[] = {
+    { "id", "string", "Which of your routines.", TRUE },
+    { "instructions", "string", "New instructions.", FALSE },
+    { "description", "string", "New description.", FALSE },
+    { "schedule", "string", "manual, hourly, daily, weekdays, weekly or "
+      "custom.", FALSE },
+    { "at", "string", "Time of day, HH:MM local.", FALSE },
+    { "weekday", "string", "Which day, for weekly.", FALSE },
+    { "cron", "string", "The expression, for custom.", FALSE },
+    { "enabled", "boolean", "Whether it runs on its schedule.", FALSE },
+    { "isolate", "boolean", "A conversation of its own.", FALSE },
+    { "read_only", "boolean", "Read-only tools.", FALSE },
+    { "catch_up", "boolean", "Run once after a missed time.", FALSE },
+    { "jitter_seconds", "integer", "Random delay, in seconds.", FALSE }
+};
+
+static const ClawtParamInfo routine_id_params[] = {
+    { "id", "string", "Which of your routines.", TRUE }
+};
+
 /* ── The tools ───────────────────────────────────────────────────── */
 
 #define TOOL(name_, desc_, req_, params_, action_) \
@@ -534,6 +588,33 @@ static const ToolDefinition tools[] = {
          "someone answered you; your mailbox will be empty because "
          "delivery empties it.",
          NEEDS_NOTHING, room_history_params, CLAWT_ACTION_READ),
+
+    TOOL("clawtilla_routine_list",
+         "The routines that run on you: what each asks, when it next runs, "
+         "whether it is on, and whether you may change it. Read this before "
+         "scheduling anything, so you change a check rather than adding a "
+         "second copy of it.",
+         NEEDS_NOTHING, no_params, CLAWT_ACTION_READ),
+
+    TOOL("clawtilla_routine_add",
+         "Schedule work for yourself: a check you will be woken to do, on a "
+         "schedule. Use it to keep an eye on something you were asked to "
+         "watch, or to split a long watchlist into several smaller checks "
+         "at different times. It runs on you and nobody else. There is a "
+         "limit on how many you may have and how close together runs may "
+         "be; the refusal says which you reached.",
+         NEEDS_SCHEDULE, routine_add_params, CLAWT_ACTION_WRITE),
+
+    TOOL("clawtilla_routine_update",
+         "Change one of your routines -- its time, its instructions, or "
+         "switch it off. Only the fields you pass change. A routine the "
+         "operator locked cannot be changed; ask them instead.",
+         NEEDS_SCHEDULE, routine_update_params, CLAWT_ACTION_WRITE),
+
+    TOOL("clawtilla_routine_remove",
+         "Remove one of your routines you no longer need. A routine the "
+         "operator locked cannot be removed.",
+         NEEDS_SCHEDULE, routine_id_params, CLAWT_ACTION_WRITE),
 
     TOOL("clawtilla_trigger_list",
          "The triggers that can wake you: what event each waits for, from "
@@ -762,6 +843,10 @@ struct _ClawtMcpTools {
     gpointer                create_room_data;
     GDestroyNotify          create_room_destroy;
 
+    ClawtMcpRoutineFunc     routine;
+    gpointer                routine_data;
+    GDestroyNotify          routine_destroy;
+
     ClawtMcpAskDecisionFunc ask_decision;
     gpointer                ask_decision_data;
     GDestroyNotify          ask_decision_destroy;
@@ -887,6 +972,22 @@ clawt_mcp_tools_set_search_func(ClawtMcpTools      *self,
     self->search = func;
     self->search_data = user_data;
     self->search_destroy = destroy;
+}
+
+void
+clawt_mcp_tools_set_routine_func(ClawtMcpTools       *self,
+                                 ClawtMcpRoutineFunc  func,
+                                 gpointer             user_data,
+                                 GDestroyNotify       destroy)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    if (self->routine_destroy != NULL && self->routine_data != NULL)
+        self->routine_destroy(self->routine_data);
+
+    self->routine = func;
+    self->routine_data = user_data;
+    self->routine_destroy = destroy;
 }
 
 void
@@ -1493,6 +1594,20 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
 
     case NEEDS_PEER_COMMS:
         if ((clawt_agent_get_caps(agent) & CLAWT_AGENT_CAPS_PEER_COMMS) == 0)
+            return FALSE;
+        break;
+
+    case NEEDS_SCHEDULE:
+        /*
+         * Somewhere to save it, and the agent's permission.  Read through
+         * the agent's config so a fleet-wide `false` and a per-agent one
+         * are the same answer; the default is on (see the schema).
+         */
+        if (self->routine == NULL)
+            return FALSE;
+
+        if (!clawt_agent_config_get_boolean(clawt_agent_get_config(agent),
+                                            "tools.schedule"))
             return FALSE;
         break;
 
@@ -2417,6 +2532,387 @@ tool_fleet_cost(ClawtMcpTools *self, const gchar *agent_id)
                     "billed but not reported as tokens.\n");
 
     return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+
+/* ── An agent's own routines ─────────────────────────────────────── */
+
+/* The fleet's config, or NULL. */
+static ClawtConfig *
+tools_config(ClawtMcpTools *self)
+{
+    return (self->agents != NULL)
+           ? clawt_agent_manager_get_config(self->agents) : NULL;
+}
+
+/*
+ * A routine's cron expression from its preset fields, with the fields in
+ * @override (an agent's proposed change) taking precedence.  NULL for a
+ * manual routine, or one whose schedule does not parse.
+ */
+static gchar *
+routine_expression(ClawtRoutine *routine, JsonObject *override)
+{
+    const gchar *keys[] = { "schedule", "at", "weekday", "cron" };
+    const gchar *values[G_N_ELEMENTS(keys)];
+    const ClawtSchemaEntry *entry;
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(keys); i++) {
+        g_autofree gchar *schema_key = g_strconcat("routines.", keys[i], NULL);
+
+        values[i] = argument_string(override, keys[i]);
+
+        if (values[i] == NULL && routine != NULL)
+            values[i] = clawt_routine_get_string(routine, keys[i]);
+
+        if (values[i] == NULL) {
+            entry = clawt_config_schema_lookup(schema_key);
+            values[i] = (entry != NULL) ? entry->default_value : NULL;
+        }
+    }
+
+    return clawt_cron_from_preset(values[0], values[1], values[2], values[3],
+                                  NULL);
+}
+
+/* "next Tue 09:00", or what stands in for it. */
+static gchar *
+routine_next_text(ClawtRoutine *routine)
+{
+    g_autofree gchar *expression = routine_expression(routine, NULL);
+    g_autoptr(ClawtCron) cron = NULL;
+    g_autoptr(GDateTime) now = g_date_time_new_now_local();
+    g_autoptr(GDateTime) next = NULL;
+
+    if (expression == NULL)
+        return g_strdup("only when started by hand");
+
+    cron = clawt_cron_parse(expression, NULL);
+    next = (cron != NULL) ? clawt_cron_next(cron, now) : NULL;
+
+    if (next == NULL)
+        return g_strdup("never: no such date");
+
+    return g_date_time_format(next, "next %a %-d %b %H:%M");
+}
+
+/* How many routines run on @agent_id. */
+static guint
+routines_on(ClawtConfig *config, const gchar *agent_id)
+{
+    GPtrArray *routines = clawt_config_get_routines(config);
+    guint count = 0;
+    guint i;
+
+    for (i = 0; routines != NULL && i < routines->len; i++) {
+        if (g_strcmp0(clawt_routine_get_string(
+                          g_ptr_array_index(routines, i), "agent"),
+                      agent_id) == 0)
+            count++;
+    }
+
+    return count;
+}
+
+/*
+ * Whether @expression wakes @agent too often for a routine it scheduled
+ * itself; on refusal the sentence says what the limit is.  Across the
+ * next 200 runs, so a bunched schedule is caught as well as a frequent
+ * one (clawt_cron_shortest_gap()).
+ */
+static gchar *
+routine_too_often(ClawtAgent *agent, const gchar *expression)
+{
+    g_autoptr(ClawtCron) cron = NULL;
+    g_autoptr(GDateTime) now = g_date_time_new_now_local();
+    gint64 minutes;
+    gint64 gap;
+
+    if (expression == NULL)
+        return NULL;
+
+    cron = clawt_cron_parse(expression, NULL);
+
+    if (cron == NULL)
+        return NULL;
+
+    minutes = clawt_agent_config_get_int(clawt_agent_get_config(agent),
+                                         "tools.schedule_min_minutes");
+    gap = clawt_cron_shortest_gap(cron, now, 200);
+
+    if (minutes <= 0 || gap >= minutes * 60)
+        return NULL;
+
+    return g_strdup_printf(
+        "That schedule runs %" G_GINT64_FORMAT " minute(s) apart at its "
+        "closest; routines you schedule must be at least %" G_GINT64_FORMAT
+        " minutes apart (tools.schedule_min_minutes). Check less often, or "
+        "check more things per run.", gap / 60, minutes);
+}
+
+/*
+ * The routine @id if @agent_id may change it, else NULL with the reason
+ * in @why: it does not exist, it runs on somebody else, or it is locked.
+ */
+static ClawtRoutine *
+own_routine(ClawtConfig *config, const gchar *agent_id, const gchar *id,
+            gchar **why)
+{
+    ClawtRoutine *routine = (id != NULL)
+        ? clawt_config_get_routine(config, id) : NULL;
+
+    if (routine == NULL) {
+        *why = g_strdup_printf("There is no routine called %s. "
+                               "clawtilla_routine_list shows yours.",
+                               id != NULL ? id : "that");
+        return NULL;
+    }
+
+    /*
+     * Another agent's routine is not refused as "locked": it is not
+     * this agent's to see the inside of, and saying it exists is enough.
+     */
+    if (g_strcmp0(clawt_routine_get_string(routine, "agent"), agent_id) != 0) {
+        *why = g_strdup_printf("%s runs on another agent; you can only "
+                               "change routines that run on you.", id);
+        return NULL;
+    }
+
+    if (clawt_routine_get_boolean(routine, "locked")) {
+        *why = g_strdup_printf("The operator locked %s, so it stays as it "
+                               "is. If it should change, say so with "
+                               "clawtilla_ask_decision or in your reply.", id);
+        return NULL;
+    }
+
+    return routine;
+}
+
+/* The members of @arguments an agent may set, by the tool's own table. */
+static JsonObject *
+routine_payload(JsonObject *arguments, const ClawtParamInfo *params,
+                gsize n_params)
+{
+    JsonObject *payload = json_object_new();
+    gsize i;
+
+    for (i = 0; i < n_params; i++) {
+        const gchar *name = params[i].name;
+
+        if (name == NULL || g_strcmp0(name, "id") == 0 ||
+            arguments == NULL || !json_object_has_member(arguments, name))
+            continue;
+
+        json_object_set_member(
+            payload, name,
+            json_node_copy(json_object_get_member(arguments, name)));
+    }
+
+    return payload;
+}
+
+static gchar *
+tool_routine_list(ClawtMcpTools *self, const gchar *agent_id)
+{
+    ClawtConfig *config = tools_config(self);
+    g_autoptr(GString) out = g_string_new(NULL);
+    GPtrArray *routines;
+    guint shown = 0;
+    guint i;
+
+    if (config == NULL)
+        return g_strdup("This fleet has no configuration to read routines "
+                        "from.");
+
+    routines = clawt_config_get_routines(config);
+
+    for (i = 0; routines != NULL && i < routines->len; i++) {
+        ClawtRoutine *routine = g_ptr_array_index(routines, i);
+        g_autofree gchar *next = NULL;
+        const gchar *description;
+        const gchar *instructions;
+
+        /* only this agent's: somebody else's schedule is not its business */
+        if (g_strcmp0(clawt_routine_get_string(routine, "agent"),
+                      agent_id) != 0)
+            continue;
+
+        shown++;
+        next = routine_next_text(routine);
+        description = clawt_routine_get_string(routine, "description");
+        instructions = clawt_routine_get_string(routine, "instructions");
+
+        g_string_append_printf(out, "- %s%s%s: %s%s%s\n",
+                               clawt_routine_get_id(routine),
+                               description != NULL ? " -- " : "",
+                               description != NULL ? description : "",
+                               next,
+                               clawt_routine_get_boolean(routine, "enabled")
+                                   ? "" : " (switched off)",
+                               clawt_routine_get_boolean(routine, "locked")
+                                   ? " [locked: yours to read, not to change]"
+                                   : "");
+
+        if (instructions != NULL)
+            g_string_append_printf(out, "    asks: %s\n", instructions);
+    }
+
+    if (shown == 0)
+        return g_strdup("No routines run on you. clawtilla_routine_add "
+                        "schedules one, if you have been given that.");
+
+    g_string_prepend(out, "Routines that run on you:\n");
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+static gchar *
+tool_routine_add(ClawtMcpTools *self, const gchar *agent_id,
+                 JsonObject *arguments, gboolean *is_error)
+{
+    ClawtConfig *config = tools_config(self);
+    ClawtAgent *agent;
+    const gchar *id = argument_string(arguments, "id");
+    g_autoptr(JsonObject) payload = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *expression = NULL;
+    g_autofree gchar *too_often = NULL;
+    g_autofree gchar *next = NULL;
+    gint64 limit;
+
+    *is_error = TRUE;
+
+    if (config == NULL || self->routine == NULL)
+        return g_strdup("Routines cannot be scheduled from here.");
+
+    agent = clawt_agent_manager_get(self->agents, agent_id);
+
+    if (agent == NULL)
+        return g_strdup("You are not an agent this fleet knows.");
+
+    if (id == NULL || argument_string(arguments, "instructions") == NULL)
+        return g_strdup("id and instructions are both required.");
+
+    if (clawt_config_get_routine(config, id) != NULL)
+        return g_strdup_printf("There is already a routine called %s. "
+                               "clawtilla_routine_update changes it, if it "
+                               "is yours.", id);
+
+    /*
+     * Counted across every routine on this agent, the operator's too:
+     * the bound is on how often it is woken, not on who arranged it.
+     */
+    limit = clawt_agent_config_get_int(clawt_agent_get_config(agent),
+                                       "tools.schedule_limit");
+
+    if (limit >= 0 && (gint64)routines_on(config, agent_id) >= limit)
+        return g_strdup_printf(
+            "You already have %u routine(s), which is your limit "
+            "(tools.schedule_limit = %" G_GINT64_FORMAT "). Change or "
+            "remove one first -- or fold this check into one you have.",
+            routines_on(config, agent_id), limit);
+
+    expression = routine_expression(NULL, arguments);
+    too_often = routine_too_often(agent, expression);
+
+    if (too_often != NULL)
+        return g_steal_pointer(&too_often);
+
+    payload = routine_payload(arguments, routine_add_params,
+                              G_N_ELEMENTS(routine_add_params));
+    json_object_set_string_member(payload, "agent", agent_id);
+
+    if (!self->routine("add", id, payload, self->routine_data, &error))
+        return g_strdup_printf("It was not scheduled: %s", error->message);
+
+    *is_error = FALSE;
+    /*
+     * Read again: saving reloads the daemon, which can replace the config
+     * object, and the one in hand then still describes the routine as it
+     * was -- the reply named the old time for a change that had worked.
+     */
+    next = routine_next_text(clawt_config_get_routine(tools_config(self), id));
+    return g_strdup_printf("Scheduled %s: %s. It wakes you with its "
+                           "instructions each time; clawtilla_routine_list "
+                           "shows it.", id, next);
+}
+
+static gchar *
+tool_routine_update(ClawtMcpTools *self, const gchar *agent_id,
+                    JsonObject *arguments, gboolean *is_error)
+{
+    ClawtConfig *config = tools_config(self);
+    const gchar *id = argument_string(arguments, "id");
+    ClawtRoutine *routine;
+    ClawtAgent *agent;
+    g_autoptr(JsonObject) payload = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *why = NULL;
+    g_autofree gchar *expression = NULL;
+    g_autofree gchar *too_often = NULL;
+    g_autofree gchar *next = NULL;
+
+    *is_error = TRUE;
+
+    if (config == NULL || self->routine == NULL)
+        return g_strdup("Routines cannot be changed from here.");
+
+    agent = clawt_agent_manager_get(self->agents, agent_id);
+    routine = own_routine(config, agent_id, id, &why);
+
+    if (agent == NULL || routine == NULL)
+        return (why != NULL) ? g_steal_pointer(&why)
+                             : g_strdup("You are not an agent this fleet "
+                                        "knows.");
+
+    expression = routine_expression(routine, arguments);
+    too_often = routine_too_often(agent, expression);
+
+    if (too_often != NULL)
+        return g_steal_pointer(&too_often);
+
+    payload = routine_payload(arguments, routine_update_params,
+                              G_N_ELEMENTS(routine_update_params));
+
+    if (json_object_get_size(payload) == 0)
+        return g_strdup("Nothing to change: pass the fields that should be "
+                        "different.");
+
+    if (!self->routine("update", id, payload, self->routine_data, &error))
+        return g_strdup_printf("It was not changed: %s", error->message);
+
+    *is_error = FALSE;
+    /*
+     * Read again: saving reloads the daemon, which can replace the config
+     * object, and the one in hand then still describes the routine as it
+     * was -- the reply named the old time for a change that had worked.
+     */
+    next = routine_next_text(clawt_config_get_routine(tools_config(self), id));
+    return g_strdup_printf("Changed %s: %s.", id, next);
+}
+
+static gchar *
+tool_routine_remove(ClawtMcpTools *self, const gchar *agent_id,
+                    JsonObject *arguments, gboolean *is_error)
+{
+    ClawtConfig *config = tools_config(self);
+    const gchar *id = argument_string(arguments, "id");
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *why = NULL;
+
+    *is_error = TRUE;
+
+    if (config == NULL || self->routine == NULL)
+        return g_strdup("Routines cannot be removed from here.");
+
+    if (own_routine(config, agent_id, id, &why) == NULL)
+        return g_steal_pointer(&why);
+
+    if (!self->routine("remove", id, NULL, self->routine_data, &error))
+        return g_strdup_printf("It was not removed: %s", error->message);
+
+    *is_error = FALSE;
+    return g_strdup_printf("Removed %s; it will not wake you again.", id);
 }
 
 
@@ -6130,6 +6626,14 @@ tools_call(ClawtMcpTools *self,
         text = tool_handoff(self, agent_id, turn_room, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_trigger_list") == 0)
         text = tool_trigger_list(self, agent_id);
+    else if (g_strcmp0(tool_name, "clawtilla_routine_list") == 0)
+        text = tool_routine_list(self, agent_id);
+    else if (g_strcmp0(tool_name, "clawtilla_routine_add") == 0)
+        text = tool_routine_add(self, agent_id, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_routine_update") == 0)
+        text = tool_routine_update(self, agent_id, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_routine_remove") == 0)
+        text = tool_routine_remove(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_task_list") == 0)
         text = tool_task_list(self, agent_id, arguments);
     else if (g_strcmp0(tool_name, "clawtilla_task_status") == 0)
@@ -6342,6 +6846,11 @@ clawt_mcp_tools_dispose(GObject *object)
         self->handoff_destroy(self->handoff_data);
         self->handoff_destroy = NULL;
         self->handoff_data = NULL;
+    }
+
+    if (self->routine_destroy != NULL && self->routine_data != NULL) {
+        self->routine_destroy(self->routine_data);
+        self->routine_destroy = NULL;
     }
 
     if (self->search_destroy != NULL && self->search_data != NULL) {

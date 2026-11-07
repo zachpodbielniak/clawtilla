@@ -291,6 +291,47 @@ typedef AiLibresearchSearch *(*ClawtMcpSearchFunc)(const gchar  *agent_id,
                                                    GError      **error);
 
 /**
+ * ClawtMcpRoutineFunc:
+ * @verb: "add", "update" or "remove"
+ * @id: the routine
+ * @payload: (nullable): its fields, keyed as in `routines.*`, for add and
+ *   update
+ * @user_data: as supplied
+ * @error: return location for a #GError
+ *
+ * Saves an agent's change to its own routines.
+ *
+ * A hook for the reason creating a room is one: the tools hold no
+ * #ClawtConfig of their own to save, and a routine has to be written to
+ * clawtilla.yaml and handed to the scheduler, or it vanishes on restart
+ * and never fires before it.  Every rule about what an agent may change
+ * -- only its own, never a locked one, how many, how often -- is applied
+ * by the tools before this is called; this only persists.
+ *
+ * Returns: %TRUE if it was saved
+ */
+typedef gboolean (*ClawtMcpRoutineFunc)(const gchar  *verb,
+                                        const gchar  *id,
+                                        JsonObject   *payload,
+                                        gpointer      user_data,
+                                        GError      **error);
+
+/**
+ * clawt_mcp_tools_set_routine_func:
+ * @self: a #ClawtMcpTools
+ * @func: (nullable) (scope notified): the hook
+ * @user_data: passed to @func
+ * @destroy: frees @user_data
+ *
+ * Unset, an agent is not offered clawtilla_routine_add, _update or
+ * _remove: there would be nowhere to save what it wrote.
+ */
+void clawt_mcp_tools_set_routine_func(ClawtMcpTools       *self,
+                                      ClawtMcpRoutineFunc  func,
+                                      gpointer             user_data,
+                                      GDestroyNotify       destroy);
+
+/**
  * clawt_mcp_tools_set_search_func:
  * @self: a #ClawtMcpTools
  * @func: (nullable) (scope notified): the hook

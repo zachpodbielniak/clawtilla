@@ -968,6 +968,16 @@ clawt_daemon_handle_integration(
     gboolean     *handled
 );
 
+/* daemon-routine.c: one path for clients' frames and agents' own tools. */
+gboolean clawt_daemon_routine_save(ClawtDaemon *self, const gchar *id,
+                                   JsonObject *payload, gboolean adding,
+                                   GError **error);
+gboolean clawt_daemon_routine_delete(ClawtDaemon *self, const gchar *id,
+                                     GError **error);
+gboolean clawt_daemon_routine_for_tools(const gchar *verb, const gchar *id,
+                                        JsonObject *payload,
+                                        gpointer user_data, GError **error);
+
 JsonNode *
 clawt_daemon_handle_routine(
     ClawtDaemon  *self,

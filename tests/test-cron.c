@@ -371,6 +371,41 @@ test_local_zone_and_fractional_boundary(void)
 		"2026-08-24T13:00:00.500Z", "2026-08-25T09:00:00-04:00");
 }
 
+
+static gint64
+gap_of(const gchar *expression)
+{
+    g_autoptr(ClawtCron) cron = clawt_cron_parse(expression, NULL);
+    g_autoptr(GDateTime) from = g_date_time_new_local(2026, 11, 7, 0, 0, 0.0);
+
+    g_assert_nonnull(cron);
+    return clawt_cron_shortest_gap(cron, from, 200);
+}
+
+static void
+test_shortest_gap(void)
+{
+    /* the plain cases */
+    g_assert_cmpint(gap_of("*/15 * * * *"), ==, 15 * 60);
+    /*
+     * Daily is 24 hours except across a clock change: 200 runs from
+     * November reach the spring one, where a day is 23 hours long.
+     * Local time on purpose (clawt_cron_next()), so that is the answer.
+     */
+    g_assert_cmpint(gap_of("0 9 * * *"), >=, 23 * 3600);
+    g_assert_cmpint(gap_of("0 9 * * *"), <=, 24 * 3600);
+    g_assert_cmpint(gap_of("0 9,18 * * *"), ==, 9 * 3600);
+
+    /* once a day by its hour, every minute by its minutes */
+    g_assert_cmpint(gap_of("0,1,2 9 * * *"), ==, 60);
+
+    /* a step that does not divide the hour wraps into a shorter gap */
+    g_assert_cmpint(gap_of("*/7 * * * *"), ==, 4 * 60);
+
+    /* never fires twice: no gap at all, not zero */
+    g_assert_cmpint(gap_of("0 0 30 2 *"), ==, G_MAXINT64);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -395,6 +430,7 @@ main(int argc, char *argv[])
     g_test_add_func("/cron/presets", test_presets_are_cron);
     g_test_add_func("/cron/custom",
                     test_a_custom_schedule_is_checked_when_it_is_typed);
+    g_test_add_func("/cron/shortest-gap", test_shortest_gap);
     g_test_add_func("/cron/bad-preset",
                     test_a_bad_preset_says_what_the_choices_are);
 

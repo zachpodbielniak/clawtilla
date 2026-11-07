@@ -448,6 +448,43 @@ anything else" is two instances with different ~events~, one with quiet
 hours and one without.  There is no ~routines.quiet_hours~; a routine
 cannot exempt itself.
 
+** Routines an agent schedules for itself
+:PROPERTIES:
+:CUSTOM_ID: routines-self-scheduled
+:END:
+
+An agent can arrange its own checks.  Asked to keep an eye on something, it does not have to be told when to look: it can schedule a routine on itself, move one to a better time, split a long watchlist into several smaller checks at different hours, or drop one it no longer needs -- the way you would ask a colleague to remind themselves rather than putting it in their calendar for them.
+
+Four tools, offered to every agent unless its ~tools.schedule~ is ~false~:
+
+| Tool | What it does |
+|------+--------------|
+| ~clawtilla_routine_list~ | the routines that run on the agent: what each asks, when it next runs, whether it is on and whether it may change it.  Always offered, even with ~tools.schedule~ off |
+| ~clawtilla_routine_add~ | schedules a new routine on the agent |
+| ~clawtilla_routine_update~ | changes one of its routines; only the fields passed change |
+| ~clawtilla_routine_remove~ | removes one of its routines |
+
+What it may and may not do, all enforced in ~src/mcp/clawt-mcp-tools.c~ before anything is saved:
+
+- *Only routines that run on it.*  A routine's ~agent~ is always the agent that added it, whatever it asks for, and another agent's routines cannot be changed, removed -- or read, beyond being told they exist.
+- *Not one you locked.*  ~routines.locked: true~ keeps a routine yours: the agent can read it and is told why a change was refused.  Only a client or the config sets or clears it; an agent cannot.  Every client's routine editor has the switch.
+- *Only some fields.*  The tools' parameters are the whole of what an agent can set: instructions, description, the schedule (~schedule~, ~at~, ~weekday~, ~cron~), ~enabled~, ~isolate~, ~read_only~, ~catch_up~, ~jitter_seconds~.  ~agent~, ~locked~, ~directory~ and ~worktree~ are not among them, so a routine an agent writes runs in its own workspace, as itself.
+- *Not too many.*  ~tools.schedule_limit~ (8) caps the routines that run on the agent -- yours included, because the bound is on how often it is woken, not on who arranged it.  Routines you add are never refused for it.
+- *Not too often.*  ~tools.schedule_min_minutes~ (15) is the shortest gap allowed between two runs, checked across the schedule's next 200 runs, so ~*/5 * * * *~ is refused and so is ~0,1,2 9 * * *~ -- once a day by its hour, every minute by its minutes.  This is the cost bound: a turn a minute is a bill, not a schedule.
+
+A routine an agent writes is an ordinary routine from then on: it is in ~clawtilla.yaml~, every client lists and edits it, and you can lock it, change it or remove it like any other.  The save goes through the same function as a client's ~routine.add~ (~clawt_daemon_routine_save()~), so the schedule is validated before anything is written and the scheduler sees the change at once.
+
+Why routines and not triggers: a trigger is an address on your network that anything can call, so creating one stays yours (~clawtilla_trigger_list~ says so to the agent).  A routine opens nothing.
+
+To take the ability away from one agent:
+
+#+begin_src yaml
+agents:
+  - id: hornbill
+    tools:
+      schedule: false
+#+end_src
+
 ** Trying one before trusting it
 
 #+begin_src bash

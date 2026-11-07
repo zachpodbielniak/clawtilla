@@ -2486,6 +2486,20 @@ once, because somebody waiting at a terminal is not load to spread;
 so does a catch-up, because a run that was already missed does not
 need to be later still.
 
+*** =routines.locked=
+
+- Type :: boolean
+- Default :: =false=
+- Since :: 0.7.1
+
+Keep the agent from changing or removing this routine.
+
+An agent with tools.schedule may adjust the routines that run on it --
+move a check, split one, drop one it no longer needs. Lock the ones
+that are yours to decide: it can still read a locked routine, and it
+is told why a change was refused rather than left guessing. Only a
+client or the config can set or clear this; an agent cannot.
+
 ** =triggers=
 
 Work started by something happening elsewhere.
@@ -4540,6 +4554,54 @@ create yourself -- every agent it makes goes through the same
 validation -- but it can do it without being asked twice.
 
 Intended for a chief-of-staff you talk to about what the fleet needs.
+
+*** =agents.tools.schedule=
+
+- Type :: boolean
+- Default :: =true=
+- Since :: 0.7.1
+
+Whether this agent may schedule its own routines.
+
+With it on, the agent is offered clawtilla_routine_add, _update and
+_remove: it can set up a check on something for itself, move one to a
+better time, or split a long watchlist into several -- the way you
+would ask a colleague to remind themselves rather than doing it for
+them. Only ever routines that run on this agent, never another's,
+and never one you marked `locked`.
+
+On by default because a routine opens nothing -- unlike a trigger,
+which is an address on your network and stays yours to create. What
+it can cost is bounded by `tools.schedule_limit` and
+`tools.schedule_min_minutes`.
+
+*** =agents.tools.schedule_limit=
+
+- Type :: integer
+- Default :: =8=
+- Since :: 0.7.1
+
+How many routines may run on this agent before it can add no more
+of its own.
+
+Counts every routine whose agent is this one, including those you
+wrote: the bound is on how often the agent is woken, not on who
+arranged it. Routines you add are never refused for it.
+
+*** =agents.tools.schedule_min_minutes=
+
+- Type :: integer
+- Default :: =15=
+- Since :: 0.7.1
+
+The shortest gap between two runs of a routine this agent schedules,
+in minutes.
+
+An agent that writes `*/1 * * * *` has written itself a turn a
+minute, which is a bill rather than a schedule. Checked over the
+schedule's next runs, so a cron expression whose runs bunch up --
+`0,1,2 9 * * *` -- is refused as well as one that is simply too
+frequent. Applies only to what an agent schedules for itself.
 
 ** =agents.mailbox=
 
