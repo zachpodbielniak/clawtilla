@@ -774,8 +774,10 @@ container_describe(ClawtComputer *computer)
     g_autoptr(GString) out = g_string_new(NULL);
 
     g_string_append_printf(out,
-        "You have a container of your own, running %s. Anything you do "
-        "inside it is isolated from the host.", self->image);
+        "You have %s, running %s. Anything you do "
+        "inside it is isolated from the host.",
+        clawt_computer_is_shared(computer) ? "a container" : "a container of your own",
+        self->image);
 
     clawt_computer_describe_mounts(computer, out);
 

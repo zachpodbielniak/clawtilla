@@ -2991,18 +2991,24 @@ clawt_daemon_reload_skills(ClawtDaemon *self)
         return;
 
     /*
-     * Bundled skills first, so the scan below sees them.  A failure is a
-     * warning: the fleet's own skills still load, and an agent's web tools
-     * still work without the skill that explains them.
+     * Bundled skills first, so the scan below sees them -- into the
+     * daemon's own state directory, never into skills.dir. That is the
+     * person's library and defaults to their home, so installing there
+     * wrote into the real ~/.clawtilla/skills from every daemon left on
+     * the default, `make test` included. A failure is a warning: the
+     * fleet's own skills still load, and an agent's web tools still work
+     * without the skill that explains them.
      */
+    self->skills = clawt_skill_library_new(directory);
     {
         g_autoptr(GError) bundled_error = NULL;
+        g_autofree gchar *bundled = g_build_filename(self->state_dir,
+                                                     "bundled-skills", NULL);
 
-        if (!clawt_skill_install_bundled(directory, &bundled_error))
+        if (!clawt_skill_install_bundled(bundled, &bundled_error))
             g_warning("skills: %s", bundled_error->message);
+        clawt_skill_library_set_bundled_directory(self->skills, bundled);
     }
-
-    self->skills = clawt_skill_library_new(directory);
     clawt_skill_library_scan(self->skills);
 
     /*
@@ -4004,6 +4010,9 @@ clawt_daemon_stop_agent(ClawtDaemon *self, const gchar *agent_id,
     computer = clawt_agent_get_computer(agent);
 
     clawt_agent_stop(agent);
+
+    /* Its asks die with it: the hook that was waiting on each is gone. */
+    clawt_daemon_policy_abandon(self, agent_id);
 
     /*
      * And its machine, when the caller meant the whole thing.

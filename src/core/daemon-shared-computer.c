@@ -78,10 +78,11 @@ clawt_daemon_shared_busy_refusal(ClawtDaemon *self, const gchar *agent_id,
         g_string_append_printf(names, "%s%s", i == 0 ? "" : ", ",
                                (const gchar *)g_ptr_array_index(running, i));
 
-    return g_strdup_printf("'%s' is the shared computer '%s', and %s %s running on it; "
-                           "stop %s first to %s", agent_id, use, names->str,
-                           running->len == 1 ? "is" : "are",
-                           running->len == 1 ? "it" : "them", what);
+    /* The names, twice: "stop it first" left the reader to work out who "it" was. */
+    return g_strdup_printf("'%s' is on the shared computer '%s', and %s %s still "
+                           "running on it; stop %s before you %s",
+                           agent_id, use, names->str,
+                           running->len == 1 ? "is" : "are", names->str, what);
 }
 
 /* Adds a mount unless the machine already has one at that path. */

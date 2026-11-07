@@ -17,7 +17,7 @@
 /* ── The type table ──────────────────────────────────────────────── */
 
 static const gchar *const matrix_required[] = {
-    "homeserver", "user_id", NULL
+    "homeserver", "user_id", "access_token", NULL
 };
 
 static const gchar *const matrix_credentials[] = {
@@ -34,7 +34,7 @@ static const gchar *const matrix_identity[] = {
 };
 
 static const gchar *const email_required[] = {
-    "imap_host", "smtp_host", "username", NULL
+    "imap_host", "smtp_host", "username", "password", NULL
 };
 
 static const gchar *const email_credentials[] = {
@@ -528,7 +528,17 @@ clawt_integration_binding_validate(ClawtIntegrationBinding  *self,
         ref = clawt_integration_binding_get_secret(
             self, self->info->credential_keys[i]);
 
-        if (ref != NULL)
+        /*
+         * Absent is not this loop's business: a credential that must be
+         * there is in required_keys and was refused above. libresearch's
+         * token is the case that showed it -- optional, needed only by a
+         * server with api.require_token -- and a fleet that had not set
+         * one was warned, on every agent, that it needed a secret
+         * reference for it. A value that is there and cannot be read as
+         * a reference is still refused.
+         */
+        if (ref != NULL ||
+            !clawt_integration_binding_has_key(self, self->info->credential_keys[i]))
             continue;
 
         {

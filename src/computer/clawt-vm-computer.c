@@ -3148,8 +3148,9 @@ vm_describe(ClawtComputer *computer)
     g_autoptr(GString) out = g_string_new(NULL);
 
     g_string_append_printf(out,
-        "You have a virtual machine of your own (%s, %u CPU%s, %u MB RAM, "
+        "You have %s (%s, %u CPU%s, %u MB RAM, "
         "%u GB disk). It is fully isolated from the host.",
+        clawt_computer_is_shared(computer) ? "a virtual machine" : "a virtual machine of your own",
         self->backend == CLAWT_VM_BACKEND_LIBVIRT ? "libvirt" : "QEMU",
         self->cpus, self->cpus == 1 ? "" : "s", self->memory_mb,
         self->disk_gb);

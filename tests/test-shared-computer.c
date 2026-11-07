@@ -244,6 +244,9 @@ test_agent_is_told_who_else_is_there(void)
     g_assert_nonnull(strstr(text, "share with b"));
     g_assert_null(strstr(text, "share with b, c"));
     g_assert_nonnull(strstr(text, CLAWT_SHARED_WORKSPACES_ROOT "/a;"));
+    /* Found live: the backend's opening sentence called it "of your own". */
+    g_assert_null(strstr(text, "of your own"));
+    g_assert_true(clawt_computer_is_shared(computer));
 
     clawt_agent_set_computer(a, NULL);
     daemon_teardown(&fixture);

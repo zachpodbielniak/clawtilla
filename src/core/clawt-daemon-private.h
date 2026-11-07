@@ -1171,6 +1171,7 @@ gboolean clawt_daemon_shared_screen_held(ClawtDaemon *self, const gchar *agent_i
 void clawt_daemon_policy_setup(ClawtDaemon *self);
 void clawt_daemon_policy_teardown(ClawtDaemon *self);
 void clawt_daemon_policy_tick(ClawtDaemon *self);
+void clawt_daemon_policy_abandon(ClawtDaemon *self, const gchar *agent_id);
 void clawt_daemon_policy_request(ClawtDaemon          *self,
                                  const gchar          *agent_id,
                                  const gchar          *tool,

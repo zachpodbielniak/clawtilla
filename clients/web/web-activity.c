@@ -16,6 +16,14 @@
  * The panel polls itself while the tab is visible. Steps are drawn as
  * plain lines rather than in a <details>, because an outerHTML swap
  * every few seconds would close anything somebody had opened.
+ *
+ * The same swap took the Steer field with it: text typed into it was
+ * gone at the next poll, so a correction took longer than four seconds
+ * to write could not be sent at all -- found by trying to. Polling
+ * pauses while the focus is inside the panel, which covers typing and
+ * the click on Steer. Not hx-preserve as well: it kept the field across
+ * the page the POST answers with, sent text and all, which invites
+ * sending it twice.
  */
 
 #include "web-pages.h"
@@ -80,11 +88,19 @@ turn_element(JsonObject *turn, gint64 now)
 
     if (clawt_web_member_bool(turn, "steerable", FALSE)) {
         g_autofree gchar *action = g_strdup_printf("/activity/%s/steer", escaped);
+        g_autofree gchar *input_id = g_strdup_printf("activity-steer-%s", agent_id);
         g_autoptr(HtmxForm) form = clawt_web_form(action);
         g_autoptr(HtmxButton) send = clawt_web_button("Steer", "primary");
+        g_autoptr(HtmxDiv) field = htmx_div_new();
+        g_autoptr(HtmxLabel) tag = htmx_label_new_with_text("Steer this turn");
+        g_autoptr(HtmxInput) input = htmx_input_new_text("body");
 
-        clawt_web_add(form, clawt_web_field("Steer this turn", "body", NULL,
-                                            "It reads this at its next step"));
+        htmx_element_add_class(HTMX_ELEMENT(field), "field");
+        htmx_input_set_placeholder(input, "It reads this at its next step");
+        htmx_element_set_id(HTMX_ELEMENT(input), input_id);
+        htmx_node_add_child(HTMX_NODE(field), HTMX_NODE(tag));
+        htmx_node_add_child(HTMX_NODE(field), HTMX_NODE(input));
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(field));
         htmx_element_set_attribute(HTMX_ELEMENT(send), "type", "submit");
         htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(send));
         htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(form));
@@ -123,7 +139,8 @@ activity_panel(ClawtWebApp *app)
     htmx_element_set_id(HTMX_ELEMENT(panel), "activity-panel");
     htmx_element_set_attribute(HTMX_ELEMENT(panel), "hx-get", "/f/activity");
     htmx_element_set_attribute(HTMX_ELEMENT(panel), "hx-trigger",
-                               "every 4s [!document.hidden]");
+                               "every 4s [!document.hidden && "
+                               "!document.activeElement.closest('#activity-panel')]");
     htmx_element_set_attribute(HTMX_ELEMENT(panel), "hx-swap", "outerHTML");
 
     if (reply == NULL) {

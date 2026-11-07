@@ -204,7 +204,7 @@ clawt_daemon_handle_computer(
         /* Stopping a shared machine would stop it under the others. */
         if (op != CLAWT_COMPUTER_LIFECYCLE_START) {
             g_autofree gchar *busy = clawt_daemon_shared_busy_refusal(
-                self, agent_id, op == CLAWT_COMPUTER_LIFECYCLE_STOP ? "stop it" : "restart it");
+                self, agent_id, op == CLAWT_COMPUTER_LIFECYCLE_STOP ? "stop the machine" : "restart the machine");
 
             if (busy != NULL)
                 return clawt_ipc_error_new(request, CLAWT_ERROR_AGENT_STATE, busy);
@@ -322,7 +322,7 @@ clawt_daemon_handle_computer(
         /* A shared machine is rebuilt only when every agent on it is stopped. */
         {
             g_autofree gchar *busy = clawt_daemon_shared_busy_refusal(
-                self, agent_id, "rebuild it");
+                self, agent_id, "rebuild the machine");
 
             if (busy != NULL)
                 return clawt_ipc_error_new(request, CLAWT_ERROR_AGENT_STATE, busy);

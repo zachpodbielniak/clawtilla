@@ -359,6 +359,62 @@ clawt_daemon_policy_settle(ClawtDaemon *self, ClawtDecision *decision, const gch
 }
 
 /*
+ * Withdraws every ask still waiting for @agent_id's turn, which has ended
+ * some other way -- interrupted, stopped, or released by the grace timer.
+ *
+ * Found by stopping an agent from the Activity page while its Bash call
+ * was held on an ask: the turn was gone, the hook that asked was killed
+ * with it, and the decision stayed in the inbox reading "gate wants to
+ * run: hostname" with a live Approve button. Approving it would have done
+ * nothing at all, which is worse than it not being there. So it is
+ * dismissed, published as settled, and the waiter told no -- the same as
+ * a person dismissing it, said by the daemon.
+ */
+void
+clawt_daemon_policy_abandon(ClawtDaemon *self, const gchar *agent_id)
+{
+    g_autoptr(GPtrArray) ids = NULL;
+    GHashTableIter iter;
+    gpointer key;
+    gpointer value;
+    guint i;
+
+    g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+    if (self->policy_waits == NULL || agent_id == NULL)
+        return;
+
+    /* Collected first: settling steals from the table being walked. */
+    ids = g_ptr_array_new_with_free_func(g_free);
+    g_hash_table_iter_init(&iter, self->policy_waits);
+    while (g_hash_table_iter_next(&iter, &key, &value))
+        if (g_strcmp0(((PolicyWait *)value)->agent_id, agent_id) == 0)
+            g_ptr_array_add(ids, g_strdup(key));
+
+    for (i = 0; i < ids->len; i++) {
+        const gchar *id = g_ptr_array_index(ids, i);
+        g_autoptr(ClawtDecision) decision = self->decisions != NULL
+            ? clawt_decision_store_get(self->decisions, id) : NULL;
+        PolicyWait *wait;
+
+        if (decision != NULL &&
+            clawt_decision_store_dismiss(self->decisions, id, NULL)) {
+            clawt_daemon_policy_settle(self, decision, "dismissed");
+            clawt_daemon_publish_decision_settled(self, decision, "dismissed");
+            continue;
+        }
+
+        /* No record to settle: still tell the waiter, and drop it. */
+        wait = g_hash_table_lookup(self->policy_waits, id);
+        if (wait != NULL) {
+            wait->reply(FALSE, "The turn that asked ended before anybody answered, "
+                               "so it was not done.", wait->reply_data);
+            g_hash_table_remove(self->policy_waits, id);
+        }
+    }
+}
+
+/*
  * Decisions whose deadline has passed are settled with their own default,
  * and say so: DEFAULTED, published as `decision.settled how=defaulted`, the
  * turn hold released. Before this, nothing ever reached that state, so a
@@ -397,6 +453,39 @@ on_default_tick(gpointer user_data)
     return G_SOURCE_CONTINUE;
 }
 
+/*
+ * Every open policy ask with nobody waiting on it, dismissed.
+ *
+ * The decision is stored on disk and the call waiting on it lives in a
+ * daemon's memory, so a daemon that stopped -- cleanly or not -- left its
+ * asks in the inbox for the next one to show, each with an Approve that
+ * could do nothing: the hook that asked had been told no, or killed.
+ * Found live by restarting a daemon with an ask open. A fresh daemon is
+ * waiting on none, so at setup this is every open one.
+ */
+static void
+sweep_orphaned_asks(ClawtDaemon *self)
+{
+    g_autoptr(GPtrArray) open = NULL;
+    guint i;
+
+    if (self->decisions == NULL)
+        return;
+
+    open = clawt_decision_store_list(self->decisions, TRUE);
+    for (i = 0; open != NULL && i < open->len; i++) {
+        ClawtDecision *decision = g_ptr_array_index(open, i);
+        const gchar *id = clawt_decision_get_id(decision);
+
+        if (!g_str_has_prefix(id, POLICY_ID_PREFIX) ||
+            g_hash_table_contains(self->policy_waits, id))
+            continue;
+
+        if (clawt_decision_store_dismiss(self->decisions, id, NULL))
+            clawt_daemon_publish_decision_settled(self, decision, "dismissed");
+    }
+}
+
 void
 clawt_daemon_policy_setup(ClawtDaemon *self)
 {
@@ -405,6 +494,7 @@ clawt_daemon_policy_setup(ClawtDaemon *self)
     if (self->policy_waits == NULL)
         self->policy_waits = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                                    policy_wait_free);
+    sweep_orphaned_asks(self);
     if (self->mcp_tools != NULL)
         clawt_mcp_tools_set_policy_func(self->mcp_tools, policy_for_tools, self, NULL);
 

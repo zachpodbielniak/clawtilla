@@ -45,6 +45,30 @@ ClawtSkillLibrary *clawt_skill_library_new(const gchar *directory);
 const gchar *clawt_skill_library_get_directory(ClawtSkillLibrary *self);
 
 /**
+ * clawt_skill_library_set_bundled_directory:
+ * @self: a #ClawtSkillLibrary
+ * @directory: (nullable): where clawtilla installed its own skills
+ *
+ * A second root, read after the library's directory on the next scan.
+ * The skills clawtilla ships live here -- inside the daemon's state, not
+ * in `skills.dir` -- because `skills.dir` is the person's library and
+ * defaults to their home: installing into it meant every daemon started
+ * with the default, every test fixture included, wrote into the real
+ * `~/.clawtilla/skills`. A skill of the same name in the library's own
+ * directory wins, unless clawtilla put it there itself.
+ */
+void clawt_skill_library_set_bundled_directory(ClawtSkillLibrary *self,
+                                               const gchar       *directory);
+
+/**
+ * clawt_skill_library_get_bundled_directory:
+ * @self: a #ClawtSkillLibrary
+ *
+ * Returns: (transfer none) (nullable): the bundled root
+ */
+const gchar *clawt_skill_library_get_bundled_directory(ClawtSkillLibrary *self);
+
+/**
  * clawt_skill_library_scan:
  * @self: a #ClawtSkillLibrary
  *

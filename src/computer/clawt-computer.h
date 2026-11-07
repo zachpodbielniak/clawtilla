@@ -372,6 +372,27 @@ ClawtComputerState clawt_computer_get_state(ClawtComputer *self);
 const gchar *clawt_computer_get_agent_id(ClawtComputer *self);
 
 /**
+ * CLAWT_SHARED_OWNER_PREFIX:
+ *
+ * What a shared machine's owner name starts with: `c.`, then the
+ * `computers:` id. No agent id can contain a dot, so it never names an
+ * agent's own machine.
+ */
+#define CLAWT_SHARED_OWNER_PREFIX "c."
+
+/**
+ * clawt_computer_is_shared:
+ * @self: a #ClawtComputer
+ *
+ * Whether this machine was built for a `computers:` entry several agents
+ * use, rather than for one agent -- which decides whether a backend may
+ * call it "your own".
+ *
+ * Returns: %TRUE for a shared machine
+ */
+gboolean clawt_computer_is_shared(ClawtComputer *self);
+
+/**
  * clawt_computer_shared_owner:
  * @computer_id: an entry under `computers:`
  *

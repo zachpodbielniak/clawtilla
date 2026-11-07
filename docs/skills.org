@@ -320,8 +320,10 @@ clawtilla's library is the agentskills layout, read by the agent's
 
 clawtilla ships some skills itself. Today there is one, =web-research=, which teaches the =clawtilla_web_*= tools and LQL ([[file:research.org][research.org]]).
 
-- They are embedded in the build (=data/skills/=) and written into =skills.dir= when the daemon loads the library, in the same layout as any other skill, so every harness reads them the same way.
-- Each carries a =.clawtilla-bundled= file holding a digest of what was written. A newer clawtilla replaces its own copy when the digest differs, and only its own: a directory of the same name without that file is somebody's skill and is left alone.
+- They are embedded in the build (=data/skills/=) and written into =<state_dir>/bundled-skills= when the daemon loads the library, in the same layout as any other skill, so every harness reads them the same way. The library reads that directory as a second root, after =skills.dir=.
+- *Never into =skills.dir=.* That is your library and defaults to your home, so writing there meant every daemon left on the default -- every test fixture included -- put a =web-research= into the real =~/.clawtilla/skills=. Versions 0.2.0 to 0.6.0 did; such a copy carries the marker below and can be deleted.
+- A skill of the same name in =skills.dir= wins, because writing one is a deliberate replacement -- unless it carries the =.clawtilla-bundled= marker, which means an older clawtilla put it there, and then the bundled root's newer copy is used instead.
+- Each carries a =.clawtilla-bundled= file holding a digest of what was written. A newer clawtilla replaces its own copy when the digest differs.
 - A bundled skill can come with something an agent has. =web-research= is assigned, with origin =integration=, to every agent with a =libresearch= integration -- by =clawt_skill_resolve_for_agent()=, the one resolver, after the agent, team and fleet lists. Naming it in one of those lists attributes it there instead.
 - With =skills.enabled: false= nothing is installed; whatever the skill would have taught has to reach the agent another way, and for =web-research= the tool descriptions and =TOOLS.org= carry a short primer for exactly that case.
 

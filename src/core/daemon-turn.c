@@ -855,6 +855,14 @@ clawt_daemon_turn_settle(ClawtDaemon *self, const gchar *agent_id)
     cancel_grace(self, agent_id);
 
     /*
+     * An ask still waiting belongs to a turn that is over: nothing will
+     * act on its answer. A turn that ends normally cannot leave one --
+     * the hook holds the turn open while it waits -- so this reaches only
+     * the interrupted, stopped and timed-out ones.
+     */
+    clawt_daemon_policy_abandon(self, agent_id);
+
+    /*
      * Whatever the runtime still believes it is typing, it is not in a
      * turn now.
      *

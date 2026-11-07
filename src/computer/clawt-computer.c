@@ -481,7 +481,15 @@ clawt_computer_shared_owner(const gchar *computer_id)
     g_return_val_if_fail(computer_id != NULL, NULL);
 
     /* A dot: no agent id may hold one, so no agent's machine can share the name. */
-    return g_strconcat("c.", computer_id, NULL);
+    return g_strconcat(CLAWT_SHARED_OWNER_PREFIX, computer_id, NULL);
+}
+
+gboolean
+clawt_computer_is_shared(ClawtComputer *self)
+{
+    g_return_val_if_fail(CLAWT_IS_COMPUTER(self), FALSE);
+
+    return g_str_has_prefix(PRIV(self)->agent_id, CLAWT_SHARED_OWNER_PREFIX);
 }
 
 gchar *

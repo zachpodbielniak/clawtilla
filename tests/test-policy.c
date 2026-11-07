@@ -450,6 +450,79 @@ test_daemon_ask_defaults(void)
     daemon_teardown(&fixture);
 }
 
+/*
+ * A turn that ends without the ask being answered -- interrupted, stopped
+ * -- takes its ask with it: dismissed, the waiter told no. Two agents,
+ * because it is keyed: the other agent's ask stays open. Found live, with
+ * an Approve button still offered on a turn that had been stopped.
+ */
+static void
+test_ask_withdrawn_when_turn_ends(void)
+{
+    DaemonFixture fixture = { 0 };
+    Reply mine = { FALSE, FALSE, NULL };
+    Reply theirs = { FALSE, FALSE, NULL };
+    g_autoptr(GPtrArray) open = NULL;
+
+    daemon_setup(&fixture);
+    clawt_daemon_policy_request(fixture.daemon, "worker", "Bash", CLAWT_ACTION_EXEC,
+                                CLAWT_POLICY_ASK, "exec=ask", "Bash", on_reply, &mine);
+    clawt_daemon_policy_request(fixture.daemon, "other", "Bash", CLAWT_ACTION_EXEC,
+                                CLAWT_POLICY_ASK, "exec=ask", "Bash", on_reply, &theirs);
+    open = clawt_decision_store_list(fixture.daemon->decisions, TRUE);
+    g_assert_cmpuint(open->len, ==, 2);
+    g_clear_pointer(&open, g_ptr_array_unref);
+
+    clawt_daemon_turn_settle(fixture.daemon, "worker");
+
+    g_assert_true(mine.replied);
+    g_assert_false(mine.allowed);
+    g_assert_false(theirs.replied);
+    open = clawt_decision_store_list(fixture.daemon->decisions, TRUE);
+    g_assert_cmpuint(open->len, ==, 1);
+    g_assert_cmpstr(clawt_decision_get_agent(g_ptr_array_index(open, 0)), ==, "other");
+
+    g_free(mine.refusal);
+    daemon_teardown(&fixture);
+    g_free(theirs.refusal);
+}
+
+/*
+ * An ask outlives the daemon that posted it -- decisions are on disk --
+ * but its waiter does not. The next daemon dismisses it rather than
+ * showing an Approve nothing would act on. Found live, by restarting a
+ * daemon with an ask open.
+ */
+static void
+test_ask_dismissed_after_restart(void)
+{
+    DaemonFixture fixture = { 0 };
+    Reply reply = { FALSE, FALSE, NULL };
+    g_autofree gchar *id = NULL;
+    g_autofree gchar *path = NULL;
+    g_autoptr(ClawtDecision) after = NULL;
+
+    daemon_setup(&fixture);
+    clawt_daemon_policy_request(fixture.daemon, "worker", "Bash", CLAWT_ACTION_EXEC,
+                                CLAWT_POLICY_ASK, "exec=ask", "Bash", on_reply, &reply);
+    id = open_decision_id(fixture.daemon);
+
+    /* The same state directory, a new daemon. */
+    clawt_daemon_stop(fixture.daemon);
+    g_clear_object(&fixture.daemon);
+    g_assert_true(reply.replied);
+    path = g_build_filename(fixture.dir, "config.yaml", NULL);
+    fixture.daemon = clawt_daemon_new(path, fixture.context);
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    after = clawt_decision_store_get(fixture.daemon->decisions, id);
+    g_assert_nonnull(after);
+    g_assert_cmpint(clawt_decision_get_state(after), ==, CLAWT_DECISION_DISMISSED);
+
+    g_free(reply.refusal);
+    daemon_teardown(&fixture);
+}
+
 /* A decision an agent asked for itself defaults too, and is said to have. */
 static void
 test_agent_decision_defaults(void)
@@ -556,6 +629,10 @@ main(gint argc, gchar *argv[])
     g_test_add_func("/policy/tools/ask-without-inbox-refuses", test_ask_without_inbox_refuses);
     g_test_add_func("/policy/daemon/ask-answered", test_daemon_ask_answered);
     g_test_add_func("/policy/daemon/ask-defaults", test_daemon_ask_defaults);
+    g_test_add_func("/policy/daemon/ask-withdrawn-when-turn-ends",
+                    test_ask_withdrawn_when_turn_ends);
+    g_test_add_func("/policy/daemon/ask-dismissed-after-restart",
+                    test_ask_dismissed_after_restart);
     g_test_add_func("/policy/daemon/agent-decision-defaults", test_agent_decision_defaults);
     g_test_add_func("/policy/daemon/hand-back", test_hand_back_refuses_and_files);
     g_test_add_func("/policy/hook-settings-follow-rules", test_hook_settings_follow_rules);

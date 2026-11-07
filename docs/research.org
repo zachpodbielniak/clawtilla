@@ -91,10 +91,10 @@ Codex has no skills concept: =clawt_skill_provider_origin()= resolves to no dire
 
 ** The bundled skill
 
-=web-research= ships inside clawtilla (=data/skills/web-research/=, embedded at build time) and is written into the fleet's =skills.dir= when the daemon loads its skill library -- the directory every agent CLI already reads, in the agentskills layout.
+=web-research= ships inside clawtilla (=data/skills/web-research/=, embedded at build time) and is written into the daemon's own =<state_dir>/bundled-skills= when it loads its skill library -- never into =skills.dir=, which is your library -- and linked into each agent's workspace like any other skill.
 
 - *Assigned with the integration.* =clawt_skill_resolve_for_agent()= adds it, with origin =integration=, to every agent with a =libresearch= integration, through the same integration resolver the tools use. An agent that names it in its own =skills:= list keeps that attribution instead.
-- *Replaced only when it is ours.* Beside it is a =.clawtilla-bundled= file holding a digest of what was written. A newer clawtilla rewrites its own copy when the digest differs. A directory called =web-research= without that file is somebody's own skill, and wins untouched.
+- *Yours wins.* A =web-research= you write in =skills.dir= replaces it. One there carrying a =.clawtilla-bundled= marker was put there by clawtilla 0.2.0 to 0.6.0, and is ignored in favour of the current version ([[file:skills.org][skills.org]]).
 - *Needs the skill library.* With =skills.enabled: false= or no =skills.dir= nothing is installed and nothing is linked. The tools still work; the always-in-context primer still reaches the agent.
 
 See [[file:skills.org][skills.org]] for how skills are linked into each harness.

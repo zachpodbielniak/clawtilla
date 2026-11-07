@@ -218,7 +218,7 @@ clawt_skill_provision_paths(ClawtAgentConfig *agent, gboolean kind_commands)
  * directory that has been deleted still resolves into the library.
  */
 static gboolean
-points_into_library(const gchar *target, const gchar *skills_dir)
+points_into_root(const gchar *target, const gchar *skills_dir)
 {
     g_autofree gchar *resolved = NULL;
     g_autofree gchar *root = NULL;
@@ -241,6 +241,25 @@ points_into_library(const gchar *target, const gchar *skills_dir)
 }
 
 /*
+ * Either of the library's roots: the fleet's skills.dir and the daemon's
+ * own bundled directory. A link clawtilla made points into one or the
+ * other, and recognising only the first left every link to a bundled
+ * skill looking like somebody's hand-made entry -- never pruned, never
+ * replaced.
+ */
+static gboolean
+points_into_library(const gchar *target, const gchar *const *roots)
+{
+    guint i;
+
+    for (i = 0; roots != NULL && roots[i] != NULL; i++)
+        if (points_into_root(target, roots[i]))
+            return TRUE;
+
+    return FALSE;
+}
+
+/*
  * Is this entry one clawtilla made?
  *
  * Decided by where it points, and deliberately not by a manifest.  A
@@ -256,7 +275,7 @@ points_into_library(const gchar *target, const gchar *skills_dir)
  * and loads nothing.
  */
 static gboolean
-link_is_ours(const gchar *path, const gchar *skills_dir)
+link_is_ours(const gchar *path, const gchar *const *skills_dir)
 {
     g_autofree gchar *target = NULL;
 
@@ -332,8 +351,8 @@ ensure_link(const gchar  *path,
  * a list would be destroying work nobody asked us to manage.
  */
 static void
-prune_links(const gchar *directory,
-            const gchar *skills_dir,
+prune_links(const gchar        *directory,
+            const gchar *const *skills_dir,
             GHashTable  *wanted,
             GPtrArray   *warnings)
 {
@@ -498,8 +517,8 @@ write_commands(const gchar  *directory,
  * is a file a person may also have written in.
  */
 static gboolean
-write_manifest(const gchar  *directory,
-               const gchar  *skills_dir,
+write_manifest(const gchar        *directory,
+               const gchar *const *skills_dir,
                GPtrArray    *bindings,
                GError      **error)
 {
@@ -624,6 +643,7 @@ clawt_skill_provision(ClawtConfig        *config,
     g_auto(GStrv) command_dirs = NULL;
     g_autofree gchar *workspace = NULL;
     const gchar *skills_dir;
+    const gchar *roots[3] = { NULL, NULL, NULL };
     const gchar *origin;
     guint i;
 
@@ -633,6 +653,8 @@ clawt_skill_provision(ClawtConfig        *config,
     found = g_ptr_array_new_with_free_func(g_free);
     workspace = clawt_agent_config_get_workspace(agent);
     skills_dir = clawt_skill_library_get_directory(library);
+    roots[0] = skills_dir;
+    roots[1] = clawt_skill_library_get_bundled_directory(library);
 
     if (workspace == NULL || skills_dir == NULL) {
         if (warnings != NULL)
@@ -674,7 +696,7 @@ clawt_skill_provision(ClawtConfig        *config,
          */
         g_autofree gchar *parent = g_path_get_dirname(skill_dirs[0]);
 
-        if (!write_manifest(parent, skills_dir, bindings, error))
+        if (!write_manifest(parent, roots, bindings, error))
             return FALSE;
 
         if (warnings != NULL)
@@ -706,7 +728,7 @@ clawt_skill_provision(ClawtConfig        *config,
          * clobber it.
          */
         if (g_file_test(path, G_FILE_TEST_EXISTS) &&
-            !link_is_ours(path, skills_dir))
+            !link_is_ours(path, roots))
             continue;
 
         if (!ensure_link(path,
@@ -716,7 +738,7 @@ clawt_skill_provision(ClawtConfig        *config,
             return FALSE;
     }
 
-    prune_links(skill_dirs[0], skills_dir, wanted, found);
+    prune_links(skill_dirs[0], roots, wanted, found);
 
     command_dirs = clawt_skill_provision_paths(agent, TRUE);
 

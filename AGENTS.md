@@ -524,6 +524,12 @@ critical fired.
 - A skip-probe is code. One that names no connection started a pod module
   against the machine's own podman, which `make test` must never need.
 - The hermetic claim is checkable: `unshare -rn <test-binary>`.
+- **A default that names the home directory is a write into it.** Bundled
+  skills were installed into `skills.dir`, which defaults to
+  `~/.clawtilla/skills`, so every fixture that did not pin it wrote into
+  the real one -- and nothing failed, because writing succeeded. Anything
+  the daemon writes for itself goes under `<state_dir>`; a key the person
+  owns is read, not populated.
 
 ## The Dependency Libraries
 
@@ -1079,6 +1085,14 @@ versions apart.
   answer was dropped as a sign-off. The finished-turn table goes too --
   `clawt_agent_get_hop_depth()` falls back to it, and that gates which tools
   the agent is offered at all.
+- **A stored question with an in-memory asker outlives the asker.** A policy
+  ask is a decision on disk and a waiting call in the daemon's memory, so
+  an interrupted turn, a stopped agent or a restarted daemon left the
+  decision open with an Approve that could do nothing.
+  `clawt_daemon_policy_abandon()` withdraws an agent's asks wherever its
+  turn settles, and policy setup dismisses every open ask, since a fresh
+  daemon waits on none. Found by pressing Stop in a live check, not by a
+  test.
 - **A restart nobody asked for still has to move the state.** The restart
   policy respawns from inside `ClawtAgentRuntime`, not through
   `clawt_agent_start()`, and nothing connected to `::started` -- so a

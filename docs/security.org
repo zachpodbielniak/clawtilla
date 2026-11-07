@@ -783,6 +783,8 @@ Every clawtilla tool declares its class in its own definition, so a tool added l
 | ~ask~       | a decision with ~approve~ / ~deny~ is posted and the call waits; ~approve~ runs it, anything else refuses it, and nobody answering by ~ask_timeout_seconds~ settles it as *defaulted* and refuses |
 | ~review~    | the decision model named by ~defaults.policy.reviewer~ judges whether the call fits the agent's described role; 0.8 or more runs it, anything less -- or a reviewer that fails -- becomes ~ask~ |
 
+*An ask lives exactly as long as the call waiting on it.* The decision is stored; the call is in the daemon's memory. So an ask is withdrawn -- dismissed, published as settled, the call refused -- when the turn that raised it ends any other way: the agent is interrupted (the Activity page's *Stop agent*, ~agent.interrupt~), stopped, or released by the turn grace timer. And a daemon that starts dismisses every policy ask it finds open, because it is waiting on none of them -- whether the last one stopped cleanly or was killed. Before 0.6.1 both cases left an ask in the inbox with an *Approve* that could do nothing, found during a live check by stopping a turn held on one.
+
 A rule that does not parse makes the agent a shadow, with the rule in the reason: an agent whose ~exec=ask~ was misspelt must not run every command unasked while its config says it asks. ~agent.set~ refuses one where it arrives.
 
 *** What each route can see

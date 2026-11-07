@@ -8348,7 +8348,29 @@ main(int argc, char *argv[])
             argc = tail + 1;
             argv[argc] = NULL;
         } else {
+            /*
+             * No known verb: what the parser left is the command line
+             * now, so argv has to say so. It used to keep the original,
+             * and `clawtilla -s SOCK list` answered "unknown command
+             * '-s'" -- the one word that was understood. The parser
+             * worked on copies, so each survivor is found by identity in
+             * `owned` and replaced with the original it was copied from.
+             */
+            g_autofree gchar **original = g_new0(gchar *, (gsize)head_argc + 1);
+            gint j;
+
+            for (i = 0; i < head_argc; i++)
+                original[i] = argv[i];
+
+            for (i = 0; i < parsed_argc; i++)
+                for (j = 0; j < head_argc; j++)
+                    if (head[i] == owned[j]) {
+                        argv[i] = original[j];
+                        break;
+                    }
+
             argc = parsed_argc;
+            argv[argc] = NULL;
         }
     }
 

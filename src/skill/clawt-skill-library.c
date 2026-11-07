@@ -40,6 +40,7 @@ struct _ClawtSkillLibrary {
     GObject       parent_instance;
 
     gchar        *directory;
+    gchar        *bundled_directory;  /* clawtilla's own, read after directory */
     GHashTable   *skills;      /* gchar* -> ClawtSkill* */
     GPtrArray    *order;       /* gchar*, names in sorted order */
     GPtrArray    *problems;    /* gchar* */
@@ -240,6 +241,7 @@ library_note_problem(ClawtSkillLibrary *self,
 
 static ClawtSkill *
 library_read_one(ClawtSkillLibrary *self,
+                 const gchar       *root,
                  const gchar       *name,
                  GError           **error)
 {
@@ -249,7 +251,8 @@ library_read_one(ClawtSkillLibrary *self,
     g_autoptr(ClawtSkill) skill = NULL;
     g_autofree gchar *digest = NULL;
 
-    directory = clawt_skill_directory_for(self->directory, name);
+    (void)self;
+    directory = clawt_skill_directory_for(root, name);
 
     if (directory == NULL) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
@@ -296,32 +299,27 @@ compare_names(gconstpointer a, gconstpointer b)
     return g_strcmp0(*(const gchar * const *)a, *(const gchar * const *)b);
 }
 
-void
-clawt_skill_library_scan(ClawtSkillLibrary *self)
+/*
+ * Reads every skill under @root into the library.
+ *
+ * @bundled is clawtilla's own root, read second: a name already found in
+ * the fleet's directory wins, because a skill somebody wrote under the
+ * same name is a deliberate replacement. The one exception is a copy an
+ * older clawtilla installed into the fleet's directory itself -- it
+ * carries the bundled marker -- which would otherwise shadow every later
+ * version for ever, so the bundled root's copy replaces it.
+ */
+static void
+scan_root(ClawtSkillLibrary *self, const gchar *root, gboolean bundled)
 {
     g_autoptr(GDir) dir = NULL;
     g_autoptr(GError) open_error = NULL;
-    g_autoptr(GHashTable) previous = NULL;
     const gchar *entry;
-    guint i;
 
-    g_return_if_fail(CLAWT_IS_SKILL_LIBRARY(self));
+    if (root == NULL)
+        return;
 
-    /*
-     * The old set is kept so that ::skill-added and ::skill-removed can
-     * say what actually changed.  A client that only had ::changed
-     * would rebuild its whole list on every keystroke in an editor.
-     */
-    previous = g_steal_pointer(&self->skills);
-    self->skills = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
-                                         (GDestroyNotify)clawt_skill_free);
-    g_ptr_array_set_size(self->order, 0);
-    g_ptr_array_set_size(self->problems, 0);
-
-    if (self->directory == NULL)
-        goto compare;
-
-    dir = g_dir_open(self->directory, 0, &open_error);
+    dir = g_dir_open(root, 0, &open_error);
 
     if (dir == NULL) {
         /*
@@ -331,9 +329,8 @@ clawt_skill_library_scan(ClawtSkillLibrary *self)
          * because it looks identical from every other view.
          */
         if (!g_error_matches(open_error, G_FILE_ERROR, G_FILE_ERROR_NOENT))
-            library_note_problem(self, self->directory, open_error->message);
-
-        goto compare;
+            library_note_problem(self, root, open_error->message);
+        return;
     }
 
     while ((entry = g_dir_read_name(dir)) != NULL) {
@@ -342,7 +339,7 @@ clawt_skill_library_scan(ClawtSkillLibrary *self)
         g_autoptr(GError) error = NULL;
         ClawtSkill *skill;
 
-        path = g_build_filename(self->directory, entry, NULL);
+        path = g_build_filename(root, entry, NULL);
 
         if (!g_file_test(path, G_FILE_TEST_IS_DIR))
             continue;
@@ -367,20 +364,51 @@ clawt_skill_library_scan(ClawtSkillLibrary *self)
             continue;
         }
 
-        skill = library_read_one(self, entry, &error);
+        if (bundled && g_hash_table_contains(self->skills, entry)) {
+            ClawtSkill *existing = g_hash_table_lookup(self->skills, entry);
+            g_autofree gchar *stale = g_build_filename(
+                clawt_skill_get_directory(existing), CLAWT_SKILL_BUNDLED_MARKER, NULL);
+
+            if (!g_file_test(stale, G_FILE_TEST_EXISTS))
+                continue;
+        }
+
+        skill = library_read_one(self, root, entry, &error);
 
         if (skill == NULL) {
             library_note_problem(self, entry, error->message);
             continue;
         }
 
+        if (!g_hash_table_contains(self->skills, entry))
+            g_ptr_array_add(self->order, g_strdup(entry));
         g_hash_table_replace(self->skills, g_strdup(entry), skill);
-        g_ptr_array_add(self->order, g_strdup(entry));
     }
+}
 
+void
+clawt_skill_library_scan(ClawtSkillLibrary *self)
+{
+    g_autoptr(GHashTable) previous = NULL;
+    guint i;
+
+    g_return_if_fail(CLAWT_IS_SKILL_LIBRARY(self));
+
+    /*
+     * The old set is kept so that ::skill-added and ::skill-removed can
+     * say what actually changed.  A client that only had ::changed
+     * would rebuild its whole list on every keystroke in an editor.
+     */
+    previous = g_steal_pointer(&self->skills);
+    self->skills = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                         (GDestroyNotify)clawt_skill_free);
+    g_ptr_array_set_size(self->order, 0);
+    g_ptr_array_set_size(self->problems, 0);
+
+    scan_root(self, self->directory, FALSE);
+    scan_root(self, self->bundled_directory, TRUE);
     g_ptr_array_sort(self->order, compare_names);
 
-compare:
     {
         GHashTableIter iter;
         gpointer key;
@@ -949,6 +977,24 @@ clawt_skill_library_remove(ClawtSkillLibrary  *self,
     return TRUE;
 }
 
+void
+clawt_skill_library_set_bundled_directory(ClawtSkillLibrary *self,
+                                          const gchar       *directory)
+{
+    g_return_if_fail(CLAWT_IS_SKILL_LIBRARY(self));
+
+    g_free(self->bundled_directory);
+    self->bundled_directory = g_strdup(directory);
+}
+
+const gchar *
+clawt_skill_library_get_bundled_directory(ClawtSkillLibrary *self)
+{
+    g_return_val_if_fail(CLAWT_IS_SKILL_LIBRARY(self), NULL);
+
+    return self->bundled_directory;
+}
+
 /* ── GObject plumbing ────────────────────────────────────────────── */
 
 static void
@@ -971,6 +1017,7 @@ clawt_skill_library_finalize(GObject *object)
     ClawtSkillLibrary *self = CLAWT_SKILL_LIBRARY(object);
 
     g_clear_pointer(&self->directory, g_free);
+    g_clear_pointer(&self->bundled_directory, g_free);
     g_clear_pointer(&self->skills, g_hash_table_unref);
     g_clear_pointer(&self->order, g_ptr_array_unref);
     g_clear_pointer(&self->problems, g_ptr_array_unref);

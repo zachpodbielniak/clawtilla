@@ -10,8 +10,10 @@
  * way it reaches it: the clawtilla_web_* tools are offered exactly when
  * the search hook answers for the agent, run on the deferred path (a
  * research run takes minutes), and answer with the server's own words;
- * the web-research skill is installed into skills.dir, replaced only when
- * it is clawtilla's own copy, and assigned with the integration; and an
+ * the web-research skill is installed into the daemon's state directory --
+ * never into skills.dir, which is the person's library and defaults to
+ * their home -- replaced only when it is clawtilla's own copy, and
+ * assigned with the integration; and an
  * agent whose CLI loads no skills (codex) gets the reference inline.
  *
  * The HTTP side is a SoupServer on loopback serving canned documents, the
@@ -20,6 +22,7 @@
 
 #include "clawtilla.h"
 #include "clawt-test-util.h"
+#include "core/clawt-daemon-private.h"
 
 #include <glib/gstdio.h>
 #include <libsoup/soup.h>
@@ -389,6 +392,127 @@ test_bundled_skill_ownership(void)
     clawt_test_remove_tree(dir);
 }
 
+/*
+ * A daemon writes its bundled skills into its own state, and never into
+ * skills.dir. Installing into skills.dir wrote into the real
+ * ~/.clawtilla/skills from every daemon on the default -- `make test`
+ * included -- which is how this was found: the directory was there, on a
+ * machine whose fleet runs elsewhere, created by a test run.
+ */
+static void
+test_bundled_skill_stays_out_of_the_library(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-bundled-XXXXXX", NULL);
+    g_autofree gchar *path = g_build_filename(dir, "config.yaml", NULL);
+    g_autofree gchar *library = g_build_filename(dir, "library", NULL);
+    g_autofree gchar *installed = g_build_filename(dir, "state", "bundled-skills",
+                                                   "web-research", "SKILL.md", NULL);
+    g_autofree gchar *yaml = g_strdup_printf(
+        "daemon:\n  tailscale: false\n  state_dir: \"%s/state\"\n"
+        "  socket: \"%s/d.sock\"\n  automation_dir: \"%s/pods\"\n"
+        "defaults:\n  workspace_root: \"%s/agents\"\n"
+        "skills:\n  dir: \"%s\"\n",
+        dir, dir, dir, dir, library);
+    g_autoptr(GMainContext) context = g_main_context_new();
+    g_autoptr(ClawtDaemon) daemon = NULL;
+    ClawtSkill *skill;
+
+    g_assert_true(g_file_set_contents(path, yaml, -1, NULL));
+    daemon = clawt_daemon_new(path, context);
+    g_assert_true(clawt_daemon_start(daemon, NULL));
+
+    g_assert_false(g_file_test(library, G_FILE_TEST_EXISTS));
+    g_assert_true(g_file_test(installed, G_FILE_TEST_IS_REGULAR));
+    skill = clawt_skill_library_lookup(daemon->skills, CLAWT_SKILL_BUNDLED_WEB_RESEARCH);
+    g_assert_nonnull(skill);
+    g_assert_true(g_str_has_prefix(clawt_skill_get_directory(skill), dir));
+    g_assert_null(strstr(clawt_skill_get_directory(skill), "/library/"));
+
+    clawt_daemon_stop(daemon);
+    g_clear_object(&daemon);
+    while (g_main_context_iteration(context, FALSE))
+        ;
+    clawt_test_remove_tree(dir);
+}
+
+/*
+ * The library's own directory wins over the bundled root -- unless the
+ * copy there is one an older clawtilla installed into it, which would
+ * otherwise shadow every later version for ever.
+ */
+static void
+test_library_root_precedence(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-roots-XXXXXX", NULL);
+    g_autofree gchar *mine = g_build_filename(dir, "library", NULL);
+    g_autofree gchar *bundled = g_build_filename(dir, "bundled", NULL);
+    g_autofree gchar *own_dir = g_build_filename(mine, "web-research", NULL);
+    g_autofree gchar *own = g_build_filename(own_dir, "SKILL.md", NULL);
+    g_autofree gchar *marker = g_build_filename(own_dir, CLAWT_SKILL_BUNDLED_MARKER, NULL);
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtSkillLibrary) library = NULL;
+
+    g_assert_true(clawt_skill_install_bundled(bundled, &error));
+    g_assert_cmpint(g_mkdir_with_parents(own_dir, 0700), ==, 0);
+    g_assert_true(g_file_set_contents(own,
+        "---\nname: web-research\ndescription: my own way of searching\n---\nmine\n",
+        -1, NULL));
+
+    library = clawt_skill_library_new(mine);
+    clawt_skill_library_set_bundled_directory(library, bundled);
+    clawt_skill_library_scan(library);
+    g_assert_cmpstr(clawt_skill_get_directory(
+        clawt_skill_library_lookup(library, "web-research")), ==, own_dir);
+
+    /* The same directory carrying our marker is a stale install of ours. */
+    g_assert_true(g_file_set_contents(marker, "old", -1, NULL));
+    clawt_skill_library_scan(library);
+    g_assert_true(g_str_has_prefix(clawt_skill_get_directory(
+        clawt_skill_library_lookup(library, "web-research")), bundled));
+    {
+        g_autoptr(GPtrArray) listed = clawt_skill_library_list(library);
+
+        g_assert_cmpuint(listed->len, ==, 1);
+    }
+
+    clawt_test_remove_tree(dir);
+}
+
+/*
+ * The token is optional: a server without api.require_token needs none,
+ * and a fleet that set none was warned on every agent. A credential that
+ * is not optional -- Matrix's access token -- is still refused when absent.
+ */
+static void
+test_token_is_optional(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+        "integrations:\n"
+        "  - name: open\n    type: libresearch\n    scope: selected\n    agents: [a]\n"
+        "    url: http://127.0.0.1:8087\n"
+        "  - name: chat\n    type: matrix\n    scope: selected\n    agents: [b]\n"
+        "    homeserver: https://example.invalid\n    user_id: \"@b:example.invalid\"\n"
+        "agents:\n  - id: a\n  - id: b\n", &error);
+    g_autoptr(GPtrArray) found = NULL;
+    gboolean open_warned = FALSE;
+    gboolean chat_warned = FALSE;
+    guint i;
+
+    g_assert_no_error(error);
+    clawt_integration_validate_fleet(config, &found);
+    for (i = 0; found != NULL && i < found->len; i++) {
+        const gchar *line = g_ptr_array_index(found, i);
+
+        if (strstr(line, "'open'") != NULL)
+            open_warned = TRUE;
+        if (strstr(line, "'chat'") != NULL && strstr(line, "access_token") != NULL)
+            chat_warned = TRUE;
+    }
+    g_assert_false(open_warned);
+    g_assert_true(chat_warned);
+}
+
 /* Assigned with the integration, and only with it. */
 static void
 test_skill_assigned_with_integration(void)
@@ -485,6 +609,10 @@ main(gint argc, gchar *argv[])
     g_test_add_func("/web-research/bundled-skill-installs", test_bundled_skill_installs_and_scans);
     g_test_add_func("/web-research/bundled-skill-ownership", test_bundled_skill_ownership);
     g_test_add_func("/web-research/skill-assigned-with-integration", test_skill_assigned_with_integration);
+    g_test_add_func("/web-research/bundled-skill-stays-out-of-the-library",
+                    test_bundled_skill_stays_out_of_the_library);
+    g_test_add_func("/web-research/library-root-precedence", test_library_root_precedence);
+    g_test_add_func("/web-research/token-is-optional", test_token_is_optional);
     g_test_add_func("/web-research/tools-org-points-or-inlines", test_tools_org_points_or_inlines);
 
     return g_test_run();
