@@ -1323,6 +1323,27 @@ pump_until(GMainContext *context, gboolean (*done)(gpointer), gpointer data,
     return done(data);
 }
 
+/*
+ * After a disconnect, the cancelled read still has to come back on the
+ * context it was started on -- and holds the stream until it does.  A test
+ * that pops the context and lets it go leaks the stream (LeakSanitizer
+ * found two), so it is pushed and drained here first.
+ */
+static void
+drain_after_disconnect(GMainContext *context)
+{
+    guint i;
+
+    g_main_context_push_thread_default(context);
+    for (i = 0; i < 200; i++) {
+        if (!g_main_context_iteration(context, FALSE))
+            g_usleep(1000);
+        if (i > 20 && !g_main_context_pending(context))
+            break;
+    }
+    g_main_context_pop_thread_default(context);
+}
+
 static gboolean
 client_is_up(gpointer data)
 {
@@ -1815,6 +1836,7 @@ test_connect_async_on_a_connected_client_is_immediate(void)
     g_assert_no_error(state.error);
 
     clawt_client_disconnect(client);
+    drain_after_disconnect(context);
     fake_daemon_stop(fake);
     g_rmdir(dir);
 }
@@ -1882,6 +1904,7 @@ test_subscribe_async_returns_before_it_has_subscribed(void)
     g_assert_true(state.ok);
 
     clawt_client_disconnect(client);
+    drain_after_disconnect(context);
     fake_daemon_stop(fake);
     g_rmdir(dir);
 }

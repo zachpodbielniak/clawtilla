@@ -28,6 +28,8 @@
 #include <lc-version.h>
 
 #include <stdarg.h>
+#include <errno.h>
+#include <ai-glib.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -2776,6 +2778,179 @@ cmd_folders(int argc, char *argv[])
     }
 
     return EXIT_SUCCESS;
+}
+
+/*
+ * Runs a CLI's own login against an account directory.
+ *
+ * The CLI is found and its account variables set by the same ai-glib
+ * client libreclaw will run, so the directory logged into here is
+ * exactly the one the agent reads -- not a second spelling of
+ * CLAUDE_CONFIG_DIR kept in this file.  It runs on this machine: an
+ * account must be logged in where the daemon's agents run.
+ */
+static gint
+account_login(const gchar *provider, const gchar *config_dir)
+{
+    const gchar *cli_type = lc_provider_type_normalize(provider, "account");
+    g_autoptr(AiCliClient) probe = lc_client_factory_new(cli_type, NULL, NULL, NULL, FALSE);
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *executable = NULL;
+    g_auto(GStrv) envp = NULL;
+    GHashTable *env;
+    GHashTableIter iter;
+    gpointer key;
+    gpointer value;
+    const gchar *argv[2] = { NULL, NULL };
+    gint status = 0;
+
+    if (probe == NULL || !ai_cli_client_set_config_dir(probe, config_dir, &error)) {
+        g_printerr("clawtilla: %s\n", error != NULL ? error->message
+                                                   : "no such agent CLI");
+        return EXIT_FAILURE;
+    }
+
+    /* Logging in is the deliberate act that makes the directory exist. */
+    if (g_mkdir_with_parents(config_dir, 0700) != 0) {
+        g_printerr("clawtilla: cannot create %s: %s\n", config_dir, g_strerror(errno));
+        return EXIT_FAILURE;
+    }
+
+    executable = AI_CLI_CLIENT_GET_CLASS(probe)->get_executable_path(probe);
+    if (executable == NULL) {
+        g_printerr("clawtilla: %s is not installed here\n", cli_type);
+        return EXIT_FAILURE;
+    }
+
+    envp = g_get_environ();
+    env = ai_cli_client_get_environment(probe);
+    if (env != NULL) {
+        g_hash_table_iter_init(&iter, env);
+        while (g_hash_table_iter_next(&iter, &key, &value))
+            envp = g_environ_setenv(envp, key, value, TRUE);
+    }
+
+    g_print("Starting %s with its login kept in %s.\n"
+            "Log in with the CLI's own command (claude: /login; codex and grok "
+            "ask on start; opencode: /connect), then quit it.\n\n",
+            executable, config_dir);
+
+    argv[0] = executable;
+    if (!g_spawn_sync(NULL, (gchar **)argv, envp,
+                      G_SPAWN_CHILD_INHERITS_STDIN, NULL, NULL, NULL, NULL,
+                      &status, &error)) {
+        g_printerr("clawtilla: %s\n", error->message);
+        return EXIT_FAILURE;
+    }
+
+    return g_spawn_check_wait_status(status, NULL) ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+
+static gint
+cmd_account(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *verb = (argc > 2) ? argv[2] : NULL;
+
+    if (verb == NULL) {
+        g_printerr("Usage: clawtilla account <list|add|rm|login> [ARGS...]\n");
+        g_printerr("\n");
+        g_printerr("  list                                accounts, their CLI and directory\n");
+        g_printerr("  add <id> <provider> <dir> [DESC]    declare one\n");
+        g_printerr("  rm <id>                             remove it; agents using it are disabled\n");
+        g_printerr("  login <id>                          run the CLI's own login against it\n");
+        g_printerr("\n");
+        g_printerr("Then point an agent at it:\n");
+        g_printerr("  clawtilla agent set <agent> model.account <id>\n");
+        return EXIT_FAILURE;
+    }
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    if (g_strcmp0(verb, "list") == 0 || g_strcmp0(verb, "login") == 0) {
+        JsonArray *accounts;
+        guint i;
+
+        if (g_strcmp0(verb, "login") == 0 && argc < 4) {
+            g_printerr("Usage: clawtilla account login <id>\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "account.list", NULL);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        accounts = json_object_get_array_member(json_node_get_object(reply), "accounts");
+
+        for (i = 0; i < json_array_get_length(accounts); i++) {
+            JsonObject *account = json_array_get_object_element(accounts, i);
+
+            if (g_strcmp0(verb, "login") == 0) {
+                if (g_strcmp0(member_or(account, "id", NULL), argv[3]) == 0)
+                    return account_login(member_or(account, "provider", NULL),
+                                         member_or(account, "config_dir", NULL));
+                continue;
+            }
+
+            g_print("%-16s %-12s %s\n", member_or(account, "id", "?"),
+                    member_or(account, "provider", "?"),
+                    member_or(account, "config_dir", "?"));
+            if (member_or(account, "description", NULL) != NULL)
+                g_print("%-16s %s\n", "", member_or(account, "description", ""));
+        }
+
+        if (g_strcmp0(verb, "login") == 0) {
+            g_printerr("clawtilla: no account '%s'\n", argv[3]);
+            return EXIT_FAILURE;
+        }
+        if (json_array_get_length(accounts) == 0)
+            g_print("No accounts. Agents log in as each CLI's default. Add one with:\n"
+                    "  clawtilla account add work claude-code ~/.claude-work\n");
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "add") == 0) {
+        if (argc < 6) {
+            g_printerr("Usage: clawtilla account add <id> <provider> <dir> [DESCRIPTION]\n");
+            return EXIT_FAILURE;
+        }
+        reply = call(client, "account.add",
+                     build_payload("id", argv[3], "provider", argv[4],
+                                   "config_dir", argv[5],
+                                   "description", (argc > 6) ? argv[6] : NULL, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        g_print("Added account %s. Log in to it once:\n"
+                "  clawtilla account login %s\n", argv[3], argv[3]);
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "rm") == 0) {
+        gint64 using;
+
+        if (argc < 4) {
+            g_printerr("Usage: clawtilla account rm <id>\n");
+            return EXIT_FAILURE;
+        }
+        reply = call(client, "account.remove", build_payload("id", argv[3], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        using = json_object_get_int_member(json_node_get_object(reply), "agents_using");
+        g_print("Removed account %s.\n", argv[3]);
+        if (using > 0)
+            g_print("%" G_GINT64_FORMAT " agent%s still name%s it and %s disabled until "
+                    "pointed elsewhere:\n  clawtilla agent set <agent> model.account \"\"\n",
+                    using, using == 1 ? "" : "s", using == 1 ? "s" : "",
+                    using == 1 ? "is" : "are");
+        if (report_refusals(reply))
+            return EXIT_FAILURE;
+        return EXIT_SUCCESS;
+    }
+
+    g_printerr("clawtilla: unknown account command '%s'\n", verb);
+    return EXIT_FAILURE;
 }
 
 static gint
@@ -7709,6 +7884,8 @@ static const ClawtVerb verbs[] = {
       cmd_room },
     { "team",    "<verb>",   "Manage teams and who is on them",
       cmd_team },
+    { "account", "<verb>",   "Separate logins for an agent CLI",
+      cmd_account },
     { "task",    "<verb>",   "Inspect delegated tasks",
       cmd_task },
     { "decision", "<verb>",  "Answer what an agent has asked you",
@@ -7825,14 +8002,24 @@ main(int argc, char *argv[])
     {
         gint verb_index = find_verb(argc, argv);
         gint head_argc = (verb_index > 0) ? verb_index : argc;
-        g_auto(GStrv) head = NULL;
+        g_auto(GStrv) owned = NULL;
+        g_autofree gchar **head = NULL;
         gint parsed_argc;
         gint i;
 
+        /*
+         * Two arrays: g_option_context_parse() removes what it consumed
+         * by shifting the array it is handed, so the strings it drops are
+         * no longer reachable from it. `owned` keeps every one to free;
+         * `head` is the shallow copy the parser rearranges.
+         */
+        owned = g_new0(gchar *, (gsize)head_argc + 1);
         head = g_new0(gchar *, (gsize)head_argc + 1);
 
-        for (i = 0; i < head_argc; i++)
-            head[i] = g_strdup(argv[i]);
+        for (i = 0; i < head_argc; i++) {
+            owned[i] = g_strdup(argv[i]);
+            head[i] = owned[i];
+        }
 
         parsed_argc = head_argc;
 
