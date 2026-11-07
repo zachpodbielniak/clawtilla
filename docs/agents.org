@@ -1963,3 +1963,8 @@ and "I never created this" is a thing people say about directories they
 later want back. Remove the ~.discarded~ ones yourself when you are
 sure.
 
+* Decisions that nobody answers
+
+A decision carries a default and, usually, a deadline (=reversible_until=). Every fifteen seconds the daemon settles each open decision whose deadline has passed with its own default, as *defaulted* -- a state kept apart from *answered*, because the inbox exists to say what somebody chose and what merely happened. It publishes ~decision.settled~ with ~how: defaulted~ so every client's badge comes down, and releases the turn budgets the question was holding. Before 0.3.0 nothing reached that state: a lapsed question sat in the inbox, counted, for ever.
+
+Action rules ([[file:security.org][security.org]], "Action policy") post decisions of their own, with ids beginning =policy-=. Answering one releases or refuses the call waiting on it rather than sending the agent a message: the agent is waiting on the tool, not on its mailbox.

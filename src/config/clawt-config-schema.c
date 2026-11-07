@@ -515,6 +515,33 @@ static const ClawtSchemaEntry schema[] = {
   "configured with looks exactly like one that has it and ignored it.",
   "0.2.0" },
 
+{ "defaults.policy", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "What agents may do without asking. See agents.policy.", "0.3.0" },
+
+{ "defaults.policy.rules", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_COMMENTED,
+  NULL, NULL,
+  "Action rules every agent follows unless it has its own list.\n"
+  "\n"
+  "Each is MATCH=MODE. MATCH is an action class -- read, write, delete,\n"
+  "message, exec, external, desktop_input, fleet_admin -- or a tool-name\n"
+  "glob such as clawtilla_create_* or Bash. MODE is allow, review, ask,\n"
+  "hand_back or deny. The first rule that matches decides; a call no\n"
+  "rule matches is allowed. An agent's own agents.policy.rules replaces\n"
+  "this list rather than adding to it, so the order of one list is the\n"
+  "whole answer.", "0.3.0" },
+
+{ "defaults.policy.ask_timeout_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "600", NULL,
+  "How long an `ask` waits for a person before it is refused. The\n"
+  "decision is then settled as defaulted, so the inbox says nobody\n"
+  "chose rather than that somebody said no.", "0.3.0" },
+
+{ "defaults.policy.reviewer", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "The decision model `review` asks: typesafe, ollama or laya (ai-glib's\n"
+  "deciders). Unset, `review` behaves as `ask`. A reviewer that is\n"
+  "unsure, or that fails, also becomes `ask` -- never `allow`.", "0.3.0" },
+
 { "ai_assist", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "The model that helps design new agents.\n"
   "\n"
@@ -3073,6 +3100,24 @@ static const ClawtSchemaEntry schema[] = {
   NULL, NULL,
   "Tool names refused. Applied after allow, so a deny always wins.", "0.1.0" },
 
+{ "agents.policy", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "What this agent may do without asking.\n"
+  "\n"
+  "Enforced on clawtilla's own tools, connectors and the desktop relay\n"
+  "for every backend, and on the CLI's own tools (Bash, Write, ...) for\n"
+  "claude-code and claude-tmux through a PreToolUse hook. Other CLIs run\n"
+  "their own tools unchecked; docs/security.org says so in full.", "0.3.0" },
+
+{ "agents.policy.rules", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "This agent's action rules, MATCH=MODE, first match wins. Defaults to\n"
+  "defaults.policy.rules.", "0.3.0" },
+
+{ "agents.policy.ask_timeout_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "How long an `ask` waits for a person. Defaults to\n"
+  "defaults.policy.ask_timeout_seconds.", "0.3.0" },
+
 { "agents.tools.manage_fleet", CLAWT_SCHEMA_BOOLEAN,
   CLAWT_SCHEMA_FLAG_DANGEROUS, "false", NULL,
   "Whether this agent may create other agents.\n"
@@ -3169,6 +3214,8 @@ static const ClawtSchemaAgentKey agent_keys[] = {
     { "model.model",                "defaults.model" },
     { "computer.type",              "defaults.computer" },
     { "runtime.autostart",          "defaults.autostart" },
+    { "policy.rules",               "defaults.policy.rules" },
+    { "policy.ask_timeout_seconds", "defaults.policy.ask_timeout_seconds" },
     { "runtime.stream_steps",       "defaults.stream_steps" },
     { "runtime.restart",            "defaults.restart" },
     { "computer.container.image",   "defaults.container_image" }

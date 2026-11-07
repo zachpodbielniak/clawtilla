@@ -30,9 +30,9 @@
  * decrement a counter can ignore it, and one drawing a line in a list
  * cannot.
  */
-static void
-publish_decision_settled(ClawtDaemon *self, ClawtDecision *decision,
-                         const gchar *how)
+void
+clawt_daemon_publish_decision_settled(ClawtDaemon *self, ClawtDecision *decision,
+                                      const gchar *how)
 {
     g_autoptr(ClawtEvent) event = NULL;
 
@@ -45,6 +45,27 @@ publish_decision_settled(ClawtDaemon *self, ClawtDecision *decision,
     clawt_event_set_detail(event, "how", how);
 
     clawt_event_bus_publish(self->bus, event);
+}
+
+/* Answers a deferred policy.check once its rule has been resolved. */
+static void
+on_policy_check_reply(gboolean allowed, const gchar *refusal, gpointer data)
+{
+    ClawtIpcPending *pending = data;
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "allowed");
+    json_builder_add_boolean_value(builder, allowed);
+    if (refusal != NULL) {
+        json_builder_set_member_name(builder, "reason");
+        json_builder_add_string_value(builder, refusal);
+    }
+    json_builder_end_object(builder);
+
+    clawt_ipc_pending_respond(pending,
+        clawt_ipc_response_new(clawt_ipc_pending_get_request(pending),
+                               json_builder_get_root(builder)));
 }
 
 JsonNode *
@@ -175,7 +196,13 @@ clawt_daemon_handle_misc(
          * the task id, so an answer that arrives after the agent has
          * moved on can still be attached to what it was about.
          */
-        clawt_daemon_deliver_decision_answer(self, settled);
+        /*
+         * A policy question has a call waiting on it, not a turn: the
+         * answer releases (or refuses) that call, and a message as well
+         * would tell the agent twice and cost it a turn to read.
+         */
+        if (!clawt_daemon_policy_settle(self, settled, "answered"))
+            clawt_daemon_deliver_decision_answer(self, settled);
 
         /*
          * And back to whichever system staged the change, if one did.
@@ -189,7 +216,7 @@ clawt_daemon_handle_misc(
          */
         clawt_daemon_venture_answer(self, settled);
 
-        publish_decision_settled(self, settled, "answered");
+        clawt_daemon_publish_decision_settled(self, settled, "answered");
 
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "decision");
@@ -225,9 +252,11 @@ clawt_daemon_handle_misc(
                                        dismiss_error->message);
 
         if (dismissed != NULL) {
-            clawt_daemon_turn_release(self,
-                                      clawt_decision_get_agent(dismissed));
-            publish_decision_settled(self, dismissed, "dismissed");
+            /* settle() releases its own hold; anything else is released here. */
+            if (!clawt_daemon_policy_settle(self, dismissed, "dismissed"))
+                clawt_daemon_turn_release(self,
+                                          clawt_decision_get_agent(dismissed));
+            clawt_daemon_publish_decision_settled(self, dismissed, "dismissed");
         }
 
         json_builder_begin_object(builder);
@@ -549,6 +578,90 @@ clawt_daemon_handle_misc(
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    /*
+     * One call an agent is about to make, judged by its action rules.
+     *
+     * Asked by the routes that are not clawtilla's own tools: the Claude
+     * Code PreToolUse hook (the CLI's Bash, Write, ...) and the connector
+     * and desktop relays. Each names the tool as the agent called it and,
+     * when it knows better than the native table, the class. Deferred,
+     * because `ask` waits for a person and `review` for a model.
+     */
+    if (g_strcmp0(kind, "policy.check") == 0) {
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        const gchar *tool = clawt_ipc_payload_string(payload, "tool");
+        const gchar *class_nick = clawt_ipc_payload_string(payload, "class");
+        const gchar *summary = clawt_ipc_payload_string(payload, "summary");
+        ClawtAgentConfig *config;
+        ClawtActionClass action = CLAWT_ACTION_EXEC;
+        ClawtPolicyMode mode;
+        g_autofree gchar *rule = NULL;
+        gint parsed = 0;
+        ClawtIpcPending *pending;
+
+        if (agent_id == NULL || tool == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "agent and tool are both required");
+        /*
+         * A token, when one is sent, must be the agent's. The relays send
+         * none -- they run from the agent's own CLI with no token to hand
+         * -- and are let in on the strength of the socket, which is the
+         * user's alone: a check can only ever restrict the caller.
+         */
+        if (clawt_ipc_payload_string(payload, "token") != NULL &&
+            !clawt_daemon_authenticate_agent(agent_id,
+                                             clawt_ipc_payload_string(payload, "token"),
+                                             self))
+            return clawt_ipc_error_new(request, CLAWT_ERROR_AUTH,
+                                       "that is not this agent's token");
+
+        config = clawt_config_get_agent(self->config, agent_id);
+
+        /*
+         * clawtilla's own tools, reached through the CLI's MCP client,
+         * are gated by the daemon when they arrive at tool.rpc; asking
+         * here as well would ask a person twice for one call.
+         */
+        if (clawt_policy_native_is_clawtilla(tool)) {
+            mode = CLAWT_POLICY_ALLOW;
+        } else {
+            if (class_nick != NULL &&
+                clawt_enum_from_nick(CLAWT_TYPE_ACTION_CLASS, class_nick, &parsed))
+                action = (ClawtActionClass)parsed;
+            else if (!clawt_mcp_tools_action_class(tool, &action))
+                action = clawt_policy_class_for_native_tool(tool);
+            mode = clawt_policy_mode_for(config, tool, action, &rule);
+        }
+
+        if (mode == CLAWT_POLICY_ALLOW || mode == CLAWT_POLICY_DENY) {
+            g_autoptr(JsonBuilder) answer = json_builder_new();
+
+            json_builder_begin_object(answer);
+            json_builder_set_member_name(answer, "allowed");
+            json_builder_add_boolean_value(answer, mode == CLAWT_POLICY_ALLOW);
+            if (mode == CLAWT_POLICY_DENY) {
+                g_autofree gchar *reason = g_strdup_printf(
+                    "Refused by the action rule '%s'. This is a standing rule, not "
+                    "a mistake in your call: do not retry it.", rule);
+
+                json_builder_set_member_name(answer, "reason");
+                json_builder_add_string_value(answer, reason);
+            }
+            json_builder_end_object(answer);
+            return clawt_ipc_response_new(request, json_builder_get_root(answer));
+        }
+
+        pending = clawt_ipc_server_defer(self->ipc_server, request);
+        if (pending == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                       "this request cannot be answered later");
+
+        clawt_daemon_policy_request(self, agent_id, tool, action, mode, rule,
+                                    summary != NULL ? summary : tool,
+                                    on_policy_check_reply, pending);
+        return NULL;
     }
 
     if (g_strcmp0(kind, "tool.rpc") == 0) {

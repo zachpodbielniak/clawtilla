@@ -236,6 +236,10 @@ struct _ClawtDaemon {
      * stale client.
      */
     GHashTable        *search_clients;
+
+    /* Calls waiting on an `ask`, keyed by decision id (daemon-policy.c). */
+    GHashTable        *policy_waits;
+    GSource           *policy_tick;
     gboolean           handoff_pumping;
 
     /* Standing work, and when it is next due. */
@@ -1137,6 +1141,24 @@ void clawt_daemon_turn_set_grace_seconds(ClawtDaemon *self, guint seconds);
  */
 void clawt_daemon_handoff_setup(ClawtDaemon *self);
 void clawt_daemon_search_setup(ClawtDaemon *self);
+void clawt_daemon_policy_setup(ClawtDaemon *self);
+void clawt_daemon_policy_teardown(ClawtDaemon *self);
+void clawt_daemon_policy_tick(ClawtDaemon *self);
+void clawt_daemon_policy_request(ClawtDaemon          *self,
+                                 const gchar          *agent_id,
+                                 const gchar          *tool,
+                                 ClawtActionClass      action,
+                                 ClawtPolicyMode       mode,
+                                 const gchar          *rule,
+                                 const gchar          *summary,
+                                 ClawtPolicyReplyFunc  reply,
+                                 gpointer              reply_data);
+gboolean clawt_daemon_policy_settle(ClawtDaemon   *self,
+                                    ClawtDecision *decision,
+                                    const gchar   *how);
+void clawt_daemon_publish_decision_settled(ClawtDaemon   *self,
+                                           ClawtDecision *decision,
+                                           const gchar   *how);
 void clawt_daemon_search_teardown(ClawtDaemon *self);
 void clawt_daemon_handoff_teardown(ClawtDaemon *self);
 

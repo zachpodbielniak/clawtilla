@@ -176,6 +176,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/skill/clawt-skill-binding.h \
 	$(SRCDIR)/skill/clawt-skill-provision.h \
 	$(SRCDIR)/skill/clawt-skill-bundled.h \
+	$(SRCDIR)/policy/clawt-policy.h \
 	$(SRCDIR)/skill/clawt-skill-commands.h \
 	$(SRCDIR)/ai/clawt-model-catalog.h \
 	$(SRCDIR)/ai/clawt-agent-designer.h \
@@ -211,6 +212,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-turn.c \
 	$(SRCDIR)/core/daemon-handoff.c \
 	$(SRCDIR)/core/daemon-search.c \
+	$(SRCDIR)/core/daemon-policy.c \
 	$(SRCDIR)/core/daemon-mailbox.c \
 	$(SRCDIR)/core/daemon-task.c \
 	$(SRCDIR)/core/daemon-computer.c \
@@ -332,6 +334,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/skill/clawt-skill-binding.c \
 	$(SRCDIR)/skill/clawt-skill-provision.c \
 	$(SRCDIR)/skill/clawt-skill-bundled.c \
+	$(SRCDIR)/policy/clawt-policy.c \
 	$(SRCDIR)/skill/clawt-skill-commands.c \
 	$(SRCDIR)/ai/clawt-model-catalog.c \
 	$(SRCDIR)/ai/clawt-agent-designer.c \

@@ -200,6 +200,19 @@ clawt_workspace_write_mcp_config(ClawtConfig      *config,
                                  GError          **error);
 
 /**
+ * clawt_workspace_claude_settings_path:
+ * @state_dir: the agent's state directory
+ *
+ * Where the Claude settings carrying an agent's PreToolUse policy hook
+ * live. Written by clawt_workspace_write_mcp_config() for an agent with
+ * action rules, and named in its generated config as
+ * `ai.claude.settings_path`.
+ *
+ * Returns: (transfer full): the path
+ */
+gchar *clawt_workspace_claude_settings_path(const gchar *state_dir);
+
+/**
  * clawt_workspace_update_tools_org:
  * @config: (nullable): the fleet configuration, for shared integrations
  * @agent: the agent's configuration

@@ -662,6 +662,15 @@ clawt_mcp_relay_run_gated(GStrv              argv,
 }
 
 gint
+clawt_mcp_relay_run_unfiltered_gated(GStrv              argv,
+                                     GStrv              envp,
+                                     ClawtMcpRelayGate  gate,
+                                     gpointer           gate_data)
+{
+    return relay_run(argv, envp, NULL, FALSE, NULL, gate, gate_data);
+}
+
+gint
 clawt_mcp_relay_run_unfiltered(GStrv argv, GStrv envp)
 {
     return relay_run(argv, envp, NULL, FALSE, NULL, NULL, NULL);

@@ -43,6 +43,9 @@
 static gchar    *opt_socket = NULL;
 static gchar    *opt_agent = NULL;
 static gchar    *opt_token_file = NULL;
+
+/* The longest any tool call may take: computer_exec's own ceiling, plus a margin. */
+#define TOOL_RPC_TIMEOUT_SECONDS (3600 + 60)
 static gboolean  opt_version = FALSE;
 static gboolean  opt_license = FALSE;
 
@@ -251,8 +254,16 @@ forward(Bridge *bridge, JsonNode *request, JsonNode *id)
      * takes it (transfer full).  Keeping a g_autoptr on it as well
      * unreferenced a node the request had already freed.
      */
-    reply = clawt_client_request(bridge->client, "tool.rpc",
-                                 json_builder_get_root(builder), &error);
+    /*
+     * An hour, not the client's default two minutes: a tool call may be
+     * a research run, a command the agent gave an hour to, or a call an
+     * action rule holds until a person answers. Giving up first reports a
+     * timeout for work that is about to succeed -- or that the daemon then
+     * does with nobody listening.
+     */
+    reply = clawt_client_request_full(bridge->client, "tool.rpc",
+                                      json_builder_get_root(builder),
+                                      TOOL_RPC_TIMEOUT_SECONDS, &error);
 
     if (reply == NULL) {
         /*

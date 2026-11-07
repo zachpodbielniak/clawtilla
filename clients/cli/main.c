@@ -2846,6 +2846,128 @@ account_login(const gchar *provider, const gchar *config_dir)
     return g_spawn_check_wait_status(status, NULL) ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
+/*
+ * The Claude Code PreToolUse hook: one tool call the CLI is about to
+ * make, judged by the agent's action rules.
+ *
+ * Claude writes the call as JSON on stdin; exit 0 lets it run, exit 2
+ * blocks it and shows stderr to the model as the reason. Anything that
+ * stops this from getting an answer -- no daemon, no token, a malformed
+ * call -- blocks rather than allows: the hook exists because somebody
+ * wrote a rule, and a rule that lapses when the daemon restarts is not
+ * one. The daemon writes the settings that run this; nobody types it.
+ */
+static gint
+cmd_policy_hook(int argc, char *argv[])
+{
+    g_autofree gchar *agent = NULL;
+    g_autofree gchar *token_file = NULL;
+    g_autofree gchar *socket_path = NULL;
+    g_autofree gchar *token = NULL;
+    g_autofree gchar *input = NULL;
+    g_autofree gchar *summary = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    GOptionEntry hook_entries[] = {
+        { "agent", 0, 0, G_OPTION_ARG_STRING, &agent, "Which agent", "ID" },
+        { "token-file", 0, 0, G_OPTION_ARG_FILENAME, &token_file, "The agent's token", "PATH" },
+        { "socket", 0, 0, G_OPTION_ARG_FILENAME, &socket_path, "The daemon's socket", "PATH" },
+        { NULL, 0, 0, G_OPTION_ARG_NONE, NULL, NULL, NULL }
+    };
+    g_autoptr(GOptionContext) context = g_option_context_new("- judge one tool call");
+    g_autoptr(GIOChannel) in = NULL;
+    const gchar *tool;
+    JsonObject *call;
+    gint hook_argc = argc - 1;
+    gchar **hook_argv = argv + 1;
+
+    g_option_context_add_main_entries(context, hook_entries, NULL);
+    if (!g_option_context_parse(context, &hook_argc, &hook_argv, &error) ||
+        agent == NULL || token_file == NULL) {
+        g_printerr("clawtilla policy-hook: %s\n",
+                   error != NULL ? error->message : "--agent and --token-file are required");
+        return 2;
+    }
+
+    if (!g_file_get_contents(token_file, &token, NULL, &error)) {
+        g_printerr("Blocked: the policy hook could not read this agent's token (%s), "
+                   "so it cannot ask whether this call is allowed.\n", error->message);
+        return 2;
+    }
+    g_strstrip(token);
+
+    in = g_io_channel_unix_new(0);
+    if (g_io_channel_read_to_end(in, &input, NULL, &error) != G_IO_STATUS_NORMAL ||
+        !json_parser_load_from_data(parser, input, -1, &error) ||
+        !JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser))) {
+        g_printerr("Blocked: the policy hook could not read the call: %s\n",
+                   error != NULL ? error->message : "not a JSON object");
+        return 2;
+    }
+
+    call = json_node_get_object(json_parser_get_root(parser));
+    tool = json_object_has_member(call, "tool_name")
+        ? json_object_get_string_member(call, "tool_name") : NULL;
+    if (tool == NULL) {
+        g_printerr("Blocked: the call named no tool.\n");
+        return 2;
+    }
+
+    /* The call, for the person asked: the tool and its input, bounded. */
+    if (json_object_has_member(call, "tool_input")) {
+        g_autofree gchar *args = json_to_string(json_object_get_member(call, "tool_input"), FALSE);
+
+        if (strlen(args) > 400)
+            args[400] = '\0';
+        summary = g_strdup_printf("%s %s", tool, args);
+    } else {
+        summary = g_strdup(tool);
+    }
+
+    client = clawt_client_new(socket_path);
+    if (!clawt_client_connect(client, &error)) {
+        g_printerr("Blocked: the policy hook could not reach the clawtilla daemon (%s), "
+                   "and a rule that lapses when the daemon is away is not a rule.\n",
+                   error->message);
+        return 2;
+    }
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "agent");
+    json_builder_add_string_value(builder, agent);
+    json_builder_set_member_name(builder, "token");
+    json_builder_add_string_value(builder, token);
+    json_builder_set_member_name(builder, "tool");
+    json_builder_add_string_value(builder, tool);
+    json_builder_set_member_name(builder, "summary");
+    json_builder_add_string_value(builder, summary);
+    if (g_getenv("CLAWTILLA_ROOM_ID") != NULL && *g_getenv("CLAWTILLA_ROOM_ID") != '\0') {
+        json_builder_set_member_name(builder, "room");
+        json_builder_add_string_value(builder, g_getenv("CLAWTILLA_ROOM_ID"));
+    }
+    json_builder_end_object(builder);
+
+    /* As long as a person may take to answer an `ask`, and a margin. */
+    reply = clawt_client_request_full(client, "policy.check", json_builder_get_root(builder),
+                                      3600, &error);
+    if (reply == NULL || !JSON_NODE_HOLDS_OBJECT(reply)) {
+        g_printerr("Blocked: the daemon did not answer whether this call is allowed: %s\n",
+                   error != NULL ? error->message : "no answer");
+        return 2;
+    }
+
+    if (json_object_get_boolean_member_with_default(json_node_get_object(reply),
+                                                    "allowed", FALSE))
+        return 0;
+
+    g_printerr("%s\n", json_object_get_string_member_with_default(
+        json_node_get_object(reply), "reason", "Refused by an action rule."));
+    return 2;
+}
+
 static gint
 cmd_account(int argc, char *argv[])
 {
@@ -3758,6 +3880,9 @@ cmd_task(int argc, char *argv[])
  * -- is enforced through the tool list, which is fixed before the relay
  * starts and so cannot fail open.
  */
+static gboolean relay_policy_gate(const gchar *agent_id, const gchar *tool,
+                                  const gchar *klass, gchar **refusal);
+
 static gboolean
 desktop_control_gate(const gchar *tool, gchar **refusal, gpointer user_data)
 {
@@ -3777,6 +3902,10 @@ desktop_control_gate(const gchar *tool, gchar **refusal, gpointer user_data)
      */
     if (!clawt_desktop_tool_is_acting(tool))
         return TRUE;
+
+    /* The agent's action rules first: a takeover is about now, a rule always. */
+    if (!relay_policy_gate(agent_id, tool, "desktop_input", refusal))
+        return FALSE;
 
     client = connect_to_daemon();
 
@@ -5074,8 +5203,54 @@ connector_connect(ClawtClient *client, const gchar *name)
  * stray line of ours is a protocol error to the client on the other end
  * of it. Everything diagnostic goes to stderr.
  */
+/*
+ * Asks the agent's action rules about one call a relay is about to pass
+ * on. Shared by the connector and desktop relays, which are started by the
+ * agent's own CLI and so carry no token: policy.check takes the agent from
+ * a local socket that is already the user's alone, and checking only ever
+ * restricts the caller.
+ *
+ * A daemon that cannot be reached lets the call through, as the desktop
+ * gate always has: the daemon supervises the agent, so an absent one is a
+ * restart in progress, not a fleet without rules.
+ */
+static gboolean
+relay_policy_gate(const gchar *agent_id, const gchar *tool, const gchar *klass,
+                  gchar **refusal)
+{
+    g_autoptr(ClawtClient) client = connect_to_daemon();
+    g_autoptr(JsonNode) reply = NULL;
+    JsonObject *result;
+
+    if (client == NULL)
+        return TRUE;
+
+    reply = clawt_client_request_full(
+        client, "policy.check",
+        build_payload("agent", agent_id, "tool", tool, "class", klass,
+                      "summary", tool, NULL),
+        3600, NULL);
+    if (reply == NULL || !JSON_NODE_HOLDS_OBJECT(reply))
+        return TRUE;
+
+    result = json_node_get_object(reply);
+    if (json_object_get_boolean_member_with_default(result, "allowed", TRUE))
+        return TRUE;
+
+    *refusal = g_strdup(json_object_get_string_member_with_default(
+        result, "reason", "Refused by an action rule."));
+    return FALSE;
+}
+
+static gboolean
+connector_policy_gate(const gchar *tool, gchar **refusal, gpointer user_data)
+{
+    *refusal = NULL;
+    return relay_policy_gate(user_data, tool, "external", refusal);
+}
+
 static gint
-connector_relay(const gchar *name)
+connector_relay(const gchar *name, const gchar *agent_id)
 {
     g_autoptr(ClawtConfig) config = NULL;
     g_autoptr(GPtrArray) catalog = NULL;
@@ -5174,6 +5349,9 @@ connector_relay(const gchar *name)
         return EXIT_FAILURE;
     }
 
+    if (agent_id != NULL)
+        return clawt_connector_relay_run_gated(plan, connector_policy_gate,
+                                               (gpointer)agent_id);
     return clawt_connector_relay_run(plan);
 }
 
@@ -5197,7 +5375,8 @@ cmd_connector(int argc, char *argv[])
      * own CLI and speaks its own protocol on stdout.
      */
     if (g_strcmp0(verb, "relay") == 0)
-        return connector_relay(name);
+        return connector_relay(name, (argc > 5 && g_strcmp0(argv[4], "--agent") == 0)
+                                         ? argv[5] : NULL);
 
     client = connect_to_daemon();
 
@@ -7886,6 +8065,8 @@ static const ClawtVerb verbs[] = {
       cmd_team },
     { "account", "<verb>",   "Separate logins for an agent CLI",
       cmd_account },
+    { "policy-hook", "--agent ID --token-file PATH", "Claude Code's PreToolUse hook (run by the daemon's settings)",
+      cmd_policy_hook },
     { "task",    "<verb>",   "Inspect delegated tasks",
       cmd_task },
     { "decision", "<verb>",  "Answer what an agent has asked you",

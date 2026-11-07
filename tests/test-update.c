@@ -248,6 +248,11 @@ test_a_checker_that_has_not_asked_says_so(void)
  * later.  And telling somebody about an update to a daemon they cannot
  * reach is advice about the wrong problem.
  */
+/*
+ * The update offered is a version clawtilla will never be: this used
+ * "0.3.0", and the day clawtilla itself became 0.3.0 the mismatch notice
+ * -- which names the client's own version -- matched it.
+ */
 static void
 test_the_notice_puts_the_update_last(void)
 {
@@ -259,21 +264,21 @@ test_the_notice_puts_the_update_last(void)
     g_autofree gchar *quiet = NULL;
 
     only_update = clawt_connection_notice_text(CLAWT_DAEMON_LINK_UP, local,
-                                               NULL, "0.3.0");
+                                               NULL, "98.7.6");
     g_assert_nonnull(only_update);
-    g_assert_nonnull(strstr(only_update, "0.3.0"));
+    g_assert_nonnull(strstr(only_update, "98.7.6"));
 
     /* A mismatch outranks it, and must not mention the update. */
     mismatch_wins = clawt_connection_notice_text(CLAWT_DAEMON_LINK_UP, local,
-                                                 "99.0.0", "0.3.0");
+                                                 "99.0.0", "98.7.6");
     g_assert_nonnull(mismatch_wins);
-    g_assert_null(strstr(mismatch_wins, "0.3.0"));
+    g_assert_null(strstr(mismatch_wins, "98.7.6"));
 
     /* A connection that never came up outranks both. */
     down = clawt_connection_notice_text(CLAWT_DAEMON_LINK_NEVER, local, NULL,
-                                        "0.3.0");
+                                        "98.7.6");
     g_assert_nonnull(down);
-    g_assert_null(strstr(down, "0.3.0"));
+    g_assert_null(strstr(down, "98.7.6"));
 
     /* And with nothing to say it still says nothing. */
     quiet = clawt_connection_notice_text(CLAWT_DAEMON_LINK_UP, local, NULL,

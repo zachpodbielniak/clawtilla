@@ -946,6 +946,18 @@ a restart.  The integration name is folded rather than refused, the way
 ~clawt_connector_token_path()~ folds an instance name, because that one
 arrives from a file somebody edits by hand.
 
+*** policy.check
+
+| Payload   | Meaning |
+|-----------+---------|
+| ~agent~   | who is about to make the call |
+| ~token~   | the agent's token; required by the Claude hook, absent from the relays (the socket is the user's alone, and a check only restricts the caller) |
+| ~tool~    | the tool as the agent called it |
+| ~class~   | optional action class, when the caller knows better than the native table (the relays send ~external~ and ~desktop_input~) |
+| ~summary~ | the call, for a person asked to approve it |
+
+Reply: ~allowed~ (boolean) and, when refused, ~reason~. ~allow~ and ~deny~ answer at once; ~ask~, ~review~ and ~hand_back~ are deferred (see [[*Some replies arrive later][Some replies arrive later]]) until a person, a model or the inbox has answered -- up to ~policy.ask_timeout_seconds~. See [[file:security.org][security.org]], "Action policy".
+
 *** account.*
 
 | Kind              | Payload                                  | Reply |
@@ -1310,7 +1322,7 @@ Every kind published, by subject:
 | a room | ~message~, ~message.refused~, ~exchange.stalled~, ~room.created~, ~room.changed~ |
 | an agent's mailbox | ~mailbox.queued~, ~mailbox.delivered~ |
 | a team | ~team.changed~ |
-| an agent | ~decision.asked~, ~decision.settled~ (~decision~, ~how~: ~answered~ or ~dismissed~) |
+| an agent | ~decision.asked~, ~decision.settled~ (~decision~, ~how~: ~answered~, ~dismissed~ or ~defaulted~) |
 | a routine | ~routine.ran~, ~routine.changed~ |
 | a trigger | ~trigger.fired~, ~trigger.changed~, ~trigger.refused~, ~trigger.verified~ |
 | a skill | ~skill.changed~ |

@@ -105,6 +105,24 @@ gint clawt_mcp_relay_run_gated(GStrv              argv,
                                gpointer           gate_data);
 
 /**
+ * clawt_mcp_relay_run_unfiltered_gated:
+ * @argv: (array zero-terminated=1): the server to run
+ * @envp: (array zero-terminated=1) (nullable): added to its environment
+ * @gate: (scope call) (nullable): asked once per tool call
+ * @gate_data: data for @gate
+ *
+ * The unfiltered relay with a per-call gate: every tool is listed, and
+ * each call is still asked about -- what an action rule on a connector
+ * nobody narrowed needs.
+ *
+ * Returns: the exit status for the process
+ */
+gint clawt_mcp_relay_run_unfiltered_gated(GStrv              argv,
+                                          GStrv              envp,
+                                          ClawtMcpRelayGate  gate,
+                                          gpointer           gate_data);
+
+/**
  * clawt_mcp_relay_call_name:
  * @line: one JSON-RPC message from the agent's MCP client
  *

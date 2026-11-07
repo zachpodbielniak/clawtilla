@@ -1046,6 +1046,18 @@ clawt_config_render_agent(ClawtConfig       *config,
         if (account != NULL)
             append_key_value(out, 2, "config_dir", account->config_dir);
     }
+
+    /*
+     * The PreToolUse hook that puts the CLI's own tools through the
+     * agent's action rules -- named only when there are rules, the same
+     * condition that writes the file.
+     */
+    if (clawt_policy_agent_has_rules(agent) && state_dir != NULL) {
+        g_autofree gchar *settings = clawt_workspace_claude_settings_path(state_dir);
+
+        g_string_append(out, "  claude:\n");
+        append_key_value(out, 4, "settings_path", settings);
+    }
     g_string_append(out, "\n");
 
     /*

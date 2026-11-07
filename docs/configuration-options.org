@@ -676,6 +676,46 @@ than an error -- a fleet is edited by hand -- but it is never
 silent, because an agent quietly missing the procedure it was
 configured with looks exactly like one that has it and ignored it.
 
+** =defaults.policy=
+
+What agents may do without asking. See agents.policy.
+
+*** =defaults.policy.rules=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.3.0
+
+Action rules every agent follows unless it has its own list.
+
+Each is MATCH=MODE. MATCH is an action class -- read, write, delete,
+message, exec, external, desktop_input, fleet_admin -- or a tool-name
+glob such as clawtilla_create_* or Bash. MODE is allow, review, ask,
+hand_back or deny. The first rule that matches decides; a call no
+rule matches is allowed. An agent's own agents.policy.rules replaces
+this list rather than adding to it, so the order of one list is the
+whole answer.
+
+*** =defaults.policy.ask_timeout_seconds=
+
+- Type :: integer
+- Default :: =600=
+- Since :: 0.3.0
+
+How long an `ask` waits for a person before it is refused. The
+decision is then settled as defaulted, so the inbox says nobody
+chose rather than that somebody said no.
+
+*** =defaults.policy.reviewer=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.3.0
+
+The decision model `review` asks: typesafe, ollama or laya (ai-glib's
+deciders). Unset, `review` behaves as `ask`. A reviewer that is
+unsure, or that fails, also becomes `ask` -- never `allow`.
+
 ** =ai_assist=
 
 The model that helps design new agents.
@@ -4368,6 +4408,33 @@ capability this agent does not have.
 - Since :: 0.1.0
 
 Tool names refused. Applied after allow, so a deny always wins.
+
+** =agents.policy=
+
+What this agent may do without asking.
+
+Enforced on clawtilla's own tools, connectors and the desktop relay
+for every backend, and on the CLI's own tools (Bash, Write, ...) for
+claude-code and claude-tmux through a PreToolUse hook. Other CLIs run
+their own tools unchecked; docs/security.org says so in full.
+
+*** =agents.policy.rules=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.3.0
+
+This agent's action rules, MATCH=MODE, first match wins. Defaults to
+defaults.policy.rules.
+
+*** =agents.policy.ask_timeout_seconds=
+
+- Type :: integer
+- Default :: unset
+- Since :: 0.3.0
+
+How long an `ask` waits for a person. Defaults to
+defaults.policy.ask_timeout_seconds.
 
 *** =agents.tools.manage_fleet=
 

@@ -1079,6 +1079,95 @@ build_values(ClawtAgentConfig *agent)
  * agents a path to a different install.  The compiled-in bindir is the
  * fallback, and a bare name lets PATH decide when neither exists.
  */
+static gchar *sibling_binary_path(const gchar *name);
+
+/*
+ * The Claude settings that put an agent's own tool calls (Bash, Write,
+ * ...) through its action rules: a PreToolUse hook running
+ * `clawtilla policy-hook`, which asks the daemon and blocks the call on a
+ * refusal.
+ *
+ * Written only for an agent that has rules, and removed when it has none,
+ * so an agent nobody restricted pays nothing per call. Outside the
+ * workspace on purpose: the workspace is the agent's to edit. An agent
+ * running unconfined could still find and change this file -- the hook
+ * stops mistakes, not an adversary, unless the agent runs under bwrap.
+ */
+static gboolean
+write_claude_settings(ClawtAgentConfig *agent, const gchar *daemon_socket,
+                      const gchar *state_dir, GError **error)
+{
+    g_autofree gchar *path = clawt_workspace_claude_settings_path(state_dir);
+    g_autofree gchar *cli = NULL;
+    g_autofree gchar *token_file = NULL;
+    g_autofree gchar *command = NULL;
+    g_autofree gchar *text = NULL;
+    g_autofree gchar *existing = NULL;
+    g_autoptr(JsonBuilder) builder = NULL;
+    g_autoptr(JsonNode) root = NULL;
+    gint timeout;
+
+    if (!clawt_policy_agent_has_rules(agent)) {
+        if (g_file_test(path, G_FILE_TEST_EXISTS))
+            g_unlink(path);
+        return TRUE;
+    }
+
+    cli = sibling_binary_path("clawtilla");
+    token_file = g_build_filename(state_dir, "token", NULL);
+    {
+        g_autofree gchar *q_cli = g_shell_quote(cli);
+        g_autofree gchar *q_agent = g_shell_quote(clawt_agent_config_get_id(agent));
+        g_autofree gchar *q_token = g_shell_quote(token_file);
+        g_autofree gchar *q_socket = daemon_socket != NULL ? g_shell_quote(daemon_socket) : NULL;
+
+        command = g_strdup_printf("%s policy-hook --agent %s --token-file %s%s%s",
+                                  q_cli, q_agent, q_token,
+                                  q_socket != NULL ? " --socket " : "",
+                                  q_socket != NULL ? q_socket : "");
+    }
+
+    /* Long enough for a person to answer an `ask`, then a margin. */
+    timeout = clawt_agent_config_get_int(agent, "policy.ask_timeout_seconds");
+    timeout = (timeout > 0 ? timeout : 600) + 60;
+
+    builder = json_builder_new();
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "hooks");
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "PreToolUse");
+    json_builder_begin_array(builder);
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "matcher");
+    json_builder_add_string_value(builder, "*");
+    json_builder_set_member_name(builder, "hooks");
+    json_builder_begin_array(builder);
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "type");
+    json_builder_add_string_value(builder, "command");
+    json_builder_set_member_name(builder, "command");
+    json_builder_add_string_value(builder, command);
+    json_builder_set_member_name(builder, "timeout");
+    json_builder_add_int_value(builder, timeout);
+    json_builder_end_object(builder);
+    json_builder_end_array(builder);
+    json_builder_end_object(builder);
+    json_builder_end_array(builder);
+    json_builder_end_object(builder);
+    json_builder_end_object(builder);
+
+    root = json_builder_get_root(builder);
+    text = json_to_string(root, TRUE);
+
+    if (g_file_get_contents(path, &existing, NULL, NULL) && g_strcmp0(existing, text) == 0)
+        return TRUE;
+
+    if (!clawt_ensure_dir(state_dir, 0700, error))
+        return FALSE;
+
+    return clawt_write_file_atomic(path, text, -1, 0600, FALSE, error);
+}
+
 static gchar *
 sibling_binary_path(const gchar *name)
 {
@@ -1229,6 +1318,12 @@ build_connector_server(ClawtConfig             *config,
     json_array_add_string_element(args, "relay");
     json_array_add_string_element(args,
                                   clawt_integration_binding_get_name(binding));
+
+    /* So the relay can ask the agent's action rules about each call. */
+    if (clawt_integration_binding_get_agent_id(binding) != NULL) {
+        json_array_add_string_element(args, "--agent");
+        json_array_add_string_element(args, clawt_integration_binding_get_agent_id(binding));
+    }
 
     json_object_set_array_member(entry, "args", args);
 
@@ -1531,6 +1626,13 @@ clawt_workspace_write_mcp_config(ClawtConfig      *config,
     text = json_generator_to_data(generator, NULL);
 
     /*
+     * The CLI's own tools are gated by a different file, written with this
+     * one because both are what an agent's CLI is handed at start.
+     */
+    if (!write_claude_settings(agent, daemon_socket, state_dir, error))
+        return FALSE;
+
+    /*
      * Not written when nothing changed. An editor with the file open
      * reloads it on every daemon start otherwise, and the agent's own
      * workspace is a directory people keep in git.
@@ -1539,6 +1641,14 @@ clawt_workspace_write_mcp_config(ClawtConfig      *config,
         return TRUE;
 
     return clawt_write_file_atomic(path, text, -1, 0600, FALSE, error);
+}
+
+gchar *
+clawt_workspace_claude_settings_path(const gchar *state_dir)
+{
+    g_return_val_if_fail(state_dir != NULL, NULL);
+
+    return g_build_filename(state_dir, "claude-settings.json", NULL);
 }
 
 /*

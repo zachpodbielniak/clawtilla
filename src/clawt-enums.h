@@ -257,6 +257,51 @@ typedef enum {
 } ClawtConfineMode;
 
 /**
+ * ClawtActionClass:
+ * @CLAWT_ACTION_READ: looks and changes nothing
+ * @CLAWT_ACTION_WRITE: changes a file, a note or a record
+ * @CLAWT_ACTION_DELETE: removes something
+ * @CLAWT_ACTION_MESSAGE: reaches another agent or a person
+ * @CLAWT_ACTION_EXEC: runs a program
+ * @CLAWT_ACTION_EXTERNAL: a third party's tool (a connector, an MCP server)
+ * @CLAWT_ACTION_DESKTOP_INPUT: types or clicks on a screen
+ * @CLAWT_ACTION_FLEET_ADMIN: creates agents or rooms
+ *
+ * What kind of thing a tool call does, so a policy rule can name a class
+ * rather than every tool.  A tool clawtilla cannot classify is
+ * %CLAWT_ACTION_EXTERNAL or %CLAWT_ACTION_EXEC, never %CLAWT_ACTION_READ:
+ * guessing a call harmless is the direction a guess must not go.
+ */
+typedef enum {
+    CLAWT_ACTION_READ = 0,
+    CLAWT_ACTION_WRITE,
+    CLAWT_ACTION_DELETE,
+    CLAWT_ACTION_MESSAGE,
+    CLAWT_ACTION_EXEC,
+    CLAWT_ACTION_EXTERNAL,
+    CLAWT_ACTION_DESKTOP_INPUT,
+    CLAWT_ACTION_FLEET_ADMIN
+} ClawtActionClass;
+
+/**
+ * ClawtPolicyMode:
+ * @CLAWT_POLICY_ALLOW: the call runs
+ * @CLAWT_POLICY_REVIEW: a decision model judges it; doubt becomes ask
+ * @CLAWT_POLICY_ASK: a person approves or denies it first
+ * @CLAWT_POLICY_HAND_BACK: refused, and handed to the operator as a decision
+ * @CLAWT_POLICY_DENY: refused
+ *
+ * What an action rule does with a call it matches.
+ */
+typedef enum {
+    CLAWT_POLICY_ALLOW = 0,
+    CLAWT_POLICY_REVIEW,
+    CLAWT_POLICY_ASK,
+    CLAWT_POLICY_HAND_BACK,
+    CLAWT_POLICY_DENY
+} ClawtPolicyMode;
+
+/**
  * ClawtDesktopBackend:
  * @CLAWT_DESKTOP_BACKEND_AUTO: the agent's own VM, else gowl, else GNOME
  * @CLAWT_DESKTOP_BACKEND_GOWL: gowl's MCP socket
@@ -931,6 +976,8 @@ GType clawt_computer_type_get_type(void) G_GNUC_CONST;
 GType clawt_computer_state_get_type(void) G_GNUC_CONST;
 GType clawt_vm_backend_get_type(void) G_GNUC_CONST;
 GType clawt_confine_mode_get_type(void) G_GNUC_CONST;
+GType clawt_action_class_get_type(void) G_GNUC_CONST;
+GType clawt_policy_mode_get_type(void) G_GNUC_CONST;
 GType clawt_desktop_backend_get_type(void) G_GNUC_CONST;
 GType clawt_input_kind_get_type(void) G_GNUC_CONST;
 GType clawt_mount_type_get_type(void) G_GNUC_CONST;
@@ -963,6 +1010,8 @@ GType clawt_credential_placement_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_COMPUTER_STATE   (clawt_computer_state_get_type())
 #define CLAWT_TYPE_VM_BACKEND       (clawt_vm_backend_get_type())
 #define CLAWT_TYPE_CONFINE_MODE     (clawt_confine_mode_get_type())
+#define CLAWT_TYPE_ACTION_CLASS     (clawt_action_class_get_type())
+#define CLAWT_TYPE_POLICY_MODE      (clawt_policy_mode_get_type())
 #define CLAWT_TYPE_DESKTOP_BACKEND  (clawt_desktop_backend_get_type())
 #define CLAWT_TYPE_INPUT_KIND       (clawt_input_kind_get_type())
 #define CLAWT_TYPE_MOUNT_TYPE       (clawt_mount_type_get_type())

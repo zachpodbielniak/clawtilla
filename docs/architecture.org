@@ -262,6 +262,10 @@ virt-manager and seeing a VM that should not have been there.  The
 default is a refusal naming the type now, and the two backends with
 genuinely nothing to destroy say so in two lines each.
 
+*** The action-policy gate
+
+One question -- may this agent make this call now? -- answered in one place. =clawt_policy_mode_for()= (=src/policy/=) settles ~allow~ and ~deny~ from the config alone; =clawt_daemon_policy_request()= (=src/core/daemon-policy.c=) resolves ~ask~, ~review~ and ~hand_back~ through the decision inbox and ai-glib's deciders. Every route reaches it: =ClawtMcpTools= before it dispatches a tool (deferring the call when an answer is minutes away), and ~policy.check~ for the Claude Code hook and the connector and desktop relays.
+
 ** What is a GObject and what is not
 
 It matters more than it sounds, because the type system will let one be

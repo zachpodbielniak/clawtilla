@@ -381,6 +381,37 @@ clawt_decision_store_dismiss(
     return stored != NULL;
 }
 
+ClawtDecision *
+clawt_decision_store_settle_default(
+    ClawtDecisionStore *self,
+    const gchar        *id,
+    GError            **error
+){
+    g_autoptr(ClawtDecision) decision = NULL;
+    g_autofree gchar *stored = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_DECISION_STORE(self), NULL);
+    g_return_val_if_fail(id != NULL, NULL);
+
+    decision = clawt_decision_store_get(self, id);
+    if (decision == NULL || clawt_decision_get_state(decision) != CLAWT_DECISION_OPEN ||
+        clawt_decision_get_default(decision) == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                    "'%s' is not an open decision with a default", id);
+        return NULL;
+    }
+
+    clawt_decision_answer(decision, clawt_decision_get_default(decision),
+                          g_get_real_time() / G_USEC_PER_SEC);
+    clawt_decision_set_state(decision, CLAWT_DECISION_DEFAULTED);
+
+    stored = clawt_decision_store_post(self, decision, error);
+    if (stored == NULL)
+        return NULL;
+
+    return g_steal_pointer(&decision);
+}
+
 guint
 clawt_decision_store_count_open(ClawtDecisionStore *self)
 {

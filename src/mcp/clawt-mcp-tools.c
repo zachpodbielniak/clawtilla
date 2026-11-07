@@ -60,6 +60,13 @@ typedef struct {
 
     const ClawtParamInfo *params;
     gsize                 n_params;
+
+    /*
+     * What kind of thing the tool does, for action rules. On the tool,
+     * like starts_a_hop, so a tool added later has to say -- the compiler
+     * refuses a TOOL() without one.
+     */
+    ClawtActionClass      action;
 } ToolDefinition;
 
 /* ── Parameter tables ────────────────────────────────────────────── */
@@ -402,19 +409,19 @@ static const ClawtParamInfo request_hands_params[] = {
 
 /* ── The tools ───────────────────────────────────────────────────── */
 
-#define TOOL(name_, desc_, req_, params_) \
-    { name_, desc_, req_, FALSE, params_, G_N_ELEMENTS(params_) }
+#define TOOL(name_, desc_, req_, params_, action_) \
+    { name_, desc_, req_, FALSE, params_, G_N_ELEMENTS(params_), action_ }
 
 /* A tool whose whole purpose is to reach another agent. */
-#define HOP_TOOL(name_, desc_, req_, params_) \
-    { name_, desc_, req_, TRUE, params_, G_N_ELEMENTS(params_) }
+#define HOP_TOOL(name_, desc_, req_, params_, action_) \
+    { name_, desc_, req_, TRUE, params_, G_N_ELEMENTS(params_), action_ }
 
 static const ToolDefinition tools[] = {
     TOOL("clawtilla_list_agents",
          "List the other agents in this fleet, with what each is for and "
          "whether it is running. Use this before delegating, so you pick "
          "someone suited to the work.",
-         NEEDS_NOTHING, no_params),
+         NEEDS_NOTHING, no_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_agent_options",
          "What can be chosen when creating an agent: the providers that "
@@ -422,18 +429,18 @@ static const ToolDefinition tools[] = {
          "actually been fetched, and the configuration keys you may pass "
          "in `settings`. Call this before clawtilla_create_agent -- it "
          "reports what exists rather than what sounds plausible.",
-         NEEDS_FLEET_ADMIN, no_params),
+         NEEDS_FLEET_ADMIN, no_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_create_agent",
          "Add a new agent to the fleet and start it. Use "
          "clawtilla_agent_options first. Creating an agent is not "
          "reversible from here -- say what you are about to make and why "
          "before you make it.",
-         NEEDS_FLEET_ADMIN, create_agent_params),
+         NEEDS_FLEET_ADMIN, create_agent_params, CLAWT_ACTION_FLEET_ADMIN),
 
     TOOL("clawtilla_get_agent",
          "Look up one agent: its description, state and what it can do.",
-         NEEDS_NOTHING, get_agent_params),
+         NEEDS_NOTHING, get_agent_params, CLAWT_ACTION_READ),
 
     HOP_TOOL("clawtilla_message_agent",
          "Send a message to another agent. It is queued, so this works even "
@@ -441,7 +448,7 @@ static const ToolDefinition tools[] = {
          "immediately without waiting for a reply. They get one answer back "
          "to you and the exchange ends there, so say everything you need to "
          "in one message rather than expecting to go back and forth.",
-         NEEDS_PEER_COMMS, message_agent_params),
+         NEEDS_PEER_COMMS, message_agent_params, CLAWT_ACTION_MESSAGE),
 
     HOP_TOOL("clawtilla_ask_agent",
          "Ask another agent a question. Their answer arrives as a message "
@@ -451,7 +458,7 @@ static const ToolDefinition tools[] = {
          "clawtilla_task_status. Ask everything you need in one go: their "
          "answer closes the exchange, and following up means calling this "
          "again.",
-         NEEDS_PEER_COMMS, ask_agent_params),
+         NEEDS_PEER_COMMS, ask_agent_params, CLAWT_ACTION_MESSAGE),
 
     HOP_TOOL("clawtilla_delegate",
          "Hand a piece of work to another agent and get a task id back. "
@@ -462,7 +469,7 @@ static const ToolDefinition tools[] = {
          "text itself. You can assign within your own team; for anything "
          "belonging to another team, send it to the chief of staff rather "
          "than to that team directly.",
-         NEEDS_ASSIGNMENT, delegate_params),
+         NEEDS_ASSIGNMENT, delegate_params, CLAWT_ACTION_MESSAGE),
 
     HOP_TOOL("clawtilla_handoff",
          "Give a task you own to somebody else, and stop owning it. Use "
@@ -473,7 +480,7 @@ static const ToolDefinition tools[] = {
          "on somebody who is mid-turn. You get told the outcome through "
          "clawtilla_task_status, which can answer even after clawtilla "
          "has been restarted.",
-         NEEDS_HANDOFF, handoff_params),
+         NEEDS_HANDOFF, handoff_params, CLAWT_ACTION_MESSAGE),
 
     TOOL("clawtilla_ask_decision",
          "Ask your operator to make a choice, without waiting for them. "
@@ -481,20 +488,20 @@ static const ToolDefinition tools[] = {
          "their answer arrives later as a message and redirects you. "
          "Use this instead of stalling, and instead of deciding "
          "unilaterally on something they would want to have seen.",
-         NEEDS_DECISION_INBOX, ask_decision_params),
+         NEEDS_DECISION_INBOX, ask_decision_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_fleet_cost",
          "What the fleet has spent so far, per agent and in total, and "
          "what one delegated task is allowed to spend. Worth checking "
          "before fanning work out widely -- delegating is spending.",
-         NEEDS_NOTHING, no_params),
+         NEEDS_NOTHING, no_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_list_teams",
          "The teams in this fleet: what each is for, who leads it, who is "
          "on it and how many are running. Read the descriptions to decide "
          "where a piece of work belongs -- they say what a team handles, "
          "which is not always obvious from the names on it.",
-         NEEDS_PEER_COMMS, no_params),
+         NEEDS_PEER_COMMS, no_params, CLAWT_ACTION_READ),
 
     /*
      * "reaching every member" was true when a room meant two people and
@@ -512,21 +519,21 @@ static const ToolDefinition tools[] = {
          "naming nobody is the normal way to take part -- do that unless "
          "you need a particular member to act on it now, because being "
          "named costs them a whole model turn. @all is your operator's.",
-         NEEDS_PEER_COMMS, post_room_params),
+         NEEDS_PEER_COMMS, post_room_params, CLAWT_ACTION_MESSAGE),
 
     TOOL("clawtilla_create_room",
          "Create a room with the given members, for work that several "
          "agents need to see. You must be one of them. In a room with "
          "more than two members, a message reaches only the members it "
          "names with @their-id.",
-         NEEDS_PEER_COMMS, create_room_params),
+         NEEDS_PEER_COMMS, create_room_params, CLAWT_ACTION_FLEET_ADMIN),
 
     TOOL("clawtilla_room_history",
          "Read recent messages from a room, or -- given an agent id -- "
          "your conversation with that agent. This is how you see whether "
          "someone answered you; your mailbox will be empty because "
          "delivery empties it.",
-         NEEDS_NOTHING, room_history_params),
+         NEEDS_NOTHING, room_history_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_trigger_list",
          "The triggers that can wake you: what event each waits for, from "
@@ -534,7 +541,7 @@ static const ToolDefinition tools[] = {
          "that nobody asked you for -- it is how you find out what started "
          "it. You cannot create one: a trigger is a public address on the "
          "operator's network, so only they make them.",
-         NEEDS_NOTHING, no_params),
+         NEEDS_NOTHING, no_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_task_list",
          "Every task you delegated, every task delegated to you, and "
@@ -545,25 +552,25 @@ static const ToolDefinition tools[] = {
          "to handed on in turn. This is how you answer \"what is everyone "
          "working on\": clawtilla_list_agents tells you who is running, "
          "which is not the same as what they are running.",
-         NEEDS_NOTHING, task_list_params),
+         NEEDS_NOTHING, task_list_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_task_status",
          "Check how a delegated task is going.",
-         NEEDS_NOTHING, task_id_params),
+         NEEDS_NOTHING, task_id_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_task_result",
          "Get the result of a finished task.",
-         NEEDS_NOTHING, task_id_params),
+         NEEDS_NOTHING, task_id_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_task_cancel",
          "Cancel a task you delegated, and everything it spawned.",
-         NEEDS_NOTHING, task_id_params),
+         NEEDS_NOTHING, task_id_params, CLAWT_ACTION_DELETE),
 
     TOOL("clawtilla_task_complete",
          "Report that a task assigned to you is done, with its result. Do "
          "this rather than only replying, or whoever delegated it is still "
          "waiting.",
-         NEEDS_NOTHING, task_result_params),
+         NEEDS_NOTHING, task_result_params, CLAWT_ACTION_MESSAGE),
 
     TOOL("clawtilla_task_progress",
          "Say that a task assigned to you is still going, and where it has "
@@ -573,23 +580,23 @@ static const ToolDefinition tools[] = {
          "have handed part of it on, or scheduled a wakeup, or are waiting "
          "on somebody. It records the note, keeps the task open for one "
          "more turn, and marks it running so nobody re-delegates it.",
-         NEEDS_NOTHING, task_progress_params),
+         NEEDS_NOTHING, task_progress_params, CLAWT_ACTION_MESSAGE),
 
     TOOL("clawtilla_mailbox_list",
          "List the messages waiting for you.",
-         NEEDS_NOTHING, mailbox_list_params),
+         NEEDS_NOTHING, mailbox_list_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_mailbox_read",
          "Read one message from your mailbox.",
-         NEEDS_NOTHING, mailbox_id_params),
+         NEEDS_NOTHING, mailbox_id_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_mailbox_ack",
          "Mark a message dealt with, so it is not delivered again.",
-         NEEDS_NOTHING, mailbox_id_params),
+         NEEDS_NOTHING, mailbox_id_params, CLAWT_ACTION_WRITE),
 
     TOOL("clawtilla_mailbox_reply",
          "Reply to a message in your mailbox and acknowledge it in one step.",
-         NEEDS_PEER_COMMS, mailbox_reply_params),
+         NEEDS_PEER_COMMS, mailbox_reply_params, CLAWT_ACTION_MESSAGE),
 
     TOOL("clawtilla_message_user",
          "Say something to your human operator. Use it when the operator "
@@ -599,7 +606,7 @@ static const ToolDefinition tools[] = {
          "whoever asked you and they will pass it on. Replying to a "
          "message from another agent reaches that agent, which is what "
          "you want there.",
-         NEEDS_NOTHING, message_user_params),
+         NEEDS_NOTHING, message_user_params, CLAWT_ACTION_MESSAGE),
 
     TOOL("clawtilla_memory_add",
          "Remember something. Use it for what you would be worse off not "
@@ -611,7 +618,7 @@ static const ToolDefinition tools[] = {
          "claims that arrived from another agent, a webhook, or an "
          "imported file. A memory is read back later as your own "
          "conclusion, with nothing left to say where it came from.",
-         NEEDS_MEMORY, memory_add_params),
+         NEEDS_MEMORY, memory_add_params, CLAWT_ACTION_WRITE),
 
     TOOL("clawtilla_memory_search",
          "Search your memories. Do this before asking the operator "
@@ -619,28 +626,28 @@ static const ToolDefinition tools[] = {
          "out something you may already have worked out. This reaches "
          "your own memories and any your team or the fleet shares -- "
          "each result says which.",
-         NEEDS_MEMORY, memory_search_params),
+         NEEDS_MEMORY, memory_search_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_memory_list",
          "Your most recent memories, pinned ones first, from every scope "
          "you can see.",
-         NEEDS_MEMORY, memory_list_params),
+         NEEDS_MEMORY, memory_list_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_memory_get",
          "One memory in full.",
-         NEEDS_MEMORY, memory_id_params),
+         NEEDS_MEMORY, memory_id_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_memory_forget",
          "Archive a memory that turned out to be wrong or is no longer "
          "true. It leaves every listing and search; a person can still "
          "go and look.",
-         NEEDS_MEMORY, memory_id_params),
+         NEEDS_MEMORY, memory_id_params, CLAWT_ACTION_DELETE),
 
     TOOL("clawtilla_memory_pin",
          "Keep a memory at the top of every listing. For the handful you "
          "want to see every time, not for anything you merely think is "
          "important.",
-         NEEDS_MEMORY, memory_pin_params),
+         NEEDS_MEMORY, memory_pin_params, CLAWT_ACTION_WRITE),
 
     TOOL("clawtilla_recall",
          "Search what was actually said in the conversations you were "
@@ -650,7 +657,7 @@ static const ToolDefinition tools[] = {
          "rooms you are a member of are searched. What you find is a "
          "record of what somebody said, not a fact you established: it "
          "does not become a memory unless you check it.",
-         NEEDS_RECALL, recall_params),
+         NEEDS_RECALL, recall_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_computer_exec",
          "Run one program on your computer. This is not a shell: the "
@@ -658,35 +665,35 @@ static const ToolDefinition tools[] = {
          "directly, so pipes, redirections, ;, &&, $(...) and $VAR are "
          "literal text rather than syntax. Wrap anything that needs them "
          "in bash -c \"...\".",
-         NEEDS_COMPUTER, computer_exec_params),
+         NEEDS_COMPUTER, computer_exec_params, CLAWT_ACTION_EXEC),
 
     TOOL("clawtilla_computer_state",
          "Describe your computer: what it is and what you can reach from it.",
-         NEEDS_COMPUTER, no_params),
+         NEEDS_COMPUTER, no_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_skill_list",
          "The procedures you have been given, with what each is for. Your "
          "own TOOLS.org lists them too; call this when you want the list as "
          "it is right now, since a skill can be assigned or enabled while "
          "you are running.",
-         NEEDS_SKILLS, no_params),
+         NEEDS_SKILLS, no_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_skill_read",
          "Read one of your skills in full. Do this before working from a "
          "skill -- the one-line description in the listing is a summary "
          "written to help you choose, not the procedure.",
-         NEEDS_SKILLS, skill_read_params),
+         NEEDS_SKILLS, skill_read_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_web_search",
          "Search the web through the fleet's libresearch server: many "
          "engines at once, merged and ranked. Results name the engines that "
          "found each one and any engine that did not answer.",
-         NEEDS_WEB_RESEARCH, web_search_params),
+         NEEDS_WEB_RESEARCH, web_search_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_web_fetch",
          "Read a web page's text through the libresearch server, with the "
          "Wayback Machine as an optional fallback for a page that is gone.",
-         NEEDS_WEB_RESEARCH, web_fetch_params),
+         NEEDS_WEB_RESEARCH, web_fetch_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_web_query",
          "Structured search with LQL, a pipeline over search results: "
@@ -697,20 +704,20 @@ static const ToolDefinition tools[] = {
          "searching and sifting by hand. research \"question\", deep: TRUE "
          "is a source too. Read the web-research skill before writing your "
          "first query, and set explain: true to check a costly one.",
-         NEEDS_WEB_RESEARCH, web_query_params),
+         NEEDS_WEB_RESEARCH, web_query_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_web_research",
          "Ask the libresearch server for a cited answer: it searches, reads "
          "the best pages and writes an answer citing them as [n]. Takes "
          "minutes; use it for a question, not a lookup.",
-         NEEDS_WEB_RESEARCH, web_research_params),
+         NEEDS_WEB_RESEARCH, web_research_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_web_query_environment",
          "What LQL on this libresearch server can name: its commands, "
          "sources, functions with their signatures, and constants. Call it "
          "when unsure whether a function or source exists rather than "
          "guessing; the answer is this server's, modules included.",
-         NEEDS_WEB_RESEARCH, no_params),
+         NEEDS_WEB_RESEARCH, no_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_request_hands",
          "Ask a person to take the screen and do something you cannot. "
@@ -719,7 +726,7 @@ static const ToolDefinition tools[] = {
          "and why, then finish your turn: you will be told when the "
          "screen comes back. Also use this when your input is being "
          "refused because somebody is already holding it.",
-         NEEDS_SCREEN, request_hands_params)
+         NEEDS_SCREEN, request_hands_params, CLAWT_ACTION_READ)
 };
 
 #undef TOOL
@@ -766,6 +773,10 @@ struct _ClawtMcpTools {
     ClawtMcpSearchFunc      search;
     gpointer                search_data;
     GDestroyNotify          search_destroy;
+
+    ClawtMcpPolicyFunc      policy;
+    gpointer                policy_data;
+    GDestroyNotify          policy_destroy;
 
     /*
      * Read-only here.  The daemon writes receipts; the tools only need
@@ -817,6 +828,22 @@ clawt_mcp_tools_set_create_agent_func(ClawtMcpTools           *self,
     self->create_agent = func;
     self->create_agent_data = user_data;
     self->create_agent_destroy = destroy;
+}
+
+void
+clawt_mcp_tools_set_policy_func(ClawtMcpTools      *self,
+                                ClawtMcpPolicyFunc  func,
+                                gpointer            user_data,
+                                GDestroyNotify      destroy)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    if (self->policy_destroy != NULL && self->policy_data != NULL)
+        self->policy_destroy(self->policy_data);
+
+    self->policy = func;
+    self->policy_data = user_data;
+    self->policy_destroy = destroy;
 }
 
 void
@@ -1293,6 +1320,68 @@ may_assign_to_somebody(ClawtAgent *agent)
         return FALSE;
 
     return (clawt_agent_get_caps(agent) & CLAWT_AGENT_CAPS_PEER_COMMS) != 0;
+}
+
+gboolean
+clawt_mcp_tools_action_class(const gchar *tool, ClawtActionClass *out_action)
+{
+    const ToolDefinition *def = find_tool(tool);
+
+    if (def == NULL)
+        return FALSE;
+    if (out_action != NULL)
+        *out_action = def->action;
+    return TRUE;
+}
+
+/*
+ * What the agent's action rules say about one call.  A plugin's tool has
+ * no definition here and is classed external.
+ */
+static ClawtPolicyMode
+policy_mode(ClawtMcpTools *self, const gchar *agent_id, const gchar *tool,
+            ClawtActionClass *out_action, gchar **out_rule)
+{
+    ClawtAgent *agent = clawt_agent_manager_get(self->agents, agent_id);
+    ClawtActionClass action = CLAWT_ACTION_EXTERNAL;
+
+    clawt_mcp_tools_action_class(tool, &action);
+    if (out_action != NULL)
+        *out_action = action;
+
+    return clawt_policy_mode_for(agent != NULL ? clawt_agent_get_config(agent) : NULL,
+                                 tool, action, out_rule);
+}
+
+static gboolean
+policy_waits(ClawtPolicyMode mode)
+{
+    switch (mode) {
+    case CLAWT_POLICY_REVIEW:
+    case CLAWT_POLICY_ASK:
+    case CLAWT_POLICY_HAND_BACK:
+        return TRUE;
+    case CLAWT_POLICY_ALLOW:
+    case CLAWT_POLICY_DENY:
+        return FALSE;
+    }
+    return TRUE;
+}
+
+/* The call, for the person asked to approve it: tool and arguments, bounded. */
+static gchar *
+policy_summary(const gchar *tool, JsonObject *arguments)
+{
+    g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
+    g_autofree gchar *json = NULL;
+
+    json_node_set_object(node, arguments != NULL ? arguments : json_object_new());
+    json = json_to_string(node, FALSE);
+    if (strlen(json) > 400) {
+        json[400] = '\0';
+        return g_strdup_printf("%s %s...", tool, json);
+    }
+    return g_strdup_printf("%s %s", tool, json);
 }
 
 gboolean
@@ -5344,8 +5433,15 @@ clawt_mcp_tools_call_defers(ClawtMcpTools *self,
     tool_name = argument_string(params, "name");
 
     if (g_strcmp0(tool_name, "clawtilla_computer_exec") != 0 &&
-        !g_str_has_prefix(tool_name != NULL ? tool_name : "", "clawtilla_web_"))
+        !g_str_has_prefix(tool_name != NULL ? tool_name : "", "clawtilla_web_")) {
+        /*
+         * Any tool defers when a rule says somebody must look first: the
+         * answer is minutes away, and only the deferred path can wait.
+         */
+        if (policy_waits(policy_mode(self, agent_id, tool_name, NULL, NULL)))
+            return clawt_mcp_tools_is_permitted(self, agent_id, tool_name);
         return FALSE;
+    }
 
     /*
      * A refusal is not worth a thread.  Saying FALSE here sends it back
@@ -5582,6 +5678,23 @@ web_call_start(ClawtMcpTools *self, const gchar *agent_id, const gchar *tool,
     }
 }
 
+/* A call waiting on an action rule's answer. */
+typedef struct {
+    ClawtMcpTools *tools;
+    gchar         *agent_id;
+    gchar         *room_id;
+    JsonNode      *request;
+    GTask         *outer;     /* owned */
+} PolicyCont;
+
+static void call_async_dispatch(ClawtMcpTools *self, const gchar *agent_id,
+                                const gchar *room_id, JsonNode *request,
+                                GTask *outer);
+static void on_policy_reply(gboolean allowed, const gchar *refusal, gpointer data);
+static JsonNode *tools_call(ClawtMcpTools *self, const gchar *agent_id,
+                            const gchar *room_id, JsonNode *request,
+                            gboolean policy_done);
+
 /*
  * Handles one tool call without holding the calling context while the
  * command runs.  Only valid for a request clawt_mcp_tools_call_defers()
@@ -5599,10 +5712,7 @@ clawt_mcp_tools_call_async(ClawtMcpTools       *self,
     JsonObject *params;
     JsonObject *arguments = NULL;
     JsonNode *request_id = NULL;
-    g_autofree gchar *refusal = NULL;
     GTask *outer;
-    ExecAsync *async;
-    ExecCall *call;
 
     g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
     g_return_if_fail(request != NULL && JSON_NODE_HOLDS_OBJECT(request));
@@ -5654,21 +5764,98 @@ clawt_mcp_tools_call_async(ClawtMcpTools       *self,
 
     observe_call(self, agent_id, argument_string(params, "name"), arguments);
 
-    if (g_str_has_prefix(argument_string(params, "name") != NULL
-                             ? argument_string(params, "name") : "",
-                         "clawtilla_web_")) {
+    /*
+     * Action rules first.  A rule that wants a person or a model answers
+     * through the hook, possibly minutes later, and the call goes on from
+     * there; deny and allow are settled here.
+     */
+    {
+        const gchar *tool = argument_string(params, "name");
+        g_autofree gchar *rule = NULL;
+        ClawtActionClass action = CLAWT_ACTION_EXTERNAL;
+        ClawtPolicyMode mode = policy_mode(self, agent_id, tool, &action, &rule);
+
+        if (mode == CLAWT_POLICY_DENY || (policy_waits(mode) && self->policy == NULL)) {
+            g_autofree gchar *message = mode == CLAWT_POLICY_DENY
+                ? g_strdup_printf("Refused by the action rule '%s'. This is a standing "
+                                  "rule, not a mistake in your call: do not retry it.", rule)
+                : g_strdup_printf("The action rule '%s' needs a person's answer and "
+                                  "there is nobody here to ask, so it is refused.", rule);
+
+            g_task_return_pointer(outer, make_response(request_id, message, TRUE),
+                                  (GDestroyNotify)json_node_unref);
+            g_object_unref(outer);
+            if (self->main_context != NULL)
+                g_main_context_pop_thread_default(self->main_context);
+            return;
+        }
+
+        if (policy_waits(mode)) {
+            PolicyCont *cont = g_new0(PolicyCont, 1);
+            g_autofree gchar *summary = policy_summary(tool, arguments);
+
+            cont->tools = g_object_ref(self);
+            cont->agent_id = g_strdup(agent_id);
+            cont->room_id = g_strdup(room_id);
+            cont->request = json_node_ref(request);
+            cont->outer = outer;
+
+            if (self->main_context != NULL)
+                g_main_context_pop_thread_default(self->main_context);
+
+            self->policy(agent_id, tool, action, mode, rule, summary,
+                         on_policy_reply, cont, self->policy_data);
+            return;
+        }
+    }
+
+    if (self->main_context != NULL)
+        g_main_context_pop_thread_default(self->main_context);
+
+    call_async_dispatch(self, agent_id, room_id, request, outer);
+}
+
+/*
+ * Runs a call the action rules have let through: a web tool or
+ * computer_exec on their own deferred paths, anything else synchronously
+ * and answered through @outer, since the caller has already deferred.
+ */
+static void
+call_async_dispatch(ClawtMcpTools *self, const gchar *agent_id,
+                    const gchar *room_id, JsonNode *request, GTask *outer)
+{
+    JsonObject *root = json_node_get_object(request);
+    JsonObject *params = json_object_get_object_member(root, "params");
+    JsonObject *arguments = NULL;
+    JsonNode *request_id = json_object_has_member(root, "id")
+        ? json_object_get_member(root, "id") : NULL;
+    const gchar *tool = argument_string(params, "name");
+    g_autofree gchar *refusal = NULL;
+    ExecAsync *async;
+    ExecCall *call;
+
+    if (json_object_has_member(params, "arguments"))
+        arguments = json_object_get_object_member(params, "arguments");
+
+    if (g_str_has_prefix(tool != NULL ? tool : "", "clawtilla_web_")) {
         WebAsync *web = g_new0(WebAsync, 1);
 
         web->outer = outer;
         web->request_id = (request_id != NULL) ? json_node_ref(request_id) : NULL;
-        web->tool = g_strdup(argument_string(params, "name"));
-
-        if (self->main_context != NULL)
-            g_main_context_pop_thread_default(self->main_context);
-
+        web->tool = g_strdup(tool);
         web_call_start(self, agent_id, web->tool, arguments, web);
         return;
     }
+
+    if (g_strcmp0(tool, "clawtilla_computer_exec") != 0) {
+        g_task_return_pointer(outer, tools_call(self, agent_id, room_id, request, TRUE),
+                              (GDestroyNotify)json_node_unref);
+        g_object_unref(outer);
+        return;
+    }
+
+    if (self->main_context != NULL)
+        g_main_context_push_thread_default(self->main_context);
 
     call = exec_call_prepare(self, agent_id, arguments, &refusal);
 
@@ -5712,6 +5899,33 @@ clawt_mcp_tools_call_async(ClawtMcpTools       *self,
                               on_exec_call_finished, async);
 }
 
+static void
+on_policy_reply(gboolean allowed, const gchar *refusal, gpointer data)
+{
+    PolicyCont *cont = data;
+
+    if (allowed) {
+        call_async_dispatch(cont->tools, cont->agent_id, cont->room_id,
+                            cont->request, cont->outer);
+    } else {
+        JsonObject *root = json_node_get_object(cont->request);
+        JsonNode *request_id = json_object_has_member(root, "id")
+            ? json_object_get_member(root, "id") : NULL;
+
+        g_task_return_pointer(cont->outer,
+                              make_response(request_id, refusal != NULL ? refusal
+                                                                        : "Refused.", TRUE),
+                              (GDestroyNotify)json_node_unref);
+        g_object_unref(cont->outer);
+    }
+
+    g_object_unref(cont->tools);
+    json_node_unref(cont->request);
+    g_free(cont->agent_id);
+    g_free(cont->room_id);
+    g_free(cont);
+}
+
 /* Returns the JSON-RPC response.  The gtk-doc block is in the header. */
 JsonNode *
 clawt_mcp_tools_call_finish(ClawtMcpTools *self, GAsyncResult *result)
@@ -5726,6 +5940,16 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
                      const gchar   *agent_id,
                      const gchar   *room_id,
                      JsonNode      *request)
+{
+    return tools_call(self, agent_id, room_id, request, FALSE);
+}
+
+static JsonNode *
+tools_call(ClawtMcpTools *self,
+           const gchar   *agent_id,
+           const gchar   *room_id,
+           JsonNode      *request,
+           gboolean       policy_done)
 {
     const gchar *turn_room = NULL;
     JsonObject *root;
@@ -5808,6 +6032,28 @@ clawt_mcp_tools_call(ClawtMcpTools *self,
             "You are not permitted to use %s.", tool_name);
 
         return make_response(request_id, message, TRUE);
+    }
+
+    /*
+     * Action rules, after the permission: a tool the agent may not have
+     * at all is refused for that reason, not for a rule about it.  A rule
+     * that needs a person is reached here only through a route that
+     * cannot wait (an agent's link); the deferred route answers those.
+     */
+    if (!policy_done) {
+        g_autofree gchar *rule = NULL;
+        ClawtPolicyMode mode = policy_mode(self, agent_id, tool_name, NULL, &rule);
+
+        if (mode == CLAWT_POLICY_DENY || policy_waits(mode)) {
+            g_autofree gchar *message = mode == CLAWT_POLICY_DENY
+                ? g_strdup_printf("Refused by the action rule '%s'. This is a standing "
+                                  "rule, not a mistake in your call: do not retry it.",
+                                  rule)
+                : g_strdup_printf("The action rule '%s' needs a person's answer, and "
+                                  "this route cannot wait for one.", rule);
+
+            return make_response(request_id, message, TRUE);
+        }
     }
 
     if (g_strcmp0(tool_name, "clawtilla_list_agents") == 0)
@@ -6053,6 +6299,13 @@ clawt_mcp_tools_dispose(GObject *object)
         self->search_data = NULL;
     }
     self->search = NULL;
+
+    if (self->policy_destroy != NULL && self->policy_data != NULL) {
+        self->policy_destroy(self->policy_data);
+        self->policy_destroy = NULL;
+        self->policy_data = NULL;
+    }
+    self->policy = NULL;
 
     self->handoff = NULL;
     self->handoff_store = NULL;

@@ -105,6 +105,24 @@ gboolean clawt_decision_store_dismiss(ClawtDecisionStore *self,
                                       GError            **error);
 
 /**
+ * clawt_decision_store_settle_default:
+ * @self: a #ClawtDecisionStore
+ * @id: which one
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Settles an open decision with its own default, as
+ * %CLAWT_DECISION_DEFAULTED: the work went the default's way and nobody
+ * chose it. Answered and defaulted stay different states, because the
+ * inbox exists to say which.
+ *
+ * Returns: (transfer full) (nullable): the settled decision, or %NULL when
+ *   it is not there, already settled, or has no default
+ */
+ClawtDecision *clawt_decision_store_settle_default(ClawtDecisionStore *self,
+                                                   const gchar        *id,
+                                                   GError            **error);
+
+/**
  * clawt_decision_store_count_open:
  * @self: a #ClawtDecisionStore
  *

@@ -382,6 +382,8 @@ struct _ClawtWindow {
      * matches nothing, which a generated row cannot carry.
      */
     GtkWidget         *skills_row;
+    /* The agent's action rules, MATCH=MODE, comma-separated like skills. */
+    GtkWidget         *policy_row;
     GtkWidget         *effort_row;
     /*
      * Which login the agent's CLI uses. The ids are kept beside the

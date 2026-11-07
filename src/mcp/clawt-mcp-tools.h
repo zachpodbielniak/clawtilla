@@ -307,6 +307,69 @@ void clawt_mcp_tools_set_search_func(ClawtMcpTools      *self,
                                      GDestroyNotify      destroy);
 
 /**
+ * ClawtPolicyReplyFunc:
+ * @allowed: whether the call may run
+ * @refusal: (nullable): why not, in words for the agent
+ * @data: the data given with the request
+ *
+ * How a policy request is answered, once.
+ */
+typedef void (*ClawtPolicyReplyFunc)(gboolean     allowed,
+                                     const gchar *refusal,
+                                     gpointer     data);
+
+/**
+ * ClawtMcpPolicyFunc:
+ * @agent_id: who is calling
+ * @tool: the tool
+ * @action: what kind of thing it does
+ * @mode: %CLAWT_POLICY_REVIEW, %CLAWT_POLICY_ASK or %CLAWT_POLICY_HAND_BACK
+ * @rule: the rule that decided
+ * @summary: the call, for the person who is asked
+ * @reply: (scope async): answered once, possibly much later
+ * @reply_data: data for @reply
+ * @user_data: what was registered with the hook
+ *
+ * Resolves a call an action rule does not simply allow or deny: by a
+ * person's answer, a decision model's, or by handing it back.
+ */
+typedef void (*ClawtMcpPolicyFunc)(const gchar          *agent_id,
+                                   const gchar          *tool,
+                                   ClawtActionClass      action,
+                                   ClawtPolicyMode       mode,
+                                   const gchar          *rule,
+                                   const gchar          *summary,
+                                   ClawtPolicyReplyFunc  reply,
+                                   gpointer              reply_data,
+                                   gpointer              user_data);
+
+/**
+ * clawt_mcp_tools_set_policy_func:
+ * @self: a #ClawtMcpTools
+ * @func: (nullable) (scope notified): the hook
+ * @user_data: passed to @func
+ * @destroy: frees @user_data
+ *
+ * Unset, a rule that would need a person or a model is a refusal: a
+ * library with no inbox to ask in must not quietly allow what a fleet
+ * said to ask about.
+ */
+void clawt_mcp_tools_set_policy_func(ClawtMcpTools      *self,
+                                     ClawtMcpPolicyFunc  func,
+                                     gpointer            user_data,
+                                     GDestroyNotify      destroy);
+
+/**
+ * clawt_mcp_tools_action_class:
+ * @tool: a clawtilla tool name
+ * @out_action: (out): its class
+ *
+ * Returns: %TRUE when @tool is one of clawtilla's tools
+ */
+gboolean clawt_mcp_tools_action_class(const gchar      *tool,
+                                      ClawtActionClass *out_action);
+
+/**
  * clawt_mcp_tools_set_handoff_store:
  * @self: a #ClawtMcpTools
  * @store: (nullable): where handoff receipts are kept

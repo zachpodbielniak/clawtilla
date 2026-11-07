@@ -741,6 +741,71 @@ refuses ~tools/call~.  A bare ssh entry in that file would hand an
 observe-only agent the ability to type, which is why clawtilla writes the
 entry itself and *removes* it when the grant is revoked.
 
+** Action policy
+
+~tools.allow~ and ~tools.deny~ decide which tools an agent has at all. Action rules decide what happens when it *uses* one: whether it runs, asks a person first, asks a decision model, hands the work back, or is refused.
+
+#+begin_src yaml
+defaults:
+  policy:
+    rules: ["delete=deny", "fleet_admin=hand_back"]
+    ask_timeout_seconds: 600
+    reviewer: ollama          # for `review`; unset, review behaves as ask
+
+agents:
+  - id: builder
+    policy:
+      rules: ["exec=review", "write=allow", "external=ask", "clawtilla_message_user=allow"]
+#+end_src
+
+*** Rules
+
+Each rule is ~MATCH=MODE~. ~MATCH~ is an action class or a tool-name glob (~clawtilla_create_*~, ~Bash~, ~mcp__github__*~). The first rule that matches decides; a call no rule matches runs. An agent's own ~policy.rules~ replaces the fleet's ~defaults.policy.rules~ rather than adding to it, so one list, read top to bottom, is the whole answer.
+
+| Class           | Covers |
+|-----------------+--------|
+| ~read~          | looks and changes nothing: ~Read~, ~Grep~, ~WebFetch~, the listing and search tools, ~clawtilla_web_*~ |
+| ~write~         | changes a file, a note or a record: ~Write~, ~Edit~, ~clawtilla_memory_add~ |
+| ~delete~        | removes something: ~clawtilla_memory_forget~, ~clawtilla_task_cancel~ |
+| ~message~       | reaches another agent or a person: ~clawtilla_message_*~, ~clawtilla_delegate~ |
+| ~exec~          | runs a program: ~Bash~, ~Task~, ~clawtilla_computer_exec~ |
+| ~external~      | a third party's tool: a connector's, an MCP server's (~mcp__*~) |
+| ~desktop_input~ | types or clicks on a screen |
+| ~fleet_admin~   | creates agents or rooms |
+
+Every clawtilla tool declares its class in its own definition, so a tool added later cannot be missed. A tool clawtilla cannot classify is ~exec~ or ~external~, never ~read~: a guess must fall on the side that asks. ~clawtilla_ask_decision~ and ~clawtilla_request_hands~ are ~read~, because they are how an agent escalates and a rule that blocked them would block the way out.
+
+| Mode        | What happens |
+|-------------+--------------|
+| ~allow~     | it runs |
+| ~deny~      | refused at once, naming the rule, and told it is a standing rule rather than a mistake to retry |
+| ~hand_back~ | refused, and filed in the operator's decision inbox as work handed to them |
+| ~ask~       | a decision with ~approve~ / ~deny~ is posted and the call waits; ~approve~ runs it, anything else refuses it, and nobody answering by ~ask_timeout_seconds~ settles it as *defaulted* and refuses |
+| ~review~    | the decision model named by ~defaults.policy.reviewer~ judges whether the call fits the agent's described role; 0.8 or more runs it, anything less -- or a reviewer that fails -- becomes ~ask~ |
+
+A rule that does not parse makes the agent a shadow, with the rule in the reason: an agent whose ~exec=ask~ was misspelt must not run every command unasked while its config says it asks. ~agent.set~ refuses one where it arrives.
+
+*** What each route can see
+
+| Route | Gated by | Covers |
+|-------+----------+--------|
+| clawtilla's own tools | the daemon, when the call arrives at ~tool.rpc~ | every backend |
+| a connector | the connector relay asking ~policy.check~ per call | every backend, stdio connectors; a connector reached by URL is filtered against its tool list but not gated per call |
+| a guest desktop | the desktop relay asking ~policy.check~ before ~computer.control~ | every backend |
+| the CLI's own tools (~Bash~, ~Write~, ...) | a Claude Code =PreToolUse= hook running ~clawtilla policy-hook~ | claude-code and claude-tmux only |
+
+The last row is the honest gap. codex, grok, opencode, cursor and antigravity run their own tools inside their own process with nothing clawtilla can intercept, so a rule about ~exec~ on a codex agent governs ~clawtilla_computer_exec~ and nothing else. It is said here rather than implied away.
+
+*** The Claude hook
+
+For an agent with any rules, the daemon writes =<state_dir>/claude-settings.json= with a =PreToolUse= hook and names it as ~ai.claude.settings_path~ in the agent's generated config; libreclaw hands it to claude-code as =--settings= and merges it into claude-tmux's own settings. With no rules, no file is written and nothing runs per call.
+
+The hook asks ~policy.check~ with the agent's token and waits as long as an ~ask~ can take. It *fails closed*: no daemon, no token, or an unreadable call blocks the tool with the reason, because a rule that lapses while the daemon restarts is not a rule. clawtilla's own tools reached through the CLI (~mcp__clawtilla__*~) are passed through, since the daemon gates them itself and asking twice would ask a person twice.
+
+The file lives in the agent's state directory, not its workspace, and is 0600. An agent running unconfined on the host could still find it and change it: the hook stops mistakes and well-meaning overreach, not an adversary. Under ~confine: bwrap~ the state directory is not in the agent's namespace.
+
+The relays fail open when the daemon cannot be reached, as the desktop gate always has: the daemon supervises the agent, so an absent daemon is a restart in progress.
+
 ** Tool permissions
 
 Per agent, ~deny~ after ~allow~ so a broad allow cannot re-enable

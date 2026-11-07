@@ -450,6 +450,30 @@ defaults:
   # configured with looks exactly like one that has it and ignored it.
   skills: []
 
+  # What agents may do without asking. See agents.policy.
+  policy:
+
+    # Action rules every agent follows unless it has its own list.
+    #
+    # Each is MATCH=MODE. MATCH is an action class -- read, write, delete,
+    # message, exec, external, desktop_input, fleet_admin -- or a tool-name
+    # glob such as clawtilla_create_* or Bash. MODE is allow, review, ask,
+    # hand_back or deny. The first rule that matches decides; a call no
+    # rule matches is allowed. An agent's own agents.policy.rules replaces
+    # this list rather than adding to it, so the order of one list is the
+    # whole answer.
+    rules: []
+
+    # How long an `ask` waits for a person before it is refused. The
+    # decision is then settled as defaulted, so the inbox says nobody
+    # chose rather than that somebody said no.
+    ask_timeout_seconds: 600
+
+    # The decision model `review` asks: typesafe, ollama or laya (ai-glib's
+    # deciders). Unset, `review` behaves as `ask`. A reviewer that is
+    # unsure, or that fails, also becomes `ask` -- never `allow`.
+    reviewer: null
+
 # The model that helps design new agents.
 #
 # `clawtilla agent new --ai` describes what you want in prose and the
@@ -2780,6 +2804,22 @@ agents:
 
       # Tool names refused. Applied after allow, so a deny always wins.
       deny: []
+
+    # What this agent may do without asking.
+    #
+    # Enforced on clawtilla's own tools, connectors and the desktop relay
+    # for every backend, and on the CLI's own tools (Bash, Write, ...) for
+    # claude-code and claude-tmux through a PreToolUse hook. Other CLIs run
+    # their own tools unchecked; docs/security.org says so in full.
+    policy:
+
+      # This agent's action rules, MATCH=MODE, first match wins. Defaults to
+      # defaults.policy.rules.
+      rules: []
+
+      # How long an `ask` waits for a person. Defaults to
+      # defaults.policy.ask_timeout_seconds.
+      ask_timeout_seconds: null
 
       # Whether this agent may create other agents.
       #

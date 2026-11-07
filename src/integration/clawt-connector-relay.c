@@ -537,14 +537,26 @@ run_http(ClawtConnectorPlan *plan)
 gint
 clawt_connector_relay_run(ClawtConnectorPlan *plan)
 {
+    return clawt_connector_relay_run_gated(plan, NULL, NULL);
+}
+
+gint
+clawt_connector_relay_run_gated(ClawtConnectorPlan *plan,
+                                ClawtMcpRelayGate   gate,
+                                gpointer            gate_data)
+{
     g_return_val_if_fail(plan != NULL, EXIT_FAILURE);
 
     if (plan->url != NULL)
         return run_http(plan);
 
     if (plan->permitted != NULL)
-        return clawt_mcp_relay_run(plan->argv, plan->envp, plan->permitted,
-                                   CONNECTOR_REFUSAL_HINT);
+        return clawt_mcp_relay_run_gated(plan->argv, plan->envp, plan->permitted,
+                                         CONNECTOR_REFUSAL_HINT, gate, gate_data);
+
+    if (gate != NULL)
+        return clawt_mcp_relay_run_unfiltered_gated(plan->argv, plan->envp,
+                                                    gate, gate_data);
 
     /*
      * No tool list means no restriction, and it has to be said with a

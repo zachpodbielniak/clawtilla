@@ -1457,3 +1457,22 @@ does not have.
 [[file:getting-started.org][getting-started.org]] is the shorter path in --- the Fedora packages, the
 first build, the first daemon and the first conversation, in about ten
 minutes.
+
+* Letting an agent work unattended, with the risky parts asked about
+
+An agent you leave running overnight should be able to read and write freely, ask before it runs a program, never delete, and hand anything that creates agents back to you:
+
+#+begin_src yaml
+agents:
+  - id: nightly
+    model:
+      provider: claude-code
+    policy:
+      rules: ["read=allow", "write=allow", "exec=review", "delete=deny", "fleet_admin=hand_back"]
+defaults:
+  policy:
+    reviewer: ollama
+    ask_timeout_seconds: 1800
+#+end_src
+
+~exec=review~ lets the reviewer pass the commands that plainly fit the agent's role and asks you about the rest; whatever nobody answers within half an hour is refused, and the inbox says it defaulted. See [[file:security.org][security.org]], "Action policy", for what each backend can and cannot intercept.

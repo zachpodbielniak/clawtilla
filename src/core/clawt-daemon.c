@@ -4101,6 +4101,7 @@ release_components(ClawtDaemon *self)
     clawt_daemon_turn_teardown(self);
     clawt_daemon_handoff_teardown(self);
     clawt_daemon_search_teardown(self);
+    clawt_daemon_policy_teardown(self);
 
     /*
      * The observer first, and before the context it attached its timers
@@ -6074,6 +6075,7 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      */
     clawt_daemon_handoff_setup(self);
     clawt_daemon_search_setup(self);
+    clawt_daemon_policy_setup(self);
 
     /*
      * Started here rather than earlier, because start can still refuse
@@ -6220,6 +6222,7 @@ clawt_daemon_stop(ClawtDaemon *self)
     clawt_daemon_turn_teardown(self);
     clawt_daemon_handoff_teardown(self);
     clawt_daemon_search_teardown(self);
+    clawt_daemon_policy_teardown(self);
 
     if (self->connector_refresh != NULL) {
         g_source_destroy(self->connector_refresh);

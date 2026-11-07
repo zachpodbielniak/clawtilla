@@ -378,6 +378,51 @@ clawt_confine_mode_get_type(void)
     return g_define_type_id__volatile;
 }
 
+/* Register ClawtActionClass as a GLib enum type */
+GType
+clawt_action_class_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_ACTION_READ, "CLAWT_ACTION_READ", "read" },
+            { CLAWT_ACTION_WRITE, "CLAWT_ACTION_WRITE", "write" },
+            { CLAWT_ACTION_DELETE, "CLAWT_ACTION_DELETE", "delete" },
+            { CLAWT_ACTION_MESSAGE, "CLAWT_ACTION_MESSAGE", "message" },
+            { CLAWT_ACTION_EXEC, "CLAWT_ACTION_EXEC", "exec" },
+            { CLAWT_ACTION_EXTERNAL, "CLAWT_ACTION_EXTERNAL", "external" },
+            { CLAWT_ACTION_DESKTOP_INPUT, "CLAWT_ACTION_DESKTOP_INPUT", "desktop_input" },
+            { CLAWT_ACTION_FLEET_ADMIN, "CLAWT_ACTION_FLEET_ADMIN", "fleet_admin" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtActionClass", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
+/* Register ClawtPolicyMode as a GLib enum type */
+GType
+clawt_policy_mode_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_POLICY_ALLOW, "CLAWT_POLICY_ALLOW", "allow" },
+            { CLAWT_POLICY_REVIEW, "CLAWT_POLICY_REVIEW", "review" },
+            { CLAWT_POLICY_ASK, "CLAWT_POLICY_ASK", "ask" },
+            { CLAWT_POLICY_HAND_BACK, "CLAWT_POLICY_HAND_BACK", "hand_back" },
+            { CLAWT_POLICY_DENY, "CLAWT_POLICY_DENY", "deny" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtPolicyMode", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
 /* Register ClawtDesktopBackend as a GLib enum type */
 GType
 clawt_desktop_backend_get_type(void)

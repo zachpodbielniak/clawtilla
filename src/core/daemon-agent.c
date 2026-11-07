@@ -1485,6 +1485,23 @@ clawt_daemon_handle_agent(
             }
         }
 
+        /* Rules are checked where they arrive, by the parser that applies them. */
+        if (g_strcmp0(key, "policy.rules") == 0 && value != NULL) {
+            g_auto(GStrv) parts = g_strsplit(value, ",", -1);
+            g_autoptr(GError) why = NULL;
+            guint p;
+
+            for (p = 0; parts[p] != NULL; p++)
+                g_strstrip(parts[p]);
+            for (p = 0; parts[p] != NULL; p++) {
+                if (*parts[p] == '\0')
+                    continue;
+                if (!clawt_policy_parse_rule(parts[p], NULL, NULL, &why))
+                    return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                               why->message);
+            }
+        }
+
         /*
          * An account is checked where it arrives, against the provider
          * the agent will have -- the one being set, or its current one.

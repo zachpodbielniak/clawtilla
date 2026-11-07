@@ -398,6 +398,21 @@ agent_validate(ClawtAgentConfig *self)
     }
 
     /*
+     * A rule that does not parse is a shadow, not a skipped line: an
+     * agent whose `exec=ask` was misspelt would otherwise run every
+     * command unasked while its config says it asks.
+     */
+    {
+        g_auto(GStrv) rules = clawt_agent_config_get_string_list(self, "policy.rules");
+        g_autoptr(GError) rule_error = NULL;
+
+        if (!clawt_policy_validate_rules((const gchar * const *)rules, &rule_error)) {
+            agent_mark_shadow(self, "policy.rules: %s", rule_error->message);
+            return;
+        }
+    }
+
+    /*
      * An account the agent cannot use is a shadow, not a warning: running
      * the turn on the default login instead spends somebody else's
      * subscription and reports nothing.

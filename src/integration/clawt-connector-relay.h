@@ -145,4 +145,21 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtConnectorPlan, clawt_connector_plan_free)
  */
 gint clawt_connector_relay_run(ClawtConnectorPlan *plan);
 
+/**
+ * clawt_connector_relay_run_gated: (skip)
+ * @plan: what to run
+ * @gate: (scope call) (nullable): asked once per tool call -- the agent's
+ *   action rules, from the CLI
+ * @gate_data: data for @gate
+ *
+ * As clawt_connector_relay_run(), asking @gate about every call. A
+ * connector reached by URL is filtered inline and is not gated: its calls
+ * are checked against the tool list only.
+ *
+ * Returns: the exit status for the process
+ */
+gint clawt_connector_relay_run_gated(ClawtConnectorPlan *plan,
+                                     ClawtMcpRelayGate   gate,
+                                     gpointer            gate_data);
+
 G_END_DECLS

@@ -72,6 +72,7 @@ thing somebody actually sits down to write.
 | ~integrations~, ~connectors~ | [[file:integrations.org][integrations.org]], [[file:connectors.org][connectors.org]]                     |
 | ~routines~                  | [[file:routines.org][routines.org]]                                         |
 | ~accounts~, ~agents.model.account~ | [[file:agents.org][agents.org]], under Models                     |
+| ~defaults.policy~, ~agents.policy~ | [[file:security.org][security.org]], under Action policy        |
 | ~integrations~ of type ~libresearch~ | [[file:research.org][research.org]]                              |
 | ~skills~, ~agents.skills~   | [[file:skills.org][skills.org]]                                           |
 | everything under ~computer:~ | [[file:computers.org][computers.org]]                                        |

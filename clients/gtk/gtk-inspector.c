@@ -197,6 +197,10 @@ on_save_agent(GtkButton *button, gpointer user_data)
     ok &= clawt_gtk_apply_setting(self, "skills",
                                   gtk_editable_get_text(
                             GTK_EDITABLE(self->skills_row)));
+    if (self->policy_row != NULL)
+        ok &= clawt_gtk_apply_setting(self, "policy.rules",
+                                      gtk_editable_get_text(
+                                GTK_EDITABLE(self->policy_row)));
 
     /*
      * The account is cleared before the provider changes and set after:
@@ -2106,6 +2110,24 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
             : "");
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
                               self->skills_row);
+
+    /*
+     * What the agent may do without asking. A list of MATCH=MODE in one
+     * line, as the web client's generic field takes it: the daemon
+     * refuses a rule it cannot parse where it arrives, naming the mode it
+     * expected, so the line cannot quietly mean less than it says.
+     */
+    self->policy_row = entry_row(
+        "Action rules",
+        (payload != NULL && json_object_has_member(payload, "settings"))
+            ? clawt_json_string(
+                  json_object_get_object_member(payload, "settings"),
+                  "policy.rules", "")
+            : "");
+    clawt_gtk_set_row_hint(self->policy_row,
+        "e.g. exec=ask, delete=deny, clawtilla_create_*=hand_back. First match "
+        "wins; unmatched calls run.");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), self->policy_row);
 
     clawt_gtk_model_chooser_build(&self->inspector_models, self, group,
                                   clawt_json_string(agent, "provider", NULL),
