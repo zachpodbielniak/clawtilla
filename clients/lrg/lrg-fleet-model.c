@@ -1669,8 +1669,7 @@ clawt_lrg_agent_memories(JsonNode *reply, const gchar *scope, gint64 now_us)
 
         row = g_new0(ClawtLrgMemoryRow, 1);
         row->body = g_strdup(content != NULL ? content : "");
-        row->title = (summary != NULL && *summary != '\0')
-            ? g_strdup(summary) : clawt_lrg_flow_one_line(content, 80);
+        row->title = clawt_memory_title(summary, content, 80);
         row->category = g_strdup(clawt_ipc_payload_string(memory,
                                                           "category"));
         row->scope = g_strdup(row_scope);

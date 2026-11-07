@@ -191,4 +191,25 @@ const gchar *clawt_memory_provenance_rule(void);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtMemory, clawt_memory_free)
 
+/**
+ * clawt_memory_title:
+ * @summary: (nullable): the memory's summary, as `memory.list` sends it
+ * @content: (nullable): its content
+ * @limit: the longest title, in characters
+ *
+ * The line a client shows for a memory: its summary when it has one,
+ * else the first line of its content, cut to @limit characters on a
+ * character boundary with an ellipsis.
+ *
+ * One rule for every client.  The web client read `title` and `body` off
+ * memory rows, which the daemon has never sent -- it sends `content` and
+ * `summary` -- so every row drew its id and an empty body, and nothing
+ * checks a member name.  A rule each client spells for itself is a rule
+ * one of them spells wrong.
+ *
+ * Returns: (transfer full): the title; "" when there is neither
+ */
+gchar *clawt_memory_title(const gchar *summary, const gchar *content,
+                          glong limit);
+
 G_END_DECLS

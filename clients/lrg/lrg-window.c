@@ -30,6 +30,23 @@
 
 #define N_PAGES (16)
 
+/*
+ * How long fleet events are gathered before the lists they invalidate
+ * are fetched again.  A busy fleet sends turn.step and agent.* several
+ * times a second; one agent.list and one activity.list per event was a
+ * request, a parse and a sidebar rebuild each, and a window that could
+ * not keep up.  A quarter second is below what reads as lag.
+ */
+#define REFRESH_COALESCE_MS (250)
+
+typedef enum {
+    REFRESH_AGENTS    = 1 << 0,
+    REFRESH_ROOMS     = 1 << 1,
+    REFRESH_ACTIVITY  = 1 << 2,
+    REFRESH_DECISIONS = 1 << 3,
+    REFRESH_USAGE     = 1 << 4
+} RefreshKind;
+
 typedef struct {
     LrgWidget  *header_title;
     LrgWidget  *header_subtitle;
@@ -48,6 +65,9 @@ typedef struct {
     gboolean    built[N_PAGES];
     LrgWidget  *main_column;
     LrgWidget  *alerts_drawer;
+    gfloat      column_cap;    /* the last cap set, so it is set on change */
+    guint       refresh_due;   /* RefreshKind bits waiting on refresh_source */
+    GSource    *refresh_source;
     GSimpleActionGroup *actions;
 } Shell;
 
@@ -320,8 +340,21 @@ clawt_lrg_window_resize(ClawtLrgApp *app, gfloat width, gfloat height)
         lrg_widget_get_visible(shell.alerts_drawer))
         lrg_widget_get_min_size(shell.alerts_drawer, &w, NULL), used += w;
 
-    lrg_widget_set_max_size(shell.main_column, MAX(width - used, 200.0f),
-                            height);
+    /*
+     * Only when it changes.  lrg_widget_set_max_size() queues a layout
+     * every time it is called, value or no value, and this runs every
+     * frame -- so setting it unconditionally re-laid out the whole window,
+     * every markdown label in the transcript included, sixty times a
+     * second, and the client ran at a few frames a second on one pegged
+     * core.  The height is not part of the cap.
+     */
+    w = MAX(width - used, 200.0f);
+
+    if (w == shell.column_cap)
+        return;
+
+    shell.column_cap = w;
+    lrg_widget_set_max_size(shell.main_column, w, -1.0f);
 }
 
 void
@@ -582,6 +615,55 @@ clawt_lrg_window_connection_changed(ClawtLrgApp *app)
 
 /* ── Events the shell itself cares about ──────────────────────────── */
 
+static gboolean
+on_refresh_due(gpointer user_data)
+{
+    ClawtLrgApp *app = user_data;
+    guint due = shell.refresh_due;
+
+    shell.refresh_due = 0;
+
+    if (due & REFRESH_AGENTS)
+        clawt_lrg_request(app, "agent.list", NULL, CLAWT_LRG_QUIET,
+                          on_agents, NULL, NULL);
+    if (due & REFRESH_ROOMS)
+        clawt_lrg_request(app, "room.list", NULL, CLAWT_LRG_QUIET, on_rooms,
+                          NULL, NULL);
+    if (due & REFRESH_ACTIVITY)
+        clawt_lrg_request(app, "activity.list", NULL, CLAWT_LRG_QUIET,
+                          on_activity, NULL, NULL);
+    /* both ends of a decision, or the count could only go up */
+    if (due & REFRESH_DECISIONS)
+        clawt_lrg_request(app, "decision.list", NULL, CLAWT_LRG_QUIET,
+                          on_decisions, NULL, NULL);
+    if (due & REFRESH_USAGE)
+        clawt_lrg_request(app, "usage.summary", usage_today_payload(),
+                          CLAWT_LRG_QUIET, on_usage, NULL, NULL);
+
+    return G_SOURCE_REMOVE;
+}
+
+/*
+ * Asks for @kinds to be fetched again within REFRESH_COALESCE_MS, once
+ * however many events asked.  The source is the app's (clawt_lrg_app_attach),
+ * so it dies with the app; the shell keeps its own reference only to ask
+ * whether it is still pending.
+ */
+static void
+refresh_soon(ClawtLrgApp *app, guint kinds)
+{
+    shell.refresh_due |= kinds;
+
+    if (shell.refresh_source != NULL &&
+        !g_source_is_destroyed(shell.refresh_source))
+        return;
+
+    g_clear_pointer(&shell.refresh_source, g_source_unref);
+    shell.refresh_source = g_timeout_source_new(REFRESH_COALESCE_MS);
+    g_source_set_callback(shell.refresh_source, on_refresh_due, app, NULL);
+    clawt_lrg_app_attach(app, shell.refresh_source);
+}
+
 void
 clawt_lrg_window_event(ClawtLrgApp *app, ClawtEvent *event)
 {
@@ -600,32 +682,25 @@ clawt_lrg_window_event(ClawtLrgApp *app, ClawtEvent *event)
 
         /* typing frames are a level; the sidebar row reads the set */
         if (g_strcmp0(kind, "agent.typing") != 0)
-            clawt_lrg_request(app, "agent.list", NULL, CLAWT_LRG_QUIET,
-                              on_agents, NULL, NULL);
+            refresh_soon(app, REFRESH_AGENTS);
     }
 
     if (g_str_has_prefix(kind, "room."))
-        clawt_lrg_request(app, "room.list", NULL, CLAWT_LRG_QUIET, on_rooms,
-                          NULL, NULL);
+        refresh_soon(app, REFRESH_ROOMS);
 
     if (g_strcmp0(kind, "turn.step") == 0 ||
         g_strcmp0(kind, "agent.typing") == 0 ||
         g_strcmp0(kind, "message") == 0)
-        clawt_lrg_request(app, "activity.list", NULL, CLAWT_LRG_QUIET,
-                          on_activity, NULL, NULL);
+        refresh_soon(app, REFRESH_ACTIVITY);
 
-    /* both ends of a decision, or the count could only go up */
     if (g_str_has_prefix(kind, "decision."))
-        clawt_lrg_request(app, "decision.list", NULL, CLAWT_LRG_QUIET,
-                          on_decisions, NULL, NULL);
+        refresh_soon(app, REFRESH_DECISIONS);
 
     if (g_str_has_prefix(kind, "control.") || g_str_has_prefix(kind, "hold"))
         clawt_lrg_hold_refresh(app);
 
     if (g_strcmp0(kind, "message") == 0)
-        clawt_lrg_request(app, "usage.summary",
-                          usage_today_payload(),
-                          CLAWT_LRG_QUIET, on_usage, NULL, NULL);
+        refresh_soon(app, REFRESH_USAGE);
 }
 
 /* ── Window actions ───────────────────────────────────────────────── */
@@ -803,6 +878,9 @@ clawt_lrg_window_build(ClawtLrgApp *app)
         g_free(shell.page_badge_tones[i]);
 
     g_clear_object(&shell.actions);
+    if (shell.refresh_source != NULL)
+        g_source_destroy(shell.refresh_source);
+    g_clear_pointer(&shell.refresh_source, g_source_unref);
     memset(&shell, 0, sizeof(shell));
     clawt_lrg_alerts_reset();
 

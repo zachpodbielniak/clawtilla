@@ -730,6 +730,20 @@ critical fired.
 - **graylib loads images by filename** and picks the decoder from the
   extension; bytes from the daemon go through a temporary file named for
   their own magic number (`clawt_avatar_sniff_mime_type()`).
+- **A frame must cost what is on screen, not what is loaded.**  Before
+  libregnum 0.8.5 nothing was culled: a 300-message transcript was laid
+  out and recorded every frame, and `LrgMarkdownLabel` re-wrapped on
+  every *measure* while a box measures every child on each
+  `add_child` -- quadratic on load.  Measured as 3 fps and a pegged core
+  on a real fleet, and as a steady 60 fps against a scratch fleet with
+  three agents, which is why it shipped.  Measure against a fleet with
+  history (`CLAWT_LRG_FPS=1`); `clawt-lrg.h` refuses an older libregnum.
+- **One request per event is a request per frame on a busy fleet.**  The
+  shell's lists are marked by events and fetched by one 250 ms timer
+  (`refresh_soon()` in `lrg-window.c`), never per event.
+- **`lrg_widget_set_max_size()` / `_set_min_size()` queue a layout on
+  every call, changed or not.**  Called from a per-frame resize hook it
+  re-laid out the whole window every frame; compare before setting.
 - **A canvas lays out without a window.**  `lrg_widget_layout()` on a
   canvas with no GL context works, which is what `--self-test` and
   `tests/test-lrgui-*.c` rely on; drawing does not.

@@ -37,6 +37,18 @@
 #include <clawtilla.h>
 #include <libregnum.h>
 
+/*
+ * 0.8.5 stops recording widgets wholly outside a clip and measures a
+ * markdown label through its layout cache.  Before it, every message in
+ * a scrolled transcript was laid out and recorded every frame, and
+ * loading one re-wrapped every message per message added: 3 fps and a
+ * pegged core on a real fleet.  No symbol changed, so
+ * LRG_REQUIRED_SYMBOLS cannot see it; the version can.
+ */
+#if !LRG_CHECK_VERSION(0, 8, 5)
+#error "clawtilla-lrg needs libregnum 0.8.5 or newer; update the checkout at LRG_DIR"
+#endif
+
 #include "clawt-lrg-model.h"
 
 G_BEGIN_DECLS

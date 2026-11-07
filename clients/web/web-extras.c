@@ -166,18 +166,29 @@ clawt_web_add_memory_card(ClawtWebApp *app, HtmxElement *parent,
         g_autoptr(HtmxDiv) head = htmx_div_new();
         g_autofree gchar *when = clawt_web_relative_time(
             clawt_web_member_int(memory, "created_at", 0));
+        g_autofree gchar *title = NULL;
 
         htmx_element_add_class(HTMX_ELEMENT(row), "list-item");
         htmx_element_add_class(HTMX_ELEMENT(head), "list-item-head");
+
+        /*
+         * The daemon sends `content` and `summary` (daemon-memory.c).  This
+         * read `title` and `body`, which it has never sent, so every row
+         * drew its id over an empty line.  The title rule is the library's,
+         * shared with the other clients.
+         */
+        title = clawt_memory_title(clawt_web_member(memory, "summary", NULL),
+                                   clawt_web_member(memory, "content", NULL),
+                                   120);
 
         {
             g_autoptr(HtmxSpan) label = htmx_span_new();
 
             htmx_element_add_class(HTMX_ELEMENT(label), "list-item-title");
             htmx_node_set_text_content(
-                HTMX_NODE(label), clawt_web_member(memory, "title",
-                                                   clawt_web_member(memory,
-                                                                    "id", "?")));
+                HTMX_NODE(label),
+                (*title != '\0') ? title
+                                  : clawt_web_member(memory, "id", "?"));
             htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(label));
         }
 
@@ -197,8 +208,10 @@ clawt_web_add_memory_card(ClawtWebApp *app, HtmxElement *parent,
         }
 
         htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(head));
-        clawt_web_add(row, clawt_web_text(
-            clawt_web_member(memory, "body", ""), "list-item-sub"));
+        /* the whole content, unless the title already is all of it */
+        if (g_strcmp0(title, clawt_web_member(memory, "content", "")) != 0)
+            clawt_web_add(row, clawt_web_text(
+                clawt_web_member(memory, "content", ""), "list-item-sub"));
         htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(row));
     }
 

@@ -91,6 +91,8 @@ Before the client links, ~make lrg-lib~ (run automatically) looks at ~$(LRG_DIR)
 
 The rebuild runs libregnum's own ~deps~ and ~lib~ targets with ~DEBUG=0~ and *none* of clawtilla's command-line variables: a ~DEBUG~, ~ASAN~ or ~BUILDDIR~ given to clawtilla reaches every nested make through ~MAKEFLAGS~, which is how libreclaw's release tree was once built with ASan.  It uses libregnum's default options, so an archive another project links (cmacs, gsurf) is rebuilt as itself, not as a cut-down variant that would break them.  The logic is ~tools/clawt-lrg-lib.sh~.
 
+The checkout itself must be libregnum 0.8.5 or later.  That is a behaviour, not a symbol -- clip culling and a cached markdown measure, without which a long conversation costs every frame (see [[#lrg-loop][the frame loop]]) -- so ~clients/lrg/clawt-lrg.h~ checks ~LRG_CHECK_VERSION(0, 8, 5)~ and stops the build with an ~#error~ naming ~LRG_DIR~.  Pull the checkout and build again.
+
 The first build takes a few minutes (libregnum is large); later ones only relink.
 
 ** One yaml-glib, not two
@@ -926,6 +928,8 @@ libregnum has no application object: a program opens a raylib window and runs it
 
 The fourth keeps an idle client from costing a core.  A frame with no input, no GLib work, nothing animating and nothing woken recently is followed by a bounded wait /inside the GLib context/ -- ~g_main_context_iteration(ctx, TRUE)~ with a timeout source as the ceiling -- rather than a sleep, so a daemon event arriving mid-wait wakes the window at once.  The ceiling is 100 ms, or 33 ms while an animated background is showing.  X11 and Wayland input is not a GLib source here, so the first keypress after a pause can wait up to the ceiling; after that the loop runs at the display's rate (vsync) for three quarters of a second after the last input or event.
 
+A frame's cost has to follow what is on screen, not what has been loaded.  libregnum 0.8.5 and later record nothing for a widget wholly outside the current clip (a scroll box's viewport, less a margin for shadows and focus rings), and measure a markdown label through the same layout cache it paints from.  Before that, a 300-message transcript was laid out and recorded in full every frame to draw the ten messages that fit -- 8 ms a frame on a fast machine and 3 fps on a real fleet -- and loading it re-wrapped every message once per message added, three seconds in a single frame.  ~clients/lrg/clawt-lrg.h~ refuses to build against an older libregnum, because no symbol changed and ~LRG_REQUIRED_SYMBOLS~ cannot tell the two apart.
+
 ** Requests are async, always
 :PROPERTIES:
 :CUSTOM_ID: lrg-async
@@ -970,6 +974,8 @@ Rules every client shares go one level further down, in ~libclawt~: ~clawt_ipc_r
 :END:
 
 The client subscribes to every event (the subscription is an intent the client remembers, so a window that started before its daemon hears everything once it appears).  Each event goes first to the shell (~clawt_lrg_window_event()~: the fleet, the island, decisions, the hold) and then to every page's ~event~ hook, whether or not the page is showing, so a page's state is current when somebody opens it.  ~resync~ -- the cursor fell off the daemon's replay ring -- re-reads the fleet and the visible page rather than carrying a hole.
+
+The lists the shell keeps (~agent.list~, ~room.list~, ~activity.list~, ~decision.list~, ~usage.summary~) are not fetched once per event.  A busy fleet sends ~turn.step~ and ~agent.*~ several times a second, and a request, a parse and a sidebar rebuild for each was more work than a frame has room for.  An event marks the lists it invalidates, and one timer 250 ms later fetches each marked list once, however many events asked.
 
 ** Avatars
 :PROPERTIES:
@@ -1061,6 +1067,15 @@ See [[#lrg-yaml][One yaml-glib, not two]].
 
 ** Undefined references to ~lrg_~ symbols
 The archive predates the widgets.  ~make LRG_BACKEND=1 lrg-lib~ rebuilds it if a required symbol is missing; if the symbol is new and not in ~LRG_REQUIRED_SYMBOLS~, add it there.
+
+** The window is slow, or a core is busy
+Run with ~CLAWT_LRG_FPS=1~: every two seconds the client prints its frame rate and how long drawing took, mean and worst, to stderr.
+
+#+begin_src bash
+CLAWT_LRG_FPS=1 clawtilla-lrg --profile srv-zach
+#+end_src
+
+An idle window draws at about 30 fps while an animated background is showing and well under that without one; a frame should take a millisecond or two.  A mean that grows with the length of the conversation on screen means the libregnum archive predates 0.8.5 (see [[#lrg-loop][the frame loop]]).  Frames that are cheap while the rate is still low point at software rendering: check ~glxinfo -B~ for llvmpipe, and try ~lrg_background: none~.
 
 ** A black window
 No OpenGL: check ~glxinfo -B~ (mesa) or run under Xvfb, which has llvmpipe.  The client draws nothing until a GL context exists.

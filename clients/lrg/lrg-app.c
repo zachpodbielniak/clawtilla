@@ -745,6 +745,12 @@ clawt_lrg_app_run(ClawtLrgApp *app, const gchar *self_test_page)
     gfloat last_x = -1.0f;
     gfloat last_y = -1.0f;
     const gchar *screenshot_path = NULL;
+    gboolean report_fps = FALSE;
+    gint64 report_since = 0;
+    gint64 report_busy = 0;
+    gint64 report_worst = 0;
+    gint64 frame_start = 0;
+    guint report_frames = 0;
     guint screenshot_after = 0;
     guint frame_count = 0;
 
@@ -779,6 +785,14 @@ clawt_lrg_app_run(ClawtLrgApp *app, const gchar *self_test_page)
         screenshot_after = (frames != NULL) ? (guint)atoi(frames) : 150;
     }
 
+    /*
+     * CLAWT_LRG_FPS=1: every two seconds, print frames drawn and the mean
+     * and worst frame time to stderr.  A frame rate is a measurement, not
+     * a feeling; this is what the docs' performance notes are taken with.
+     */
+    report_fps = g_getenv("CLAWT_LRG_FPS") != NULL;
+    report_since = g_get_monotonic_time();
+
     while (!app->quit && !grl_window_should_close(window)) {
         gfloat dt = GetFrameTime();
         gfloat w = (gfloat)GetScreenWidth();
@@ -808,9 +822,32 @@ clawt_lrg_app_run(ClawtLrgApp *app, const gchar *self_test_page)
         lrg_canvas_process_input(app->canvas, &input);
 
         /* 3. draw */
+        frame_start = g_get_monotonic_time();
         grl_window_begin_drawing(window);
         lrg_canvas_render(app->canvas);
         grl_window_end_drawing(window);
+
+        if (report_fps) {
+            gint64 now = g_get_monotonic_time();
+            gint64 took = now - frame_start;
+
+            report_frames++;
+            report_busy += took;
+            report_worst = MAX(report_worst, took);
+
+            if (now - report_since >= 2 * G_USEC_PER_SEC) {
+                g_printerr("%s: %.1f fps, frame %.1f ms mean, %.1f ms worst\n",
+                           CLAWT_LRG_BIN_NAME,
+                           (gdouble)report_frames * G_USEC_PER_SEC /
+                               (gdouble)(now - report_since),
+                           (gdouble)report_busy / report_frames / 1000.0,
+                           (gdouble)report_worst / 1000.0);
+                report_since = now;
+                report_frames = 0;
+                report_busy = 0;
+                report_worst = 0;
+            }
+        }
 
         /*
          * CLAWT_LRG_SCREENSHOT_PAGE=PAGE[:TARGET]: a third of the way in,

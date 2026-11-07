@@ -462,6 +462,26 @@ test_a_category_outside_the_vocabulary_is_kept(void)
     fixture_teardown(&fixture);
 }
 
+
+static void
+test_a_memory_title_prefers_the_summary(void)
+{
+    g_autofree gchar *summary = clawt_memory_title("Likes terse replies",
+                                                   "The operator said...", 40);
+    g_autofree gchar *first = clawt_memory_title(NULL, "  line one  \nline two",
+                                                 40);
+    g_autofree gchar *empty_summary = clawt_memory_title("", "content", 40);
+    g_autofree gchar *cut = clawt_memory_title(NULL, "é-é-é-é-é-é", 4);
+    g_autofree gchar *nothing = clawt_memory_title(NULL, NULL, 40);
+
+    g_assert_cmpstr(summary, ==, "Likes terse replies");
+    g_assert_cmpstr(first, ==, "line one");
+    g_assert_cmpstr(empty_summary, ==, "content");
+    /* cut on a character, never inside one, and marked as cut */
+    g_assert_cmpstr(cut, ==, "é-é…");
+    g_assert_cmpstr(nothing, ==, "");
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -481,6 +501,7 @@ main(int argc, char *argv[])
     g_test_add_func("/memory/survives-reopening",
                     test_memories_survive_reopening);
     g_test_add_func("/memory/empty-refused", test_empty_content_is_refused);
+    g_test_add_func("/memory/title", test_a_memory_title_prefers_the_summary);
     g_test_add_func("/memory/importance-judged",
                     test_an_importance_is_judged_not_written_through);
     g_test_add_func("/memory/category-outside-vocabulary-kept",
