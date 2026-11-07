@@ -1030,6 +1030,22 @@ clawt_config_render_agent(ClawtConfig       *config,
                      clawt_agent_config_get_string(agent, "model.model"));
     append_key_value(out, 2, "default_effort",
                      clawt_agent_config_get_string(agent, "model.effort"));
+    /*
+     * The account travels through the rendered config, not the agent's
+     * environment, so an embedded runtime -- which never sees agents.env --
+     * logs in as the same account a process runtime would.  Validation has
+     * already shadowed an agent whose account it cannot use.
+     */
+    {
+        ClawtConfig *fleet = clawt_agent_config_get_config(agent);
+        g_autoptr(ClawtAccountSpec) account = fleet != NULL
+            ? clawt_config_get_account(fleet,
+                  clawt_agent_config_get_string(agent, "model.account"))
+            : NULL;
+
+        if (account != NULL)
+            append_key_value(out, 2, "config_dir", account->config_dir);
+    }
     g_string_append(out, "\n");
 
     /*

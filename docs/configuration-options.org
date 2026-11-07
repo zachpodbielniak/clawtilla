@@ -1509,6 +1509,59 @@ same function as both. The three are additive: a skill named in two
 of them is one skill, and the most specific place it was asked for is
 what gets reported.
 
+** =accounts=
+
+Separate logins for an agent CLI, so two agents on one machine can
+spend two subscriptions.
+
+Each account is a directory the CLI keeps its login and settings in;
+an agent picks one with agents.model.account. Claude Code and the tmux
+variant use CLAUDE_CONFIG_DIR, codex CODEX_HOME, grok GROK_HOME and
+opencode its XDG directories. cursor and antigravity keep their login
+under $HOME and cannot take an account: an agent that names one for
+them is disabled with that reason rather than run on the default
+login.
+
+The directory is not created. Log in once with `clawtilla account
+login ID`, which runs the CLI's own login against it.
+
+*** =accounts.id=
+
+- Type :: string
+- Default :: unset
+- Required :: yes
+- Since :: 0.2.0
+
+Identifier, and what agents.model.account names.
+
+*** =accounts.provider=
+
+- Type :: string
+- Default :: unset
+- Required :: yes
+- Since :: 0.2.0
+
+The agent CLI this login is for: claude-code, claude-tmux, codex-cli,
+grok-build or opencode. An agent may use the account only when its own
+provider is the same CLI.
+
+*** =accounts.config_dir=
+
+- Type :: path
+- Default :: unset
+- Required :: yes
+- Since :: 0.2.0
+
+The directory the CLI keeps this login in. ~ is expanded.
+
+*** =accounts.description=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.2.0
+
+Whose login this is, or what it is for.
+
 ** =integrations=
 
 Named integrations, each handed to one agent, some agents or all of them.
@@ -2781,6 +2834,15 @@ Model name. Defaults to defaults.model.
 - Since :: 0.1.0
 
 Reasoning effort: low, medium, high, xhigh or max, when the model has one.
+
+*** =agents.model.account=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.2.0
+
+Which entry of accounts this agent's CLI logs in as. Unset is the CLI's
+default login. The account's provider must be this agent's provider.
 
 *** =agents.model.routing_profile=
 

@@ -58,6 +58,7 @@ licence, send nothing, and exit 0.
 | ~agent mount list/add/rm <id>~ | folders shared with its computer |
 | ~agent edit <id> [FILE...]~ | open them in ~$EDITOR~ |
 | ~agent discover~ | agents on disk that the config does not know about |
+| ~account list/add/rm/login~ | separate logins for an agent CLI; ~login~ runs the CLI's own login against the account's directory |
 | ~agent import <id> [--from DIR \vert{} --link DIR \vert{} --git URL] [--keep-git]~ | adopt one, keeping its state |
 | ~agent forget <id>~ | move one aside; nothing is deleted |
 | ~agent git-init~ | make the state directory a git repository, with a ~.gitignore~ that keeps credentials out |
@@ -508,6 +509,10 @@ the first entry.
 It is also the only one of the four that does not need the guest
 rebuilt: it reaches the virtual GPU rather than the cloud-init seed, so
 it applies at the VM's next boot.
+
+*** Choosing an account
+
+The agent inspector has an *Account* row beside the model and effort. Its choices come from ~account.list~ with the agent named, so it offers only the accounts the daemon will accept for that agent's provider; an account the agent already names and can no longer use is still shown, labelled, so saving cannot replace it without anybody choosing to. Saving clears the account before a provider change and sets it after, because the daemon checks the pair. The web client's agent page draws the same choices as a select.
 
 *** Teams in the sidebar
 

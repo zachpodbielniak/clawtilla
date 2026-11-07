@@ -33,7 +33,8 @@ typedef enum {
     NEEDS_ASSIGNMENT,
     NEEDS_SKILLS,
     NEEDS_SCREEN,
-    NEEDS_HANDOFF
+    NEEDS_HANDOFF,
+    NEEDS_WEB_RESEARCH
 } ToolRequirement;
 
 typedef struct {
@@ -313,6 +314,44 @@ static const ClawtParamInfo memory_pin_params[] = {
     { "id",     "string", "Which memory.", TRUE },
     { "pinned", "boolean", "Pin it, or unpin it. Defaults to pinning.",
       FALSE }
+};
+
+static const ClawtParamInfo web_search_params[] = {
+    { "query", "string",
+      "What to search for. Bangs work: !gh, !mdn, !arxiv, !reddit ...", TRUE },
+    { "category", "string",
+      "web (default), news, code, images or videos.", FALSE },
+    { "time_range", "string", "any (default), day, week, month or year.", FALSE },
+    { "site", "string", "Only results from this host, e.g. docs.gtk.org.", FALSE },
+    { "count", "integer", "How many results, 1 to 50. Defaults to 10.", FALSE }
+};
+
+static const ClawtParamInfo web_fetch_params[] = {
+    { "url", "string", "The page to read.", TRUE },
+    { "max_chars", "integer",
+      "The longest text to return. Defaults to the server's (usually 20000).", FALSE },
+    { "archive", "string",
+      "never (default), fallback (use the Wayback Machine when the live page "
+      "fails) or only (read the snapshot).", FALSE }
+};
+
+static const ClawtParamInfo web_query_params[] = {
+    { "query", "string",
+      "An LQL query over search results. The web-research skill has the "
+      "language; clawtilla_web_query_environment lists what this server "
+      "supports.", TRUE },
+    { "explain", "boolean",
+      "Plan the query without running it -- cheap, and shows how each "
+      "filter reaches the engines. Do this first for anything costly.", FALSE },
+    { "max_rows", "integer", "Rows to show, at most. Defaults to 50.", FALSE }
+};
+
+static const ClawtParamInfo web_research_params[] = {
+    { "question", "string", "The question to answer.", TRUE },
+    { "deep", "boolean",
+      "Let the server's model write and run follow-up searches. Slower, "
+      "broader.", FALSE },
+    { "pages", "integer", "Pages to read, 1 to 20. Defaults to the server's.", FALSE }
 };
 
 static const ClawtParamInfo skill_read_params[] = {
@@ -638,6 +677,41 @@ static const ToolDefinition tools[] = {
          "written to help you choose, not the procedure.",
          NEEDS_SKILLS, skill_read_params),
 
+    TOOL("clawtilla_web_search",
+         "Search the web through the fleet's libresearch server: many "
+         "engines at once, merged and ranked. Results name the engines that "
+         "found each one and any engine that did not answer.",
+         NEEDS_WEB_RESEARCH, web_search_params),
+
+    TOOL("clawtilla_web_fetch",
+         "Read a web page's text through the libresearch server, with the "
+         "Wayback Machine as an optional fallback for a page that is gone.",
+         NEEDS_WEB_RESEARCH, web_fetch_params),
+
+    TOOL("clawtilla_web_query",
+         "Structured search with LQL, a pipeline over search results: "
+         "search \"TEXT\", category: CODE | filter site(\"x\") and "
+         "published >= now() - 7d | sort score DESC | limit 5 | fields "
+         "title, url. Use it whenever a question needs filtering by site, "
+         "date, file type or stars, counting, or reshaping, instead of "
+         "searching and sifting by hand. research \"question\", deep: TRUE "
+         "is a source too. Read the web-research skill before writing your "
+         "first query, and set explain: true to check a costly one.",
+         NEEDS_WEB_RESEARCH, web_query_params),
+
+    TOOL("clawtilla_web_research",
+         "Ask the libresearch server for a cited answer: it searches, reads "
+         "the best pages and writes an answer citing them as [n]. Takes "
+         "minutes; use it for a question, not a lookup.",
+         NEEDS_WEB_RESEARCH, web_research_params),
+
+    TOOL("clawtilla_web_query_environment",
+         "What LQL on this libresearch server can name: its commands, "
+         "sources, functions with their signatures, and constants. Call it "
+         "when unsure whether a function or source exists rather than "
+         "guessing; the answer is this server's, modules included.",
+         NEEDS_WEB_RESEARCH, no_params),
+
     TOOL("clawtilla_request_hands",
          "Ask a person to take the screen and do something you cannot. "
          "This does not hand the screen over and does not wait -- only a "
@@ -689,6 +763,10 @@ struct _ClawtMcpTools {
     gpointer                handoff_data;
     GDestroyNotify          handoff_destroy;
 
+    ClawtMcpSearchFunc      search;
+    gpointer                search_data;
+    GDestroyNotify          search_destroy;
+
     /*
      * Read-only here.  The daemon writes receipts; the tools only need
      * to answer "what became of the task I handed over", which is the
@@ -739,6 +817,22 @@ clawt_mcp_tools_set_create_agent_func(ClawtMcpTools           *self,
     self->create_agent = func;
     self->create_agent_data = user_data;
     self->create_agent_destroy = destroy;
+}
+
+void
+clawt_mcp_tools_set_search_func(ClawtMcpTools      *self,
+                                ClawtMcpSearchFunc  func,
+                                gpointer            user_data,
+                                GDestroyNotify      destroy)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    if (self->search_destroy != NULL && self->search_data != NULL)
+        self->search_destroy(self->search_data);
+
+    self->search = func;
+    self->search_data = user_data;
+    self->search_destroy = destroy;
 }
 
 void
@@ -1344,6 +1438,23 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
         if (!clawt_agent_config_get_boolean(clawt_agent_get_config(agent),
                                             "tools.manage_fleet"))
             return FALSE;
+        break;
+
+    case NEEDS_WEB_RESEARCH:
+        /*
+         * Only to an agent whose integrations name a libresearch server.
+         * Asked of the same hook the call uses, so "offered" and "works"
+         * cannot disagree about which agents have one.
+         */
+        {
+            g_autoptr(AiLibresearchSearch) client = NULL;
+
+            if (self->search == NULL)
+                return FALSE;
+            client = self->search(agent_id, self->search_data, NULL);
+            if (client == NULL)
+                return FALSE;
+        }
         break;
 
     case NEEDS_SCREEN:
@@ -5232,7 +5343,8 @@ clawt_mcp_tools_call_defers(ClawtMcpTools *self,
     params = json_object_get_object_member(root, "params");
     tool_name = argument_string(params, "name");
 
-    if (g_strcmp0(tool_name, "clawtilla_computer_exec") != 0)
+    if (g_strcmp0(tool_name, "clawtilla_computer_exec") != 0 &&
+        !g_str_has_prefix(tool_name != NULL ? tool_name : "", "clawtilla_web_"))
         return FALSE;
 
     /*
@@ -5284,6 +5396,190 @@ on_exec_call_finished(GObject *source, GAsyncResult *result,
                                                       is_error),
                           (GDestroyNotify)json_node_unref);
     exec_async_free(async);
+}
+
+/* ── Web research, through a libresearch server ─────────────────── */
+
+/*
+ * Every web tool waits on the network -- research for minutes -- so all
+ * of them take the deferred path: an IPC handler must not wait on the
+ * network, and the rule is enforced here, where the wait is, rather than
+ * at each caller.
+ */
+typedef struct {
+    GTask    *outer;        /* owned: the answer this call is waiting on */
+    JsonNode *request_id;   /* owned, nullable */
+    gchar    *tool;
+    guint     max_rows;
+} WebAsync;
+
+static void
+web_async_free(WebAsync *async)
+{
+    g_clear_object(&async->outer);
+    g_clear_pointer(&async->request_id, json_node_unref);
+    g_free(async->tool);
+    g_free(async);
+}
+
+/* The environment is reference material: kept whole, but bounded. */
+#define WEB_ENVIRONMENT_MAX_BYTES (64 * 1024)
+
+static gchar *
+web_render(const gchar *tool, JsonNode *doc, guint max_rows)
+{
+    if (g_strcmp0(tool, "clawtilla_web_search") == 0)
+        return ai_libresearch_format_search(doc, max_rows);
+    if (g_strcmp0(tool, "clawtilla_web_fetch") == 0)
+        return ai_libresearch_format_fetch(doc);
+    if (g_strcmp0(tool, "clawtilla_web_query") == 0)
+        return ai_libresearch_format_query(doc, max_rows);
+    if (g_strcmp0(tool, "clawtilla_web_research") == 0)
+        return ai_libresearch_format_research(doc);
+
+    {
+        gchar *text = json_to_string(doc, TRUE);
+
+        if (strlen(text) > WEB_ENVIRONMENT_MAX_BYTES) {
+            gchar *bounded;
+
+            text[WEB_ENVIRONMENT_MAX_BYTES] = '\0';
+            bounded = g_strconcat(text, "\n[truncated]\n", NULL);
+            g_free(text);
+            text = bounded;
+        }
+        return text;
+    }
+}
+
+static void
+on_web_done(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    WebAsync *async = user_data;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) doc = NULL;
+    g_autofree gchar *text = NULL;
+
+    doc = ai_libresearch_search_request_finish(AI_LIBRESEARCH_SEARCH(source), result, &error);
+
+    /*
+     * The server's own words, including an LQL error's caret excerpt:
+     * that is the only thing that shows the agent where its query broke.
+     */
+    text = (doc != NULL) ? web_render(async->tool, doc, async->max_rows)
+                         : g_strdup(error->message);
+
+    g_task_return_pointer(async->outer,
+                          make_response(async->request_id, text, doc == NULL),
+                          (GDestroyNotify)json_node_unref);
+    web_async_free(async);
+}
+
+/*
+ * Starts one web tool.  Answers through @async in every case, a refusal
+ * included, because the caller has already deferred its IPC frame.
+ */
+static void
+web_call_start(ClawtMcpTools *self, const gchar *agent_id, const gchar *tool,
+               JsonObject *arguments, WebAsync *async)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(AiLibresearchSearch) client = NULL;
+    const gchar *refusal = NULL;
+
+    /*
+     * Pushed before the client is asked for, not just before the request:
+     * libsoup binds a session to the context it was created on, so a
+     * client built under the process default and then used from the
+     * tools' context sends a request nothing ever reads the answer to.
+     */
+    if (self->main_context != NULL)
+        g_main_context_push_thread_default(self->main_context);
+
+    client = self->search != NULL
+        ? self->search(agent_id, self->search_data, &error) : NULL;
+    if (client == NULL) {
+        g_autofree gchar *text = g_strdup_printf(
+            "No libresearch server is configured for you%s%s",
+            error != NULL ? ": " : ".", error != NULL ? error->message : "");
+
+        g_task_return_pointer(async->outer, make_response(async->request_id, text, TRUE),
+                              (GDestroyNotify)json_node_unref);
+        web_async_free(async);
+        if (self->main_context != NULL)
+            g_main_context_pop_thread_default(self->main_context);
+        return;
+    }
+
+    if (g_strcmp0(tool, "clawtilla_web_search") == 0) {
+        const gchar *query = argument_string(arguments, "query");
+        g_autoptr(AiSearchOptions) options = ai_search_options_new();
+        const gchar *range = argument_string(arguments, "time_range");
+        gint64 count = argument_int(arguments, "count", 10);
+
+        if (query == NULL) {
+            refusal = "query is required";
+        } else {
+            ai_search_options_set_count(options, (guint)CLAMP(count, 1, 50));
+            if (argument_string(arguments, "site") != NULL)
+                ai_search_options_set_site(options, argument_string(arguments, "site"));
+            if (g_strcmp0(range, "day") == 0)
+                ai_search_options_set_freshness(options, AI_SEARCH_FRESHNESS_DAY);
+            else if (g_strcmp0(range, "week") == 0)
+                ai_search_options_set_freshness(options, AI_SEARCH_FRESHNESS_WEEK);
+            else if (g_strcmp0(range, "month") == 0)
+                ai_search_options_set_freshness(options, AI_SEARCH_FRESHNESS_MONTH);
+            else if (g_strcmp0(range, "year") == 0)
+                ai_search_options_set_freshness(options, AI_SEARCH_FRESHNESS_YEAR);
+            async->max_rows = (guint)CLAMP(count, 1, 50);
+            ai_libresearch_search_web_async(client, query, options,
+                                            argument_string(arguments, "category"),
+                                            NULL, on_web_done, async);
+        }
+    } else if (g_strcmp0(tool, "clawtilla_web_fetch") == 0) {
+        const gchar *url = argument_string(arguments, "url");
+
+        if (url == NULL)
+            refusal = "url is required";
+        else
+            ai_libresearch_search_fetch_async(
+                client, url, (guint)CLAMP(argument_int(arguments, "max_chars", 0), 0, 1000000),
+                argument_string(arguments, "archive"), NULL, on_web_done, async);
+    } else if (g_strcmp0(tool, "clawtilla_web_query") == 0) {
+        const gchar *query = argument_string(arguments, "query");
+
+        if (query == NULL) {
+            refusal = "query is required";
+        } else {
+            async->max_rows = (guint)CLAMP(argument_int(arguments, "max_rows", 50), 1, 1000);
+            ai_libresearch_search_query_async(client, query,
+                                              argument_boolean(arguments, "explain", FALSE),
+                                              NULL, on_web_done, async);
+        }
+    } else if (g_strcmp0(tool, "clawtilla_web_research") == 0) {
+        const gchar *question = argument_string(arguments, "question");
+
+        if (question == NULL)
+            refusal = "question is required";
+        else
+            ai_libresearch_search_research_async(
+                client, question, argument_boolean(arguments, "deep", FALSE),
+                (guint)CLAMP(argument_int(arguments, "pages", 0), 0, 20),
+                NULL, on_web_done, async);
+    } else if (g_strcmp0(tool, "clawtilla_web_query_environment") == 0) {
+        ai_libresearch_search_environment_async(client, NULL, on_web_done, async);
+    } else {
+        refusal = "no such web tool";
+    }
+
+    if (self->main_context != NULL)
+        g_main_context_pop_thread_default(self->main_context);
+
+    if (refusal != NULL) {
+        g_task_return_pointer(async->outer, make_response(async->request_id, refusal, TRUE),
+                              (GDestroyNotify)json_node_unref);
+        web_async_free(async);
+    }
 }
 
 /*
@@ -5357,6 +5653,22 @@ clawt_mcp_tools_call_async(ClawtMcpTools       *self,
         arguments = json_object_get_object_member(params, "arguments");
 
     observe_call(self, agent_id, argument_string(params, "name"), arguments);
+
+    if (g_str_has_prefix(argument_string(params, "name") != NULL
+                             ? argument_string(params, "name") : "",
+                         "clawtilla_web_")) {
+        WebAsync *web = g_new0(WebAsync, 1);
+
+        web->outer = outer;
+        web->request_id = (request_id != NULL) ? json_node_ref(request_id) : NULL;
+        web->tool = g_strdup(argument_string(params, "name"));
+
+        if (self->main_context != NULL)
+            g_main_context_pop_thread_default(self->main_context);
+
+        web_call_start(self, agent_id, web->tool, arguments, web);
+        return;
+    }
 
     call = exec_call_prepare(self, agent_id, arguments, &refusal);
 
@@ -5734,6 +6046,13 @@ clawt_mcp_tools_dispose(GObject *object)
         self->handoff_destroy = NULL;
         self->handoff_data = NULL;
     }
+
+    if (self->search_destroy != NULL && self->search_data != NULL) {
+        self->search_destroy(self->search_data);
+        self->search_destroy = NULL;
+        self->search_data = NULL;
+    }
+    self->search = NULL;
 
     self->handoff = NULL;
     self->handoff_store = NULL;

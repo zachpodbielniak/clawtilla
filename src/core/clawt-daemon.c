@@ -2948,6 +2948,18 @@ clawt_daemon_reload_skills(ClawtDaemon *self)
     if (directory == NULL || *directory == '\0')
         return;
 
+    /*
+     * Bundled skills first, so the scan below sees them.  A failure is a
+     * warning: the fleet's own skills still load, and an agent's web tools
+     * still work without the skill that explains them.
+     */
+    {
+        g_autoptr(GError) bundled_error = NULL;
+
+        if (!clawt_skill_install_bundled(directory, &bundled_error))
+            g_warning("skills: %s", bundled_error->message);
+    }
+
     self->skills = clawt_skill_library_new(directory);
     clawt_skill_library_scan(self->skills);
 
@@ -4088,6 +4100,7 @@ release_components(ClawtDaemon *self)
      */
     clawt_daemon_turn_teardown(self);
     clawt_daemon_handoff_teardown(self);
+    clawt_daemon_search_teardown(self);
 
     /*
      * The observer first, and before the context it attached its timers
@@ -6060,6 +6073,7 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      * queued when this daemon last stopped -- which settles turns.
      */
     clawt_daemon_handoff_setup(self);
+    clawt_daemon_search_setup(self);
 
     /*
      * Started here rather than earlier, because start can still refuse
@@ -6205,6 +6219,7 @@ clawt_daemon_stop(ClawtDaemon *self)
      */
     clawt_daemon_turn_teardown(self);
     clawt_daemon_handoff_teardown(self);
+    clawt_daemon_search_teardown(self);
 
     if (self->connector_refresh != NULL) {
         g_source_destroy(self->connector_refresh);

@@ -316,6 +316,15 @@ flat directory of ~.md~ or ~.org~ files, read by libreclaw itself.
 clawtilla's library is the agentskills layout, read by the agent's
 *CLI*, and the two do not interact.
 
+** Bundled skills
+
+clawtilla ships some skills itself. Today there is one, =web-research=, which teaches the =clawtilla_web_*= tools and LQL ([[file:research.org][research.org]]).
+
+- They are embedded in the build (=data/skills/=) and written into =skills.dir= when the daemon loads the library, in the same layout as any other skill, so every harness reads them the same way.
+- Each carries a =.clawtilla-bundled= file holding a digest of what was written. A newer clawtilla replaces its own copy when the digest differs, and only its own: a directory of the same name without that file is somebody's skill and is left alone.
+- A bundled skill can come with something an agent has. =web-research= is assigned, with origin =integration=, to every agent with a =libresearch= integration -- by =clawt_skill_resolve_for_agent()=, the one resolver, after the agent, team and fleet lists. Naming it in one of those lists attributes it there instead.
+- With =skills.enabled: false= nothing is installed; whatever the skill would have taught has to reach the agent another way, and for =web-research= the tool descriptions and =TOOLS.org= carry a short primer for exactly that case.
+
 ** Configuration
 
 See [[file:configuration-options.org][the option reference]] for

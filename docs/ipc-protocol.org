@@ -946,6 +946,16 @@ a restart.  The integration name is folded rather than refused, the way
 ~clawt_connector_token_path()~ folds an instance name, because that one
 arrives from a file somebody edits by hand.
 
+*** account.*
+
+| Kind              | Payload                                  | Reply |
+|-------------------+------------------------------------------+-------|
+| ~account.list~    | =agent= (optional)                       | =accounts=: =[{id, provider, config_dir, description}]=; with =agent=, each also has =usable= (boolean) and =reason= when it is not |
+| ~account.add~     | =id=, =provider=, =config_dir=, =description= | =id=; refused for a bad or taken id, or a CLI that cannot take an account |
+| ~account.remove~  | =id=                                     | =agents_using=: how many agents still name it (they become shadows); =refusals= |
+
+=usable= is answered by =clawt_account_check()=, the same function ~agent.set~ applies to ~model.account~, so a picker built from it offers exactly what saving accepts. Publishes ~account.changed~.
+
 *** routine.*
 
 ~routine.list~ returns every routine with its own fields plus three the

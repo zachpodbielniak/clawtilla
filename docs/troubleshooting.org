@@ -2754,3 +2754,12 @@ check what a guest is on:
 #+begin_src bash
 clawtilla computer exec <agent-id> -- cat /var/lib/clawtilla/desktop-update.status
 #+end_src
+
+** An agent is disabled with "model.account: ..."
+
+It names an account it cannot use: one not declared under =accounts:=, one for another CLI (=is a claude-code login and this agent runs codex-cli=), or one on a CLI that keeps its login under =$HOME= (cursor, antigravity). Point it at another account or clear it with =clawtilla agent set <agent> model.account ""=. See [[file:agents.org][agents.org]], under Accounts.
+
+** The web tools answer "is unreachable", 401, 403 or 404
+
+The libresearch server named by the agent's =libresearch= integration is not answering, wants a token, has LQL switched off, or has no research module. [[file:research.org][research.org]] has the table, under "When it does not work".
+

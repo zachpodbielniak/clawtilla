@@ -1,0 +1,130 @@
+#+title: Web research
+#+description: Web search, page reading, LQL queries and cited research answers through a libresearch server, and how agents learn LQL
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-11-07 Sat]
+#+updated: [2026-11-07 Sat]
+#+version: 0.2.0
+
+* Web research
+
+An agent reaches the web through a libresearch server: a self-hosted metasearch engine that sends one query to many engines, merges and ranks the results, reads pages, runs LQL queries over the results and writes cited research answers. clawtilla talks to it over its REST API and never links it, so the server can be on the same machine (=http://127.0.0.1:8087=, libresearch's own default) or anywhere the daemon can reach.
+
+** Turning it on
+
+Add a =libresearch= integration and scope it to the agents that should search:
+
+#+begin_src yaml
+integrations:
+  - name: search
+    type: libresearch
+    scope: all
+    url: "http://127.0.0.1:8087"
+    # token: {file: ~/.clawtilla/secrets/libresearch.token}   # only with api.require_token
+#+end_src
+
+Or inline on one agent:
+
+#+begin_src yaml
+agents:
+  - id: researcher
+    integrations:
+      libresearch:
+        enabled: true
+        url: "http://127.0.0.1:8087"
+#+end_src
+
+It is =one_per_agent=: two servers would be two answers to "search the web" with nothing to say which was meant. The token is a secret reference, resolved by the daemon once per agent and never written into the agent's files.
+
+The integration's health check asks the server for its LQL environment (=GET /api/v1/query/environment=): the cheapest request that proves both that the API answers and that LQL is on. A 401 with a token configured counts as reachable, because the token is deliberately not resolved for a health check -- a password manager behind it may block.
+
+** The tools
+
+Offered only to an agent whose integrations include a =libresearch= server. The same daemon hook decides whether the tools are listed and what they call, so "offered" and "works" cannot disagree.
+
+| Tool                                | Endpoint                         | What the agent gets back |
+|-------------------------------------+----------------------------------+---------------------------|
+| ~clawtilla_web_search~              | =/api/v1/search=                 | instant answers first, then numbered results with URL, engines and date, then the engines that did not answer |
+| ~clawtilla_web_fetch~               | =/api/v1/fetch=                  | the page's readable text; with =archive: fallback= the Wayback Machine stands in for a page that is gone, and says so |
+| ~clawtilla_web_query~               | =/api/v1/query=                  | an LQL result: one block per row with every column by name, a count of rows left out, or the plan with =explain: true= |
+| ~clawtilla_web_research~            | =/api/v1/research=               | a cited answer, then the numbered sources, marked when they were not read or not cited |
+| ~clawtilla_web_query_environment~   | =/api/v1/query/environment=      | the server's commands, sources, functions with signatures, and constants |
+
+*** They answer later
+
+Every one of them waits on the network, and research waits for minutes, so all five take the deferred path an IPC handler uses for anything slow (=clawt_mcp_tools_call_defers()=, then =clawt_mcp_tools_call_async()=): the daemon claims the right to answer, the request runs on the daemon's context, and the reply goes out when the server answers. Nothing else the daemon is doing waits.
+
+They come in only through ~tool.rpc~ (=clawtilla-mcp-server=). The older ~mcp.request~ frame over an agent's link refuses deferred tools, as it does =clawtilla_computer_exec=.
+
+*** Errors are the server's own words
+
+A failure comes back as the libresearch error envelope's message, including an LQL error's position and caret excerpt:
+
+#+begin_example
+libresearch invalid_query (HTTP 400 from http://127.0.0.1:8087): expected an expression, found end of query
+1:26: expected an expression, found end of query
+  search "x" | filter nope(
+                           ^
+#+end_example
+
+That excerpt is the only thing that shows an agent where its query broke, so it is never summarised away. See [[*When it does not work][When it does not work]] for what each status means.
+
+** LQL, and how an agent learns it
+
+LQL is a pipeline query language: a source produces rows and each =|= stage filters, reshapes, sorts or summarizes them. libresearch adds the =search= and =research= sources, the search predicates (=site()=, =filetype()=, =intitle()=, ...) and pushdown of filters to the engines that can express them.
+
+#+begin_example
+search "gtk4 list view", category: CODE
+| filter site("docs.gtk.org") and published >= now() - 30d
+| sort score DESC | limit 5 | fields title, url
+#+end_example
+
+An agent learns it in three layers, sized by what its CLI can load.
+
+1. *Always in context.* The ~clawtilla_web_query~ tool description carries a one-line primer and points at the skill, and the agent's =TOOLS.org= integrations region carries an example and the =explain= advice. Both are short, because they are in every prompt.
+2. *The =web-research= skill.* A full reference, written for the clawtilla tools rather than the libresearch CLI: when to search, fetch, query or research; the =search= source and its columns; the commands; the search predicates and pushdown; the language basics; the module functions; worked recipes; and how to read an error. Its description is written so that a harness which opens skills by itself (Claude Code, grok, opencode, cursor, antigravity) opens it when a search question needs structure. See [[*The bundled skill][The bundled skill]].
+3. *The live environment.* ~clawtilla_web_query_environment~ answers for *this* server, modules included, so nothing in clawtilla keeps a list of LQL functions that could drift from the server's. The skill tells the agent to call it when unsure rather than guess.
+
+*** Codex gets the reference inline
+
+Codex has no skills concept: =clawt_skill_provider_origin()= resolves to no directories for it. A pointer to a skill it cannot load is a sentence it cannot act on, so for a codex agent the =TOOLS.org= region carries the skill's LQL reference itself instead of the pointer. It is about five kilobytes, well inside the persona ceiling described in [[file:agents.org][agents.org]].
+
+** The bundled skill
+
+=web-research= ships inside clawtilla (=data/skills/web-research/=, embedded at build time) and is written into the fleet's =skills.dir= when the daemon loads its skill library -- the directory every agent CLI already reads, in the agentskills layout.
+
+- *Assigned with the integration.* =clawt_skill_resolve_for_agent()= adds it, with origin =integration=, to every agent with a =libresearch= integration, through the same integration resolver the tools use. An agent that names it in its own =skills:= list keeps that attribution instead.
+- *Replaced only when it is ours.* Beside it is a =.clawtilla-bundled= file holding a digest of what was written. A newer clawtilla rewrites its own copy when the digest differs. A directory called =web-research= without that file is somebody's own skill, and wins untouched.
+- *Needs the skill library.* With =skills.enabled: false= or no =skills.dir= nothing is installed and nothing is linked. The tools still work; the always-in-context primer still reaches the agent.
+
+See [[file:skills.org][skills.org]] for how skills are linked into each harness.
+
+** Limits worth knowing
+
+- A query has the server's time limit (~lql.timeout_ms~, 30 s by default). A query whose source is =research= gets the research module's longer limit; the client waits up to 900 s of silence for those.
+- Model functions (=ai_summarize=, =decide_relevance=, ...) see at most ~lql.max_model_rows~ (20) rows per stage, and refuse when a confidential engine answered.
+- Rate limits are per client address and minute on the server (~rate_limit.query_per_minute~, 10, for queries and research).
+- ~clawtilla_web_query~ shows 50 rows unless =max_rows= says otherwise; ~clawtilla_web_search~ shows up to 50 results.
+- The environment reply is capped at 64 KiB.
+
+** When it does not work
+
+| Symptom                                      | Cause and remedy |
+|----------------------------------------------+------------------|
+| No =clawtilla_web_*= tools at all            | The agent has no =libresearch= integration in scope, or the agent is a shadow. =clawtilla integration list= shows what it has. |
+| =... is unreachable: ...=                    | Nothing answered at =url=. Is =libresearchd= running, and listening where the URL says? |
+| =unauthorized= (401)                         | The server sets ~api.require_token~; give the integration a =token=. |
+| =forbidden= (403)                            | A wrong token, or =lql.enabled: false= on the server -- no query can fix the second. |
+| =not_found= (404) from research              | The server's research module is not active (~modules.research~). |
+| =research_failed= (503)                      | ~modules.research.max_busy~ runs are already going; try later. |
+| =rate_limited= (429)                         | Over the server's per-minute limit. Wait rather than retry at once. |
+| =invalid_query= (400)                        | The query does not parse or check: read the caret. (422 is a limit: length, stages, rows or time.) |
+| =search_failed= (502)                        | A search inside the query failed: a redirecting bang such as =!w=, or no engine for the category. |
+| The skill is not in the agent's skills       | =skills.enabled= is off, or =skills.dir= is unset; or a hand-written =web-research= of the same name is there instead. |
+
+** See also
+
+- [[file:integrations.org][integrations.org]] -- the =libresearch= type among the others
+- [[file:skills.org][skills.org]] -- how skills reach each harness
+- [[file:ipc-protocol.org][ipc-protocol.org]] -- ~tool.rpc~ and replies that arrive later
+- libresearch's own =docs/api.org= and =docs/lql.org=

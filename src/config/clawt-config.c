@@ -14,6 +14,8 @@
 
 #include <yaml-glib.h>
 #include <string.h>
+#include <libreclaw.h>
+#include <ai-glib.h>
 
 struct _ClawtConfig {
     GObject      parent_instance;
@@ -393,6 +395,33 @@ agent_validate(ClawtAgentConfig *self)
                           "two deliberate acts, not one. Set it, or pick a "
                           "confinement mode");
         return;
+    }
+
+    /*
+     * An account the agent cannot use is a shadow, not a warning: running
+     * the turn on the default login instead spends somebody else's
+     * subscription and reports nothing.
+     */
+    {
+        const gchar *account_id = clawt_agent_config_get_string(self, "model.account");
+
+        if (account_id != NULL && *account_id != '\0' && self->config != NULL) {
+            g_autoptr(ClawtAccountSpec) account =
+                clawt_config_get_account(self->config, account_id);
+            g_autoptr(GError) account_error = NULL;
+
+            if (account == NULL) {
+                agent_mark_shadow(self, "model.account: no account '%s' in accounts:",
+                                  account_id);
+                return;
+            }
+            if (!clawt_account_check(account,
+                                     clawt_agent_config_get_string(self, "model.provider"),
+                                     &account_error)) {
+                agent_mark_shadow(self, "model.account: %s", account_error->message);
+                return;
+            }
+        }
     }
 
     {
@@ -1664,6 +1693,251 @@ compare_teams(gconstpointer a, gconstpointer b)
         return 0;
 
     return first->order < second->order ? -1 : 1;
+}
+
+void
+clawt_account_spec_free(ClawtAccountSpec *self)
+{
+    if (self == NULL)
+        return;
+
+    g_free(self->id);
+    g_free(self->provider);
+    g_free(self->config_dir);
+    g_free(self->description);
+    g_free(self);
+}
+
+/* ~ and ~/ expanded; anything else as written. */
+static gchar *
+expand_home(const gchar *path)
+{
+    if (path == NULL)
+        return NULL;
+    if (g_strcmp0(path, "~") == 0)
+        return g_strdup(g_get_home_dir());
+    if (g_str_has_prefix(path, "~/"))
+        return g_build_filename(g_get_home_dir(), path + 2, NULL);
+    return g_strdup(path);
+}
+
+GPtrArray *
+clawt_config_get_accounts(ClawtConfig *self)
+{
+    GPtrArray *out;
+    YamlNode *accounts;
+    YamlSequence *sequence;
+    guint i;
+    guint length;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), NULL);
+
+    out = g_ptr_array_new_with_free_func((GDestroyNotify)clawt_account_spec_free);
+
+    accounts = node_at_path(self->root, "accounts", FALSE);
+    if (accounts == NULL || yaml_node_get_node_type(accounts) != YAML_NODE_SEQUENCE)
+        return out;
+
+    sequence = yaml_node_get_sequence(accounts);
+    length = yaml_sequence_get_length(sequence);
+
+    for (i = 0; i < length; i++) {
+        YamlNode *entry = yaml_sequence_get_element(sequence, i);
+        YamlMapping *mapping;
+        ClawtAccountSpec *spec;
+
+        if (entry == NULL || yaml_node_get_node_type(entry) != YAML_NODE_MAPPING)
+            continue;
+        mapping = yaml_node_get_mapping(entry);
+
+        /*
+         * Skipped rather than half-used: an account without a directory
+         * would be the default login under another name.
+         */
+        if (member_string(mapping, "id") == NULL ||
+            member_string(mapping, "provider") == NULL ||
+            member_string(mapping, "config_dir") == NULL) {
+            g_warning("accounts[%u]: id, provider and config_dir are all "
+                      "required, so this account is ignored", i);
+            continue;
+        }
+
+        spec = g_new0(ClawtAccountSpec, 1);
+        spec->id = g_strdup(member_string(mapping, "id"));
+        spec->provider = g_strdup(member_string(mapping, "provider"));
+        spec->config_dir = expand_home(member_string(mapping, "config_dir"));
+        spec->description = g_strdup(member_string(mapping, "description"));
+        g_ptr_array_add(out, spec);
+    }
+
+    return out;
+}
+
+ClawtAccountSpec *
+clawt_config_get_account(ClawtConfig *self, const gchar *account_id)
+{
+    g_autoptr(GPtrArray) accounts = NULL;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), NULL);
+
+    if (account_id == NULL || *account_id == '\0')
+        return NULL;
+
+    accounts = clawt_config_get_accounts(self);
+    for (i = 0; i < accounts->len; i++) {
+        ClawtAccountSpec *spec = g_ptr_array_index(accounts, i);
+
+        if (g_strcmp0(spec->id, account_id) == 0)
+            return g_ptr_array_steal_index(accounts, i);
+    }
+
+    return NULL;
+}
+
+gboolean
+clawt_config_add_account(ClawtConfig  *self,
+                         const gchar  *account_id,
+                         const gchar  *provider,
+                         const gchar  *config_dir,
+                         const gchar  *description,
+                         GError      **error)
+{
+    YamlNode *accounts_node;
+    g_autoptr(YamlNode) entry = NULL;
+    g_autoptr(ClawtAccountSpec) existing = NULL;
+    ClawtAccountSpec candidate = { NULL, NULL, NULL, NULL };
+    YamlMapping *mapping;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);
+
+    if (!clawt_is_valid_id(account_id)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "'%s' is not a usable account id: ids may hold only "
+                    "lowercase letters, digits, '-' and '_', and must not "
+                    "start with punctuation",
+                    account_id != NULL ? account_id : "");
+        return FALSE;
+    }
+    if (provider == NULL || *provider == '\0' || config_dir == NULL || *config_dir == '\0') {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "an account needs a provider and a directory");
+        return FALSE;
+    }
+
+    existing = clawt_config_get_account(self, account_id);
+    if (existing != NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_ALREADY_EXISTS,
+                    "an account called '%s' already exists", account_id);
+        return FALSE;
+    }
+
+    /* Refused here rather than saved and then refused by every agent. */
+    candidate.id = (gchar *)account_id;
+    candidate.provider = (gchar *)provider;
+    candidate.config_dir = (gchar *)config_dir;
+    if (!clawt_account_check(&candidate, provider, error))
+        return FALSE;
+
+    accounts_node = node_at_path(self->root, "accounts", FALSE);
+    if (accounts_node == NULL ||
+        yaml_node_get_node_type(accounts_node) != YAML_NODE_SEQUENCE) {
+        g_autoptr(YamlNode) fresh = yaml_node_new_sequence(NULL);
+
+        yaml_mapping_set_member(yaml_node_get_mapping(self->root), "accounts", fresh);
+        accounts_node = node_at_path(self->root, "accounts", FALSE);
+        apply_schema_comment(accounts_node, "accounts");
+    }
+
+    entry = yaml_node_new_mapping(NULL);
+    mapping = yaml_node_get_mapping(entry);
+    {
+        g_autoptr(YamlNode) id_node = yaml_node_new_string(account_id);
+        g_autoptr(YamlNode) provider_node = yaml_node_new_string(provider);
+        g_autoptr(YamlNode) dir_node = yaml_node_new_string(config_dir);
+
+        yaml_mapping_set_member(mapping, "id", id_node);
+        yaml_mapping_set_member(mapping, "provider", provider_node);
+        yaml_mapping_set_member(mapping, "config_dir", dir_node);
+    }
+    if (description != NULL && *description != '\0') {
+        g_autoptr(YamlNode) description_node = yaml_node_new_string(description);
+
+        yaml_mapping_set_member(mapping, "description", description_node);
+    }
+
+    yaml_sequence_add_element(yaml_node_get_sequence(accounts_node), entry);
+    return TRUE;
+}
+
+gboolean
+clawt_config_remove_account(ClawtConfig *self, const gchar *account_id)
+{
+    YamlNode *accounts_node;
+    YamlSequence *sequence;
+    guint i;
+    guint length;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);
+    g_return_val_if_fail(account_id != NULL, FALSE);
+
+    accounts_node = node_at_path(self->root, "accounts", FALSE);
+    if (accounts_node == NULL ||
+        yaml_node_get_node_type(accounts_node) != YAML_NODE_SEQUENCE)
+        return FALSE;
+
+    sequence = yaml_node_get_sequence(accounts_node);
+    length = yaml_sequence_get_length(sequence);
+    for (i = 0; i < length; i++) {
+        YamlNode *element = yaml_sequence_get_element(sequence, i);
+
+        if (yaml_node_get_node_type(element) != YAML_NODE_MAPPING)
+            continue;
+        if (g_strcmp0(member_string(yaml_node_get_mapping(element), "id"), account_id) == 0) {
+            yaml_sequence_remove_element(sequence, i);
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
+gboolean
+clawt_account_check(const ClawtAccountSpec *account,
+                    const gchar            *agent_provider,
+                    GError                **error)
+{
+    const gchar *account_cli;
+    const gchar *agent_cli;
+    g_autoptr(AiCliClient) probe = NULL;
+
+    g_return_val_if_fail(account != NULL, FALSE);
+
+    /*
+     * Compared after libreclaw's normalisation, because that is what
+     * decides which CLI actually runs: "claude" and "claude-code" are one
+     * login, and an unknown name runs Claude Code.
+     */
+    account_cli = lc_provider_type_normalize(account->provider, account->id);
+    agent_cli = lc_provider_type_normalize(agent_provider, "agent");
+
+    if (g_strcmp0(account_cli, agent_cli) != 0) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                    "account '%s' is a %s login and this agent runs %s",
+                    account->id, account_cli, agent_cli);
+        return FALSE;
+    }
+
+    /* Asked of the client, so a CLI gaining the ability needs no edit here. */
+    probe = lc_client_factory_new(account_cli, NULL, NULL, NULL, FALSE);
+    if (probe == NULL || !ai_cli_client_supports_config_dir(probe)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                    "account '%s': %s keeps its login under $HOME and cannot "
+                    "be pointed at another one", account->id, account_cli);
+        return FALSE;
+    }
+
+    return TRUE;
 }
 
 GPtrArray *

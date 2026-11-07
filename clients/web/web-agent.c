@@ -238,9 +238,54 @@ team_choices(ClawtWebApp *app, GStrv *out_ids, GStrv *out_names)
     return TRUE;
 }
 
+/*
+ * The accounts this agent can log in as, as the daemon decides it --
+ * the same check agent.set applies, so the list offers only what saving
+ * accepts. The GTK inspector builds its combo from the same reply.
+ */
+static gboolean
+account_choices(ClawtWebApp *app, const gchar *agent_id,
+                GStrv *out_ids, GStrv *out_names)
+{
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    JsonArray *accounts;
+    g_autoptr(GPtrArray) ids = g_ptr_array_new();
+    g_autoptr(GPtrArray) names = g_ptr_array_new();
+    guint i;
+
+    clawt_web_payload_set(payload, "agent", agent_id);
+    reply = clawt_web_app_call(app, "account.list",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+    if (reply == NULL)
+        return FALSE;
+    accounts = clawt_web_member_array(clawt_web_root(reply), "accounts");
+
+    g_ptr_array_add(ids, g_strdup(""));
+    g_ptr_array_add(names, g_strdup("The CLI's own login"));
+
+    for (i = 0; accounts != NULL && i < json_array_get_length(accounts); i++) {
+        JsonObject *account = json_array_get_object_element(accounts, i);
+        const gchar *id = clawt_web_member(account, "id", NULL);
+
+        if (id == NULL || !clawt_web_member_bool(account, "usable", FALSE))
+            continue;
+        g_ptr_array_add(ids, g_strdup(id));
+        g_ptr_array_add(names, clawt_web_member(account, "description", NULL) != NULL
+            ? g_strdup_printf("%s -- %s", id, clawt_web_member(account, "description", ""))
+            : g_strdup(id));
+    }
+
+    g_ptr_array_add(ids, NULL);
+    g_ptr_array_add(names, NULL);
+    *out_ids = (GStrv)g_ptr_array_free(g_steal_pointer(&ids), FALSE);
+    *out_names = (GStrv)g_ptr_array_free(g_steal_pointer(&names), FALSE);
+    return TRUE;
+}
+
 static HtmxElement *
-control_for(ClawtWebApp *app, const ClawtSchemaEntry *entry, const gchar *key,
-            const gchar *value)
+control_for(ClawtWebApp *app, const gchar *agent_id, const ClawtSchemaEntry *entry,
+            const gchar *key, const gchar *value)
 {
     g_autofree gchar *label = key_label(key);
     g_autofree gchar *doc = first_line(entry->doc);
@@ -257,6 +302,17 @@ control_for(ClawtWebApp *app, const ClawtSchemaEntry *entry, const gchar *key,
         g_auto(GStrv) names = NULL;
 
         if (team_choices(app, &ids, &names))
+            return HTMX_ELEMENT(clawt_web_select_field(
+                label, field_name, (const gchar *const *)ids,
+                (const gchar *const *)names, value));
+    }
+
+    /* An account no longer usable stays listed: the select adds the value. */
+    if (g_strcmp0(key, "model.account") == 0) {
+        g_auto(GStrv) ids = NULL;
+        g_auto(GStrv) names = NULL;
+
+        if (account_choices(app, agent_id, &ids, &names))
             return HTMX_ELEMENT(clawt_web_select_field(
                 label, field_name, (const gchar *const *)ids,
                 (const gchar *const *)names, value));
@@ -694,7 +750,7 @@ clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id)
                                      ? clawt_web_member(settings, key, "") : "";
 
                 clawt_web_add(group_body,
-                              control_for(app, entry, key, value));
+                              control_for(app, agent_id, entry, key, value));
 
                 /*
                  * An option that hands over real authority says so where
@@ -758,6 +814,34 @@ apply_form(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
 
     *out_restart = FALSE;
     schema = clawt_config_schema_get(&n_entries);
+
+    /*
+     * The account comes off before the provider changes and goes back on
+     * after (the schema walk below reaches it later): the daemon checks
+     * the pair, and a codex provider set while the agent still names a
+     * Claude login is refused. The GTK inspector saves in the same order.
+     */
+    {
+        const gchar *posted = clawt_web_form_value(request, "k:model.account");
+        const gchar *current = settings != NULL
+            ? clawt_web_member(settings, "model.account", "") : "";
+
+        if (posted != NULL && g_strcmp0(posted, current) != 0 && *current != '\0') {
+            g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+            g_autoptr(JsonNode) reply = NULL;
+
+            clawt_web_payload_set(payload, "agent", agent_id);
+            clawt_web_payload_set(payload, "key", "model.account");
+            clawt_web_payload_set(payload, "value", "");
+            reply = clawt_web_app_request(app, "agent.set",
+                                          clawt_web_payload_take(g_steal_pointer(&payload)),
+                                          error);
+            if (reply == NULL)
+                return 0;
+            if (settings != NULL)
+                json_object_set_string_member(settings, "model.account", "");
+        }
+    }
 
     for (i = 0; i < n_entries; i++) {
         const ClawtSchemaEntry *entry = &schema[i];

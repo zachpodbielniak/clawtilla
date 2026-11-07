@@ -252,6 +252,120 @@ clawt_daemon_handle_team(
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
 
+    /* ── accounts ── */
+    if (g_strcmp0(kind, "account.add") == 0) {
+        if (!clawt_config_add_account(self->config,
+                                      clawt_ipc_payload_string(payload, "id"),
+                                      clawt_ipc_payload_string(payload, "provider"),
+                                      clawt_ipc_payload_string(payload, "config_dir"),
+                                      clawt_ipc_payload_string(payload, "description"),
+                                      &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        if (!clawt_config_save(self->config, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        clawt_event_bus_emit(self->bus, "account.changed",
+                             clawt_ipc_payload_string(payload, "id"));
+        json_builder_begin_object(builder);
+        clawt_daemon_add_string_member(builder, "id",
+                                       clawt_ipc_payload_string(payload, "id"));
+        json_builder_end_object(builder);
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "account.remove") == 0) {
+        const gchar *account_id = clawt_ipc_payload_string(payload, "id");
+        g_autoptr(GPtrArray) refusals = NULL;
+        GPtrArray *agents;
+        guint using = 0;
+        guint i;
+
+        if (account_id == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "which account?");
+        if (!clawt_config_remove_account(self->config, account_id))
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "no such account");
+        if (!clawt_config_save(self->config, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        /*
+         * Agents still naming it are revalidated now and become shadows
+         * with the reason, rather than starting next time on the default
+         * login.  How many is in the reply, because that is the question
+         * somebody removing an account is actually holding.
+         */
+        agents = clawt_agent_manager_list(self->agents);
+        for (i = 0; agents != NULL && i < agents->len; i++) {
+            ClawtAgent *agent = g_ptr_array_index(agents, i);
+            ClawtAgentConfig *config = clawt_agent_get_config(agent);
+
+            if (g_strcmp0(clawt_agent_config_get_string(config, "model.account"),
+                          account_id) == 0) {
+                using++;
+                clawt_agent_config_revalidate(config);
+                clawt_agent_revalidate(agent);
+            }
+        }
+
+        refusals = clawt_daemon_render_refusals_new();
+        clawt_daemon_render_all_agents_into(self, refusals);
+        clawt_event_bus_emit(self->bus, "account.changed", account_id);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "agents_using");
+        json_builder_add_int_value(builder, using);
+        clawt_daemon_add_render_refusals(builder, refusals);
+        json_builder_end_object(builder);
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "account.list") == 0) {
+        g_autoptr(GPtrArray) accounts = clawt_config_get_accounts(self->config);
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        ClawtAgentConfig *agent = agent_id != NULL
+            ? clawt_config_get_agent(self->config, agent_id) : NULL;
+        guint i;
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "accounts");
+        json_builder_begin_array(builder);
+
+        for (i = 0; i < accounts->len; i++) {
+            ClawtAccountSpec *account = g_ptr_array_index(accounts, i);
+
+            json_builder_begin_object(builder);
+            clawt_daemon_add_string_member(builder, "id", account->id);
+            clawt_daemon_add_string_member(builder, "provider", account->provider);
+            clawt_daemon_add_string_member(builder, "config_dir", account->config_dir);
+            clawt_daemon_add_string_member(builder, "description", account->description);
+
+            /*
+             * With an agent named, say whether it can log in as this one,
+             * and why not -- so a picker offers only what the daemon will
+             * accept, decided by the one function that decides it.
+             */
+            if (agent != NULL) {
+                g_autoptr(GError) why = NULL;
+                gboolean usable = clawt_account_check(
+                    account, clawt_agent_config_get_string(agent, "model.provider"), &why);
+
+                json_builder_set_member_name(builder, "usable");
+                json_builder_add_boolean_value(builder, usable);
+                clawt_daemon_add_string_member(builder, "reason",
+                                               why != NULL ? why->message : NULL);
+            }
+
+            json_builder_end_object(builder);
+        }
+
+        json_builder_end_array(builder);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
     *handled = FALSE;
     return NULL;
 }

@@ -191,6 +191,18 @@ clawt_skill_resolve_for_agent(ClawtConfig       *config,
         add_names(out, seen, (const gchar *const *)fleet, "fleet", library);
     }
 
+    /*
+     * Last, and least specific: a bundled skill that comes with something
+     * the agent has (web-research with a libresearch integration).  An
+     * explicit assignment above already counted it, so it is attributed
+     * there; this only adds what nobody named.
+     */
+    {
+        g_auto(GStrv) implied = clawt_skill_bundled_for_agent(config, agent);
+
+        add_names(out, seen, (const gchar *const *)implied, "integration", library);
+    }
+
     g_ptr_array_sort(out, compare_bindings);
 
     return out;

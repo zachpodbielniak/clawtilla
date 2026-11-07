@@ -228,6 +228,14 @@ struct _ClawtDaemon {
      * happened" hands the same work over twice.  See daemon-handoff.c.
      */
     ClawtHandoffStore *handoffs;
+
+    /*
+     * libresearch clients, keyed on agent, url and token reference, so a
+     * secret behind a password manager is resolved once rather than on
+     * every tool listing -- and a changed integration is a new key, not a
+     * stale client.
+     */
+    GHashTable        *search_clients;
     gboolean           handoff_pumping;
 
     /* Standing work, and when it is next due. */
@@ -1128,6 +1136,8 @@ void clawt_daemon_turn_set_grace_seconds(ClawtDaemon *self, guint seconds);
  * exist before one can.
  */
 void clawt_daemon_handoff_setup(ClawtDaemon *self);
+void clawt_daemon_search_setup(ClawtDaemon *self);
+void clawt_daemon_search_teardown(ClawtDaemon *self);
 void clawt_daemon_handoff_teardown(ClawtDaemon *self);
 
 /*

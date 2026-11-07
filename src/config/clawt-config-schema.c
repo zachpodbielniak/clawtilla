@@ -1099,6 +1099,39 @@ static const ClawtSchemaEntry schema[] = {
   "of them is one skill, and the most specific place it was asked for is\n"
   "what gets reported.", "0.2.0" },
 
+/* ── accounts ────────────────────────────────────────────────────── */
+{ "accounts", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
+  "Separate logins for an agent CLI, so two agents on one machine can\n"
+  "spend two subscriptions.\n"
+  "\n"
+  "Each account is a directory the CLI keeps its login and settings in;\n"
+  "an agent picks one with agents.model.account. Claude Code and the tmux\n"
+  "variant use CLAUDE_CONFIG_DIR, codex CODEX_HOME, grok GROK_HOME and\n"
+  "opencode its XDG directories. cursor and antigravity keep their login\n"
+  "under $HOME and cannot take an account: an agent that names one for\n"
+  "them is disabled with that reason rather than run on the default\n"
+  "login.\n"
+  "\n"
+  "The directory is not created. Log in once with `clawtilla account\n"
+  "login ID`, which runs the CLI's own login against it.", "0.2.0" },
+
+{ "accounts.id", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED, NULL, NULL,
+  "Identifier, and what agents.model.account names.", "0.2.0" },
+
+{ "accounts.provider", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED,
+  NULL, NULL,
+  "The agent CLI this login is for: claude-code, claude-tmux, codex-cli,\n"
+  "grok-build or opencode. An agent may use the account only when its own\n"
+  "provider is the same CLI.", "0.2.0" },
+
+{ "accounts.config_dir", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_REQUIRED,
+  NULL, NULL,
+  "The directory the CLI keeps this login in. ~ is expanded.", "0.2.0" },
+
+{ "accounts.description", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Whose login this is, or what it is for.", "0.2.0" },
+
 { "integrations", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Named integrations, each handed to one agent, some agents or all of them.\n"
   "\n"
@@ -1942,6 +1975,10 @@ static const ClawtSchemaEntry schema[] = {
 
 { "agents.model.effort", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Reasoning effort: low, medium, high, xhigh or max, when the model has one.", "0.1.0" },
+
+{ "agents.model.account", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Which entry of accounts this agent's CLI logs in as. Unset is the CLI's\n"
+  "default login. The account's provider must be this agent's provider.", "0.2.0" },
 
 { "agents.model.routing_profile", CLAWT_SCHEMA_STRING,
   CLAWT_SCHEMA_FLAG_INERT, NULL, NULL,

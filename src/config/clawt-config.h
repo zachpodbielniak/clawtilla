@@ -486,6 +486,99 @@ void clawt_team_spec_free(ClawtTeamSpec *self);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtTeamSpec, clawt_team_spec_free)
 
 /**
+ * ClawtAccountSpec:
+ * @id: the account id, and what `agents.model.account` names
+ * @provider: the agent CLI the login is for
+ * @config_dir: the directory the CLI keeps the login in, ~ expanded
+ * @description: (nullable): whose login this is
+ *
+ * One entry from the config's `accounts:` list.
+ */
+typedef struct {
+    gchar *id;
+    gchar *provider;
+    gchar *config_dir;
+    gchar *description;
+} ClawtAccountSpec;
+
+void clawt_account_spec_free(ClawtAccountSpec *self);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtAccountSpec, clawt_account_spec_free)
+
+/**
+ * clawt_config_get_accounts:
+ * @self: a #ClawtConfig
+ *
+ * The accounts declared in the config, in file order.  An entry missing
+ * its id, provider or directory is skipped with a warning.
+ *
+ * Returns: (transfer full) (element-type ClawtAccountSpec): the accounts
+ */
+GPtrArray *clawt_config_get_accounts(ClawtConfig *self);
+
+/**
+ * clawt_config_get_account: (skip)
+ * @self: a #ClawtConfig
+ * @account_id: which account
+ *
+ * Returns: (transfer full) (nullable): the account, or %NULL
+ */
+ClawtAccountSpec *clawt_config_get_account(ClawtConfig *self,
+                                           const gchar *account_id);
+
+/**
+ * clawt_config_add_account:
+ * @self: a #ClawtConfig
+ * @account_id: the new account's id
+ * @provider: the agent CLI the login is for
+ * @config_dir: the directory the CLI keeps the login in
+ * @description: (nullable): whose login this is
+ * @error: return location for a #GError
+ *
+ * Adds an entry to `accounts:`.  Saving is the caller's.
+ *
+ * Returns: %TRUE when added; %FALSE for a bad or taken id, or a CLI that
+ *   cannot take an account
+ */
+gboolean clawt_config_add_account(ClawtConfig  *self,
+                                  const gchar  *account_id,
+                                  const gchar  *provider,
+                                  const gchar  *config_dir,
+                                  const gchar  *description,
+                                  GError      **error);
+
+/**
+ * clawt_config_remove_account:
+ * @self: a #ClawtConfig
+ * @account_id: which account
+ *
+ * Removes an entry from `accounts:`.  Agents naming it become shadows at
+ * the next revalidation, which is the honest answer: they can no longer
+ * log in as it.
+ *
+ * Returns: %TRUE when an entry was removed
+ */
+gboolean clawt_config_remove_account(ClawtConfig *self,
+                                     const gchar *account_id);
+
+/**
+ * clawt_account_check:
+ * @account: the account
+ * @agent_provider: the provider the agent runs on
+ * @error: return location for why it cannot be used
+ *
+ * Whether an agent on @agent_provider can log in as @account: the two must
+ * be the same CLI, and the CLI must be one that can be pointed at another
+ * login at all.  The second is asked of the CLI client itself, not of a
+ * list kept here.
+ *
+ * Returns: %TRUE when the agent can use the account
+ */
+gboolean clawt_account_check(const ClawtAccountSpec *account,
+                             const gchar            *agent_provider,
+                             GError                **error);
+
+/**
  * clawt_config_get_teams:
  * @self: a #ClawtConfig
  *

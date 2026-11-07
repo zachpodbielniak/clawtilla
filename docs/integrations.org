@@ -442,6 +442,21 @@ hand over.
 [[file:connectors.org][connectors.org]] covers the catalogue, the OAuth flows, renewal, revoking,
 and exactly what the broker does and does not protect against.
 
+** libresearch -- web search, LQL and cited research
+
+A libresearch server, reached over its REST API and never linked. It gives the agents in scope the ~clawtilla_web_search~, ~clawtilla_web_fetch~, ~clawtilla_web_query~ (LQL), ~clawtilla_web_research~ and ~clawtilla_web_query_environment~ tools, and the bundled =web-research= skill that teaches them.
+
+#+begin_src yaml
+integrations:
+  - name: search
+    type: libresearch
+    scope: all
+    url: "http://127.0.0.1:8087"
+    token: {file: ~/.clawtilla/secrets/libresearch.token}   # only with api.require_token
+#+end_src
+
+Not an =mcp= entry, because the tools are clawtilla's own and answered on the daemon's deferred path: a research run takes minutes, and an MCP server of its own would put that wait in a process nobody supervises. =one_per_agent=: two servers would be two answers to one question. Health check: the server's LQL environment answers. Everything else -- the tools, how agents learn LQL, what each error means -- is in [[file:research.org][research.org]].
+
 ** notify -- when an agent is blocked on you, or has broken
 
 ~clawtilla_message_user~ puts an agent's question where you will see it

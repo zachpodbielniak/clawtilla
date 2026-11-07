@@ -1486,6 +1486,43 @@ clawt_daemon_handle_agent(
         }
 
         /*
+         * An account is checked where it arrives, against the provider
+         * the agent will have -- the one being set, or its current one.
+         * Accepting it and shadowing the agent at the next revalidation
+         * would report "saved" for a login the agent will never use.
+         */
+        if ((g_strcmp0(key, "model.account") == 0 && value != NULL && *value != '\0') ||
+            g_strcmp0(key, "model.provider") == 0) {
+            const gchar *account_id = g_strcmp0(key, "model.account") == 0
+                ? value : clawt_agent_config_get_string(config, "model.account");
+            const gchar *provider = g_strcmp0(key, "model.provider") == 0
+                ? value : clawt_agent_config_get_string(config, "model.provider");
+
+            if (account_id != NULL && *account_id != '\0') {
+                g_autoptr(ClawtAccountSpec) account =
+                    clawt_config_get_account(self->config, account_id);
+                g_autoptr(GError) why = NULL;
+
+                if (account == NULL) {
+                    g_autofree gchar *message = g_strdup_printf(
+                        "there is no account '%s'; declare it under accounts: "
+                        "or `clawtilla account add`", account_id);
+
+                    return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND, message);
+                }
+                if (!clawt_account_check(account, provider, &why)) {
+                    g_autofree gchar *message = g_strdup_printf(
+                        "%s%s", why->message,
+                        g_strcmp0(key, "model.provider") == 0
+                            ? "; clear model.account or pick a matching one first" : "");
+
+                    return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                               message);
+                }
+            }
+        }
+
+        /*
          * Dispatch on what the schema says the key *is*, rather than
          * writing every value as a scalar.
          *

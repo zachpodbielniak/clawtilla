@@ -198,9 +198,26 @@ on_save_agent(GtkButton *button, gpointer user_data)
                                   gtk_editable_get_text(
                             GTK_EDITABLE(self->skills_row)));
 
+    /*
+     * The account is cleared before the provider changes and set after:
+     * the daemon checks the pair, and setting a codex provider while the
+     * agent still names a Claude login is refused.
+     */
+    if (self->account_row != NULL && self->account_ids != NULL)
+        ok &= clawt_gtk_apply_setting(self, "model.account", "");
+
     if (clawt_gtk_chooser_provider_id(&self->inspector_models) != NULL)
         ok &= clawt_gtk_apply_setting(self, "model.provider",
                                       clawt_gtk_chooser_provider_id(&self->inspector_models));
+
+    if (self->account_row != NULL && self->account_ids != NULL) {
+        guint chosen = adw_combo_row_get_selected(ADW_COMBO_ROW(self->account_row));
+
+        if (chosen < self->account_ids->len &&
+            *(const gchar *)g_ptr_array_index(self->account_ids, chosen) != '\0')
+            ok &= clawt_gtk_apply_setting(self, "model.account",
+                                          g_ptr_array_index(self->account_ids, chosen));
+    }
 
     model = clawt_gtk_chooser_model(&self->inspector_models);
 
@@ -567,6 +584,74 @@ index_of(const gchar *const *values, const gchar *wanted)
     }
 
     return 0;
+}
+
+/*
+ * The accounts this agent can log in as, asked of the daemon -- which
+ * answers with the same check agent.set applies, so the picker offers
+ * only what saving will accept.  The current value is always present
+ * even when it is no longer usable: a combo that cannot show the value
+ * would replace it on the next save without anybody choosing to.
+ */
+static GtkWidget *
+account_row_build(ClawtWindow *self, const gchar *current)
+{
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GtkStringList) labels = gtk_string_list_new(NULL);
+    GtkWidget *row = adw_combo_row_new();
+    JsonArray *accounts = NULL;
+    guint selected = 0;
+    guint i;
+
+    if (self->account_ids == NULL)
+        self->account_ids = g_ptr_array_new_with_free_func(g_free);
+    g_ptr_array_set_size(self->account_ids, 0);
+
+    g_ptr_array_add(self->account_ids, g_strdup(""));
+    gtk_string_list_append(labels, "The CLI's own login");
+
+    reply = clawt_window_request(self, "account.list",
+                                 clawt_build_payload("agent", self->selected_agent, NULL));
+    if (reply != NULL && clawt_payload_of(reply) != NULL &&
+        json_object_has_member(clawt_payload_of(reply), "accounts"))
+        accounts = json_object_get_array_member(clawt_payload_of(reply), "accounts");
+
+    for (i = 0; accounts != NULL && i < json_array_get_length(accounts); i++) {
+        JsonObject *account = json_array_get_object_element(accounts, i);
+        const gchar *id = clawt_json_string(account, "id", NULL);
+        gboolean usable = clawt_json_boolean(account, "usable", FALSE);
+        g_autofree gchar *label = NULL;
+
+        if (id == NULL || (!usable && g_strcmp0(id, current) != 0))
+            continue;
+
+        label = g_strdup_printf("%s%s%s%s", id,
+                                clawt_json_string(account, "description", NULL) != NULL ? " -- " : "",
+                                clawt_json_string(account, "description", ""),
+                                usable ? "" : " (cannot be used: see the agent's warning)");
+        if (g_strcmp0(id, current) == 0)
+            selected = self->account_ids->len;
+        g_ptr_array_add(self->account_ids, g_strdup(id));
+        gtk_string_list_append(labels, label);
+    }
+
+    /* Named but not declared at all: still shown, still the value. */
+    if (current != NULL && *current != '\0' && selected == 0) {
+        g_autofree gchar *label = g_strdup_printf("%s (not declared)", current);
+
+        selected = self->account_ids->len;
+        g_ptr_array_add(self->account_ids, g_strdup(current));
+        gtk_string_list_append(labels, label);
+    }
+
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), "Account");
+    adw_combo_row_set_model(ADW_COMBO_ROW(row), G_LIST_MODEL(labels));
+    adw_combo_row_set_selected(ADW_COMBO_ROW(row), selected);
+    clawt_gtk_set_row_hint(row,
+        "Which login this agent's CLI uses. Add one with "
+        "`clawtilla account add`, then `clawtilla account login`.");
+
+    return row;
 }
 
 static GtkWidget *
@@ -2030,6 +2115,14 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
                                  clawt_json_string(agent, "effort",
                                                    "medium"));
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), self->effort_row);
+
+    self->account_row = account_row_build(
+        self,
+        (payload != NULL && json_object_has_member(payload, "settings"))
+            ? clawt_json_string(json_object_get_object_member(payload, "settings"),
+                                "model.account", NULL)
+            : NULL);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), self->account_row);
 
     self->computer_row = combo_row("Computer", clawt_gtk_computer_type_nicks(),
                                    clawt_json_string(agent, "computer",

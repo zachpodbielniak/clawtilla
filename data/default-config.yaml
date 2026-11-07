@@ -798,6 +798,21 @@ skills:
 # # did before there were any.
 # teams: []
 
+# # Separate logins for an agent CLI, so two agents on one machine can
+# # spend two subscriptions.
+# #
+# # Each account is a directory the CLI keeps its login and settings in;
+# # an agent picks one with agents.model.account. Claude Code and the tmux
+# # variant use CLAUDE_CONFIG_DIR, codex CODEX_HOME, grok GROK_HOME and
+# # opencode its XDG directories. cursor and antigravity keep their login
+# # under $HOME and cannot take an account: an agent that names one for
+# # them is disabled with that reason rather than run on the default
+# # login.
+# #
+# # The directory is not created. Log in once with `clawtilla account
+# # login ID`, which runs the CLI's own login against it.
+# accounts: []
+
 # # Named integrations, each handed to one agent, some agents or all of them.
 # #
 # # An integration is a connection to something outside the fleet, kept in

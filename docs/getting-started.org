@@ -334,6 +334,7 @@ loginctl enable-linger $USER
 - [[file:connectors.org][connectors.org]] -- connected accounts: agents get the tools, the credential stays here
 - [[file:routines.org][routines.org]] -- standing work on a schedule
 - [[file:skills.org][skills.org]] -- reusable procedures, and why an imported one arrives disabled
+- [[file:research.org][research.org]] -- web search, LQL and cited research through a libresearch server
 - [[file:automation.org][automation.org]] -- reacting to the fleet, and acting on it, from a pod
 - [[file:mailboxes.org][mailboxes.org]] -- queue semantics, and how to reason about a stuck queue
 - [[file:security.org][security.org]] -- the threat model, stated plainly

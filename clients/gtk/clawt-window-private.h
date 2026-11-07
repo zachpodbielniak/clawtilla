@@ -383,6 +383,13 @@ struct _ClawtWindow {
      */
     GtkWidget         *skills_row;
     GtkWidget         *effort_row;
+    /*
+     * Which login the agent's CLI uses. The ids are kept beside the
+     * combo because its labels say more than the id ("work -- Claude
+     * Code") and saving needs the id back.
+     */
+    GtkWidget         *account_row;
+    GPtrArray         *account_ids;
     GtkWidget         *computer_row;
     GtkWidget         *restart_row;
     GtkWidget         *autostart_row;

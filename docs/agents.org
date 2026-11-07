@@ -283,6 +283,42 @@ The Claude Code backend takes aliases rather than dated model ids --
 a new snapshot lands and a pinned id quietly does not.  ~fable~ is the
 one to reach for when an agent writes prose rather than code.
 
+*** Accounts: a separate login per agent
+
+An agent's CLI normally runs as whoever is logged in to it on the daemon's machine. An *account* is a directory the CLI keeps another login in, so two agents can spend two subscriptions:
+
+#+begin_src yaml
+accounts:
+  - id: work
+    provider: claude-code
+    config_dir: ~/.claude-work
+    description: "the work subscription"
+
+agents:
+  - id: researcher
+    model:
+      provider: claude-code
+      account: work
+#+end_src
+
+#+begin_src bash
+clawtilla account add work claude-code ~/.claude-work "the work subscription"
+clawtilla account login work      # runs the CLI's own login against that directory
+clawtilla agent set researcher model.account work
+#+end_src
+
+The account becomes ~ai.config_dir~ in the agent's generated config, and libreclaw points the variable the CLI reads at it: =CLAUDE_CONFIG_DIR= for Claude Code and the tmux variant, =CODEX_HOME= for codex, =GROK_HOME= for grok, and the three XDG roots for opencode. It travels through the generated config rather than the agent's environment, so an embedded runtime -- which never sees =agents.env= -- uses it too.
+
+Three things are refused rather than run on the default login, because spending somebody else's subscription and saying nothing is the failure this exists to prevent:
+
+- an account id that is not declared;
+- an account for a different CLI from the agent's provider (a Claude login on a codex agent would point =CODEX_HOME= at =~/.claude=);
+- an account on cursor or antigravity, which keep their login under =$HOME= where nothing moves it.
+
+Each is refused by ~agent.set~ where it arrives, and an agent that reaches that state another way (a hand edit, a removed account) becomes a shadow with the reason. Changing an agent's provider while it names an account for another CLI is refused too: clear ~model.account~ first. Both clients clear it before saving a provider change and set it after.
+
+=clawtilla account login= runs on the machine you type it on. Run it where the daemon runs, because that is where the agents' CLIs read the directory.
+
 *** An agent runs on a CLI backend, and only on a CLI backend
 
 libreclaw drives command-line tools, not HTTP APIs.  Its provider table

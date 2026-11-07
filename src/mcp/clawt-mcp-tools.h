@@ -34,6 +34,8 @@
 #include "task/clawt-handoff-store.h"
 #include "task/clawt-task-manager.h"
 
+#include <ai-glib.h>
+
 G_BEGIN_DECLS
 
 #define CLAWT_TYPE_MCP_TOOLS (clawt_mcp_tools_get_type())
@@ -272,6 +274,37 @@ void clawt_mcp_tools_set_handoff_func(ClawtMcpTools       *self,
                                       ClawtMcpHandoffFunc  func,
                                       gpointer             user_data,
                                       GDestroyNotify       destroy);
+
+/**
+ * ClawtMcpSearchFunc:
+ * @agent_id: the agent asking
+ * @user_data: what was registered with the hook
+ * @error: why the agent has no search server, when it has none
+ *
+ * The libresearch server an agent's integration names, as a client.
+ *
+ * Returns: (transfer full) (nullable): the client, or %NULL when the
+ *   agent has no `libresearch` integration
+ */
+typedef AiLibresearchSearch *(*ClawtMcpSearchFunc)(const gchar  *agent_id,
+                                                   gpointer      user_data,
+                                                   GError      **error);
+
+/**
+ * clawt_mcp_tools_set_search_func:
+ * @self: a #ClawtMcpTools
+ * @func: (nullable) (scope notified): the hook
+ * @user_data: passed to @func
+ * @destroy: frees @user_data
+ *
+ * Unset, or answering %NULL for an agent, the `clawtilla_web_*` tools are
+ * not offered to it: a search tool that can only be refused is one an
+ * agent will keep calling.
+ */
+void clawt_mcp_tools_set_search_func(ClawtMcpTools      *self,
+                                     ClawtMcpSearchFunc  func,
+                                     gpointer            user_data,
+                                     GDestroyNotify      destroy);
 
 /**
  * clawt_mcp_tools_set_handoff_store:

@@ -1901,7 +1901,8 @@ static const gchar TOOL_LIST_END[] =
  * other end is in a room with four other people.
  */
 static void
-describe_integration(GString *out, ClawtIntegrationBinding *binding)
+describe_integration(GString *out, ClawtIntegrationBinding *binding,
+                     ClawtAgentConfig *agent)
 {
     const ClawtIntegrationInfo *info =
         clawt_integration_binding_get_info(binding);
@@ -2121,6 +2122,48 @@ describe_integration(GString *out, ClawtIntegrationBinding *binding)
         return;
     }
 
+    if (g_strcmp0(info->id, "libresearch") == 0) {
+        g_auto(GStrv) skill_dirs = clawt_skill_provision_paths(agent, FALSE);
+
+        g_string_append_printf(out,
+            "A libresearch server at ~%s~: web search across many engines,\n"
+            "LQL queries over the results, and cited research answers. Use\n"
+            "it through ~clawtilla_web_search~, ~clawtilla_web_fetch~,\n"
+            "~clawtilla_web_query~ (LQL), ~clawtilla_web_research~ and\n"
+            "~clawtilla_web_query_environment~.\n\n"
+            "When a question needs structure -- only some sites, recent\n"
+            "results, file types, star counts, counting -- write LQL instead\n"
+            "of searching and sifting by hand:\n\n"
+            "#+begin_example\n"
+            "search \"gtk4 list view\", category: CODE | filter site(\"docs.gtk.org\")\n"
+            "  and published >= now() - 30d | sort score DESC | limit 5 | fields title, url\n"
+            "#+end_example\n\n"
+            "Set ~explain: true~ to check a query before running it.\n\n",
+            clawt_integration_binding_get_string(binding, "url"));
+
+        /*
+         * Where the agent's CLI loads skills, the web-research skill is the
+         * reference, assigned with the integration.  Where it has no skills
+         * concept at all (codex), the same reference is put here, because a
+         * pointer to a skill that cannot be loaded is a sentence the agent
+         * cannot act on.
+         */
+        if (skill_dirs != NULL && skill_dirs[0] != NULL) {
+            g_string_append(out,
+                "The ~web-research~ skill has the whole language and worked\n"
+                "recipes. Open it before your first non-trivial query.\n\n");
+        } else {
+            const gchar *reference = clawt_skill_bundled_file(
+                CLAWT_SKILL_BUNDLED_WEB_RESEARCH "/references/lql.md");
+
+            if (reference != NULL)
+                g_string_append_printf(out,
+                    "The LQL reference, since your CLI does not load skills:\n\n"
+                    "#+begin_example\n%s#+end_example\n\n", reference);
+        }
+        return;
+    }
+
     if (g_strcmp0(info->id, "mcp") == 0) {
         const gchar *command =
             clawt_integration_binding_get_string(binding, "command");
@@ -2181,7 +2224,7 @@ render_integrations_section(ClawtConfig *config, ClawtAgentConfig *agent)
         "a person on the other end of your reply.\n\n");
 
     for (i = 0; i < bindings->len; i++)
-        describe_integration(out, g_ptr_array_index(bindings, i));
+        describe_integration(out, g_ptr_array_index(bindings, i), agent);
 
     g_string_append_printf(out, "%s\n", TOOLS_END);
 

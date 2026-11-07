@@ -105,7 +105,65 @@ libadwaita is absent -- everything else here is headless and still useful.
 | `clawtilla-web` | the htmx web client |
 | `plugins/libclawt-plugin-*.so` | bundled plugins |
 | `Clawt-1.0.gir`, `Clawt-1.0.typelib` | introspection data |
-| `clawt-version.h`, `clawt-default-config.h` | generated headers |
+| `clawt-version.h`, `clawt-default-config.h`, `clawt-bundled-skills.h` | generated headers |
+
+## Versioning
+
+The version lives in `config.mk` (`VERSION_MAJOR`, `VERSION_MINOR`,
+`VERSION_MICRO`) and every release on master carries an annotated tag
+`v<MAJOR>.<MINOR>.<MICRO>` (e.g. `v0.2.0`) on the commit that sets it.
+`v0.1.0` is the baseline: the tree as it stood when this section was
+written.
+
+- **Micro** (+1): every change landing on master that changes what is
+  built: bug fixes, patches, small features, new options or tools, polish
+  (`fix`, `perf`, small `feat`, `refactor`). Changes that touch only docs,
+  tests or tooling (`docs`, `test`, `ci`, `chore`) do not bump; they ride
+  with the next release.
+- **Minor** (+1, micro back to 0): a major feature (a new subsystem, a new
+  page in both clients, a new kind of integration or computer), or anything
+  that breaks compatibility: an IPC frame kind or member, a config key, the
+  C API or ABI of `libclawt`, the GIR API, or CLI verbs and output.
+- **Major**: never bumped without asking the user first.
+- The library soname and GIR namespace (`Clawt-1.0`) are separate and change
+  only with an incompatible API generation.
+
+One bump per landing, the highest kind it contains: a run of commits that
+lands together bumps once (minor if any is a major feature, else micro).
+
+- **Every landing is released at once.** Each landing on master that
+  changes the build bumps, is tagged and is pushed immediately with its
+  tag; nothing that changes the build waits on master untagged. Tag only
+  after `make clean all`, `make test`, `make DEBUG=1 ASAN=1 clean all test`,
+  `make docs-check` and `make parity` pass with zero warnings; a fix a later
+  run needs lands as its own micro.
+- **Working directly on master** (the usual case here -- clawtilla is the
+  exception to the worktree habit): bump `config.mk` in the change's own
+  commit, or for a run of commits in the last one, then tag that commit and
+  push it with the tag:
+
+  ```bash
+  $EDITOR config.mk                        # bump VERSION_MINOR or VERSION_MICRO
+  make clean all && make test && make DEBUG=1 ASAN=1 clean all test
+  make docs-check && make parity
+  git commit                               # the message names the new version
+  git tag -a v0.3.0 -m 'v0.3.0'
+  git push origin master v0.3.0
+  ```
+
+- **Merging a branch** when one is used: bump in the merge commit itself
+  (`git merge --no-ff --no-commit`), so the tag marks the merge and the
+  branch never carries a version.
+- Tag only a commit whose `config.mk` matches the tag, after its build and
+  tests pass; never move or delete a pushed tag; a broken release is fixed
+  by the next micro.
+- **Dependencies are pinned to tags.** `deps/libreclaw` is bumped
+  deliberately to a tagged libreclaw (`build(deps): libreclaw vX.Y.Z -- why`),
+  which in turn pins a tagged ai-glib, and the suite runs against the new
+  pin before the bump lands. Both upstreams follow the same rule: a change
+  needed here lands there first, tagged, and is then pinned.
+- A version bump is always pushed with its tag. Anything else still waits
+  for the user to ask.
 
 ## Code Style
 
@@ -397,6 +455,16 @@ only on a success path is NULL on the failure path that needs it.
 `GTask` pushes its own context around its callback, which makes some of this
 work by luck depending on how the caller was reached. That is not a plan.
 
+**libsoup is the seventh, and it is stricter.** A `SoupSession` is bound to
+the context that was thread-default when it was *created*, and libsoup
+attaches new sources to the thread-default from inside its own callbacks --
+so a session built under the process default and used from another context,
+or a session's context iterated without being pushed, sends its request and
+never reads the answer. No error, no warning; measured in a ten-line program
+before it was believed. `web_call_start()` pushes the tools' context
+*before* it asks the search hook for a client, and the web-research test
+pushes the context for the whole wait, as a running daemon does.
+
 **A blocking API taken onto a worker thread must bring its own context.** A
 worker started by `g_task_run_in_thread()` has no thread-default, so anything
 that reaches for one gets the **global default** -- the loop the window is
@@ -562,6 +630,20 @@ critical fired.
 
 ### ai-glib
 
+- **Accounts are a class datum, not a list here.** `AiCliClientClass.config_dir_env`
+  names the variables an account directory sets for each CLI, and NULL means
+  the CLI keys its login on `$HOME` and refuses one. `clawt_account_check()`
+  asks a probe client (`ai_cli_client_supports_config_dir()`) rather than
+  keeping its own table of which providers can.
+- **One `.mcp.json`, every CLI's dialect.** libreclaw translates the
+  workspace's `.mcp.json` with `ai_mcp_config_endpoint_for()` for codex, grok
+  and opencode, which never read it; before 0.27.0 those agents had none of
+  clawtilla's tools. codex is never given a server's `env` -- it would sit in
+  argv -- so an `mcp` integration with an environment does not reach a codex
+  agent, and the session log says which.
+- `AiLibresearchSearch` is the web tools' client. Its requests are async on
+  purpose; render its documents with `ai_libresearch_format_*()` so both the
+  tools and any client show the same thing.
 - Build the designer's executor with `ai_tool_executor_new_empty()`, never
   `ai_tool_executor_new()` -- the latter silently grants `bash`, `read`,
   `write` and `edit`, and `unregister()` cannot take built-ins back.
@@ -1603,4 +1685,5 @@ versions apart.
 - Never apply a size limit to something already read. Bound what accumulates
 - Never grant a path in a predicate without granting it in whatever builds
   the sandbox
-- Never push to master without approval
+- Never push to master without approval -- except a version bump, which is
+  pushed with its tag at once (see Versioning)

@@ -100,6 +100,19 @@ static const ClawtIntegrationField fields[] = {
       NULL,
       CLAWT_FIELD_BOOLEAN, NULL, NULL, NULL, NULL, FALSE },
 
+    /* ── libresearch ──────────────────────────────────────────────── */
+
+    { "libresearch", "url", "Server",
+      "Where libresearchd answers. Its own default is local.",
+      "http://127.0.0.1:8087",
+      CLAWT_FIELD_TEXT, NULL, NULL, NULL, NULL, TRUE },
+
+    { "libresearch", "token", "Token",
+      "Only when the server sets api.require_token. A reference -- "
+      "env:NAME, file:PATH or command:... -- never the token itself.",
+      "file:~/.clawtilla/secrets/libresearch.token",
+      CLAWT_FIELD_SECRET, NULL, NULL, NULL, NULL, FALSE },
+
     /* ── email ───────────────────────────────────────────────────── */
 
     { "email", "username", "Mailbox",
@@ -303,6 +316,7 @@ static const struct {
     { "cmacs",     "Emacs" },
     { "mcp",       "MCP server" },
     { "connector", "Connected account" },
+    { "libresearch", "Web research (libresearch)" },
     { "notify",    "Notifications" }
 };
 

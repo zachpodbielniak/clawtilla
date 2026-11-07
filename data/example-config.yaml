@@ -994,6 +994,38 @@ teams:
     # what gets reported.
     skills: []
 
+# Separate logins for an agent CLI, so two agents on one machine can
+# spend two subscriptions.
+#
+# Each account is a directory the CLI keeps its login and settings in;
+# an agent picks one with agents.model.account. Claude Code and the tmux
+# variant use CLAUDE_CONFIG_DIR, codex CODEX_HOME, grok GROK_HOME and
+# opencode its XDG directories. cursor and antigravity keep their login
+# under $HOME and cannot take an account: an agent that names one for
+# them is disabled with that reason rather than run on the default
+# login.
+#
+# The directory is not created. Log in once with `clawtilla account
+# login ID`, which runs the CLI's own login against it.
+accounts:
+
+    # Identifier, and what agents.model.account names.
+    # Required.
+  - id: null
+
+    # The agent CLI this login is for: claude-code, claude-tmux, codex-cli,
+    # grok-build or opencode. An agent may use the account only when its own
+    # provider is the same CLI.
+    # Required.
+    provider: null
+
+    # The directory the CLI keeps this login in. ~ is expanded.
+    # Required.
+    config_dir: null
+
+    # Whose login this is, or what it is for.
+    description: null
+
 # Named integrations, each handed to one agent, some agents or all of them.
 #
 # An integration is a connection to something outside the fleet, kept in
@@ -1758,6 +1790,10 @@ agents:
 
       # Reasoning effort: low, medium, high, xhigh or max, when the model has one.
       effort: null
+
+      # Which entry of accounts this agent's CLI logs in as. Unset is the CLI's
+      # default login. The account's provider must be this agent's provider.
+      account: null
 
       # libreclaw smart-routing profile: off, eco, auto, premium or free.
       #

@@ -58,6 +58,14 @@ static const gchar *const connector_required[] = {
     "provider", NULL
 };
 
+static const gchar *const libresearch_required[] = {
+    "url", NULL
+};
+
+static const gchar *const libresearch_credentials[] = {
+    "token", NULL
+};
+
 static const ClawtIntegrationInfo integrations[] = {
     { "matrix", CLAWT_INTEGRATION_KIND_CHANNEL,
       "Chat over Matrix, including bridged Discord and Signal rooms.",
@@ -130,6 +138,21 @@ static const ClawtIntegrationInfo integrations[] = {
      * machine and a phone push while you are not is two instances doing
      * their jobs, not a conflict.
      */
+    /*
+     * A libresearch server, reached over its REST API -- never linked.
+     *
+     * Not an `mcp` entry, because the tools are clawtilla's own
+     * (clawtilla_web_*), answered by the daemon on the deferred path: a
+     * research run takes minutes, and an MCP server of its own would put
+     * that wait in a process nobody supervises.  one_per_agent: two
+     * servers would be two answers to "search the web" with nothing to
+     * say which was meant.
+     */
+    { "libresearch", CLAWT_INTEGRATION_KIND_TOOLS,
+      "Web search, LQL queries and cited research through a libresearch server.",
+      libresearch_required, libresearch_credentials, NULL,
+      NULL, TRUE, FALSE },
+
     { "notify", CLAWT_INTEGRATION_KIND_NOTIFY,
       "Tell you when an agent is blocked on you or has broken.",
       NULL, NULL, NULL,
@@ -1138,6 +1161,33 @@ on_imap_reached(GObject *source, GAsyncResult *result, gpointer user_data)
                 timeout);
 }
 
+static void
+on_libresearch_health(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    GTask *task = user_data;
+    ClawtIntegrationBinding *binding = g_task_get_task_data(task);
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) doc = NULL;
+    g_autoptr(ClawtSecretRef) token = clawt_integration_binding_get_secret(binding, "token");
+
+    doc = ai_libresearch_search_request_finish(AI_LIBRESEARCH_SEARCH(source), result, &error);
+
+    if (doc != NULL ||
+        (token != NULL && g_error_matches(error, AI_ERROR, AI_ERROR_INVALID_API_KEY)))
+        g_task_return_boolean(task, TRUE);
+    else if (g_error_matches(error, AI_ERROR, AI_ERROR_INVALID_API_KEY))
+        g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_AUTH,
+                                "the server requires a token (api.require_token); set token");
+    else if (g_error_matches(error, AI_ERROR, AI_ERROR_PERMISSION_DENIED))
+        g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_AUTH,
+                                "refused: LQL is off on the server (lql.enabled: false), "
+                                "or the token is wrong -- %s", error->message);
+    else
+        g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                                "%s", error->message);
+    g_object_unref(task);
+}
+
 void
 clawt_integration_health_check_async(ClawtIntegrationBinding *binding,
                                      guint                    timeout_seconds,
@@ -1373,6 +1423,25 @@ clawt_integration_health_check_async(ClawtIntegrationBinding *binding,
         g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
                                 "neither command nor url is set");
         g_object_unref(task);
+        return;
+    }
+
+    /*
+     * A libresearch server is asked for its LQL environment: it is the
+     * cheapest request that proves the API answers *and* that LQL is on,
+     * which is what the web tools need.  The token is not resolved here --
+     * a password manager behind it may block -- so a 401 from a server
+     * that wants one, with one configured, is reachable rather than
+     * broken.
+     */
+    if (g_strcmp0(id, "libresearch") == 0) {
+        g_autoptr(AiLibresearchSearch) client = ai_libresearch_search_new(
+            clawt_integration_binding_get_string(binding, "url"), NULL);
+
+        g_task_set_task_data(task, clawt_integration_binding_ref(binding),
+                             (GDestroyNotify)clawt_integration_binding_unref);
+        ai_libresearch_search_environment_async(client, cancellable,
+                                                on_libresearch_health, task);
         return;
     }
 

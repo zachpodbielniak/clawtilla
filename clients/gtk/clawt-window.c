@@ -5885,6 +5885,7 @@ clawt_window_finalize(GObject *object)
      * were added to, which GTK has already taken apart.
      */
     g_clear_pointer(&self->schema_rows, g_ptr_array_unref);
+    g_clear_pointer(&self->account_ids, g_ptr_array_unref);
 
     /*
      * The same rule for the switcher's bookkeeping: these hold borrowed

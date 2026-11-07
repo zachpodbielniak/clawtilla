@@ -175,6 +175,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/skill/clawt-skill-library.h \
 	$(SRCDIR)/skill/clawt-skill-binding.h \
 	$(SRCDIR)/skill/clawt-skill-provision.h \
+	$(SRCDIR)/skill/clawt-skill-bundled.h \
 	$(SRCDIR)/skill/clawt-skill-commands.h \
 	$(SRCDIR)/ai/clawt-model-catalog.h \
 	$(SRCDIR)/ai/clawt-agent-designer.h \
@@ -209,6 +210,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-room.c \
 	$(SRCDIR)/core/daemon-turn.c \
 	$(SRCDIR)/core/daemon-handoff.c \
+	$(SRCDIR)/core/daemon-search.c \
 	$(SRCDIR)/core/daemon-mailbox.c \
 	$(SRCDIR)/core/daemon-task.c \
 	$(SRCDIR)/core/daemon-computer.c \
@@ -329,6 +331,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/skill/clawt-skill-library.c \
 	$(SRCDIR)/skill/clawt-skill-binding.c \
 	$(SRCDIR)/skill/clawt-skill-provision.c \
+	$(SRCDIR)/skill/clawt-skill-bundled.c \
 	$(SRCDIR)/skill/clawt-skill-commands.c \
 	$(SRCDIR)/ai/clawt-model-catalog.c \
 	$(SRCDIR)/ai/clawt-agent-designer.c \
@@ -458,6 +461,20 @@ $(DEFAULT_CONFIG_H): $(DEFAULT_CONFIG_SRC) | $(OUTDIR)
 	@printf 'static const gchar default_config_yaml[] =\n' > $@
 	@awk '{ gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); printf "    \"%s\\n\"\n", $$0 }' $< >> $@
 	@printf '    ;\n' >> $@
+
+# The bundled skills (data/skills/<name>/...), embedded so the daemon can
+# install them into skills.dir without knowing where data was installed.
+# Adding a skill means listing its files here.
+BUNDLED_SKILL_FILES = \
+	$(DATADIR_SRC)/skills/web-research/SKILL.md \
+	$(DATADIR_SRC)/skills/web-research/references/lql.md
+BUNDLED_SKILLS_H = $(OUTDIR)/clawt-bundled-skills.h
+
+$(BUNDLED_SKILLS_H): $(BUNDLED_SKILL_FILES) tools/clawt-embed-files.sh | $(OUTDIR)
+	@echo "Generating $(notdir $@) from data/skills..."
+	@bash tools/clawt-embed-files.sh $@ $(DATADIR_SRC)/skills $(BUNDLED_SKILL_FILES)
+
+$(OBJDIR)/skill/clawt-skill-bundled.o: $(BUNDLED_SKILLS_H)
 
 # Every library object needs the version header and the dep archives first.
 $(LIB_OBJECTS): $(OUTDIR)/clawt-version.h $(LIBRECLAW_STATIC)
