@@ -238,4 +238,59 @@ gboolean     clawt_ipc_payload_boolean(JsonObject  *payload,
  */
 gchar *clawt_ipc_reply_refusal_text(JsonNode *payload, guint *n_refused);
 
+/**
+ * clawt_ipc_reply_object:
+ * @reply: (nullable): a reply payload as a client received it
+ *
+ * The reply's object, or %NULL.
+ *
+ * A node can hold the object *type* and no object --
+ * json_node_new(JSON_NODE_OBJECT) builds exactly that, and every
+ * payload-less reply once arrived as one -- so JSON_NODE_HOLDS_OBJECT()
+ * is not a pointer check.  One reader, total over every #JsonNode, so a
+ * client cannot get it right in one page and wrong in the next.
+ *
+ * Returns: (transfer none) (nullable): the object
+ */
+JsonObject *clawt_ipc_reply_object(JsonNode *reply);
+
+/**
+ * clawt_ipc_payload_new:
+ * @first_key: (nullable): the first member name, or %NULL for `{}`
+ * @...: its string value, then further name/value pairs, %NULL-terminated
+ *
+ * Builds a request payload from string pairs.
+ *
+ * A %NULL value drops the member rather than sending null: the daemon
+ * treats absent and null differently in places, and a caller passing
+ * %NULL almost always means "I do not have one".  Every value is a
+ * string; the daemon's readers accept "true"/"false" for booleans for
+ * exactly this reason (see clawt_ipc_payload_boolean()).
+ *
+ * Returns: (transfer full): a payload object
+ */
+JsonNode *clawt_ipc_payload_new(const gchar *first_key, ...)
+    G_GNUC_NULL_TERMINATED;
+
+/**
+ * clawt_ipc_reply_toast_text:
+ * @error: (nullable): the request's error, or %NULL if it succeeded
+ * @reply: (nullable): the reply, when it succeeded
+ *
+ * What a client should say about a request somebody just made, or %NULL
+ * for nothing.
+ *
+ * A failure is said -- except %CLAWT_ERROR_NOT_CONNECTED, which is not
+ * an answer to anything somebody did but a condition the window is in,
+ * held open by its connection banner: a window opened against a stopped
+ * daemon makes a dozen requests before it draws, and a dozen copies of
+ * one sentence stacked over the control that leads out of it helps
+ * nobody.  A success is said only when it left an agent behind
+ * (clawt_ipc_reply_refusal_text()).  Every graphical client applies this
+ * to every reply, so it lives here rather than in three copies.
+ *
+ * Returns: (transfer full) (nullable): the text to show
+ */
+gchar *clawt_ipc_reply_toast_text(const GError *error, JsonNode *reply);
+
 G_END_DECLS

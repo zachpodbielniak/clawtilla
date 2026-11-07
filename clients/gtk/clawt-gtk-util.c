@@ -56,13 +56,16 @@ clawt_json_boolean(JsonObject *object, const gchar *key, gboolean fallback)
     return json_object_get_boolean_member(object, key);
 }
 
+/*
+ * Thin names over libclawt's readers, kept because every page in this
+ * client spells them this way.  The rules themselves -- an object type
+ * holding no object, a NULL value dropping its member -- live in
+ * src/ipc/clawt-ipc-proto.c, shared with clawtilla-lrg.
+ */
 JsonObject *
 clawt_payload_of(JsonNode *reply)
 {
-    if (reply == NULL || !JSON_NODE_HOLDS_OBJECT(reply))
-        return NULL;
-
-    return json_node_get_object(reply);
+    return clawt_ipc_reply_object(reply);
 }
 
 JsonNode *
@@ -72,6 +75,12 @@ clawt_build_payload(const gchar *first_key, ...)
     const gchar *key = first_key;
     va_list args;
 
+    /*
+     * Not a call to clawt_ipc_payload_new(): C cannot forward a va_list
+     * into a variadic function, and a v-variant in the public API for
+     * one caller is more surface than this loop.  The NULL-drops rule is
+     * the same and test-client-rules.c pins both.
+     */
     json_builder_begin_object(builder);
 
     va_start(args, first_key);
@@ -79,11 +88,6 @@ clawt_build_payload(const gchar *first_key, ...)
     while (key != NULL) {
         const gchar *value = va_arg(args, const gchar *);
 
-        /*
-         * A NULL value drops the member rather than sending null.  The
-         * daemon treats absent and null differently in places, and the
-         * caller almost always means "I do not have one".
-         */
         if (value != NULL) {
             json_builder_set_member_name(builder, key);
             json_builder_add_string_value(builder, value);

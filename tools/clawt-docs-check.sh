@@ -370,6 +370,72 @@ check_event_kind_coverage () {
     done
 }
 
+#
+# clawtilla-lrg's own documentation.
+#
+# Three things that drift silently: a page file added to the client with
+# no word in the docs, an appearance key only this client reads that the
+# docs never name, and a value of one of its settings the docs leave out
+# -- each invisible to every other check, because none sends a frame,
+# names a config key or registers a tool.
+#
+# Every clients/lrg/*.c must be named in docs/lrg-client.org (the file
+# table there is the map of the client), every `lrg_*` key the appearance
+# parser reads must appear, and every nick in the three lrg_* tables must
+# appear in =verbatim= markup.  Read from the code, never a list here.
+#
+check_lrg_client_docs () {
+    local_doc="docs/lrg-client.org"
+
+    [ -d clients/lrg ] || return 0
+
+    LRG_DOC_TMP="$(mktemp)"
+
+    if [ ! -f "${local_doc}" ]
+    then
+        echo "docs-check: clients/lrg exists but ${local_doc} does not"
+        FAIL=1
+        return 0
+    fi
+
+    for local_file in clients/lrg/*.c
+    do
+        local_name="$(basename "${local_file}")"
+
+        if ! grep -qF "${local_name}" "${local_doc}"
+        then
+            echo "docs-check: clients/lrg/${local_name} is not described in ${local_doc}"
+            FAIL=1
+        fi
+    done
+
+    sed -n 's/.*member_string(mapping, "\(lrg_[a-z_]*\)").*/\1/p' \
+        src/config/clawt-appearance.c | sort -u > "${LRG_DOC_TMP}"
+
+    while read -r local_key
+    do
+        if ! grep -qF "${local_key}" "${local_doc}"
+        then
+            echo "docs-check: appearance key '${local_key}' is not documented in ${local_doc}"
+            FAIL=1
+        fi
+    done < "${LRG_DOC_TMP}"
+
+    sed -n 's/.*{ *CLAWT_LRG_[A-Z]*_[A-Z]*, *"\([a-z-]*\)".*/\1/p' \
+        src/config/clawt-appearance.c | sort -u > "${LRG_DOC_TMP}"
+
+    while read -r local_nick
+    do
+        if ! grep -qF "=${local_nick}=" "${local_doc}"
+        then
+            echo "docs-check: lrg setting value '${local_nick}' is not documented as =${local_nick}= in ${local_doc}"
+            FAIL=1
+        fi
+    done < "${LRG_DOC_TMP}"
+
+    rm -f "${LRG_DOC_TMP}"
+}
+
 main () {
     check_public_headers
     check_doc_config_keys
@@ -379,6 +445,7 @@ main () {
     check_cli_verb_coverage
     check_ipc_kind_coverage
     check_event_kind_coverage
+    check_lrg_client_docs
 
     if [ "${FAIL}" -ne 0 ]
     then

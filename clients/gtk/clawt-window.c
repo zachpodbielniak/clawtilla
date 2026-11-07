@@ -119,47 +119,20 @@ clawt_window_request(ClawtWindow *self, const gchar *kind, JsonNode *payload)
 
     reply = clawt_client_request(self->client, kind, payload, &error);
 
-    if (reply == NULL) {
-        /*
-         * Every failure is surfaced -- except the one the banner is
-         * already holding open.  A request that quietly did nothing is
-         * the worst outcome here: the interface would look like it had
-         * worked and the fleet would disagree.
-         *
-         * "Not connected" is the exception because it is not an answer
-         * to anything somebody just did: it is a condition the window is
-         * *in*, said once and permanently by the banner.  A window
-         * opened against a daemon that is not running makes a dozen
-         * requests before it has drawn anything, so toasting each would
-         * stack a dozen copies of one sentence over the one control
-         * that leads out of it.  Same split as the alerts panel: arrived
-         * on its own goes to the persistent surface, answers what you
-         * just did stays a toast.
-         */
-        if (!g_error_matches(error, CLAWT_ERROR, CLAWT_ERROR_NOT_CONNECTED))
-            clawt_window_toast(self, error->message);
-
-        return NULL;
-    }
-
     /*
-     * A reply can succeed and still leave an agent behind.  Seven daemon
-     * handlers re-render the fleet's agent files, and clawtilla refuses to
-     * render a `libreclaw:` block that redeclares a section it renders
-     * itself -- so a perfectly ordinary edit saves to clawtilla.yaml,
-     * reports success, and reaches nothing the agent reads.
-     *
-     * Checked here rather than at each call site, for the reason the
-     * failure toast is: a handler that grows the array later is covered
-     * without anybody remembering to look, and one that never carries it
-     * costs a member lookup.
+     * Every failure is surfaced except "not connected", which the banner
+     * is already holding open; a success is surfaced only when it left an
+     * agent behind on its old config.yaml.  The rule is
+     * clawt_ipc_reply_toast_text(), shared with clawtilla-lrg, because a
+     * request that quietly did nothing should look the same in every
+     * client -- and a handler that grows a `refused` array later is
+     * covered without anybody remembering to look.
      */
     {
-        g_autofree gchar *refused =
-            clawt_ipc_reply_refusal_text(reply, NULL);
+        g_autofree gchar *text = clawt_ipc_reply_toast_text(error, reply);
 
-        if (refused != NULL)
-            clawt_window_toast(self, refused);
+        if (text != NULL)
+            clawt_window_toast(self, text);
     }
 
     return reply;

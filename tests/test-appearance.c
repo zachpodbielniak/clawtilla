@@ -1520,6 +1520,254 @@ test_descriptions_emit_no_css(void)
     g_assert_null(strstr(css, "description"));
 }
 
+/* ── clawtilla-lrg's own keys ─────────────────────────────────────── */
+
+static void
+test_lrg_keys_default_to_zero(void)
+{
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+
+    /* zero is the shipped value, so an old file keeps its behaviour */
+    g_assert_cmpint(clawt_appearance_get_lrg_motion(appearance), ==,
+                    CLAWT_LRG_MOTION_DEFAULT);
+    g_assert_cmpint(clawt_appearance_get_lrg_material(appearance), ==,
+                    CLAWT_LRG_MATERIAL_DEFAULT);
+    g_assert_cmpint(clawt_appearance_get_lrg_background(appearance), ==,
+                    CLAWT_LRG_BACKGROUND_DEFAULT);
+    g_assert_null(clawt_appearance_get_lrg_accent(appearance));
+    g_assert_cmpfloat(clawt_appearance_get_lrg_scale(appearance), ==, 0.0);
+}
+
+static void
+test_lrg_keys_round_trip(void)
+{
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+    g_autoptr(ClawtAppearance) again = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *data = NULL;
+
+    clawt_appearance_set_lrg_motion(appearance, CLAWT_LRG_MOTION_WOBBLY);
+    clawt_appearance_set_lrg_material(appearance, CLAWT_LRG_MATERIAL_GLASS);
+    clawt_appearance_set_lrg_background(appearance,
+                                        CLAWT_LRG_BACKGROUND_PLASMA);
+    clawt_appearance_set_lrg_accent(appearance, "#F0A");
+    clawt_appearance_set_lrg_scale(appearance, 1.25);
+
+    data = clawt_appearance_to_data(appearance);
+    again = clawt_appearance_parse(data, &error);
+    g_assert_no_error(error);
+
+    g_assert_cmpint(clawt_appearance_get_lrg_motion(again), ==,
+                    CLAWT_LRG_MOTION_WOBBLY);
+    g_assert_cmpint(clawt_appearance_get_lrg_material(again), ==,
+                    CLAWT_LRG_MATERIAL_GLASS);
+    g_assert_cmpint(clawt_appearance_get_lrg_background(again), ==,
+                    CLAWT_LRG_BACKGROUND_PLASMA);
+
+    /* short hex is widened and lower-cased: one spelling for one colour */
+    g_assert_cmpstr(clawt_appearance_get_lrg_accent(again), ==, "#ff00aa");
+    g_assert_cmpfloat_with_epsilon(clawt_appearance_get_lrg_scale(again),
+                                   1.25, 1e-9);
+
+    /* and a copy carries them too */
+    {
+        g_autoptr(ClawtAppearance) copy = clawt_appearance_copy(again);
+
+        g_assert_cmpstr(clawt_appearance_get_lrg_accent(copy), ==,
+                        "#ff00aa");
+        g_assert_cmpint(clawt_appearance_get_lrg_material(copy), ==,
+                        CLAWT_LRG_MATERIAL_GLASS);
+    }
+}
+
+static gboolean
+count_warning(const gchar *domain, GLogLevelFlags level, const gchar *message,
+              gpointer user_data)
+{
+    guint *count = user_data;
+
+    (*count)++;
+    return FALSE;
+}
+
+static void
+test_lrg_unknown_nick_is_the_default(void)
+{
+    g_autoptr(ClawtAppearance) appearance = NULL;
+    GLogLevelFlags fatal;
+    guint warned = 0;
+
+    /*
+     * A nick this build does not know must become the default -- never a
+     * neighbouring value -- and say so.  g_test_init() makes warnings
+     * fatal, so they are counted by a handler and the fatal mask is
+     * restored after.
+     */
+    fatal = g_log_set_always_fatal(G_LOG_FATAL_MASK);
+    g_test_log_set_fatal_handler(count_warning, &warned);
+
+    appearance = clawt_appearance_parse(
+        "lrg_motion: jiggly\nlrg_material: velvet\nlrg_background: lava\n",
+        NULL);
+
+    g_test_log_set_fatal_handler(NULL, NULL);
+    g_log_set_always_fatal(fatal);
+
+    g_assert_nonnull(appearance);
+    g_assert_cmpint(clawt_appearance_get_lrg_motion(appearance), ==,
+                    CLAWT_LRG_MOTION_DEFAULT);
+    g_assert_cmpint(clawt_appearance_get_lrg_material(appearance), ==,
+                    CLAWT_LRG_MATERIAL_DEFAULT);
+    g_assert_cmpint(clawt_appearance_get_lrg_background(appearance), ==,
+                    CLAWT_LRG_BACKGROUND_DEFAULT);
+}
+
+static void
+test_lrg_out_of_range_values_are_clamped_or_dropped(void)
+{
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+
+    clawt_appearance_set_lrg_scale(appearance, 99.0);
+    g_assert_cmpfloat(clawt_appearance_get_lrg_scale(appearance), ==,
+                      CLAWT_LRG_SCALE_MAX);
+
+    clawt_appearance_set_lrg_scale(appearance, 0.1);
+    g_assert_cmpfloat(clawt_appearance_get_lrg_scale(appearance), ==,
+                      CLAWT_LRG_SCALE_MIN);
+
+    clawt_appearance_set_lrg_scale(appearance, -1.0);
+    g_assert_cmpfloat(clawt_appearance_get_lrg_scale(appearance), ==, 0.0);
+
+    /* an accent that is not a colour is no accent, not a broken one */
+    clawt_appearance_set_lrg_accent(appearance, "#12345");
+    g_assert_null(clawt_appearance_get_lrg_accent(appearance));
+    clawt_appearance_set_lrg_accent(appearance, "red");
+    g_assert_null(clawt_appearance_get_lrg_accent(appearance));
+
+    /* a value the enum does not have is the default, not a neighbour */
+    clawt_appearance_set_lrg_motion(appearance, (ClawtLrgMotion)77);
+    g_assert_cmpint(clawt_appearance_get_lrg_motion(appearance), ==,
+                    CLAWT_LRG_MOTION_DEFAULT);
+}
+
+static void
+test_lrg_enumerations_walk_and_round_trip(void)
+{
+    guint i;
+
+    /* every value's nick reads back as that value, and has a label */
+    for (i = 0; i < clawt_lrg_motion_count(); i++) {
+        ClawtLrgMotion value = clawt_lrg_motion_nth(i);
+        ClawtLrgMotion back = CLAWT_LRG_MOTION_DEFAULT;
+
+        g_assert_true(clawt_lrg_motion_from_nick(
+            clawt_lrg_motion_nick(value), &back));
+        g_assert_cmpint(back, ==, value);
+        g_assert_cmpstr(clawt_lrg_motion_label(value), !=, "");
+    }
+
+    for (i = 0; i < clawt_lrg_material_count(); i++) {
+        ClawtLrgMaterial value = clawt_lrg_material_nth(i);
+        ClawtLrgMaterial back = CLAWT_LRG_MATERIAL_DEFAULT;
+
+        g_assert_true(clawt_lrg_material_from_nick(
+            clawt_lrg_material_nick(value), &back));
+        g_assert_cmpint(back, ==, value);
+    }
+
+    for (i = 0; i < clawt_lrg_background_count(); i++) {
+        ClawtLrgBackground value = clawt_lrg_background_nth(i);
+        ClawtLrgBackground back = CLAWT_LRG_BACKGROUND_DEFAULT;
+
+        g_assert_true(clawt_lrg_background_from_nick(
+            clawt_lrg_background_nick(value), &back));
+        g_assert_cmpint(back, ==, value);
+    }
+
+    g_assert_cmpuint(clawt_lrg_motion_count(), ==, 6);
+    g_assert_cmpuint(clawt_lrg_material_count(), ==, 4);
+    g_assert_cmpuint(clawt_lrg_background_count(), ==, 5);
+}
+
+static void
+test_palette_color_reads_every_spelling(void)
+{
+    static const gchar css[] =
+        "@define-color a #ff0000;\n"
+        "@define-color b #0f08;\n"
+        "@define-color c rgb(0, 128, 255);\n"
+        "@define-color d rgba(10, 20, 30, 0.5);\n"
+        "@define-color e rgb(255 255 255 / 25%);\n"
+        "@define-color f @a;\n"
+        "@define-color g alpha(@a, 0.5);\n"
+        "@define-color loop1 @loop2;\n"
+        "@define-color loop2 @loop1;\n"
+        "@define-color weird shade(@a, 1.2);\n"
+        "@define-color aa #00ff00;\n";
+    gdouble rgba[4];
+
+    g_assert_true(clawt_palette_color(css, "a", rgba));
+    g_assert_cmpfloat(rgba[0], ==, 1.0);
+    g_assert_cmpfloat(rgba[3], ==, 1.0);
+
+    g_assert_true(clawt_palette_color(css, "b", rgba));
+    g_assert_cmpfloat(rgba[1], ==, 1.0);
+    g_assert_cmpfloat_with_epsilon(rgba[3], 136.0 / 255.0, 1e-9);
+
+    g_assert_true(clawt_palette_color(css, "c", rgba));
+    g_assert_cmpfloat_with_epsilon(rgba[1], 128.0 / 255.0, 1e-9);
+
+    g_assert_true(clawt_palette_color(css, "d", rgba));
+    g_assert_cmpfloat(rgba[3], ==, 0.5);
+
+    g_assert_true(clawt_palette_color(css, "e", rgba));
+    g_assert_cmpfloat(rgba[3], ==, 0.25);
+
+    g_assert_true(clawt_palette_color(css, "f", rgba));
+    g_assert_cmpfloat(rgba[0], ==, 1.0);
+
+    g_assert_true(clawt_palette_color(css, "g", rgba));
+    g_assert_cmpfloat(rgba[3], ==, 0.5);
+
+    /* "a" is a prefix of "aa": the name must match whole */
+    g_assert_true(clawt_palette_color(css, "aa", rgba));
+    g_assert_cmpfloat(rgba[0], ==, 0.0);
+    g_assert_cmpfloat(rgba[1], ==, 1.0);
+
+    /* unresolvable is FALSE, never black: the caller falls back */
+    g_assert_false(clawt_palette_color(css, "loop1", rgba));
+    g_assert_false(clawt_palette_color(css, "weird", rgba));
+    g_assert_false(clawt_palette_color(css, "missing", rgba));
+    g_assert_false(clawt_palette_color(NULL, "a", rgba));
+}
+
+static void
+test_palette_color_reads_every_required_colour_of_mocha(void)
+{
+    ClawtAppearance *appearance = clawt_appearance_new();
+    g_auto(GStrv) required = clawt_appearance_palette_missing("");
+    const gchar *css;
+    guint i;
+
+    clawt_appearance_set_theme(appearance, CLAWT_THEME_CATPPUCCIN_MOCHA);
+    /* the disk-palette getter answers only for files... */
+    g_assert_null(clawt_appearance_get_palette_css(appearance));
+
+    /* ...so the lrg client reads a built-in one through this */
+    css = clawt_appearance_get_scheme_css(appearance);
+    g_assert_nonnull(css);
+
+    /* the shipped palette is wholly readable by clawtilla-lrg's reader */
+    for (i = 0; required[i] != NULL; i++) {
+        gdouble rgba[4];
+
+        if (!clawt_palette_color(css, required[i], rgba))
+            g_error("Mocha's %s is not readable", required[i]);
+    }
+
+    clawt_appearance_free(appearance);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1647,6 +1895,19 @@ main(int argc, char *argv[])
                     test_an_unreadable_value_shows_descriptions);
     g_test_add_func("/appearance/descriptions-emit-no-css",
                     test_descriptions_emit_no_css);
+
+    g_test_add_func("/appearance/lrg/defaults", test_lrg_keys_default_to_zero);
+    g_test_add_func("/appearance/lrg/round-trip", test_lrg_keys_round_trip);
+    g_test_add_func("/appearance/lrg/unknown-nick-is-default",
+                    test_lrg_unknown_nick_is_the_default);
+    g_test_add_func("/appearance/lrg/out-of-range",
+                    test_lrg_out_of_range_values_are_clamped_or_dropped);
+    g_test_add_func("/appearance/lrg/enumerations",
+                    test_lrg_enumerations_walk_and_round_trip);
+    g_test_add_func("/appearance/palette-color/spellings",
+                    test_palette_color_reads_every_spelling);
+    g_test_add_func("/appearance/palette-color/mocha-complete",
+                    test_palette_color_reads_every_required_colour_of_mocha);
 
     result = g_test_run();
 

@@ -18,6 +18,7 @@
 
 #include <glib.h>
 #include <math.h>
+#include <string.h>
 
 /* Anything after this instant is live rather than replayed. */
 #define CONNECTED_AT G_GINT64_CONSTANT(1000000)
@@ -901,6 +902,91 @@ test_an_empty_toast_is_never_shown(void)
     g_assert_false(clawt_toast_should_show("something", 1, "", 2));
 }
 
+
+/* ── Reply helpers every graphical client shares ──────────────────── */
+
+static void
+test_reply_object_is_total(void)
+{
+    g_autoptr(JsonNode) typed_but_empty = json_node_new(JSON_NODE_OBJECT);
+    g_autoptr(JsonNode) array = json_node_new(JSON_NODE_ARRAY);
+    g_autoptr(JsonNode) real = clawt_ipc_payload_new("a", "b", NULL);
+
+    /*
+     * A node can hold the object type and no object; every client reads
+     * every reply through this, so it must be total over JsonNodes.
+     */
+    g_assert_null(clawt_ipc_reply_object(NULL));
+    g_assert_null(clawt_ipc_reply_object(typed_but_empty));
+    g_assert_null(clawt_ipc_reply_object(array));
+    g_assert_nonnull(clawt_ipc_reply_object(real));
+    g_assert_cmpstr(clawt_ipc_payload_string(clawt_ipc_reply_object(real), "a"),
+                    ==, "b");
+}
+
+static void
+test_payload_drops_a_null_value(void)
+{
+    g_autoptr(JsonNode) payload =
+        clawt_ipc_payload_new("agent", "alice", "room", NULL, "kind", "dm",
+                              NULL);
+    JsonObject *object = clawt_ipc_reply_object(payload);
+
+    /* absent and null mean different things to the daemon */
+    g_assert_cmpuint(json_object_get_size(object), ==, 2);
+    g_assert_true(json_object_has_member(object, "agent"));
+    g_assert_false(json_object_has_member(object, "room"));
+    g_assert_cmpstr(clawt_ipc_payload_string(object, "kind"), ==, "dm");
+}
+
+static void
+test_payload_with_no_members_is_an_empty_object(void)
+{
+    g_autoptr(JsonNode) payload = clawt_ipc_payload_new(NULL, NULL);
+    JsonObject *object = clawt_ipc_reply_object(payload);
+
+    g_assert_nonnull(object);
+    g_assert_cmpuint(json_object_get_size(object), ==, 0);
+}
+
+static void
+test_toast_text_skips_not_connected(void)
+{
+    g_autoptr(GError) offline =
+        g_error_new_literal(CLAWT_ERROR, CLAWT_ERROR_NOT_CONNECTED, "offline");
+    g_autoptr(GError) refused =
+        g_error_new_literal(CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND, "no such agent");
+    g_autofree gchar *said = NULL;
+
+    /* the banner holds "not connected"; every other failure is said */
+    g_assert_null(clawt_ipc_reply_toast_text(offline, NULL));
+
+    said = clawt_ipc_reply_toast_text(refused, NULL);
+    g_assert_cmpstr(said, ==, "no such agent");
+}
+
+static void
+test_toast_text_names_a_refused_agent(void)
+{
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autoptr(JsonNode) plain = clawt_ipc_payload_new("ok", "true", NULL);
+    g_autofree gchar *said = NULL;
+    JsonNode *with_refusal;
+
+    /* a success is said only when it left an agent behind */
+    g_assert_null(clawt_ipc_reply_toast_text(NULL, plain));
+    g_assert_null(clawt_ipc_reply_toast_text(NULL, NULL));
+
+    g_assert_true(json_parser_load_from_data(parser,
+        "{\"refused\": [{\"agent\": \"bob\", \"message\": \"redeclares "
+        "channels\"}]}", -1, NULL));
+    with_refusal = json_parser_get_root(parser);
+
+    said = clawt_ipc_reply_toast_text(NULL, with_refusal);
+    g_assert_nonnull(said);
+    g_assert_nonnull(strstr(said, "bob"));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -995,6 +1081,17 @@ g_test_add_func("/client-rules/tier/unknown",
                     test_an_empty_toast_is_never_shown);
     g_test_add_func("/client-rules/age/backwards-clock",
                     test_a_future_timestamp_reads_as_just_now);
+
+    g_test_add_func("/client-rules/reply/object-is-total",
+                    test_reply_object_is_total);
+    g_test_add_func("/client-rules/reply/payload-drops-null",
+                    test_payload_drops_a_null_value);
+    g_test_add_func("/client-rules/reply/payload-empty-object",
+                    test_payload_with_no_members_is_an_empty_object);
+    g_test_add_func("/client-rules/reply/toast-skips-not-connected",
+                    test_toast_text_skips_not_connected);
+    g_test_add_func("/client-rules/reply/toast-names-refusal",
+                    test_toast_text_names_a_refused_agent);
 
     return g_test_run();
 }

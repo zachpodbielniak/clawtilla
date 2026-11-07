@@ -326,6 +326,24 @@ void clawt_appearance_set_scheme(ClawtAppearance *self, const gchar *nick);
 const gchar *clawt_appearance_get_palette_css(ClawtAppearance *self);
 
 /**
+ * clawt_appearance_get_scheme_css:
+ * @self: a #ClawtAppearance
+ *
+ * The colours of whichever scheme @self names, in the palette vocabulary:
+ * a palette file's own CSS, or a built-in palette's (Catppuccin Mocha).
+ *
+ * clawt_appearance_get_palette_css() answers only for a palette found on
+ * disk, which is what GTK and the web client need -- a built-in palette
+ * reaches them through clawt_appearance_to_css().  clawtilla-lrg reads
+ * colours one by one with clawt_palette_color() and needs both kinds
+ * from one place, or a built-in palette is silently drawn as stock.
+ *
+ * Returns: (transfer none) (nullable): the CSS, or %NULL for a scheme
+ *   with no palette of its own (system, light, dark)
+ */
+const gchar *clawt_appearance_get_scheme_css(ClawtAppearance *self);
+
+/**
  * ClawtMeasureUnit:
  * @CLAWT_MEASURE_DEFAULT: follow the shipped column
  * @CLAWT_MEASURE_PERCENT: a share of the width the window has to give
@@ -785,5 +803,315 @@ gboolean clawt_appearance_save(ClawtAppearance *self,
                                GError         **error);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtAppearance, clawt_appearance_free)
+
+/* ── The libregnum client's own settings ──────────────────────────── */
+
+/**
+ * ClawtLrgMotion:
+ * @CLAWT_LRG_MOTION_DEFAULT: the shipped feel (smooth)
+ * @CLAWT_LRG_MOTION_NONE: no animation at all; values jump to their target
+ * @CLAWT_LRG_MOTION_SNAPPY: quick, nearly critically damped
+ * @CLAWT_LRG_MOTION_SMOOTH: critically damped, no overshoot
+ * @CLAWT_LRG_MOTION_BOUNCY: a visible overshoot
+ * @CLAWT_LRG_MOTION_WOBBLY: playful, several oscillations
+ *
+ * How clawtilla-lrg animates.  Read only by that client: GTK follows the
+ * desktop's own animation setting and the web client the browser's
+ * `prefers-reduced-motion`, and neither has springs to tune.
+ *
+ * Zero is "the shipped value", as everywhere in #ClawtAppearance, so a
+ * file written before the key existed keeps the behaviour it had.
+ * %CLAWT_LRG_MOTION_NONE is the reduced-motion setting and turns off
+ * every entrance, transition, pulse and background animation, not just
+ * the springs.
+ */
+typedef enum {
+    CLAWT_LRG_MOTION_DEFAULT = 0,
+    CLAWT_LRG_MOTION_NONE,
+    CLAWT_LRG_MOTION_SNAPPY,
+    CLAWT_LRG_MOTION_SMOOTH,
+    CLAWT_LRG_MOTION_BOUNCY,
+    CLAWT_LRG_MOTION_WOBBLY
+} ClawtLrgMotion;
+
+/**
+ * ClawtLrgMaterial:
+ * @CLAWT_LRG_MATERIAL_DEFAULT: the shipped surfaces (frosted)
+ * @CLAWT_LRG_MATERIAL_FLAT: opaque surfaces, no blur -- cheapest to draw
+ * @CLAWT_LRG_MATERIAL_FROSTED: blurred, translucent sidebar and header
+ * @CLAWT_LRG_MATERIAL_GLASS: refractive glass with a rim light
+ *
+ * What clawtilla-lrg's chrome is made of.  clawtilla-lrg only.
+ */
+typedef enum {
+    CLAWT_LRG_MATERIAL_DEFAULT = 0,
+    CLAWT_LRG_MATERIAL_FLAT,
+    CLAWT_LRG_MATERIAL_FROSTED,
+    CLAWT_LRG_MATERIAL_GLASS
+} ClawtLrgMaterial;
+
+/**
+ * ClawtLrgBackground:
+ * @CLAWT_LRG_BACKGROUND_DEFAULT: the shipped background (aurora)
+ * @CLAWT_LRG_BACKGROUND_NONE: the palette's window colour, still
+ * @CLAWT_LRG_BACKGROUND_AURORA: slow aurora bands tinted by the accent
+ * @CLAWT_LRG_BACKGROUND_MESH: a drifting mesh gradient
+ * @CLAWT_LRG_BACKGROUND_PLASMA: a plasma field
+ *
+ * What clawtilla-lrg draws behind everything.  clawtilla-lrg only.  Each
+ * animated one is dimmed toward the window colour so text keeps its
+ * contrast, and holds still under %CLAWT_LRG_MOTION_NONE.
+ */
+typedef enum {
+    CLAWT_LRG_BACKGROUND_DEFAULT = 0,
+    CLAWT_LRG_BACKGROUND_NONE,
+    CLAWT_LRG_BACKGROUND_AURORA,
+    CLAWT_LRG_BACKGROUND_MESH,
+    CLAWT_LRG_BACKGROUND_PLASMA
+} ClawtLrgBackground;
+
+/**
+ * CLAWT_LRG_SCALE_MIN:
+ *
+ * The smallest interface scale clawtilla-lrg accepts.
+ */
+#define CLAWT_LRG_SCALE_MIN (0.5)
+
+/**
+ * CLAWT_LRG_SCALE_MAX:
+ *
+ * The largest interface scale clawtilla-lrg accepts.
+ */
+#define CLAWT_LRG_SCALE_MAX (3.0)
+
+/**
+ * clawt_lrg_motion_count:
+ *
+ * Returns: how many #ClawtLrgMotion values there are
+ */
+guint clawt_lrg_motion_count(void);
+
+/**
+ * clawt_lrg_motion_nth:
+ * @n: an index below clawt_lrg_motion_count()
+ *
+ * Returns: the @n'th value, in drawing order
+ */
+ClawtLrgMotion clawt_lrg_motion_nth(guint n);
+
+/**
+ * clawt_lrg_motion_nick:
+ * @motion: a #ClawtLrgMotion
+ *
+ * Returns: (transfer none): the spelling written to appearance.yaml
+ */
+const gchar *clawt_lrg_motion_nick(ClawtLrgMotion motion);
+
+/**
+ * clawt_lrg_motion_label:
+ * @motion: a #ClawtLrgMotion
+ *
+ * Returns: (transfer none): the name a person is shown
+ */
+const gchar *clawt_lrg_motion_label(ClawtLrgMotion motion);
+
+/**
+ * clawt_lrg_motion_from_nick:
+ * @nick: (nullable): a spelling, case-insensitive
+ * @out: (out): the value
+ *
+ * Returns: %TRUE if @nick names a value; @out is then set
+ */
+gboolean clawt_lrg_motion_from_nick(const gchar *nick, ClawtLrgMotion *out);
+
+/**
+ * clawt_lrg_material_count:
+ *
+ * Returns: how many #ClawtLrgMaterial values there are
+ */
+guint clawt_lrg_material_count(void);
+
+/**
+ * clawt_lrg_material_nth:
+ * @n: an index below clawt_lrg_material_count()
+ *
+ * Returns: the @n'th value, in drawing order
+ */
+ClawtLrgMaterial clawt_lrg_material_nth(guint n);
+
+/**
+ * clawt_lrg_material_nick:
+ * @material: a #ClawtLrgMaterial
+ *
+ * Returns: (transfer none): the spelling written to appearance.yaml
+ */
+const gchar *clawt_lrg_material_nick(ClawtLrgMaterial material);
+
+/**
+ * clawt_lrg_material_label:
+ * @material: a #ClawtLrgMaterial
+ *
+ * Returns: (transfer none): the name a person is shown
+ */
+const gchar *clawt_lrg_material_label(ClawtLrgMaterial material);
+
+/**
+ * clawt_lrg_material_from_nick:
+ * @nick: (nullable): a spelling, case-insensitive
+ * @out: (out): the value
+ *
+ * Returns: %TRUE if @nick names a value; @out is then set
+ */
+gboolean clawt_lrg_material_from_nick(const gchar      *nick,
+                                      ClawtLrgMaterial *out);
+
+/**
+ * clawt_lrg_background_count:
+ *
+ * Returns: how many #ClawtLrgBackground values there are
+ */
+guint clawt_lrg_background_count(void);
+
+/**
+ * clawt_lrg_background_nth:
+ * @n: an index below clawt_lrg_background_count()
+ *
+ * Returns: the @n'th value, in drawing order
+ */
+ClawtLrgBackground clawt_lrg_background_nth(guint n);
+
+/**
+ * clawt_lrg_background_nick:
+ * @background: a #ClawtLrgBackground
+ *
+ * Returns: (transfer none): the spelling written to appearance.yaml
+ */
+const gchar *clawt_lrg_background_nick(ClawtLrgBackground background);
+
+/**
+ * clawt_lrg_background_label:
+ * @background: a #ClawtLrgBackground
+ *
+ * Returns: (transfer none): the name a person is shown
+ */
+const gchar *clawt_lrg_background_label(ClawtLrgBackground background);
+
+/**
+ * clawt_lrg_background_from_nick:
+ * @nick: (nullable): a spelling, case-insensitive
+ * @out: (out): the value
+ *
+ * Returns: %TRUE if @nick names a value; @out is then set
+ */
+gboolean clawt_lrg_background_from_nick(const gchar        *nick,
+                                        ClawtLrgBackground *out);
+
+/**
+ * clawt_appearance_get_lrg_motion:
+ * @self: a #ClawtAppearance
+ *
+ * Returns: how clawtilla-lrg animates
+ */
+ClawtLrgMotion clawt_appearance_get_lrg_motion(ClawtAppearance *self);
+
+/**
+ * clawt_appearance_set_lrg_motion:
+ * @self: a #ClawtAppearance
+ * @motion: a #ClawtLrgMotion; a value the type does not have becomes
+ *   %CLAWT_LRG_MOTION_DEFAULT
+ */
+void clawt_appearance_set_lrg_motion(ClawtAppearance *self,
+                                     ClawtLrgMotion   motion);
+
+/**
+ * clawt_appearance_get_lrg_material:
+ * @self: a #ClawtAppearance
+ *
+ * Returns: what clawtilla-lrg's chrome is made of
+ */
+ClawtLrgMaterial clawt_appearance_get_lrg_material(ClawtAppearance *self);
+
+/**
+ * clawt_appearance_set_lrg_material:
+ * @self: a #ClawtAppearance
+ * @material: a #ClawtLrgMaterial; unknown values become the default
+ */
+void clawt_appearance_set_lrg_material(ClawtAppearance  *self,
+                                       ClawtLrgMaterial  material);
+
+/**
+ * clawt_appearance_get_lrg_background:
+ * @self: a #ClawtAppearance
+ *
+ * Returns: what clawtilla-lrg draws behind everything
+ */
+ClawtLrgBackground clawt_appearance_get_lrg_background(ClawtAppearance *self);
+
+/**
+ * clawt_appearance_set_lrg_background:
+ * @self: a #ClawtAppearance
+ * @background: a #ClawtLrgBackground; unknown values become the default
+ */
+void clawt_appearance_set_lrg_background(ClawtAppearance    *self,
+                                         ClawtLrgBackground  background);
+
+/**
+ * clawt_appearance_get_lrg_accent:
+ * @self: a #ClawtAppearance
+ *
+ * Returns: (transfer none) (nullable): clawtilla-lrg's accent as
+ *   `#rrggbb`, or %NULL to take the palette's
+ */
+const gchar *clawt_appearance_get_lrg_accent(ClawtAppearance *self);
+
+/**
+ * clawt_appearance_set_lrg_accent:
+ * @self: a #ClawtAppearance
+ * @accent: (nullable): `#rgb` or `#rrggbb`; %NULL, empty or anything
+ *   else clears it, so the palette's accent is used
+ */
+void clawt_appearance_set_lrg_accent(ClawtAppearance *self,
+                                     const gchar     *accent);
+
+/**
+ * clawt_appearance_get_lrg_scale:
+ * @self: a #ClawtAppearance
+ *
+ * Returns: clawtilla-lrg's interface scale, or 0 to follow the monitor
+ */
+gdouble clawt_appearance_get_lrg_scale(ClawtAppearance *self);
+
+/**
+ * clawt_appearance_set_lrg_scale:
+ * @self: a #ClawtAppearance
+ * @scale: a factor between %CLAWT_LRG_SCALE_MIN and %CLAWT_LRG_SCALE_MAX
+ *   (clamped), or 0 or less to follow the monitor
+ */
+void clawt_appearance_set_lrg_scale(ClawtAppearance *self, gdouble scale);
+
+/**
+ * clawt_palette_color:
+ * @css: (nullable): palette CSS in libadwaita's vocabulary
+ * @name: a colour name, e.g. `window_bg_color`
+ * @rgba: (out caller-allocates) (array fixed-size=4): red, green, blue
+ *   and alpha, each 0..1
+ *
+ * Reads one `@define-color` out of a palette, following `@name`
+ * references and `alpha(@name, f)`, and understanding `#rgb`, `#rgba`,
+ * `#rrggbb`, `#rrggbbaa`, `rgb()` and `rgba()` (comma or space
+ * separated, alpha as a fraction or a percentage).
+ *
+ * clawtilla-lrg draws with libregnum, which cannot read CSS, so the one
+ * set of palettes all three clients share has to be read colour by
+ * colour.  A colour this cannot resolve -- a function it does not know,
+ * a reference loop -- is %FALSE rather than black: the caller falls back
+ * to the stock value, which is what libadwaita does for a palette that
+ * leaves a name out.
+ *
+ * Returns: %TRUE if @rgba was set
+ */
+gboolean clawt_palette_color(const gchar *css,
+                             const gchar *name,
+                             gdouble      rgba[4]);
 
 G_END_DECLS

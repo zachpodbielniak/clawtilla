@@ -34,6 +34,11 @@ make config-files
 # Fail on undocumented public API or stale doc references
 make docs-check
 
+# The optional libregnum client, against ../libregnum (or LRG_DIR=...)
+make LRG_BACKEND=1
+make LRG_BACKEND=1 test
+make LRG_BACKEND=1 lrg-check F=clients/lrg/lrg-chat.c
+
 # Full rebuild
 make clean all
 make DEBUG=1 ASAN=1 clean all
@@ -89,6 +94,16 @@ directory`.
 The GTK client is skipped with a message, not a build failure, when
 libadwaita is absent -- everything else here is headless and still useful.
 
+`clawtilla-lrg`, the libregnum client, is opt-in (`LRG_BACKEND=1`) and
+builds against a libregnum checkout at `LRG_DIR` (default `../libregnum`),
+never a submodule -- recursively libregnum is enormous.  It adds
+`mesa-libGL-devel`, `libX11-devel`, `fribidi-devel`, `zlib-devel`,
+`openssl-devel` and `readline-devel` (plus `wayland-devel` and
+`libxkbcommon-devel` when present, and `luajit-devel`/`python3-devel` if
+libregnum found them).  `make lrg-lib` rebuilds that checkout's archive in
+place when it is missing, older than its sources, or lacks a symbol in
+`LRG_REQUIRED_SYMBOLS`.  See `docs/lrg-client.org`.
+
 ## Build Output
 
 - `make` -> `build/release/` (`-O2 -DNDEBUG`)
@@ -103,6 +118,7 @@ libadwaita is absent -- everything else here is headless and still useful.
 | `clawtilla-gtk` | the GTK4 client |
 | `clawtilla-mcp-server` | serves the orchestration tools to an agent's CLI |
 | `clawtilla-web` | the htmx web client |
+| `clawtilla-lrg` | the libregnum client (`LRG_BACKEND=1` only) |
 | `plugins/libclawt-plugin-*.so` | bundled plugins |
 | `Clawt-1.0.gir`, `Clawt-1.0.typelib` | introspection data |
 | `clawt-version.h`, `clawt-default-config.h`, `clawt-bundled-skills.h` | generated headers |
@@ -661,6 +677,62 @@ critical fired.
   Verified against 2.1.247 with a control.
 - A relative `-Wl,-rpath` in a dep's `rules.mk` makes its tests load whatever
   is installed when run from a parent tree. `$ORIGIN/..`.
+
+### libregnum (clawtilla-lrg only)
+
+- **One yaml-glib, not two.** `liblibregnum.a` has yaml-glib merged in,
+  and two copies in one process register `YamlParser` and friends twice
+  -- a GType clash, not merely duplicate symbols.  The lrg link line drops
+  libreclaw's yaml-glib archive (`LRG_LIBRECLAW_LIBS`) and `make
+  lrg-yaml-check` refuses the build unless libregnum's yaml-glib descends
+  from clawtilla's pin, because libclawt was compiled against that pin's
+  headers.
+- **gnu89 needs `-include stdbool.h`.** Under gnu89 `<raylib.h>` declares
+  `bool` as an int-sized enum while raylib stores a one-byte `_Bool`, so
+  mouse buttons read "held" for ever.  libregnum compiles itself this way
+  and `LRG_CFLAGS` does the same.  The `-DLRG_HAS_*` set must match how
+  the archive was built, or `<libregnum.h>` declares a different library
+  from the one linked.
+- **There is no application object.**  The client owns a raylib loop and
+  drains the GLib context once a frame (`clients/lrg/lrg-app.c`).  So
+  **nothing in `clients/lrg/` may call `clawt_client_request()`**: its
+  wait iterates the context from inside a frame, re-entering a widget
+  tree halfway through being drawn.  `clawt_lrg_request()` is async,
+  pushes the app's context around `clawt_client_request_async()` (an
+  async API takes the ambient context), and has a generation guard for
+  replies about a selection that has moved on.
+- **An idle loop must wait inside GLib, not sleep.**  A bounded
+  `g_main_context_iteration(ctx, TRUE)` with a timeout source as the
+  ceiling, so a daemon event mid-wait wakes the window; a `g_usleep()`
+  would make every event wait the full ceiling.
+- **The theme loader is strict and atomic.**  An unknown key, role, part,
+  state or effect name refuses the whole document, and the client then
+  falls back to a preset -- which looks like "the palette is ignored", not
+  like a bug.  `tests/test-lrgui-theme.c` loads every appearance
+  combination for that reason.  Colours in theme YAML must be *quoted*:
+  an unquoted `#` starts a comment.
+- **Palette colours are read one by one** with `clawt_palette_color()`.
+  `clawt_appearance_get_palette_css()` answers only for palettes on
+  disk; `clawt_appearance_get_scheme_css()` answers for built-in ones too.
+  Using the first drew Catppuccin Mocha as stock libadwaita, and only a
+  test asserting the *value* of the window colour saw it.
+- **`LrgLabel` draws one line.**  A wrapping paragraph is an
+  `LrgMarkdownLabel` fed `clawt_lrg_markdown_escape()`d text, so a
+  person's underscores are not italics and nothing they wrote becomes a
+  link.  Model output goes through `clawt_lrg_markdown()`, whose links
+  open http, https and file only.
+- **GLFW prefers Wayland whenever it finds a compositor.**  Unsetting
+  `WAYLAND_DISPLAY` is not enough to land on Xvfb: libwayland then tries
+  `wayland-0` in `XDG_RUNTIME_DIR` and finds the desktop's, so a
+  "headless" run opens on the real screen.  Set
+  `WAYLAND_DISPLAY=no-wayland-here` (a socket that does not exist) and
+  unset `XDG_SESSION_TYPE`; GLFW then falls back to X11.
+- **graylib loads images by filename** and picks the decoder from the
+  extension; bytes from the daemon go through a temporary file named for
+  their own magic number (`clawt_avatar_sniff_mime_type()`).
+- **A canvas lays out without a window.**  `lrg_widget_layout()` on a
+  canvas with no GL context works, which is what `--self-test` and
+  `tests/test-lrgui-*.c` rely on; drawing does not.
 
 ### htmx-glib
 
@@ -1506,9 +1578,10 @@ versions apart.
 
 ## Rules Both Clients Share
 
-- **Never add a capability to one graphical client and not the other.**
-  `make parity` compares five layers: IPC frame kinds, slash commands,
-  library enumerations, vocabularies, and declared affordances.
+- **Never add a capability to one graphical client and not the others.**
+  `make parity` compares five layers across gtk, web and lrg: IPC frame
+  kinds, slash commands, library enumerations, vocabularies, and declared
+  affordances (one marker column per client).
 - It cannot see a frame kind built with `g_strconcat()` -- name them as
   literals. Its affordance layer reads a corpus with `web-style.c` **excluded**,
   because a class name in the stylesheet is not a capability. Layers 5 needs
@@ -1699,5 +1772,11 @@ versions apart.
 - Never apply a size limit to something already read. Bound what accumulates
 - Never grant a path in a predicate without granting it in whatever builds
   the sandbox
+- Never call `clawt_client_request()` from `clients/lrg/` -- its wait
+  iterates the main context from inside a frame; use `clawt_lrg_request()`
+- Never link a second yaml-glib into `clawtilla-lrg`; libregnum's is the
+  one, and `make lrg-yaml-check` says whether it may be
+- Never give a client's affordance row fewer markers than there are
+  clients; an empty column is a declaration that covers nothing
 - Never push to master without approval -- except a version bump, which is
   pushed with its tag at once (see Versioning)

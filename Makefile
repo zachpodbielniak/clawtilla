@@ -358,6 +358,15 @@ LIB_OBJECTS = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(LIB_SOURCES))
 
 # Test files
 TEST_SOURCES = $(wildcard $(TESTDIR)/test-*.c)
+
+# tests/test-lrgui-*.c link libregnum (they lay out real widgets and load
+# real theme documents), so they exist only in an LRG_BACKEND=1 build.
+# Everything else about the lrg client -- its models -- is tested in
+# test-lrg-models*.c, which needs no libregnum and always runs.
+ifneq ($(LRG_AVAILABLE),1)
+TEST_SOURCES := $(filter-out $(TESTDIR)/test-lrgui-%,$(TEST_SOURCES))
+endif
+
 TEST_BINARIES = $(patsubst $(TESTDIR)/%.c,$(OUTDIR)/tests/%,$(TEST_SOURCES))
 
 # ============================================================
@@ -375,7 +384,7 @@ all:
 
 .PHONY: all-impl  ## @internal
 all-impl: $(OUTDIR)/clawt-version.h shared static daemon cli mcp-server \
-          gtk web $(PROJECT_NAME)-1.0.pc plugins pod-modules gir
+          gtk web lrg $(PROJECT_NAME)-1.0.pc plugins pod-modules gir
 
 # ── Submodule freshness ───────────────────────────────────────────────
 #
@@ -512,12 +521,18 @@ CLI_SRCDIR    = clients/cli
 MCP_SRCDIR    = clients/mcp
 GTK_SRCDIR    = clients/gtk
 WEB_SRCDIR    = clients/web
+LRG_SRCDIR    = clients/lrg
 
 DAEMON_SOURCES = $(wildcard $(DAEMON_SRCDIR)/*.c)
 CLI_SOURCES    = $(wildcard $(CLI_SRCDIR)/*.c)
 MCP_SOURCES    = $(wildcard $(MCP_SRCDIR)/*.c)
 GTK_SOURCES    = $(wildcard $(GTK_SRCDIR)/*.c)
 WEB_SOURCES    = $(wildcard $(WEB_SRCDIR)/*.c)
+LRG_SOURCES    = $(wildcard $(LRG_SRCDIR)/*.c)
+# The page models are plain C over JSON and libclawt -- no libregnum
+# header -- so tests/test-lrg-models.c links them into every `make test`,
+# with or without LRG_BACKEND.
+LRG_MODEL_SOURCES = $(wildcard $(LRG_SRCDIR)/*-model.c)
 
 # Where `make web-smoke` looks, and which agent it pokes.
 #
@@ -543,6 +558,31 @@ WEB_SMOKE_AGENT ?=
 # Include common rules
 include rules.mk
 
+# The lrg client's page models are #included by tests/test-lrg-models-*.c
+# (no libregnum needed), for the reason test-web-render includes the web
+# renderers: the generic rule cannot see them, and a change to a model
+# must relink the test that checks it.
+$(OUTDIR)/tests/test-lrg-models: $(LRG_MODEL_SOURCES) \
+        $(wildcard $(LRG_SRCDIR)/*-model.h)
+$(OUTDIR)/tests/test-lrg-models-%: $(LRG_MODEL_SOURCES) \
+        $(wildcard $(LRG_SRCDIR)/*-model.h)
+
+# The libregnum-linked tests compile the whole client except main.c into
+# themselves: they build pages against a canvas with no window, which is
+# the client's own code and not a copy of it.  The client's shared code
+# is linked with libregnum's yaml-glib, like the binary (see config.mk).
+LRG_CLIENT_SOURCES = $(filter-out $(LRG_SRCDIR)/main.c,$(LRG_SOURCES))
+
+ifeq ($(LRG_AVAILABLE),1)
+$(OUTDIR)/tests/test-lrgui-%: $(TESTDIR)/test-lrgui-%.c $(LRG_CLIENT_SOURCES) \
+        $(wildcard $(LRG_SRCDIR)/*.h) $(LIB_STATIC) $(LRG_LIB) \
+        $(BUILD_FLAGS_STAMP) | $(OUTDIR)/tests lrg-lib
+	$(CC) $(CFLAGS) $(LRG_CFLAGS) -I$(SRCDIR) -I$(TESTDIR) -I$(LRG_SRCDIR) \
+		-DCLAWT_TEST_FIXTURES='"$(CURDIR)/$(TESTDIR)/fixtures"' \
+		-DCLAWT_TEST_SRCDIR='"$(CURDIR)"' \
+		$< $(LRG_CLIENT_SOURCES) -o $@ $(LIB_STATIC) $(LRG_LDFLAGS)
+endif
+
 $(OUTDIR)/tests/test-web-render: $(WEB_SRCDIR)/web-ui.c \
                                  $(WEB_SRCDIR)/web-navigation.c \
                                  $(WEB_SRCDIR)/web-style.c \
@@ -554,6 +594,10 @@ $(OUTDIR)/tests/test-web-render: $(WEB_SRCDIR)/web-ui.c \
 .PHONY: cli  ## Build the clawtilla CLI only
 .PHONY: gtk  ## Build clawtilla-gtk only (skipped, loudly, without libadwaita)
 .PHONY: web  ## Build the clawtilla-web htmx client only
+.PHONY: lrg  ## Build clawtilla-lrg, the libregnum client (LRG_BACKEND=1, LRG_DIR=../libregnum)
+.PHONY: lrg-lib  ## Rebuild LRG_DIR's libregnum archive when missing or stale
+.PHONY: lrg-check  ## Syntax-check one lrg client file: make LRG_BACKEND=1 lrg-check F=<file>
+.PHONY: lrg-yaml-check  ## Refuse an LRG build whose yaml-glib would not match clawtilla's
 daemon: $(DAEMON_BIN_TARGET)
 cli:    $(CLI_BIN_TARGET)
 web:    $(WEB_BIN_TARGET)
@@ -599,6 +643,55 @@ else
 gtk:
 	@echo "Skipping $(GTK_BIN_NAME): $(GTK_PKG_DEPS) not found by pkg-config."
 	@echo "  Fedora: layer gtk4-devel and libadwaita-devel into the image."
+endif
+
+# ── The libregnum client ──────────────────────────────────────────────
+#
+# Opt-in (LRG_BACKEND=1), against the libregnum checkout at LRG_DIR.
+# `lrg-lib` keeps that checkout's archive current: it is rebuilt when it
+# is missing, when any libregnum or graylib source is newer than it, or
+# when it lacks a symbol the client links (an archive from before the
+# widget set links nothing useful).  The rebuild runs libregnum's own
+# `deps' and `lib' with its own defaults and *none* of ours: a
+# command-line DEBUG/ASAN/BUILDDIR reaches every nested make through
+# MAKEFLAGS, which is how libreclaw's release tree once got built with
+# ASan.  The archive is an order-only prerequisite with an empty rule, so
+# a fresh archive relinks the client and an untouched one does not.
+ifeq ($(LRG_AVAILABLE),1)
+lrg: lrg-yaml-check $(LRG_BIN_TARGET)
+
+lrg-lib: | $(OUTDIR)
+	@LRG_LIB="$(LRG_LIB)" LRG_DIR="$(LRG_DIR)" LRG_SYMBOLS="$(LRG_REQUIRED_SYMBOLS)" \
+		MAKE_CMD="$(MAKE)" tools/clawt-lrg-lib.sh
+
+$(LRG_LIB): | lrg-lib ;
+
+# libregnum's yaml-glib is the one linked (see config.mk), so it must be
+# clawtilla's pin or a descendant of it.  A libregnum that pins an older
+# or diverged yaml-glib would link, and then misread structures whose
+# layout clawtilla's objects were compiled against.
+lrg-yaml-check:
+	@tools/clawt-lrg-lib.sh --yaml-check "$(LR_YAML_GLIB_DIR)" "$(LRG_YAML_DIR)"
+
+# One file at a time, with the flags the binary uses -- for checking a
+# page while the rest of the client is still being written.  A real
+# compile to /dev/null rather than -fsyntax-only, which skips the passes
+# that report -Wmaybe-uninitialized and -Wunused-function:
+#   make LRG_BACKEND=1 lrg-check F=clients/lrg/lrg-chat.c
+lrg-check: | $(OUTDIR)/clawt-version.h
+	$(CC) $(CFLAGS) $(LRG_CFLAGS) -I$(LRG_SRCDIR) -c -o /dev/null $(F)
+
+$(LRG_BIN_TARGET): $(LRG_SOURCES) $(wildcard $(LRG_SRCDIR)/*.h) $(LIB_STATIC) $(LRG_LIB) | $(OUTDIR) $(OUTDIR)/clawt-version.h
+	@echo "Building $(LRG_BIN_NAME)..."
+	$(CC) $(CFLAGS) $(LRG_CFLAGS) -I$(LRG_SRCDIR) $(LRG_SOURCES) \
+		-o $@ $(LIB_STATIC) $(LRG_LDFLAGS)
+else ifeq ($(LRG_BACKEND),1)
+lrg lrg-lib lrg-yaml-check lrg-check:
+	@echo "Skipping $(LRG_BIN_NAME): no libregnum at LRG_DIR=$(LRG_DIR)."
+	@echo "  Clone libregnum there (with --recursive), or pass LRG_DIR=<path>."
+else
+lrg lrg-lib lrg-yaml-check lrg-check:
+	@echo "Skipping $(LRG_BIN_NAME): build with LRG_BACKEND=1 (libregnum at LRG_DIR, default ../libregnum)."
 endif
 
 # ============================================================
@@ -893,6 +986,7 @@ install: all
 	install -m 755 $(MCP_BIN_TARGET) $(DESTDIR)$(BINDIR)/
 	@[ -x $(GTK_BIN_TARGET) ] && install -m 755 $(GTK_BIN_TARGET) $(DESTDIR)$(BINDIR)/ || true
 	@[ -x $(WEB_BIN_TARGET) ] && install -m 755 $(WEB_BIN_TARGET) $(DESTDIR)$(BINDIR)/ || true
+	@[ -x $(LRG_BIN_TARGET) ] && install -m 755 $(LRG_BIN_TARGET) $(DESTDIR)$(BINDIR)/ || true
 	@for h in $(PUBLIC_HEADERS); do \
 		sub=$$(dirname $${h#$(SRCDIR)/}); \
 		install -d $(DESTDIR)$(INCLUDEDIR)/$(PROJECT_NAME)-1.0/$$sub; \
@@ -932,6 +1026,7 @@ uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/$(MCP_BIN_NAME)
 	rm -f $(DESTDIR)$(BINDIR)/$(GTK_BIN_NAME)
 	rm -f $(DESTDIR)$(BINDIR)/$(WEB_BIN_NAME)
+	rm -f $(DESTDIR)$(BINDIR)/$(LRG_BIN_NAME)
 	rm -rf $(DESTDIR)$(INCLUDEDIR)/$(PROJECT_NAME)-1.0
 	rm -f $(DESTDIR)$(PKGCONFIGDIR)/$(PROJECT_NAME)-1.0.pc
 	rm -rf $(DESTDIR)$(LIBDIR)/$(PROJECT_NAME)

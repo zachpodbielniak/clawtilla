@@ -26,11 +26,13 @@ set -eu
 # because a run where eleven of fourteen binaries failed to link was
 # still "green, and at least one ran".
 #
-# Recount with `ls tests/test-*.c | wc -l` and raise this whenever the
-# suite grows.  It sits at the real count rather than below it: every
+# Recount with `ls tests/test-*.c | grep -v lrgui | wc -l` and raise this
+# whenever the suite grows.  The tests/test-lrgui-*.c binaries link
+# libregnum and exist only in an LRG_BACKEND=1 build, so the floor is the
+# count without them: it must hold for the build everybody makes.  It sits at the real count rather than below it: every
 # binary short of that is one that did not run, and a floor with slack
 # in it is a floor that tolerates exactly the failure it exists for.
-TEST_FLOOR=93
+TEST_FLOOR=99
 
 main () {
     if [ $# -ne 1 ]

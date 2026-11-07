@@ -832,7 +832,10 @@ all three places it looked.
 ** Parity with the GTK client
 
 The two answer for the same daemon, so they should reach the same parts
-of it.  Two clients drifting apart is invisible -- nothing breaks,
+of it.  So does the third, ~clawtilla-lrg~ (see [[file:lrg-client.org][lrg-client.org]]): the
+script compares every graphical client in the tree -- ~gtk~, ~web~, and
+~lrg~ whenever ~clients/lrg/~ exists -- and everything below about "both
+clients" holds for all three.  Two clients drifting apart is invisible -- nothing breaks,
 nothing warns, and somebody finds out by reaching for the half that was
 not built.
 
@@ -919,6 +922,28 @@ command.
   catches one half being removed or never written, and cannot catch a
   feature nobody declared.
 
+*** With three clients
+
+Each layer compares every client, not a pair.  Layer 1 takes the union
+of every client's kinds and requires each client to send all of it, or
+to name the kind in its own exception map (~GTK_MAY_LACK~,
+~WEB_MAY_LACK~, ~LRG_MAY_LACK~); a kind missing from one client is
+reported with the clients that do send it.  Layer 2 still runs outward
+from the GTK composer, to each of the others.  Layer 3 requires every
+client or none to walk a family -- except the ~clawt_lrg_*~ families,
+which are clawtilla-lrg's own settings by decision and must be walked by
+it alone.  Layer 4 checks every client's code.  Layer 5's markers have
+one column per client in the order ~gtk|web|lrg~, and a declaration with
+no marker in a client's column fails rather than passing for want of
+anything to look for.  clawtilla-lrg's stylesheet is its theme document,
+~clients/lrg/lrg-theme-model.c~, so that file is excluded from layer 5
+the way ~web-style.c~ is.
+
+~tests/test-client-parity.sh~ builds a synthetic three-client tree and
+watches each layer fail for the third client -- a kind, a command, an
+lrg-only enumeration unwalked, and a marker present only in the theme
+document -- and pass when the tree is fixed.
+
 Two things learned building it, both of which made the check report the
 opposite of the truth:
 
@@ -935,7 +960,7 @@ opposite of the truth:
 
 *** Adding a feature
 
-Build it in both.  If it sends a frame, answers a command, or walks a
+Build it in every client.  If it sends a frame, answers a command, or walks a
 ~_count()~/~_nth()~ family, there is nothing to declare -- layers one to
 four find it on their own.
 
@@ -944,12 +969,12 @@ a row to ~AFFORDANCES~ naming a marker per client:
 
 #+begin_src bash
 declare -A AFFORDANCES=(
-    ["unread marker"]="unread_marker|unread-rule"
+    ["unread marker"]="unread_marker|unread-rule|unread_marker"
 )
 #+end_src
 
-The key is the capability in words; the value is the GTK marker, a pipe,
-and the web marker.  A marker must be something the feature *cannot work
+The key is the capability in words; the value is the GTK marker, the web
+marker and the clawtilla-lrg marker, separated by pipes.  A marker must be something the feature *cannot work
 without* -- a function name, a CSS class, a constant -- and never a
 label somebody might reword, because then the check fails on a wording
 change and passes when the feature is gone.  The two halves are usually

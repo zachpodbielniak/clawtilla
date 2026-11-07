@@ -37,10 +37,10 @@ backends, mailboxes, rooms, teams, tasks, the orchestration tools, the
 plugin system, the integrations, the AI agent designer, the CLI, the GTK
 client and the web client are all built and tested.
 
-The two graphical clients are held to the same feature set by ~make
-parity~, which compares the parts of the daemon each one reaches *and*
-the slash commands each answers, failing when a capability exists in only
-one of them.  Two clients drifting
+The graphical clients are held to the same feature set by ~make parity~,
+which compares the parts of the daemon each one reaches *and* the slash
+commands each answers, failing when a capability exists in only some of
+them.  Two clients drifting
 apart is otherwise invisible until somebody reaches for the half that was
 not built.
 
@@ -118,6 +118,11 @@ is spelled out in [[file:docs/security.org][docs/security.org]].
 - =clawtilla-web= -- the same client over HTTP, built with htmx-glib.
   Listens on the loopback and this machine's tailnet address, so a laptop
   reaches the fleet without a tunnel set up by hand.
+- =clawtilla-lrg= -- the same client again, drawn with libregnum on an
+  OpenGL canvas: frosted and glass surfaces over an animated background,
+  springs on everything that moves, and its own motion, material,
+  background, accent and scale settings.  Optional: =make LRG_BACKEND=1=,
+  against a libregnum checkout at =LRG_DIR= (default =../libregnum=).
 
 ** Documentation
 
@@ -145,6 +150,7 @@ All under [[file:docs/][docs/]], in org-mode:
 | [[file:docs/ipc-protocol.org][ipc-protocol.org]] | the client wire format |
 | [[file:docs/clients.org][clients.org]] | CLI, GTK, web, and embedding =libclawt= |
 | [[file:docs/web-client.org][web-client.org]] | the web client, where it listens, and client parity |
+| [[file:docs/lrg-client.org][lrg-client.org]] | the libregnum client: building it, its look and settings, its architecture |
 | [[file:docs/security.org][security.org]] | threat model, secrets, confinement |
 | [[file:docs/development.org][development.org]] | building, style, adding options and tests |
 | [[file:docs/maintenance.org][maintenance.org]] | submodule upgrades, backups, credential rotation, pruning, releasing |

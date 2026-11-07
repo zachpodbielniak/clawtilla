@@ -11,6 +11,7 @@
 #include "ipc/clawt-ipc-proto.h"
 
 #include <errno.h>
+#include <stdarg.h>
 #include <string.h>
 
 #include <netinet/in.h>
@@ -549,4 +550,57 @@ clawt_ipc_reply_refusal_text(JsonNode *payload, guint *n_refused)
                                length);
 
     return g_strdup(text->str);
+}
+
+JsonObject *
+clawt_ipc_reply_object(JsonNode *reply)
+{
+    if (reply == NULL || !JSON_NODE_HOLDS_OBJECT(reply))
+        return NULL;
+
+    return json_node_get_object(reply);
+}
+
+JsonNode *
+clawt_ipc_payload_new(const gchar *first_key, ...)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    const gchar *key = first_key;
+    va_list args;
+
+    json_builder_begin_object(builder);
+
+    va_start(args, first_key);
+
+    while (key != NULL) {
+        const gchar *value = va_arg(args, const gchar *);
+
+        /* NULL drops the member: absent and null mean different things */
+        if (value != NULL) {
+            json_builder_set_member_name(builder, key);
+            json_builder_add_string_value(builder, value);
+        }
+
+        key = va_arg(args, const gchar *);
+    }
+
+    va_end(args);
+
+    json_builder_end_object(builder);
+
+    return json_builder_get_root(builder);
+}
+
+gchar *
+clawt_ipc_reply_toast_text(const GError *error, JsonNode *reply)
+{
+    if (error != NULL) {
+        /* the banner already says this, permanently */
+        if (g_error_matches(error, CLAWT_ERROR, CLAWT_ERROR_NOT_CONNECTED))
+            return NULL;
+
+        return g_strdup(error->message);
+    }
+
+    return clawt_ipc_reply_refusal_text(reply, NULL);
 }

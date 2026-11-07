@@ -2755,6 +2755,24 @@ tests cannot see it:
 make web-smoke WEB_SMOKE_URL=http://127.0.0.1:8790 WEB_SMOKE_AGENT=chief
 #+end_src
 
+** The libregnum client
+
+#+begin_src bash
+make LRG_BACKEND=1
+clawtilla-lrg [--socket PATH] [--profile NAME | --host HOST [--port N] [--token T]]
+#+end_src
+
+Everything ~clawtilla-gtk~ does, drawn with libregnum's widgets on an
+OpenGL canvas instead of GTK: the same six sections and their pages, the
+same slash commands, the same Settings pages, the same ~appearance.yaml~
+and palettes -- plus five settings only it reads (motion, material,
+background, accent and interface scale), and the island, a one-line
+summary of the fleet at the top of the window.  It is optional, built
+against a libregnum checkout at ~LRG_DIR~ (default ~../libregnum~) rather
+than a submodule, and ~make parity~ holds it to the same feature set as
+the other two.  See [[file:lrg-client.org][lrg-client.org]] for building it, its look and
+settings, and how it is put together.
+
 ** Embedding libclawt
 
 The library is the product; the daemon is one caller.

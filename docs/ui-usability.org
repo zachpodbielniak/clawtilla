@@ -1,5 +1,5 @@
-#+title: GTK and web usability review
-#+description: Searchable navigation, readable section tabs, and verification of the desktop and browser clients.
+#+title: Client usability review
+#+description: Searchable navigation, readable section tabs, and verification of the desktop, browser and libregnum clients.
 #+authors: clawtilla contributors
 #+categories: clients usability
 #+created: 2026-09-09T10:01:31-04:00
@@ -14,7 +14,9 @@ The GTK picker searches a snapshot locally as you type. =Enter= opens the first 
 
 The web picker is a dedicated =/navigate= page. Its ordinary GET form works without JavaScript, and a search URL can be bookmarked. Submit a query with =Enter= or Search, then activate a result. =Ctrl+K= focuses and selects the query when already on the picker page. On conversation pages, the shortcut and the Go to link wait for the current draft to save before leaving; a failed save keeps the conversation open and reports the failure inline. The browser's standard modified-click behavior is preserved. The Back to conversations link returns to the selected agent's Chat, or to the selected group room; without either, it returns to the fleet.
 
-If the daemon is unavailable, both pickers explicitly report incomplete destinations and keep page navigation available. Reopen the GTK picker or submit another web search to retry. Neither picker changes daemon configuration or starts agents.
+The libregnum client's picker is a modal sheet over the window, opened with =Ctrl+K= or *Go to…* in the header menu. It uses the same matcher (=clawt_navigation_matches()=) over the same agents, rooms and pages; arrow keys move through the results, =Enter= opens the highlighted one and =Esc= closes the sheet. See [[file:lrg-client.org][lrg-client.org]].
+
+If the daemon is unavailable, the pickers explicitly report incomplete destinations and keep page navigation available. Reopen the GTK picker or submit another web search to retry. Neither picker changes daemon configuration or starts agents.
 
 * Review findings and changes
 
@@ -56,6 +58,14 @@ GDK_BACKEND=broadway BROADWAY_DISPLAY=:11 \
 #+end_src
 
 Visual inspection additionally needs an active Broadway browser connection or a normal display. Check section labels, the picker, Tasks, long labels, keyboard focus, and light and dark palettes at laptop and narrow window sizes. A hermetic test cannot prove a widget's visible allocation, and Broadway does not validate compositor-specific Wayland behavior.
+
+** The libregnum client's header
+
+The first rendering of =clawtilla-lrg= put the six section tabs in the header beside the agent's name and the island, and at a 1360-pixel window the island was pushed off the right edge with nothing to say it had gone. The tabs have their own centred row under the header now -- the decision the GTK client reached for the same reason -- and the title takes whatever width is left.
+
+** The libregnum client's checks
+
+=clawtilla-lrg= has no accessibility tree for xdotool to search, so its interaction checks assert on structure: =clawtilla-lrg --self-test PAGE:TARGET= builds the window without opening one, selects an agent or room, lays out at 1280×800 and prints libregnum's inspector snapshot as JSON. =tests/test-lrg-rooms.sh= runs it against a real daemon, and opens the real window once under Xvfb to check that frames are drawn. Visual inspection uses =CLAWT_LRG_SCREENSHOT=; see [[file:lrg-client.org::#lrg-screenshots][lrg-client.org]].
 
 ** Narrow pane breakpoints
 

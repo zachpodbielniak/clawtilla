@@ -59,6 +59,16 @@ struct _ClawtAppearance {
      * stored or read changed.
      */
     gchar     *palette;
+
+    /*
+     * clawtilla-lrg's own settings.  Zero is the shipped value for each,
+     * like every field above; the other two clients never read them.
+     */
+    ClawtLrgMotion     lrg_motion;
+    ClawtLrgMaterial   lrg_material;
+    ClawtLrgBackground lrg_background;
+    gchar             *lrg_accent;
+    gdouble            lrg_scale;
 };
 
 G_DEFINE_BOXED_TYPE(ClawtAppearance, clawt_appearance, clawt_appearance_copy,
@@ -94,6 +104,11 @@ clawt_appearance_copy(ClawtAppearance *self)
     copy->run_spacing = self->run_spacing;
     copy->hide_descriptions = self->hide_descriptions;
     copy->palette = g_strdup(self->palette);
+    copy->lrg_motion = self->lrg_motion;
+    copy->lrg_material = self->lrg_material;
+    copy->lrg_background = self->lrg_background;
+    copy->lrg_accent = g_strdup(self->lrg_accent);
+    copy->lrg_scale = self->lrg_scale;
 
     return copy;
 }
@@ -107,6 +122,7 @@ clawt_appearance_free(ClawtAppearance *self)
     g_free(self->font);
     g_free(self->monospace_font);
     g_free(self->palette);
+    g_free(self->lrg_accent);
     g_free(self);
 }
 
@@ -1133,6 +1149,21 @@ clawt_appearance_theme_label(ClawtTheme theme)
 }
 
 const gchar *
+clawt_appearance_get_scheme_css(ClawtAppearance *self)
+{
+    const ThemeInfo *info;
+
+    g_return_val_if_fail(self != NULL, NULL);
+
+    if (self->palette != NULL)
+        return clawt_appearance_get_palette_css(self);
+
+    info = theme_info(self->theme);
+
+    return (info != NULL) ? info->css : NULL;
+}
+
+const gchar *
 clawt_appearance_get_palette_css(ClawtAppearance *self)
 {
     const Palette *palette;
@@ -1645,6 +1676,55 @@ clawt_appearance_parse(const gchar *text, GError **error)
                     g_ascii_strcasecmp(value, "no") == 0 ||
                     g_strcmp0(value, "0") == 0));
 
+    /*
+     * clawtilla-lrg's keys.  A nick this build does not know is the
+     * shipped value, said once on stderr: a hand-edited preference must
+     * not cost somebody their client, and must not silently become a
+     * neighbouring value either.
+     */
+    value = member_string(mapping, "lrg_motion");
+
+    if (value != NULL) {
+        ClawtLrgMotion motion = CLAWT_LRG_MOTION_DEFAULT;
+
+        if (!clawt_lrg_motion_from_nick(value, &motion))
+            g_warning("appearance: lrg_motion '%s' is not a motion; "
+                      "using the default", value);
+
+        clawt_appearance_set_lrg_motion(self, motion);
+    }
+
+    value = member_string(mapping, "lrg_material");
+
+    if (value != NULL) {
+        ClawtLrgMaterial material = CLAWT_LRG_MATERIAL_DEFAULT;
+
+        if (!clawt_lrg_material_from_nick(value, &material))
+            g_warning("appearance: lrg_material '%s' is not a material; "
+                      "using the default", value);
+
+        clawt_appearance_set_lrg_material(self, material);
+    }
+
+    value = member_string(mapping, "lrg_background");
+
+    if (value != NULL) {
+        ClawtLrgBackground background = CLAWT_LRG_BACKGROUND_DEFAULT;
+
+        if (!clawt_lrg_background_from_nick(value, &background))
+            g_warning("appearance: lrg_background '%s' is not a background; "
+                      "using the default", value);
+
+        clawt_appearance_set_lrg_background(self, background);
+    }
+
+    clawt_appearance_set_lrg_accent(self, member_string(mapping, "lrg_accent"));
+
+    value = member_string(mapping, "lrg_scale");
+
+    if (value != NULL)
+        clawt_appearance_set_lrg_scale(self, g_ascii_strtod(value, NULL));
+
     return self;
 }
 
@@ -1750,6 +1830,29 @@ clawt_appearance_to_data(ClawtAppearance *self)
     g_string_append_printf(out, "agent_descriptions: %s\n",
                            self->hide_descriptions ? "false" : "true");
 
+    g_string_append(out,
+        "\n"
+        "# clawtilla-lrg only; the GTK and web clients ignore these.\n"
+        "# 'default' is the shipped value. lrg_motion: none is the\n"
+        "# reduced-motion setting. An empty accent takes the palette's,\n"
+        "# and an lrg_scale of 0 follows the monitor.\n");
+
+    g_string_append_printf(out, "lrg_motion: %s\n",
+                           clawt_lrg_motion_nick(self->lrg_motion));
+    g_string_append_printf(out, "lrg_material: %s\n",
+                           clawt_lrg_material_nick(self->lrg_material));
+    g_string_append_printf(out, "lrg_background: %s\n",
+                           clawt_lrg_background_nick(self->lrg_background));
+    append_quoted(out, "lrg_accent",
+                  (self->lrg_accent != NULL) ? self->lrg_accent : "");
+
+    {
+        gchar scale[G_ASCII_DTOSTR_BUF_SIZE];
+
+        g_ascii_formatd(scale, sizeof(scale), "%g", self->lrg_scale);
+        g_string_append_printf(out, "lrg_scale: %s\n", scale);
+    }
+
     return g_string_free(out, FALSE);
 }
 
@@ -1798,4 +1901,581 @@ clawt_appearance_save(ClawtAppearance *self, const gchar *path,
      * person wrote themselves would be an odd thing to lock down.
      */
     return clawt_write_file_atomic(resolved, text, -1, 0644, FALSE, error);
+}
+
+/* ── The libregnum client's own settings ──────────────────────────── */
+
+typedef struct {
+    gint         value;
+    const gchar *nick;
+    const gchar *label;
+} LrgChoice;
+
+/*
+ * One table per enum, in drawing order, and every reader walks it -- the
+ * nick, the label, the count and the reverse lookup cannot disagree.
+ */
+static const LrgChoice lrg_motion_table[] = {
+    { CLAWT_LRG_MOTION_DEFAULT, "default", "Default (smooth)" },
+    { CLAWT_LRG_MOTION_NONE,    "none",    "None (reduced motion)" },
+    { CLAWT_LRG_MOTION_SNAPPY,  "snappy",  "Snappy" },
+    { CLAWT_LRG_MOTION_SMOOTH,  "smooth",  "Smooth" },
+    { CLAWT_LRG_MOTION_BOUNCY,  "bouncy",  "Bouncy" },
+    { CLAWT_LRG_MOTION_WOBBLY,  "wobbly",  "Wobbly" }
+};
+
+static const LrgChoice lrg_material_table[] = {
+    { CLAWT_LRG_MATERIAL_DEFAULT, "default", "Default (frosted)" },
+    { CLAWT_LRG_MATERIAL_FLAT,    "flat",    "Flat" },
+    { CLAWT_LRG_MATERIAL_FROSTED, "frosted", "Frosted" },
+    { CLAWT_LRG_MATERIAL_GLASS,   "glass",   "Glass" }
+};
+
+static const LrgChoice lrg_background_table[] = {
+    { CLAWT_LRG_BACKGROUND_DEFAULT, "default", "Default (aurora)" },
+    { CLAWT_LRG_BACKGROUND_NONE,    "none",    "None" },
+    { CLAWT_LRG_BACKGROUND_AURORA,  "aurora",  "Aurora" },
+    { CLAWT_LRG_BACKGROUND_MESH,    "mesh",    "Mesh gradient" },
+    { CLAWT_LRG_BACKGROUND_PLASMA,  "plasma",  "Plasma" }
+};
+
+static const LrgChoice *
+lrg_choice_find(const LrgChoice *table, gsize n, gint value)
+{
+    gsize i;
+
+    for (i = 0; i < n; i++) {
+        if (table[i].value == value)
+            return &table[i];
+    }
+
+    return NULL;
+}
+
+static gboolean
+lrg_choice_from_nick(const LrgChoice *table, gsize n, const gchar *nick,
+                     gint *out)
+{
+    gsize i;
+
+    if (nick == NULL)
+        return FALSE;
+
+    for (i = 0; i < n; i++) {
+        if (g_ascii_strcasecmp(table[i].nick, nick) == 0) {
+            *out = table[i].value;
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
+guint
+clawt_lrg_motion_count(void)
+{
+    return G_N_ELEMENTS(lrg_motion_table);
+}
+
+ClawtLrgMotion
+clawt_lrg_motion_nth(guint n)
+{
+    g_return_val_if_fail(n < G_N_ELEMENTS(lrg_motion_table),
+                         CLAWT_LRG_MOTION_DEFAULT);
+
+    return (ClawtLrgMotion)lrg_motion_table[n].value;
+}
+
+const gchar *
+clawt_lrg_motion_nick(ClawtLrgMotion motion)
+{
+    const LrgChoice *c = lrg_choice_find(
+        lrg_motion_table, G_N_ELEMENTS(lrg_motion_table), (gint)motion);
+
+    return (c != NULL) ? c->nick : "default";
+}
+
+const gchar *
+clawt_lrg_motion_label(ClawtLrgMotion motion)
+{
+    const LrgChoice *c = lrg_choice_find(
+        lrg_motion_table, G_N_ELEMENTS(lrg_motion_table), (gint)motion);
+
+    return (c != NULL) ? c->label : lrg_motion_table[0].label;
+}
+
+gboolean
+clawt_lrg_motion_from_nick(const gchar *nick, ClawtLrgMotion *out)
+{
+    gint value;
+
+    g_return_val_if_fail(out != NULL, FALSE);
+
+    if (!lrg_choice_from_nick(lrg_motion_table,
+                              G_N_ELEMENTS(lrg_motion_table), nick, &value))
+        return FALSE;
+
+    *out = (ClawtLrgMotion)value;
+    return TRUE;
+}
+
+guint
+clawt_lrg_material_count(void)
+{
+    return G_N_ELEMENTS(lrg_material_table);
+}
+
+ClawtLrgMaterial
+clawt_lrg_material_nth(guint n)
+{
+    g_return_val_if_fail(n < G_N_ELEMENTS(lrg_material_table),
+                         CLAWT_LRG_MATERIAL_DEFAULT);
+
+    return (ClawtLrgMaterial)lrg_material_table[n].value;
+}
+
+const gchar *
+clawt_lrg_material_nick(ClawtLrgMaterial material)
+{
+    const LrgChoice *c = lrg_choice_find(
+        lrg_material_table, G_N_ELEMENTS(lrg_material_table), (gint)material);
+
+    return (c != NULL) ? c->nick : "default";
+}
+
+const gchar *
+clawt_lrg_material_label(ClawtLrgMaterial material)
+{
+    const LrgChoice *c = lrg_choice_find(
+        lrg_material_table, G_N_ELEMENTS(lrg_material_table), (gint)material);
+
+    return (c != NULL) ? c->label : lrg_material_table[0].label;
+}
+
+gboolean
+clawt_lrg_material_from_nick(const gchar *nick, ClawtLrgMaterial *out)
+{
+    gint value;
+
+    g_return_val_if_fail(out != NULL, FALSE);
+
+    if (!lrg_choice_from_nick(lrg_material_table,
+                              G_N_ELEMENTS(lrg_material_table), nick, &value))
+        return FALSE;
+
+    *out = (ClawtLrgMaterial)value;
+    return TRUE;
+}
+
+guint
+clawt_lrg_background_count(void)
+{
+    return G_N_ELEMENTS(lrg_background_table);
+}
+
+ClawtLrgBackground
+clawt_lrg_background_nth(guint n)
+{
+    g_return_val_if_fail(n < G_N_ELEMENTS(lrg_background_table),
+                         CLAWT_LRG_BACKGROUND_DEFAULT);
+
+    return (ClawtLrgBackground)lrg_background_table[n].value;
+}
+
+const gchar *
+clawt_lrg_background_nick(ClawtLrgBackground background)
+{
+    const LrgChoice *c = lrg_choice_find(
+        lrg_background_table, G_N_ELEMENTS(lrg_background_table),
+        (gint)background);
+
+    return (c != NULL) ? c->nick : "default";
+}
+
+const gchar *
+clawt_lrg_background_label(ClawtLrgBackground background)
+{
+    const LrgChoice *c = lrg_choice_find(
+        lrg_background_table, G_N_ELEMENTS(lrg_background_table),
+        (gint)background);
+
+    return (c != NULL) ? c->label : lrg_background_table[0].label;
+}
+
+gboolean
+clawt_lrg_background_from_nick(const gchar *nick, ClawtLrgBackground *out)
+{
+    gint value;
+
+    g_return_val_if_fail(out != NULL, FALSE);
+
+    if (!lrg_choice_from_nick(lrg_background_table,
+                              G_N_ELEMENTS(lrg_background_table), nick,
+                              &value))
+        return FALSE;
+
+    *out = (ClawtLrgBackground)value;
+    return TRUE;
+}
+
+ClawtLrgMotion
+clawt_appearance_get_lrg_motion(ClawtAppearance *self)
+{
+    g_return_val_if_fail(self != NULL, CLAWT_LRG_MOTION_DEFAULT);
+
+    return self->lrg_motion;
+}
+
+void
+clawt_appearance_set_lrg_motion(ClawtAppearance *self, ClawtLrgMotion motion)
+{
+    g_return_if_fail(self != NULL);
+
+    /* a value the type does not have is the default, never a neighbour */
+    if (lrg_choice_find(lrg_motion_table, G_N_ELEMENTS(lrg_motion_table),
+                        (gint)motion) == NULL)
+        motion = CLAWT_LRG_MOTION_DEFAULT;
+
+    self->lrg_motion = motion;
+}
+
+ClawtLrgMaterial
+clawt_appearance_get_lrg_material(ClawtAppearance *self)
+{
+    g_return_val_if_fail(self != NULL, CLAWT_LRG_MATERIAL_DEFAULT);
+
+    return self->lrg_material;
+}
+
+void
+clawt_appearance_set_lrg_material(ClawtAppearance *self,
+                                  ClawtLrgMaterial material)
+{
+    g_return_if_fail(self != NULL);
+
+    if (lrg_choice_find(lrg_material_table, G_N_ELEMENTS(lrg_material_table),
+                        (gint)material) == NULL)
+        material = CLAWT_LRG_MATERIAL_DEFAULT;
+
+    self->lrg_material = material;
+}
+
+ClawtLrgBackground
+clawt_appearance_get_lrg_background(ClawtAppearance *self)
+{
+    g_return_val_if_fail(self != NULL, CLAWT_LRG_BACKGROUND_DEFAULT);
+
+    return self->lrg_background;
+}
+
+void
+clawt_appearance_set_lrg_background(ClawtAppearance *self,
+                                    ClawtLrgBackground background)
+{
+    g_return_if_fail(self != NULL);
+
+    if (lrg_choice_find(lrg_background_table,
+                        G_N_ELEMENTS(lrg_background_table),
+                        (gint)background) == NULL)
+        background = CLAWT_LRG_BACKGROUND_DEFAULT;
+
+    self->lrg_background = background;
+}
+
+const gchar *
+clawt_appearance_get_lrg_accent(ClawtAppearance *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    return self->lrg_accent;
+}
+
+/*
+ * `#rgb` or `#rrggbb`, normalised to lower-case `#rrggbb`; NULL for
+ * anything else.  An accent is written into the theme as a colour, so a
+ * value that is not one must not survive to be misread there.
+ */
+static gchar *
+normalise_hex_color(const gchar *text)
+{
+    gsize length;
+    gsize i;
+
+    if (text == NULL || text[0] != '#')
+        return NULL;
+
+    length = strlen(text + 1);
+
+    if (length != 3 && length != 6)
+        return NULL;
+
+    for (i = 1; i <= length; i++) {
+        if (!g_ascii_isxdigit(text[i]))
+            return NULL;
+    }
+
+    if (length == 3) {
+        gchar wide[8];
+
+        wide[0] = '#';
+        wide[1] = text[1];
+        wide[2] = text[1];
+        wide[3] = text[2];
+        wide[4] = text[2];
+        wide[5] = text[3];
+        wide[6] = text[3];
+        wide[7] = '\0';
+
+        return g_ascii_strdown(wide, -1);
+    }
+
+    return g_ascii_strdown(text, -1);
+}
+
+void
+clawt_appearance_set_lrg_accent(ClawtAppearance *self, const gchar *accent)
+{
+    g_return_if_fail(self != NULL);
+
+    g_free(self->lrg_accent);
+    self->lrg_accent = normalise_hex_color(accent);
+}
+
+gdouble
+clawt_appearance_get_lrg_scale(ClawtAppearance *self)
+{
+    g_return_val_if_fail(self != NULL, 0.0);
+
+    return self->lrg_scale;
+}
+
+void
+clawt_appearance_set_lrg_scale(ClawtAppearance *self, gdouble scale)
+{
+    g_return_if_fail(self != NULL);
+
+    if (!(scale > 0.0)) {
+        self->lrg_scale = 0.0;
+        return;
+    }
+
+    self->lrg_scale = CLAMP(scale, CLAWT_LRG_SCALE_MIN, CLAWT_LRG_SCALE_MAX);
+}
+
+/* ── Reading a palette colour by colour ───────────────────────────── */
+
+#define PALETTE_MAX_DEPTH (8)
+
+static gboolean palette_resolve(const gchar *css, const gchar *expr,
+                                gdouble rgba[4], guint depth);
+
+static gboolean
+parse_hex(const gchar *hex, gdouble rgba[4])
+{
+    gsize length = strlen(hex);
+    guint values[8];
+    gsize i;
+
+    if (length != 3 && length != 4 && length != 6 && length != 8)
+        return FALSE;
+
+    for (i = 0; i < length; i++) {
+        if (!g_ascii_isxdigit(hex[i]))
+            return FALSE;
+
+        values[i] = (guint)g_ascii_xdigit_value(hex[i]);
+    }
+
+    if (length <= 4) {
+        rgba[0] = (gdouble)(values[0] * 17) / 255.0;
+        rgba[1] = (gdouble)(values[1] * 17) / 255.0;
+        rgba[2] = (gdouble)(values[2] * 17) / 255.0;
+        rgba[3] = (length == 4) ? (gdouble)(values[3] * 17) / 255.0 : 1.0;
+    } else {
+        rgba[0] = (gdouble)(values[0] * 16 + values[1]) / 255.0;
+        rgba[1] = (gdouble)(values[2] * 16 + values[3]) / 255.0;
+        rgba[2] = (gdouble)(values[4] * 16 + values[5]) / 255.0;
+        rgba[3] = (length == 8) ? (gdouble)(values[6] * 16 + values[7]) / 255.0
+                                : 1.0;
+    }
+
+    return TRUE;
+}
+
+/* A number, with `%` meaning a fraction of @scale. */
+static gboolean
+parse_component(const gchar *text, gdouble scale, gdouble *out)
+{
+    gchar *end = NULL;
+    gdouble value;
+
+    text = g_strstrip((gchar *)text);
+    value = g_ascii_strtod(text, &end);
+
+    if (end == text)
+        return FALSE;
+
+    while (*end == ' ')
+        end++;
+
+    if (*end == '%')
+        value = value / 100.0 * scale;
+    else if (*end != '\0')
+        return FALSE;
+
+    *out = value;
+    return TRUE;
+}
+
+/* `rgb(r, g, b)`, `rgba(r, g, b, a)`, `rgb(r g b / a)` */
+static gboolean
+parse_rgb_function(const gchar *args, gdouble rgba[4])
+{
+    g_autofree gchar *copy = g_strdup(args);
+    g_auto(GStrv) parts = NULL;
+    gchar *slash;
+    gdouble values[4] = { 0.0, 0.0, 0.0, 1.0 };
+    guint n;
+    guint i;
+
+    slash = strchr(copy, '/');
+
+    if (slash != NULL)
+        *slash = ',';
+
+    g_strdelimit(copy, " \t", ',');
+    parts = g_strsplit(copy, ",", -1);
+
+    for (i = 0, n = 0; parts[i] != NULL; i++) {
+        if (*g_strstrip(parts[i]) == '\0')
+            continue;
+
+        if (n >= 4)
+            return FALSE;
+
+        if (!parse_component(parts[i], (n == 3) ? 1.0 : 255.0, &values[n]))
+            return FALSE;
+
+        n++;
+    }
+
+    if (n != 3 && n != 4)
+        return FALSE;
+
+    rgba[0] = CLAMP(values[0] / 255.0, 0.0, 1.0);
+    rgba[1] = CLAMP(values[1] / 255.0, 0.0, 1.0);
+    rgba[2] = CLAMP(values[2] / 255.0, 0.0, 1.0);
+    rgba[3] = CLAMP(values[3], 0.0, 1.0);
+
+    return TRUE;
+}
+
+/* The expression after `@define-color <name>`, or NULL. */
+static gchar *
+palette_lookup(const gchar *css, const gchar *name)
+{
+    const gchar *p = css;
+    gsize name_length = strlen(name);
+
+    while ((p = strstr(p, "@define-color")) != NULL) {
+        const gchar *q = p + strlen("@define-color");
+        const gchar *end;
+
+        while (*q == ' ' || *q == '\t')
+            q++;
+
+        if (strncmp(q, name, name_length) == 0 &&
+            (q[name_length] == ' ' || q[name_length] == '\t')) {
+            q += name_length;
+            end = strchr(q, ';');
+
+            if (end == NULL)
+                return NULL;
+
+            return g_strstrip(g_strndup(q, (gsize)(end - q)));
+        }
+
+        p = q;
+    }
+
+    return NULL;
+}
+
+static gboolean
+palette_resolve(const gchar *css, const gchar *expr, gdouble rgba[4],
+                guint depth)
+{
+    gsize length;
+
+    if (depth > PALETTE_MAX_DEPTH || expr == NULL)
+        return FALSE;
+
+    length = strlen(expr);
+
+    if (expr[0] == '#')
+        return parse_hex(expr + 1, rgba);
+
+    if (expr[0] == '@') {
+        g_autofree gchar *target = palette_lookup(css, expr + 1);
+
+        return palette_resolve(css, target, rgba, depth + 1);
+    }
+
+    if (length > 0 && expr[length - 1] == ')') {
+        const gchar *open = strchr(expr, '(');
+        g_autofree gchar *function = NULL;
+        g_autofree gchar *args = NULL;
+
+        if (open == NULL)
+            return FALSE;
+
+        function = g_strstrip(g_strndup(expr, (gsize)(open - expr)));
+        args = g_strndup(open + 1, length - (gsize)(open - expr) - 2);
+
+        if (g_strcmp0(function, "rgb") == 0 ||
+            g_strcmp0(function, "rgba") == 0)
+            return parse_rgb_function(args, rgba);
+
+        if (g_strcmp0(function, "alpha") == 0) {
+            gchar *comma = strrchr(args, ',');
+            gdouble factor;
+
+            if (comma == NULL)
+                return FALSE;
+
+            *comma = '\0';
+
+            if (!parse_component(comma + 1, 1.0, &factor))
+                return FALSE;
+
+            if (!palette_resolve(css, g_strstrip(args), rgba, depth + 1))
+                return FALSE;
+
+            rgba[3] = CLAMP(rgba[3] * factor, 0.0, 1.0);
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
+gboolean
+clawt_palette_color(const gchar *css, const gchar *name, gdouble rgba[4])
+{
+    g_autofree gchar *expr = NULL;
+    gdouble out[4];
+
+    g_return_val_if_fail(name != NULL, FALSE);
+    g_return_val_if_fail(rgba != NULL, FALSE);
+
+    if (css == NULL)
+        return FALSE;
+
+    expr = palette_lookup(css, name);
+
+    if (!palette_resolve(css, expr, out, 0))
+        return FALSE;
+
+    memcpy(rgba, out, sizeof(out));
+    return TRUE;
 }

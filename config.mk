@@ -10,8 +10,8 @@
 # Project information
 PROJECT_NAME = clawtilla
 VERSION_MAJOR = 0
-VERSION_MINOR = 6
-VERSION_MICRO = 2
+VERSION_MINOR = 7
+VERSION_MICRO = 0
 VERSION = $(VERSION_MAJOR).$(VERSION_MINOR).$(VERSION_MICRO)
 
 # Installation paths
@@ -136,6 +136,72 @@ GTK_PKG_CFLAGS := $(shell pkg-config --cflags $(GTK_PKG_DEPS) 2>/dev/null)
 GTK_PKG_LIBS   := $(shell pkg-config --libs   $(GTK_PKG_DEPS) 2>/dev/null)
 GTK_AVAILABLE  := $(shell pkg-config --exists $(GTK_PKG_DEPS) 2>/dev/null && echo 1 || echo 0)
 
+# ── libregnum client (clients/lrg) ───────────────────────────────────
+#
+# Opt in with LRG_BACKEND=1.  libregnum is NOT a submodule: recursively
+# it is enormous (graylib, raylib, crispy, optional ai-glib/cad-glib/
+# Steam), so the client builds against a sibling checkout named by
+# LRG_DIR.  `make LRG_BACKEND=1` builds that checkout's library in place
+# when the archive is missing or older than its sources -- with
+# libregnum's *own* default options, so an archive another project links
+# (cmacs, gsurf) is rebuilt as itself rather than as a cut-down variant.
+#
+# One yaml-glib, not two.  liblibregnum.a has yaml-glib merged into it,
+# and clawtilla links libreclaw's.  Two copies in one process register
+# YamlParser and friends twice -- a GType clash, not merely duplicate
+# symbols -- so the lrg binary drops libreclaw's archive and takes
+# libregnum's.  That is only sound while libregnum's yaml-glib descends
+# from clawtilla's pin; `lrg-yaml-check` refuses the build otherwise.
+LRG_BACKEND ?= 0
+LRG_DIR     ?= $(abspath $(CURDIR)/../libregnum)
+LRG_LIB      = $(LRG_DIR)/build/release/lib/liblibregnum.a
+LRG_YAML_DIR = $(LRG_DIR)/deps/yaml-glib
+
+# What the client links from libregnum, checked with nm before a link: an
+# archive older than the widget set links fine and fails nowhere useful.
+LRG_REQUIRED_SYMBOLS = lrg_canvas_new lrg_island_new lrg_text_editor_new \
+                       lrg_markdown_label_new lrg_table_new lrg_node_graph_new \
+                       lrg_toast_queue_new lrg_header_bar_new lrg_switcher_new \
+                       lrg_timeline_view_new lrg_property_grid_new
+
+ifeq ($(LRG_BACKEND),1)
+LRG_AVAILABLE := $(shell test -f $(LRG_DIR)/src/libregnum.h && echo 1 || echo 0)
+else
+LRG_AVAILABLE := 0
+endif
+
+# The -DLRG_HAS_* set must match how the archive was built, or
+# <libregnum.h> declares a different library than the one linked.  These
+# mirror libregnum's own detection for its default options.
+LRG_HAS_DEFS := -DLRG_PLATFORM_LINUX=1 -DLRG_BUILD_EDITOR=1 -DLRG_BUILD_EDITOR_UI=1 \
+                $(if $(shell pkg-config --exists libdex-1 && echo y),-DLRG_HAS_LIBDEX=1) \
+                $(if $(shell pkg-config --exists luajit && echo y),-DLRG_HAS_LUAJIT=1) \
+                $(if $(shell pkg-config --exists fribidi && echo y),-DLRG_HAS_FRIBIDI=1) \
+                $(if $(shell pkg-config --exists python3-embed && echo y),-DLRG_HAS_PYTHON=1) \
+                $(if $(wildcard $(LRG_DIR)/deps/crispy/src/crispy.h),-DLRG_HAS_CRISPY=1)
+
+# -include stdbool.h: under gnu89 <raylib.h> declares `bool` as an
+# int-sized enum while raylib stores a one-byte _Bool, so mouse buttons
+# read "held" for ever.  libregnum compiles itself the same way.
+# -isystem: libregnum's and raylib's headers are not ours to warn about.
+LRG_CFLAGS = -include stdbool.h $(LRG_HAS_DEFS) \
+             -isystem $(LRG_DIR)/src \
+             -isystem $(LRG_DIR)/deps/graylib/src \
+             -isystem $(LRG_DIR)/deps/graylib/deps/raylib/src
+
+LRG_PKG_DEPS = zlib libpq openssl sqlite3 fribidi \
+               $(if $(shell pkg-config --exists luajit && echo y),luajit) \
+               $(if $(shell pkg-config --exists python3-embed && echo y),python3-embed)
+LRG_SYS_LIBS = $(shell pkg-config --libs $(LRG_PKG_DEPS) 2>/dev/null) \
+               $(shell pkg-config --libs wayland-client wayland-cursor wayland-egl xkbcommon 2>/dev/null) \
+               -lGL -lX11 -lm -lpthread -ldl -lrt -lreadline
+
+# libreclaw's group without its yaml-glib (see above).
+LRG_LIBRECLAW_LIBS = $(filter-out $(LR_YAML_GLIB_DIR)/build/release/libyaml-glib-1.0.a,$(LIBRECLAW_LIBS))
+
+LRG_LDFLAGS = $(LDFLAGS_SAN) $(LRG_LIBRECLAW_LIBS) $(LRG_LIB) $(PKG_LIBS) $(LRG_SYS_LIBS) \
+              $(shell pkg-config --libs yaml-0.1)
+
 # Build directories
 BUILDDIR := build
 OBJDIR_DEBUG := $(BUILDDIR)/debug/obj
@@ -225,6 +291,9 @@ GTK_BIN_TARGET = $(OUTDIR)/$(GTK_BIN_NAME)
 
 WEB_BIN_NAME = clawtilla-web
 WEB_BIN_TARGET = $(OUTDIR)/$(WEB_BIN_NAME)
+
+LRG_BIN_NAME = clawtilla-lrg
+LRG_BIN_TARGET = $(OUTDIR)/$(LRG_BIN_NAME)
 
 # The agent-facing MCP server.  An agent's AI CLI starts this; it is not
 # meant to be run by hand.

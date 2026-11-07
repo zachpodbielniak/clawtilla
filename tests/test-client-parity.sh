@@ -21,7 +21,7 @@
 # both clients -- which is how long a latent check waits before it is
 # wrong about something.
 #
-# So this drives the real script against a tree of two synthetic clients,
+# So this drives the real script against a tree of synthetic clients,
 # where the only difference between the two arms is whether the web
 # client's mention is inside `/* */`.  src/ is symlinked from the repo so
 # the daemon's frame kinds and the public headers are the real ones; the
@@ -51,7 +51,8 @@ trap cleanup EXIT
 build_tree () {
     WORK="$(mktemp -d "${TMPDIR:-/tmp}/clawt-parity-XXXXXX")"
 
-    mkdir -p "${WORK}/tools" "${WORK}/clients/gtk" "${WORK}/clients/web"
+    mkdir -p "${WORK}/tools" "${WORK}/clients/gtk" "${WORK}/clients/web" \
+             "${WORK}/clients/lrg"
     ln -s "${ROOT}/src" "${WORK}/src"
     cp "${ROOT}/tools/clawt-client-parity.sh" "${WORK}/tools/"
 }
@@ -83,6 +84,36 @@ GTK
         printf '    %s\n' "${1}"
         echo '}'
     } > "${WORK}/clients/web/fake.c"
+
+    # The third client agrees with GTK unless an arm says otherwise.
+    write_lrg 'send_frame("agent.start"); answer("/parityprobe");'
+}
+
+#
+# @1: the line clawtilla-lrg carries its probes on; @2 (optional): the
+# body of its theme document, which the affordance layer must not read.
+#
+write_lrg () {
+    {
+        echo 'void fake(void)'
+        echo '{'
+        echo '    send_frame("agent.list");'
+        echo '    answer("/other");'
+        printf '    %s\n' "${1}"
+        echo '}'
+    } > "${WORK}/clients/lrg/fake.c"
+
+    printf '%s\n' "${2:-/* no styles */}" \
+        > "${WORK}/clients/lrg/lrg-theme-model.c"
+}
+
+#
+# The lrg column of a declared affordance, read from the real script so
+# this test follows whatever marker the client actually uses.
+#
+lrg_marker_for () {
+    grep -F "[\"${1}\"]=" "${ROOT}/tools/clawt-client-parity.sh" \
+        | head -1 | sed 's/.*="//; s/"$//' | cut -d'|' -f3
 }
 
 #
@@ -129,7 +160,7 @@ main () {
     output="$(run_parity)"
 
     expect_line "a frame kind named only in a comment does not count" \
-        yes '^ +agent\.start +in clawtilla-gtk, missing from clawtilla-web' \
+        yes '^ +agent\.start +in clawtilla-gtk, clawtilla-lrg, missing from clawtilla-web' \
         "${output}"
     expect_line "a slash command named only in a comment does not count" \
         yes '^ +/parityprobe +a command in clawtilla-gtk, missing from clawtilla-web' \
@@ -147,6 +178,70 @@ main () {
         no 'agent\.start' "${output}"
     expect_line "a slash command in code does count" \
         no '/parityprobe' "${output}"
+
+    #
+    # The third client, layer by layer.  Each pair of arms is a failure
+    # and the same tree fixed, for the reason arm two exists: a check
+    # that reports everything always reports the thing you asked about.
+    #
+    write_lrg '/* send_frame("agent.start"); answer("/parityprobe"); */'
+    output="$(run_parity)"
+
+    expect_line "lrg: a kind GTK and web send is required of lrg" \
+        yes '^ +agent\.start +in clawtilla-gtk, clawtilla-web, missing from clawtilla-lrg' \
+        "${output}"
+    expect_line "lrg: a GTK slash command is required of lrg" \
+        yes '^ +/parityprobe +a command in clawtilla-gtk, missing from clawtilla-lrg' \
+        "${output}"
+
+    #
+    # clawtilla-lrg's own settings are walked by it and by nobody else:
+    # GTK and web not walking clawt_lrg_motion is a decision, lrg not
+    # walking it is a failure.
+    #
+    write_lrg 'send_frame("agent.start"); answer("/parityprobe");'
+    output="$(run_parity)"
+
+    expect_line "lrg: its own enumeration unwalked is reported" \
+        yes '^ +clawt_lrg_motion\(\) +clawtilla-lrg.s own setting, not walked by clawtilla-lrg' \
+        "${output}"
+    expect_line "lrg: GTK and web are never asked to walk lrg's settings" \
+        no 'clawt_lrg_motion\(\) +walked by' "${output}"
+
+    write_lrg 'send_frame("agent.start"); answer("/parityprobe"); clawt_lrg_motion_count();'
+    output="$(run_parity)"
+
+    expect_line "lrg: its own enumeration walked is not reported" \
+        no 'clawt_lrg_motion\(\)' "${output}"
+
+    #
+    # Layer 5, against a real declared affordance.  A marker that exists
+    # only in the theme document is no more a capability than a CSS rule
+    # in web-style.c is.
+    #
+    local marker
+    marker="$(lrg_marker_for "unread rule")"
+
+    if [ -z "${marker}" ]
+    then
+        echo "  FAIL  \"unread rule\" has no clawtilla-lrg marker to test with"
+        FAIL=1
+    else
+        write_lrg 'send_frame("agent.start"); answer("/parityprobe");' \
+            "static const char *s = \"${marker}\";"
+        output="$(run_parity)"
+
+        expect_line "lrg: a marker only in the theme document does not count" \
+            yes '^ +unread rule +declared, missing from clawtilla-lrg' \
+            "${output}"
+
+        write_lrg "send_frame(\"agent.start\"); answer(\"/parityprobe\"); ${marker}();"
+        output="$(run_parity)"
+
+        expect_line "lrg: a marker in code does count" \
+            no '^ +unread rule +declared, missing from clawtilla-lrg' \
+            "${output}"
+    fi
 
     #
     # Arm three: it does not litter.

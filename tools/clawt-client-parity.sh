@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
-# clawt-client-parity.sh - The GTK client and the web client answer for
-# the same daemon, so they should reach the same parts of it.
+# clawt-client-parity.sh - The graphical clients (GTK, web and, when it is
+# in the tree, libregnum) answer for the same daemon, so they should reach
+# the same parts of it.
 #
 # Copyright (C) 2026
 # SPDX-License-Identifier: AGPL-3.0-or-later
@@ -62,34 +63,12 @@ set -euo pipefail
 
 CDPATH=
 
-gtk=""
-web=""
-only_gtk=""
-only_web=""
-gtk_cmds=""
-web_cmds=""
-only_gtk_cmds=""
-gtk_code=""
-web_code=""
-gtk_render=""
-web_render=""
 api_text=""
-
-cleanup () {
-    rm -f "${gtk}" "${web}" "${only_gtk}" "${only_web}" \
-          "${gtk_cmds}" "${web_cmds}" "${only_gtk_cmds}" \
-          "${gtk_code}" "${web_code}" "${gtk_render}" "${web_render}" \
-          "${api_text}"
-}
-
-trap cleanup EXIT
 
 # CDPATH is cleared above, so a bare cd cannot echo the directory it
 # resolved to and have the command substitution capture it as well as pwd's
 # own output.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-GTK_DIR="${ROOT}/clients/gtk"
-WEB_DIR="${ROOT}/clients/web"
 #
 # The daemon's client surface, which is one file per verb family.
 #
@@ -150,47 +129,47 @@ declare -A VOCABULARIES=(
 #
 # shellcheck disable=SC2034
 declare -A AFFORDANCES=(
-    ["searchable navigation"]="clawt_gtk_build_navigation|navigation-search"
-    ["unread marker"]="unread_marker|unread-rule"
-    ["live turn steps"]="clawt_gtk_steps_add|turn_steps"
-    ["tool run collapsing"]="clawt_turn_step_run_summary|clawt_turn_step_run_summary"
-    ["step tone"]="clawt_turn_step_tone|clawt_turn_step_tone"
-    ["expand a tool run"]="gtk_expander_set_label_widget|htmx_summary_new_with_text"
-    ["steps merged into history"]="clawt_turn_step_precedes|clawt_turn_step_precedes"
-    ["jump to latest"]="jump_revealer|jump-pill"
-    ["transcript measure"]="adw_clamp_new|transcript-inner"
-    ["markdown rendering"]="clawt_markdown_to_pango|clawt_markdown_to_html"
-    ["attachment previews"]="append_attachment_previews|attachment"
-    ["unread count"]="clawt-unread-badge|unread-badge"
-    ["unread tab total"]="adw_view_stack_page_set_badge_number|unread_total"
-    ["message runs"]="clawt_chat_run_is_start|clawt_chat_run_is_start"
-    ["transcript stamps"]="clawt_chat_time_label|clawt_chat_time_label"
-    ["day dividers"]="day_divider|day-divider"
-    ["sender avatars"]="adw_avatar_new|msg-avatar"
-    ["own-turn bubbles"]="clawt-bubble|msg-self"
-    ["alerts surface"]="build_alerts_panel|alert-row"
-    ["alert severity tiers"]="clawt_alert_tier_for_event|clawt_alert_tier_for_event"
-    ["unread rule"]="clawt_unread_should_count|clawt_unread_should_count"
-    ["team tally"]="clawt_team_tally|clawt_team_tally"
-    ["fleet warnings"]="append_warning_rows|clawt_web_warnings"
-    ["peer conversations"]="fill_conversation_menu|conversation_switcher"
-    ["team busy marker"]="clawt-team-busy|clawt-team-busy"
-    ["follow the live edge"]="clawt_transcript_is_at_bottom|transcript-end"
-    ["alert filter"]="alerts_show_all|show_all"
-    ["agent attachments"]="fetch_attachment|attachment_element"
-    ["fleet activity ages"]="clawt_activity_elapsed_label|clawt_activity_elapsed_label"
-    ["stop is agent-wide"]="clawt_activity_stop_prompt|clawt_activity_stop_prompt"
-    ["steer only where it reaches"]="\"steerable\"|\"steerable\""
-    ["flow groups by sender"]="flow_run_sender|flow_run_sender"
-    ["alert arrives read"]="clawt_alert_arrives_read|clawt_alert_arrives_read"
-    ["composer on the message column"]="CHAT_BODY_INSET|chat-gutter"
-    ["reading measurements"]="build_reading_group|clawt_run_gap"
-    ["measure units"]="clawt_measure_unit_count|clawt_measure_unit_count"
-    ["computer types"]="clawt_computer_type_count|clawt_computer_type_count"
-    ["import modes"]="clawt_import_mode_count|clawt_import_mode_count"
-    ["palettes from disk"]="clawt_appearance_scheme_count|clawt_appearance_scheme_count"
-    ["message boundary in a run"]="CHAT_MESSAGE_SPACING|msg-time"
-    ["decision inbox"]="build_decision_page|decision-row"
+    ["searchable navigation"]="clawt_gtk_build_navigation|navigation-search|navigation_search_changed"
+    ["unread marker"]="unread_marker|unread-rule|unread_rule_new"
+    ["live turn steps"]="clawt_gtk_steps_add|turn_steps|steps_add_live"
+    ["tool run collapsing"]="clawt_turn_step_run_summary|clawt_turn_step_run_summary|clawt_turn_step_run_summary"
+    ["step tone"]="clawt_turn_step_tone|clawt_turn_step_tone|clawt_turn_step_tone"
+    ["expand a tool run"]="gtk_expander_set_label_widget|htmx_summary_new_with_text|lrg_expander_new"
+    ["steps merged into history"]="clawt_turn_step_precedes|clawt_turn_step_precedes|clawt_turn_step_precedes"
+    ["jump to latest"]="jump_revealer|jump-pill|on_jump_clicked"
+    ["transcript measure"]="adw_clamp_new|transcript-inner|clawt_measure_resolve_px"
+    ["markdown rendering"]="clawt_markdown_to_pango|clawt_markdown_to_html|clawt_lrg_markdown"
+    ["attachment previews"]="append_attachment_previews|attachment|attachment_previews_append"
+    ["unread count"]="clawt-unread-badge|unread-badge|unread-badge"
+    ["unread tab total"]="adw_view_stack_page_set_badge_number|unread_total|clawt_lrg_unread_badge"
+    ["message runs"]="clawt_chat_run_is_start|clawt_chat_run_is_start|clawt_chat_run_is_start"
+    ["transcript stamps"]="clawt_chat_time_label|clawt_chat_time_label|clawt_chat_time_label"
+    ["day dividers"]="day_divider|day-divider|day_divider_new"
+    ["sender avatars"]="adw_avatar_new|msg-avatar|sender_avatar"
+    ["own-turn bubbles"]="clawt-bubble|msg-self|own_bubble_new"
+    ["alerts surface"]="build_alerts_panel|alert-row|build_alerts_panel"
+    ["alert severity tiers"]="clawt_alert_tier_for_event|clawt_alert_tier_for_event|clawt_alert_tier_for_event"
+    ["unread rule"]="clawt_unread_should_count|clawt_unread_should_count|clawt_unread_should_count"
+    ["team tally"]="clawt_team_tally|clawt_team_tally|clawt_team_tally"
+    ["fleet warnings"]="append_warning_rows|clawt_web_warnings|append_warning_rows"
+    ["peer conversations"]="fill_conversation_menu|conversation_switcher|conversation_picker"
+    ["team busy marker"]="clawt-team-busy|clawt-team-busy|clawt-team-busy"
+    ["follow the live edge"]="clawt_transcript_is_at_bottom|transcript-end|clawt_transcript_is_at_bottom"
+    ["alert filter"]="alerts_show_all|show_all|alerts_show_all"
+    ["agent attachments"]="fetch_attachment|attachment_element|fetch_agent_attachment"
+    ["fleet activity ages"]="clawt_activity_elapsed_label|clawt_activity_elapsed_label|clawt_activity_elapsed_label"
+    ["stop is agent-wide"]="clawt_activity_stop_prompt|clawt_activity_stop_prompt|clawt_activity_stop_prompt"
+    ["steer only where it reaches"]="\"steerable\"|\"steerable\"|\"steerable\""
+    ["flow groups by sender"]="flow_run_sender|flow_run_sender|flow_run_sender"
+    ["alert arrives read"]="clawt_alert_arrives_read|clawt_alert_arrives_read|clawt_alert_arrives_read"
+    ["composer on the message column"]="CHAT_BODY_INSET|chat-gutter|CHAT_BODY_INSET"
+    ["reading measurements"]="build_reading_group|clawt_run_gap|build_reading_card"
+    ["measure units"]="clawt_measure_unit_count|clawt_measure_unit_count|clawt_measure_unit_count"
+    ["computer types"]="clawt_computer_type_count|clawt_computer_type_count|clawt_computer_type_count"
+    ["import modes"]="clawt_import_mode_count|clawt_import_mode_count|clawt_import_mode_count"
+    ["palettes from disk"]="clawt_appearance_scheme_count|clawt_appearance_scheme_count|clawt_appearance_scheme_count"
+    ["message boundary in a run"]="CHAT_MESSAGE_SPACING|msg-time|CHAT_MESSAGE_SPACING"
+    ["decision inbox"]="build_decision_page|decision-row|decision-card"
     #
     # The count on the top-level tab, which is a different thing from
     # the page: the GTK client sums a section's pages onto its own tab
@@ -199,17 +178,17 @@ declare -A AFFORDANCES=(
     # not exist until the daemon started saying when a decision was
     # settled, without which a count could only ever go up.
     #
-    ["decision count on a tab"]="clawt_gtk_set_page_badge|clawt_web_app_open_decisions"
-    ["connection reachability"]="clawt_connection_probe|clawt_connection_probe"
-    ["identity size"]="clawt-identity-size|clawt-identity-size"
-    ["connection banner"]="connection_banner|clawt-connection-banner"
-    ["daemon version check"]="note_daemon_version|note_daemon_version"
-    ["connection notice"]="clawt_connection_notice_text|clawt_connection_notice_text"
-    ["start on a remote daemon"]="opt_profile|opt_profile"
-    ["resync after a gap"]="\"resync\"|\"resync\""
-    ["stop the running turn"]="on_stop_turn|stop_turn_button"
-    ["decision options stack"]="decision_option_button|decision-options"
-    ["sidebar face"]="clawt_gtk_build_avatar|agent-face"
+    ["decision count on a tab"]="clawt_gtk_set_page_badge|clawt_web_app_open_decisions|CLAWT_PAGE_DECISIONS, open"
+    ["connection reachability"]="clawt_connection_probe|clawt_connection_probe|clawt_connection_probe"
+    ["identity size"]="clawt-identity-size|clawt-identity-size|clawt-identity-size"
+    ["connection banner"]="connection_banner|clawt-connection-banner|clawt_lrg_update_banner"
+    ["daemon version check"]="note_daemon_version|note_daemon_version|note_daemon_version"
+    ["connection notice"]="clawt_connection_notice_text|clawt_connection_notice_text|clawt_connection_notice_text"
+    ["start on a remote daemon"]="opt_profile|opt_profile|opt_profile"
+    ["resync after a gap"]="\"resync\"|\"resync\"|\"resync\""
+    ["stop the running turn"]="on_stop_turn|stop_turn_button|on_stop_turn_clicked"
+    ["decision options stack"]="decision_option_button|decision-options|decision_option_button"
+    ["sidebar face"]="clawt_gtk_build_avatar|agent-face|clawt_lrg_avatar(app, agent->name"
     #
     # A group room drawn beside the agents, and the two things you can
     # only do to one from a client.
@@ -220,9 +199,9 @@ declare -A AFFORDANCES=(
     # a rule rather than a call.  Layer 5 is the only one that can see
     # that a client draws rooms at all.
     #
-    ["rooms in the sidebar"]="room_row|room_row"
-    ["making a room"]="clawt_gtk_on_new_room|on_new_room_submit"
-    ["a room says how it delivers"]="answers when named|answers when named"
+    ["rooms in the sidebar"]="room_row|room_row|room_row"
+    ["making a room"]="clawt_gtk_on_new_room|on_new_room_submit|on_room_response"
+    ["a room says how it delivers"]="answers when named|answers when named|answers when named"
     #
     # Putting a room in a team's group.
     #
@@ -232,8 +211,8 @@ declare -A AFFORDANCES=(
     # both clients, because GTK sends it for a rename too.  A dead route
     # is exactly what layer 5 is for.
     #
-    ["moving a room to a team"]="move_room_to_team|team_picker_for(\"r\""
-    ["picture editor"]="build_avatar_group|on_avatar_set"
+    ["moving a room to a team"]="move_room_to_team|team_picker_for(\"r\"|\"room.set\""
+    ["picture editor"]="build_avatar_group|on_avatar_set|build_avatar_group"
     #
     # A description under each agent's name, and the setting that keeps
     # it for the pointer instead.
@@ -245,8 +224,8 @@ declare -A AFFORDANCES=(
     # the only one that can see it, which is exactly what layer 5 is
     # for.
     #
-    ["agent descriptions"]="clawt-agent-row|agent-desc"
-    ["hide agent descriptions"]="build_fleet_list_group|clawt_agent_desc"
+    ["agent descriptions"]="clawt-agent-row|agent-desc|clawt-agent-row"
+    ["hide agent descriptions"]="build_fleet_list_group|clawt_agent_desc|build_agent_list_card"
     #
     # Which standing is drawn beside a name.  The rule itself is in the
     # library, so layer 3 would catch a client that stopped walking it
@@ -254,7 +233,7 @@ declare -A AFFORDANCES=(
     # unread in every `agent.list` reply, so the *drawing* is declared
     # too.
     #
-    ["team standing badges"]="CLAWT_TEAM_BADGE_LEAD|CLAWT_TEAM_BADGE_LEAD"
+    ["team standing badges"]="CLAWT_TEAM_BADGE_LEAD|CLAWT_TEAM_BADGE_LEAD|CLAWT_TEAM_BADGE_LEAD"
     #
     # Clicking a face to see the picture properly.
     #
@@ -262,11 +241,11 @@ declare -A AFFORDANCES=(
     # GtkWindow, the other toggles an overlay from the page-head script
     # -- so layers 1 to 4 are all blind to it.
     #
-    ["enlarge a profile picture"]="on_avatar_preview_clicked|avatar-zoom"
-    ["trigger secret shown once"]="secret_shown_once|secret_shown_once"
-    ["trigger verification capture"]="on_trigger_capture|on_trigger_capture"
-    ["composer drafts"]="clawt_gtk_persist_draft|draft_key_for"
-    ["steer a busy agent"]="\"steered\"|\"steered\""
+    ["enlarge a profile picture"]="on_avatar_preview_clicked|avatar-zoom|avatar_preview_open"
+    ["trigger secret shown once"]="secret_shown_once|secret_shown_once|secret_shown_once"
+    ["trigger verification capture"]="on_trigger_capture|on_trigger_capture|on_trigger_capture"
+    ["composer drafts"]="clawt_gtk_persist_draft|draft_key_for|chat_persist_draft"
+    ["steer a busy agent"]="\"steered\"|\"steered\"|\"steered\""
     #
     # What an agent is doing, as opposed to whether its process is up.
     #
@@ -275,7 +254,7 @@ declare -A AFFORDANCES=(
     # helper rather than a _count()/_nth() enumeration, and layer 4 does
     # not because neither client spells any of its output out.
     #
-    ["agent activity"]="clawt_agent_activity_label|clawt_agent_activity_label"
+    ["agent activity"]="clawt_agent_activity_label|clawt_agent_activity_label|clawt_agent_activity_label"
     #
     # A routine that can never fire says why.
     #
@@ -290,7 +269,7 @@ declare -A AFFORDANCES=(
     # name, because `"problem"` is also how an integration binding
     # reports its own trouble in three other files.
     #
-    ["a broken routine says why"]="will never run|routine, \"problem\""
+    ["a broken routine says why"]="will never run|routine, \"problem\"|will never run"
     #
     # An update the daemon found.
     #
@@ -299,7 +278,7 @@ declare -A AFFORDANCES=(
     # Layer 1 cannot see it -- control.status is a frame both already
     # send, and this is a member inside its reply.
     #
-    ["an available update"]="daemon_update|daemon_update"
+    ["an available update"]="daemon_update|daemon_update|daemon_update"
     #
     # Holding the fleet, and saying which agents are held.
     #
@@ -307,7 +286,7 @@ declare -A AFFORDANCES=(
     # control.pause and control.resume as literals -- but the *badge*
     # that says an agent is held is not a frame, so it is declared.
     #
-    ["a held agent is drawn as held"]="clawt_hold_label|clawt_hold_label"
+    ["a held agent is drawn as held"]="clawt_hold_label|clawt_hold_label|clawt_hold_label"
     #
     # Integration forms drawn from the shared field table.
     #
@@ -317,7 +296,7 @@ declare -A AFFORDANCES=(
     # types as "this type declares no settings of its own" while GTK had
     # full editors for them.
     #
-    ["integration fields"]="clawt_integration_fields|clawt_integration_fields"
+    ["integration fields"]="clawt_integration_fields|clawt_integration_fields|clawt_integration_fields"
     #
     # A skill's `/name` is dynamic, so layer 2 cannot see it.
     #
@@ -329,17 +308,17 @@ declare -A AFFORDANCES=(
     # when the check reports OK through a client that lost the feature
     # entirely.
     #
-    ["skill commands in the composer"]="clawt_gtk_skill_commands|slash-popover"
+    ["skill commands in the composer"]="clawt_gtk_skill_commands|slash-popover|skill_commands_cached"
     # The `@` completion. Both markers name the thing that offers the
     # names, not the matcher: clawt_mention_prefix_at() is in the
     # library and both clients would match it, so a client that lost
     # its completion entirely would still report OK.
-    ["mention completion"]="fill_mention_list|mention-popover"
+    ["mention completion"]="fill_mention_list|mention-popover|mention_rows_fill"
     # Arrowing through a completion list and taking one with Return or
     # Tab. A separate affordance from the list itself, because a client
     # can perfectly well draw the names and offer no way to reach them
     # without the mouse -- which is what both did until it was added.
-    ["completion keyboard navigation"]="completion_move|cmp_move"
+    ["completion keyboard navigation"]="completion_move|cmp_move|completion_move"
     # Slash commands answered in a room. Both clients run the fleet-wide
     # ones there and refuse the agent-scoped ones with the same
     # sentence; the web one used to post them into the room as messages
@@ -347,26 +326,26 @@ declare -A AFFORDANCES=(
     # The marker is a fragment both sources hold on one line: the GTK
     # sentence is split across two string literals, so a longer phrase
     # matches in the web client and nowhere in the other.
-    ["commands in a room"]="about one agent|about one agent"
+    ["commands in a room"]="about one agent|about one agent|about one agent"
     # Return sends and Shift+Return is a newline. The web composer is a
     # textarea, which does not submit its form on Return the way a
     # single-line input does, so this had to be written rather than
     # inherited -- until it was, the only way to send from that client
     # was the mouse, and Shift+Return did the same thing as Return.
-    ["enter sends, shift+enter newlines"]="GDK_SHIFT_MASK|shiftKey"
-    ["skill command expansion"]="clawt_gtk_skill_expand|skill.expand"
-    ["skills library"]="clawt_gtk_refresh_skills|clawt_web_skills_body"
-    ["skill provenance"]="Provenance|sha256"
-    ["skill scan warnings"]="Not copied|Not copied"
-    ["fleet recall"]="recall_entry|recall-form"
-    ["recall results"]="refresh_recall_once|recall-hit"
-    ["operator profile"]="operator_view|operator-profile"
-    ["screen preview"]="screen_picture|screen-frame"
-    ["screen takeover"]="on_screen_take|on_screen_take"
-    ["screen input"]="on_screen_input|on_screen_input"
-    ["stale frame label"]="\"stale\"|\"stale\""
-    ["vnc viewer"]="remote-viewer|viewer.vv"
-    ["teach recordings"]="teach_group|add_teach_section"
+    ["enter sends, shift+enter newlines"]="GDK_SHIFT_MASK|shiftKey|LRG_INPUT_MODIFIER_SHIFT"
+    ["skill command expansion"]="clawt_gtk_skill_expand|skill.expand|\"skill.expand\""
+    ["skills library"]="clawt_gtk_refresh_skills|clawt_web_skills_body|refresh_skills_library"
+    ["skill provenance"]="Provenance|sha256|Provenance"
+    ["skill scan warnings"]="Not copied|Not copied|Not copied"
+    ["fleet recall"]="recall_entry|recall-form|recall_entry"
+    ["recall results"]="refresh_recall_once|recall-hit|recall-hit"
+    ["operator profile"]="operator_view|operator-profile|operator-profile"
+    ["screen preview"]="screen_picture|screen-frame|screen_picture"
+    ["screen takeover"]="on_screen_take|on_screen_take|on_screen_take"
+    ["screen input"]="on_screen_input|on_screen_input|on_screen_input"
+    ["stale frame label"]="\"stale\"|\"stale\"|\"stale\""
+    ["vnc viewer"]="remote-viewer|viewer.vv|remote-viewer"
+    ["teach recordings"]="teach_group|add_teach_section|teach_group"
     #
     # The caveat, which is the one part of this feature that must not be
     # in only one client.
@@ -377,12 +356,12 @@ declare -A AFFORDANCES=(
     # the recordings and not the caveat would be the one somebody used
     # to decide a trace was safe to share.
     #
-    ["teach caveats"]="caveats|caveats"
+    ["teach caveats"]="caveats|caveats|caveats"
 )
 
 usage () {
     cat <<'USAGE'
-clawt-client-parity.sh - check the two graphical clients cover the same daemon
+clawt-client-parity.sh - check the graphical clients cover the same daemon
 
 Usage:
   clawt-client-parity.sh [--list] [--help]
@@ -390,13 +369,15 @@ Usage:
   --list    print each client's coverage instead of only the differences
   --help    this text
 
-Exits non-zero when the two clients differ at any of five layers:
+Exits non-zero when the clients (gtk, web, and lrg when clients/lrg
+exists) differ at any of five layers:
 
-  1. an IPC frame kind one sends and the other never mentions
-  2. a slash command the GTK composer answers and the web one does not
-  3. a library choice enumeration one walks and the other does not
-  4. a value from a library vocabulary that either client spells out
-  5. a declared interface affordance missing from one of them
+  1. an IPC frame kind one sends and another never mentions
+  2. a slash command the GTK composer answers and another does not
+  3. a library choice enumeration one walks and another does not
+     (clawt_lrg_* families are clawtilla-lrg's alone)
+  4. a value from a library vocabulary that any client spells out
+  5. a declared interface affordance missing from any of them
 
 Layers 1-4 need nothing declared.  Layer 5 does, and cannot catch a
 feature nobody declared -- it is there for the capabilities that are pure
@@ -663,7 +644,12 @@ client_render_code () {
 
     for file in "${1}"/*.c
     do
+        #
+        # clawtilla-lrg's stylesheet is its theme document: the style
+        # classes it paints are no more a capability than a CSS rule is.
+        #
         [[ "${file}" == *-style.c ]] && continue
+        [[ "${file}" == */lrg-theme-model.c ]] && continue
         files+=("${file}")
     done
 
@@ -723,8 +709,82 @@ report_missing () {
     return "${failures}"
 }
 
+#
+# Kinds clawtilla-lrg is allowed to lack, each with the reason.  Same rule
+# as the two maps above: a decision, not a to-do.
+#
+# shellcheck disable=SC2034
+declare -A LRG_MAY_LACK=(
+    ["agent.file_read"]="same capability as GTK's, same mechanism: the file opens in \$EDITOR, which is the better answer when the client and the daemon share a machine"
+    ["agent.file_write"]="the other half of the same; \$EDITOR writes the file directly"
+)
+
+#
+# The clients, in the order they are reported, and where each lives.
+#
+# A table rather than a pair because there are three now, and the old
+# script's shape -- `gtk` and `web` variables, `comm` between exactly two
+# sets, a marker split on one `|` -- had the number two built into every
+# line.  clawtilla-lrg is optional and its directory may not exist in a
+# tree that never built it, so it is compared only when it is there.
+#
+CLIENT_NAMES=(gtk web)
+declare -A CLIENT_DIRS=(
+    [gtk]="${ROOT}/clients/gtk"
+    [web]="${ROOT}/clients/web"
+    [lrg]="${ROOT}/clients/lrg"
+)
+
+if [[ -d "${CLIENT_DIRS[lrg]}" ]]
+then
+    CLIENT_NAMES+=(lrg)
+fi
+
+# Per-client temporary files, filled in main().
+#
+# new_tmp() stores the name in the variable it is given rather than
+# printing it.  `x="$(new_tmp)"` would run it in a subshell, recording the
+# file in a TMPFILES the EXIT trap never sees -- the leak this script's
+# api_text once had, 202 copies of the public headers deep.
+declare -A KINDS_FILE=()
+declare -A CODE_FILE=()
+declare -A RENDER_FILE=()
+declare -A CMDS_FILE=()
+TMPFILES=()
+
+cleanup () {
+    if [[ ${#TMPFILES[@]} -gt 0 ]]
+    then
+        rm -f "${TMPFILES[@]}"
+    fi
+}
+
+trap cleanup EXIT
+
+new_tmp () {
+    local file
+
+    file="$(mktemp)"
+    TMPFILES+=("${file}")
+    printf -v "${1}" '%s' "${file}"
+}
+
+# The index of a client in CLIENT_NAMES, which is its column in a marker.
+client_column () {
+    local i
+
+    for i in "${!CLIENT_NAMES[@]}"
+    do
+        [[ "${CLIENT_NAMES[${i}]}" == "${1}" ]] && { echo "${i}"; return; }
+    done
+
+    echo -1
+}
+
 main () {
     local list=0
+    local client
+    local tmp
 
     while [[ $# -gt 0 ]]
     do
@@ -743,23 +803,19 @@ main () {
     # local is gone by then -- which under `set -u` turns a clean run into
     # "unbound variable" printed after the result.
     #
-    gtk="$(mktemp)"
-    web="$(mktemp)"
-    only_gtk="$(mktemp)"
-    only_web="$(mktemp)"
-    gtk_cmds="$(mktemp)"
-    web_cmds="$(mktemp)"
-    only_gtk_cmds="$(mktemp)"
-    gtk_code="$(mktemp)"
-    web_code="$(mktemp)"
-    gtk_render="$(mktemp)"
-    web_render="$(mktemp)"
-    api_text="$(mktemp)"
+    new_tmp tmp; api_text="${tmp}"
 
-    client_code "${GTK_DIR}" > "${gtk_code}"
-    client_code "${WEB_DIR}" > "${web_code}"
-    client_render_code "${GTK_DIR}" > "${gtk_render}"
-    client_render_code "${WEB_DIR}" > "${web_render}"
+    for client in "${CLIENT_NAMES[@]}"
+    do
+        new_tmp tmp; CODE_FILE[${client}]="${tmp}"
+        new_tmp tmp; RENDER_FILE[${client}]="${tmp}"
+        new_tmp tmp; KINDS_FILE[${client}]="${tmp}"
+        new_tmp tmp; CMDS_FILE[${client}]="${tmp}"
+
+        client_code "${CLIENT_DIRS[${client}]}" > "${CODE_FILE[${client}]}"
+        client_render_code "${CLIENT_DIRS[${client}]}" \
+            > "${RENDER_FILE[${client}]}"
+    done
 
     #
     # The public API's own text, for the enumeration layer.  Here rather
@@ -774,14 +830,9 @@ main () {
     #
     # Layer 3 walks whatever is in here, so an empty corpus makes it
     # compare nothing and report OK -- which is indistinguishable from
-    # every enumeration agreeing.  Demonstrated rather than imagined:
-    # emptying this file leaves "0 enumeration(s)" in an otherwise
-    # cheerful success line.
-    #
-    # A moved header, a changed glob or a strip_comments that stopped
-    # matching would all land here, and each would quietly retire a whole
-    # layer of the check.  Saying ok about the wrong thing is worse than
-    # saying nothing, because it sends the reader somewhere else.
+    # every enumeration agreeing.  A moved header, a changed glob or a
+    # strip_comments that stopped matching would all land here, and each
+    # would quietly retire a whole layer of the check.
     #
     if [[ ! -s "${api_text}" ]]
     then
@@ -792,30 +843,35 @@ main () {
         exit 1
     fi
 
-    #
-    # Every layer reads the same stripped corpus, built once above.
-    #
-    client_kinds "${gtk_code}" > "${gtk}"
-    client_kinds "${web_code}" > "${web}"
+    local union
+    new_tmp tmp; union="${tmp}"
 
-    comm -23 "${gtk}" "${web}" > "${only_gtk}"
-    comm -13 "${gtk}" "${web}" > "${only_web}"
+    for client in "${CLIENT_NAMES[@]}"
+    do
+        client_kinds "${CODE_FILE[${client}]}" > "${KINDS_FILE[${client}]}"
+        client_commands "${CODE_FILE[${client}]}" > "${CMDS_FILE[${client}]}"
+    done
 
-    client_commands "${gtk_code}" > "${gtk_cmds}"
-    client_commands "${web_code}" > "${web_cmds}"
-
-    comm -23 "${gtk_cmds}" "${web_cmds}" > "${only_gtk_cmds}"
+    for client in "${CLIENT_NAMES[@]}"
+    do
+        cat "${KINDS_FILE[${client}]}"
+    done | sort -u > "${union}"
 
     if [[ "${list}" -eq 1 ]]
     then
-        echo "clawtilla-gtk reaches $(wc -l < "${gtk}") frame kinds:"
-        sed 's/^/  /' "${gtk}"
+        for client in "${CLIENT_NAMES[@]}"
+        do
+            echo "clawtilla-${client} reaches $(wc -l < "${KINDS_FILE[${client}]}") frame kinds:"
+            sed 's/^/  /' "${KINDS_FILE[${client}]}"
+            echo
+        done
+
+        printf 'slash commands:'
+        for client in "${CLIENT_NAMES[@]}"
+        do
+            printf ' %s in %s' "$(wc -l < "${CMDS_FILE[${client}]}")" "${client}"
+        done
         echo
-        echo "clawtilla-web reaches $(wc -l < "${web}") frame kinds:"
-        sed 's/^/  /' "${web}"
-        echo
-        echo "slash commands: $(wc -l < "${gtk_cmds}") in gtk, \
-$(wc -l < "${web_cmds}") in web"
         echo
 
         echo "choice enumerations, and who walks them:"
@@ -823,13 +879,16 @@ $(wc -l < "${web_cmds}") in web"
         for shown in $(enumerations)
         do
             local who=""
-            walks_enumeration "${gtk_code}" "${shown}" && who="gtk"
-            walks_enumeration "${web_code}" "${shown}" && who="${who:+${who}+}web"
+            for client in "${CLIENT_NAMES[@]}"
+            do
+                walks_enumeration "${CODE_FILE[${client}]}" "${shown}" \
+                    && who="${who:+${who}+}${client}"
+            done
             printf '  %-38s %s\n' "${shown}()" "${who:-nobody}"
         done
         echo
 
-        echo "library vocabularies neither client may copy:"
+        echo "library vocabularies no client may copy:"
         local vocab
         for vocab in "${!VOCABULARIES[@]}"
         do
@@ -838,7 +897,7 @@ $(wc -l < "${web_cmds}") in web"
         done
         echo
 
-        echo "declared affordances (gtk marker | web marker):"
+        echo "declared affordances ($(IFS='|'; echo "${CLIENT_NAMES[*]}") markers):"
         local aff
         for aff in "${!AFFORDANCES[@]}"
         do
@@ -849,111 +908,172 @@ $(wc -l < "${web_cmds}") in web"
 
     local failures=0
 
-    if [[ -s "${only_gtk}" ]] || [[ -s "${only_web}" ]]
-    then
-        echo "client parity:"
-    fi
-
-    report_missing "clawtilla-web" "clawtilla-gtk" "${only_gtk}" \
-        WEB_MAY_LACK || failures=$((failures + $?))
-    report_missing "clawtilla-gtk" "clawtilla-web" "${only_web}" \
-        GTK_MAY_LACK || failures=$((failures + $?))
-
     #
-    # Commands are only checked one way. The GTK composer is the one with
-    # the established set; the web client answering something extra is a
-    # thing to notice by reading, not a build failure.
+    # Layer 1: every kind any client sends, every client sends -- or has
+    # a reason not to in its exception map.  Compared against the union
+    # rather than pairwise, because with three clients a pairwise check
+    # needs three comparisons to say what this says in one.
     #
-    while read -r command
+    local missing
+    local one_kind
+    local other
+    local holders
+
+    new_tmp one_kind
+
+    for client in "${CLIENT_NAMES[@]}"
     do
-        [[ -z "${command}" ]] && continue
+        new_tmp tmp; missing="${tmp}"
+        comm -23 "${union}" "${KINDS_FILE[${client}]}" > "${missing}"
 
-        printf '  %-28s a command in clawtilla-gtk, missing from clawtilla-web\n' \
-            "${command}"
-        failures=$((failures + 1))
-    done < "${only_gtk_cmds}"
+        [[ -s "${missing}" ]] || continue
+
+        while read -r kind
+        do
+            [[ -z "${kind}" ]] && continue
+            holders=""
+
+            for other in "${CLIENT_NAMES[@]}"
+            do
+                grep -qx -- "${kind}" "${KINDS_FILE[${other}]}" \
+                    && holders="${holders:+${holders}, }clawtilla-${other}"
+            done
+
+            echo "${kind}" > "${one_kind}"
+            report_missing "clawtilla-${client}" "${holders}" "${one_kind}" \
+                "${client^^}_MAY_LACK" || failures=$((failures + $?))
+        done < "${missing}"
+    done
+
+    #
+    # Layer 2: commands, checked from the GTK composer outwards.  GTK is
+    # the one with the established set; another client answering
+    # something extra is a thing to notice by reading, not a failure.
+    #
+    for client in "${CLIENT_NAMES[@]}"
+    do
+        [[ "${client}" == "gtk" ]] && continue
+
+        while read -r command
+        do
+            [[ -z "${command}" ]] && continue
+
+            printf '  %-28s a command in clawtilla-gtk, missing from clawtilla-%s\n' \
+                "${command}" "${client}"
+            failures=$((failures + 1))
+        done < <(comm -23 "${CMDS_FILE[gtk]}" "${CMDS_FILE[${client}]}")
+    done
 
     #
     # Layer 3: a set of choices the library offers must be offered by
-    # both clients, or by neither.
+    # every client, or by none.
+    #
+    # Except the `clawt_lrg_*` families, which are clawtilla-lrg's own
+    # settings (motion, material, background) by decision: GTK follows
+    # the desktop's animation setting and the web client the browser's,
+    # and neither has springs or glass to tune.  Those must be walked by
+    # clawtilla-lrg when it is present, and are nobody else's to walk.
     #
     local family
-    local in_gtk
-    local in_web
+    local walked
+    local not_walked
 
     for family in $(enumerations)
     do
-        in_gtk=0
-        in_web=0
-
-        walks_enumeration "${gtk_code}" "${family}" && in_gtk=1
-        walks_enumeration "${web_code}" "${family}" && in_web=1
-
-        [[ "${in_gtk}" -eq "${in_web}" ]] && continue
-
-        if [[ "${in_gtk}" -eq 1 ]]
+        if [[ "${family}" == clawt_lrg_* ]]
         then
-            printf '  %-28s walked by clawtilla-gtk, not by clawtilla-web\n' \
-                "${family}()"
-        else
-            printf '  %-28s walked by clawtilla-web, not by clawtilla-gtk\n' \
-                "${family}()"
+            if [[ -n "${CODE_FILE[lrg]:-}" ]] && \
+               ! walks_enumeration "${CODE_FILE[lrg]}" "${family}"
+            then
+                printf '  %-28s clawtilla-lrg'"'"'s own setting, not walked by clawtilla-lrg\n' \
+                    "${family}()"
+                failures=$((failures + 1))
+            fi
+            continue
         fi
 
+        walked=""
+        not_walked=""
+
+        for client in "${CLIENT_NAMES[@]}"
+        do
+            if walks_enumeration "${CODE_FILE[${client}]}" "${family}"
+            then
+                walked="${walked:+${walked}, }clawtilla-${client}"
+            else
+                not_walked="${not_walked:+${not_walked}, }clawtilla-${client}"
+            fi
+        done
+
+        [[ -z "${walked}" || -z "${not_walked}" ]] && continue
+
+        printf '  %-28s walked by %s, not by %s\n' \
+            "${family}()" "${walked}" "${not_walked}"
         failures=$((failures + 1))
     done
 
     #
-    # Layer 4: and neither may keep its own copy of the values.
+    # Layer 4: and no client may keep its own copy of the values.
     #
     local vocabulary
     local value
-    local client
 
     for vocabulary in "${!VOCABULARIES[@]}"
     do
         for value in $(vocabulary_values "${VOCABULARIES[${vocabulary}]}")
         do
-            for client in "gtk:${gtk_code}" "web:${web_code}"
+            for client in "${CLIENT_NAMES[@]}"
             do
-                grep -qF "\"${value}\"" "${client#*:}" || continue
+                grep -qF "\"${value}\"" "${CODE_FILE[${client}]}" || continue
 
                 printf '  %-28s clawtilla-%s names it; walk the %s list\n' \
-                    "${value}" "${client%%:*}" "${vocabulary}"
+                    "${value}" "${client}" "${vocabulary}"
                 failures=$((failures + 1))
             done
         done
     done
 
     #
-    # Layer 5: the declared interface affordances, both halves present.
+    # Layer 5: the declared interface affordances, every client's marker
+    # present.  A marker is the field in the client's column; an empty
+    # or absent field is a declaration that does not cover that client,
+    # which is a failure rather than a pass -- otherwise adding a client
+    # would satisfy every affordance by having no markers at all.
     #
     local affordance
-    local markers
+    local column
+    local -a markers
 
     for affordance in "${!AFFORDANCES[@]}"
     do
-        markers="${AFFORDANCES[${affordance}]}"
+        IFS='|' read -r -a markers <<< "${AFFORDANCES[${affordance}]}"
 
-        grep -qF "${markers%%|*}" "${gtk_render}" || {
-            printf '  %-28s declared, missing from clawtilla-gtk\n' \
-                "${affordance}"
-            failures=$((failures + 1))
-        }
+        for client in "${CLIENT_NAMES[@]}"
+        do
+            column="$(client_column "${client}")"
 
-        grep -qF "${markers#*|}" "${web_render}" || {
-            printf '  %-28s declared, missing from clawtilla-web\n' \
-                "${affordance}"
-            failures=$((failures + 1))
-        }
+            if [[ -z "${markers[${column}]:-}" ]]
+            then
+                printf '  %-28s declared without a clawtilla-%s marker\n' \
+                    "${affordance}" "${client}"
+                failures=$((failures + 1))
+                continue
+            fi
+
+            grep -qF -- "${markers[${column}]}" "${RENDER_FILE[${client}]}" || {
+                printf '  %-28s declared, missing from clawtilla-%s\n' \
+                    "${affordance}" "${client}"
+                failures=$((failures + 1))
+            }
+        done
     done
 
     if [[ "${failures}" -gt 0 ]]
     then
         echo
-        echo "${failures} capability(ies) exist in one client and not the other."
-        echo "Build it in both, or record the reason in the exception map in"
-        echo "  tools/clawt-client-parity.sh"
+        echo "${failures} capability(ies) exist in some clients and not others."
+        echo "Build it in every client, or record the reason in the exception"
+        echo "map in tools/clawt-client-parity.sh"
         exit 1
     fi
 
@@ -974,12 +1094,15 @@ $(wc -l < "${web_cmds}") in web"
         exit 1
     fi
 
-    echo "client parity: OK ($(wc -l < "${gtk}") kinds and \
-$(wc -l < "${gtk_cmds}") commands in gtk, $(wc -l < "${web}") kinds and \
-$(wc -l < "${web_cmds}") commands in web; \
-${n_enums} enumeration(s), \
-${#VOCABULARIES[@]} vocabulary(ies), \
-${#AFFORDANCES[@]} affordance(s))"
+    local summary=""
+
+    for client in "${CLIENT_NAMES[@]}"
+    do
+        summary="${summary:+${summary}, }$(wc -l < "${KINDS_FILE[${client}]}") kinds and $(wc -l < "${CMDS_FILE[${client}]}") commands in ${client}"
+    done
+
+    echo "client parity: OK (${summary}; ${n_enums} enumeration(s), \
+${#VOCABULARIES[@]} vocabulary(ies), ${#AFFORDANCES[@]} affordance(s))"
 }
 
 main "$@"
