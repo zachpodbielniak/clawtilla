@@ -3741,8 +3741,27 @@ cmd_decision(int argc, char *argv[])
         return EXIT_SUCCESS;
     }
 
+    if (g_strcmp0(verb, "delete") == 0) {
+        if (argc < 4) {
+            g_printerr("Usage: clawtilla decision delete <id>\n"
+                       "\n"
+                       "Removes it from the inbox for good, answered or not. "
+                       "An open one is withdrawn first: the agent carries on "
+                       "with its default.\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "decision.delete",
+                     build_payload("decision", argv[3], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Deleted.\n");
+        return EXIT_SUCCESS;
+    }
+
     g_printerr("Usage: clawtilla decision [list [--all] | answer <id> "
-               "<answer> | dismiss <id>]\n");
+               "<answer> | dismiss <id> | delete <id>]\n");
     return EXIT_FAILURE;
 }
 

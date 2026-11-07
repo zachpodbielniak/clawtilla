@@ -76,6 +76,7 @@ licence, send nothing, and exit 0.
 | ~decision list [--all]~ | choices agents are waiting on you for |
 | ~decision answer <id> <answer>~ | free text; it routes back to the agent |
 | ~decision dismiss <id>~ | it carries on with its default |
+| ~decision delete <id>~ | gone from the inbox for good, answered or not; an open one is withdrawn first |
 | ~event list [subject]~ | what the fleet has been doing, from the event log |
 | ~cost [--today \vert{} --days N] [--agent ID]~ | what the fleet has spent |
 | ~computer exec <agent> -- CMD…~ | |

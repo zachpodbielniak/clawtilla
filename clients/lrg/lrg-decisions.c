@@ -98,6 +98,25 @@ on_dismiss_clicked(LrgButton *button, gpointer user_data)
                       CLAWT_LRG_REQUEST_NONE, on_settled, "Dismissed", NULL);
 }
 
+/*
+ * Gone from the inbox for good, open or settled.  Dismiss keeps the
+ * record and says the operator passed; this is for an entry nobody wants
+ * to see again.  An open one is withdrawn on the way out, so the agent
+ * carries on with its default exactly as it would on a dismiss.
+ */
+static void
+on_delete_clicked(LrgButton *button, gpointer user_data)
+{
+    const gchar *id = g_object_get_data(G_OBJECT(button), "decision-id");
+
+    if (id == NULL)
+        return;
+
+    clawt_lrg_request(decisions.app, "decision.delete",
+                      clawt_ipc_payload_new("decision", id, NULL),
+                      CLAWT_LRG_REQUEST_NONE, on_settled, "Deleted", NULL);
+}
+
 /* ── Drawing ──────────────────────────────────────────────────────── */
 
 /*
@@ -151,6 +170,8 @@ decision_card(JsonObject *decision, gint64 now_us)
     LrgWidget *entry;
     LrgWidget *send;
     LrgWidget *drop;
+    LrgWidget *remove;
+    LrgWidget *closing = clawt_lrg_hbox(8.0f);
     LrgWidget *card;
     guint i;
 
@@ -219,8 +240,17 @@ decision_card(JsonObject *decision, gint64 now_us)
                             G_CALLBACK(on_dismiss_clicked), NULL);
     g_object_set_data_full(G_OBJECT(drop), "decision-id", g_strdup(id),
                            g_free);
-    lrg_widget_set_halign(drop, LRG_ALIGN_START);
-    clawt_lrg_take(body, drop);
+
+    remove = clawt_lrg_button("Delete", "danger",
+                              G_CALLBACK(on_delete_clicked), NULL);
+    g_object_set_data_full(G_OBJECT(remove), "decision-id", g_strdup(id),
+                           g_free);
+
+    /* the two ways of closing it, side by side and apart from answering */
+    clawt_lrg_take(closing, drop);
+    clawt_lrg_take(closing, remove);
+    lrg_widget_set_halign(closing, LRG_ALIGN_START);
+    clawt_lrg_take(body, closing);
 
     card = clawt_lrg_card(body);
     lrg_widget_add_class(card, "decision-card");

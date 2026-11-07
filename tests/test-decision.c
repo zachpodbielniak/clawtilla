@@ -347,6 +347,68 @@ test_dismissing_and_missing_ids(void)
     clawt_test_remove_tree(dir);
 }
 
+/*
+ * Deleting forgets the row, in any state, and the open count follows.
+ * Two rows, so a DELETE without its WHERE would show as the survivor
+ * going missing.
+ */
+static void
+test_deleting_removes_only_that_one(void)
+{
+    g_autofree gchar *dir = NULL;
+    g_autoptr(ClawtDecisionStore) store = store_new(&dir);
+    g_autofree gchar *gone = NULL;
+    g_autofree gchar *kept = NULL;
+    g_autofree gchar *answered = NULL;
+
+    {
+        g_autoptr(ClawtDecision) a = clawt_decision_new(NULL, "chief", "One?");
+        g_autoptr(ClawtDecision) b = clawt_decision_new(NULL, "chief", "Two?");
+        g_autoptr(ClawtDecision) c = clawt_decision_new(NULL, "chief", "Three?");
+
+        gone = clawt_decision_store_post(store, a, NULL);
+        kept = clawt_decision_store_post(store, b, NULL);
+        answered = clawt_decision_store_post(store, c, NULL);
+    }
+    g_assert_cmpuint(clawt_decision_store_count_open(store), ==, 3);
+
+    g_assert_true(clawt_decision_store_delete(store, gone, NULL));
+    g_assert_cmpuint(clawt_decision_store_count_open(store), ==, 2);
+
+    {
+        g_autoptr(ClawtDecision) missing = clawt_decision_store_get(store, gone);
+        g_autoptr(ClawtDecision) survivor = clawt_decision_store_get(store, kept);
+
+        g_assert_null(missing);
+        g_assert_nonnull(survivor);
+    }
+
+    /* a settled one goes too: deleting is not limited to the open */
+    {
+        g_autoptr(ClawtDecision) settled =
+            clawt_decision_store_answer(store, answered, "yes", NULL);
+
+        g_assert_nonnull(settled);
+    }
+    g_assert_true(clawt_decision_store_delete(store, answered, NULL));
+
+    {
+        g_autoptr(GPtrArray) all = clawt_decision_store_list(store, FALSE);
+
+        g_assert_cmpuint(all->len, ==, 1);
+    }
+
+    /* a missing id is NOT_FOUND, not a quiet success */
+    {
+        g_autoptr(GError) missing = NULL;
+
+        g_assert_false(clawt_decision_store_delete(store, gone, &missing));
+        g_assert_error(missing, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND);
+    }
+
+    clawt_test_remove_tree(dir);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -369,6 +431,8 @@ main(int argc, char *argv[])
                     test_the_list_puts_the_deadline_first);
     g_test_add_func("/decision/answering-settles-it-once",
                     test_answering_settles_it_once);
+    g_test_add_func("/decision/deleting-removes-only-that-one",
+                    test_deleting_removes_only_that_one);
     g_test_add_func("/decision/dismissing-and-missing-ids",
                     test_dismissing_and_missing_ids);
 

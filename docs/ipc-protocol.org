@@ -183,6 +183,14 @@ that does not exist.
 ~decision.list~ takes ~open~ (default true) and answers with
 ~decisions~ and an ~open~ count. ~decision.answer~ takes ~decision~ and
 a free-text ~answer~; ~decision.dismiss~ takes ~decision~.
+~decision.delete~ takes ~decision~ and answers with ~deleted~ (the id):
+the row leaves the store whatever its state, and an unknown id is
+~NOT_FOUND~.  Dismissing keeps the record and says the operator passed;
+deleting is for an entry nobody wants to see again -- a stale ask, one
+raised by mistake, or one a daemon from before 0.3.0 left open past its
+deadline.  An open decision is withdrawn on the way out exactly as a
+dismissal would be: a turn it held is released, and a policy call
+waiting on it is refused with "The operator deleted the request".
 
 Two fields on each item are *derived by the daemon* rather than left to
 each client: ~urgent~ (the deadline is inside a day) and
@@ -1334,7 +1342,7 @@ Every kind published, by subject:
 | a room | ~message~, ~message.refused~, ~exchange.stalled~, ~room.created~, ~room.changed~ |
 | an agent's mailbox | ~mailbox.queued~, ~mailbox.delivered~ |
 | a team | ~team.changed~ |
-| an agent | ~decision.asked~, ~decision.settled~ (~decision~, ~how~: ~answered~, ~dismissed~ or ~defaulted~) |
+| an agent | ~decision.asked~, ~decision.settled~ (~decision~, ~how~: ~answered~, ~dismissed~, ~defaulted~ or ~deleted~), ~decision.deleted~ (~decision~) |
 | a routine | ~routine.ran~, ~routine.changed~ |
 | a trigger | ~trigger.fired~, ~trigger.changed~, ~trigger.refused~, ~trigger.verified~ |
 | a skill | ~skill.changed~ |
@@ -1354,6 +1362,12 @@ already empty -- and a count that is merely too high reads as work
 somebody has not got to yet, so nothing looked wrong.  The subject is
 the agent, matching ~decision.asked~, so a client filing events by who
 they are about can file both the same way.
+
+~decision.deleted~ is published for every deletion; ~decision.settled~
+with ~how: deleted~ only when the row was still open.  A list holding
+the row must drop it either way, while a count of open questions may
+come down only once -- a second ~settled~ for an already-answered row
+would take it below the truth.
 
 ~agent.state~ is published for *every* state and carries the state's nick
 plus a ~detail~ saying why.  ~agent.started~ and ~agent.stopped~ are

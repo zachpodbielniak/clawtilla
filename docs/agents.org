@@ -1967,4 +1967,6 @@ sure.
 
 A decision carries a default and, usually, a deadline (=reversible_until=). Every fifteen seconds the daemon settles each open decision whose deadline has passed with its own default, as *defaulted* -- a state kept apart from *answered*, because the inbox exists to say what somebody chose and what merely happened. It publishes ~decision.settled~ with ~how: defaulted~ so every client's badge comes down, and releases the turn budgets the question was holding. Before 0.3.0 nothing reached that state: a lapsed question sat in the inbox, counted, for ever.
 
+Any decision can also be deleted -- Delete on its card in every client, or ~clawtilla decision delete <id>~. Dismissing keeps the record and says the operator passed; deleting removes the row, answered or not, for the entries nobody wants to see again: a stale ask, one raised by mistake, or one a pre-0.3.0 daemon left open past its deadline. An open one is withdrawn on the way out as a dismissal would be, so the agent carries on with its default and a policy call waiting on it is refused.
+
 Action rules ([[file:security.org][security.org]], "Action policy") post decisions of their own, with ids beginning =policy-=. Answering one releases or refuses the call waiting on it rather than sending the agent a message: the agent is waiting on the tool, not on its mailbox.

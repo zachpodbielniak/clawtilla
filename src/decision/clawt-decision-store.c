@@ -381,6 +381,49 @@ clawt_decision_store_dismiss(
     return stored != NULL;
 }
 
+gboolean
+clawt_decision_store_delete(
+    ClawtDecisionStore *self,
+    const gchar        *id,
+    GError            **error
+){
+    sqlite3_stmt *stmt = NULL;
+    gint rc;
+
+    g_return_val_if_fail(CLAWT_IS_DECISION_STORE(self), FALSE);
+    g_return_val_if_fail(id != NULL, FALSE);
+
+    if (sqlite3_prepare_v2(self->db, "DELETE FROM decisions WHERE id = ?",
+                           -1, &stmt, NULL) != SQLITE_OK) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                    "could not delete '%s': %s", id, sqlite3_errmsg(self->db));
+        return FALSE;
+    }
+
+    sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    /*
+     * "It said no" and "it did not say" kept apart: a failed write is not
+     * a missing decision, or a client would report a row as already gone
+     * while it is still on disk.
+     */
+    if (rc != SQLITE_DONE) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                    "could not delete '%s': %s", id, sqlite3_errmsg(self->db));
+        return FALSE;
+    }
+
+    if (sqlite3_changes(self->db) == 0) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "there is no decision called '%s'", id);
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
 ClawtDecision *
 clawt_decision_store_settle_default(
     ClawtDecisionStore *self,

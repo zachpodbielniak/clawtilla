@@ -6776,6 +6776,7 @@ typedef struct {
     guint  settled;
     gchar *how;
     gchar *subject;
+    guint  deleted;
 } DecisionTrail;
 
 static void
@@ -6796,6 +6797,9 @@ on_decision_bus_event(ClawtEventBus *bus, ClawtEvent *event, gpointer data)
         trail->how = g_strdup(clawt_event_get_detail(event, "how"));
         trail->subject = g_strdup(clawt_event_get_subject(event));
     }
+
+    if (g_strcmp0(kind, "decision.deleted") == 0)
+        trail->deleted++;
 }
 
 static gchar *
@@ -6819,7 +6823,7 @@ static void
 test_answering_a_decision_says_so(void)
 {
     Fixture fixture;
-    DecisionTrail trail = { 0, 0, NULL, NULL };
+    DecisionTrail trail = { 0, 0, NULL, NULL, 0 };
     g_autoptr(GError) error = NULL;
     g_autofree gchar *id = NULL;
     g_autofree gchar *body = NULL;
@@ -6878,7 +6882,7 @@ static void
 test_dismissing_a_decision_says_so(void)
 {
     Fixture fixture;
-    DecisionTrail trail = { 0, 0, NULL, NULL };
+    DecisionTrail trail = { 0, 0, NULL, NULL, 0 };
     g_autoptr(GError) error = NULL;
     g_autofree gchar *id = NULL;
     g_autofree gchar *body = NULL;
@@ -6904,6 +6908,82 @@ test_dismissing_a_decision_says_so(void)
     g_assert_cmpuint(trail.settled, ==, 1);
     g_assert_cmpstr(trail.how, ==, "dismissed");
     g_assert_cmpstr(trail.subject, ==, "chief");
+
+    g_free(trail.how);
+    g_free(trail.subject);
+    fixture_teardown(&fixture);
+}
+
+/*
+ * Deleting one removes it from the store, whatever its state.
+ *
+ * An open one is withdrawn first -- settled as `deleted`, so a badge
+ * counting open questions comes down -- and an already-answered one
+ * publishes only `decision.deleted`: it was not waiting, and a second
+ * `settled` would take a count below the truth.
+ */
+static void
+test_deleting_a_decision(void)
+{
+    Fixture fixture;
+    DecisionTrail trail = { 0, 0, NULL, NULL, 0 };
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *open_id = NULL;
+    g_autofree gchar *answered_id = NULL;
+    g_autofree gchar *body = NULL;
+    ClawtDecisionStore *store;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n    enabled: true\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+    g_assert_no_error(error);
+    store = clawt_daemon_get_decisions(fixture.daemon);
+
+    g_signal_connect(clawt_daemon_get_event_bus(fixture.daemon), "event",
+                     G_CALLBACK(on_decision_bus_event), &trail);
+
+    /* an open one: withdrawn, then gone */
+    open_id = post_a_decision(&fixture, "chief", "Ship it?");
+    body = g_strdup_printf("{\"decision\": \"%s\"}", open_id);
+    {
+        g_autoptr(JsonNode) reply = request(&fixture, "decision.delete", body);
+
+        g_assert_nonnull(reply);
+        g_assert_false(clawt_ipc_frame_is_error(reply));
+        g_assert_cmpstr(clawt_ipc_payload_string(payload_of(reply),
+                                                 "deleted"), ==, open_id);
+    }
+    g_assert_null(clawt_decision_store_get(store, open_id));
+    g_assert_cmpuint(trail.settled, ==, 1);
+    g_assert_cmpstr(trail.how, ==, "deleted");
+    g_assert_cmpstr(trail.subject, ==, "chief");
+    g_assert_cmpuint(trail.deleted, ==, 1);
+
+    /* gone means gone: a second delete is NOT_FOUND and publishes nothing */
+    {
+        g_autoptr(JsonNode) again = request(&fixture, "decision.delete", body);
+
+        g_assert_true(clawt_ipc_frame_is_error(again));
+    }
+    g_assert_cmpuint(trail.deleted, ==, 1);
+
+    /* an answered one: deleted without a second settlement */
+    answered_id = post_a_decision(&fixture, "chief", "Merge it?");
+    {
+        g_autoptr(ClawtDecision) settled =
+            clawt_decision_store_answer(store, answered_id, "yes", NULL);
+
+        g_assert_nonnull(settled);
+    }
+    g_free(body);
+    body = g_strdup_printf("{\"decision\": \"%s\"}", answered_id);
+    {
+        g_autoptr(JsonNode) reply = request(&fixture, "decision.delete", body);
+
+        g_assert_false(clawt_ipc_frame_is_error(reply));
+    }
+    g_assert_null(clawt_decision_store_get(store, answered_id));
+    g_assert_cmpuint(trail.settled, ==, 1);
+    g_assert_cmpuint(trail.deleted, ==, 2);
 
     g_free(trail.how);
     g_free(trail.subject);
@@ -10662,6 +10742,8 @@ main(int argc, char *argv[])
                     test_answering_a_decision_says_so);
     g_test_add_func("/daemon/dismissing-a-decision-says-so",
                     test_dismissing_a_decision_says_so);
+    g_test_add_func("/daemon/decision-deleting",
+                    test_deleting_a_decision);
     g_test_add_func("/daemon/autostart-does-not-run-inside-start",
                     test_autostart_does_not_run_inside_start);
     g_test_add_func("/daemon/start-returns-with-a-mute-podman-socket",

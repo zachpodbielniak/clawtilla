@@ -69,6 +69,15 @@ deadline_text(gint64 until, gint64 now)
     }
 }
 
+/* "/decisions/<verb>?decision=<id>", escaped: an id is daemon data */
+static gchar *
+decision_action(const gchar *verb, const gchar *id)
+{
+    g_autofree gchar *escaped = g_uri_escape_string(id, NULL, FALSE);
+
+    return g_strdup_printf("/decisions/%s?decision=%s", verb, escaped);
+}
+
 static HtmxElement *
 decision_row(ClawtWebApp *app, JsonObject *decision, gint64 now)
 {
@@ -209,8 +218,9 @@ decision_row(ClawtWebApp *app, JsonObject *decision, gint64 now)
             g_autoptr(HtmxDiv) actions = htmx_div_new();
             g_autoptr(HtmxButton) send = clawt_web_button("Answer",
                                                           "primary");
+            g_autofree gchar *dismiss = decision_action("dismiss", id);
             g_autoptr(HtmxButton) drop = clawt_web_post_button(
-                "Does not need me", "/decisions/dismiss", "default", id);
+                "Does not need me", dismiss, "default", NULL);
 
             htmx_element_add_class(HTMX_ELEMENT(actions), "btn-row");
             htmx_element_set_attribute(HTMX_ELEMENT(send), "type", "submit");
@@ -220,6 +230,29 @@ decision_row(ClawtWebApp *app, JsonObject *decision, gint64 now)
         }
 
         htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(form));
+    }
+
+    /*
+     * Delete, on every row and outside the answer form: a settled row
+     * has no form, and it is the stale ones -- answered long ago, or
+     * left open past a deadline by a daemon from before 0.3.0 -- that
+     * somebody most wants gone.
+     */
+    {
+        g_autoptr(HtmxDiv) closing = htmx_div_new();
+        g_autofree gchar *remove = decision_action("delete", id);
+
+        htmx_element_add_class(HTMX_ELEMENT(closing), "btn-row");
+        g_autoptr(HtmxButton) wipe = clawt_web_post_button("Delete", remove,
+                                                           "danger", NULL);
+
+        /* one click, as in the other clients: the agent's default stands */
+        htmx_element_set_attribute(HTMX_ELEMENT(wipe), "title",
+            "Remove it from the inbox for good; an open one is withdrawn "
+            "and the agent carries on with its default");
+        htmx_element_add_class(HTMX_ELEMENT(closing), "btn-row");
+        htmx_node_add_child(HTMX_NODE(closing), HTMX_NODE(wipe));
+        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(closing));
     }
 
     return HTMX_ELEMENT(g_steal_pointer(&row));
@@ -355,11 +388,49 @@ on_answer(HtmxRequest *request, GHashTable *params, gpointer user_data)
     return clawt_web_redirect(request, "/decisions");
 }
 
+/*
+ * Which decision a closing button means: the query string, which every
+ * such button carries, else the form's hidden field.  Dismiss once read
+ * a field called "id" that nothing sent -- the form names it "decision"
+ * and the button had put the id in its confirm prompt instead -- so the
+ * web client's "Does not need me" posted, redirected and did nothing.
+ */
+static const gchar *
+decision_id(HtmxRequest *request)
+{
+    const gchar *id = htmx_request_get_query_param(request, "decision");
+
+    if (id == NULL || *id == '\0')
+        id = clawt_web_form_value(request, "decision");
+
+    return (id != NULL && *id != '\0') ? id : NULL;
+}
+
+static HtmxResponse *
+on_delete(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    const gchar *id = decision_id(request);
+
+    (void)params;
+
+    if (id != NULL) {
+        ClawtWebPayload *payload = clawt_web_payload_new();
+        g_autoptr(JsonNode) reply = NULL;
+
+        clawt_web_payload_set(payload, "decision", id);
+        reply = clawt_web_app_call(app, "decision.delete",
+                                   clawt_web_payload_take(payload));
+    }
+
+    return clawt_web_redirect(request, "/decisions");
+}
+
 static HtmxResponse *
 on_dismiss(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
     ClawtWebApp *app = user_data;
-    const gchar *id = clawt_web_form_value(request, "id");
+    const gchar *id = decision_id(request);
 
     (void)params;
 
@@ -381,4 +452,5 @@ clawt_web_register_decisions(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_get(router, "/decisions", on_decisions, app);
     htmx_router_post(router, "/decisions/answer", on_answer, app);
     htmx_router_post(router, "/decisions/dismiss", on_dismiss, app);
+    htmx_router_post(router, "/decisions/delete", on_delete, app);
 }

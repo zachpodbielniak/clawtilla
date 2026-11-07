@@ -268,6 +268,64 @@ clawt_daemon_handle_misc(
                                       json_builder_get_root(builder));
     }
 
+    if (g_strcmp0(kind, "decision.delete") == 0) {
+        const gchar *id = clawt_ipc_payload_string(payload, "decision");
+        g_autoptr(ClawtDecision) deleted = NULL;
+        g_autoptr(GError) delete_error = NULL;
+        g_autoptr(ClawtEvent) event = NULL;
+
+        if (self->decisions == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "this daemon keeps no decisions");
+        if (id == NULL || *id == '\0')
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "deleting needs a decision");
+
+        /*
+         * Read first, for the same reason dismiss does: an open question
+         * may be holding an agent's turn clock or a policy call, and only
+         * the record says whose.  Forgetting the row without releasing
+         * them would leave a turn that can never time out and a call that
+         * waits for ever on a question that no longer exists anywhere.
+         */
+        deleted = clawt_decision_store_get(self->decisions, id);
+
+        if (!clawt_decision_store_delete(self->decisions, id, &delete_error))
+            return clawt_ipc_error_new(request, delete_error->code,
+                                       delete_error->message);
+
+        if (deleted != NULL &&
+            clawt_decision_get_state(deleted) == CLAWT_DECISION_OPEN) {
+            if (!clawt_daemon_policy_settle(self, deleted, "deleted"))
+                clawt_daemon_turn_release(self,
+                                          clawt_decision_get_agent(deleted));
+            /* only an open one was counted, so only it may bring a badge down */
+            clawt_daemon_publish_decision_settled(self, deleted, "deleted");
+        }
+
+        /*
+         * Every list holding the row has to drop it, settled or not --
+         * decision.settled says "no longer waiting", which for an
+         * already-answered row is not news and would double-count.
+         */
+        if (self->bus != NULL) {
+            event = clawt_event_new("decision.deleted",
+                                    deleted != NULL
+                                        ? clawt_decision_get_agent(deleted)
+                                        : NULL);
+            clawt_event_set_detail(event, "decision", id);
+            clawt_event_bus_publish(self->bus, event);
+        }
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "deleted");
+        json_builder_add_string_value(builder, id);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request,
+                                      json_builder_get_root(builder));
+    }
+
     if (g_strcmp0(kind, "event.list") == 0) {
         const gchar *subject = clawt_ipc_payload_string(payload, "subject");
         guint limit = (guint)clawt_ipc_payload_int(payload, "limit", 200);

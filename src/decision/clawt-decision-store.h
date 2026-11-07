@@ -105,6 +105,26 @@ gboolean clawt_decision_store_dismiss(ClawtDecisionStore *self,
                                       GError            **error);
 
 /**
+ * clawt_decision_store_delete:
+ * @self: a #ClawtDecisionStore
+ * @id: which one
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Removes the decision from the store altogether, whatever its state.
+ * Dismissing keeps the record (it says the person passed); deleting is
+ * for an entry nobody wants to see again -- a stale ask, one raised by
+ * mistake. Settling an open one first (releasing a turn, a waiting
+ * policy call) is the caller's job; this only forgets it.
+ *
+ * Returns: %TRUE if it was there and is now gone; %FALSE with
+ *   %CLAWT_ERROR_NOT_FOUND when there was no such decision, or
+ *   %CLAWT_ERROR_FAILED when the store could not be written
+ */
+gboolean clawt_decision_store_delete(ClawtDecisionStore *self,
+                                     const gchar        *id,
+                                     GError            **error);
+
+/**
  * clawt_decision_store_settle_default:
  * @self: a #ClawtDecisionStore
  * @id: which one

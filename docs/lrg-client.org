@@ -720,7 +720,7 @@ Each card shows "origin → assignee", a state badge toned by =clawt_task_state_
 ** Decisions
 The Work section's inbox of questions agents are waiting on. Its tab carries the open count in the warn tone (=clawt_lrg_set_page_badge()=), set from the reply's =open= on every refresh here and by the shell on every =decision.*= event, so both ends of a decision -- asked and settled -- move the count. The column is clamped to the reading measure from the appearance settings (=clawt_measure_resolve_px()=), as GTK clamps it to the chat's.
 
-Each decision is a card: who asked and how long ago (=created_at= is seconds, converted), the urgency badges ("closing soon" warn, "already decided" bad) with a sentence saying what each means, the whole question as a wrapping paragraph, "Going ahead with: <default> — <reason>", each option as a wrapping sentence with its own Choose button, an answer box with Answer on the same line, and "Does not need me". A typed answer wins over a clicked option. Enter in the answer box answers.
+Each decision is a card: who asked and how long ago (=created_at= is seconds, converted), the urgency badges ("closing soon" warn, "already decided" bad) with a sentence saying what each means, the whole question as a wrapping paragraph, "Going ahead with: <default> — <reason>", each option as a wrapping sentence with its own Choose button, an answer box with Answer on the same line, and "Does not need me" beside Delete. A typed answer wins over a clicked option. Enter in the answer box answers.
 
 A policy ask is a decision like any other on the wire; the daemon writes the action and the matched action rule into the question, which is why the question is drawn whole rather than as a one-line title.
 
@@ -729,6 +729,7 @@ A policy ask is a decision like any other on the wire; the daemon writes the act
 | listing | ~decision.list~ |
 | Choose / Answer / Enter | ~decision.answer~ |
 | Does not need me | ~decision.dismiss~ |
+| Delete | ~decision.delete~ |
 
 ** Go to… (Ctrl+K)
 A command palette in an =LrgDialog=: a search entry, the results, and a footer of keys. Opened by Ctrl+K or the header menu's "Go to…"; pressing Ctrl+K while it is open does nothing.

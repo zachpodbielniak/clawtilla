@@ -54,6 +54,29 @@ on_decision_answer(GtkButton *button, gpointer user_data)
         clawt_gtk_refresh_decisions(self);
 }
 
+/*
+ * Gone from the inbox for good, whatever state it is in.  Dismiss keeps
+ * the record and says the operator passed; this is for an entry nobody
+ * wants to see again -- a stale ask, one raised by mistake, one a daemon
+ * from before 0.3.0 left open past its deadline.
+ */
+static void
+on_decision_delete(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *id = g_object_get_data(G_OBJECT(button), "decision-id");
+    g_autoptr(JsonNode) reply = NULL;
+
+    if (id == NULL)
+        return;
+
+    reply = clawt_window_request(self, "decision.delete",
+                                 clawt_build_payload("decision", id, NULL));
+
+    if (reply != NULL)
+        clawt_gtk_refresh_decisions(self);
+}
+
 static void
 on_decision_dismiss(GtkButton *button, gpointer user_data)
 {
@@ -149,6 +172,8 @@ refresh_decisions_once(ClawtWindow *self)
         GtkWidget *actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
         GtkWidget *answer = gtk_button_new_with_label("Answer");
         GtkWidget *drop = gtk_button_new_with_label("Does not need me");
+        GtkWidget *remove = gtk_button_new_with_label("Delete");
+        GtkWidget *closing = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
         guint o;
 
         /*
@@ -226,6 +251,15 @@ refresh_decisions_once(ClawtWindow *self)
         g_signal_connect(drop, "clicked", G_CALLBACK(on_decision_dismiss),
                          self);
 
+        g_object_set_data_full(G_OBJECT(remove), "decision-id",
+                               g_strdup(id), g_free);
+        g_signal_connect(remove, "clicked", G_CALLBACK(on_decision_delete),
+                         self);
+        gtk_widget_add_css_class(remove, "destructive-action");
+        gtk_widget_set_tooltip_text(
+            remove, "Remove it from the inbox for good; an open one is "
+                    "withdrawn and the agent carries on with its default");
+
         gtk_widget_add_css_class(answer, "suggested-action");
 
         /*
@@ -244,7 +278,10 @@ refresh_decisions_once(ClawtWindow *self)
             gtk_widget_set_hexpand(typed, TRUE);
         }
 
-        gtk_widget_set_halign(drop, GTK_ALIGN_START);
+        /* the two ways of closing it, side by side and apart from answering */
+        gtk_box_append(GTK_BOX(closing), drop);
+        gtk_box_append(GTK_BOX(closing), remove);
+        gtk_widget_set_halign(closing, GTK_ALIGN_START);
 
         if (gtk_widget_get_first_child(choices) != NULL) {
             pad_decision_row(choices);
@@ -255,10 +292,10 @@ refresh_decisions_once(ClawtWindow *self)
         }
 
         pad_decision_row(actions);
-        pad_decision_row(drop);
+        pad_decision_row(closing);
 
         adw_expander_row_add_row(ADW_EXPANDER_ROW(row), actions);
-        adw_expander_row_add_row(ADW_EXPANDER_ROW(row), drop);
+        adw_expander_row_add_row(ADW_EXPANDER_ROW(row), closing);
 
         gtk_list_box_append(self->decision_list, row);
     }

@@ -345,6 +345,9 @@ clawt_daemon_policy_settle(ClawtDaemon *self, ClawtDecision *decision, const gch
                                "retry it; say what you needed in your reply instead.");
         else if (g_strcmp0(how, "dismissed") == 0)
             message = g_strdup("The operator dismissed the request, so it was not done.");
+        else if (g_strcmp0(how, "deleted") == 0)
+            /* not the fallback below: it would quote an answer nobody gave */
+            message = g_strdup("The operator deleted the request, so it was not done.");
         else
             message = g_strdup_printf("The operator answered '%s', so it was not done.%s",
                                       answer != NULL ? answer : "deny",
