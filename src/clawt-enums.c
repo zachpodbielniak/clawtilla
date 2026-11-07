@@ -1610,6 +1610,7 @@ static const struct {
     { CLAWT_PAGE_TASKS,     CLAWT_SECTION_WORK,       "tasks",     "Tasks" },
     { CLAWT_PAGE_DECISIONS, CLAWT_SECTION_WORK,       "decisions", "Decisions" },
     { CLAWT_PAGE_FLOW,      CLAWT_SECTION_WORK,       "flow",      "Flow" },
+    { CLAWT_PAGE_ACTIVITY,  CLAWT_SECTION_WORK,       "activity",  "Activity" },
     { CLAWT_PAGE_SKILLS,    CLAWT_SECTION_LIBRARY,    "skills",    "Skills" },
     { CLAWT_PAGE_MEMORY,    CLAWT_SECTION_LIBRARY,    "memory",    "Memory" }
 };

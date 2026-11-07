@@ -107,6 +107,7 @@ The same seven the GTK client's view switcher has, in the same order.
 | Routines | scheduled work, and running one now                        |
 | Tasks    | delegated work, the budget, cancelling                     |
 | Flow     | what the agents are saying to each other                   |
+| Activity | every running turn, to stop or steer ([[file:clients.org::#activity-tab][the Activity tab]]) |
 
 And the settings pages: fleet, VM images, teams, shared folders,
 spending, integrations, connectors, appearance and connections.
@@ -190,6 +191,7 @@ answers with the page it did it on.
 | =/settings/<page>/...=        | their actions: add, save, remove, health, test, authorize, revoke |
 | =/new=, =/import=, =/design=  | making an agent                         |
 | =/alerts=, =/decisions=, =/routines/...=, =/tasks/:task/cancel= | the standing surfaces |
+| =/activity/:agent/stop=, =/activity/:agent/steer=, =/f/activity= | the Activity page's actions and its polled panel |
 | =/events=                     | the SSE stream                          |
 | =/static=                     | the vendored scripts                    |
 

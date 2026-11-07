@@ -133,6 +133,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/chat/clawt-message.h \
 	$(SRCDIR)/chat/clawt-mention.h \
 	$(SRCDIR)/chat/clawt-turn-step.h \
+	$(SRCDIR)/chat/clawt-activity.h \
 	$(SRCDIR)/chat/clawt-chat-run.h \
 	$(SRCDIR)/chat/clawt-chat-layout.h \
 	$(SRCDIR)/decision/clawt-decision.h \
@@ -214,6 +215,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-search.c \
 	$(SRCDIR)/core/daemon-policy.c \
 	$(SRCDIR)/core/daemon-shared-computer.c \
+	$(SRCDIR)/core/daemon-activity.c \
 	$(SRCDIR)/core/daemon-mailbox.c \
 	$(SRCDIR)/core/daemon-task.c \
 	$(SRCDIR)/core/daemon-computer.c \
@@ -292,6 +294,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/chat/clawt-message.c \
 	$(SRCDIR)/chat/clawt-mention.c \
 	$(SRCDIR)/chat/clawt-turn-step.c \
+	$(SRCDIR)/chat/clawt-activity.c \
 	$(SRCDIR)/chat/clawt-chat-run.c \
 	$(SRCDIR)/chat/clawt-chat-layout.c \
 	$(SRCDIR)/decision/clawt-decision.c \

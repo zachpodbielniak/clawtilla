@@ -1599,6 +1599,7 @@ typedef enum {
  * @CLAWT_PAGE_TASKS: delegated work
  * @CLAWT_PAGE_DECISIONS: what is waiting on a person
  * @CLAWT_PAGE_FLOW: what the agents are saying to each other
+ * @CLAWT_PAGE_ACTIVITY: every turn running across the fleet, to stop or steer
  * @CLAWT_PAGE_SKILLS: the fleet's procedures, and who carries them
  * @CLAWT_PAGE_MEMORY: recall, and the operator profile
  *
@@ -1618,6 +1619,7 @@ typedef enum {
     CLAWT_PAGE_TASKS,
     CLAWT_PAGE_DECISIONS,
     CLAWT_PAGE_FLOW,
+    CLAWT_PAGE_ACTIVITY,
     CLAWT_PAGE_SKILLS,
     CLAWT_PAGE_MEMORY
 } ClawtPage;

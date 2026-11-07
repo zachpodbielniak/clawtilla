@@ -72,6 +72,7 @@ licence, send nothing, and exit 0.
 | ~team rm <id>~ | its agents keep running and become teamless |
 | ~team assign <agent> <team> [lead]~ | |
 | ~task list/show/cancel~ | |
+| ~activity~ | every turn running across the fleet, with its age and last step |
 | ~decision list [--all]~ | choices agents are waiting on you for |
 | ~decision answer <id> <answer>~ | free text; it routes back to the agent |
 | ~decision dismiss <id>~ | it carries on with its default |
@@ -2238,6 +2239,24 @@ computer do not get one.
 Message bodies are rendered as labels, never as Pango markup.  Model
 output arrives from somewhere the user does not control, and treating it
 as markup would let a message rewrite the interface around it.
+
+*** The Activity tab
+:PROPERTIES:
+:CUSTOM_ID: activity-tab
+:END:
+
+Under Work, beside Tasks, Decisions and Flow. Where Flow is what the fleet *said*, Activity is what it is *doing*: one row per turn running anywhere in the fleet, from ~activity.list~. An agent mid-turn in three rooms is three rows, because it is three turns.
+
+Each row says who and where, how long the turn has been running, on whose behalf when that is not you, the task it is working on if it has one, and how many steps it has taken. Its most recent steps (six at most) are drawn with the same one-line summary the chat uses. The age comes from the moment the turn began -- a keepalive from the runtime does not restart it -- and from the daemon's clock, so a client on another machine does not skew it. The page refreshes on every step and every turn starting or ending, and every few seconds besides, because a turn sitting in one long command produces no step for minutes and a frozen "running 12s" reads as a stale page.
+
+Two actions, each labelled with what it actually does:
+
+- *Stop agent* is ~agent.interrupt~, which has no narrower form: it ends every turn the agent is running, not only the row it was pressed on. So it is labelled with the agent, and the confirmation says how many turns that is (~clawt_activity_stop_prompt()~, the same words in both clients).
+- *Steer* is ~msg.send~ to the agent. A busy agent holds it and folds it into the running turn at its next step, and the reply says ~steered~; if the turn ended in the meantime it arrives as an ordinary message, and the client says that instead. Steering reaches only the agent's conversation with you, so it is offered only on that row (~steerable~ in the listing). Every other row says so, and points at stopping it or messaging it there.
+
+~clawtilla activity~ prints the same listing, with the last step of each turn.
+
+The GTK client keeps a row you expanded open across refreshes. The web client polls the panel every four seconds while the tab is visible and draws the steps as plain lines, since a swap that frequent would close anything somebody had opened.
 
 *** The activity line
 

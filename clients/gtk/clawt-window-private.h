@@ -96,6 +96,7 @@ typedef enum {
     CLAWT_REFRESH_SELECTED,
     CLAWT_REFRESH_MAILBOX,
     CLAWT_REFRESH_TASKS,
+    CLAWT_REFRESH_ACTIVITY,
     CLAWT_REFRESH_DECISIONS,
     CLAWT_REFRESH_FLOW,
     CLAWT_REFRESH_IMAGES,
@@ -465,6 +466,9 @@ struct _ClawtWindow {
 
     /* Tasks */
     GtkListBox        *task_list;
+    GtkListBox        *activity_list;
+    GHashTable        *activity_expanded;  /* agent\x1froom of rows left open */
+    guint              activity_tick;      /* ages while the page is up */
 
     /*
      * Choices agents are waiting on somebody for.
@@ -1173,6 +1177,14 @@ clawt_gtk_refresh_operator(ClawtWindow *self);
 
 void
 clawt_gtk_refresh_decisions(ClawtWindow *self);
+
+/* ── Defined in gtk-activity.c: the activity page ────────────────── */
+
+GtkWidget *
+clawt_gtk_build_activity_page(ClawtWindow *self);
+
+void
+clawt_gtk_refresh_activity(ClawtWindow *self);
 
 /* ── Defined in gtk-flow.c: the flow page ────────────────────────── */
 

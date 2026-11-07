@@ -552,6 +552,30 @@ ClawtTypingEdge clawt_agent_note_typing(ClawtAgent  *self,
 guint clawt_agent_get_typing_rooms(ClawtAgent *self);
 
 /**
+ * clawt_agent_dup_running_rooms:
+ * @self: a #ClawtAgent
+ *
+ * The rooms this agent has a turn running in right now, oldest turn
+ * first -- the same set clawt_agent_get_typing_rooms() counts, so it is
+ * cleared wherever a turn can end, including the runtime exiting.
+ *
+ * Returns: (transfer full) (element-type utf8): the room ids
+ */
+GPtrArray *clawt_agent_dup_running_rooms(ClawtAgent *self);
+
+/**
+ * clawt_agent_get_turn_started_in:
+ * @self: a #ClawtAgent
+ * @room_id: (nullable): a room
+ *
+ * When the turn running in @room_id began, taken on the typing
+ * indicator's rising edge and not moved by its keepalives.
+ *
+ * Returns: wall-clock microseconds, or 0 when no turn is running there
+ */
+gint64 clawt_agent_get_turn_started_in(ClawtAgent *self, const gchar *room_id);
+
+/**
  * clawt_agent_clear_typing:
  * @self: a #ClawtAgent
  *

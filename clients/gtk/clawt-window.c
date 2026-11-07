@@ -1537,6 +1537,10 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
                       self->selected_room) == 0)
             clawt_gtk_steps_add(self, step);
 
+        /* Any room's: the activity page is the whole fleet. */
+        if (clawt_gtk_current_page(self) == CLAWT_PAGE_ACTIVITY)
+            clawt_gtk_refresh_activity(self);
+
         return;
     }
 
@@ -1589,6 +1593,10 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
          * anything anywhere is happening.
          */
         clawt_gtk_refresh_agents(self);
+
+        /* A turn began or ended somewhere: a row comes or goes. */
+        if (clawt_gtk_current_page(self) == CLAWT_PAGE_ACTIVITY)
+            clawt_gtk_refresh_activity(self);
         return;
     }
 
@@ -4771,6 +4779,10 @@ on_page_shown(ClawtWindow *self)
         clawt_gtk_refresh_tasks(self);
         return;
     }
+    if (clawt_gtk_current_page(self) == CLAWT_PAGE_ACTIVITY) {
+        clawt_gtk_refresh_activity(self);
+        return;
+    }
     if (clawt_gtk_current_page(self) != CLAWT_PAGE_MEMORY)
         return;
 
@@ -4946,6 +4958,7 @@ build_page(ClawtWindow *self, ClawtPage page)
     case CLAWT_PAGE_TASKS:     return clawt_gtk_build_task_page(self);
     case CLAWT_PAGE_DECISIONS: return clawt_gtk_build_decision_page(self);
     case CLAWT_PAGE_FLOW:      return clawt_gtk_build_flow_page(self);
+    case CLAWT_PAGE_ACTIVITY:  return clawt_gtk_build_activity_page(self);
     case CLAWT_PAGE_SKILLS:    return clawt_gtk_build_skill_page(self);
     case CLAWT_PAGE_MEMORY:    return clawt_gtk_build_recall_page(self);
     }
@@ -5792,6 +5805,9 @@ static void
 clawt_window_dispose(GObject *object)
 {
     ClawtWindow *self = CLAWT_WINDOW(object);
+
+    g_clear_handle_id(&self->activity_tick, g_source_remove);
+    g_clear_pointer(&self->activity_expanded, g_hash_table_unref);
 
     /*
      * The composer that is open right now.  Leaving an agent saves its

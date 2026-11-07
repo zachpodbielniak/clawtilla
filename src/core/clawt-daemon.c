@@ -8445,6 +8445,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_config,
     clawt_daemon_handle_skill,
     clawt_daemon_handle_teach,
+    clawt_daemon_handle_activity,
 };
 
 JsonNode *

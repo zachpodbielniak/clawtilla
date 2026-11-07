@@ -172,3 +172,56 @@ clawt_daemon_room_steps(ClawtDaemon *self, const gchar *room_id)
 
     return g_ptr_array_ref(history);
 }
+
+/*
+ * One step as room.steps and activity.list both send it: the member
+ * names clawt_turn_step_new_from_object() reads, from the same
+ * constants, so a client parses either reply with one function.
+ */
+void
+clawt_daemon_add_step_object(JsonBuilder *builder, ClawtTurnStep *step)
+{
+    json_builder_begin_object(builder);
+
+    json_builder_set_member_name(builder, CLAWT_STEP_MEMBER_KIND);
+    json_builder_add_string_value(
+        builder, clawt_enum_to_nick(CLAWT_TYPE_STEP_KIND,
+                                    clawt_turn_step_get_kind(step)));
+
+    json_builder_set_member_name(builder, CLAWT_STEP_MEMBER_ROOM);
+    json_builder_add_string_value(builder,
+                                  clawt_turn_step_get_room_id(step));
+
+    if (clawt_turn_step_get_text(step) != NULL) {
+        json_builder_set_member_name(builder, CLAWT_STEP_MEMBER_TEXT);
+        json_builder_add_string_value(builder,
+                                      clawt_turn_step_get_text(step));
+    }
+
+    if (clawt_turn_step_get_tool_name(step) != NULL) {
+        json_builder_set_member_name(builder, CLAWT_STEP_MEMBER_TOOL);
+        json_builder_add_string_value(
+            builder, clawt_turn_step_get_tool_name(step));
+    }
+
+    if (clawt_turn_step_get_detail(step) != NULL) {
+        json_builder_set_member_name(builder,
+                                     CLAWT_STEP_MEMBER_DETAIL);
+        json_builder_add_string_value(
+            builder, clawt_turn_step_get_detail(step));
+    }
+
+    json_builder_set_member_name(builder, CLAWT_STEP_MEMBER_FAILED);
+    json_builder_add_boolean_value(builder,
+                                   clawt_turn_step_get_failed(step));
+
+    json_builder_set_member_name(builder, CLAWT_STEP_MEMBER_TS);
+    json_builder_add_int_value(builder,
+                               clawt_turn_step_get_timestamp(step));
+
+    json_builder_set_member_name(builder, "agent");
+    json_builder_add_string_value(builder,
+                                  clawt_turn_step_get_agent_id(step));
+
+    json_builder_end_object(builder);
+}

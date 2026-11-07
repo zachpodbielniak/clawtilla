@@ -111,7 +111,7 @@ struct _ClawtAgent {
      * safe direction rather than a plausible one.
      */
     GHashTable     *turns;         /* room -> TurnSetup (owned) */
-    GHashTable     *typing_rooms;  /* room -> NULL: the ones running */
+    GHashTable     *typing_rooms;  /* room -> gint64*: when its turn began */
     gchar          *last_room;
     GQueue         *pending;       /* TurnSetup (owned), tagged by room */
 
@@ -1182,7 +1182,15 @@ clawt_agent_note_typing(ClawtAgent  *self,
          * delegation would be parented on.
          */
         if (!g_hash_table_contains(self->typing_rooms, key)) {
-            g_hash_table_add(self->typing_rooms, g_strdup(key));
+            gint64 *started = g_new(gint64, 1);
+
+            /*
+             * When, on the same edge that starts the turn: a keepalive
+             * does not move it, so "running for four minutes" is the
+             * turn's age and not the time since the last refresh.
+             */
+            *started = g_get_real_time();
+            g_hash_table_insert(self->typing_rooms, g_strdup(key), started);
             clawt_agent_begin_turn(self, room_id);
         }
     } else {
@@ -1220,6 +1228,46 @@ clawt_agent_get_typing_rooms(ClawtAgent *self)
     g_return_val_if_fail(CLAWT_IS_AGENT(self), 0);
 
     return g_hash_table_size(self->typing_rooms);
+}
+
+/* Oldest turn first, so a listing reads in the order the work began. */
+static gint
+compare_started(gconstpointer a, gconstpointer b, gpointer user_data)
+{
+    GHashTable *rooms = user_data;
+    gint64 first = *(const gint64 *)g_hash_table_lookup(rooms, *(const gchar *const *)a);
+    gint64 second = *(const gint64 *)g_hash_table_lookup(rooms, *(const gchar *const *)b);
+
+    return (first > second) - (first < second);
+}
+
+GPtrArray *
+clawt_agent_dup_running_rooms(ClawtAgent *self)
+{
+    GPtrArray *out;
+    GHashTableIter iter;
+    gpointer key;
+
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), NULL);
+
+    out = g_ptr_array_new_with_free_func(g_free);
+    g_hash_table_iter_init(&iter, self->typing_rooms);
+    while (g_hash_table_iter_next(&iter, &key, NULL))
+        g_ptr_array_add(out, g_strdup(key));
+    g_ptr_array_sort_with_data(out, compare_started, self->typing_rooms);
+
+    return out;
+}
+
+gint64
+clawt_agent_get_turn_started_in(ClawtAgent *self, const gchar *room_id)
+{
+    const gint64 *started;
+
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), 0);
+
+    started = g_hash_table_lookup(self->typing_rooms, room_key(room_id));
+    return started != NULL ? *started : 0;
 }
 
 void
@@ -1772,5 +1820,5 @@ clawt_agent_init(ClawtAgent *self)
     self->turns = g_hash_table_new_full(g_str_hash, g_str_equal,
                                         g_free, turn_setup_free);
     self->typing_rooms = g_hash_table_new_full(g_str_hash, g_str_equal,
-                                               g_free, NULL);
+                                               g_free, g_free);
 }

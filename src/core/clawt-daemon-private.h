@@ -1104,6 +1104,17 @@ void clawt_daemon_note_step(ClawtDaemon *self, ClawtTurnStep *step);
  */
 GPtrArray *clawt_daemon_room_steps(ClawtDaemon *self, const gchar *room_id);
 
+void clawt_daemon_add_step_object(JsonBuilder *builder, ClawtTurnStep *step);
+
+JsonNode *
+clawt_daemon_handle_activity(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
+
 /*
  * A turn is waiting on a person, and is waiting no longer.
  *

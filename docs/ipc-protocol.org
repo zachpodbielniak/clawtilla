@@ -344,6 +344,14 @@ same way ~agent.start~ is and for the reason written there --- every
 caller has somebody waiting on the answer, and the wait is bounded by
 podomation's socket timeout.
 
+**** activity.list
+
+~activity.list~ (no payload) → ~now~ (the daemon's clock, microseconds) and ~turns~: one object per turn running anywhere in the fleet, an agent's oldest turn first. Each has ~agent~, ~agent_name~, ~room~ and ~room_name~ when the room has one, ~started~ (microseconds, taken on the typing indicator's rising edge and not moved by its keepalives), ~origin~ and ~task~ when the turn has them, ~steerable~, ~running_turns~ (how many the agent has, which is what Stop ends), ~step_count~ and ~steps~ -- that agent's most recent steps in that room since the turn began, at most =CLAWT_ACTIVITY_STEPS=, in the shape ~room.steps~ uses.
+
+Nothing in it is kept for the purpose. Which turns are running is each agent's typing set, already cleared wherever a turn can end, the runtime exiting included; the steps are the rooms' bounded history. A turn with no room named is listed with an empty ~room~.
+
+~steerable~ is TRUE only for the agent's direct room with the operator, which is where ~msg.send~ folds a correction into a running turn. Stop is ~agent.interrupt~, below, and ends every turn the agent has.
+
 **** agent.interrupt
 
 ~agent.interrupt~ (~agent~) → ~interrupted~, ~killed~.

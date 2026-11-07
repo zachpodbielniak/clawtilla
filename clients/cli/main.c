@@ -3746,6 +3746,71 @@ cmd_decision(int argc, char *argv[])
     return EXIT_FAILURE;
 }
 
+/*
+ * Every turn running across the fleet, the listing the Activity page in
+ * both clients draws. Stopping and steering are the existing verbs --
+ * `agent interrupt` and `send` -- so they are named rather than
+ * duplicated.
+ */
+static gint
+cmd_activity(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    JsonArray *turns;
+    gint64 now;
+    guint i;
+
+    (void)argc;
+    (void)argv;
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+    reply = call(client, "activity.list", NULL);
+    if (reply == NULL)
+        return EXIT_FAILURE;
+
+    turns = json_object_has_member(json_node_get_object(reply), "turns")
+        ? json_object_get_array_member(json_node_get_object(reply), "turns") : NULL;
+    now = json_object_get_int_member_with_default(json_node_get_object(reply), "now",
+                                                  g_get_real_time());
+    if (turns == NULL || json_array_get_length(turns) == 0) {
+        g_print("Nothing is running.\n");
+        return EXIT_SUCCESS;
+    }
+
+    for (i = 0; i < json_array_get_length(turns); i++) {
+        JsonObject *turn = json_array_get_object_element(turns, i);
+        const gchar *agent_id = member_or(turn, "agent", "?");
+        g_autofree gchar *elapsed = clawt_activity_elapsed_label(
+            json_object_get_int_member_with_default(turn, "started", 0), now);
+        JsonArray *steps = json_object_has_member(turn, "steps")
+            ? json_object_get_array_member(turn, "steps") : NULL;
+
+        g_print("%s  in %s  running %s%s%s%s%s\n", agent_id,
+                member_or(turn, "room_name", member_or(turn, "room", "?")), elapsed,
+                json_object_has_member(turn, "origin") ? "  for " : "",
+                member_or(turn, "origin", ""),
+                json_object_has_member(turn, "task") ? "  task " : "",
+                member_or(turn, "task", ""));
+
+        if (steps != NULL && json_array_get_length(steps) > 0) {
+            g_autoptr(ClawtTurnStep) last = clawt_turn_step_new_from_object(
+                json_array_get_object_element(steps, json_array_get_length(steps) - 1),
+                agent_id);
+            g_autofree gchar *summary = last != NULL ? clawt_turn_step_summary(last) : NULL;
+
+            if (summary != NULL)
+                g_print("  last: %s\n", summary);
+        }
+    }
+
+    g_print("\nStop one with `clawtilla agent interrupt <agent>` (every turn it is "
+            "running); steer one with `clawtilla send <agent> <text>`.\n");
+    return EXIT_SUCCESS;
+}
+
 static gint
 cmd_task(int argc, char *argv[])
 {
@@ -8129,6 +8194,8 @@ static const ClawtVerb verbs[] = {
       cmd_memory },
     { "computer", "<verb>",  "Run commands on an agent's computer",
       cmd_computer },
+    { "activity", "",        "Every turn running across the fleet",
+      cmd_activity },
     { "cp",      "<src> <dst>", "Copy files to or from a computer",
       cmd_cp },
     { "folders", "<verb>",   "Share host folders with the whole fleet",

@@ -144,6 +144,7 @@ HtmxElement *clawt_web_triggers_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_skills_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_tasks_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_flow_body(ClawtWebApp *app, const gchar *agent_id);
+HtmxElement *clawt_web_activity_body(ClawtWebApp *app, const gchar *agent_id);
 HtmxElement *clawt_web_decisions_body(ClawtWebApp *app,
                                       const gchar *agent_id);
 HtmxElement *clawt_web_memory_body(ClawtWebApp *app, const gchar *agent_id);
@@ -182,6 +183,7 @@ void clawt_web_register_agent(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_mailbox(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_computer(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_work(HtmxRouter *router, ClawtWebApp *app);
+void clawt_web_register_activity(HtmxRouter *router, ClawtWebApp *app);
 
 /**
  * clawt_web_register_triggers:

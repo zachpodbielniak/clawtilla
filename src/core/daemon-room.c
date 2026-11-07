@@ -419,53 +419,8 @@ clawt_daemon_handle_room(
         json_builder_set_member_name(builder, "steps");
         json_builder_begin_array(builder);
 
-        for (i = 0; steps != NULL && i < steps->len; i++) {
-            ClawtTurnStep *step = g_ptr_array_index(steps, i);
-
-            json_builder_begin_object(builder);
-
-            json_builder_set_member_name(builder, CLAWT_STEP_MEMBER_KIND);
-            json_builder_add_string_value(
-                builder, clawt_enum_to_nick(CLAWT_TYPE_STEP_KIND,
-                                            clawt_turn_step_get_kind(step)));
-
-            json_builder_set_member_name(builder, CLAWT_STEP_MEMBER_ROOM);
-            json_builder_add_string_value(builder,
-                                          clawt_turn_step_get_room_id(step));
-
-            if (clawt_turn_step_get_text(step) != NULL) {
-                json_builder_set_member_name(builder, CLAWT_STEP_MEMBER_TEXT);
-                json_builder_add_string_value(builder,
-                                              clawt_turn_step_get_text(step));
-            }
-
-            if (clawt_turn_step_get_tool_name(step) != NULL) {
-                json_builder_set_member_name(builder, CLAWT_STEP_MEMBER_TOOL);
-                json_builder_add_string_value(
-                    builder, clawt_turn_step_get_tool_name(step));
-            }
-
-            if (clawt_turn_step_get_detail(step) != NULL) {
-                json_builder_set_member_name(builder,
-                                             CLAWT_STEP_MEMBER_DETAIL);
-                json_builder_add_string_value(
-                    builder, clawt_turn_step_get_detail(step));
-            }
-
-            json_builder_set_member_name(builder, CLAWT_STEP_MEMBER_FAILED);
-            json_builder_add_boolean_value(builder,
-                                           clawt_turn_step_get_failed(step));
-
-            json_builder_set_member_name(builder, CLAWT_STEP_MEMBER_TS);
-            json_builder_add_int_value(builder,
-                                       clawt_turn_step_get_timestamp(step));
-
-            json_builder_set_member_name(builder, "agent");
-            json_builder_add_string_value(builder,
-                                          clawt_turn_step_get_agent_id(step));
-
-            json_builder_end_object(builder);
-        }
+        for (i = 0; steps != NULL && i < steps->len; i++)
+            clawt_daemon_add_step_object(builder, g_ptr_array_index(steps, i));
 
         json_builder_end_array(builder);
         json_builder_end_object(builder);
