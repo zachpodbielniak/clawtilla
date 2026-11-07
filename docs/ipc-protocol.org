@@ -753,6 +753,10 @@ Each one publishes a ~computer.power~ event carrying ~action~ and
 successes reads as "it did not happen" rather than as "we do not know
 what it did".
 
+~computer.shared~ (no payload) → ~computers~, one object per machine declared under ~computers:~, in file order: ~id~, ~type~, ~description~ when there is one, ~shareable~ (FALSE for a host computer), ~state~ (~unbuilt~ until a user has started it), ~users~ (every agent naming it) and ~running~ (those of them running). Read from the config rather than from the machines built, so a machine nobody has started can still be chosen.
+
+For an agent on a shared machine, ~computer.start~, ~computer.stop~ and ~computer.restart~ are refused while another user is running, and ~computer.rebuild~ while any user is. ~agent.set~ refuses ~computer.use~ naming an undeclared or host computer, and any other ~computer.*~ key of an agent that names a machine. ~computer.control~ answers ~allowed: false~ with the holder in ~refusal~ when another user is driving the shared screen.
+
 ~computer.rebuild~ (~agent~) tears the agent's computer down and
 provisions it again, answering ~rebuilt~, ~agent~ and sometimes ~note~.
 It is *refused while the agent runs*, rather than done carefully:

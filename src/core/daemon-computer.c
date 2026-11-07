@@ -201,6 +201,15 @@ clawt_daemon_handle_computer(
                   "stop: it runs on this one"
                 : "this agent has no computer");
 
+        /* Stopping a shared machine would stop it under the others. */
+        if (op != CLAWT_COMPUTER_LIFECYCLE_START) {
+            g_autofree gchar *busy = clawt_daemon_shared_busy_refusal(
+                self, agent_id, op == CLAWT_COMPUTER_LIFECYCLE_STOP ? "stop it" : "restart it");
+
+            if (busy != NULL)
+                return clawt_ipc_error_new(request, CLAWT_ERROR_AGENT_STATE, busy);
+        }
+
         /*
          * A fence, because for a container this is not reversible.
          * `computer.container.keep` is false by default and the backend
@@ -310,6 +319,15 @@ clawt_daemon_handle_computer(
                                        "this agent has no computer to "
                                        "rebuild");
 
+        /* A shared machine is rebuilt only when every agent on it is stopped. */
+        {
+            g_autofree gchar *busy = clawt_daemon_shared_busy_refusal(
+                self, agent_id, "rebuild it");
+
+            if (busy != NULL)
+                return clawt_ipc_error_new(request, CLAWT_ERROR_AGENT_STATE, busy);
+        }
+
         /*
          * Built from the config rather than taken from the agent, so
          * the teardown and provisioning run against what the config
@@ -319,8 +337,34 @@ clawt_daemon_handle_computer(
             g_autoptr(GPtrArray) defaults =
                 clawt_config_get_default_mounts(self->config);
 
-            built = clawt_computer_factory_create(agent_config, defaults,
-                                                  self->pod_bridge, &error);
+            /* A shared machine is rebuilt as itself, and the pool forgets it. */
+            if (clawt_daemon_shared_computer_id(self, agent_id) != NULL) {
+                const gchar *use = clawt_daemon_shared_computer_id(self, agent_id);
+                g_autoptr(GPtrArray) ids = clawt_daemon_shared_users(self, use, FALSE, NULL);
+                g_autoptr(GPtrArray) users = g_ptr_array_new();
+                guint u;
+
+                for (u = 0; u < ids->len; u++)
+                    g_ptr_array_add(users, clawt_config_get_agent(self->config,
+                                                                  g_ptr_array_index(ids, u)));
+                if (users->len == 0)
+                    g_ptr_array_add(users, agent_config);
+                built = clawt_computer_factory_create_shared(use, users, defaults,
+                                                             self->pod_bridge, &error);
+                clawt_daemon_shared_computer_forget(self, use);
+
+                /* Every agent on it lets go, so each next start takes the new one. */
+                for (u = 0; u < ids->len; u++) {
+                    ClawtAgent *user = clawt_agent_manager_get(self->agents,
+                                                               g_ptr_array_index(ids, u));
+
+                    if (user != NULL)
+                        clawt_agent_set_computer(user, NULL);
+                }
+            } else {
+                built = clawt_computer_factory_create(agent_config, defaults,
+                                                      self->pod_bridge, &error);
+            }
         }
 
         if (built == NULL)
@@ -370,6 +414,59 @@ clawt_daemon_handle_computer(
         if (removed != NULL)
             clawt_daemon_add_string_member(builder, "note", removed);
 
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    /*
+     * The machines agents can share, and who is on each. Read from the
+     * config, not the pool: a machine nobody has started yet is still one
+     * an agent can be pointed at, and a picker offering only the running
+     * ones would hide the rest.
+     */
+    if (g_strcmp0(kind, "computer.shared") == 0) {
+        g_autoptr(GPtrArray) ids = clawt_config_get_computer_ids(self->config);
+        guint i;
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "computers");
+        json_builder_begin_array(builder);
+        for (i = 0; i < ids->len; i++) {
+            const gchar *id = g_ptr_array_index(ids, i);
+            g_autoptr(GPtrArray) users = clawt_daemon_shared_users(self, id, FALSE, NULL);
+            g_autoptr(GPtrArray) running = clawt_daemon_shared_users(self, id, TRUE, NULL);
+            ClawtComputer *built = self->shared_computers != NULL
+                ? g_hash_table_lookup(self->shared_computers, id) : NULL;
+            const gchar *type = clawt_config_get_computer_string(self->config, id, "type");
+            guint u;
+
+            json_builder_begin_object(builder);
+            clawt_daemon_add_string_member(builder, "id", id);
+            clawt_daemon_add_string_member(builder, "type", type != NULL ? type : "none");
+            if (clawt_config_get_computer_string(self->config, id, "description") != NULL)
+                clawt_daemon_add_string_member(builder, "description",
+                    clawt_config_get_computer_string(self->config, id, "description"));
+            json_builder_set_member_name(builder, "shareable");
+            json_builder_add_boolean_value(builder, g_strcmp0(type, "host") != 0);
+            clawt_daemon_add_string_member(builder, "state",
+                built != NULL
+                    ? clawt_enum_to_nick(CLAWT_TYPE_COMPUTER_STATE,
+                                         clawt_computer_get_state(built))
+                    : "unbuilt");
+            json_builder_set_member_name(builder, "users");
+            json_builder_begin_array(builder);
+            for (u = 0; u < users->len; u++)
+                json_builder_add_string_value(builder, g_ptr_array_index(users, u));
+            json_builder_end_array(builder);
+            json_builder_set_member_name(builder, "running");
+            json_builder_begin_array(builder);
+            for (u = 0; u < running->len; u++)
+                json_builder_add_string_value(builder, g_ptr_array_index(running, u));
+            json_builder_end_array(builder);
+            json_builder_end_object(builder);
+        }
+        json_builder_end_array(builder);
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));

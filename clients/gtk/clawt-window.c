@@ -5886,6 +5886,7 @@ clawt_window_finalize(GObject *object)
      */
     g_clear_pointer(&self->schema_rows, g_ptr_array_unref);
     g_clear_pointer(&self->account_ids, g_ptr_array_unref);
+    g_clear_pointer(&self->use_ids, g_ptr_array_unref);
 
     /*
      * The same rule for the switcher's bookkeeping: these hold borrowed

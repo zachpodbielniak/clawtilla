@@ -1242,6 +1242,20 @@ clawt_daemon_handle_agent(
          * from that config, and afterwards there is nothing left to
          * build it from.
          */
+        /*
+         * Never a shared machine: it belongs to the computers: entry, and
+         * the other agents on it are still using it. Said in the reply
+         * rather than done quietly or refused -- the agent is still
+         * removed, its machine stays.
+         */
+        if (with_computer && clawt_daemon_shared_computer_id(self, agent_id) != NULL) {
+            computer_detail = g_strdup_printf(
+                "kept: it is the shared computer '%s'; remove it from computers: "
+                "and rebuild to delete it",
+                clawt_daemon_shared_computer_id(self, agent_id));
+            with_computer = FALSE;
+        }
+
         if (with_computer) {
             ClawtAgent *agent = clawt_agent_manager_get(self->agents,
                                                          agent_id);
@@ -1499,6 +1513,47 @@ clawt_daemon_handle_agent(
                 if (!clawt_policy_parse_rule(parts[p], NULL, NULL, &why))
                     return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
                                                why->message);
+            }
+        }
+
+        /*
+         * A shared machine is checked where it arrives: an undeclared one,
+         * or a host computer, would be saved, reported as saved, and turn
+         * the agent into a shadow at the next revalidation.
+         */
+        if (g_strcmp0(key, "computer.use") == 0 && value != NULL && *value != '\0') {
+            const gchar *type = clawt_config_get_computer_string(self->config, value, "type");
+
+            if (!clawt_config_has_computer(self->config, value)) {
+                g_autofree gchar *message = g_strdup_printf(
+                    "there is no computer '%s'; declare it under computers: first", value);
+
+                return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND, message);
+            }
+            if (g_strcmp0(type, "host") == 0) {
+                g_autofree gchar *message = g_strdup_printf(
+                    "'%s' is a host computer, which confines one agent to its own "
+                    "workspace and cannot be shared", value);
+
+                return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT, message);
+            }
+        }
+
+        /*
+         * Every other computer.* key of an agent on a shared machine is
+         * the machine's: it is read from computers:, so writing it onto
+         * the agent would be saved, echoed, and never read.
+         */
+        if (g_str_has_prefix(key, "computer.") && g_strcmp0(key, "computer.use") != 0) {
+            const gchar *use = clawt_agent_config_get_string(config, "computer.use");
+
+            if (use != NULL && *use != '\0') {
+                g_autofree gchar *message = g_strdup_printf(
+                    "'%s' uses the shared computer '%s', so %s is that machine's; "
+                    "change it under computers: (id %s), or clear computer.use first",
+                    agent_id, use, key, use);
+
+                return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT, message);
             }
         }
 

@@ -237,6 +237,11 @@ struct _ClawtDaemon {
      */
     GHashTable        *search_clients;
 
+    /* Machines several agents share, keyed by computers: id. */
+    GHashTable        *shared_computers;
+    /* Who is driving each shared machine's one screen: id -> DriveLease. */
+    GHashTable        *drive_leases;
+
     /* Calls waiting on an `ask`, keyed by decision id (daemon-policy.c). */
     GHashTable        *policy_waits;
     GSource           *policy_tick;
@@ -1141,6 +1146,17 @@ void clawt_daemon_turn_set_grace_seconds(ClawtDaemon *self, guint seconds);
  */
 void clawt_daemon_handoff_setup(ClawtDaemon *self);
 void clawt_daemon_search_setup(ClawtDaemon *self);
+const gchar *clawt_daemon_shared_computer_id(ClawtDaemon *self, const gchar *agent_id);
+GPtrArray *clawt_daemon_shared_users(ClawtDaemon *self, const gchar *computer_id,
+                                     gboolean running_only, const gchar *except);
+gchar *clawt_daemon_shared_busy_refusal(ClawtDaemon *self, const gchar *agent_id,
+                                        const gchar *what);
+ClawtComputer *clawt_daemon_shared_computer_get(ClawtDaemon *self, ClawtAgent *agent,
+                                                GError **error);
+void clawt_daemon_shared_computer_forget(ClawtDaemon *self, const gchar *computer_id);
+gboolean clawt_daemon_shared_take_screen(ClawtDaemon *self, const gchar *agent_id,
+                                         gchar **out_refusal);
+gboolean clawt_daemon_shared_screen_held(ClawtDaemon *self, const gchar *agent_id);
 void clawt_daemon_policy_setup(ClawtDaemon *self);
 void clawt_daemon_policy_teardown(ClawtDaemon *self);
 void clawt_daemon_policy_tick(ClawtDaemon *self);

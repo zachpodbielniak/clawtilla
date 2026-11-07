@@ -1126,6 +1126,31 @@ static const ClawtSchemaEntry schema[] = {
   "of them is one skill, and the most specific place it was asked for is\n"
   "what gets reported.", "0.2.0" },
 
+/* ── computers ───────────────────────────────────────────────────── */
+{ "computers", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
+  "Machines several agents share.\n"
+  "\n"
+  "Each entry takes an id and the same keys as an agent's computer:\n"
+  "block -- type, container, vm, desktop, mounts, and the rest; every\n"
+  "one is documented under agents.computer. An agent joins one with\n"
+  "agents.computer.use. Agents A and B on `alpha` and C, D and E on\n"
+  "`beta` are two machines, not five.\n"
+  "\n"
+  "Each agent keeps its own workspace, mounted at\n"
+  "/mnt/clawtilla/workspaces/<agent>, and its own exchange folder. The\n"
+  "machine stops when its last running agent stops, and is rebuilt only\n"
+  "when every agent on it is stopped. A desktop is one screen, driven by\n"
+  "one agent at a time.", "0.5.0" },
+
+{ "computers.id", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED, NULL, NULL,
+  "Identifier, and what agents.computer.use names. The machine is called\n"
+  "clawt-c.<id> in podman, distrobox and libvirt -- a dot no agent id can\n"
+  "hold, so it never shares a name with an agent's own machine.", "0.5.0" },
+
+{ "computers.description", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "What this machine is for.", "0.5.0" },
+
 /* ── accounts ────────────────────────────────────────────────────── */
 { "accounts", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Separate logins for an agent CLI, so two agents on one machine can\n"
@@ -2164,6 +2189,13 @@ static const ClawtSchemaEntry schema[] = {
 { "agents.computer", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "What the agent can run commands on.", "0.1.0" },
 
+{ "agents.computer.use", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Share a machine declared under computers: instead of having one of\n"
+  "this agent's own. Set, every other computer.* key comes from that\n"
+  "entry and this agent's own computer block is ignored, so several\n"
+  "agents naming one entry run on exactly one machine.", "0.5.0" },
+
 { "agents.computer.type", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
   NULL, clawt_computer_type_get_type,
   "Which kind of computer this agent gets. Defaults to\n"
@@ -2975,6 +3007,15 @@ static const ClawtSchemaEntry schema[] = {
   "Taking the screen again while you already hold it extends the lease,\n"
   "which is what a client does while somebody is still working.", "0.2.0" },
 
+{ "agents.computer.desktop.driver_idle_seconds", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_NONE, "120", NULL,
+  "On a shared computer, how long one agent keeps the screen after its\n"
+  "last input before another may type or click.\n"
+  "\n"
+  "A shared machine has one desktop. The first agent to act on it holds\n"
+  "it; another agent's input is refused, naming who is driving, until\n"
+  "the holder has been idle this long. Looking is never refused.", "0.5.0" },
+
 { "agents.computer.desktop.allow_recording", CLAWT_SCHEMA_BOOLEAN,
   CLAWT_SCHEMA_FLAG_DANGEROUS, "false", NULL,
   "Whether a demonstration may be recorded on this screen.\n"
@@ -3312,6 +3353,22 @@ clawt_config_schema_lookup(const gchar *key)
     {
         if (g_strcmp0(schema[i].key, key) == 0)
             return &schema[i];
+    }
+
+    /*
+     * A shared computer takes the keys of an agent's computer block, so
+     * `computers.<k>` is answered by `agents.computer.<k>` -- one rule,
+     * not a second copy of eighty rows to drift. `use` is the agent's own
+     * and means nothing inside a machine.
+     */
+    if (g_str_has_prefix(key, "computers.") &&
+        g_strcmp0(key, "computers.use") != 0) {
+        g_autofree gchar *agent_key =
+            g_strconcat("agents.computer.", key + strlen("computers."), NULL);
+
+        for (i = 0; i < G_N_ELEMENTS(schema); i++)
+            if (g_strcmp0(schema[i].key, agent_key) == 0)
+                return &schema[i];
     }
 
     return NULL;

@@ -1741,6 +1741,87 @@ Connecting is not provisioning.  If you want an agent on another
 machine's hypervisor, run a daemon over there, or give the agent an
 ~ssh~ computer pointed at a guest you manage yourself.
 
+** Shared computers
+:PROPERTIES:
+:CUSTOM_ID: shared-computers
+:END:
+
+An agent normally gets a machine of its own. Several can share one instead: declare it under ~computers:~ and point each agent at it with ~computer.use~. Which agents share which machine is entirely the fleet's to say -- any number of machines, any grouping:
+
+#+begin_src yaml
+computers:
+  - id: alpha
+    description: the build box
+    type: container
+    container:
+      image: registry.fedoraproject.org/fedora:44
+  - id: beta
+    type: vm
+    vm:
+      image: ~/vms/fedora-44.qcow2
+    desktop:
+      enabled: true
+      backend: guest
+      allow_input: true
+
+agents:
+  - id: a
+    computer: { use: alpha }
+  - id: b
+    computer: { use: alpha }
+  - id: c
+    computer: { use: beta }
+  - id: d
+    computer: { use: beta }
+  - id: e
+    computer: { use: beta }
+#+end_src
+
+Here ~a~ and ~b~ share one container and ~c~, ~d~ and ~e~ share one VM with a desktop.
+
+*** The entry takes every key an agent's computer does
+
+A ~computers:~ entry is written exactly like an agent's ~computer:~ block -- ~type~, ~container.*~, ~vm.*~, ~desktop.*~, ~mounts~ and the rest -- plus an ~id~ and a ~description~. There is no second list of keys: an agent that names a machine reads *every* ~computer.*~ key but ~use~ from the machine's entry, through the same getters every backend and client already uses, so ~computer.vm.cpus~ of agent ~c~ above is the VM's. The table in [[file:configuration-options.org][configuration-options.org]] documents the keys once, under ~agents.computer.*~.
+
+So an agent's own ~computer.*~ keys are ignored while it names a machine, and ~agent.set~ refuses to write one -- it would be saved, reported as saved and never read. Change the machine's entry, or clear ~computer.use~ first. Both clients hide those rows for an agent on a shared machine and say why.
+
+*** What makes an agent a shadow
+
+- ~computer.use~ naming nothing under ~computers:~.
+- ~computer.use~ naming a ~host~ computer. A host computer is the real machine confined to one agent's workspace; sharing one would quietly make every user's confinement the first user's.
+
+Both are also refused where they arrive, by ~agent.set~ and both clients' pickers, rather than saved and shadowed at the next revalidation.
+
+*** One machine, named after itself
+
+The daemon builds a shared machine once, the first time any of its agents starts, and every user holds the same object. It is named after the machine, not an agent: ~clawt-c.alpha~ for the container, distrobox and libvirt domain, ~vms/c.alpha~ for the VM's state. An agent id cannot contain a dot, so that name cannot collide with any agent's own machine.
+
+*** Each agent has its own workspace inside
+
+~/mnt/clawtilla/workspace~ is the workspace of an agent with a machine of its own. On a shared machine every user's workspace is mounted instead at ~/mnt/clawtilla/workspaces/<agent>~, and each agent's exchange folder is mounted as usual. Mounts in the entry, and the fleet's default mounts that reach any of its users, are mounted once.
+
+Each agent is told, in the computer region of its =TOOLS.org= and by ~clawtilla_computer_state~, which machine it is on, who else is, which workspace is its own, and that processes and files it did not make may be theirs. An agent that is not told which folder is its own finds the others first.
+
+*A user added after a VM was built* reaches it only after a rebuild, for the reason in [[#stale-shares][A share added after the VM was built]]: the guest's fstab is written once.
+
+*** Starting and stopping
+
+- Starting any user starts the machine if it is not running.
+- Stopping a user stops the machine only when no other user is still running on it.
+- ~computer.stop~, ~computer.restart~ and ~computer.start~ on one user's behalf are refused while another user is running, naming them -- stopping it would pull the machine out from under them.
+- ~computer.rebuild~ is refused while any user runs. A rebuild detaches the machine from every user, so each builds against the new one at its next start.
+- ~agent remove --with-computer~ never destroys a shared machine; the reply says it was kept.
+
+*** One screen, one driver
+
+A shared machine with a desktop has one screen, so only one agent drives it at a time. The first acting call -- a click, a key, a spawn -- takes the screen; while it holds it, another user's acting calls are refused with the holder's name and how long to wait. Looking is never refused. The lease lapses after the holder has done nothing on the screen for ~computer.desktop.driver_idle_seconds~ (120 by default), so an agent that has finished does not keep it.
+
+Taking the screen yourself (see [[*Taking the screen][Taking the screen]]) takes it from every agent on the machine, not only the one whose page you were on.
+
+*** Seeing them
+
+~clawtilla computer shared~ lists each machine, its type, whether it has been built, and its users with the running ones marked. Both clients offer the same list as the /Use computer/ picker in the agent editor. The IPC behind all three is ~computer.shared~ ([[file:ipc-protocol.org][ipc-protocol.org]]).
+
 ** Mount paths
 
 Mounts are how files get in and out.

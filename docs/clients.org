@@ -79,6 +79,7 @@ licence, send nothing, and exit 0.
 | ~cost [--today \vert{} --days N] [--agent ID]~ | what the fleet has spent |
 | ~computer exec <agent> -- CMD…~ | |
 | ~computer status <agent>~ | |
+| ~computer shared~ | the machines agents share, their type and state, and who is on each |
 | ~cp <src> <dst>~ | either side may be ~<agent>:<path>~ |
 | ~config show/validate/render/edit~ | |
 | ~config reload~ | re-read the config file the daemon was started with |
@@ -513,6 +514,10 @@ it applies at the VM's next boot.
 *** Choosing an account
 
 The agent inspector has an *Account* row beside the model and effort. Its choices come from ~account.list~ with the agent named, so it offers only the accounts the daemon will accept for that agent's provider; an account the agent already names and can no longer use is still shown, labelled, so saving cannot replace it without anybody choosing to. Saving clears the account before a provider change and sets it after, because the daemon checks the pair. The web client's agent page draws the same choices as a select.
+
+*** Choosing a shared computer
+
+The agent inspector has a *Use computer* row above the computer type. Its choices come from ~computer.shared~: /Its own machine/, then every machine declared under ~computers:~ that can be shared, with its type and description. A machine the agent names that is no longer declared is still shown, labelled, so saving cannot move the agent without anybody choosing to. While the agent is on a shared machine the computer type is shown greyed out -- it is the machine's -- and the per-agent image and VM rows are not drawn, because ~agent.set~ refuses those keys for it. Saving writes ~computer.use~ first. The web client's agent page draws the same select in its Computer card, hides the same rows, and says why.
 
 *** Teams in the sidebar
 

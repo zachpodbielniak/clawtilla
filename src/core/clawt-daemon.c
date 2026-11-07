@@ -3388,9 +3388,12 @@ start_agent_prepare(ClawtDaemon    *self,
         g_autoptr(ClawtComputer) computer = NULL;
         g_autoptr(GPtrArray) defaults =
             clawt_config_get_default_mounts(self->config);
+        gboolean shared = clawt_daemon_shared_computer_id(self, agent_id) != NULL;
 
-        computer = clawt_computer_factory_create(config, defaults,
-                                                 self->pod_bridge, &local);
+        /* A shared machine comes from the pool, mounts and exchange included. */
+        computer = shared
+            ? clawt_daemon_shared_computer_get(self, agent, &local)
+            : clawt_computer_factory_create(config, defaults, self->pod_bridge, &local);
 
         /*
          * A computer that cannot be built from the config is a shadow
@@ -3403,7 +3406,8 @@ start_agent_prepare(ClawtDaemon    *self,
             return FALSE;
         }
 
-        apply_mounts(self, agent, computer);
+        if (!shared)
+            apply_mounts(self, agent, computer);
 
         /*
          * The desktop is an add-on to whatever computer that turned out
@@ -4011,6 +4015,19 @@ clawt_daemon_stop_agent(ClawtDaemon *self, const gchar *agent_id,
      * container an agent had ever used went on running under a stopped
      * agent until somebody found it in `podman ps`.
      */
+    /*
+     * A shared machine stops with its last running agent, not with any
+     * of them: stopping it under the others would end their turns.
+     */
+    if (stop_machine && computer != NULL &&
+        clawt_daemon_shared_computer_id(self, agent_id) != NULL) {
+        g_autoptr(GPtrArray) others = clawt_daemon_shared_users(
+            self, clawt_daemon_shared_computer_id(self, agent_id), TRUE, agent_id);
+
+        if (others->len > 0)
+            stop_machine = FALSE;
+    }
+
     if (stop_machine && computer != NULL) {
         g_autoptr(GError) local = NULL;
 
@@ -4144,6 +4161,8 @@ release_components(ClawtDaemon *self)
     clawt_daemon_handoff_teardown(self);
     clawt_daemon_search_teardown(self);
     clawt_daemon_policy_teardown(self);
+    g_clear_pointer(&self->shared_computers, g_hash_table_unref);
+    g_clear_pointer(&self->drive_leases, g_hash_table_unref);
 
     /*
      * The observer first, and before the context it attached its timers
@@ -6265,6 +6284,8 @@ clawt_daemon_stop(ClawtDaemon *self)
     clawt_daemon_handoff_teardown(self);
     clawt_daemon_search_teardown(self);
     clawt_daemon_policy_teardown(self);
+    g_clear_pointer(&self->shared_computers, g_hash_table_unref);
+    g_clear_pointer(&self->drive_leases, g_hash_table_unref);
 
     if (self->connector_refresh != NULL) {
         g_source_destroy(self->connector_refresh);

@@ -270,11 +270,113 @@ build_guest_desktop(ClawtAgentConfig *agent_config)
     return desktop;
 }
 
+/*
+ * A shared machine's mounts: its own (the shared entry's, read through the
+ * agent config's redirect), the fleet folders that cover *any* agent on
+ * it, and one workspace per agent at /mnt/clawtilla/workspaces/<agent>.
+ * Each agent's own workspace path is what TOOLS.org tells it; the single
+ * /mnt/clawtilla/workspace of an unshared machine would name whichever
+ * agent happened to start it first.
+ */
+static void
+apply_shared_mounts(ClawtComputer *computer, ClawtAgentConfig *any_user,
+                    GPtrArray *users, GPtrArray *default_mounts)
+{
+    g_autoptr(GPtrArray) own = clawt_agent_config_get_mounts(any_user);
+    g_autoptr(GPtrArray) mine = g_ptr_array_new_with_free_func((GDestroyNotify)clawt_mount_free);
+    g_autoptr(GPtrArray) mounts = NULL;
+    ClawtComputerType type = clawt_computer_get_computer_type(computer);
+    guint u;
+    guint d;
+    guint i;
+
+    if (default_mounts != NULL && clawt_computer_type_takes_mounts(type) &&
+        clawt_agent_config_get_boolean(any_user, "computer.default_mounts")) {
+        for (d = 0; d < default_mounts->len; d++) {
+            ClawtMount *candidate = g_ptr_array_index(default_mounts, d);
+
+            for (u = 0; u < users->len; u++) {
+                ClawtAgentConfig *user = g_ptr_array_index(users, u);
+
+                if (clawt_mount_covers(candidate, clawt_agent_config_get_id(user),
+                                       clawt_agent_config_get_string(user, "team"))) {
+                    g_ptr_array_add(mine, clawt_mount_copy(candidate));
+                    break;
+                }
+            }
+        }
+        mounts = clawt_mount_merge_defaults(mine, own);
+    } else {
+        mounts = g_ptr_array_ref(own);
+    }
+
+    for (i = 0; i < mounts->len; i++)
+        clawt_computer_add_mount(computer, g_ptr_array_index(mounts, i));
+
+    if (!clawt_computer_type_shares_host_paths(type) ||
+        !clawt_agent_config_get_boolean(any_user, "computer.workspace"))
+        return;
+
+    for (u = 0; u < users->len; u++) {
+        ClawtAgentConfig *user = g_ptr_array_index(users, u);
+        g_autofree gchar *workspace = clawt_agent_config_get_workspace(user);
+        g_autofree gchar *target = clawt_computer_shared_workspace_path(
+            clawt_agent_config_get_id(user));
+        ClawtMount *mount;
+
+        if (workspace == NULL)
+            continue;
+        mount = clawt_mount_new(workspace, target);
+        clawt_mount_set_mode(mount, CLAWT_MOUNT_MODE_RW);
+        clawt_mount_set_create(mount, TRUE);
+        clawt_mount_set_relabel(mount, CLAWT_RELABEL_SHARED);
+        clawt_computer_add_mount(computer, mount);
+        clawt_mount_free(mount);
+    }
+}
+
+static ClawtComputer *create_for(ClawtAgentConfig *agent_config, const gchar *owner,
+                                 GPtrArray *users, GPtrArray *default_mounts,
+                                 ClawtPodBridge *bridge, GError **error);
+
 ClawtComputer *
 clawt_computer_factory_create(ClawtAgentConfig  *agent_config,
                               GPtrArray         *default_mounts,
                               ClawtPodBridge    *bridge,
                               GError           **error)
+{
+    g_return_val_if_fail(agent_config != NULL, NULL);
+
+    return create_for(agent_config, clawt_agent_config_get_id(agent_config), NULL,
+                      default_mounts, bridge, error);
+}
+
+ClawtComputer *
+clawt_computer_factory_create_shared(const gchar       *computer_id,
+                                     GPtrArray         *users,
+                                     GPtrArray         *default_mounts,
+                                     ClawtPodBridge    *bridge,
+                                     GError           **error)
+{
+    g_autofree gchar *owner = NULL;
+    ClawtAgentConfig *any_user;
+
+    g_return_val_if_fail(computer_id != NULL, NULL);
+    g_return_val_if_fail(users != NULL && users->len > 0, NULL);
+
+    owner = clawt_computer_shared_owner(computer_id);
+    any_user = g_ptr_array_index(users, 0);
+
+    return create_for(any_user, owner, users, default_mounts, bridge, error);
+}
+
+static ClawtComputer *
+create_for(ClawtAgentConfig  *agent_config,
+           const gchar       *owner,
+           GPtrArray         *users,
+           GPtrArray         *default_mounts,
+           ClawtPodBridge    *bridge,
+           GError           **error)
 {
     ClawtComputerType type;
     const gchar *agent_id;
@@ -282,7 +384,12 @@ clawt_computer_factory_create(ClawtAgentConfig  *agent_config,
 
     g_return_val_if_fail(agent_config != NULL, NULL);
 
-    agent_id = clawt_agent_config_get_id(agent_config);
+    /*
+     * The name every backend builds its machine's name from: the agent's
+     * id, or `c.<id>` for a shared machine, so `clawt-c.alpha` can never
+     * collide with any agent's machine: agent ids cannot hold a dot.
+     */
+    agent_id = owner;
     type = (ClawtComputerType)
         clawt_agent_config_get_enum(agent_config, "computer.type");
 
@@ -645,7 +752,9 @@ clawt_computer_factory_create(ClawtAgentConfig  *agent_config,
         return NULL;
     }
 
-    if (computer != NULL)
+    if (computer != NULL && users != NULL)
+        apply_shared_mounts(computer, agent_config, users, default_mounts);
+    else if (computer != NULL)
         apply_mounts(computer, agent_config, default_mounts);
 
     return computer;

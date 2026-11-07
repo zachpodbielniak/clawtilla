@@ -18,6 +18,7 @@
 #include "clawt-window-private.h"
 
 static gboolean     apply_schema_rows(ClawtWindow *self);
+static const gchar *use_row_value(ClawtWindow *self);
 
 /* ── Inspector ───────────────────────────────────────────────────── */
 
@@ -232,11 +233,19 @@ on_save_agent(GtkButton *button, gpointer user_data)
                                   efforts[MIN(adw_combo_row_get_selected(
                                         ADW_COMBO_ROW(self->effort_row)), 4)]);
 
-    ok &= clawt_gtk_apply_setting(self, "computer.type",
-                                  clawt_gtk_computer_type_nick_at(adw_combo_row_get_selected(
-                            ADW_COMBO_ROW(self->computer_row))));
+    /*
+     * The shared machine first, and nothing else under computer.* when
+     * there is one: those keys are the machine's, kept under computers:,
+     * and the daemon refuses to write them onto an agent that uses it.
+     */
+    ok &= clawt_gtk_apply_setting(self, "computer.use", use_row_value(self));
 
-    if (self->vm_cpus_row != NULL) {
+    if (*use_row_value(self) == '\0')
+        ok &= clawt_gtk_apply_setting(self, "computer.type",
+                                      clawt_gtk_computer_type_nick_at(adw_combo_row_get_selected(
+                                ADW_COMBO_ROW(self->computer_row))));
+
+    if (self->vm_cpus_row != NULL && *use_row_value(self) == '\0') {
         g_autofree gchar *image = clawt_gtk_disk_chooser_value(&self->inspector_disk);
         const gchar *cpus = gtk_editable_get_text(
             GTK_EDITABLE(self->vm_cpus_row));
@@ -299,7 +308,7 @@ on_save_agent(GtkButton *button, gpointer user_data)
                                                             : "false");
     }
 
-    if (self->inspector_image.row != NULL) {
+    if (self->inspector_image.row != NULL && *use_row_value(self) == '\0') {
         g_autofree gchar *image = clawt_gtk_image_chooser_value(&self->inspector_image);
 
         if (image != NULL)
@@ -656,6 +665,85 @@ account_row_build(ClawtWindow *self, const gchar *current)
         "`clawtilla account add`, then `clawtilla account login`.");
 
     return row;
+}
+
+/*
+ * The machines this agent can share, from computer.shared -- the same
+ * list the web client's select is built from. The current value stays
+ * even when it is no longer declared, so saving cannot silently move the
+ * agent onto a machine of its own.
+ */
+static GtkWidget *
+use_row_build(ClawtWindow *self, const gchar *current)
+{
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GtkStringList) labels = gtk_string_list_new(NULL);
+    GtkWidget *row = adw_combo_row_new();
+    JsonArray *computers = NULL;
+    guint selected = 0;
+    guint i;
+
+    if (self->use_ids == NULL)
+        self->use_ids = g_ptr_array_new_with_free_func(g_free);
+    g_ptr_array_set_size(self->use_ids, 0);
+
+    g_ptr_array_add(self->use_ids, g_strdup(""));
+    gtk_string_list_append(labels, "Its own machine");
+
+    reply = clawt_window_request(self, "computer.shared", NULL);
+    if (reply != NULL && clawt_payload_of(reply) != NULL &&
+        json_object_has_member(clawt_payload_of(reply), "computers"))
+        computers = json_object_get_array_member(clawt_payload_of(reply), "computers");
+
+    for (i = 0; computers != NULL && i < json_array_get_length(computers); i++) {
+        JsonObject *computer = json_array_get_object_element(computers, i);
+        const gchar *id = clawt_json_string(computer, "id", NULL);
+        gboolean shareable = clawt_json_boolean(computer, "shareable", TRUE);
+        g_autofree gchar *label = NULL;
+
+        if (id == NULL || (!shareable && g_strcmp0(id, current) != 0))
+            continue;
+
+        label = g_strdup_printf("%s (%s)%s%s", id,
+                                clawt_json_string(computer, "type", "none"),
+                                clawt_json_string(computer, "description", NULL) != NULL
+                                    ? " -- " : "",
+                                clawt_json_string(computer, "description", ""));
+        if (g_strcmp0(id, current) == 0)
+            selected = self->use_ids->len;
+        g_ptr_array_add(self->use_ids, g_strdup(id));
+        gtk_string_list_append(labels, label);
+    }
+
+    if (current != NULL && *current != '\0' && selected == 0) {
+        g_autofree gchar *label = g_strdup_printf("%s (not declared)", current);
+
+        selected = self->use_ids->len;
+        g_ptr_array_add(self->use_ids, g_strdup(current));
+        gtk_string_list_append(labels, label);
+    }
+
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), "Use computer");
+    adw_combo_row_set_model(ADW_COMBO_ROW(row), G_LIST_MODEL(labels));
+    adw_combo_row_set_selected(ADW_COMBO_ROW(row), selected);
+    clawt_gtk_set_row_hint(row,
+        "A machine declared under computers: that several agents share. "
+        "Its settings are the machine's, not this agent's.");
+
+    return row;
+}
+
+/* The shared machine chosen in the inspector, or "" for its own. */
+static const gchar *
+use_row_value(ClawtWindow *self)
+{
+    guint chosen;
+
+    if (self->use_row == NULL || self->use_ids == NULL)
+        return "";
+
+    chosen = adw_combo_row_get_selected(ADW_COMBO_ROW(self->use_row));
+    return chosen < self->use_ids->len ? g_ptr_array_index(self->use_ids, chosen) : "";
 }
 
 static GtkWidget *
@@ -2146,11 +2234,29 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
             : NULL);
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), self->account_row);
 
-    self->computer_row = combo_row("Computer", clawt_gtk_computer_type_nicks(),
-                                   clawt_json_string(agent, "computer",
-                                                     "none"));
-    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
-                              self->computer_row);
+    {
+        const gchar *use = (payload != NULL && json_object_has_member(payload, "settings"))
+            ? clawt_json_string(json_object_get_object_member(payload, "settings"),
+                                "computer.use", NULL)
+            : NULL;
+
+        self->use_row = use_row_build(self, use);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), self->use_row);
+
+        self->computer_row = combo_row("Computer", clawt_gtk_computer_type_nicks(),
+                                       clawt_json_string(agent, "computer",
+                                                         "none"));
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                                  self->computer_row);
+
+        /* Shown, so the machine's type is visible; edited under computers:. */
+        if (use != NULL && *use != '\0') {
+            gtk_widget_set_sensitive(self->computer_row, FALSE);
+            clawt_gtk_set_row_hint(self->computer_row,
+                "Set by the shared computer. Choose \"Its own machine\" above "
+                "to give this agent one of its own.");
+        }
+    }
 
     /*
      * The image, for a container agent.  Built only when there is one:
@@ -2163,7 +2269,9 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
     self->inspector_computer =
         g_strdup(clawt_json_string(agent, "computer", "none"));
 
-    if (clawt_computer_type_takes_image(
+    /* On a shared machine these are the machine's: not drawn, not saved. */
+    if (*use_row_value(self) == '\0' &&
+        clawt_computer_type_takes_image(
             clawt_gtk_computer_type_from_nick(self->inspector_computer)))
         clawt_gtk_image_chooser_build(&self->inspector_image, self, group,
                                       clawt_json_string(agent, "image", NULL));
@@ -2184,7 +2292,7 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
     self->vm_desktop_row = NULL;
     self->vm_desktop_input_row = NULL;
 
-    if (g_strcmp0(self->inspector_computer, "vm") == 0) {
+    if (*use_row_value(self) == '\0' && g_strcmp0(self->inspector_computer, "vm") == 0) {
         clawt_gtk_disk_chooser_build(&self->inspector_disk, self, group,
                                      clawt_json_string(agent, "vm_image", NULL));
 

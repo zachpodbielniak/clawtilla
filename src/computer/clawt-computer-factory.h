@@ -47,6 +47,27 @@ ClawtComputer *clawt_computer_factory_create(ClawtAgentConfig  *agent_config,
                                              GError           **error);
 
 /**
+ * clawt_computer_factory_create_shared:
+ * @computer_id: the entry under `computers:`
+ * @users: (element-type ClawtAgentConfig): every agent that uses it; the
+ *   first is read for the machine's settings, which all of them share
+ * @default_mounts: (nullable) (element-type ClawtMount): the fleet folders
+ * @bridge: (nullable): the pod bridge, for container and VM backends
+ * @error: return location for a #GError
+ *
+ * Builds one machine for several agents: named `clawt-c.<id>`, carrying
+ * each agent's workspace at /mnt/clawtilla/workspaces/<agent> and the
+ * fleet folders that cover any of them.
+ *
+ * Returns: (transfer full) (nullable): the computer
+ */
+ClawtComputer *clawt_computer_factory_create_shared(const gchar       *computer_id,
+                                                    GPtrArray         *users,
+                                                    GPtrArray         *default_mounts,
+                                                    ClawtPodBridge    *bridge,
+                                                    GError           **error);
+
+/**
  * clawt_computer_factory_create_desktop:
  * @agent_config: (transfer none): the agent's configuration
  *

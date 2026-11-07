@@ -43,6 +43,15 @@ G_BEGIN_DECLS
  */
 #define CLAWT_WORKSPACE_MOUNT_POINT "/mnt/clawtilla/workspace"
 
+/**
+ * CLAWT_SHARED_WORKSPACES_ROOT:
+ *
+ * Where each agent's workspace is mounted on a shared computer, one
+ * directory per agent: a single CLAWT_WORKSPACE_MOUNT_POINT could name only
+ * one of them.
+ */
+#define CLAWT_SHARED_WORKSPACES_ROOT "/mnt/clawtilla/workspaces"
+
 #define CLAWT_TYPE_COMPUTER (clawt_computer_get_type())
 
 G_DECLARE_DERIVABLE_TYPE(ClawtComputer, clawt_computer,
@@ -361,6 +370,26 @@ ClawtComputerState clawt_computer_get_state(ClawtComputer *self);
  * Returns: (transfer none): the agent this belongs to
  */
 const gchar *clawt_computer_get_agent_id(ClawtComputer *self);
+
+/**
+ * clawt_computer_shared_owner:
+ * @computer_id: an entry under `computers:`
+ *
+ * The name a shared machine is built under, `c.<id>`, which backends turn
+ * into `clawt-c.<id>`. Agent ids cannot hold a dot, so no agent's own
+ * machine can ever have the same name.
+ *
+ * Returns: (transfer full): the owner name
+ */
+gchar *clawt_computer_shared_owner(const gchar *computer_id);
+
+/**
+ * clawt_computer_shared_workspace_path:
+ * @agent_id: an agent on a shared computer
+ *
+ * Returns: (transfer full): where that agent's workspace is on the machine
+ */
+gchar *clawt_computer_shared_workspace_path(const gchar *agent_id);
 
 /**
  * clawt_computer_add_mount:

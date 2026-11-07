@@ -1018,6 +1018,30 @@ teams:
     # what gets reported.
     skills: []
 
+# Machines several agents share.
+#
+# Each entry takes an id and the same keys as an agent's computer:
+# block -- type, container, vm, desktop, mounts, and the rest; every
+# one is documented under agents.computer. An agent joins one with
+# agents.computer.use. Agents A and B on `alpha` and C, D and E on
+# `beta` are two machines, not five.
+#
+# Each agent keeps its own workspace, mounted at
+# /mnt/clawtilla/workspaces/<agent>, and its own exchange folder. The
+# machine stops when its last running agent stops, and is rebuilt only
+# when every agent on it is stopped. A desktop is one screen, driven by
+# one agent at a time.
+computers:
+
+    # Identifier, and what agents.computer.use names. The machine is called
+    # clawt-c.<id> in podman, distrobox and libvirt -- a dot no agent id can
+    # hold, so it never shares a name with an agent's own machine.
+    # Required.
+  - id: null
+
+    # What this machine is for.
+    description: null
+
 # Separate logins for an agent CLI, so two agents on one machine can
 # spend two subscriptions.
 #
@@ -1963,6 +1987,12 @@ agents:
     # What the agent can run commands on.
     computer:
 
+      # Share a machine declared under computers: instead of having one of
+      # this agent's own. Set, every other computer.* key comes from that
+      # entry and this agent's own computer block is ignored, so several
+      # agents naming one entry run on exactly one machine.
+      use: null
+
       # Which kind of computer this agent gets. Defaults to
       # defaults.computer. The permitted values are listed above, from the
       # schema itself -- the copy that used to be written out here had
@@ -2677,6 +2707,14 @@ agents:
         # Taking the screen again while you already hold it extends the lease,
         # which is what a client does while somebody is still working.
         takeover_lease_seconds: 900
+
+        # On a shared computer, how long one agent keeps the screen after its
+        # last input before another may type or click.
+        #
+        # A shared machine has one desktop. The first agent to act on it holds
+        # it; another agent's input is refused, naming who is driving, until
+        # the holder has been idle this long. Looking is never refused.
+        driver_idle_seconds: 120
 
         # Whether a demonstration may be recorded on this screen.
         #

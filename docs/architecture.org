@@ -262,6 +262,10 @@ virt-manager and seeing a VM that should not have been there.  The
 default is a refusal naming the type now, and the two backends with
 genuinely nothing to destroy say so in two lines each.
 
+*** Shared computers
+
+A machine several agents use is declared under ~computers:~ and named by each agent's ~computer.use~. The config redirects every other ~computer.*~ key of such an agent to the machine's entry (=agent_node_for_key()= in =clawt-config.c=), so nothing downstream knows a machine is shared. The daemon keeps the built machines in a pool keyed by machine id (=src/core/daemon-shared-computer.c=), which is also the one place that answers "who else is on it" for stop, rebuild, remove and the screen's driver lease. See [[file:computers.org::#shared-computers][Shared computers]].
+
 *** The action-policy gate
 
 One question -- may this agent make this call now? -- answered in one place. =clawt_policy_mode_for()= (=src/policy/=) settles ~allow~ and ~deny~ from the config alone; =clawt_daemon_policy_request()= (=src/core/daemon-policy.c=) resolves ~ask~, ~review~ and ~hand_back~ through the decision inbox and ai-glib's deciders. Every route reaches it: =ClawtMcpTools= before it dispatches a tool (deferring the call when an answer is minutes away), and ~policy.check~ for the Claude Code hook and the connector and desktop relays.

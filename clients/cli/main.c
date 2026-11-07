@@ -3945,11 +3945,61 @@ cmd_computer(int argc, char *argv[])
     const gchar *verb = (argc > 2) ? argv[2] : NULL;
     const gchar *agent_id = (argc > 3) ? argv[3] : NULL;
 
+    /* The one verb about machines rather than an agent's machine. */
+    if (g_strcmp0(verb, "shared") == 0) {
+        JsonArray *computers;
+        guint i;
+
+        client = connect_to_daemon();
+        if (client == NULL)
+            return EXIT_FAILURE;
+        reply = call(client, "computer.shared", NULL);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        computers = json_object_has_member(json_node_get_object(reply), "computers")
+            ? json_object_get_array_member(json_node_get_object(reply), "computers") : NULL;
+        if (computers == NULL || json_array_get_length(computers) == 0) {
+            g_print("No shared computers. Declare one under computers: and point "
+                    "agents at it with computer.use.\n");
+            return EXIT_SUCCESS;
+        }
+
+        for (i = 0; i < json_array_get_length(computers); i++) {
+            JsonObject *computer = json_array_get_object_element(computers, i);
+            JsonArray *users = json_object_get_array_member(computer, "users");
+            JsonArray *running = json_object_get_array_member(computer, "running");
+            guint u;
+
+            g_print("%s  %s  %s%s%s\n  users:",
+                    member_or(computer, "id", "?"), member_or(computer, "type", "?"),
+                    member_or(computer, "state", "?"),
+                    json_object_has_member(computer, "description") ? "  " : "",
+                    member_or(computer, "description", ""));
+            for (u = 0; users != NULL && u < json_array_get_length(users); u++) {
+                const gchar *user = json_array_get_string_element(users, u);
+                gboolean up = FALSE;
+                guint r;
+
+                for (r = 0; running != NULL && r < json_array_get_length(running); r++)
+                    if (g_strcmp0(json_array_get_string_element(running, r), user) == 0)
+                        up = TRUE;
+                g_print(" %s%s", user, up ? " (running)" : "");
+            }
+            g_print("%s\n", users == NULL || json_array_get_length(users) == 0 ? " none" : "");
+        }
+
+        return EXIT_SUCCESS;
+    }
+
     if (verb == NULL || agent_id == NULL) {
         g_printerr("Usage: clawtilla computer "
                    "<exec|status|screen|takeover|release|start|stop|restart|"
                    "rebuild|desktop-mcp> <agent> [-- COMMAND...]\n");
+        g_printerr("       clawtilla computer shared\n");
         g_printerr("\n");
+        g_printerr("  shared                 the machines agents share, and "
+                   "who is on each\n");
         g_printerr("  start <agent>          power the machine on\n");
         g_printerr("  stop <agent> [--remove]\n");
         g_printerr("                         power it off; --remove is "

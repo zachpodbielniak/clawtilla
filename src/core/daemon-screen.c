@@ -606,7 +606,19 @@ clawt_daemon_handle_screen(
     if (g_strcmp0(kind, "computer.control") == 0) {
         const gchar *tool = clawt_ipc_payload_string(payload, "tool");
         gboolean acting = clawt_desktop_tool_is_acting(tool);
-        gboolean held = clawt_takeover_is_held(self->takeover, agent_id);
+        gboolean held = clawt_takeover_is_held(self->takeover, agent_id) ||
+                        clawt_daemon_shared_screen_held(self, agent_id);
+        g_autofree gchar *driving = NULL;
+
+        /* A shared screen has one driver at a time; looking is never refused. */
+        if (acting && !held && !clawt_daemon_shared_take_screen(self, agent_id, &driving)) {
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "allowed");
+            json_builder_add_boolean_value(builder, FALSE);
+            clawt_daemon_add_string_member(builder, "refusal", driving);
+            json_builder_end_object(builder);
+            return clawt_ipc_response_new(request, json_builder_get_root(builder));
+        }
 
         /*
          * The agent has just done something to its screen, so a frame at

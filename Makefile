@@ -213,6 +213,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-handoff.c \
 	$(SRCDIR)/core/daemon-search.c \
 	$(SRCDIR)/core/daemon-policy.c \
+	$(SRCDIR)/core/daemon-shared-computer.c \
 	$(SRCDIR)/core/daemon-mailbox.c \
 	$(SRCDIR)/core/daemon-task.c \
 	$(SRCDIR)/core/daemon-computer.c \

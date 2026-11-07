@@ -1457,6 +1457,59 @@ clawt_agent_get_desktop(ClawtAgent *self)
     return self->desktop;
 }
 
+/*
+ * Who else is on a shared machine, and where this agent's own workspace
+ * is inside it. Two agents writing to /mnt/clawtilla/workspace would be
+ * writing to each other's files, so each has its own directory there --
+ * and an agent that is not told which one is its own will find the
+ * others first. The other users are named so a process it did not start
+ * or a file it did not write has an explanation that is not "something
+ * is wrong with the machine".
+ */
+static void
+describe_sharing(ClawtAgent *self, GString *out)
+{
+    const gchar *use = self->config != NULL
+        ? clawt_agent_config_get_string(self->config, "computer.use") : NULL;
+    ClawtConfig *fleet;
+    GPtrArray *agents;
+    g_autoptr(GString) others = NULL;
+    g_autofree gchar *workspace = NULL;
+    guint count = 0;
+    guint i;
+
+    if (use == NULL || *use == '\0')
+        return;
+
+    fleet = clawt_agent_config_get_config(self->config);
+    agents = fleet != NULL ? clawt_config_get_agents(fleet) : NULL;
+    others = g_string_new(NULL);
+    for (i = 0; agents != NULL && i < agents->len; i++) {
+        ClawtAgentConfig *config = g_ptr_array_index(agents, i);
+        const gchar *id = clawt_agent_config_get_id(config);
+
+        if (g_strcmp0(id, clawt_agent_get_id(self)) == 0 ||
+            g_strcmp0(clawt_agent_config_get_string(config, "computer.use"), use) != 0)
+            continue;
+        g_string_append_printf(others, "%s%s", count == 0 ? "" : ", ", id);
+        count++;
+    }
+
+    workspace = clawt_computer_shared_workspace_path(clawt_agent_get_id(self));
+    g_string_append_printf(out,
+        " This is the shared computer '%s'%s%s%s. Your workspace inside it is %s; "
+        "the other agents' workspaces sit beside it under %s and are theirs, so "
+        "leave them alone. Processes and files you did not make may belong to "
+        "them. There is one screen: while another agent is typing or clicking "
+        "on it, your own input is refused for a short while and looking still "
+        "works.",
+        use,
+        count > 0 ? ", which you share with " : "",
+        count > 0 ? others->str : "",
+        count > 0 ? "" : " (nobody else is on it at the moment)",
+        workspace, CLAWT_SHARED_WORKSPACES_ROOT);
+}
+
 gchar *
 clawt_agent_describe_computer(ClawtAgent *self)
 {
@@ -1475,6 +1528,8 @@ clawt_agent_describe_computer(ClawtAgent *self)
 
         if (computer_text != NULL)
             g_string_append(out, computer_text);
+
+        describe_sharing(self, out);
     }
 
     /*

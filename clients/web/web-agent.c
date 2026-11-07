@@ -283,6 +283,61 @@ account_choices(ClawtWebApp *app, const gchar *agent_id,
     return TRUE;
 }
 
+/*
+ * The machines an agent can share, from computer.shared -- the list the
+ * GTK inspector's "Use computer" row is built from. A host computer is
+ * left out: it cannot be shared, and agent.set refuses it.
+ */
+static gboolean
+use_choices(ClawtWebApp *app, GStrv *out_ids, GStrv *out_names)
+{
+    g_autoptr(JsonNode) reply = NULL;
+    JsonArray *computers;
+    g_autoptr(GPtrArray) ids = g_ptr_array_new();
+    g_autoptr(GPtrArray) names = g_ptr_array_new();
+    guint i;
+
+    reply = clawt_web_app_call(app, "computer.shared", NULL);
+    if (reply == NULL)
+        return FALSE;
+    computers = clawt_web_member_array(clawt_web_root(reply), "computers");
+
+    g_ptr_array_add(ids, g_strdup(""));
+    g_ptr_array_add(names, g_strdup("Its own machine"));
+
+    for (i = 0; computers != NULL && i < json_array_get_length(computers); i++) {
+        JsonObject *computer = json_array_get_object_element(computers, i);
+        const gchar *id = clawt_web_member(computer, "id", NULL);
+
+        if (id == NULL || !clawt_web_member_bool(computer, "shareable", TRUE))
+            continue;
+        g_ptr_array_add(ids, g_strdup(id));
+        g_ptr_array_add(names, g_strdup_printf("%s (%s)%s%s", id,
+            clawt_web_member(computer, "type", "none"),
+            clawt_web_member(computer, "description", NULL) != NULL ? " -- " : "",
+            clawt_web_member(computer, "description", "")));
+    }
+
+    g_ptr_array_add(ids, NULL);
+    g_ptr_array_add(names, NULL);
+    *out_ids = (GStrv)g_ptr_array_free(g_steal_pointer(&ids), FALSE);
+    *out_names = (GStrv)g_ptr_array_free(g_steal_pointer(&names), FALSE);
+    return TRUE;
+}
+
+/*
+ * Whether @key is one of the shared machine's keys rather than the
+ * agent's: every computer.* but computer.use, once computer.use is set.
+ * The renderer leaves them out and the saver does not send them, with
+ * one answer for both.
+ */
+static gboolean
+key_belongs_to_shared(const gchar *key, const gchar *use)
+{
+    return use != NULL && *use != '\0' &&
+           g_str_has_prefix(key, "computer.") && g_strcmp0(key, "computer.use") != 0;
+}
+
 static HtmxElement *
 control_for(ClawtWebApp *app, const gchar *agent_id, const ClawtSchemaEntry *entry,
             const gchar *key, const gchar *value)
@@ -304,6 +359,16 @@ control_for(ClawtWebApp *app, const gchar *agent_id, const ClawtSchemaEntry *ent
         if (team_choices(app, &ids, &names))
             return HTMX_ELEMENT(clawt_web_select_field(
                 label, field_name, (const gchar *const *)ids,
+                (const gchar *const *)names, value));
+    }
+
+    if (g_strcmp0(key, "computer.use") == 0) {
+        g_auto(GStrv) ids = NULL;
+        g_auto(GStrv) names = NULL;
+
+        if (use_choices(app, &ids, &names))
+            return HTMX_ELEMENT(clawt_web_select_field(
+                "use computer", field_name, (const gchar *const *)ids,
                 (const gchar *const *)names, value));
     }
 
@@ -748,9 +813,21 @@ clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id)
                 const gchar *key = clawt_config_schema_agent_name(entry);
                 const gchar *value = (settings != NULL)
                                      ? clawt_web_member(settings, key, "") : "";
+                const gchar *use = (settings != NULL)
+                                   ? clawt_web_member(settings, "computer.use", "") : "";
+
+                if (key_belongs_to_shared(key, use))
+                    continue;
 
                 clawt_web_add(group_body,
                               control_for(app, agent_id, entry, key, value));
+
+                if (g_strcmp0(key, "computer.use") == 0 && *use != '\0')
+                    clawt_web_add(group_body, clawt_web_notice(
+                        "This agent is on a shared computer, so the rest of its "
+                        "computer settings are that machine's, under computers:. "
+                        "Choose \"Its own machine\" and save to give it one of "
+                        "its own.", ""));
 
                 /*
                  * An option that hands over real authority says so where
@@ -857,6 +934,14 @@ apply_form(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
          * mean a field that draws and does not save, or the reverse.
          */
         if (key == NULL || skip_key(key, entry))
+            continue;
+
+        /*
+         * Moving onto a shared machine in the same save as editing this
+         * agent's own computer settings: computer.use comes first in the
+         * schema, so the rest would be refused. They are the machine's.
+         */
+        if (key_belongs_to_shared(key, clawt_web_form_value(request, "k:computer.use")))
             continue;
 
         field = g_strdup_printf("k:%s", key);

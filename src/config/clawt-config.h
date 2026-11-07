@@ -506,6 +506,42 @@ void clawt_account_spec_free(ClawtAccountSpec *self);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtAccountSpec, clawt_account_spec_free)
 
 /**
+ * clawt_config_get_computer_ids:
+ * @self: a #ClawtConfig
+ *
+ * The ids of the machines declared under `computers:`, in file order --
+ * the machines agents can share with `computer.use`.
+ *
+ * Returns: (transfer full) (element-type utf8): the ids
+ */
+GPtrArray *clawt_config_get_computer_ids(ClawtConfig *self);
+
+/**
+ * clawt_config_has_computer:
+ * @self: a #ClawtConfig
+ * @computer_id: (nullable): an id
+ *
+ * Returns: %TRUE when `computers:` declares @computer_id
+ */
+gboolean clawt_config_has_computer(ClawtConfig *self, const gchar *computer_id);
+
+/**
+ * clawt_config_get_computer_string:
+ * @self: a #ClawtConfig
+ * @computer_id: (nullable): a shared computer's id
+ * @key: the key inside the entry, spelled as an agent's `computer.*` key
+ *   without its `computer.` prefix (`type`, `description`, `container.image`)
+ *
+ * The value as written in the entry, with no fallback: an agent on the
+ * machine reads its effective values through its own getters.
+ *
+ * Returns: (transfer none) (nullable): the value
+ */
+const gchar *clawt_config_get_computer_string(ClawtConfig *self,
+                                              const gchar *computer_id,
+                                              const gchar *key);
+
+/**
  * clawt_config_get_accounts:
  * @self: a #ClawtConfig
  *

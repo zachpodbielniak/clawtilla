@@ -392,6 +392,8 @@ struct _ClawtWindow {
      */
     GtkWidget         *account_row;
     GPtrArray         *account_ids;
+    GtkWidget         *use_row;       /* computer.use: a shared machine */
+    GPtrArray         *use_ids;
     GtkWidget         *computer_row;
     GtkWidget         *restart_row;
     GtkWidget         *autostart_row;

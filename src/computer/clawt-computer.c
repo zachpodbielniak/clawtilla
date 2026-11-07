@@ -475,6 +475,23 @@ clawt_computer_get_state(ClawtComputer *self)
     return PRIV(self)->state;
 }
 
+gchar *
+clawt_computer_shared_owner(const gchar *computer_id)
+{
+    g_return_val_if_fail(computer_id != NULL, NULL);
+
+    /* A dot: no agent id may hold one, so no agent's machine can share the name. */
+    return g_strconcat("c.", computer_id, NULL);
+}
+
+gchar *
+clawt_computer_shared_workspace_path(const gchar *agent_id)
+{
+    g_return_val_if_fail(agent_id != NULL, NULL);
+
+    return g_build_filename(CLAWT_SHARED_WORKSPACES_ROOT, agent_id, NULL);
+}
+
 const gchar *
 clawt_computer_get_agent_id(ClawtComputer *self)
 {

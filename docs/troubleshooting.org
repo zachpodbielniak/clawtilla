@@ -1156,6 +1156,17 @@ not by switching to ~confine: none~.
 
 Also intended.
 
+** A shared computer will not stop, rebuild or take a click
+
+Working as intended; each refusal names who it is waiting for. A machine under ~computers:~ belongs to every agent whose ~computer.use~ names it (~clawtilla computer shared~ lists them):
+
+- /stop/, /restart/ or /start/ is refused while another user is running on it: stopping it would pull the machine out from under them. Stop them first, or stop only your agent -- the machine keeps running until its last user stops.
+- /rebuild/ is refused while any user is running.
+- A desktop action is refused with "/<agent> is driving the screen/" while another user holds the screen. Looking still works, and the lease lapses after ~computer.desktop.driver_idle_seconds~ of that agent doing nothing on it.
+- ~agent set~ refuses ~computer.type~ and every other ~computer.*~ key of an agent on a shared machine. They are the machine's: change the entry under ~computers:~, or clear ~computer.use~ to give the agent a machine of its own.
+
+An agent in ~SHADOW~ saying "/computer.use: there is no computer/" names a machine that is not declared under ~computers:~, or one whose ~id~ is not a valid id. "/is a host computer/" means the entry has ~type: host~, which cannot be shared. See [[file:computers.org::#shared-computers][Shared computers]].
+
 ** An agent was created and its container or VM is not there
 
 Nothing was ever built.  A computer is built when the agent first

@@ -252,6 +252,8 @@ agent_mark_shadow(ClawtAgentConfig *self, const gchar *format, ...)
     va_end(args);
 }
 
+static YamlNode *computer_entry(ClawtConfig *config, const gchar *id);
+
 /*
  * Validates one agent, turning anything unusable into a shadow rather than
  * an error.
@@ -395,6 +397,35 @@ agent_validate(ClawtAgentConfig *self)
                           "two deliberate acts, not one. Set it, or pick a "
                           "confinement mode");
         return;
+    }
+
+    /*
+     * A shared machine has to exist, and has to be one several agents can
+     * be on. A host computer is the real machine confined to one agent's
+     * workspace; "sharing" one would be each agent's confinement quietly
+     * becoming the first agent's.
+     */
+    {
+        const gchar *use = lookup_string(self->node, "computer.use");
+
+        if (use != NULL && *use != '\0') {
+            gint type = 0;
+
+            if (computer_entry(self->config, use) == NULL || !clawt_is_valid_id(use)) {
+                agent_mark_shadow(self, "computer.use: there is no computer '%s' under "
+                                  "computers:", use);
+                return;
+            }
+
+            type = clawt_agent_config_get_enum(self, "computer.type");
+            if (type == CLAWT_COMPUTER_HOST) {
+                agent_mark_shadow(self, "computer.use: '%s' is a host computer, which is "
+                                  "one agent confined to its own workspace and cannot be "
+                                  "shared; make it a container, distrobox, VM or ssh "
+                                  "machine", use);
+                return;
+            }
+        }
     }
 
     /*
@@ -682,6 +713,113 @@ routing_mode_role_default(ClawtAgentConfig *self)
     return nick;
 }
 
+/* The computers: entry named @id, or NULL. */
+static YamlNode *
+computer_entry(ClawtConfig *config, const gchar *id)
+{
+    YamlNode *computers;
+    YamlSequence *sequence;
+    guint i;
+
+    if (config == NULL || id == NULL || *id == '\0')
+        return NULL;
+
+    computers = node_at_path(config->root, "computers", FALSE);
+    if (computers == NULL || yaml_node_get_node_type(computers) != YAML_NODE_SEQUENCE)
+        return NULL;
+
+    sequence = yaml_node_get_sequence(computers);
+    for (i = 0; i < yaml_sequence_get_length(sequence); i++) {
+        YamlNode *element = yaml_sequence_get_element(sequence, i);
+
+        if (element != NULL && yaml_node_get_node_type(element) == YAML_NODE_MAPPING &&
+            g_strcmp0(member_string(yaml_node_get_mapping(element), "id"), id) == 0)
+            return element;
+    }
+
+    return NULL;
+}
+
+/*
+ * Where an agent's key is read from.
+ *
+ * With computer.use set, every other computer.* key comes from the shared
+ * machine's entry under computers:, read with the agent-relative spelling
+ * minus its `computer.` prefix -- so every getter, every backend and every
+ * client that reads `computer.type` of an agent sees the shared machine
+ * without knowing there is one. Anything else is the agent's own node.
+ */
+static YamlNode *
+agent_node_for_key(ClawtAgentConfig *self, const gchar *key, const gchar **out_key)
+{
+    YamlNode *entry;
+
+    *out_key = key;
+    if (self->config == NULL || key == NULL || !g_str_has_prefix(key, "computer.") ||
+        g_strcmp0(key, "computer.use") == 0)
+        return self->node;
+
+    entry = computer_entry(self->config, lookup_string(self->node, "computer.use"));
+
+    /* Named and not declared: validation shadows the agent; read its own. */
+    if (entry == NULL)
+        return self->node;
+
+    *out_key = key + strlen("computer.");
+    return entry;
+}
+
+GPtrArray *
+clawt_config_get_computer_ids(ClawtConfig *self)
+{
+    GPtrArray *out;
+    YamlNode *computers;
+    YamlSequence *sequence;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), NULL);
+
+    out = g_ptr_array_new_with_free_func(g_free);
+    computers = node_at_path(self->root, "computers", FALSE);
+    if (computers == NULL || yaml_node_get_node_type(computers) != YAML_NODE_SEQUENCE)
+        return out;
+
+    sequence = yaml_node_get_sequence(computers);
+    for (i = 0; i < yaml_sequence_get_length(sequence); i++) {
+        YamlNode *element = yaml_sequence_get_element(sequence, i);
+        const gchar *id;
+
+        if (element == NULL || yaml_node_get_node_type(element) != YAML_NODE_MAPPING)
+            continue;
+        id = member_string(yaml_node_get_mapping(element), "id");
+        if (id != NULL && clawt_is_valid_id(id))
+            g_ptr_array_add(out, g_strdup(id));
+    }
+
+    return out;
+}
+
+gboolean
+clawt_config_has_computer(ClawtConfig *self, const gchar *computer_id)
+{
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);
+
+    return computer_entry(self, computer_id) != NULL;
+}
+
+const gchar *
+clawt_config_get_computer_string(ClawtConfig *self, const gchar *computer_id,
+                                 const gchar *key)
+{
+    YamlNode *entry;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), NULL);
+    g_return_val_if_fail(key != NULL, NULL);
+
+    entry = computer_entry(self, computer_id);
+    return entry != NULL ? lookup_string(entry, key) : NULL;
+}
+
 const gchar *
 clawt_agent_config_get_string(ClawtAgentConfig *self, const gchar *key)
 {
@@ -691,9 +829,14 @@ clawt_agent_config_get_string(ClawtAgentConfig *self, const gchar *key)
     g_return_val_if_fail(self != NULL, NULL);
     g_return_val_if_fail(key != NULL, NULL);
 
-    value = lookup_string(self->node, key);
-    if (value != NULL)
-        return value;
+    {
+        const gchar *path = key;
+        YamlNode *node = agent_node_for_key(self, key, &path);
+
+        value = lookup_string(node, path);
+        if (value != NULL)
+            return value;
+    }
 
     /*
      * Which fleet key this falls back to comes from the schema, not from
@@ -872,7 +1015,12 @@ clawt_agent_config_get_string_list(ClawtAgentConfig *self, const gchar *key)
 
     g_return_val_if_fail(self != NULL, NULL);
 
-    value = node_to_strv(node_at_path(self->node, key, FALSE));
+    {
+        const gchar *path = key;
+        YamlNode *node = agent_node_for_key(self, key, &path);
+
+        value = node_to_strv(node_at_path(node, path, FALSE));
+    }
 
     if (value != NULL)
         return value;
@@ -963,7 +1111,12 @@ clawt_agent_config_has_key(ClawtAgentConfig *self, const gchar *key)
 {
     g_return_val_if_fail(self != NULL, FALSE);
 
-    return node_at_path(self->node, key, FALSE) != NULL;
+    {
+        const gchar *path = key;
+        YamlNode *node = agent_node_for_key(self, key, &path);
+
+        return node_at_path(node, path, FALSE) != NULL;
+    }
 }
 
 static gboolean
@@ -1617,7 +1770,12 @@ clawt_agent_config_get_mounts(ClawtAgentConfig *self)
 {
     g_return_val_if_fail(self != NULL, NULL);
 
-    return mounts_from_node(self->node, "computer.mounts");
+    {
+        const gchar *path = "computer.mounts";
+        YamlNode *node = agent_node_for_key(self, path, &path);
+
+        return mounts_from_node(node, path);
+    }
 }
 
 GPtrArray *
