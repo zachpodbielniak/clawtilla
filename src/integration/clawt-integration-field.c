@@ -44,7 +44,7 @@ static const gchar *const notify_priority_labels[] = {
 };
 
 static const gchar *const notify_events[] = {
-    "question", "error", "done", "routine", "update", NULL
+    "question", "error", "done", "routine", "update", "budget", NULL
 };
 
 static const gchar *const notify_event_labels[] = {
@@ -53,6 +53,7 @@ static const gchar *const notify_event_labels[] = {
     "A task finished",
     "A routine failed to run",
     "A newer clawtilla exists",
+    "A daily spending cap refused work",
     NULL
 };
 

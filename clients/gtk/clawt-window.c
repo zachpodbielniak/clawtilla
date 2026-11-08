@@ -1338,6 +1338,17 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
         }
     }
 
+    /*
+     * The Fleet page while it is up: a message is usually a turn's answer
+     * and a turn is a cost; a state change or a sleep moves a Stop button.
+     * Before the branches below, several of which return.
+     */
+    if (clawt_gtk_current_page(self) == CLAWT_PAGE_FLEET &&
+        (g_strcmp0(kind, "message") == 0 || g_strcmp0(kind, "agent.state") == 0 ||
+         g_strcmp0(kind, "agent.idle_stopped") == 0 ||
+         g_strcmp0(kind, "spending.limit-reached") == 0))
+        clawt_gtk_refresh_fleet(self);
+
     if (g_strcmp0(kind, "message") == 0) {
         const gchar *from = clawt_event_get_detail(event, "from");
         const gchar *body = clawt_event_get_detail(event, "body");
@@ -4773,6 +4784,10 @@ on_page_shown(ClawtWindow *self)
         clawt_gtk_refresh_activity(self);
         return;
     }
+    if (clawt_gtk_current_page(self) == CLAWT_PAGE_FLEET) {
+        clawt_gtk_refresh_fleet(self);
+        return;
+    }
     if (clawt_gtk_current_page(self) != CLAWT_PAGE_MEMORY)
         return;
 
@@ -4949,6 +4964,7 @@ build_page(ClawtWindow *self, ClawtPage page)
     case CLAWT_PAGE_DECISIONS: return clawt_gtk_build_decision_page(self);
     case CLAWT_PAGE_FLOW:      return clawt_gtk_build_flow_page(self);
     case CLAWT_PAGE_ACTIVITY:  return clawt_gtk_build_activity_page(self);
+    case CLAWT_PAGE_FLEET:     return clawt_gtk_build_fleet_page(self);
     case CLAWT_PAGE_SKILLS:    return clawt_gtk_build_skill_page(self);
     case CLAWT_PAGE_MEMORY:    return clawt_gtk_build_recall_page(self);
     }

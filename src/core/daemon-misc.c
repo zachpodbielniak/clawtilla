@@ -12,6 +12,34 @@
 #include <glib/gstdio.h>
 #include <string.h>
 
+/* One agent's line in usage.summary, read before any is written. */
+typedef struct {
+    ClawtAgent       *agent;     /* borrowed: the manager holds it */
+    ClawtUsageTotals  totals;
+    gint64            last_turn_at;
+    gint64           *daily;     /* days entries, or NULL */
+} UsageRow;
+
+static void
+usage_row_clear(gpointer data)
+{
+    UsageRow *row = data;
+
+    g_clear_pointer(&row->daily, g_free);
+}
+
+/* Most spent first; ties by id, so the order is the same every time. */
+static gint
+usage_row_by_cost(gconstpointer a, gconstpointer b)
+{
+    const UsageRow *x = a;
+    const UsageRow *y = b;
+
+    if (x->totals.cost_micros != y->totals.cost_micros)
+        return x->totals.cost_micros > y->totals.cost_micros ? -1 : 1;
+    return g_strcmp0(clawt_agent_get_id(x->agent), clawt_agent_get_id(y->agent));
+}
+
 #include "core/clawt-daemon.h"
 #include "core/clawt-daemon-private.h"
 
@@ -425,11 +453,36 @@ clawt_daemon_handle_misc(
         GPtrArray *agents = clawt_agent_manager_list(self->agents);
         ClawtUsageTotals fleet = { 0, 0, 0, 0 };
         gint64 since = clawt_ipc_payload_int(payload, "since", 0);
+        gint64 days_asked = clawt_ipc_payload_int(payload, "days", 0);
+        guint days = (guint)CLAMP(days_asked, 0, 92);
+        gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+        gint64 idle_hours = clawt_config_get_int(self->config,
+                                                 "orchestration.idle_hours");
+        g_autofree gint64 *day_starts = NULL;
+        g_autofree gint64 *fleet_daily = NULL;
+        g_autoptr(GArray) rows = NULL;
         guint i;
 
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "agents");
-        json_builder_begin_array(builder);
+        /*
+         * The Fleet page's read, on request: the last turn and the idle
+         * state always (they are cheap and every caller wants them), a
+         * per-day series only when asked for, since it is the part that
+         * grows with the window.  Capped at a quarter so a typo cannot
+         * ask for a decade of empty days.
+         */
+        if (days > 0) {
+            day_starts = clawt_usage_day_starts(now, days);
+            fleet_daily = g_new0(gint64, days);
+        }
+
+        /*
+         * Read every agent first, then write: "sort": "cost" orders the
+         * rows by what they spent in the period, most first -- ordering
+         * is the daemon's to decide, as the fleet grouping is, so the
+         * clients do not each sort a list their own way.
+         */
+        rows = g_array_new(FALSE, TRUE, sizeof(UsageRow));
+        g_array_set_clear_func(rows, usage_row_clear);
 
         for (i = 0; i < agents->len; i++) {
             ClawtAgent *agent = g_ptr_array_index(agents, i);
@@ -437,45 +490,121 @@ clawt_daemon_handle_misc(
             g_autofree gchar *state_dir = NULL;
             g_autofree gchar *db_path = NULL;
             g_autoptr(GError) read_error = NULL;
-            ClawtUsageTotals totals = { 0, 0, 0, 0 };
+            UsageRow row = { 0 };
 
             state_dir = clawt_config_agent_state_dir(self->config, agent_id);
             if (state_dir == NULL)
                 continue;
 
             db_path = clawt_usage_database_path(state_dir);
+            row.agent = agent;
+            if (days > 0)
+                row.daily = g_new0(gint64, days);
 
             /*
              * One unreadable database does not fail the summary.  A
              * fleet report that refuses because one agent's file is
              * mid-write tells you nothing about the other nine.
              */
-            if (!clawt_usage_read_totals(db_path, since, &totals,
+            if (!clawt_usage_read_report(db_path, since, day_starts, days,
+                                         &row.totals, &row.last_turn_at, row.daily,
                                          &read_error)) {
                 g_debug("usage: %s: %s", agent_id,
                         read_error != NULL ? read_error->message : "unknown");
             }
 
-            clawt_usage_totals_add(&fleet, &totals);
+            g_array_append_val(rows, row);
+        }
+
+        if (g_strcmp0(clawt_ipc_payload_string(payload, "sort"), "cost") == 0)
+            g_array_sort(rows, usage_row_by_cost);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "agents");
+        json_builder_begin_array(builder);
+
+        for (i = 0; i < rows->len; i++) {
+            UsageRow *row = &g_array_index(rows, UsageRow, i);
+            ClawtAgent *agent = row->agent;
+            ClawtIdleState idle;
+            guint d;
+
+            clawt_usage_totals_add(&fleet, &row->totals);
+            idle = clawt_usage_idle_state(row->last_turn_at, now, idle_hours);
 
             json_builder_begin_object(builder);
             json_builder_set_member_name(builder, "id");
-            json_builder_add_string_value(builder, agent_id);
+            json_builder_add_string_value(builder, clawt_agent_get_id(agent));
             json_builder_set_member_name(builder, "name");
             json_builder_add_string_value(builder,
                                           clawt_agent_get_name(agent));
             json_builder_set_member_name(builder, "turns");
-            json_builder_add_int_value(builder, totals.turns);
+            json_builder_add_int_value(builder, row->totals.turns);
             json_builder_set_member_name(builder, "input_tokens");
-            json_builder_add_int_value(builder, totals.input_tokens);
+            json_builder_add_int_value(builder, row->totals.input_tokens);
             json_builder_set_member_name(builder, "output_tokens");
-            json_builder_add_int_value(builder, totals.output_tokens);
+            json_builder_add_int_value(builder, row->totals.output_tokens);
             json_builder_set_member_name(builder, "cost_micros");
-            json_builder_add_int_value(builder, totals.cost_micros);
+            json_builder_add_int_value(builder, row->totals.cost_micros);
+
+            /* 0 is never: an agent idle longer than the period is the point */
+            json_builder_set_member_name(builder, "last_turn_at");
+            json_builder_add_int_value(builder, row->last_turn_at);
+            json_builder_set_member_name(builder, "idle");
+            json_builder_add_string_value(builder, clawt_usage_idle_label(idle));
+            json_builder_set_member_name(builder, "idle_tone");
+            json_builder_add_string_value(builder, clawt_usage_idle_tone(idle));
+            json_builder_set_member_name(builder, "state");
+            json_builder_add_string_value(builder,
+                clawt_enum_to_nick(CLAWT_TYPE_AGENT_STATE,
+                                   clawt_agent_get_state(agent)));
+            json_builder_set_member_name(builder, "idle_stop_hours");
+            json_builder_add_int_value(builder,
+                clawt_agent_config_get_int(clawt_agent_get_config(agent),
+                                           "runtime.idle_stop_hours"));
+            json_builder_set_member_name(builder, "asleep");
+            json_builder_add_boolean_value(builder,
+                clawt_daemon_idle_is_asleep(self, clawt_agent_get_id(agent)));
+
+            if (days > 0) {
+                json_builder_set_member_name(builder, "daily");
+                json_builder_begin_array(builder);
+                for (d = 0; d < days; d++) {
+                    json_builder_add_int_value(builder, row->daily[d]);
+                    fleet_daily[d] += row->daily[d];
+                }
+                json_builder_end_array(builder);
+            }
             json_builder_end_object(builder);
         }
 
         json_builder_end_array(builder);
+
+        if (days > 0) {
+            guint d;
+
+            /* the fleet's spend per day, oldest first, and where each starts */
+            json_builder_set_member_name(builder, "days");
+            json_builder_begin_array(builder);
+            for (d = 0; d < days; d++) {
+                json_builder_begin_object(builder);
+                json_builder_set_member_name(builder, "start");
+                json_builder_add_int_value(builder, day_starts[d]);
+                json_builder_set_member_name(builder, "cost_micros");
+                json_builder_add_int_value(builder, fleet_daily[d]);
+                json_builder_end_object(builder);
+            }
+            json_builder_end_array(builder);
+        }
+
+        json_builder_set_member_name(builder, "now");
+        json_builder_add_int_value(builder, now);
+        json_builder_set_member_name(builder, "idle_hours");
+        json_builder_add_int_value(builder, idle_hours);
+        json_builder_set_member_name(builder, "daily_fleet_budget_micros");
+        json_builder_add_int_value(builder,
+            clawt_config_get_int(self->config,
+                                 "orchestration.daily_fleet_budget_micros"));
 
         json_builder_set_member_name(builder, "total");
         json_builder_begin_object(builder);

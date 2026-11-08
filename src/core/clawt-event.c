@@ -287,6 +287,20 @@ clawt_alert_tier_for_event(ClawtEvent *event)
         return CLAWT_ALERT_NOTICE;
 
     /*
+     * A daily cap refused work.  A notice rather than an error: nothing
+     * broke and the queued messages wait for midnight or a raised cap,
+     * but it is the one thing about money that arrives on its own, and
+     * an agent that has quietly stopped answering reads as broken to
+     * anybody who was not told.  An agent put to sleep for being idle is
+     * routine -- it wakes when written to, and a badge for it would be
+     * telling somebody about a saving.
+     */
+    if (g_strcmp0(kind, "spending.limit-reached") == 0)
+        return CLAWT_ALERT_NOTICE;
+    if (g_strcmp0(kind, "agent.idle_stopped") == 0)
+        return CLAWT_ALERT_ROUTINE;
+
+    /*
      * A steer is what the person just did, so a client showing it in the
      * conversation has already answered the question.  Listing it would
      * be telling somebody about their own keystroke.

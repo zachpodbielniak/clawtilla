@@ -14,6 +14,7 @@
 #endif
 
 #include <glib-object.h>
+#include <json-glib/json-glib.h>
 
 #include "clawt-types.h"
 
@@ -124,6 +125,243 @@ gboolean clawt_usage_read_totals(const gchar       *db_path,
                                  gint64             since,
                                  ClawtUsageTotals  *out,
                                  GError           **error);
+
+/**
+ * clawt_usage_day_starts: (skip)
+ * @now: unix seconds, the moment "today" is measured from
+ * @days: how many days, today included
+ *
+ * The local midnights that bound @days days ending today: element 0 is
+ * the start of the oldest day and element @days the start of tomorrow,
+ * so day `i` is `[starts[i], starts[i + 1])`.  Local, because "what did
+ * the fleet spend on Tuesday" means the person's Tuesday, and computed
+ * as dates rather than by subtracting 86400 so a day that has 23 or 25
+ * hours is still one day.
+ *
+ * Not introspectable: the array is @days + 1 long, which an annotation
+ * cannot say.
+ *
+ * Returns: (transfer full): @days + 1 timestamps
+ */
+gint64 *clawt_usage_day_starts(gint64 now, guint days);
+
+/**
+ * clawt_usage_read_report: (skip)
+ * @db_path: an agent's libreclaw database
+ * @since: unix seconds to total from, or 0 for everything
+ * @day_starts: (nullable): @days + 1 day boundaries from
+ *   clawt_usage_day_starts(), or %NULL for no daily figures
+ * @days: how many days @day_starts describes
+ * @out: (out caller-allocates): the totals since @since
+ * @last_turn_at: (out) (optional): unix seconds of the agent's most recent
+ *   recorded turn ever, or 0 when it has never taken one
+ * @daily_micros: (out caller-allocates) (array length=days) (optional):
+ *   cost per day, oldest first; zeroed first
+ * @error: (out) (optional): return location for a #GError
+ *
+ * One read of an agent's recorded turns for the fleet view: what it spent
+ * in a period, when it last did anything at all, and how the spend fell
+ * across the last @days days.  A missing database is an agent that has
+ * never run: zero, last turn 0, and not created -- as for
+ * clawt_usage_read_totals().
+ *
+ * Returns: %TRUE if the database could be read (or was not there)
+ */
+gboolean clawt_usage_read_report(const gchar       *db_path,
+                                 gint64             since,
+                                 const gint64      *day_starts,
+                                 guint              days,
+                                 ClawtUsageTotals  *out,
+                                 gint64            *last_turn_at,
+                                 gint64            *daily_micros,
+                                 GError           **error);
+
+/**
+ * ClawtIdleState:
+ * @CLAWT_IDLE_ACTIVE: took a turn within the idle window
+ * @CLAWT_IDLE_IDLE: has taken turns, none within the window
+ * @CLAWT_IDLE_NEVER: has never taken a turn
+ *
+ * How recently an agent did anything, for the Fleet page and the CLI.
+ * Separate from whether it is running: an idle agent can be running
+ * (the expensive case: a process and a computer for nothing) or stopped.
+ */
+typedef enum {
+    CLAWT_IDLE_ACTIVE,
+    CLAWT_IDLE_IDLE,
+    CLAWT_IDLE_NEVER
+} ClawtIdleState;
+
+/**
+ * clawt_usage_idle_state:
+ * @last_turn_at: unix seconds of the last turn, 0 for never
+ * @now: unix seconds
+ * @idle_hours: the window, `orchestration.idle_hours`; 0 calls nothing idle
+ *
+ * The one rule every client and the CLI apply.
+ *
+ * Returns: the agent's #ClawtIdleState
+ */
+ClawtIdleState clawt_usage_idle_state(gint64 last_turn_at, gint64 now,
+                                      gint64 idle_hours);
+
+/**
+ * clawt_usage_idle_label:
+ * @state: a #ClawtIdleState
+ *
+ * Returns: (transfer none): "active", "idle" or "never used"
+ */
+const gchar *clawt_usage_idle_label(ClawtIdleState state);
+
+/**
+ * clawt_usage_idle_tone:
+ * @state: a #ClawtIdleState
+ *
+ * The badge tone the clients paint it in: an idle agent is a warning
+ * (something is being held for nothing), one never used is neutral.
+ *
+ * Returns: (transfer none): "good", "warn" or "neutral"
+ */
+const gchar *clawt_usage_idle_tone(ClawtIdleState state);
+
+/**
+ * clawt_usage_last_turn_label:
+ * @last_turn_at: unix seconds of the last turn, 0 for never
+ * @now: unix seconds
+ *
+ * Returns: (transfer full): "never", or how long ago, as
+ *   clawt_time_ago_label() spells it
+ */
+gchar *clawt_usage_last_turn_label(gint64 last_turn_at, gint64 now);
+
+/**
+ * clawt_usage_sparkline:
+ * @values: (array length=n): costs, oldest first
+ * @n: how many
+ *
+ * One character per value, scaled to the largest: `▁`..`█` for spend,
+ * `·` for a day with none -- so a day the fleet was idle reads as a gap
+ * rather than as the smallest bar.  Text rather than a drawing so every
+ * client shows the same thing: a GTK label, a web span, an lrg label.
+ *
+ * Returns: (transfer full): the strip
+ */
+gchar *clawt_usage_sparkline(const gint64 *values, guint n);
+
+/**
+ * clawt_usage_share_label:
+ * @part: one agent's cost
+ * @whole: the fleet's
+ *
+ * Returns: (transfer full): "42%", "<1%" for a sliver, "0%" for nothing
+ */
+gchar *clawt_usage_share_label(gint64 part, gint64 whole);
+
+/* ── The Fleet page, as every client draws it ────────────────────── */
+
+/**
+ * clawt_usage_period_count:
+ *
+ * The periods the Fleet page offers: All time, Today, Last 7 days, Last
+ * 30 days.  One table for every client, walked with _nth.
+ *
+ * Returns: how many there are
+ */
+guint clawt_usage_period_count(void);
+
+/**
+ * clawt_usage_period_label:
+ * @n: an index below clawt_usage_period_count()
+ *
+ * Returns: (transfer none): what to call it
+ */
+const gchar *clawt_usage_period_label(guint n);
+
+/**
+ * clawt_usage_period_since:
+ * @n: an index below clawt_usage_period_count()
+ * @now: unix seconds
+ *
+ * Returns: the `since` it means: 0 for all time, local midnight for
+ *   today, @now less the days otherwise
+ */
+gint64 clawt_usage_period_since(guint n, gint64 now);
+
+/* The period the Fleet page opens on: Last 7 days. */
+#define CLAWT_USAGE_PERIOD_DEFAULT (2)
+
+/**
+ * clawt_usage_fleet_payload:
+ * @since: unix seconds the totals start at, 0 for all time
+ * @days: how many days of daily figures, 0 for none
+ *
+ * The `usage.summary` request the Fleet page sends: the period, the
+ * days, and the rows sorted by cost.
+ *
+ * Returns: (transfer full): the payload
+ */
+JsonNode *clawt_usage_fleet_payload(gint64 since, guint days);
+
+/**
+ * clawt_usage_fleet_summary:
+ * @reply: a `usage.summary` reply object
+ *
+ * Returns: (transfer full): "$3.20 across 41 turns", or "Nothing spent
+ *   in this period"
+ */
+gchar *clawt_usage_fleet_summary(JsonObject *reply);
+
+/**
+ * clawt_usage_fleet_budget_line:
+ * @reply: a `usage.summary` reply object asked for with days
+ *
+ * Reads `daily_fleet_budget_micros`, the cap the router enforces.
+ *
+ * Returns: (transfer full) (nullable): "Today $0.42 of a $5.00 daily
+ *   cap", or "Today $5.01 -- the $5.00 daily cap is reached; new work
+ *   waits", or %NULL when no fleet cap is set or no days were asked for
+ */
+gchar *clawt_usage_fleet_budget_line(JsonObject *reply);
+
+/**
+ * clawt_usage_fleet_strip:
+ * @reply: a `usage.summary` reply object asked for with days
+ *
+ * Returns: (transfer full): the fleet's days as clawt_usage_sparkline()
+ *   draws them, oldest first; "" when no days were asked for
+ */
+gchar *clawt_usage_fleet_strip(JsonObject *reply);
+
+/**
+ * clawt_usage_fleet_row_subtitle:
+ * @agent: one element of the reply's `agents`
+ * @now: unix seconds
+ *
+ * Returns: (transfer full): "12 turns · last turn 3d ago", with
+ *   " · asleep until a message" for an agent put to sleep, or " · sleeps
+ *   after 24h" for one set to
+ */
+gchar *clawt_usage_fleet_row_subtitle(JsonObject *agent, gint64 now);
+
+/**
+ * clawt_usage_fleet_row_stoppable:
+ * @agent: one element of the reply's `agents`
+ *
+ * Whether the row offers Stop: running and idle (or never used).  The
+ * expensive case the page exists for -- a process and a computer held
+ * for nothing.
+ *
+ * Returns: %TRUE when it is running and not active
+ */
+gboolean clawt_usage_fleet_row_stoppable(JsonObject *agent);
+
+/**
+ * clawt_usage_fleet_stoppable_count:
+ * @reply: a `usage.summary` reply object
+ *
+ * Returns: how many rows clawt_usage_fleet_row_stoppable() offers Stop on
+ */
+guint clawt_usage_fleet_stoppable_count(JsonObject *reply);
 
 /**
  * clawt_usage_new:

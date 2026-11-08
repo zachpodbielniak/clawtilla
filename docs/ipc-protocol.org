@@ -727,6 +727,10 @@ Cost crosses the wire in *micro-dollars as an integer*, not as a float.
 It is summed across every agent, and a running total of floats disagrees
 with itself depending on the order the agents happened to be visited in.
 
+Since 0.8.0 it also takes ~days~ (1 to 92) and ~sort~ (~"cost"~, most first; otherwise the fleet's own order), and every agent carries ~last_turn_at~ (unix seconds, 0 for never), ~idle~ and ~idle_tone~ (=clawt_usage_idle_label()= and =clawt_usage_idle_tone()=, so a client does not decide what idle means), ~state~, ~idle_stop_hours~ and ~asleep~ (stopped by the daemon for being idle, and woken by the next message). With ~days~, each agent has a ~daily~ array of cost per day and the reply a ~days~ array of ~{start, cost_micros}~, oldest first, the last being today from local midnight. The reply also carries ~now~ (the daemon's clock, for ages), ~idle_hours~ and ~daily_fleet_budget_micros~. A client older than this reads none of them and loses nothing.
+
+Two events go with it: ~agent.idle_stopped~ (subject the agent, detail ~hours~) when =agents.runtime.idle_stop_hours= stops one -- a routine alert -- and ~spending.limit-reached~ (subject ~fleet~ or ~agent:<id>~, details ~cost_micros~ and ~limit_micros~), published by the router since 0.7.x and tiered as a notice from 0.8.0.
+
 One unreadable database does not fail the summary -- a fleet report that
 refused because one agent's file was mid-write would say nothing about
 the other nine.

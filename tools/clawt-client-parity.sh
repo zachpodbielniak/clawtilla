@@ -198,6 +198,15 @@ declare -A AFFORDANCES=(
     #
     ["sidebar collapses"]="clawt_appearance_set_sidebar_collapsed|nav-toggle|clawt_lrg_window_toggle_sidebar"
     #
+    # The Fleet page: what each agent costs and which sit idle, the last
+    # fourteen days, and stopping the idle ones -- one at a time and all
+    # at once.  The text is libclawt's in all three.
+    #
+    ["fleet cost by agent"]="clawt_usage_fleet_row_subtitle|clawt_usage_fleet_row_subtitle|clawt_usage_fleet_row_subtitle"
+    ["fleet days strip"]="clawt_usage_fleet_strip|clawt_usage_fleet_strip|clawt_usage_fleet_strip"
+    ["stop an idle agent"]="on_fleet_stop|/fleet-usage/%s/stop|on_stop_clicked"
+    ["stop the idle ones"]="on_stop_idle_confirmed|/fleet-usage/stop-idle|on_stop_idle_confirmed"
+    #
     # A group room drawn beside the agents, and the two things you can
     # only do to one from a client.
     #

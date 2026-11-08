@@ -113,6 +113,7 @@ typedef enum {
     CLAWT_REFRESH_SCREEN,
     CLAWT_REFRESH_COMPUTER_MOUNTS,
     CLAWT_REFRESH_EXCHANGE,
+    CLAWT_REFRESH_FLEET,
     CLAWT_N_REFRESH
 } ClawtRefreshKind;
 
@@ -467,6 +468,14 @@ struct _ClawtWindow {
     /* Tasks */
     GtkListBox        *task_list;
     GtkListBox        *activity_list;
+
+    /* The Fleet page (gtk-fleet.c). */
+    GtkListBox        *fleet_list;
+    GtkWidget         *fleet_period;
+    GtkWidget         *fleet_summary;
+    GtkWidget         *fleet_budget;
+    GtkWidget         *fleet_strip;
+    GtkWidget         *fleet_stop_idle;
     GHashTable        *activity_expanded;  /* agent\x1froom of rows left open */
     guint              activity_tick;      /* ages while the page is up */
 
@@ -1185,6 +1194,14 @@ clawt_gtk_build_activity_page(ClawtWindow *self);
 
 void
 clawt_gtk_refresh_activity(ClawtWindow *self);
+
+/* ── Defined in gtk-fleet.c: what each agent costs, and the idle ── */
+
+GtkWidget *
+clawt_gtk_build_fleet_page(ClawtWindow *self);
+
+void
+clawt_gtk_refresh_fleet(ClawtWindow *self);
 
 /* ── Defined in gtk-flow.c: the flow page ────────────────────────── */
 

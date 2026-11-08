@@ -503,6 +503,13 @@ orchestration:
   # 0 disables the cap.
   task_budget_usd: 5.0
 
+  # How long without a turn before the Fleet page calls an agent idle.
+  #
+  # Only a label: an idle agent is still running, still holding its
+  # process and its computer. `agents.runtime.idle_stop_hours` is what
+  # stops one. 0 calls nothing idle.
+  idle_hours: 72
+
   # How many recent messages per room are remembered for loop detection.
   #
   # A message repeating one already in the window is refused. This catches

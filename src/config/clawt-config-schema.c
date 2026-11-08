@@ -664,6 +664,14 @@ static const ClawtSchemaEntry schema[] = {
   "Spend cap for one delegated task and everything it spawns.\n"
   "0 disables the cap.", "0.1.0" },
 
+{ "orchestration.idle_hours", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "72", NULL,
+  "How long without a turn before the Fleet page calls an agent idle.\n"
+  "\n"
+  "Only a label: an idle agent is still running, still holding its\n"
+  "process and its computer. `agents.runtime.idle_stop_hours` is what\n"
+  "stops one. 0 calls nothing idle.", "0.8.0" },
+
 { "orchestration.cycle_window", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "10", NULL,
   "How many recent messages per room are remembered for loop detection.\n"
@@ -1369,6 +1377,10 @@ static const ClawtSchemaEntry schema[] = {
   "`done` -- a task finished.\n"
   "`error` -- an agent stopped in a way nobody asked for.\n"
   "`routine` -- a scheduled run failed.\n"
+  "`update` -- a newer clawtilla exists.\n"
+  "`budget` -- a daily spending cap refused work\n"
+  "(`orchestration.daily_fleet_budget_micros`, or an agent's\n"
+  "`orchestration.daily_agent_budget_micros`).\n"
   "\n"
   "The default is question and error, which is the whole rule: blocked\n"
   "on you, or broken. A notifier that fires on every turn is one people\n"
@@ -2198,6 +2210,17 @@ static const ClawtSchemaEntry schema[] = {
   "This is a duration limit; runtime.turn_timeout_seconds separately\n"
   "controls the turn watchdog. Values must be between 0 and 2147483647.",
   "0.2.0" },
+
+{ "agents.runtime.idle_stop_hours", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "0", NULL,
+  "Stop this agent after this many hours without a turn. 0 never does.\n"
+  "\n"
+  "An idle agent still holds its process, its ports and its computer.\n"
+  "Stopped this way it is woken again by the next message queued for\n"
+  "it -- from you, a routine, a trigger or another agent -- so sleeping\n"
+  "loses no conversation; the message waits in its mailbox while it\n"
+  "starts. An agent that has never taken a turn is measured from when\n"
+  "it started. Stopping it by hand is not this: it stays stopped.", "0.8.0" },
 
 { "agents.runtime.turn_timeout_seconds", CLAWT_SCHEMA_INT,
   CLAWT_SCHEMA_FLAG_NONE, "0", NULL,

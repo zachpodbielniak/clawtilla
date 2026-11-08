@@ -4203,6 +4203,7 @@ release_components(ClawtDaemon *self)
     clawt_daemon_handoff_teardown(self);
     clawt_daemon_search_teardown(self);
     clawt_daemon_policy_teardown(self);
+    clawt_daemon_idle_teardown(self);
     g_clear_pointer(&self->shared_computers, g_hash_table_unref);
     g_clear_pointer(&self->drive_leases, g_hash_table_unref);
 
@@ -6182,6 +6183,7 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     clawt_daemon_handoff_setup(self);
     clawt_daemon_search_setup(self);
     clawt_daemon_policy_setup(self);
+    clawt_daemon_idle_setup(self);
 
     /*
      * Started here rather than earlier, because start can still refuse
@@ -6329,6 +6331,7 @@ clawt_daemon_stop(ClawtDaemon *self)
     clawt_daemon_handoff_teardown(self);
     clawt_daemon_search_teardown(self);
     clawt_daemon_policy_teardown(self);
+    clawt_daemon_idle_teardown(self);
     g_clear_pointer(&self->shared_computers, g_hash_table_unref);
     g_clear_pointer(&self->drive_leases, g_hash_table_unref);
 

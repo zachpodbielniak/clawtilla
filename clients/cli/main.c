@@ -3413,9 +3413,11 @@ cmd_cost(int argc, char *argv[])
     gint64 since = 0;
     gint64 days = 0;
     const gchar *only_agent = NULL;
+    gboolean by_day = FALSE;
     gdouble budget;
     guint i;
     gint shown = 0;
+    gint64 now = g_get_real_time() / G_USEC_PER_SEC;
 
     /*
      * Parsed here rather than through GOption because every other verb
@@ -3423,32 +3425,39 @@ cmd_cost(int argc, char *argv[])
      */
     for (i = 2; i < (guint)argc; i++) {
         if (g_strcmp0(argv[i], "--today") == 0) {
-            GDateTime *now = g_date_time_new_now_local();
+            GDateTime *today = g_date_time_new_now_local();
             GDateTime *midnight = g_date_time_new_local(
-                g_date_time_get_year(now), g_date_time_get_month(now),
-                g_date_time_get_day_of_month(now), 0, 0, 0.0);
+                g_date_time_get_year(today), g_date_time_get_month(today),
+                g_date_time_get_day_of_month(today), 0, 0, 0.0);
 
             since = g_date_time_to_unix(midnight);
             g_date_time_unref(midnight);
-            g_date_time_unref(now);
+            g_date_time_unref(today);
         } else if (g_strcmp0(argv[i], "--days") == 0 && i + 1 < (guint)argc) {
             days = g_ascii_strtoll(argv[++i], NULL, 10);
             if (days > 0)
                 since = (g_get_real_time() / G_USEC_PER_SEC) - days * 86400;
         } else if (g_strcmp0(argv[i], "--agent") == 0 && i + 1 < (guint)argc) {
             only_agent = argv[++i];
+        } else if (g_strcmp0(argv[i], "--by-day") == 0) {
+            by_day = TRUE;
         } else if (g_strcmp0(argv[i], "-h") == 0 ||
                    g_strcmp0(argv[i], "--help") == 0) {
             g_print("Usage: clawtilla cost [--today | --days N] "
-                    "[--agent ID]\n"
+                    "[--agent ID] [--by-day]\n"
                     "\n"
-                    "What the fleet has spent, per agent and in total.\n"
+                    "What the fleet has spent, per agent and in total, most\n"
+                    "first, with how long since each agent's last turn and\n"
+                    "whether it is idle (orchestration.idle_hours).\n"
+                    "--by-day adds the fleet's spend for each of the last\n"
+                    "14 days (or --days N).\n"
                     "\n"
                     "Examples:\n"
                     "  clawtilla cost                # everything on record\n"
                     "  clawtilla cost --today        # since local midnight\n"
                     "  clawtilla cost --days 7       # the last week\n"
-                    "  clawtilla cost --agent chief  # one agent\n");
+                    "  clawtilla cost --agent chief  # one agent\n"
+                    "  clawtilla cost --by-day       # and the last 14 days\n");
             return EXIT_SUCCESS;
         } else {
             g_printerr("clawtilla cost: unknown option '%s'\n", argv[i]);
@@ -3464,6 +3473,12 @@ cmd_cost(int argc, char *argv[])
     json_builder_begin_object(builder);
     json_builder_set_member_name(builder, "since");
     json_builder_add_int_value(builder, since);
+    json_builder_set_member_name(builder, "sort");
+    json_builder_add_string_value(builder, "cost");
+    if (by_day) {
+        json_builder_set_member_name(builder, "days");
+        json_builder_add_int_value(builder, days > 0 ? days : 14);
+    }
     json_builder_end_object(builder);
     payload = json_builder_get_root(builder);
 
@@ -3477,8 +3492,9 @@ cmd_cost(int argc, char *argv[])
     budget = json_object_get_double_member_with_default(root,
                                                         "task_budget_usd", 0.0);
 
-    g_print("%-20s %8s %12s %12s %12s\n",
-            "AGENT", "TURNS", "IN", "OUT", "COST");
+    now = json_object_get_int_member_with_default(root, "now", now);
+    g_print("%-20s %8s %12s %12s %12s  %-10s %s\n",
+            "AGENT", "TURNS", "IN", "OUT", "COST", "LAST TURN", "IDLE");
 
     for (i = 0; i < json_array_get_length(agents); i++) {
         JsonObject *a = json_array_get_object_element(agents, i);
@@ -3491,13 +3507,21 @@ cmd_cost(int argc, char *argv[])
         cost = clawt_usage_format_cost(
             json_object_get_int_member_with_default(a, "cost_micros", 0));
 
-        g_print("%-20s %8" G_GINT64_FORMAT " %12" G_GINT64_FORMAT
-                " %12" G_GINT64_FORMAT " %12s\n",
-                id,
-                json_object_get_int_member_with_default(a, "turns", 0),
-                json_object_get_int_member_with_default(a, "input_tokens", 0),
-                json_object_get_int_member_with_default(a, "output_tokens", 0),
-                cost);
+        {
+            /* a daemon before 0.8.0 sends neither: say so, not "never" */
+            g_autofree gchar *last = json_object_has_member(a, "last_turn_at")
+                ? clawt_usage_last_turn_label(
+                      json_object_get_int_member(a, "last_turn_at"), now)
+                : g_strdup("-");
+
+            g_print("%-20s %8" G_GINT64_FORMAT " %12" G_GINT64_FORMAT
+                    " %12" G_GINT64_FORMAT " %12s  %-10s %s\n",
+                    id,
+                    json_object_get_int_member_with_default(a, "turns", 0),
+                    json_object_get_int_member_with_default(a, "input_tokens", 0),
+                    json_object_get_int_member_with_default(a, "output_tokens", 0),
+                    cost, last, member_or(a, "idle", "-"));
+        }
         shown++;
     }
 
@@ -3524,6 +3548,26 @@ cmd_cost(int argc, char *argv[])
                 json_object_get_int_member_with_default(total, "output_tokens",
                                                         0),
                 cost);
+    }
+
+    /* the fleet's days, oldest first, as the Fleet page draws them */
+    if (by_day && json_object_has_member(root, "days")) {
+        JsonArray *day_list = json_object_get_array_member(root, "days");
+        g_autofree gchar *strip = clawt_usage_fleet_strip(root);
+        guint d;
+
+        g_print("\n%-12s %12s\n", "DAY", "COST");
+        for (d = 0; d < json_array_get_length(day_list); d++) {
+            JsonObject *day = json_array_get_object_element(day_list, d);
+            g_autoptr(GDateTime) start = g_date_time_new_from_unix_local(
+                json_object_get_int_member_with_default(day, "start", 0));
+            g_autofree gchar *date = g_date_time_format(start, "%Y-%m-%d");
+            g_autofree gchar *cost = clawt_usage_format_cost(
+                json_object_get_int_member_with_default(day, "cost_micros", 0));
+
+            g_print("%-12s %12s\n", date, cost);
+        }
+        g_print("%s\n", strip);
     }
 
     if (since > 0) {
@@ -8207,7 +8251,7 @@ static const ClawtVerb verbs[] = {
       cmd_decision },
     { "event",   "<verb>",   "The daemon's event history",
       cmd_event },
-    { "cost",    "[--days N]", "What the fleet has spent, per agent",
+    { "cost",    "[--days N] [--by-day]", "What the fleet has spent, per agent",
       cmd_cost },
     { "memory",  "<verb>",   "What an agent has written down",
       cmd_memory },

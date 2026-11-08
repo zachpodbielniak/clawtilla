@@ -8658,6 +8658,242 @@ run_one_agent(Fixture *fixture, const gchar *agent_id)
     return connection;
 }
 
+/* Counts one event kind on the bus. */
+typedef struct {
+    const gchar    *kind;
+    guint           seen;
+    ClawtAlertTier  tier;       /* the tier of the last one seen */
+} KindCount;
+
+static void
+on_kind_event(ClawtEventBus *bus, ClawtEvent *event, gpointer data)
+{
+    KindCount *count = data;
+
+    (void)bus;
+    if (g_strcmp0(clawt_event_get_kind(event), count->kind) == 0) {
+        count->seen++;
+        count->tier = clawt_alert_tier_for_event(event);
+    }
+}
+
+/*
+ * An agent idle longer than agents.runtime.idle_stop_hours is stopped,
+ * and the next message queued for it starts it again: sleeping loses no
+ * conversation.  The clock is moved by back-dating the start the daemon
+ * measures a turnless agent from.
+ */
+static void
+test_an_idle_agent_sleeps_and_a_message_wakes_it(void)
+{
+    Fixture fixture = { 0 };
+    g_autofree gchar *fake = g_build_filename(CLAWT_TEST_FIXTURES,
+                                              "fake-libreclaw", NULL);
+    g_autofree gchar *extra = NULL;
+    g_autoptr(GSocketConnection) link = NULL;
+    g_autoptr(JsonNode) sent = NULL;
+    KindCount slept = { "agent.idle_stopped", 0, CLAWT_ALERT_ROUTINE };
+    ClawtAgent *agent;
+    gint64 *started;
+    guint spun;
+
+    if (!g_file_test(fake, G_FILE_TEST_IS_EXECUTABLE)) {
+        g_test_skip("the fake libreclaw fixture is not executable");
+        return;
+    }
+
+    extra = g_strdup_printf(
+        "  libreclaw_binary: \"%s\"\n"
+        "agents:\n"
+        "  - id: sleeper\n"
+        "    enabled: true\n"
+        "    runtime:\n"
+        "      idle_stop_hours: 1\n"
+        "    env:\n"
+        "      FAKE_LIBRECLAW_SLEEP: \"30\"\n"
+        "    computer:\n"
+        "      type: none\n", fake);
+
+    fixture_setup(&fixture, extra);
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+    g_signal_connect(clawt_daemon_get_event_bus(fixture.daemon), "event",
+                     G_CALLBACK(on_kind_event), &slept);
+    link = run_one_agent(&fixture, "sleeper");
+    agent = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                    "sleeper");
+
+    /* just started: not idle */
+    clawt_daemon_idle_tick(fixture.daemon);
+    g_assert_cmpint(clawt_agent_get_state(agent), ==, CLAWT_AGENT_STATE_RUNNING);
+    g_assert_cmpuint(slept.seen, ==, 0);
+
+    /* two hours without a turn */
+    started = g_hash_table_lookup(fixture.daemon->idle_started, "sleeper");
+    g_assert_nonnull(started);
+    *started -= 2 * 3600;
+    clawt_daemon_idle_tick(fixture.daemon);
+    g_assert_true(clawt_daemon_idle_is_asleep(fixture.daemon, "sleeper"));
+    g_assert_cmpuint(slept.seen, ==, 1);
+    g_assert_cmpint(clawt_agent_get_state(agent), !=, CLAWT_AGENT_STATE_RUNNING);
+
+    /* a message wakes it */
+    sent = request(&fixture, "msg.send",
+                   "{\"target\":\"sleeper\",\"body\":\"are you there?\"}");
+    g_assert_false(clawt_ipc_frame_is_error(sent));
+    for (spun = 0; spun < 500 &&
+                   clawt_daemon_idle_is_asleep(fixture.daemon, "sleeper"); spun++) {
+        g_main_context_iteration(fixture.context, FALSE);
+        g_usleep(1000);
+    }
+    for (spun = 0; spun < 200 &&
+                   clawt_agent_get_state(agent) == CLAWT_AGENT_STATE_STOPPED; spun++) {
+        g_main_context_iteration(fixture.context, FALSE);
+        g_usleep(1000);
+    }
+    g_assert_false(clawt_daemon_idle_is_asleep(fixture.daemon, "sleeper"));
+    g_assert_cmpint(clawt_agent_get_state(agent), !=, CLAWT_AGENT_STATE_STOPPED);
+
+    g_signal_handlers_disconnect_by_data(
+        clawt_daemon_get_event_bus(fixture.daemon), &slept);
+    g_io_stream_close(G_IO_STREAM(link), NULL, NULL);
+    fixture_teardown(&fixture);
+}
+
+/* Writes one recorded turn into an agent's libreclaw database. */
+static void
+record_turn(Fixture *fixture, const gchar *agent_id, gint64 cost_micros,
+            gint64 at)
+{
+    g_autofree gchar *state_dir = clawt_config_agent_state_dir(
+        clawt_daemon_get_config(fixture->daemon), agent_id);
+    g_autofree gchar *sessions = g_build_filename(state_dir, "sessions", NULL);
+    g_autofree gchar *db_path = clawt_usage_database_path(state_dir);
+    g_autoptr(LcDatabase) db = LC_DATABASE(lc_sqlite_database_new());
+    g_autoptr(GError) error = NULL;
+
+    g_assert_cmpint(g_mkdir_with_parents(sessions, 0700), ==, 0);
+    g_assert_true(lc_database_open(db, db_path, &error));
+    g_assert_true(lc_database_add_token_usage(db, "k", "clawtilla", "r", "p", "m",
+        1, 1, cost_micros, at, &error));
+    lc_database_close(db);
+}
+
+/*
+ * The Fleet page's read: sorted by what each spent, with the last turn,
+ * the idle state and a day-by-day series.  Three agents: one spending
+ * today, one that spent a little four days ago (idle at the 72-hour
+ * default), one never used.
+ */
+static void
+test_usage_summary_for_the_fleet_page(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) reply = NULL;
+    JsonObject *payload;
+    JsonArray *agents;
+    JsonObject *first;
+    JsonObject *idle = NULL;
+    JsonObject *never = NULL;
+    gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+    guint i;
+
+    fixture_setup(&fixture,
+        "agents:\n  - id: busy\n  - id: quiet\n  - id: unused\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+    record_turn(&fixture, "busy", 900000, now);
+    record_turn(&fixture, "quiet", 1000, now - 4 * 86400);
+
+    reply = request(&fixture, "usage.summary", "{\"days\":7,\"sort\":\"cost\"}");
+    g_assert_false(clawt_ipc_frame_is_error(reply));
+    payload = clawt_ipc_frame_get_payload(reply);
+    agents = json_object_get_array_member(payload, "agents");
+    g_assert_cmpuint(json_array_get_length(agents), ==, 3);
+
+    /* most spent first */
+    first = json_array_get_object_element(agents, 0);
+    g_assert_cmpstr(json_object_get_string_member(first, "id"), ==, "busy");
+    g_assert_cmpstr(json_object_get_string_member(first, "idle"), ==, "active");
+    g_assert_cmpuint(json_array_get_length(
+        json_object_get_array_member(first, "daily")), ==, 7);
+
+    for (i = 0; i < 3; i++) {
+        JsonObject *a = json_array_get_object_element(agents, i);
+
+        if (g_strcmp0(json_object_get_string_member(a, "id"), "quiet") == 0)
+            idle = a;
+        if (g_strcmp0(json_object_get_string_member(a, "id"), "unused") == 0)
+            never = a;
+    }
+    g_assert_nonnull(idle);
+    g_assert_nonnull(never);
+    g_assert_cmpstr(json_object_get_string_member(idle, "idle"), ==, "idle");
+    g_assert_cmpstr(json_object_get_string_member(idle, "idle_tone"), ==, "warn");
+    g_assert_cmpint(json_object_get_int_member(idle, "last_turn_at"), ==,
+                    now - 4 * 86400);
+    g_assert_cmpstr(json_object_get_string_member(never, "idle"), ==, "never used");
+    g_assert_cmpint(json_object_get_int_member(never, "last_turn_at"), ==, 0);
+
+    /* the fleet's days, oldest first, today last */
+    g_assert_cmpuint(json_array_get_length(
+        json_object_get_array_member(payload, "days")), ==, 7);
+    g_assert_cmpint(json_object_get_int_member(
+        json_array_get_object_element(
+            json_object_get_array_member(payload, "days"), 6),
+        "cost_micros"), ==, 900000);
+    g_assert_cmpint(json_object_get_int_member(payload, "idle_hours"), ==, 72);
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A daily cap that refuses work is a notice in the alerts drawer.
+ *
+ * The cap itself is the router's (tests/test-daily-budgets.c); this is
+ * the half 0.8.0 added: `spending.limit-reached` is tiered NOTICE, so a
+ * fleet that has stopped answering because of money says so on its own
+ * instead of only in the event log.  And the daemon's own handler for it
+ * (the notifier hand-off) runs with no notifier configured.
+ */
+static void
+test_a_reached_cap_is_a_notice(void)
+{
+    Fixture fixture = { 0 };
+    KindCount reached = { "spending.limit-reached", 0, CLAWT_ALERT_ROUTINE };
+    g_autofree gchar *state_dir = NULL;
+    g_autofree gchar *sessions = NULL;
+    g_autofree gchar *db_path = NULL;
+    g_autoptr(LcDatabase) db = NULL;
+    g_autoptr(GError) error = NULL;
+    gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+
+    fixture_setup(&fixture,
+        "orchestration:\n  daily_fleet_budget_micros: 500000\n"
+        "agents:\n  - id: spender\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+    g_signal_connect(clawt_daemon_get_event_bus(fixture.daemon), "event",
+                     G_CALLBACK(on_kind_event), &reached);
+
+    state_dir = clawt_config_agent_state_dir(
+        clawt_daemon_get_config(fixture.daemon), "spender");
+    sessions = g_build_filename(state_dir, "sessions", NULL);
+    g_assert_cmpint(g_mkdir_with_parents(sessions, 0700), ==, 0);
+    db_path = clawt_usage_database_path(state_dir);
+    db = LC_DATABASE(lc_sqlite_database_new());
+    g_assert_true(lc_database_open(db, db_path, &error));
+    g_assert_true(lc_database_add_token_usage(db, "k", "clawtilla", "r", "p", "m",
+        1, 1, 600000, now, &error));
+    lc_database_close(db);
+
+    g_assert_false(clawt_mailbox_router_check_daily_budget(
+        clawt_daemon_get_router(fixture.daemon), "spender", now, NULL));
+    g_assert_cmpuint(reached.seen, ==, 1);
+    g_assert_cmpint(reached.tier, ==, CLAWT_ALERT_NOTICE);
+
+    g_signal_handlers_disconnect_by_data(
+        clawt_daemon_get_event_bus(fixture.daemon), &reached);
+    fixture_teardown(&fixture);
+}
+
 /*
  * Granting a running agent the chief's role says a restart is needed.
  *
@@ -10549,6 +10785,12 @@ main(int argc, char *argv[])
 	g_test_add_data_func("/daemon/usage/new-link", GUINT_TO_POINTER(2), test_first_turn_usage_is_charged);
 	g_test_add_data_func("/daemon/usage/reconnect-keeps-pending", GUINT_TO_POINTER(3), test_first_turn_usage_is_charged);
 
+    g_test_add_func("/daemon/usage/fleet-page-summary",
+                    test_usage_summary_for_the_fleet_page);
+    g_test_add_func("/daemon/idle/sleeps-and-wakes",
+                    test_an_idle_agent_sleeps_and_a_message_wakes_it);
+    g_test_add_func("/daemon/idle/a-reached-cap-is-a-notice",
+                    test_a_reached_cap_is_a_notice);
     g_test_add_func("/daemon/starts", test_starts_with_an_empty_config);
     g_test_add_func("/daemon/correcting-a-shadow-key-clears-it",
                     test_correcting_a_shadow_key_clears_the_shadow);

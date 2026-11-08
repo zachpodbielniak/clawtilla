@@ -245,6 +245,12 @@ struct _ClawtDaemon {
     /* Calls waiting on an `ask`, keyed by decision id (daemon-policy.c). */
     GHashTable        *policy_waits;
     GSource           *policy_tick;
+
+    /* Idle agents put to sleep, and the day's spend (daemon-idle.c). */
+    GSource           *idle_tick;
+    GHashTable        *idle_started;   /* agent -> gint64 unix start */
+    GHashTable        *idle_stopped;   /* agents asleep until a message */
+    gulong             idle_bus_handler;
     gboolean           handoff_pumping;
 
     /* Standing work, and when it is next due. */
@@ -1181,6 +1187,14 @@ gboolean clawt_daemon_shared_screen_held(ClawtDaemon *self, const gchar *agent_i
 void clawt_daemon_policy_setup(ClawtDaemon *self);
 void clawt_daemon_policy_teardown(ClawtDaemon *self);
 void clawt_daemon_policy_tick(ClawtDaemon *self);
+
+/* daemon-idle.c: idle_stop_hours, and the cap reaching a notifier */
+void     clawt_daemon_idle_setup(ClawtDaemon *self);
+void     clawt_daemon_idle_teardown(ClawtDaemon *self);
+/* One tick now, for tests: stop idle agents, check the day's spend. */
+void     clawt_daemon_idle_tick(ClawtDaemon *self);
+/* Whether the daemon stopped @agent_id for being idle and will wake it. */
+gboolean clawt_daemon_idle_is_asleep(ClawtDaemon *self, const gchar *agent_id);
 void clawt_daemon_policy_abandon(ClawtDaemon *self, const gchar *agent_id);
 void clawt_daemon_policy_request(ClawtDaemon          *self,
                                  const gchar          *agent_id,

@@ -579,6 +579,13 @@ orchestration:
   # 0 disables the cap.
   task_budget_usd: 5.0
 
+  # How long without a turn before the Fleet page calls an agent idle.
+  #
+  # Only a label: an idle agent is still running, still holding its
+  # process and its computer. `agents.runtime.idle_stop_hours` is what
+  # stops one. 0 calls nothing idle.
+  idle_hours: 72
+
   # How many recent messages per room are remembered for loop detection.
   #
   # A message repeating one already in the window is refused. This catches
@@ -1245,6 +1252,10 @@ integrations:
     # `done` -- a task finished.
     # `error` -- an agent stopped in a way nobody asked for.
     # `routine` -- a scheduled run failed.
+    # `update` -- a newer clawtilla exists.
+    # `budget` -- a daily spending cap refused work
+    # (`orchestration.daily_fleet_budget_micros`, or an agent's
+    # `orchestration.daily_agent_budget_micros`).
     #
     # The default is question and error, which is the whole rule: blocked
     # on you, or broken. A notifier that fires on every turn is one people
@@ -1996,6 +2007,16 @@ agents:
       # This is a duration limit; runtime.turn_timeout_seconds separately
       # controls the turn watchdog. Values must be between 0 and 2147483647.
       process_timeout_ms: 0
+
+      # Stop this agent after this many hours without a turn. 0 never does.
+      #
+      # An idle agent still holds its process, its ports and its computer.
+      # Stopped this way it is woken again by the next message queued for
+      # it -- from you, a routine, a trigger or another agent -- so sleeping
+      # loses no conversation; the message waits in its mailbox while it
+      # starts. An agent that has never taken a turn is measured from when
+      # it started. Stopping it by hand is not this: it stays stopped.
+      idle_stop_hours: 0
 
       # How long a turn may go without producing anything before it is
       # cancelled. 0, the default, disables it.

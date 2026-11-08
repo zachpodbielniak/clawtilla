@@ -99,6 +99,7 @@ clawt_lrg_page_for(ClawtPage page)
     case CLAWT_PAGE_DECISIONS: return clawt_lrg_decisions_page();
     case CLAWT_PAGE_FLOW:      return clawt_lrg_flow_page();
     case CLAWT_PAGE_ACTIVITY:  return clawt_lrg_activity_page();
+    case CLAWT_PAGE_FLEET:     return clawt_lrg_fleet_page();
     case CLAWT_PAGE_SKILLS:    return clawt_lrg_skills_page();
     case CLAWT_PAGE_MEMORY:    return clawt_lrg_memory_page();
     }

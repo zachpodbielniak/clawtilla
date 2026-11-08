@@ -108,6 +108,7 @@ The same seven the GTK client's view switcher has, in the same order.
 | Tasks    | delegated work, the budget, cancelling                     |
 | Flow     | what the agents are saying to each other                   |
 | Activity | every running turn, to stop or steer ([[file:clients.org::#activity-tab][the Activity tab]]) |
+| Fleet    | cost per agent, the last fourteen days, idle agents to stop ([[file:clients.org::#fleet-tab][the Fleet tab]]) |
 
 And the settings pages: fleet, VM images, teams, shared folders,
 spending, integrations, connectors, appearance and connections.
@@ -192,6 +193,7 @@ answers with the page it did it on.
 | =/new=, =/import=, =/design=  | making an agent                         |
 | =/alerts=, =/decisions=, =/routines/...=, =/tasks/:task/cancel= | the standing surfaces |
 | =/activity/:agent/stop=, =/activity/:agent/steer=, =/f/activity= | the Activity page's actions and its polled panel |
+| =/fleet-usage/:agent/stop=, =/fleet-usage/stop-idle=, =/f/fleet-usage= | the Fleet page's actions and its polled panel (=?period== picks the window) |
 | =/events=                     | the SSE stream                          |
 | =/static=                     | the vendored scripts                    |
 

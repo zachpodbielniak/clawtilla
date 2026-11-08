@@ -808,6 +808,8 @@ typedef enum {
  * @CLAWT_NOTIFY_EVENTS_ERROR: an agent stopped in a way nobody asked for
  * @CLAWT_NOTIFY_EVENTS_ROUTINE: a routine failed to run
  * @CLAWT_NOTIFY_EVENTS_UPDATE: a newer clawtilla exists
+ * @CLAWT_NOTIFY_EVENTS_BUDGET: a daily spending cap refused work --
+ *   the fleet's or one agent's (`spending.limit-reached`; since 0.8.0)
  *
  * What is worth interrupting somebody for.
  *
@@ -824,7 +826,8 @@ typedef enum {
     CLAWT_NOTIFY_EVENTS_DONE     = 1 << 1,
     CLAWT_NOTIFY_EVENTS_ERROR    = 1 << 2,
     CLAWT_NOTIFY_EVENTS_ROUTINE  = 1 << 3,
-    CLAWT_NOTIFY_EVENTS_UPDATE   = 1 << 4
+    CLAWT_NOTIFY_EVENTS_UPDATE   = 1 << 4,
+    CLAWT_NOTIFY_EVENTS_BUDGET   = 1 << 5
 } ClawtNotifyEvents;
 
 /**
@@ -1602,6 +1605,7 @@ typedef enum {
  * @CLAWT_PAGE_ACTIVITY: every turn running across the fleet, to stop or steer
  * @CLAWT_PAGE_SKILLS: the fleet's procedures, and who carries them
  * @CLAWT_PAGE_MEMORY: recall, and the operator profile
+ * @CLAWT_PAGE_FLEET: what each agent costs and which are idle (since 0.8.0)
  *
  * Every page either client can show, in the order they are drawn.
  *
@@ -1621,7 +1625,8 @@ typedef enum {
     CLAWT_PAGE_FLOW,
     CLAWT_PAGE_ACTIVITY,
     CLAWT_PAGE_SKILLS,
-    CLAWT_PAGE_MEMORY
+    CLAWT_PAGE_MEMORY,
+    CLAWT_PAGE_FLEET
 } ClawtPage;
 
 /**

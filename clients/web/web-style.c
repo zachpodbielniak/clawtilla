@@ -307,6 +307,9 @@ clawt_web_stylesheet(void)
     "h2.section{font-family:var(--serif);font-size:22px;margin:0 0 4px;"
       "letter-spacing:-0.025em;line-height:1.15}"
     ".lede{color:var(--muted);margin:0 0 24px;max-width:44rem}"
+    /* the Fleet page: the period's total, and fourteen days as bars */
+    ".fleet-usage-total{font-size:1.5rem;font-weight:700;margin:8px 0 2px}"
+    ".fleet-usage-strip{font-size:1.4rem;letter-spacing:2px;line-height:1.2;margin-bottom:12px}"
 
     /* ── Rows ── */
     ".row{display:flex;align-items:baseline;justify-content:space-between;"

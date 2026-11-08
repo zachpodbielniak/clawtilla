@@ -1343,6 +1343,12 @@ versions apart.
   section inserted mid-way emits the remaining keys under it and then reopens
   the old one -- a duplicate top-level key YAML resolves by discarding the
   first.
+- **Grep the schema for the concept, not the spelling, before adding a
+  key.** 0.8.0 nearly shipped `orchestration.daily_budget_usd`, an alert
+  in dollars, beside `orchestration.daily_fleet_budget_micros`, the cap
+  in micro-dollars the router already enforces and already announced:
+  two budgets for one day's spend, which disagree the moment either is
+  set. `budget` grepped would have found it; `daily_budget_usd` did not.
 - An agent-relative key is not the schema key: `orchestration.mailbox.*` is
   `mailbox.*` inside an agent, `memories.enabled` keeps its whole name.
   `clawt_config_schema_agent_keys()` / `_agent_name()` state that once; three

@@ -499,11 +499,207 @@ test_a_room_refusal_says_it_is_a_room(void)
     g_assert_nonnull(strstr(chain_error->message, "Delegation has gone"));
 }
 
+/*
+ * The fleet view's read: the period's totals, the last turn ever (even
+ * when it is older than the period -- that is the idle agent), and the
+ * spend per local day.  Turns at three ages: 10 days ago, yesterday and
+ * now; a 7-day window and a period of the last 2 days.
+ */
+static void
+test_report_reads_last_turn_and_days(void)
+{
+    Fixture fixture;
+    g_autofree gchar *state_dir = NULL;
+    g_autofree gchar *db_path = NULL;
+    g_autofree gint64 *starts = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtUsageTotals totals;
+    gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+    gint64 daily[7];
+    gint64 last = -1;
+    g_autoptr(LcDatabase) db = NULL;
+    guint d;
+    gint64 sum = 0;
+
+    fixture_setup(&fixture);
+    state_dir = make_agent_with_turns(&fixture, "worker", 1, 1000,
+                                      now - 10 * 86400);
+    db_path = clawt_usage_database_path(state_dir);
+
+    /* more rows, into the same database */
+    db = LC_DATABASE(lc_sqlite_database_new());
+    g_assert_true(lc_database_open(db, db_path, &error));
+    g_assert_true(lc_database_add_token_usage(db, "k", "clawtilla", "r", "p", "m",
+        1, 1, 20000, now - 86400, &error));
+    g_assert_true(lc_database_add_token_usage(db, "k", "clawtilla", "r", "p", "m",
+        1, 1, 300000, now, &error));
+    lc_database_close(db);
+
+    starts = clawt_usage_day_starts(now, 7);
+    g_assert_nonnull(starts);
+    g_assert_cmpint(starts[0], <, starts[7]);
+    g_assert_cmpint(starts[6], <=, now);
+    g_assert_cmpint(now, <, starts[7]);
+
+    g_assert_true(clawt_usage_read_report(db_path, now - 2 * 86400, starts, 7,
+                                          &totals, &last, daily, &error));
+    g_assert_no_error(error);
+
+    /* the period: yesterday and today, not 10 days ago */
+    g_assert_cmpint(totals.turns, ==, 2);
+    g_assert_cmpint(totals.cost_micros, ==, 320000);
+    /* the last turn is the newest ever */
+    g_assert_cmpint(last, ==, now);
+    /* today is the last day; the 10-day-old turn is outside the window */
+    g_assert_cmpint(daily[6], ==, 300000);
+    for (d = 0; d < 7; d++)
+        sum += daily[d];
+    g_assert_cmpint(sum, ==, 320000);
+
+    fixture_teardown(&fixture);
+}
+
+/* A database that is not there: never used, nothing spent, nothing created. */
+static void
+test_report_of_a_missing_database(void)
+{
+    Fixture fixture;
+    g_autofree gchar *db_path = NULL;
+    g_autofree gint64 *starts = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtUsageTotals totals;
+    gint64 daily[3] = { 9, 9, 9 };
+    gint64 last = -1;
+
+    fixture_setup(&fixture);
+    db_path = clawt_usage_database_path(fixture.dir);
+    starts = clawt_usage_day_starts(g_get_real_time() / G_USEC_PER_SEC, 3);
+
+    g_assert_true(clawt_usage_read_report(db_path, 0, starts, 3, &totals, &last,
+                                          daily, &error));
+    g_assert_no_error(error);
+    g_assert_cmpint(last, ==, 0);
+    g_assert_cmpint(daily[0] + daily[1] + daily[2], ==, 0);
+    g_assert_false(g_file_test(db_path, G_FILE_TEST_EXISTS));
+
+    fixture_teardown(&fixture);
+}
+
+static void
+test_sparkline_and_share(void)
+{
+    gint64 days[4] = { 0, 10, 80, 40 };
+    g_autofree gchar *strip = clawt_usage_sparkline(days, 4);
+    g_autofree gchar *none = clawt_usage_sparkline(days, 1);
+    g_autofree gchar *half = clawt_usage_share_label(50, 100);
+    g_autofree gchar *sliver = clawt_usage_share_label(1, 1000);
+    g_autofree gchar *nothing = clawt_usage_share_label(0, 1000);
+
+    /* a gap, the smallest bar (never a gap), the tallest, a middle one */
+    g_assert_cmpstr(strip, ==, "\xc2\xb7\xe2\x96\x81\xe2\x96\x88\xe2\x96\x84");
+    g_assert_cmpstr(none, ==, "\xc2\xb7");
+    g_assert_cmpstr(half, ==, "50%");
+    g_assert_cmpstr(sliver, ==, "<1%");
+    g_assert_cmpstr(nothing, ==, "0%");
+}
+
+/* The Fleet page's lines, from a reply shaped as usage.summary sends it. */
+static void
+test_fleet_page_lines(void)
+{
+    static const gchar reply_text[] =
+        "{\"agents\":["
+        " {\"id\":\"busy\",\"turns\":12,\"cost_micros\":900000,"
+        "  \"last_turn_at\":999000,\"idle\":\"active\",\"state\":\"running\"},"
+        " {\"id\":\"quiet\",\"turns\":1,\"cost_micros\":1000,"
+        "  \"last_turn_at\":740800,\"idle\":\"idle\",\"state\":\"running\","
+        "  \"idle_stop_hours\":24},"
+        " {\"id\":\"nap\",\"turns\":0,\"cost_micros\":0,\"last_turn_at\":0,"
+        "  \"idle\":\"never used\",\"state\":\"stopped\",\"asleep\":true}],"
+        "\"total\":{\"turns\":13,\"cost_micros\":901000},"
+        "\"days\":[{\"start\":1,\"cost_micros\":0},{\"start\":2,\"cost_micros\":901000}],"
+        "\"daily_fleet_budget_micros\":500000}";
+    g_autoptr(JsonParser) parser = json_parser_new();
+    JsonObject *reply;
+    JsonArray *agents;
+    g_autofree gchar *summary = NULL;
+    g_autofree gchar *budget = NULL;
+    g_autofree gchar *strip = NULL;
+    g_autofree gchar *busy = NULL;
+    g_autofree gchar *quiet = NULL;
+    g_autofree gchar *nap = NULL;
+    g_autoptr(JsonNode) payload = clawt_usage_fleet_payload(100, 14);
+
+    g_assert_true(json_parser_load_from_data(parser, reply_text, -1, NULL));
+    reply = json_node_get_object(json_parser_get_root(parser));
+    agents = json_object_get_array_member(reply, "agents");
+
+    summary = clawt_usage_fleet_summary(reply);
+    g_assert_cmpstr(summary, ==, "$0.90 across 13 turns");
+    budget = clawt_usage_fleet_budget_line(reply);
+    g_assert_cmpstr(budget, ==,
+                    "Today $0.90 -- the $0.50 daily cap is reached; new work waits");
+    strip = clawt_usage_fleet_strip(reply);
+    g_assert_cmpstr(strip, ==, "\xc2\xb7\xe2\x96\x88");
+
+    busy = clawt_usage_fleet_row_subtitle(json_array_get_object_element(agents, 0),
+                                          1000000);
+    quiet = clawt_usage_fleet_row_subtitle(json_array_get_object_element(agents, 1),
+                                           1000000);
+    nap = clawt_usage_fleet_row_subtitle(json_array_get_object_element(agents, 2),
+                                         1000000);
+    g_assert_cmpstr(busy, ==, "12 turns \xc2\xb7 last turn 16m ago");
+    g_assert_cmpstr(quiet, ==, "1 turn \xc2\xb7 last turn 3d ago \xc2\xb7 sleeps after 24h");
+    g_assert_cmpstr(nap, ==, "0 turns \xc2\xb7 last turn never \xc2\xb7 asleep until a message");
+
+    /* Stop on a running agent that is not doing anything, and only there */
+    g_assert_false(clawt_usage_fleet_row_stoppable(json_array_get_object_element(agents, 0)));
+    g_assert_true(clawt_usage_fleet_row_stoppable(json_array_get_object_element(agents, 1)));
+    g_assert_false(clawt_usage_fleet_row_stoppable(json_array_get_object_element(agents, 2)));
+    g_assert_cmpuint(clawt_usage_fleet_stoppable_count(reply), ==, 1);
+
+    /* the request: the period, the days, sorted by cost */
+    g_assert_cmpstr(json_object_get_string_member(json_node_get_object(payload), "sort"),
+                    ==, "cost");
+    g_assert_cmpint(json_object_get_int_member(json_node_get_object(payload), "days"),
+                    ==, 14);
+}
+
+static void
+test_idle_rules(void)
+{
+    gint64 now = 1000000000;
+    g_autofree gchar *never = clawt_usage_last_turn_label(0, now);
+    g_autofree gchar *ago = clawt_usage_last_turn_label(now - 3 * 86400, now);
+
+    g_assert_cmpint(clawt_usage_idle_state(0, now, 72), ==, CLAWT_IDLE_NEVER);
+    g_assert_cmpint(clawt_usage_idle_state(now - 3600, now, 72), ==, CLAWT_IDLE_ACTIVE);
+    g_assert_cmpint(clawt_usage_idle_state(now - 72 * 3600, now, 72), ==, CLAWT_IDLE_IDLE);
+    /* 0 calls nothing idle */
+    g_assert_cmpint(clawt_usage_idle_state(now - 400 * 86400, now, 0), ==, CLAWT_IDLE_ACTIVE);
+
+    g_assert_cmpstr(never, ==, "never");
+    g_assert_cmpstr(ago, ==, "3d ago");
+
+    /* every state has a label and a tone the stylesheets paint */
+    g_assert_cmpstr(clawt_usage_idle_label(CLAWT_IDLE_IDLE), ==, "idle");
+    g_assert_cmpstr(clawt_usage_idle_tone(CLAWT_IDLE_IDLE), ==, "warn");
+    g_assert_cmpstr(clawt_usage_idle_tone(CLAWT_IDLE_ACTIVE), ==, "good");
+    g_assert_cmpstr(clawt_usage_idle_tone(CLAWT_IDLE_NEVER), ==, "neutral");
+}
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
 
+    g_test_add_func("/usage/report-last-turn-and-days",
+                    test_report_reads_last_turn_and_days);
+    g_test_add_func("/usage/report-missing-database",
+                    test_report_of_a_missing_database);
+    g_test_add_func("/usage/idle-rules", test_idle_rules);
+    g_test_add_func("/usage/sparkline-and-share", test_sparkline_and_share);
+    g_test_add_func("/usage/fleet-page-lines", test_fleet_page_lines);
     g_test_add_func("/usage/database-path-is-inside-sessions",
                     test_database_path_is_inside_sessions);
     g_test_add_func("/usage/missing-database-is-zero",
