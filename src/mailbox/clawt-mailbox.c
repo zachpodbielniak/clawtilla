@@ -64,6 +64,7 @@ static const gchar *SCHEMA_SQL =
 	"  request_room TEXT,"
 	"  request_origin TEXT,"
 	"  request_task TEXT,"
+    "  model TEXT,"
     "  subject TEXT,"
     "  idempotency_key TEXT,"
     "  last_error TEXT,"
@@ -170,6 +171,18 @@ apply_schema(sqlite3 *db, GError **error)
         return FALSE;
     }
 
+    /*
+     * Since 0.7.7: the model a delivery's turn runs on.  A fleet's
+     * mailboxes predate it, and a column they lack would fail their
+     * first read and quarantine the queue as corrupt.
+     */
+    if (!has_column(db, "items", "model") &&
+        sqlite3_exec(db, "ALTER TABLE items ADD COLUMN model TEXT",
+                     NULL, NULL, NULL) != SQLITE_OK) {
+        set_sqlite_error(error, db, "adding model to the mailbox");
+        return FALSE;
+    }
+
     /* Since 0.1.0: which items leave their recipient free to reply. */
     if (!has_column(db, "items", "invites_reply") &&
         sqlite3_exec(db,
@@ -235,6 +248,7 @@ item_from_row(sqlite3_stmt *stmt)
         sqlite3_column_int(stmt, 17) != 0);
 	clawt_mailbox_item_set_request_context(item, column_text(stmt, 18),
 		column_text(stmt, 19), column_text(stmt, 20));
+    clawt_mailbox_item_set_model(item, column_text(stmt, 21));
 
     return item;
 }
@@ -243,7 +257,7 @@ item_from_row(sqlite3_stmt *stmt)
     "id, sender, recipient, body, room, task_id, reply_to, subject, " \
     "idempotency_key, last_error, priority, state, depth, attempts, " \
     "created_at, not_before, expires_at, invites_reply, " \
-	"request_room, request_origin, request_task"
+	"request_room, request_origin, request_task, model"
 
 /* ── Depth ───────────────────────────────────────────────────────── */
 
@@ -574,8 +588,8 @@ clawt_mailbox_post(ClawtMailbox *self, ClawtMailboxItem *item, GError **error)
             "INSERT INTO items (id, sender, recipient, body, room, task_id,"
             " reply_to, subject, idempotency_key, priority, state, depth,"
             " attempts, created_at, not_before, expires_at, invites_reply,"
-			" request_room, request_origin, request_task)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+			" request_room, request_origin, request_task, model)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             -1, &stmt, NULL) != SQLITE_OK) {
         set_sqlite_error(error, self->db, "queueing a message");
         return NULL;
@@ -613,6 +627,8 @@ clawt_mailbox_post(ClawtMailbox *self, ClawtMailboxItem *item, GError **error)
 		-1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 20, clawt_mailbox_item_get_request_task(item),
 		-1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 21, clawt_mailbox_item_get_model(item), -1,
+                      SQLITE_TRANSIENT);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);

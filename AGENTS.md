@@ -627,6 +627,15 @@ critical fired.
 - It writes one `token_usage` row per AI turn. Read it through
   `lc_database_*`, never by opening its schema. A missing database is zero, not
   an error -- and must not be opened, since opening creates it.
+- **A model for one turn is a frame member, applied at the drain.**  A
+  routine's `model` and `clawtilla_delegate`'s `model` ride the mailbox
+  item (its `model` column) and go out as `chat.message_in`'s `model` via
+  `clawt_link_deliver_full()`; libreclaw 0.28.0 applies it when the turn
+  is taken off its queue and restores the previous model afterwards
+  unless something changed it meanwhile.  Applied on arrival it would
+  describe whichever turn ran next.  The same frame says `overrides:
+  false` for a peer's message: libreclaw honoured `$OVERRIDE(...)` from
+  any sender, so one agent's text could choose another's model.
 - **Typing rises on `LcSession::turn-started` (the drain), never at enqueue.**
   Under agent mode one session queues several rooms, and anything armed at
   arrival describes turns that have not begun -- the daemon's per-room turn

@@ -1494,6 +1494,17 @@ routines:
     # Required.
     agent: null
 
+    # The model this routine's run uses, instead of the agent's own.
+    #
+    # For that one turn only: the agent's next turn is back on its own
+    # model. A scheduled check that reads a page and compares a number does
+    # not need the model the agent plans with, and a run costs what its
+    # model costs. A model name for the agent's provider, as in
+    # `agents.model.model`; like that key it is not checked against the
+    # catalogue, which goes stale, so a name the provider does not know
+    # fails the run rather than the save. Empty is the agent's own model.
+    model: null
+
     # Whether it runs on its schedule. A disabled routine can still be
     # started by hand, which is how you try one before trusting it.
     enabled: true

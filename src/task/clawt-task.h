@@ -86,6 +86,20 @@ const gchar   *clawt_task_get_result(ClawtTask *self);
 const gchar   *clawt_task_get_room(ClawtTask *self);
 const gchar   *clawt_task_get_parent_id(ClawtTask *self);
 const gchar   *clawt_task_get_reason(ClawtTask *self);
+
+/**
+ * clawt_task_get_model:
+ * @self: a #ClawtTask
+ *
+ * The model the delegator asked the work to run on, for the assignee's
+ * turn that receives it (`clawtilla_delegate`'s `model`, a routine's
+ * `model`).  That turn only: the assignee's later turns -- its follow-ups
+ * on the same task included -- are on its own model.
+ *
+ * Returns: (transfer none) (nullable): the model, or %NULL for the
+ *   assignee's own
+ */
+const gchar   *clawt_task_get_model(ClawtTask *self);
 const gchar   *clawt_task_get_session_key(ClawtTask *self);
 const gchar   *clawt_task_get_progress_note(ClawtTask *self);
 
@@ -199,6 +213,7 @@ gboolean clawt_task_transfer_owner(ClawtTask *self, const gchar *new_owner);
 void clawt_task_set_room(ClawtTask *self, const gchar *room);
 void clawt_task_set_parent_id(ClawtTask *self, const gchar *parent_id);
 void clawt_task_set_reason(ClawtTask *self, const gchar *reason);
+void clawt_task_set_model(ClawtTask *self, const gchar *model);
 void clawt_task_set_result(ClawtTask *self, const gchar *result);
 void clawt_task_set_progress_note(ClawtTask *self, const gchar *note);
 void clawt_task_set_state(ClawtTask *self, ClawtTaskState state);

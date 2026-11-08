@@ -21,6 +21,7 @@ struct _ClawtTask {
     gchar *room;
     gchar *parent_id;
     gchar *reason;
+    gchar *model;
     gchar *session_key;
     gchar *progress_note;
     gchar *cancelled_by;
@@ -136,6 +137,7 @@ clawt_task_copy(ClawtTask *self)
     copy->room = g_strdup(self->room);
     copy->parent_id = g_strdup(self->parent_id);
     copy->reason = g_strdup(self->reason);
+    copy->model = g_strdup(self->model);
     copy->session_key = g_strdup(self->session_key);
     copy->progress_note = g_strdup(self->progress_note);
     copy->cancelled_by = g_strdup(self->cancelled_by);
@@ -181,6 +183,7 @@ clawt_task_free(ClawtTask *self)
     g_free(self->room);
     g_free(self->parent_id);
     g_free(self->reason);
+    g_free(self->model);
     g_free(self->session_key);
     g_free(self->progress_note);
     g_free(self->cancelled_by);
@@ -204,6 +207,7 @@ GETTER(result, result)
 GETTER(room, room)
 GETTER(parent_id, parent_id)
 GETTER(reason, reason)
+GETTER(model, model)
 GETTER(session_key, session_key)
 GETTER(progress_note, progress_note)
 GETTER(cancelled_by, cancelled_by)
@@ -223,6 +227,7 @@ GETTER(cancelled_by, cancelled_by)
 SETTER(room, room)
 SETTER(parent_id, parent_id)
 SETTER(reason, reason)
+SETTER(model, model)
 SETTER(result, result)
 SETTER(progress_note, progress_note)
 SETTER(cancelled_by, cancelled_by)

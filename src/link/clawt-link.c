@@ -537,6 +537,22 @@ clawt_link_deliver(ClawtLink    *self,
                    const gchar  *session_peer,
                    GError      **error)
 {
+    return clawt_link_deliver_full(self, room_id, sender_id, sender_name, body,
+                                   thread_id, session_peer, NULL, TRUE, error);
+}
+
+gboolean
+clawt_link_deliver_full(ClawtLink    *self,
+                        const gchar  *room_id,
+                        const gchar  *sender_id,
+                        const gchar  *sender_name,
+                        const gchar  *body,
+                        const gchar  *thread_id,
+                        const gchar  *session_peer,
+                        const gchar  *model,
+                        gboolean      overrides_allowed,
+                        GError      **error)
+{
     g_autoptr(JsonObject) payload = json_object_new();
 
     g_return_val_if_fail(CLAWT_IS_LINK(self), FALSE);
@@ -560,6 +576,12 @@ clawt_link_deliver(ClawtLink    *self,
      */
     if (session_peer != NULL && g_strcmp0(session_peer, sender_id) != 0)
         json_object_set_string_member(payload, "session_peer", session_peer);
+
+    /* both omitted in the ordinary case, for the same reason */
+    if (model != NULL && *model != '\0')
+        json_object_set_string_member(payload, "model", model);
+    if (!overrides_allowed)
+        json_object_set_boolean_member(payload, "overrides", FALSE);
 
     return send_frame(self, LC_BRIDGE_FRAME_CHAT_MESSAGE_IN, NULL, payload,
                       error);

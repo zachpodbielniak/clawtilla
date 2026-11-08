@@ -707,6 +707,7 @@ test_all_fields_round_trip(void)
     clawt_mailbox_item_set_subject(posted, "weekly summary");
     clawt_mailbox_item_set_depth(posted, 3);
     clawt_mailbox_item_set_priority(posted, CLAWT_PRIORITY_HIGH);
+    clawt_mailbox_item_set_model(posted, "haiku");
 
     id = clawt_mailbox_post(fixture.mailbox, posted, &error);
     g_assert_no_error(error);
@@ -723,8 +724,54 @@ test_all_fields_round_trip(void)
     g_assert_cmpint(clawt_mailbox_item_get_depth(recovered), ==, 3);
     g_assert_cmpint(clawt_mailbox_item_get_priority(recovered), ==,
                     CLAWT_PRIORITY_HIGH);
+    g_assert_cmpstr(clawt_mailbox_item_get_model(recovered), ==, "haiku");
 
     fixture_teardown(&fixture);
+}
+
+/*
+ * A mailbox written before the model column existed keeps its queue.
+ * CREATE TABLE IF NOT EXISTS does nothing to a table that is already
+ * there, so without the migration the first read of an upgraded fleet's
+ * mailbox fails -- and a failed read is quarantined as corruption.
+ */
+static void
+test_a_mailbox_from_before_model_keeps_its_queue(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-mbox-old-XXXXXX", NULL);
+    g_autofree gchar *path = g_build_filename(dir, "mailbox.db", NULL);
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtMailbox) mailbox = NULL;
+    g_autoptr(ClawtMailboxItem) queued = NULL;
+    sqlite3 *db = NULL;
+
+    g_assert_cmpint(sqlite3_open(path, &db), ==, SQLITE_OK);
+    g_assert_cmpint(sqlite3_exec(db,
+        "CREATE TABLE items (id TEXT PRIMARY KEY, sender TEXT, recipient TEXT,"
+        " body TEXT NOT NULL, room TEXT, task_id TEXT, reply_to TEXT,"
+        " request_room TEXT, request_origin TEXT, request_task TEXT,"
+        " subject TEXT, idempotency_key TEXT, last_error TEXT,"
+        " priority INTEGER NOT NULL DEFAULT 1, state INTEGER NOT NULL DEFAULT 0,"
+        " depth INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0,"
+        " invites_reply INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL,"
+        " not_before INTEGER NOT NULL DEFAULT 0, expires_at INTEGER NOT NULL DEFAULT 0,"
+        " lease_expires_at INTEGER NOT NULL DEFAULT 0);"
+        "INSERT INTO items (id, sender, recipient, body, created_at)"
+        " VALUES ('00000000000000000000-old', 'user', 'chief', 'still here', 1);",
+        NULL, NULL, NULL), ==, SQLITE_OK);
+    sqlite3_close_v2(db);
+
+    mailbox = clawt_mailbox_new("chief", path, &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(mailbox);
+
+    queued = clawt_mailbox_lease(mailbox, 60);
+    g_assert_nonnull(queued);
+    g_assert_cmpstr(clawt_mailbox_item_get_body(queued), ==, "still here");
+    g_assert_null(clawt_mailbox_item_get_model(queued));
+
+    g_clear_object(&mailbox);
+    clawt_test_remove_tree(dir);
 }
 
 /* Bodies are arbitrary text, including things that look like SQL. */
@@ -794,6 +841,8 @@ main(int argc, char *argv[])
     g_test_add_func("/mailbox/filter-by-state", test_listing_filters_by_state);
     g_test_add_func("/mailbox/empty", test_empty_mailbox_leases_nothing);
     g_test_add_func("/mailbox/fields-round-trip", test_all_fields_round_trip);
+    g_test_add_func("/mailbox/model-column-migrates",
+                    test_a_mailbox_from_before_model_keeps_its_queue);
     g_test_add_func("/mailbox/hostile-bodies",
                     test_hostile_bodies_are_stored_verbatim);
 

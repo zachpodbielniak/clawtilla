@@ -2251,3 +2251,12 @@ does not apply to that.
 tools:
   manage_fleet: true
 #+end_src
+
+
+** A model for the delegated turn
+
+~clawtilla_delegate~ takes an optional =model=: the turn that receives the assignment runs on it instead of the assignee's own model -- a cheaper one for routine checking, a stronger one for a hard piece of reasoning.  It is recorded on the task (~task.list~ and ~task.show~ say =model=), put on the assignment's delivery and nothing else -- not the delegator's later notes on the same task, not anything sent back -- and libreclaw 0.28.0 applies it for that one turn and restores the assignee's model afterwards.  A routine's =model= works the same way (docs/routines.org, "A model of its own").
+
+*** A peer's message cannot choose the model
+
+libreclaw honours a =$OVERRIDE(model=...)= directive in a message body, and until 0.28.0 it did so from any sender -- so one agent's sentence, delivered to another, could pick the recipient's model, voice and effort.  clawtilla now marks every message one agent sends another with =overrides: false= on the frame, and libreclaw leaves the directive in the text, unapplied.  The operator's own messages are unaffected.

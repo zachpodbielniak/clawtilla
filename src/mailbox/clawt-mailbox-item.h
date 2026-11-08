@@ -60,6 +60,26 @@ const gchar *clawt_mailbox_item_get_to(ClawtMailboxItem *self);
 const gchar *clawt_mailbox_item_get_body(ClawtMailboxItem *self);
 const gchar *clawt_mailbox_item_get_room(ClawtMailboxItem *self);
 const gchar *clawt_mailbox_item_get_task_id(ClawtMailboxItem *self);
+
+/**
+ * clawt_mailbox_item_get_model:
+ * @self: a #ClawtMailboxItem
+ *
+ * The model the delivery's turn runs on, from the message
+ * (clawt_message_set_model()); stored with the item so a model survives
+ * a daemon restart between queueing and delivery.
+ *
+ * Returns: (transfer none) (nullable): the model, or %NULL for the
+ *   agent's own
+ */
+const gchar *clawt_mailbox_item_get_model(ClawtMailboxItem *self);
+
+/**
+ * clawt_mailbox_item_set_model:
+ * @self: a #ClawtMailboxItem
+ * @model: (nullable): the per-turn model
+ */
+void clawt_mailbox_item_set_model(ClawtMailboxItem *self, const gchar *model);
 const gchar *clawt_mailbox_item_get_reply_to(ClawtMailboxItem *self);
 const gchar *clawt_mailbox_item_get_subject(ClawtMailboxItem *self);
 const gchar *clawt_mailbox_item_get_idempotency_key(ClawtMailboxItem *self);

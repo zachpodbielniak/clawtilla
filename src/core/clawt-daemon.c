@@ -1041,6 +1041,19 @@ routine_is_isolated(ClawtDaemon *self, const gchar *routine_id)
     return FALSE;
 }
 
+/* A routine's own model, or NULL for the agent's (also when it is gone). */
+static const gchar *
+routine_model(ClawtDaemon *self, const gchar *routine_id)
+{
+    ClawtRoutine *routine = routine_by_id(self, routine_id);
+    const gchar *model;
+
+    if (routine == NULL)
+        return NULL;
+    model = clawt_routine_get_string(routine, "model");
+    return (model != NULL && *model != '\0') ? model : NULL;
+}
+
 /*
  * Starting one scheduled run.
  *
@@ -1147,8 +1160,14 @@ run_routine(const gchar *routine_id, const gchar *agent_id,
      */
     clawt_task_manager_start(self->tasks, clawt_task_get_id(task));
 
-    if (clawt_mailbox_router_send_to(self->router, sender, target, prompt,
-                                     clawt_task_get_id(task), 0, error) < 0) {
+    /*
+     * With the routine's own model, when it names one: that turn only,
+     * applied by libreclaw when the turn starts and put back after.
+     */
+    if (clawt_mailbox_router_send_to_model(
+            self->router, sender, target, prompt, clawt_task_get_id(task),
+            routine_model(self, routine_id),
+            error) < 0) {
         clawt_task_manager_fail(self->tasks, clawt_task_get_id(task),
                                 (error != NULL && *error != NULL)
                                     ? (*error)->message
@@ -2819,6 +2838,20 @@ deliver_for_tools(const gchar *from_agent, const gchar *target,
 	clawt_message_set_task_id(message, task_id);
 	clawt_message_set_depth(message, depth);
 	clawt_message_set_priority(message, priority);
+
+	/*
+	 * A delegation that named a model: only the assignment itself, sent
+	 * to the assignee, runs on it -- not the delegator's later notes on
+	 * the same task, nor anything sent the other way.
+	 */
+	if (task_id != NULL && self->tasks != NULL) {
+		ClawtTask *task = clawt_task_manager_get(self->tasks, task_id);
+
+		if (task != NULL && clawt_task_get_model(task) != NULL &&
+			g_strcmp0(clawt_task_get_assignee(task), target) == 0 &&
+			clawt_task_get_state(task) == CLAWT_TASK_PENDING)
+			clawt_message_set_model(message, clawt_task_get_model(task));
+	}
 
 	/*
 	 * Questions carry a snapshot of the calling turn through the peer's
@@ -7304,6 +7337,12 @@ clawt_daemon_add_task_object(JsonBuilder *builder, ClawtTask *task)
     if (clawt_task_get_reason(task) != NULL) {
         json_builder_set_member_name(builder, "reason");
         json_builder_add_string_value(builder, clawt_task_get_reason(task));
+    }
+
+    /* the model the assignment's turn ran on, when the delegator chose one */
+    if (clawt_task_get_model(task) != NULL) {
+        json_builder_set_member_name(builder, "model");
+        json_builder_add_string_value(builder, clawt_task_get_model(task));
     }
 
     /*

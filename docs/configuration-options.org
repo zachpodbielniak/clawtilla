@@ -2325,6 +2325,22 @@ nobody is there to answer a question about what was meant.
 
 Which agent runs it.
 
+*** =routines.model=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.7.7
+
+The model this routine's run uses, instead of the agent's own.
+
+For that one turn only: the agent's next turn is back on its own
+model. A scheduled check that reads a page and compares a number does
+not need the model the agent plans with, and a run costs what its
+model costs. A model name for the agent's provider, as in
+`agents.model.model`; like that key it is not checked against the
+catalogue, which goes stale, so a name the provider does not know
+fails the run rather than the save. Empty is the agent's own model.
+
 *** =routines.enabled=
 
 - Type :: boolean

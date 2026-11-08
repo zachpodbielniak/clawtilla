@@ -156,6 +156,30 @@ gint clawt_mailbox_router_send_to(ClawtMailboxRouter  *self,
                                   GError             **error);
 
 /**
+ * clawt_mailbox_router_send_to_model:
+ * @self: a #ClawtMailboxRouter
+ * @from: the sender, as for clawt_mailbox_router_send_to()
+ * @target: a room id or an agent id
+ * @body: what to say
+ * @task_id: (nullable): the task this belongs to
+ * @model: (nullable): the model the receiving turn runs on, or %NULL
+ *   (or "") for the agent's own
+ * @error: (out) (optional): return location for a #GError
+ *
+ * clawt_mailbox_router_send_to() at depth 0 and the normal band, for a
+ * routine or a delegation that names a model for its turn.
+ *
+ * Returns: how many mailboxes it was queued into, or -1 on refusal
+ */
+gint clawt_mailbox_router_send_to_model(ClawtMailboxRouter  *self,
+                                        const gchar         *from,
+                                        const gchar         *target,
+                                        const gchar         *body,
+                                        const gchar         *task_id,
+                                        const gchar         *model,
+                                        GError             **error);
+
+/**
  * clawt_mailbox_router_send_to_full:
  * @self: a #ClawtMailboxRouter
  * @from: the sending agent, or "user" for a person

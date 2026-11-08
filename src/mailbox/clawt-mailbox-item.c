@@ -19,6 +19,7 @@ struct _ClawtMailboxItem {
     gchar *body;
     gchar *room;
     gchar *task_id;
+    gchar *model;
     gchar *reply_to;
     gchar *subject;
     gchar *idempotency_key;
@@ -93,6 +94,7 @@ clawt_mailbox_item_copy(ClawtMailboxItem *self)
     copy->body = g_strdup(self->body);
     copy->room = g_strdup(self->room);
     copy->task_id = g_strdup(self->task_id);
+    copy->model = g_strdup(self->model);
     copy->reply_to = g_strdup(self->reply_to);
     copy->subject = g_strdup(self->subject);
     copy->idempotency_key = g_strdup(self->idempotency_key);
@@ -128,6 +130,7 @@ clawt_mailbox_item_free(ClawtMailboxItem *self)
     g_free(self->body);
     g_free(self->room);
     g_free(self->task_id);
+    g_free(self->model);
     g_free(self->reply_to);
     g_free(self->subject);
     g_free(self->idempotency_key);
@@ -152,6 +155,7 @@ GETTER_STR(to, to)
 GETTER_STR(body, body)
 GETTER_STR(room, room)
 GETTER_STR(task_id, task_id)
+GETTER_STR(model, model)
 GETTER_STR(reply_to, reply_to)
 GETTER_STR(subject, subject)
 GETTER_STR(idempotency_key, idempotency_key)
@@ -175,6 +179,7 @@ GETTER_STR(request_task, request_task)
 SETTER_STR(id, id)
 SETTER_STR(room, room)
 SETTER_STR(task_id, task_id)
+SETTER_STR(model, model)
 SETTER_STR(reply_to, reply_to)
 SETTER_STR(subject, subject)
 SETTER_STR(last_error, last_error)

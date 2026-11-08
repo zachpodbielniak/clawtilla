@@ -135,6 +135,27 @@ void clawt_message_set_timestamp(ClawtMessage *self, gint64 timestamp);
 void clawt_message_set_depth(ClawtMessage *self, gint depth);
 
 /**
+ * clawt_message_set_model:
+ * @self: a #ClawtMessage
+ * @model: (nullable): a model for the turn this message starts, or %NULL
+ *   for the agent's own
+ *
+ * A routine's or a delegated task's model.  It is carried onto every
+ * mailbox item the message produces and sent with the delivery, and
+ * libreclaw (0.28.0 and later) runs that one turn on it and puts the
+ * agent's own model back afterwards.
+ */
+void clawt_message_set_model(ClawtMessage *self, const gchar *model);
+
+/**
+ * clawt_message_get_model:
+ * @self: a #ClawtMessage
+ *
+ * Returns: (transfer none) (nullable): the per-turn model, or %NULL
+ */
+const gchar *clawt_message_get_model(ClawtMessage *self);
+
+/**
  * clawt_message_set_room_id:
  * @self: a #ClawtMessage
  * @room_id: the resolved destination room

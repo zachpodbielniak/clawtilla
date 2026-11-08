@@ -140,6 +140,40 @@ gboolean clawt_link_deliver(ClawtLink    *self,
                             GError      **error);
 
 /**
+ * clawt_link_deliver_full:
+ * @self: a #ClawtLink
+ * @room_id: (nullable): the room the message is in
+ * @sender_id: who sent it
+ * @sender_name: (nullable): their display name
+ * @body: the message
+ * @thread_id: (nullable): thread to reply into
+ * @session_peer: (nullable): as for clawt_link_deliver()
+ * @model: (nullable): a model for the turn this message starts, or %NULL
+ *   for the agent's own
+ * @overrides_allowed: whether a `$OVERRIDE(...)` in @body may take
+ *   effect; %FALSE for text another agent wrote
+ * @error: (out) (optional): return location for a #GError
+ *
+ * clawt_link_deliver() with the two members libreclaw 0.28.0 reads.
+ * @model is applied when the turn starts and taken back when it ends.
+ * @overrides_allowed is %FALSE for a peer's message: libreclaw honoured
+ * `$OVERRIDE(model=...)` from any sender, so one agent's sentence could
+ * choose another agent's model, voice and effort.
+ *
+ * Returns: %TRUE if it reached the socket
+ */
+gboolean clawt_link_deliver_full(ClawtLink    *self,
+                                 const gchar  *room_id,
+                                 const gchar  *sender_id,
+                                 const gchar  *sender_name,
+                                 const gchar  *body,
+                                 const gchar  *thread_id,
+                                 const gchar  *session_peer,
+                                 const gchar  *model,
+                                 gboolean      overrides_allowed,
+                                 GError      **error);
+
+/**
  * clawt_link_send_welcome:
  * @self: a #ClawtLink
  * @error: (out) (optional): return location for a #GError

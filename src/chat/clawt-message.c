@@ -25,6 +25,7 @@ struct _ClawtMessage {
 	gchar *request_room;
 	gchar *request_origin;
 	gchar *request_task;
+    gchar *model;
 
     gint64        timestamp;
     gint          depth;
@@ -97,6 +98,7 @@ clawt_message_copy(ClawtMessage *self)
     copy->sender_name = g_strdup(self->sender_name);
     copy->body = g_strdup(self->body);
     copy->task_id = g_strdup(self->task_id);
+    copy->model = g_strdup(self->model);
     copy->parent_id = g_strdup(self->parent_id);
     copy->only_for = g_strdup(self->only_for);
 	copy->reply_to = g_strdup(self->reply_to);
@@ -126,6 +128,7 @@ clawt_message_free(ClawtMessage *self)
     g_free(self->sender_name);
     g_free(self->body);
     g_free(self->task_id);
+    g_free(self->model);
     g_free(self->parent_id);
     g_free(self->only_for);
 	g_free(self->reply_to);
@@ -154,6 +157,7 @@ GETTER(reply_to, reply_to)
 GETTER(request_room, request_room)
 GETTER(request_origin, request_origin)
 GETTER(request_task, request_task)
+GETTER(model, model)
 
 #undef GETTER
 
@@ -174,6 +178,7 @@ SETTER(task_id, task_id)
 SETTER(parent_id, parent_id)
 SETTER(only_for, only_for)
 SETTER(reply_to, reply_to)
+SETTER(model, model)
 
 #undef SETTER
 

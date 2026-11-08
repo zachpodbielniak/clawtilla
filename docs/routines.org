@@ -338,6 +338,24 @@ one is not obeyed.  An agent that ignores =worktree= has not hit a bug
 in the scheduler; it has ignored an instruction, which is a question
 about the model and the rest of the prompt.
 
+** A model of its own
+
+=model= runs each of a routine's runs on a model other than the agent's own -- a cheaper one for a check that reads a page and compares a number, which does not need the model the agent plans with, and costs what its model costs:
+
+#+begin_src yaml
+routines:
+  - id: hornbill-watchlist
+    agent: hornbill
+    schedule: custom
+    cron: "0 */4 * * *"
+    model: haiku
+    instructions: Check each item on the watchlist and message me only if one is under its target.
+#+end_src
+
+It is that one turn only.  The model travels with the delivery (the mailbox item keeps it, so it survives a daemon restart before the run is delivered), clawtilla sends it on the frame as =model=, and libreclaw 0.28.0 applies it when the turn starts -- not when the message arrives, which for a busy agent would describe somebody else's turn -- and puts the agent's own model back when the turn ends.  The agent's next turn, the operator's included, is on its own model.  If something else changed the model while the run was going (a per-room model, the operator's =$OVERRIDE=), that change stands.
+
+A model name for the agent's provider, as in =agents.model.model=.  Like that key it is not checked against the catalogue, which goes stale: a name the provider does not know fails the run, not the save.  Every client's routine editor has the field (the web and libregnum clients draw it from the schema; GTK by hand), =clawtilla routine set <id> model=haiku= sets it, and an agent with ~tools.schedule~ can give its own routines one through =clawtilla_routine_add= and =_update=.
+
 ** Spreading several routines out
 
 #+begin_src yaml

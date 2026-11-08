@@ -1051,6 +1051,25 @@ test_deliver_carries_the_session_peer(void)
     payload = json_object_get_object_member(delivered, "payload");
     g_assert_false(json_object_has_member(payload, "session_peer"));
 
+    /* plain delivery: neither of libreclaw 0.28.0's members */
+    g_assert_false(json_object_has_member(payload, "model"));
+    g_assert_false(json_object_has_member(payload, "overrides"));
+
+    /* a model for the turn, and a peer's text that may not carry $OVERRIDE */
+    g_assert_true(clawt_link_deliver_full(
+        clawt_link_server_get_link(fixture.server, "chief"),
+        "dm:chief:kudu", "kudu", NULL, "check the price", NULL,
+        NULL, "haiku", FALSE, &error));
+    g_assert_no_error(error);
+
+    g_clear_pointer(&delivered, json_object_unref);
+    g_clear_pointer(&kind, g_free);
+    delivered = client_read(&client, &kind);
+    payload = json_object_get_object_member(delivered, "payload");
+    g_assert_cmpstr(json_object_get_string_member(payload, "model"), ==, "haiku");
+    g_assert_true(json_object_has_member(payload, "overrides"));
+    g_assert_false(json_object_get_boolean_member(payload, "overrides"));
+
     client_close(&client);
     capture_clear(&capture);
     fixture_teardown(&fixture);

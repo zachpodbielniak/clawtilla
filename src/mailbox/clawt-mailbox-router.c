@@ -755,6 +755,7 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
         clawt_mailbox_item_set_room(item, clawt_room_get_id(room));
         clawt_mailbox_item_set_task_id(item,
                                        clawt_message_get_task_id(message));
+        clawt_mailbox_item_set_model(item, clawt_message_get_model(message));
         clawt_mailbox_item_set_depth(item, clawt_message_get_depth(message));
 
         /*
@@ -866,6 +867,29 @@ clawt_mailbox_router_send_to(ClawtMailboxRouter  *self,
     return clawt_mailbox_router_send_to_full(self, from, target, body,
                                              task_id, depth,
                                              CLAWT_PRIORITY_NORMAL, error);
+}
+
+gint
+clawt_mailbox_router_send_to_model(ClawtMailboxRouter  *self,
+                                   const gchar         *from,
+                                   const gchar         *target,
+                                   const gchar         *body,
+                                   const gchar         *task_id,
+                                   const gchar         *model,
+                                   GError             **error)
+{
+    g_autoptr(ClawtMessage) message = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_MAILBOX_ROUTER(self), -1);
+    g_return_val_if_fail(from != NULL, -1);
+    g_return_val_if_fail(target != NULL, -1);
+    g_return_val_if_fail(body != NULL, -1);
+
+    message = clawt_message_new(target, from, body);
+    clawt_message_set_task_id(message, task_id);
+    clawt_message_set_model(message, (model != NULL && *model != '\0') ? model : NULL);
+
+    return clawt_mailbox_router_send(self, message, error);
 }
 
 gint
@@ -1219,16 +1243,24 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
                     (const gchar *const *)ids, agent_id);
             }
 
-            if (!clawt_link_deliver(link,
-                                    clawt_mailbox_item_get_room(item),
-                                    from,
-                                    NULL,
-                                    (body != NULL)
-                                        ? body
-                                        : clawt_mailbox_item_get_body(item),
-                                    clawt_mailbox_item_get_task_id(item),
-                                    session_peer,
-                                    &error)) {
+            /*
+             * A peer's text may not carry a $OVERRIDE: libreclaw
+             * honoured one from any sender, so an agent's sentence could
+             * pick another agent's model.  The model a routine or a
+             * delegation chose is sent on its own, for that turn only.
+             */
+            if (!clawt_link_deliver_full(link,
+                                         clawt_mailbox_item_get_room(item),
+                                         from,
+                                         NULL,
+                                         (body != NULL)
+                                             ? body
+                                             : clawt_mailbox_item_get_body(item),
+                                         clawt_mailbox_item_get_task_id(item),
+                                         session_peer,
+                                         clawt_mailbox_item_get_model(item),
+                                         !peer,
+                                         &error)) {
                 /*
                  * Put back and the drain stops here.  Continuing past a
                  * failed delivery would hand the agent its messages out

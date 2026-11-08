@@ -41,6 +41,7 @@ typedef struct {
     GtkWidget   *agent_row;
     GStrv        agent_ids;
     GtkWidget   *directory_row;
+    GtkWidget   *model_row;
     GtkWidget   *worktree_row;
     GtkWidget   *enabled_row;
     GtkWidget   *catch_up_row;
@@ -201,6 +202,9 @@ on_routine_saved(GtkButton *button, gpointer user_data)
     json_builder_set_member_name(builder, "directory");
     json_builder_add_string_value(
         builder, gtk_editable_get_text(GTK_EDITABLE(dialog->directory_row)));
+    json_builder_set_member_name(builder, "model");
+    json_builder_add_string_value(
+        builder, gtk_editable_get_text(GTK_EDITABLE(dialog->model_row)));
     json_builder_set_member_name(builder, "worktree");
     json_builder_add_boolean_value(
         builder, adw_switch_row_get_active(
@@ -396,6 +400,15 @@ open_routine_editor(ClawtWindow *self, JsonObject *existing)
 
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(where),
                               dialog->agent_row);
+
+    dialog->model_row = clawt_gtk_add_entry(
+        where, "Model",
+        existing != NULL ? clawt_json_string(existing, "model", "") : "");
+    clawt_gtk_set_row_hint(
+        dialog->model_row,
+        "Each run on this model instead of the agent's own -- a cheaper "
+        "one for a check that only compares a number. Empty is the "
+        "agent's model; its later turns are on its own either way.");
 
     dialog->directory_row = clawt_gtk_add_entry(
         where, "Folder",

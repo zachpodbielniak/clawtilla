@@ -159,6 +159,12 @@ static const ClawtParamInfo delegate_params[] = {
                             "see this conversation.", TRUE },
     { "reason",   "string", "Why this agent. Recorded for the audit trail.",
       FALSE },
+    { "model",    "string", "A model for the turn that receives this work, "
+                            "instead of the assignee's own -- a cheaper one "
+                            "for routine checking, a stronger one for hard "
+                            "reasoning. A model name for the assignee's "
+                            "provider; leave it out to use theirs. Their "
+                            "later turns are on their own model.", FALSE },
     { "turn_room", "string",
       "Which of your conversations this call is part of, from the "
       "[clawtilla] line on the message you are handling. Only "
@@ -438,7 +444,10 @@ static const ClawtParamInfo routine_add_params[] = {
     { "catch_up", "boolean", "Run once at startup if its time passed while "
       "the daemon was down.", FALSE },
     { "jitter_seconds", "integer", "Delay each run by up to this many "
-      "seconds.", FALSE }
+      "seconds.", FALSE },
+    { "model", "string", "A model for each run instead of your own -- a "
+      "cheaper one for a check that only compares a number. A model name "
+      "for your provider; leave it out to use yours.", FALSE }
 };
 
 static const ClawtParamInfo routine_update_params[] = {
@@ -454,7 +463,9 @@ static const ClawtParamInfo routine_update_params[] = {
     { "isolate", "boolean", "A conversation of its own.", FALSE },
     { "read_only", "boolean", "Read-only tools.", FALSE },
     { "catch_up", "boolean", "Run once after a missed time.", FALSE },
-    { "jitter_seconds", "integer", "Random delay, in seconds.", FALSE }
+    { "jitter_seconds", "integer", "Random delay, in seconds.", FALSE },
+    { "model", "string", "The model each run uses; empty for your own.",
+      FALSE }
 };
 
 static const ClawtParamInfo routine_id_params[] = {
@@ -3661,6 +3672,17 @@ tool_delegate(ClawtMcpTools *self,
     }
 
     clawt_task_set_reason(task, reason);
+
+    /*
+     * The model for the assignee's turn, carried on the task: the daemon
+     * puts it on the delivery (deliver_for_tools()) and libreclaw runs
+     * that one turn on it.
+     */
+    {
+        const gchar *model = argument_string(arguments, "model");
+
+        clawt_task_set_model(task, (model != NULL && *model != '\0') ? model : NULL);
+    }
 
     /*
      * Which conversation asked for this.  The settle notice goes back

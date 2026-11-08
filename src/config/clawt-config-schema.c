@@ -1647,6 +1647,18 @@ static const ClawtSchemaEntry schema[] = {
   NULL, NULL,
   "Which agent runs it.", "0.2.0" },
 
+{ "routines.model", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "The model this routine's run uses, instead of the agent's own.\n"
+  "\n"
+  "For that one turn only: the agent's next turn is back on its own\n"
+  "model. A scheduled check that reads a page and compares a number does\n"
+  "not need the model the agent plans with, and a run costs what its\n"
+  "model costs. A model name for the agent's provider, as in\n"
+  "`agents.model.model`; like that key it is not checked against the\n"
+  "catalogue, which goes stale, so a name the provider does not know\n"
+  "fails the run rather than the save. Empty is the agent's own model.", "0.7.7" },
+
 { "routines.enabled", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "true", NULL,
   "Whether it runs on its schedule. A disabled routine can still be\n"

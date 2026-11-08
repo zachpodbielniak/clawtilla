@@ -644,6 +644,54 @@ test_delegate_creates_a_task(void)
 }
 
 /*
+ * A delegation can name the model the assignee's turn runs on, and the
+ * task carries it to the delivery (deliver_for_tools() reads it there).
+ * Leaving it out, or leaving it empty, is the assignee's own model.
+ */
+static void
+test_a_delegation_can_name_a_model(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) named = NULL;
+    g_autoptr(JsonNode) plain = NULL;
+    g_autoptr(GPtrArray) tasks = NULL;
+    gboolean is_error = TRUE;
+    guint i;
+    guint with_model = 0;
+
+    fixture_setup(&fixture,
+        "agents:\n  - id: chief\n    chief_of_staff: true\n"
+        "  - id: researcher\n");
+
+    named = call_tool(&fixture, "chief", "clawtilla_delegate",
+                      "{\"agent_id\":\"researcher\","
+                      "\"task\":\"compare two numbers\",\"model\":\"haiku\"}");
+    response_text(named, &is_error);
+    g_assert_false(is_error);
+    plain = call_tool(&fixture, "chief", "clawtilla_delegate",
+                      "{\"agent_id\":\"researcher\","
+                      "\"task\":\"think hard\",\"model\":\"\"}");
+    response_text(plain, &is_error);
+    g_assert_false(is_error);
+
+    tasks = clawt_task_manager_list(fixture.tasks, "researcher", TRUE);
+    g_assert_cmpuint(tasks->len, ==, 2);
+    for (i = 0; i < tasks->len; i++) {
+        ClawtTask *task = g_ptr_array_index(tasks, i);
+
+        if (g_strcmp0(clawt_task_get_prompt(task), "compare two numbers") == 0) {
+            g_assert_cmpstr(clawt_task_get_model(task), ==, "haiku");
+            with_model++;
+        } else {
+            g_assert_null(clawt_task_get_model(task));
+        }
+    }
+    g_assert_cmpuint(with_model, ==, 1);
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * A delegation remembers which conversation asked for it.
  *
  * Under per-room sessions "the delegator" is one agent but several
@@ -4098,6 +4146,8 @@ main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
 
+    g_test_add_func("/mcp-tools/delegate/names-a-model",
+                    test_a_delegation_can_name_a_model);
     g_test_add_func("/mcp/team/member-cannot-delegate",
                     test_a_member_is_not_offered_delegation);
     g_test_add_func("/mcp/team/lead-stops-at-its-team",
