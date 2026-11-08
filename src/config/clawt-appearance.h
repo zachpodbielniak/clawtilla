@@ -739,6 +739,32 @@ void     clawt_appearance_set_show_descriptions(ClawtAppearance *self,
                                                 gboolean         show);
 
 /**
+ * clawt_appearance_get_sidebar_collapsed:
+ * @self: a #ClawtAppearance
+ *
+ * Whether the person hid the fleet sidebar, as `sidebar_collapsed` in
+ * `appearance.yaml`.  Off by default, and only a recognisable "on"
+ * (true, yes, 1) reads as on: a typo must not take the fleet out of
+ * the window.  The GTK and libregnum clients save it when the sidebar
+ * is hidden or shown; the web client has no desktop collapse.  It
+ * describes a wide window: a narrow one hides the sidebar regardless,
+ * and its toggle opens it as a drawer over the page.
+ *
+ * Returns: %TRUE when the sidebar is hidden
+ */
+gboolean clawt_appearance_get_sidebar_collapsed(ClawtAppearance *self);
+
+/**
+ * clawt_appearance_set_sidebar_collapsed:
+ * @self: a #ClawtAppearance
+ * @collapsed: whether the fleet sidebar is hidden
+ *
+ * See clawt_appearance_get_sidebar_collapsed().
+ */
+void     clawt_appearance_set_sidebar_collapsed(ClawtAppearance *self,
+                                                gboolean         collapsed);
+
+/**
  * clawt_appearance_to_css:
  * @self: a #ClawtAppearance
  *

@@ -58,8 +58,16 @@
 #endif
 
 /* The smallest window the client allows; every page is tested to fit it. */
-#define CLAWT_LRG_MIN_WIDTH  (960)
-#define CLAWT_LRG_MIN_HEIGHT (600)
+#define CLAWT_LRG_MIN_WIDTH  (640)
+#define CLAWT_LRG_MIN_HEIGHT (480)
+
+/*
+ * Below this the sidebar is never beside the page -- 340 pixels of it
+ * left a column too thin to read -- and its toggle opens it as a drawer
+ * over the page instead.  GTK collapses at 800; this client's header
+ * and tabs are wider, so it gives way sooner.
+ */
+#define CLAWT_LRG_NARROW_WIDTH (1000)
 
 #include "clawt-lrg-model.h"
 
@@ -268,6 +276,10 @@ void       clawt_lrg_window_resize(ClawtLrgApp *app, gfloat width,
 
 void clawt_lrg_show_page(ClawtLrgApp *app, ClawtPage page);
 void clawt_lrg_select_agent(ClawtLrgApp *app, const gchar *agent_id);
+/* Shows or hides the sidebar: saved when wide, a drawer when narrow. */
+void     clawt_lrg_window_toggle_sidebar(ClawtLrgApp *app);
+/* Whether the sidebar is on screen (beside the page or over it). */
+gboolean clawt_lrg_window_sidebar_shown(ClawtLrgApp *app);
 void clawt_lrg_select_room(ClawtLrgApp *app, const gchar *room_id);
 
 /* Re-reads agent.list and room.list and redraws the sidebar. */

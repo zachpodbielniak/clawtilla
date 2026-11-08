@@ -181,6 +181,7 @@ clawtilla-lrg --host 100.72.0.41 --token "$(ssh box clawtilla daemon token)"
 | Keys | Action |
 |------+--------|
 | =Ctrl+K= | Go to… (agents, rooms, pages) |
+| =Ctrl+B= | show or hide the sidebar (in a narrow window: open or close it over the page) |
 | =Ctrl+,= | Settings |
 | =Ctrl+Q= | Quit |
 | =Tab=, arrows | move focus; libregnum draws the focus ring |
@@ -394,7 +395,7 @@ Opening the drawer marks everything read, and an alert that lands while it is op
 :END:
 Source: =clients/lrg/lrg-sidebar.c=; decisions in =clients/lrg/lrg-chat-model.c= (=clawt_lrg_sidebar_entries()=, =clawt_lrg_agent_row_new()=, =clawt_lrg_reorder_entries()=), tested by =tests/test-lrg-models-chat.c=. Mirrors =clients/gtk/gtk-sidebar.c=.
 
-The sidebar is drawn in the =clawt-chrome= material, always visible at the left of the window. It reads =app->agents= (~agent.list~) and =app->rooms= (~room.list~), which the shell keeps current, and asks for ~team.list~ itself alongside every refresh, redrawing only when the answer changed. A failed ~team.list~ keeps the previous list rather than showing a fleet with no teams.
+The sidebar is drawn in the =clawt-chrome= material at the left of the window. The =‹= button at the left of the header, the menu's "Show or hide the sidebar" and =Ctrl+B= fold it away and bring it back; the choice is saved as ~sidebar_collapsed~ in ~appearance.yaml~ (=clawt_lrg_window_toggle_sidebar()=), which the GTK client reads too, so the next window of either opens the way this one was left. Below =CLAWT_LRG_NARROW_WIDTH= (1000 pixels) it is never beside the page -- 340 of them left a column too thin to read -- and the same toggle opens it as a drawer /over/ the page instead: the one sidebar is moved from the window's row onto the canvas (=clawt-drawer=), so its selection and scroll position are the ones it had. Choosing an agent or a room closes the drawer, and opening one is not saved: a small window is not a decision about the sidebar. This is what lets the window go down to 640 pixels (=CLAWT_LRG_MIN_WIDTH=). It reads =app->agents= (~agent.list~) and =app->rooms= (~room.list~), which the shell keeps current, and asks for ~team.list~ itself alongside every refresh, redrawing only when the answer changed. A failed ~team.list~ keeps the previous list rather than showing a fleet with no teams.
 
 *** What it shows
 - *Brand*: "clawtilla" and, under it, which daemon the window is connected to (=clawt_connection_describe()=).

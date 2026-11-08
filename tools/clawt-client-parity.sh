@@ -190,6 +190,14 @@ declare -A AFFORDANCES=(
     ["decision options stack"]="decision_option_button|decision-options|decision_option_button"
     ["sidebar face"]="clawt_gtk_build_avatar|agent-face|clawt_lrg_avatar(app, agent->name"
     #
+    # The fleet sidebar folds away.  GTK's split view and its toggle;
+    # the web client's drawer at phone width (its desktop layout has no
+    # collapse, by decision -- docs/web-client.org); the lrg toggle,
+    # which is a drawer below CLAWT_LRG_NARROW_WIDTH.  GTK and lrg save
+    # the choice as sidebar_collapsed; the web client has none to save.
+    #
+    ["sidebar collapses"]="clawt_appearance_set_sidebar_collapsed|nav-toggle|clawt_lrg_window_toggle_sidebar"
+    #
     # A group room drawn beside the agents, and the two things you can
     # only do to one from a client.
     #

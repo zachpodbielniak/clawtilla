@@ -1164,6 +1164,23 @@ on_sidebar_shown(GObject *object, GParamSpec *pspec, gpointer user_data)
 
     self->sidebar_open = adw_overlay_split_view_get_show_sidebar(
         ADW_OVERLAY_SPLIT_VIEW(object));
+
+    /*
+     * And saved, when it is a choice about a wide window: the same
+     * `sidebar_collapsed` clawtilla-lrg reads, so the next window -- of
+     * either client -- opens the way this one was left.  A collapsed
+     * split's toggle opens and closes a drawer, which is not a
+     * preference about the sidebar, so it is not written.
+     */
+    if (self->appearance != NULL &&
+        !adw_overlay_split_view_get_collapsed(ADW_OVERLAY_SPLIT_VIEW(object)) &&
+        clawt_appearance_get_sidebar_collapsed(self->appearance) == self->sidebar_open) {
+        g_autoptr(GError) error = NULL;
+
+        clawt_appearance_set_sidebar_collapsed(self->appearance, !self->sidebar_open);
+        if (!clawt_appearance_save(self->appearance, NULL, &error))
+            g_warning("could not save the sidebar's state: %s", error->message);
+    }
 }
 
 /*
@@ -5763,6 +5780,14 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
         }
 
         clawt_gtk_apply_appearance(self->appearance);
+
+        /* the agent list as it was left; restoring it is not a choice to save */
+        if (clawt_appearance_get_sidebar_collapsed(self->appearance)) {
+            self->sidebar_transient = TRUE;
+            adw_overlay_split_view_set_show_sidebar(self->split, FALSE);
+            self->sidebar_transient = FALSE;
+            self->sidebar_open = FALSE;
+        }
     }
 
     reload_connections(self);

@@ -1457,6 +1457,42 @@ test_descriptions_round_trip(void)
 }
 
 /*
+ * The sidebar's hidden state survives the file and the copy, defaults to
+ * shown, and reads as hidden only for a recognisable "on": a typo that
+ * hid the fleet would look like the fleet had gone.
+ */
+static void
+test_sidebar_collapsed_round_trip(void)
+{
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+    g_autoptr(ClawtAppearance) back = NULL;
+    g_autoptr(ClawtAppearance) copy = NULL;
+    g_autoptr(ClawtAppearance) typo = NULL;
+    g_autoptr(ClawtAppearance) absent = NULL;
+    g_autofree gchar *data = NULL;
+
+    g_assert_false(clawt_appearance_get_sidebar_collapsed(appearance));
+
+    clawt_appearance_set_sidebar_collapsed(appearance, TRUE);
+    data = clawt_appearance_to_data(appearance);
+    g_assert_nonnull(strstr(data, "sidebar_collapsed: true"));
+    back = clawt_appearance_parse(data, NULL);
+    g_assert_nonnull(back);
+    g_assert_true(clawt_appearance_get_sidebar_collapsed(back));
+
+    copy = clawt_appearance_copy(appearance);
+    g_assert_true(clawt_appearance_get_sidebar_collapsed(copy));
+
+    typo = clawt_appearance_parse("sidebar_collapsed: ture\n", NULL);
+    g_assert_nonnull(typo);
+    g_assert_false(clawt_appearance_get_sidebar_collapsed(typo));
+
+    absent = clawt_appearance_parse("theme: catppuccin-mocha\n", NULL);
+    g_assert_nonnull(absent);
+    g_assert_false(clawt_appearance_get_sidebar_collapsed(absent));
+}
+
+/*
  * A file written before this key existed keeps its descriptions.
  *
  * Absent has to be "show" rather than "off", or upgrading would empty
@@ -1895,6 +1931,8 @@ main(int argc, char *argv[])
                     test_an_unreadable_value_shows_descriptions);
     g_test_add_func("/appearance/descriptions-emit-no-css",
                     test_descriptions_emit_no_css);
+    g_test_add_func("/appearance/sidebar-collapsed-round-trip",
+                    test_sidebar_collapsed_round_trip);
 
     g_test_add_func("/appearance/lrg/defaults", test_lrg_keys_default_to_zero);
     g_test_add_func("/appearance/lrg/round-trip", test_lrg_keys_round_trip);

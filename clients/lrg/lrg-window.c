@@ -66,6 +66,11 @@ typedef struct {
     LrgWidget  *main_column;
     LrgWidget  *alerts_drawer;
     gfloat      column_cap;    /* the last cap set, so it is set on change */
+    LrgWidget  *root;          /* the hbox the sidebar lives in when it is beside */
+    LrgWidget  *sidebar_toggle;
+    gboolean    narrow;        /* the window is below CLAWT_LRG_NARROW_WIDTH */
+    gboolean    drawer_open;   /* narrow, and the sidebar is open over the page */
+    gboolean    sidebar_over;  /* the sidebar is a canvas child, not in root */
     guint       refresh_due;   /* RefreshKind bits waiting on refresh_source */
     GSource    *refresh_source;
     GSimpleActionGroup *actions;
@@ -316,6 +321,97 @@ on_page_clicked(LrgButton *button, gpointer user_data)
 
 /* ── Selection ────────────────────────────────────────────────────── */
 
+/* ── The sidebar: beside, hidden, or a drawer over the page ───────── */
+
+/*
+ * Puts the sidebar where the current state says.  Wide: in the row,
+ * shown unless the person hid it (`sidebar_collapsed`).  Narrow: never
+ * in the row -- beside the page it left a column too thin to read --
+ * and, while the drawer is open, a child of the canvas on top of the
+ * page instead.  Moving it rather than drawing a second one keeps one
+ * sidebar, with one selection and one scroll position.
+ */
+static void
+place_sidebar(ClawtLrgApp *app)
+{
+    LrgWidget *sidebar = app->sidebar;
+    gboolean over = shell.narrow && shell.drawer_open;
+    gboolean shown = shell.narrow
+        ? shell.drawer_open
+        : !clawt_appearance_get_sidebar_collapsed(app->appearance);
+
+    if (sidebar == NULL || shell.root == NULL)
+        return;
+
+    if (over != shell.sidebar_over) {
+        g_object_ref(sidebar);
+        lrg_container_remove_child(
+            LRG_CONTAINER(over ? shell.root : LRG_WIDGET(app->canvas)), sidebar);
+        if (over)
+            lrg_container_add_child(LRG_CONTAINER(app->canvas), sidebar);
+        else
+            lrg_container_insert_child_at(LRG_CONTAINER(shell.root), sidebar, 0);
+        g_object_unref(sidebar);
+        shell.sidebar_over = over;
+    }
+
+    if (over)
+        lrg_widget_add_class(sidebar, "clawt-drawer");
+    else
+        lrg_widget_remove_class(sidebar, "clawt-drawer");
+
+    lrg_widget_set_visible(sidebar, shown);
+
+    if (shell.sidebar_toggle != NULL)
+        lrg_button_set_text(LRG_BUTTON(shell.sidebar_toggle),
+                            shown ? "\xe2\x80\xb9" : "\xe2\x80\xba");
+
+    /* the column's width depends on it: recompute on the next resize */
+    shell.column_cap = -1.0f;
+    clawt_lrg_app_wake(app);
+}
+
+gboolean
+clawt_lrg_window_sidebar_shown(ClawtLrgApp *app)
+{
+    return app->sidebar != NULL && lrg_widget_get_visible(app->sidebar);
+}
+
+void
+clawt_lrg_window_toggle_sidebar(ClawtLrgApp *app)
+{
+    g_autoptr(GError) error = NULL;
+
+    /*
+     * Narrow, the toggle opens and closes the drawer and remembers
+     * nothing: the window being small is not a decision about the
+     * sidebar.  Wide, it is the person's choice, and it is saved, so
+     * the next window opens the way this one was left -- and GTK, which
+     * reads the same key, does too.
+     */
+    if (shell.narrow) {
+        shell.drawer_open = !shell.drawer_open;
+    } else {
+        clawt_appearance_set_sidebar_collapsed(
+            app->appearance,
+            !clawt_appearance_get_sidebar_collapsed(app->appearance));
+        if (!clawt_appearance_save(app->appearance, NULL, &error))
+            g_warning("could not save the sidebar's state: %s", error->message);
+    }
+
+    place_sidebar(app);
+}
+
+/* An agent or a room was chosen from the drawer: it has done its job. */
+static void
+close_drawer(ClawtLrgApp *app)
+{
+    if (shell.narrow && shell.drawer_open) {
+        shell.drawer_open = FALSE;
+        place_sidebar(app);
+    }
+}
+
 void
 clawt_lrg_window_resize(ClawtLrgApp *app, gfloat width, gfloat height)
 {
@@ -325,6 +421,23 @@ clawt_lrg_window_resize(ClawtLrgApp *app, gfloat width, gfloat height)
     if (shell.main_column == NULL)
         return;
 
+    /* crossing the narrow edge either way closes a drawer */
+    {
+        gboolean narrow = width < CLAWT_LRG_NARROW_WIDTH * (gfloat)app->scale;
+
+        if (narrow != shell.narrow) {
+            shell.narrow = narrow;
+            shell.drawer_open = FALSE;
+            place_sidebar(app);
+        }
+    }
+
+    /* over the page, the drawer is the window's height at its own width */
+    if (shell.sidebar_over) {
+        lrg_widget_set_position(app->sidebar, 0.0f, 0.0f);
+        lrg_widget_set_size(app->sidebar, 340.0f * (gfloat)app->scale, height);
+    }
+
     /*
      * The column gets what is left and no more.  A box allocates its
      * children their natural width, and one natural width too many -- a
@@ -333,7 +446,9 @@ clawt_lrg_window_resize(ClawtLrgApp *app, gfloat width, gfloat height)
      * gone.  Capping it here stops that at the root, whatever page it
      * came from; the content then wraps or clips inside the column.
      */
-    if (app->sidebar != NULL && lrg_widget_get_visible(app->sidebar))
+    /* a drawer is over the page, not beside it, and takes no width */
+    if (app->sidebar != NULL && lrg_widget_get_visible(app->sidebar) &&
+        !shell.sidebar_over)
         lrg_widget_get_min_size(app->sidebar, &w, NULL), used += w;
 
     if (shell.alerts_drawer != NULL &&
@@ -369,6 +484,7 @@ clawt_lrg_select_agent(ClawtLrgApp *app, const gchar *agent_id)
 
     g_free(app->agent_id);
     app->agent_id = g_strdup(agent_id);
+    close_drawer(app);
 
     /* an agent's own conversation is its direct room */
     g_clear_pointer(&app->room_id, g_free);
@@ -388,6 +504,7 @@ clawt_lrg_select_room(ClawtLrgApp *app, const gchar *room_id)
     g_free(app->room_id);
     app->room_id = g_strdup(room_id);
     g_clear_pointer(&app->agent_id, g_free);
+    close_drawer(app);
 
     app->generation++;
     clawt_lrg_sidebar_refresh(app);
@@ -729,6 +846,8 @@ on_action(GSimpleAction *action, GVariant *parameter, gpointer user_data)
         clawt_lrg_new_room_dialog(app);
     else if (g_strcmp0(name, "connections") == 0)
         clawt_lrg_open_settings(app, "connections");
+    else if (g_strcmp0(name, "toggle-sidebar") == 0)
+        clawt_lrg_window_toggle_sidebar(app);
 }
 
 static GSimpleActionGroup *
@@ -736,7 +855,8 @@ build_actions(ClawtLrgApp *app)
 {
     static const gchar *const names[] = {
         "navigate", "settings", "quit", "pause-fleet", "resume-fleet",
-        "agent-create", "agent-import", "room-create", "connections"
+        "agent-create", "agent-import", "room-create", "connections",
+        "toggle-sidebar"
     };
     GSimpleActionGroup *group = g_simple_action_group_new();
     gsize i;
@@ -766,6 +886,8 @@ build_app_menu(void)
     g_menu_append_section(menu, NULL, G_MENU_MODEL(fleet));
 
     g_menu_append(app_section, "Go to…\tCtrl+K", "win.navigate");
+    g_menu_append(app_section, "Show or hide the sidebar\tCtrl+B",
+                  "win.toggle-sidebar");
     g_menu_append(app_section, "Connections…", "win.connections");
     g_menu_append(app_section, "Settings…\tCtrl+,", "win.settings");
     g_menu_append(app_section, "Quit\tCtrl+Q", "win.quit");
@@ -791,6 +913,12 @@ on_island_toggled(LrgIsland *island, gboolean expanded, gpointer user_data)
 
 /* ── Building ─────────────────────────────────────────────────────── */
 
+static void
+on_sidebar_toggle(LrgButton *button, gpointer user_data)
+{
+    clawt_lrg_window_toggle_sidebar(user_data);
+}
+
 static LrgWidget *
 build_header(ClawtLrgApp *app)
 {
@@ -803,6 +931,15 @@ build_header(ClawtLrgApp *app)
 
     lrg_widget_add_class(header, "clawt-chrome");
     lrg_container_set_padding(LRG_CONTAINER(header), 12.0f);
+
+    /*
+     * The sidebar's toggle, at the edge it hides: "‹" folds it away,
+     * "›" brings it back (or, in a narrow window, opens it over the page).
+     */
+    shell.sidebar_toggle = clawt_lrg_button("\xe2\x80\xb9", "flat",
+                                            G_CALLBACK(on_sidebar_toggle), app);
+    lrg_widget_set_valign(shell.sidebar_toggle, LRG_ALIGN_CENTER);
+    clawt_lrg_take(header, shell.sidebar_toggle);
 
     shell.header_avatar_slot = clawt_lrg_hbox(0.0f);
     lrg_widget_set_valign(shell.header_avatar_slot, LRG_ALIGN_CENTER);
@@ -914,6 +1051,7 @@ clawt_lrg_window_build(ClawtLrgApp *app)
     lrg_widget_set_min_size(app->sidebar, 340.0f * (gfloat)app->scale, 0.0f);
     lrg_widget_set_max_size(app->sidebar, 340.0f * (gfloat)app->scale, -1.0f);
     clawt_lrg_take(root, app->sidebar);
+    shell.root = root;
 
     clawt_lrg_take(main_column, build_header(app));
 
@@ -993,6 +1131,9 @@ clawt_lrg_window_build(ClawtLrgApp *app)
 
     clawt_lrg_show_page(app, CLAWT_PAGE_CHAT);
     clawt_lrg_update_banner(app);
+
+    /* as the person left it, from appearance.yaml */
+    place_sidebar(app);
 
     return root;
 }

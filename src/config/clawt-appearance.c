@@ -53,6 +53,12 @@ struct _ClawtAppearance {
     gboolean   hide_descriptions;
 
     /*
+     * Whether the person hid the fleet sidebar.  Zero is shown, which is
+     * what every client did before this was remembered.
+     */
+    gboolean   sidebar_collapsed;
+
+    /*
      * Set only when the chosen scheme came from a file, because a
      * palette on disk has no ClawtTheme value.  The built-in schemes go
      * on `theme` as they always did, so nothing about how a choice is
@@ -103,6 +109,7 @@ clawt_appearance_copy(ClawtAppearance *self)
     copy->measure = self->measure;
     copy->run_spacing = self->run_spacing;
     copy->hide_descriptions = self->hide_descriptions;
+    copy->sidebar_collapsed = self->sidebar_collapsed;
     copy->palette = g_strdup(self->palette);
     copy->lrg_motion = self->lrg_motion;
     copy->lrg_material = self->lrg_material;
@@ -617,6 +624,23 @@ clawt_appearance_set_show_descriptions(ClawtAppearance *self, gboolean show)
     g_return_if_fail(self != NULL);
 
     self->hide_descriptions = !show;
+}
+
+gboolean
+clawt_appearance_get_sidebar_collapsed(ClawtAppearance *self)
+{
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    return self->sidebar_collapsed;
+}
+
+void
+clawt_appearance_set_sidebar_collapsed(ClawtAppearance *self,
+                                       gboolean         collapsed)
+{
+    g_return_if_fail(self != NULL);
+
+    self->sidebar_collapsed = collapsed ? TRUE : FALSE;
 }
 
 /* ── Themes ──────────────────────────────────────────────────────── */
@@ -1677,6 +1701,18 @@ clawt_appearance_parse(const gchar *text, GError **error)
                     g_strcmp0(value, "0") == 0));
 
     /*
+     * Only a recognisable "on" hides the sidebar: a typo must not take
+     * the fleet out of the window, which would look like it had gone.
+     */
+    value = member_string(mapping, "sidebar_collapsed");
+
+    if (value != NULL)
+        clawt_appearance_set_sidebar_collapsed(
+            self, g_ascii_strcasecmp(value, "true") == 0 ||
+                  g_ascii_strcasecmp(value, "yes") == 0 ||
+                  g_strcmp0(value, "1") == 0);
+
+    /*
      * clawtilla-lrg's keys.  A nick this build does not know is the
      * shipped value, said once on stderr: a hand-edited preference must
      * not cost somebody their client, and must not silently become a
@@ -1829,6 +1865,16 @@ clawt_appearance_to_data(ClawtAppearance *self)
 
     g_string_append_printf(out, "agent_descriptions: %s\n",
                            self->hide_descriptions ? "false" : "true");
+
+    g_string_append(out,
+        "\n"
+        "# Whether the fleet sidebar is hidden. clawtilla-gtk and\n"
+        "# clawtilla-lrg remember it when you hide or show it; the web\n"
+        "# client's desktop layout has no collapse and ignores it. A narrow\n"
+        "# window hides the sidebar whatever this says, and its toggle\n"
+        "# then opens it over the page rather than beside it.\n");
+    g_string_append_printf(out, "sidebar_collapsed: %s\n",
+                           self->sidebar_collapsed ? "true" : "false");
 
     g_string_append(out,
         "\n"

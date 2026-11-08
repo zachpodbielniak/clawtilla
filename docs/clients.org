@@ -1261,6 +1261,8 @@ Like the fonts and the folded teams, it lives in the /client's/ config
 in the browser) and not in ~clawtilla.yaml~. It is about the person at
 this screen, not about the fleet.
 
+~sidebar_collapsed~ beside it remembers that the agent list was hidden, for the same person at the same screen. The GTK client restores it when a window opens and saves it whenever the list is shown or hidden in a wide window; the libregnum client does the same. Either client's narrow window opens and closes the list as a drawer, which is not saved -- a small window is not a decision about the sidebar. The web client's desktop layout has no collapse and ignores the key; its sidebar is a drawer only at phone width. Only a recognisable "on" (=true=, =yes=, =1=) hides it, since a typo that took the fleet out of the window would look like the fleet had gone.
+
 What it does /not/ hide is what an agent is doing. =working…= and =3
 waiting to be read= stand in place of the description while they apply,
 and a list that stopped saying which agents are working would answer a

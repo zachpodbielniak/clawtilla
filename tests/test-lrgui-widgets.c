@@ -256,6 +256,62 @@ test_every_page_fits_the_window(Fixture *fixture, gconstpointer data)
     resize_to(app, 1280.0f, 800.0f);
 }
 
+/*
+ * The sidebar folds away and comes back, and a narrow window makes it a
+ * drawer over the page.  Wide, the choice is saved in appearance.yaml
+ * (the next window opens the same way); narrow, it is not -- a small
+ * window is not a decision about the sidebar.  Choosing a room from the
+ * drawer closes it.
+ */
+static void
+test_sidebar_toggles_and_drawers(Fixture *fixture, gconstpointer data)
+{
+    ClawtLrgApp *app = fixture->app;
+    g_autoptr(ClawtAppearance) saved = NULL;
+    gfloat wide_column;
+
+    /* wide: beside the page, then hidden, and saved */
+    resize_to(app, 1600.0f, 900.0f);
+    g_assert_true(clawt_lrg_window_sidebar_shown(app));
+    g_assert_true(lrg_widget_get_parent(app->sidebar) != LRG_CONTAINER(app->canvas));
+    wide_column = lrg_widget_get_width(app->switcher);
+
+    clawt_lrg_window_toggle_sidebar(app);
+    resize_to(app, 1600.0f, 900.0f);
+    g_assert_false(clawt_lrg_window_sidebar_shown(app));
+    /* its width went to the page */
+    g_assert_cmpfloat(lrg_widget_get_width(app->switcher), >, wide_column);
+    saved = clawt_appearance_load(NULL, NULL);
+    g_assert_nonnull(saved);
+    g_assert_true(clawt_appearance_get_sidebar_collapsed(saved));
+
+    clawt_lrg_window_toggle_sidebar(app);
+    resize_to(app, 1600.0f, 900.0f);
+    g_assert_true(clawt_lrg_window_sidebar_shown(app));
+
+    /* narrow: hidden whatever was saved, and the toggle opens a drawer */
+    resize_to(app, 700.0f, 600.0f);
+    g_assert_false(clawt_lrg_window_sidebar_shown(app));
+    clawt_lrg_window_toggle_sidebar(app);
+    resize_to(app, 700.0f, 600.0f);
+    g_assert_true(clawt_lrg_window_sidebar_shown(app));
+    g_assert_true(lrg_widget_get_parent(app->sidebar) == LRG_CONTAINER(app->canvas));
+    g_assert_cmpfloat(lrg_widget_get_height(app->sidebar), ==, 600.0f);
+    /* over the page, not beside it: the page keeps the window's width */
+    g_assert_cmpfloat(lrg_widget_get_x(app->switcher), <, 10.0f);
+
+    /* choosing from the drawer closes it */
+    clawt_lrg_select_room(app, "standup");
+    resize_to(app, 700.0f, 600.0f);
+    g_assert_false(clawt_lrg_window_sidebar_shown(app));
+    g_assert_true(lrg_widget_get_parent(app->sidebar) != LRG_CONTAINER(app->canvas));
+
+    /* and wide again, it is beside the page as the person left it */
+    clawt_lrg_select_room(app, NULL);
+    resize_to(app, 1280.0f, 800.0f);
+    g_assert_true(clawt_lrg_window_sidebar_shown(app));
+}
+
 static void
 test_section_tabs_walk_the_library(Fixture *fixture, gconstpointer data)
 {
@@ -390,6 +446,8 @@ main(int argc, char *argv[])
                test_every_page_builds_and_lays_out, fixture_tear_down);
     g_test_add("/lrgui/widgets/every-page-fits", Fixture, NULL, fixture_set_up,
                test_every_page_fits_the_window, fixture_tear_down);
+    g_test_add("/lrgui/widgets/sidebar-toggle", Fixture, NULL, fixture_set_up,
+               test_sidebar_toggles_and_drawers, fixture_tear_down);
     g_test_add("/lrgui/widgets/section-tabs", Fixture, NULL, fixture_set_up,
                test_section_tabs_walk_the_library, fixture_tear_down);
     g_test_add("/lrgui/widgets/disconnected", Fixture, NULL, fixture_set_up,

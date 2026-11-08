@@ -761,6 +761,7 @@ clawt_lrg_app_build(ClawtLrgApp *app)
     clawt_lrg_add(LRG_WIDGET(app->canvas), LRG_WIDGET(app->toasts));
 
     lrg_canvas_add_shortcut(app->canvas, "<Control>k", "win.navigate", NULL);
+    lrg_canvas_add_shortcut(app->canvas, "<Control>b", "win.toggle-sidebar", NULL);
     lrg_canvas_add_shortcut(app->canvas, "<Control>comma", "win.settings",
                             NULL);
     lrg_canvas_add_shortcut(app->canvas, "<Control>q", "win.quit", NULL);
@@ -791,9 +792,10 @@ clawt_lrg_app_run(ClawtLrgApp *app, const gchar *self_test_page)
         SetTraceLogLevel(LOG_WARNING);
         window = grl_window_new(1360, 860, "clawtilla");
         /*
-         * The narrowest window every page fits: a 340-pixel sidebar, and a
-         * header of avatar, island, Alerts and menu beside it.  At 720 the
-         * header alone was wider than what was left, whatever shrank.
+         * The narrowest window every page fits.  Below
+         * CLAWT_LRG_NARROW_WIDTH the sidebar is a drawer rather than a
+         * column, which is what lets the window get this small; with it
+         * beside the page, 720 left a header wider than what remained.
          * tests/test-lrgui-widgets.c lays every page out at this size.
          */
         SetWindowMinSize(CLAWT_LRG_MIN_WIDTH, CLAWT_LRG_MIN_HEIGHT);
