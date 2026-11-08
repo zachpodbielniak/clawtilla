@@ -548,6 +548,13 @@ critical fired.
 - A skip-probe is code. One that names no connection started a pod module
   against the machine's own podman, which `make test` must never need.
 - The hermetic claim is checkable: `unshare -rn <test-binary>`.
+- **`make test` runs with `HOME` pointing at a path that does not
+  exist** (`$TMPDIR/no-home`), so every default that names the home
+  directory -- `skills.extra_dirs`' `~/.agents/skills`, `skills.dir`,
+  anything later -- reads nothing and a test that writes there shows up
+  as litter. The first sign was a test passing on a machine with an
+  empty `~/.agents/skills` and failing on the author's, on a skill the
+  test had never heard of. Never `rm -rf "$HOME"` to clean up after it.
 - **A default that names the home directory is a write into it.** Bundled
   skills were installed into `skills.dir`, which defaults to
   `~/.clawtilla/skills`, so every fixture that did not pin it wrote into

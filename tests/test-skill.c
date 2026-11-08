@@ -716,6 +716,70 @@ test_a_disabled_skill_is_assigned_and_not_active(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * skills.extra_dirs: another root, read and never written.  skills.dir
+ * wins a clash, a skill found only there is read-only, and turning it
+ * off keeps the setting under the settings directory -- nothing is
+ * written into ~/.agents/skills, which belongs to the person.
+ */
+static void
+test_an_extra_root_is_read_and_never_written(void)
+{
+    Fixture fixture = { 0 };
+    g_autofree gchar *extra = NULL;
+    g_autofree gchar *settings = NULL;
+    g_autofree gchar *mine = NULL;
+    g_autofree gchar *theirs = NULL;
+    g_autofree gchar *borrowed = NULL;
+    g_autofree gchar *beside = NULL;
+    g_autofree gchar *kept = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtSkill *skill;
+
+    fixture_setup(&fixture, NULL);
+    extra = g_build_filename(fixture.dir, "agents-skills", NULL);
+    settings = g_build_filename(fixture.dir, "state", "skill-settings", NULL);
+
+    mine = write_skill(fixture.skills_dir, "release", "Ours", NULL);
+    theirs = write_skill(extra, "release", "Theirs", NULL);
+    borrowed = write_skill(extra, "brandkit", "Borrowed", NULL);
+
+    clawt_skill_library_add_extra_directory(fixture.library, extra);
+    clawt_skill_library_set_settings_directory(fixture.library, settings);
+    clawt_skill_library_scan(fixture.library);
+
+    /* skills.dir wins the clash; the other is found, and read-only */
+    skill = clawt_skill_library_lookup(fixture.library, "release");
+    g_assert_nonnull(skill);
+    g_assert_cmpstr(clawt_skill_get_description(skill), ==, "Ours");
+    g_assert_null(clawt_skill_library_get_read_only_root(fixture.library, "release"));
+    g_assert_nonnull(clawt_skill_library_lookup(fixture.library, "brandkit"));
+    g_assert_cmpstr(clawt_skill_library_get_read_only_root(fixture.library, "brandkit"),
+                    ==, extra);
+
+    /* turned off: the setting is ours, beside nothing of theirs */
+    g_assert_true(clawt_skill_library_set_enabled(fixture.library, "brandkit", FALSE,
+                                                  &error));
+    g_assert_no_error(error);
+    beside = g_build_filename(borrowed, ".clawtilla.yaml", NULL);
+    kept = g_build_filename(settings, "brandkit", ".clawtilla.yaml", NULL);
+    g_assert_false(g_file_test(beside, G_FILE_TEST_EXISTS));
+    g_assert_true(g_file_test(kept, G_FILE_TEST_EXISTS));
+
+    /* ...and survives a rescan */
+    clawt_skill_library_scan(fixture.library);
+    g_assert_false(clawt_skill_get_enabled(
+        clawt_skill_library_lookup(fixture.library, "brandkit")));
+
+    /* removing is refused, naming where it lives */
+    g_assert_false(clawt_skill_library_remove(fixture.library, "brandkit", &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED);
+    g_assert_nonnull(strstr(error->message, extra));
+    g_assert_true(g_file_test(borrowed, G_FILE_TEST_IS_DIR));
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -742,6 +806,8 @@ main(int argc, char *argv[])
                     test_an_edited_skill_is_noticed);
     g_test_add_func("/skill/enable-remove",
                     test_enable_and_remove_round_trip);
+    g_test_add_func("/skill/extra-root-read-only",
+                    test_an_extra_root_is_read_and_never_written);
     g_test_add_func("/skill/library-name-gate",
                     test_the_library_refuses_a_traversal_name);
 

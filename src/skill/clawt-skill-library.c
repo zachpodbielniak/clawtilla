@@ -8,6 +8,8 @@
  */
 
 #include "clawtilla.h"
+
+#include <errno.h>
 #include "skill/clawt-skill-library.h"
 #include "skill/clawt-skill-scan.h"
 
@@ -41,6 +43,19 @@ struct _ClawtSkillLibrary {
 
     gchar        *directory;
     gchar        *bundled_directory;  /* clawtilla's own, read after directory */
+
+    /*
+     * Somebody else's skill directories -- ~/.agents/skills by default,
+     * the one ai-glib's harnesses share -- read between `directory` and
+     * the bundled root and never written: a skill found only there is
+     * read-only here, and its sidecar lives under @settings_directory
+     * instead of beside it.  A key the person owns is read, not
+     * populated.
+     */
+    GPtrArray    *extra_directories;  /* gchar* */
+    gchar        *settings_directory; /* nullable: sidecars of read-only skills */
+    GHashTable   *read_only;          /* name -> the root it came from */
+    GPtrArray    *extra_monitors;     /* GFileMonitor*, one per extra root */
     GHashTable   *skills;      /* gchar* -> ClawtSkill* */
     GPtrArray    *order;       /* gchar*, names in sorted order */
     GPtrArray    *problems;    /* gchar* */
@@ -251,7 +266,6 @@ library_read_one(ClawtSkillLibrary *self,
     g_autoptr(ClawtSkill) skill = NULL;
     g_autofree gchar *digest = NULL;
 
-    (void)self;
     directory = clawt_skill_directory_for(root, name);
 
     if (directory == NULL) {
@@ -271,7 +285,17 @@ library_read_one(ClawtSkillLibrary *self,
         return NULL;
 
     clawt_skill_set_directory(skill, directory);
-    load_sidecar(skill, directory);
+
+    /* A read-only skill's settings are ours, kept under the state directory. */
+    if (g_hash_table_contains(self->read_only, name)) {
+        if (self->settings_directory != NULL) {
+            g_autofree gchar *settings = g_build_filename(self->settings_directory, name, NULL);
+
+            load_sidecar(skill, settings);
+        }
+    } else {
+        load_sidecar(skill, directory);
+    }
 
     /*
      * Provenance is checked, not merely stored.
@@ -310,7 +334,8 @@ compare_names(gconstpointer a, gconstpointer b)
  * version for ever, so the bundled root's copy replaces it.
  */
 static void
-scan_root(ClawtSkillLibrary *self, const gchar *root, gboolean bundled)
+scan_root(ClawtSkillLibrary *self, const gchar *root, gboolean bundled,
+          gboolean read_only)
 {
     g_autoptr(GDir) dir = NULL;
     g_autoptr(GError) open_error = NULL;
@@ -364,6 +389,10 @@ scan_root(ClawtSkillLibrary *self, const gchar *root, gboolean bundled)
             continue;
         }
 
+        /* skills.dir, and an earlier extra root, win over a later one */
+        if (read_only && g_hash_table_contains(self->skills, entry))
+            continue;
+
         if (bundled && g_hash_table_contains(self->skills, entry)) {
             ClawtSkill *existing = g_hash_table_lookup(self->skills, entry);
             g_autofree gchar *stale = g_build_filename(
@@ -373,9 +402,14 @@ scan_root(ClawtSkillLibrary *self, const gchar *root, gboolean bundled)
                 continue;
         }
 
+        if (read_only)
+            g_hash_table_replace(self->read_only, g_strdup(entry), g_strdup(root));
+
         skill = library_read_one(self, root, entry, &error);
 
         if (skill == NULL) {
+            if (read_only)
+                g_hash_table_remove(self->read_only, entry);
             library_note_problem(self, entry, error->message);
             continue;
         }
@@ -405,8 +439,11 @@ clawt_skill_library_scan(ClawtSkillLibrary *self)
     g_ptr_array_set_size(self->order, 0);
     g_ptr_array_set_size(self->problems, 0);
 
-    scan_root(self, self->directory, FALSE);
-    scan_root(self, self->bundled_directory, TRUE);
+    g_hash_table_remove_all(self->read_only);
+    scan_root(self, self->directory, FALSE, FALSE);
+    for (i = 0; i < self->extra_directories->len; i++)
+        scan_root(self, g_ptr_array_index(self->extra_directories, i), FALSE, TRUE);
+    scan_root(self, self->bundled_directory, TRUE, FALSE);
     g_ptr_array_sort(self->order, compare_names);
 
     {
@@ -500,6 +537,16 @@ clawt_skill_library_set_watching(ClawtSkillLibrary *self, gboolean watching)
             g_clear_object(&self->monitor);
         }
 
+        while (self->extra_monitors->len > 0) {
+            GFileMonitor *extra = g_ptr_array_index(self->extra_monitors,
+                                                    self->extra_monitors->len - 1);
+
+            g_signal_handlers_disconnect_by_data(extra, self);
+            g_file_monitor_cancel(extra);
+            g_ptr_array_remove_index(self->extra_monitors,
+                                     self->extra_monitors->len - 1);
+        }
+
         g_object_notify_by_pspec(G_OBJECT(self), properties[PROP_WATCHING]);
         return;
     }
@@ -532,6 +579,26 @@ clawt_skill_library_set_watching(ClawtSkillLibrary *self, gboolean watching)
         } else {
             g_signal_connect(self->monitor, "changed",
                              G_CALLBACK(on_directory_changed), self);
+        }
+    }
+
+    /* The extra roots too: a skill added to ~/.agents/skills appears without a reload. */
+    {
+        guint i;
+
+        for (i = 0; i < self->extra_directories->len; i++) {
+            const gchar *root = g_ptr_array_index(self->extra_directories, i);
+            g_autoptr(GFile) dir = NULL;
+            GFileMonitor *extra;
+
+            if (!g_file_test(root, G_FILE_TEST_IS_DIR))
+                continue;
+            dir = g_file_new_for_path(root);
+            extra = g_file_monitor_directory(dir, G_FILE_MONITOR_WATCH_MOVES, NULL, NULL);
+            if (extra == NULL)
+                continue;
+            g_signal_connect(extra, "changed", G_CALLBACK(on_directory_changed), self);
+            g_ptr_array_add(self->extra_monitors, extra);
         }
     }
 
@@ -924,6 +991,29 @@ clawt_skill_library_set_enabled(ClawtSkillLibrary  *self,
         return FALSE;
     }
 
+    if (g_hash_table_contains(self->read_only, name)) {
+        g_autofree gchar *settings = NULL;
+
+        if (self->settings_directory == NULL) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED,
+                        "'%s' is read from %s, which clawtilla does not write "
+                        "to, and there is nowhere else to keep its setting",
+                        name, (const gchar *)g_hash_table_lookup(self->read_only, name));
+            return FALSE;
+        }
+        settings = g_build_filename(self->settings_directory, name, NULL);
+        if (g_mkdir_with_parents(settings, 0700) != 0) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                        "could not create %s: %s", settings, g_strerror(errno));
+            return FALSE;
+        }
+        clawt_skill_set_enabled(skill, enabled);
+        if (!save_sidecar(skill, settings, error))
+            return FALSE;
+        g_signal_emit(self, signals[SIGNAL_CHANGED], 0);
+        return TRUE;
+    }
+
     clawt_skill_set_enabled(skill, enabled);
 
     if (!save_sidecar(skill, clawt_skill_get_directory(skill), error))
@@ -957,6 +1047,16 @@ clawt_skill_library_remove(ClawtSkillLibrary  *self,
         return FALSE;
     }
 
+    /* Somebody else's directory: say where it is, rather than "no such skill". */
+    if (!g_file_test(directory, G_FILE_TEST_IS_DIR) &&
+        g_hash_table_contains(self->read_only, name)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED,
+                    "'%s' is read from %s (skills.extra_dirs), which clawtilla "
+                    "does not delete from; remove it there, or turn it off here",
+                    name, (const gchar *)g_hash_table_lookup(self->read_only, name));
+        return FALSE;
+    }
+
     if (!g_file_test(directory, G_FILE_TEST_IS_DIR)) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
                     "no skill called '%s'", name);
@@ -985,6 +1085,34 @@ clawt_skill_library_set_bundled_directory(ClawtSkillLibrary *self,
 
     g_free(self->bundled_directory);
     self->bundled_directory = g_strdup(directory);
+}
+
+void
+clawt_skill_library_add_extra_directory(ClawtSkillLibrary *self, const gchar *directory)
+{
+    g_return_if_fail(CLAWT_IS_SKILL_LIBRARY(self));
+
+    if (directory == NULL || *directory == '\0' ||
+        g_strcmp0(directory, self->directory) == 0)
+        return;
+    g_ptr_array_add(self->extra_directories, g_strdup(directory));
+}
+
+void
+clawt_skill_library_set_settings_directory(ClawtSkillLibrary *self, const gchar *directory)
+{
+    g_return_if_fail(CLAWT_IS_SKILL_LIBRARY(self));
+
+    g_free(self->settings_directory);
+    self->settings_directory = g_strdup(directory);
+}
+
+const gchar *
+clawt_skill_library_get_read_only_root(ClawtSkillLibrary *self, const gchar *name)
+{
+    g_return_val_if_fail(CLAWT_IS_SKILL_LIBRARY(self), NULL);
+
+    return name != NULL ? g_hash_table_lookup(self->read_only, name) : NULL;
 }
 
 const gchar *
@@ -1018,6 +1146,10 @@ clawt_skill_library_finalize(GObject *object)
 
     g_clear_pointer(&self->directory, g_free);
     g_clear_pointer(&self->bundled_directory, g_free);
+    g_clear_pointer(&self->extra_directories, g_ptr_array_unref);
+    g_clear_pointer(&self->settings_directory, g_free);
+    g_clear_pointer(&self->read_only, g_hash_table_unref);
+    g_clear_pointer(&self->extra_monitors, g_ptr_array_unref);
     g_clear_pointer(&self->skills, g_hash_table_unref);
     g_clear_pointer(&self->order, g_ptr_array_unref);
     g_clear_pointer(&self->problems, g_ptr_array_unref);
@@ -1125,6 +1257,9 @@ clawt_skill_library_class_init(ClawtSkillLibraryClass *klass)
 static void
 clawt_skill_library_init(ClawtSkillLibrary *self)
 {
+    self->extra_directories = g_ptr_array_new_with_free_func(g_free);
+    self->read_only = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    self->extra_monitors = g_ptr_array_new_with_free_func(g_object_unref);
     self->skills = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                          (GDestroyNotify)clawt_skill_free);
     self->order = g_ptr_array_new_with_free_func(g_free);

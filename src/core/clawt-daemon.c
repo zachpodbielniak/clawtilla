@@ -3033,6 +3033,20 @@ clawt_daemon_reload_skills(ClawtDaemon *self)
      * without the skill that explains them.
      */
     self->skills = clawt_skill_library_new(directory);
+
+    /* skills.extra_dirs: read, never written; their settings live with ours */
+    {
+        g_auto(GStrv) extra = clawt_config_get_string_list(self->config, "skills.extra_dirs");
+        g_autofree gchar *settings = g_build_filename(self->state_dir, "skill-settings", NULL);
+        guint i;
+
+        for (i = 0; extra != NULL && extra[i] != NULL; i++) {
+            g_autofree gchar *path = clawt_expand_path(g_strstrip(extra[i]));
+
+            clawt_skill_library_add_extra_directory(self->skills, path);
+        }
+        clawt_skill_library_set_settings_directory(self->skills, settings);
+    }
     {
         g_autoptr(GError) bundled_error = NULL;
         g_autofree gchar *bundled = g_build_filename(self->state_dir,

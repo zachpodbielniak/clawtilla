@@ -253,4 +253,39 @@ gboolean clawt_skill_library_remove(ClawtSkillLibrary  *self,
                                     const gchar        *name,
                                     GError            **error);
 
+/**
+ * clawt_skill_library_add_extra_directory:
+ * @self: a #ClawtSkillLibrary
+ * @directory: another root of skill directories, read and never written
+ *
+ * Read after the library's own directory and before the bundled skills,
+ * at the next scan; a name already found earlier wins.  A skill found
+ * only here is read-only: removing it is refused, and turning it on or
+ * off keeps the setting under the settings directory rather than beside
+ * the skill.  `skills.extra_dirs`, `~/.agents/skills` by default.
+ */
+void clawt_skill_library_add_extra_directory(ClawtSkillLibrary *self,
+                                             const gchar       *directory);
+
+/**
+ * clawt_skill_library_set_settings_directory:
+ * @self: a #ClawtSkillLibrary
+ * @directory: (nullable): where read-only skills' settings are kept
+ *
+ * Unset, a read-only skill cannot be turned on or off.
+ */
+void clawt_skill_library_set_settings_directory(ClawtSkillLibrary *self,
+                                                const gchar       *directory);
+
+/**
+ * clawt_skill_library_get_read_only_root:
+ * @self: a #ClawtSkillLibrary
+ * @name: a skill's name
+ *
+ * Returns: (transfer none) (nullable): the extra root @name was read
+ *   from, or %NULL when it is the library's own (or bundled)
+ */
+const gchar *clawt_skill_library_get_read_only_root(ClawtSkillLibrary *self,
+                                                    const gchar       *name);
+
 G_END_DECLS

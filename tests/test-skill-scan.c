@@ -490,12 +490,62 @@ test_a_digest_changes_with_the_body(void)
     g_assert_cmpuint(strlen(a), ==, 64);
 }
 
+/*
+ * A description written the way most SKILL.md files outside clawtilla
+ * write one -- `description: >` and an indented paragraph -- is that
+ * paragraph, not ">".  Read as ">", the markup check refused it: twenty
+ * of one person's twenty-six skills in ~/.agents/skills.
+ */
+static void
+test_block_scalars_are_read(void)
+{
+    static const gchar folded[] =
+        "---\nname: folded\ndescription: >\n  Use this when\n  the work is long.\n---\nbody\n";
+    static const gchar stripped[] =
+        "---\nname: stripped\ndescription: >-\n  One line.\n---\nbody\n";
+    static const gchar literal[] =
+        "---\nname: literal\ndescription: |\n  First.\n  Second.\n---\nbody\n";
+    static const gchar plain[] =
+        "---\nname: plain\ndescription: Starts here\n  and continues: with a colon.\n---\nbody\n";
+    static const gchar nested[] =
+        "---\nname: outer\nmetadata:\n  name: inner\n  type: tool\ndescription: Kept.\n---\nbody\n";
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtSkill) a = clawt_skill_parse(folded, -1, NULL, &error);
+    g_autoptr(ClawtSkill) b = NULL;
+    g_autoptr(ClawtSkill) c = NULL;
+    g_autoptr(ClawtSkill) d = NULL;
+    g_autoptr(ClawtSkill) e = NULL;
+
+    g_assert_no_error(error);
+    g_assert_cmpstr(clawt_skill_get_description(a), ==, "Use this when the work is long.");
+
+    b = clawt_skill_parse(stripped, -1, NULL, &error);
+    g_assert_no_error(error);
+    g_assert_cmpstr(clawt_skill_get_description(b), ==, "One line.");
+
+    c = clawt_skill_parse(literal, -1, NULL, &error);
+    g_assert_no_error(error);
+    g_assert_cmpstr(clawt_skill_get_description(c), ==, "First.\nSecond.");
+
+    d = clawt_skill_parse(plain, -1, NULL, &error);
+    g_assert_no_error(error);
+    g_assert_cmpstr(clawt_skill_get_description(d), ==,
+                    "Starts here and continues: with a colon.");
+
+    /* a nested `name:` is the nested mapping's, never the skill's */
+    e = clawt_skill_parse(nested, -1, NULL, &error);
+    g_assert_no_error(error);
+    g_assert_cmpstr(clawt_skill_get_name(e), ==, "outer");
+    g_assert_cmpstr(clawt_skill_get_description(e), ==, "Kept.");
+}
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/skill-scan/name-plain", test_a_plain_name_is_accepted);
+    g_test_add_func("/skill-scan/block-scalars", test_block_scalars_are_read);
     g_test_add_func("/skill-scan/name-traversal",
                     test_traversal_shapes_are_refused);
     g_test_add_func("/skill-scan/name-shape", test_shape_rules_are_refused);

@@ -864,6 +864,17 @@ skills:
   # typo in this path leaves an empty directory to puzzle over later.
   dir: "~/.clawtilla/skills"
 
+  # Other directories of skills to read, on the daemon's machine.
+  #
+  # ~/.agents/skills by default: the directory ai-glib's harnesses, Claude
+  # Code and others share, so a skill installed for them is a skill the
+  # fleet has. Read after skills.dir -- a skill of the same name there
+  # wins -- and never written: removing one is refused, and turning one
+  # on or off is kept under the daemon's state directory. A directory
+  # that does not exist is skipped without a word. An empty list reads
+  # only skills.dir.
+  extra_dirs: ["~/.agents/skills"]
+
   # How long a demonstration may record before it stops itself.
   #
   # A recording that has been forgotten is worse than one that ended

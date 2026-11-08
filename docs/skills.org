@@ -327,6 +327,25 @@ clawtilla ships some skills itself. Today there is one, =web-research=, which te
 - A bundled skill can come with something an agent has. =web-research= is assigned, with origin =integration=, to every agent with a =libresearch= integration -- by =clawt_skill_resolve_for_agent()=, the one resolver, after the agent, team and fleet lists. Naming it in one of those lists attributes it there instead.
 - With =skills.enabled: false= nothing is installed; whatever the skill would have taught has to reach the agent another way, and for =web-research= the tool descriptions and =TOOLS.org= carry a short primer for exactly that case.
 
+** Skills other harnesses already have
+:PROPERTIES:
+:CUSTOM_ID: extra-dirs
+:END:
+
+=skills.extra_dirs= names more directories of skills to read, on the daemon's machine; it defaults to =~/.agents/skills=, the directory ai-glib's harnesses, Claude Code and others share, so a skill installed for them is one the fleet has without copying it.  Since 0.9.2.
+
+- *Read after =skills.dir=, before the bundled skills.*  A skill of the same name in =skills.dir= wins, so a copy you edit is the one used; an earlier extra directory wins over a later one.
+- *Never written.*  Removing one is refused with where it lives.  Turning one on or off is kept under =<state_dir>/skill-settings/<name>/= rather than beside it -- a directory the person owns is read, not populated.
+- *Watched*, like =skills.dir=: a skill added there appears without a reload.
+- *On the daemon's machine.*  A daemon on another host reads that host's =~/.agents/skills=, not the one beside your client; sync it there if that is where your skills are.
+- A directory that does not exist is skipped without a word; =skills.extra_dirs: []= reads only =skills.dir=.
+
+The same rules apply as to any skill: a description over 1024 characters, or one with an angle bracket in it, is reported (=clawtilla skill list=, and the daemon's log) and not loaded.
+
+*** Front matter written as YAML writes it
+
+A SKILL.md's front matter is read the way YAML reads it, as far as the two keys clawtilla uses go.  =description: >= or =|= followed by an indented paragraph is that paragraph, folded or kept line by line; a plain value continued on indented lines is folded; and only a key at the left margin is a key, so a nested =name:= under =metadata:= is not the skill's name.  Before 0.9.2 the reader took only the first line, so =description: >= was the description ">" -- which the markup check then refused, and most skills written for other harnesses did not load.
+
 ** Configuration
 
 See [[file:configuration-options.org][the option reference]] for

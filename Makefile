@@ -936,6 +936,7 @@ $(OUTDIR)/tests/test-config-offline: $(CLI_BIN_TARGET)
 test: $(TEST_BINARIES) test-plugins plugins
 	@echo "Running tests..."
 	@TMPDIR=$$(mktemp -d /tmp/clawt-run-XXXXXX); export TMPDIR; \
+	HOME="$$TMPDIR/no-home"; export HOME; \
 	sh $(TOOLSDIR)/clawt-test-litter.sh snapshot $(OUTDIR)/test-litter; \
 	fail=0; ran=0; \
 	for t in $(TEST_BINARIES); do \

@@ -200,14 +200,23 @@ clawt_skill_parse(const gchar  *text,
         if (*trimmed == '\0' || *trimmed == '#')
             continue;
 
+        /*
+         * Only a line at the left margin is a key.  An indented line
+         * belongs to the key above it -- a continuation, or a nested
+         * mapping such as `metadata:` -- and reading it as a key let a
+         * nested `name:` replace the skill's own.
+         */
+        if (g_ascii_isspace(*trimmed))
+            continue;
+
         colon = strchr(trimmed, ':');
 
         if (colon == NULL) {
             /*
-             * A continuation line, a list item, or something this
-             * parser has no opinion about.  Skipped rather than
-             * refused: front matter belongs to whoever wrote the skill
-             * and only two of its keys are ours.
+             * A list item, or something this parser has no opinion
+             * about.  Skipped rather than refused: front matter belongs
+             * to whoever wrote the skill and only two of its keys are
+             * ours.
              */
             continue;
         }
@@ -217,9 +226,53 @@ clawt_skill_parse(const gchar  *text,
         {
             g_autofree gchar *raw = g_strdup(colon + 1);
             gchar *key = g_strdup(g_strstrip(trimmed));
+            const gchar *value = g_strstrip(raw);
+            gboolean block = (*value == '>' || *value == '|') &&
+                             strspn(value + 1, "+-0123456789") == strlen(value + 1);
+            GString *joined = NULL;
+
+            /*
+             * The lines after the key that are indented (or blank) are
+             * its value too.  `description: >` and an indented paragraph
+             * is how most SKILL.md files outside clawtilla write one --
+             * Claude Code's and ai-glib's included -- and reading only
+             * the first line took the value to be ">", which the markup
+             * check then refused: twenty of one person's twenty-six
+             * skills in ~/.agents/skills.  Folded (>) joins with spaces,
+             * literal (|) keeps the newlines; a plain value continued on
+             * indented lines folds like >.  Chomping is moot: the result
+             * is stripped.
+             */
+            while (lines[i + 1] != NULL) {
+                const gchar *next = lines[i + 1];
+                g_autofree gchar *piece = NULL;
+
+                if (*next != '\0' && !g_ascii_isspace(*next))
+                    break;
+                piece = g_strstrip(g_strdup(next));
+                if (g_strcmp0(piece, "---") == 0 || g_strcmp0(piece, "...") == 0)
+                    break;
+                i++;
+
+                if (joined == NULL)
+                    joined = g_string_new(block ? "" : value);
+                if (*piece == '\0') {
+                    g_string_append_c(joined, '\n');
+                    continue;
+                }
+                if (joined->len > 0 && joined->str[joined->len - 1] != '\n')
+                    g_string_append_c(joined, (block && *value == '|') ? '\n' : ' ');
+                g_string_append(joined, piece);
+            }
 
             g_ptr_array_add(keys, key);
-            g_ptr_array_add(values, unquote_scalar(g_strstrip(raw)));
+            if (joined != NULL) {
+                g_autofree gchar *text_value = g_string_free(joined, FALSE);
+
+                g_ptr_array_add(values, g_strdup(g_strstrip(text_value)));
+            } else {
+                g_ptr_array_add(values, block ? g_strdup("") : unquote_scalar(value));
+            }
         }
     }
 

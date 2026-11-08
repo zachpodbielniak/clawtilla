@@ -971,6 +971,18 @@ static const ClawtSchemaEntry schema[] = {
   "typo in this path leaves an empty directory to puzzle over later.",
   "0.2.0" },
 
+{ "skills.extra_dirs", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_COMMENTED,
+  "~/.agents/skills", NULL,
+  "Other directories of skills to read, on the daemon's machine.\n"
+  "\n"
+  "~/.agents/skills by default: the directory ai-glib's harnesses, Claude\n"
+  "Code and others share, so a skill installed for them is a skill the\n"
+  "fleet has. Read after skills.dir -- a skill of the same name there\n"
+  "wins -- and never written: removing one is refused, and turning one\n"
+  "on or off is kept under the daemon's state directory. A directory\n"
+  "that does not exist is skipped without a word. An empty list reads\n"
+  "only skills.dir.", "0.9.2" },
+
 { "skills.teach_max_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_COMMENTED,
   "900", NULL,
   "How long a demonstration may record before it stops itself.\n"
