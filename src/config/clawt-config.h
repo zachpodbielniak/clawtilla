@@ -506,6 +506,16 @@ void clawt_account_spec_free(ClawtAccountSpec *self);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtAccountSpec, clawt_account_spec_free)
 
 /**
+ * clawt_config_get_browser_ids:
+ * @self: a #ClawtConfig
+ *
+ * The ids of the shared browser sessions under `browsers:`, in file order.
+ *
+ * Returns: (transfer full) (element-type utf8): the ids
+ */
+GPtrArray *clawt_config_get_browser_ids(ClawtConfig *self);
+
+/**
  * clawt_config_get_computer_ids:
  * @self: a #ClawtConfig
  *

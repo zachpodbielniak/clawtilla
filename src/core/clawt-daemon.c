@@ -4204,6 +4204,7 @@ release_components(ClawtDaemon *self)
     clawt_daemon_search_teardown(self);
     clawt_daemon_policy_teardown(self);
     clawt_daemon_idle_teardown(self);
+    clawt_daemon_browser_teardown(self);
     g_clear_pointer(&self->shared_computers, g_hash_table_unref);
     g_clear_pointer(&self->drive_leases, g_hash_table_unref);
 
@@ -6184,6 +6185,7 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     clawt_daemon_search_setup(self);
     clawt_daemon_policy_setup(self);
     clawt_daemon_idle_setup(self);
+    clawt_daemon_browser_setup(self);
 
     /*
      * Started here rather than earlier, because start can still refuse
@@ -6332,6 +6334,7 @@ clawt_daemon_stop(ClawtDaemon *self)
     clawt_daemon_search_teardown(self);
     clawt_daemon_policy_teardown(self);
     clawt_daemon_idle_teardown(self);
+    clawt_daemon_browser_teardown(self);
     g_clear_pointer(&self->shared_computers, g_hash_table_unref);
     g_clear_pointer(&self->drive_leases, g_hash_table_unref);
 
@@ -7070,6 +7073,11 @@ clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
         builder, clawt_computer_type_has_screen(
                      (ClawtComputerType)clawt_agent_config_get_enum(
                          config, "computer.type")));
+
+    /* The Computer page draws a Browser view from this, computer or not. */
+    json_builder_set_member_name(builder, "browser");
+    json_builder_add_string_value(builder, clawt_enum_to_nick(
+        CLAWT_TYPE_BROWSER_MODE, clawt_agent_config_get_enum(config, "browser.mode")));
 
     json_builder_set_member_name(builder, "computer_stop_removes");
     json_builder_add_boolean_value(builder,
@@ -8500,6 +8508,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_skill,
     clawt_daemon_handle_teach,
     clawt_daemon_handle_activity,
+    clawt_daemon_handle_browser,
 };
 
 JsonNode *

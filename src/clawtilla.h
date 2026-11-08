@@ -163,6 +163,7 @@
 #include "memory/clawt-summariser.h"
 #include "memory/clawt-operator-profile.h"
 #include "usage/clawt-usage.h"
+#include "browser/clawt-browser.h"
 #include "mailbox/clawt-mailbox.h"
 
 #include "agent/clawt-agent-runtime.h"

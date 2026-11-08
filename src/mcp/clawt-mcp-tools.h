@@ -33,6 +33,7 @@
 #include "memory/clawt-transcript-index.h"
 #include "task/clawt-handoff-store.h"
 #include "task/clawt-task-manager.h"
+#include "browser/clawt-browser.h"
 
 #include <ai-glib.h>
 
@@ -330,6 +331,18 @@ void clawt_mcp_tools_set_routine_func(ClawtMcpTools       *self,
                                       ClawtMcpRoutineFunc  func,
                                       gpointer             user_data,
                                       GDestroyNotify       destroy);
+
+/**
+ * clawt_mcp_tools_set_browsers:
+ * @self: a #ClawtMcpTools
+ * @browsers: (nullable): the daemon's browser sessions
+ *
+ * Unset, the `clawtilla_browser_*` tools are offered to nobody.  Set,
+ * they are offered to an agent whose `browser.mode` is not `none`, and
+ * `clawtilla_browser_eval` only where `browser.allow_scripts` is true.
+ */
+void clawt_mcp_tools_set_browsers(ClawtMcpTools       *self,
+                                  ClawtBrowserManager *browsers);
 
 /**
  * clawt_mcp_tools_set_search_func:

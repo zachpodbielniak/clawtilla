@@ -735,6 +735,16 @@ One unreadable database does not fail the summary -- a fleet report that
 refused because one agent's file was mid-write would say nothing about
 the other nine.
 
+*** browser.*
+
+Since 0.9.0. Every verb but ~browser.list~ takes ~agent~ and acts on the session that agent drives -- its own, or the shared one its =agents.browser.use= names -- and every verb but ~browser.list~ is deferred: a frame waits on a page and a start waits seconds for an X server.
+
+- ~browser.list~ → ~available~ (whether this daemon was built with =GSURF=1=) and ~sessions~: every shared session declared under =browsers:=, used or not, then each agent's own. Each has ~key~ (~agent:<id>~ or ~shared:<id>~), ~id~, ~kind~ (~own~ or ~shared~), ~agents~ (who drives it), ~running~, ~uri~, ~title~, ~driver~ (the agent holding a shared session's wheel, or empty) and ~last_used~. Read from the daemon's record; it touches no browser, so ~uri~ and ~title~ are the last ones read.
+- ~browser.frame~ → the same members for one session plus ~png_base64~, a picture of the visible page. A session that is not running answers at once with ~running: false~ and no picture -- a frame never starts one.
+- ~browser.open~ (~url~; ~https://~ is assumed without a scheme) starts the session if it must, navigates, and waits up to twenty seconds for the load.
+- ~browser.click~ (~x~, ~y~, in the page's CSS pixels) is a person's click. It does not take a shared session's driver lease, since a person at the Computer page outranks an agent.
+- ~browser.stop~ stops it. The profile and its logins stay; the open page does not.
+
 *** computer.*
 
 ~computer.exec~ (~agent~, ~command~, ~cwd~, ~timeout~ -- 120 seconds by

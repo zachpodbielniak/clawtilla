@@ -1,0 +1,6 @@
+<!doctype html>
+<!-- tests/test-browser-integration.sh: the title is written by script, and a click on the button rewrites it. -->
+<html><head><meta charset="utf-8"><title>no script</title>
+<style>body{margin:0}button{position:absolute;left:0;top:0;width:200px;height:60px}</style></head>
+<body><button id="b" onclick="document.title='Clicked'">Click</button>
+<script>document.title = 'JavaScript ran';</script></body></html>

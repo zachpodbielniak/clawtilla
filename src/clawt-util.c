@@ -405,6 +405,16 @@ clawt_build_child_environment(GHashTable *extra)
     for (i = 0; passthrough_env[i] != NULL; i++) {
         const gchar *value = g_getenv(passthrough_env[i]);
 
+        /*
+         * A name in @extra replaces the allowlisted one rather than
+         * following it.  Both used to be written, and the first copy is
+         * the one getenv() finds -- so an agent's own `env:` naming
+         * XDG_CONFIG_HOME, or a browser session pointing XDG_DATA_HOME at
+         * its private profile, was silently the daemon's value instead.
+         */
+        if (extra != NULL && g_hash_table_contains(extra, passthrough_env[i]))
+            continue;
+
         if (value != NULL)
             g_ptr_array_add(out, g_strdup_printf("%s=%s",
                                                  passthrough_env[i], value));

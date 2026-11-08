@@ -183,6 +183,25 @@ void clawt_web_register_chat(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_agent(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_mailbox(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_computer(HtmxRouter *router, ClawtWebApp *app);
+
+/**
+ * clawt_web_add_browser:
+ * @app: the app
+ * @parent: where the card goes
+ * @agent_id: the agent whose browser it shows
+ *
+ * The Computer page's Browser view (web-browser.c).
+ */
+void clawt_web_add_browser(ClawtWebApp *app, HtmxElement *parent, const gchar *agent_id);
+
+/**
+ * clawt_web_register_browser:
+ * @router: the router
+ * @app: the app
+ *
+ * The Browser view's poll, picture and actions.
+ */
+void clawt_web_register_browser(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_work(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_activity(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_fleet_usage(HtmxRouter *router, ClawtWebApp *app);

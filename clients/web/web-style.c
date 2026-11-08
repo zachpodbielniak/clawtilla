@@ -310,6 +310,9 @@ clawt_web_stylesheet(void)
     /* the Fleet page: the period's total, and fourteen days as bars */
     ".fleet-usage-total{font-size:1.5rem;font-weight:700;margin:8px 0 2px}"
     ".fleet-usage-strip{font-size:1.4rem;letter-spacing:2px;line-height:1.2;margin-bottom:12px}"
+    ".browser-line{margin:8px 0;overflow-wrap:anywhere}"
+    ".browser-frame{overflow:auto;max-height:80vh;border:1px solid var(--line);border-radius:6px}"
+    ".browser-frame input{display:block;max-width:none;border:0;padding:0;cursor:crosshair}"
 
     /* ── Rows ── */
     ".row{display:flex;align-items:baseline;justify-content:space-between;"

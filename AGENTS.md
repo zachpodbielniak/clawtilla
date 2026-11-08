@@ -83,6 +83,7 @@ the second is what clawtilla adds:
 | `bwrap` | `bubblewrap` | `confine: bwrap` host sandbox (runtime) |
 | `podman` | `podman` | container computers (runtime) |
 | `distrobox` | `distrobox` | distrobox computers (runtime) |
+| `Xvfb` | `xorg-x11-server-Xvfb` | browser sessions, `GSURF=1` (runtime) |
 | — | `gobject-introspection-devel` | `.gir`/`.typelib` (auto-skipped if absent) |
 
 Adding a dependency means adding it to `PKG_DEPS` in `config.mk` *and*
@@ -103,6 +104,13 @@ never a submodule -- recursively libregnum is enormous.  It adds
 libregnum found them).  `make lrg-lib` rebuilds that checkout's archive in
 place when it is missing, older than its sources, or lacks a symbol in
 `LRG_REQUIRED_SYMBOLS`.  See `docs/lrg-client.org`.
+
+Browser sessions are opt-in too (`GSURF=1`, `GSURF_DIR` defaulting to
+`../gsurf`).  clawtilla links nothing from gsurf: a session is Xvfb plus
+a gsurf process driven over gsurf's control socket, because the daemon
+must never link GTK.  `make GSURF=1` refuses a gsurf older than 0.5.10
+and builds `GSURF_DIR` when its binary is missing; building that needs
+`webkit2gtk4.1-devel` and `gtk3-devel`.  See `docs/browser.org`.
 
 ## Build Output
 
@@ -1045,6 +1053,26 @@ Other VM facts:
   offers every tool it has to whoever connects. The `.mcp.json` entry names the
   clawtilla CLI, not ssh, because the guest's port is chosen after the
   workspace files are written.
+
+### Browser sessions
+
+- **A candidate binary is not the binary you checked.** The first live
+  run found a distribution gsurf 0.4.4 on PATH ahead of the 0.5.10 build
+  `make GSURF=1` had accepted, and an old gsurf has no `control.name` --
+  so it opened a window and the socket never appeared, reported as
+  "did not answer within 20 seconds". `clawt_browser_resolve_gsurf()`
+  reads each candidate's `--version` and puts the checked build before
+  PATH.
+- **`-nolisten unix-abstract` is a private-`/tmp` trap.** X is then
+  reachable only through `/tmp/.X11-unix`, which a daemon with
+  PrivateTmp or a sandbox does not share with the child it starts.
+- **An environment built from two lists needs one winner.**
+  `clawt_build_child_environment()` wrote an allowlisted name and the
+  same name from the extras, and getenv() returns the first -- so an
+  agent's `env:` could never override `XDG_CONFIG_HOME`, and nothing
+  said so. Extras replace now; `tests/test-browser.c` asserts one copy.
+- **Never `pkill gsurf`.** The person runs gsurf as their browser. Stop
+  a test's processes by pid, or through the daemon.
 
 ### Host confinement
 

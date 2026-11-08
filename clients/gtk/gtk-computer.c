@@ -625,6 +625,8 @@ on_computer_view_changed(GObject *object, GParamSpec *spec,
     screen_set_watching(
         self,
         clawt_computer_view_from_nick(name) == CLAWT_COMPUTER_VIEW_SCREEN);
+    clawt_gtk_browser_set_showing(
+        self, clawt_computer_view_from_nick(name) == CLAWT_COMPUTER_VIEW_BROWSER);
 
     if (clawt_computer_view_from_nick(name) == CLAWT_COMPUTER_VIEW_SCREEN)
         clawt_gtk_refresh_screen(self);
@@ -651,6 +653,7 @@ clawt_gtk_refresh_computer(ClawtWindow *self, JsonObject *agent)
                            : "This agent has no computer.");
 
     sync_screen_tab(self, agent);
+    clawt_gtk_browser_set_agent(self, agent);
 
     /*
      * A different agent means the watch on the old one has to go, and it
@@ -879,7 +882,7 @@ clawt_gtk_build_computer_page(ClawtWindow *self)
      */
     for (i = 0; i < clawt_computer_view_count(); i++) {
         ClawtComputerView view = clawt_computer_view_nth(i);
-        GtkWidget *child;
+        GtkWidget *child = NULL;
         AdwViewStackPage *page;
 
         switch (view) {
@@ -899,8 +902,9 @@ clawt_gtk_build_computer_page(ClawtWindow *self)
             child = exchange;
             break;
 
-        default:
-            continue;
+        case CLAWT_COMPUTER_VIEW_BROWSER:
+            child = clawt_gtk_build_browser_view(self);
+            break;
         }
 
         page = adw_view_stack_add_titled(
@@ -910,6 +914,8 @@ clawt_gtk_build_computer_page(ClawtWindow *self)
 
         if (view == CLAWT_COMPUTER_VIEW_SCREEN)
             self->computer_screen_page = page;
+        if (view == CLAWT_COMPUTER_VIEW_BROWSER)
+            self->computer_browser_page = page;
     }
 
     adw_view_switcher_set_stack(ADW_VIEW_SWITCHER(switcher),
@@ -948,4 +954,8 @@ clawt_gtk_stop_watching_screen(ClawtWindow *self)
 
     g_clear_pointer(&self->screen_agent, g_free);
     g_clear_pointer(&self->screen_viewer, g_free);
+
+    /* And the browser poll, which would otherwise fire into a closed window. */
+    clawt_gtk_browser_set_showing(self, FALSE);
+    g_clear_pointer(&self->browser_agent, g_free);
 }

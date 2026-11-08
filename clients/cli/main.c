@@ -3810,6 +3810,142 @@ cmd_decision(int argc, char *argv[])
 }
 
 /*
+ * clawtilla browser: the fleet's browser sessions.
+ *
+ * list reads the daemon's record and touches no browser; open, stop and
+ * screenshot go to the agent's session, starting it for open.
+ */
+static gint
+cmd_browser(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *verb = argc > 2 ? argv[2] : "list";
+
+    if (g_strcmp0(verb, "-h") == 0 || g_strcmp0(verb, "--help") == 0 ||
+        g_strcmp0(verb, "help") == 0) {
+        g_print("Usage: clawtilla browser [list | open AGENT URL | click AGENT X Y |\n"
+                "                          stop AGENT | screenshot AGENT FILE]\n"
+                "\n"
+                "The web browsers agents drive (agents.browser.mode). A session\n"
+                "starts on the agent's first browser call; open starts it too.\n"
+                "\n"
+                "Examples:\n"
+                "  clawtilla browser                       # every session\n"
+                "  clawtilla browser open research example.org\n"
+                "  clawtilla browser screenshot research page.png\n"
+                "  clawtilla browser click research 40 20   # page pixels\n"
+                "  clawtilla browser stop research\n");
+        return EXIT_SUCCESS;
+    }
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    if (g_strcmp0(verb, "list") == 0) {
+        JsonObject *root;
+        JsonArray *sessions;
+        guint i;
+
+        reply = call(client, "browser.list", NULL);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        root = json_node_get_object(reply);
+        if (!json_object_get_boolean_member_with_default(root, "available", FALSE))
+            g_print("This daemon was built without GSURF=1: no session can start.\n");
+        sessions = json_object_has_member(root, "sessions")
+            ? json_object_get_array_member(root, "sessions") : NULL;
+        if (sessions == NULL || json_array_get_length(sessions) == 0) {
+            g_print("No agent has a browser (agents.browser.mode).\n");
+            return EXIT_SUCCESS;
+        }
+        for (i = 0; i < json_array_get_length(sessions); i++) {
+            JsonObject *session = json_array_get_object_element(sessions, i);
+            JsonArray *agents = json_object_get_array_member(session, "agents");
+            g_autofree gchar *line = clawt_browser_session_line(session);
+            g_autoptr(GString) who = g_string_new("");
+            guint j;
+
+            for (j = 0; agents != NULL && j < json_array_get_length(agents); j++)
+                g_string_append_printf(who, "%s%s", j > 0 ? ", " : "",
+                                       json_array_get_string_element(agents, j));
+            g_print("%-20s %-7s %s\n  %s\n", member_or(session, "id", "?"),
+                    member_or(session, "kind", "?"), who->len > 0 ? who->str : "(nobody)",
+                    line);
+        }
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "open") == 0 && argc > 4) {
+        g_autofree gchar *line = NULL;
+
+        reply = call(client, "browser.open",
+                     clawt_ipc_payload_new("agent", argv[3], "url", argv[4], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        line = clawt_browser_session_line(json_node_get_object(reply));
+        g_print("%s\n", line);
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "click") == 0 && argc > 5) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        g_autofree gchar *line = NULL;
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "agent");
+        json_builder_add_string_value(builder, argv[3]);
+        json_builder_set_member_name(builder, "x");
+        json_builder_add_int_value(builder, g_ascii_strtoll(argv[4], NULL, 10));
+        json_builder_set_member_name(builder, "y");
+        json_builder_add_int_value(builder, g_ascii_strtoll(argv[5], NULL, 10));
+        json_builder_end_object(builder);
+        reply = call(client, "browser.click", json_builder_get_root(builder));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        line = clawt_browser_session_line(json_node_get_object(reply));
+        g_print("%s\n", line);
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "stop") == 0 && argc > 3) {
+        reply = call(client, "browser.stop", clawt_ipc_payload_new("agent", argv[3], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        g_print("Stopped. The profile and its logins stay.\n");
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "screenshot") == 0 && argc > 4) {
+        const gchar *encoded;
+        g_autofree guchar *raw = NULL;
+        g_autoptr(GError) error = NULL;
+        gsize length = 0;
+
+        reply = call(client, "browser.frame", clawt_ipc_payload_new("agent", argv[3], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        encoded = member_or(json_node_get_object(reply), "png_base64", NULL);
+        if (encoded == NULL) {
+            g_printerr("%s's browser is not running; nothing to take a picture of.\n",
+                       argv[3]);
+            return EXIT_FAILURE;
+        }
+        raw = g_base64_decode(encoded, &length);
+        if (!g_file_set_contents(argv[4], (const gchar *)raw, (gssize)length, &error)) {
+            g_printerr("%s\n", error->message);
+            return EXIT_FAILURE;
+        }
+        g_print("Wrote %s (%" G_GSIZE_FORMAT " bytes).\n", argv[4], length);
+        return EXIT_SUCCESS;
+    }
+
+    g_printerr("Unknown browser verb or missing argument; try clawtilla browser --help\n");
+    return EXIT_FAILURE;
+}
+
+/*
  * Every turn running across the fleet, the listing the Activity page in
  * both clients draws. Stopping and steering are the existing verbs --
  * `agent interrupt` and `send` -- so they are named rather than
@@ -8259,6 +8395,8 @@ static const ClawtVerb verbs[] = {
       cmd_computer },
     { "activity", "",        "Every turn running across the fleet",
       cmd_activity },
+    { "browser", "<verb>",   "The web browsers agents drive",
+      cmd_browser },
     { "cp",      "<src> <dst>", "Copy files to or from a computer",
       cmd_cp },
     { "folders", "<verb>",   "Share host folders with the whole fleet",

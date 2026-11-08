@@ -75,6 +75,15 @@ typedef struct {
     gboolean            frame_inflight;
     GSource            *poll;
 
+    /* browser: polled while showing, one read in flight */
+    LrgWidget          *browser_line;
+    LrgWidget          *browser_picture;
+    LrgWidget          *browser_url;
+    LrgWidget          *browser_click;
+    GrlTexture         *browser_texture;
+    gboolean            browser_inflight;
+    GSource            *browser_poll;
+
     /* mounts and exchange */
     LrgWidget          *mount_list;
     LrgWidget          *exchange_list;
@@ -896,6 +905,214 @@ build_screen_view(ClawtLrgApp *app)
     return box;
 }
 
+/* ── Browser ──────────────────────────────────────────────────────── */
+
+/*
+ * Mirrors clients/gtk/gtk-browser.c and clients/web/web-browser.c: the
+ * line from clawt_browser_session_line(), the picture, an address to
+ * open, Stop.  An LrgImage takes no pointer, so a click is typed as x,y
+ * in the page's own pixels -- the same as the Screen view's -- and the
+ * picture is decoded no wider than the panel, so those are read off the
+ * PNG's own header rather than the texture.
+ */
+#define BROWSER_POLL_SECONDS (3)
+
+static gboolean
+browser_showing(ClawtLrgApp *app)
+{
+    return app->page == CLAWT_PAGE_COMPUTER &&
+           cp.view == CLAWT_COMPUTER_VIEW_BROWSER && app->agent_id != NULL;
+}
+
+static void
+on_browser_frame(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+                 gpointer user_data)
+{
+    JsonObject *root = clawt_ipc_reply_object(reply);
+    g_autofree gchar *line = NULL;
+    const gchar *base64;
+
+    if (cp.browser_line == NULL)
+        return;
+    line = error != NULL && root == NULL ? g_strdup(error->message)
+                                         : clawt_browser_session_line(root);
+    lrg_label_set_text(LRG_LABEL(cp.browser_line), line);
+
+    base64 = clawt_ipc_payload_string(root, "png_base64");
+    if (base64 == NULL) {
+        lrg_image_set_texture(LRG_IMAGE(cp.browser_picture), NULL);
+        g_clear_object(&cp.browser_texture);
+    } else {
+        gsize length = 0;
+        g_autofree guchar *raw = g_base64_decode(base64, &length);
+        GrlTexture *texture = (raw != NULL && length > 0) ? decode_frame(raw, length) : NULL;
+
+        if (texture != NULL) {
+            lrg_image_set_texture(LRG_IMAGE(cp.browser_picture), texture);
+            lrg_widget_set_max_size(cp.browser_picture,
+                                    (gfloat)grl_texture_get_width(texture),
+                                    (gfloat)grl_texture_get_height(texture));
+            g_clear_object(&cp.browser_texture);
+            cp.browser_texture = texture;
+        }
+    }
+    clawt_lrg_app_wake(app);
+}
+
+static void
+browser_refresh(ClawtLrgApp *app)
+{
+    if (cp.browser_inflight || app->agent_id == NULL)
+        return;
+    cp.browser_inflight = TRUE;
+    clawt_lrg_request(app, "browser.frame",
+                      clawt_ipc_payload_new("agent", app->agent_id, NULL),
+                      CLAWT_LRG_QUIET | CLAWT_LRG_GUARDED, on_browser_frame,
+                      &cp.browser_inflight, clear_flag);
+}
+
+static gboolean
+on_browser_poll(gpointer user_data)
+{
+    ClawtLrgApp *app = user_data;
+
+    if (!browser_showing(app)) {
+        g_clear_pointer(&cp.browser_poll, g_source_unref);
+        return G_SOURCE_REMOVE;
+    }
+    browser_refresh(app);
+    return G_SOURCE_CONTINUE;
+}
+
+static void
+browser_start_polling(ClawtLrgApp *app)
+{
+    if (!browser_showing(app))
+        return;
+    browser_refresh(app);
+    if (cp.browser_poll != NULL)
+        return;
+    /* On app->context by name, as the screen's poll is. */
+    cp.browser_poll = g_timeout_source_new_seconds(BROWSER_POLL_SECONDS);
+    g_source_set_callback(cp.browser_poll, on_browser_poll, app, NULL);
+    clawt_lrg_app_attach(app, cp.browser_poll);
+}
+
+static void
+on_browser_done(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+                gpointer user_data)
+{
+    (void)reply;
+    (void)user_data;
+    if (error != NULL)
+        clawt_lrg_toast(app, error->message);
+    browser_refresh(app);
+}
+
+static void
+on_browser_open(LrgWidget *widget, gpointer user_data)
+{
+    ClawtLrgApp *app = user_data;
+    const gchar *url = lrg_text_input_get_text(LRG_TEXT_INPUT(cp.browser_url));
+
+    (void)widget;
+    if (app->agent_id == NULL || url == NULL || *url == '\0')
+        return;
+    lrg_label_set_text(LRG_LABEL(cp.browser_line), "Opening\xe2\x80\xa6");
+    clawt_lrg_request(app, "browser.open",
+                      clawt_ipc_payload_new("agent", app->agent_id, "url", url, NULL),
+                      CLAWT_LRG_GUARDED, on_browser_done, NULL, NULL);
+}
+
+static void
+on_browser_click(LrgWidget *widget, gpointer user_data)
+{
+    ClawtLrgApp *app = user_data;
+    const gchar *text = lrg_text_input_get_text(LRG_TEXT_INPUT(cp.browser_click));
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    gint64 x = -1;
+    gint64 y = -1;
+    gchar *end = NULL;
+
+    (void)widget;
+    if (app->agent_id == NULL || text == NULL)
+        return;
+    x = g_ascii_strtoll(text, &end, 10);
+    if (end != NULL && (*end == ',' || *end == ' '))
+        y = g_ascii_strtoll(end + 1, NULL, 10);
+    if (x < 0 || y < 0) {
+        clawt_lrg_toast(app, "Give the click as x,y in the page's pixels.");
+        return;
+    }
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "agent");
+    json_builder_add_string_value(builder, app->agent_id);
+    json_builder_set_member_name(builder, "x");
+    json_builder_add_int_value(builder, x);
+    json_builder_set_member_name(builder, "y");
+    json_builder_add_int_value(builder, y);
+    json_builder_end_object(builder);
+    clawt_lrg_request(app, "browser.click", json_builder_get_root(builder),
+                      CLAWT_LRG_GUARDED, on_browser_done, NULL, NULL);
+}
+
+static void
+on_browser_stop(LrgButton *button, gpointer user_data)
+{
+    ClawtLrgApp *app = user_data;
+
+    (void)button;
+    if (app->agent_id == NULL)
+        return;
+    clawt_lrg_request(app, "browser.stop",
+                      clawt_ipc_payload_new("agent", app->agent_id, NULL),
+                      CLAWT_LRG_GUARDED, on_browser_done, NULL, NULL);
+}
+
+static LrgWidget *
+build_browser_view(ClawtLrgApp *app)
+{
+    LrgWidget *box = clawt_lrg_vbox(10.0f);
+    LrgWidget *bar = clawt_lrg_hbox(8.0f);
+    LrgWidget *clicks = clawt_lrg_hbox(8.0f);
+    LrgWidget *frame = clawt_lrg_card(NULL);
+    LrgImage *picture = lrg_image_new();
+
+    cp.browser_url = clawt_lrg_entry(NULL, "https://example.org");
+    lrg_widget_set_fill_weight(cp.browser_url, 1.0f);
+    g_signal_connect(cp.browser_url, "submitted", G_CALLBACK(on_browser_open), app);
+    clawt_lrg_take(bar, cp.browser_url);
+    clawt_lrg_take(bar, clawt_lrg_button("Open", "primary", G_CALLBACK(on_browser_open), app));
+    clawt_lrg_take(bar, clawt_lrg_button("Stop the browser", NULL,
+                                         G_CALLBACK(on_browser_stop), app));
+    clawt_lrg_take(box, bar);
+
+    cp.browser_line = clawt_lrg_paragraph("", "muted");
+    clawt_lrg_add(box, cp.browser_line);
+    g_object_unref(cp.browser_line);
+
+    lrg_image_set_scale_mode(picture, LRG_IMAGE_SCALE_MODE_FIT);
+    lrg_image_set_corner_radius(picture, 8.0f);
+    lrg_widget_set_min_size(LRG_WIDGET(picture), 0.0f, 240.0f);
+    cp.browser_picture = LRG_WIDGET(picture);
+    clawt_lrg_take(frame, LRG_WIDGET(picture));
+    clawt_lrg_take(box, frame);
+
+    cp.browser_click = clawt_lrg_entry(NULL, "Click at x,y (the page's pixels)");
+    lrg_widget_set_fill_weight(cp.browser_click, 1.0f);
+    g_signal_connect(cp.browser_click, "submitted", G_CALLBACK(on_browser_click), app);
+    clawt_lrg_take(clicks, cp.browser_click);
+    clawt_lrg_take(clicks, clawt_lrg_button("Click", NULL, G_CALLBACK(on_browser_click), app));
+    clawt_lrg_take(box, clicks);
+
+    clawt_lrg_take(box, clawt_lrg_paragraph(
+        "The agent's own web browser, which runs the page's JavaScript. The "
+        "open page is lost when it stops; the profile and its logins stay.",
+        "caption"));
+    return box;
+}
+
 /* ── Mounts and exchange ──────────────────────────────────────────── */
 
 static void
@@ -991,6 +1208,10 @@ refresh_view(ClawtLrgApp *app)
         clawt_lrg_request(app, "exchange.list", NULL, CLAWT_LRG_QUIET,
                           on_exchange, NULL, NULL);
         break;
+
+    case CLAWT_COMPUTER_VIEW_BROWSER:
+        browser_start_polling(app);
+        break;
     }
 
     /* the watch follows the view: nothing grabbed behind another tab */
@@ -1043,12 +1264,18 @@ sync_tabs(ClawtLrgApp *app, JsonObject *agent)
     gboolean has_screen = clawt_lrg_computer_offers_screen(agent);
     guint i;
 
+    gboolean has_browser = g_strcmp0(clawt_ipc_payload_string(agent, "browser"), "none") != 0 &&
+                           clawt_ipc_payload_string(agent, "browser") != NULL;
+
     for (i = 0; i < cp.n_views; i++) {
         if (cp.views[i] == CLAWT_COMPUTER_VIEW_SCREEN)
             lrg_widget_set_visible(cp.tabs[i], has_screen);
+        if (cp.views[i] == CLAWT_COMPUTER_VIEW_BROWSER)
+            lrg_widget_set_visible(cp.tabs[i], has_browser);
     }
 
-    if (cp.view == CLAWT_COMPUTER_VIEW_SCREEN && !has_screen)
+    if ((cp.view == CLAWT_COMPUTER_VIEW_SCREEN && !has_screen) ||
+        (cp.view == CLAWT_COMPUTER_VIEW_BROWSER && !has_browser))
         cp.view = CLAWT_COMPUTER_VIEW_SHELL;
 }
 
@@ -1187,6 +1414,10 @@ build(ClawtLrgApp *app)
 
         case CLAWT_COMPUTER_VIEW_EXCHANGE:
             child = build_list_view(&cp.exchange_list);
+            break;
+
+        case CLAWT_COMPUTER_VIEW_BROWSER:
+            child = build_browser_view(app);
             break;
         }
 

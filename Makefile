@@ -105,6 +105,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/memory/clawt-summariser.h \
 	$(SRCDIR)/memory/clawt-operator-profile.h \
 	$(SRCDIR)/usage/clawt-usage.h \
+	$(SRCDIR)/browser/clawt-browser.h \
 	$(SRCDIR)/mailbox/clawt-mailbox.h \
 	$(SRCDIR)/mailbox/clawt-mailbox-router.h \
 	$(SRCDIR)/agent/clawt-agent-runtime.h \
@@ -215,6 +216,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-search.c \
 	$(SRCDIR)/core/daemon-policy.c \
 	$(SRCDIR)/core/daemon-idle.c \
+	$(SRCDIR)/core/daemon-browser.c \
 	$(SRCDIR)/core/daemon-shared-computer.c \
 	$(SRCDIR)/core/daemon-activity.c \
 	$(SRCDIR)/core/daemon-mailbox.c \
@@ -261,6 +263,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/memory/clawt-summariser.c \
 	$(SRCDIR)/memory/clawt-operator-profile.c \
 	$(SRCDIR)/usage/clawt-usage.c \
+	$(SRCDIR)/browser/clawt-browser.c \
 	$(SRCDIR)/mailbox/clawt-mailbox-item.c \
 	$(SRCDIR)/mailbox/clawt-mailbox.c \
 	$(SRCDIR)/mailbox/clawt-mailbox-router.c \
@@ -384,8 +387,21 @@ all:
 	@$(MAKE) --no-print-directory all-impl
 
 .PHONY: all-impl  ## @internal
-all-impl: $(OUTDIR)/clawt-version.h shared static daemon cli mcp-server \
+all-impl: gsurf-bin $(OUTDIR)/clawt-version.h shared static daemon cli mcp-server \
           gtk web lrg $(PROJECT_NAME)-1.0.pc plugins pod-modules gir
+
+# ── gsurf (GSURF=1) ───────────────────────────────────────────────────
+#
+# Checks GSURF_DIR's version and builds its binary when it is missing.
+# Never rebuilt when present: it is somebody's browser, built with their
+# own options, and clawtilla only runs it.  A no-op without GSURF=1.
+.PHONY: gsurf-bin  ## With GSURF=1: check GSURF_DIR's gsurf and build it if missing
+gsurf-bin:
+ifeq ($(GSURF),1)
+	@tools/clawt-gsurf-check.sh "$(GSURF_DIR)" "$(GSURF_MIN_VERSION)" "$(MAKE)"
+else
+	@true
+endif
 
 # ── Submodule freshness ───────────────────────────────────────────────
 #

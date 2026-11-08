@@ -466,6 +466,7 @@ main(int argc, char *argv[])
     clawt_web_register_agent(router, app);
     clawt_web_register_mailbox(router, app);
     clawt_web_register_computer(router, app);
+    clawt_web_register_browser(router, app);
     clawt_web_register_work(router, app);
     clawt_web_register_activity(router, app);
     clawt_web_register_fleet_usage(router, app);

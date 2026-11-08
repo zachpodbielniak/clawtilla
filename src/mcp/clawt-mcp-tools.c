@@ -35,7 +35,9 @@ typedef enum {
     NEEDS_SCREEN,
     NEEDS_HANDOFF,
     NEEDS_WEB_RESEARCH,
-    NEEDS_SCHEDULE
+    NEEDS_SCHEDULE,
+    NEEDS_BROWSER,
+    NEEDS_BROWSER_SCRIPTS
 } ToolRequirement;
 
 typedef struct {
@@ -260,6 +262,54 @@ static const ClawtParamInfo computer_exec_params[] = {
     { "timeout",     "integer",
       "Seconds before giving up. Defaults to 120. Always set one for "
       "anything that might wait for input.", FALSE }
+};
+
+static const ClawtParamInfo browser_open_params[] = {
+    { "url", "string", "The address to open; https:// is assumed when there "
+      "is no scheme.", TRUE }
+};
+
+static const ClawtParamInfo browser_read_params[] = {
+    { "max_chars", "integer", "The most text to return. Defaults to 20000.", FALSE },
+    { "links", "boolean", "Whether to list the page's links too. Defaults to "
+      "true.", FALSE }
+};
+
+static const ClawtParamInfo browser_html_params[] = {
+    { "selector", "string", "A CSS selector; the whole document without one.", FALSE },
+    { "max_chars", "integer", "The most HTML to return. Defaults to 50000.", FALSE }
+};
+
+static const ClawtParamInfo browser_click_params[] = {
+    { "selector", "string", "A CSS selector for what to click -- prefer this; "
+      "it is scrolled into view and clicked in the middle.", FALSE },
+    { "x", "integer", "Instead of a selector: the x position in the page's "
+      "CSS pixels, as on clawtilla_browser_screenshot.", FALSE },
+    { "y", "integer", "With x: the y position.", FALSE },
+    { "button", "integer", "1 left (the default), 2 middle, 3 right.", FALSE }
+};
+
+static const ClawtParamInfo browser_type_params[] = {
+    { "text", "string", "What to type. A newline is Enter.", TRUE },
+    { "selector", "string", "A CSS selector for the field; it is focused "
+      "first. Without one, the text goes wherever the focus is.", FALSE },
+    { "submit", "boolean", "Press Enter afterwards and wait for the page.", FALSE }
+};
+
+static const ClawtParamInfo browser_key_params[] = {
+    { "key", "string", "Enter, Tab, Escape, Backspace, Delete, ArrowUp, "
+      "ArrowDown, Home, End, PageUp, PageDown, space, or one character.", TRUE },
+    { "modifiers", "string", "Comma-separated: ctrl, shift, alt, super.", FALSE }
+};
+
+static const ClawtParamInfo browser_scroll_params[] = {
+    { "pages", "number", "How far, in screens: 1 is one screen down, -1 one "
+      "up. Defaults to 1.", FALSE }
+};
+
+static const ClawtParamInfo browser_eval_params[] = {
+    { "script", "string", "JavaScript to run in the page; its last value is "
+      "returned as JSON.", TRUE }
 };
 
 static const ClawtParamInfo message_user_params[] = {
@@ -763,6 +813,67 @@ static const ToolDefinition tools[] = {
          "Describe your computer: what it is and what you can reach from it.",
          NEEDS_COMPUTER, no_params, CLAWT_ACTION_READ),
 
+    TOOL("clawtilla_browser_open",
+         "Open a page in your web browser -- a real one, which runs the "
+         "page's JavaScript. Use it when clawtilla_web_fetch comes back "
+         "empty or says the page needs JavaScript, when you have to log in, "
+         "or when you need to click or fill something in. Waits for the "
+         "page to load and says where you ended up. If your browser is "
+         "shared, other agents use it too, one at a time.",
+         NEEDS_BROWSER, browser_open_params, CLAWT_ACTION_EXTERNAL),
+
+    TOOL("clawtilla_browser_read",
+         "The text of the page your browser is on, as a person would read "
+         "it after the scripts ran, with its links. Read before you click: "
+         "the links' text is usually what to click on.",
+         NEEDS_BROWSER, browser_read_params, CLAWT_ACTION_READ),
+
+    TOOL("clawtilla_browser_html",
+         "The HTML of the page, or of the element a selector names -- for "
+         "finding a selector to click or type into.",
+         NEEDS_BROWSER, browser_html_params, CLAWT_ACTION_READ),
+
+    TOOL("clawtilla_browser_click",
+         "Click in the page, by CSS selector (preferred) or at a position "
+         "from a screenshot. The page sees a real click. Afterwards it says "
+         "which page you are on, since a click may have navigated.",
+         NEEDS_BROWSER, browser_click_params, CLAWT_ACTION_DESKTOP_INPUT),
+
+    TOOL("clawtilla_browser_type",
+         "Type text into the page, key by key, into the field a selector "
+         "names or wherever the focus is. With submit, press Enter and wait "
+         "for the page.",
+         NEEDS_BROWSER, browser_type_params, CLAWT_ACTION_DESKTOP_INPUT),
+
+    TOOL("clawtilla_browser_key",
+         "Press one key in the page, optionally with modifiers.",
+         NEEDS_BROWSER, browser_key_params, CLAWT_ACTION_DESKTOP_INPUT),
+
+    TOOL("clawtilla_browser_scroll",
+         "Scroll the page by screens.",
+         NEEDS_BROWSER, browser_scroll_params, CLAWT_ACTION_READ),
+
+    TOOL("clawtilla_browser_screenshot",
+         "A picture of what your browser shows. Positions in it are the "
+         "page's CSS pixels, which clawtilla_browser_click takes as x and y.",
+         NEEDS_BROWSER, no_params, CLAWT_ACTION_READ),
+
+    TOOL("clawtilla_browser_back",
+         "Go back one page.",
+         NEEDS_BROWSER, no_params, CLAWT_ACTION_EXTERNAL),
+
+    TOOL("clawtilla_browser_release",
+         "Let go of a shared browser so another agent can drive it. Call it "
+         "when you are done with a page; a claim also lapses on its own after "
+         "two minutes without a call. Does nothing on a browser of your own.",
+         NEEDS_BROWSER, no_params, CLAWT_ACTION_READ),
+
+    TOOL("clawtilla_browser_eval",
+         "Run your own JavaScript in the page and get its last value back as "
+         "JSON. For reading what the other tools cannot reach; prefer them "
+         "for anything a person would do.",
+         NEEDS_BROWSER_SCRIPTS, browser_eval_params, CLAWT_ACTION_EXEC),
+
     TOOL("clawtilla_skill_list",
          "The procedures you have been given, with what each is for. Your "
          "own TOOLS.org lists them too; call this when you want the list as "
@@ -869,6 +980,9 @@ struct _ClawtMcpTools {
     ClawtMcpSearchFunc      search;
     gpointer                search_data;
     GDestroyNotify          search_destroy;
+
+    /* The daemon's browser sessions, for clawtilla_browser_*; NULL offers none. */
+    ClawtBrowserManager    *browsers;
 
     ClawtMcpPolicyFunc      policy;
     gpointer                policy_data;
@@ -983,6 +1097,14 @@ clawt_mcp_tools_set_search_func(ClawtMcpTools      *self,
     self->search = func;
     self->search_data = user_data;
     self->search_destroy = destroy;
+}
+
+void
+clawt_mcp_tools_set_browsers(ClawtMcpTools *self, ClawtBrowserManager *browsers)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    g_set_object(&self->browsers, browsers);
 }
 
 void
@@ -1707,6 +1829,23 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
             if (client == NULL)
                 return FALSE;
         }
+        break;
+
+    case NEEDS_BROWSER:
+    case NEEDS_BROWSER_SCRIPTS:
+        /*
+         * A browser the agent was given, in a daemon that can run one.
+         * The shadow check already refuses a browser in a build without
+         * GSURF=1, so an agent that reaches here with a mode set has one.
+         */
+        if (self->browsers == NULL ||
+            clawt_agent_config_get_enum(clawt_agent_get_config(agent), "browser.mode") ==
+                CLAWT_BROWSER_NONE)
+            return FALSE;
+        if (tool->requirement == NEEDS_BROWSER_SCRIPTS &&
+            !clawt_agent_config_get_boolean(clawt_agent_get_config(agent),
+                                            "browser.allow_scripts"))
+            return FALSE;
         break;
 
     case NEEDS_SCREEN:
@@ -6002,7 +6141,8 @@ clawt_mcp_tools_call_defers(ClawtMcpTools *self,
     tool_name = argument_string(params, "name");
 
     if (g_strcmp0(tool_name, "clawtilla_computer_exec") != 0 &&
-        !g_str_has_prefix(tool_name != NULL ? tool_name : "", "clawtilla_web_")) {
+        !g_str_has_prefix(tool_name != NULL ? tool_name : "", "clawtilla_web_") &&
+        !g_str_has_prefix(tool_name != NULL ? tool_name : "", "clawtilla_browser_")) {
         /*
          * Any tool defers when a rule says somebody must look first: the
          * answer is minutes away, and only the deferred path can wait.
@@ -6384,6 +6524,495 @@ clawt_mcp_tools_call_async(ClawtMcpTools       *self,
     call_async_dispatch(self, agent_id, room_id, request, outer);
 }
 
+
+/* ── Browser tools ────────────────────────────────────────────────── */
+
+/*
+ * Every browser tool waits on a page, and starting a session waits
+ * seconds for an X server and a browser, so all of them take the
+ * deferred path and do their work on a thread.  A job holds what the
+ * thread needs and answers @outer itself; GTask delivers that answer on
+ * the context the outer task was made on, which is the tools' own.
+ */
+typedef struct {
+    ClawtBrowser *browser;
+    gchar        *agent_id;
+    gchar        *tool;
+    JsonObject   *arguments;    /* owned ref, nullable */
+    JsonNode     *request_id;   /* owned, nullable */
+    GTask        *outer;        /* owned */
+    gboolean      shared;
+    gint          allow_scripts;
+} BrowserJob;
+
+static void
+browser_job_free(gpointer data)
+{
+    BrowserJob *job = data;
+
+    g_clear_object(&job->browser);
+    g_free(job->agent_id);
+    g_free(job->tool);
+    g_clear_pointer(&job->arguments, json_object_unref);
+    g_clear_pointer(&job->request_id, json_node_unref);
+    g_clear_object(&job->outer);
+    g_free(job);
+}
+
+/* A text answer plus a picture, as MCP carries an image. */
+static JsonNode *
+make_image_response(JsonNode *request_id, GBytes *png, const gchar *text)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autofree gchar *encoded = g_base64_encode(g_bytes_get_data(png, NULL),
+                                                g_bytes_get_size(png));
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "jsonrpc");
+    json_builder_add_string_value(builder, "2.0");
+    if (request_id != NULL) {
+        json_builder_set_member_name(builder, "id");
+        json_builder_add_value(builder, json_node_copy(request_id));
+    }
+    json_builder_set_member_name(builder, "result");
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "content");
+    json_builder_begin_array(builder);
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "type");
+    json_builder_add_string_value(builder, "image");
+    json_builder_set_member_name(builder, "data");
+    json_builder_add_string_value(builder, encoded);
+    json_builder_set_member_name(builder, "mimeType");
+    json_builder_add_string_value(builder, "image/png");
+    json_builder_end_object(builder);
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "type");
+    json_builder_add_string_value(builder, "text");
+    json_builder_set_member_name(builder, "text");
+    json_builder_add_string_value(builder, text != NULL ? text : "");
+    json_builder_end_object(builder);
+    json_builder_end_array(builder);
+    json_builder_set_member_name(builder, "isError");
+    json_builder_add_boolean_value(builder, FALSE);
+    json_builder_end_object(builder);
+    json_builder_end_object(builder);
+
+    return json_builder_get_root(builder);
+}
+
+/* An object node of string members, from NULL-terminated name/value pairs. */
+static JsonNode *
+browser_params(const gchar *first, ...)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    const gchar *name;
+    va_list args;
+
+    json_builder_begin_object(builder);
+    va_start(args, first);
+    for (name = first; name != NULL; name = va_arg(args, const gchar *)) {
+        const gchar *value = va_arg(args, const gchar *);
+
+        json_builder_set_member_name(builder, name);
+        json_builder_add_string_value(builder, value);
+    }
+    va_end(args);
+    json_builder_end_object(builder);
+    return json_builder_get_root(builder);
+}
+
+/* Where the page is now, as a line an agent can act on. */
+static gchar *
+browser_where(ClawtBrowser *browser)
+{
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *title = NULL;
+
+    clawt_browser_refresh_page(browser);
+    uri = clawt_browser_dup_uri(browser);
+    title = clawt_browser_dup_title(browser);
+    return g_strdup_printf("Now on %s%s%s%s", uri != NULL ? uri : "(unknown page)",
+                           title != NULL && *title != '\0' ? " -- \"" : "",
+                           title != NULL ? title : "",
+                           title != NULL && *title != '\0' ? "\"" : "");
+}
+
+/* Truncates @text to @max characters, saying so. */
+static gchar *
+bounded_text(const gchar *text, gint64 max)
+{
+    glong length = g_utf8_strlen(text, -1);
+
+    if (max <= 0 || length <= max)
+        return g_strdup(text);
+    {
+        g_autofree gchar *head = g_utf8_substring(text, 0, (glong)max);
+
+        return g_strdup_printf("%s\n[... %ld more characters; call again with a "
+                               "larger max_chars, or scroll]", head, length - (glong)max);
+    }
+}
+
+/* The page's links, as JavaScript collects them, one per line. */
+static const gchar browser_links_script[] =
+    "(() => { const out = []; const seen = new Set();"
+    " for (const a of document.querySelectorAll('a[href]')) {"
+    "  const t = (a.innerText || a.getAttribute('aria-label') || '').trim().replace(/\\s+/g, ' ');"
+    "  if (!a.href || seen.has(a.href)) continue; seen.add(a.href);"
+    "  out.push((t ? t.slice(0, 80) + ' -> ' : '') + a.href);"
+    "  if (out.length >= 150) break; }"
+    " return out.join('\\n'); })()";
+
+/* Runs one tool on the worker.  Returns the response node. */
+static JsonNode *
+browser_job_run(BrowserJob *job)
+{
+    ClawtBrowser *browser = job->browser;
+    JsonObject *arguments = job->arguments;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) params = NULL;
+    g_autoptr(JsonNode) result = NULL;
+    g_autofree gchar *where = NULL;
+    const gchar *tool = job->tool;
+    gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+
+    if (g_strcmp0(tool, "clawtilla_browser_release") == 0) {
+        gboolean held = job->shared && clawt_browser_release(browser, job->agent_id);
+
+        return make_response(job->request_id,
+                             !job->shared ? "This browser is your own; there is "
+                                            "nobody to release it to."
+                             : held ? "Released. Another agent may drive it now."
+                                    : "You were not driving it.", FALSE);
+    }
+
+    /* One driver at a time on a shared session; the claim is renewed by every call. */
+    if (job->shared && !clawt_browser_claim(browser, job->agent_id, now, &error))
+        return make_response(job->request_id, error->message, TRUE);
+
+    if (g_strcmp0(tool, "clawtilla_browser_open") == 0) {
+        const gchar *url = argument_string(arguments, "url");
+        g_autofree gchar *full = NULL;
+        gboolean loaded;
+
+        if (url == NULL || *url == '\0')
+            return make_response(job->request_id, "Give a url to open.", TRUE);
+        full = strstr(url, "://") != NULL || g_str_has_prefix(url, "about:") ||
+               g_str_has_prefix(url, "data:") || g_str_has_prefix(url, "file:")
+            ? g_strdup(url) : g_strconcat("https://", url, NULL);
+        params = browser_params("uri", full, NULL);
+        result = clawt_browser_call(browser, "navigate", params, 30, &error);
+        if (result == NULL)
+            goto failed;
+        loaded = clawt_browser_wait_loaded(browser, 20);
+        where = browser_where(browser);
+        {
+            g_autofree gchar *text = g_strdup_printf(
+                "%s%s. Call clawtilla_browser_read for its text.", where,
+                loaded ? "" : " (still loading after 20 seconds)");
+
+            return make_response(job->request_id, text, FALSE);
+        }
+    }
+
+    if (g_strcmp0(tool, "clawtilla_browser_read") == 0) {
+        g_autofree gchar *body = NULL;
+        g_autofree gchar *links = NULL;
+        g_autofree gchar *text = NULL;
+
+        result = clawt_browser_call(browser, "page.text", NULL, 30, &error);
+        if (result == NULL)
+            goto failed;
+        body = bounded_text(JSON_NODE_HOLDS_VALUE(result) &&
+                            json_node_get_value_type(result) == G_TYPE_STRING
+                                ? json_node_get_string(result) : "",
+                            argument_int(arguments, "max_chars", 20000));
+        if (argument_boolean(arguments, "links", TRUE)) {
+            g_autoptr(JsonNode) linked = NULL;
+
+            params = browser_params("script", browser_links_script, NULL);
+            linked = clawt_browser_call(browser, "page.eval", params, 15, NULL);
+            if (linked != NULL && JSON_NODE_HOLDS_VALUE(linked) &&
+                json_node_get_value_type(linked) == G_TYPE_STRING)
+                links = g_strdup(json_node_get_string(linked));
+        }
+        where = browser_where(browser);
+        text = g_strdup_printf("%s\n\n%s%s%s", where, *body != '\0' ? body
+                               : "(the page has no visible text yet -- it may still be "
+                                 "loading; try again, or take a screenshot)",
+                               links != NULL && *links != '\0' ? "\n\nLinks:\n" : "",
+                               links != NULL ? links : "");
+        return make_response(job->request_id, text, FALSE);
+    }
+
+    if (g_strcmp0(tool, "clawtilla_browser_html") == 0) {
+        const gchar *selector = argument_string(arguments, "selector");
+        g_autofree gchar *quoted = NULL;
+        g_autofree gchar *script = NULL;
+        g_autofree gchar *text = NULL;
+
+        if (selector != NULL) {
+            g_autoptr(JsonNode) literal = json_node_new(JSON_NODE_VALUE);
+
+            json_node_set_string(literal, selector);
+            quoted = json_to_string(literal, FALSE);
+        }
+        script = selector != NULL
+            ? g_strdup_printf("(() => { const e = document.querySelector(%s); "
+                              "return e ? e.outerHTML : null; })()", quoted)
+            : g_strdup("document.documentElement.outerHTML");
+        params = browser_params("script", script, NULL);
+        result = clawt_browser_call(browser, "page.eval", params, 30, &error);
+        if (result == NULL)
+            goto failed;
+        if (!JSON_NODE_HOLDS_VALUE(result) || json_node_get_value_type(result) != G_TYPE_STRING) {
+            text = g_strdup_printf("Nothing in the page matches %s.", selector);
+            return make_response(job->request_id, text, TRUE);
+        }
+        text = bounded_text(json_node_get_string(result),
+                            argument_int(arguments, "max_chars", 50000));
+        return make_response(job->request_id, text, FALSE);
+    }
+
+    if (g_strcmp0(tool, "clawtilla_browser_click") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        const gchar *selector = argument_string(arguments, "selector");
+        g_autofree gchar *text = NULL;
+
+        if (selector == NULL && (arguments == NULL || !json_object_has_member(arguments, "x")))
+            return make_response(job->request_id, "Give a selector, or x and y.", TRUE);
+
+        json_builder_begin_object(builder);
+        if (selector != NULL) {
+            json_builder_set_member_name(builder, "selector");
+            json_builder_add_string_value(builder, selector);
+        } else {
+            json_builder_set_member_name(builder, "x");
+            json_builder_add_int_value(builder, argument_int(arguments, "x", 0));
+            json_builder_set_member_name(builder, "y");
+            json_builder_add_int_value(builder, argument_int(arguments, "y", 0));
+        }
+        json_builder_set_member_name(builder, "button");
+        json_builder_add_int_value(builder, argument_int(arguments, "button", 1));
+        json_builder_end_object(builder);
+        params = json_builder_get_root(builder);
+
+        result = clawt_browser_call(browser, "page.click", params, 30, &error);
+        if (result == NULL)
+            goto failed;
+        /* gsurf answers when the click is handed over, not when it lands. */
+        clawt_browser_wait_loaded(browser, 10);
+        where = browser_where(browser);
+        text = g_strdup_printf("Clicked. %s.", where);
+        return make_response(job->request_id, text, FALSE);
+    }
+
+    if (g_strcmp0(tool, "clawtilla_browser_type") == 0) {
+        const gchar *typed = argument_string(arguments, "text");
+        const gchar *selector = argument_string(arguments, "selector");
+        g_autofree gchar *text = NULL;
+
+        if (typed == NULL)
+            return make_response(job->request_id, "Give the text to type.", TRUE);
+        params = selector != NULL ? browser_params("text", typed, "selector", selector, NULL)
+                                  : browser_params("text", typed, NULL);
+        result = clawt_browser_call(browser, "page.type", params, 60, &error);
+        if (result == NULL)
+            goto failed;
+        if (argument_boolean(arguments, "submit", FALSE)) {
+            g_autoptr(JsonNode) enter = browser_params("key", "Enter", NULL);
+            g_autoptr(JsonNode) pressed = clawt_browser_call(browser, "page.key", enter,
+                                                             30, &error);
+
+            if (pressed == NULL)
+                goto failed;
+            clawt_browser_wait_loaded(browser, 20);
+        }
+        where = browser_where(browser);
+        text = g_strdup_printf("Typed %ld character(s)%s. %s.",
+                               g_utf8_strlen(typed, -1),
+                               argument_boolean(arguments, "submit", FALSE)
+                                   ? " and pressed Enter" : "", where);
+        return make_response(job->request_id, text, FALSE);
+    }
+
+    if (g_strcmp0(tool, "clawtilla_browser_key") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        const gchar *key = argument_string(arguments, "key");
+        const gchar *modifiers = argument_string(arguments, "modifiers");
+        g_autofree gchar *text = NULL;
+
+        if (key == NULL)
+            return make_response(job->request_id, "Give the key to press.", TRUE);
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "key");
+        json_builder_add_string_value(builder, key);
+        if (modifiers != NULL && *modifiers != '\0') {
+            g_auto(GStrv) names = g_strsplit(modifiers, ",", -1);
+            guint i;
+
+            json_builder_set_member_name(builder, "modifiers");
+            json_builder_begin_array(builder);
+            for (i = 0; names[i] != NULL; i++)
+                json_builder_add_string_value(builder, g_strstrip(names[i]));
+            json_builder_end_array(builder);
+        }
+        json_builder_end_object(builder);
+        params = json_builder_get_root(builder);
+        result = clawt_browser_call(browser, "page.key", params, 30, &error);
+        if (result == NULL)
+            goto failed;
+        clawt_browser_wait_loaded(browser, 10);
+        where = browser_where(browser);
+        text = g_strdup_printf("Pressed %s. %s.", key, where);
+        return make_response(job->request_id, text, FALSE);
+    }
+
+    if (g_strcmp0(tool, "clawtilla_browser_scroll") == 0) {
+        g_autofree gchar *script = NULL;
+        gdouble pages = 1.0;
+
+        if (arguments != NULL && json_object_has_member(arguments, "pages")) {
+            JsonNode *node = json_object_get_member(arguments, "pages");
+
+            if (JSON_NODE_HOLDS_VALUE(node) &&
+                (json_node_get_value_type(node) == G_TYPE_DOUBLE ||
+                 json_node_get_value_type(node) == G_TYPE_INT64))
+                pages = json_node_get_double(node);
+        }
+        script = g_strdup_printf("window.scrollBy(0, Math.round(window.innerHeight * 0.9 * %.3f)); "
+                                 "Math.round(100 * (window.scrollY + window.innerHeight) / "
+                                 "Math.max(1, document.documentElement.scrollHeight))",
+                                 CLAMP(pages, -50.0, 50.0));
+        params = browser_params("script", script, NULL);
+        result = clawt_browser_call(browser, "page.eval", params, 15, &error);
+        if (result == NULL)
+            goto failed;
+        {
+            g_autofree gchar *text = g_strdup_printf(
+                "Scrolled; the bottom of the screen is %" G_GINT64_FORMAT "%% of the "
+                "way down the page.",
+                JSON_NODE_HOLDS_VALUE(result) ? (gint64)json_node_get_double(result) : 0);
+
+            return make_response(job->request_id, text, FALSE);
+        }
+    }
+
+    if (g_strcmp0(tool, "clawtilla_browser_screenshot") == 0) {
+        g_autoptr(GBytes) png = clawt_browser_screenshot(browser, &error);
+
+        if (png == NULL)
+            goto failed;
+        where = browser_where(browser);
+        return make_image_response(job->request_id, png, where);
+    }
+
+    if (g_strcmp0(tool, "clawtilla_browser_back") == 0) {
+        result = clawt_browser_call(browser, "back", NULL, 30, &error);
+        if (result == NULL)
+            goto failed;
+        clawt_browser_wait_loaded(browser, 15);
+        where = browser_where(browser);
+        return make_response(job->request_id, where, FALSE);
+    }
+
+    if (g_strcmp0(tool, "clawtilla_browser_eval") == 0) {
+        const gchar *script = argument_string(arguments, "script");
+        g_autofree gchar *text = NULL;
+
+        /* Checked again here, at the call: the offer was decided at list time. */
+        if (!job->allow_scripts)
+            return make_response(job->request_id, "browser.allow_scripts is off for you, "
+                                 "so your own JavaScript cannot run.", TRUE);
+        if (script == NULL)
+            return make_response(job->request_id, "Give the script to run.", TRUE);
+        params = browser_params("script", script, NULL);
+        result = clawt_browser_call(browser, "page.eval", params, 30, &error);
+        if (result == NULL)
+            goto failed;
+        text = json_to_string(result, TRUE);
+        {
+            g_autofree gchar *bounded = bounded_text(text, 50000);
+
+            return make_response(job->request_id, bounded, FALSE);
+        }
+    }
+
+    return make_response(job->request_id, "No such browser tool.", TRUE);
+
+failed:
+    {
+        g_autofree gchar *text = g_strdup_printf("The browser could not do that: %s",
+                                                 error != NULL ? error->message
+                                                               : "no reason given");
+
+        return make_response(job->request_id, text, TRUE);
+    }
+}
+
+/*
+ * A plain thread, not a GTask run in one: the thread answers @outer and
+ * frees the job itself.  A GTask here would queue its own completion on
+ * the tools' context, holding the job -- and through it the outer task
+ * and the tools -- until somebody iterated that context once more, which
+ * a caller that has its answer has no reason to do.
+ */
+static gpointer
+browser_job_thread(gpointer data)
+{
+    BrowserJob *job = data;
+
+    g_task_return_pointer(job->outer, browser_job_run(job),
+                          (GDestroyNotify)json_node_unref);
+    browser_job_free(job);
+    return NULL;
+}
+
+/* Starts a browser tool on a worker thread; @outer is answered from there. */
+static void
+browser_call_start(ClawtMcpTools *self, const gchar *agent_id, const gchar *tool,
+                   JsonObject *arguments, JsonNode *request_id, GTask *outer)
+{
+    ClawtAgent *agent = self->agents != NULL
+        ? clawt_agent_manager_get(self->agents, agent_id) : NULL;
+    ClawtAgentConfig *config = agent != NULL ? clawt_agent_get_config(agent) : NULL;
+    g_autofree gchar *key = NULL;
+    BrowserJob *job;
+    gint mode;
+
+    mode = config != NULL ? clawt_agent_config_get_enum(config, "browser.mode")
+                          : CLAWT_BROWSER_NONE;
+    key = clawt_browser_manager_session_key((ClawtBrowserMode)mode, agent_id,
+                                            config != NULL
+                                                ? clawt_agent_config_get_string(config, "browser.use")
+                                                : NULL);
+    if (self->browsers == NULL || key == NULL) {
+        g_task_return_pointer(outer, make_response(request_id, "You have no browser "
+                              "(browser.mode is none).", TRUE),
+                              (GDestroyNotify)json_node_unref);
+        g_object_unref(outer);
+        return;
+    }
+
+    job = g_new0(BrowserJob, 1);
+    job->browser = clawt_browser_manager_obtain(self->browsers, key);
+    clawt_browser_configure(job->browser,
+                            clawt_agent_config_get_string(config, "browser.home"),
+                            (gint)clawt_agent_config_get_int(config, "browser.width"),
+                            (gint)clawt_agent_config_get_int(config, "browser.height"),
+                            (gint)clawt_agent_config_get_int(config, "browser.idle_minutes"));
+    job->agent_id = g_strdup(agent_id);
+    job->tool = g_strdup(tool);
+    job->arguments = arguments != NULL ? json_object_ref(arguments) : NULL;
+    job->request_id = request_id != NULL ? json_node_ref(request_id) : NULL;
+    job->outer = outer;
+    job->shared = mode == CLAWT_BROWSER_SHARED;
+    job->allow_scripts = clawt_agent_config_get_boolean(config, "browser.allow_scripts");
+
+    g_thread_unref(g_thread_new("clawt-browser-tool", browser_job_thread, job));
+}
+
 /*
  * Runs a call the action rules have let through: a web tool or
  * computer_exec on their own deferred paths, anything else synchronously
@@ -6413,6 +7042,11 @@ call_async_dispatch(ClawtMcpTools *self, const gchar *agent_id,
         web->request_id = (request_id != NULL) ? json_node_ref(request_id) : NULL;
         web->tool = g_strdup(tool);
         web_call_start(self, agent_id, web->tool, arguments, web);
+        return;
+    }
+
+    if (g_str_has_prefix(tool != NULL ? tool : "", "clawtilla_browser_")) {
+        browser_call_start(self, agent_id, tool, arguments, request_id, outer);
         return;
     }
 
@@ -6895,6 +7529,7 @@ clawt_mcp_tools_dispose(GObject *object)
 
     g_clear_pointer(&self->tool_providers, g_ptr_array_unref);
     g_clear_object(&self->agents);
+    g_clear_object(&self->browsers);
     g_clear_object(&self->tasks);
     g_clear_object(&self->guard);
 

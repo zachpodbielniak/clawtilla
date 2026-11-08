@@ -1,0 +1,130 @@
+#+title: Browser sessions
+#+description: A real web browser an agent can drive: gsurf on a private Xvfb, built with GSURF=1
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-11-07 Sat]
+#+updated: [2026-11-07 Sat]
+#+version: 0.1.0
+
+* Browser sessions
+
+=clawtilla_web_fetch= reads what a server sends.  For a page built by JavaScript that is a script tag and an empty =<div>=, and for anything behind a login it is the login page.  A browser session is a real browser: gsurf (WebKitGTK) on a private X display, which runs the page's scripts, keeps cookies, and takes clicks and typing.  An agent drives it with the =clawtilla_browser_*= tools; a person watches and drives it from the Computer page's Browser view, or with =clawtilla browser=.
+
+Since 0.9.0.
+
+** Building it in
+
+Browser sessions are opt-in at build time, like the libregnum client:
+
+#+begin_src bash
+make GSURF=1                      # gsurf from ../gsurf
+make GSURF=1 GSURF_DIR=~/src/gsurf
+#+end_src
+
+gsurf is *not* a dependency and clawtilla links nothing from it.  The daemon must never link GTK, so a session is two child processes -- Xvfb and gsurf -- and a Unix socket.  =GSURF=1= does three things:
+
+- defines =CLAWT_HAVE_GSURF=, which is what lets an agent have a browser at all;
+- records =GSURF_DIR='s build as a place to find the binary;
+- runs =tools/clawt-gsurf-check.sh=, which refuses a gsurf older than 0.5.10 (the release that added ~page.click~, ~page.type~, ~page.key~ and the inline screenshot the tools are made of) and builds =GSURF_DIR= when its binary is missing.  A gsurf that is already built is never rebuilt: it is somebody's browser, built with their options.
+
+| Needs | Fedora package | For |
+|-------+----------------+-----|
+| gsurf's build | =webkit2gtk4.1-devel=, =gtk3-devel= | building =GSURF_DIR= |
+| =Xvfb= | =xorg-x11-server-Xvfb= | the private display (runtime) |
+
+An agent configured with a browser in a build without =GSURF=1= is disabled, with the reason, rather than run without the tools it was told it has.
+
+*** Which gsurf runs
+
+Beside =clawtillad=, the install location, the =GSURF_DIR= build, then =PATH= -- and each candidate's =--version= is read, so one older than 0.5.10 is passed over.  The build comes before =PATH= on purpose: the first live run found a distribution gsurf 0.4.4 on =PATH= ahead of the 0.5.10 build, and an old gsurf has no ~control.name~, so it starts, opens its window, and the socket clawtilla waits for never appears under the name it asked for.  None found names every place looked at and why each was not used.
+
+** Configuring it
+
+Three ways an agent can be set up, by =agents.browser.mode=:
+
+| Mode | What the agent gets |
+|------+---------------------|
+| =none= (default) | no browser; =clawtilla_web_fetch= as before |
+| =own= | a session of its own, with its own profile |
+| =shared= | the session declared under =browsers:= that =agents.browser.use= names |
+
+#+begin_src yaml
+browsers:
+  - id: accounts
+    description: logged in to the vendor portals
+    home: https://portal.example.com
+agents:
+  - id: researcher
+    browser:
+      mode: own
+      idle_minutes: 30
+  - id: billing
+    browser:
+      mode: shared
+      use: accounts
+  - id: support
+    browser:
+      mode: shared
+      use: accounts
+#+end_src
+
+A shared session's keys -- =home=, =allow_scripts=, =idle_minutes=, =width=, =height= -- come from its =browsers:= entry, read through the same getters as an agent's own, exactly as =computers:= work.  =mode= and =use= stay the agent's.  Every key is in [[file:configuration-options.org][configuration-options.org]].
+
+** What a session is
+
+- *Started on first use.*  The agent's first browser call, or a person opening a page from the Browser view or the CLI, starts it.  Watching does not: a frame of a session that is not running answers "not running".
+- *A private display.*  Xvfb picks its own display with =-displayfd=, so two sessions never race for =:99=.  TCP is off; the abstract socket is left on, because a daemon with a private =/tmp= (a systemd unit's =PrivateTmp=, a sandbox) cannot share =/tmp/.X11-unix= with the browser it starts -- measured: gsurf then never opens its window.
+- *A private profile.*  =<state_dir>/browsers/agent.<id>/= or =shared.<id>/= holds its data, cache, cookies, downloads, generated ~gsurf.yaml~ and the two logs.  An agent and a shared session with the same id never share one.  The profile survives a stop, so a login does; the open page does not.
+- *No modules.*  gsurf runs with =--no-modules=: its modal module would take an agent's typed =j= as "scroll down".
+- *Its environment is the allowlist*, plus =DISPLAY=, =GDK_BACKEND=x11=, the profile's =XDG_*= directories and a =WAYLAND_DISPLAY= naming a socket that does not exist -- GTK finds =wayland-0= on its own, and a "headless" browser would open on your screen.  Building this exposed a bug in =clawt_build_child_environment()=: a name in both the allowlist and the extras was written twice and =getenv()= returned the allowlisted copy, so an agent's own =env:= could not override =XDG_CONFIG_HOME= either.  Extras now replace.
+- *It dies with the daemon* (=PR_SET_PDEATHSIG=), stops after =idle_minutes= without a call (checked on the daemon's one-minute tick), stops when its agent stops if it is the agent's own, and stops with the daemon.
+- *One driver at a time on a shared session.*  Two agents clicking in one page undo each other's work and neither can tell, so a call from a second agent is refused, naming the first.  The claim is renewed by every call and lapses after two minutes without one (=CLAWT_BROWSER_DRIVER_LEASE_SECONDS=); =clawtilla_browser_release= gives it up sooner.  A person's click from the Computer page does not take the lease.
+
+** The tools
+
+Offered only to an agent whose =agents.browser.mode= is not =none=, in a daemon that holds sessions.  Every one runs on a worker thread through the deferred tool path: a page can take seconds and a start longer, and nothing that waits may hold the daemon's main context.
+
+| Tool | What it does |
+|------+--------------|
+| =clawtilla_browser_open= | navigate (=https://= assumed), wait for the load, say where it ended up |
+| =clawtilla_browser_read= | the page's text after its scripts ran, and its links |
+| =clawtilla_browser_html= | the HTML, of the document or of a selector |
+| =clawtilla_browser_click= | a click, by selector (preferred) or at x, y from a screenshot |
+| =clawtilla_browser_type= | typing, key by key, into a selector or the focus; optionally Enter |
+| =clawtilla_browser_key= | one key, with modifiers |
+| =clawtilla_browser_scroll= | by screens; says how far down the page the view is |
+| =clawtilla_browser_screenshot= | a picture, as an MCP image |
+| =clawtilla_browser_back= | back one page |
+| =clawtilla_browser_release= | give up a shared session's wheel |
+| =clawtilla_browser_eval= | the agent's own JavaScript -- only with =agents.browser.allow_scripts= |
+
+*A reply means handed over, not done.*  gsurf answers ~page.click~ when the events reach the engine, not when the page has handled them, so every tool that can navigate -- open, click, type with submit, key, back -- waits for ~document.readyState~ to be =complete= and then reports the page it is on.  That last line is what makes a click that navigated visible to the agent without another call.
+
+Click, type and key are =desktop-input= actions to the action rules, open and back are =external=, and eval is =exec=, so a policy can gate the browser the way it gates a screen.
+
+=clawtilla_browser_eval= is off by default: reading, clicking and typing cover what a person does, and a script can read every field and post anything as the logged-in user without a visible step.  It is refused at the call as well as left out of the listing.
+
+** Watching and driving it yourself
+
+The Computer page has a Browser view in every client ([[file:clients.org][clients.org]]): the line saying what it is on, a picture refreshed every three seconds while the view is open, an address to open, Stop, and a click on the picture as a click in the page.  An agent with a browser and no computer gets the Browser view on its own.
+
+#+begin_src bash
+clawtilla browser                              # every session, running or not
+clawtilla browser open researcher example.org
+clawtilla browser click researcher 40 20      # the page's CSS pixels
+clawtilla browser screenshot researcher page.png
+clawtilla browser stop researcher
+#+end_src
+
+The IPC verbs are in [[file:ipc-protocol.org][ipc-protocol.org]].
+
+** Testing it
+
+=tests/test-browser.c= covers everything above gsurf's control socket with a fake transport (=clawt_browser_manager_set_transport()=): the session keys, the keys a shared session takes from its entry, the shadow reasons, the lease, which agents are offered which tools, and what each tool sends.  It cannot see a real X server or a real page.
+
+=tests/test-browser-integration.sh= can, behind =CLAWT_TEST_INTEGRATION=1=: against a =GSURF=1= build it starts a daemon, opens a fixture page whose title only its script sets, takes a screenshot and checks it is a PNG, clicks the button and waits for the page to retitle itself, and stops the session.  It skips, saying why, when Xvfb or a =GSURF=1= daemon is missing.
+
+** Not done
+
+- A person typing into the page from the Browser view.  Clicks are there; text goes through the agent or gsurf's own window.
+- =clawtilla_web_fetch= falling back to the browser when it reads an empty page.  The agent is told when to reach for the browser instead, in the tools' descriptions.

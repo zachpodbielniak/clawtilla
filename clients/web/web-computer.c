@@ -633,7 +633,7 @@ add_screen(ClawtWebApp *app, HtmxElement *parent, const gchar *agent_id)
  */
 static void
 add_subnav(HtmxElement *parent, const gchar *agent_id, ClawtComputerView on,
-           gboolean has_screen)
+           gboolean has_screen, gboolean has_computer, gboolean has_browser)
 {
     g_autoptr(HtmxDiv) nav = htmx_div_new();
     g_autofree gchar *escaped = g_uri_escape_string(agent_id, NULL, FALSE);
@@ -652,6 +652,10 @@ add_subnav(HtmxElement *parent, const gchar *agent_id, ClawtComputerView on,
          * would offer it on a backend added later or fail to.
          */
         if (view == CLAWT_COMPUTER_VIEW_SCREEN && !has_screen)
+            continue;
+
+        /* An agent with a browser and no computer has the one view. */
+        if (view == CLAWT_COMPUTER_VIEW_BROWSER ? !has_browser : !has_computer)
             continue;
 
         href = g_strdup_printf("/a/%s/computer/%s", escaped,
@@ -699,6 +703,20 @@ clawt_web_computer_view_body(ClawtWebApp       *app,
 
     clawt_web_add(pad, clawt_web_section_title("Computer"));
 
+    /*
+     * A browser is not a computer, but it lives on this page: an agent with
+     * one and no machine gets the Browser view on its own.
+     */
+    if (g_strcmp0(clawt_web_member(agent, "computer", "none"), "none") == 0 &&
+        g_strcmp0(clawt_web_member(agent, "browser", "none"), "none") != 0) {
+        add_subnav(HTMX_ELEMENT(pad), agent_id, CLAWT_COMPUTER_VIEW_BROWSER,
+                   FALSE, FALSE, TRUE);
+        clawt_web_add_browser(app, HTMX_ELEMENT(pad), agent_id);
+        htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
+
+        return g_steal_pointer(&view);
+    }
+
     if (g_strcmp0(clawt_web_member(agent, "computer", "none"), "none") == 0) {
         clawt_web_add(pad, clawt_web_text(
             "This agent has no computer -- it is chat only.", "lede"));
@@ -713,7 +731,8 @@ clawt_web_computer_view_body(ClawtWebApp       *app,
     }
 
     add_subnav(HTMX_ELEMENT(pad), agent_id, tab,
-               clawt_web_member_bool(agent, "computer_screen", FALSE));
+               clawt_web_member_bool(agent, "computer_screen", FALSE), TRUE,
+               g_strcmp0(clawt_web_member(agent, "browser", "none"), "none") != 0);
 
     payload = clawt_web_payload_new();
     clawt_web_payload_set(payload, "agent", agent_id);
@@ -809,6 +828,10 @@ clawt_web_computer_view_body(ClawtWebApp       *app,
 
     case CLAWT_COMPUTER_VIEW_SHELL:
         add_console(HTMX_ELEMENT(pad), agent_id, NULL, NULL);
+        break;
+
+    case CLAWT_COMPUTER_VIEW_BROWSER:
+        clawt_web_add_browser(app, HTMX_ELEMENT(pad), agent_id);
         break;
     }
 

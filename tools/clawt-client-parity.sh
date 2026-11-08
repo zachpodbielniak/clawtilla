@@ -95,6 +95,7 @@ declare -A WEB_MAY_LACK=(
 declare -A GTK_MAY_LACK=(
     ["agent.file_read"]="same capability, different mechanism: /edit opens the file in \$EDITOR there, which is the better answer when the client and the daemon share a machine"
     ["agent.file_write"]="the other half of the same; \$EDITOR writes the file directly"
+    ["browser.list"]="the Browser view's line comes from browser.frame's reply here; the web client reads browser.list for it because its picture is a separate request, and two frames per poll would be two screenshots"
 )
 
 #
@@ -206,6 +207,9 @@ declare -A AFFORDANCES=(
     ["fleet days strip"]="clawt_usage_fleet_strip|clawt_usage_fleet_strip|clawt_usage_fleet_strip"
     ["stop an idle agent"]="on_fleet_stop|/fleet-usage/%s/stop|on_stop_clicked"
     ["stop the idle ones"]="on_stop_idle_confirmed|/fleet-usage/stop-idle|on_stop_idle_confirmed"
+    ["browser view"]="clawt_gtk_build_browser_view|/f/a/:id/browser|build_browser_view"
+    ["click in the browser"]="on_picture_pressed|/browser/click|on_browser_click"
+    ["open a page in the browser"]="\"browser.open\"|/browser/open|\"browser.open\""
     #
     # A group room drawn beside the agents, and the two things you can
     # only do to one from a client.
@@ -734,6 +738,7 @@ report_missing () {
 declare -A LRG_MAY_LACK=(
     ["agent.file_read"]="same capability as GTK's, same mechanism: the file opens in \$EDITOR, which is the better answer when the client and the daemon share a machine"
     ["agent.file_write"]="the other half of the same; \$EDITOR writes the file directly"
+    ["browser.list"]="the Browser view's line comes from browser.frame's reply here, as in GTK; the web client reads browser.list because its picture is a separate request"
 )
 
 #

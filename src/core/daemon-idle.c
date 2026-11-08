@@ -113,6 +113,7 @@ clawt_daemon_idle_tick(ClawtDaemon *self)
 
     now = g_get_real_time() / G_USEC_PER_SEC;
     stop_idle_agents(self, now);
+    clawt_daemon_browser_tick(self, now);
 }
 
 static gboolean

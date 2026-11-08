@@ -17,6 +17,8 @@
 #include <libreclaw.h>
 #include <ai-glib.h>
 
+static YamlNode *list_entry(ClawtConfig *config, const gchar *list, const gchar *id);
+
 struct _ClawtConfig {
     GObject      parent_instance;
 
@@ -400,6 +402,31 @@ agent_validate(ClawtAgentConfig *self)
     }
 
     /*
+     * A browser has to be one this build can start, and a shared one has
+     * to exist.  An agent told it has browser tools and given none spends
+     * its turns finding that out, so it is disabled with the reason.
+     */
+    {
+        gint mode = clawt_agent_config_get_enum(self, "browser.mode");
+        const gchar *use = lookup_string(self->node, "browser.use");
+
+        if (mode != CLAWT_BROWSER_NONE && !clawt_browser_build_available()) {
+            agent_mark_shadow(self, "browser.mode: %s needs clawtilla built with "
+                              "GSURF=1, and this one was not -- rebuild with "
+                              "`make GSURF=1`, or set browser.mode: none",
+                              mode == CLAWT_BROWSER_OWN ? "own" : "shared");
+            return;
+        }
+        if (mode == CLAWT_BROWSER_SHARED &&
+            (use == NULL || *use == '\0' || list_entry(self->config, "browsers", use) == NULL ||
+             !clawt_is_valid_id(use))) {
+            agent_mark_shadow(self, "browser.use: there is no browser '%s' under "
+                              "browsers:", use != NULL ? use : "");
+            return;
+        }
+    }
+
+    /*
      * A shared machine has to exist, and has to be one several agents can
      * be on. A host computer is the real machine confined to one agent's
      * workspace; "sharing" one would be each agent's confinement quietly
@@ -713,22 +740,22 @@ routing_mode_role_default(ClawtAgentConfig *self)
     return nick;
 }
 
-/* The computers: entry named @id, or NULL. */
+/* The entry named @id in the top-level list @list (computers, browsers), or NULL. */
 static YamlNode *
-computer_entry(ClawtConfig *config, const gchar *id)
+list_entry(ClawtConfig *config, const gchar *list, const gchar *id)
 {
-    YamlNode *computers;
+    YamlNode *entries;
     YamlSequence *sequence;
     guint i;
 
     if (config == NULL || id == NULL || *id == '\0')
         return NULL;
 
-    computers = node_at_path(config->root, "computers", FALSE);
-    if (computers == NULL || yaml_node_get_node_type(computers) != YAML_NODE_SEQUENCE)
+    entries = node_at_path(config->root, list, FALSE);
+    if (entries == NULL || yaml_node_get_node_type(entries) != YAML_NODE_SEQUENCE)
         return NULL;
 
-    sequence = yaml_node_get_sequence(computers);
+    sequence = yaml_node_get_sequence(entries);
     for (i = 0; i < yaml_sequence_get_length(sequence); i++) {
         YamlNode *element = yaml_sequence_get_element(sequence, i);
 
@@ -738,6 +765,13 @@ computer_entry(ClawtConfig *config, const gchar *id)
     }
 
     return NULL;
+}
+
+/* The computers: entry named @id, or NULL. */
+static YamlNode *
+computer_entry(ClawtConfig *config, const gchar *id)
+{
+    return list_entry(config, "computers", id);
 }
 
 /*
@@ -755,6 +789,23 @@ agent_node_for_key(ClawtAgentConfig *self, const gchar *key, const gchar **out_k
     YamlNode *entry;
 
     *out_key = key;
+
+    /*
+     * The same rule for a shared browser, except that `use` alone does not
+     * decide it: `mode` says whether the agent is on a shared session at
+     * all, and both stay the agent's own, since they are about the agent.
+     */
+    if (self->config != NULL && key != NULL && g_str_has_prefix(key, "browser.") &&
+        g_strcmp0(key, "browser.use") != 0 && g_strcmp0(key, "browser.mode") != 0 &&
+        g_strcmp0(lookup_string(self->node, "browser.mode"), "shared") == 0) {
+        entry = list_entry(self->config, "browsers",
+                           lookup_string(self->node, "browser.use"));
+        if (entry == NULL)
+            return self->node;
+        *out_key = key + strlen("browser.");
+        return entry;
+    }
+
     if (self->config == NULL || key == NULL || !g_str_has_prefix(key, "computer.") ||
         g_strcmp0(key, "computer.use") == 0)
         return self->node;
@@ -767,6 +818,36 @@ agent_node_for_key(ClawtAgentConfig *self, const gchar *key, const gchar **out_k
 
     *out_key = key + strlen("computer.");
     return entry;
+}
+
+GPtrArray *
+clawt_config_get_browser_ids(ClawtConfig *self)
+{
+    GPtrArray *out;
+    YamlNode *entries;
+    YamlSequence *sequence;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), NULL);
+
+    out = g_ptr_array_new_with_free_func(g_free);
+    entries = node_at_path(self->root, "browsers", FALSE);
+    if (entries == NULL || yaml_node_get_node_type(entries) != YAML_NODE_SEQUENCE)
+        return out;
+
+    sequence = yaml_node_get_sequence(entries);
+    for (i = 0; i < yaml_sequence_get_length(sequence); i++) {
+        YamlNode *element = yaml_sequence_get_element(sequence, i);
+        const gchar *id;
+
+        if (element == NULL || yaml_node_get_node_type(element) != YAML_NODE_MAPPING)
+            continue;
+        id = member_string(yaml_node_get_mapping(element), "id");
+        if (id != NULL && clawt_is_valid_id(id))
+            g_ptr_array_add(out, g_strdup(id));
+    }
+
+    return out;
 }
 
 GPtrArray *

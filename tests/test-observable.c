@@ -1396,7 +1396,7 @@ test_a_frames_size_comes_from_the_image(void)
 /* ── The sub-views ───────────────────────────────────────────────── */
 
 /*
- * The Computer page's four halves, walked rather than listed.
+ * The Computer page's five views, walked rather than listed.
  *
  * Both clients build their tabs from this, so a fifth added here appears
  * in the window and in the browser or in neither.
@@ -1406,7 +1406,7 @@ test_the_computer_sub_views_round_trip(void)
 {
     guint i;
 
-    g_assert_cmpuint(clawt_computer_view_count(), ==, 4);
+    g_assert_cmpuint(clawt_computer_view_count(), ==, 5);
 
     for (i = 0; i < clawt_computer_view_count(); i++) {
         const gchar *nick = clawt_computer_view_nth_nick(i);

@@ -803,6 +803,9 @@ The latest step is always visible; an =LrgExpander= ("Last 6 steps", remembered 
 ~activity.list~, ~agent.interrupt~, ~msg.send~.
 
 
+** Browser (on the Computer page)
+=build_browser_view()= in =clients/lrg/lrg-computer.c=: an address entry with Open and "Stop the browser", the line from =clawt_browser_session_line()=, the picture (decoded no wider than the panel, as the Screen view's is) and a "Click at x,y" entry, because an =LrgImage= takes no pointer. It reads ~browser.frame~ every three seconds while it is showing, on a source attached to the app's context by name, with one read in flight; the tab is shown only for an agent whose row says it has a browser. See [[file:browser.org][browser.org]].
+
 ** Fleet
 =clients/lrg/lrg-fleet-page.c=, the third drawing of [[file:clients.org::#fleet-tab][the Fleet tab]]. A period combo, the period's total and the day's cap (=clawt_usage_fleet_summary()=, =clawt_usage_fleet_budget_line()=), the fourteen-day strip as one monospace label, and a lifted row per agent with its subtitle (=clawt_usage_fleet_row_subtitle()=), an idle badge in =clawt_usage_idle_tone()=, and Stop when =clawt_usage_fleet_row_stoppable()= says so. "Stop the idle ones" asks first with the count from =clawt_usage_fleet_stoppable_count()=.
 

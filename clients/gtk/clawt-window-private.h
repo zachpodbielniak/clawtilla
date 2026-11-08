@@ -440,6 +440,17 @@ struct _ClawtWindow {
     GtkLabel          *computer_state;
     AdwViewStack      *computer_stack;
     AdwViewStackPage  *computer_screen_page;
+    AdwViewStackPage  *computer_browser_page;
+
+    /* gtk-browser.c: the Browser view, polled while it is showing */
+    GtkEntry          *browser_entry;
+    GtkLabel          *browser_line;
+    GtkPicture        *browser_picture;
+    gchar             *browser_agent;
+    guint              browser_tick;
+    guint              browser_generation;
+    gboolean           browser_in_flight;
+    gboolean           browser_again;
     GtkListBox        *computer_mount_list;
     GtkListBox        *exchange_list;
 
@@ -1140,6 +1151,11 @@ clawt_gtk_refresh_computer(ClawtWindow *self, JsonObject *agent);
 
 void
 clawt_gtk_refresh_screen(ClawtWindow *self);
+
+/* gtk-browser.c */
+GtkWidget *clawt_gtk_build_browser_view(ClawtWindow *self);
+void       clawt_gtk_browser_set_agent(ClawtWindow *self, JsonObject *agent);
+void       clawt_gtk_browser_set_showing(ClawtWindow *self, gboolean showing);
 
 void
 clawt_gtk_refresh_computer_mounts(ClawtWindow *self);

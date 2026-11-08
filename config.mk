@@ -10,7 +10,7 @@
 # Project information
 PROJECT_NAME = clawtilla
 VERSION_MAJOR = 0
-VERSION_MINOR = 8
+VERSION_MINOR = 9
 VERSION_MICRO = 0
 VERSION = $(VERSION_MAJOR).$(VERSION_MINOR).$(VERSION_MICRO)
 
@@ -253,13 +253,34 @@ DATADIR_SRC = data
 # Git version info (computed in Makefile, defined there)
 GIT_SHA ?= unknown
 
+# ── Browser sessions (GSURF=1) ────────────────────────────────────────
+#
+# Opt in with GSURF=1.  gsurf is NOT a submodule and clawtilla links
+# nothing from it: a browser session is a gsurf *process* on a private
+# Xvfb, driven over gsurf's control socket, because the daemon must never
+# link GTK.  GSURF=1 only says this build may start one, and records the
+# GSURF_DIR build as the last place to find the binary.  `make GSURF=1`
+# builds that checkout when its binary is missing, and refuses a gsurf
+# older than GSURF_MIN_VERSION, which added page.click, page.type,
+# page.key and the inline screenshot the agent tools are made of.
+GSURF       ?= 0
+GSURF_DIR   ?= $(abspath $(CURDIR)/../gsurf)
+GSURF_BIN    = $(GSURF_DIR)/build/release/gsurf
+GSURF_MIN_VERSION = 0.5.10
+
+ifeq ($(GSURF),1)
+GSURF_CFLAGS = -DCLAWT_HAVE_GSURF=1 -DCLAWT_GSURF_BUILD_BIN=\"$(GSURF_BIN)\"
+else
+GSURF_CFLAGS =
+endif
+
 # Combined flags
 #
 # We include <libreclaw.h>, which defines LC_INSIDE itself, so we do NOT
 # define LC_COMPILATION -- that macro is for building libreclaw, not for
 # consuming it.
 CFLAGS = $(CFLAGS_BASE) $(CFLAGS_OPT) $(CFLAGS_SAN) $(PKG_CFLAGS) \
-         $(LIBRECLAW_CFLAGS) \
+         $(LIBRECLAW_CFLAGS) $(GSURF_CFLAGS) \
          -DCLAWT_COMPILATION \
          -DCLAWT_VERSION_MAJOR=$(VERSION_MAJOR) \
          -DCLAWT_VERSION_MINOR=$(VERSION_MINOR) \

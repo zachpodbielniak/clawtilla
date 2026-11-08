@@ -844,6 +844,16 @@ skills:
 # # one agent at a time.
 # computers: []
 
+# # Web browser sessions several agents share.
+# #
+# # Each entry takes an id and the same keys as an agent's browser:
+# # block -- home, allow_scripts, idle_minutes, width, height. An agent
+# # joins one with agents.browser.mode: shared and agents.browser.use.
+# # Agents on one entry share one profile -- its cookies, its logins, its
+# # open page -- and drive it one at a time: a call while another agent
+# # drives is refused, naming that agent. Needs a GSURF=1 build.
+# browsers: []
+
 # # Separate logins for an agent CLI, so two agents on one machine can
 # # spend two subscriptions.
 # #

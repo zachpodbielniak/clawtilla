@@ -1049,6 +1049,23 @@ computers:
     # What this machine is for.
     description: null
 
+# Web browser sessions several agents share.
+#
+# Each entry takes an id and the same keys as an agent's browser:
+# block -- home, allow_scripts, idle_minutes, width, height. An agent
+# joins one with agents.browser.mode: shared and agents.browser.use.
+# Agents on one entry share one profile -- its cookies, its logins, its
+# open page -- and drive it one at a time: a call while another agent
+# drives is refused, naming that agent. Needs a GSURF=1 build.
+browsers:
+
+    # Identifier, and what agents.browser.use names.
+    # Required.
+  - id: null
+
+    # What this session is for -- say which logins it holds.
+    description: null
+
 # Separate logins for an agent CLI, so two agents on one machine can
 # spend two subscriptions.
 #
@@ -2795,6 +2812,52 @@ agents:
         # before you turn it into a skill.
         # DANGEROUS: read docs/security.org before enabling this.
         allow_recording: false
+
+    # A real web browser the agent can drive (needs a GSURF=1 build).
+    browser:
+
+      # Whether this agent can drive a real web browser.
+      #
+      # `own` gives it a session of its own, `shared` one declared under
+      # browsers: (agents.browser.use names it), `none` neither -- the agent
+      # still has clawtilla_web_fetch. A session is gsurf on a private X
+      # display, started on the agent's first browser call and stopped after
+      # agents.browser.idle_minutes without one; it runs JavaScript, so it
+      # reads pages clawtilla_web_fetch cannot, and the agent can click and
+      # type. Watch it from the Computer page's Browser view.
+      #
+      # Needs clawtilla built with GSURF=1: an agent asking for a browser
+      # from a build without one is disabled with that reason rather than
+      # run without the tools it was told it has.
+      # Values: none, own, shared
+      mode: "none"
+
+      # With agents.browser.mode: shared, the browsers: entry to join. Set,
+      # every other browser.* key comes from that entry.
+      use: null
+
+      # The page a session opens on.
+      home: "about:blank"
+
+      # Whether the agent is offered clawtilla_browser_eval, which runs its
+      # own JavaScript in the page.
+      #
+      # Off by default. Reading, clicking and typing cover what a person does;
+      # a script can read any field and post anything as the logged-in
+      # user without a single visible step.
+      # DANGEROUS: read docs/security.org before enabling this.
+      allow_scripts: false
+
+      # Stop the session after this many minutes without a browser call. The
+      # profile stays, so a login survives; the open page does not. 0 keeps
+      # it running until its agent stops.
+      idle_minutes: 15
+
+      # The session's window width, in pixels.
+      width: 1280
+
+      # The session's window height, in pixels.
+      height: 800
 
     # Environment variables for this agent's process.
     #

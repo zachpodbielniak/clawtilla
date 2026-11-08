@@ -193,6 +193,26 @@ typedef enum {
 } ClawtComputerType;
 
 /**
+ * ClawtBrowserMode:
+ * @CLAWT_BROWSER_NONE: no browser; the agent has clawtilla_web_fetch only
+ * @CLAWT_BROWSER_OWN: a session of its own, with its own profile
+ * @CLAWT_BROWSER_SHARED: a session declared under `browsers:`, which
+ *   several agents may drive, one at a time
+ *
+ * Whether an agent can drive a real web browser (`agents.browser.mode`,
+ * since 0.9.0).  A session is a gsurf on a private Xvfb, started on the
+ * first browser tool call; it needs a `GSURF=1` build.
+ */
+typedef enum {
+    CLAWT_BROWSER_NONE = 0,
+    CLAWT_BROWSER_OWN,
+    CLAWT_BROWSER_SHARED
+} ClawtBrowserMode;
+
+GType clawt_browser_mode_get_type(void) G_GNUC_CONST;
+#define CLAWT_TYPE_BROWSER_MODE (clawt_browser_mode_get_type())
+
+/**
  * ClawtComputerState:
  * @CLAWT_COMPUTER_STATE_ABSENT: nothing provisioned
  * @CLAWT_COMPUTER_STATE_PROVISIONING: being created
@@ -328,6 +348,8 @@ typedef enum {
  * @CLAWT_COMPUTER_VIEW_SCREEN: watch the desktop, and take it
  * @CLAWT_COMPUTER_VIEW_MOUNTS: which host paths are inside
  * @CLAWT_COMPUTER_VIEW_EXCHANGE: the shared drop-box
+ * @CLAWT_COMPUTER_VIEW_BROWSER: the agent's web browser: what page it is
+ *   on, and a picture of it (since 0.9.0)
  *
  * The four halves of the Computer page.
  *
@@ -341,7 +363,8 @@ typedef enum {
     CLAWT_COMPUTER_VIEW_SHELL = 0,
     CLAWT_COMPUTER_VIEW_SCREEN,
     CLAWT_COMPUTER_VIEW_MOUNTS,
-    CLAWT_COMPUTER_VIEW_EXCHANGE
+    CLAWT_COMPUTER_VIEW_EXCHANGE,
+    CLAWT_COMPUTER_VIEW_BROWSER
 } ClawtComputerView;
 
 /**

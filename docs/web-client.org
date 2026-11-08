@@ -194,6 +194,7 @@ answers with the page it did it on.
 | =/alerts=, =/decisions=, =/routines/...=, =/tasks/:task/cancel= | the standing surfaces |
 | =/activity/:agent/stop=, =/activity/:agent/steer=, =/f/activity= | the Activity page's actions and its polled panel |
 | =/fleet-usage/:agent/stop=, =/fleet-usage/stop-idle=, =/f/fleet-usage= | the Fleet page's actions and its polled panel (=?period== picks the window) |
+| =/a/:id/browser/open=, =/a/:id/browser/click=, =/a/:id/browser/stop=, =/a/:id/browser/frame=, =/f/a/:id/browser= | the Computer page's Browser view: its actions, its picture and its polled panel |
 | =/events=                     | the SSE stream                          |
 | =/static=                     | the vendored scripts                    |
 
@@ -1201,3 +1202,11 @@ clawtilla-web --socket "$XDG_RUNTIME_DIR/clawtilla/daemon.sock"
 The sidebar says "The daemon is not answering" with the reason, rather
 than drawing an empty fleet -- a fleet with no agents in it is a
 different problem with a different fix.
+
+** The Browser view
+:PROPERTIES:
+:CUSTOM_ID: browser-view
+:END:
+
+The picture is an =<input type="image">= in a plain form, so a click posts ~x~ and ~y~ with no JavaScript at all -- the one way this page can take a pointer and still work with nothing loaded. It is drawn at its own size in a scrolling box: a picture scaled to fit would send scaled coordinates, and the click would land somewhere else. The panel above it is polled every three seconds while the tab is visible, and reads ~browser.list~ rather than ~browser.frame~, because the picture is already a second request and two frames per poll would be two screenshots. See [[file:browser.org][browser.org]].
+

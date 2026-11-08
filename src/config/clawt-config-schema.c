@@ -1159,6 +1159,24 @@ static const ClawtSchemaEntry schema[] = {
   NULL, NULL,
   "What this machine is for.", "0.5.0" },
 
+/* ── browsers ────────────────────────────────────────────────────── */
+{ "browsers", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
+  "Web browser sessions several agents share.\n"
+  "\n"
+  "Each entry takes an id and the same keys as an agent's browser:\n"
+  "block -- home, allow_scripts, idle_minutes, width, height. An agent\n"
+  "joins one with agents.browser.mode: shared and agents.browser.use.\n"
+  "Agents on one entry share one profile -- its cookies, its logins, its\n"
+  "open page -- and drive it one at a time: a call while another agent\n"
+  "drives is refused, naming that agent. Needs a GSURF=1 build.", "0.9.0" },
+
+{ "browsers.id", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED, NULL, NULL,
+  "Identifier, and what agents.browser.use names.", "0.9.0" },
+
+{ "browsers.description", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "What this session is for -- say which logins it holds.", "0.9.0" },
+
 /* ── accounts ────────────────────────────────────────────────────── */
 { "accounts", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Separate logins for an agent CLI, so two agents on one machine can\n"
@@ -3091,6 +3109,57 @@ static const ClawtSchemaEntry schema[] = {
   "recording stops itself after `skills.teach_max_seconds`.\n"
   "\n"
   "Capture pauses for a password field only as far as the compositor\ncan see one, and that is less far than it sounds. In a guest, GNOME\nShell recognises its own password entries -- the lock screen, its\npolkit and keyring prompts -- and pauses. On the host, gowl cannot:\nunder Wayland a client's widget tree is private, so it suppresses\ncapture while the session is locked and while the focused window's\napp-id or title matches its deny list of credential applications,\nand a password typed into a form inside any other window IS\nrecorded. Every trace carries that sentence. Read a recording\nbefore you turn it into a skill.", "0.2.0" },
+
+{ "agents.browser", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "A real web browser the agent can drive (needs a GSURF=1 build).", "0.9.0" },
+
+{ "agents.browser.mode", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "none", clawt_browser_mode_get_type,
+  "Whether this agent can drive a real web browser.\n"
+  "\n"
+  "`own` gives it a session of its own, `shared` one declared under\n"
+  "browsers: (agents.browser.use names it), `none` neither -- the agent\n"
+  "still has clawtilla_web_fetch. A session is gsurf on a private X\n"
+  "display, started on the agent's first browser call and stopped after\n"
+  "agents.browser.idle_minutes without one; it runs JavaScript, so it\n"
+  "reads pages clawtilla_web_fetch cannot, and the agent can click and\n"
+  "type. Watch it from the Computer page's Browser view.\n"
+  "\n"
+  "Needs clawtilla built with GSURF=1: an agent asking for a browser\n"
+  "from a build without one is disabled with that reason rather than\n"
+  "run without the tools it was told it has.", "0.9.0" },
+
+{ "agents.browser.use", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "With agents.browser.mode: shared, the browsers: entry to join. Set,\n"
+  "every other browser.* key comes from that entry.", "0.9.0" },
+
+{ "agents.browser.home", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  "about:blank", NULL,
+  "The page a session opens on.", "0.9.0" },
+
+{ "agents.browser.allow_scripts", CLAWT_SCHEMA_BOOLEAN,
+  CLAWT_SCHEMA_FLAG_DANGEROUS, "false", NULL,
+  "Whether the agent is offered clawtilla_browser_eval, which runs its\n"
+  "own JavaScript in the page.\n"
+  "\n"
+  "Off by default. Reading, clicking and typing cover what a person does;\n"
+  "a script can read any field and post anything as the logged-in\n"
+  "user without a single visible step.", "0.9.0" },
+
+{ "agents.browser.idle_minutes", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "15", NULL,
+  "Stop the session after this many minutes without a browser call. The\n"
+  "profile stays, so a login survives; the open page does not. 0 keeps\n"
+  "it running until its agent stops.", "0.9.0" },
+
+{ "agents.browser.width", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "1280", NULL,
+  "The session's window width, in pixels.", "0.9.0" },
+
+{ "agents.browser.height", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "800", NULL,
+  "The session's window height, in pixels.", "0.9.0" },
 
 { "agents.env", CLAWT_SCHEMA_MAPPING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Environment variables for this agent's process.\n"

@@ -251,6 +251,10 @@ struct _ClawtDaemon {
     GHashTable        *idle_started;   /* agent -> gint64 unix start */
     GHashTable        *idle_stopped;   /* agents asleep until a message */
     gulong             idle_bus_handler;
+
+    /* daemon-browser.c: every browser session, made on an agent's first call */
+    ClawtBrowserManager *browsers;
+    gulong             browser_bus_handler;
     gboolean           handoff_pumping;
 
     /* Standing work, and when it is next due. */
@@ -992,6 +996,20 @@ clawt_daemon_handle_routine(
     JsonObject   *payload,
     gboolean     *handled
 );
+
+JsonNode *
+clawt_daemon_handle_browser(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
+
+/* daemon-browser.c */
+void clawt_daemon_browser_setup(ClawtDaemon *self);
+void clawt_daemon_browser_teardown(ClawtDaemon *self);
+void clawt_daemon_browser_tick(ClawtDaemon *self, gint64 now);
 
 JsonNode *
 clawt_daemon_handle_skill(

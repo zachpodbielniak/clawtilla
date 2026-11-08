@@ -317,6 +317,25 @@ clawt_computer_type_get_type(void)
     return g_define_type_id__volatile;
 }
 
+/* Register ClawtBrowserMode as a GLib enum type */
+GType
+clawt_browser_mode_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_BROWSER_NONE, "CLAWT_BROWSER_NONE", "none" },
+            { CLAWT_BROWSER_OWN, "CLAWT_BROWSER_OWN", "own" },
+            { CLAWT_BROWSER_SHARED, "CLAWT_BROWSER_SHARED", "shared" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtBrowserMode", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
 /* Register ClawtComputerState as a GLib enum type */
 GType
 clawt_computer_state_get_type(void)
@@ -458,7 +477,8 @@ static const struct {
     { CLAWT_COMPUTER_VIEW_SHELL, "shell", "Shell" },
     { CLAWT_COMPUTER_VIEW_SCREEN, "screen", "Screen" },
     { CLAWT_COMPUTER_VIEW_MOUNTS, "mounts", "Mounts" },
-    { CLAWT_COMPUTER_VIEW_EXCHANGE, "exchange", "Exchange" }
+    { CLAWT_COMPUTER_VIEW_EXCHANGE, "exchange", "Exchange" },
+    { CLAWT_COMPUTER_VIEW_BROWSER, "browser", "Browser" }
 };
 
 guint
