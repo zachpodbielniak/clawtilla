@@ -3037,6 +3037,27 @@ would settle both. It is reported and replaced with room rather
 than refused, because refusing would take the agent out of the
 fleet over a setting.
 
+*** =agents.session.timeout_minutes=
+
+- Type :: integer
+- Default :: =30=
+- Since :: 0.7.5
+
+Minutes of inactivity before libreclaw drops this agent's session.
+
+The next message after the timeout starts a fresh context rather
+than continuing the old one. -1 means never expire: the session
+lives as long as the agent does, and the tradeoff is one context
+that only ever grows until the provider compacts it or somebody
+runs /reset. 0 and anything below -1 are meaningless to libreclaw's
+own session manager, which takes only a positive number of minutes
+or -1: `clawtilla config validate` rejects such a value, and if one
+reaches the daemon anyway it is reported with a warning and
+replaced with 30 in the rendered config.
+
+This is libreclaw's own value (its session.timeout_minutes); the
+daemon renders this straight through.
+
 ** =agents.runtime=
 
 How this agent's libreclaw instance is hosted.

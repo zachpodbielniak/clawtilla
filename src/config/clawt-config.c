@@ -3394,6 +3394,23 @@ clawt_config_get_warnings(ClawtConfig *self)
     return self->warnings;
 }
 
+/*
+ * libreclaw's session manager takes only a positive number of minutes or
+ * -1 for never (g_return_val_if_fail(timeout_minutes > 0 || == -1) in
+ * lc_session_manager_new()). 0 and anything below -1 are refused here
+ * rather than left to crash libreclaw on session creation.
+ */
+static gboolean
+validate_session_timeout_minutes(gint64 value, const gchar *key, GError **error)
+{
+	if (value == -1 || value > 0)
+		return TRUE;
+	g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+		"%s must be a positive number of minutes, or -1 to never "
+		"expire the session; got %" G_GINT64_FORMAT, key, value);
+	return FALSE;
+}
+
 /* Thresholds must have one exact value; reject signs, fractions and overflow. */
 static gboolean
 validate_daily_limit(const gchar *value, const gchar *key, GError **error)
@@ -3467,10 +3484,17 @@ clawt_config_validate(ClawtConfig *self, GError **error)
 		return FALSE;
 	for (i = 0; i < self->agents->len; i++) {
 		ClawtAgentConfig *agent = g_ptr_array_index(self->agents, i);
-		g_autofree gchar *key = g_strdup_printf("agent %s daily_agent_budget_micros",
+		g_autofree gchar *budget_key = g_strdup_printf(
+			"agent %s daily_agent_budget_micros",
+			clawt_agent_config_get_id(agent));
+		g_autofree gchar *timeout_key = g_strdup_printf(
+			"agent %s session.timeout_minutes",
 			clawt_agent_config_get_id(agent));
 		if (!validate_daily_limit(clawt_agent_config_get_string(agent,
-			"daily_agent_budget_micros"), key, error))
+			"daily_agent_budget_micros"), budget_key, error))
+			return FALSE;
+		if (!validate_session_timeout_minutes(clawt_agent_config_get_int(agent,
+			"session.timeout_minutes"), timeout_key, error))
 			return FALSE;
 	}
 

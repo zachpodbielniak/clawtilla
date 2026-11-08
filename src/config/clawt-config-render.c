@@ -16,6 +16,12 @@
 
 #include <string.h>
 
+/*
+ * libreclaw's own default, used when session.timeout_minutes reaches
+ * here as something its session manager refuses (see the render below).
+ */
+#define CLAWT_SESSION_TIMEOUT_MINUTES_DEFAULT (30)
+
 gchar *
 clawt_config_agent_state_dir(ClawtConfig *config, const gchar *agent_id)
 {
@@ -1160,6 +1166,50 @@ clawt_config_render_agent(ClawtConfig       *config,
         append_key_int(out, 2, "watchdog_timeout_seconds",
                        MAX(clawt_agent_config_get_int(
                                agent, "runtime.turn_timeout_seconds"), 0));
+
+        /*
+         * Idle-timeout on the session itself, rendered from
+         * `agents.session.timeout_minutes`.
+         *
+         * Written even at the default, for the same reason as the
+         * watchdog above: a config that states the value is one
+         * somebody can read the answer out of. -1 has to be rendered
+         * explicitly too, since -1 is what tells libreclaw to never
+         * expire the session, and leaving the key out would restore
+         * whatever libreclaw's own default is instead.
+         *
+         * libreclaw's lc_session_manager_new() takes only a positive
+         * number of minutes or -1
+         * (g_return_val_if_fail(timeout_minutes > 0 ||
+         * timeout_minutes == -1)), and clawt_config_validate() -- what
+         * `clawtilla config validate` and the config.validate IPC call
+         * -- is not run by the daemon on load or reload, so a bad value
+         * can reach here regardless of that check. Reported and
+         * replaced rather than refused, for the same reason as
+         * session.routing_mode's sender-room case above: refusing would
+         * shadow the agent and take it out of the fleet over a setting,
+         * and a brand-new agent has no previous config.yaml to fall
+         * back on. Reported rather than silently replaced, because an
+         * explicit value quietly ignored is the worst of the three.
+         */
+        {
+            gint64 timeout_minutes = clawt_agent_config_get_int(
+                agent, "session.timeout_minutes");
+
+            if (timeout_minutes != -1 && timeout_minutes <= 0) {
+                g_warning("agent %s: session.timeout_minutes: %"
+                          G_GINT64_FORMAT " is not a positive number of "
+                          "minutes or -1 (never expire), which "
+                          "libreclaw's session manager refuses. Using "
+                          "%d instead; fix it in the config to silence "
+                          "this.", clawt_agent_config_get_id(agent),
+                          timeout_minutes,
+                          CLAWT_SESSION_TIMEOUT_MINUTES_DEFAULT);
+                timeout_minutes = CLAWT_SESSION_TIMEOUT_MINUTES_DEFAULT;
+            }
+
+            append_key_int(out, 2, "timeout_minutes", timeout_minutes);
+        }
 
         g_string_append(out, "\n");
 

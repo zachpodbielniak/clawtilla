@@ -1001,6 +1001,178 @@ test_validate_rejects_impossible_values(void)
 }
 
 /*
+ * session.timeout_minutes reaches the agent's own config.yaml, written
+ * even at the default -- the same reason as watchdog_timeout_seconds
+ * above it: a config that states the value is one somebody can read the
+ * answer out of, and -1 has to be rendered explicitly since -1 is what
+ * tells libreclaw to never expire the session.
+ */
+static void
+test_session_timeout_minutes_unset_renders_the_default(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+        "agents:\n  - id: plain\n", &error);
+    GPtrArray *agents;
+    g_autofree gchar *rendered = NULL;
+
+    g_assert_no_error(error);
+    agents = clawt_config_get_agents(config);
+
+    rendered = clawt_config_render_agent(
+        config, g_ptr_array_index(agents, 0),
+        "/tmp/s.sock", "/tmp/state", NULL);
+
+    g_assert_nonnull(strstr(rendered, "\n  timeout_minutes: 30\n"));
+}
+
+static void
+test_session_timeout_minutes_never_expire_renders(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+        "agents:\n"
+        "  - id: forever\n"
+        "    session:\n"
+        "      timeout_minutes: -1\n", &error);
+    GPtrArray *agents;
+    g_autofree gchar *rendered = NULL;
+
+    g_assert_no_error(error);
+    agents = clawt_config_get_agents(config);
+
+    rendered = clawt_config_render_agent(
+        config, g_ptr_array_index(agents, 0),
+        "/tmp/s.sock", "/tmp/state", NULL);
+
+    g_assert_nonnull(strstr(rendered, "\n  timeout_minutes: -1\n"));
+}
+
+static void
+test_session_timeout_minutes_positive_value_renders(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+        "agents:\n"
+        "  - id: patient\n"
+        "    session:\n"
+        "      timeout_minutes: 120\n", &error);
+    GPtrArray *agents;
+    g_autofree gchar *rendered = NULL;
+
+    g_assert_no_error(error);
+    agents = clawt_config_get_agents(config);
+
+    rendered = clawt_config_render_agent(
+        config, g_ptr_array_index(agents, 0),
+        "/tmp/s.sock", "/tmp/state", NULL);
+
+    g_assert_nonnull(strstr(rendered, "\n  timeout_minutes: 120\n"));
+}
+
+/*
+ * 0 and anything below -1 are meaningless to libreclaw's own session
+ * manager, which takes only a positive number of minutes or -1
+ * (g_return_val_if_fail(timeout_minutes > 0 || timeout_minutes == -1) in
+ * lc_session_manager_new()). clawt_config_validate() -- what
+ * `clawtilla config validate` and the config.validate IPC call -- is
+ * the up-front check; it is not run by the daemon on load or reload, so
+ * it alone does not stop a bad value reaching a rendered config.yaml.
+ */
+static void
+test_session_timeout_minutes_validate_rejects_zero_and_below_negative_one(void)
+{
+    {
+        g_autoptr(GError) error = NULL;
+        g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+            "agents:\n"
+            "  - id: zeroed\n"
+            "    session:\n"
+            "      timeout_minutes: 0\n", &error);
+
+        g_assert_no_error(error);
+        g_assert_false(clawt_config_validate(config, &error));
+        g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID);
+    }
+
+    {
+        g_autoptr(GError) error = NULL;
+        g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+            "agents:\n"
+            "  - id: too-negative\n"
+            "    session:\n"
+            "      timeout_minutes: -2\n", &error);
+
+        g_assert_no_error(error);
+        g_assert_false(clawt_config_validate(config, &error));
+        g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID);
+    }
+}
+
+/*
+ * clawt_config_validate() is never called by the daemon's own load or
+ * reload path, so clawt_config_render_agent() is what actually runs on
+ * every path to an agent's config.yaml -- and, like session.routing_mode's
+ * sender-room case, it reports a value libreclaw's session manager would
+ * refuse and replaces it rather than refusing the whole agent: refusing
+ * would shadow it and take it out of the fleet over a setting, and a
+ * brand-new agent has no previous config.yaml to fall back on.
+ */
+static void
+test_session_timeout_minutes_render_replaces_zero_and_below_negative_one(void)
+{
+    {
+        g_autoptr(GError) error = NULL;
+        g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+            "agents:\n"
+            "  - id: zeroed\n"
+            "    session:\n"
+            "      timeout_minutes: 0\n", &error);
+        GPtrArray *agents;
+        g_autofree gchar *rendered = NULL;
+
+        g_assert_no_error(error);
+        agents = clawt_config_get_agents(config);
+
+        g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING,
+                              "*session.timeout_minutes*");
+        rendered = clawt_config_render_agent(
+            config, g_ptr_array_index(agents, 0),
+            "/tmp/s.sock", "/tmp/state", &error);
+        g_test_assert_expected_messages();
+
+        g_assert_no_error(error);
+        g_assert_nonnull(rendered);
+        g_assert_nonnull(strstr(rendered, "\n  timeout_minutes: 30\n"));
+    }
+
+    {
+        g_autoptr(GError) error = NULL;
+        g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+            "agents:\n"
+            "  - id: too-negative\n"
+            "    session:\n"
+            "      timeout_minutes: -2\n", &error);
+        GPtrArray *agents;
+        g_autofree gchar *rendered = NULL;
+
+        g_assert_no_error(error);
+        agents = clawt_config_get_agents(config);
+
+        g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING,
+                              "*session.timeout_minutes*");
+        rendered = clawt_config_render_agent(
+            config, g_ptr_array_index(agents, 0),
+            "/tmp/s.sock", "/tmp/state", &error);
+        g_test_assert_expected_messages();
+
+        g_assert_no_error(error);
+        g_assert_nonnull(rendered);
+        g_assert_nonnull(strstr(rendered, "\n  timeout_minutes: 30\n"));
+    }
+}
+
+/*
  * The routing mode reaches the agent's own config.yaml, and libreclaw
  * understands every value clawtilla can render.
  *
@@ -2009,6 +2181,21 @@ main(int argc, char *argv[])
     g_test_add_func("/config/file/missing-loads-defaults",
                     test_missing_file_loads_as_defaults);
     g_test_add_func("/config/validate-rejects", test_validate_rejects_impossible_values);
+    g_test_add_func(
+        "/config/session-timeout-minutes/unset-renders-the-default",
+        test_session_timeout_minutes_unset_renders_the_default);
+    g_test_add_func(
+        "/config/session-timeout-minutes/never-expire-renders",
+        test_session_timeout_minutes_never_expire_renders);
+    g_test_add_func(
+        "/config/session-timeout-minutes/positive-value-renders",
+        test_session_timeout_minutes_positive_value_renders);
+    g_test_add_func(
+        "/config/session-timeout-minutes/validate-rejects-zero-and-below-negative-one",
+        test_session_timeout_minutes_validate_rejects_zero_and_below_negative_one);
+    g_test_add_func(
+        "/config/session-timeout-minutes/render-replaces-zero-and-below-negative-one",
+        test_session_timeout_minutes_render_replaces_zero_and_below_negative_one);
     g_test_add_func(
         "/config/routing-mode-survives-the-render-parse-round-trip",
         test_routing_mode_survives_the_render_parse_round_trip);
