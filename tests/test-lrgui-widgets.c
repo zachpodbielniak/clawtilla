@@ -429,6 +429,72 @@ test_appearance_applies_live(Fixture *fixture, gconstpointer data)
 
 }
 
+/*
+ * Typing "/" with a fleet's worth of skills must not stall the window.
+ *
+ * The list was rebuilt from nothing on every keystroke, one wrapping
+ * paragraph per row, and each row added to the box measured every row
+ * before it -- with sixty skills and their descriptions that was seconds
+ * per key, which reads as the window hanging the moment the list opens.
+ */
+static JsonNode *
+many_skills(guint n)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    guint i;
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "commands");
+    json_builder_begin_array(builder);
+    for (i = 0; i < n; i++) {
+        g_autofree gchar *name = g_strdup_printf("skill-%02u", i);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "name");
+        json_builder_add_string_value(builder, name);
+        json_builder_set_member_name(builder, "description");
+        json_builder_add_string_value(builder,
+            "Use this skill when the work at hand calls for a long, careful, "
+            "multi-step procedure that a model would otherwise improvise, "
+            "including reading, planning, writing, testing and reporting back "
+            "with the evidence for each step it took along the way.");
+        json_builder_end_object(builder);
+    }
+    json_builder_end_array(builder);
+    json_builder_end_object(builder);
+    return json_builder_get_root(builder);
+}
+
+static void
+test_typing_a_slash_stays_quick(Fixture *fixture, gconstpointer data)
+{
+    ClawtLrgApp *app = fixture->app;
+    g_autoptr(JsonNode) skills = many_skills(60);
+    const gchar *typed[] = { "/", "/s", "/sk", "/ski", "/skil", "/skill", "/skill-", "/" };
+    gint64 start;
+    gint64 worst = 0;
+    guint rows = 0;
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS(typed); i++) {
+        g_autofree gchar *json = NULL;
+        gint64 took;
+
+        start = g_get_monotonic_time();
+        rows = clawt_lrg_chat_debug_type(app, typed[i], skills);
+        json = snapshot(app);
+        took = g_get_monotonic_time() - start;
+        worst = MAX(worst, took);
+    }
+
+    g_test_message("typing a slash: worst keystroke %.1f ms, %u rows",
+                   (gdouble)worst / 1000.0, rows);
+    g_assert_cmpuint(rows, >, 0);
+    g_assert_cmpint(worst, <, 100 * 1000);
+
+    clawt_lrg_chat_debug_type(app, "", NULL);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -458,6 +524,9 @@ main(int argc, char *argv[])
                test_dialogs_open, fixture_tear_down);
     g_test_add("/lrgui/widgets/appearance-live", Fixture, NULL, fixture_set_up,
                test_appearance_applies_live, fixture_tear_down);
+
+    g_test_add("/lrgui/widgets/typing-a-slash-stays-quick", Fixture, NULL,
+               fixture_set_up, test_typing_a_slash_stays_quick, fixture_tear_down);
 
     result = g_test_run();
 

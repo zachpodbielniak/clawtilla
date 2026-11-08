@@ -122,6 +122,7 @@ typedef struct {
     GPtrArray   *rows;           /* Completion */
     gint         highlight;
     JsonNode    *skill_commands; /* cached while the line is a command */
+    guint        skill_generation; /* the selection they were asked for */
     gboolean     skill_asked;
     gboolean     sending;
 
@@ -129,6 +130,9 @@ typedef struct {
     gint64       connected_at;
     ClawtClient *client_seen;
 } Chat;
+
+/* The most completion rows drawn at once; the rest are counted, not built. */
+#define COMPLETION_MAX_ROWS (12)
 
 static Chat chat;
 
@@ -2652,7 +2656,24 @@ completion_add(ClawtLrgApp *app, CompletionKind kind, const gchar *value,
                gboolean takes_argument)
 {
     Completion *row = g_new0(Completion, 1);
-    LrgWidget *content = clawt_lrg_row(title, subtitle);
+    LrgWidget *content = clawt_lrg_vbox(2.0f);
+
+    /*
+     * One line each, the description ellipsized -- not clawt_lrg_row(),
+     * whose subtitle is a wrapping markdown paragraph.  A list of sixty
+     * skills, rebuilt per keystroke, each paragraph re-measured as every
+     * later row was added, took 2.6 s a key: the window looked hung the
+     * moment "/" opened it.  A completion is read at a glance; the whole
+     * description is on the Skills page.
+     */
+    clawt_lrg_take(content, clawt_lrg_label(title, NULL));
+    if (subtitle != NULL && *subtitle != '\0') {
+        LrgWidget *line = clawt_lrg_label(subtitle, "muted");
+
+        lrg_label_set_ellipsize(LRG_LABEL(line), TRUE);
+        lrg_widget_set_fill_weight(line, 1.0f);
+        clawt_lrg_take(content, line);
+    }
 
     row->kind = kind;
     row->value = g_strdup(value);
@@ -2753,9 +2774,22 @@ on_skill_commands(ClawtLrgApp *app, JsonNode *reply, const GError *error,
  * stops being a command or the selection changes, so a skill enabled
  * while the window is open is offered the next time a slash is typed.
  */
+static void skill_commands_forget(void);
+
 static JsonNode *
 skill_commands_cached(ClawtLrgApp *app)
 {
+    /*
+     * Another agent selected since they were asked: they are its
+     * commands, not this one's.  And a reply the selection guard dropped
+     * left `skill_asked` set with nothing cached, so without this the
+     * list stayed empty until the line stopped being a command.
+     */
+    if (chat.skill_generation != app->generation) {
+        skill_commands_forget();
+        chat.skill_generation = app->generation;
+    }
+
     if (chat.skill_commands != NULL || chat.skill_asked ||
         app->agent_id == NULL)
         return chat.skill_commands;
@@ -2787,6 +2821,7 @@ entry_changed(ClawtLrgApp *app)
     const ClawtLrgSlashCommand *commands;
     JsonNode *skills;
     guint n = 0;
+    guint more;
     guint i;
 
     if (chat.editor == NULL)
@@ -2805,6 +2840,7 @@ entry_changed(ClawtLrgApp *app)
 
     completion_begin();
     commands = clawt_lrg_slash_commands(&n);
+    more = 0;
 
     for (i = 0; i < n; i++) {
         g_autofree gchar *label = NULL;
@@ -2812,6 +2848,10 @@ entry_changed(ClawtLrgApp *app)
         if (!g_str_has_prefix(commands[i].name, text))
             continue;
 
+        if (chat.rows->len >= COMPLETION_MAX_ROWS) {
+            more++;
+            continue;
+        }
         label = clawt_lrg_slash_label(commands[i].name, commands[i].argument);
         completion_add(app, COMPLETION_COMMAND, commands[i].name, label,
                        commands[i].summary, commands[i].argument != NULL);
@@ -2842,6 +2882,10 @@ entry_changed(ClawtLrgApp *app)
             if (bare == NULL || !g_str_has_prefix(name, text))
                 continue;
 
+            if (chat.rows->len >= COMPLETION_MAX_ROWS) {
+                more++;
+                continue;
+            }
             label = clawt_lrg_slash_label(name, hint);
             completion_add(app, COMPLETION_COMMAND, name, label,
                            clawt_ipc_payload_string(command, "description"),
@@ -2849,7 +2893,35 @@ entry_changed(ClawtLrgApp *app)
         }
     }
 
+    /*
+     * Said, not silently dropped: a list that stops at twelve with no
+     * sign would read as "that is all of them".
+     */
+    if (more > 0) {
+        g_autofree gchar *said = g_strdup_printf(
+            "and %u more \xe2\x80\x94 keep typing to narrow it", more);
+
+        clawt_lrg_take(chat.completions, clawt_lrg_label(said, "caption"));
+    }
+
     completion_reveal(app);
+}
+
+guint
+clawt_lrg_chat_debug_type(ClawtLrgApp *app, const gchar *text, JsonNode *skills)
+{
+    if (chat.editor == NULL)
+        return 0;
+
+    g_clear_pointer(&chat.skill_commands, json_node_unref);
+    if (skills != NULL)
+        chat.skill_commands = json_node_ref(skills);
+    chat.skill_asked = TRUE;
+    chat.skill_generation = app->generation;
+
+    lrg_text_editor_set_text(LRG_TEXT_EDITOR(chat.editor), text);
+    entry_changed(app);
+    return chat.rows->len;
 }
 
 static void

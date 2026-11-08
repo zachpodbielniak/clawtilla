@@ -770,6 +770,12 @@ critical fired.
   on a real fleet, and as a steady 60 fps against a scratch fleet with
   three agents, which is why it shipped.  Measure against a fleet with
   history (`CLAWT_LRG_FPS=1`); `clawt-lrg.h` refuses an older libregnum.
+- **A list rebuilt per keystroke must cost what it shows.** The `/`
+  completion built every match as a row with a wrapping markdown
+  paragraph, from scratch on each key, and a box re-measures earlier
+  children as each is added: sixty skills made a key cost 2.6 s, which
+  is a hung window. Twelve one-line rows and a count of the rest: 4 ms.
+  `/lrgui/widgets/typing-a-slash-stays-quick` times it.
 - **One request per event is a request per frame on a busy fleet.**  The
   shell's lists are marked by events and fetched by one 250 ms timer
   (`refresh_soon()` in `lrg-window.c`), never per event.

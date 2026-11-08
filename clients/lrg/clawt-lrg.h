@@ -311,6 +311,15 @@ void clawt_lrg_window_connection_changed(ClawtLrgApp *app);
 /* ── The page registry (each implemented in its own file) ─────────── */
 
 const ClawtLrgPage *clawt_lrg_chat_page(void);       /* lrg-chat.c */
+
+/*
+ * For tests (lrg-chat.c): puts @text in the composer as if it had been
+ * typed, with @skills -- a `skill.commands` reply, or NULL -- standing in
+ * for the agent's own commands, and answers how many completion rows are
+ * showing.  The daemon a test has is absent, so this is the only way to
+ * put a list of realistic size in front of the composer.
+ */
+guint clawt_lrg_chat_debug_type(ClawtLrgApp *app, const gchar *text, JsonNode *skills);
 const ClawtLrgPage *clawt_lrg_agent_page(void);      /* lrg-inspector.c */
 const ClawtLrgPage *clawt_lrg_mailbox_page(void);    /* lrg-mailbox.c */
 const ClawtLrgPage *clawt_lrg_computer_page(void);   /* lrg-computer.c */

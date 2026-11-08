@@ -469,6 +469,8 @@ An =LrgTextEditor= with class =clawt-composer= (glass with a rim light), growing
 | Up / Down | move the completion highlight (wrapping; from nothing, Down takes the first, Up the last) |
 | Tab | take the highlighted completion, or the first |
 | Return | take the highlighted completion when one is highlighted, else send |
+
+The completion list shows at most twelve rows -- built-in commands first, then the agent's own (~skill.commands~) -- each one line, its description ellipsized, and says how many more match ("and 48 more -- keep typing to narrow it"). Before 0.9.1 every match was a row with a wrapping markdown paragraph, rebuilt on every keystroke, and each row added re-measured the ones before it: with sixty skills a key took 2.6 s and the window looked hung the moment "/" opened the list. =/lrgui/widgets/typing-a-slash-stays-quick= types into it with sixty skills and fails past 100 ms a key; it measures 4 ms. The agent's commands are cached for the line and dropped when the selection changes, so another agent's list is never offered.
 | Escape | close the completion list |
 
 - *Sending*: ~msg.send~ with =target= (the room, or the agent for its direct conversation), =body=, =from: user=. Queued files are first put with ~attachment.put~ and named in the body with both paths, host first (=clawt_lrg_body_with_attachments()=). Not drawn on send: the daemon's =message= event draws it. The composer is emptied only if it still holds what was sent. A steer ("mid-turn -- held, and sent when this turn ends") and a stopped target ("held in its mailbox until it starts") are toasted; otherwise the activity line says it was delivered.
