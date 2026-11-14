@@ -521,6 +521,17 @@ void clawt_mcp_tools_set_browsers(ClawtMcpTools       *self,
                                   ClawtBrowserManager *browsers);
 
 /**
+ * clawt_mcp_tools_forget_secret_refs:
+ * @self: a #ClawtMcpTools
+ * @agent_id: an agent
+ *
+ * Drops every unspent `clawtilla_secret_ref` reference given to the
+ * agent.  A stopped agent's references have no turn left to be used in,
+ * and one that outlived its agent is one more thing to leak.
+ */
+void clawt_mcp_tools_forget_secret_refs(ClawtMcpTools *self, const gchar *agent_id);
+
+/**
  * ClawtMcpGrokReply:
  * @text: what the agent is told -- the job id on success, or why not
  * @is_error: whether it was refused

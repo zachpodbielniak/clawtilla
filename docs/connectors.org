@@ -48,12 +48,28 @@ because it runs as the same user and =secrets.dir= is right there.
 Confinement is what makes that airtight -- see [[file:computers.org][computers.org]] and
 [[file:security.org][security.org]].
 
+For a *confined host agent* (~runtime.confine: bwrap~) the relay runs in
+the agent's box, started by its CLI, so the box binds -- read-only, one
+by one -- the credential of each connector the agent holds, and nothing
+else of =secrets.dir=.  The agent can read its own connectors'
+credentials, as an unconfined one can; it cannot read another agent's,
+an ungranted connector's, the OAuth registrations or any other secret.
+See [[file:security.org::*Connectors in a confined box][Connectors in a confined box]].
+
 What it buys everywhere: one place to revoke, renewal that happens
 before anything breaks, and a per-agent tool list.
 
 *** Where the credential actually goes
 
-Into a 0600 file under =secrets.dir=, and nowhere else.  The agent's
+Into a 0600 file under =secrets.dir=, and nowhere else: one directory
+per connector, =secrets.dir/connectors/<name>/token.json=, the directory
+0700.  A directory each, rather than the flat
+=secrets.dir/connector-<name>.json= of earlier releases, because a
+confined agent's box binds the directory: a bind of the file would go on
+showing the token the box started with after the daemon renewed it.  The
+daemon moves a flat file into its directory when it starts and points
+~token_file~ at the new path; a ~token_file~ you wrote yourself is never
+moved.  The agent's
 =.mcp.json= names ~clawtilla connector relay <name>~ and carries no
 secret; the relay reads that file *itself* and hands the value to the
 tool server it starts.  There are exactly four places it must never
@@ -942,7 +958,9 @@ Before the trimmed result goes out, the whole message is written to =<state_dir>
 
 The answer stays within the budget the result was held to, whatever is asked, and is announced at both ends when it is cut; the result's text in it is escaped.  The tool is offered only to an agent that holds a connector.
 
-The permission is where the lookup happens.  The daemon resolves the id inside the *calling* agent's own =mcp-results= and nowhere else, so there is no id one agent can pass that reaches another's results -- and an id that is not there, is malformed, or belongs to somebody else gets one answer, word for word, so asking cannot be used to learn what another agent's tools returned.  For a bwrap-confined agent the directory is inside its own state directory, which its box already binds; it is the agent's own data either way.
+The permission is where the lookup happens.  The daemon resolves the id inside the *calling* agent's own =mcp-results= and nowhere else, so there is no id one agent can pass that reaches another's results -- and an id that is not there, is malformed, or belongs to somebody else gets one answer, word for word, so asking cannot be used to learn what another agent's tools returned.  *Under confinement.*  A confined agent's connector relays run inside its bwrap box, so the relay spills there, not the daemon: =mcp-results/= is under =<state_dir>/agents/<id>/=, the agent's own state directory, which ~clawt_agent_confine_build()~ binds read-write at the same path (the rendered config, sessions and link token live there too).  Nothing extra is bound, nothing crosses IPC, and the daemon's query tool reads the same path on the host.  =tests/test-agent-confine.c= (~/agent-confine/held-results-are-writable~) checks both the ~--bind~ and the sandbox's own predicate, built as the daemon builds it.  The same holds for the apps the daemon keeps under =mcp-apps/=, which the box can write but the relay never needs to.  The agent can read its own held results from inside the box; they are what its own tools returned.
+
+*Through the egress gate.*  For a gated agent the HTTP bridge sends every request through ~CLAWTILLA_EGRESS_PROXY~ (see "A gated agent's connector says the egress gate refused it" below, and [[file:security.org][security.org]]); the bounded reader reads the gate's answer like any other, a relay's own ~resources/read~ for an app's view goes the same way, and every request is still answered -- a failure status that is not JSON-RPC is judged on its first 64 KiB and answered with a tool error, and a body that breaks off before a whole message arrived gets one too.
 
 *** A limit applied while reading
 
@@ -1216,6 +1234,12 @@ Run under qemu-user emulation on this x86_64 machine, the build got through ~npm
 
 ** Renewal
 
+Only the daemon renews or writes a credential.  A relay asks it to
+(~connector.refresh~, over IPC) before reading, and reads the file the
+daemon wrote -- including a relay inside a confined agent's box, which
+sees the renewal because its connector's directory, not the file, is
+bound in.  The reply carries no credential.
+
 An access token often lasts an hour.  The daemon renews any that is
 within ~connectors.refresh_margin_seconds~ of expiring, on a timer of its
 own -- not when a tool server starts, because a server started with a
@@ -1362,6 +1386,25 @@ that matter here:
 
 No credential has been stored.  Either =clawtilla connector key <name>=
 or =clawtilla connector connect <name>=.
+
+*** "cannot read the credential for 'x'"
+
+The relay could not open the token file.  On a confined agent
+(~runtime.confine: bwrap~) this was every credentialed connector before
+the box bound them; now it means the connector is not granted to this
+agent (its ~scope~ and ~agents:~), or its ~token_file~ names a file that
+did not exist when the agent started -- a file somebody chose is bound
+as itself, so it must exist first.  Restart the agent after fixing
+either.
+
+*** A gated agent's connector says the egress gate refused it
+
+The agent has ~runtime.network: gated~, and its connector's server is on
+this machine, the LAN or the tailnet.  The relay runs in the agent's box
+and goes out through the egress gate like everything else there; add the
+server's address (with its port, for loopback) to =egress.allow= if the
+agent should reach it.  That opens it to the agent's own tools as well.
+See [[file:security.org::*Connectors from a gated box][Connectors from a gated box]].
 
 *** "no connector called 'x'"
 

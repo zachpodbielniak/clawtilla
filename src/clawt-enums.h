@@ -327,6 +327,23 @@ GType clawt_browser_mode_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_BROWSER_MODE (clawt_browser_mode_get_type())
 
 /**
+ * ClawtVaultKind:
+ * @CLAWT_VAULT_PASSWORD: the value itself is typed into the field
+ * @CLAWT_VAULT_TOTP: the value is a TOTP seed (base32, or an
+ *   `otpauth://totp/` URI) and the daemon types the current RFC 6238 code
+ *
+ * What a `vault:` entry holds (`vault.kind`, since 0.25.0).  Either way
+ * the agent names the entry and never sees what is typed.
+ */
+typedef enum {
+    CLAWT_VAULT_PASSWORD = 0,
+    CLAWT_VAULT_TOTP
+} ClawtVaultKind;
+
+GType clawt_vault_kind_get_type(void) G_GNUC_CONST;
+#define CLAWT_TYPE_VAULT_KIND (clawt_vault_kind_get_type())
+
+/**
  * ClawtComputerState:
  * @CLAWT_COMPUTER_STATE_ABSENT: nothing provisioned
  * @CLAWT_COMPUTER_STATE_PROVISIONING: being created

@@ -189,6 +189,8 @@
 #include "usage/clawt-task-sources.h"
 #include "usage/clawt-usage.h"
 #include "browser/clawt-browser.h"
+#include "browser/clawt-secret-vault.h"
+#include "browser/clawt-totp.h"
 #include "mailbox/clawt-mailbox.h"
 #include "mailbox/clawt-ack-check.h"
 

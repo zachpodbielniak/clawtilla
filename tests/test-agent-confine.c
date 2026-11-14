@@ -506,6 +506,221 @@ test_builder_grants(void)
 }
 
 /*
+ * The connector credentials a box binds, as data and then as the box.
+ * Two agents and five connectors: one granted by name, one to everyone,
+ * one to the other agent only, one to nobody, and one granted with a
+ * hand-written token_file outside secrets.dir.  The granted three are
+ * bound read-only, each by its own directory (or file), and nothing of
+ * the other two -- nor secrets.dir, nor the OAuth registrations beside
+ * them -- is in the argv or passes the predicate.
+ */
+static void
+test_connector_secrets(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_autoptr(GError) error = NULL;
+    g_auto(GStrv) paths = NULL;
+    g_auto(GStrv) wrapped = NULL;
+    g_autofree gchar *secrets = NULL;
+    g_autofree gchar *top = NULL;
+    g_autofree gchar *mine = NULL;
+    g_autofree gchar *everyone = NULL;
+    g_autofree gchar *theirs = NULL;
+    g_autofree gchar *nobody = NULL;
+    g_autofree gchar *handset = NULL;
+    g_autofree gchar *their_token = NULL;
+    g_autofree gchar *auth_dir = NULL;
+    g_autofree gchar *loose = NULL;
+    g_autofree gchar *overlay = NULL;
+    const gchar *argv[] = { "libreclaw", NULL };
+    ClawtAgentConfig *agent;
+    guint i;
+
+    fixture_setup(&fixture);
+    with_bwrap(&fixture);
+
+    secrets = g_build_filename(fixture.base, "secrets", NULL);
+    overlay = g_build_filename(fixture.base, "connectors.d", NULL);
+    g_assert_cmpint(g_mkdir_with_parents(overlay, 0700), ==, 0);
+    handset = g_build_filename(fixture.tools, "my-key.json", NULL);
+    g_assert_true(g_file_set_contents(handset, "{}", -1, NULL));
+
+    top = g_strdup_printf(
+        "secrets:\n"
+        "  dir: \"%s\"\n"
+        "connectors:\n"
+        "  dir: \"%s\"\n"
+        "integrations:\n"
+        "  - name: mine\n"
+        "    type: connector\n"
+        "    provider: bearer\n"
+        "    url: https://mcp.example.com/mine\n"
+        "    scope: selected\n"
+        "    agents: [boxed]\n"
+        "  - name: everyone\n"
+        "    type: connector\n"
+        "    provider: bearer\n"
+        "    url: https://mcp.example.com/everyone\n"
+        "    scope: all\n"
+        "  - name: theirs\n"
+        "    type: connector\n"
+        "    provider: bearer\n"
+        "    url: https://mcp.example.com/theirs\n"
+        "    scope: selected\n"
+        "    agents: [neighbour]\n"
+        "  - name: nobody\n"
+        "    type: connector\n"
+        "    provider: bearer\n"
+        "    url: https://mcp.example.com/nobody\n"
+        "    scope: none\n"
+        "  - name: handset\n"
+        "    type: connector\n"
+        "    provider: bearer\n"
+        "    url: https://mcp.example.com/handset\n"
+        "    token_file: \"%s\"\n"
+        "    scope: selected\n"
+        "    agents: [boxed]\n",
+        secrets, overlay, handset);
+    config = load(&fixture, top,
+                  "    runtime:\n"
+                  "      confine: bwrap\n"
+                  "  - id: neighbour\n"
+                  "    workspace: \"/nonexistent/neighbour\"\n");
+    agent = clawt_config_get_agent(config, "boxed");
+    g_assert_nonnull(agent);
+
+    mine = clawt_connector_token_dir(secrets, "mine");
+    everyone = clawt_connector_token_dir(secrets, "everyone");
+    theirs = clawt_connector_token_dir(secrets, "theirs");
+    nobody = clawt_connector_token_dir(secrets, "nobody");
+
+    /*
+     * As data: exactly the granted three -- the handset one by its file
+     * as well as its directory -- and the catalogue overlay.
+     */
+    paths = clawt_agent_confine_connector_paths(agent);
+    g_assert_nonnull(paths);
+
+    for (i = 0; paths[i] != NULL; i++)
+        g_test_message("bind: %s", paths[i]);
+
+    g_assert_cmpuint(g_strv_length(paths), ==, 5);
+    g_assert_true(g_strv_contains((const gchar * const *)paths, overlay));
+    g_assert_true(g_strv_contains((const gchar * const *)paths, mine));
+    g_assert_true(g_strv_contains((const gchar * const *)paths, everyone));
+    g_assert_true(g_strv_contains((const gchar * const *)paths, handset));
+    g_assert_false(g_strv_contains((const gchar * const *)paths, theirs));
+    g_assert_false(g_strv_contains((const gchar * const *)paths, nobody));
+    g_assert_false(g_strv_contains((const gchar * const *)paths, secrets));
+
+    /* Nothing is made for a connector the agent does not hold. */
+    g_assert_true(clawt_agent_confine_prepare_connector_secrets(agent,
+                                                                &error));
+    g_assert_no_error(error);
+    g_assert_true(g_file_test(mine, G_FILE_TEST_IS_DIR));
+    g_assert_true(g_file_test(everyone, G_FILE_TEST_IS_DIR));
+    g_assert_false(g_file_test(theirs, G_FILE_TEST_EXISTS));
+
+    {
+        GStatBuf st;
+
+        g_assert_cmpint(g_stat(mine, &st), ==, 0);
+        g_assert_cmpint(st.st_mode & 0777, ==, 0700);
+    }
+
+    /*
+     * What is in secrets.dir but not granted: another agent's
+     * credential, an OAuth registration, a loose secret file.
+     */
+    g_assert_cmpint(g_mkdir_with_parents(theirs, 0700), ==, 0);
+    their_token = g_build_filename(theirs, "token.json", NULL);
+    g_assert_true(g_file_set_contents(their_token, "{}", -1, NULL));
+    auth_dir = g_build_filename(secrets, "connector-auth", NULL);
+    g_assert_cmpint(g_mkdir_with_parents(auth_dir, 0700), ==, 0);
+    loose = g_build_filename(secrets, "github-token", NULL);
+    g_assert_true(g_file_set_contents(loose, "x", -1, NULL));
+
+    /* As the box: each granted path read-only, and the predicate agrees. */
+    sandbox = clawt_agent_confine_build(agent, fixture.state, NULL, NULL,
+                                        NULL, &error);
+    g_assert_no_error(error);
+    wrapped = clawt_sandbox_wrap_argv(sandbox, argv);
+
+    g_assert_cmpint(find_pair(wrapped, "--ro-bind", mine), >=, 0);
+    g_assert_cmpint(find_pair(wrapped, "--ro-bind", everyone), >=, 0);
+    g_assert_cmpint(find_pair(wrapped, "--ro-bind", handset), >=, 0);
+    g_assert_cmpint(find_pair(wrapped, "--ro-bind", overlay), >=, 0);
+    g_assert_cmpint(find_pair(wrapped, "--bind", mine), ==, -1);
+
+    for (i = 0; wrapped[i] != NULL; i++) {
+        g_assert_cmpstr(wrapped[i], !=, secrets);
+        g_assert_cmpstr(wrapped[i], !=, theirs);
+        g_assert_cmpstr(wrapped[i], !=, their_token);
+        g_assert_cmpstr(wrapped[i], !=, auth_dir);
+        g_assert_cmpstr(wrapped[i], !=, loose);
+    }
+
+    g_assert_true(clawt_sandbox_path_is_allowed(sandbox, mine));
+    g_assert_true(clawt_sandbox_path_is_allowed(sandbox, handset));
+    g_assert_false(clawt_sandbox_path_is_allowed(sandbox, secrets));
+    g_assert_false(clawt_sandbox_path_is_allowed(sandbox, their_token));
+    g_assert_false(clawt_sandbox_path_is_allowed(sandbox, auth_dir));
+    g_assert_false(clawt_sandbox_path_is_allowed(sandbox, loose));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A confined agent's connector relays run inside its box, so the held
+ * results a relay spills and the apps the daemon keeps must be under a
+ * writable bind -- the agent's own state directory, built here as the
+ * daemon builds it.  Checked on the argv and on the predicate both: the
+ * wall and the door.
+ */
+static void
+test_held_results_are_writable(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_autoptr(GError) error = NULL;
+    g_auto(GStrv) wrapped = NULL;
+    g_autofree gchar *agent_state = NULL;
+    g_autofree gchar *spill = NULL;
+    g_autofree gchar *apps = NULL;
+    g_autofree gchar *prefix = NULL;
+    const gchar *argv[] = { "libreclaw", NULL };
+
+    fixture_setup(&fixture);
+    with_bwrap(&fixture);
+
+    config = load(&fixture, NULL, "    runtime:\n      confine: bwrap\n");
+    agent_state = clawt_config_agent_state_dir(config, "boxed");
+    g_assert_cmpint(g_mkdir_with_parents(agent_state, 0700), ==, 0);
+
+    spill = clawt_mcp_result_spill_dir(config, "boxed");
+    apps = clawt_mcp_app_store_dir(config, "boxed");
+    prefix = g_strconcat(agent_state, G_DIR_SEPARATOR_S, NULL);
+
+    g_assert_true(g_str_has_prefix(spill, prefix));
+    g_assert_true(g_str_has_prefix(apps, prefix));
+
+    sandbox = clawt_agent_confine_build(clawt_config_get_agent(config,
+                                                               "boxed"),
+                                        agent_state, NULL, NULL, NULL,
+                                        &error);
+    g_assert_no_error(error);
+    wrapped = clawt_sandbox_wrap_argv(sandbox, argv);
+
+    g_assert_cmpint(find_pair(wrapped, "--bind", agent_state), >=, 0);
+    g_assert_true(clawt_sandbox_path_is_allowed(sandbox, spill));
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * Without an account the CLI's own login is bound -- the directory and
  * the file beside it, for Claude Code.
  */
@@ -1048,6 +1263,8 @@ main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
 
+    g_test_add_func("/agent-confine/held-results-are-writable",
+                    test_held_results_are_writable);
     g_test_add_func("/agent-confine/off-by-default",
                     test_off_by_default_and_fleet_default);
     g_test_add_func("/agent-confine/embedded-refused",
@@ -1057,6 +1274,8 @@ main(int argc, char *argv[])
     g_test_add_func("/agent-confine/unknown-value",
                     test_unknown_value_is_a_shadow);
     g_test_add_func("/agent-confine/builder-grants", test_builder_grants);
+    g_test_add_func("/agent-confine/connector-secrets",
+                    test_connector_secrets);
     g_test_add_func("/agent-confine/default-logins",
                     test_default_login_paths);
     g_test_add_func("/agent-confine/prepare-wraps",

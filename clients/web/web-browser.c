@@ -16,6 +16,13 @@
  * is the one way this page can take a pointer and still work on a
  * tailnet with nothing loaded.  It is drawn at its own size inside a
  * scrolling box, because a scaled picture would send scaled coordinates.
+ *
+ * Under it, the vault entries this agent may have filled (vault.list),
+ * one Allow / Revoke form each, which sends the whole list through
+ * agent.set browser.secrets (clawt_vault_grants_with()).  Names only:
+ * vault.list carries no value.  While a secret is on the page there is
+ * no picture -- the daemon takes none -- and the line says why
+ * (clawt_browser_fill_line()).
  */
 
 #include "web-pages.h"
@@ -41,8 +48,10 @@ build_browser_panel(ClawtWebApp *app, const gchar *agent_id)
 
     listing = clawt_web_app_call(app, "browser.list", NULL);
     session = clawt_browser_list_find(clawt_web_root(listing), agent_id);
+    /* No picture of a page a secret is on: the line says why. */
     running = session != NULL &&
-              json_object_get_boolean_member_with_default(session, "running", FALSE);
+              json_object_get_boolean_member_with_default(session, "running", FALSE) &&
+              !json_object_get_boolean_member_with_default(session, "secret_hold", FALSE);
     line = clawt_browser_session_line(session);
     clawt_web_add(panel, clawt_web_text(line, "browser-line"));
 
@@ -65,6 +74,56 @@ build_browser_panel(ClawtWebApp *app, const gchar *agent_id)
     }
 
     return HTMX_ELEMENT(g_steal_pointer(&panel));
+}
+
+/* The vault entries this agent may have filled: one Allow / Revoke each. */
+static void
+add_secrets(ClawtWebApp *app, HtmxElement *body, const gchar *agent_id)
+{
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *escaped = g_uri_escape_string(agent_id, NULL, FALSE);
+    g_autofree gchar *action = g_strdup_printf("/a/%s/browser/secret", escaped);
+    JsonObject *root;
+    JsonArray *entries;
+    guint i;
+
+    clawt_web_payload_set(payload, "agent", agent_id);
+    reply = clawt_web_app_call(app, "vault.list",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+    root = reply != NULL ? clawt_web_root(reply) : NULL;
+    entries = root != NULL && json_object_has_member(root, "entries")
+        ? json_object_get_array_member(root, "entries") : NULL;
+
+    clawt_web_add(body, clawt_web_section_title("Secrets it may have filled"));
+    if (entries == NULL || json_array_get_length(entries) == 0) {
+        clawt_web_add(body, clawt_web_text("No vault entries. Declare them under vault: in "
+                                           "clawtilla.yaml to let an agent log in without "
+                                           "seeing the password.", "muted"));
+        return;
+    }
+    for (i = 0; i < json_array_get_length(entries); i++) {
+        JsonObject *entry = json_array_get_object_element(entries, i);
+        gboolean granted = json_object_get_boolean_member_with_default(entry, "granted",
+                                                                       FALSE);
+        g_autofree gchar *label = clawt_vault_entry_label(entry);
+        g_autoptr(HtmxForm) form = clawt_web_form(action);
+        g_autoptr(HtmxDiv) row = htmx_div_new();
+        g_autoptr(HtmxButton) button = clawt_web_button(granted ? "Revoke" : "Allow",
+                                                        granted ? "default" : "primary");
+
+        htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
+        htmx_element_add_class(HTMX_ELEMENT(row), "vault-grant");
+        clawt_web_add(form, clawt_web_hidden("name",
+                                             json_object_get_string_member_with_default(
+                                                 entry, "name", "")));
+        clawt_web_add(form, clawt_web_hidden("grant", granted ? "0" : "1"));
+        clawt_web_add(row, clawt_web_text(label, granted ? NULL : "muted"));
+        htmx_element_set_attribute(HTMX_ELEMENT(button), "type", "submit");
+        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(button));
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(row));
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
+    }
 }
 
 void
@@ -99,6 +158,7 @@ clawt_web_add_browser(ClawtWebApp *app, HtmxElement *parent, const gchar *agent_
         htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(actions));
     }
 
+    add_secrets(app, body, agent_id);
     clawt_web_add(body, build_browser_panel(app, agent_id));
     htmx_node_add_child(HTMX_NODE(parent), HTMX_NODE(card));
 }
@@ -212,6 +272,35 @@ on_browser_stop(HtmxRequest *request, GHashTable *params, gpointer user_data)
     return after(app, request, agent_id, reply, "Stopped.");
 }
 
+/* Allow or revoke one vault entry: the whole list goes, through agent.set. */
+static HtmxResponse *
+on_browser_secret(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+    g_autofree gchar *name = clawt_web_param(params, "name");
+    g_autofree gchar *grant = clawt_web_param(params, "grant");
+    g_autoptr(ClawtWebPayload) ask = clawt_web_payload_new();
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) listing = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *value = NULL;
+
+    clawt_web_payload_set(ask, "agent", agent_id);
+    listing = clawt_web_app_call(app, "vault.list",
+                                 clawt_web_payload_take(g_steal_pointer(&ask)));
+    if (listing == NULL)
+        return after(app, request, agent_id, NULL, NULL);
+    value = clawt_vault_grants_with(clawt_web_root(listing), name,
+                                    g_strcmp0(grant, "1") == 0);
+    clawt_web_payload_set(payload, "agent", agent_id);
+    clawt_web_payload_set(payload, "key", "browser.secrets");
+    clawt_web_payload_set(payload, "value", value);
+    reply = clawt_web_app_call(app, "agent.set",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+    return after(app, request, agent_id, reply, "Saved.");
+}
+
 void
 clawt_web_register_browser(HtmxRouter *router, ClawtWebApp *app)
 {
@@ -220,4 +309,5 @@ clawt_web_register_browser(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_post(router, "/a/:id/browser/open", on_browser_open, app);
     htmx_router_post(router, "/a/:id/browser/click", on_browser_click, app);
     htmx_router_post(router, "/a/:id/browser/stop", on_browser_stop, app);
+    htmx_router_post(router, "/a/:id/browser/secret", on_browser_secret, app);
 }

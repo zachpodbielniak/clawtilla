@@ -1871,6 +1871,81 @@ Identifier, and what agents.browser.use names.
 
 What this session is for -- say which logins it holds.
 
+** =vault=
+
+Secrets an agent can have typed into a web page without ever seeing
+them: passwords, and TOTP seeds the daemon turns into one-time codes.
+
+  vault:
+    - name: github
+      secret: {command: "pass show web/github"}
+      sites: [github.com]
+    - name: github-2fa
+      kind: totp
+      secret: {file: github-totp}
+      sites: [github.com]
+
+An agent may ask only for the names its agents.browser.secrets lists.
+It calls clawtilla_secret_ref for a one-use reference bound to it and
+to the conversation it is in, then clawtilla_browser_fill_secret with
+that reference and a field. The daemon resolves the value, types it
+into the field as key input, and the agent hears only that it was
+filled. Screenshots and clawtilla_browser_eval are refused on that
+page until the browser navigates away. Needs a GSURF=1 build.
+
+*** =vault.name=
+
+- Type :: string
+- Default :: unset
+- Required :: yes
+- Since :: 0.25.0
+
+What an agent asks for, and what agents.browser.secrets lists. The
+name is all an agent or a client ever sees of the entry's secret.
+
+*** =vault.description=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.25.0
+
+Whose login this is, or which field it belongs in.
+
+*** =vault.kind=
+
+- Type :: enum
+- Values :: password, totp
+- Default :: =password=
+- Since :: 0.25.0
+
+`password` types the value itself. `totp` reads the value as a TOTP
+seed -- base32, or an otpauth://totp/ URI with its algorithm, digits
+and period -- and types the RFC 6238 code for the current time.
+
+*** =vault.secret=
+
+- Type :: secret reference
+- Default :: unset
+- Required :: yes
+- Since :: 0.25.0
+
+A secret reference, never the value: {file: ...}, {env: ...} or
+{command: ...}, resolved the way secrets: says, at the moment of the
+fill and not before.
+
+*** =vault.sites=
+
+- Type :: list of strings
+- Default :: unset
+- Required :: yes
+- Since :: 0.25.0
+
+The hosts the secret may be typed into: a page on any other host is
+refused, so an agent steered to a look-alike site cannot be made to
+fill it there. `example.com` also matches its subdomains
+(login.example.com); a page whose address cannot be read is refused.
+An entry without sites is never filled.
+
 ** =accounts=
 
 Separate logins for an agent CLI, so two agents on one machine can
@@ -2502,7 +2577,7 @@ are. See docs/connectors.org, "Servers with many tools".
 
 - Type :: integer
 - Default :: =-1=
-- Since :: 0.25.0
+- Since :: 0.28.0
 
 connector: the most of one tool result the agent is shown, in bytes.
 
@@ -2520,7 +2595,7 @@ and anything below 1024 is read as 1024. See docs/connectors.org,
 
 - Type :: boolean
 - Default :: =false=
-- Since :: 0.25.0
+- Since :: 0.28.0
 
 connector: show its apps in chat.
 
@@ -2755,7 +2830,7 @@ rather than listing them. Only read when a connector's `directory` is
 
 - Type :: integer
 - Default :: =65536=
-- Since :: 0.25.0
+- Since :: 0.28.0
 
 The most of one connector tool result an agent is shown, in bytes.
 
@@ -2771,7 +2846,7 @@ anything longer goes to disk as it arrives.
 
 - Type :: string
 - Default :: =http://127.0.0.1:8790=
-- Since :: 0.25.0
+- Since :: 0.28.0
 
 Where the web client is reached, for an MCP app's Open in browser.
 
@@ -5464,6 +5539,17 @@ user without a single visible step.
 Stop the session after this many minutes without a browser call. The
 profile stays, so a login survives; the open page does not. 0 keeps
 it running until its agent stops.
+
+*** =agents.browser.secrets=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.25.0
+
+The vault: entries this agent may have filled into a page, by name.
+Empty, the agent is offered no secret tools. Always the agent's own,
+even on a shared browser: what an agent may ask for is about the
+agent, not the session.
 
 *** =agents.browser.width=
 

@@ -20,6 +20,12 @@
  *
  * The picture is drawn at its own size in a scrolling box, so a click's
  * widget coordinates are the page's CSS pixels with no scaling to undo.
+ *
+ * Under the address row, the vault entries this agent may have filled
+ * (vault.list): one switch each, by name, sent as the whole list through
+ * agent.set browser.secrets.  No value ever reaches this window --
+ * vault.list carries none -- and the line above the picture says when a
+ * secret was last filled (clawt_browser_fill_line()).
  */
 
 #include "clawt-window-private.h"
@@ -27,6 +33,7 @@
 #define BROWSER_POLL_SECONDS (3)
 
 static void request_frame(ClawtWindow *self);
+static void request_vault(ClawtWindow *self);
 
 static void
 on_frame_reply(GObject *source, GAsyncResult *result, gpointer user_data)
@@ -108,10 +115,112 @@ clawt_gtk_browser_set_showing(ClawtWindow *self, gboolean showing)
         self->browser_tick = g_timeout_add_seconds(BROWSER_POLL_SECONDS, on_browser_tick,
                                                    self);
         request_frame(self);
+        request_vault(self);
     } else if (!showing && self->browser_tick != 0) {
         g_source_remove(self->browser_tick);
         self->browser_tick = 0;
     }
+}
+
+/* ── The secrets this agent may have filled ───────────────────────── */
+
+static void
+on_grant_reply(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) reply = clawt_client_request_finish(CLAWT_CLIENT(source),
+                                                            result, &error);
+
+    if (reply == NULL && error != NULL)
+        clawt_window_toast(self, error->message);
+    request_vault(self);
+}
+
+static void
+on_grant_toggled(GtkCheckButton *check, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *name = g_object_get_data(G_OBJECT(check), "clawt-vault-name");
+    g_autofree gchar *value = NULL;
+
+    if (self->browser_vault_filling || self->client == NULL || self->browser_agent == NULL ||
+        name == NULL)
+        return;
+    value = clawt_vault_grants_with(self->browser_vault, name,
+                                    gtk_check_button_get_active(check));
+    clawt_client_request_async(self->client, "agent.set",
+                               clawt_build_payload("agent", self->browser_agent,
+                                                   "key", "browser.secrets",
+                                                   "value", value, NULL),
+                               NULL, on_grant_reply, self);
+}
+
+static void
+on_vault_reply(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) reply = clawt_client_request_finish(CLAWT_CLIENT(source),
+                                                            result, &error);
+    JsonObject *payload;
+    JsonArray *entries;
+    GtkWidget *child;
+    guint i;
+
+    if (self->browser_secrets == NULL || reply == NULL)
+        return;
+    payload = clawt_payload_of(reply);
+    if (payload == NULL ||
+        g_strcmp0(json_object_get_string_member_with_default(payload, "agent", ""),
+                  self->browser_agent) != 0)
+        return;
+
+    g_clear_pointer(&self->browser_vault, json_object_unref);
+    self->browser_vault = json_object_ref(payload);
+    while ((child = gtk_widget_get_first_child(GTK_WIDGET(self->browser_secrets))) != NULL)
+        gtk_box_remove(self->browser_secrets, child);
+
+    entries = json_object_has_member(payload, "entries")
+        ? json_object_get_array_member(payload, "entries") : NULL;
+    if (entries == NULL || json_array_get_length(entries) == 0) {
+        GtkWidget *none = gtk_label_new("No vault entries. Declare them under vault: in "
+                                        "clawtilla.yaml to let an agent log in without "
+                                        "seeing the password.");
+
+        gtk_label_set_wrap(GTK_LABEL(none), TRUE);
+        gtk_label_set_xalign(GTK_LABEL(none), 0.0f);
+        gtk_widget_add_css_class(none, "dim-label");
+        gtk_box_append(self->browser_secrets, none);
+        return;
+    }
+
+    self->browser_vault_filling = TRUE;
+    for (i = 0; i < json_array_get_length(entries); i++) {
+        JsonObject *entry = json_array_get_object_element(entries, i);
+        g_autofree gchar *label = clawt_vault_entry_label(entry);
+        GtkWidget *check = gtk_check_button_new_with_label(label);
+
+        g_object_set_data_full(G_OBJECT(check), "clawt-vault-name",
+                               g_strdup(json_object_get_string_member_with_default(
+                                   entry, "name", "")), g_free);
+        gtk_check_button_set_active(GTK_CHECK_BUTTON(check),
+                                    json_object_get_boolean_member_with_default(
+                                        entry, "granted", FALSE));
+        g_signal_connect(check, "toggled", G_CALLBACK(on_grant_toggled), self);
+        gtk_box_append(self->browser_secrets, check);
+    }
+    self->browser_vault_filling = FALSE;
+}
+
+static void
+request_vault(ClawtWindow *self)
+{
+    if (self->client == NULL || self->browser_agent == NULL)
+        return;
+    clawt_client_request_async(self->client, "vault.list",
+                               clawt_build_payload("agent", self->browser_agent, NULL),
+                               NULL, on_vault_reply, self);
 }
 
 /* An action's answer: say what failed, then read the page again. */
@@ -212,6 +321,17 @@ clawt_gtk_build_browser_view(ClawtWindow *self)
     gtk_box_append(GTK_BOX(row), stop);
     gtk_box_append(GTK_BOX(box), row);
 
+    /* Which secrets the agent may ask for, folded away: it is set once. */
+    {
+        GtkWidget *expander = gtk_expander_new("Secrets it may have filled");
+
+        self->browser_secrets = GTK_BOX(gtk_box_new(GTK_ORIENTATION_VERTICAL, 2));
+        gtk_widget_set_tooltip_text(expander, "Vault entries the agent can have typed "
+                                              "into a page without seeing them");
+        gtk_expander_set_child(GTK_EXPANDER(expander), GTK_WIDGET(self->browser_secrets));
+        gtk_box_append(GTK_BOX(box), expander);
+    }
+
     self->browser_line = GTK_LABEL(gtk_label_new(""));
     gtk_label_set_wrap(self->browser_line, TRUE);
     gtk_label_set_xalign(self->browser_line, 0.0f);
@@ -254,8 +374,11 @@ clawt_gtk_browser_set_agent(ClawtWindow *self, JsonObject *agent)
             gtk_picture_set_paintable(self->browser_picture, NULL);
         if (self->browser_line != NULL)
             gtk_label_set_text(self->browser_line, "");
-        if (self->browser_tick != 0)
+        g_clear_pointer(&self->browser_vault, json_object_unref);
+        if (self->browser_tick != 0) {
             request_frame(self);
+            request_vault(self);
+        }
     } else if (!has_browser) {
         g_clear_pointer(&self->browser_agent, g_free);
     }

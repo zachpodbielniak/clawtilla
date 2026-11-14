@@ -1373,6 +1373,55 @@ static const ClawtSchemaEntry schema[] = {
   NULL, NULL,
   "What this session is for -- say which logins it holds.", "0.9.0" },
 
+/* ── vault ───────────────────────────────────────────────────────── */
+{ "vault", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
+  "Secrets an agent can have typed into a web page without ever seeing\n"
+  "them: passwords, and TOTP seeds the daemon turns into one-time codes.\n"
+  "\n"
+  "  vault:\n"
+  "    - name: github\n"
+  "      secret: {command: \"pass show web/github\"}\n"
+  "      sites: [github.com]\n"
+  "    - name: github-2fa\n"
+  "      kind: totp\n"
+  "      secret: {file: github-totp}\n"
+  "      sites: [github.com]\n"
+  "\n"
+  "An agent may ask only for the names its agents.browser.secrets lists.\n"
+  "It calls clawtilla_secret_ref for a one-use reference bound to it and\n"
+  "to the conversation it is in, then clawtilla_browser_fill_secret with\n"
+  "that reference and a field. The daemon resolves the value, types it\n"
+  "into the field as key input, and the agent hears only that it was\n"
+  "filled. Screenshots and clawtilla_browser_eval are refused on that\n"
+  "page until the browser navigates away. Needs a GSURF=1 build.", "0.25.0" },
+
+{ "vault.name", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED, NULL, NULL,
+  "What an agent asks for, and what agents.browser.secrets lists. The\n"
+  "name is all an agent or a client ever sees of the entry's secret.", "0.25.0" },
+
+{ "vault.description", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Whose login this is, or which field it belongs in.", "0.25.0" },
+
+{ "vault.kind", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "password", clawt_vault_kind_get_type,
+  "`password` types the value itself. `totp` reads the value as a TOTP\n"
+  "seed -- base32, or an otpauth://totp/ URI with its algorithm, digits\n"
+  "and period -- and types the RFC 6238 code for the current time.", "0.25.0" },
+
+{ "vault.secret", CLAWT_SCHEMA_SECRET, CLAWT_SCHEMA_FLAG_REQUIRED, NULL, NULL,
+  "A secret reference, never the value: {file: ...}, {env: ...} or\n"
+  "{command: ...}, resolved the way secrets: says, at the moment of the\n"
+  "fill and not before.", "0.25.0" },
+
+{ "vault.sites", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_REQUIRED,
+  NULL, NULL,
+  "The hosts the secret may be typed into: a page on any other host is\n"
+  "refused, so an agent steered to a look-alike site cannot be made to\n"
+  "fill it there. `example.com` also matches its subdomains\n"
+  "(login.example.com); a page whose address cannot be read is refused.\n"
+  "An entry without sites is never filled.", "0.25.0" },
+
 /* ── accounts ────────────────────────────────────────────────────── */
 { "accounts", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Separate logins for an agent CLI, so two agents on one machine can\n"
@@ -1805,7 +1854,7 @@ static const ClawtSchemaEntry schema[] = {
   "clawtilla_mcp_result_query. -1 (the default) means the fleet's\n"
   "connectors.max_result_bytes, 0 means no budget for this connector,\n"
   "and anything below 1024 is read as 1024. See docs/connectors.org,\n"
-  "\"Results bigger than the budget\".", "0.25.0" },
+  "\"Results bigger than the budget\".", "0.28.0" },
 
 { "integrations.show_apps", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "false", NULL,
@@ -1818,7 +1867,7 @@ static const ClawtSchemaEntry schema[] = {
   "sandboxed frame when somebody opens it, and the GTK and lrg clients\n"
   "offer it in the browser. Off by default, because the view is the\n"
   "server's own code running in your browser. See docs/connectors.org,\n"
-  "\"Apps in chat\".", "0.25.0" },
+  "\"Apps in chat\".", "0.28.0" },
 
 
 /* ── connectors ──────────────────────────────────────────────────── */
@@ -2001,7 +2050,7 @@ static const ClawtSchemaEntry schema[] = {
   "one listing of a big repository does not spend the whole context. 0\n"
   "turns the budget off; anything below 1024 is read as 1024. Whatever\n"
   "this says, the relay holds at most 64 MiB of one message in memory --\n"
-  "anything longer goes to disk as it arrives.", "0.25.0" },
+  "anything longer goes to disk as it arrives.", "0.28.0" },
 
 { "connectors.apps_web_url", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   "http://127.0.0.1:8790", NULL,
@@ -2010,7 +2059,7 @@ static const ClawtSchemaEntry schema[] = {
   "The GTK and lrg clients cannot draw an app's HTML, so they link to the\n"
   "web client's view of it: <this>/a/<agent>/app/<app>. The address\n"
   "clawtilla-web listens on by default; change it when the web client\n"
-  "runs elsewhere or on another port.", "0.25.0" },
+  "runs elsewhere or on another port.", "0.28.0" },
 
 /* ── broker ──────────────────────────────────────────────────────── */
 { "broker", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
@@ -3962,6 +4011,13 @@ static const ClawtSchemaEntry schema[] = {
   "Stop the session after this many minutes without a browser call. The\n"
   "profile stays, so a login survives; the open page does not. 0 keeps\n"
   "it running until its agent stops.", "0.9.0" },
+
+{ "agents.browser.secrets", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "The vault: entries this agent may have filled into a page, by name.\n"
+  "Empty, the agent is offered no secret tools. Always the agent's own,\n"
+  "even on a shared browser: what an agent may ask for is about the\n"
+  "agent, not the session.", "0.25.0" },
 
 { "agents.browser.width", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "1280", NULL,

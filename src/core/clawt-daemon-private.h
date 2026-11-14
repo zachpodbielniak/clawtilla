@@ -843,6 +843,14 @@ clawt_daemon_store_connector_token(ClawtDaemon      *self,
 void
 clawt_daemon_sweep_connector_flows(ClawtDaemon *self);
 
+/*
+ * Moves every connector credential still in the flat layout
+ * (`secrets.dir/connector-<name>.json`) into its own directory, and
+ * points the configuration at it.  Run once, at start, before any agent.
+ */
+void
+clawt_daemon_connector_migrate_tokens(ClawtDaemon *self);
+
 void
 clawt_daemon_warm_model_cache(ClawtDaemon *self);
 

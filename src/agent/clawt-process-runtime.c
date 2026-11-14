@@ -604,6 +604,13 @@ prepare_network(ClawtProcessRuntime  *self,
         for (i = 0; names[i] != NULL; i++)
             g_hash_table_insert(environment, g_strdup(names[i]),
                                 g_strdup(proxy));
+
+        /*
+         * And the route for the connector relays the CLI starts, which
+         * must not take NO_PROXY's word for 127.0.0.1 (clawt-egress-gate.h).
+         */
+        g_hash_table_insert(environment, g_strdup(CLAWT_EGRESS_PROXY_ENV),
+                            g_strdup(proxy));
     }
 
     g_hash_table_insert(environment, g_strdup("NO_PROXY"),

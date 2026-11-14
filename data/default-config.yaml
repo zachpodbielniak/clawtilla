@@ -1008,6 +1008,27 @@ skills:
 # # drives is refused, naming that agent. Needs a GSURF=1 build.
 # browsers: []
 
+# # Secrets an agent can have typed into a web page without ever seeing
+# # them: passwords, and TOTP seeds the daemon turns into one-time codes.
+# #
+# #   vault:
+# #     - name: github
+# #       secret: {command: "pass show web/github"}
+# #       sites: [github.com]
+# #     - name: github-2fa
+# #       kind: totp
+# #       secret: {file: github-totp}
+# #       sites: [github.com]
+# #
+# # An agent may ask only for the names its agents.browser.secrets lists.
+# # It calls clawtilla_secret_ref for a one-use reference bound to it and
+# # to the conversation it is in, then clawtilla_browser_fill_secret with
+# # that reference and a field. The daemon resolves the value, types it
+# # into the field as key input, and the agent hears only that it was
+# # filled. Screenshots and clawtilla_browser_eval are refused on that
+# # page until the browser navigates away. Needs a GSURF=1 build.
+# vault: []
+
 # # Separate logins for an agent CLI, so two agents on one machine can
 # # spend two subscriptions.
 # #
