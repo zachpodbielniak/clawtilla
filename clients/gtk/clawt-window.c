@@ -25,6 +25,8 @@ static void         model_chooser_build_full(ModelChooser *chooser,
                                              const gchar  *want_provider,
                                              const gchar  *want_model,
                                              const gchar  *require);
+static void         chooser_add_row(GtkWidget *container,
+                                    GtkWidget *row);
 static void         on_image_changed(GObject    *object,
                                      GParamSpec *pspec,
                                      gpointer    user_data);
@@ -1327,6 +1329,13 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
                 line = g_strdup_printf("%s is %s",
                                        subject != NULL ? subject : "?",
                                        state != NULL ? state : "?");
+            } else if (clawt_event_get_detail(event, "message") != NULL) {
+                /*
+                 * An event that carries its own sentence -- agent.failover
+                 * does: who, on what, why and until when -- says it,
+                 * rather than "agent.failover · scout".
+                 */
+                line = g_strdup(clawt_event_get_detail(event, "message"));
             } else {
                 line = g_strdup_printf("%s \302\267 %s",
                                        kind != NULL ? kind : "?",
@@ -2277,6 +2286,43 @@ clawt_gtk_model_chooser_build(ModelChooser *chooser, ClawtWindow *window,
 }
 
 /*
+ * The same rows from a catalogue the caller already holds, so a list of
+ * choosers -- the fallback editor draws one per entry -- costs one
+ * model.list rather than one per row.  Copied, because the "agent"
+ * filter rewrites the provider list to keep each chooser's own value.
+ */
+void
+clawt_gtk_model_chooser_build_from(ModelChooser *chooser,
+                                   ClawtWindow  *window,
+                                   GtkWidget    *container,
+                                   JsonNode     *catalog,
+                                   const gchar  *want_provider,
+                                   const gchar  *want_model)
+{
+    g_clear_pointer(&chooser->catalog, json_node_unref);
+
+    if (catalog != NULL)
+        chooser->catalog = json_node_copy(catalog);
+
+    model_chooser_build_full(chooser, window, container, want_provider,
+                             want_model, "agent");
+}
+
+/*
+ * A row into whatever holds the chooser.  An AdwExpanderRow is not a
+ * group, and adding to it through adw_preferences_group_add() is a
+ * runtime assertion rather than a compile error.
+ */
+static void
+chooser_add_row(GtkWidget *container, GtkWidget *row)
+{
+    if (ADW_IS_EXPANDER_ROW(container))
+        adw_expander_row_add_row(ADW_EXPANDER_ROW(container), row);
+    else
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(container), row);
+}
+
+/*
  * @require names the flag a provider must carry to be offered, or is
  * %NULL to offer all of them.
  *
@@ -2315,21 +2361,18 @@ model_chooser_build_full(ModelChooser *chooser, ClawtWindow *window,
     chooser->provider_row = adw_combo_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(chooser->provider_row),
                                   "Provider");
-    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
-                              chooser->provider_row);
+    chooser_add_row(group, chooser->provider_row);
 
     chooser->model_row = adw_combo_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(chooser->model_row),
                                   "Model");
-    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
-                              chooser->model_row);
+    chooser_add_row(group, chooser->model_row);
 
     chooser->model_entry = adw_entry_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(chooser->model_entry),
                                   "Model name");
     gtk_widget_set_visible(chooser->model_entry, FALSE);
-    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
-                              chooser->model_entry);
+    chooser_add_row(group, chooser->model_entry);
 
     /*
      * refresh: the provider's own list where we can get it.  The
@@ -2337,9 +2380,13 @@ model_chooser_build_full(ModelChooser *chooser, ClawtWindow *window,
      * see what the provider actually runs today. The daemon falls back
      * to the table when there is no key or no network, so this never
      * produces an empty chooser.
+     *
+     * Unless the caller handed one in: clawt_gtk_model_chooser_build_from()
+     * fills it before coming here.
      */
-    chooser->catalog = clawt_window_request(
-        window, "model.list", clawt_build_payload("refresh", "true", NULL));
+    if (chooser->catalog == NULL)
+        chooser->catalog = clawt_window_request(
+            window, "model.list", clawt_build_payload("refresh", "true", NULL));
 
     if (chooser->catalog != NULL && require != NULL) {
         JsonArray *all = json_object_get_array_member(
@@ -6237,6 +6284,9 @@ clawt_window_finalize(GObject *object)
     g_clear_pointer(&self->schema_rows, g_ptr_array_unref);
     g_clear_pointer(&self->account_ids, g_ptr_array_unref);
     g_clear_pointer(&self->use_ids, g_ptr_array_unref);
+    g_clear_pointer(&self->inspector_account, g_free);
+    g_clear_pointer(&self->inspector_provider, g_free);
+    clawt_gtk_fallback_editor_clear(self);
 
     /*
      * The same rule for the switcher's bookkeeping: these hold borrowed

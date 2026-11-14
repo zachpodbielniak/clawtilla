@@ -1147,6 +1147,15 @@ accounts:
     # Whose login this is, or what it is for.
     description: null
 
+    # This login bills each use -- an API key -- rather than drawing on a
+    # subscription's limit.
+    #
+    # Only agents.model.fallbacks reads it. Failing over to another sign-in
+    # of the same subscription is refused, because rotating accounts to
+    # get past a usage limit breaks the provider's terms; a pay-per-use
+    # login on the same CLI pays for the work it does and is allowed.
+    pay_per_use: false
+
 # Named integrations, each handed to one agent, some agents or all of them.
 #
 # An integration is a connection to something outside the fleet, kept in
@@ -2142,19 +2151,60 @@ agents:
       # default login. The account's provider must be this agent's provider.
       account: null
 
-      # libreclaw smart-routing profile: off, eco, auto, premium or free.
+      # Reserved. Not implemented in this build: nothing reads it, and
+      # nothing will until it can mean something here.
       #
-      # Not implemented in this build. Nothing renders it into the agent's
-      # config.yaml, so libreclaw is never told about it and routes on its
-      # own default.
+      # libreclaw's smart routing (off, eco, auto, premium, free) picks a
+      # model per message by scoring the prompt against a price table of
+      # named providers. An agent here runs one CLI backend with one model,
+      # so there is nothing for a profile to choose between -- rendering it
+      # would switch on a router with a single candidate. Moving off a
+      # backend that refuses is model.fallbacks; a cheaper model for one
+      # scheduled job is routines.model.
       routing_profile: null
 
-      # Models to fall back to, in order, when the primary is unavailable.
+      # Where this agent's conversations continue, in order, when its own
+      # backend refuses a turn: a usage limit, a rate limit, a sign-out or
+      # an outage.
       #
-      # Not implemented in this build. Nothing renders it into the agent's
-      # config.yaml, so an unavailable primary model fails the turn rather
-      # than falling back to anything.
-      fallbacks: []
+      #   fallbacks:
+      #     - provider: codex-cli
+      #       model: gpt-5.5
+      #     - provider: claude-code
+      #       model: sonnet
+      #
+      # libreclaw does the failing over: the next turn runs on the first
+      # entry nothing is holding, and the agent returns to its own backend
+      # at the reset the provider named, or after a backoff when it named
+      # none. A move to another CLI or another login starts a fresh
+      # conversation there; the agent's own conversation resumes when it
+      # comes back. Each switch raises an agent.failover event and alert,
+      # and agent status shows the fallback until the agent is back.
+      #
+      # Another sign-in to the same subscription is refused: an entry on
+      # this agent's CLI (claude-code and claude-tmux are one Claude login)
+      # with a different account, unless that account has pay_per_use set.
+      # Rotating accounts to get past a usage limit breaks the provider's
+      # terms. The agent is a shadow with the reason until the list is
+      # fixed, and agent set refuses such a list where it arrives.
+      #
+      # On the command line the list is one string:
+      # `clawtilla agent set ID model.fallbacks "codex-cli:gpt-5.5,
+      # claude-code:sonnet@backup"` -- provider:model, then @account.
+      fallbacks:
+
+          # The agent CLI: one of the providers model.provider takes.
+          # Required.
+        - provider: null
+
+          # The model that CLI is asked for.
+          # Required.
+          model: null
+
+          # Which entry of accounts this fallback's CLI logs in as. Unset is the
+          # CLI's default login. The account's provider must be this entry's
+          # provider.
+          account: null
 
     # How this agent's conversations map to AI sessions.
     session:

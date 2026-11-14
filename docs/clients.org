@@ -575,6 +575,18 @@ it applies at the VM's next boot.
 
 The agent inspector has an *Account* row beside the model and effort. Its choices come from ~account.list~ with the agent named, so it offers only the accounts the daemon will accept for that agent's provider; an account the agent already names and can no longer use is still shown, labelled, so saving cannot replace it without anybody choosing to. Saving clears the account before a provider change and sets it after, because the daemon checks the pair. The web client's agent page draws the same choices as a select.
 
+*** Editing the fallbacks
+
+~model.fallbacks~ is where an agent's conversations continue, in order, when its own backend hits a usage limit, a rate limit, a sign-out or an outage; the agent comes back at the reset (see "Limit failover" in [[file:agents.org][agents.org]]).  All three graphical clients edit it as an ordered list beside the model, effort and account, never as the three text fields the schema walk yields for a list of mappings -- the generic editors skip every =model.fallbacks*= key the way they skip ~computer.mounts~.
+
+Each entry is a provider picker (the agent-capable providers of ~model.list~, plus the entry's own provider whatever it is), a model picker (that provider's catalogue models, or a name typed by hand), and an account picker: /The CLI's own login/, then the accounts whose provider is the entry's CLI (~clawt_model_fallback_account_fits()~ -- ~account.list~'s own =usable= is about the agent's provider, and an entry may run another CLI), then the account the entry already names whatever it is, so saving cannot drop it.  Changing an entry's provider refills its models and its logins.  Buttons move an entry earlier or later, remove it, and add one, which starts on the agent's own provider.
+
+The list is read with ~clawt_model_fallback_parse_list()~ and sent whole as one ~agent.set model.fallbacks~ spelled by ~clawt_model_fallback_list_to_string()~; no client builds the spelling itself.  An entry without a model stops the save before anything is sent.  A list the client cannot parse is shown as the reason, not as an empty editor, because an empty editor saved back would write the empty list over the real one.  The daemon refuses a list that names an unknown account, an account for another CLI, a provider no agent runs on, or another sign-in to a subscription the agent already uses; each client shows that refusal the way it shows any other ~agent.set~ refusal.
+
+- *GTK*: a /Fallbacks/ expander row in the inspector's Settings group, under /Account/.  Each entry is a heading row ("Fallback 1", with its label) carrying up, down and remove buttons, then the same provider and model rows as the agent's own model, then an /Account/ row; the expander's =+= adds one.  Edits are kept until /Save changes/, which sends the list after the model and, when the provider or the account changes in the same save, clears the old list first -- the daemon checks the list against the backend it falls back from.  The account is now cleared only when it actually changes, because clearing an untouched one can make the primary a rotation of a fallback's login and fail the save.
+- *Web*: a /Fallbacks/ card under the agent page's settings form, a form of its own posting to =/a/:id/fallbacks=.  Each entry has a provider select, a model text field suggesting that provider's models through a =<datalist>=, an account select, and /Earlier/, /Later/ and /Remove/; a last row adds one.  The page holds no state between requests, so every button saves.
+- *lrg*: a /Fallbacks/ card on the Overview page right under the Model card, with the same three controls per entry and /Earlier/, /Later/, /Remove/ and /Add a fallback/.  /Save changes/ sends it with the rest, in the order =clawt_lrg_agent_save_plan()= gives.
+
 *** Choosing a shared computer
 
 The agent inspector has a *Use computer* row above the computer type. Its choices come from ~computer.shared~: /Its own machine/, then every machine declared under ~computers:~ that can be shared, with its type and description. A machine the agent names that is no longer declared is still shown, labelled, so saving cannot move the agent without anybody choosing to. While the agent is on a shared machine the computer type is shown greyed out -- it is the machine's -- and the per-agent image and VM rows are not drawn, because ~agent.set~ refuses those keys for it. Saving writes ~computer.use~ first. The web client's agent page draws the same select in its Computer card, hides the same rows, and says why.
@@ -1274,6 +1286,14 @@ Each agent shows a face, a state dot, what it is doing, and badges:
 - a red *HOST* badge when the agent can run commands on the real machine
 - a *CHIEF* badge on the chief of staff
 - a green *LEAD* badge on a team lead
+- an amber *On fallback: codex-cli gpt-5.5* badge while the agent runs on
+  one of its ~model.fallbacks~ -- text from ~clawt_failover_badge()~, the
+  daemon's ~failover_message~ as its tooltip.  The inspector's /Agent/
+  group carries the same badge and sentence as a row, updated in place
+  from the sidebar's refresh when ~agent.failover~ arrives, so an edit in
+  progress is never thrown away; the web client draws it in the sidebar,
+  the top bar and the agent page's /At a glance/ card, the lrg client in
+  the sidebar and the /At a glance/ card.
 
 Mail waiting for the *agent* is in the subtitle -- =3 waiting to be
 read=, or =working… · 3 waiting= when it is mid-turn -- rather than as a
@@ -1352,6 +1372,11 @@ different question from the one the setting was turned off to answer.
 A collapsible panel on the right of the GTK client, bound to a bell in
 the header bar; an =/alerts= page in the web client, reached from the
 sidebar.  Both carry a count.
+
+An event that carries its own sentence in a =message= detail is recorded
+in those words rather than as "kind · subject": ~agent.failover~'s says
+"Scout is running on fallback codex-cli gpt-5.5 because claude-code opus
+hit its usage limit, back at 18:50".  All three clients do this.
 
 **** An alert that lands in front of you arrives read
 

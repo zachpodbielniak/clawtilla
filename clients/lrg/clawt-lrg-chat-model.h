@@ -196,6 +196,9 @@ gchar *clawt_lrg_typing_activity(gboolean typing_now, const gchar *peer);
  * @can_interrupt: whether it offers Stop-this-turn
  * @standing: chief, lead or neither
  * @unread: messages in @dm_room nobody has read
+ * @fallback: (nullable): "On fallback: codex-cli gpt-5.5" while it runs on
+ *   one of its model.fallbacks, from clawt_failover_badge()
+ * @fallback_message: (nullable): the sentence saying why and until when
  *
  * One agent row, decided.
  */
@@ -219,6 +222,8 @@ typedef struct {
     gboolean        can_interrupt;
     ClawtTeamBadge  standing;
     guint           unread;
+    gchar          *fallback;
+    gchar          *fallback_message;
 } ClawtLrgAgentRow;
 
 /**

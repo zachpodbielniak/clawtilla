@@ -1913,11 +1913,152 @@ test_the_sidebar_description_clips(void)
     g_assert_nonnull(strstr(rule, "line-clamp:2"));
 }
 
+/* A JSON object for a fixture, or a failed test. */
+static JsonNode *
+json_fixture(const gchar *text)
+{
+    g_autoptr(GError) error = NULL;
+    JsonNode *node = json_from_string(text, &error);
+
+    g_assert_no_error(error);
+    g_assert_nonnull(node);
+    return node;
+}
+
+/*
+ * The "On fallback" badge: the library's words, the sentence as the
+ * title -- quoted safely, since it carries an agent's name -- and nothing at
+ * all while the agent is on its own backend.
+ */
+static void
+test_the_failover_badge(void)
+{
+    g_autoptr(JsonNode) away = json_fixture(
+        "{\"id\":\"scout\",\"failover\":{\"state\":\"fallback\","
+        "\"primary\":{\"provider\":\"claude-code\",\"model\":\"opus\"},"
+        "\"active\":{\"provider\":\"codex-cli\",\"model\":\"gpt-5.5\","
+        "\"index\":0},\"reason\":\"usage-limit\"},"
+        "\"failover_message\":\"Scout\\\" onmouseover=\\\"x() is away\"}");
+    g_autoptr(JsonNode) home = json_fixture("{\"id\":\"scout\"}");
+    g_autoptr(HtmxSpan) badge =
+        clawt_web_failover_badge(json_node_get_object(away));
+    g_autofree gchar *html = NULL;
+
+    g_assert_nonnull(badge);
+    html = htmx_element_render(HTMX_ELEMENT(badge));
+    g_assert_nonnull(strstr(html, "On fallback: codex-cli gpt-5.5"));
+    g_assert_nonnull(strstr(html, "badge-warn"));
+    g_assert_nonnull(strstr(html, "title=\""));
+    g_assert_null(strstr(html, "\" onmouseover=\""));
+
+    g_assert_null(clawt_web_failover_badge(json_node_get_object(home)));
+    g_assert_null(clawt_web_failover_badge(NULL));
+}
+
+/*
+ * The text between @from and the next @to in @html, for asserting on
+ * one control of a form rather than on the whole page.
+ */
+static gchar *
+slice(const gchar *html, const gchar *from, const gchar *to)
+{
+    const gchar *start = strstr(html, from);
+    const gchar *end;
+
+    g_assert_nonnull(start);
+    end = strstr(start, to);
+    g_assert_nonnull(end);
+
+    return g_strndup(start, (gsize)(end - start));
+}
+
+/*
+ * The fallback editor: a row per entry in order, each with the entry's
+ * provider selected, its model in a text box that suggests the
+ * provider's catalogue, and only logins for that CLI -- plus the one it
+ * names -- in its account picker.  Providers no agent runs on are not
+ * offered.  The buttons say which edit they are.
+ */
+static void
+test_the_fallback_editor(void)
+{
+    g_autoptr(JsonNode) catalog = json_fixture(
+        "{\"providers\":["
+        "{\"id\":\"claude-code\",\"label\":\"Claude Code\",\"agent\":true,"
+        " \"models\":[{\"id\":\"opus\",\"label\":\"Opus\"},"
+        "             {\"id\":\"sonnet\",\"label\":\"Sonnet\"}]},"
+        "{\"id\":\"codex-cli\",\"label\":\"Codex\",\"agent\":true,"
+        " \"models\":[{\"id\":\"gpt-5.5\",\"label\":\"GPT-5.5\"}]},"
+        "{\"id\":\"openai\",\"label\":\"OpenAI\",\"agent\":false,"
+        " \"models\":[{\"id\":\"gpt-4o\",\"label\":\"GPT-4o\"}]}]}");
+    g_autoptr(JsonNode) accounts = json_fixture(
+        "{\"accounts\":["
+        "{\"id\":\"backup\",\"provider\":\"codex-cli\"},"
+        "{\"id\":\"work\",\"provider\":\"claude-code\","
+        " \"description\":\"<i>the office</i>\"}]}");
+    g_autoptr(HtmxDiv) card = clawt_web_fallback_card(
+        "scout", "codex-cli:gpt-5.5@backup, claude-code:sonnet",
+        "claude-code", json_node_get_object(catalog),
+        json_node_get_object(accounts));
+    g_autofree gchar *html = htmx_element_render(HTMX_ELEMENT(card));
+    g_autofree gchar *first_account = NULL;
+    g_autofree gchar *first_provider = NULL;
+
+    g_assert_nonnull(strstr(html, "action=\"/a/scout/fallbacks\""));
+    g_assert_nonnull(strstr(html, "name=\"fb_count\""));
+    g_assert_nonnull(strstr(html, "name=\"fb_model_0\""));
+    g_assert_nonnull(strstr(html, "value=\"gpt-5.5\""));
+    g_assert_nonnull(strstr(html, "name=\"fb_model_1\""));
+    g_assert_nonnull(strstr(html, "list=\"fallback-models-"));
+    g_assert_nonnull(strstr(html, "<datalist"));
+
+    /* the edits, named by their buttons */
+    g_assert_nonnull(strstr(html, "value=\"up:1\""));
+    g_assert_nonnull(strstr(html, "value=\"down:0\""));
+    g_assert_nonnull(strstr(html, "value=\"remove:1\""));
+    g_assert_nonnull(strstr(html, "value=\"add\""));
+    g_assert_nonnull(strstr(html, "value=\"save\""));
+
+    /* the first entry runs codex-cli, so only codex logins are offered */
+    first_provider = slice(html, "name=\"fb_provider_0\"", "</select>");
+    g_assert_nonnull(strstr(first_provider,
+                            "selected=\"selected\" value=\"codex-cli\""));
+    g_assert_null(strstr(first_provider, "value=\"openai\""));
+
+    first_account = slice(html, "name=\"fb_account_0\"", "</select>");
+    g_assert_nonnull(strstr(first_account,
+                            "selected=\"selected\" value=\"backup\""));
+    g_assert_null(strstr(first_account, "value=\"work\""));
+
+    /* a description is somebody's text */
+    g_assert_null(strstr(html, "<i>"));
+}
+
+/*
+ * A list that cannot be read is said, not edited: an empty form saved
+ * back would write the empty list over the one in clawtilla.yaml.
+ */
+static void
+test_the_fallback_editor_will_not_save_over_a_bad_list(void)
+{
+    g_autoptr(HtmxDiv) card = clawt_web_fallback_card(
+        "scout", "codex-cli", "claude-code", NULL, NULL);
+    g_autofree gchar *html = htmx_element_render(HTMX_ELEMENT(card));
+
+    g_assert_nonnull(strstr(html, "notice-bad"));
+    g_assert_null(strstr(html, "fb_count"));
+    g_assert_null(strstr(html, "<form"));
+}
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/web/navigation-result", test_navigation_result);
+    g_test_add_func("/web/the-failover-badge", test_the_failover_badge);
+    g_test_add_func("/web/the-fallback-editor", test_the_fallback_editor);
+    g_test_add_func("/web/the-fallback-editor-will-not-save-over-a-bad-list",
+                    test_the_fallback_editor_will_not_save_over_a_bad_list);
 
     g_test_add_func("/web/connection-banner-when-there-is-something-to-say",
                     test_the_connection_banner_is_drawn_when_there_is_something_to_say);

@@ -408,6 +408,25 @@ struct _ClawtWindow {
      */
     GtkWidget         *account_row;
     GPtrArray         *account_ids;
+    /* model.account as the inspector was drawn, so a save clears it only on a change */
+    gchar             *inspector_account;
+    gchar             *inspector_provider;  /* model.provider, likewise */
+
+    /*
+     * model.fallbacks: the expander holding the editor (weak), its
+     * entries (FallbackEntry*, owned), the model.list and account.list
+     * every entry is drawn from, and the list as agent.show spelled it
+     * -- NULL when it could not be read, which leaves the editor shut
+     * rather than offering to save over a list it cannot show.
+     */
+    GtkWidget         *fallbacks_row;
+    GPtrArray         *fallback_entries;
+    GPtrArray         *fallback_rows;       /* borrowed: what was added to the expander */
+    JsonNode          *fallback_catalog;
+    JsonNode          *fallback_accounts;
+    gchar             *fallbacks_saved;
+    /* "On fallback" in the inspector's Agent group; weak, hidden while not */
+    GtkWidget         *failover_row;
     GtkWidget         *use_row;       /* computer.use: a shared machine */
     GPtrArray         *use_ids;
     GtkWidget         *computer_row;
@@ -951,6 +970,12 @@ clawt_gtk_model_chooser_build(ModelChooser *chooser, ClawtWindow *window,
                               const gchar *want_model);
 
 void
+clawt_gtk_model_chooser_build_from(ModelChooser *chooser, ClawtWindow *window,
+                                   GtkWidget *container, JsonNode *catalog,
+                                   const gchar *want_provider,
+                                   const gchar *want_model);
+
+void
 clawt_gtk_on_new_agent(GtkButton *button, gpointer user_data);
 
 gboolean
@@ -1310,6 +1335,27 @@ clawt_gtk_computer_type_nicks(void);
 
 void
 clawt_gtk_delete_agent(ClawtWindow *self);
+
+/*
+ * The inspector's fallback editor, freed: from dispose, and before the
+ * inspector is drawn again.
+ */
+void
+clawt_gtk_fallback_editor_clear(ClawtWindow *self);
+
+/*
+ * The sidebar's listing of the selected agent, applied to the
+ * inspector's "On fallback" row in place -- an event never rebuilds the
+ * page somebody may be editing.
+ */
+void
+clawt_gtk_inspector_sync_failover(ClawtWindow *self, JsonObject *agent);
+
+/*
+ * The badge for an agent the listing says is on a fallback, or NULL.
+ */
+GtkWidget *
+clawt_gtk_failover_badge(JsonObject *agent);
 
 const gchar *
 clawt_gtk_editor_command(void);

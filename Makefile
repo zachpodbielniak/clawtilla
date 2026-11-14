@@ -102,6 +102,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/integration/clawt-notify.h \
 	$(SRCDIR)/config/clawt-config.h \
 	$(SRCDIR)/config/clawt-config-render.h \
+	$(SRCDIR)/config/clawt-model-fallback.h \
 	$(SRCDIR)/computer/clawt-mount.h \
 	$(SRCDIR)/computer/clawt-exchange.h \
 	$(SRCDIR)/computer/clawt-observable.h \
@@ -276,6 +277,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/integration/clawt-notify.c \
 	$(SRCDIR)/config/clawt-config.c \
 	$(SRCDIR)/config/clawt-config-render.c \
+	$(SRCDIR)/config/clawt-model-fallback.c \
 	$(SRCDIR)/computer/clawt-mount.c \
 	$(SRCDIR)/computer/clawt-exchange.c \
 	$(SRCDIR)/computer/clawt-image-catalog.c \
