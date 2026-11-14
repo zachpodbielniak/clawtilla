@@ -667,6 +667,17 @@ critical fired.
   state arms on exactly that edge. Any new per-turn side effect in lc-app
   hangs off that signal; `CLAWTILLA_ROOM_ID` and the typing indicator both
   made this mistake at enqueue before being moved.
+- **Limit failover is libreclaw's, and so is the rotation rule.** libreclaw
+  sees the provider's refusal, so `LcFailover` (`ai.fallbacks`) does the
+  switch and the return; clawtilla renders `model.fallbacks` and refuses a
+  bad list early. "Another sign-in to the same subscription" is asked of
+  `lc_failover_add_fallback()` from `clawt_config_check_fallbacks()` rather
+  than restated -- two copies of a refusal is how a list clawtilla accepts
+  becomes one libreclaw silently shortens. The agent reports the state as
+  an `agent.failover` link frame and repeats it after every hello while it
+  is away, so the daemon clears it with the link, never on a timer. A
+  session id is kept per login (CLI type plus config dir): a cross-CLI
+  fallback starts fresh and the primary resumes its own conversation.
 - Cost comes from the provider (`ai_response_set_cost_micros()`), not the rate
   card: a CLI bills cache reads and writes, which never appear in
   `input_tokens`. `-1` means unknown, never free.

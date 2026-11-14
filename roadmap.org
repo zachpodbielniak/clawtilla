@@ -43,12 +43,13 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 - *Lesson to copy:* =844139d5e= again. Their loopback check could not fail because the harness bridge sat on the fixture's own port, and the probe counted its own spec as a leaked secret. State what the probe holds constant.
 - *Version:* none (test only).
 
-** TODO Make =model.fallbacks= do something: limit failover                                          :runtime:
+** DONE Make =model.fallbacks= do something: limit failover (version assigned at merge)                :runtime:
 - *Today:* =docs/agents.org:272=. =model.fallbacks= and =model.routing_profile= are "rendered nowhere", so an agent whose primary is unavailable fails.
 - *Prior art:* =server/limit-failover.ts= and =limit-resets.ts=. On a usage limit or a sign-out, the conversation continues on a backup engine and returns once the limit resets. It refuses to fail over to another sign-in on the *same subscription*, because rotating accounts breaks provider terms. A pay-per-use key on the same engine is allowed.
 - *Proposal:* decide where the switch lives. libreclaw sees the provider error, so the mechanism belongs upstream: tag libreclaw, pin it, then render =ai.fallbacks= into the agent's config. clawtilla's part is rendering, the account check (=clawt_account_check()= already knows which accounts are which), and an event and alert when an agent is running on a fallback.
 - *Open question:* does the fallback list carry a provider per entry? A fallback across CLIs (claude-code to codex) loses the session; say so in the event.
 - *Version:* minor (config semantics change; libreclaw pin bump).
+- *Shipped:* libreclaw's =LcFailover= (=ai.fallbacks=, the =agent.failover= frame, per-login session ids) does the switch and the return; clawtilla renders =model.fallbacks= as a list of {provider, model, account}, refuses another sign-in to the same subscription at load and in =agent set= (=clawt_config_check_fallbacks()=, asking libreclaw's own rule), adds =accounts.pay_per_use=, and turns the frame into agent state, an =agent.failover= event and alert, and an "On fallback" badge in every client. The fallback list does carry a provider per entry; a cross-CLI move says the context was lost. =model.routing_profile= is documented as reserved rather than wired: an agent has one backend, so there is nothing for a profile to choose between. Design in =docs/agents.org= under Limit failover.
 
 ** TODO Egress gate and provider-key broker                                                        :security:network:
 - *Today:* =allow_network= in =clawt-sandbox.c= is =--unshare-net= or nothing. A networked agent reaches the whole tailnet and LAN. Provider API keys appear to reach the agent's environment (*unverified*: inferred from the =api_key: {env: ANTHROPIC_API_KEY}= example in =docs/security.org=).
