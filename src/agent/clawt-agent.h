@@ -488,7 +488,7 @@ guint clawt_agent_get_turn_tool_calls_in(ClawtAgent  *self,
  *
  * What clawt_agent_settle_steer() did with a steer's answer.
  *
- * Since: 0.26.0
+ * Since: 0.28.0
  */
 typedef enum {
 	CLAWT_STEER_SETTLE_UNKNOWN = 0,
@@ -507,7 +507,7 @@ typedef enum {
  *
  * Returns: %TRUE if such a delivery was waiting
  *
- * Since: 0.26.0
+ * Since: 0.28.0
  */
 gboolean clawt_agent_await_steer(ClawtAgent  *self,
 				 const gchar *item_id);
@@ -531,7 +531,7 @@ gboolean clawt_agent_await_steer(ClawtAgent  *self,
  *
  * Returns: what was done
  *
- * Since: 0.26.0
+ * Since: 0.28.0
  */
 ClawtSteerSettle clawt_agent_settle_steer(ClawtAgent  *self,
 					  const gchar *room_id,
@@ -552,7 +552,7 @@ ClawtSteerSettle clawt_agent_settle_steer(ClawtAgent  *self,
  *
  * Returns: %TRUE only while a turn is running in @room_id
  *
- * Since: 0.26.0
+ * Since: 0.28.0
  */
 gboolean clawt_agent_get_turn_steer_facts(ClawtAgent   *self,
 					  const gchar  *room_id,

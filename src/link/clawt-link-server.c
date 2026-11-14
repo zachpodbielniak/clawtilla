@@ -853,7 +853,7 @@ clawt_link_server_class_init(ClawtLinkServerClass *klass)
      * @reason: (nullable): why it was refused
      * @asked: whether the agent's engine was asked
      *
-     * See #ClawtLink::steered.  Since: 0.26.0
+     * See #ClawtLink::steered.  Since: 0.28.0
      */
     signals[SIGNAL_STEERED] =
         g_signal_new("steered", CLAWT_TYPE_LINK_SERVER, G_SIGNAL_RUN_LAST,

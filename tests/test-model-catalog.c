@@ -387,7 +387,7 @@ test_acp_is_an_agent_with_its_own_default(void)
     g_assert_cmpuint(provider->n_models, ==, 1);
     g_assert_cmpstr(provider->models[0].id, ==, "default");
 
-    /* The command it is started from is a schema key, since 0.26.0. */
+    /* The command it is started from is a schema key, since 0.28.0. */
     g_assert_nonnull(clawt_config_schema_lookup("agents.model.command"));
 }
 

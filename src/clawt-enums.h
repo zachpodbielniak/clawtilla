@@ -172,7 +172,7 @@ typedef enum {
  *
  * Which deliveries may be handed to the turn already running in their
  * room instead of waiting to become a turn of their own
- * (`agents.steer`, since 0.26.0).  Every level keeps the rules no policy
+ * (`agents.steer`, since 0.28.0).  Every level keeps the rules no policy
  * lifts: never into another room's turn, never into a consultation
  * unless it is the consulting agent asking again, never a result the
  * daemon holds for the end of the turn, never a delivery naming

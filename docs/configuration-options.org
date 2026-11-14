@@ -3759,7 +3759,7 @@ Reasoning effort: low, medium, high, xhigh or max, when the model has one.
 
 - Type :: string
 - Default :: unset
-- Since :: 0.26.0
+- Since :: 0.28.0
 
 The command line an acp agent is started from, e.g.
 "gemini --experimental-acp". Only read when model.provider is acp.
@@ -3865,7 +3865,7 @@ provider.
 - Type :: enum
 - Values :: never, delegator, peers, all
 - Default :: =delegator=
-- Since :: 0.26.0
+- Since :: 0.28.0
 
 Which messages may be handed to the turn this agent is already
 running, instead of waiting to become a turn of their own.

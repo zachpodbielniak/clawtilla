@@ -369,7 +369,7 @@ gboolean clawt_mailbox_turn_close(ClawtMailbox  *self,
  *
  * Returns: %TRUE on success, including @from already gone
  *
- * Since: 0.26.0
+ * Since: 0.28.0
  */
 gboolean clawt_mailbox_turn_join(ClawtMailbox  *self,
                                  gint64         into,

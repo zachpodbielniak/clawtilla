@@ -315,7 +315,7 @@ void clawt_mailbox_item_set_round_chain(ClawtMailboxItem *self,
  *
  * Returns: (transfer none) (nullable): the message id, or %NULL
  *
- * Since: 0.26.0
+ * Since: 0.28.0
  */
 const gchar *clawt_mailbox_item_get_message_id(ClawtMailboxItem *self);
 
@@ -324,7 +324,7 @@ const gchar *clawt_mailbox_item_get_message_id(ClawtMailboxItem *self);
  * @self: a #ClawtMailboxItem
  * @message_id: (nullable): the room message's id
  *
- * Since: 0.26.0
+ * Since: 0.28.0
  */
 void clawt_mailbox_item_set_message_id(ClawtMailboxItem *self,
                                        const gchar      *message_id);

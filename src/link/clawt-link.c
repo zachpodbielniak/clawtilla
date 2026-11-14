@@ -950,7 +950,7 @@ clawt_link_class_init(ClawtLinkClass *klass)
      *
      * The agent says what became of a message the daemon asked it to
      * steer into its running turn.  Telemetry about a delivered message,
-     * never a message.  Since: 0.26.0
+     * never a message.  Since: 0.28.0
      */
     signals[SIGNAL_STEERED] =
         g_signal_new("steered", CLAWT_TYPE_LINK, G_SIGNAL_RUN_LAST, 0,

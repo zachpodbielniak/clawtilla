@@ -362,7 +362,7 @@ higher ~replays~ and any outward mark.  A restart that cut that turn then
 hands both items back together, or ends both as interrupted -- it never
 reruns the steered words on their own after the turn that already read
 them.  The item also carries the room message it was posted as
-(~message_id~ column, since 0.26.0), which is what the room's "steered"
+(~message_id~ column, since 0.28.0), which is what the room's "steered"
 mark is attached to.  A redelivered steered item is answered by libreclaw
 from its steer journal and is not run twice.
 

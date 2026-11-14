@@ -170,7 +170,7 @@ void clawt_model_catalog_fetch_models_async(const gchar          *provider_id,
  *
  * Returns: (transfer none): the label
  *
- * Since: 0.26.0
+ * Since: 0.28.0
  */
 const gchar *clawt_model_catalog_acp_command_label(void);
 
@@ -182,7 +182,7 @@ const gchar *clawt_model_catalog_acp_command_label(void);
  *
  * Returns: (transfer none): the hint
  *
- * Since: 0.26.0
+ * Since: 0.28.0
  */
 const gchar *clawt_model_catalog_acp_command_hint(void);
 

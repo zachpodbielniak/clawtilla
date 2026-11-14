@@ -198,7 +198,7 @@ gboolean clawt_link_deliver_full(ClawtLink    *self,
  *
  * Returns: %TRUE if it reached the socket
  *
- * Since: 0.26.0
+ * Since: 0.28.0
  */
 gboolean clawt_link_deliver_steer(ClawtLink    *self,
                                   const gchar  *room_id,
@@ -225,7 +225,7 @@ gboolean clawt_link_deliver_steer(ClawtLink    *self,
  *
  * Returns: %TRUE if a steer may be asked of this agent
  *
- * Since: 0.26.0
+ * Since: 0.28.0
  */
 gboolean clawt_link_get_can_steer(ClawtLink *self);
 
@@ -236,7 +236,7 @@ gboolean clawt_link_get_can_steer(ClawtLink *self);
  *
  * For tests standing in for an agent's hello.
  *
- * Since: 0.26.0
+ * Since: 0.28.0
  */
 void clawt_link_set_can_steer(ClawtLink *self, gboolean can_steer);
 

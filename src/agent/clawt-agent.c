@@ -173,7 +173,7 @@ typedef struct {
 
 	/*
 	 * Delivered with a steer request and not yet answered (Since
-	 * 0.26.0).  libreclaw has either handed the message to the turn
+	 * 0.28.0).  libreclaw has either handed the message to the turn
 	 * running in its room or is about to queue it, and only its
 	 * chat.steered says which -- so until then no turn may take this
 	 * entry: clawt_agent_begin_turn() passes over it, and
@@ -1370,7 +1370,7 @@ clawt_agent_deliver_merged(
 	}
 }
 
-/* ── Steering (Since 0.26.0) ─────────────────────────────────────── */
+/* ── Steering (Since 0.28.0) ─────────────────────────────────────── */
 
 /* The waiting delivery whose input is @item_id, and where it stands. */
 static TurnSetup *

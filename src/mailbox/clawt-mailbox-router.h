@@ -78,7 +78,7 @@ void clawt_mailbox_router_set_event_bus(ClawtMailboxRouter *self,
  * (see clawt_steer_decide()).  Without it a delivery steers under
  * `delegator` only when its sender is the agent the turn is answering.
  *
- * Since: 0.26.0
+ * Since: 0.28.0
  */
 void clawt_mailbox_router_set_task_manager(ClawtMailboxRouter *self,
                                            ClawtTaskManager   *tasks);

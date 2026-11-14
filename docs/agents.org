@@ -424,7 +424,7 @@ program that speaks the Agent Client Protocol (v1, JSON-RPC over stdio)
 an agent's engine --- Gemini CLI's ~--experimental-acp~, Zed's agents,
 anything that implements the protocol.
 
-- *Which program is ~model.command~* (since 0.26.0): the command line,
+- *Which program is ~model.command~* (since 0.28.0): the command line,
   split like a shell would split it but with no shell.  It is rendered
   into libreclaw's ~ai.command~ only for an ~acp~ agent.  Left empty,
   libreclaw falls back to ~$AI_ACP_COMMAND~ in the agent's environment,

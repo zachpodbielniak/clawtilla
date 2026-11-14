@@ -420,7 +420,7 @@ void clawt_message_set_interrupted(ClawtMessage *self,
  * Returns: (transfer none) (nullable): the outcome, or %NULL when the
  *   message was not steered
  *
- * Since: 0.26.0
+ * Since: 0.28.0
  */
 const gchar *clawt_message_get_steered(ClawtMessage *self);
 
@@ -429,7 +429,7 @@ const gchar *clawt_message_get_steered(ClawtMessage *self);
  * @self: a #ClawtMessage
  * @outcome: (nullable): "delivered", "indeterminate", or %NULL
  *
- * Since: 0.26.0
+ * Since: 0.28.0
  */
 void clawt_message_set_steered(ClawtMessage *self,
                                const gchar  *outcome);

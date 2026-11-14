@@ -297,7 +297,7 @@ apply_schema(sqlite3 *db, GError **error)
 	}
 
 	/*
-	 * Since 0.26.0: the room message an item delivers, so a steer's
+	 * Since 0.28.0: the room message an item delivers, so a steer's
 	 * outcome can be drawn on it.  Absent means none, which only costs
 	 * an older queued item its "steered" mark.
 	 */

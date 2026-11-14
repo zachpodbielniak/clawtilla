@@ -2692,7 +2692,7 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "The model is the agent's own default: ACP has no request that picks\n"
   "one, so model.model is not sent and the program's own configuration\n"
-  "(or its command line) chooses.", "0.26.0" },
+  "(or its command line) chooses.", "0.28.0" },
 
 { "agents.model.account", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Which entry of accounts this agent's CLI logs in as. Unset is the CLI's\n"
@@ -2787,7 +2787,7 @@ static const ClawtSchemaEntry schema[] = {
   "Only some engines can be steered: Claude Code, claude-tmux and codex\n"
   "on libreclaw's ai.codex.transport app-server. On any other the agent\n"
   "says no and the message waits as before. Needs libreclaw 0.30.0 or\n"
-  "later; an older agent is never asked.", "0.26.0" },
+  "later; an older agent is never asked.", "0.28.0" },
 
 { "agents.session", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "How this agent's conversations map to AI sessions.", "0.2.0" },

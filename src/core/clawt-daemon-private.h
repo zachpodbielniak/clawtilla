@@ -1876,7 +1876,7 @@ gboolean clawt_daemon_turn_steer(ClawtDaemon *self,
  * Applies an agent's chat.steered: folds a steered delivery's turn
  * description into the running turn (or releases a refused one to its
  * own turn), marks the room message as steered and publishes
- * `turn.steered`.  Since 0.26.0.
+ * `turn.steered`.  Since 0.28.0.
  *
  * Returns what clawt_agent_settle_steer() did.
  */
@@ -1892,7 +1892,7 @@ ClawtSteerSettle clawt_daemon_turn_settle_steer(ClawtDaemon *self,
  * Whether a person's message to @target goes straight into the turn
  * running in their direct room (`agents.steer: all` on an agent whose
  * link steers) rather than being held for the end of the turn.
- * Since 0.26.0.
+ * Since 0.28.0.
  */
 gboolean clawt_daemon_turn_person_steers(ClawtDaemon *self,
                                          const gchar *target);

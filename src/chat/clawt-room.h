@@ -287,7 +287,7 @@ void clawt_room_restore(ClawtRoom *self, ClawtMessage *message);
  *   was); %FALSE when it is not in the room, or the line could not be
  *   written (with @error set)
  *
- * Since: 0.26.0
+ * Since: 0.28.0
  */
 gboolean clawt_room_mark_steered(ClawtRoom    *self,
                                  const gchar  *message_id,
@@ -306,7 +306,7 @@ gboolean clawt_room_mark_steered(ClawtRoom    *self,
  *
  * Returns: %TRUE when it applied
  *
- * Since: 0.26.0
+ * Since: 0.28.0
  */
 gboolean clawt_room_restore_annotation(ClawtRoom   *self,
                                        const gchar *message_id,
