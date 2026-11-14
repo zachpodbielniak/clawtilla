@@ -287,6 +287,32 @@ gboolean clawt_message_get_invites_reply(ClawtMessage *self);
 void clawt_message_set_invites_reply(ClawtMessage *self, gboolean invites);
 
 /**
+ * clawt_message_get_composed:
+ * @self: a #ClawtMessage
+ *
+ * Whether the daemon assembled this body itself, escaping whatever it
+ * quoted -- see clawt_message_set_composed().
+ *
+ * Returns: %TRUE for a body the daemon composed
+ */
+gboolean clawt_message_get_composed(ClawtMessage *self);
+
+/**
+ * clawt_message_set_composed:
+ * @self: a #ClawtMessage
+ * @composed: %TRUE when the daemon wrote this body
+ *
+ * Marks a body the daemon wrote under somebody else's name -- a
+ * delegation's assignment, a handoff -- whose own [clawtilla] lines are
+ * genuine and whose quoted parts were already passed through
+ * clawt_preamble_escape() by whoever composed it.  The router delivers
+ * every other body from an agent, a bot or a webhook escaped as a
+ * whole; this is how the daemon's own sentences inside such a body
+ * survive that.  Never set it on text an agent supplied.
+ */
+void clawt_message_set_composed(ClawtMessage *self, gboolean composed);
+
+/**
  * clawt_message_set_priority:
  * @self: a #ClawtMessage
  * @priority: the band to queue at

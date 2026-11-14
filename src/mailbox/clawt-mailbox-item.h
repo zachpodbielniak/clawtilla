@@ -175,6 +175,44 @@ void clawt_mailbox_item_set_attempts(ClawtMailboxItem *self, gint attempts);
  */
 void clawt_mailbox_item_set_invites_reply(ClawtMailboxItem *self,
                                           gboolean          invites);
+
+/**
+ * clawt_mailbox_item_get_composed:
+ * @self: a #ClawtMailboxItem
+ *
+ * Whether the daemon composed this body -- see
+ * clawt_message_set_composed(), which is where the value comes from.
+ * Stored, because an item can outlive the daemon that queued it.
+ *
+ * Returns: %TRUE for a body the daemon composed
+ */
+gboolean clawt_mailbox_item_get_composed(ClawtMailboxItem *self);
+
+/**
+ * clawt_mailbox_item_set_composed:
+ * @self: a #ClawtMailboxItem
+ * @composed: %TRUE when the daemon wrote this body
+ *
+ * See clawt_message_set_composed().
+ */
+void clawt_mailbox_item_set_composed(ClawtMailboxItem *self,
+                                     gboolean          composed);
+
+/**
+ * clawt_mailbox_item_dup_delivered_body:
+ * @self: a #ClawtMailboxItem
+ *
+ * The body as its recipient is handed it: passed through
+ * clawt_preamble_escape() unless clawtilla itself sent it
+ * (%CLAWT_SYSTEM_SENDER), the operator ("user") did, or the daemon
+ * composed it (clawt_mailbox_item_get_composed()).  The router puts
+ * this, never the raw body, after a delivery preamble, so a peer, a bot
+ * or a webhook cannot write a line that reads as the daemon.  The
+ * stored body is left as it was said.
+ *
+ * Returns: (transfer full): the body to deliver
+ */
+gchar *clawt_mailbox_item_dup_delivered_body(ClawtMailboxItem *self);
 void clawt_mailbox_item_set_created_at(ClawtMailboxItem *self, gint64 when);
 void clawt_mailbox_item_set_not_before(ClawtMailboxItem *self, gint64 when);
 void clawt_mailbox_item_set_expires_at(ClawtMailboxItem *self, gint64 when);
