@@ -840,6 +840,10 @@ on_save_agent(GtkButton *button, gpointer user_data)
     if (model != NULL)
         ok &= clawt_gtk_apply_setting(self, "model.model", model);
 
+    if (self->acp_command_row != NULL)
+        ok &= clawt_gtk_apply_setting(self, "model.command",
+                  gtk_editable_get_text(GTK_EDITABLE(self->acp_command_row)));
+
     ok &= clawt_gtk_apply_setting(self, "model.effort",
                                   efforts[MIN(adw_combo_row_get_selected(
                                         ADW_COMBO_ROW(self->effort_row)), 4)]);
@@ -995,16 +999,16 @@ on_save_agent(GtkButton *button, gpointer user_data)
             ok &= clawt_gtk_apply_setting(self, "team", self->team_ids[chosen]);
     }
 
-    if (self->team_role_row != NULL) {
-        static const gchar *const roles[] = { "member", "lead" };
-
-        ok &= clawt_gtk_apply_setting(self, "team_role",
     if (self->steer_row != NULL)
         ok &= clawt_gtk_apply_setting(self, "steer",
                   clawt_steer_policy_nick((ClawtSteerPolicy)
                       adw_combo_row_get_selected(
                           ADW_COMBO_ROW(self->steer_row))));
 
+    if (self->team_role_row != NULL) {
+        static const gchar *const roles[] = { "member", "lead" };
+
+        ok &= clawt_gtk_apply_setting(self, "team_role",
                                       roles[MIN(adw_combo_row_get_selected(
                                           ADW_COMBO_ROW(self->team_role_row)),
                                                 1)]);
@@ -1428,10 +1432,6 @@ use_row_value(ClawtWindow *self)
     return chosen < self->use_ids->len ? g_ptr_array_index(self->use_ids, chosen) : "";
 }
 
-static GtkWidget *
-combo_row(const gchar *title, const gchar *const *values,
-          const gchar *selected)
-{
 /*
  * The steer level's own explanation, under the row, following the
  * choice -- libclawt's words, so the three clients say the same thing
@@ -1476,6 +1476,10 @@ steer_row_new(const gchar *current)
     return row;
 }
 
+static GtkWidget *
+combo_row(const gchar *title, const gchar *const *values,
+          const gchar *selected)
+{
     GtkWidget *row = adw_combo_row_new();
 
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), title);
@@ -3340,6 +3344,19 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
                                                    "medium"));
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), self->effort_row);
 
+    /* An acp agent's program, in libclawt's words (model.command). */
+    self->acp_command_row = entry_row(
+        clawt_model_catalog_acp_command_label(),
+        (payload != NULL && json_object_has_member(payload, "settings"))
+            ? clawt_json_string(
+                  json_object_get_object_member(payload, "settings"),
+                  "model.command", "")
+            : "");
+    clawt_gtk_set_row_hint(self->acp_command_row,
+                           clawt_model_catalog_acp_command_hint());
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              self->acp_command_row);
+
     self->account_row = account_row_build(
         self,
         (payload != NULL && json_object_has_member(payload, "settings"))
@@ -3728,6 +3745,10 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
                                   self->team_role_row);
     }
 
+    self->steer_row = steer_row_new(clawt_json_string(agent, "steer",
+                                                      "delegator"));
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), self->steer_row);
+
     self->chief_row = switch_row(
         "Chief of staff", "Hands work to the other agents",
         json_object_has_member(agent, "chief_of_staff") &&
@@ -3745,10 +3766,6 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
      * this one, and nothing on screen said so.
      */
     self->manage_fleet_row = switch_row(
-    self->steer_row = steer_row_new(clawt_json_string(agent, "steer",
-                                                      "delegator"));
-    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), self->steer_row);
-
         "May create agents",
         "Adds clawtilla_create_agent. It can give a new agent a container "
         "or a VM, which is a machine that runs code.",

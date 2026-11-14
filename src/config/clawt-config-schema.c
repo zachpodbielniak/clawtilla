@@ -2538,6 +2538,21 @@ static const ClawtSchemaEntry schema[] = {
 { "agents.model.effort", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Reasoning effort: low, medium, high, xhigh or max, when the model has one.", "0.1.0" },
 
+{ "agents.model.command", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "The command line an acp agent is started from, e.g.\n"
+  "\"gemini --experimental-acp\". Only read when model.provider is acp.\n"
+  "\n"
+  "acp runs any program that speaks the Agent Client Protocol (v1,\n"
+  "JSON-RPC over stdio) as the agent's engine, so which program is this\n"
+  "setting. It is split like a shell would split it, with no shell: no\n"
+  "pipes, no variables. Left empty, libreclaw falls back to\n"
+  "$AI_ACP_COMMAND in the agent's environment, and a turn with neither\n"
+  "fails saying so.\n"
+  "\n"
+  "The model is the agent's own default: ACP has no request that picks\n"
+  "one, so model.model is not sent and the program's own configuration\n"
+  "(or its command line) chooses.", "0.26.0" },
+
 { "agents.model.account", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Which entry of accounts this agent's CLI logs in as. Unset is the CLI's\n"
   "default login. The account's provider must be this agent's provider.", "0.2.0" },
@@ -2600,21 +2615,6 @@ static const ClawtSchemaEntry schema[] = {
   "CLI's default login. The account's provider must be this entry's\n"
   "provider.", "0.16.0" },
 
-{ "agents.session", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
-  "How this agent's conversations map to AI sessions.", "0.2.0" },
-
-{ "agents.session.routing_mode", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
-  "sender-room", lc_routing_mode_get_type,
-  "How many context windows this agent is.\n"
-  "\n"
-  "sender-room, the default, gives every (room, sender) pair a session\n"
-  "of its own: the conversation with the operator, the conversation\n"
-  "with each peer, each a separate AI context that shares nothing with\n"
-  "the others. room drops the sender, so everybody in one room shares\n"
-  "a session. agent is one session for everything -- every room, every\n"
-  "sender, one conversation.\n"
-  "\n"
-  "The default suits an agent that serves several people and should\n"
 { "agents.steer", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
   "delegator", clawt_steer_policy_get_type,
   "Which messages may be handed to the turn this agent is already\n"
@@ -2648,6 +2648,21 @@ static const ClawtSchemaEntry schema[] = {
   "says no and the message waits as before. Needs libreclaw 0.30.0 or\n"
   "later; an older agent is never asked.", "0.26.0" },
 
+{ "agents.session", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "How this agent's conversations map to AI sessions.", "0.2.0" },
+
+{ "agents.session.routing_mode", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "sender-room", lc_routing_mode_get_type,
+  "How many context windows this agent is.\n"
+  "\n"
+  "sender-room, the default, gives every (room, sender) pair a session\n"
+  "of its own: the conversation with the operator, the conversation\n"
+  "with each peer, each a separate AI context that shares nothing with\n"
+  "the others. room drops the sender, so everybody in one room shares\n"
+  "a session. agent is one session for everything -- every room, every\n"
+  "sender, one conversation.\n"
+  "\n"
+  "The default suits an agent that serves several people and should\n"
   "keep them apart. It is the wrong shape for an orchestrator: a chief\n"
   "of staff told \"only use oryx\" in the operator's room has never\n"
   "heard that constraint when a peer's reply wakes the sibling session,\n"

@@ -2313,6 +2313,21 @@ agents:
       # Reasoning effort: low, medium, high, xhigh or max, when the model has one.
       effort: null
 
+      # The command line an acp agent is started from, e.g.
+      # "gemini --experimental-acp". Only read when model.provider is acp.
+      #
+      # acp runs any program that speaks the Agent Client Protocol (v1,
+      # JSON-RPC over stdio) as the agent's engine, so which program is this
+      # setting. It is split like a shell would split it, with no shell: no
+      # pipes, no variables. Left empty, libreclaw falls back to
+      # $AI_ACP_COMMAND in the agent's environment, and a turn with neither
+      # fails saying so.
+      #
+      # The model is the agent's own default: ACP has no request that picks
+      # one, so model.model is not sent and the program's own configuration
+      # (or its command line) chooses.
+      command: null
+
       # Which entry of accounts this agent's CLI logs in as. Unset is the CLI's
       # default login. The account's provider must be this agent's provider.
       account: null
@@ -2372,21 +2387,6 @@ agents:
           # provider.
           account: null
 
-    # How this agent's conversations map to AI sessions.
-    session:
-
-      # How many context windows this agent is.
-      #
-      # sender-room, the default, gives every (room, sender) pair a session
-      # of its own: the conversation with the operator, the conversation
-      # with each peer, each a separate AI context that shares nothing with
-      # the others. room drops the sender, so everybody in one room shares
-      # a session. agent is one session for everything -- every room, every
-      # sender, one conversation.
-      #
-      # The default suits an agent that serves several people and should
-      # keep them apart. It is the wrong shape for an orchestrator: a chief
-      # of staff told "only use oryx" in the operator's room has never
     # Which messages may be handed to the turn this agent is already
     # running, instead of waiting to become a turn of their own.
     #
@@ -2420,6 +2420,21 @@ agents:
     # Values: never, delegator, peers, all
     steer: "delegator"
 
+    # How this agent's conversations map to AI sessions.
+    session:
+
+      # How many context windows this agent is.
+      #
+      # sender-room, the default, gives every (room, sender) pair a session
+      # of its own: the conversation with the operator, the conversation
+      # with each peer, each a separate AI context that shares nothing with
+      # the others. room drops the sender, so everybody in one room shares
+      # a session. agent is one session for everything -- every room, every
+      # sender, one conversation.
+      #
+      # The default suits an agent that serves several people and should
+      # keep them apart. It is the wrong shape for an orchestrator: a chief
+      # of staff told "only use oryx" in the operator's room has never
       # heard that constraint when a peer's reply wakes the sibling session,
       # and what looks like one agent contradicting itself is three contexts
       # that have never met. Give such an agent agent mode. The cost is

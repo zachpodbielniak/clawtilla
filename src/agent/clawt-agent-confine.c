@@ -498,8 +498,13 @@ clawt_agent_confine_build(ClawtAgentConfig     *config,
         const gchar *provider =
             clawt_agent_config_get_string(config, "model.provider");
         const gchar *cli = lc_provider_type_normalize(provider, "agent");
-        g_autoptr(AiCliClient) probe =
-            lc_client_factory_new(cli, NULL, NULL, NULL, FALSE);
+        /*
+         * No probe for a provider libreclaw refuses: building one for
+         * NULL would grant Claude Code's program to an agent that runs
+         * nothing.
+         */
+        g_autoptr(AiCliClient) probe = (provider == NULL || cli != NULL)
+            ? lc_client_factory_new(cli, NULL, NULL, NULL, FALSE) : NULL;
 
         if (probe != NULL) {
             g_autofree gchar *executable =

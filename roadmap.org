@@ -219,7 +219,8 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 - *Today:* =clawt-turn-watch.c= exempts held turns but samples no CPU.
 - *Prior art:* =fdf894efa=. A shell command whose processes are using CPU is still working.
 
-** TODO Generic ACP engine driver
+** DONE Generic ACP engine driver (version assigned at merge)
+- *Done:* ai-glib v0.12.0's =AiAcpClient= (type =acp=); libreclaw =feat/steering= maps =acp= / =acp-agent= / =acp_agent= to it ahead of the claude fall-through, builds it with =skip-permissions= and the configured =command= (=ai.command=, =ai.providers[].command=), and no longer rewrites an unknown provider type to claude-code: it is refused with the valid list. Here: an =acp= row in the catalogue's agent column (one model, the agent's own =default=), pinned in =tests/test-model-catalog.c=; =agents.model.command= (since 0.26.0) rendered as libreclaw's =ai.command= for an acp agent and editable in GTK, web and lrg (parity row "an acp agent's command"). Docs in =docs/agents.org=, "Any ACP agent".
 - *Prior art:* =server/drivers/acp/= and =docs/custom-engines.md=. Any ACP-over-stdio CLI becomes an engine.
 - *Needs:* lands in ai-glib, then libreclaw's =lc_provider_type_normalize()=, then the =agent= column in clawtilla's catalog. =tests/test-model-catalog.c= keeps them pinned. It also removes the silent rewrite to claude-code for unknown types.
 

@@ -427,6 +427,7 @@ struct _ClawtWindow {
     /* The agent's action rules, MATCH=MODE, comma-separated like skills. */
     GtkWidget         *policy_row;
     GtkWidget         *effort_row;
+    GtkWidget         *acp_command_row;  /* model.command */
     /*
      * Which login the agent's CLI uses. The ids are kept beside the
      * combo because its labels say more than the id ("work -- Claude
@@ -466,8 +467,8 @@ struct _ClawtWindow {
     GtkWidget         *manage_fleet_row;
     GtkWidget         *team_row;
     GtkWidget         *team_role_row;
-    GStrv              team_ids;
     GtkWidget         *steer_row;      /* agents.steer, walked from libclawt */
+    GStrv              team_ids;
     gboolean           settings_need_restart;
 
     /*

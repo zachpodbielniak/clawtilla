@@ -279,6 +279,11 @@ declare -A AFFORDANCES=(
     #
     ["steered messages"]="clawt_message_steered_label|clawt_message_steered_label|clawt_message_steered_label"
     ["explain an agent's steer level"]="clawt_steer_policy_explanation|clawt_steer_policy_explanation|clawt_steer_policy_explanation"
+    #
+    # A generic ACP agent (model.provider: acp): the command that is the
+    # agent, named and explained in libclawt's words in all three.
+    #
+    ["an acp agent's command"]="clawt_model_catalog_acp_command_hint|clawt_model_catalog_acp_command_hint|clawt_model_catalog_acp_command_hint"
     ["rebuild requests say what is lost"]="\"loses\"|\"loses\"|\"loses\""
     ["ack-check model choices"]="clawt_ack_check_model_nth_value|clawt_ack_check_model_nth_value|clawt_ack_check_model_nth_value"
     #

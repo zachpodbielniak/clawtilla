@@ -2499,6 +2499,17 @@ clawt_account_check(const ClawtAccountSpec *account,
     account_cli = lc_provider_type_normalize(account->provider, account->id);
     agent_cli = lc_provider_type_normalize(agent_provider, "agent");
 
+    /* A provider libreclaw does not run has no login to point anywhere. */
+    if ((account->provider != NULL && account_cli == NULL) ||
+        (agent_provider != NULL && agent_cli == NULL)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                    "account '%s': provider '%s' is not one libreclaw runs "
+                    "(valid: %s)", account->id,
+                    account_cli == NULL ? account->provider : agent_provider,
+                    lc_provider_type_valid_list());
+        return FALSE;
+    }
+
     if (g_strcmp0(account_cli, agent_cli) != 0) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
                     "account '%s' is a %s login and this agent runs %s",

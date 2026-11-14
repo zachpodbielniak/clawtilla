@@ -1182,6 +1182,9 @@ clawt_lrg_agent_form(JsonObject *settings)
             field->hint = g_strdup(clawt_agent_confine_explanation());
         } else if (friendly_field(key, &field->label, &field->hint)) {
             /* named for what it does, with the sentence that says how */
+        } else if (g_strcmp0(key, "model.command") == 0) {
+            field->label = g_strdup(clawt_model_catalog_acp_command_label());
+            field->hint = g_strdup(clawt_model_catalog_acp_command_hint());
         } else if (g_strcmp0(key, "steer") == 0) {
             const gchar *current = string_or(settings, key, "");
 

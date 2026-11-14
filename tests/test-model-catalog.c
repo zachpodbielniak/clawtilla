@@ -364,10 +364,40 @@ test_the_new_cli_backends_and_their_aliases_resolve(void)
     }
 }
 
+/*
+ * A generic ACP agent (libreclaw 0.30.0 over ai-glib v0.12.0): "acp" and
+ * its aliases resolve to it, it is offered as an agent's provider, and
+ * its one model is the agent's own default -- ACP has no request that
+ * picks a model, so a catalogue listing models would be listing guesses.
+ */
+static void
+test_acp_is_an_agent_with_its_own_default(void)
+{
+    const ClawtProviderInfo *provider;
+
+    g_assert_cmpstr(lc_provider_type_normalize("acp", "t"), ==, "acp");
+    g_assert_cmpstr(lc_provider_type_normalize("acp-agent", "t"), ==, "acp");
+    g_assert_cmpstr(lc_provider_type_normalize("acp_agent", "t"), ==, "acp");
+
+    provider = clawt_model_catalog_find_provider("acp");
+    g_assert_nonnull(provider);
+    g_assert_true(provider->agent);
+    g_assert_false(provider->tools);
+    g_assert_false(provider->open_ended);
+    g_assert_cmpuint(provider->n_models, ==, 1);
+    g_assert_cmpstr(provider->models[0].id, ==, "default");
+
+    /* The command it is started from is a schema key, since 0.26.0. */
+    g_assert_nonnull(clawt_config_schema_lookup("agents.model.command"));
+}
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
+
+    g_test_add_func("/model-catalog/acp-is-an-agent",
+                    test_acp_is_an_agent_with_its_own_default);
 
     g_test_add_func("/model-catalog/agent-providers-are-libreclaws",
                     test_agent_providers_are_the_ones_libreclaw_runs);
