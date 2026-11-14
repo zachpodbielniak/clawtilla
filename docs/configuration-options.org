@@ -1797,7 +1797,7 @@ what gets reported.
 
 - Type :: string
 - Default :: unset
-- Since :: 0.21.0
+- Since :: 0.23.0
 
 The broker's gateway server for this team's agents.
 
@@ -2714,7 +2714,7 @@ different thing with a similar name. See docs/connectors.org,
 
 - Type :: boolean
 - Default :: =false=
-- Since :: 0.21.0
+- Since :: 0.23.0
 
 Run the broker.
 
@@ -2728,7 +2728,7 @@ way of either: broker.status says starting while the image pulls.
 - Type :: enum
 - Values :: anythingmcp, jentic
 - Default :: =anythingmcp=
-- Since :: 0.21.0
+- Since :: 0.23.0
 
 Which broker: anythingmcp or jentic.
 
@@ -2745,7 +2745,7 @@ Its telemetry and release check are always switched off.
 
 - Type :: string
 - Default :: unset
-- Since :: 0.21.0
+- Since :: 0.23.0
 
 The gateway's image, pinned to a tag.
 
@@ -2761,7 +2761,7 @@ how.
 
 - Type :: string
 - Default :: unset
-- Since :: 0.21.0
+- Since :: 0.23.0
 
 The database image beside an AnythingMCP gateway, pinned to a tag.
 
@@ -2774,7 +2774,7 @@ runs no database container, so this is unused for jentic.
 
 - Type :: string
 - Default :: =127.0.0.1=
-- Since :: 0.21.0
+- Since :: 0.23.0
 
 The address the gateway's ports are published on.
 
@@ -2786,7 +2786,7 @@ network, and the dashboard's own sign-in is all that guards it.
 
 - Type :: integer
 - Default :: =47400=
-- Since :: 0.21.0
+- Since :: 0.23.0
 
 The host port of the gateway's MCP endpoint and API.
 
@@ -2796,7 +2796,7 @@ For jentic this is also its dashboard, which shares the port.
 
 - Type :: integer
 - Default :: =47300=
-- Since :: 0.21.0
+- Since :: 0.23.0
 
 The host port of AnythingMCP's dashboard.
 
@@ -2808,7 +2808,7 @@ or team. Unused for jentic, whose dashboard is on broker.port.
 
 - Type :: string
 - Default :: unset
-- Since :: 0.21.0
+- Since :: 0.23.0
 
 Which podman runs the broker, as computer.container.connection says.
 
@@ -2821,7 +2821,7 @@ machine, so a remote one also needs a tunnel to its ports.
 - Type :: enum
 - Values :: never, on-failure, always
 - Default :: =always=
-- Since :: 0.21.0
+- Since :: 0.23.0
 
 What to do when a broker container stops without being asked to.
 
@@ -3536,7 +3536,7 @@ simply not grouped and no team lead may assign to it.
 
 - Type :: string
 - Default :: unset
-- Since :: 0.21.0
+- Since :: 0.23.0
 
 This agent's own gateway server on the broker.
 

@@ -1328,7 +1328,7 @@ static const ClawtSchemaEntry schema[] = {
   "team's agents may use. For jentic, the Jentic agent the team acts\n"
   "as, whose API key `clawtilla broker key team:<id>` stores. An agent\n"
   "with its own agents.broker_server uses that one instead. Unused\n"
-  "unless broker.enabled is on.", "0.21.0" },
+  "unless broker.enabled is on.", "0.23.0" },
 
 /* ── computers ───────────────────────────────────────────────────── */
 { "computers", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
@@ -1960,7 +1960,7 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "Not the provider-key broker of runtime.network: gated, which is a\n"
   "different thing with a similar name. See docs/connectors.org,\n"
-  "\"An integration broker\".", "0.21.0" },
+  "\"An integration broker\".", "0.23.0" },
 
 { "broker.enabled", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "false", NULL,
@@ -1969,7 +1969,7 @@ static const ClawtSchemaEntry schema[] = {
   "Off by default, because turning it on pulls an image of several\n"
   "hundred megabytes and opens ports on this machine. Started in the\n"
   "background when the daemon starts or this is turned on, never in the\n"
-  "way of either: broker.status says starting while the image pulls.", "0.21.0" },
+  "way of either: broker.status says starting while the image pulls.", "0.23.0" },
 
 { "broker.type", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
   "anythingmcp", clawt_broker_type_get_type,
@@ -1982,7 +1982,7 @@ static const ClawtSchemaEntry schema[] = {
   "rule before it injects a stored key. Jentic One's own caveat is\n"
   "that an agent running as the same OS user can read its state, so it\n"
   "is refused unless every agent using it has runtime.confine: bwrap.\n"
-  "Its telemetry and release check are always switched off.", "0.21.0" },
+  "Its telemetry and release check are always switched off.", "0.23.0" },
 
 { "broker.image", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_COMMENTED,
   NULL, NULL,
@@ -1994,7 +1994,7 @@ static const ClawtSchemaEntry schema[] = {
   "tag, or tagged latest, is refused: an upgrade should be a change\n"
   "somebody made. AnythingMCP publishes amd64 only, so an aarch64\n"
   "machine names a locally built one here -- docs/connectors.org says\n"
-  "how.", "0.21.0" },
+  "how.", "0.23.0" },
 
 { "broker.database_image", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_COMMENTED,
   NULL, NULL,
@@ -2003,7 +2003,7 @@ static const ClawtSchemaEntry schema[] = {
   "Empty means docker.io/library/postgres:17.12-alpine. The database\n"
   "publishes no port: the two containers share a unix socket under\n"
   "<daemon.state_dir>/broker/run. Jentic One keeps SQLite files and\n"
-  "runs no database container, so this is unused for jentic.", "0.21.0" },
+  "runs no database container, so this is unused for jentic.", "0.23.0" },
 
 { "broker.bind", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   "127.0.0.1", NULL,
@@ -2011,13 +2011,13 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "Loopback by default: the relay that reaches it runs on this machine.\n"
   "Anything wider puts the gateway's dashboard and MCP endpoint on that\n"
-  "network, and the dashboard's own sign-in is all that guards it.", "0.21.0" },
+  "network, and the dashboard's own sign-in is all that guards it.", "0.23.0" },
 
 { "broker.port", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "47400", NULL,
   "The host port of the gateway's MCP endpoint and API.\n"
   "\n"
-  "For jentic this is also its dashboard, which shares the port.", "0.21.0" },
+  "For jentic this is also its dashboard, which shares the port.", "0.23.0" },
 
 { "broker.dashboard_port", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "47300", NULL,
@@ -2025,7 +2025,7 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "Where you register the first (admin) account, sign in to SaaS apps\n"
   "with your own OAuth clients and make a gateway server for each agent\n"
-  "or team. Unused for jentic, whose dashboard is on broker.port.", "0.21.0" },
+  "or team. Unused for jentic, whose dashboard is on broker.port.", "0.23.0" },
 
 { "broker.connection", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_COMMENTED,
   NULL, NULL,
@@ -2033,7 +2033,7 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "Empty is this user's rootless podman. A remote podman runs the\n"
   "containers there while broker.bind and the relay still dial this\n"
-  "machine, so a remote one also needs a tunnel to its ports.", "0.21.0" },
+  "machine, so a remote one also needs a tunnel to its ports.", "0.23.0" },
 
 { "broker.restart", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
   "always", clawt_restart_policy_get_type,
@@ -2043,7 +2043,7 @@ static const ClawtSchemaEntry schema[] = {
   "start it again, since podman's listing does not say how a container\n"
   "ended. Five restarts within ten minutes stop the retries, so a\n"
   "gateway that cannot start is reported rather than restarted for\n"
-  "ever.", "0.21.0" },
+  "ever.", "0.23.0" },
 
 /* ── grok ────────────────────────────────────────────────────────── */
 { "grok", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
@@ -2534,7 +2534,7 @@ static const ClawtSchemaEntry schema[] = {
   "acts as, whose API key `clawtilla broker key <id>` stores. Unset\n"
   "means the team's teams.broker_server, or no broker at all. An agent\n"
   "with runtime.network gated or none cannot reach the gateway on\n"
-  "loopback and is not given it.", "0.21.0" },
+  "loopback and is not given it.", "0.23.0" },
 
 { "agents.team_role", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
   "member", clawt_team_role_get_type,
