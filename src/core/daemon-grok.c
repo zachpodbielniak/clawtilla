@@ -74,10 +74,47 @@ struct _ClawtDaemonGrok {
     GCancellable   *cancellable;  /* owned: the tailscaled lookup */
     gchar          *dns_name;     /* this machine's tailnet name, once known */
     gchar          *dns_error;    /* why it is not, once asked */
-    gboolean        dns_asked;
+    gboolean        dns_asked;    /* a lookup is out, or has answered */
+    gboolean        draining;     /* re-running sends the lookup held */
+    GPtrArray      *held;         /* HeldSend*: waiting on the lookup */
+    GSource        *kick;         /* owned: the lookup at start */
 };
 
 typedef struct _ClawtDaemonGrok Grok;
+
+/*
+ * A send that arrived while this machine's tailnet name was still being
+ * asked for.  Held and re-run when tailscaled answers, rather than
+ * refused: the first job after every daemon start was otherwise turned
+ * away with "not known yet" for no reason the person could act on.
+ */
+typedef struct {
+    ClawtDaemon         *daemon;   /* not owned */
+    gchar               *agent_id;
+    gchar               *room_id;
+    gchar               *task_id;
+    gint                 depth;
+    gchar               *bot_asked;
+    gchar               *instructions;
+    gchar               *context;
+    gint64               ttl_minutes;
+    ClawtDaemonGrokSent  done;
+    gpointer             done_data;
+} HeldSend;
+
+static void
+held_send_free(gpointer data)
+{
+    HeldSend *held = data;
+
+    g_free(held->agent_id);
+    g_free(held->room_id);
+    g_free(held->task_id);
+    g_free(held->bot_asked);
+    g_free(held->instructions);
+    g_free(held->context);
+    g_free(held);
+}
 
 static Grok *
 grok_ref(Grok *self)
@@ -96,6 +133,7 @@ grok_unref(Grok *self)
     g_clear_object(&self->store);
     g_clear_object(&self->session);
     g_clear_object(&self->cancellable);
+    g_clear_pointer(&self->held, g_ptr_array_unref);
     g_free(self->dns_name);
     g_free(self->dns_error);
     g_free(self);
@@ -181,15 +219,39 @@ on_dns_name(GObject *source, GAsyncResult *result, gpointer user_data)
         g_free(name);
     }
 
+    /*
+     * Every send that waited on this answer, re-run now that there is
+     * one.  `draining` makes a failure refuse with tailscaled's own
+     * reason rather than hold the send again, which would wait for ever.
+     */
+    if (!self->stopped && self->held != NULL && self->held->len > 0) {
+        g_autoptr(GPtrArray) held = g_steal_pointer(&self->held);
+        guint i;
+
+        self->held = g_ptr_array_new_with_free_func(held_send_free);
+        self->draining = TRUE;
+
+        for (i = 0; i < held->len; i++) {
+            HeldSend *one = g_ptr_array_index(held, i);
+
+            clawt_daemon_grok_send(one->daemon, one->agent_id, one->room_id,
+                                   one->task_id, one->depth, one->bot_asked,
+                                   one->instructions, one->context,
+                                   one->ttl_minutes, one->done,
+                                   one->done_data);
+        }
+
+        self->draining = FALSE;
+    }
+
     grok_unref(self);
 }
 
 /*
- * Asked from the first sweep after start and again whenever a job needs
- * it and it is still unknown -- never during daemon start, which must not
- * reach anything, and never in a test, whose fixtures set
- * daemon.tailscale false.  Asking only on demand refused the first job
- * after every start with "not known yet".
+ * Asked from an idle just after start, from every sweep while it is
+ * unknown, and whenever a job needs it -- never on the path that brings
+ * the daemon up, which must wait on nothing, and never in a test, whose
+ * fixtures set daemon.tailscale false.
  */
 static void
 ask_dns_name(Grok *self)
@@ -1231,6 +1293,38 @@ clawt_daemon_grok_send(ClawtDaemon          *daemon,
 
     host = callback_host(daemon, &reason);
 
+    /*
+     * Not known *yet* is not a refusal: callback_host() has just asked
+     * tailscaled, and the answer is a local socket away.  Held and re-run
+     * from on_dns_name().  Only when the name could not be had at all --
+     * the listener is off, tailscaled answered with an error, or this is
+     * the re-run after its answer -- is the job refused, naming why.
+     */
+    if (host == NULL && self->dns_asked && self->dns_name == NULL &&
+        self->dns_error == NULL && !self->draining &&
+        daemon->ingress != NULL &&
+        clawt_webhook_ingress_is_on_tailnet(daemon->ingress)) {
+        HeldSend *held = g_new0(HeldSend, 1);
+
+        held->daemon = daemon;
+        held->agent_id = g_strdup(agent_id);
+        held->room_id = g_strdup(room_id);
+        held->task_id = g_strdup(task_id);
+        held->depth = depth;
+        held->bot_asked = g_strdup(bot_asked);
+        held->instructions = g_strdup(instructions);
+        held->context = g_strdup(context);
+        held->ttl_minutes = ttl_minutes;
+        held->done = done;
+        held->done_data = done_data;
+
+        if (self->held == NULL)
+            self->held = g_ptr_array_new_with_free_func(held_send_free);
+
+        g_ptr_array_add(self->held, held);
+        return;
+    }
+
     if (host == NULL)
         REFUSE(reason);
 
@@ -1423,6 +1517,19 @@ clawt_daemon_grok_get_store(ClawtDaemon *daemon)
     g_return_val_if_fail(CLAWT_IS_DAEMON(daemon), NULL);
 
     return daemon->grok != NULL ? daemon->grok->store : NULL;
+}
+
+static gboolean
+on_kick(gpointer user_data)
+{
+    ClawtDaemon *daemon = user_data;
+
+    if (daemon->grok != NULL) {
+        g_clear_pointer(&daemon->grok->kick, g_source_unref);
+        ask_dns_name(daemon->grok);
+    }
+
+    return G_SOURCE_REMOVE;
 }
 
 static gboolean
@@ -1636,6 +1743,15 @@ clawt_daemon_grok_start(ClawtDaemon *daemon)
 
     daemon->grok = self;
 
+    /*
+     * The tailnet name, asked as soon as the loop runs rather than when
+     * the first job needs it -- from an idle, so start itself waits on
+     * nothing, and asynchronously, so the loop does not either.
+     */
+    self->kick = g_idle_source_new();
+    g_source_set_callback(self->kick, on_kick, daemon, NULL);
+    g_source_attach(self->kick, daemon->main_context);
+
     if (daemon->ingress != NULL)
         clawt_webhook_ingress_set_grok_func(daemon->ingress, on_grok_request,
                                             daemon);
@@ -1668,6 +1784,25 @@ clawt_daemon_grok_stop(ClawtDaemon *daemon)
         g_source_destroy(self->sweep);
         g_source_unref(self->sweep);
         self->sweep = NULL;
+    }
+
+    if (self->kick != NULL) {
+        g_source_destroy(self->kick);
+        g_clear_pointer(&self->kick, g_source_unref);
+    }
+
+    /* A held send is answered, never dropped: its caller is waiting. */
+    if (self->held != NULL) {
+        g_autoptr(GPtrArray) held = g_steal_pointer(&self->held);
+        guint i;
+
+        for (i = 0; i < held->len; i++) {
+            HeldSend *one = g_ptr_array_index(held, i);
+
+            if (one->done != NULL)
+                one->done(NULL, "the daemon stopped before the job was sent",
+                          one->done_data);
+        }
     }
 
     self->stopped = TRUE;

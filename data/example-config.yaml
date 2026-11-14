@@ -1514,9 +1514,11 @@ grok:
 
   # The name a Grok bot uses to reach this daemon.
   #
-  # Empty means the machine's own tailnet name, asked of tailscaled --
-  # the FQDN `tailscale status` shows for it. Set it when tailscaled is
-  # not readable by the daemon's user. Either way the webhook listener
+  # Empty means the machine's own tailnet name, asked of tailscaled as
+  # soon as the daemon starts -- the FQDN `tailscale status` shows for
+  # it -- and a job sent before it answers waits for the answer. This is
+  # an override, for a machine whose tailscaled the daemon's user cannot
+  # read or a name other than its MagicDNS one. Either way the listener
   # (daemon.webhook_enabled) has to be bound on the tailnet
   # (daemon.tailscale): a job is refused rather than sent with an
   # address nothing answers on.

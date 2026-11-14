@@ -1675,9 +1675,11 @@ static const ClawtSchemaEntry schema[] = {
   NULL, NULL,
   "The name a Grok bot uses to reach this daemon.\n"
   "\n"
-  "Empty means the machine's own tailnet name, asked of tailscaled --\n"
-  "the FQDN `tailscale status` shows for it. Set it when tailscaled is\n"
-  "not readable by the daemon's user. Either way the webhook listener\n"
+  "Empty means the machine's own tailnet name, asked of tailscaled as\n"
+  "soon as the daemon starts -- the FQDN `tailscale status` shows for\n"
+  "it -- and a job sent before it answers waits for the answer. This is\n"
+  "an override, for a machine whose tailscaled the daemon's user cannot\n"
+  "read or a name other than its MagicDNS one. Either way the listener\n"
   "(daemon.webhook_enabled) has to be bound on the tailnet\n"
   "(daemon.tailscale): a job is refused rather than sent with an\n"
   "address nothing answers on.", "0.10.0" },

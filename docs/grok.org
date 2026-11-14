@@ -58,7 +58,7 @@ afterwards -- the listener is bound when the daemon starts.
 
 Then, in Grok, connect the bot's computer to your tailnet (it shows up in =tailscale status= as =grokbot-…=).  A tailnet ACL that lets that node reach *only* the listener's port (=daemon.webhook_port=, 8788) is strongly recommended: every bot shares one computer, and it is somebody else's.
 
-The address the bot dials is this machine's MagicDNS name, asked of tailscaled over its local socket.  If the daemon's user cannot read tailscaled's status, set =grok.callback_host= to the name =tailscale status= shows.
+The address the bot dials is this machine's MagicDNS name, asked of tailscaled over its local socket as soon as the daemon starts; a job sent before tailscaled has answered waits for the answer rather than being refused.  =grok.callback_host= is an override, for a machine whose tailscaled the daemon's user cannot read or a name other than its MagicDNS one.
 
 *** 2. Give the bot's routine a webhook trigger
 
@@ -183,7 +183,7 @@ A =needs_input= job is settled: a job cannot be resumed.  To answer the bot's qu
 |--------------+-----+------------|
 | "the daemon's webhook listener is off" | =daemon.webhook_enabled= is false | turn it on |
 | "the webhook listener is not bound on the tailnet" | =daemon.tailscale= is false, or the machine is not on the tailnet | turn it on; check =tailscale status= |
-| "this machine's tailnet name is not known yet" | tailscaled is asked within thirty seconds of the daemon starting, and again after a failure; it has not answered, or the daemon's user cannot read it | send again in a moment, or set =grok.callback_host= |
+| "this machine's tailnet name is not known yet: …" | tailscaled is asked as soon as the daemon starts, and a job that arrives before it answers waits for the answer; this is the answer being an error -- tailscaled not running, or not readable by the daemon's user | fix what the message names, or set =grok.callback_host= |
 | "the bot's routine is switched off in Grok" | Grok answered 400 | switch the routine back on |
 | "Grok refused the routine's key" | Grok answered 401 | the key was rotated: update the file the integration's =token= names |
 | "the routine has hit Grok's hourly run limit" | Grok answered 429 (200 runs an hour per routine, 300 across routines) | wait; Grok does not queue refused runs |
