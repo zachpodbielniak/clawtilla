@@ -307,6 +307,8 @@ present whenever there is a runtime, including at zero: "this child has
 never been replaced" is the answer that makes the other two worth
 trusting, and an absent member cannot say it.
 
+An agent running on a fallback backend also carries ~failover~ and ~failover_message~, and only while that lasts.  ~failover~ is the state its libreclaw reported (~state~, ~primary~ and ~active~ each with ~provider~ and ~model~, ~reason~, ~reset_at~, ~retry_at~, ~context_lost~) plus ~since~, in microseconds, when it first left its primary.  ~failover_message~ is the sentence the ~agent.failover~ alert carried.  Clients badge it through ~clawt_failover_badge()~.  ~agent.show~'s ~settings~ carries ~model.fallbacks~ in the one text spelling, =provider:model@account= comma separated, which ~agent.set~ takes back.
+
 Every client renders ~busy~ and ~peer~ through
 ~clawt_agent_activity_label()~ rather than its own sentence -- the CLI
 read neither field for as long as they existed, and the web client drew
@@ -1473,7 +1475,7 @@ Every kind published, by subject:
 | Subject | Kinds |
 |---------+-------|
 | the daemon | ~daemon.started~, ~daemon.stopped~, ~daemon.reloaded~, ~config.changed~, ~hold.changed~ |
-| an agent | ~agent.created~, ~agent.removed~, ~agent.changed~, ~agent.started~, ~agent.stopped~, ~agent.interrupted~, ~agent.state~, ~agent.connected~, ~agent.disconnected~, ~agent.typing~, ~agent.identity~, ~agent.contested~ (~evictions~) |
+| an agent | ~agent.created~, ~agent.removed~, ~agent.changed~, ~agent.started~, ~agent.stopped~, ~agent.interrupted~, ~agent.state~, ~agent.connected~, ~agent.disconnected~, ~agent.typing~, ~agent.identity~, ~agent.contested~ (~evictions~), ~agent.failover~ (~state~, ~provider~, ~model~, ~primary_provider~, ~primary_model~, ~reason~, ~reset_at~, ~retry_at~, ~context_lost~, ~message~) |
 | a room | ~message~, ~message.refused~, ~exchange.stalled~, ~room.created~, ~room.changed~ |
 | an agent's mailbox | ~mailbox.queued~, ~mailbox.delivered~ |
 | a team | ~team.changed~ |
@@ -1594,6 +1596,8 @@ error, because at every threshold but the last **nothing has been
 stopped** -- clawtilla does not own the model's own tool-call loop and
 cannot steer a turn that is already running.  At the last threshold the
 turn is interrupted and a ~turn.timed_out~ follows.
+
+~agent.failover~ is published when an agent's libreclaw reports, over its link, that it moved to a fallback backend (~state~ =fallback=) or came back to its own (~state~ =primary=); see ~model.fallbacks~ in [[file:agents.org][agents.org]].  ~provider~ and ~model~ are the backend turns now run on, ~reason~ is =usage-limit=, =rate-limit=, =signed-out= or =unavailable=, ~reset_at~ is the reset the provider named and ~retry_at~ when the primary is tried again (Unix seconds, =0= when unknown), and ~context_lost~ is =true= when the fallback is another CLI or login, so the conversation did not come along.  ~message~ is the sentence from ~clawt_failover_describe()~, which every client shows rather than writing its own.  It is a notice while the agent is away and routine when it is back (~clawt_alert_tier_for_event()~), and ~agent.changed~ follows it.
 
 ~agent.contested~ is published when connections claiming one agent id
 have taken the link from each other often enough, and fast enough, to be

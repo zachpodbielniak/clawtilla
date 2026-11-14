@@ -28,6 +28,9 @@ struct _ClawtAgent {
     /* What it is doing right now; see clawt_agent_set_activity(). */
     gboolean           busy;
     gchar             *activity_peer;
+
+    /* On a fallback backend; see clawt_agent_set_failover(). */
+    JsonObject        *failover;
     ClawtAgentRuntime *runtime;
     ClawtComputer     *computer;
     ClawtDesktop      *desktop;
@@ -489,6 +492,55 @@ clawt_agent_set_activity(ClawtAgent *self, gboolean busy, const gchar *peer)
         g_free(self->activity_peer);
         self->activity_peer = g_strdup(peer);
     }
+}
+
+void
+clawt_agent_set_failover(ClawtAgent *self,
+                         JsonObject *failover)
+{
+    gint64 since;
+    JsonObject *copy;
+    GList *members;
+    GList *l;
+
+    g_return_if_fail(CLAWT_IS_AGENT(self));
+
+    if (!clawt_failover_is_active(failover)) {
+        g_clear_pointer(&self->failover, json_object_unref);
+        return;
+    }
+
+    /*
+     * Since the agent first left its primary, not since the latest
+     * report: the primary refusing again moves the retry time and sends
+     * a fresh frame, and that is not the agent leaving a second time.
+     */
+    since = (self->failover != NULL)
+        ? json_object_get_int_member_with_default(self->failover, "since",
+                                                  g_get_real_time())
+        : g_get_real_time();
+
+    /* A copy, so nothing the link does to its payload reaches here. */
+    copy = json_object_new();
+    members = json_object_get_members(failover);
+    for (l = members; l != NULL; l = l->next)
+        json_object_set_member(copy, l->data,
+                               json_node_copy(json_object_get_member(
+                                   failover, l->data)));
+    g_list_free(members);
+
+    json_object_set_int_member(copy, "since", since);
+
+    g_clear_pointer(&self->failover, json_object_unref);
+    self->failover = copy;
+}
+
+JsonObject *
+clawt_agent_get_failover(ClawtAgent *self)
+{
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), NULL);
+
+    return self->failover;
 }
 
 gboolean
@@ -1802,6 +1854,7 @@ clawt_agent_finalize(GObject *object)
      * peer found it immediately.
      */
     g_clear_pointer(&self->activity_peer, g_free);
+    g_clear_pointer(&self->failover, json_object_unref);
 
     G_OBJECT_CLASS(clawt_agent_parent_class)->finalize(object);
 }

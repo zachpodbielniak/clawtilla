@@ -493,6 +493,156 @@ test_save_moving_onto_a_shared_machine(void)
                     "computer.use");
 }
 
+/* The fallback list goes last, after the model it falls back from. */
+static void
+test_save_sends_the_fallbacks_last(void)
+{
+    g_autoptr(JsonNode) settings = parse(
+        "{\"model.model\":\"opus\",\"model.fallbacks\":\"\"}");
+    g_autoptr(GPtrArray) form = posted("model.fallbacks", "codex-cli:gpt-5.5",
+                                       "model.model", "sonnet", NULL);
+    g_autoptr(GPtrArray) plan =
+        clawt_lrg_agent_save_plan(form, json_node_get_object(settings));
+
+    g_assert_cmpuint(plan->len, ==, 2);
+    g_assert_cmpstr(((ClawtLrgAgentSetting *)g_ptr_array_index(plan, 0))->key, ==,
+                    "model.model");
+    g_assert_cmpstr(((ClawtLrgAgentSetting *)g_ptr_array_index(plan, 1))->key, ==,
+                    "model.fallbacks");
+    g_assert_cmpstr(((ClawtLrgAgentSetting *)g_ptr_array_index(plan, 1))->value, ==,
+                    "codex-cli:gpt-5.5");
+}
+
+/*
+ * With the provider changing too, the old list comes off first: the
+ * daemon checks a provider against the current list, and refuses one
+ * that would make it a rotation.
+ */
+static void
+test_save_clears_the_fallbacks_before_the_provider(void)
+{
+    g_autoptr(JsonNode) settings = parse(
+        "{\"model.provider\":\"claude-code\","
+        "\"model.fallbacks\":\"codex-cli:gpt-5.5\"}");
+    g_autoptr(GPtrArray) form = posted("model.provider", "codex-cli",
+                                       "model.fallbacks", "claude-code:sonnet",
+                                       NULL);
+    g_autoptr(GPtrArray) plan =
+        clawt_lrg_agent_save_plan(form, json_node_get_object(settings));
+
+    g_assert_cmpuint(plan->len, ==, 3);
+    g_assert_cmpstr(((ClawtLrgAgentSetting *)g_ptr_array_index(plan, 0))->key, ==,
+                    "model.fallbacks");
+    g_assert_cmpstr(((ClawtLrgAgentSetting *)g_ptr_array_index(plan, 0))->value, ==,
+                    "");
+    g_assert_cmpstr(((ClawtLrgAgentSetting *)g_ptr_array_index(plan, 1))->key, ==,
+                    "model.provider");
+    g_assert_cmpstr(((ClawtLrgAgentSetting *)g_ptr_array_index(plan, 2))->value, ==,
+                    "claude-code:sonnet");
+}
+
+/* An unchanged list is not sent, and not cleared either. */
+static void
+test_save_leaves_unchanged_fallbacks(void)
+{
+    g_autoptr(JsonNode) settings = parse(
+        "{\"model.provider\":\"claude-code\","
+        "\"model.fallbacks\":\"codex-cli:gpt-5.5\"}");
+    g_autoptr(GPtrArray) form = posted("model.provider", "claude-tmux",
+                                       "model.fallbacks", "codex-cli:gpt-5.5",
+                                       NULL);
+    g_autoptr(GPtrArray) plan =
+        clawt_lrg_agent_save_plan(form, json_node_get_object(settings));
+
+    g_assert_cmpuint(plan->len, ==, 1);
+    g_assert_cmpstr(((ClawtLrgAgentSetting *)g_ptr_array_index(plan, 0))->key, ==,
+                    "model.provider");
+}
+
+/*
+ * An entry's account picker offers logins for its own CLI, the CLI's
+ * own login, and the account it already names whatever that is.
+ */
+static void
+test_fallback_account_choices(void)
+{
+    g_autoptr(JsonNode) reply = parse(
+        "{\"accounts\":["
+        "{\"id\":\"backup\",\"provider\":\"codex-cli\"},"
+        "{\"id\":\"work\",\"provider\":\"claude-code\"}]}");
+    g_autoptr(ClawtLrgAgentChoices) codex =
+        clawt_lrg_agent_fallback_account_choices(reply, "codex-cli", NULL);
+    g_autoptr(ClawtLrgAgentChoices) kept =
+        clawt_lrg_agent_fallback_account_choices(reply, "codex-cli", "work");
+
+    g_assert_cmpuint(index_of(codex, ""), ==, 0);
+    g_assert_cmpuint(index_of(codex, "backup"), !=, G_MAXUINT);
+    g_assert_cmpuint(index_of(codex, "work"), ==, G_MAXUINT);
+    g_assert_cmpstr(codex->selected, ==, "");
+
+    g_assert_cmpuint(index_of(kept, "work"), !=, G_MAXUINT);
+    g_assert_cmpstr(kept->selected, ==, "work");
+}
+
+/* Add, remove and the two moves; a new entry is refused until it has a model. */
+static void
+test_fallback_edit_and_spell(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GPtrArray) list = clawt_model_fallback_parse_list(
+        "codex-cli:gpt-5.5@backup, claude-code:sonnet", &error);
+    g_autofree gchar *moved = NULL;
+    g_autofree gchar *refused = NULL;
+    g_autofree gchar *removed = NULL;
+
+    g_assert_no_error(error);
+
+    g_assert_true(clawt_lrg_agent_fallback_edit(list, "down", 0, NULL));
+    moved = clawt_lrg_agent_fallback_spell(list, NULL);
+    g_assert_cmpstr(moved, ==, "claude-code:sonnet, codex-cli:gpt-5.5@backup");
+
+    g_assert_false(clawt_lrg_agent_fallback_edit(list, "up", 0, NULL));
+    g_assert_false(clawt_lrg_agent_fallback_edit(list, "down", 1, NULL));
+    g_assert_false(clawt_lrg_agent_fallback_edit(list, "remove", 7, NULL));
+
+    g_assert_true(clawt_lrg_agent_fallback_edit(list, "add", 0, "claude-code"));
+    g_assert_cmpuint(list->len, ==, 3);
+    refused = clawt_lrg_agent_fallback_spell(list, &error);
+    g_assert_null(refused);
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT);
+    g_assert_nonnull(strstr(error->message, "Fallback 3"));
+
+    g_assert_true(clawt_lrg_agent_fallback_edit(list, "remove", 2, NULL));
+    g_assert_true(clawt_lrg_agent_fallback_edit(list, "up", 1, NULL));
+    removed = clawt_lrg_agent_fallback_spell(list, NULL);
+    g_assert_cmpstr(removed, ==, "codex-cli:gpt-5.5@backup, claude-code:sonnet");
+}
+
+/* The form leaves the list's child keys to the editor. */
+static void
+test_fallback_keys_are_not_form_fields(void)
+{
+    const ClawtSchemaEntry *schema;
+    gsize n_entries = 0;
+    gsize i;
+    guint seen = 0;
+
+    schema = clawt_config_schema_get(&n_entries);
+
+    for (i = 0; i < n_entries; i++) {
+        const gchar *key = clawt_config_schema_agent_name(&schema[i]);
+
+        if (key == NULL || !g_str_has_prefix(key, "model.fallbacks"))
+            continue;
+
+        seen++;
+        g_assert_true(clawt_lrg_agent_key_skipped(key, &schema[i]));
+    }
+
+    /* the walk does reach them, or this test checks nothing */
+    g_assert_cmpuint(seen, >, 0);
+}
+
 static void
 test_saved_text(void)
 {
@@ -979,6 +1129,17 @@ main(gint argc, gchar **argv)
     g_test_add_func("/lrg-agent/save/shared",
                     test_save_moving_onto_a_shared_machine);
     g_test_add_func("/lrg-agent/save/text", test_saved_text);
+    g_test_add_func("/lrg-agent/save/fallbacks-last",
+                    test_save_sends_the_fallbacks_last);
+    g_test_add_func("/lrg-agent/save/fallbacks-before-provider",
+                    test_save_clears_the_fallbacks_before_the_provider);
+    g_test_add_func("/lrg-agent/save/fallbacks-unchanged",
+                    test_save_leaves_unchanged_fallbacks);
+    g_test_add_func("/lrg-agent/fallbacks/accounts",
+                    test_fallback_account_choices);
+    g_test_add_func("/lrg-agent/fallbacks/edit", test_fallback_edit_and_spell);
+    g_test_add_func("/lrg-agent/fallbacks/not-form-fields",
+                    test_fallback_keys_are_not_form_fields);
     g_test_add_func("/lrg-agent/glance/tone",
                     test_state_tone_covers_every_state);
     g_test_add_func("/lrg-agent/glance/verbs", test_verbs);

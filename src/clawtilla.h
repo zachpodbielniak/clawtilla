@@ -122,6 +122,7 @@
 
 #include "config/clawt-config.h"
 #include "config/clawt-config-render.h"
+#include "config/clawt-model-fallback.h"
 #include "integration/clawt-connector.h"
 #include "integration/clawt-integration.h"
 #include "integration/clawt-integration-field.h"

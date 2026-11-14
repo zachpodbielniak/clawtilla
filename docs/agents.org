@@ -268,20 +268,75 @@ model:
   effort: high              # low | medium | high | xhigh | max
 #+end_src
 
-Three keys, and only three.  ~model.routing_profile~ and
-~model.fallbacks~ are in the schema and are rendered nowhere: the
-agent's generated config carries ~ai.provider~, ~ai.model~ and
-~ai.default_effort~ and stops.  A fallback list is accepted, saved,
-reported back by ~agent show~, and never consulted -- so an agent whose
-primary model is unavailable fails rather than falling back.
-(~routing_profile~ would not have worked as documented either: libreclaw
-knows ~off~, ~eco~, ~auto~, ~premium~ and ~free~, and silently reads
-anything else, ~default~ included, as ~off~.)
+These three keys pick the agent's own backend.  A fourth, ~model.account~, picks its login (see Accounts below), and a fifth, ~model.fallbacks~, picks where its conversations go when that backend refuses (see Limit failover below).
+
+~model.routing_profile~ is *reserved*: it is in the schema, nothing reads it, and the loader warns when it is set.  libreclaw's smart routing picks a model per message by scoring the prompt against a price table of named providers.  An agent here runs one CLI backend with one model, so a profile would have nothing to choose between.  The things it might have been reached for have their own keys: ~model.fallbacks~ moves off a backend that refuses, and a routine's ~model~ runs one scheduled job on a cheaper model.  (It would not have worked as once documented either: libreclaw knows ~off~, ~eco~, ~auto~, ~premium~ and ~free~, and reads anything else, ~default~ included, as ~off~ without saying so.)
 
 The Claude Code backend takes aliases rather than dated model ids --
 ~opus~, ~sonnet~, ~fable~, ~haiku~ -- because an alias keeps working when
 a new snapshot lands and a pinned id quietly does not.  ~fable~ is the
 one to reach for when an agent writes prose rather than code.
+
+*** Limit failover: where the conversation goes when the backend refuses
+
+A subscription CLI stops answering when its usage limit is reached, and can stay that way for hours.  Without a fallback the agent fails every turn until the reset.  With one, the conversation continues on the next backend in the list and returns once the limit resets.
+
+#+begin_src yaml
+agents:
+  - id: researcher
+    model:
+      provider: claude-code
+      model: opus
+      fallbacks:
+        - provider: codex-cli
+          model: gpt-5.5
+        - provider: claude-code
+          model: sonnet
+        - provider: claude-code
+          model: opus
+          account: claude-api      # an account with pay_per_use: true
+#+end_src
+
+#+begin_src bash
+clawtilla agent set researcher model.fallbacks "codex-cli:gpt-5.5, claude-code:sonnet"
+clawtilla agent set researcher model.fallbacks ""     # no fallbacks
+#+end_src
+
+On the command line, and in what ~agent show~ reports, the list is one string: entries separated by commas, each =provider:model= with an optional =@account=.  The GTK, web and lrg clients edit it as an ordered list in the agent's model settings.  You can add and remove entries and move them up and down.  Provider and model are picked from the model catalogue.
+
+**** What happens
+- libreclaw does the failing over, because it is the one that sees the provider's refusal.  The list is rendered into the agent's generated config as ~ai.fallbacks~, with each account resolved to its directory.
+- A turn refused because of a *usage limit*, a *rate limit*, a *sign-out* or an *outage* is put back on the agent's queue and runs on the first entry nothing is holding.  The person or peer who sent the message hears only the answer.  Network errors, timeouts, plain server errors and a context overflow do not move a conversation.  The next backend would meet them too, or they clear in a moment.
+- A refused backend is held until the reset the provider named.  When the provider names none, it is held for a backoff: an hour for a usage limit, a minute for a rate limit, five minutes for a sign-out, two for an outage.  The backoff doubles on each refusal in a row, up to four hours.  When the agent's own backend is free again, the next turn runs on it.  If that turn succeeds, the agent is back.  If it is refused again, the turn moves to the fallback again.
+- One list serves every conversation the agent has, because a usage limit is the account's.
+
+**** What is lost
+A session belongs to the CLI and login that started it.  A move to a fallback on the *same* CLI and login (Claude Code =opus= to =sonnet=) keeps the conversation.  A move to another CLI (claude-code to codex-cli) or another login starts a fresh conversation there, without the history.  When the agent comes back, its own conversation resumes.  The turns that ran on the fallback are then not in that conversation.  The event and the alert say so whenever context was lost.
+
+A routine's or a delegation's per-turn ~model~ names a model of the agent's own backend, so it applies only while the agent is on its primary.
+
+**** What you see
+- An ~agent.failover~ event and an alert (a notice) for each switch: "researcher is running on fallback codex-cli gpt-5.5 because claude-code opus hit its usage limit, back at 18:50 (a fresh conversation there: the context did not come along)".  When the provider named no reset, it says "trying claude-code opus again at" instead, because a backoff is a guess.  The return is a routine event.
+- ~agent list~ marks the agent =[on fallback]=.  ~agent show~ prints the list and the sentence.  ~agent.list~ and ~agent.show~ carry ~failover~ and ~failover_message~ (see [[file:ipc-protocol.org][ipc-protocol.org]]), and the graphical clients show an "On fallback" badge.
+- The state belongs to the agent's process.  It is cleared when the agent's link goes.  An agent that reconnects while still on a fallback reports the state again, and a restarted agent starts on its primary.
+
+**** Refused: another sign-in to the same subscription
+Rotating accounts to get past a provider's usage limit breaks the provider's terms and can get the accounts closed.  So a list is refused when any entry is another sign-in to a subscription that the agent or an earlier entry already uses: the same CLI family (=claude-code= and =claude-tmux= are one Claude login) on a different account.  The exception is an account marked ~pay_per_use: true~ (an API key that bills each use).  Another provider is always allowed, and so is the same login on another model.
+
+#+begin_src yaml
+accounts:
+  - id: claude-api
+    provider: claude-code
+    config_dir: ~/.claude-api
+    pay_per_use: true           # bills each use, so it may back up the subscription
+#+end_src
+
+The check is ~clawt_config_check_fallbacks()~.  It asks ~clawt_account_check()~ about each entry's account and asks libreclaw's own ~lc_failover_add_fallback()~ about the list as a whole.  clawtilla and libreclaw therefore refuse by one rule, not by two copies of it.  It is enforced in three places:
+- At load: the agent becomes a shadow, with the reason.
+- In ~agent set model.fallbacks~: the list is refused where it arrives.
+- In ~agent set model.provider~ or ~model.account~: a change that would make the current list a rotation is refused, with "change model.fallbacks first".
+
+An entry naming an undeclared account, an account for another CLI, or a provider an agent cannot run on (anything the model catalogue does not mark as able to run an agent, since libreclaw would quietly run Claude Code for it) is refused the same way.
 
 *** Accounts: a separate login per agent
 
