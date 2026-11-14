@@ -1696,6 +1696,13 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
         clawt_gtk_refresh_routines(self);
 
     /*
+     * A wait set, looked at with something new to show, or ended. Only
+     * the inspector's list is refilled, never the form above it.
+     */
+    if (g_str_has_prefix(kind, "wait."))
+        clawt_gtk_refresh_waits(self);
+
+    /*
      * One prefix match covers trigger.fired, .changed, .refused and
      * .verified -- and the last two are the ones somebody is waiting on
      * while they point a forge at a new endpoint.

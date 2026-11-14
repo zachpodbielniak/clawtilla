@@ -252,6 +252,12 @@ you is a record of the conversation.  The queue is a queue, not an
 archive; the transcript and the event log are the durable record of what
 was said.
 
+** A wait ending is a delivery
+
+A wait an agent set with ~clawtilla_wait_until~ ends in exactly one item in that agent's mailbox -- when its condition holds, when it expires, when its condition can no longer be checked, or when the operator cancels it from a client (an agent cancelling its own is not told).  The item is queued into the room the wait was set from, falling back to the agent's conversation with its operator, from ~clawtilla~, at depth zero with ~invites_reply~ cleared and addressed to the agent alone, so it obeys everything above: it waits in the queue for a stopped agent, it is leased and retried like any other, and it is subject to ~max_depth~ and ~overflow~.  Its body is composed by the daemon with every quoted part -- the agent's label and note, the URL or command, what the last look saw, a command's output -- passed through ~clawt_preamble_escape()~.
+
+Nothing is queued while a wait is pending: the looks are the daemon's and cost no turn.  The wait record itself is not in the mailbox but in ~<state_dir>/waits/~, removed after the item is queued -- so a daemon killed between the two may queue a second copy after it restarts, and never none.  See [[file:orchestration.org::*Waits: a condition checked by code][orchestration.org]].
+
 ** Configuration
 
 The defaults, spelled out:

@@ -425,6 +425,13 @@ struct _ClawtWindow {
     ModelChooser       inspector_models;
     ImageChooser       inspector_image;
     gchar             *inspector_computer;   /* the selected agent's type */
+    /*
+     * The inspector's "Waiting for" list, refilled on its own by
+     * `wait.changed` so an event never rebuilds the form somebody may be
+     * editing above it.  Weak: the inspector is rebuilt wholesale and
+     * takes the list with it.
+     */
+    GtkListBox        *inspector_waits;
     ImageChooser       inspector_disk;
     GtkWidget         *vm_cpus_row;
     GtkWidget         *vm_memory_row;
@@ -1276,6 +1283,13 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
 
 GtkWidget *
 clawt_gtk_build_inspector_page(ClawtWindow *self);
+
+/*
+ * Refills the selected agent's "Waiting for" list, if the inspector is
+ * showing one.  Called for every `wait.*` event.
+ */
+void
+clawt_gtk_refresh_waits(ClawtWindow *self);
 
 ClawtComputerType
 clawt_gtk_computer_type_from_nick(const gchar *nick);

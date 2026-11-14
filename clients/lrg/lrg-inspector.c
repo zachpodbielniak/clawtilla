@@ -51,6 +51,7 @@ typedef struct {
     LrgWidget  *glance;
     LrgWidget  *integrations;
     LrgWidget  *mounts;
+    LrgWidget  *waits;
     LrgWidget  *files;
     LrgWidget  *usage_today;
     LrgWidget  *usage_total;
@@ -1576,6 +1577,140 @@ build_mounts(ClawtLrgApp *app, JsonObject *agent, guint index)
     return index;
 }
 
+/* ── Waiting for ──────────────────────────────────────────────────── */
+
+static void ask_waits(ClawtLrgApp *app);
+
+static void
+on_wait_cancelled(
+	ClawtLrgApp  *app,
+	JsonNode     *reply,
+	const GError *error,
+	gpointer      user_data
+){
+	if (reply != NULL)
+		clawt_lrg_toast(app, "Cancelled. The agent has been told it is no "
+		                "longer waiting.");
+
+	ask_waits(app);
+}
+
+static void
+on_wait_cancel(
+	LrgButton *button,
+	gpointer   user_data
+){
+	ClawtLrgApp *app = user_data;
+	const gchar *id = g_object_get_data(G_OBJECT(button), "clawt-wait");
+
+	if (id == NULL)
+		return;
+
+	clawt_lrg_request(app, "wait.cancel",
+	                  clawt_ipc_payload_new("wait", id, NULL),
+	                  CLAWT_LRG_REQUEST_NONE, on_wait_cancelled, NULL, NULL);
+}
+
+/*
+ * One row per pending wait.  The schedule line is
+ * clawt_wait_schedule_label()'s, so it reads as the GTK and web clients
+ * draw it.
+ */
+static void
+on_waits(
+	ClawtLrgApp  *app,
+	JsonNode     *reply,
+	const GError *error,
+	gpointer      user_data
+){
+	JsonObject *root = clawt_ipc_reply_object(reply);
+	JsonArray *waits = (root != NULL && json_object_has_member(root, "waits"))
+		? json_object_get_array_member(root, "waits") : NULL;
+	gint64 now = g_get_real_time();
+	guint i;
+
+	if (ins.waits == NULL)
+		return;
+
+	clawt_lrg_clear(ins.waits);
+
+	if (waits == NULL || json_array_get_length(waits) == 0)
+		clawt_lrg_take(ins.waits, clawt_lrg_paragraph(
+			"Nothing. When this agent sets a wait with "
+			"clawtilla_wait_until, it shows here until it ends.", "muted"));
+
+	for (i = 0; waits != NULL && i < json_array_get_length(waits); i++) {
+		JsonObject *wait = json_array_get_object_element(waits, i);
+		const gchar *label = clawt_ipc_payload_string(wait, "label");
+		const gchar *condition = clawt_ipc_payload_string(wait, "condition");
+		const gchar *seen = clawt_ipc_payload_string(wait, "last_result");
+		g_autofree gchar *schedule = clawt_wait_schedule_label(
+			json_object_has_member(wait, "last_check_at")
+				? json_object_get_int_member(wait, "last_check_at") : 0,
+			json_object_has_member(wait, "next_check_at")
+				? json_object_get_int_member(wait, "next_check_at") : 0,
+			json_object_has_member(wait, "expires_at")
+				? json_object_get_int_member(wait, "expires_at") : 0,
+			now);
+		g_autofree gchar *subtitle = g_strdup_printf(
+			"%s\n%s%s%s", condition != NULL ? condition : "?", schedule,
+			seen != NULL ? "\nLast check saw: " : "",
+			seen != NULL ? seen : "");
+		LrgWidget *row = clawt_lrg_row(label != NULL ? label : "?",
+		                               subtitle);
+		LrgWidget *cancel = clawt_lrg_button("Cancel", "flat",
+		                                     G_CALLBACK(on_wait_cancel),
+		                                     app);
+
+		g_object_set_data_full(G_OBJECT(cancel), "clawt-wait",
+		                       g_strdup(clawt_ipc_payload_string(wait, "id")),
+		                       g_free);
+		clawt_lrg_row_add_suffix(row, cancel);
+		clawt_lrg_appear(app, row, i);
+		clawt_lrg_take(ins.waits, row);
+	}
+
+	clawt_lrg_app_wake(app);
+}
+
+static void
+ask_waits(
+	ClawtLrgApp *app
+){
+	if (app->agent_id == NULL || ins.waits == NULL)
+		return;
+
+	clawt_lrg_request(app, "wait.list",
+	                  clawt_ipc_payload_new("agent", app->agent_id, NULL),
+	                  CLAWT_LRG_GUARDED | CLAWT_LRG_QUIET, on_waits, NULL,
+	                  NULL);
+}
+
+/*
+ * What this agent is waiting for: conditions clawtilla checks by code on
+ * its behalf.  Shown because a wait is work happening while nothing
+ * appears to be -- an agent that looks idle and is waiting on a deploy
+ * is not one somebody should nudge.
+ */
+static guint
+build_waits(
+	ClawtLrgApp *app,
+	guint        index
+){
+	LrgWidget *box = section_card(
+		app, ins.body, "Waiting for",
+		"Conditions clawtilla checks for this agent, by code -- a pending "
+		"wait costs nothing. The agent gets one notice when each holds or "
+		"expires; cancelling one tells it.", index++);
+
+	ins.waits = clawt_lrg_vbox(6.0f);
+	clawt_lrg_add(box, ins.waits);
+	g_object_unref(ins.waits);
+
+	ask_waits(app);
+	return index;
+}
+
 /* ── Files ────────────────────────────────────────────────────────── */
 
 static void
@@ -1860,6 +1995,7 @@ draw_all(ClawtLrgApp *app)
     clawt_lrg_clear(ins.body);
     ins.integrations = NULL;
     ins.mounts = NULL;
+    ins.waits = NULL;
     ins.files = NULL;
     ins.save = NULL;
     ins.usage_today = NULL;
@@ -1889,6 +2025,7 @@ draw_all(ClawtLrgApp *app)
     build_avatar_group(app, agent, index++);
     draw_usage(app, index++);
     index = build_form(app, index);
+    index = build_waits(app, index);
     index = build_credentials(app, agent, index);
     index = build_integrations(app, index);
     index = build_computer_detail(app, agent, index);
@@ -1943,6 +2080,7 @@ refresh(ClawtLrgApp *app)
         ins.save = NULL;
         ins.integrations = NULL;
         ins.mounts = NULL;
+        ins.waits = NULL;
         ins.files = NULL;
         ins.usage_today = NULL;
         ins.usage_total = NULL;
@@ -1991,6 +2129,11 @@ event(ClawtLrgApp *app, ClawtEvent *ev)
 
     if (g_str_has_prefix(kind, "integration."))
         ask_integrations(app);
+
+    /* Only the list is refilled, never the form somebody may be editing. */
+    if (g_str_has_prefix(kind, "wait.") &&
+        (subject == NULL || g_strcmp0(subject, app->agent_id) == 0))
+        ask_waits(app);
 }
 
 static LrgWidget *

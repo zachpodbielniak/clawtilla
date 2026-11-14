@@ -746,6 +746,19 @@ orchestration:
   # receipts until the count alone drops them.
   handoff_receipt_days: 2
 
+  # How many pending waits one agent may have.
+  #
+  # A wait (clawtilla_wait_until) is a condition clawtilla checks by code
+  # -- a URL, a file, a task, the agent's computer, a command -- so the
+  # model is woken once when it holds rather than on every look. A pending
+  # wait costs no turns, but each one is a probe: a URL fetched once a
+  # minute, a command run on the agent's computer. This bounds how many
+  # of those one agent can leave running, and the refusal names its
+  # pending waits so it can fold a new one into an old one.
+  #
+  # Override with max_waits on an agent. 0 removes the limit.
+  max_waits_per_agent: 10
+
 # What an agent remembers between conversations.
 #
 # Not agents.memory, which is the MEMORY.md size budget and a different

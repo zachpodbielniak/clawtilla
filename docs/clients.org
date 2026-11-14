@@ -81,6 +81,8 @@ licence, send nothing, and exit 0.
 | ~decision answer <id> <answer>~ | free text; it routes back to the agent |
 | ~decision dismiss <id>~ | it carries on with its default |
 | ~decision delete <id>~ | gone from the inbox for good, answered or not; an open one is withdrawn first |
+| ~wait list [agent]~ | conditions agents are waiting on, checked by code: condition, last and next check, expiry |
+| ~wait cancel <id>~ | stop one; the agent is told it is no longer waiting |
 | ~event list [subject]~ | what the fleet has been doing, from the event log |
 | ~cost [--today \vert{} --days N] [--agent ID]~ | what the fleet has spent |
 | ~computer exec <agent> -- CMD…~ | |
@@ -579,6 +581,10 @@ The agent inspector has a *Use computer* row above the computer type. Its choice
 *** Sandboxing an agent's own tools
 
 The agent inspector has a *Sandbox its own tools (bubblewrap)* switch under Restart and *Start with the daemon*. It is ~runtime.confine~ (see =docs/agents.org=, "Sandboxing the agent's own tools"): on, the agent's CLI, everything it runs and its MCP servers start inside bubblewrap with only the workspace, mounts, login and programs they need. The sentence under it, the label, and the warning row that appears when the daemon cannot give it -- bubblewrap not installed where the daemon runs, or an embedded runtime -- all come from the library (=clawt_agent_confine_label()=, =clawt_agent_confine_explanation()=, =clawt_agent_confine_notice()=), read against the agent's =confine=, =runtime_type= and =confine_available= members. The warning says the agent is a shadow because of it, which otherwise shows only as a state with its reason elsewhere on the page. Saving writes the key only when the switch was changed, so an agent following =defaults.confine= is not pinned to the fleet's answer by being opened and saved. It applies at the agent's next start. The web client's agent page draws the same setting in its Runtime card as a select of the enum's values, with the same sentence and warning; the libregnum client draws it in the same card of its generated form.
+
+*** What an agent is waiting for
+
+The agent inspector has a *Waiting for* group, above the integrations: one row per pending wait the agent set with ~clawtilla_wait_until~, titled with the agent's own words for it, with the condition, a schedule line from ~clawt_wait_schedule_label()~ (~checked 4m ago · next check in 1m · expires in 23h~), what the last check saw, and a *Cancel* button.  Cancelling sends ~wait.cancel~, and the daemon tells the agent, which would otherwise go on believing it was waiting.  The list -- and only the list, never the form above it -- refills on every ~wait.changed~ event.  An agent that looks idle and is in fact waiting on a deploy is not one somebody should nudge, which is why it is on the agent's own view.  The web client's agent page draws the same list as a card with a Cancel form per row, and the libregnum client's Overview as a section.  How many an agent may have is ~max_waits~, in the agent's settings with the other fleet settings it may override.  See [[file:orchestration.org::*Waits: a condition checked by code][orchestration.org]].
 
 *** Teams in the sidebar
 

@@ -12,6 +12,8 @@
 #include "chat/clawt-room-manager.h"
 #include "interfaces/clawt-tool-provider.h"
 #include "plugin/clawt-param-info.h"
+#include "wait/clawt-wait-manager.h"
+#include "clawt-net.h"
 
 #include <string.h>
 
@@ -39,6 +41,7 @@ typedef enum {
     NEEDS_BROWSER,
     NEEDS_BROWSER_SCRIPTS,
     NEEDS_GROK,
+    NEEDS_WAITS,
     NEEDS_NEVER
 } ToolRequirement;
 
@@ -576,6 +579,58 @@ static const ClawtParamInfo routine_id_params[] = {
     { "id", "string", "Which of your routines.", TRUE }
 };
 
+/*
+ * One flat table for every kind of wait, rather than a nested object per
+ * kind: a model fills in flat parameters reliably and a union of shapes
+ * badly, and each parameter says which kind it belongs to.
+ */
+static const ClawtParamInfo wait_until_params[] = {
+	{ "label", "string",
+	  "What you are waiting for, in the words your operator would use -- "
+	  "\"the deploy finishes\". It heads the notice you get and the "
+	  "\"Waiting for\" list your operator sees.", TRUE },
+	{ "kind", "string",
+	  "url, file, task, computer or command.", TRUE },
+	{ "url", "string",
+	  "For url: the page, http or https on the public internet. Checked "
+	  "at most once a minute, without credentials; private and local "
+	  "addresses are refused.", FALSE },
+	{ "status", "integer",
+	  "For url: the HTTP status to wait for. Leave it out to accept any "
+	  "2xx.", FALSE },
+	{ "contains", "string",
+	  "For url: text the page must contain, ignoring case.", FALSE },
+	{ "path", "string",
+	  "For file: the file, relative to your workspace.", FALSE },
+	{ "changed", "boolean",
+	  "For file: true to wait for the file to change, false (the default) "
+	  "to wait for it to exist.", FALSE },
+	{ "task_id", "string",
+	  "For task: a task you delegated or were given. Any way it settles "
+	  "ends the wait, and the notice says which.", FALSE },
+	{ "command", "string",
+	  "For command: the program and its arguments, run on your computer "
+	  "once a minute. Not run through a shell -- use bash -c \"...\" for "
+	  "a pipe or a redirection.", FALSE },
+	{ "exit_status", "integer",
+	  "For command: the exit status to wait for. Defaults to 0.", FALSE },
+	{ "hours", "integer",
+	  "How long to wait before giving up and telling you so. Defaults to "
+	  "24; at most 168 (seven days).", FALSE },
+	{ "note", "string",
+	  "What to remind yourself of when it ends -- what you meant to do "
+	  "next. It comes back to you in the notice.", FALSE },
+	{ "turn_room", "string",
+	  "Which of your conversations this call is part of, from the "
+	  "[clawtilla] line on the message you are handling. The notice "
+	  "comes back to that conversation.", FALSE }
+};
+
+static const ClawtParamInfo wait_id_params[] = {
+	{ "wait_id", "string", "Which of your waits, as clawtilla_wait_list "
+	  "names it.", TRUE }
+};
+
 /* ── The tools ───────────────────────────────────────────────────── */
 
 #define TOOL(name_, desc_, req_, params_, action_) \
@@ -1022,6 +1077,36 @@ static const ToolDefinition tools[] = {
          "is handed over once. For a Grok bot; never offered to an agent.",
          NEEDS_NEVER, grok_replies_params, CLAWT_ACTION_READ),
 
+    /*
+     * The description says what a pending wait costs, because that is
+     * the whole decision: an agent that believes waiting costs a turn a
+     * check will keep a routine instead, or stay busy narrating.
+     */
+    TOOL("clawtilla_wait_until",
+         "Have clawtilla tell you when something happens, instead of "
+         "checking yourself. Code checks the condition -- a URL's status "
+         "or text, a file in your workspace existing or changing, a task "
+         "settling, your computer answering, a command's exit status -- "
+         "and a pending wait costs nothing: no turns, no tokens, however "
+         "long it runs. When it holds you get one notice in this "
+         "conversation; if it has not held by its deadline (24 hours "
+         "unless you say, at most 7 days) you get an expiry notice "
+         "instead. Use this rather than a routine that wakes you to look, "
+         "and rather than staying busy. End your turn after setting it.",
+         NEEDS_WAITS, wait_until_params, CLAWT_ACTION_WRITE),
+
+    TOOL("clawtilla_wait_list",
+         "Your pending waits: what each waits for, when it was last "
+         "checked and what that saw, and when it gives up. A pending wait "
+         "costs nothing, so there is no reason to cancel one that is "
+         "still wanted -- read this before setting a second copy.",
+         NEEDS_WAITS, no_params, CLAWT_ACTION_READ),
+
+    TOOL("clawtilla_wait_cancel",
+         "Stop one of your pending waits. You get no notice for a wait "
+         "you cancel yourself.",
+         NEEDS_WAITS, wait_id_params, CLAWT_ACTION_DELETE),
+
     TOOL("clawtilla_request_hands",
          "Ask a person to take the screen and do something you cannot. "
          "This does not hand the screen over and does not wait -- only a "
@@ -1101,6 +1186,13 @@ struct _ClawtMcpTools {
      * the daemon restarts.
      */
     ClawtHandoffStore      *handoff_store;   /* unowned */
+
+    /*
+     * The fleet's waits.  Unowned, like the handoff store, and NULL in
+     * a library embedded without a daemon -- which is what withholds the
+     * three wait tools rather than offering them to fail.
+     */
+    ClawtWaitManager       *waits;   /* unowned */
 
     ClawtMcpToolObserverFunc observer;
     gpointer                 observer_data;
@@ -1524,6 +1616,16 @@ observe_call(ClawtMcpTools *self, const gchar *agent_id,
     }
 
     self->observer(agent_id, tool_name, args, self->observer_data);
+}
+
+void
+clawt_mcp_tools_set_waits(
+	ClawtMcpTools    *self,
+	ClawtWaitManager *waits
+){
+	g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+	self->waits = waits;
 }
 
 void
@@ -2042,6 +2144,18 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
 
             json_array_unref(bots);
         }
+        break;
+
+    case NEEDS_WAITS:
+        /*
+         * Only the manager.  Setting a wait is not a grant of anything:
+         * each kind is checked when it is asked for against what the
+         * agent could already do itself -- a command wait needs the
+         * computer and clawtilla_computer_exec, a task wait needs the
+         * task to be the agent's -- so there is nothing to gate here.
+         */
+        if (self->waits == NULL)
+            return FALSE;
         break;
 
     case NEEDS_NEVER:
@@ -6344,6 +6458,373 @@ tool_mailbox_reply(ClawtMcpTools *self, const gchar *agent_id,
                            clawt_mailbox_item_get_from(item));
 }
 
+/* ── Waits ───────────────────────────────────────────────────────── */
+
+/*
+ * The room a wait reports into.
+ *
+ * The calling turn's room when there is one, because "you will be told
+ * here" has to be true about the here where it was said.  Otherwise the
+ * agent's conversation with its operator, which is the room a turn with
+ * no room on it was almost certainly started from.
+ */
+static gchar *
+wait_room(
+	ClawtMcpTools *self,
+	const gchar   *agent_id,
+	const gchar   *turn_room
+){
+	ClawtRoom *room;
+
+	if (turn_room != NULL)
+		return g_strdup(turn_room);
+
+	if (self->room_manager == NULL)
+		return NULL;
+
+	room = clawt_room_manager_get_direct(self->room_manager, "user", agent_id);
+
+	return (room != NULL) ? g_strdup(clawt_room_get_id(room)) : NULL;
+}
+
+/*
+ * Whether the agent could run this command itself.  A command wait is
+ * the same act as clawtilla_computer_exec repeated by the daemon, so it
+ * is offered on exactly the same terms -- a wait must not be a way round
+ * a tool the operator withheld.
+ */
+static gchar *
+wait_exec_refusal(
+	ClawtMcpTools *self,
+	const gchar   *agent_id,
+	ClawtAgent    *agent
+){
+	if ((clawt_agent_get_caps(agent) & CLAWT_AGENT_CAPS_COMPUTER) == 0 ||
+	    clawt_agent_get_computer(agent) == NULL)
+		return g_strdup("You have no computer, so there is nothing for a "
+		                "computer or command wait to check.");
+
+	if (!clawt_mcp_tools_is_permitted(self, agent_id,
+	                                  "clawtilla_computer_exec"))
+		return g_strdup("You may not run commands "
+		                "(clawtilla_computer_exec), so you may not have "
+		                "clawtilla run one for you either.");
+
+	return NULL;
+}
+
+/*
+ * Fills in the condition from the arguments, or says why it cannot.
+ *
+ * Returns %NULL with @wait filled in, or a refusal.  @out_already is set
+ * when the condition holds right now -- a file that exists, a task that
+ * has settled -- in which case nothing is created and the agent is told
+ * so, rather than being sent a notice fifteen seconds later about
+ * something it could have been told in the reply.
+ */
+static gchar *
+wait_condition(
+	ClawtMcpTools  *self,
+	const gchar    *agent_id,
+	ClawtAgent     *agent,
+	JsonObject     *arguments,
+	ClawtWait      *wait,
+	gchar         **out_already
+){
+	ClawtAgentConfig *config = clawt_agent_get_config(agent);
+
+	*out_already = NULL;
+
+	/*
+	 * Every kind named, no default: a kind added to the enum and not
+	 * here is a -Wswitch warning rather than a wait with no condition.
+	 */
+	switch (wait->kind) {
+	case CLAWT_WAIT_URL: {
+		const gchar *url = argument_string(arguments, "url");
+		gint64 status = argument_int(arguments, "status", 0);
+		gchar *refusal = clawt_net_url_refusal(url);
+
+		if (refusal != NULL)
+			return refusal;
+
+		if (status != 0 && (status < 100 || status > 599))
+			return g_strdup_printf("%" G_GINT64_FORMAT " is not an HTTP "
+			                       "status.", status);
+
+		wait->url = g_strdup(url);
+		wait->status = (gint)status;
+		wait->contains = g_strdup(argument_string(arguments, "contains"));
+		return NULL;
+	}
+
+	case CLAWT_WAIT_FILE: {
+		const gchar *path = argument_string(arguments, "path");
+		g_autofree gchar *workspace =
+			clawt_agent_config_get_workspace(config);
+		g_autoptr(GError) error = NULL;
+		gboolean exists = FALSE;
+		gint64 size = 0;
+		gint64 mtime = 0;
+		gchar *refusal = clawt_wait_path_refusal(path);
+
+		if (refusal != NULL)
+			return refusal;
+
+		if (!clawt_wait_stat_in_workspace(workspace, path, &exists, &size,
+		                                  &mtime, &error))
+			return g_strdup_printf("That file cannot be watched: %s",
+			                       error->message);
+
+		wait->path = g_strdup(path);
+		wait->on_change = argument_boolean(arguments, "changed", FALSE);
+		wait->baseline_exists = exists;
+		wait->baseline_size = size;
+		wait->baseline_mtime = mtime;
+
+		if (!wait->on_change && exists)
+			*out_already = g_strdup_printf(
+				"%s already exists, so there is nothing to wait for. Carry "
+				"on with it now.", path);
+		return NULL;
+	}
+
+	case CLAWT_WAIT_TASK: {
+		const gchar *task_id = argument_string(arguments, "task_id");
+		ClawtTask *task;
+		gchar *refusal;
+
+		if (task_id == NULL)
+			return g_strdup("task_id is needed for a task wait.");
+
+		task = (self->tasks != NULL)
+		       ? clawt_task_manager_get(self->tasks, task_id) : NULL;
+
+		if (task == NULL)
+			return g_strdup_printf("There is no task %s. "
+			                       "clawtilla_task_list shows the ones you "
+			                       "have.", task_id);
+
+		refusal = task_refusal_for(self, task_id, agent_id, FALSE);
+
+		if (refusal != NULL)
+			return refusal;
+
+		wait->task_id = g_strdup(task_id);
+
+		if (clawt_task_is_finished(task))
+			*out_already = g_strdup_printf(
+				"Task %s has already settled (%s), so there is nothing to "
+				"wait for. clawtilla_task_result has what it produced.",
+				task_id,
+				clawt_enum_to_nick(CLAWT_TYPE_TASK_STATE,
+				                   (gint)clawt_task_get_state(task)));
+		return NULL;
+	}
+
+	case CLAWT_WAIT_COMPUTER:
+		return wait_exec_refusal(self, agent_id, agent);
+
+	case CLAWT_WAIT_COMMAND: {
+		const gchar *command = argument_string(arguments, "command");
+		g_auto(GStrv) argv = NULL;
+		g_autoptr(GError) error = NULL;
+		gchar *refusal = wait_exec_refusal(self, agent_id, agent);
+
+		if (refusal != NULL)
+			return refusal;
+
+		if (command == NULL)
+			return g_strdup("command is needed for a command wait.");
+
+		/*
+		 * Refused before the parse, which removes the quotes that
+		 * would tell a literal `|` from one meant for a shell -- the
+		 * same order clawtilla_computer_exec checks in.
+		 */
+		refusal = clawt_command_shell_syntax_refusal(command);
+
+		if (refusal != NULL)
+			return refusal;
+
+		if (!g_shell_parse_argv(command, NULL, &argv, &error))
+			return g_strdup_printf("That command could not be parsed: %s",
+			                       error->message);
+
+		wait->command = g_strdup(command);
+		wait->exit_status = (gint)argument_int(arguments, "exit_status", 0);
+		return NULL;
+	}
+	}
+
+	return g_strdup("That kind of wait is not known.");
+}
+
+static gchar *
+tool_wait_until(
+	ClawtMcpTools *self,
+	const gchar   *agent_id,
+	const gchar   *turn_room,
+	JsonObject    *arguments,
+	gboolean      *is_error
+){
+	ClawtAgent *agent;
+	ClawtWaitKind kind;
+	g_autoptr(ClawtWait) wait = NULL;
+	g_autofree gchar *refusal = NULL;
+	g_autofree gchar *already = NULL;
+	g_autofree gchar *condition = NULL;
+	g_autofree gchar *expires = NULL;
+	g_autoptr(GError) error = NULL;
+	const gchar *label = argument_string(arguments, "label");
+	gint64 hours;
+	gint64 limit;
+	gint64 now = g_get_real_time();
+	gboolean clamped = FALSE;
+
+	*is_error = TRUE;
+
+	agent = (self->agents != NULL)
+	        ? clawt_agent_manager_get(self->agents, agent_id) : NULL;
+
+	if (agent == NULL || self->waits == NULL)
+		return g_strdup("Waits are not available here.");
+
+	if (label == NULL || *label == '\0')
+		return g_strdup("label is needed: say what you are waiting for, "
+		                "in the words your operator would use.");
+
+	if (!clawt_wait_kind_from_nick(argument_string(arguments, "kind"),
+	                               &kind))
+		return g_strdup("kind must be url, file, task, computer or "
+		                "command.");
+
+	wait = clawt_wait_new(kind);
+	refusal = wait_condition(self, agent_id, agent, arguments, wait,
+	                         &already);
+
+	if (refusal != NULL)
+		return g_steal_pointer(&refusal);
+
+	if (already != NULL) {
+		*is_error = FALSE;
+		return g_steal_pointer(&already);
+	}
+
+	wait->agent_id = g_strdup(agent_id);
+	wait->room_id = wait_room(self, agent_id, turn_room);
+	wait->label = g_strdup(label);
+	wait->note = g_strdup(argument_string(arguments, "note"));
+
+	if (wait->room_id == NULL)
+		return g_strdup("There is no conversation to send the notice to.");
+
+	hours = clawt_wait_clamp_hours(argument_int(arguments, "hours", 0),
+	                               &clamped);
+	limit = clawt_agent_config_get_int(clawt_agent_get_config(agent),
+	                                   "max_waits");
+
+	if (!clawt_wait_manager_add(self->waits, wait, hours,
+	                            (limit > 0) ? (guint)limit : 0, now,
+	                            &error)) {
+		/*
+		 * The limit says what to do instead, because "too many" on its
+		 * own is answered by trying again.
+		 */
+		if (limit > 0 &&
+		    clawt_wait_manager_count(self->waits, agent_id) >= (guint)limit)
+			return g_strdup_printf(
+				"You already have %" G_GINT64_FORMAT " pending waits, the "
+				"most you may have. clawtilla_wait_list shows them; cancel "
+				"one you no longer need with clawtilla_wait_cancel, or "
+				"fold this into one you have.", limit);
+
+		return g_strdup_printf("The wait could not be set: %s",
+		                       error->message);
+	}
+
+	*is_error = FALSE;
+	condition = clawt_wait_describe(wait);
+	expires = clawt_time_until_label(wait->expires_at, now);
+
+	return g_strdup_printf(
+		"Waiting (%s): %s. Code checks it every %u seconds or so, and it "
+		"costs you nothing while it waits. You will get one notice in this "
+		"conversation when it holds, or when it expires %s%s. End your "
+		"turn now -- there is nothing to watch.",
+		wait->id, condition,
+		clawt_wait_interval_seconds(wait->kind, 0), expires,
+		clamped ? " (capped at seven days, the longest a wait may run)"
+		        : "");
+}
+
+static gchar *
+tool_wait_list(
+	ClawtMcpTools *self,
+	const gchar   *agent_id
+){
+	g_autoptr(GPtrArray) waits = NULL;
+	g_autoptr(GString) out = NULL;
+	gint64 now = g_get_real_time();
+	guint i;
+
+	if (self->waits == NULL)
+		return g_strdup("Waits are not available here.");
+
+	waits = clawt_wait_manager_list(self->waits, agent_id);
+
+	if (waits->len == 0)
+		return g_strdup("You have no pending waits.");
+
+	out = g_string_new(NULL);
+	g_string_append_printf(out, "%u pending wait%s, none costing you "
+	                       "anything:\n", waits->len,
+	                       waits->len == 1 ? "" : "s");
+
+	for (i = 0; i < waits->len; i++) {
+		ClawtWait *wait = g_ptr_array_index(waits, i);
+		g_autofree gchar *condition = clawt_wait_describe(wait);
+		g_autofree gchar *schedule = clawt_wait_schedule_label(
+			wait->last_check_at, wait->next_check_at, wait->expires_at,
+			now);
+
+		g_string_append_printf(out, "- %s: %s -- %s\n  %s\n", wait->id,
+		                       wait->label, condition, schedule);
+
+		if (wait->last_result != NULL)
+			g_string_append_printf(out, "  last saw: %s\n",
+			                       wait->last_result);
+	}
+
+	return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+static gchar *
+tool_wait_cancel(
+	ClawtMcpTools *self,
+	const gchar   *agent_id,
+	JsonObject    *arguments,
+	gboolean      *is_error
+){
+	const gchar *id = argument_string(arguments, "wait_id");
+	g_autoptr(GError) error = NULL;
+
+	if (self->waits == NULL) {
+		*is_error = TRUE;
+		return g_strdup("Waits are not available here.");
+	}
+
+	if (!clawt_wait_manager_cancel(self->waits, id, agent_id,
+	                               g_get_real_time(), &error)) {
+		*is_error = TRUE;
+		return g_strdup_printf("%s. clawtilla_wait_list shows the ones you "
+		                       "have.", error->message);
+	}
+
+	return g_strdup_printf("Cancelled %s. Nothing is checking it any more, "
+	                       "and you will not be told about it.", id);
+}
+
 /* ── Dispatch ────────────────────────────────────────────────────── */
 
 /*
@@ -7797,6 +8278,13 @@ tools_call(ClawtMcpTools *self,
         text = tool_post_room(self, agent_id, turn_room, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_create_room") == 0)
         text = tool_create_room(self, agent_id, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_wait_until") == 0)
+        text = tool_wait_until(self, agent_id, turn_room, arguments,
+                               &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_wait_list") == 0)
+        text = tool_wait_list(self, agent_id);
+    else if (g_strcmp0(tool_name, "clawtilla_wait_cancel") == 0)
+        text = tool_wait_cancel(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_room_history") == 0)
         text = tool_room_history(self, agent_id, arguments,
                                  &is_error);

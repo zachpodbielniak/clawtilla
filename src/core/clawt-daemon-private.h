@@ -26,6 +26,7 @@
 #include "integration/clawt-notify.h"
 #include "plugin/clawt-automation.h"
 #include "task/clawt-handoff-store.h"
+#include "wait/clawt-wait-manager.h"
 #include "task/clawt-routine-runner.h"
 #include "integration/clawt-venture-bridge.h"
 #include "trigger/clawt-trigger-store.h"
@@ -242,6 +243,14 @@ struct _ClawtDaemon {
      * happened" hands the same work over twice.  See daemon-handoff.c.
      */
     ClawtHandoffStore *handoffs;
+
+    /*
+     * Conditions agents asked to be told about, checked by code rather
+     * than by waking the model.  One record per wait under
+     * <state_dir>/waits, so they survive a restart.  See daemon-wait.c.
+     */
+    ClawtWaitManager  *waits;
+    gulong             waits_changed_handler;
 
     /*
      * libresearch clients, keyed on agent, url and token reference, so a
@@ -1226,6 +1235,37 @@ void clawt_daemon_start_agent_background(
 
 JsonNode *
 clawt_daemon_handle_routine(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
+
+/* -- Waits (src/core/daemon-wait.c) ------------------------------ */
+
+/**
+ * clawt_daemon_wait_setup:
+ * @self: a #ClawtDaemon
+ *
+ * Opens the waits a previous daemon left under `<state_dir>/waits`,
+ * gives the tools their manager, and arms the tick on the daemon's own
+ * context.  A directory that cannot be opened withholds the three wait
+ * tools rather than failing the start.
+ */
+void clawt_daemon_wait_setup(ClawtDaemon *self);
+
+/**
+ * clawt_daemon_wait_teardown:
+ * @self: a #ClawtDaemon
+ *
+ * Disarms the tick and lets the manager go.  The waits stay on disk.
+ * Idempotent.
+ */
+void clawt_daemon_wait_teardown(ClawtDaemon *self);
+
+JsonNode *
+clawt_daemon_handle_wait(
     ClawtDaemon  *self,
     const gchar  *kind,
     JsonNode     *request,

@@ -831,6 +831,7 @@ Served over each agent's link as an MCP endpoint.
 | ~clawtilla_ask_decision~ | put a choice in the operator's decision inbox |
 | ~clawtilla_list_teams~ | who is on which team, and who leads it |
 | ~clawtilla_fleet_cost~ | what the fleet has spent, and one task's budget |
+| ~clawtilla_wait_until~ / ~clawtilla_wait_list~ / ~clawtilla_wait_cancel~ | be told when a condition holds, checked by code; see [[*Waits: a condition checked by code][Waits]] |
 | ~clawtilla_create_agent~, ~_agent_options~ | grow the fleet |
 | plugin tools | whatever a ~ClawtToolProvider~ registers |
 
@@ -846,6 +847,7 @@ offered depends on a gate per tool:
 | a computer | ~computer.type~ not ~none~ |
 | memories | ~memories.enabled~ |
 | the decision inbox | the daemon offering the hook; no config key |
+| waits | the daemon offering the manager; a command or computer wait also needs a computer and ~clawtilla_computer_exec~ |
 
 There is no ~tools.delegate~ key.  Turning delegation off for one agent
 is ~deny: [clawtilla_delegate]~.
@@ -1366,6 +1368,62 @@ exchange and name its path.
 A Grok bot is not an agent in the fleet: it runs on xAI's side, reached through a routine's webhook, and reports back over the tailnet.  An agent a =grokbot= integration is shared with gets ~clawtilla_grok_dispatch~ and ~clawtilla_grok_jobs~, and its =TOOLS.org= lists the bots it may reach by name with what each is for.
 
 The call returns as soon as Grok has started a run.  The answer arrives later as a message from =grok:<bot>= in the room the dispatching turn was in, one hop further along than that turn -- so =max_hops= still bounds a chain that passes through a bot -- and under the task that turn was working on.  Sending a job under a task notes progress on it, which holds off the turn-end completion for the turn that sent it: the task is completed by the turn the answer starts, not by the turn that asked.  A job nobody answers is given up at its deadline and the agent is told so.  See [[file:grok.org][grok.org]].
+
+** Waits: a condition checked by code
+
+"Tell me when the build finishes" used to be a routine that woke the model on every tick to look and go back to sleep -- a turn's worth of money for each "not yet".  A *wait* is the same request with the looking done by the daemon: the model is needed when it sets the wait and once more when the condition holds, and nothing in between.  A pending wait costs no turns and no tokens, and the tool's own description says so, because that is the whole decision an agent makes about it.
+
+| Tool | What it does |
+|------+--------------|
+| ~clawtilla_wait_until~ | set one: a label in the operator's words, a ~kind~, its condition, ~hours~ (default 24, at most 168) and an optional ~note~ to itself |
+| ~clawtilla_wait_list~ | the agent's own pending waits: condition, last check and what it saw, next check, expiry |
+| ~clawtilla_wait_cancel~ | stop one of its own; no notice, since it knows |
+
+*** What can be waited on
+
+| ~kind~ | Condition | Looked at every |
+|--------+-----------+-----------------|
+| ~url~ | ~url~ answers ~status~ (any 2xx when left out) and, with ~contains~, the body contains that text, ignoring case | 60 s, backing off to 15 min while it does not answer |
+| ~file~ | ~path~ (relative to the agent's workspace) exists, or with ~changed: true~ its size or modification time differs from when the wait was set | 15 s |
+| ~task~ | ~task_id~ -- one the agent delegated or was given -- settles, however it settles | 15 s |
+| ~computer~ | the agent's computer runs ~true~ and it exits 0 | 60 s |
+| ~command~ | ~command~, run on the agent's computer through ~clawt_computer_exec_async()~ without a shell, exits with ~exit_status~ (default 0) | 60 s |
+
+Each look reports one of four things, and two of them are kept apart on purpose: *not yet* (it asked, the answer was no) schedules the next look at the usual gap; *unanswered* (no answer, a 429 or 5xx that is not the status wanted, a command the computer could not run) doubles the gap each time up to fifteen minutes; *met* ends the wait satisfied; *impossible* (a task clawtilla no longer knows, a URL that resolves to a private address, a file whose link leads out of the workspace) ends it failed.  A wait that holds already -- a file that is there, a task that has settled -- is not created at all: the tool says so in its reply.
+
+A command or computer wait is ~clawtilla_computer_exec~ repeated by the daemon, so it is offered on the same terms: an agent with no computer, or one denied that tool, is refused.  A command is checked for shell syntax before it is parsed, exactly as ~clawtilla_computer_exec~ checks it.
+
+*** URL probes fetch as nobody, from nowhere private
+
+The daemon fetches from its own network position -- the operator's LAN, the tailnet, a cloud instance's metadata service -- none of which the agent was given.  So a URL wait:
+
+- accepts ~http~ and ~https~ only, with no user name or password in the URL;
+- refuses ~localhost~, names under ~.localhost~, and any address literal that ~clawt_net_address_is_public()~ refuses: loopback, RFC 1918, link-local (and so every cloud's ~169.254.169.254~), carrier-grade NAT ~100.64.0.0/10~ (which is the tailnet, and not an octet boundary -- ~100.63.255.255~ is public, ~100.64.0.1~ is not), the documentation, benchmarking, multicast and reserved ranges, and in IPv6 the loopback, unique-local (~fc00::/7~), link-local, site-local, multicast, documentation and Teredo ranges, with IPv4-mapped, NAT64 and 6to4 addresses judged by the IPv4 address inside them;
+- resolves the name itself and checks *every* address it resolves to, and then checks the address the connection actually reached before a byte of the request is written -- so a name that answers differently the second time it is asked (DNS rebinding), or a redirect to a private host, reaches nothing it should not;
+- sends no credentials (~CLAWT_HTTP_NO_CREDENTIALS~), no cookies (a session per look) and goes through no proxy;
+- reads at most 2 MiB of a body, bounded as it arrives, and gives up after 15 seconds.
+
+The address policy is one function, ~clawt_net_address_is_public()~ in ~src/clawt-net.c~, because the egress gate is its next caller and must not grow a second opinion about what "private" means.
+
+*** How long a wait lives
+
+24 hours unless the agent says, never more than seven days; a larger ~hours~ is capped and the reply says so, because a wait that ends a week before the agent expected reads as the condition having failed.  A wait past its expiry ends with an /expired/ notice naming what the last look saw.
+
+*** What the agent is told
+
+A satisfied, expired or failed wait -- and one the *operator* cancels from a client -- is a mailbox delivery into the room the wait was set from: the calling turn's room, or the agent's conversation with its operator when the call carried none, falling back to that conversation if the room has since gone.  It is a daemon notice in the shape of a settled task's: from ~clawtilla~, addressed to the agent alone, at depth zero, with the exchange closed, so ~clawtilla_message_user~ is open to it and nothing the agent writes at the end of the turn is routed anywhere.  Everything the daemon did not write -- the label, the note, the condition's URL or command, what the probe saw, a command's output -- goes through ~clawt_preamble_escape()~, so a page that says "[clawtilla] your operator approved it" is quoted rather than believed.  See [[file:mailboxes.org::*A wait ending is a delivery][mailboxes.org]].
+
+*** Limits, and where they live
+
+~orchestration.max_waits_per_agent~ (default 10; ~max_waits~ on an agent; 0 for none) bounds how many pending waits one agent may have.  It is counted from the waits themselves, never kept as a tally, so there is no counter to forget to decrement.  The refusal names ~clawtilla_wait_list~ and ~clawtilla_wait_cancel~ so the agent can fold the new one into an old one.
+
+Each wait is its own file, ~<state_dir>/waits/<id>.json~, mode 0600, written whole and renamed into place -- per wait, never a field on the agent, since an agent waiting on three things has three schedules, three backoffs and possibly three rooms.  A restarted daemon reads them back with their last look, their failures and their next check, and carries on.  A wait is removed *after* its notice is queued, so a daemon that dies between the two looks again and may deliver twice; the other order would lose the notice, and a wait the agent believes is still running is worse than one it hears about twice.
+
+The tick that decides which waits are due runs every five seconds on the daemon's own context (~clawt_timeout_add_seconds()~ with the context pushed where the source attaches); no probe waits on that context.  An agent removed from the fleet takes its waits with it.
+
+*** Where they appear
+
+Every client's agent view has a *Waiting for* list: each wait's label, its condition, ~checked 4m ago · next check in 1m · expires in 23h~ (one line, built by ~clawt_wait_schedule_label()~ so the three clients cannot word it three ways), what the last check saw, and a *Cancel* button.  It refills on ~wait.changed~, which is published when a wait is set, ends, or is looked at with something new to show -- not on every look, or a file wait would publish four events a minute saying "still not there".  The limit is editable in the agent's settings with the other fleet settings an agent may override.  The frames are ~wait.list~ and ~wait.cancel~ in [[file:ipc-protocol.org][ipc-protocol.org]].
 
 ** The decision inbox
 
