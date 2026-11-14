@@ -1230,7 +1230,7 @@ static const ClawtSchemaEntry schema[] = {
   "Only agents.model.fallbacks reads it. Failing over to another sign-in\n"
   "of the same subscription is refused, because rotating accounts to\n"
   "get past a usage limit breaks the provider's terms; a pay-per-use\n"
-  "login on the same CLI pays for the work it does and is allowed.", "0.12.0" },
+  "login on the same CLI pays for the work it does and is allowed.", "0.16.0" },
 
 { "integrations", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Named integrations, each handed to one agent, some agents or all of them.\n"
@@ -2262,21 +2262,21 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "On the command line the list is one string:\n"
   "`clawtilla agent set ID model.fallbacks \"codex-cli:gpt-5.5,\n"
-  "claude-code:sonnet@backup\"` -- provider:model, then @account.", "0.12.0" },
+  "claude-code:sonnet@backup\"` -- provider:model, then @account.", "0.16.0" },
 
 { "agents.model.fallbacks.provider", CLAWT_SCHEMA_STRING,
   CLAWT_SCHEMA_FLAG_REQUIRED, NULL, NULL,
-  "The agent CLI: one of the providers model.provider takes.", "0.12.0" },
+  "The agent CLI: one of the providers model.provider takes.", "0.16.0" },
 
 { "agents.model.fallbacks.model", CLAWT_SCHEMA_STRING,
   CLAWT_SCHEMA_FLAG_REQUIRED, NULL, NULL,
-  "The model that CLI is asked for.", "0.12.0" },
+  "The model that CLI is asked for.", "0.16.0" },
 
 { "agents.model.fallbacks.account", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
   "Which entry of accounts this fallback's CLI logs in as. Unset is the\n"
   "CLI's default login. The account's provider must be this entry's\n"
-  "provider.", "0.12.0" },
+  "provider.", "0.16.0" },
 
 { "agents.session", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "How this agent's conversations map to AI sessions.", "0.2.0" },

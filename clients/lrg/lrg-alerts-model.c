@@ -123,6 +123,12 @@ clawt_lrg_alerts_add_event(GPtrArray *alerts, ClawtEvent *event,
 
         line = g_strdup_printf("%s is %s", (subject != NULL) ? subject : "?",
                                (state != NULL) ? state : "?");
+    } else if (clawt_event_get_detail(event, "message") != NULL) {
+        /*
+         * An event carrying its own sentence -- agent.failover's says
+         * who, on what, why and until when -- is shown as written.
+         */
+        line = g_strdup(clawt_event_get_detail(event, "message"));
     } else {
         line = g_strdup_printf("%s · %s", (kind != NULL) ? kind : "?",
                                (subject != NULL) ? subject : "the fleet");

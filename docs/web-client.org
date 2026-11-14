@@ -452,6 +452,32 @@ A permission changed under a running agent says so: an AI CLI lists its
 tools once, when its session starts, so the change reaches the agent's
 files and not its session.
 
+*** The fallback list has a card of its own
+
+~model.fallbacks~ is a list of mappings, so the schema walk yields its
+child keys -- three text fields that would edit no entry.  They are
+skipped, and the list is edited in a /Fallbacks/ card under the form
+(~clawt_web_fallback_card()~ in =web-ui.c=, so =tests/test-web-render.c=
+renders it).  A form cannot nest in another, so it is a form of its own,
+posting to =/a/:id/fallbacks= with =op= naming the button: =save=, =add=,
+=up:N=, =down:N= or =remove:N=.  The page has no state between requests,
+so every button saves the whole list in the library's spelling; a list
+reordered and not saved would exist nowhere.
+
+Each entry is a provider select, a model text field with a =<datalist>=
+of that provider's models (a suggestion, not a restriction: the catalogue
+goes stale), and an account select offering the CLI's own login and the
+accounts for that entry's CLI.  The add row's datalist holds every agent
+provider's models and its account select names each login's CLI, since
+its provider is not chosen until it is posted.  An entry missing its
+provider or model is refused on the page rather than dropped, and the
+daemon's refusal of a list is shown as written.  See "Editing the
+fallbacks" in [[file:clients.org][clients.org]].
+
+An agent running on a fallback carries an amber /On fallback: …/ badge,
+titled with the daemon's sentence, in the sidebar, the top bar and the
+/At a glance/ card (~clawt_web_failover_badge()~).
+
 ** Appearance
 
 Theme, interface font and size, code font and size, and the reading

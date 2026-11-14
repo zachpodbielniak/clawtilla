@@ -122,6 +122,27 @@ GPtrArray *clawt_model_fallback_parse_list(const gchar  *text,
 gchar *clawt_model_fallback_list_to_string(GPtrArray *fallbacks);
 
 /**
+ * clawt_model_fallback_account_fits:
+ * @account_provider: (nullable): an entry of `accounts:`'s `provider`
+ * @provider: (nullable): the CLI a fallback entry runs
+ *
+ * Whether that account is a login for that CLI -- what a fallback
+ * entry's account picker offers.  `account.list` answers "usable" for
+ * the agent's own provider only, and an entry may run another CLI, so
+ * the editor asks this per entry instead.
+ *
+ * Compared as written: accounts.provider is documented in the canonical
+ * spelling, and normalising would fit "claude" -- the catalogue's HTTP
+ * provider -- to a Claude Code login.  The daemon still decides when the
+ * list is saved, so this keeps a login for another CLI off the picker
+ * rather than refusing anything.
+ *
+ * Returns: %TRUE when an entry for @provider may name the account
+ */
+gboolean clawt_model_fallback_account_fits(const gchar *account_provider,
+                                           const gchar *provider);
+
+/**
  * clawt_failover_reason_phrase:
  * @reason: (nullable): the `reason` an agent reported: `usage-limit`,
  *   `rate-limit`, `signed-out` or `unavailable`

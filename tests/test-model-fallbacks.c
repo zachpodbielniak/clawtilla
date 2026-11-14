@@ -418,6 +418,24 @@ test_alert_tier(void)
     g_assert_cmpint(clawt_alert_tier_for_event(home), ==, CLAWT_ALERT_ROUTINE);
 }
 
+/*
+ * The account picker's rule: a login is offered to an entry for its own
+ * CLI only, as written -- "claude" is the catalogue's HTTP provider, so
+ * folding it into claude-code would offer a subscription login to an
+ * entry that names an API.
+ */
+static void
+test_account_fits(void)
+{
+    g_assert_true(clawt_model_fallback_account_fits("codex-cli", "codex-cli"));
+    g_assert_false(clawt_model_fallback_account_fits("claude-code",
+                                                     "codex-cli"));
+    g_assert_false(clawt_model_fallback_account_fits("claude", "claude-code"));
+    g_assert_false(clawt_model_fallback_account_fits(NULL, "codex-cli"));
+    g_assert_false(clawt_model_fallback_account_fits("codex-cli", NULL));
+    g_assert_false(clawt_model_fallback_account_fits("", ""));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -440,6 +458,7 @@ main(int argc, char *argv[])
     g_test_add_func("/model-fallbacks/set-round-trips", test_set_round_trips);
     g_test_add_func("/model-fallbacks/describe", test_describe);
     g_test_add_func("/model-fallbacks/alert-tier", test_alert_tier);
+    g_test_add_func("/model-fallbacks/account-fits", test_account_fits);
 
     return g_test_run();
 }

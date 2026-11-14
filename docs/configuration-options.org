@@ -1697,7 +1697,7 @@ Whose login this is, or what it is for.
 
 - Type :: boolean
 - Default :: =false=
-- Since :: 0.12.0
+- Since :: 0.16.0
 
 This login bills each use -- an API key -- rather than drawing on a
 subscription's limit.
@@ -3219,7 +3219,7 @@ claude-code:sonnet@backup"` -- provider:model, then @account.
 - Type :: string
 - Default :: unset
 - Required :: yes
-- Since :: 0.12.0
+- Since :: 0.16.0
 
 The agent CLI: one of the providers model.provider takes.
 
@@ -3228,7 +3228,7 @@ The agent CLI: one of the providers model.provider takes.
 - Type :: string
 - Default :: unset
 - Required :: yes
-- Since :: 0.12.0
+- Since :: 0.16.0
 
 The model that CLI is asked for.
 
@@ -3236,7 +3236,7 @@ The model that CLI is asked for.
 
 - Type :: string
 - Default :: unset
-- Since :: 0.12.0
+- Since :: 0.16.0
 
 Which entry of accounts this fallback's CLI logs in as. Unset is the
 CLI's default login. The account's provider must be this entry's

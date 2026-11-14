@@ -145,6 +145,25 @@ clawt_model_fallback_list_to_string(GPtrArray *fallbacks)
     return g_string_free(out, FALSE);
 }
 
+gboolean
+clawt_model_fallback_account_fits(const gchar *account_provider,
+                                  const gchar *provider)
+{
+    /*
+     * As written, not normalised.  libreclaw folds "claude" into
+     * claude-code and "grok" into grok-build, but the catalogue uses both
+     * names for HTTP providers no agent runs on, so normalising would fit
+     * an API key's entry to a subscription login.  accounts.provider is
+     * documented in the canonical spelling, and a login spelt otherwise
+     * is still saved -- the daemon's check is the one that decides.
+     */
+    if (account_provider == NULL || provider == NULL ||
+        *account_provider == '\0' || *provider == '\0')
+        return FALSE;
+
+    return g_strcmp0(account_provider, provider) == 0;
+}
+
 const gchar *
 clawt_failover_reason_phrase(const gchar *reason)
 {

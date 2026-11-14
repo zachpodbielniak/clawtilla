@@ -389,6 +389,16 @@ declare -A AFFORDANCES=(
     # to decide a trace was safe to share.
     #
     ["teach caveats"]="caveats|caveats|caveats"
+    #
+    # model.fallbacks: the ordered editor, the badge on an agent running
+    # on one, and the alert that says why in the daemon's own sentence.
+    # A list editable in one client and a three-field text box in another
+    # is the drift this table exists for; so is an agent marked as away in
+    # one sidebar and not the next.
+    #
+    ["fallback list editor"]="fallback_editor_draw|clawt_web_fallback_card|draw_fallbacks"
+    ["on fallback badge"]="clawt_gtk_failover_badge|clawt_web_failover_badge|clawt_lrg_badge(agent->fallback"
+    ["alert in the event's words"]="clawt_event_get_detail(event, \"message\")|clawt_event_get_detail(event, \"message\")|clawt_event_get_detail(event, \"message\")"
 )
 
 usage () {

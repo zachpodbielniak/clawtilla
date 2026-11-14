@@ -351,6 +351,16 @@ clawt_web_stylesheet(void)
     ".btn-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}"
 
     /*
+     * The fallback editor: each entry set apart, so which provider,
+     * model and account belong together -- and which entry a button
+     * moves -- is read off the page rather than counted.
+     */
+    ".fallback-entry{border-top:1px solid var(--line);padding-top:12px;"
+    "margin-top:12px}"
+    ".fallback-state{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;"
+    "margin:4px 0 8px}"
+
+    /*
      * The Computer page's four tabs.
      *
      * A row of links rather than a control, so each of them is a real

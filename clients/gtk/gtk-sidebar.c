@@ -348,6 +348,19 @@ agent_row(ClawtWindow *self, JsonObject *agent, guint unread)
      * the real machine should be visibly different from one that cannot,
      * at a glance, in the list.
      */
+    /*
+     * Running on somebody else's backend: the conversation may have
+     * started afresh, and the answer is coming from a model nobody
+     * picked for this agent.  The sentence saying why and until when is
+     * the tooltip.
+     */
+    {
+        GtkWidget *fallback = clawt_gtk_failover_badge(agent);
+
+        if (fallback != NULL)
+            gtk_box_append(GTK_BOX(box), fallback);
+    }
+
     if (strstr(caps, "host-control") != NULL)
         gtk_box_append(GTK_BOX(box),
                        clawt_gtk_badge("HOST", "error",
@@ -1982,6 +1995,15 @@ refresh_agents_once(ClawtWindow *self)
          * Folded away, but still counted -- the header's tally is what
          * makes collapsing safe, because it says what is behind it.
          */
+        /*
+         * The inspector's "On fallback" row, from the same listing, in
+         * place -- before the fold below, which skips the row but not
+         * the agent somebody has open.
+         */
+        if (g_strcmp0(clawt_json_string(agent, "id", ""),
+                      self->selected_agent) == 0)
+            clawt_gtk_inspector_sync_failover(self, agent);
+
         if (team_is_collapsed(self, team != NULL ? team : ""))
             continue;
 
