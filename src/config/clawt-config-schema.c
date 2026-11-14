@@ -796,7 +796,7 @@ static const ClawtSchemaEntry schema[] = {
   "settlement is progress and chatter is not.\n"
   "\n"
   "At the limit the messaging tools are withheld from that tree's turns,\n"
-  "exactly as max_hops withholds them, and one alert names the tree.", "0.18.0" },
+  "exactly as max_hops withholds them, and one alert names the tree.", "0.20.0" },
 
 { "orchestration.mailbox", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Defaults for every agent's mailbox.\n"
@@ -1222,7 +1222,7 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "Without this the hop count built up across a room's history, so an\n"
   "ordinary standup reached max_hops by itself. The depth now starts\n"
-  "again at every round, and max_hops stays as the backstop.", "0.18.0" },
+  "again at every round, and max_hops stays as the backstop.", "0.20.0" },
 
 { "rooms.turn_timeout_seconds", CLAWT_SCHEMA_INT,
   CLAWT_SCHEMA_FLAG_NONE, "0", NULL,
@@ -1871,7 +1871,7 @@ static const ClawtSchemaEntry schema[] = {
   "Only when somebody asks for a sign-in -- never at daemon start. No\n"
   "request in it follows a redirect, and nothing it finds may be plain\n"
   "http unless the server itself is on loopback. Off, such a connector\n"
-  "takes a pasted token only.", "0.19.0" },
+  "takes a pasted token only.", "0.20.0" },
 
 { "connectors.client_name", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   "clawtilla", NULL,
@@ -1880,7 +1880,7 @@ static const ClawtSchemaEntry schema[] = {
   "Sent as `client_name` in a dynamic client registration, so it is what\n"
   "the server's consent screen shows the person approving it -- worth\n"
   "setting to something that says which machine is asking when several\n"
-  "fleets sign in to one service.", "0.19.0" },
+  "fleets sign in to one service.", "0.20.0" },
 
 /* ── routines ────────────────────────────────────────────────────── */
 { "connectors.registry_enabled", CLAWT_SCHEMA_BOOLEAN,
