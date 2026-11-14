@@ -291,6 +291,28 @@ void clawt_web_register_issues(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_rescue(HtmxRouter *router, ClawtWebApp *app);
 
 /**
+ * clawt_web_register_steps:
+ * @router: the router
+ * @app: the app
+ *
+ * The Screen view's saved steps (web-steps.c), at
+ * `/a/:id/steps/:verb`; before clawt_web_register_views().
+ */
+void clawt_web_register_steps(HtmxRouter *router, ClawtWebApp *app);
+
+/**
+ * clawt_web_add_saved_steps_card:
+ * @app: the app
+ * @parent: where the card goes
+ * @agent_id: whose screen
+ *
+ * The last turn's desktop input with Save, and every saved list with
+ * Replay and Delete.
+ */
+void clawt_web_add_saved_steps_card(ClawtWebApp *app, HtmxElement *parent,
+                                    const gchar *agent_id);
+
+/**
  * clawt_web_add_rescue_card:
  * @app: the app
  * @parent: where the cards go

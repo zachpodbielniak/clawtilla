@@ -1780,6 +1780,16 @@ clients are told both -- a control that silently mis-clicked by a factor
 of three would read as the pointer being unreliable rather than as
 arithmetic.
 
+*Saved steps*, under the screen in all three clients: what the agent's
+last turn pressed on it (~steps.last~), one line per step, with a name
+field and *Save* when the daemon says the turn can be replayed exactly
+-- and the reason when it cannot (a call that is not a plain key, text,
+move, click or scroll; a secret typed; no picture from before the first
+step).  Each saved list has *Replay* and *Delete*.  Replay runs only
+while you hold the screen and only when a fresh picture of it hashes the
+same as the one taken before the steps were recorded; otherwise it
+sends nothing and says why.  See [[file:computers.org::#saved-steps][computers.org]].
+
 *Open in a viewer* appears for a VM whose domain is running.  The GTK
 client spawns ~remote-viewer~ and names the package when it is missing;
 the browser offers the same ~vnc://~ address and a ~.vv~ file.  No noVNC

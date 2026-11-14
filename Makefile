@@ -110,6 +110,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/computer/clawt-exchange.h \
 	$(SRCDIR)/computer/clawt-observable.h \
 	$(SRCDIR)/computer/clawt-screen.h \
+	$(SRCDIR)/computer/clawt-saved-steps.h \
 	$(SRCDIR)/computer/clawt-takeover.h \
 	$(SRCDIR)/computer/clawt-observer.h \
 	$(SRCDIR)/computer/clawt-image-catalog.h \
@@ -255,6 +256,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-memory.c \
 	$(SRCDIR)/core/daemon-sentinel.c \
 	$(SRCDIR)/core/daemon-rescue.c \
+	$(SRCDIR)/core/daemon-steps.c \
 	$(SRCDIR)/core/daemon-mount.c \
 	$(SRCDIR)/core/daemon-egress.c \
 	$(SRCDIR)/core/daemon-image.c \
@@ -349,6 +351,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/net/clawt-egress-broker.c \
 	$(SRCDIR)/computer/clawt-observable.c \
 	$(SRCDIR)/computer/clawt-screen.c \
+	$(SRCDIR)/computer/clawt-saved-steps.c \
 	$(SRCDIR)/computer/clawt-takeover.c \
 	$(SRCDIR)/computer/clawt-observer.c \
 	$(SRCDIR)/computer/clawt-computer.c \

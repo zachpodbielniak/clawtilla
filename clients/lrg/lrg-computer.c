@@ -902,6 +902,9 @@ build_screen_view(ClawtLrgApp *app)
         "Taking the screen refuses the agent's own clicks until you give it "
         "back. Input is sent only while you hold it.", "caption"));
 
+    /* What the agent pressed here, kept to do again (lrg-steps.c). */
+    clawt_lrg_take(box, clawt_lrg_steps_build(app));
+
     return box;
 }
 
@@ -1298,6 +1301,7 @@ refresh(ClawtLrgApp *app)
 
     draw_machine_bar(app, agent);
     sync_tabs(app, agent);
+    clawt_lrg_steps_refresh(app);
 
     /*
      * The daemon's own state is what says *why*; a stopped agent has no
@@ -1320,6 +1324,22 @@ event(ClawtLrgApp *app, ClawtEvent *ev)
 
     if (kind == NULL || app->page != CLAWT_PAGE_COMPUTER)
         return;
+
+    /* Saved steps changed, or a replay ended. */
+    if (g_str_has_prefix(kind, "steps.") &&
+        g_strcmp0(subject, app->agent_id) == 0) {
+        if (g_strcmp0(kind, "steps.replayed") == 0) {
+            const gchar *failed = clawt_event_get_detail(ev, "error");
+            g_autofree gchar *said = (failed != NULL)
+                ? g_strdup_printf("The replay stopped: %s", failed)
+                : g_strdup("Replayed every saved step.");
+
+            clawt_lrg_toast(app, said);
+        }
+
+        clawt_lrg_steps_refresh(app);
+        return;
+    }
 
     /* A new frame for the agent on screen: fetch it now, not next tick. */
     if (g_strcmp0(kind, "computer.frame") == 0) {

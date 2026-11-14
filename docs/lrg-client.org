@@ -661,6 +661,8 @@ Shown only where the daemon says there could be a screen (=computer_screen=). Wh
 
 The status line says whether the frame is live or stale (with its age, from the daemon's =stale=), who holds the screen and what the agent asked for. Take the screen (~computer.takeover~) and Give the screen back (~computer.release~) swap as the hold changes; Open in a viewer spawns =remote-viewer= on the VM's VNC address, and says plainly when it is not installed. Typing (text, or =@key= for a key or combo) or a click at =x,y= is sent with ~computer.input~ only while this client holds the screen and the machine can take input; a click that is not two whole numbers is refused rather than sent as =0,0=.
 
+*Saved steps* (=clients/lrg/lrg-steps.c=), under the screen: ~steps.last~'s lines with a name and Save (enabled only when the daemon says the turn can be saved, its reason shown otherwise), and each saved list with Replay (~steps.replay~) and Delete (~steps.delete~). Re-read with the page and on ~steps.changed~ / ~steps.replayed~; a replay's end is a toast saying how it went.
+
 *** Mounts
 
 ~agent.mount.list~, each as host path = guest path with its mode -- both spellings, because an agent's own tools run on the host and only =computer_exec= enters the guest.
@@ -1222,6 +1224,7 @@ A colour this client reads but the palette leaves out falls back to libadwaita's
 | ~lrg-flow.c~ | the conversation graph and the agents' conversations | ~gtk-flow.c~ |
 | ~lrg-activity.c~ | every running turn, to stop or steer | ~gtk-activity.c~ |
 | ~lrg-rescue.c~ | the chat's first-reply rescue card above the composer | ~gtk-rescue.c~ |
+| ~lrg-steps.c~ | the Screen view's saved steps: Save, Replay, Delete | ~gtk-steps.c~ |
 | ~lrg-issues.c~ | the Activity page's Issues: the sentinel's report and Scan now | ~gtk-issues.c~ |
 | ~lrg-skills.c~ | the skills library and teaching | ~gtk-skills.c~ |
 | ~lrg-recall.c~ | recall, an agent's memories, the operator profile | ~gtk-recall.c~ |

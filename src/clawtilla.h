@@ -46,6 +46,7 @@
 #include "net/clawt-egress-broker.h"
 #include "computer/clawt-observable.h"
 #include "computer/clawt-screen.h"
+#include "computer/clawt-saved-steps.h"
 #include "computer/clawt-takeover.h"
 #include "computer/clawt-computer.h"
 #include "computer/clawt-observer.h"

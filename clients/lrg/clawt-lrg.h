@@ -350,6 +350,9 @@ void clawt_lrg_issues_refresh(ClawtLrgApp *app);
  * The box is the chat's (borrowed); refresh re-reads turn.rescue. */
 LrgWidget *clawt_lrg_rescue_build(ClawtLrgApp *app);
 void clawt_lrg_rescue_refresh(ClawtLrgApp *app);
+/* lrg-steps.c: the Screen view's saved steps, under the screen. */
+LrgWidget *clawt_lrg_steps_build(ClawtLrgApp *app);
+void clawt_lrg_steps_refresh(ClawtLrgApp *app);
 const ClawtLrgPage *clawt_lrg_fleet_page(void);      /* lrg-fleet-page.c */
 const ClawtLrgPage *clawt_lrg_grok_page(void);       /* lrg-grok.c */
 const ClawtLrgPage *clawt_lrg_skills_page(void);     /* lrg-skills.c */

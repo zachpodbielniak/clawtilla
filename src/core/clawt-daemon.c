@@ -9993,6 +9993,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_memory,
     clawt_daemon_handle_sentinel,
     clawt_daemon_handle_rescue,
+    clawt_daemon_handle_steps,
     clawt_daemon_handle_mount,
     clawt_daemon_handle_egress,
     clawt_daemon_handle_image,

@@ -773,6 +773,9 @@ clawt_daemon_turn_setup(ClawtDaemon *self)
     self->room_watch = clawt_turn_watch_new_work();
     self->busy_watch = clawt_busy_watch_new();
     self->rescues = clawt_rescue_watch_new();
+    self->step_recorder = clawt_step_recorder_new();
+    self->replays = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                          NULL);
     self->turn_said = g_hash_table_new_full(g_str_hash, g_str_equal,
                                             g_free, g_free);
     self->steers = clawt_steer_queue_new();
@@ -890,6 +893,8 @@ clawt_daemon_turn_teardown(ClawtDaemon *self)
     g_clear_object(&self->room_watch);
     g_clear_object(&self->busy_watch);
     g_clear_object(&self->rescues);
+    g_clear_object(&self->step_recorder);
+    g_clear_pointer(&self->replays, g_hash_table_unref);
     g_clear_pointer(&self->turn_said, g_hash_table_unref);
     g_clear_object(&self->steers);
 }
@@ -933,6 +938,9 @@ clawt_daemon_turn_begin(ClawtDaemon *self, const gchar *agent_id,
 
     clawt_turn_watch_begin(self->turn_watch, agent_id);
     note_turn_said(self, agent_id);
+
+    /* Saved steps record per turn, from this edge to the settle. */
+    clawt_daemon_steps_turn_began(self, agent_id);
 
     if (self->busy_watch != NULL)
         clawt_busy_watch_forget(self->busy_watch, agent_id);
@@ -1086,6 +1094,9 @@ clawt_daemon_turn_settle(ClawtDaemon *self, const gchar *agent_id)
 
     /* Every room's offer is withdrawn: the turns are over. */
     clawt_daemon_rescue_life(self, agent_id, NULL);
+
+    /* And this turn's desktop input becomes the agent's last run. */
+    clawt_daemon_steps_turn_ended(self, agent_id);
 
     if (self->turn_said != NULL)
         g_hash_table_remove(self->turn_said, agent_id);

@@ -285,6 +285,12 @@ struct _ClawtDaemon {
      * nothing yet, keyed agent and room.
      */
     ClawtRescueWatch *rescues;
+    /*
+     * Saved steps (daemon-steps.c): each agent's desktop input per
+     * turn, and the agents a replay is running on now.
+     */
+    ClawtStepRecorder *step_recorder;
+    GHashTable        *replays;
     GHashTable       *turn_said;
     gint            (*turn_pid_func)(ClawtDaemon *self, const gchar *agent_id);
     guint             turn_grace_seconds;
@@ -1231,6 +1237,24 @@ void clawt_daemon_rescue_begin(ClawtDaemon *self, const gchar *agent_id,
 void clawt_daemon_rescue_life(ClawtDaemon *self, const gchar *agent_id,
                               const gchar *room_id);
 void clawt_daemon_rescue_sweep(ClawtDaemon *self);
+
+/*
+ * daemon-steps.c: saved steps.  A turn began or ended (the agent edge),
+ * and an acting desktop call passed the gate, with its arguments.
+ */
+void clawt_daemon_steps_turn_began(ClawtDaemon *self, const gchar *agent_id);
+void clawt_daemon_steps_turn_ended(ClawtDaemon *self, const gchar *agent_id);
+void clawt_daemon_steps_note_call(ClawtDaemon *self, const gchar *agent_id,
+                                  const gchar *tool, JsonObject *arguments);
+
+JsonNode *
+clawt_daemon_handle_steps(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
 
 JsonNode *
 clawt_daemon_handle_rescue(

@@ -3452,6 +3452,88 @@ Bound to loopback, so reaching it from another machine means an SSH
 tunnel you set up on purpose.  A live view of whatever an agent is doing
 does not belong on the network because a default was convenient.
 
+** Saved steps: a desktop task again, with no model
+:PROPERTIES:
+:CUSTOM_ID: saved-steps
+:END:
+
+An agent that once worked out which buttons to press spends a model's
+turn working it out again every time it is asked.  Saved steps keep what
+it pressed, so a person can run the same input again with no model at
+all.  Every rule below is a refusal, because a replayed click lands
+wherever the screen has put something since.
+
+*Recorded at the gate.*  Every acting desktop call already passes
+~computer.control~ -- the check in front of the MCP relay that the
+takeover uses -- and the relay now hands that gate the call's
+arguments, not only its name (=ClawtMcpRelayGate= gained an
+~arguments~ parameter; =clawt_mcp_relay_call_arguments()=).  The daemon
+keeps each agent's current turn's calls (=ClawtStepRecorder=, in memory,
+at most =CLAWT_SAVED_STEPS_MAX= = 200) from the turn's rising edge to its
+settle; the last turn that touched the screen is kept until another
+does.
+
+*Only what can be repeated exactly is a step.*  A call becomes one
+=ClawtInputEvent= only when every value is there
+(=clawt_saved_step_from_call()=), for gowl's and gnome-desktop-mcp's
+spellings alike:
+
+| Step | gowl | gnome-desktop-mcp |
+|------+------+-------------------|
+| a key or combo | ~send_key~ (~key~) | ~key_combo~ / ~key_press~ (~combo~, ~keys~ or ~key~) |
+| typed text | ~send_text~ (~text~) | ~type_text~ (~text~) |
+| a pointer move | ~send_mouse_move~ (~x~, ~y~) | ~mouse_move~ (~x~, ~y~) |
+| a click | ~send_mouse~ ~click~ where the last recorded move put the pointer | ~mouse_click~ (~x~, ~y~, ~button~) |
+| a scroll | ~send_scroll~ (~direction~) | ~mouse_scroll~ (~direction~) |
+
+Any other acting call -- focusing a window by id, launching an
+application, a drag, a gowl click with no recorded move before it --
+makes the *whole* turn unsaveable, with the reason.  Half a task
+replayed is worse than none.
+
+*Typed text that looks like a secret is refused*, by the same
+=clawt_redact_secrets()= every log line goes through: steps are stored
+as typed, in =<state_dir>/saved-steps/<agent>.yaml= at 0600.
+
+*A checkpoint is required.*  When a turn begins on an agent with a
+screen the daemon asks the observer for a picture; the turn's first
+acting call takes the SHA-256 of the last picture taken *after* the turn
+began (=clawt_screen_hash_bytes()=).  A turn with no such picture cannot
+be saved.  And the rule that nothing is captured unless somebody is
+looking still holds: the observer grabs only for a screen somebody is
+watching, so a turn is saveable only if its screen was being watched
+when it began -- which is the case worth saving anyway, since the
+person deciding to keep the steps saw them happen.  Nothing extra is
+grabbed for an agent nobody is looking at.
+
+*Replay is input a person sends* -- ~computer.input~'s path,
+=clawt_observer_send_input_async()= -- *and only while that person holds
+the screen*, the same takeover that refuses the agent's own acting calls
+for as long as it is held, so the two never fight for the pointer.
+~steps.replay~:
+
+1. refuses an agent with no screen, a screen nobody is holding, and a
+   second replay on the same screen;
+2. asks for a fresh picture and waits for one taken after it asked (up
+   to 15 s), then compares its hash with the checkpoint;
+3. *refuses, sending nothing*, when they differ -- exact on purpose: a
+   panel clock that moved is a different screen, and the refusal says so
+   rather than clicking on a guess.  In practice this means a guest or a
+   compositor without a ticking clock, or a screen put back exactly;
+4. sends the steps one at a time, checking before each that the screen
+   is still held -- releasing it is how a person says stop -- and
+   publishes ~steps.replayed~ with how many were sent and why it stopped.
+
+What it deliberately does not do: no window-title checkpoint (neither
+backend's window list is read by the daemon today, and a title match
+would let a moved window take a click meant for its old position); no
+replay without the hold; no replay on a different computer (the list is
+per agent, and its screen is that agent's); no model at any point.
+
+In the clients it is the *Saved steps* section under the Screen view in
+GTK, web and lrg: the last turn's steps with Save and a name, or the
+reason it cannot be saved; each saved list with Replay and Delete.
+
 ** Adding a backend
 
 ~ClawtComputerProvider~ is the interface a plugin would implement:

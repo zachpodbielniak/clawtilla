@@ -620,6 +620,9 @@ add_screen(ClawtWebApp *app, HtmxElement *parent, const gchar *agent_id)
 
     htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(panel));
     htmx_node_add_child(HTMX_NODE(parent), HTMX_NODE(card));
+
+    /* What the agent pressed here, kept to do again (web-steps.c). */
+    clawt_web_add_saved_steps_card(app, parent, agent_id);
 }
 
 /* ── The view ────────────────────────────────────────────────────── */

@@ -482,6 +482,7 @@ main(int argc, char *argv[])
     clawt_web_register_review(router, app);
     clawt_web_register_issues(router, app);
     clawt_web_register_rescue(router, app);
+    clawt_web_register_steps(router, app);
     clawt_web_register_extras(router, app);
 
     /*

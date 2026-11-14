@@ -1754,6 +1754,21 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
         g_strcmp0(clawt_event_get_subject(event), self->selected_agent) == 0)
         clawt_gtk_refresh_rescue(self);
 
+    /* Saved steps changed, or a replay ended: the list says which. */
+    if (g_str_has_prefix(kind, "steps.") &&
+        g_strcmp0(clawt_event_get_subject(event), self->selected_agent) == 0) {
+        if (g_strcmp0(kind, "steps.replayed") == 0) {
+            const gchar *failed = clawt_event_get_detail(event, "error");
+            g_autofree gchar *said = (failed != NULL)
+                ? g_strdup_printf("The replay stopped: %s", failed)
+                : g_strdup("Replayed every saved step.");
+
+            clawt_window_toast(self, said);
+        }
+
+        clawt_gtk_refresh_saved_steps(self);
+    }
+
     /* A scan ended: the report on disk is new, or the failure is. */
     if (g_strcmp0(kind, "sentinel.finished") == 0)
         clawt_gtk_refresh_issues(self);

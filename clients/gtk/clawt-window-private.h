@@ -502,6 +502,14 @@ struct _ClawtWindow {
      * composer; hidden while there is no offer for the selected agent.
      */
     GtkWidget         *rescue_box;
+    /*
+     * The Screen view's saved steps (gtk-steps.c): the last turn's line,
+     * the name field and Save, and the saved lists.
+     */
+    GtkWidget         *steps_last;
+    GtkWidget         *steps_name;
+    GtkWidget         *steps_save;
+    GtkWidget         *steps_list;
     GtkWidget         *issues_status;
     ImageChooser       inspector_disk;
     GtkWidget         *vm_cpus_row;
@@ -1486,6 +1494,16 @@ clawt_gtk_build_rescue(ClawtWindow *self);
 
 void
 clawt_gtk_refresh_rescue(ClawtWindow *self);
+
+/*
+ * The Screen view's saved steps (gtk-steps.c): built under the screen,
+ * re-read with the computer page and on `steps.*` events.
+ */
+GtkWidget *
+clawt_gtk_build_saved_steps(ClawtWindow *self);
+
+void
+clawt_gtk_refresh_saved_steps(ClawtWindow *self);
 
 ClawtComputerType
 clawt_gtk_computer_type_from_nick(const gchar *nick);

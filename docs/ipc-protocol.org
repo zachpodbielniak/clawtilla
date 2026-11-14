@@ -928,6 +928,29 @@ Events, subject the agent: ~turn.no_reply~ (~room~, ~seconds~,
 (~room~) when it shows anything or ends.  See
 [[file:orchestration.org::*First-reply rescue: a turn that has shown nothing][orchestration.org]].
 
+*** steps.*
+
+Saved steps (see [[file:computers.org::#saved-steps][computers.org]]).  Each takes ~agent~; ~save~,
+~replay~ and ~delete~ take ~name~.
+
+- ~steps.last~ → the agent's last turn that touched its screen, or an
+  empty object: ~finished_at~, ~calls~, ~saveable~ (a JSON boolean),
+  ~why_not~ and ~steps~ (one line per step, from
+  =clawt_saved_step_describe()=).
+- ~steps.save~ → ~saved~.  Refused, with the recorder's reason, for a
+  turn that cannot be saved; a name is letters, digits, spaces, ~-~,
+  ~_~ and ~.~.
+- ~steps.list~ → ~replaying~ and ~saved~ (~name~, ~created_at~, ~steps~).
+- ~steps.delete~ → ~deleted~.
+- ~steps.replay~ → ~started~, ~steps~; answered at once, and the end is
+  the ~steps.replayed~ event (~name~, ~ok~, ~done~, ~steps~, ~error~).
+  Refused for an agent with no screen, a screen not held, and a replay
+  already running.
+
+~computer.control~ takes ~arguments~ (the call's own object) beside
+~tool~, which is what the steps are recorded from.  Events, subject the
+agent: ~steps.changed~, ~steps.replayed~.
+
 *** sentinel.*
 
 ~sentinel.scan~ (no payload) → ~started~ and ~running~.  Starts
@@ -1783,6 +1806,7 @@ Every kind published, by subject:
 | an agent | ~decision.asked~ (~decision~, ~room~), ~decision.settled~ (~decision~, ~how~: ~answered~, ~dismissed~, ~defaulted~ or ~deleted~, ~room~, ~answer~, ~via~), ~decision.deleted~ (~decision~, ~room~) |
 | a routine | ~routine.ran~, ~routine.changed~, ~routine.turned_off~ (~agent~, ~failures~, ~error~) |
 | an agent | ~wait.changed~ (~wait~, ~state~) |
+| an agent | ~steps.changed~, ~steps.replayed~ (~name~, ~ok~, ~done~, ~steps~, ~error~) |
 | an agent | ~turn.no_reply~ (~room~, ~seconds~, ~choices~), ~turn.no_reply_cleared~ (~room~) |
 | the daemon | ~sentinel.finished~ (~ok~, ~error~) |
 | an agent | ~turn.cost~ (~cost_micros~, ~task~): what a turn just cost, for the sentinel |

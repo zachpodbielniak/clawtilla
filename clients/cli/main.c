@@ -4580,7 +4580,8 @@ static gboolean relay_policy_gate(const gchar *agent_id, const gchar *tool,
                                   const gchar *klass, gchar **refusal);
 
 static gboolean
-desktop_control_gate(const gchar *tool, gchar **refusal, gpointer user_data)
+desktop_control_gate(const gchar *tool, JsonObject *arguments,
+                     gchar **refusal, gpointer user_data)
 {
     const gchar *agent_id = user_data;
     g_autoptr(ClawtClient) client = NULL;
@@ -4608,9 +4609,33 @@ desktop_control_gate(const gchar *tool, gchar **refusal, gpointer user_data)
     if (client == NULL)
         return TRUE;
 
-    reply = clawt_client_request(
-        client, "computer.control",
-        build_payload("agent", agent_id, "tool", tool, NULL), &error);
+    /*
+     * The arguments go too: the gate is the one place a desktop call is
+     * seen, and saved steps record what was pressed, not only that
+     * something was.
+     */
+    {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "agent");
+        json_builder_add_string_value(builder, agent_id);
+        json_builder_set_member_name(builder, "tool");
+        json_builder_add_string_value(builder, tool);
+
+        if (arguments != NULL) {
+            JsonNode *copy = json_node_new(JSON_NODE_OBJECT);
+
+            json_node_set_object(copy, arguments);
+            json_builder_set_member_name(builder, "arguments");
+            json_builder_add_value(builder, copy);
+        }
+
+        json_builder_end_object(builder);
+
+        reply = clawt_client_request(client, "computer.control",
+                                     json_builder_get_root(builder), &error);
+    }
 
     if (reply == NULL || !JSON_NODE_HOLDS_OBJECT(reply))
         return TRUE;
@@ -6028,8 +6053,11 @@ relay_policy_gate(const gchar *agent_id, const gchar *tool, const gchar *klass,
 }
 
 static gboolean
-connector_policy_gate(const gchar *tool, gchar **refusal, gpointer user_data)
+connector_policy_gate(const gchar *tool, JsonObject *arguments,
+                      gchar **refusal, gpointer user_data)
 {
+    (void)arguments;
+
     *refusal = NULL;
     return relay_policy_gate(user_data, tool, "external", refusal);
 }
