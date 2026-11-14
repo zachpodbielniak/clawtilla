@@ -1121,6 +1121,41 @@ clawt_process_is_descendant_of(GPid pid, GPid root)
     return FALSE;
 }
 
+gboolean
+clawt_process_has_exited(GPid pid)
+{
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *contents = NULL;
+    const gchar *line;
+
+    if (pid <= 0)
+        return TRUE;
+
+    path = g_strdup_printf("/proc/%d/status", (gint)pid);
+
+    /* Gone already, or never there: either way nothing is left to stop. */
+    if (!g_file_get_contents(path, &contents, NULL, NULL))
+        return TRUE;
+
+    line = strstr(contents, "\nState:");
+
+    if (line == NULL)
+        return TRUE;
+
+    line += strlen("\nState:");
+
+    while (*line == ' ' || *line == '\t')
+        line++;
+
+    /*
+     * Z is a zombie: exited, waiting for its parent to reap it.  X is
+     * the instant after, which /proc can briefly show.  Everything else
+     * -- running, sleeping, stopped, in disk wait -- is a process a
+     * signal can still end.
+     */
+    return *line == 'Z' || *line == 'X';
+}
+
 /*
  * Depth-first pre-order: a parent is appended before everything below
  * it, so reversing the result puts every descendant before its parent.

@@ -999,6 +999,53 @@ test_a_guest_desktop_says_where_to_look_when_it_fails(void)
 }
 
 /*
+ * Wait until a stubborn-libreclaw child is actually stubborn.
+ *
+ * `trap '' TERM` takes a moment to install, and a SIGTERM sent into that
+ * gap meets the default action and the child dies at once.  So whether a
+ * stop took the graceful branch or the force-kill one depended on which
+ * of the two processes the scheduler ran first -- a release build almost
+ * always lost the race, and ASAN on a loaded machine almost always won
+ * it, so the same test proved nothing in one build and hit a warning it
+ * had not asked for in the other.
+ *
+ * The fixture prints its line after installing the trap, so the line
+ * appearing is the signal that it is ready -- the @nth such line, since
+ * the log tail outlives a restart and the first child's line is still
+ * in it when the second has not yet trapped anything.  Bounded by the
+ * clock rather
+ * than by a count of polls, at ten seconds: under ASAN at a load of 40 a
+ * poll is far longer than its nominal 10ms, and a count of them is not a
+ * time at all.
+ */
+static void
+wait_until_stubborn(ClawtAgentRuntime *runtime, guint nth)
+{
+    gint64 deadline = g_get_monotonic_time() + 10 * G_USEC_PER_SEC;
+    gboolean up = FALSE;
+
+    while (!up && g_get_monotonic_time() < deadline) {
+        g_auto(GStrv) tail = clawt_agent_runtime_get_log_tail(runtime, 16);
+        guint seen = 0;
+        gsize i;
+
+        for (i = 0; tail != NULL && tail[i] != NULL; i++) {
+            if (strstr(tail[i], "stubborn-libreclaw up") != NULL)
+                seen++;
+        }
+
+        up = (seen >= nth);
+
+        if (!up) {
+            g_main_context_iteration(NULL, FALSE);
+            g_usleep(10 * 1000);
+        }
+    }
+
+    g_assert_true(up);
+}
+
+/*
  * Stopping a runtime stops it, rather than merely asking.
  *
  * The flag used to be cleared the instant SIGTERM was *sent*, so a
@@ -1043,43 +1090,11 @@ test_stopping_waits_for_the_child_to_go(void)
     g_assert_cmpint(pid, >, 0);
 
     /*
-     * Wait until the child is actually stubborn before signalling it.
-     *
-     * `trap '' TERM` takes a moment to install, and the test used to send
-     * SIGTERM into that gap -- where the default action still applies and
-     * the child dies at once.  So a release build stopped it in 110ms,
-     * took the graceful branch, passed, and proved nothing about the
-     * force-kill path this test exists for.  Only under ASAN, which is
-     * slow enough that the trap wins the race, did the intended path run
-     * at all.
-     *
-     * The fixture prints its line after installing the trap, so the line
-     * appearing is the signal that it is ready.
+     * Wait until the child is actually stubborn before signalling it --
+     * otherwise this can pass through the graceful branch and prove
+     * nothing about the force-kill path it exists for.
      */
-    {
-        guint waited;
-
-        for (waited = 0; waited < 200; waited++) {
-            g_auto(GStrv) tail =
-                clawt_agent_runtime_get_log_tail(CLAWT_AGENT_RUNTIME(runtime),
-                                                  16);
-            gboolean up = FALSE;
-            gsize i;
-
-            for (i = 0; tail != NULL && tail[i] != NULL; i++) {
-                if (strstr(tail[i], "stubborn-libreclaw up") != NULL)
-                    up = TRUE;
-            }
-
-            if (up)
-                break;
-
-            g_main_context_iteration(NULL, FALSE);
-            g_usleep(10 * 1000);
-        }
-
-        g_assert_cmpuint(waited, <, 200);
-    }
+    wait_until_stubborn(CLAWT_AGENT_RUNTIME(runtime), 1);
 
     /*
      * And the warning is expected, not incidental.  It is the audible
@@ -1137,8 +1152,28 @@ test_restarting_does_not_leave_the_old_one(void)
                                             &error));
     first = clawt_agent_runtime_get_pid(CLAWT_AGENT_RUNTIME(runtime));
 
+    /*
+     * Stubborn before it is stopped, so the restart meets the child that
+     * exposed the bug -- one still there when SIGTERM has been sent.
+     *
+     * The stop used to follow the start immediately.  The 5-second grace
+     * is the product's deadline for a child that ignores SIGTERM, and
+     * this fixture ignores it by design, so the warning is the correct
+     * outcome whenever the trap is in place; what decided whether it
+     * happened was the race above.  A release build mostly signalled into
+     * the gap and passed without exercising the case, and ASAN at a load
+     * of 40 mostly lost it and failed on a warning nobody had said to
+     * expect -- 55 runs in 64.  Waiting for the trap makes the path
+     * certain and the warning expected, every time.
+     */
+    wait_until_stubborn(CLAWT_AGENT_RUNTIME(runtime), 1);
+
     /* What agent.restart does: stop, then start. */
+    g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING,
+                          "*did not stop within*");
     clawt_agent_runtime_stop(CLAWT_AGENT_RUNTIME(runtime));
+    g_test_assert_expected_messages();
+
     g_assert_true(clawt_agent_runtime_start(CLAWT_AGENT_RUNTIME(runtime),
                                             &error));
     g_assert_no_error(error);
@@ -1150,7 +1185,17 @@ test_restarting_does_not_leave_the_old_one(void)
     /* Exactly one, not two. */
     g_assert_cmpint(kill(first, 0), ==, -1);
 
+    /*
+     * The second is the same fixture, so the same certainty is owed --
+     * and it is the second line that says so, not the first child's.
+     */
+    wait_until_stubborn(CLAWT_AGENT_RUNTIME(runtime), 2);
+
+    g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING,
+                          "*did not stop within*");
     clawt_agent_runtime_stop(CLAWT_AGENT_RUNTIME(runtime));
+    g_test_assert_expected_messages();
+
     g_assert_cmpint(kill(second, 0), ==, -1);
 
     fixture_teardown(&fixture);
