@@ -43,9 +43,18 @@ Each bot is a =grokbot= integration *named for the bot*.  The name is what agent
 The bot reports to the daemon's webhook listener, on its tailnet address.  Both of these must be on:
 
 #+begin_src bash
-clawtilla config set daemon.webhook_enabled true
-clawtilla config set daemon.tailscale true
+clawtilla config edit
 #+end_src
+
+#+begin_src yaml
+daemon:
+  webhook_enabled: true
+  tailscale: true
+#+end_src
+
+There is no ~config set~ for fleet-level keys: =config edit= opens
+~clawtilla.yaml~ in =$EDITOR= and reloads on save.  Restart the daemon
+afterwards -- the listener is bound when the daemon starts.
 
 Then, in Grok, connect the bot's computer to your tailnet (it shows up in =tailscale status= as =grokbot-…=).  A tailnet ACL that lets that node reach *only* the listener's port (=daemon.webhook_port=, 8788) is strongly recommended: every bot shares one computer, and it is somebody else's.
 

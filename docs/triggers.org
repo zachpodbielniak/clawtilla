@@ -324,8 +324,17 @@ The whole sequence, on a machine where the daemon is already running.
 *** 1. Turn the receiver on
 
 #+begin_src bash
-clawtilla config set daemon.webhook_enabled true
+clawtilla config edit
 #+end_src
+
+#+begin_src yaml
+daemon:
+  webhook_enabled: true
+#+end_src
+
+There is no ~config set~ for fleet-level keys: =config edit= opens
+~clawtilla.yaml~ in =$EDITOR= and reloads on save.  Restart the daemon
+afterwards -- the listener is bound when the daemon starts.
 
 Check what it bound, because that is the host half of the URL you are
 about to paste into a browser:
