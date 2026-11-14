@@ -52,6 +52,7 @@ typedef struct {
     LrgWidget  *integrations;
     LrgWidget  *mounts;
     LrgWidget  *waits;
+    LrgWidget *memory_review;   /* the Memory review list */
     LrgWidget  *files;
     LrgWidget  *usage_today;
     LrgWidget  *usage_total;
@@ -2298,6 +2299,173 @@ build_waits(
 	return index;
 }
 
+/* ── Memory review ────────────────────────────────────────────────── */
+
+static void ask_memory_review(ClawtLrgApp *app);
+
+static void
+on_memory_undone(
+	ClawtLrgApp  *app,
+	JsonNode     *reply,
+	const GError *error,
+	gpointer      user_data
+){
+	if (reply != NULL)
+		clawt_lrg_toast(app, "Undone. The agent reads its memories as they "
+		                "are now from its next search.");
+
+	ask_memory_review(app);
+}
+
+static void
+on_memory_undo(
+	LrgButton *button,
+	gpointer   user_data
+){
+	ClawtLrgApp *app = user_data;
+	const gchar *scope = g_object_get_data(G_OBJECT(button), "clawt-scope");
+	gint64 id = (gint64)GPOINTER_TO_SIZE(
+		g_object_get_data(G_OBJECT(button), "clawt-entry"));
+	g_autoptr(JsonBuilder) builder = json_builder_new();
+
+	if (app->agent_id == NULL)
+		return;
+
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "agent");
+	json_builder_add_string_value(builder, app->agent_id);
+	json_builder_set_member_name(builder, "scope");
+	json_builder_add_string_value(builder, scope != NULL ? scope : "agent");
+	json_builder_set_member_name(builder, "id");
+	json_builder_add_int_value(builder, id);
+	json_builder_end_object(builder);
+
+	clawt_lrg_request(app, "memory.undo", json_builder_get_root(builder),
+	                  CLAWT_LRG_REQUEST_NONE, on_memory_undone, NULL, NULL);
+}
+
+/*
+ * One row per journal entry, newest first.  The words for an action and
+ * for its reversal are libclawt's (clawt_memory_journal_action_label(),
+ * _undo_label()), so a row reads as the GTK and web clients draw it.
+ */
+static void
+on_memory_review(
+	ClawtLrgApp  *app,
+	JsonNode     *reply,
+	const GError *error,
+	gpointer      user_data
+){
+	JsonObject *root = clawt_ipc_reply_object(reply);
+	JsonArray *entries = (root != NULL &&
+	                      json_object_has_member(root, "entries"))
+		? json_object_get_array_member(root, "entries") : NULL;
+	gint64 now = g_get_real_time();
+	guint i;
+
+	if (ins.memory_review == NULL)
+		return;
+
+	clawt_lrg_clear(ins.memory_review);
+
+	if (entries == NULL || json_array_get_length(entries) == 0)
+		clawt_lrg_take(ins.memory_review, clawt_lrg_paragraph(
+			reply == NULL
+				? "This agent has no memory store, or its journal could not "
+				  "be read."
+				: "No changes yet. Each time this agent remembers, forgets "
+				  "or pins something it shows here, with a way to take it "
+				  "back.", "muted"));
+
+	for (i = 0; entries != NULL && i < json_array_get_length(entries); i++) {
+		JsonObject *entry = json_array_get_object_element(entries, i);
+		const gchar *kind = clawt_ipc_payload_string(entry, "action");
+		const gchar *scope = clawt_ipc_payload_string(entry, "scope");
+		const gchar *excerpt = clawt_ipc_payload_string(entry, "excerpt");
+		const gchar *line = clawt_ipc_payload_string(entry, "line");
+		const gchar *why = clawt_ipc_payload_string(entry, "why_not");
+		g_autofree gchar *ago = clawt_time_ago_label(
+			clawt_ipc_payload_int(entry, "at", 0) * G_USEC_PER_SEC, now);
+		g_autofree gchar *title = g_strdup_printf("%s: %s",
+			clawt_memory_journal_action_label(kind),
+			excerpt != NULL ? excerpt
+				: (clawt_ipc_payload_string(entry, "memory_id") != NULL
+					? clawt_ipc_payload_string(entry, "memory_id") : "?"));
+		g_autofree gchar *subtitle = g_strdup_printf("%s \302\267 %s%s%s%s",
+			line != NULL ? line : "", ago,
+			(scope != NULL && g_strcmp0(scope, "agent") != 0)
+				? " \302\267 in the " : "",
+			(scope != NULL && g_strcmp0(scope, "agent") != 0) ? scope : "",
+			(scope != NULL && g_strcmp0(scope, "agent") != 0)
+				? "'s memories" : "");
+		LrgWidget *row = clawt_lrg_row(title, subtitle);
+
+		if (clawt_ipc_payload_boolean(entry, "undoable", FALSE)) {
+			LrgWidget *undo = clawt_lrg_button(
+				clawt_memory_journal_undo_label(kind), "flat",
+				G_CALLBACK(on_memory_undo), app);
+
+			g_object_set_data_full(G_OBJECT(undo), "clawt-scope",
+			                       g_strdup(scope != NULL ? scope : "agent"),
+			                       g_free);
+			g_object_set_data(G_OBJECT(undo), "clawt-entry",
+			                  GSIZE_TO_POINTER((gsize)clawt_ipc_payload_int(
+			                      entry, "id", 0)));
+			clawt_lrg_row_add_suffix(row, undo);
+		} else if (why != NULL && g_strcmp0(kind, "undo") != 0 &&
+		           clawt_ipc_payload_int(entry, "undone_at", 0) == 0) {
+			g_autofree gchar *note = g_strdup_printf("Cannot be undone: %s",
+			                                         why);
+
+			clawt_lrg_row_add_suffix(row,
+				clawt_lrg_paragraph(note, "muted"));
+		}
+
+		clawt_lrg_appear(app, row, i);
+		clawt_lrg_take(ins.memory_review, row);
+	}
+
+	clawt_lrg_app_wake(app);
+}
+
+static void
+ask_memory_review(
+	ClawtLrgApp *app
+){
+	if (app->agent_id == NULL || ins.memory_review == NULL)
+		return;
+
+	clawt_lrg_request(app, "memory.journal",
+	                  clawt_ipc_payload_new("agent", app->agent_id, NULL),
+	                  CLAWT_LRG_GUARDED | CLAWT_LRG_QUIET, on_memory_review,
+	                  NULL, NULL);
+}
+
+/*
+ * What this agent changed in its memories, with an Undo per change: a
+ * memory is read back as the agent's own conclusion, so a wrong one has
+ * to be visible -- and reversible -- somewhere a person looks.
+ */
+static guint
+build_memory_review(
+	ClawtLrgApp *app,
+	guint        index
+){
+	LrgWidget *box = section_card(
+		app, ins.body, "Memory review",
+		"Everything this agent remembered, forgot or pinned, newest first. "
+		"Undo takes one change back: an added memory is archived, a "
+		"forgotten one returns, a pin flips back. Nothing is deleted.",
+		index++);
+
+	ins.memory_review = clawt_lrg_vbox(6.0f);
+	clawt_lrg_add(box, ins.memory_review);
+	g_object_unref(ins.memory_review);
+
+	ask_memory_review(app);
+	return index;
+}
+
 /* ── Files ────────────────────────────────────────────────────────── */
 
 static void
@@ -2583,6 +2751,7 @@ draw_all(ClawtLrgApp *app)
     ins.integrations = NULL;
     ins.mounts = NULL;
     ins.waits = NULL;
+    ins.memory_review = NULL;
     ins.files = NULL;
     ins.save = NULL;
     ins.fallbacks = NULL;
@@ -2616,6 +2785,7 @@ draw_all(ClawtLrgApp *app)
     draw_usage(app, index++);
     index = build_form(app, index);
     index = build_waits(app, index);
+    index = build_memory_review(app, index);
     index = build_credentials(app, agent, index);
     index = build_integrations(app, index);
     index = build_computer_detail(app, agent, index);
@@ -2674,6 +2844,7 @@ refresh(ClawtLrgApp *app)
         ins.integrations = NULL;
         ins.mounts = NULL;
         ins.waits = NULL;
+        ins.memory_review = NULL;
         ins.files = NULL;
         ins.usage_today = NULL;
         ins.usage_total = NULL;
@@ -2727,6 +2898,10 @@ event(ClawtLrgApp *app, ClawtEvent *ev)
     if (g_str_has_prefix(kind, "wait.") &&
         (subject == NULL || g_strcmp0(subject, app->agent_id) == 0))
         ask_waits(app);
+
+    if (g_strcmp0(kind, "memory.changed") == 0 &&
+        g_strcmp0(subject, app->agent_id) == 0)
+        ask_memory_review(app);
 }
 
 static LrgWidget *

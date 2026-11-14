@@ -1253,10 +1253,34 @@ clawt_config_render_agent(ClawtConfig       *config,
 
         /* Both watchdogs are opt-in. Write the resolved budget explicitly
          * so generated configs state the policy, including disabled zero.
-         * The daemon measures inactivity; libreclaw measures duration. */
-        append_key_int(out, 2, "watchdog_timeout_seconds",
-                       MAX(clawt_agent_config_get_int(
-                               agent, "runtime.turn_timeout_seconds"), 0));
+         * The daemon measures inactivity; libreclaw measures duration.
+         *
+         * Widened by runtime.busy_max_seconds while the busy check is on.
+         * libreclaw's watchdog counts total duration, so at the bare
+         * budget it would cut the very build the daemon has just decided
+         * is working -- the daemon's check would keep a turn alive that
+         * the inner one then kills, and the feature would do nothing
+         * anywhere but in a test.  A busy check with no ceiling has no
+         * longest turn to write, so the inner cap is off with it: the
+         * daemon's activity watch is the one still standing. */
+        {
+            gint64 budget = MAX(clawt_agent_config_get_int(
+                                    agent, "runtime.turn_timeout_seconds"),
+                                0);
+            gint64 busy = clawt_agent_config_get_int(
+                agent, "runtime.busy_cpu_percent");
+            gint64 ceiling = clawt_agent_config_get_int(
+                agent, "runtime.busy_max_seconds");
+
+            /* An embedded agent has no tree of its own to measure. */
+            if (budget > 0 && busy > 0 &&
+                clawt_agent_config_get_enum(agent, "runtime.type") ==
+                    CLAWT_RUNTIME_PROCESS)
+                budget = (ceiling > 0)
+                    ? MIN(budget + ceiling, (gint64)G_MAXINT) : 0;
+
+            append_key_int(out, 2, "watchdog_timeout_seconds", budget);
+        }
 
         /*
          * Idle-timeout on the session itself, rendered from

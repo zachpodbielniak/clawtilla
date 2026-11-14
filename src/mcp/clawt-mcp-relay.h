@@ -35,6 +35,7 @@
 #endif
 
 #include <glib.h>
+#include <json-glib/json-glib.h>
 
 #include "mcp/clawt-mcp-directory.h"
 
@@ -59,6 +60,8 @@ gint clawt_mcp_relay_run(GStrv argv, GStrv envp, GStrv permitted,
 /**
  * ClawtMcpRelayGate: (skip)
  * @tool: the tool about to be called
+ * @arguments: (nullable): the call's arguments, for a gate that records
+ *   what was asked as well as deciding whether it may happen
  * @refusal: (out) (transfer full) (nullable): what to tell the agent
  *   instead, when the answer is no
  * @user_data: whatever was handed to clawt_mcp_relay_run_gated()
@@ -82,6 +85,7 @@ gint clawt_mcp_relay_run(GStrv argv, GStrv envp, GStrv permitted,
  * Returns: %TRUE if the call may go through
  */
 typedef gboolean (*ClawtMcpRelayGate)(const gchar  *tool,
+                                      JsonObject   *arguments,
                                       gchar       **refusal,
                                       gpointer      user_data);
 
@@ -123,6 +127,17 @@ gint clawt_mcp_relay_run_unfiltered_gated(GStrv              argv,
                                           GStrv              envp,
                                           ClawtMcpRelayGate  gate,
                                           gpointer           gate_data);
+
+/**
+ * clawt_mcp_relay_call_arguments:
+ * @line: one JSON-RPC message
+ *
+ * The arguments of a `tools/call`, for the gate.
+ *
+ * Returns: (transfer full) (nullable): the arguments object, or %NULL
+ *   when @line is not a call or carries none
+ */
+JsonObject *clawt_mcp_relay_call_arguments(const gchar *line);
 
 /**
  * clawt_mcp_relay_call_name:

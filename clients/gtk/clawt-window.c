@@ -537,6 +537,9 @@ clawt_gtk_select_agent(ClawtWindow *self, const gchar *agent_id)
     g_free(self->selected_agent);
     self->selected_agent = g_strdup(agent_id);
 
+    /* The rescue card is about the agent on screen, so it is re-read. */
+    clawt_gtk_refresh_rescue(self);
+
     /*
      * And no longer a room.  The two selections are exclusive, and a
      * stale room entry would keep the sidebar highlighting a row
@@ -1752,6 +1755,38 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
      */
     if (g_str_has_prefix(kind, "wait."))
         clawt_gtk_refresh_waits(self);
+
+    /*
+     * A memory remembered, forgotten, pinned or undone: the selected
+     * agent's review list redraws, and nothing above it.
+     */
+    /* A turn that has shown nothing was offered, or showed something. */
+    if (g_str_has_prefix(kind, "turn.no_reply") &&
+        g_strcmp0(clawt_event_get_subject(event), self->selected_agent) == 0)
+        clawt_gtk_refresh_rescue(self);
+
+    /* Saved steps changed, or a replay ended: the list says which. */
+    if (g_str_has_prefix(kind, "steps.") &&
+        g_strcmp0(clawt_event_get_subject(event), self->selected_agent) == 0) {
+        if (g_strcmp0(kind, "steps.replayed") == 0) {
+            const gchar *failed = clawt_event_get_detail(event, "error");
+            g_autofree gchar *said = (failed != NULL)
+                ? g_strdup_printf("The replay stopped: %s", failed)
+                : g_strdup("Replayed every saved step.");
+
+            clawt_window_toast(self, said);
+        }
+
+        clawt_gtk_refresh_saved_steps(self);
+    }
+
+    /* A scan ended: the report on disk is new, or the failure is. */
+    if (g_strcmp0(kind, "sentinel.finished") == 0)
+        clawt_gtk_refresh_issues(self);
+
+    if (g_strcmp0(kind, "memory.changed") == 0 &&
+        g_strcmp0(clawt_event_get_subject(event), self->selected_agent) == 0)
+        clawt_gtk_refresh_memory_review(self);
 
     /*
      * One prefix match covers trigger.fired, .changed, .refused and
@@ -5194,6 +5229,7 @@ on_page_shown(ClawtWindow *self)
     }
     if (clawt_gtk_current_page(self) == CLAWT_PAGE_ACTIVITY) {
         clawt_gtk_refresh_activity(self);
+        clawt_gtk_refresh_issues(self);
         return;
     }
     if (clawt_gtk_current_page(self) == CLAWT_PAGE_FLEET) {

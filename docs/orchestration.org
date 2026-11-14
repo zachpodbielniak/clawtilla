@@ -2612,7 +2612,89 @@ The same number is also rendered into the agent's own libreclaw config as
 cannot see is still unwound from inside. This inner watchdog measures
 total duration, including time spent producing output or waiting on a
 decision. A positive value therefore imposes that duration ceiling as well
-as the daemon's inactivity check; zero disables both.
+as the daemon's inactivity check; zero disables both.  While the busy
+check below is on, the inner ceiling is the budget plus
+~agents.runtime.busy_max_seconds~, because at the bare budget it would
+cut exactly the build the daemon had just decided was working; with no
+busy ceiling (~0~) the inner one is off and the daemon's activity watch
+is the one standing.
+
+**A busy process tree is working.**  A CLI reports a tool when it starts
+and when it ends, so a turn running one long command -- a test suite, a
+build, a migration -- is silent for as long as the command runs.  Each
+sweep (every five seconds) the daemon reads the CPU time of every
+watched agent's process tree from =/proc= (=ClawtBusyWatch=, one read of
+the process table per sweep, and none at all while no running turn has
+a budget).  A tree that used at least ~agents.runtime.busy_cpu_percent~
+of one core (default 5; 0 turns the check off) since the previous sweep
+counts as a sign of life, exactly as a step does.
+
+- *What is summed:* every descendant's own user and system time plus its
+  reaped children's, and the root's reaped children but never the root's
+  own time -- the root is the libreclaw process, and its bookkeeping is
+  not the turn's work.  A compiler that ran and exited between two
+  sweeps still shows up in the parent that waited for it.
+- *What is not work:* a total that went down (a process exited before
+  its parent waited) becomes the new baseline; a first reading, or a
+  reading of a different pid after a restart, has nothing to compare
+  with and is never busy.
+- *The ceiling:* ~agents.runtime.busy_max_seconds~ (default 7200) bounds
+  how long CPU alone keeps a silent turn alive, counted from the last
+  thing the turn actually reported (a step, a message, a tool call).
+  CPU never moves that clock, or a command spinning in a loop would hold
+  its turn for ever.  0 is no ceiling.
+- *Where it cannot look:* an embedded agent (~runtime.type: embedded~)
+  shares the daemon's process, so its tree cannot be told apart from
+  the fleet's and the check does nothing there.  A command waiting on
+  the network uses no CPU and is still stopped -- that is the wedge the
+  watchdog exists for.  Under ~confine: bwrap~ the root is the bwrap
+  process, so libreclaw's own time is inside the sum; it is idle while a
+  tool runs and well under the threshold.
+
+*** First-reply rescue: a turn that has shown nothing
+
+~agents.runtime.first_reply_seconds~ (default 20; 0 never) is not a
+budget.  Nothing is stopped by it: after that long with *nothing at all*
+from a room's turn -- no step, no thought, no reply -- the daemon
+publishes ~turn.no_reply~ and the clients offer two things beside the
+conversation: *Stop*, and *Try <model> instead* for each model one turn
+can move to.  The first step, reply or settle publishes
+~turn.no_reply_cleared~ and the offer goes, so a card is never left over
+a turn that has since answered.  Keyed on agent *and* room
+(=ClawtRescueWatch=), since an agent runs a turn per room.
+
+*What the daemon can see, and the limit that follows.*  The watch is fed
+by the same steps the watchdog counts.  libreclaw forwards reasoning a
+paragraph at a time and every tool call; it drops the CLI's own status
+lines (their vocabulary is per provider -- ~claude: init~ would read as
+the agent talking) and holds prose until a tool call follows it or the
+turn ends.  So "no step yet" does separate "thinking out loud" from
+"silent", and does *not* separate "the CLI has emitted nothing" from "it
+is writing its answer" or "it is thinking without a paragraph break
+yet".  The offer is therefore worded as what is known --
+=clawt_rescue_offer_text()=: "has not replied or shown any activity for
+20 seconds. It may still be starting, or writing an answer it has not sent
+yet -- or it may be stuck" -- and never says the CLI is stuck.  With
+~runtime.stream_steps~ off there is no signal at all until the answer,
+and nothing is offered.
+
+*What "try another model" can do.*  A model for one turn is a frame
+member libreclaw applies when it takes a message off its queue, and it
+is a *name on the CLI the agent is already running*: libreclaw cannot
+move one turn to another CLI or another login.  So the choices are the
+~model.fallbacks~ entries on the agent's own provider (compared through
+libreclaw's normaliser) and login (=clawt_rescue_switch_choices()=); the
+others are listed by ~turn.rescue~ with the reason, and libreclaw still
+fails over to them by itself at a limit.
+
+The switch hands the room's running turn back to the queue *with the
+model on it* (=clawt_mailbox_turn_hand_back()=: refused when the turn
+has already acted outside the fleet, since running it again could do
+that twice; the replay count is left alone, so a later crash can still
+rerun it once) and then interrupts the agent.  The interrupt's settle
+drains the queue, so the same message goes out again on the chosen
+model, for that turn only.  Both buttons stop *everything* the agent is
+running, as ~agent.interrupt~ always does, and say so.
 
 *** The room's turn
 

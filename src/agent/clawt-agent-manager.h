@@ -177,6 +177,24 @@ ClawtMemoryStore *clawt_agent_manager_memory_write_store(
     GError            **error);
 
 /**
+ * clawt_agent_manager_memory_store_for_scope:
+ * @self: a #ClawtAgentManager
+ * @agent_id: whose view of the scope
+ * @scope: which database: the agent's own, its team's or the fleet's
+ *
+ * One database this agent can see, for reading its journal.  A shared
+ * scope is never brought into being by asking, and an agent on no team
+ * has no team database.
+ *
+ * Returns: (transfer none) (nullable): the store, or %NULL when there is
+ *   none
+ */
+ClawtMemoryStore *clawt_agent_manager_memory_store_for_scope(
+    ClawtAgentManager *self,
+    const gchar       *agent_id,
+    ClawtMemoryScope   scope);
+
+/**
  * clawt_agent_manager_memory_search:
  * @self: a #ClawtAgentManager
  * @agent_id: whose view of the fleet's memories

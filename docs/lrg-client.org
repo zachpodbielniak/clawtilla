@@ -446,6 +446,8 @@ The Chat tab's number is =clawt_lrg_unread_badge()=: the total of =app->unread=,
 Source: =clients/lrg/lrg-chat.c=; decisions in =clients/lrg/lrg-chat-model.c=. Mirrors =clients/gtk/gtk-chat.c=, =clients/gtk/gtk-follow.c= and the chat half of =clients/gtk/clawt-window.c= (message, typing and unread handling, drafts, selection).
 
 *** What it shows
+- *The transcript*:*** What it shows
+- *First-reply rescue*: a card above the composer while the agent on screen has a turn that has shown nothing for ~agents.runtime.first_reply_seconds~ (~turn.rescue~ ~list~, re-read on ~turn.no_reply~, ~turn.no_reply_cleared~ and every agent switch, guarded): =clawt_rescue_offer_text()=, *Stop* and a *Try <model> instead* per choice (~turn.rescue~ ~stop~ / ~switch~). Implemented in =clients/lrg/lrg-rescue.c=.
 - *The transcript*: the conversation of the selected agent (its direct room with the operator) or the selected room, loaded with ~room.history~ and the room's turn steps with ~room.steps~, merged on time so each stretch of tool calls sits between the message that prompted it and the answer it produced (=clawt_lrg_steps_before()= / =clawt_turn_step_precedes()=). Both replies are guarded twice: by the shell's selection generation and by the page's own history generation, so a reply that lands after the person moved on never repaints the page they left.
 - *Runs*: consecutive messages from one sender on one day share one header (=clawt_chat_run_is_start()=). An agent's run header is its avatar (clickable to see the picture larger when it has one), its name and the clock (=clawt_chat_time_label()=); a continuation carries its time in the avatar's gutter, which is what tells a new message from a new paragraph. The operator's turns are bubbles on the right in the accent gradient (=clawt-bubble-mine=, popping in), the time once above the first; an agent's bodies sit on a soft surface card (=clawt-bubble=), flying up as they arrive.
 - *Spacing*: a new run is further apart than a new message, and a new message further than a paragraph (=clawt_appearance_get_run_spacing()=, the message gap derived from it as in GTK). Day dividers ("Today", "Yesterday", "Wednesday 25 August", from =clawt_chat_day_label()=) sit between rules.
@@ -599,6 +601,10 @@ Every chooser is drawn first holding only the current value, then refilled when 
 
 Save changes sends only what changed, one ~agent.set~ at a time in the order =clawt_lrg_agent_save_plan()= gives: the account is cleared first when it moves from one login to another (the daemon checks the provider/account pair), and a computer key the newly chosen shared machine owns is never sent.  The fallback list, spelled by =clawt_lrg_agent_fallback_spell()= (which refuses an entry with no model before anything is sent), goes last; when the provider or the account changes in the same save, the old list is cleared first, because the daemon checks the list against the backend it falls back from. It stops at the first refusal (already toasted) and re-reads the page -- unless the accepted steps had cleared the stored list (=clawt_lrg_agent_plan_cleared_fallbacks()=), in which case it first runs =clawt_lrg_agent_fallback_restore_plan()=: the old list onto the new backend, then, if that is refused, the old backend and the list together, so a refusal never leaves the agent with no list. The closing toast names the restart a change needs, and says so specifically when any reply carried =restart_required= (an AI CLI lists its tools once, at session start).
 
+*** Memory review
+
+A section below *Waiting for* (~memory.journal~): one row per journal entry with the action and excerpt, who and when, and the shared database for a team or fleet row; an undo button labelled by =clawt_memory_journal_undo_label()= (~memory.undo~) or the daemon's reason it cannot be undone.  Guarded and quiet like the waits, and refilled alone on ~memory.changed~ for the agent on screen.
+
 *** Waiting for
 
 From ~wait.list~ with the agent: a row per pending wait with the agent's label as its title and, under it, the condition, the schedule line from =clawt_wait_schedule_label()= and what the last check saw, with a *Cancel* button that sends ~wait.cancel~ (the daemon tells the agent).  Only this section re-reads on a ~wait.changed~ event for the agent shown, so a form being edited above it is never thrown away.
@@ -654,6 +660,8 @@ A command run inside the computer with ~computer.exec~, its echo, stdout, stderr
 Shown only where the daemon says there could be a screen (=computer_screen=). While the view is showing, a one-second source on the app's context sends ~computer.observe~ (renewing the lease) and ~computer.screen~, and on an observable screen ~computer.frame~, all quiet; a ~computer.frame~ event fetches the new frame at once. The first tick after the page or the view is left sends ~computer.observe_stop~ and removes the source, and a different agent lets go of the old one's watch before the id changes. The frame is decoded the way avatars are -- through a temporary file named for its sniffed type -- at most 1280 px wide, and drawn in an =LrgImage= in FIT mode capped at its own size, so it is never blown up.
 
 The status line says whether the frame is live or stale (with its age, from the daemon's =stale=), who holds the screen and what the agent asked for. Take the screen (~computer.takeover~) and Give the screen back (~computer.release~) swap as the hold changes; Open in a viewer spawns =remote-viewer= on the VM's VNC address, and says plainly when it is not installed. Typing (text, or =@key= for a key or combo) or a click at =x,y= is sent with ~computer.input~ only while this client holds the screen and the machine can take input; a click that is not two whole numbers is refused rather than sent as =0,0=.
+
+*Saved steps* (=clients/lrg/lrg-steps.c=), under the screen: ~steps.last~'s lines with a name and Save (enabled only when the daemon says the turn can be saved, its reason shown otherwise), and each saved list with Replay (~steps.replay~) and Delete (~steps.delete~). Re-read with the page and on ~steps.changed~ / ~steps.replayed~; a replay's end is a toast saying how it went.
 
 *** Mounts
 
@@ -837,13 +845,16 @@ Each card shows the agent's avatar with its live glow, "alpha in planning", the 
 
 The latest step is always visible; an =LrgExpander= ("Last 6 steps", remembered open per turn) holds every step the reply carries -- each with its tone (=clawt_turn_step_tone()=) and summary (=clawt_turn_step_summary()=) -- and an =LrgTimelineView= with one locked track where each step is a clip from when it began until the next did (the last until now), which shows where the time went in a way a list does not.
 
+*** Issues
+A section under the cards: the age of the last sentinel report (=clawt_sentinel_age_text()=, "Scanned 3m ago", with "scanning now…" while one runs), *Scan now* (~sentinel.scan~), and one row per issue from ~sentinel.report~ with a badge (=clawt_sentinel_kind_label()=, red for ~bad~, amber for ~warning~), the title, and when it last happened with the sample.  Read when the page is shown and on ~sentinel.finished~, never on the ten-second tick.  See [[file:maintenance.org::*The sentinel: what keeps going wrong][maintenance.org]].
+
 *** Actions
 - Stop agent (~agent.interrupt~): labelled agent-wide, because it ends every turn the agent is running; asks first with =clawt_activity_stop_prompt()=, then says whether anything was stopped.
 - Steer (~msg.send~, target the agent, as GTK and the web client send it): an entry and button on a card whose =steerable= is true. Enter sends. The reply's =steered= says whether the busy agent took it as a steer or had finished and took it as a new message. A card whose turn is in another room says why there is no field: steering reaches only the agent's conversation with you.
 - Refresh, in the toolbar.
 
 *** Frame kinds
-~activity.list~, ~agent.interrupt~, ~msg.send~.
+~activity.list~, ~agent.interrupt~, ~msg.send~, ~sentinel.scan~, ~sentinel.report~.
 
 
 ** Browser (on the Computer page)
@@ -1214,6 +1225,9 @@ A colour this client reads but the palette leaves out falls back to libadwaita's
 | ~lrg-work-model.c~, ~clawt-lrg-work-model.h~ | automation's and work's decisions | -- |
 | ~lrg-flow.c~ | the conversation graph and the agents' conversations | ~gtk-flow.c~ |
 | ~lrg-activity.c~ | every running turn, to stop or steer | ~gtk-activity.c~ |
+| ~lrg-rescue.c~ | the chat's first-reply rescue card above the composer | ~gtk-rescue.c~ |
+| ~lrg-steps.c~ | the Screen view's saved steps: Save, Replay, Delete | ~gtk-steps.c~ |
+| ~lrg-issues.c~ | the Activity page's Issues: the sentinel's report and Scan now | ~gtk-issues.c~ |
 | ~lrg-skills.c~ | the skills library and teaching | ~gtk-skills.c~ |
 | ~lrg-recall.c~ | recall, an agent's memories, the operator profile | ~gtk-recall.c~ |
 | ~lrg-fleet-model.c~, ~clawt-lrg-fleet-model.h~ | flow's, activity's and the library's decisions | -- |

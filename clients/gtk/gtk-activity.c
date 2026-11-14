@@ -287,6 +287,7 @@ GtkWidget *
 clawt_gtk_build_activity_page(ClawtWindow *self)
 {
     GtkWidget *scroll = gtk_scrolled_window_new();
+    GtkWidget *column = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 
     self->activity_list = GTK_LIST_BOX(gtk_list_box_new());
     gtk_list_box_set_selection_mode(self->activity_list, GTK_SELECTION_NONE);
@@ -296,8 +297,12 @@ clawt_gtk_build_activity_page(ClawtWindow *self)
     gtk_widget_set_margin_start(GTK_WIDGET(self->activity_list), 12);
     gtk_widget_set_margin_end(GTK_WIDGET(self->activity_list), 12);
 
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll),
-                                  GTK_WIDGET(self->activity_list));
+    gtk_box_append(GTK_BOX(column), GTK_WIDGET(self->activity_list));
+
+    /* What keeps going wrong, below what is running now (gtk-issues.c). */
+    clawt_gtk_build_issues(self, GTK_BOX(column));
+
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), column);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
 

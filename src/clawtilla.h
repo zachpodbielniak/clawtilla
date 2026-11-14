@@ -46,6 +46,7 @@
 #include "net/clawt-egress-broker.h"
 #include "computer/clawt-observable.h"
 #include "computer/clawt-screen.h"
+#include "computer/clawt-saved-steps.h"
 #include "computer/clawt-takeover.h"
 #include "computer/clawt-computer.h"
 #include "computer/clawt-observer.h"
@@ -85,6 +86,8 @@
 #include "chat/clawt-loop-guard.h"
 #include "chat/clawt-repeat-watch.h"
 #include "chat/clawt-turn-watch.h"
+#include "chat/clawt-busy-watch.h"
+#include "chat/clawt-rescue.h"
 #include "chat/clawt-steer-queue.h"
 #include "chat/clawt-draft-store.h"
 #include "chat/clawt-room.h"
@@ -131,6 +134,7 @@
 #include "core/clawt-event.h"
 #include "core/clawt-event-bus.h"
 #include "core/clawt-event-log.h"
+#include "core/clawt-sentinel.h"
 
 #include "config/clawt-config.h"
 #include "config/clawt-config-render.h"
@@ -178,6 +182,7 @@
 
 #include "mailbox/clawt-mailbox-item.h"
 #include "memory/clawt-memory.h"
+#include "memory/clawt-memory-journal.h"
 #include "memory/clawt-memory-store.h"
 #include "memory/clawt-memory-scopes.h"
 #include "memory/clawt-transcript-index.h"

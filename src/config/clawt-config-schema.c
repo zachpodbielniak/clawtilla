@@ -1065,6 +1065,19 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "A prompt suffix reaches every turn, so this number is what the\nreminder asks the agent for rather than something clawtilla counts.\nCounting turns from the daemon would need a per-turn channel to the\nagent, and the only one there is is the delivery preamble -- which not\nevery turn has.", "0.2.0" },
 
+{ "memories.journal_keep", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "1000", NULL,
+  "How many changes each memory database's journal keeps. 0 keeps every\n"
+  "one.\n"
+  "\n"
+  "Every remember, forget, pin and unpin is written to a journal beside\n"
+  "the memories it changed, with who made it, and the Memory review page\n"
+  "in each client lists it with an Undo per row. The oldest rows go first\n"
+  "once there are more than this, and a change whose row has gone can no\n"
+  "longer be undone -- the page says so rather than offering a button\n"
+  "that cannot work. One journal per database: an agent's own, each\n"
+  "team's and the fleet's.", "0.26.0" },
+
 { "memories.operator_profile", CLAWT_SCHEMA_BOOLEAN,
   CLAWT_SCHEMA_FLAG_COMMENTED, "false", NULL,
   "Whether the fleet keeps a profile of the person it works for.\n"
@@ -1075,6 +1088,42 @@ static const ClawtSchemaEntry schema[] = {
   "something to build.\n"
   "\n"
   "Two halves: `<state_dir>/OPERATOR.org`, which you write, and\nfleet-scope memories in the `operator` category, which agents record.\nBoth are written into a marked region of every agent's USER.org, so a\nchange reaches the whole fleet rather than only agents made afterwards.\nOff removes the region again.", "0.2.0" },
+
+/* ── sentinel ────────────────────────────────────────────────────── */
+{ "sentinel", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "What `clawtilla sentinel` looks for in the event log.\n"
+  "\n"
+  "The sentinel is a read-only scan of <state_dir>/events/*.ndjson that\n"
+  "groups failing tool calls, long queue waits, spending and stalled turns\n"
+  "into issues and writes them as YAML. It runs out of process: the\n"
+  "clients' Issues view asks the daemon to start `clawtilla sentinel`\n"
+  "and then shows what it wrote. It never writes to the event log.", "0.26.0" },
+
+{ "sentinel.days", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, "7", NULL,
+  "How many days of the event log one scan reads, counting today. 0\n"
+  "reads every file there is, which daemon.event_log_days bounds.", "0.26.0" },
+
+{ "sentinel.min_failures", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "3", NULL,
+  "How many failures of one agent's tool make an issue. A tool that\n"
+  "failed once is a turn's ordinary business; one that failed this many\n"
+  "times in the window is a pattern somebody should look at.", "0.26.0" },
+
+{ "sentinel.queue_wait_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "600", NULL,
+  "How long a message may wait in an agent's queue, from being queued to\n"
+  "being delivered, before the wait is an issue. Messages still queued\n"
+  "past it when the scan ends are reported too.", "0.26.0" },
+
+{ "sentinel.daily_spend_micros", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "10000000", NULL,
+  "One agent's spend in one day, in micro-dollars, that makes an issue.\n"
+  "0 reports only the days a cap was reached.\n"
+  "\n"
+  "A line to report, not a limit: nothing is refused at it. The caps that\n"
+  "do refuse work are orchestration.daily_fleet_budget_micros and each\n"
+  "agent's own, and every time one is reached is an issue whatever this\n"
+  "says.", "0.26.0" },
 
 /* ── skills ──────────────────────────────────────────────────────── */
 { "skills", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
@@ -2986,8 +3035,58 @@ static const ClawtSchemaEntry schema[] = {
   "publishes turn.timed_out; the same number is rendered into the\n"
   "agent's own session.watchdog_timeout_seconds. That inner watchdog\n"
   "measures total duration, even while output arrives or a decision is\n"
-  "pending; a positive value therefore also caps the whole turn.",
+  "pending; a positive value therefore also caps the whole turn -- at\n"
+  "this number plus runtime.busy_max_seconds while the busy check\n"
+  "(runtime.busy_cpu_percent) is on, and not at all when that ceiling\n"
+  "is 0.",
   "0.2.0" },
+
+{ "agents.runtime.first_reply_seconds", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_NONE, "20", NULL,
+  "How long a turn may show nothing at all -- no step, no thought, no\n"
+  "reply -- before the clients offer to stop it or to run the same\n"
+  "message on another model. 0 never offers.\n"
+  "\n"
+  "Nothing is stopped by this; it is an offer, shown beside the\n"
+  "conversation and withdrawn the moment the turn shows anything. It\n"
+  "needs runtime.stream_steps, since a turn whose steps are not\n"
+  "streamed is silent until it answers whether or not it is working.\n"
+  "\n"
+  "Silence here is what the daemon can see, which is less than what the\n"
+  "CLI is doing: libreclaw does not forward the CLI's own status lines,\n"
+  "and holds prose until a tool call or the end of the turn. So the\n"
+  "offer says the turn has shown nothing, never that it is stuck. The\n"
+  "models offered are the model.fallbacks entries on the agent's own\n"
+  "CLI and login, since one turn's model is a name on the CLI it is\n"
+  "already running.", "0.26.0" },
+
+{ "agents.runtime.busy_cpu_percent", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "5", NULL,
+  "How much CPU the agent's processes must use, in percent of one core,\n"
+  "for a silent turn to count as working. 0 turns the check off.\n"
+  "\n"
+  "A turn running one long command -- a test suite, a build -- reports\n"
+  "nothing between the tool starting and the tool finishing, so\n"
+  "runtime.turn_timeout_seconds would read forty minutes of compiling as\n"
+  "a wedged turn. Each watchdog sweep (every five seconds) reads the CPU\n"
+  "time of the agent's process tree from /proc; a tree that used at\n"
+  "least this much since the last sweep counts as a sign of life. A\n"
+  "command waiting on the network uses none and is still stopped.\n"
+  "\n"
+  "Only for runtime.type: process. An embedded agent shares the daemon's\n"
+  "process, so its tree cannot be told apart from the fleet's and the\n"
+  "check does nothing there. Nothing is read while\n"
+  "runtime.turn_timeout_seconds is 0.", "0.26.0" },
+
+{ "agents.runtime.busy_max_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "7200", NULL,
+  "The longest a busy process tree may keep a silent turn alive, in\n"
+  "seconds since the turn last reported anything. 0 is no ceiling.\n"
+  "\n"
+  "A command stuck in a loop uses CPU too, and without a ceiling it would\n"
+  "hold its turn for ever. Past this many seconds with no step, message\n"
+  "or tool call the CPU stops counting and runtime.turn_timeout_seconds\n"
+  "applies as it would to any silent turn.", "0.26.0" },
 
 /* ── agents.computer ─────────────────────────────────────────────── */
 { "agents.computer", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,

@@ -691,6 +691,9 @@ build(ClawtLrgApp *app)
     clawt_lrg_add(body, state.list);
     g_object_unref(state.list);
 
+    /* What keeps going wrong, below what is running now (lrg-issues.c). */
+    clawt_lrg_issues_build(app, body);
+
     clawt_lrg_take(clawt_lrg_page_toolbar(state.page),
                    clawt_lrg_button("Refresh", "flat",
                                     G_CALLBACK(on_refresh_clicked), app));
@@ -712,6 +715,7 @@ refresh(ClawtLrgApp *app)
 {
     state.ticks = 0;
     request_activity(app);
+    clawt_lrg_issues_refresh(app);
 }
 
 static void
@@ -731,6 +735,10 @@ event(ClawtLrgApp *app, ClawtEvent *event)
         g_strcmp0(kind, "agent.typing") == 0 ||
         g_strcmp0(kind, "message") == 0)
         request_activity(app);
+
+    /* A scan ended: the report is new, or the failure is. */
+    if (g_strcmp0(kind, "sentinel.finished") == 0)
+        clawt_lrg_issues_refresh(app);
 }
 
 static const ClawtLrgPage page_impl = {

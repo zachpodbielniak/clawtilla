@@ -243,4 +243,28 @@ GPtrArray *clawt_turn_watch_collect_expired(ClawtTurnWatch *self);
  */
 void clawt_turn_watch_reset(ClawtTurnWatch *self);
 
+/**
+ * clawt_turn_watch_dup_keys:
+ * @self: a #ClawtTurnWatch
+ *
+ * Every turn being watched, held or running.  For a caller that has
+ * other evidence of life to add -- the busy check reads a process tree
+ * per watched agent before the sweep collects the expired ones.
+ *
+ * Returns: (transfer full) (element-type utf8): the keys, possibly empty
+ */
+GPtrArray *clawt_turn_watch_dup_keys(ClawtTurnWatch *self);
+
+/**
+ * clawt_turn_watch_now:
+ * @self: a #ClawtTurnWatch
+ *
+ * The time on this watch's clock, which is the fake one in a test.  A
+ * caller measuring something against the same turns has to read the
+ * same clock, or a test on a fake clock compares two different times.
+ *
+ * Returns: monotonic microseconds
+ */
+gint64 clawt_turn_watch_now(ClawtTurnWatch *self);
+
 G_END_DECLS

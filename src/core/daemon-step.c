@@ -115,6 +115,9 @@ clawt_daemon_note_step(ClawtDaemon *self, ClawtTurnStep *step)
      */
     clawt_daemon_turn_activity(self, agent_id);
 
+    /* And it is not silent any more: a rescue offer is withdrawn. */
+    clawt_daemon_rescue_life(self, agent_id, room_id);
+
 	/*
 	 * And evidence of what the turn did.  A tool step is a command run,
 	 * a file read or written, a message sent -- anything that makes the

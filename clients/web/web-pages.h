@@ -260,6 +260,93 @@ void clawt_web_register_decisions(HtmxRouter *router, ClawtWebApp *app);
  */
 void clawt_web_register_memory(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_creation(HtmxRouter *router, ClawtWebApp *app);
+
+/**
+ * clawt_web_register_review:
+ * @router: the router
+ * @app: the app
+ *
+ * The undo route of the agent page's Memory review (web-review.c).  Under
+ * `/a/:id/`, so registered before clawt_web_register_views().
+ */
+void clawt_web_register_review(HtmxRouter *router, ClawtWebApp *app);
+
+/**
+ * clawt_web_register_issues:
+ * @router: the router
+ * @app: the app
+ *
+ * The Activity page's Scan now (web-issues.c), at `/issues/scan`.
+ */
+void clawt_web_register_issues(HtmxRouter *router, ClawtWebApp *app);
+
+/**
+ * clawt_web_register_rescue:
+ * @router: the router
+ * @app: the app
+ *
+ * The chat's first-reply rescue actions (web-rescue.c), at
+ * `/a/:id/rescue`; before clawt_web_register_views().
+ */
+void clawt_web_register_rescue(HtmxRouter *router, ClawtWebApp *app);
+
+/**
+ * clawt_web_register_steps:
+ * @router: the router
+ * @app: the app
+ *
+ * The Screen view's saved steps (web-steps.c), at
+ * `/a/:id/steps/:verb`; before clawt_web_register_views().
+ */
+void clawt_web_register_steps(HtmxRouter *router, ClawtWebApp *app);
+
+/**
+ * clawt_web_add_saved_steps_card:
+ * @app: the app
+ * @parent: where the card goes
+ * @agent_id: whose screen
+ *
+ * The last turn's desktop input with Save, and every saved list with
+ * Replay and Delete.
+ */
+void clawt_web_add_saved_steps_card(ClawtWebApp *app, HtmxElement *parent,
+                                    const gchar *agent_id);
+
+/**
+ * clawt_web_add_rescue_card:
+ * @app: the app
+ * @parent: where the cards go
+ * @agent_id: whose turns
+ *
+ * One card per turn of @agent_id the daemon has offered to rescue, with
+ * Stop and a form per model the turn can move to; nothing when there is
+ * none.
+ */
+void clawt_web_add_rescue_card(ClawtWebApp *app, HtmxElement *parent,
+                               const gchar *agent_id);
+
+/**
+ * clawt_web_add_issues_card:
+ * @app: the app
+ * @parent: where the card goes
+ * @agent_id: (nullable): the agent the page is about, to come back to
+ *
+ * The Activity page's Issues card: the sentinel's last report.
+ */
+void clawt_web_add_issues_card(ClawtWebApp *app, HtmxElement *parent,
+                               const gchar *agent_id);
+
+/**
+ * clawt_web_add_memory_review_card:
+ * @app: the app
+ * @parent: where the card goes
+ * @agent_id: whose journal
+ *
+ * The agent page's Memory review card: the journal of every memory
+ * change, with an Undo per row the daemon would accept.
+ */
+void clawt_web_add_memory_review_card(ClawtWebApp *app, HtmxElement *parent,
+                                      const gchar *agent_id);
 void clawt_web_register_extras(HtmxRouter *router, ClawtWebApp *app);
 
 /**

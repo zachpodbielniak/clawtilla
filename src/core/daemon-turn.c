@@ -348,6 +348,152 @@ clawt_daemon_turn_sweep_now(ClawtDaemon *self)
     on_turn_sweep(self);
 }
 
+/* ── A busy process tree is working ──────────────────────────────── */
+
+static gint
+agent_root_pid(ClawtDaemon *self, const gchar *agent_id)
+{
+    ClawtAgent *agent;
+    ClawtAgentRuntime *runtime;
+
+    if (self->turn_pid_func != NULL)
+        return self->turn_pid_func(self, agent_id);
+
+    agent = (self->agents != NULL)
+        ? clawt_agent_manager_get(self->agents, agent_id) : NULL;
+    runtime = (agent != NULL) ? clawt_agent_get_runtime(agent) : NULL;
+
+    /* Zero for an embedded agent: its tree is the daemon's. */
+    return (runtime != NULL) ? (gint)clawt_agent_runtime_get_pid(runtime) : 0;
+}
+
+static gint64
+agent_runtime_int(ClawtDaemon *self, const gchar *agent_id, const gchar *key)
+{
+    ClawtAgentConfig *config = (self->config != NULL && agent_id != NULL)
+        ? clawt_config_get_agent(self->config, agent_id) : NULL;
+    g_autofree gchar *fleet = g_strconcat("agents.", key, NULL);
+
+    if (config == NULL)
+        return (self->config != NULL)
+            ? clawt_config_get_int(self->config, fleet) : 0;
+
+    return clawt_agent_config_get_int(config, key);
+}
+
+void
+clawt_daemon_turn_set_pid_func(ClawtDaemon *self,
+                               gint (*func)(ClawtDaemon *self,
+                                            const gchar *agent_id))
+{
+    g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+    self->turn_pid_func = func;
+}
+
+ClawtBusyWatch *
+clawt_daemon_turn_get_busy_watch(ClawtDaemon *self)
+{
+    g_return_val_if_fail(CLAWT_IS_DAEMON(self), NULL);
+
+    return self->busy_watch;
+}
+
+/*
+ * Before the sweep collects the expired turns: every watched agent whose
+ * process tree has used the CPU since the last sweep is working, and is
+ * told so the way a step tells it.
+ *
+ * Measured on the turn watch's own clock, so the ceiling and the budget
+ * are two readings of one time.  The snapshot of /proc is read once per
+ * sweep and only when some running turn could use it, since a fleet with
+ * the watchdog off has no reason to walk the process table every five
+ * seconds.
+ */
+static void
+note_busy_trees(ClawtDaemon *self)
+{
+    g_autoptr(GPtrArray) keys = NULL;
+    gboolean refreshed = FALSE;
+    gint64 now;
+    guint i;
+
+    if (self->busy_watch == NULL || self->turn_watch == NULL)
+        return;
+
+    keys = clawt_turn_watch_dup_keys(self->turn_watch);
+    now = clawt_turn_watch_now(self->turn_watch);
+
+    for (i = 0; i < keys->len; i++) {
+        const gchar *agent_id = g_ptr_array_index(keys, i);
+        gint64 threshold;
+        gint64 ceiling;
+        gint64 *said;
+        gint pid;
+        gint percent = -1;
+
+        /* Parked on a person: nothing is expiring, nothing to prove. */
+        if (clawt_turn_watch_get_holds(self->turn_watch, agent_id) > 0)
+            continue;
+
+        if (clawt_turn_watch_get_budget_for(self->turn_watch, agent_id) == 0)
+            continue;
+
+        threshold = agent_runtime_int(self, agent_id,
+                                      "runtime.busy_cpu_percent");
+        if (threshold <= 0)
+            continue;
+
+        pid = agent_root_pid(self, agent_id);
+        if (pid <= 0)
+            continue;
+
+        /*
+         * The ceiling counts from the last thing the turn *said*.  A
+         * command looping on the CPU would otherwise hold its turn for
+         * ever, which is the wedge the watchdog is for, wearing work's
+         * clothes.
+         */
+        ceiling = agent_runtime_int(self, agent_id,
+                                    "runtime.busy_max_seconds");
+        said = (self->turn_said != NULL)
+            ? g_hash_table_lookup(self->turn_said, agent_id) : NULL;
+
+        if (ceiling > 0 && said != NULL &&
+            now - *said >= ceiling * G_USEC_PER_SEC) {
+            clawt_busy_watch_forget(self->busy_watch, agent_id);
+            continue;
+        }
+
+        if (!refreshed) {
+            clawt_busy_watch_refresh(self->busy_watch);
+            refreshed = TRUE;
+        }
+
+        if (clawt_busy_watch_sample(self->busy_watch, agent_id, pid, now,
+                                    (guint)MIN(threshold, (gint64)G_MAXUINT),
+                                    &percent)) {
+            g_debug("%s: silent but its processes used %d%% of a core; "
+                    "counted as working", agent_id, percent);
+            clawt_turn_watch_note_activity(self->turn_watch, agent_id);
+        }
+    }
+}
+
+static void
+note_turn_said(ClawtDaemon *self, const gchar *agent_id)
+{
+    gint64 *at;
+
+    if (self->turn_said == NULL || self->turn_watch == NULL ||
+        agent_id == NULL)
+        return;
+
+    at = g_new(gint64, 1);
+    *at = clawt_turn_watch_now(self->turn_watch);
+    g_hash_table_insert(self->turn_said, g_strdup(agent_id), at);
+}
+
 static gboolean
 on_turn_sweep(gpointer data)
 {
@@ -359,6 +505,11 @@ on_turn_sweep(gpointer data)
     if (self->turn_watch == NULL || self->room_watch == NULL)
         return G_SOURCE_CONTINUE;
 
+    note_busy_trees(self);
+
+    /* Turns that have shown nothing at all: offered, not stopped. */
+    clawt_daemon_rescue_sweep(self);
+
     wedged = clawt_turn_watch_collect_expired(self->turn_watch);
 
     for (i = 0; i < wedged->len; i++) {
@@ -369,8 +520,10 @@ on_turn_sweep(gpointer data)
             "[clawtilla] This turn produced nothing for %u seconds and was "
             "stopped. That is agents.runtime.turn_timeout_seconds, which "
             "counts activity rather than elapsed time -- a turn may run for "
-            "an hour while it is doing things. Whatever was in flight is "
-            "gone; say what you have rather than starting again.",
+            "an hour while it is doing things, and while its processes "
+            "keep using the CPU (agents.runtime.busy_cpu_percent). "
+            "Whatever was in flight is gone; say what you have rather "
+            "than starting again.",
             agent_turn_budget(self, agent_id));
 
         stop_expired_turn(self, agent_id, CLAWT_STALL_TURN_TIMEOUT, message);
@@ -618,6 +771,13 @@ clawt_daemon_turn_setup(ClawtDaemon *self)
     self->repeats = clawt_repeat_watch_new();
     self->turn_watch = clawt_turn_watch_new_activity();
     self->room_watch = clawt_turn_watch_new_work();
+    self->busy_watch = clawt_busy_watch_new();
+    self->rescues = clawt_rescue_watch_new();
+    self->step_recorder = clawt_step_recorder_new();
+    self->replays = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                          NULL);
+    self->turn_said = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                            g_free, g_free);
     self->steers = clawt_steer_queue_new();
 
     self->room_holder = g_hash_table_new_full(g_str_hash, g_str_equal,
@@ -731,6 +891,11 @@ clawt_daemon_turn_teardown(ClawtDaemon *self)
     g_clear_object(&self->repeats);
     g_clear_object(&self->turn_watch);
     g_clear_object(&self->room_watch);
+    g_clear_object(&self->busy_watch);
+    g_clear_object(&self->rescues);
+    g_clear_object(&self->step_recorder);
+    g_clear_pointer(&self->replays, g_hash_table_unref);
+    g_clear_pointer(&self->turn_said, g_hash_table_unref);
     g_clear_object(&self->steers);
 }
 
@@ -772,6 +937,13 @@ clawt_daemon_turn_begin(ClawtDaemon *self, const gchar *agent_id,
                                     agent_turn_budget(self, agent_id));
 
     clawt_turn_watch_begin(self->turn_watch, agent_id);
+    note_turn_said(self, agent_id);
+
+    /* Saved steps record per turn, from this edge to the settle. */
+    clawt_daemon_steps_turn_began(self, agent_id);
+
+    if (self->busy_watch != NULL)
+        clawt_busy_watch_forget(self->busy_watch, agent_id);
 }
 
 void
@@ -787,6 +959,13 @@ clawt_daemon_turn_begin_room(ClawtDaemon *self, const gchar *agent_id,
     if (agent_id == NULL || room_id == NULL ||
         self->room_watch == NULL || self->rooms == NULL)
         return;
+
+    /*
+     * The first-reply watch starts on the same edge, before the room
+     * budget's early return: a room with no budget still has a person
+     * waiting on its first reply.
+     */
+    clawt_daemon_rescue_begin(self, agent_id, room_id);
 
     room = clawt_room_manager_get(self->rooms, room_id);
     budget = (room != NULL) ? clawt_room_get_turn_timeout(room) : 0;
@@ -823,6 +1002,7 @@ clawt_daemon_turn_settle_room(ClawtDaemon *self, const gchar *agent_id,
     key = room_hold_key(room_id, agent_id);
 
     settle_hold(self, key);
+    clawt_daemon_rescue_life(self, agent_id, room_id);
 
     /*
      * The steps of the turn that just ended are *kept*.
@@ -847,6 +1027,8 @@ clawt_daemon_turn_activity(ClawtDaemon *self, const gchar *agent_id)
 
     if (self->turn_watch != NULL)
         clawt_turn_watch_note_activity(self->turn_watch, agent_id);
+
+    note_turn_said(self, agent_id);
 }
 
 /*
@@ -906,6 +1088,18 @@ clawt_daemon_turn_settle(ClawtDaemon *self, const gchar *agent_id)
 
     if (self->turn_watch != NULL)
         clawt_turn_watch_end(self->turn_watch, agent_id);
+
+    if (self->busy_watch != NULL)
+        clawt_busy_watch_forget(self->busy_watch, agent_id);
+
+    /* Every room's offer is withdrawn: the turns are over. */
+    clawt_daemon_rescue_life(self, agent_id, NULL);
+
+    /* And this turn's desktop input becomes the agent's last run. */
+    clawt_daemon_steps_turn_ended(self, agent_id);
+
+    if (self->turn_said != NULL)
+        g_hash_table_remove(self->turn_said, agent_id);
 
     if (self->repeats != NULL)
         clawt_repeat_watch_end_turn(self->repeats, agent_id);

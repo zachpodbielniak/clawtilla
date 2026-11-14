@@ -218,6 +218,32 @@ build_batch_refusal(void)
     return render(reply);
 }
 
+JsonObject *
+clawt_mcp_relay_call_arguments(const gchar *line)
+{
+    g_autoptr(JsonObject) object = NULL;
+    JsonObject *params;
+
+    parse_object(line, &object, NULL);
+
+    if (object == NULL ||
+        g_strcmp0(json_object_get_string_member_with_default(object,
+                                                             "method", ""),
+                  "tools/call") != 0 ||
+        !json_object_has_member(object, "params") ||
+        !JSON_NODE_HOLDS_OBJECT(json_object_get_member(object, "params")))
+        return NULL;
+
+    params = json_object_get_object_member(object, "params");
+
+    if (!json_object_has_member(params, "arguments") ||
+        !JSON_NODE_HOLDS_OBJECT(json_object_get_member(params, "arguments")))
+        return NULL;
+
+    return json_object_ref(json_object_get_object_member(params,
+                                                         "arguments"));
+}
+
 gchar *
 clawt_mcp_relay_call_name(const gchar *line)
 {
@@ -512,8 +538,10 @@ clawt_mcp_relay_policy_outbound(const ClawtMcpRelayPolicy  *policy,
 
     if (tool != NULL) {
         g_autofree gchar *denied = NULL;
+        g_autoptr(JsonObject) arguments =
+            clawt_mcp_relay_call_arguments(effective);
 
-        if (!policy->gate(tool, &denied, policy->gate_data)) {
+        if (!policy->gate(tool, arguments, &denied, policy->gate_data)) {
             *to_client = clawt_mcp_relay_build_refusal(
                 effective,
                 (denied != NULL) ? denied

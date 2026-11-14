@@ -5327,6 +5327,7 @@ clawt_gtk_build_chat_page(ClawtWindow *self)
         gtk_widget_set_margin_start(composer, CHAT_BODY_INSET);
         gtk_widget_set_margin_end(composer, CHAT_ROW_MARGIN);
 
+        gtk_box_append(GTK_BOX(composer), clawt_gtk_build_rescue(self));
         gtk_box_append(GTK_BOX(composer), self->activity_bar);
         gtk_box_append(GTK_BOX(composer), self->command_revealer);
         gtk_box_append(GTK_BOX(composer), self->attachments);

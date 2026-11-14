@@ -749,7 +749,7 @@ test_the_watchdog_reaches_the_agents_config(void)
     g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
         "agents:\n"
         "  - id: patient\n"
-        "    runtime: {turn_timeout_seconds: 5400}\n"
+        "    runtime: {turn_timeout_seconds: 5400, busy_cpu_percent: 0}\n"
         "  - id: unbounded\n"
         "    runtime: {turn_timeout_seconds: 0}\n"
         "  - id: ordinary\n",
@@ -802,6 +802,50 @@ test_the_watchdog_reaches_the_agents_config(void)
                                    entry->default_value);
         g_assert_nonnull(strstr(ordinary, expected));
     }
+}
+
+/*
+ * The busy check widens libreclaw's own watchdog, or it would do nothing.
+ *
+ * libreclaw counts total duration, so at the bare budget it cuts the
+ * build the daemon has just decided is working.  With the busy check on
+ * the inner cap is the budget plus the busy ceiling; with no ceiling it
+ * is off, since there is no longest turn to write; and an embedded agent
+ * -- which the busy check cannot measure -- keeps the bare budget.
+ */
+static void
+test_the_busy_check_widens_the_inner_watchdog(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+        "agents:\n"
+        "  - id: builder\n"
+        "    runtime: {turn_timeout_seconds: 600, busy_cpu_percent: 5,"
+        " busy_max_seconds: 3000}\n"
+        "  - id: forever\n"
+        "    runtime: {turn_timeout_seconds: 600, busy_max_seconds: 0}\n"
+        "  - id: inside\n"
+        "    runtime: {type: embedded, turn_timeout_seconds: 600}\n",
+        &error);
+    GPtrArray *agents;
+    g_autofree gchar *builder = NULL;
+    g_autofree gchar *forever = NULL;
+    g_autofree gchar *inside = NULL;
+
+    g_assert_no_error(error);
+    agents = clawt_config_get_agents(config);
+
+    builder = clawt_config_render_agent(config, g_ptr_array_index(agents, 0),
+                                        "/tmp/s.sock", "/tmp/state", NULL);
+    g_assert_nonnull(strstr(builder, "watchdog_timeout_seconds: 3600"));
+
+    forever = clawt_config_render_agent(config, g_ptr_array_index(agents, 1),
+                                        "/tmp/s.sock", "/tmp/state", NULL);
+    g_assert_nonnull(strstr(forever, "watchdog_timeout_seconds: 0"));
+
+    inside = clawt_config_render_agent(config, g_ptr_array_index(agents, 2),
+                                       "/tmp/s.sock", "/tmp/state", NULL);
+    g_assert_nonnull(strstr(inside, "watchdog_timeout_seconds: 600"));
 }
 
 /* Read the generated YAML through libreclaw and tune a real client:
@@ -1450,6 +1494,8 @@ main(int argc, char **argv)
 
     g_test_add_func("/turn-hygiene/the-watchdog-reaches-the-agents-config",
                     test_the_watchdog_reaches_the_agents_config);
+    g_test_add_func("/turn-hygiene/busy-widens-the-inner-cap",
+                    test_the_busy_check_widens_the_inner_watchdog);
     g_test_add_func("/turn-hygiene/process-timeout/libreclaw",
                     test_process_timeout_reaches_libreclaw);
     g_test_add_func("/turn-hygiene/process-timeout/invalid",
