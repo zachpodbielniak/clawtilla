@@ -1119,6 +1119,14 @@ Other VM facts:
 - **A bind protects a path, not an inode.** `clawt_sandbox_check_links()`
   refuses a read-only file bind or a denied file with a second hard link
   before anything is spawned; call it wherever `wrap_argv()` is.
+- **A shared network namespace shares the abstract socket namespace.**
+  A networked box reached every `@`-socket on the host -- an X server
+  trusting the local user among them. `clawt_sandbox_enter()` (Landlock
+  scope) must run in the child setup of whatever spawns `wrap_argv()`'s
+  output, after `wrap_argv()`.
+- **A protection with no failing check is not tested.** Adding one to
+  `clawt_sandbox_wrap_argv()` means a `ClawtSandboxMutation` flag, a
+  probe check, and a row in `tests/test-sandbox-probe.c`'s table.
 
 ## Daemon, IPC and Clients
 

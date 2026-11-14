@@ -770,11 +770,19 @@ translate_argv(ClawtComputer *computer, const gchar * const *argv)
  * Only async-signal-safe calls belong here; setpriority is one.
  */
 static void
-apply_nice(gpointer user_data)
+host_child_setup(gpointer user_data)
 {
-    gint level = GPOINTER_TO_INT(user_data);
+    ClawtHostComputer *self = (ClawtHostComputer *)user_data;
 
-    if (setpriority(PRIO_PROCESS, 0, level) != 0) {
+    /*
+     * The Landlock scope bwrap cannot apply: without it a box with
+     * allow_network reaches every abstract unix socket on the machine.
+     * A no-op outside bwrap.
+     */
+    clawt_sandbox_enter(self->sandbox);
+
+    if (self->nice_level != 0 &&
+        setpriority(PRIO_PROCESS, 0, self->nice_level) != 0) {
         /* Nothing safe to report from here; the parent cannot be told. */
     }
 }
@@ -859,12 +867,13 @@ host_exec(ClawtComputer        *computer,
 
     /*
      * The requested niceness is applied in the child.  It was stored and
-     * never used, so an operator asking for nice: 5 got nothing.
+     * never used, so an operator asking for nice: 5 got nothing.  Set
+     * always, because the same child setup carries the sandbox's
+     * Landlock scope; the nice level is still applied only when one was
+     * asked for.
      */
-    if (self->nice_level != 0)
-        g_subprocess_launcher_set_child_setup(launcher, apply_nice,
-                                              GINT_TO_POINTER(self->nice_level),
-                                              NULL);
+    g_subprocess_launcher_set_child_setup(launcher, host_child_setup, self,
+                                          NULL);
 
     if (working_dir != NULL) {
         g_autofree gchar *expanded = clawt_expand_path(working_dir);

@@ -168,7 +168,7 @@ static const ClawtSchemaEntry schema[] = {
   "while somebody is looking at it. An expired device is removed exactly\n"
   "as `clawtilla device revoke` would remove it, live connections and\n"
   "all; pair it again with a fresh code. The daemon's own token\n"
-  "(token_file) is the owner credential and never expires.", "0.13.0" },
+  "(token_file) is the owner credential and never expires.", "0.15.0" },
 
 { "daemon.event_log_days", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "30", NULL,
@@ -868,7 +868,7 @@ static const ClawtSchemaEntry schema[] = {
   "of those one agent can leave running, and the refusal names its\n"
   "pending waits so it can fold a new one into an old one.\n"
   "\n"
-  "Override with max_waits on an agent. 0 removes the limit.", "0.14.0" },
+  "Override with max_waits on an agent. 0 removes the limit.", "0.15.0" },
 
 { "memories", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "What an agent remembers between conversations.\n"

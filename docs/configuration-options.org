@@ -191,7 +191,7 @@ cannot leave the daemon open by omission.
 
 - Type :: integer
 - Default :: =90=
-- Since :: 0.13.0
+- Since :: 0.15.0
 
 Days a paired device may go unseen before its token stops working.
 0 means never.
@@ -1157,7 +1157,7 @@ receipts until the count alone drops them.
 
 - Type :: integer
 - Default :: =10=
-- Since :: 0.14.0
+- Since :: 0.15.0
 
 How many pending waits one agent may have.
 

@@ -9,10 +9,14 @@
 
 #include "clawtilla.h"
 #include "computer/clawt-sandbox.h"
+#include "computer/clawt-sandbox-private.h"
 
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <sys/prctl.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 
 struct _ClawtSandbox {
     GObject parent_instance;
@@ -38,6 +42,19 @@ struct _ClawtSandbox {
 
     /* Symlinks to recreate inside: pairs of (link path, target). */
     GPtrArray        *symlinks;
+
+    /*
+     * ClawtSandboxMutation flags, always 0 outside
+     * tests/test-sandbox-probe.c: see clawt-sandbox-private.h.
+     */
+    guint             mutations;
+
+    /*
+     * Decided by clawt_sandbox_wrap_argv(), in the parent, and read by
+     * clawt_sandbox_enter() in the child: whether to put the child in a
+     * Landlock domain scoped against abstract unix sockets.
+     */
+    gboolean          scope_abstract;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtSandbox, clawt_sandbox, G_TYPE_OBJECT)
@@ -273,6 +290,95 @@ clawt_sandbox_set_agent_confined(ClawtSandbox *self, gboolean confined)
     self->agent_confined = confined;
 }
 
+void
+clawt_sandbox_test_set_mutations(
+    ClawtSandbox *self,
+    guint         mutations
+){
+    g_return_if_fail(CLAWT_IS_SANDBOX(self));
+
+    self->mutations = mutations;
+}
+
+/*
+ * Landlock, spelled out here rather than taken from <linux/landlock.h>:
+ * the `scoped` member and its flags arrived in Linux 6.12 headers, and a
+ * build host with older ones is still a build host.  The syscall numbers
+ * are the same on every architecture that has them.
+ */
+#define SANDBOX_LANDLOCK_CREATE_RULESET_VERSION (1U << 0)
+#define SANDBOX_LANDLOCK_SCOPE_ABSTRACT_UNIX    (1ULL << 0)
+#define SANDBOX_LANDLOCK_SCOPED_ABI             (6)
+
+typedef struct {
+    guint64 handled_access_fs;
+    guint64 handled_access_net;
+    guint64 scoped;
+} SandboxLandlockAttr;
+
+gboolean
+clawt_sandbox_can_scope_abstract_sockets(void)
+{
+#if defined(SYS_landlock_create_ruleset)
+    static gint abi = -2;
+
+    if (abi == -2)
+        abi = (gint)syscall(SYS_landlock_create_ruleset, NULL, (gsize)0,
+                            SANDBOX_LANDLOCK_CREATE_RULESET_VERSION);
+
+    return abi >= SANDBOX_LANDLOCK_SCOPED_ABI;
+#else
+    return FALSE;
+#endif
+}
+
+void
+clawt_sandbox_enter(ClawtSandbox *self)
+{
+#if defined(SYS_landlock_create_ruleset) && defined(SYS_landlock_restrict_self)
+    SandboxLandlockAttr attr;
+    long ruleset;
+
+    /*
+     * Between fork and exec: only async-signal-safe calls, no GLib, no
+     * allocation, and nothing to report a failure to.  A failure leaves
+     * the abstract namespace open, which is what this kernel gave us
+     * anyway -- clawt_sandbox_wrap_argv() said so in the parent.
+     */
+    if (self == NULL || !self->scope_abstract)
+        return;
+
+    attr.handled_access_fs = 0;
+    attr.handled_access_net = 0;
+    attr.scoped = SANDBOX_LANDLOCK_SCOPE_ABSTRACT_UNIX;
+
+    ruleset = syscall(SYS_landlock_create_ruleset, &attr, sizeof(attr), 0);
+
+    if (ruleset < 0)
+        return;
+
+    /*
+     * no_new_privs is what lets an unprivileged process restrict itself.
+     * bwrap sets it too, and wrap_argv() only asks for this when the
+     * bwrap that will run is not setuid -- a setuid bwrap under
+     * no_new_privs could not make its namespaces at all.
+     */
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0)
+        (void)syscall(SYS_landlock_restrict_self, (int)ruleset, 0);
+
+    close((int)ruleset);
+#else
+    (void)self;
+#endif
+}
+
+/* Whether the test hook has taken @which out of this box. */
+static gboolean
+mutated(ClawtSandbox *self, ClawtSandboxMutation which)
+{
+    return (self->mutations & (guint)which) != 0;
+}
+
 /*
  * The most entries one denied directory is walked for.  A deny is a
  * small thing -- ~/.ssh, a key file, a credentials directory -- and a
@@ -378,6 +484,9 @@ clawt_sandbox_check_links(ClawtSandbox *self, GError **error)
     if (self->mode != CLAWT_CONFINE_BWRAP)
         return TRUE;
 
+    if (mutated(self, CLAWT_SANDBOX_MUTATE_SKIP_LINK_CHECK))
+        return TRUE;
+
     /*
      * Read-only binds of a single file.  A directory bound read-only is
      * not walked: it is a CLI's install or a mount somebody declared,
@@ -471,7 +580,8 @@ clawt_sandbox_wrap_environment(ClawtSandbox        *self,
          * how an agent's env: used to beat the allowlist.
          */
         if (self->mode == CLAWT_CONFINE_BWRAP &&
-            clawt_sandbox_environment_is_owned(name))
+            clawt_sandbox_environment_is_owned(name) &&
+            !mutated(self, CLAWT_SANDBOX_MUTATE_AGENT_ENV_WINS))
             continue;
 
         g_ptr_array_add(out, g_strdup(entry));
@@ -845,6 +955,40 @@ clawt_sandbox_wrap_argv(ClawtSandbox *self, const gchar * const *argv)
     g_ptr_array_add(out, g_strdup("bwrap"));
 
     /*
+     * Abstract unix sockets belong to the network namespace, so a box
+     * that keeps the host's network -- every agent-CLI box, and an exec
+     * box with allow_network -- could connect to any of them: an X
+     * server that trusts the local user (Xvfb, `xhost +si:localuser`)
+     * among them, which is every keystroke and every window.  bwrap
+     * cannot close that, and a Landlock scope can: clawt_sandbox_enter()
+     * applies it in the child.  Asked for in every bwrap box, networked
+     * or not, so the protection does not depend on a second one.
+     */
+    self->scope_abstract = FALSE;
+
+    if (!mutated(self, CLAWT_SANDBOX_MUTATE_SHARE_ABSTRACT)) {
+        g_autofree gchar *bwrap = g_find_program_in_path("bwrap");
+        struct stat st;
+        gboolean setuid_bwrap = (bwrap != NULL && stat(bwrap, &st) == 0 &&
+                                 (st.st_mode & S_ISUID) != 0);
+
+        if (clawt_sandbox_can_scope_abstract_sockets() && !setuid_bwrap) {
+            self->scope_abstract = TRUE;
+        } else if (self->allow_network) {
+            static gsize said = 0;
+
+            if (g_once_init_enter(&said)) {
+                g_message("a networked bubblewrap box can reach the host's "
+                          "abstract unix sockets here (%s): Landlock ABI 6, "
+                          "Linux 6.12, is what closes them",
+                          setuid_bwrap ? "bwrap is setuid"
+                                       : "the kernel has no Landlock scopes");
+                g_once_init_leave(&said, 1);
+            }
+        }
+    }
+
+    /*
      * A minimal read-only system, then exactly what the agent was granted.
      * Starting from nothing and adding is the only order that fails safe:
      * starting from everything and removing means each new thing on the
@@ -870,8 +1014,14 @@ clawt_sandbox_wrap_argv(ClawtSandbox *self, const gchar * const *argv)
     g_ptr_array_add(out, g_strdup("/proc"));
     g_ptr_array_add(out, g_strdup("--dev"));
     g_ptr_array_add(out, g_strdup("/dev"));
-    g_ptr_array_add(out, g_strdup("--tmpfs"));
-    g_ptr_array_add(out, g_strdup("/tmp"));
+    if (mutated(self, CLAWT_SANDBOX_MUTATE_SHARE_TMP)) {
+        g_ptr_array_add(out, g_strdup("--bind"));
+        g_ptr_array_add(out, g_strdup("/tmp"));
+        g_ptr_array_add(out, g_strdup("/tmp"));
+    } else {
+        g_ptr_array_add(out, g_strdup("--tmpfs"));
+        g_ptr_array_add(out, g_strdup("/tmp"));
+    }
 
     /*
      * Name resolution, when the box has a network to resolve on.
@@ -908,9 +1058,19 @@ clawt_sandbox_wrap_argv(ClawtSandbox *self, const gchar * const *argv)
      * $XDG_RUNTIME_DIR it can write -- see
      * clawt_sandbox_wrap_environment(), which points it there.
      */
-    if (self->private_home != NULL) {
+    if (mutated(self, CLAWT_SANDBOX_MUTATE_SHARE_HOME)) {
+        const gchar *home = (self->private_home != NULL)
+            ? self->private_home : g_get_home_dir();
+
+        g_ptr_array_add(out, g_strdup("--bind"));
+        g_ptr_array_add(out, g_strdup(home));
+        g_ptr_array_add(out, g_strdup(home));
+    } else if (self->private_home != NULL) {
         g_ptr_array_add(out, g_strdup("--tmpfs"));
         g_ptr_array_add(out, g_strdup(self->private_home));
+    }
+
+    if (self->private_home != NULL) {
         g_ptr_array_add(out, g_strdup("--perms"));
         g_ptr_array_add(out, g_strdup("0700"));
         g_ptr_array_add(out, g_strdup("--dir"));
@@ -918,9 +1078,13 @@ clawt_sandbox_wrap_argv(ClawtSandbox *self, const gchar * const *argv)
     }
 
     if (self->root != NULL) {
+        g_autofree gchar *bound = mutated(self,
+                                          CLAWT_SANDBOX_MUTATE_WIDEN_ROOT)
+            ? g_path_get_dirname(self->root) : g_strdup(self->root);
+
         g_ptr_array_add(out, g_strdup("--bind"));
-        g_ptr_array_add(out, g_strdup(self->root));
-        g_ptr_array_add(out, g_strdup(self->root));
+        g_ptr_array_add(out, g_strdup(bound));
+        g_ptr_array_add(out, g_strdup(bound));
         g_ptr_array_add(out, g_strdup("--chdir"));
         g_ptr_array_add(out, g_strdup(self->root));
     }
@@ -955,6 +1119,9 @@ clawt_sandbox_wrap_argv(ClawtSandbox *self, const gchar * const *argv)
         const gchar *path = g_ptr_array_index(self->mount_paths, i);
         gboolean writable = (i < self->mount_writable->len)
             ? g_array_index(self->mount_writable, gboolean, i) : FALSE;
+
+        if (mutated(self, CLAWT_SANDBOX_MUTATE_RO_WRITABLE))
+            writable = TRUE;
 
         g_ptr_array_add(out, g_strdup(writable ? "--bind" : "--ro-bind"));
         g_ptr_array_add(out, g_strdup(path));
@@ -1005,7 +1172,8 @@ clawt_sandbox_wrap_argv(ClawtSandbox *self, const gchar * const *argv)
     for (i = 0; i < self->deny_paths->len; i++) {
         const gchar *path = g_ptr_array_index(self->deny_paths, i);
 
-        if (!bwrap_path_is_visible(self, path))
+        if (!bwrap_path_is_visible(self, path) ||
+            mutated(self, CLAWT_SANDBOX_MUTATE_SKIP_DENIALS))
             continue;
 
         if (g_file_test(path, G_FILE_TEST_IS_DIR)) {
@@ -1018,7 +1186,8 @@ clawt_sandbox_wrap_argv(ClawtSandbox *self, const gchar * const *argv)
         }
     }
 
-    if (!self->allow_network)
+    if (!self->allow_network &&
+        !mutated(self, CLAWT_SANDBOX_MUTATE_SHARE_NET))
         g_ptr_array_add(out, g_strdup("--unshare-net"));
 
     /*
@@ -1027,8 +1196,17 @@ clawt_sandbox_wrap_argv(ClawtSandbox *self, const gchar * const *argv)
      * nothing left to stop it.
      */
     g_ptr_array_add(out, g_strdup("--die-with-parent"));
-    g_ptr_array_add(out, g_strdup("--unshare-pid"));
-    g_ptr_array_add(out, g_strdup("--new-session"));
+
+    if (!mutated(self, CLAWT_SANDBOX_MUTATE_SHARE_PID))
+        g_ptr_array_add(out, g_strdup("--unshare-pid"));
+
+    /*
+     * Its own session, so the box has no controlling terminal: with one,
+     * TIOCSTI (where the kernel still allows it) types into the shell the
+     * daemon was started from.
+     */
+    if (!mutated(self, CLAWT_SANDBOX_MUTATE_SHARE_SESSION))
+        g_ptr_array_add(out, g_strdup("--new-session"));
 
     g_ptr_array_add(out, g_strdup("--"));
 
