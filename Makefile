@@ -182,6 +182,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/chat/clawt-loop-guard.h \
 	$(SRCDIR)/chat/clawt-repeat-watch.h \
 	$(SRCDIR)/chat/clawt-turn-watch.h \
+	$(SRCDIR)/chat/clawt-busy-watch.h \
 	$(SRCDIR)/chat/clawt-steer-queue.h \
 	$(SRCDIR)/chat/clawt-draft-store.h \
 	$(SRCDIR)/chat/clawt-room.h \
@@ -379,6 +380,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/chat/clawt-loop-guard.c \
 	$(SRCDIR)/chat/clawt-repeat-watch.c \
 	$(SRCDIR)/chat/clawt-turn-watch.c \
+	$(SRCDIR)/chat/clawt-busy-watch.c \
 	$(SRCDIR)/chat/clawt-steer-queue.c \
 	$(SRCDIR)/chat/clawt-draft-store.c \
 	$(SRCDIR)/chat/clawt-room.c \

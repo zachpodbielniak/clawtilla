@@ -2796,8 +2796,39 @@ static const ClawtSchemaEntry schema[] = {
   "publishes turn.timed_out; the same number is rendered into the\n"
   "agent's own session.watchdog_timeout_seconds. That inner watchdog\n"
   "measures total duration, even while output arrives or a decision is\n"
-  "pending; a positive value therefore also caps the whole turn.",
+  "pending; a positive value therefore also caps the whole turn -- at\n"
+  "this number plus runtime.busy_max_seconds while the busy check\n"
+  "(runtime.busy_cpu_percent) is on, and not at all when that ceiling\n"
+  "is 0.",
   "0.2.0" },
+
+{ "agents.runtime.busy_cpu_percent", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "5", NULL,
+  "How much CPU the agent's processes must use, in percent of one core,\n"
+  "for a silent turn to count as working. 0 turns the check off.\n"
+  "\n"
+  "A turn running one long command -- a test suite, a build -- reports\n"
+  "nothing between the tool starting and the tool finishing, so\n"
+  "runtime.turn_timeout_seconds would read forty minutes of compiling as\n"
+  "a wedged turn. Each watchdog sweep (every five seconds) reads the CPU\n"
+  "time of the agent's process tree from /proc; a tree that used at\n"
+  "least this much since the last sweep counts as a sign of life. A\n"
+  "command waiting on the network uses none and is still stopped.\n"
+  "\n"
+  "Only for runtime.type: process. An embedded agent shares the daemon's\n"
+  "process, so its tree cannot be told apart from the fleet's and the\n"
+  "check does nothing there. Nothing is read while\n"
+  "runtime.turn_timeout_seconds is 0.", "0.24.0" },
+
+{ "agents.runtime.busy_max_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "7200", NULL,
+  "The longest a busy process tree may keep a silent turn alive, in\n"
+  "seconds since the turn last reported anything. 0 is no ceiling.\n"
+  "\n"
+  "A command stuck in a loop uses CPU too, and without a ceiling it would\n"
+  "hold its turn for ever. Past this many seconds with no step, message\n"
+  "or tool call the CPU stops counting and runtime.turn_timeout_seconds\n"
+  "applies as it would to any silent turn.", "0.24.0" },
 
 /* ── agents.computer ─────────────────────────────────────────────── */
 { "agents.computer", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,

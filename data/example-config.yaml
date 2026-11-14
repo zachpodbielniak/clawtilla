@@ -2557,8 +2557,37 @@ agents:
       # publishes turn.timed_out; the same number is rendered into the
       # agent's own session.watchdog_timeout_seconds. That inner watchdog
       # measures total duration, even while output arrives or a decision is
-      # pending; a positive value therefore also caps the whole turn.
+      # pending; a positive value therefore also caps the whole turn -- at
+      # this number plus runtime.busy_max_seconds while the busy check
+      # (runtime.busy_cpu_percent) is on, and not at all when that ceiling
+      # is 0.
       turn_timeout_seconds: 0
+
+      # How much CPU the agent's processes must use, in percent of one core,
+      # for a silent turn to count as working. 0 turns the check off.
+      #
+      # A turn running one long command -- a test suite, a build -- reports
+      # nothing between the tool starting and the tool finishing, so
+      # runtime.turn_timeout_seconds would read forty minutes of compiling as
+      # a wedged turn. Each watchdog sweep (every five seconds) reads the CPU
+      # time of the agent's process tree from /proc; a tree that used at
+      # least this much since the last sweep counts as a sign of life. A
+      # command waiting on the network uses none and is still stopped.
+      #
+      # Only for runtime.type: process. An embedded agent shares the daemon's
+      # process, so its tree cannot be told apart from the fleet's and the
+      # check does nothing there. Nothing is read while
+      # runtime.turn_timeout_seconds is 0.
+      busy_cpu_percent: 5
+
+      # The longest a busy process tree may keep a silent turn alive, in
+      # seconds since the turn last reported anything. 0 is no ceiling.
+      #
+      # A command stuck in a loop uses CPU too, and without a ceiling it would
+      # hold its turn for ever. Past this many seconds with no step, message
+      # or tool call the CPU stops counting and runtime.turn_timeout_seconds
+      # applies as it would to any silent turn.
+      busy_max_seconds: 7200
 
     # What the agent can run commands on.
     computer:

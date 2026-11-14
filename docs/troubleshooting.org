@@ -747,10 +747,13 @@ A message the agent sent, a ~clawtilla_*~ tool call it made, or a streamed
 CLI step. With step streaming disabled, its own ~bash~, ~read~ and ~write~
 calls are not visible to the daemon.
 
-So an agent that spends twenty minutes inside one long build, without
-saying anything and without calling a clawtilla tool, looks silent from
-out here.  If that is what your fleet does, raise the number --- it is
-per agent:
+A long build no longer looks silent: while the agent's processes use at
+least ~agents.runtime.busy_cpu_percent~ of a core (default 5) the turn
+counts as working, for up to ~agents.runtime.busy_max_seconds~ (default
+7200) after it last reported anything.  A command waiting on the network
+or on a lock uses no CPU and still looks silent, and an embedded agent's
+processes cannot be measured at all.  If that is what your fleet does,
+raise the number --- it is per agent:
 
 #+begin_src yaml
 agents:

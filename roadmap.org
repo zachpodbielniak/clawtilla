@@ -215,8 +215,9 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 - *Prior art:* =45b74bb0c=. After about 20 s with no reply, offer Stop or switch AI.
 - *Note:* overlaps the turn watchdog. Worth it only if libreclaw's streamed events show "the CLI has emitted nothing at all", which is different from "it is thinking".
 
-** TODO Watchdog that counts a busy process tree as working
-- *Today:* =clawt-turn-watch.c= exempts held turns but samples no CPU.
+** DONE Watchdog that counts a busy process tree as working (version assigned at merge)
+- *Done:* =ClawtBusyWatch= (=src/chat/clawt-busy-watch.c=) reads the agent's process tree from =/proc= once per watchdog sweep through an injectable reader; a tree that used at least ~agents.runtime.busy_cpu_percent~ (default 5; 0 off) of one core since the last sweep counts as activity for the turn watch. Descendants' own and reaped-children time, the root's reaped children only; a falling total is a new baseline, never work. ~agents.runtime.busy_max_seconds~ (default 7200, 0 none) bounds it from the last thing the turn reported, so a looping command cannot hold a turn for ever. libreclaw's inner duration watchdog is rendered as the budget plus that ceiling while the check is on (it would otherwise cut the build the daemon just called working). Embedded agents cannot be measured and are skipped. Design in =docs/orchestration.org=, "The turn watchdog". Tests: =tests/test-busy-watch.c= (fake /proc, two agents, the ceiling), =tests/test-turn-hygiene.c= (the rendered cap).
+- *Was:* =clawt-turn-watch.c= exempted held turns but sampled no CPU.
 - *Prior art:* =fdf894efa=. A shell command whose processes are using CPU is still working.
 
 ** TODO Generic ACP engine driver

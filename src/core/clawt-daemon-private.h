@@ -260,6 +260,19 @@ struct _ClawtDaemon {
     GHashTable       *room_steps;
     GHashTable       *turn_grace;   /* agent id -> GSource*, see arm_grace() */
     GSource          *turn_sweep;
+
+    /*
+     * The busy check: a silent turn whose process tree is using the CPU
+     * is working (agents.runtime.busy_cpu_percent).  @turn_said is agent
+     * id -> monotonic usec on the turn watch's clock of the last thing
+     * the turn actually reported, which is what busy_max_seconds counts
+     * from -- CPU never moves it, or a looping command would hold its
+     * turn for ever.  @turn_pid_func answers an agent's root pid; NULL
+     * asks the runtime, and a test puts a fake process table behind it.
+     */
+    ClawtBusyWatch   *busy_watch;
+    GHashTable       *turn_said;
+    gint            (*turn_pid_func)(ClawtDaemon *self, const gchar *agent_id);
     guint             turn_grace_seconds;
 
     /*
@@ -1582,6 +1595,16 @@ ClawtRoom *clawt_daemon_create_room(ClawtDaemon  *self,
                                     GError      **error);
 
 void clawt_daemon_turn_sweep_now(ClawtDaemon *self);
+
+/*
+ * For tests: where an agent's root process id comes from (NULL asks the
+ * runtime), and the busy check's own watch, so a test can give it a fake
+ * process table.
+ */
+void clawt_daemon_turn_set_pid_func(ClawtDaemon *self,
+                                    gint (*func)(ClawtDaemon *self,
+                                                 const gchar *agent_id));
+ClawtBusyWatch *clawt_daemon_turn_get_busy_watch(ClawtDaemon *self);
 
 void clawt_daemon_turn_settle_room(ClawtDaemon *self, const gchar *agent_id,
                                    const gchar *room_id);

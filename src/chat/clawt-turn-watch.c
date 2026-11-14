@@ -415,3 +415,29 @@ clawt_turn_watch_init(ClawtTurnWatch *self)
     self->watched = g_hash_table_new_full(g_str_hash, g_str_equal,
                                           g_free, g_free);
 }
+
+GPtrArray *
+clawt_turn_watch_dup_keys(ClawtTurnWatch *self)
+{
+    GPtrArray *out;
+    GHashTableIter iter;
+    gpointer key;
+
+    g_return_val_if_fail(CLAWT_IS_TURN_WATCH(self), NULL);
+
+    out = g_ptr_array_new_with_free_func(g_free);
+    g_hash_table_iter_init(&iter, self->watched);
+
+    while (g_hash_table_iter_next(&iter, &key, NULL))
+        g_ptr_array_add(out, g_strdup(key));
+
+    return out;
+}
+
+gint64
+clawt_turn_watch_now(ClawtTurnWatch *self)
+{
+    g_return_val_if_fail(CLAWT_IS_TURN_WATCH(self), 0);
+
+    return now_usec(self);
+}
