@@ -467,6 +467,32 @@ When somebody turns the broker on, clawtilla starts a local AnythingMCP for them
 ** TODO Escape the marker in the remaining quoted text                                        :security:orchestration:
 - *Found by:* the v0.12.0 preamble work. Not yet escaped: general MCP tool output that quotes other agents (recall, room history), roster names in room preambles, and system notes beyond the ones listed in =docs/orchestration.org=. A mid-line marker ("Latest from oryx: [clawtilla] ...") is also left alone by design; decide whether quoted summaries need it.
 
+* Follow-ups found while implementing
+
+** TODO Upstream: podomation container event thread leaks its GError                         :upstream:
+- =modules/container/pod-container-module.c=, =container_stream_thread_func()= (podomation 643fe83, lines ~1425-1429): =if (!self->streaming) break;= leaves =error= set. Fix: =g_clear_error(&error);= before the =break=. v0.15.0 worked around it in =tests/test-computer.c=.
+
+** TODO Upstream: ai-glib classifies every CLI's usage limit                                   :upstream:ai-glib:
+- Only claude-code maps its limit to =AI_ERROR_SESSION_LIMIT= with the reset notice. codex, grok, opencode, cursor and antigravity report =AI_ERROR_CLI_EXECUTION=, so libreclaw's failover classifies them from text. Map their limit, rate-limit and sign-out output to =SESSION_LIMIT=, =RATE_LIMITED= and =INVALID_API_KEY=.
+
+** TODO Upstream: libreclaw records the model in =token_usage.provider=                       :upstream:libreclaw:spending:
+- The usage ledger takes the provider from the agent's =model.provider= at tag time instead.
+
+** TODO Usage ledger: keep a task's run across a restart                                        :spending:
+- The task -> routine/trigger run map is in memory, so a run spanning a restart is tagged =task:<id>=. Persist it with the task.
+
+** TODO Waits: should URL waits need web or egress permission?                                  :security:orchestration:
+- A URL wait lets an agent with no network of its own have the daemon fetch addresses it chooses (public ones only). Gate it on the same permission the egress gate uses.
+
+** TODO Devices: may a paired device revoke other devices?                                       :security:clients:
+- Today any authenticated device can revoke others (it only removes access); only the owner pairs. Decide whether revoke is owner-only.
+
+** TODO Fallback polish in the clients                                                          :clients:
+- The GTK Fleet page shows no "on fallback" badge (=usage.summary= lacks =failover=). In GTK and lrg, a save that changes provider and then has its fallback list refused leaves the list cleared until saved again.
+
+** TODO =tools/clawt-web-smoke.sh=: four checks fail on master                                  :test:
+- The same 4 of 48 fail on an untouched build; found during the fallbacks work.
+
 * Design decisions to make, not gaps
 
 ** Takeover: refuse or park
