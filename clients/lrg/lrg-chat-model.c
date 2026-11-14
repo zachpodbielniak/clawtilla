@@ -104,7 +104,7 @@ clawt_lrg_chat_row_rooms(JsonNode *agents, JsonNode *rooms)
         JsonObject *room = array_object(array, i);
         const gchar *id = clawt_ipc_payload_string(room, "id");
 
-        if (id != NULL && clawt_ipc_payload_boolean(room, "declared", FALSE))
+        if (id != NULL && clawt_room_is_listed(id))
             g_hash_table_add(rows, g_strdup(id));
     }
 
@@ -661,11 +661,13 @@ layout_rooms_for_team(Layout *layout, const gchar *team)
         ClawtLrgSidebarEntry *entry;
 
         /*
-         * Only rooms somebody made.  A direct conversation is already the
-         * agent's own row, and a routine's or a trigger's belongs to it.
+         * Only rooms somebody made, and each team's "Problems to look
+         * at".  A direct conversation is already the agent's own row, and
+         * a routine's or a trigger's belongs to it.  The library decides
+         * which.
          */
         if (id == NULL ||
-            !clawt_ipc_payload_boolean(room, "declared", FALSE) ||
+            !clawt_room_is_listed(id) ||
             g_strcmp0(room_team, team != NULL ? team : "") != 0 ||
             g_hash_table_contains(layout->rooms_done, id))
             continue;

@@ -129,6 +129,38 @@ const gchar   *clawt_task_get_cancelled_by(ClawtTask *self);
  */
 void           clawt_task_set_cancelled_by(ClawtTask *self,
                                            const gchar *value);
+/**
+ * clawt_task_get_retried_by:
+ * @self: a #ClawtTask
+ *
+ * Who last sent it round again with clawtilla_task_retry or a client's
+ * Retry -- an agent id, or "user" for the operator.  Kept on the task as
+ * well as on the incident, because a listing of tasks is where somebody
+ * asks why one is running again.
+ *
+ * Returns: (transfer none) (nullable): the retrier
+ */
+const gchar   *clawt_task_get_retried_by(ClawtTask *self);
+
+/**
+ * clawt_task_get_retries:
+ * @self: a #ClawtTask
+ *
+ * Returns: how many times it has been retried
+ */
+guint          clawt_task_get_retries(ClawtTask *self);
+
+/**
+ * clawt_task_reopen:
+ * @self: a #ClawtTask
+ * @who: who is retrying it
+ *
+ * Puts a failed or stalled task back to `pending` for another attempt:
+ * clears the result, the reason, the finish time and both completion
+ * flags, and records @who.  The state check is
+ * clawt_task_manager_retry()'s, which is what callers use.
+ */
+void           clawt_task_reopen(ClawtTask *self, const gchar *who);
 ClawtTaskState clawt_task_get_state(ClawtTask *self);
 gint           clawt_task_get_depth(ClawtTask *self);
 gint64         clawt_task_get_created_at(ClawtTask *self);
@@ -316,6 +348,19 @@ gboolean clawt_task_is_finished(ClawtTask *self);
  * Returns: (transfer none): the tone
  */
 const gchar *clawt_task_state_tone(ClawtTaskState state);
+
+/**
+ * clawt_task_state_is_retryable:
+ * @state: a task state
+ *
+ * Whether a task in @state can be sent round again with
+ * clawtilla_task_retry or a client's Retry: failed and stalled, and
+ * nothing else.  One answer for the daemon's refusal and every client's
+ * button, so no client offers a Retry the daemon will refuse.
+ *
+ * Returns: %TRUE for a failed or stalled task
+ */
+gboolean clawt_task_state_is_retryable(ClawtTaskState state);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtTask, clawt_task_free)
 

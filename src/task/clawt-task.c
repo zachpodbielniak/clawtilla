@@ -25,6 +25,8 @@ struct _ClawtTask {
     gchar *session_key;
     gchar *progress_note;
     gchar *cancelled_by;
+    gchar *retried_by;
+    guint  retries;
 
     /*
      * Everyone who has owned it, oldest first, with the current
@@ -141,6 +143,8 @@ clawt_task_copy(ClawtTask *self)
     copy->session_key = g_strdup(self->session_key);
     copy->progress_note = g_strdup(self->progress_note);
     copy->cancelled_by = g_strdup(self->cancelled_by);
+    copy->retried_by = g_strdup(self->retried_by);
+    copy->retries = self->retries;
 
     /*
      * Deep, because g_ptr_array_copy() carries the source's element-free
@@ -187,6 +191,7 @@ clawt_task_free(ClawtTask *self)
     g_free(self->session_key);
     g_free(self->progress_note);
     g_free(self->cancelled_by);
+    g_free(self->retried_by);
     g_clear_pointer(&self->owners, g_ptr_array_unref);
     g_free(self);
 }
@@ -211,8 +216,43 @@ GETTER(model, model)
 GETTER(session_key, session_key)
 GETTER(progress_note, progress_note)
 GETTER(cancelled_by, cancelled_by)
+GETTER(retried_by, retried_by)
 
 #undef GETTER
+
+guint
+clawt_task_get_retries(ClawtTask *self)
+{
+    g_return_val_if_fail(self != NULL, 0);
+    return self->retries;
+}
+
+void
+clawt_task_reopen(ClawtTask *self, const gchar *who)
+{
+    g_return_if_fail(self != NULL);
+
+    /*
+     * Everything that described the attempt that ended goes, because
+     * each of it would otherwise describe the next one: a stale result
+     * read as the new answer, a stale finish time making "how long did
+     * this take" negative, and a stale completion hold swallowing the
+     * new attempt's first real ending.  The reason goes too -- the
+     * incident keeps what the last attempt said.
+     */
+    g_clear_pointer(&self->result, g_free);
+    g_clear_pointer(&self->reason, g_free);
+    g_clear_pointer(&self->progress_note, g_free);
+    g_clear_pointer(&self->cancelled_by, g_free);
+    self->holds_completion = FALSE;
+    self->result_inferred = FALSE;
+    self->finished_at = 0;
+    self->state = CLAWT_TASK_PENDING;
+
+    g_free(self->retried_by);
+    self->retried_by = g_strdup(who);
+    self->retries++;
+}
 
 #define SETTER(name, field)                              \
     void                                                 \
@@ -421,4 +461,23 @@ clawt_task_state_tone(ClawtTaskState state)
      * programming error rather than a state.
      */
     g_return_val_if_reached("neutral");
+}
+
+gboolean
+clawt_task_state_is_retryable(ClawtTaskState state)
+{
+    /* Every state named, no default: -Wswitch catches the next one. */
+    switch (state) {
+    case CLAWT_TASK_FAILED:
+    case CLAWT_TASK_STALLED:
+        return TRUE;
+
+    case CLAWT_TASK_PENDING:
+    case CLAWT_TASK_RUNNING:
+    case CLAWT_TASK_COMPLETED:
+    case CLAWT_TASK_CANCELLED:
+        return FALSE;
+    }
+
+    return FALSE;
 }

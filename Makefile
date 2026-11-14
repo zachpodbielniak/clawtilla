@@ -178,6 +178,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/task/clawt-handoff.h \
 	$(SRCDIR)/task/clawt-handoff-store.h \
 	$(SRCDIR)/task/clawt-routine-runner.h \
+	$(SRCDIR)/task/clawt-incident.h \
 	$(SRCDIR)/trigger/clawt-trigger-event.h \
 	$(SRCDIR)/trigger/clawt-trigger-provider.h \
 	$(SRCDIR)/trigger/clawt-trigger.h \
@@ -352,6 +353,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/task/clawt-handoff.c \
 	$(SRCDIR)/task/clawt-handoff-store.c \
 	$(SRCDIR)/task/clawt-routine-runner.c \
+	$(SRCDIR)/task/clawt-incident.c \
 	$(SRCDIR)/wait/clawt-wait.c \
 	$(SRCDIR)/wait/clawt-wait-manager.c \
 	$(SRCDIR)/trigger/clawt-trigger-event.c \

@@ -42,6 +42,7 @@ typedef enum {
     NEEDS_BROWSER_SCRIPTS,
     NEEDS_GROK,
     NEEDS_WAITS,
+    NEEDS_RETRY,
     NEEDS_NEVER
 } ToolRequirement;
 
@@ -187,6 +188,21 @@ static const ClawtParamInfo delegate_params[] = {
  * the recipient needs -- it is put in front of them rather than left in
  * an audit trail they cannot read.
  */
+static const ClawtParamInfo task_retry_params[] = {
+    { "incident_id", "string",
+      "The incident to retry, as a \"Problems to look at\" report names "
+      "it. Give this or task_id.", FALSE },
+    { "task_id", "string",
+      "Or the failed or stalled task to retry.", FALSE },
+    { "reason", "string",
+      "What the assignee should know this time -- what you think went "
+      "wrong. They see it with the original work.", FALSE },
+    { "turn_room", "string",
+      "Which of your conversations this call is part of, from the "
+      "[clawtilla] line on the message you are handling. Only needed "
+      "when you are working in more than one at once.", FALSE }
+};
+
 static const ClawtParamInfo handoff_params[] = {
     { "task_id",  "string", "The task you are handing over.", TRUE },
     { "agent_id", "string", "Who is taking it on.", TRUE },
@@ -706,6 +722,16 @@ static const ToolDefinition tools[] = {
          "has been restarted.",
          NEEDS_HANDOFF, handoff_params, CLAWT_ACTION_MESSAGE),
 
+    HOP_TOOL("clawtilla_task_retry",
+         "Send a failed or stalled run round again: a task is re-queued "
+         "for its assignee with its original work, a routine is run "
+         "again. Use it on an incident from your \"Problems to look at\" "
+         "room when the cause looks transient. It refuses work that is "
+         "still running or already finished, and work you could not have "
+         "assigned. Agents may retry one incident twice; after that, tell "
+         "your operator what needs fixing instead.",
+         NEEDS_RETRY, task_retry_params, CLAWT_ACTION_MESSAGE),
+
     TOOL("clawtilla_ask_decision",
          "Ask your operator to make a choice, without waiting for them. "
          "You state what you will do anyway, and carry on doing it; "
@@ -1161,6 +1187,9 @@ struct _ClawtMcpTools {
     ClawtMcpHandoffFunc     handoff;
     gpointer                handoff_data;
     GDestroyNotify          handoff_destroy;
+
+    /* Incidents and retries, for clawtilla_task_retry; borrowed. */
+    ClawtIncidentDesk      *incidents;
 
     ClawtMcpSearchFunc      search;
     gpointer                search_data;
@@ -1629,6 +1658,15 @@ clawt_mcp_tools_set_waits(
 }
 
 void
+clawt_mcp_tools_set_incident_desk(ClawtMcpTools     *self,
+                                  ClawtIncidentDesk *desk)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    self->incidents = desk;
+}
+
+void
 clawt_mcp_tools_set_room_manager(ClawtMcpTools    *self,
                                  ClawtRoomManager *rooms)
 {
@@ -2042,6 +2080,17 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
 
     case NEEDS_ASSIGNMENT:
         if (!may_assign_to_somebody(agent))
+            return FALSE;
+        break;
+
+    case NEEDS_RETRY:
+        /*
+         * The assignment gate, because a retry puts work back on
+         * somebody's list -- and the desk, because without it there is
+         * nothing to retry with.  Which *particular* run is allowed is
+         * settled at call time, like delegation's target.
+         */
+        if (self->incidents == NULL || !may_assign_to_somebody(agent))
             return FALSE;
         break;
 
@@ -4225,6 +4274,68 @@ tool_delegate(ClawtMcpTools *self,
         "Delegated to %s as task %s. You will be notified here when it "
         "settles -- no need to poll clawtilla_task_status or ask them how "
         "it is going.", assignee, clawt_task_get_id(task));
+}
+
+/*
+ * Sending a broken run round again.
+ *
+ * Judged in two steps, the way delegation is: the tool is offered only
+ * to an agent that can assign to somebody, and whether it may retry
+ * *this* run -- the run's assignee is somebody it could assign to, and
+ * it has not already retried it as often as an agent may -- is the
+ * desk's, asked here.  The retry itself is the desk's too, so the
+ * operator's Retry and this tool are one implementation.
+ */
+static gchar *
+tool_task_retry(ClawtMcpTools *self,
+                const gchar   *agent_id,
+                JsonObject    *arguments,
+                gboolean      *is_error)
+{
+    const gchar *task_id = argument_string(arguments, "task_id");
+    const gchar *incident_id = argument_string(arguments, "incident_id");
+    const gchar *reason = argument_string(arguments, "reason");
+    g_autofree gchar *refusal = NULL;
+    g_autofree gchar *new_task = NULL;
+    g_autoptr(GError) error = NULL;
+    gboolean rerun = FALSE;
+
+    if (task_id == NULL && incident_id == NULL) {
+        *is_error = TRUE;
+        return g_strdup("Name the run to retry: incident_id from the "
+                        "report, or task_id.");
+    }
+
+    if (self->incidents == NULL) {
+        *is_error = TRUE;
+        return g_strdup("Retrying is not available here.");
+    }
+
+    if (!clawt_incident_desk_may_retry(self->incidents, agent_id, task_id,
+                                       incident_id, &refusal)) {
+        *is_error = TRUE;
+        return g_steal_pointer(&refusal);
+    }
+
+    new_task = clawt_incident_desk_retry(self->incidents, task_id,
+                                         incident_id, agent_id, reason,
+                                         &rerun, &error);
+
+    if (new_task == NULL) {
+        *is_error = TRUE;
+        return g_strdup_printf("Not retried: %s.", error->message);
+    }
+
+    if (rerun)
+        return g_strdup_printf(
+            "The routine is running again as task %s. If it breaks again "
+            "you will get another report here -- there is no need to "
+            "watch it.", new_task);
+
+    return g_strdup_printf(
+        "Task %s is queued for its assignee again, with the original work "
+        "and your note. Its delegator hears how it ends, as before; if it "
+        "breaks again you will get another report here.", new_task);
 }
 
 /*
@@ -8095,6 +8206,8 @@ tools_call(ClawtMcpTools *self,
         text = tool_delegate(self, agent_id, turn_room, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_handoff") == 0)
         text = tool_handoff(self, agent_id, turn_room, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_task_retry") == 0)
+        text = tool_task_retry(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_trigger_list") == 0)
         text = tool_trigger_list(self, agent_id);
     else if (g_strcmp0(tool_name, "clawtilla_routine_list") == 0)

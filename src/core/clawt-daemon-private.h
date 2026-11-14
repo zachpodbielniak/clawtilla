@@ -284,6 +284,16 @@ struct _ClawtDaemon {
     ClawtRoutineRunner *routines;
 
 	/*
+	 * Broken runs, filed and reported to whoever leads the team
+	 * (orchestration.incidents).  Built once the router exists, and
+	 * cleared before it.  agent_last_state remembers each agent's
+	 * previous state, which is what tells a crash (running -> error)
+	 * from a start that never got that far.
+	 */
+	ClawtIncidentDesk *incidents;
+	GHashTable        *agent_last_state;
+
+	/*
 	 * daemon-routine.c: routine runs waiting to hear whether their
 	 * agent's computer came up, keyed agent -> (routine -> gint64 run
 	 * time in microseconds); the agents whose computer last refused to

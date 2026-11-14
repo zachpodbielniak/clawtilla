@@ -177,6 +177,27 @@ ClawtRoom *clawt_room_manager_get_trigger(ClawtRoomManager *self,
                                           const gchar      *agent_id);
 
 /**
+ * clawt_room_manager_get_incidents:
+ * @self: a #ClawtRoomManager
+ * @team: (nullable): the team, or %NULL for agents on no team
+ * @recipient: (nullable): the agent reports in it go to, added as a
+ *   member if it is not one already
+ *
+ * A team's "Problems to look at" room, making it if it is not there.
+ *
+ * The same shape as clawt_room_manager_get_routine(), under the
+ * `incidents:` namespace (clawt_incident_room_id()), with the team set
+ * so a client draws it under that team's heading.  The recipient is a
+ * member because a report delivered into a room the reader is not in is
+ * one its own tools cannot read back.
+ *
+ * Returns: (transfer none): the room
+ */
+ClawtRoom *clawt_room_manager_get_incidents(ClawtRoomManager *self,
+                                            const gchar      *team,
+                                            const gchar      *recipient);
+
+/**
  * clawt_room_manager_list:
  * @self: a #ClawtRoomManager
  *

@@ -1471,7 +1471,7 @@ clawt_lrg_nav_targets(JsonNode *agents, JsonNode *rooms,
         const gchar *team = clawt_ipc_payload_string(room, "team");
         g_autofree gchar *detail = NULL;
 
-        if (id == NULL || !clawt_ipc_payload_boolean(room, "declared", FALSE))
+        if (id == NULL || !clawt_room_is_listed(id))
             continue;
 
         detail = g_strdup_printf("Room \302\267 %s \302\267 %s", id,

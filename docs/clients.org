@@ -1559,7 +1559,7 @@ Restart, and still asks twice.
 | Mailbox | what is waiting, with acknowledge |
 | Computer | five views: Shell, Screen, Mounts, Exchange and Browser |
 | Routines | standing work for this agent: the schedule, when it last ran and what happened |
-| Tasks | what has been delegated to whom, and where it got to |
+| Tasks | what has been delegated to whom, and where it got to; *Problems to look at* above it, with Retry |
 | Flow | every conversation between agents, newest first, and what was said |
 
 The Routines tab puts the presets in front -- Manual, Hourly, Daily,
@@ -1568,6 +1568,17 @@ is one of the five and nobody should have to write ~0 9 * * 1-5~ to get
 weekday mornings.  A routine that did not fire because the machine was
 asleep is shown as *missed*, not failed: showing it as broken would train
 you to ignore the one that is.  See [[file:routines.org][routines.org]].
+
+The Tasks tab opens with *Problems to look at*: the two incident settings
+(*Report broken runs*, and *Who hears about them*, whose choices are
+walked from the library) and every open incident -- whose run broke, how,
+what it said, and who was told, or that the report is waiting for them to
+finish a turn, or why nobody was.  *Retry* sits on each incident the
+daemon says can be retried (~retryable~), and on every failed or stalled
+task row below.  Each team's *Problems to look at* room is also in the
+sidebar under the team, where the reports themselves can be read and the
+lead written to.  The same in GTK, web and lrg; see
+[[file:orchestration.org::*Incidents: broken runs reach the lead][Incidents]].
 
 A routine whose computer did not start =routines.max_start_failures= runs in a row (three by default) is turned off by the daemon, and its row says so in libclawt's words -- "turned off after 3 failed starts: <the computer's error>" (~clawt_routine_turned_off_note()~) -- with a *Turn back on* button beside it that sends ~routine.update~ with =enabled: true=.  The alerts panel gets the same news as an error (~routine.turned_off~, worded by ~clawt_routine_turned_off_alert()~).  The editor has the limit as *Turn off after failed starts*, with ~clawt_routine_start_failures_hint()~ under it; GTK, web and lrg draw all four the same way, and ~make parity~ declares them.  See [[file:routines.org::#max-start-failures][routines.org]].
 

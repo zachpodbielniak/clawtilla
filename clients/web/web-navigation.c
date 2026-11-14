@@ -94,7 +94,7 @@ on_navigation(HtmxRequest *request, GHashTable *params, gpointer user_data)
 		g_autofree gchar *escaped = g_uri_escape_string(id, NULL, FALSE);
 		g_autofree gchar *url = g_strdup_printf("/r/%s", escaped);
 		g_autofree gchar *detail = g_strdup_printf("Room · %s · %s", id, clawt_web_member(room, "team", ""));
-		if (clawt_web_member_bool(room, "declared", FALSE))
+		if (clawt_room_is_listed(id))
 			count += clawt_web_navigation_result(HTMX_ELEMENT(results), query, clawt_web_member(room, "name", id), detail, id, url);
 	}
 	for (i = 0; i < clawt_section_count(); i++) {

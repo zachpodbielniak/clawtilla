@@ -453,6 +453,15 @@ declare -A AFFORDANCES=(
     ["pairing countdown"]="clawt_device_countdown_text|clawt_device_countdown_text|clawt_device_countdown_text"
     ["device last seen"]="clawt_device_seen_text|clawt_device_seen_text|clawt_device_seen_text"
     ["a code on screen learns it was used"]="\"device.paired\"|/settings/devices/pair-status|\"device.paired\""
+    #
+    # Each team's "Problems to look at" room has a sidebar row.  It sends
+    # no frame of its own -- it is room.list read with a different
+    # filter -- so layer 1 cannot see a client that lists only declared
+    # rooms, and the incidents would then be readable nowhere but the
+    # Tasks page.  The marker is the library predicate every listing
+    # site calls.
+    #
+    ["incidents rooms in the sidebar"]="clawt_room_is_listed|clawt_room_is_listed|clawt_room_is_listed"
 )
 
 usage () {

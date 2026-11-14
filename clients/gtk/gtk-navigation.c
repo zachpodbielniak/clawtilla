@@ -184,7 +184,7 @@ on_navigate(GSimpleAction *action, GVariant *parameter, gpointer user_data)
 		const gchar *id = clawt_json_string(room, "id", "");
 		g_autofree gchar *detail = g_strdup_printf("Room · %s · %s", id,
 			clawt_json_string(room, "team", ""));
-		if (clawt_json_boolean(room, "declared", FALSE))
+		if (clawt_room_is_listed(id))
 			navigation_add(nav, clawt_json_string(room, "name", id), detail, id, 1,
 				clawt_json_string(room, "team", ""));
 	}

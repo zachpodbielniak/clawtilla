@@ -32,6 +32,7 @@
 #include "core/clawt-event-bus.h"
 #include "memory/clawt-transcript-index.h"
 #include "task/clawt-handoff-store.h"
+#include "task/clawt-incident.h"
 #include "task/clawt-task-manager.h"
 #include "browser/clawt-browser.h"
 
@@ -699,6 +700,17 @@ void clawt_mcp_tools_set_observer(ClawtMcpTools            *self,
                                   ClawtMcpToolObserverFunc  func,
                                   gpointer                  user_data,
                                   GDestroyNotify            notify);
+
+/**
+ * clawt_mcp_tools_set_incident_desk:
+ * @self: a #ClawtMcpTools
+ * @desk: (nullable): where broken runs are filed and retried
+ *
+ * Unset, `clawtilla_task_retry` is not offered.  Borrowed: whoever owns
+ * @desk keeps it alive for as long as the tools are in use.
+ */
+void clawt_mcp_tools_set_incident_desk(ClawtMcpTools     *self,
+                                       ClawtIncidentDesk *desk);
 
 /**
  * clawt_mcp_tools_set_room_manager:

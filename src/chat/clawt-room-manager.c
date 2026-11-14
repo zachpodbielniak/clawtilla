@@ -371,6 +371,40 @@ clawt_room_manager_get_trigger(ClawtRoomManager *self,
 }
 
 ClawtRoom *
+clawt_room_manager_get_incidents(ClawtRoomManager *self,
+                                 const gchar      *team,
+                                 const gchar      *recipient)
+{
+    g_autofree gchar *room_id = NULL;
+    ClawtRoom *room;
+
+    g_return_val_if_fail(CLAWT_IS_ROOM_MANAGER(self), NULL);
+
+    room_id = clawt_incident_room_id(team);
+    room = g_hash_table_lookup(self->rooms, room_id);
+
+    if (room == NULL) {
+        room = clawt_room_new(room_id, NULL);
+
+        /*
+         * "incidents" is the room's own half, the way "routine" is a
+         * routine room's: never an agent, so the router delivers to it
+         * nothing, and it keeps the room a room of two when only one
+         * agent is reading it.
+         */
+        clawt_room_add_member(room, "incidents");
+        clawt_room_set_name(room, CLAWT_INCIDENT_ROOM_NAME);
+        clawt_room_set_team(room, team);
+        room = insert_room(self, room);
+    }
+
+    if (recipient != NULL && !clawt_room_has_member(room, recipient))
+        clawt_room_add_member(room, recipient);
+
+    return room;
+}
+
+ClawtRoom *
 clawt_room_manager_get_direct(ClawtRoomManager *self, const gchar *a,
                               const gchar *b)
 {
@@ -415,13 +449,32 @@ clawt_room_manager_load_direct(ClawtRoomManager *self)
         g_autofree gchar *room_id = NULL;
         g_auto(GStrv) parts = NULL;
 
-        if (!g_str_has_prefix(name, "dm:") ||
-            !g_str_has_suffix(name, ".ndjson"))
+        if (!g_str_has_suffix(name, ".ndjson"))
             continue;
 
         room_id = g_strndup(name, strlen(name) - strlen(".ndjson"));
 
         if (g_hash_table_contains(self->rooms, room_id))
+            continue;
+
+        /*
+         * And the incidents rooms, for the same reason: the reports are
+         * on disk, and an operator opening "Problems to look at" after a
+         * restart should not find it missing until something else
+         * breaks.  The team comes back out of the id; the recipient is
+         * added again by the next report.
+         */
+        if (clawt_incident_room_is(room_id)) {
+            const gchar *team = room_id + strlen(CLAWT_INCIDENT_ROOM_PREFIX);
+
+            clawt_room_manager_get_incidents(
+                self, g_strcmp0(room_id, CLAWT_INCIDENT_FLEET_ROOM) == 0
+                      ? NULL : team, NULL);
+            restored++;
+            continue;
+        }
+
+        if (!g_str_has_prefix(room_id, "dm:"))
             continue;
 
         /*

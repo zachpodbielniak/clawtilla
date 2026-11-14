@@ -911,7 +911,7 @@ Each rule is ~MATCH=MODE~. ~MATCH~ is an action class or a tool-name glob (~claw
 | ~read~          | looks and changes nothing: ~Read~, ~Grep~, ~WebFetch~, the listing and search tools, ~clawtilla_web_*~ |
 | ~write~         | changes a file, a note or a record: ~Write~, ~Edit~, ~clawtilla_memory_add~ |
 | ~delete~        | removes something: ~clawtilla_memory_forget~, ~clawtilla_task_cancel~ |
-| ~message~       | reaches another agent or a person: ~clawtilla_message_*~, ~clawtilla_delegate~ |
+| ~message~       | reaches another agent or a person: ~clawtilla_message_*~, ~clawtilla_delegate~, ~clawtilla_task_retry~ |
 | ~exec~          | runs a program: ~Bash~, ~Task~, ~clawtilla_computer_exec~ |
 | ~external~      | a third party's tool: a connector's, an MCP server's (~mcp__*~) |
 | ~desktop_input~ | types or clicks on a screen |

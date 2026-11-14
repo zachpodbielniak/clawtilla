@@ -1348,6 +1348,18 @@ versions apart.
   this turn, or children of its own still running. A task that does end this
   way is marked inferred and says so when read, because "they said it was
   done" and "they stopped talking" need different follow-ups.
+- **A broken run is reported to its lead, once, and invites nothing.**
+  `ClawtIncidentDesk` listens to `task-changed` itself (a reporter
+  somebody else must call is a reporter nothing calls) and files one
+  incident per run -- a routine's keyed on the routine, or an hourly
+  failure is a room of copies. The report is the system's voice, so the
+  run's own words are escaped *and* fenced with a fence longer than any
+  backtick run in them; it goes out with `invites_reply` false and no
+  task id, because the lead's sign-off is neither a result nor an
+  answer; and it is held while the lead is mid-turn, since the
+  incidents room is a session of its own and would start a second turn
+  beside the first. A person stopping an agent is not an incident:
+  `clawt_incident_desk_quiet_begin()` around the orphaning.
 - **`running` means the assignee started a turn on it**, set at
   `clawt_agent_begin_turn()`. Creating a task says work was handed out and
   delivering it says a mailbox took it; neither says anybody looked, because a
