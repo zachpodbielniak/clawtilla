@@ -321,11 +321,12 @@ lrg_proposal_review(LrgWidget *body, const gchar *id, JsonObject *proposal)
  * the text free to wrap, each reads as the thing it is.
  */
 static LrgWidget *
-decision_option_button(const gchar *id, const gchar *option, LrgWidget *entry)
+decision_option_button(const gchar *id, const gchar *option, LrgWidget *entry,
+                       gboolean destructive)
 {
     LrgWidget *row = clawt_lrg_hbox(10.0f);
     LrgWidget *text = clawt_lrg_paragraph(option, NULL);
-    LrgWidget *pick = clawt_lrg_button("Choose", NULL,
+    LrgWidget *pick = clawt_lrg_button("Choose", destructive ? "danger" : NULL,
                                        G_CALLBACK(on_answer_clicked), NULL);
 
     lrg_widget_add_class(row, "clawt-row");
@@ -358,9 +359,16 @@ decision_card(JsonObject *decision, gint64 now_us)
     LrgWidget *body = clawt_lrg_vbox(8.0f);
     LrgWidget *head = clawt_lrg_hbox(8.0f);
     LrgWidget *badges = clawt_lrg_hbox(6.0f);
-    LrgWidget *typed = clawt_lrg_hbox(8.0f);
-    LrgWidget *entry;
+    LrgWidget *entry = NULL;
     LrgWidget *send;
+    /*
+     * A rebuild request: a yes or no about destroying a machine, with
+     * what goes said on its own and no typed answer -- only "approve"
+     * rebuilds, and anything typed would read as a yes that is not one.
+     */
+    gboolean is_rebuild = g_strcmp0(clawt_ipc_payload_string(decision, "kind"),
+                                    "rebuild") == 0;
+    const gchar *loses = clawt_ipc_payload_string(decision, "loses");
     LrgWidget *drop;
     LrgWidget *remove;
     LrgWidget *closing = clawt_lrg_hbox(8.0f);
@@ -408,6 +416,9 @@ decision_card(JsonObject *decision, gint64 now_us)
             clawt_lrg_take(badges, clawt_lrg_badge(routed, "info"));
     }
 
+    if (is_rebuild)
+        clawt_lrg_take(badges, clawt_lrg_badge("rebuild", "bad"));
+
     {
         LrgWidget *top = clawt_lrg_hbox(8.0f);
 
@@ -419,6 +430,16 @@ decision_card(JsonObject *decision, gint64 now_us)
     clawt_lrg_take(body, clawt_lrg_paragraph((question != NULL) ? question
                                                                 : "",
                                              "heading"));
+
+    if (is_rebuild && loses != NULL) {
+        g_autofree gchar *said = g_strdup_printf("What a rebuild destroys: %s",
+                                                 loses);
+        LrgWidget *warning = clawt_lrg_vbox(4.0f);
+
+        clawt_lrg_take(warning, clawt_lrg_badge("will be lost", "warn"));
+        clawt_lrg_take(warning, clawt_lrg_paragraph(said, NULL));
+        clawt_lrg_take(body, warning);
+    }
 
     if (going != NULL)
         clawt_lrg_take(body, clawt_lrg_paragraph(going, "muted"));
@@ -443,29 +464,38 @@ decision_card(JsonObject *decision, gint64 now_us)
      * action -- and made first, so the option buttons can read it: a
      * typed answer wins over a clicked option.
      */
-    entry = clawt_lrg_entry(NULL, "\"neither, do X\" is a perfectly good "
-                                  "answer");
-    lrg_widget_set_fill_weight(entry, 1.0f);
-    send = clawt_lrg_button("Answer", "primary",
-                            G_CALLBACK(on_answer_clicked), NULL);
-    g_object_set_data_full(G_OBJECT(send), "decision-id", g_strdup(id),
-                           g_free);
-    g_object_set_data(G_OBJECT(send), "entry", entry);
-    g_signal_connect(entry, "submitted", G_CALLBACK(on_answer_submitted),
-                     send);
+    if (!is_rebuild) {
+        entry = clawt_lrg_entry(NULL, "\"neither, do X\" is a perfectly good "
+                                      "answer");
+        lrg_widget_set_fill_weight(entry, 1.0f);
+    }
 
     for (i = 0; options[i] != NULL; i++)
-        clawt_lrg_take(body, decision_option_button(id, options[i], entry));
+        clawt_lrg_take(body, decision_option_button(id, options[i], entry,
+                                                    is_rebuild &&
+                                                    g_strcmp0(options[i],
+                                                              "approve") == 0));
 
-    clawt_lrg_take(typed, entry);
-    clawt_lrg_take(typed, send);
-    clawt_lrg_take(body, typed);
+    if (entry != NULL) {
+        LrgWidget *typed = clawt_lrg_hbox(8.0f);
+
+        send = clawt_lrg_button("Answer", "primary",
+                                G_CALLBACK(on_answer_clicked), NULL);
+        g_object_set_data_full(G_OBJECT(send), "decision-id", g_strdup(id),
+                               g_free);
+        g_object_set_data(G_OBJECT(send), "entry", entry);
+        g_signal_connect(entry, "submitted", G_CALLBACK(on_answer_submitted),
+                         send);
+        clawt_lrg_take(typed, entry);
+        clawt_lrg_take(typed, send);
+        clawt_lrg_take(body, typed);
+    }
 
 closing_row:
-    /* a proposal's review replaces the answer row it never drew into */
-    if (proposal != NULL)
-        g_object_unref(typed);
-
+    /*
+     * A proposal's review replaces the answer row; nothing of it was
+     * made, since the row is built only once an entry exists.
+     */
     drop = clawt_lrg_button("Does not need me", "flat",
                             G_CALLBACK(on_dismiss_clicked), NULL);
     g_object_set_data_full(G_OBJECT(drop), "decision-id", g_strdup(id),

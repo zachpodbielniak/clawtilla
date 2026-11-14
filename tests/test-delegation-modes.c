@@ -161,8 +161,8 @@ test_consult_survives_a_restart_and_migrates(void)
 		sqlite3 *db = NULL;
 
 		/*
-		 * A store from before both 0.20.0's round columns and the
-		 * consultation: the two migrations apply one after the other.
+		 * A store from before the consultation, 0.20.0's round columns
+		 * and 0.22.0's replays: the migrations apply in that order.
 		 */
 		g_assert_cmpint(sqlite3_open(old_path, &db), ==, SQLITE_OK);
 		g_assert_cmpint(sqlite3_exec(db,
@@ -194,6 +194,7 @@ test_consult_survives_a_restart_and_migrates(void)
 		g_assert_false(clawt_mailbox_item_get_consult(item));
 		g_assert_cmpuint(clawt_mailbox_item_get_round(item), ==, 0);
 		g_assert_null(clawt_mailbox_item_get_chain(item));
+		g_assert_cmpuint(clawt_mailbox_item_get_replays(item), ==, 0);
 
 		/* And it takes new work carrying all three. */
 		{
@@ -725,6 +726,122 @@ test_results_wait_for_the_busy_room(void)
 		"results for you arrived in room"), ==, 1);
 	g_assert_nonnull(strstr(second, "Task t-1 is finished"));
 	g_assert_nonnull(strstr(second, "Task t-2 is finished"));
+
+	fixture_teardown(&fixture);
+}
+
+/* ── Turn records ────────────────────────────────────────────────── */
+
+/* The newest open turn record of @agent_id's mailbox. */
+static ClawtTurnRecord *
+newest_record(Fixture *fixture, const gchar *agent_id, guint *out_open)
+{
+	ClawtAgent *agent = clawt_agent_manager_get(fixture->agents, agent_id);
+	g_autoptr(GPtrArray) open = clawt_mailbox_turn_list_open(
+		clawt_agent_get_mailbox(agent));
+	ClawtTurnRecord *newest;
+
+	*out_open = open->len;
+	if (open->len == 0)
+		return NULL;
+
+	newest = g_ptr_array_steal_index(open, open->len - 1);
+	return newest;
+}
+
+/*
+ * Results held for a busy room and handed over together are one turn,
+ * so they are one turn record naming every part: a restart that cuts
+ * that turn reruns it once, as one, rather than once per result.
+ */
+static void
+test_held_results_open_one_turn_record(void)
+{
+	Fixture fixture = { 0 };
+	ClawtAgent *chief;
+	ClawtRoom *operator_room;
+	g_autoptr(ClawtTurnRecord) record = NULL;
+	guint before = 0;
+	guint after = 0;
+
+	fixture_setup(&fixture);
+	chief = clawt_agent_manager_get(fixture.agents, "chief");
+	operator_room = clawt_room_manager_get_direct(fixture.rooms, "chief",
+		"user");
+	give_agent_a_link(&fixture, "chief");
+
+	clawt_agent_note_typing(chief, clawt_room_get_id(operator_room), TRUE);
+	send_notice(&fixture, clawt_room_get_id(operator_room), "chief", "t-1",
+		"[clawtilla] Task t-1 is finished.");
+	send_notice(&fixture, clawt_room_get_id(operator_room), "chief", "t-2",
+		"[clawtilla] Task t-2 is finished.");
+	record = newest_record(&fixture, "chief", &before);
+	g_clear_pointer(&record, clawt_turn_record_free);
+
+	clawt_agent_note_typing(chief, clawt_room_get_id(operator_room), FALSE);
+	g_assert_cmpuint(clawt_mailbox_router_drain(fixture.router, "chief"), ==,
+		2);
+
+	record = newest_record(&fixture, "chief", &after);
+	g_assert_cmpuint(after, ==, before + 1);
+	g_assert_nonnull(record);
+	g_assert_cmpuint(g_strv_length(record->items), ==, 2);
+	g_assert_cmpstr(record->room, ==, clawt_room_get_id(operator_room));
+
+	fixture_teardown(&fixture);
+}
+
+/*
+ * A consultation's turn is never marked as having acted outward: its
+ * acting tools are withheld, so a mark reaching it can only be the
+ * agent-wide fold on behalf of another turn.  The ordinary turn running
+ * beside it is marked; the consultation is left to be rerun.
+ */
+static void
+test_consultation_is_never_outward(void)
+{
+	Fixture fixture = { 0 };
+	ClawtAgent *chief;
+	g_autoptr(ClawtMailboxItem) asked = NULL;
+	g_autoptr(ClawtMailboxItem) ordinary = NULL;
+	g_autoptr(GPtrArray) open = NULL;
+	guint i;
+	gboolean saw_consult = FALSE;
+	gboolean saw_work = FALSE;
+
+	fixture_setup(&fixture);
+	chief = clawt_agent_manager_get(fixture.agents, "chief");
+
+	asked = clawt_mailbox_item_new("beta", "chief", "is it sound?");
+	clawt_mailbox_item_set_room(asked, "consult-room");
+	clawt_mailbox_item_set_consult(asked, TRUE);
+	begin_turn_on(chief, asked, "consult-room");
+
+	ordinary = clawt_mailbox_item_new("user", "chief", "send the report");
+	clawt_mailbox_item_set_room(ordinary, "work-room");
+	begin_turn_on(chief, ordinary, "work-room");
+
+	/* Named: the consultation's own room is not marked. */
+	g_assert_cmpuint(clawt_agent_mark_outward(chief, "consult-room",
+		"sent the operator a message"), ==, 0);
+	/* Unnamed: only the ordinary turn is. */
+	g_assert_cmpuint(clawt_agent_mark_outward(chief, NULL,
+		"sent the operator a message"), ==, 1);
+
+	open = clawt_mailbox_turn_list_open(clawt_agent_get_mailbox(chief));
+	for (i = 0; i < open->len; i++) {
+		ClawtTurnRecord *record = g_ptr_array_index(open, i);
+
+		if (g_strcmp0(record->room, "consult-room") == 0) {
+			saw_consult = TRUE;
+			g_assert_null(record->outward);
+		} else if (g_strcmp0(record->room, "work-room") == 0) {
+			saw_work = TRUE;
+			g_assert_nonnull(record->outward);
+		}
+	}
+	g_assert_true(saw_consult);
+	g_assert_true(saw_work);
 
 	fixture_teardown(&fixture);
 }
@@ -1431,6 +1548,15 @@ test_daemon_decision_routes_to_the_delegator(void)
 		g_assert_cmpstr(json_object_get_string_member(first, "routed_to"),
 			==, "chief");
 		g_assert_nonnull(strstr(label, "chief"));
+
+		/* The inline card reads the same line off the same object. */
+		{
+			g_autoptr(ClawtDecision) inline_card =
+				clawt_decision_new_from_object(first);
+			g_autofree gchar *line = clawt_decision_routed_text(inline_card);
+
+			g_assert_cmpstr(line, ==, label);
+		}
 	}
 
 	/* Another agent may not answer it. */
@@ -1560,6 +1686,10 @@ main(int argc, char **argv)
 		test_thread_new_makes_and_reports_a_room);
 	g_test_add_func("/delegation-modes/results-wait-for-busy-room",
 		test_results_wait_for_the_busy_room);
+	g_test_add_func("/delegation-modes/held-results-one-turn-record",
+		test_held_results_open_one_turn_record);
+	g_test_add_func("/delegation-modes/consultation-never-outward",
+		test_consultation_is_never_outward);
 	g_test_add_func("/delegation-modes/consultation-inside-a-round",
 		test_consultation_inside_a_round);
 	g_test_add_func("/delegation-modes/held-results-keep-their-round",

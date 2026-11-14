@@ -2017,12 +2017,34 @@ ack_chip_new(gboolean from_user)
     return chip;
 }
 
+/*
+ * The mark on the daemon's notice that a turn was cut short and will
+ * not be resumed.  A warning colour, not a dim one: it says the request
+ * above it was not finished, which is the one thing about it somebody
+ * scrolling past must not miss.
+ */
+static GtkWidget *
+interrupted_chip_new(gboolean from_user)
+{
+    GtkWidget *chip = gtk_label_new(clawt_message_interrupted_label());
+
+    gtk_widget_add_css_class(chip, "caption-heading");
+    gtk_widget_add_css_class(chip, "warning");
+    gtk_widget_set_tooltip_text(chip, clawt_message_interrupted_tooltip());
+    gtk_widget_set_halign(chip, from_user ? GTK_ALIGN_END : GTK_ALIGN_START);
+    gtk_widget_set_margin_top(chip, 2);
+    if (!from_user)
+        gtk_widget_set_margin_start(chip, CHAT_GUTTER);
+
+    return chip;
+}
+
 void
 clawt_gtk_append_message_to(ClawtWindow *self, const TranscriptView *view,
                             const gchar *sender, const gchar *body, gboolean from_user,
                             gint64 ts, const gchar *task, gint64 depth,
                             gboolean acknowledged, gint64 merged,
-                            gint64 consult)
+                            gint64 consult, gboolean interrupted)
 {
     g_autofree gchar *merge_preface = NULL;
     g_auto(GStrv) merge_labels = NULL;
@@ -2351,6 +2373,17 @@ clawt_gtk_append_message_to(ClawtWindow *self, const TranscriptView *view,
             gtk_box_append(GTK_BOX(row), chip);
     }
 
+    /*
+     * The notice itself is drawn in a card under the chip, so it reads
+     * as the system's statement about the conversation rather than as
+     * one more line of it.
+     */
+    if (interrupted) {
+        gtk_box_append(GTK_BOX(row), interrupted_chip_new(from_user));
+        gtk_widget_add_css_class(text, "card");
+        gtk_widget_add_css_class(row, "clawt-interrupted");
+    }
+
     append_attachment_previews(self, row, body, from_user);
 
     /*
@@ -2414,7 +2447,7 @@ clawt_gtk_append_message(ClawtWindow *self, const gchar *sender, const gchar *bo
                             self->selected_color };
 
     clawt_gtk_append_message_to(self, &view, sender, body, from_user, ts, NULL, 0,
-                                FALSE, 0, 0);
+                                FALSE, 0, 0, FALSE);
 }
 
 /*
@@ -2427,7 +2460,8 @@ void
 clawt_gtk_append_message_marked(ClawtWindow *self, const gchar *sender,
                                 const gchar *body, gboolean from_user,
                                 gint64 ts, gboolean acknowledged,
-                                gint64 merged, gint64 consult)
+                                gint64 merged, gint64 consult,
+                                gboolean interrupted)
 {
     TranscriptView view = { self->transcript, &self->run_sender,
                             &self->run_day, self->selected_agent,
@@ -2435,7 +2469,7 @@ clawt_gtk_append_message_marked(ClawtWindow *self, const gchar *sender,
                             self->selected_color };
 
     clawt_gtk_append_message_to(self, &view, sender, body, from_user, ts, NULL, 0,
-                                acknowledged, merged, consult);
+                                acknowledged, merged, consult, interrupted);
 }
 
 /*
@@ -4412,7 +4446,8 @@ clawt_gtk_load_history(ClawtWindow *self)
                                      g_strcmp0(sender, "user") == 0, ts,
                                      clawt_json_int(message, "acknowledged", 0) != 0,
                                      clawt_json_int(message, "merged", 0),
-                                     clawt_json_int(message, "consult", 0));
+                                     clawt_json_int(message, "consult", 0),
+                                     clawt_json_int(message, "interrupted", 0) != 0);
             clawt_gtk_append_round_marks(self, 0,
                                      clawt_json_string(message, "skipped", NULL),
                                      clawt_json_string(message, "skip_reason", NULL),

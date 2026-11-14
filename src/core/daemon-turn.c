@@ -893,8 +893,15 @@ clawt_daemon_turn_settle(ClawtDaemon *self, const gchar *agent_id)
     if (self->agents != NULL) {
         ClawtAgent *agent = clawt_agent_manager_get(self->agents, agent_id);
 
-        if (agent != NULL)
+        if (agent != NULL) {
+            /*
+             * The turns are over, so nothing of them is rerun after a
+             * later restart.  Before the set is cleared, which is what
+             * says which ones were running.
+             */
+            clawt_agent_close_running_turns(agent);
             clawt_agent_clear_typing(agent);
+        }
     }
 
     if (self->turn_watch != NULL)

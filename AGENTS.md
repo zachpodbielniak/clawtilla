@@ -1324,7 +1324,10 @@ versions apart.
   *question* carries it: the answer is marked `CLAWT_CONSULT_ANSWERED` for
   the clients and never reaches an item, or answering a consultation would
   make the asker's next turn one. A finished turn withholds nothing, so
-  `TOOLS.org` does not depend on what the last turn was.
+  `TOOLS.org` does not depend on what the last turn was. And a
+  consultation is never marked outward (`mark_turn_records()` skips
+  it): nothing that acts was reachable, so a mark there is the
+  agent-wide fold speaking for another turn.
 - **A group room counts in rounds, and a tree counts in requests.** A
   round starts at a message from a person, a routine or a trigger
   (depth 0); the thread of replies rides on the message and the stored
@@ -1371,6 +1374,19 @@ versions apart.
   answer was dropped as a sign-off. The finished-turn table goes too --
   `clawt_agent_get_hop_depth()` falls back to it, and that gates which tools
   the agent is offered at all.
+- **A turn a restart cut is rerun once, and only if nothing outward is
+  known of it.** Deliveries ack at the socket, so the mailbox keeps a turn
+  record per delivery until the room's falling edge (or
+  `clawt_agent_close_running_turns()` when the daemon ends the turn). A
+  successful outward call marks it -- `clawt_mcp_tools_outward_label()`
+  from the tool's action class; peer messages are inward. When a process
+  ends and at daemon start, `clawt_daemon_turns_recover()` requeues an
+  unmarked, never-rerun turn's items and ends every other one with an
+  `interrupted` notice, deleting the record in the same transaction. Do
+  not close records in `clawt_agent_clear_typing()`: a dying process
+  clears its typing set too, and those open records are the whole point.
+  A stop somebody asked for (`agent.stop`, an approved rebuild) abandons
+  its turns first, so its own state change has nothing left to rerun.
 - **A stored question with an in-memory asker outlives the asker.** A policy
   ask is a decision on disk and a waiting call in the daemon's memory, so
   an interrupted turn, a stopped agent or a restarted daemon left the

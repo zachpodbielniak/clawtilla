@@ -249,4 +249,175 @@ guint clawt_mailbox_depth(ClawtMailbox *self);
  */
 const gchar *clawt_mailbox_get_agent_id(ClawtMailbox *self);
 
+/**
+ * ClawtTurnRecord: (skip)
+ * @id: the record's own id
+ * @room: (nullable): the room the turn ran in
+ * @items: (array zero-terminated=1): the mailbox items the delivery
+ *   carried -- one, or every part of a merged delivery
+ * @replays: how many times those items had already been handed back
+ * @outward: (nullable): what the turn did outside the fleet, comma
+ *   separated, or %NULL when nothing outward is known
+ * @opened_at: when the delivery was handed over, in microseconds
+ * @redelivered: set by clawt_mailbox_turn_recover(): %TRUE when the
+ *   items went back into the queue
+ * @reason: (nullable): set by clawt_mailbox_turn_recover() when they did
+ *   not: why the turn ends as interrupted instead
+ * @from: (nullable): who sent the first item, if it is still queued
+ * @body: (nullable): the first item's body, if it is still queued
+ *
+ * One delivery an agent was handed and had not finished, as the
+ * mailbox remembers it across a restart.
+ */
+typedef struct {
+	gint64    id;
+	gchar    *room;
+	gchar   **items;
+	guint     replays;
+	gchar    *outward;
+	gint64    opened_at;
+	gboolean  redelivered;
+	gchar    *reason;
+	gchar    *from;
+	gchar    *body;
+} ClawtTurnRecord;
+
+/**
+ * clawt_turn_record_free: (skip)
+ * @record: (nullable): a #ClawtTurnRecord
+ *
+ * Frees @record.
+ */
+void clawt_turn_record_free(ClawtTurnRecord *record);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtTurnRecord, clawt_turn_record_free)
+
+/**
+ * clawt_mailbox_turn_open:
+ * @self: a #ClawtMailbox
+ * @room_id: (nullable): the room the delivery went into
+ * @item_ids: (array zero-terminated=1): the items it carried
+ * @replays: how many times they had already been handed back
+ * @error: return location for a #GError
+ *
+ * Records a delivery an agent has just been handed, before it has
+ * started -- or finished -- the turn it sets up.
+ *
+ * The queue forgets a delivery once it is acknowledged at the socket,
+ * and libreclaw's own queue is in memory, so without this a process
+ * that died mid-turn took the turn with it and nothing knew to say so.
+ * The record is closed when the turn ends (clawt_mailbox_turn_close())
+ * and read back on the next start (clawt_mailbox_turn_recover()).  The
+ * items it names are kept from the acknowledged-item sweep while it is
+ * open, so they can be handed back.
+ *
+ * Returns: the record's id, or 0 on failure
+ */
+gint64 clawt_mailbox_turn_open(ClawtMailbox        *self,
+                               const gchar         *room_id,
+                               const gchar * const *item_ids,
+                               guint                replays,
+                               GError             **error);
+
+/**
+ * clawt_mailbox_turn_mark_outward:
+ * @self: a #ClawtMailbox
+ * @turn: a record from clawt_mailbox_turn_open()
+ * @what: a short label for what the turn did outside the fleet
+ * @error: return location for a #GError
+ *
+ * Marks an open turn as having acted outward -- sent something to a
+ * person, written through a connector, run a command on a machine that
+ * is not a sandbox.  A marked turn is never rerun after a restart,
+ * because the rerun would do it twice; it ends as interrupted instead.
+ * Each label is kept once.
+ *
+ * Returns: %TRUE if the record was marked
+ */
+gboolean clawt_mailbox_turn_mark_outward(ClawtMailbox  *self,
+                                         gint64         turn,
+                                         const gchar   *what,
+                                         GError       **error);
+
+/**
+ * clawt_mailbox_turn_close:
+ * @self: a #ClawtMailbox
+ * @turn: a record from clawt_mailbox_turn_open()
+ * @error: return location for a #GError
+ *
+ * Forgets a turn that ended normally.
+ *
+ * Returns: %TRUE on success, including a record already gone
+ */
+gboolean clawt_mailbox_turn_close(ClawtMailbox  *self,
+                                  gint64         turn,
+                                  GError       **error);
+
+/**
+ * clawt_mailbox_turn_list_open: (skip)
+ * @self: a #ClawtMailbox
+ *
+ * Returns: (transfer full) (element-type ClawtTurnRecord): every open
+ *   turn record, oldest first
+ */
+GPtrArray *clawt_mailbox_turn_list_open(ClawtMailbox *self);
+
+/**
+ * clawt_mailbox_turn_count_open:
+ * @self: a #ClawtMailbox
+ *
+ * Returns: how many turn records are open
+ */
+guint clawt_mailbox_turn_count_open(ClawtMailbox *self);
+
+/**
+ * ClawtTurnVetoFunc: (skip)
+ * @mailbox: the mailbox being recovered
+ * @record: a turn about to be handed back
+ * @user_data: as supplied
+ *
+ * A last word on a turn clawt_mailbox_turn_recover() would rerun, for a
+ * reason only the caller knows -- the task it belonged to has already
+ * been failed, say.
+ *
+ * Returns: (transfer none) (nullable): why it must not be rerun, or
+ *   %NULL to let it be
+ */
+typedef const gchar *(*ClawtTurnVetoFunc)(ClawtMailbox    *mailbox,
+                                          ClawtTurnRecord *record,
+                                          gpointer         user_data);
+
+/**
+ * clawt_mailbox_turn_recover: (skip)
+ * @self: a #ClawtMailbox
+ * @replay: %FALSE to end every open turn as interrupted, for a stop
+ *   somebody asked for
+ * @reason: (nullable): why, when @replay is %FALSE
+ * @veto: (nullable) (scope call): asked about each turn that would be
+ *   handed back
+ * @veto_data: data for @veto
+ * @error: return location for a #GError
+ *
+ * Settles every open turn record, once, after the process that held
+ * them has gone.
+ *
+ * A turn is handed back -- its items returned to the queue with their
+ * replay count raised -- only when nothing outward is known of it, it
+ * was not itself a rerun, and its items are still there.  Every other
+ * turn ends as interrupted, with @reason set on its record for the
+ * notice the caller posts.  Either way the record is deleted in the
+ * same transaction, so no turn is handed back twice however many
+ * restarts follow.
+ *
+ * Returns: (transfer full) (element-type ClawtTurnRecord) (nullable):
+ *   the settled records, with @redelivered or @reason filled in, or
+ *   %NULL on failure
+ */
+GPtrArray *clawt_mailbox_turn_recover(ClawtMailbox       *self,
+                                      gboolean            replay,
+                                      const gchar        *reason,
+                                      ClawtTurnVetoFunc   veto,
+                                      gpointer            veto_data,
+                                      GError            **error);
+
 G_END_DECLS

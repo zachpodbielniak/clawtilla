@@ -173,6 +173,10 @@ load_room(ClawtRoomManager *self, ClawtRoom *room)
 				clawt_message_set_consult(message, (ClawtConsultRole)role);
 		}
 
+		if (json_object_has_member(object, "interrupted"))
+			clawt_message_set_interrupted(message,
+				json_object_get_boolean_member(object, "interrupted"));
+
 		/* The round and its thread, and any withheld mention. */
 		if (json_object_has_member(object, "round"))
 			clawt_message_set_round(message,

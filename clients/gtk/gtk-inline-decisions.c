@@ -267,6 +267,14 @@ card_fill(
 	who = g_strdup_printf("%s asks", clawt_decision_get_agent(decision));
 
 	gtk_box_append(GTK_BOX(card), text_label(who, "caption-heading"));
+
+	/* Who it was put to first, as the inbox says it. */
+	{
+		g_autofree gchar *routed = clawt_decision_routed_text(decision);
+
+		if (routed != NULL)
+			gtk_box_append(GTK_BOX(card), text_label(routed, "dim-label"));
+	}
 	gtk_box_append(GTK_BOX(card),
 	               text_label(clawt_decision_get_question(decision), NULL));
 

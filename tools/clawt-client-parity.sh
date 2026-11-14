@@ -263,6 +263,15 @@ declare -A AFFORDANCES=(
     ["a task's own room"]="clawt_task_thread_summary|clawt_task_thread_summary|clawt_task_thread_summary"
     ["open a task's own room"]="on_task_open_room|htmx_a_new_with_href(url)|on_open_room_clicked"
     ["decision routed to"]="clawt_decision_routed_label|clawt_decision_routed_label|clawt_decision_routed_label"
+    ["decision routed to, inline"]="clawt_decision_routed_text|clawt_decision_routed_text|clawt_decision_routed_text"
+    #
+    # A turn a restart or a stop cut short, drawn as the daemon's notice
+    # with libclawt's label in all three; and an agent's rebuild request,
+    # drawn as a decision that says what it destroys (the `loses` member)
+    # beside Approve and Decline.
+    #
+    ["interrupted-turn notices"]="clawt_message_interrupted_label|clawt_message_interrupted_label|clawt_message_interrupted_label"
+    ["rebuild requests say what is lost"]="\"loses\"|\"loses\"|\"loses\""
     ["ack-check model choices"]="clawt_ack_check_model_nth_value|clawt_ack_check_model_nth_value|clawt_ack_check_model_nth_value"
     #
     # Rounds in a group room and the budget per task tree: a divider

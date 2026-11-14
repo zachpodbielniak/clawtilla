@@ -146,6 +146,10 @@ The transcript draws a *Round N* divider (=.round-divider=) where a group room's
 
 =transcript()= reads the room's decisions (~decision.list~ with the ~room~ ~room.history~ resolved) and merges them between the messages with =clawt_decision_precedes()=, each drawn by =clawt_web_decision_inline()= in =web-ui.c= (so =test-web-render= can hold it).  An open card is a form posting to =/f/decision/answer= with ~via: chat~ and one submit button per option; it targets ~closest .decision-inline~ with an ~outerHTML~ swap, has ~hx-sync="this:drop"~ so a second press while the first is in flight is dropped, and ~hx-disabled-elt~ so its buttons are disabled for the wait.  The route answers with the card redrawn from the daemon's reply -- settled -- or, when the daemon refused (a stale card, a double tap's second press, the inbox got there first), from the decision as the daemon now holds it with the refusal written into the card.  A decision deleted meanwhile becomes the refusal text in the card's place.  Without htmx the route redirects to =/decisions=.  The transcript re-renders on every fleet event anyway, so a decision settled in the inbox, another window or by its deadline is redrawn as settled with the next ~decision.settled~.  The inbox's own answers send ~via: inbox~.  See [[file:clients.org][Decisions inline]].
 
+*** Interrupted turns and rebuild requests
+
+=message_element()= also reads =interrupted=: the daemon's notice that a turn was cut short and will not be resumed gets a =warn= badge, =clawt_message_interrupted_label()= with =clawt_message_interrupted_tooltip()= as its =title=, and its body is boxed with =.msg-interrupted=.  On =/decisions= a rebuild request (=kind: "rebuild"=) has a =bad= *rebuild* badge, its =loses= sentence in a =.decision-loses= box, a =danger= *approve* button, and no free-text field or Answer button -- only ~approve~ rebuilds.  See [[file:clients.org][clients.org]].
+
 *** Connectors
 
 Each connector's card has a /Tools/ row --

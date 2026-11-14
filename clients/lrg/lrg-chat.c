@@ -1227,7 +1227,8 @@ merge_sections_new(ClawtLrgApp *app, const gchar *preface, gchar **labels,
 static void
 append_message(ClawtLrgApp *app, const gchar *sender, const gchar *body,
                gint64 ts, const gchar *task, gint64 depth, gboolean animate,
-               gboolean acknowledged, gint64 merged, gint64 consult)
+               gboolean acknowledged, gint64 merged, gint64 consult,
+               gboolean interrupted)
 {
     g_autofree gchar *merge_preface = NULL;
     g_auto(GStrv) merge_labels = NULL;
@@ -1400,6 +1401,29 @@ append_message(ClawtLrgApp *app, const gchar *sender, const gchar *body,
         clawt_lrg_take(row, mark);
     }
 
+    /*
+     * The daemon's notice that a turn was cut short and will not be
+     * resumed, in warning colours: it says the request above it was not
+     * finished.  The label carries the whole of it here, as above, with
+     * the explanation under it since there is no tooltip to put it in.
+     */
+    if (interrupted) {
+        LrgWidget *cut = clawt_lrg_badge(clawt_message_interrupted_label(),
+                                         "warn");
+        LrgWidget *why = clawt_lrg_label(clawt_message_interrupted_tooltip(),
+                                         "caption");
+
+        lrg_widget_set_halign(cut, from_user ? LRG_ALIGN_END : LRG_ALIGN_START);
+        if (!from_user) {
+            LrgInsets pad = { px(app, CHAT_GUTTER), 0.0f, 0.0f, 0.0f };
+
+            lrg_widget_set_margin(cut, &pad);
+            lrg_widget_set_margin(why, &pad);
+        }
+        clawt_lrg_take(row, cut);
+        clawt_lrg_take(row, why);
+    }
+
     attachment_previews_append(app, row, body, from_user);
     attach_message_menu(row, body);
 
@@ -1428,7 +1452,7 @@ append_local(ClawtLrgApp *app, const gchar *text)
      */
     chat.following = TRUE;
     chat.auto_scrolling = FALSE;
-    append_message(app, "clawtilla", text, 0, NULL, 0, TRUE, FALSE, 0, 0);
+    append_message(app, "clawtilla", text, 0, NULL, 0, TRUE, FALSE, 0, 0, FALSE);
     clawt_lrg_app_wake(app);
 }
 
@@ -2005,6 +2029,14 @@ inline_card_fill(ClawtLrgApp *app, LrgWidget *card, ClawtDecision *decision)
 
     who = g_strdup_printf("%s asks", clawt_decision_get_agent(decision));
     clawt_lrg_take(body, clawt_lrg_label(who, "caption"));
+
+    /* Who it was put to first, as the inbox says it. */
+    {
+        g_autofree gchar *routed = clawt_decision_routed_text(decision);
+
+        if (routed != NULL)
+            clawt_lrg_take(body, clawt_lrg_label(routed, "muted"));
+    }
     clawt_lrg_take(body, clawt_lrg_paragraph(
                              clawt_decision_get_question(decision), "heading"));
 
@@ -2232,7 +2264,8 @@ draw_history(ClawtLrgApp *app, JsonNode *history, GPtrArray *steps,
                        i + CHAT_HISTORY_ENTRANCES >= n,
                        clawt_ipc_payload_int(message, "acknowledged", 0) != 0,
                        clawt_ipc_payload_int(message, "merged", 0),
-                       clawt_ipc_payload_int(message, "consult", 0));
+                       clawt_ipc_payload_int(message, "consult", 0),
+                       clawt_ipc_payload_int(message, "interrupted", 0) != 0);
         append_round_marks(app, 0,
                            clawt_ipc_payload_string(message, "skipped"),
                            clawt_ipc_payload_string(message, "skip_reason"),
@@ -4517,7 +4550,8 @@ on_message_event(ClawtLrgApp *app, ClawtEvent *event)
                        clawt_event_get_detail(event, "task"), 0, TRUE,
                        clawt_event_get_detail_int(event, "acknowledged") != 0,
                        clawt_event_get_detail_int(event, "merged"),
-                       clawt_event_get_detail_int(event, "consult"));
+                       clawt_event_get_detail_int(event, "consult"),
+                       clawt_event_get_detail_int(event, "interrupted") != 0);
         append_round_marks(app, 0, clawt_event_get_detail(event, "skipped"),
                            clawt_event_get_detail(event, "skip_reason"),
                            FALSE);

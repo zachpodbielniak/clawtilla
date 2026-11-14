@@ -180,6 +180,20 @@ gchar       *clawt_decision_routed_label(const gchar *routed_to,
                                          const gchar *answered_by,
                                          gboolean     open);
 
+/**
+ * clawt_decision_routed_text:
+ * @self: a #ClawtDecision
+ *
+ * clawt_decision_routed_label() for a decision already read off the
+ * wire (clawt_decision_new_from_object()), which is what the inline card
+ * in the chat holds: the same line the inbox draws, from the same
+ * fields.
+ *
+ * Returns: (transfer full) (nullable): the line, or %NULL for a
+ *   decision that went to the operator alone
+ */
+gchar       *clawt_decision_routed_text(ClawtDecision *self);
+
 gint64 clawt_decision_get_created_at(ClawtDecision *self);
 void   clawt_decision_set_created_at(ClawtDecision *self, gint64 when);
 

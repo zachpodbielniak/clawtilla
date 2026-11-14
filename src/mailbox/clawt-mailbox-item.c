@@ -37,6 +37,7 @@ struct _ClawtMailboxItem {
 	gboolean composed;
 	gboolean one_way;
 	gboolean consult;
+	guint    replays;
 	guint    round;
 	gchar   *chain;
     gint64   created_at;
@@ -116,6 +117,7 @@ clawt_mailbox_item_copy(ClawtMailboxItem *self)
 	copy->composed = self->composed;
 	copy->one_way = self->one_way;
 	copy->consult = self->consult;
+	copy->replays = self->replays;
 	copy->round = self->round;
 	copy->chain = g_strdup(self->chain);
     copy->created_at = self->created_at;
@@ -332,6 +334,23 @@ clawt_mailbox_item_set_round_chain(
 	self->round = round;
 	g_free(self->chain);
 	self->chain = (chain != NULL && *chain != '\0') ? g_strdup(chain) : NULL;
+}
+
+guint
+clawt_mailbox_item_get_replays(
+	ClawtMailboxItem *self
+){
+	g_return_val_if_fail(self != NULL, 0);
+	return self->replays;
+}
+
+void
+clawt_mailbox_item_set_replays(
+	ClawtMailboxItem *self,
+	guint             replays
+){
+	g_return_if_fail(self != NULL);
+	self->replays = replays;
 }
 
 gchar *

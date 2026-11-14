@@ -1404,7 +1404,8 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
                                      g_strcmp0(from, "user") == 0, 0,
                                      clawt_event_get_detail_int(event, "acknowledged") != 0,
                                      clawt_event_get_detail_int(event, "merged"),
-                                     clawt_event_get_detail_int(event, "consult"));
+                                     clawt_event_get_detail_int(event, "consult"),
+                                     clawt_event_get_detail_int(event, "interrupted") != 0);
             clawt_gtk_append_round_marks(self, 0,
                                      clawt_event_get_detail(event, "skipped"),
                                      clawt_event_get_detail(event, "skip_reason"),

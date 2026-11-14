@@ -5915,10 +5915,17 @@ relay_policy_gate(const gchar *agent_id, const gchar *tool, const gchar *klass,
     if (client == NULL)
         return TRUE;
 
+    /*
+     * The room the CLI's session is in, so a connector write marks that
+     * turn alone.  A relay started outside a turn has none -- the member
+     * is then left out -- and the call counts against every running turn
+     * (docs/mailboxes.org, "A turn a restart cut short").
+     */
     reply = clawt_client_request_full(
         client, "policy.check",
         build_payload("agent", agent_id, "tool", tool, "class", klass,
-                      "summary", tool, NULL),
+                      "summary", tool, "room", g_getenv("CLAWTILLA_ROOM_ID"),
+                      NULL),
         3600, NULL);
     if (reply == NULL || !JSON_NODE_HOLDS_OBJECT(reply))
         return TRUE;

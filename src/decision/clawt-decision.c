@@ -413,3 +413,12 @@ clawt_decision_routed_label(const gchar *routed_to, const gchar *answered_by,
 
     return g_strdup_printf("asked of %s first", routed_to);
 }
+
+gchar *
+clawt_decision_routed_text(ClawtDecision *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    return clawt_decision_routed_label(self->routed_to, self->answered_by,
+                                       self->state == CLAWT_DECISION_OPEN);
+}

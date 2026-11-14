@@ -161,6 +161,15 @@ typedef struct {
 	guint     work_calls;
 	gboolean  evidence;
 	gchar    *last_error;
+
+	/*
+	 * The mailbox's turn records this turn answers for (gint64 ids):
+	 * one per delivery, more when an overflowing queue folded several
+	 * into one.  Closed together on the falling edge; marked together
+	 * when the turn acts outward.  NULL for a turn nothing recorded --
+	 * one no delivery set up, or one handed over with no mailbox.
+	 */
+	GArray   *records;
 } TurnSetup;
 
 
@@ -174,6 +183,7 @@ turn_setup_free(gpointer data)
     g_free(setup->task_id);
 	g_free(setup->last_error);
 	g_clear_pointer(&setup->input, clawt_mailbox_item_free);
+	g_clear_pointer(&setup->records, g_array_unref);
     g_free(setup);
 }
 
@@ -882,6 +892,19 @@ trim_pending_turns(ClawtAgent *self)
 
         if (next->origin == NULL)
             next->origin = g_strdup(oldest->origin);
+
+		/*
+		 * And its turn records.  The folded message is still in
+		 * libreclaw's queue and will still run; only its description
+		 * went.  Left behind, its record would never be closed, and the
+		 * next restart would rerun a message that had been answered.
+		 */
+		if (oldest->records != NULL) {
+			if (next->records == NULL)
+				next->records = g_array_new(FALSE, FALSE, sizeof(gint64));
+			g_array_append_vals(next->records, oldest->records->data,
+				oldest->records->len);
+		}
     }
 
     g_warning("agent %s: more than %d messages are waiting for a turn; the "
@@ -1059,6 +1082,156 @@ item_turn_owner(
  * Keep the exact input with its turn. Only a correlated, closed answer
  * restores responsibility; an incoming question is still the peer's ask.
  */
+/*
+ * Writes the mailbox's record of a delivery the agent has just been
+ * handed, and files its id on the turn it set up.
+ *
+ * Only with a mailbox and real item ids: a test that hands an agent a
+ * delivery with neither has no queue to hand anything back to.  A write
+ * that fails is a warning and not a refused delivery -- the message has
+ * already reached the socket, and the worst a missing record costs is
+ * that a restart does not rerun this one turn.
+ */
+static void
+open_turn_record(
+	ClawtAgent          *self,
+	TurnSetup           *setup,
+	const gchar         *room_id,
+	const gchar * const *ids,
+	guint                replays
+){
+	g_autoptr(GError) error = NULL;
+	gint64 record;
+
+	if (self->mailbox == NULL || ids == NULL || ids[0] == NULL)
+		return;
+
+	record = clawt_mailbox_turn_open(self->mailbox, room_id, ids, replays,
+		&error);
+
+	if (record <= 0) {
+		g_warning("agent %s: could not record the turn a delivery started, "
+			"so a restart will not rerun it: %s", clawt_agent_get_id(self),
+			error != NULL ? error->message : "unknown");
+		return;
+	}
+
+	if (setup->records == NULL)
+		setup->records = g_array_new(FALSE, FALSE, sizeof(gint64));
+	g_array_append_val(setup->records, record);
+}
+
+/* Closes every record a finished turn answered for. */
+static void
+close_turn_records(
+	ClawtAgent *self,
+	TurnSetup  *setup
+){
+	guint i;
+
+	if (setup == NULL || setup->records == NULL || self->mailbox == NULL)
+		return;
+
+	for (i = 0; i < setup->records->len; i++) {
+		g_autoptr(GError) error = NULL;
+
+		if (!clawt_mailbox_turn_close(self->mailbox,
+				g_array_index(setup->records, gint64, i), &error))
+			g_warning("agent %s: could not close a turn record, so a "
+				"restart may rerun a finished turn: %s",
+				clawt_agent_get_id(self),
+				error != NULL ? error->message : "unknown");
+	}
+
+	g_array_set_size(setup->records, 0);
+}
+
+/* Marks every record of one turn; returns how many there were. */
+static guint
+mark_turn_records(
+	ClawtAgent  *self,
+	TurnSetup   *setup,
+	const gchar *what
+){
+	guint marked = 0;
+	guint i;
+
+	if (setup == NULL || setup->records == NULL || self->mailbox == NULL)
+		return 0;
+
+	/*
+	 * A consultation never acts outward: every tool that could is
+	 * withheld from it and refused if named (clawt_mcp_tools_consult_
+	 * withholds()), so a mark reaching one came from the agent-wide fold
+	 * on behalf of another turn.  Left unmarked, a consultation cut by a
+	 * restart is rerun once -- which only asks the question again.
+	 */
+	if (setup->consult)
+		return 0;
+
+	for (i = 0; i < setup->records->len; i++) {
+		g_autoptr(GError) error = NULL;
+
+		if (clawt_mailbox_turn_mark_outward(self->mailbox,
+				g_array_index(setup->records, gint64, i), what, &error))
+			marked++;
+		else
+			g_warning("agent %s: could not mark a turn as having acted "
+				"outward, so a restart could repeat %s: %s",
+				clawt_agent_get_id(self), what,
+				error != NULL ? error->message : "unknown");
+	}
+
+	return marked;
+}
+
+guint
+clawt_agent_mark_outward(
+	ClawtAgent  *self,
+	const gchar *room_id,
+	const gchar *what
+){
+	GHashTableIter iter;
+	gpointer key;
+	gpointer value;
+	TurnSetup *setup;
+	guint marked = 0;
+
+	g_return_val_if_fail(CLAWT_IS_AGENT(self), 0);
+	g_return_val_if_fail(what != NULL, 0);
+
+	/*
+	 * The turn in the named room, when that room has one running.  A
+	 * room that is not running is a description outliving its turn (or
+	 * a turn_room an agent made up), and is no better than no room.
+	 */
+	if (room_id != NULL && room_is_live(self, room_id)) {
+		setup = turn_in(self, room_id);
+		if (setup != NULL)
+			return mark_turn_records(self, setup, what);
+	}
+
+	/*
+	 * Otherwise every running turn, which is the safe direction and
+	 * the only one: a turn wrongly marked ends as "interrupted" after a
+	 * restart and costs a person a re-ask, while a turn wrongly left
+	 * unmarked is rerun and sends whatever it sent a second time.
+	 */
+	g_hash_table_iter_init(&iter, self->turns);
+	while (g_hash_table_iter_next(&iter, &key, &value))
+		if (g_hash_table_contains(self->typing_rooms, key))
+			marked += mark_turn_records(self, value, what);
+
+	/*
+	 * And with nothing running at all -- a tool call that beat its own
+	 * typing frame, or a test -- the turn last begun.
+	 */
+	if (marked == 0 && g_hash_table_size(self->typing_rooms) == 0)
+		marked = mark_turn_records(self, latest_turn(self), what);
+
+	return marked;
+}
+
 void
 clawt_agent_deliver_item(ClawtAgent *self, ClawtMailboxItem *item,
 	gboolean replies)
@@ -1075,6 +1248,13 @@ clawt_agent_deliver_item(ClawtAgent *self, ClawtMailboxItem *item,
 	setup = g_queue_peek_tail(self->pending);
 	setup->input = clawt_mailbox_item_copy(item);
 	setup->consult = clawt_mailbox_item_get_consult(item);
+
+	{
+		const gchar *ids[2] = { clawt_mailbox_item_get_id(item), NULL };
+
+		open_turn_record(self, setup, clawt_mailbox_item_get_room(item),
+			ids, clawt_mailbox_item_get_replays(item));
+	}
 }
 
 void
@@ -1155,6 +1335,28 @@ clawt_agent_deliver_merged(
 	setup = g_queue_peek_tail(self->pending);
 	setup->input = clawt_mailbox_item_copy(delivered);
 	setup->consult = consult;
+
+	/*
+	 * One record naming every part, with the highest replay count among
+	 * them: the turn is one turn, and a part that was already rerun
+	 * once must not buy the whole merge a second rerun.
+	 */
+	{
+		g_autoptr(GPtrArray) ids = g_ptr_array_new();
+		guint replays = 0;
+
+		for (i = 0; i < items->len; i++) {
+			ClawtMailboxItem *item = g_ptr_array_index(items, i);
+
+			if (clawt_mailbox_item_get_id(item) != NULL)
+				g_ptr_array_add(ids, (gpointer)clawt_mailbox_item_get_id(item));
+			replays = MAX(replays, clawt_mailbox_item_get_replays(item));
+		}
+		g_ptr_array_add(ids, NULL);
+
+		open_turn_record(self, setup, clawt_mailbox_item_get_room(delivered),
+			(const gchar * const *)ids->pdata, replays);
+	}
 }
 
 gboolean
@@ -1586,6 +1788,15 @@ clawt_agent_note_typing(ClawtAgent  *self,
          * room here would have nothing to judge that answer by.
          */
         g_hash_table_remove(self->typing_rooms, key);
+
+		/*
+		 * The turn ended, so a restart has nothing of it to rerun.
+		 * Only on a real falling edge: a FALSE for a room that was not
+		 * typing describes no turn, and closing the room's last one
+		 * again is harmless but says something untrue.
+		 */
+		if (room_was_live)
+			close_turn_records(self, turn_in(self, room_id));
     }
 
     if (was_typing != (g_hash_table_size(self->typing_rooms) > 0))
@@ -1653,6 +1864,20 @@ clawt_agent_get_turn_started_in(ClawtAgent *self, const gchar *room_id)
 
     started = g_hash_table_lookup(self->typing_rooms, room_key(room_id));
     return started != NULL ? *started : 0;
+}
+
+void
+clawt_agent_close_running_turns(
+	ClawtAgent *self
+){
+	GHashTableIter iter;
+	gpointer key;
+
+	g_return_if_fail(CLAWT_IS_AGENT(self));
+
+	g_hash_table_iter_init(&iter, self->typing_rooms);
+	while (g_hash_table_iter_next(&iter, &key, NULL))
+		close_turn_records(self, g_hash_table_lookup(self->turns, key));
 }
 
 void

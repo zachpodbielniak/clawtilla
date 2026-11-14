@@ -437,6 +437,24 @@ void clawt_agent_deliver_merged(ClawtAgent       *self,
                                 const gboolean   *peers);
 
 /**
+ * clawt_agent_mark_outward:
+ * @self: a #ClawtAgent
+ * @room_id: (nullable): the turn's room, when the call named one
+ * @what: a short label for what the turn did outside the fleet
+ *
+ * Marks the mailbox's record of a running turn as having acted outward,
+ * so a restart that cuts it ends it as interrupted rather than rerunning
+ * it and doing the thing twice.  The turn in @room_id when one is
+ * running there; otherwise every running turn, because a call that
+ * cannot say which turn it belongs to must count against all of them.
+ *
+ * Returns: how many records were marked
+ */
+guint clawt_agent_mark_outward(ClawtAgent  *self,
+                               const gchar *room_id,
+                               const gchar *what);
+
+/**
  * clawt_agent_note_turn_tool:
  * @self: a #ClawtAgent
  * @room_id: (nullable): the turn's room, or %NULL for a call that names
@@ -746,6 +764,19 @@ gint64 clawt_agent_get_turn_started_in(ClawtAgent *self, const gchar *room_id);
  * new turn runs with the abandoned one's description.
  */
 void clawt_agent_clear_typing(ClawtAgent *self);
+
+/**
+ * clawt_agent_close_running_turns:
+ * @self: a #ClawtAgent
+ *
+ * Closes the mailbox's records of every turn running now, for a turn
+ * the daemon ends itself -- an interrupt somebody asked for, a grace
+ * timer -- while the process lives on.  Those turns are over, so a
+ * later restart must not rerun them.  Deliberately not part of
+ * clawt_agent_clear_typing(): a process that *dies* clears its typing
+ * set too, and there the open records are exactly what a restart reruns.
+ */
+void clawt_agent_close_running_turns(ClawtAgent *self);
 
 /**
  * clawt_agent_begin_turn:

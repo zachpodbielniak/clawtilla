@@ -276,6 +276,116 @@ you is a record of the conversation.  The queue is a queue, not an
 archive; the transcript and the event log are the durable record of what
 was said.
 
+** A turn a restart cut short
+
+The ack at the socket means the queue forgets a delivery the moment the
+agent has it, and libreclaw's own queue is in memory -- so a process that
+died mid-turn used to take the turn with it.  Nobody was told; the
+person who asked waited for an answer that was never coming.  Each
+agent's ~mailbox.db~ now also keeps a *turn record* per delivery, from the
+moment it reaches the socket until its turn ends, and the next start
+decides what becomes of every record still open.
+
+*** What a record holds
+
+| Column     | What it is                                                                 |
+|------------+----------------------------------------------------------------------------|
+| ~room~     | the room the delivery went into                                            |
+| items      | the mailbox items it carried (~turn_items~): one, or every part of a merge  |
+| ~replays~  | how many times those items had already been handed back                    |
+| ~outward~  | what the turn did outside the fleet, comma separated, or empty             |
+| ~opened_at~ | when it was handed over                                                   |
+
+It is opened by ~clawt_agent_deliver_item()~ and ~_deliver_merged()~ --
+the router's two delivery paths -- and closed on the room's falling
+typing edge (~clawt_agent_note_typing()~), or by
+~clawt_agent_close_running_turns()~ when the daemon ends the turn itself
+(an interrupt, the grace timer: ~clawt_daemon_turn_settle()~).  A process
+that *dies* clears its typing set without closing anything, which is the
+point: what is still open after it is exactly what it was running, and
+what it had been handed and not started -- that died in libreclaw's
+queue too.  A delivery folded away by the pending-turn overflow hands its
+record to the entry it was folded into, so it is closed with that turn.
+
+An item an open record names is kept from the acknowledged-item sweep,
+so it is still there to be handed back.
+
+*** Outward is marked when it succeeds
+
+A turn is marked when something it did reached outside the fleet
+(~clawt_agent_mark_outward()~), because repeating that is the harm a
+rerun can do:
+
+| Call                                            | Outward?                         | Why                                                        |
+|-------------------------------------------------+----------------------------------+------------------------------------------------------------|
+| ~clawtilla_message_user~                        | yes                              | a person, and the notifier's buzz on their phone           |
+| ~clawtilla_computer_exec~ on ~host~, ~distrobox~ (and any type added later) | yes | somebody's real machine; a distrobox shares the home directory |
+| ~clawtilla_computer_exec~ on ~container~, ~vm~  | no                               | a sandbox with its own filesystem                          |
+| a tool of class ~external~ (Grok writes, ~browser_open~, a plugin's tool) | yes  | a third party's system                                    |
+| a tool of class ~desktop_input~ (~browser_click~ ...), ~exec~ (~browser_eval~) | yes | a click can submit a form                              |
+| a connector call let through by a relay          | yes, unless its name reads       | ~get_~, ~list_~, ~search_~, ~read_~ ... are reads; anything else is a write |
+| desktop input through the desktop relay          | yes                              | as above                                                   |
+| ~clawtilla_message_agent~, ~_ask_agent~, ~_delegate~, ~_handoff~, ~_post_room~, ~_mailbox_reply~, ~_task_*~ | no | *peer messages are inward*: the recipient is in the fleet, a duplicate lands in a room both can read, and a rerun is how the conversation carries on rather than a second effect in the world |
+| routines, memories, rooms, agents, every read    | no                               | clawtilla's own state                                      |
+| the CLI's own tools (~Bash~, ~Write~) through the policy hook | not judged         | a hook sees ~ls~ and ~git push~ as the same ~Bash~; counting every one would mean no coding turn is ever rerun |
+
+clawtilla's own tools are marked after the call and only when it
+succeeded (~clawt_mcp_tools_outward_label()~, from each tool's declared
+action class, so a tool added later lands on a side without anybody
+listing it).  A relay reports nothing after a call, so a connector or
+desktop call is marked when ~policy.check~ lets it through
+(~clawt_mcp_tools_relay_outward_label()~) -- a call that then fails is
+counted anyway, which costs a rerun rather than a second email.  A call
+that names its ~turn_room~ marks that room's turn; one that cannot say
+marks every running turn, for the same reason.
+
+*A consultation is never outward.*  Every tool that could make it so is
+withheld from a consultation's turn and refused if named
+(~clawt_mcp_tools_consult_withholds()~), so a mark that reaches one can
+only be the fold above acting for another turn; ~clawt_agent_mark_outward()~
+skips it.  A consultation cut by a restart is therefore rerun once,
+which asks the question again and does nothing else.
+
+*Held results are one turn and one record.*  Results waiting for a busy
+room (see "Results wait for the turn they would interrupt" in
+[[file:orchestration.org][orchestration.org]]) are handed over as one merged delivery, which opens
+a single record naming every part, with the highest ~replays~ among
+them -- so a cut merge is rerun at most once, as one.
+
+*** Recovery
+
+Whenever an agent's process ends -- its state becomes ~stopped~ or
+~error~, which the restart policy's respawn passes through too -- and
+once for every agent when the daemon starts, before anything is
+delivered, ~clawt_daemon_turns_recover()~ settles every open record:
+
+| The record                                   | What happens                                                        |
+|----------------------------------------------+---------------------------------------------------------------------|
+| nothing outward, never rerun, items still there | its items go back to ~pending~ with ~replays~ raised; the agent is handed them again, opening with a ~[clawtilla]~ line saying it is a rerun and to check what it already did |
+| marked outward                                | an *interrupted* notice in its room, listing what it had done       |
+| itself a rerun (~replays~ ≥ 1)                | an interrupted notice -- never handed over a third time            |
+| items gone, expired or already back in the queue | an interrupted notice                                            |
+| its task already ended (failed by the crash, cancelled) | an interrupted notice                                     |
+
+Either way the record is deleted in the same transaction that decides,
+so a daemon killed halfway through recovery reruns nothing twice.  The
+notice is the daemon's voice (sender ~clawtilla~, ~invites_reply~ false,
+~interrupted~ set on the message), quotes the first line of what was
+being answered escaped and fenced, and asks the reader to check and ask
+again.  Every client draws it apart -- see [[file:clients.org][clients.org]].
+
+*A stop somebody asked for is not a crash.*  ~agent.stop~ ends every open
+turn of the agent as interrupted ("its operator stopped it") before it
+stops, with no rerun; so does an approved rebuild
+([[file:computers.org][computers.org]], "An agent asking for a rebuild").
+~agent.restart~ is the other kind, and reruns as above.
+
+What it cannot see: a turn whose process died after the typing indicator
+dropped and before the answer was posted counts as finished, and the
+answer is lost as before.  A container command that pushes over the
+network is not outward by this table, because the sandbox is the
+filesystem's and not the network's.
+
 ** A wait ending is a delivery
 
 A wait an agent set with ~clawtilla_wait_until~ ends in exactly one item in that agent's mailbox -- when its condition holds, when it expires, when its condition can no longer be checked, or when the operator cancels it from a client (an agent cancelling its own is not told).  The item is queued into the room the wait was set from, falling back to the agent's conversation with its operator, from ~clawtilla~, at depth zero with ~invites_reply~ cleared and addressed to the agent alone, so it obeys everything above: it waits in the queue for a stopped agent, it is leased and retried like any other, and it is subject to ~max_depth~ and ~overflow~.  Its body is composed by the daemon with every quoted part -- the agent's label and note, the URL or command, what the last look saw, a command's output -- passed through ~clawt_preamble_escape()~.
@@ -443,6 +553,17 @@ GPtrArray *dead = clawt_mailbox_dead_letters(mailbox);
 guint expired  = clawt_mailbox_purge_expired(mailbox);
 guint returned = clawt_mailbox_reclaim_expired_leases(mailbox);
 guint waiting  = clawt_mailbox_depth(mailbox);
+
+/* The turn records: opened at delivery, closed when the turn ends. */
+const gchar *ids[] = { id, NULL };
+gint64 turn = clawt_mailbox_turn_open(mailbox, room, ids, 0, &error);
+clawt_mailbox_turn_mark_outward(mailbox, turn, "sent the operator a message",
+                                &error);
+clawt_mailbox_turn_close(mailbox, turn, &error);
+
+/* After the process has gone: rerun once, or interrupted. */
+GPtrArray *settled = clawt_mailbox_turn_recover(mailbox, TRUE, NULL,
+                                                NULL, NULL, &error);
 #+end_src
 
 ~clawt_mailbox_ack()~, ~_nack()~ and ~_requeue()~ all refuse an item
