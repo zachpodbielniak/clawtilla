@@ -72,7 +72,86 @@ clawt_daemon_publish_decision_settled(ClawtDaemon *self, ClawtDecision *decision
     clawt_event_set_detail(event, "decision", clawt_decision_get_id(decision));
     clawt_event_set_detail(event, "how", how);
 
+    /*
+     * And where, with what and by which surface -- so a chat holding the
+     * inline view of this decision can find it by room and redraw it as
+     * settled without asking again.  Without these a client could only
+     * decrement a counter: the inline view would go on offering buttons
+     * the daemon was going to refuse.
+     */
+    clawt_event_set_detail(event, "room", clawt_decision_get_room(decision));
+    clawt_event_set_detail(event, "answer",
+                           clawt_decision_get_answer(decision));
+    clawt_event_set_detail(event, "via",
+                           clawt_decision_get_settled_via(decision));
+
     clawt_event_bus_publish(self->bus, event);
+}
+
+/*
+ * Says that a decision is waiting, and where it was asked.
+ *
+ * Every door a decision comes in by publishes through here: an agent's
+ * own ask, a policy rule that asks or hands back, a venture staging.
+ * The emits it replaced named only the agent, which was enough to bump a
+ * badge and not enough for a chat to know the question belonged in the
+ * room on screen -- the other half of the publish-both-ends rule, since
+ * decision.settled carries the room too.
+ */
+void
+clawt_daemon_publish_decision_asked(ClawtDaemon   *self,
+                                    ClawtDecision *decision)
+{
+    g_autoptr(ClawtEvent) event = NULL;
+
+    if (self->bus == NULL || decision == NULL)
+        return;
+
+    event = clawt_event_new("decision.asked",
+                            clawt_decision_get_agent(decision));
+    clawt_event_set_detail(event, "decision", clawt_decision_get_id(decision));
+    clawt_event_set_detail(event, "room", clawt_decision_get_room(decision));
+
+    clawt_event_bus_publish(self->bus, event);
+}
+
+/*
+ * The room a decision asked with none named belongs to, when that is
+ * not a guess.
+ *
+ * A tool call names its turn's room when libreclaw handed it one; a
+ * policy ask is raised from a hook that carries no room at all.  An
+ * agent mid-turn in exactly one room asked from that room.  An agent in
+ * several, or in none, could have asked from any of them -- and a
+ * question drawn in the wrong conversation is worse than one that only
+ * reaches the inbox, so the room stays unset.
+ */
+void
+clawt_daemon_decision_place(ClawtDaemon   *self,
+                            ClawtDecision *decision)
+{
+    ClawtAgent *agent;
+    g_autoptr(GPtrArray) rooms = NULL;
+
+    if (decision == NULL || clawt_decision_get_room(decision) != NULL ||
+        self->agents == NULL)
+        return;
+
+    agent = clawt_agent_manager_get(self->agents,
+                                    clawt_decision_get_agent(decision));
+    if (agent == NULL)
+        return;
+
+    /*
+     * A turn whose typing frame named no room is kept under a sentinel
+     * beginning with \x01 (clawt-agent.c), which is bookkeeping and not
+     * a room anybody can open -- the same thing
+     * clawt_agent_get_last_turn_room() refuses to hand out.
+     */
+    rooms = clawt_agent_dup_running_rooms(agent);
+    if (rooms != NULL && rooms->len == 1 &&
+        ((const gchar *)g_ptr_array_index(rooms, 0))[0] != '\x01')
+        clawt_decision_set_room(decision, g_ptr_array_index(rooms, 0));
 }
 
 /* Answers a deferred policy.check once its rule has been resolved. */
@@ -164,6 +243,7 @@ clawt_daemon_handle_misc(
 
     if (g_strcmp0(kind, "decision.list") == 0) {
         gboolean open_only = clawt_ipc_payload_boolean(payload, "open", TRUE);
+        const gchar *room = clawt_ipc_payload_string(payload, "room");
         g_autoptr(GPtrArray) decisions = NULL;
         gint64 now = g_get_real_time() / G_USEC_PER_SEC;
         guint i;
@@ -172,7 +252,15 @@ clawt_daemon_handle_misc(
             return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
                                        "this daemon keeps no decisions");
 
-        decisions = clawt_decision_store_list(self->decisions, open_only);
+        /*
+         * A room narrows it to that conversation's view: every state,
+         * oldest first, because a chat draws a settled question where
+         * it was asked rather than dropping it out of the transcript.
+         * `open` is ignored there for the same reason.
+         */
+        decisions = (room != NULL)
+            ? clawt_decision_store_list_room(self->decisions, room)
+            : clawt_decision_store_list(self->decisions, open_only);
 
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "decisions");
@@ -195,6 +283,7 @@ clawt_daemon_handle_misc(
     if (g_strcmp0(kind, "decision.answer") == 0) {
         const gchar *id = clawt_ipc_payload_string(payload, "decision");
         const gchar *answer = clawt_ipc_payload_string(payload, "answer");
+        const gchar *via = clawt_ipc_payload_string(payload, "via");
         g_autoptr(ClawtDecision) settled = NULL;
         g_autoptr(ClawtSkillProposal) proposal = NULL;
         g_autoptr(GError) answer_error = NULL;
@@ -207,6 +296,17 @@ clawt_daemon_handle_misc(
             return clawt_ipc_error_new(
                 request, CLAWT_ERROR_INVALID_ARGUMENT,
                 "answering needs a decision and an answer");
+
+        /*
+         * Refused where it arrives: a surface nobody can name would be
+         * stored and then drawn as a blank in every view of the
+         * decision, which is a refusal postponed to where it cannot be
+         * explained.
+         */
+        if (!clawt_decision_via_is_known(via))
+            return clawt_ipc_error_new(
+                request, CLAWT_ERROR_INVALID_ARGUMENT,
+                "'via' is chat, inbox or cli");
 
         /*
          * A skill proposal is carried out before its decision is
@@ -232,11 +332,19 @@ clawt_daemon_handle_misc(
             }
         }
 
-        settled = clawt_decision_store_answer(self->decisions, id, answer,
-                                              &answer_error);
+        /*
+         * The check and the write happen inside one call on the
+         * daemon's one main context, so two presses -- a double tap, or
+         * the inline view and the inbox at once -- are ordered here, and
+         * the second is refused with what the first one did.  The code
+         * is passed through so a press on a deleted decision reads as
+         * NOT_FOUND rather than as a generic failure.
+         */
+        settled = clawt_decision_store_answer_via(self->decisions, id, answer,
+                                                  via, &answer_error);
 
         if (settled == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+            return clawt_ipc_error_new(request, answer_error->code,
                                        answer_error->message);
 
         /*
@@ -254,8 +362,13 @@ clawt_daemon_handle_misc(
          * answer releases (or refuses) that call, and a message as well
          * would tell the agent twice and cost it a turn to read.
          */
-        /* A proposal has told its agent already, in its own words. */
+        /*
+         * A proposal has told its agent already, in its own words; and a
+         * rebuild request is answered by doing it, or by saying it was
+         * not done -- not by quoting the answer back.
+         */
         if (proposal == NULL &&
+            !clawt_daemon_rebuild_settle(self, settled, "answered") &&
             !clawt_daemon_policy_settle(self, settled, "answered"))
             clawt_daemon_deliver_decision_answer(self, settled);
 
@@ -308,7 +421,8 @@ clawt_daemon_handle_misc(
 
         if (dismissed != NULL) {
             /* settle() releases its own hold; anything else is released here. */
-            if (!clawt_daemon_policy_settle(self, dismissed, "dismissed"))
+            if (!clawt_daemon_rebuild_settle(self, dismissed, "dismissed") &&
+                !clawt_daemon_policy_settle(self, dismissed, "dismissed"))
                 clawt_daemon_turn_release(self,
                                           clawt_decision_get_agent(dismissed));
             /* a draft nobody will be asked about again is rejected */
@@ -354,7 +468,8 @@ clawt_daemon_handle_misc(
 
         if (deleted != NULL &&
             clawt_decision_get_state(deleted) == CLAWT_DECISION_OPEN) {
-            if (!clawt_daemon_policy_settle(self, deleted, "deleted"))
+            if (!clawt_daemon_rebuild_settle(self, deleted, "deleted") &&
+                !clawt_daemon_policy_settle(self, deleted, "deleted"))
                 clawt_daemon_turn_release(self,
                                           clawt_decision_get_agent(deleted));
             clawt_daemon_skill_proposal_withdraw(self, deleted);
@@ -373,6 +488,10 @@ clawt_daemon_handle_misc(
                                         ? clawt_decision_get_agent(deleted)
                                         : NULL);
             clawt_event_set_detail(event, "decision", id);
+            /* so a chat drawing it inline can take it out of the room too */
+            if (deleted != NULL)
+                clawt_event_set_detail(event, "room",
+                                       clawt_decision_get_room(deleted));
             clawt_event_bus_publish(self->bus, event);
         }
 
@@ -918,6 +1037,25 @@ clawt_daemon_handle_misc(
                                 "with clawtilla_ask_decision instead of acting on it");
                 mode = CLAWT_POLICY_DENY;
             }
+        }
+
+        /*
+         * A call a relay is about to pass on, marked on the agent's turn
+         * when it reaches outside the fleet -- a connector's write, a
+         * click.  Here, before the call, because a relay reports nothing
+         * after it: a call that then fails is counted anyway, which is
+         * the direction that costs a rerun rather than a second email.
+         * Not for a denial, which did nothing.
+         */
+        if (mode != CLAWT_POLICY_DENY) {
+            g_autofree gchar *outward =
+                clawt_mcp_tools_relay_outward_label(tool, action);
+            ClawtAgent *caller = clawt_agent_manager_get(self->agents, agent_id);
+
+            if (outward != NULL && caller != NULL &&
+                !clawt_policy_native_is_clawtilla(tool))
+                clawt_agent_mark_outward(caller,
+                    clawt_ipc_payload_string(payload, "room"), outward);
         }
 
         if (mode == CLAWT_POLICY_ALLOW || mode == CLAWT_POLICY_DENY) {

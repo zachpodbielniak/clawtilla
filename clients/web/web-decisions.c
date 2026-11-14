@@ -226,6 +226,14 @@ decision_row(ClawtWebApp *app, JsonObject *decision, gint64 now,
                                               FALSE);
     const gchar *answer = clawt_web_member(decision, "answer", NULL);
     gint64 state = clawt_web_member_int(decision, "state", 0);
+    /*
+     * A rebuild request: a yes or no about destroying a machine, with
+     * what goes said apart from the question and no free-text answer --
+     * only "approve" rebuilds, and anything typed would read as a yes.
+     */
+    gboolean is_rebuild = g_strcmp0(clawt_web_member(decision, "kind", NULL),
+                                    "rebuild") == 0;
+    const gchar *loses = clawt_web_member(decision, "loses", NULL);
     g_autofree gchar *deadline = deadline_text(until, now);
 
     (void)app;
@@ -251,6 +259,9 @@ decision_row(ClawtWebApp *app, JsonObject *decision, gint64 now,
     if (settled)
         clawt_web_add(head, clawt_web_badge("already decided", "bad"));
 
+    if (is_rebuild)
+        clawt_web_add(head, clawt_web_badge("rebuild", "bad"));
+
     /*
      * What became of it, in the settled view.  Answered and dismissed
      * are different things -- both mean the work went a particular way,
@@ -271,6 +282,13 @@ decision_row(ClawtWebApp *app, JsonObject *decision, gint64 now,
         web_proposal_review(row, decision, proposal);
     } else {
         clawt_web_add(row, clawt_web_text(question, "decision-question"));
+
+        if (is_rebuild && loses != NULL && state == 0) {
+            g_autofree gchar *lost = g_strdup_printf(
+                "What a rebuild destroys: %s", loses);
+
+            clawt_web_add(row, clawt_web_text(lost, "decision-loses"));
+        }
 
         /*
          * The default, always, and phrased as what *is happening* rather
@@ -336,7 +354,10 @@ decision_row(ClawtWebApp *app, JsonObject *decision, gint64 now,
                 if (option == NULL || *option == '\0')
                     continue;
 
-                pick = clawt_web_button(option, "default");
+                pick = clawt_web_button(option,
+                                        is_rebuild &&
+                                        g_strcmp0(option, "approve") == 0
+                                            ? "danger" : "default");
                 htmx_element_set_attribute(HTMX_ELEMENT(pick), "type", "submit");
                 htmx_element_set_attribute(HTMX_ELEMENT(pick), "name", "answer");
                 htmx_element_set_attribute(HTMX_ELEMENT(pick), "value", option);
@@ -345,9 +366,10 @@ decision_row(ClawtWebApp *app, JsonObject *decision, gint64 now,
 
             htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(buttons));
 
-            clawt_web_add(form, clawt_web_field(
-                "Or say something else", "answer", NULL,
-                "\"neither, do X\" is a perfectly good answer"));
+            if (!is_rebuild)
+                clawt_web_add(form, clawt_web_field(
+                    "Or say something else", "answer", NULL,
+                    "\"neither, do X\" is a perfectly good answer"));
 
             {
                 g_autoptr(HtmxDiv) actions = htmx_div_new();
@@ -359,7 +381,8 @@ decision_row(ClawtWebApp *app, JsonObject *decision, gint64 now,
 
                 htmx_element_add_class(HTMX_ELEMENT(actions), "btn-row");
                 htmx_element_set_attribute(HTMX_ELEMENT(send), "type", "submit");
-                htmx_node_add_child(HTMX_NODE(actions), HTMX_NODE(send));
+                if (!is_rebuild)
+                    htmx_node_add_child(HTMX_NODE(actions), HTMX_NODE(send));
                 htmx_node_add_child(HTMX_NODE(actions), HTMX_NODE(drop));
                 htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(actions));
             }
@@ -537,11 +560,107 @@ on_answer(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
         clawt_web_payload_set(payload, "decision", id);
         clawt_web_payload_set(payload, "answer", answer);
+        clawt_web_payload_set(payload, "via", CLAWT_DECISION_VIA_INBOX);
         reply = clawt_web_app_call(app, "decision.answer",
                                    clawt_web_payload_take(payload));
     }
 
     return clawt_web_redirect(request, "/decisions");
+}
+
+/*
+ * The decision as the daemon now has it, found in its room's list -- or
+ * in the whole inbox when the room is not known -- for redrawing a card
+ * after a press the daemon refused.
+ */
+static JsonNode *
+current_decision(ClawtWebApp *app, const gchar *id, JsonObject **found)
+{
+    ClawtWebPayload *query = clawt_web_payload_new();
+    JsonNode *reply;
+    JsonArray *items;
+    guint i;
+
+    *found = NULL;
+    clawt_web_payload_set_bool(query, "open", FALSE);
+    reply = clawt_web_app_call(app, "decision.list",
+                               clawt_web_payload_take(query));
+    items = clawt_web_member_array(clawt_web_root(reply), "decisions");
+
+    for (i = 0; items != NULL && i < json_array_get_length(items); i++) {
+        JsonObject *one = json_array_get_object_element(items, i);
+
+        if (g_strcmp0(clawt_web_member(one, "id", NULL), id) == 0) {
+            *found = one;
+            break;
+        }
+    }
+
+    return reply;
+}
+
+/*
+ * A press on the inline view in the chat.
+ *
+ * Answers with `via: chat` and returns the card redrawn from what the
+ * daemon now holds: settled by this press, or -- when the daemon refused
+ * it because the inbox, another window or the clock settled it first,
+ * or because it was a double tap's second press -- settled by whatever
+ * did, with the refusal written into the card.  A card that went on
+ * offering the buttons would invite the same refusal again.
+ */
+static HtmxResponse *
+on_inline_answer(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    const gchar *id = clawt_web_form_value(request, "decision");
+    const gchar *answer = clawt_web_form_value(request, "answer");
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(JsonNode) listing = NULL;
+    g_autofree gchar *refusal = NULL;
+    g_autoptr(HtmxElement) card = NULL;
+    JsonObject *settled = NULL;
+
+    (void)params;
+
+    if (id == NULL || *id == '\0')
+        return clawt_web_redirect(request, "/decisions");
+
+    if (answer != NULL && *answer != '\0') {
+        ClawtWebPayload *payload = clawt_web_payload_new();
+
+        clawt_web_payload_set(payload, "decision", id);
+        clawt_web_payload_set(payload, "answer", answer);
+        clawt_web_payload_set(payload, "via", CLAWT_DECISION_VIA_CHAT);
+        reply = clawt_web_app_call(app, "decision.answer",
+                                   clawt_web_payload_take(payload));
+
+        /* copied now: the next call frees the app's last error */
+        if (reply == NULL)
+            refusal = g_strdup(clawt_web_app_last_error(app));
+    }
+
+    /* Without htmx there is no card to swap: the inbox shows the result. */
+    if (!htmx_request_is_htmx(request))
+        return clawt_web_redirect(request, "/decisions");
+
+    settled = clawt_web_member_object(clawt_web_root(reply), "decision");
+
+    if (settled == NULL)
+        listing = current_decision(app, id, &settled);
+
+    /*
+     * Gone from the store altogether: deleted while the card was on
+     * screen.  Said in the card's place rather than leaving it blank.
+     */
+    if (settled == NULL)
+        card = HTMX_ELEMENT(clawt_web_text(
+            refusal != NULL ? refusal : "That decision no longer exists.",
+            "error"));
+    else
+        card = clawt_web_decision_inline(settled, refusal);
+
+    return clawt_web_fragment_response(card);
 }
 
 /*
@@ -655,6 +774,7 @@ clawt_web_register_decisions(HtmxRouter *router, ClawtWebApp *app)
 {
     htmx_router_get(router, "/decisions", on_decisions, app);
     htmx_router_post(router, "/decisions/answer", on_answer, app);
+    htmx_router_post(router, "/f/decision/answer", on_inline_answer, app);
     htmx_router_post(router, "/decisions/dismiss", on_dismiss, app);
     htmx_router_post(router, "/decisions/delete", on_delete, app);
     htmx_router_post(router, "/decisions/proposal", on_proposal, app);

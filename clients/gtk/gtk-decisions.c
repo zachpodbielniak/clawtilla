@@ -50,6 +50,8 @@ on_decision_answer(GtkButton *button, gpointer user_data)
     reply = clawt_window_request(self, "decision.answer",
                                  clawt_build_payload("decision", id,
                                                      "answer", answer,
+                                                     "via",
+                                                     CLAWT_DECISION_VIA_INBOX,
                                                      NULL));
 
     if (reply != NULL)
@@ -507,6 +509,9 @@ refresh_decisions_once(ClawtWindow *self)
         GtkWidget *drop = gtk_button_new_with_label("Does not need me");
         GtkWidget *remove = gtk_button_new_with_label("Delete");
         GtkWidget *closing = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        gboolean is_rebuild = g_strcmp0(clawt_json_string(decision, "kind", NULL),
+                                        "rebuild") == 0;
+        const gchar *loses = clawt_json_string(decision, "loses", NULL);
         JsonObject *proposal = clawt_skill_proposal_id_is_valid(id)
                                ? proposal_for(proposals, id) : NULL;
         guint o;
@@ -572,6 +577,19 @@ refresh_decisions_once(ClawtWindow *self)
                 clawt_gtk_badge("closing soon", "warning",
                                 "the default stops being cheap to undo within a day"));
 
+        /*
+         * A rebuild request is a yes or a no about destroying a machine,
+         * so it says what goes before anybody reads the options -- and
+         * offers no free-text answer, because only "approve" rebuilds
+         * and anything typed would read as a yes that is not one.
+         */
+        if (is_rebuild)
+            adw_expander_row_add_suffix(
+                ADW_EXPANDER_ROW(row),
+                clawt_gtk_badge("rebuild", "error",
+                                "approving destroys this agent's computer and "
+                                "builds a fresh one"));
+
         if (clawt_json_boolean(decision, "settled_by_default", FALSE))
             adw_expander_row_add_suffix(
                 ADW_EXPANDER_ROW(row),
@@ -600,6 +618,10 @@ refresh_decisions_once(ClawtWindow *self)
                 continue;
 
             pick = decision_option_button(option);
+
+            /* Approving a rebuild destroys something; it looks like it. */
+            if (is_rebuild && g_strcmp0(option, "approve") == 0)
+                gtk_widget_add_css_class(pick, "destructive-action");
 
             g_object_set_data_full(G_OBJECT(pick), "decision-id",
                                    g_strdup(id), g_free);
@@ -653,6 +675,19 @@ refresh_decisions_once(ClawtWindow *self)
         gtk_box_append(GTK_BOX(closing), remove);
         gtk_widget_set_halign(closing, GTK_ALIGN_START);
 
+        if (is_rebuild && loses != NULL) {
+            GtkWidget *warning = gtk_label_new(NULL);
+            g_autofree gchar *said = g_strdup_printf("What a rebuild destroys: %s",
+                                                     loses);
+
+            gtk_label_set_text(GTK_LABEL(warning), said);
+            gtk_label_set_wrap(GTK_LABEL(warning), TRUE);
+            gtk_label_set_xalign(GTK_LABEL(warning), 0.0f);
+            gtk_widget_add_css_class(warning, "warning");
+            pad_decision_row(warning);
+            adw_expander_row_add_row(ADW_EXPANDER_ROW(row), warning);
+        }
+
         if (gtk_widget_get_first_child(choices) != NULL) {
             pad_decision_row(choices);
             adw_expander_row_add_row(ADW_EXPANDER_ROW(row), choices);
@@ -664,7 +699,12 @@ refresh_decisions_once(ClawtWindow *self)
         pad_decision_row(actions);
         pad_decision_row(closing);
 
-        adw_expander_row_add_row(ADW_EXPANDER_ROW(row), actions);
+        if (!is_rebuild) {
+            adw_expander_row_add_row(ADW_EXPANDER_ROW(row), actions);
+        } else {
+            g_object_ref_sink(actions);
+            g_object_unref(actions);
+        }
         adw_expander_row_add_row(ADW_EXPANDER_ROW(row), closing);
 
         gtk_list_box_append(self->decision_list, row);

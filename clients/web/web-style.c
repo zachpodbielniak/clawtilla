@@ -405,6 +405,16 @@ clawt_web_stylesheet(void)
     ".decision-options{display:flex;flex-direction:column;gap:8px;"
       "align-items:stretch;margin-bottom:12px}"
     ".decision-options .btn{text-align:left;white-space:normal}"
+    /*
+     * The same decision, inline in the chat it was asked from: framed so
+     * it reads as a question waiting rather than as one more message,
+     * and inset to the message column so it does not claim the avatar
+     * gutter.  Settled, it quietens -- the outcome is history.
+     */
+    ".decision-inline{border:1px solid var(--line);border-radius:8px;"
+      "background:var(--surface-2);padding:10px 12px;margin:8px 0 8px 52px}"
+    ".decision-inline .decision-options{margin:8px 0}"
+    ".decision-inline-settled{opacity:0.85}"
     ".field{margin-bottom:16px}"
     ".field>label{display:block;font-size:12px;letter-spacing:0.02em;"
       "color:var(--muted);margin-bottom:5px}"
@@ -694,6 +704,12 @@ clawt_web_stylesheet(void)
       "padding:6px 10px;background:var(--surface-2);"
       "overflow-wrap:anywhere}"
     ".merge-section-label{font-size:.85em;font-weight:600;margin-bottom:2px}"
+    /* a turn cut short and not resumed: the notice, boxed in warning */
+    ".msg-interrupted{border:1px solid var(--warn-fg);border-radius:8px;"
+      "padding:6px 10px;background:var(--warn-bg)}"
+    /* a rebuild request's loss, above its Approve and Decline */
+    ".decision-loses{border:1px solid var(--warn-fg);border-radius:8px;"
+      "padding:6px 10px;background:var(--warn-bg);margin:6px 0}"
     ".msg-body code{font-family:var(--mono);font-size:var(--mono-size);"
       "background:var(--surface-2);padding:1px 5px;border-radius:4px}"
     ".msg-body pre{font-family:var(--mono);font-size:var(--mono-size);"

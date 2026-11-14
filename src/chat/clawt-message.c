@@ -35,6 +35,7 @@ struct _ClawtMessage {
 	gboolean      one_way;
 	gboolean      acknowledged;
 	guint         merged;
+	gboolean      interrupted;
 
 	/* A group room's round, and the thread of replies within it. */
 	guint         round;
@@ -123,6 +124,7 @@ clawt_message_copy(ClawtMessage *self)
 	copy->one_way = self->one_way;
 	copy->acknowledged = self->acknowledged;
 	copy->merged = self->merged;
+	copy->interrupted = self->interrupted;
 	copy->round = self->round;
 	copy->chain = g_strdup(self->chain);
 	copy->skipped = g_strdup(self->skipped);
@@ -491,6 +493,25 @@ clawt_message_set_merged(
 	self->merged = parts;
 }
 
+gboolean
+clawt_message_get_interrupted(
+	ClawtMessage *self
+){
+	g_return_val_if_fail(self != NULL, FALSE);
+
+	return self->interrupted;
+}
+
+void
+clawt_message_set_interrupted(
+	ClawtMessage *self,
+	gboolean      interrupted
+){
+	g_return_if_fail(self != NULL);
+
+	self->interrupted = interrupted;
+}
+
 guint
 clawt_message_get_round(
 	ClawtMessage *self
@@ -574,6 +595,20 @@ const gchar *
 clawt_message_ack_label(void)
 {
 	return "acknowledged (no wake)";
+}
+
+const gchar *
+clawt_message_interrupted_label(void)
+{
+	return "interrupted \xe2\x80\x94 not resumed";
+}
+
+const gchar *
+clawt_message_interrupted_tooltip(void)
+{
+	return "A restart or a stop cut this turn short. It is not rerun, so "
+	       "nothing it already did outside the fleet is done twice. Check "
+	       "what was done and ask again if it still needs doing.";
 }
 
 const gchar *

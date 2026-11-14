@@ -43,6 +43,7 @@ typedef enum {
     NEEDS_GROK,
     NEEDS_WAITS,
     NEEDS_RETRY,
+    NEEDS_REBUILD,
     NEEDS_SKILL_PROPOSAL,
     NEEDS_NEVER
 } ToolRequirement;
@@ -572,6 +573,13 @@ static const ClawtParamInfo create_agent_params[] = {
       "Start it once it exists. Defaults to true, which is what builds "
       "its container or VM -- an agent that is never started has no "
       "machine.", FALSE }
+};
+
+static const ClawtParamInfo request_rebuild_params[] = {
+    { "reason", "string",
+      "Why your computer needs rebuilding, in a sentence or two: what is "
+      "broken and what you already tried. It is shown to your operator "
+      "beside what a rebuild destroys, and they decide.", TRUE }
 };
 
 static const ClawtParamInfo request_hands_params[] = {
@@ -1200,7 +1208,19 @@ static const ToolDefinition tools[] = {
          "and why, then finish your turn: you will be told when the "
          "screen comes back. Also use this when your input is being "
          "refused because somebody is already holding it.",
-         NEEDS_SCREEN, request_hands_params, CLAWT_ACTION_READ)
+         NEEDS_SCREEN, request_hands_params, CLAWT_ACTION_READ),
+
+    TOOL("clawtilla_request_rebuild",
+         "Ask your operator to rebuild your computer -- destroy it and "
+         "build a fresh one from the configuration -- when it is stuck "
+         "past repair: a package database you cannot fix, a machine that "
+         "no longer answers. This does not rebuild anything and does not "
+         "wait: it files a decision your operator approves or declines, "
+         "and it shows them what a rebuild would destroy. Say why, then "
+         "finish your turn. If they approve, your turn is stopped, the "
+         "machine is rebuilt and you are told; anything you installed or "
+         "left inside it may be gone.",
+         NEEDS_REBUILD, request_rebuild_params, CLAWT_ACTION_READ)
 };
 
 #undef TOOL
@@ -1244,6 +1264,10 @@ struct _ClawtMcpTools {
     ClawtMcpAskDecisionFunc ask_decision;
     gpointer                ask_decision_data;
     GDestroyNotify          ask_decision_destroy;
+
+    ClawtMcpRequestRebuildFunc request_rebuild;
+    gpointer                   request_rebuild_data;
+    GDestroyNotify             request_rebuild_destroy;
 
     ClawtMcpHandoffFunc     handoff;
     gpointer                handoff_data;
@@ -1519,6 +1543,24 @@ clawt_mcp_tools_set_ask_decision_func(ClawtMcpTools           *self,
     self->ask_decision = func;
     self->ask_decision_data = user_data;
     self->ask_decision_destroy = destroy;
+}
+
+void
+clawt_mcp_tools_set_request_rebuild_func(
+	ClawtMcpTools              *self,
+	ClawtMcpRequestRebuildFunc  func,
+	gpointer                    user_data,
+	GDestroyNotify              destroy
+){
+	g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+	if (self->request_rebuild_destroy != NULL &&
+		self->request_rebuild_data != NULL)
+		self->request_rebuild_destroy(self->request_rebuild_data);
+
+	self->request_rebuild = func;
+	self->request_rebuild_data = user_data;
+	self->request_rebuild_destroy = destroy;
 }
 
 void
@@ -2024,6 +2066,179 @@ clawt_mcp_tools_action_class(const gchar *tool, ClawtActionClass *out_action)
 }
 
 /*
+ * Whether a connector's tool reads, judged from its name.
+ *
+ * A connector's server is somebody else's and declares no classes, so
+ * this is a judgement and errs one way: only a name that opens with a
+ * reading verb is a read, and everything else -- `create_issue`,
+ * `send_message`, `merge`, a name nobody has seen -- counts as a write.
+ * A read wrongly counted as a write costs a restart its rerun; a write
+ * counted as a read is rerun and done twice.  The CLI names a server's
+ * tool `mcp__<server>__<tool>`, so the verb is after the last `__`.
+ */
+static gboolean
+tool_name_reads(const gchar *tool)
+{
+	static const gchar *const verbs[] = {
+		"get", "list", "search", "read", "fetch", "find", "query",
+		"describe", "show", "view", "count", "lookup", "check", "inspect",
+		"browse", "download", "export", "preview", "status"
+	};
+	const gchar *name = tool;
+	const gchar *cut;
+	guint i;
+
+	if (tool == NULL)
+		return FALSE;
+
+	while ((cut = strstr(name, "__")) != NULL)
+		name = cut + 2;
+
+	for (i = 0; i < G_N_ELEMENTS(verbs); i++) {
+		gsize length = strlen(verbs[i]);
+		gchar next;
+
+		if (g_ascii_strncasecmp(name, verbs[i], length) != 0)
+			continue;
+
+		/* `get_file`, `get-file`, `getFile` and `get`; not `getaway`. */
+		next = name[length];
+		if (next == '\0' || next == '_' || next == '-' || next == '.' ||
+			g_ascii_isupper(next))
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
+gchar *
+clawt_mcp_tools_outward_label(
+	const gchar       *tool,
+	ClawtComputerType  computer
+){
+	ClawtActionClass action = CLAWT_ACTION_EXTERNAL;
+
+	if (tool == NULL)
+		return NULL;
+
+	/*
+	 * Reaching a person.  clawtilla_message_user is the one message
+	 * that leaves the fleet: it lands in the operator's chat and fires
+	 * the notifier, which is a buzz on somebody's phone.  Every other
+	 * MESSAGE tool reaches another agent, which is inward -- a peer
+	 * handed a message twice reads it in its own room and can tell, and
+	 * a rerun of the turn that sent it is how the conversation carries
+	 * on rather than a second effect in the world.
+	 */
+	if (g_strcmp0(tool, "clawtilla_message_user") == 0)
+		return g_strdup("sent the operator a message");
+
+	if (g_strcmp0(tool, "clawtilla_computer_exec") == 0) {
+		/*
+		 * A command is outward unless the machine is a sandbox the
+		 * fleet owns -- a container or a VM, whose filesystem is its
+		 * own.  The host is somebody's real machine, a distrobox
+		 * shares the home directory, and a type added later is
+		 * outward until somebody decides otherwise.
+		 */
+		if (computer == CLAWT_COMPUTER_CONTAINER ||
+			computer == CLAWT_COMPUTER_VM)
+			return NULL;
+		return g_strdup_printf("ran a command on its %s",
+			computer == CLAWT_COMPUTER_HOST ? "host machine"
+			: clawt_enum_to_nick(CLAWT_TYPE_COMPUTER_TYPE, computer) != NULL
+				? clawt_enum_to_nick(CLAWT_TYPE_COMPUTER_TYPE, computer)
+				: "computer");
+	}
+
+	/* A plugin's tool has no definition here and is a third party's. */
+	clawt_mcp_tools_action_class(tool, &action);
+
+	switch (action) {
+	case CLAWT_ACTION_EXTERNAL:
+		return g_strdup_printf("used %s", tool);
+	case CLAWT_ACTION_DESKTOP_INPUT:
+		return g_strdup("typed or clicked on a screen");
+	case CLAWT_ACTION_EXEC:
+		return g_strdup_printf("ran code through %s", tool);
+	case CLAWT_ACTION_READ:
+	case CLAWT_ACTION_WRITE:
+	case CLAWT_ACTION_DELETE:
+	case CLAWT_ACTION_MESSAGE:
+	case CLAWT_ACTION_FLEET_ADMIN:
+	default:
+		/*
+		 * clawtilla's own state: routines, memories, tasks, peers,
+		 * rooms, agents.  All of it inside the fleet, all of it visible
+		 * to whoever looks next, none of it a second email.
+		 */
+		return NULL;
+	}
+}
+
+gchar *
+clawt_mcp_tools_relay_outward_label(
+	const gchar      *tool,
+	ClawtActionClass  action
+){
+	if (tool == NULL)
+		return NULL;
+
+	switch (action) {
+	case CLAWT_ACTION_EXTERNAL:
+	case CLAWT_ACTION_WRITE:
+	case CLAWT_ACTION_DELETE:
+		/* A connector: a write unless its name says it only reads. */
+		if (tool_name_reads(tool))
+			return NULL;
+		return g_strdup_printf("used %s through a connector", tool);
+	case CLAWT_ACTION_DESKTOP_INPUT:
+		return g_strdup("typed or clicked on a screen");
+	case CLAWT_ACTION_READ:
+	case CLAWT_ACTION_MESSAGE:
+	case CLAWT_ACTION_EXEC:
+	case CLAWT_ACTION_FLEET_ADMIN:
+	default:
+		/*
+		 * The CLI's own tools (Bash, Write) reach here through the
+		 * policy hook, and are not judged: a hook sees `ls` and `git
+		 * push` as the same Bash, and counting every one would mean no
+		 * coding turn is ever rerun.  docs/mailboxes.org says so.
+		 */
+		return NULL;
+	}
+}
+
+/*
+ * Marks the calling agent's turn when a call it made reached outside
+ * the fleet.  See clawt_mcp_tools_outward_label() for what counts.
+ */
+static void
+mark_turn_outward(
+	ClawtMcpTools *self,
+	const gchar   *agent_id,
+	const gchar   *turn_room,
+	const gchar   *tool
+){
+	ClawtAgent *agent;
+	g_autofree gchar *label = NULL;
+
+	if (self->agents == NULL || agent_id == NULL)
+		return;
+
+	agent = clawt_agent_manager_get(self->agents, agent_id);
+	if (agent == NULL)
+		return;
+
+	label = clawt_mcp_tools_outward_label(tool, (ClawtComputerType)
+		clawt_agent_config_get_enum(clawt_agent_get_config(agent),
+			"computer.type"));
+
+	if (label != NULL)
+		clawt_agent_mark_outward(agent, turn_room, label);
+}
+
+/*
  * What the agent's action rules say about one call.  A plugin's tool has
  * no definition here and is classed external.
  */
@@ -2373,6 +2588,21 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
     case NEEDS_NEVER:
         /* The bot's side of the Grok endpoint; an agent never has it. */
         return FALSE;
+
+	case NEEDS_REBUILD:
+		/*
+		 * Only to an agent whose computer is a machine clawtilla builds
+		 * -- a container, a VM, a distrobox -- and only in a daemon
+		 * that can file the decision.  A host agent has nothing to
+		 * rebuild, and asking would cost a person a decision whose
+		 * only possible answer is "there is nothing to do".
+		 */
+		if (self->request_rebuild == NULL ||
+			!clawt_computer_type_has_machine((ClawtComputerType)
+				clawt_agent_config_get_enum(clawt_agent_get_config(agent),
+					"computer.type")))
+			return FALSE;
+		break;
 
     case NEEDS_SCREEN:
         /*
@@ -4012,6 +4242,7 @@ tool_agent_options(ClawtMcpTools *self)
 static gchar *
 tool_ask_decision(ClawtMcpTools *self,
                   const gchar   *agent_id,
+                  const gchar   *turn_room,
                   JsonObject    *arguments,
                   gboolean      *is_error)
 {
@@ -4043,6 +4274,14 @@ tool_ask_decision(ClawtMcpTools *self,
     decision = clawt_decision_new(NULL, agent_id, question);
     clawt_decision_set_default(decision, fallback, reason);
     clawt_decision_set_task(decision, task);
+
+    /*
+     * The room the turn is in, so the question can be drawn inline in
+     * the conversation that raised it as well as in the inbox.  NULL
+     * when the call could not say; the daemon places it then only when
+     * the agent is in exactly one turn, rather than guessing.
+     */
+    clawt_decision_set_room(decision, turn_room);
 
     if (options != NULL && *options != '\0') {
         g_auto(GStrv) split = g_strsplit(options, "\n", -1);
@@ -5762,6 +6001,54 @@ tool_request_hands(ClawtMcpTools *self, const gchar *agent_id,
         "button to take it. Finish your turn and say you are waiting -- "
         "nothing will interrupt you, and while somebody is holding the "
         "screen your own input is refused rather than queued.", reason);
+}
+
+/*
+ * The agent asking for its machine to be rebuilt, which -- like asking
+ * for hands -- is all it can do.
+ *
+ * Rebuilding destroys the machine, and what is inside it may be the only
+ * copy of somebody's work; so the agent files a decision and a person
+ * reads what would be lost before anything happens.  Never a rebuild on
+ * the agent's own say-so, and never automatic: a machine kept on
+ * purpose (`computer.container.keep`, a VM's disk) holds state that only
+ * a person can decide is worth less than a working machine.
+ */
+static gchar *
+tool_request_rebuild(
+	ClawtMcpTools *self,
+	const gchar   *agent_id,
+	JsonObject    *arguments,
+	gboolean      *is_error
+){
+	const gchar *reason = argument_string(arguments, "reason");
+	g_autoptr(GError) error = NULL;
+	gchar *answer;
+
+	if (self->request_rebuild == NULL) {
+		*is_error = TRUE;
+		return g_strdup("There is nobody to ask: this build has no daemon "
+		                "to file the request with.");
+	}
+
+	if (reason == NULL || *reason == '\0') {
+		*is_error = TRUE;
+		return g_strdup("Say why the machine needs rebuilding -- what is "
+		                "broken and what you tried. Your operator decides "
+		                "from that, and a request with no reason is one "
+		                "nobody can weigh against what it destroys.");
+	}
+
+	answer = self->request_rebuild(agent_id, reason,
+	                               self->request_rebuild_data, &error);
+
+	if (answer == NULL) {
+		*is_error = TRUE;
+		return g_strdup(error != NULL ? error->message
+		                              : "the request could not be filed");
+	}
+
+	return answer;
 }
 
 static gchar *
@@ -8517,7 +8804,7 @@ tools_call(ClawtMcpTools *self,
              g_strcmp0(tool_name, "clawtilla_ask_agent") == 0)
         text = tool_message_agent(self, agent_id, turn_room, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_ask_decision") == 0)
-        text = tool_ask_decision(self, agent_id, arguments, &is_error);
+        text = tool_ask_decision(self, agent_id, turn_room, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_fleet_cost") == 0)
         text = tool_fleet_cost(self, agent_id);
     else if (g_strcmp0(tool_name, "clawtilla_list_teams") == 0)
@@ -8701,6 +8988,8 @@ tools_call(ClawtMcpTools *self,
         text = tool_skill_read(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_request_hands") == 0)
         text = tool_request_hands(self, agent_id, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_request_rebuild") == 0)
+        text = tool_request_rebuild(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_mailbox_list") == 0)
         text = tool_mailbox_list(self, agent_id, arguments);
     else if (g_strcmp0(tool_name, "clawtilla_mailbox_read") == 0)
@@ -8742,6 +9031,15 @@ tools_call(ClawtMcpTools *self,
             }
         }
     }
+
+	/*
+	 * A call that reached outside the fleet marks the turn it ran in,
+	 * so a restart that cuts the turn does not rerun it and do the
+	 * thing a second time.  After the call and only when it succeeded:
+	 * a refused or failed call did nothing worth not repeating.
+	 */
+	if (!is_error)
+		mark_turn_outward(self, agent_id, turn_room, tool_name);
 
     return make_response(request_id, text, is_error);
 }

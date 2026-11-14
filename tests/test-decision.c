@@ -17,6 +17,7 @@
 
 #include <glib.h>
 #include <glib/gstdio.h>
+#include <sqlite3.h>
 #include <string.h>
 
 #include "clawt-test-util.h"
@@ -297,7 +298,14 @@ test_answering_settles_it_once(void)
 
         g_assert_null(twice);
         g_assert_nonnull(again);
-        g_assert_nonnull(strstr(again->message, "already been settled"));
+        /*
+         * And says what did happen, because whoever pressed is looking
+         * at a view that was out of date and needs to know which way it
+         * went -- not merely that it went.
+         */
+        g_assert_nonnull(strstr(again->message, "Already settled"));
+        g_assert_nonnull(strstr(again->message, "neither, do X"));
+        g_assert_nonnull(strstr(again->message, "changed nothing"));
     }
 
     clawt_test_remove_tree(dir);
@@ -409,6 +417,350 @@ test_deleting_removes_only_that_one(void)
     clawt_test_remove_tree(dir);
 }
 
+/* ── The inline view: the same record, drawn in its room ─────────── */
+
+/*
+ * What decision.list puts on the wire comes back as the record, room and
+ * all -- one reader for three clients, so none of them can take the
+ * answer of a defaulted decision for somebody's choice.
+ */
+static void
+test_a_decision_reads_back_off_the_wire(void)
+{
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autoptr(ClawtDecision) back = NULL;
+    g_autoptr(GError) error = NULL;
+
+    g_assert_true(json_parser_load_from_data(parser,
+        "{\"id\": \"d1\", \"agent\": \"chief\", \"question\": \"Ship?\","
+        " \"options\": [\"now\", \"\", 7, \"later\"],"
+        " \"default\": \"later\", \"default_reason\": \"quiet hours\","
+        " \"task\": null, \"answer\": \"later\", \"reversible_until\": 10,"
+        " \"created_at\": 5, \"state\": 2, \"room\": \"dm:chief:user\","
+        " \"settled_via\": null, \"answered_at\": 11}", -1, &error));
+    g_assert_no_error(error);
+
+    back = clawt_decision_new_from_object(
+        json_node_get_object(json_parser_get_root(parser)));
+    g_assert_nonnull(back);
+    g_assert_cmpstr(clawt_decision_get_room(back), ==, "dm:chief:user");
+    g_assert_cmpint(clawt_decision_get_state(back), ==,
+                    CLAWT_DECISION_DEFAULTED);
+    g_assert_cmpstr(clawt_decision_get_options(back)[0], ==, "now");
+    g_assert_cmpstr(clawt_decision_get_options(back)[1], ==, "later");
+    g_assert_null(clawt_decision_get_options(back)[2]);
+    g_assert_cmpint(clawt_decision_get_created_at(back), ==, 5);
+    g_assert_null(clawt_decision_get_settled_via(back));
+
+    /* no id, no decision: there would be nothing to answer */
+    {
+        g_autoptr(JsonParser) bare = json_parser_new();
+
+        g_assert_true(json_parser_load_from_data(bare,
+            "{\"question\": \"orphan\"}", -1, NULL));
+        g_assert_null(clawt_decision_new_from_object(
+            json_node_get_object(json_parser_get_root(bare))));
+    }
+}
+
+/*
+ * Settled in the inbox, the inline view says so.
+ *
+ * The chat holds its own copy of the record; a `decision.settled` from
+ * any surface is folded into it, and the copy then reads exactly as the
+ * inbox's does.  A replay of the same event changes nothing -- the
+ * daemon never settles one twice, so a second event is not news -- and
+ * an event about a different decision changes nothing either.
+ */
+static void
+test_settling_in_the_inbox_updates_the_inline_view(void)
+{
+    g_autoptr(ClawtDecision) held =
+        clawt_decision_new("d1", "chief", "Take the outage now?");
+    g_autoptr(ClawtEvent) other = clawt_event_new("decision.settled", "chief");
+    g_autoptr(ClawtEvent) event = clawt_event_new("decision.settled", "chief");
+    g_autofree gchar *outcome = NULL;
+    const gchar *options[] = { "now", "after the release", NULL };
+
+    clawt_decision_set_options(held, options);
+    clawt_decision_set_default(held, "after the release", NULL);
+    clawt_decision_set_room(held, "dm:chief:user");
+
+    clawt_event_set_detail(other, "decision", "d2");
+    clawt_event_set_detail(other, "how", "answered");
+    g_assert_false(clawt_decision_apply_event(held, other));
+    g_assert_cmpint(clawt_decision_get_state(held), ==, CLAWT_DECISION_OPEN);
+
+    clawt_event_set_detail(event, "decision", "d1");
+    clawt_event_set_detail(event, "how", "answered");
+    clawt_event_set_detail(event, "answer", "now");
+    clawt_event_set_detail(event, "via", CLAWT_DECISION_VIA_INBOX);
+    clawt_event_set_detail(event, "room", "dm:chief:user");
+
+    g_assert_cmpstr(clawt_decision_event_room(event), ==, "dm:chief:user");
+    g_assert_true(clawt_decision_apply_event(held, event));
+    g_assert_cmpint(clawt_decision_get_state(held), ==,
+                    CLAWT_DECISION_ANSWERED);
+    g_assert_cmpstr(clawt_decision_get_answer(held), ==, "now");
+
+    outcome = clawt_decision_outcome_text(held);
+    g_assert_nonnull(strstr(outcome, "You answered"));
+    g_assert_nonnull(strstr(outcome, "now"));
+    g_assert_nonnull(strstr(outcome, "in the inbox"));
+
+    g_assert_false(clawt_decision_apply_event(held, event));
+
+    /* deleted is not a state: the card goes, the record is not rewritten */
+    {
+        g_autoptr(ClawtDecision) open =
+            clawt_decision_new("d3", "chief", "Which?");
+
+        g_assert_false(clawt_decision_apply_settled(open, "deleted", NULL,
+                                                    NULL, NOW));
+        g_assert_cmpint(clawt_decision_get_state(open), ==,
+                        CLAWT_DECISION_OPEN);
+    }
+}
+
+/*
+ * Every way of settling has a sentence that says who and how, and the
+ * clock is never "you".
+ */
+static void
+test_each_outcome_says_who_and_how(void)
+{
+    g_autoptr(ClawtDecision) chat = clawt_decision_new("a", "chief", "Q?");
+    g_autoptr(ClawtDecision) clock = clawt_decision_new("b", "chief", "Q?");
+    g_autoptr(ClawtDecision) passed = clawt_decision_new("c", "chief", "Q?");
+    g_autoptr(ClawtDecision) unknown = clawt_decision_new("d", "chief", "Q?");
+    g_autofree gchar *said_chat = NULL;
+    g_autofree gchar *said_clock = NULL;
+    g_autofree gchar *said_passed = NULL;
+    g_autofree gchar *said_unknown = NULL;
+
+    g_assert_null(clawt_decision_outcome_text(chat));
+
+    clawt_decision_set_default(clock, "wait", NULL);
+    clawt_decision_set_default(passed, "wait", NULL);
+
+    g_assert_true(clawt_decision_apply_settled(chat, "answered", "go",
+                                               CLAWT_DECISION_VIA_CHAT, NOW));
+    g_assert_true(clawt_decision_apply_settled(clock, "defaulted", "wait",
+                                               NULL, NOW));
+    g_assert_true(clawt_decision_apply_settled(passed, "dismissed", NULL,
+                                               CLAWT_DECISION_VIA_INBOX, NOW));
+    g_assert_true(clawt_decision_apply_settled(unknown, "answered", "go",
+                                               NULL, NOW));
+
+    said_chat = clawt_decision_outcome_text(chat);
+    said_clock = clawt_decision_outcome_text(clock);
+    said_passed = clawt_decision_outcome_text(passed);
+    said_unknown = clawt_decision_outcome_text(unknown);
+
+    g_assert_nonnull(strstr(said_chat, "in the chat"));
+    g_assert_nonnull(strstr(said_clock, "Nobody answered in time"));
+    g_assert_null(strstr(said_clock, "You"));
+    g_assert_nonnull(strstr(said_passed, "Dismissed in the inbox"));
+    g_assert_nonnull(strstr(said_passed, "wait"));
+    /* an answer from an unnamed surface is not claimed for the reader */
+    g_assert_null(strstr(said_unknown, "You"));
+}
+
+/*
+ * A press on a decision the clock already settled -- the stale press --
+ * is told that, in words, and told the press did nothing.
+ */
+static void
+test_a_stale_press_is_told_what_happened(void)
+{
+    g_autofree gchar *dir = NULL;
+    g_autoptr(ClawtDecisionStore) store = store_new(&dir);
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *id = NULL;
+
+    {
+        g_autoptr(ClawtDecision) decision =
+            clawt_decision_new(NULL, "chief", "Restart the database?");
+        g_autoptr(ClawtDecision) settled = NULL;
+
+        clawt_decision_set_default(decision, "wait for the window", NULL);
+        id = clawt_decision_store_post(store, decision, NULL);
+        settled = clawt_decision_store_settle_default(store, id, NULL);
+        g_assert_nonnull(settled);
+    }
+
+    {
+        g_autoptr(ClawtDecision) late = clawt_decision_store_answer_via(
+            store, id, "restart now", CLAWT_DECISION_VIA_CHAT, &error);
+
+        g_assert_null(late);
+        g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED);
+        g_assert_nonnull(strstr(error->message, "Already settled"));
+        g_assert_nonnull(strstr(error->message, "Nobody answered in time"));
+        g_assert_nonnull(strstr(error->message, "wait for the window"));
+        g_assert_nonnull(strstr(error->message, "changed nothing"));
+        g_assert_nonnull(strstr(error->message, "chief"));
+    }
+
+    clawt_test_remove_tree(dir);
+}
+
+/*
+ * The room and the surface survive the store, and a room's list is that
+ * room's in the order asked, settled ones included -- a settled question
+ * stays in the transcript where it was asked.
+ */
+static void
+test_a_rooms_decisions_come_back_in_order(void)
+{
+    g_autofree gchar *dir = NULL;
+    g_autoptr(ClawtDecisionStore) store = store_new(&dir);
+    g_autofree gchar *first = NULL;
+    g_autofree gchar *second = NULL;
+    g_autofree gchar *elsewhere = NULL;
+    g_autofree gchar *nowhere = NULL;
+
+    {
+        g_autoptr(ClawtDecision) a = clawt_decision_new(NULL, "chief", "A?");
+        g_autoptr(ClawtDecision) b = clawt_decision_new(NULL, "chief", "B?");
+        g_autoptr(ClawtDecision) c = clawt_decision_new(NULL, "chief", "C?");
+        g_autoptr(ClawtDecision) d = clawt_decision_new(NULL, "chief", "D?");
+
+        clawt_decision_set_room(a, "room-1");
+        clawt_decision_set_created_at(a, NOW);
+        clawt_decision_set_room(b, "room-1");
+        clawt_decision_set_created_at(b, NOW + 1);
+        clawt_decision_set_room(c, "room-2");
+        clawt_decision_set_room(d, "");
+
+        second = clawt_decision_store_post(store, b, NULL);
+        first = clawt_decision_store_post(store, a, NULL);
+        elsewhere = clawt_decision_store_post(store, c, NULL);
+        nowhere = clawt_decision_store_post(store, d, NULL);
+    }
+
+    {
+        g_autoptr(ClawtDecision) answered = clawt_decision_store_answer_via(
+            store, first, "yes", CLAWT_DECISION_VIA_CHAT, NULL);
+
+        g_assert_nonnull(answered);
+        g_assert_cmpstr(clawt_decision_get_settled_via(answered), ==,
+                        CLAWT_DECISION_VIA_CHAT);
+    }
+
+    {
+        g_autoptr(GPtrArray) room = clawt_decision_store_list_room(store,
+                                                                   "room-1");
+        g_autoptr(GPtrArray) none = clawt_decision_store_list_room(store, "");
+        g_autoptr(ClawtDecision) back = clawt_decision_store_get(store, first);
+
+        g_assert_cmpuint(room->len, ==, 2);
+        g_assert_cmpstr(clawt_decision_get_id(g_ptr_array_index(room, 0)), ==,
+                        first);
+        g_assert_cmpstr(clawt_decision_get_id(g_ptr_array_index(room, 1)), ==,
+                        second);
+        g_assert_cmpint(clawt_decision_get_state(g_ptr_array_index(room, 0)),
+                        ==, CLAWT_DECISION_ANSWERED);
+
+        /* an unplaced decision belongs to no room, not to every room */
+        g_assert_cmpuint(none->len, ==, 0);
+
+        g_assert_cmpstr(clawt_decision_get_room(back), ==, "room-1");
+        g_assert_cmpstr(clawt_decision_get_settled_via(back), ==, "chat");
+    }
+
+    clawt_test_remove_tree(dir);
+}
+
+/*
+ * A store written before the room existed is upgraded where it opens,
+ * not left to answer every SELECT with an empty list.
+ */
+static void
+test_an_old_store_gains_the_room(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-decision-XXXXXX", NULL);
+    g_autofree gchar *path = g_build_filename(dir, "decisions.db", NULL);
+    g_autoptr(GError) error = NULL;
+    sqlite3 *db = NULL;
+
+    g_assert_cmpint(sqlite3_open(path, &db), ==, SQLITE_OK);
+    g_assert_cmpint(sqlite3_exec(db,
+        "CREATE TABLE decisions (id TEXT PRIMARY KEY, agent TEXT NOT NULL,"
+        " question TEXT NOT NULL, options TEXT, default_option TEXT,"
+        " default_reason TEXT, task TEXT, answer TEXT,"
+        " reversible_until INTEGER NOT NULL DEFAULT 0,"
+        " created_at INTEGER NOT NULL,"
+        " answered_at INTEGER NOT NULL DEFAULT 0,"
+        " state INTEGER NOT NULL DEFAULT 0);"
+        "INSERT INTO decisions (id, agent, question, created_at)"
+        " VALUES ('old', 'chief', 'From before?', 1);",
+        NULL, NULL, NULL), ==, SQLITE_OK);
+    sqlite3_close(db);
+
+    {
+        g_autoptr(ClawtDecisionStore) store =
+            clawt_decision_store_new(path, &error);
+        g_autoptr(ClawtDecision) old = NULL;
+        g_autoptr(GPtrArray) open = NULL;
+
+        g_assert_no_error(error);
+        g_assert_nonnull(store);
+
+        old = clawt_decision_store_get(store, "old");
+        g_assert_nonnull(old);
+        g_assert_null(clawt_decision_get_room(old));
+
+        open = clawt_decision_store_list(store, TRUE);
+        g_assert_cmpuint(open->len, ==, 1);
+    }
+
+    /* and opening it again does not try to add the columns twice */
+    {
+        g_autoptr(ClawtDecisionStore) again =
+            clawt_decision_store_new(path, &error);
+
+        g_assert_no_error(error);
+        g_assert_nonnull(again);
+    }
+
+    clawt_test_remove_tree(dir);
+}
+
+/*
+ * The default line says what happens and until when, as a clock time --
+ * a relative "in 3h" in a transcript is wrong from the moment it is
+ * drawn.  Placing goes strictly before the message.
+ */
+static void
+test_the_default_line_and_placement(void)
+{
+    g_autoptr(ClawtDecision) decision =
+        clawt_decision_new("d", "chief", "Ship?");
+    g_autoptr(GTimeZone) utc = g_time_zone_new_utc();
+    g_autofree gchar *line = NULL;
+
+    g_assert_null(clawt_decision_default_text(decision, utc));
+
+    clawt_decision_set_default(decision, "after the release", "quiet hours");
+    clawt_decision_set_reversible_until(decision, NOW);
+    line = clawt_decision_default_text(decision, utc);
+
+    g_assert_nonnull(strstr(line, "If nobody answers"));
+    g_assert_nonnull(strstr(line, "after the release"));
+    g_assert_nonnull(strstr(line, "quiet hours"));
+    g_assert_nonnull(strstr(line, "Reversible until"));
+    g_assert_nonnull(strstr(line, "12:00"));
+
+    clawt_decision_set_created_at(decision, 100);
+    g_assert_false(clawt_decision_precedes(decision, 100));
+    g_assert_true(clawt_decision_precedes(decision, 101));
+
+    g_assert_true(clawt_decision_via_is_known(NULL));
+    g_assert_true(clawt_decision_via_is_known(CLAWT_DECISION_VIA_CHAT));
+    g_assert_false(clawt_decision_via_is_known("telepathy"));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -435,6 +787,21 @@ main(int argc, char *argv[])
                     test_deleting_removes_only_that_one);
     g_test_add_func("/decision/dismissing-and-missing-ids",
                     test_dismissing_and_missing_ids);
+
+    g_test_add_func("/decision/inline/reads-back-off-the-wire",
+                    test_a_decision_reads_back_off_the_wire);
+    g_test_add_func("/decision/inline/settled-in-the-inbox",
+                    test_settling_in_the_inbox_updates_the_inline_view);
+    g_test_add_func("/decision/inline/each-outcome-says-who",
+                    test_each_outcome_says_who_and_how);
+    g_test_add_func("/decision/inline/stale-press-is-told",
+                    test_a_stale_press_is_told_what_happened);
+    g_test_add_func("/decision/inline/a-rooms-decisions-in-order",
+                    test_a_rooms_decisions_come_back_in_order);
+    g_test_add_func("/decision/inline/old-store-gains-the-room",
+                    test_an_old_store_gains_the_room);
+    g_test_add_func("/decision/inline/default-line-and-placement",
+                    test_the_default_line_and_placement);
 
     return g_test_run();
 }

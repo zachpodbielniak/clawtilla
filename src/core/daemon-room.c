@@ -787,6 +787,12 @@ clawt_daemon_handle_room(
 					(gint64)clawt_message_get_merged(message));
 			}
 
+			/* A turn cut short and not resumed; an integer, as above. */
+			if (clawt_message_get_interrupted(message)) {
+				json_builder_set_member_name(builder, "interrupted");
+				json_builder_add_int_value(builder, 1);
+			}
+
 			/*
 			 * The round, and any mention withheld with its reason, as
 			 * the `message` event carries them, so a client draws a

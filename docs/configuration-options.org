@@ -1045,7 +1045,7 @@ with or without this.
 
 - Type :: integer
 - Default :: =60=
-- Since :: 0.18.0
+- Since :: 0.20.0
 
 How many requests one task tree may send between settlements.
 0 disables the budget.
@@ -1638,7 +1638,7 @@ starts again at each round.
 
 - Type :: integer
 - Default :: =3=
-- Since :: 0.18.0
+- Since :: 0.20.0
 
 How many replies one thread may run to in a round of a group room.
 0 removes the cap; the once-per-thread rule below still applies.
@@ -2593,7 +2593,7 @@ in again.
 
 - Type :: boolean
 - Default :: =true=
-- Since :: 0.19.0
+- Since :: 0.20.0
 
 Whether a remote connector finds out for itself how to sign in.
 
@@ -2613,7 +2613,7 @@ takes a pasted token only.
 
 - Type :: string
 - Default :: =clawtilla=
-- Since :: 0.19.0
+- Since :: 0.20.0
 
 What clawtilla calls itself when it registers with a server.
 

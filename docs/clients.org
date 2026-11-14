@@ -747,9 +747,14 @@ The tree budget's alert, ~task.tree_budget~, is a notice in each client's alerts
 Four marks in the transcript, drawn the same way in all three clients from fields ~room.history~ and the ~message~ event both carry:
 
 - *acknowledged (no wake)* -- =clawt_message_ack_label()= -- beside an answer the acknowledgement check recorded instead of delivering (=acknowledged=).  It is on every such message, not on a run header, because it is a fact about that one message: unmarked, an answer the asker never took a turn on reads as having been ignored.  GTK and the web client carry =clawt_message_ack_tooltip()= as the tooltip; libregnum has no tooltips, so the label is the whole of it.
+- *interrupted — not resumed* -- =clawt_message_interrupted_label()= -- on the daemon's notice that a turn was cut short and will not be rerun (=interrupted=): after a restart when it had already acted outside the fleet or was itself a rerun, or when somebody stopped the agent.  Drawn in warning colours with the body boxed (GTK: a ~warning~ chip and a ~card~; web: a ~warn~ badge and ~.msg-interrupted~; libregnum: a ~warn~ badge with =clawt_message_interrupted_tooltip()= written under it), because it says the request above it was not finished.  See [[file:mailboxes.org][mailboxes.org]], "A turn a restart cut short".
 - *Round N* -- =clawt_round_label()= -- a divider, drawn like the day's, where a new round of a group room begins (=round=).  A round starts at each message from a person, a routine or a trigger, so a standup reads as the rounds it was rather than one scroll.  A new round starts a new run, so its first speaker is named again.
 - *Not delivered to @name -- why* -- =clawt_round_skip_note()= -- a dim line under a message whose =@mention= was kept and not delivered (=skipped=, =skip_reason=): the member had already answered in that thread of replies, or the thread had reached =rooms.max_chain=.  It is the whole answer to "why did that member never reply", so it is a sentence rather than a chip.  GTK and the web client carry =clawt_round_skip_tooltip()= as the tooltip.
 - *Delivered as one turn* -- clawtilla's note when several results waiting in one room were handed to an agent as a single turn (=merged=, the number of parts).  Its body is split with =clawt_merge_split()= and drawn as its sections: the opening line, then one block per result with its label ("'oryx' answering you", "clawtilla: task t-12") as a small heading and the result's first line beneath.  The results themselves are already in the room above it; the note says they cost one wake, not N.
+
+*** An agent asking for its computer to be rebuilt
+
+~clawtilla_request_rebuild~ lands in the Decisions page like any other decision, and all three clients draw it as what it is (=kind: "rebuild"=): a red *rebuild* badge, the =loses= sentence -- what a rebuild destroys -- as a warning above the options, a destructive *approve* and a plain *decline*, and *no free-text answer*, because only the word ~approve~ rebuilds and anything typed would read as a yes that is not one.  "Does not need me" and Delete still withdraw it.  Approving stops the agent's turn, rebuilds the machine and tells the agent; see [[file:computers.org][computers.org]], "An agent asking for a rebuild".
 
 *** Reordering the fleet
 
@@ -1969,6 +1974,20 @@ saying fits on a page --- rather than a transcript of one room, which is
 why it does not draw through the chat's builder.  What it does share is
 where a run begins: consecutive messages from one agent do not repeat the
 name, from the same ~clawt_chat_run_is_start()~.
+
+**** Decisions inline
+
+A decision an agent asks with ~clawtilla_ask_decision~ -- or an action rule asks or hands back -- is drawn in the room it was asked from as well as in the inbox. It is a *second view of the same record*, not a copy: the card shows who asks, the question, and while it is open the options as buttons with the default and its deadline under them ("If nobody answers: "after the release" -- quiet hours. Reversible until Tue 25 Aug 12:00."). Once settled it shows how it ended and who ended it: "You answered "now" in the chat.", "You answered … in the inbox.", "Nobody answered in time, so the default stands: …", "Dismissed in the inbox as not needing you; the default stands: …". All three clients draw both lines from ~clawt_decision_default_text()~ and ~clawt_decision_outcome_text()~, so the inbox and the chat say the same words.
+
+Pressing an option sends the same ~decision.answer~ the inbox sends, with ~via: chat~ (the inbox sends ~via: inbox~ and the CLI ~via: cli~). Settling it anywhere -- the card, the inbox, another window, the CLI, the deadline passing -- publishes ~decision.settled~ with the room, the answer and the surface, and each client folds that into the card it holds (~clawt_decision_apply_event()~), so both views change together. A deleted decision's card is taken out on ~decision.deleted~.
+
+The deadline is a clock time rather than "in 3h": a relative time in a transcript is wrong from the moment it is drawn, and nothing redraws a card whose decision has not changed.
+
+The card sits where it was asked: a room's decisions (~decision.list~ with ~room~, every state, oldest first) are merged into the history by ~clawt_decision_precedes()~ -- strictly before a message's second -- the same way turn steps are merged by ~clawt_turn_step_precedes()~. A question asked while a turn is running is drawn above the live step block, so the block stays the live edge.
+
+A double tap is refused twice over. The client stops it first -- GTK makes the options insensitive for the request's wait, the web form has ~hx-sync="this:drop"~ and disables its buttons, lrg draws "Answering…" in place of the buttons until the reply -- and the daemon refuses whatever still gets through, as it refuses a press on a card that was out of date: "Already settled: You answered "now" in the chat. Your press changed nothing; if you have changed your mind, say so in a message to chief." The refusal is shown (a toast in GTK and lrg, written into the card on the web) and the card is redrawn from the daemon's current record, so it stops offering buttons that would be refused again.
+
+A question with no options cannot be answered with a button; its card says so and points at Decisions, which has the free-text box. A decision nobody could place in a room -- a venture staging, or a policy ask while the agent was mid-turn in several rooms -- is drawn in the inbox only.
 
 *** Markdown
 

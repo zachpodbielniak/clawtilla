@@ -1403,7 +1403,8 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
                                      body != NULL ? body : "",
                                      g_strcmp0(from, "user") == 0, 0,
                                      clawt_event_get_detail_int(event, "acknowledged") != 0,
-                                     clawt_event_get_detail_int(event, "merged"));
+                                     clawt_event_get_detail_int(event, "merged"),
+                                     clawt_event_get_detail_int(event, "interrupted") != 0);
             clawt_gtk_append_round_marks(self, 0,
                                      clawt_event_get_detail(event, "skipped"),
                                      clawt_event_get_detail(event, "skip_reason"),
@@ -1723,8 +1724,10 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
      * pages -- which is the whole difference between a surface and a
      * page nobody looks at.
      */
-    if (g_str_has_prefix(kind, "decision."))
+    if (g_str_has_prefix(kind, "decision.")) {
         clawt_gtk_refresh_decisions(self);
+        clawt_gtk_inline_decisions_on_event(self, event);
+    }
 
     /*
      * Both ends of a job publish this, so the badge counts down as well
@@ -6295,6 +6298,7 @@ clawt_window_dispose(GObject *object)
     g_clear_pointer(&self->flow_run_day, g_free);
     g_clear_pointer(&self->selected_color, g_free);
     g_clear_pointer(&self->shown, g_hash_table_unref);
+    g_clear_pointer(&self->inline_decisions, g_hash_table_unref);
 
     /*
      * The widget is the transcript's; the array is ours.
@@ -6371,6 +6375,8 @@ clawt_window_init(ClawtWindow *self)
     self->schema_rows = g_ptr_array_new_with_free_func(clawt_gtk_schema_row_free);
     self->shown = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                         NULL);
+    self->inline_decisions = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                                   g_free, NULL);
 
     /*
      * Flow keeps its own, and it is emptied when the conversation
