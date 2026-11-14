@@ -19,6 +19,8 @@
 #endif
 
 #include "agent/clawt-agent-runtime.h"
+#include "computer/clawt-sandbox.h"
+#include "net/clawt-egress-broker.h"
 
 G_BEGIN_DECLS
 
@@ -76,6 +78,39 @@ void clawt_process_runtime_set_environment(ClawtProcessRuntime *self,
  */
 void clawt_process_runtime_set_sandbox(ClawtProcessRuntime *self,
                                        ClawtSandbox        *sandbox);
+
+/**
+ * clawt_process_runtime_set_egress:
+ * @self: a #ClawtProcessRuntime
+ * @network: the agent's `runtime.network`
+ * @gate_socket: (nullable): the agent's egress-gate socket, for
+ *   %CLAWT_RUNTIME_NETWORK_GATED
+ * @broker: (nullable): the daemon's provider-key broker
+ *
+ * Where the next start's child may connect.  Anything but open needs a
+ * sandbox (clawt_process_runtime_set_sandbox()) and is refused at
+ * prepare without one.  Under gated the box runs clawtilla-relay, which
+ * bridges 127.0.0.1:3128 to @gate_socket and 127.0.0.1:3129 to the
+ * broker, and the child is handed HTTPS_PROXY and HTTP_PROXY for the
+ * first; under none only the broker's port is bridged.  Keys the broker
+ * can hold are replaced with a token minted for that one process, which
+ * its exit revokes.
+ */
+void clawt_process_runtime_set_egress(ClawtProcessRuntime *self,
+                                      ClawtRuntimeNetwork  network,
+                                      const gchar         *gate_socket,
+                                      ClawtEgressBroker   *broker);
+
+/**
+ * clawt_process_runtime_set_relay_binary:
+ * @self: a #ClawtProcessRuntime
+ * @path: (nullable): clawtilla-relay, or %NULL to look for it beside the
+ *   running binary, one directory above it, then on PATH
+ *
+ * Overrides where clawtilla-relay is found.
+ */
+void clawt_process_runtime_set_relay_binary(ClawtProcessRuntime *self,
+                                            const gchar         *path);
 
 /**
  * clawt_process_runtime_prepare:

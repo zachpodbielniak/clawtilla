@@ -424,12 +424,15 @@ clawt_agent_confine_build(ClawtAgentConfig     *config,
     sandbox = clawt_sandbox_new(CLAWT_CONFINE_BWRAP, workspace);
 
     /*
-     * The CLI has a provider to reach; limiting where it may connect is
-     * the egress gate's job, not a bind's.  Turning the network off here
-     * would produce an agent that cannot answer and a box that looked
-     * stronger than the one that ships.
+     * The network, from runtime.network, decided here with the binds so
+     * the box and the setting cannot disagree.  Open shares the
+     * machine's; gated and none get a namespace of their own with only
+     * loopback in it, and the process runtime adds the relay that makes
+     * the egress gate and the broker reachable from there.
      */
-    clawt_sandbox_set_allow_network(sandbox, TRUE);
+    clawt_sandbox_set_allow_network(
+        sandbox, clawt_agent_config_get_enum(config, "runtime.network") ==
+                 CLAWT_RUNTIME_NETWORK_OPEN);
     clawt_sandbox_set_private_home(sandbox, g_get_home_dir());
     clawt_sandbox_set_agent_confined(sandbox, TRUE);
 

@@ -27,6 +27,9 @@
 typedef struct {
     LrgWidget *list;
     guint      generation;
+    LrgWidget *allow;       /* egress.allow, one row per entry */
+    LrgWidget *allow_entry; /* what a new entry is typed into */
+    guint      allow_generation;
 } Folders;
 
 static Folders folders;
@@ -266,6 +269,96 @@ on_list(ClawtLrgApp *app, JsonNode *reply, const GError *error,
     clawt_lrg_app_wake(app);
 }
 
+/* ── Private addresses gated agents may reach (egress.allow) ─────── */
+
+static void
+on_allow_changed(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+                 gpointer user_data)
+{
+    /* A refusal is toasted by the request; the entry keeps the text. */
+    if (reply == NULL)
+        return;
+
+    if (user_data != NULL && folders.allow_entry != NULL)
+        lrg_text_input_set_text(LRG_TEXT_INPUT(folders.allow_entry), "");
+
+    refresh(app);
+}
+
+static void
+on_allow_add(LrgButton *button, gpointer user_data)
+{
+    ClawtLrgApp *app = user_data;
+    const gchar *entry = clawt_lrg_entry_text(folders.allow_entry);
+
+    if (entry == NULL || *entry == '\0')
+        return;
+
+    clawt_lrg_request(app, "egress.allow.add",
+                      clawt_ipc_payload_new("entry", entry, NULL),
+                      CLAWT_LRG_REQUEST_NONE, on_allow_changed,
+                      GINT_TO_POINTER(1), NULL);
+}
+
+static void
+on_allow_remove(LrgButton *button, gpointer user_data)
+{
+    clawt_lrg_request(user_data, "egress.allow.remove",
+                      clawt_ipc_payload_new(
+                          "entry",
+                          g_object_get_data(G_OBJECT(button), "clawt-entry"),
+                          NULL),
+                      CLAWT_LRG_REQUEST_NONE, on_allow_changed, NULL, NULL);
+}
+
+static void
+on_allow_list(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+              gpointer user_data)
+{
+    JsonObject *payload;
+    JsonArray *entries;
+    const gchar *problem;
+    guint i;
+
+    if (GPOINTER_TO_UINT(user_data) != folders.allow_generation ||
+        reply == NULL || folders.allow == NULL)
+        return;
+
+    clawt_lrg_clear(folders.allow);
+    payload = clawt_ipc_reply_object(reply);
+    entries = clawt_lrg_settings_member_array(payload, "entries");
+    problem = clawt_ipc_payload_string(payload, "problem");
+
+    if (entries == NULL || json_array_get_length(entries) == 0)
+        clawt_lrg_take(folders.allow, clawt_lrg_row(
+            "Public internet only",
+            "Gated agents reach no private address: not this machine, "
+            "your LAN or your tailnet."));
+
+    for (i = 0; entries != NULL && i < json_array_get_length(entries); i++) {
+        const gchar *entry = json_array_get_string_element(entries, i);
+        LrgWidget *row = clawt_lrg_row(entry, NULL);
+        LrgWidget *remove = clawt_lrg_button("Remove", "flat",
+                                             G_CALLBACK(on_allow_remove),
+                                             app);
+
+        g_object_set_data_full(G_OBJECT(remove), "clawt-entry",
+                               g_strdup(entry), g_free);
+        clawt_lrg_row_add_suffix(row, remove);
+        clawt_lrg_take(folders.allow, row);
+    }
+
+    /* A hand-edited entry that does not parse: the list opens nothing. */
+    if (problem != NULL) {
+        LrgWidget *row = clawt_lrg_row("Worth fixing", problem);
+
+        clawt_lrg_row_add_prefix(row, clawt_lrg_badge("!", "warn"));
+        clawt_lrg_take(folders.allow, row);
+    }
+
+    clawt_lrg_app_wake(app);
+}
+
 static void
 refresh(ClawtLrgApp *app)
 {
@@ -275,6 +368,11 @@ refresh(ClawtLrgApp *app)
     folders.generation++;
     clawt_lrg_request(app, "defaults.mount.list", NULL, CLAWT_LRG_QUIET,
                       on_list, GUINT_TO_POINTER(folders.generation), NULL);
+
+    folders.allow_generation++;
+    clawt_lrg_request(app, "egress.allow.list", NULL, CLAWT_LRG_QUIET,
+                      on_allow_list,
+                      GUINT_TO_POINTER(folders.allow_generation), NULL);
 }
 
 static LrgWidget *
@@ -300,6 +398,36 @@ build(ClawtLrgApp *app)
     g_object_unref(folders.list);
 
     clawt_lrg_take(clawt_lrg_page_body(page), clawt_lrg_card(box));
+
+    /*
+     * The network's answer to the same question, in the library's words
+     * so the three clients agree: what a gated agent may reach beyond
+     * the public internet.
+     */
+    {
+        LrgWidget *allow_box = clawt_lrg_vbox(10.0f);
+        LrgWidget *add_row = clawt_lrg_hbox(8.0f);
+
+        clawt_lrg_take(allow_box, clawt_lrg_label(
+            clawt_egress_allowlist_label(), "heading"));
+        clawt_lrg_take(allow_box, clawt_lrg_paragraph(
+            clawt_egress_allowlist_explanation(), "muted"));
+
+        folders.allow_entry = clawt_lrg_entry(
+            NULL, "100.101.102.103, 192.168.1.0/24, nas.example.ts.net:5000");
+        clawt_lrg_add(add_row, folders.allow_entry);
+        g_object_unref(folders.allow_entry);
+        clawt_lrg_take(add_row, clawt_lrg_button("Allow", "primary",
+                                                 G_CALLBACK(on_allow_add),
+                                                 app));
+        clawt_lrg_take(allow_box, add_row);
+
+        folders.allow = clawt_lrg_vbox(6.0f);
+        clawt_lrg_add(allow_box, folders.allow);
+        g_object_unref(folders.allow);
+
+        clawt_lrg_take(clawt_lrg_page_body(page), clawt_lrg_card(allow_box));
+    }
 
     return page;
 }

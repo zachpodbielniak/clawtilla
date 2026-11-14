@@ -847,7 +847,7 @@ runtime:
     - ~/.nvm/versions/node/v22.11.0
 #+end_src
 
-Off by default, so nothing about a running agent changes until somebody turns it on. With ~confine: bwrap~ the libreclaw child -- and with it the AI CLI, every command the CLI runs and its MCP servers -- starts inside bubblewrap. Its own Bash, Read and Write can then reach the workspace, its state directory, the computer's mounts in their declared modes, the CLI's login directory (writable, so OAuth tokens refresh), and read-only the programs it runs: the CLI, libreclaw and whatever ~.mcp.json~ names. ~$HOME~ and ~/tmp~ are private and empty apart from those; ~/usr~ and ~/etc~ are read-only; the network is untouched. =docs/security.org= has the full table and what it does not stop.
+Off by default, so nothing about a running agent changes until somebody turns it on. With ~confine: bwrap~ the libreclaw child -- and with it the AI CLI, every command the CLI runs and its MCP servers -- starts inside bubblewrap. Its own Bash, Read and Write can then reach the workspace, its state directory, the computer's mounts in their declared modes, the CLI's login directory (writable, so OAuth tokens refresh), and read-only the programs it runs: the CLI, libreclaw and whatever ~.mcp.json~ names. ~$HOME~ and ~/tmp~ are private and empty apart from those; ~/usr~ and ~/etc~ are read-only; the network is whatever ~runtime.network~ says (below). =docs/security.org= has the full table and what it does not stop.
 
 Things worth knowing before turning it on:
 
@@ -860,6 +860,33 @@ Things worth knowing before turning it on:
 - *Stopping is still clean.* bwrap forwards no signals, so SIGTERM goes to libreclaw inside the box; the ~pid~ an agent listing reports is libreclaw's, and an interrupt kills what is below libreclaw.
 
 In the clients the switch is under Runtime, labelled "Sandbox its own tools (bubblewrap)", with a sentence saying what it does and a warning when it cannot be given here.
+
+*** Where the agent may connect
+
+#+begin_src yaml
+runtime:
+  confine: bwrap            # required for anything but open
+  network: gated            # open (default) | gated | none
+#+end_src
+
+Inside the sandbox, ~runtime.network~ decides the network:
+
+- *open* (the default) shares the machine's network: the LAN, the tailnet and this machine's loopback services included.
+- *gated* gives the box a network namespace with nothing in it but loopback. The only route out is clawtilla's egress gate, an HTTP proxy in the daemon that reaches *public addresses only* -- it refuses this machine, the LAN, link-local, CGNAT and tailnets (100.64.0.0/10), IPv6 local networks and cloud metadata, judged by the address a name resolves to, so a public name pointed at 127.0.0.1 is refused too. The CLI is handed ~HTTPS_PROXY~ and ~HTTP_PROXY~; the namespace being empty is what enforces it.
+- *none* gives it no route at all.
+
+Under ~gated~ and ~none~, a provider key the CLI can be pointed away from is *brokered*: ~ANTHROPIC_API_KEY~ (and ~ANTHROPIC_AUTH_TOKEN~) for Claude Code, ~OPENAI_API_KEY~ for Codex. The agent's environment holds a token minted for that one process and a base URL on its own loopback; the daemon swaps the token for the real key on the way to a fixed upstream, and never sends it across a redirect. So an agent on ~none~ can still talk to its model and to nothing else. Keys a CLI cannot redirect -- grok, antigravity, cursor, opencode, and anything like ~GITHUB_TOKEN~ -- are passed as before and listed on the agent's view as not brokered, with the reason. A Claude *subscription* (an OAuth login) has no key to swap and is unaffected.
+
+Things worth knowing:
+
+- *It needs the sandbox.* ~gated~ or ~none~ without ~runtime.confine: bwrap~ (on the agent or from =defaults.confine=) disables the agent with that reason, and ~agent.set~ refuses either half of the pair. It is never run on an open network instead. The clients grey the choice out while the sandbox is off and say why.
+- *Private addresses the fleet should reach go in =egress.allow=*: an address, a network or a host name, with an optional port -- a tailnet service, say. The clients edit it beside the shared folders; metadata addresses are refused.
+- *A refusal is a 403 naming the address and the reason*, and the agent is told in its per-turn directive that the gate is there, so it reads a refused LAN address as a boundary rather than an outage.
+- *The agent's view says what happened*: "egress: gated (3 refused today)", the last refusals with host, address and reason, and whether each key is brokered.
+- *It takes effect at the next start*, like the sandbox.
+- *libreclaw's own channels* (Matrix, email) follow the proxy only where GLib's proxy resolver reads the environment; otherwise a gated agent's channel has no route, and fails rather than reaching anything directly. Inbound is closed too: a libreclaw ~webhook~ channel listens on the box's own loopback, which nothing outside the namespace can reach -- use clawtilla's triggers instead, which deliver through the mailbox. A gated agent is for work, not for being a chat surface on the LAN.
+
+=docs/security.org= (Egress) has the ranges, the route through the box and the broker's table.
 
 *** When the account runs out of session allowance
 

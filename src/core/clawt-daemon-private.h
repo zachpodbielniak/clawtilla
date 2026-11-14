@@ -364,6 +364,14 @@ struct _ClawtDaemon {
      * can serve the bytes to a client that may be on another machine.
      */
     gchar   *attachment_dir;
+
+    /*
+     * `runtime.network: gated` and `none`: the egress gate and the
+     * provider-key broker, both made the first time an agent needs one
+     * (daemon-egress.c), never at daemon start.
+     */
+    ClawtEgressGate   *egress_gate;
+    ClawtEgressBroker *egress_broker;
     guint    sweep_source_id;
     gboolean running;
 };
@@ -1032,6 +1040,34 @@ clawt_daemon_handle_memory(
     JsonObject   *payload,
     gboolean     *handled
 );
+
+JsonNode *
+clawt_daemon_handle_egress(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
+
+/*
+ * The egress gate and broker (daemon-egress.c).  ensure() makes and
+ * binds them; prepare_agent() hands a process runtime its network for
+ * the next start, refusing rather than downgrading; add_status() writes
+ * an agent's `egress` member for agent.show; refresh_allowlist() reads
+ * egress.allow into the running gate; stop() and release() are the
+ * daemon's own stop and dispose.
+ */
+gboolean clawt_daemon_egress_ensure(ClawtDaemon *self, GError **error);
+gboolean clawt_daemon_egress_prepare_agent(ClawtDaemon          *self,
+                                           ClawtAgentConfig     *config,
+                                           ClawtProcessRuntime  *runtime,
+                                           GError              **error);
+void clawt_daemon_egress_add_status(ClawtDaemon *self, JsonBuilder *builder,
+                                    ClawtAgent *agent);
+void clawt_daemon_egress_refresh_allowlist(ClawtDaemon *self);
+void clawt_daemon_egress_stop(ClawtDaemon *self);
+void clawt_daemon_egress_release(ClawtDaemon *self);
 
 JsonNode *
 clawt_daemon_handle_mount(

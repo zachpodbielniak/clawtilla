@@ -343,6 +343,24 @@ declare -A AFFORDANCES=(
     ["sandbox an agent's own tools"]="clawt_agent_confine_label|clawt_agent_confine_label|clawt_agent_confine_label"
     ["why a sandboxed agent cannot start"]="clawt_agent_confine_notice|clawt_agent_confine_notice|clawt_agent_confine_notice"
     #
+    # The egress gate (runtime.network, egress.allow).
+    #
+    # The network choice is a schema enum, so layers 1 to 4 see a form
+    # field whether or not a client named its choices -- which is the
+    # part that makes it usable: "Through clawtilla's gate" rather than
+    # "gated", and the reason it is greyed while the sandbox is off.
+    # The agent view's "egress: gated (N refused today)", its refusal
+    # lines and its brokered-key rows are reply members, not frames.
+    # The allowlist's frames are layer 1's; its label and sentence are
+    # declared here so all three say the same thing about it.
+    #
+    ["name an agent's network choices"]="clawt_egress_network_choice_label|clawt_egress_network_choice_label|clawt_egress_network_choice_label"
+    ["why the network cannot be gated"]="clawt_egress_network_notice|clawt_egress_network_notice|clawt_egress_network_notice"
+    ["an agent's egress summary"]="clawt_egress_status_line|clawt_egress_status_line|clawt_egress_status_line"
+    ["an agent's egress refusals"]="clawt_egress_refusal_line|clawt_egress_refusal_line|clawt_egress_refusal_line"
+    ["which keys the broker holds"]="\"brokered\"|\"brokered\"|\"brokered\""
+    ["the fleet's egress allowlist"]="clawt_egress_allowlist_label|clawt_egress_allowlist_label|clawt_egress_allowlist_label"
+    #
     # Integration forms drawn from the shared field table.
     #
     # Not a frame kind and not an enumeration -- both clients send

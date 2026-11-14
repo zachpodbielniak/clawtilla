@@ -1145,6 +1145,72 @@ folders_content(ClawtWebApp *app)
         htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
     }
 
+    /*
+     * The network's answer to the same question: what a gated agent may
+     * reach beyond the public internet.  Beside the folders because both
+     * are fleet-wide grants; the label and the sentence are the
+     * library's, so the three clients agree.
+     */
+    {
+        g_autoptr(JsonNode) allow = clawt_web_app_call(app,
+                                                       "egress.allow.list",
+                                                       NULL);
+        JsonArray *entries = clawt_web_member_array(clawt_web_root(allow),
+                                                    "entries");
+        const gchar *problem = clawt_web_member(clawt_web_root(allow),
+                                                "problem", NULL);
+        g_autoptr(HtmxDiv) card = clawt_web_card(
+            clawt_egress_allowlist_label(),
+            clawt_egress_allowlist_explanation());
+        HtmxElement *body = clawt_web_card_body(card);
+        g_autoptr(HtmxForm) add_form = clawt_web_form("/settings/egress/add");
+        guint e;
+
+        if (problem != NULL)
+            clawt_web_add(body, clawt_web_notice(problem, "bad"));
+
+        if (entries == NULL || json_array_get_length(entries) == 0)
+            clawt_web_add(body, clawt_web_text(
+                "Public internet only: not this machine, your LAN or your "
+                "tailnet.", "small muted"));
+
+        for (e = 0; entries != NULL && e < json_array_get_length(entries);
+             e++) {
+            const gchar *entry = json_array_get_string_element(entries, e);
+            g_autoptr(HtmxForm) form =
+                clawt_web_form("/settings/egress/remove");
+            g_autoptr(HtmxDiv) row = htmx_div_new();
+            g_autoptr(HtmxButton) remove =
+                clawt_web_button("Remove", "danger");
+
+            htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
+            clawt_web_add(row, clawt_web_text(entry, "mono"));
+            htmx_element_set_attribute(HTMX_ELEMENT(remove), "type",
+                                       "submit");
+            htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(remove));
+            clawt_web_add(form, clawt_web_hidden("entry", entry));
+            htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(row));
+            htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
+        }
+
+        clawt_web_add(add_form, clawt_web_field(
+            "Address, network or host name", "entry", NULL,
+            "100.101.102.103, 192.168.1.0/24, nas.example.ts.net:5000"));
+
+        {
+            g_autoptr(HtmxDiv) row = htmx_div_new();
+            g_autoptr(HtmxButton) add = clawt_web_button("Allow", "primary");
+
+            htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
+            htmx_element_set_attribute(HTMX_ELEMENT(add), "type", "submit");
+            htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(add));
+            htmx_node_add_child(HTMX_NODE(add_form), HTMX_NODE(row));
+        }
+
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(add_form));
+        htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
+    }
+
     return HTMX_ELEMENT(g_steal_pointer(&box));
 }
 
@@ -2516,6 +2582,48 @@ on_folder_remove(HtmxRequest *request, GHashTable *params, gpointer user_data)
                              "No longer shared.", FALSE);
 }
 
+/*
+ * egress.allow, one entry at a time.  The daemon checks an entry where it
+ * arrives, so a metadata address or a typo comes back as the failure
+ * banner rather than being saved.
+ */
+static HtmxResponse *
+on_egress_allow(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    g_autofree gchar *failure = NULL;
+    ClawtWebApp *app = user_data;
+    const gchar *entry = clawt_web_form_value(request, "entry");
+    gboolean removing = g_str_has_suffix(htmx_request_get_path(request),
+                                         "/remove");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(HtmxElement) content = NULL;
+
+    (void)params;
+
+    clawt_web_payload_set(payload, "entry", entry);
+
+    reply = clawt_web_app_call(app,
+                               removing ? "egress.allow.remove"
+                                        : "egress.allow.add",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        failure = g_strdup(clawt_web_app_last_error(app));
+
+    content = folders_content(app);
+
+    if (failure != NULL)
+        return settings_response(app, request, "folders", content, failure,
+                                 TRUE);
+
+    return settings_response(app, request, "folders", content,
+                             removing ? "No longer allowed."
+                                      : "Allowed. Gated agents can reach it "
+                                        "from their next connection.",
+                             FALSE);
+}
+
 void
 clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app)
 {
@@ -2537,6 +2645,8 @@ clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app)
                                          "name", "images", "Cancelled."));
 
     htmx_router_post(router, "/settings/folders/add", on_folder_add, app);
+    htmx_router_post(router, "/settings/egress/add", on_egress_allow, app);
+    htmx_router_post(router, "/settings/egress/remove", on_egress_allow, app);
     htmx_router_post(router, "/settings/folders/remove", on_folder_remove,
                      app);
     htmx_router_post(router, "/settings/teams/add", on_team_add, app);

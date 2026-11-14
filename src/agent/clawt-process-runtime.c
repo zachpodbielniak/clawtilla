@@ -51,6 +51,20 @@ struct _ClawtProcessRuntime {
      */
     GPid          payload;
 
+    /*
+     * `runtime.network`.  Set before each start, with the sandbox:
+     * anything but open is only given inside one.  `gate_socket` is the
+     * agent's own egress-gate socket (gated only), `broker` the daemon's
+     * provider-key broker, and `broker_agent` the id a token is
+     * registered under for the child that is running, so its exit
+     * revokes it.
+     */
+    ClawtRuntimeNetwork  network;
+    gchar               *gate_socket;
+    ClawtEgressBroker   *broker;
+    gchar               *broker_agent;
+    gchar               *relay;
+
     GSubprocess      *process;
     GCancellable     *cancellable;
     GDataInputStream *log_stream;
@@ -154,6 +168,48 @@ clawt_process_runtime_set_sandbox(ClawtProcessRuntime *self,
 
     if (sandbox != NULL)
         self->sandbox = g_object_ref(sandbox);
+}
+
+void
+clawt_process_runtime_set_egress(ClawtProcessRuntime *self,
+                                 ClawtRuntimeNetwork  network,
+                                 const gchar         *gate_socket,
+                                 ClawtEgressBroker   *broker)
+{
+    g_return_if_fail(CLAWT_IS_PROCESS_RUNTIME(self));
+
+    self->network = network;
+    g_free(self->gate_socket);
+    self->gate_socket = g_strdup(gate_socket);
+    g_clear_object(&self->broker);
+
+    if (broker != NULL)
+        self->broker = g_object_ref(broker);
+}
+
+void
+clawt_process_runtime_set_relay_binary(ClawtProcessRuntime *self,
+                                       const gchar         *path)
+{
+    g_return_if_fail(CLAWT_IS_PROCESS_RUNTIME(self));
+
+    g_free(self->relay);
+    self->relay = g_strdup(path);
+}
+
+/*
+ * Stops the broker accepting the token minted for the child that was
+ * running.  A token lives exactly as long as its process: one that
+ * outlived it would be a key anybody who had read the old environment
+ * could still spend.
+ */
+static void
+revoke_broker_token(ClawtProcessRuntime *self)
+{
+    if (self->broker != NULL && self->broker_agent != NULL)
+        clawt_egress_broker_revoke(self->broker, self->broker_agent);
+
+    g_clear_pointer(&self->broker_agent, g_free);
 }
 
 /* ── Reading the child's output ──────────────────────────────────── */
@@ -266,6 +322,7 @@ on_process_exited(GObject *source, GAsyncResult *result, gpointer user_data)
 
     self->running = FALSE;
     self->exited = TRUE;
+    revoke_broker_token(self);
 
     clean = g_subprocess_get_successful(process);
 
@@ -365,6 +422,215 @@ resolve_libreclaw(void)
     return g_find_program_in_path("libreclaw");
 }
 
+/*
+ * clawtilla-relay, the in-box end of a gated network: beside the
+ * running binary (installed, or build/<type>/ for the daemon), one level
+ * up (build/<type>/tests/ for a test), then PATH.  NULL when none of
+ * them has it, which refuses the start -- never a gated agent quietly
+ * given the open network instead.
+ */
+static gchar *
+resolve_relay(ClawtProcessRuntime *self)
+{
+    g_autofree gchar *exe_dir = executable_dir();
+
+    if (self->relay != NULL)
+        return g_file_test(self->relay, G_FILE_TEST_IS_EXECUTABLE)
+               ? g_strdup(self->relay) : NULL;
+
+    if (exe_dir != NULL) {
+        g_autofree gchar *beside = g_build_filename(exe_dir,
+                                                    "clawtilla-relay", NULL);
+        g_autofree gchar *above = g_build_filename(exe_dir, "..",
+                                                   "clawtilla-relay", NULL);
+
+        if (g_file_test(beside, G_FILE_TEST_IS_EXECUTABLE))
+            return g_steal_pointer(&beside);
+
+        if (g_file_test(above, G_FILE_TEST_IS_EXECUTABLE))
+            return g_canonicalize_filename(above, NULL);
+    }
+
+    return g_find_program_in_path("clawtilla-relay");
+}
+
+/*
+ * Grants a file the box needs that the sandbox builder could not know
+ * about, unless the box already reaches it.  /usr is in every box.
+ */
+static void
+grant_file(ClawtSandbox *sandbox, const gchar *path, gboolean writable)
+{
+    g_autofree gchar *real = clawt_canonicalize_missing(path);
+
+    if (real != NULL && clawt_path_is_within(real, "/usr"))
+        return;
+
+    if (!clawt_sandbox_path_is_allowed(sandbox, path))
+        clawt_sandbox_add_mount_path(sandbox, path, writable);
+
+    if (!writable && real != NULL && g_strcmp0(real, path) != 0) {
+        if (!clawt_sandbox_path_is_allowed(sandbox, real))
+            clawt_sandbox_add_mount_path(sandbox, real, FALSE);
+
+        clawt_sandbox_add_symlink(sandbox, path);
+    }
+}
+
+/*
+ * The network a gated or closed agent is given: the broker's token in
+ * place of each key its CLI can be pointed away from, the proxy
+ * variables for the gate, and the relay that makes both reachable from
+ * inside a namespace with nothing but loopback in it.
+ *
+ * Fills @extra (the environment the child will get) and @relay_argv
+ * (what goes before libreclaw's own argv).  Fails rather than give the
+ * agent an open network: a missing relay, a broker that is not
+ * listening while there are keys to broker, or a token that cannot be
+ * minted are all refusals.
+ */
+static gboolean
+prepare_network(ClawtProcessRuntime  *self,
+                GHashTable          **extra,
+                GPtrArray            *relay_argv,
+                GError              **error)
+{
+    ClawtAgentConfig *config =
+        clawt_agent_runtime_get_config(CLAWT_AGENT_RUNTIME(self));
+    const gchar *agent_id =
+        (config != NULL) ? clawt_agent_config_get_id(config) : NULL;
+    const gchar *provider = (config != NULL)
+        ? clawt_agent_config_get_string(config, "model.provider") : NULL;
+    g_autoptr(ClawtEgressBrokerPlan) plan = NULL;
+    g_autofree gchar *token = NULL;
+    g_autofree gchar *relay = NULL;
+    g_autofree gchar *proxy = NULL;
+    GHashTable *environment;
+    gboolean brokering;
+
+    relay = resolve_relay(self);
+
+    /*
+     * Absolute, because the box starts in the workspace: a relative
+     * path that named the relay from here names nothing from there.
+     */
+    if (relay != NULL && !g_path_is_absolute(relay)) {
+        gchar *absolute = g_canonicalize_filename(relay, NULL);
+
+        g_free(relay);
+        relay = absolute;
+    }
+
+    if (relay == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_CONFINEMENT,
+                            "runtime.network: gated and none need "
+                            "clawtilla-relay, which was not found beside "
+                            "clawtillad, one directory above it, or on "
+                            "PATH; build or install it, or set "
+                            "runtime.network: open. The agent is not "
+                            "given an open network instead");
+        return FALSE;
+    }
+
+    if (self->network == CLAWT_RUNTIME_NETWORK_GATED &&
+        self->gate_socket == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_CONFINEMENT,
+                            "runtime.network: gated, and the daemon has no "
+                            "egress gate for this agent");
+        return FALSE;
+    }
+
+    /*
+     * The plan is made by name first, to learn whether there is
+     * anything to broker at all; a token is minted only when there is,
+     * and only then must the broker be listening.
+     */
+    plan = clawt_egress_broker_plan(self->environment, provider,
+                                    self->network, NULL);
+    brokering = plan->grants->len > 0;
+    g_clear_pointer(&plan, clawt_egress_broker_plan_free);
+
+    if (brokering) {
+        if (self->broker == NULL || agent_id == NULL ||
+            clawt_egress_broker_get_socket_path(self->broker) == NULL) {
+            g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_CONFINEMENT,
+                                "this agent has a provider key to broker, "
+                                "and the daemon's broker is not listening; "
+                                "the key is not handed to the agent "
+                                "instead");
+            return FALSE;
+        }
+
+        token = clawt_egress_broker_mint_token(error);
+
+        if (token == NULL)
+            return FALSE;
+    }
+
+    plan = clawt_egress_broker_plan(self->environment, provider,
+                                    self->network, token);
+    environment = g_hash_table_ref(plan->environment);
+
+    if (brokering) {
+        revoke_broker_token(self);
+        clawt_egress_broker_register(self->broker, agent_id, token,
+                                     plan->grants);
+        self->broker_agent = g_strdup(agent_id);
+    }
+
+    /*
+     * Both spellings of each variable, because CLIs disagree about
+     * which they read; ours replace whatever an agent's env: said, since
+     * the gate is the only route there is.  NO_PROXY keeps the broker,
+     * on loopback, from being sent through the proxy -- which would
+     * refuse it as this machine.
+     */
+    if (self->network == CLAWT_RUNTIME_NETWORK_GATED) {
+        static const gchar *const names[] = {
+            "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", NULL
+        };
+        guint i;
+
+        proxy = g_strdup_printf("http://127.0.0.1:%d",
+                                CLAWT_EGRESS_PROXY_PORT);
+
+        for (i = 0; names[i] != NULL; i++)
+            g_hash_table_insert(environment, g_strdup(names[i]),
+                                g_strdup(proxy));
+    }
+
+    g_hash_table_insert(environment, g_strdup("NO_PROXY"),
+                        g_strdup("127.0.0.1,localhost,::1"));
+    g_hash_table_insert(environment, g_strdup("no_proxy"),
+                        g_strdup("127.0.0.1,localhost,::1"));
+
+    /* The relay, and what it bridges. */
+    grant_file(self->sandbox, relay, FALSE);
+    g_ptr_array_add(relay_argv, g_strdup(relay));
+
+    if (self->network == CLAWT_RUNTIME_NETWORK_GATED) {
+        grant_file(self->sandbox, self->gate_socket, TRUE);
+        g_ptr_array_add(relay_argv, g_strdup("--forward"));
+        g_ptr_array_add(relay_argv, g_strdup_printf(
+            "127.0.0.1:%d=%s", CLAWT_EGRESS_PROXY_PORT, self->gate_socket));
+    }
+
+    if (brokering) {
+        const gchar *broker_socket =
+            clawt_egress_broker_get_socket_path(self->broker);
+
+        grant_file(self->sandbox, broker_socket, TRUE);
+        g_ptr_array_add(relay_argv, g_strdup("--forward"));
+        g_ptr_array_add(relay_argv, g_strdup_printf(
+            "127.0.0.1:%d=%s", CLAWT_EGRESS_BROKER_PORT, broker_socket));
+    }
+
+    g_ptr_array_add(relay_argv, g_strdup("--"));
+
+    *extra = environment;
+    return TRUE;
+}
+
 gboolean
 clawt_process_runtime_prepare(ClawtProcessRuntime  *self,
                               GStrv                *out_argv,
@@ -373,6 +639,8 @@ clawt_process_runtime_prepare(ClawtProcessRuntime  *self,
 {
     g_autofree gchar *binary = NULL;
     g_auto(GStrv) environment = NULL;
+    g_autoptr(GHashTable) network_environment = NULL;
+    g_autoptr(GPtrArray) relay_argv = NULL;
     const gchar *argv[4];
 
     g_return_val_if_fail(CLAWT_IS_PROCESS_RUNTIME(self), FALSE);
@@ -402,10 +670,35 @@ clawt_process_runtime_prepare(ClawtProcessRuntime  *self,
     argv[3] = NULL;
 
     /*
+     * The network comes first, because it decides the environment: under
+     * a gated or closed network the keys the broker holds are replaced
+     * before anything is built from them.  Only inside a sandbox -- the
+     * validator shadows an agent that asks for one without the other,
+     * and this refuses rather than trusting that it did.
+     */
+    if (self->network != CLAWT_RUNTIME_NETWORK_OPEN) {
+        if (self->sandbox == NULL) {
+            g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_CONFINEMENT,
+                                "runtime.network is not open, and only the "
+                                "sandbox (runtime.confine: bwrap) can "
+                                "enforce that; the agent is not given an "
+                                "open network instead");
+            return FALSE;
+        }
+
+        relay_argv = g_ptr_array_new_with_free_func(g_free);
+
+        if (!prepare_network(self, &network_environment, relay_argv, error))
+            return FALSE;
+    }
+
+    /*
      * The shared allowlist plus whatever the agent's own `env:` block
      * names -- never the daemon's environment wholesale.
      */
-    environment = clawt_build_child_environment(self->environment);
+    environment = clawt_build_child_environment(
+        network_environment != NULL ? network_environment
+                                    : self->environment);
 
     if (self->sandbox == NULL) {
         *out_argv = g_strdupv((gchar **)argv);
@@ -456,7 +749,23 @@ clawt_process_runtime_prepare(ClawtProcessRuntime  *self,
         if (!clawt_sandbox_check_links(self->sandbox, error))
             return FALSE;
 
-        wrapped = clawt_sandbox_wrap_argv(self->sandbox, argv);
+        /*
+         * Under a gated or closed network the box runs the relay, which
+         * runs libreclaw: the relay owns the loopback ports the proxy
+         * variables and the broker's base URL name.
+         */
+        if (relay_argv != NULL) {
+            guint i;
+
+            for (i = 0; argv[i] != NULL; i++)
+                g_ptr_array_add(relay_argv, g_strdup(argv[i]));
+
+            g_ptr_array_add(relay_argv, NULL);
+            wrapped = clawt_sandbox_wrap_argv(
+                self->sandbox, (const gchar * const *)relay_argv->pdata);
+        } else {
+            wrapped = clawt_sandbox_wrap_argv(self->sandbox, argv);
+        }
 
         /*
          * The resolved bubblewrap, not the bare name: the launcher's
@@ -515,6 +824,7 @@ process_runtime_start(ClawtAgentRuntime *runtime, GError **error)
     self->process = g_subprocess_launcher_spawnv(
         launcher, (const gchar * const *)argv, error);
     if (self->process == NULL) {
+        revoke_broker_token(self);
         g_prefix_error(error, "starting %s: ", argv[0]);
         return FALSE;
     }
@@ -710,7 +1020,14 @@ is_bwrap(GPid pid)
     if (!g_file_get_contents(path, &comm, NULL, NULL))
         return FALSE;
 
-    return g_strcmp0(g_strstrip(comm), "bwrap") == 0;
+    /*
+     * clawtilla-relay too: under a gated network it is the process
+     * between bwrap and libreclaw, and a stop aimed at it would end the
+     * agent without libreclaw's clean shutdown.  Its name is exactly the
+     * fifteen characters the kernel keeps.
+     */
+    return g_strcmp0(g_strstrip(comm), "bwrap") == 0 ||
+           g_strcmp0(comm, "clawtilla-relay") == 0;
 }
 
 /*
@@ -907,6 +1224,8 @@ clawt_process_runtime_dispose(GObject *object)
     g_clear_object(&self->log_stream);
     g_clear_pointer(&self->environment, g_hash_table_unref);
     g_clear_object(&self->sandbox);
+    revoke_broker_token(self);
+    g_clear_object(&self->broker);
 
     G_OBJECT_CLASS(clawt_process_runtime_parent_class)->dispose(object);
 }
@@ -918,6 +1237,8 @@ clawt_process_runtime_finalize(GObject *object)
 
     g_clear_pointer(&self->binary, g_free);
     g_clear_pointer(&self->config_path, g_free);
+    g_clear_pointer(&self->gate_socket, g_free);
+    g_clear_pointer(&self->relay, g_free);
     g_clear_pointer(&self->context, g_main_context_unref);
 
     G_OBJECT_CLASS(clawt_process_runtime_parent_class)->finalize(object);

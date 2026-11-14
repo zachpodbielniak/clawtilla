@@ -338,6 +338,22 @@ key_belongs_to_shared(const gchar *key, const gchar *use)
            g_str_has_prefix(key, "computer.") && g_strcmp0(key, "computer.use") != 0;
 }
 
+/*
+ * Whether this agent's network can be chosen: only inside the sandbox,
+ * since outside it the CLI could ignore the gate.  Asked of the agent as
+ * the daemon reports it, so the page and the refusal agree.
+ */
+static gboolean
+network_editable(ClawtWebApp *app, const gchar *agent_id)
+{
+    g_autoptr(JsonNode) shown = clawt_web_find_agent(app, agent_id);
+    JsonObject *agent = clawt_web_member_object(clawt_web_root(shown),
+                                                "agent");
+
+    return g_strcmp0(clawt_web_member(agent, "confine", "none"),
+                     "bwrap") == 0;
+}
+
 static HtmxElement *
 control_for(ClawtWebApp *app, const gchar *agent_id, const ClawtSchemaEntry *entry,
             const gchar *key, const gchar *value)
@@ -396,6 +412,43 @@ control_for(ClawtWebApp *app, const gchar *agent_id, const ClawtSchemaEntry *ent
             return HTMX_ELEMENT(clawt_web_select_field(
                 clawt_agent_confine_label(), field_name,
                 (const gchar *const *)choices, NULL, value));
+    }
+
+    /*
+     * Where the agent may connect, with the library's names for the
+     * choices ("Through clawtilla's gate") over the enum's own values.
+     * Disabled while the sandbox is off -- a disabled select is not
+     * posted, so saving cannot write a network the daemon would refuse
+     * -- and the reason follows it in the card.
+     */
+    if (g_strcmp0(key, "runtime.network") == 0) {
+        g_auto(GStrv) choices = enum_choices(entry);
+        g_autoptr(GPtrArray) labels = g_ptr_array_new();
+        HtmxDiv *field;
+        GList *l;
+        guint i;
+
+        if (choices != NULL) {
+            for (i = 0; choices[i] != NULL; i++)
+                g_ptr_array_add(labels, (gpointer)
+                                clawt_egress_network_choice_label(choices[i]));
+
+            g_ptr_array_add(labels, NULL);
+            field = clawt_web_select_field(
+                clawt_egress_network_label(), field_name,
+                (const gchar *const *)choices,
+                (const gchar *const *)labels->pdata, value);
+
+            if (!network_editable(app, agent_id)) {
+                for (l = htmx_node_get_children(HTMX_NODE(field)); l != NULL;
+                     l = l->next)
+                    if (G_TYPE_CHECK_INSTANCE_TYPE(l->data, HTMX_TYPE_SELECT))
+                        htmx_element_set_attribute(HTMX_ELEMENT(l->data),
+                                                   "disabled", "disabled");
+            }
+
+            return HTMX_ELEMENT(field);
+        }
     }
 
     switch (entry->type) {
@@ -566,6 +619,70 @@ add_summary_card(HtmxElement *parent, JsonObject *agent,
             "What the agent is told about its computer:", "small muted"));
         htmx_node_add_child(HTMX_NODE(details), HTMX_NODE(pre));
         htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(details));
+    }
+
+    htmx_node_add_child(HTMX_NODE(parent), HTMX_NODE(card));
+}
+
+/*
+ * Where the agent may connect, what the gate refused it today and why,
+ * and which of its keys the broker holds.  The summary is the library's
+ * line, so the three clients say "egress: gated (3 refused today)" the
+ * same way; each refusal names the address as well as the host, which is
+ * what makes a rebinding name legible.
+ */
+static void
+add_egress_card(HtmxElement *parent, JsonObject *egress)
+{
+    g_autofree gchar *summary = NULL;
+    g_autoptr(HtmxDiv) card = NULL;
+    HtmxElement *body;
+    JsonArray *refusals;
+    JsonArray *keys;
+    guint i;
+
+    if (egress == NULL)
+        return;
+
+    summary = clawt_egress_status_line(
+        clawt_web_member(egress, "network", "open"),
+        (guint)clawt_web_member_int(egress, "refused_today", 0));
+    card = clawt_web_card(clawt_egress_network_label(), summary);
+    body = clawt_web_card_body(card);
+
+    refusals = clawt_web_member_array(egress, "refusals");
+
+    for (i = 0; refusals != NULL && i < json_array_get_length(refusals);
+         i++) {
+        JsonObject *refusal = json_array_get_object_element(refusals, i);
+        g_autofree gchar *line = NULL;
+
+        if (refusal == NULL)
+            continue;
+
+        line = clawt_egress_refusal_line(
+            clawt_web_member(refusal, "host", NULL),
+            (guint)clawt_web_member_int(refusal, "port", 0),
+            clawt_web_member(refusal, "address", NULL),
+            clawt_web_member(refusal, "reason", NULL));
+        clawt_web_add(body, clawt_web_text(line, "small mono"));
+    }
+
+    keys = clawt_web_member_array(egress, "keys");
+
+    for (i = 0; keys != NULL && i < json_array_get_length(keys); i++) {
+        JsonObject *key = json_array_get_object_element(keys, i);
+        gboolean brokered;
+
+        if (key == NULL)
+            continue;
+
+        brokered = clawt_web_member_bool(key, "brokered", FALSE);
+        clawt_web_add(body, clawt_web_row(
+            clawt_web_member(key, "name", "?"),
+            brokered ? "brokered: the agent holds a token, the daemon "
+                       "adds the real key"
+                     : clawt_web_member(key, "reason", "not brokered")));
     }
 
     htmx_node_add_child(HTMX_NODE(parent), HTMX_NODE(card));
@@ -746,6 +863,8 @@ clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id)
                      clawt_web_member(root, "computer_detail", NULL),
                      clawt_web_member_object(root, "identity"));
 
+    add_egress_card(HTMX_ELEMENT(pad),
+                    clawt_web_member_object(root, "egress"));
     add_avatar_card(HTMX_ELEMENT(pad), agent, agent_id);
 
     escaped = g_uri_escape_string(agent_id, NULL, FALSE);
@@ -858,6 +977,28 @@ clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id)
                                       clawt_web_notice(notice, "bad"));
                 }
 
+                /*
+                 * The chosen network's one line, or -- with the sandbox
+                 * off -- why it cannot be chosen, in the library's words.
+                 */
+                if (g_strcmp0(key, "runtime.network") == 0) {
+                    const gchar *confine =
+                        clawt_web_member(agent, "confine", "none");
+                    const gchar *network =
+                        clawt_web_member(agent, "network", "open");
+                    const gchar *notice =
+                        clawt_egress_network_notice(network, confine);
+
+                    if (notice != NULL)
+                        clawt_web_add(group_body, clawt_web_notice(
+                            notice, g_strcmp0(network, "open") != 0
+                                    ? "bad" : ""));
+                    else
+                        clawt_web_add(group_body, clawt_web_text(
+                            clawt_egress_network_choice_explanation(network),
+                            "small muted"));
+                }
+
                 if (g_strcmp0(key, "computer.use") == 0 && *use != '\0')
                     clawt_web_add(group_body, clawt_web_notice(
                         "This agent is on a shared computer, so the rest of its "
@@ -953,6 +1094,38 @@ apply_form(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
                 return 0;
             if (settings != NULL)
                 json_object_set_string_member(settings, "model.account", "");
+        }
+    }
+
+    /*
+     * Opening the network goes before the schema walk: runtime.confine
+     * comes first there, and turning the sandbox off while the network
+     * is still gated is refused -- so a save that does both would fail
+     * halfway in schema order.
+     */
+    {
+        const gchar *network = clawt_web_form_value(request, "k:runtime.network");
+        const gchar *current = (settings != NULL)
+            ? clawt_web_member(settings, "runtime.network", "") : "";
+
+        if (g_strcmp0(network, "open") == 0 &&
+            g_strcmp0(current, "open") != 0 && *current != '\0') {
+            g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+            g_autoptr(JsonNode) reply = NULL;
+
+            clawt_web_payload_set(payload, "agent", agent_id);
+            clawt_web_payload_set(payload, "key", "runtime.network");
+            clawt_web_payload_set(payload, "value", "open");
+            reply = clawt_web_app_request(app, "agent.set",
+                                          clawt_web_payload_take(
+                                              g_steal_pointer(&payload)),
+                                          error);
+
+            if (reply == NULL)
+                return 0;
+
+            *out_restart = TRUE;
+            json_object_set_string_member(settings, "runtime.network", "open");
         }
     }
 

@@ -322,6 +322,8 @@ struct _ClawtWindow {
     GtkWidget         *settings_integrations;
     GtkWidget         *settings_teams;
     GtkWidget         *settings_folders;
+    GtkWidget         *settings_egress;       /* egress.allow, a list */
+    GtkWidget         *settings_egress_entry; /* the entry it adds from */
     GtkWidget         *settings_spending;
     GtkWidget         *settings_spending_period;
     gint64             settings_spending_since;
@@ -402,6 +404,8 @@ struct _ClawtWindow {
     GtkWidget         *autostart_row;
     GtkWidget         *confine_row;   /* runtime.confine, as a switch */
     gboolean           confine_shown; /* what it held when drawn */
+    GtkWidget         *network_row;   /* runtime.network, as a combo */
+    guint              network_shown; /* the enum index drawn */
     GtkWidget         *chief_row;
     GtkWidget         *manage_fleet_row;
     GtkWidget         *team_row;

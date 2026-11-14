@@ -493,6 +493,61 @@ test_save_moving_onto_a_shared_machine(void)
                     "computer.use");
 }
 
+/*
+ * Opening the network goes before turning the sandbox off: the daemon
+ * refuses the second while the first is still gated, and schema order
+ * would send them the other way round.
+ */
+static void
+test_save_opens_the_network_before_the_sandbox(void)
+{
+    g_autoptr(JsonNode) settings = parse(
+        "{\"runtime.confine\":\"bwrap\",\"runtime.network\":\"gated\"}");
+    g_autoptr(GPtrArray) form = posted("runtime.confine", "none",
+                                       "runtime.network", "open", NULL);
+    g_autoptr(GPtrArray) plan =
+        clawt_lrg_agent_save_plan(form, json_node_get_object(settings));
+    g_autoptr(JsonNode) closed = parse(
+        "{\"runtime.confine\":\"none\",\"runtime.network\":\"open\"}");
+    g_autoptr(GPtrArray) gate = posted("runtime.confine", "bwrap",
+                                       "runtime.network", "gated", NULL);
+    g_autoptr(GPtrArray) gate_plan =
+        clawt_lrg_agent_save_plan(gate, json_node_get_object(closed));
+
+    g_assert_cmpuint(plan->len, ==, 2);
+    g_assert_cmpstr(((ClawtLrgAgentSetting *)g_ptr_array_index(plan, 0))->key,
+                    ==, "runtime.network");
+    g_assert_cmpstr(((ClawtLrgAgentSetting *)g_ptr_array_index(plan, 1))->key,
+                    ==, "runtime.confine");
+
+    /* Gating it: the sandbox first, in schema order. */
+    g_assert_cmpuint(gate_plan->len, ==, 2);
+    g_assert_cmpstr(
+        ((ClawtLrgAgentSetting *)g_ptr_array_index(gate_plan, 0))->key, ==,
+        "runtime.confine");
+}
+
+/* The network's choices wear the library's names, walked from the enum. */
+static void
+test_network_choices_are_named(void)
+{
+    ClawtLrgAgentChoices *choices = clawt_lrg_agent_enum_choices(
+        CLAWT_TYPE_RUNTIME_NETWORK, "gated");
+    guint i;
+    gboolean found = FALSE;
+
+    for (i = 0; i < choices->ids->len; i++) {
+        if (g_strcmp0(g_ptr_array_index(choices->ids, i), "gated") == 0) {
+            g_assert_cmpstr(g_ptr_array_index(choices->labels, i), ==,
+                            clawt_egress_network_choice_label("gated"));
+            found = TRUE;
+        }
+    }
+
+    g_assert_true(found);
+    clawt_lrg_agent_choices_free(choices);
+}
+
 static void
 test_saved_text(void)
 {
@@ -978,6 +1033,10 @@ main(gint argc, gchar **argv)
                     test_save_does_not_clear_an_unset_account);
     g_test_add_func("/lrg-agent/save/shared",
                     test_save_moving_onto_a_shared_machine);
+    g_test_add_func("/lrg-agent/save/network-first",
+                    test_save_opens_the_network_before_the_sandbox);
+    g_test_add_func("/lrg-agent/choices/network",
+                    test_network_choices_are_named);
     g_test_add_func("/lrg-agent/save/text", test_saved_text);
     g_test_add_func("/lrg-agent/glance/tone",
                     test_state_tone_covers_every_state);

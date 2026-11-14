@@ -287,6 +287,125 @@ clawt_gtk_append_warning_rows(GtkListBox *list, JsonNode *reply)
     }
 }
 
+/* ── Private addresses gated agents may reach (egress.allow) ─────── */
+
+static void refresh_egress_allowlist(ClawtWindow *self);
+
+static void
+on_egress_allow_add(GtkWidget *widget, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *entry;
+    g_autoptr(JsonNode) reply = NULL;
+
+    (void)widget;
+
+    entry = gtk_editable_get_text(GTK_EDITABLE(self->settings_egress_entry));
+
+    if (entry == NULL || *entry == '\0')
+        return;
+
+    /*
+     * Checked by the daemon where it arrives; a refusal (a metadata
+     * address, a typo) comes back as the toast clawt_window_request()
+     * shows, and the entry keeps what was typed so it can be fixed.
+     */
+    reply = clawt_window_request(self, "egress.allow.add",
+                                 clawt_build_payload("entry", entry, NULL));
+
+    if (reply == NULL)
+        return;
+
+    gtk_editable_set_text(GTK_EDITABLE(self->settings_egress_entry), "");
+    refresh_egress_allowlist(self);
+}
+
+static void
+on_egress_allow_remove(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *entry = g_object_get_data(G_OBJECT(button), "clawt-entry");
+    g_autoptr(JsonNode) reply = NULL;
+
+    reply = clawt_window_request(self, "egress.allow.remove",
+                                 clawt_build_payload("entry", entry, NULL));
+
+    if (reply != NULL)
+        refresh_egress_allowlist(self);
+}
+
+static void
+refresh_egress_allowlist(ClawtWindow *self)
+{
+    g_autoptr(JsonNode) reply = NULL;
+    JsonObject *payload;
+    JsonArray *entries;
+    guint i;
+
+    if (self->settings_egress == NULL)
+        return;
+
+    clawt_gtk_clear_list(GTK_LIST_BOX(self->settings_egress));
+
+    reply = clawt_window_request(self, "egress.allow.list", NULL);
+
+    if (reply == NULL)
+        return;
+
+    payload = clawt_payload_of(reply);
+    entries = json_object_has_member(payload, "entries")
+              ? json_object_get_array_member(payload, "entries") : NULL;
+
+    if (entries == NULL || json_array_get_length(entries) == 0) {
+        GtkWidget *row = adw_action_row_new();
+
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                      "Public internet only");
+        adw_action_row_set_subtitle(
+            ADW_ACTION_ROW(row),
+            "Gated agents reach no private address: not this machine, "
+            "your LAN or your tailnet.");
+        gtk_list_box_append(GTK_LIST_BOX(self->settings_egress), row);
+    }
+
+    for (i = 0; entries != NULL && i < json_array_get_length(entries); i++) {
+        const gchar *entry = json_array_get_string_element(entries, i);
+        GtkWidget *row = adw_action_row_new();
+        GtkWidget *remove_button;
+
+        adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row), FALSE);
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), entry);
+
+        remove_button = gtk_button_new_from_icon_name("user-trash-symbolic");
+        gtk_widget_add_css_class(remove_button, "flat");
+        gtk_widget_set_valign(remove_button, GTK_ALIGN_CENTER);
+        gtk_widget_set_tooltip_text(remove_button, "Stop allowing this");
+        g_object_set_data_full(G_OBJECT(remove_button), "clawt-entry",
+                               g_strdup(entry), g_free);
+        g_signal_connect(remove_button, "clicked",
+                         G_CALLBACK(on_egress_allow_remove), self);
+        adw_action_row_add_suffix(ADW_ACTION_ROW(row), remove_button);
+
+        gtk_list_box_append(GTK_LIST_BOX(self->settings_egress), row);
+    }
+
+    /* A hand-edited entry that does not parse: the list opens nothing. */
+    if (json_object_has_member(payload, "problem")) {
+        GtkWidget *row = adw_action_row_new();
+
+        adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row), FALSE);
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                      "Worth fixing");
+        adw_action_row_set_subtitle(
+            ADW_ACTION_ROW(row),
+            json_object_get_string_member(payload, "problem"));
+        adw_action_row_add_prefix(
+            ADW_ACTION_ROW(row),
+            gtk_image_new_from_icon_name("dialog-warning-symbolic"));
+        gtk_list_box_append(GTK_LIST_BOX(self->settings_egress), row);
+    }
+}
+
 void
 clawt_gtk_refresh_settings_folders(ClawtWindow *self)
 {
@@ -300,6 +419,9 @@ clawt_gtk_refresh_settings_folders(ClawtWindow *self)
         g_autoptr(JsonNode) reply = NULL;
         JsonArray *mounts;
         guint i;
+
+        /* The allowlist below the folders, under the same guard. */
+        refresh_egress_allowlist(self);
 
         clawt_gtk_clear_list(GTK_LIST_BOX(self->settings_folders));
 
@@ -417,6 +539,50 @@ clawt_gtk_build_shared_folders_page(ClawtWindow *self)
 
     adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
                              ADW_PREFERENCES_GROUP(group));
+
+    /*
+     * Beside the shared folders because it answers the same question
+     * for the network: what every agent may reach beyond its own.  The
+     * label and the sentence are the library's, so the three clients
+     * agree.
+     */
+    {
+        GtkWidget *egress = adw_preferences_group_new();
+        GtkWidget *apply;
+
+        adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(egress),
+                                        clawt_egress_allowlist_label());
+        adw_preferences_group_set_description(
+            ADW_PREFERENCES_GROUP(egress),
+            clawt_egress_allowlist_explanation());
+
+        self->settings_egress_entry = adw_entry_row_new();
+        adw_preferences_row_set_title(
+            ADW_PREFERENCES_ROW(self->settings_egress_entry),
+            "Address, network or host name");
+        adw_entry_row_set_show_apply_button(
+            ADW_ENTRY_ROW(self->settings_egress_entry), TRUE);
+        g_signal_connect(self->settings_egress_entry, "apply",
+                         G_CALLBACK(on_egress_allow_add), self);
+
+        apply = gtk_list_box_new();
+        gtk_list_box_set_selection_mode(GTK_LIST_BOX(apply),
+                                        GTK_SELECTION_NONE);
+        gtk_widget_add_css_class(apply, "boxed-list");
+        gtk_list_box_append(GTK_LIST_BOX(apply), self->settings_egress_entry);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(egress), apply);
+
+        self->settings_egress = gtk_list_box_new();
+        gtk_list_box_set_selection_mode(GTK_LIST_BOX(self->settings_egress),
+                                        GTK_SELECTION_NONE);
+        gtk_widget_add_css_class(self->settings_egress, "boxed-list");
+        gtk_widget_set_margin_top(self->settings_egress, 6);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(egress),
+                                  self->settings_egress);
+
+        adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                                 ADW_PREFERENCES_GROUP(egress));
+    }
 
     return page;
 }
