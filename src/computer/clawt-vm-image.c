@@ -8,6 +8,7 @@
  */
 
 #include "clawtilla.h"
+#include "clawt-http.h"
 #include "computer/clawt-vm-image.h"
 
 #include <libsoup/soup.h>
@@ -525,7 +526,8 @@ static void
 send_request(Download *download)
 {
     g_clear_object(&download->message);
-    download->message = soup_message_new("GET", download->url);
+    download->message = clawt_http_message_new("GET", download->url,
+                                               CLAWT_HTTP_NO_CREDENTIALS);
 
     if (download->message == NULL) {
         finish_download(download, "that is not a URL this can fetch");
@@ -619,8 +621,8 @@ on_listing(GObject *source, GAsyncResult *result, gpointer user_data)
     gsize length = 0;
     const gchar *data;
 
-    body = soup_session_send_and_read_finish(SOUP_SESSION(source), result,
-                                             &error);
+    body = clawt_http_send_and_read_finish(SOUP_SESSION(source), result,
+                                           &error);
 
     if (body == NULL) {
         finish_download(download,
@@ -667,7 +669,8 @@ static void
 resolve_and_send(Download *download)
 {
     g_clear_object(&download->message);
-    download->message = soup_message_new("GET", download->url);
+    download->message = clawt_http_message_new("GET", download->url,
+                                               CLAWT_HTTP_NO_CREDENTIALS);
 
     if (download->message == NULL) {
         finish_download(download, "that is not a URL this can fetch");

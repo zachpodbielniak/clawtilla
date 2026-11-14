@@ -433,7 +433,9 @@ When somebody turns the broker on, clawtilla starts a local AnythingMCP for them
 
 * Audits -- bug classes they hit that may be here
 
-** TODO Credentials sent along on HTTP redirects
+** DONE Credentials sent along on HTTP redirects
+- *Shipped:* (version assigned at merge). Every =SoupMessage= is made by =clawt_http_message_new()=, which makes the caller declare whether it carries a credential; credentialed ones refuse redirects and a 3xx becomes an error naming where it pointed. =tests/test-http-constructors.sh= keeps raw =soup_message_new()= out of =src/=. See =docs/security.org=, "A credential never follows a redirect".
+- *Left upstream:* web research goes through ai-glib's =AiLibresearchSearch=, whose async path has no redirect guard; mcp-glib's HTTP transport, libreclaw's Matrix channel and most podomation modules have none either.
 - *Prior art:* =8571d788d=, =4a1e70e9e=, =0d4e3c5cb=. Requests carrying keys now refuse redirects.
 - *Check:* every =SoupSession= in connectors, OAuth device flow, the Grok bridge and web research that sets =Authorization=. libsoup follows redirects by default (=SOUP_MESSAGE_NO_REDIRECT= is opt-in).
 

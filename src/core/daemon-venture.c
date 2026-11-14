@@ -17,6 +17,7 @@
  */
 
 #include "clawtilla.h"
+#include "clawt-http.h"
 #include "core/clawt-daemon-private.h"
 
 #include "integration/clawt-connector.h"
@@ -139,8 +140,8 @@ on_venture_answered(GObject *source, GAsyncResult *result, gpointer user_data)
     g_autoptr(GBytes) body = NULL;
     g_autoptr(GError) error = NULL;
 
-    body = soup_session_send_and_read_finish(SOUP_SESSION(source), result,
-                                             &error);
+    body = clawt_http_send_and_read_finish(SOUP_SESSION(source), result,
+                                           &error);
 
     if (body == NULL) {
         clawt_venture_bridge_complete(request->bridge, request->url, NULL, 0,
@@ -196,7 +197,8 @@ venture_send(ClawtVentureBridge *bridge, const gchar *method,
     VentureRequest *request;
     GMainContext *context;
 
-    message = soup_message_new(method, url);
+    message = clawt_http_message_new(method, url,
+                                     CLAWT_HTTP_CARRIES_CREDENTIALS);
 
     if (message == NULL) {
         g_autoptr(GError) error = NULL;
@@ -595,8 +597,8 @@ on_replay_page(GObject *source, GAsyncResult *result, gpointer user_data)
     gboolean full = FALSE;
     guint status;
 
-    body = soup_session_send_and_read_finish(SOUP_SESSION(source), result,
-                                             &error);
+    body = clawt_http_send_and_read_finish(SOUP_SESSION(source), result,
+                                           &error);
     status = soup_message_get_status(read->message);
 
     if (replay->stopped) {
@@ -683,7 +685,9 @@ replay_read_page(struct _ClawtVentureReplay *replay, const gchar *trigger_id,
 
     url = clawt_venture_business_events_url(base, organization_id, after,
                                             read->limit);
-    read->message = url != NULL ? soup_message_new("GET", url) : NULL;
+    read->message = url != NULL
+        ? clawt_http_message_new("GET", url, CLAWT_HTTP_CARRIES_CREDENTIALS)
+        : NULL;
 
     if (read->message == NULL) {
         replay_say(replay, trigger_id,

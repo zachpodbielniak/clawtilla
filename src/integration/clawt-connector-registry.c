@@ -23,6 +23,7 @@
  */
 
 #include "clawtilla.h"
+#include "clawt-http.h"
 #include "integration/clawt-connector-registry.h"
 
 #include <libsoup/soup.h>
@@ -831,8 +832,8 @@ on_registry_page(GObject *source, GAsyncResult *result, gpointer user_data)
     gsize length = 0;
     guint i;
 
-    body = soup_session_send_and_read_finish(SOUP_SESSION(source), result,
-                                             &error);
+    body = clawt_http_send_and_read_finish(SOUP_SESSION(source), result,
+                                           &error);
 
     if (body == NULL) {
         registry_refresh_done(self, g_steal_pointer(&error));
@@ -899,7 +900,8 @@ registry_fetch_page(RegistryRefresh *self)
     query_str = g_string_free(query, FALSE);
     url = g_strconcat(self->base_url, "/v0.1/servers", query_str, NULL);
 
-    message = soup_message_new("GET", url);
+    message = clawt_http_message_new("GET", url,
+                                     CLAWT_HTTP_NO_CREDENTIALS);
 
     if (message == NULL) {
         GError *error = NULL;

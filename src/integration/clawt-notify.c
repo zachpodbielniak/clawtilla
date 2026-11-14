@@ -8,6 +8,7 @@
  */
 
 #include "clawtilla.h"
+#include "clawt-http.h"
 #include "integration/clawt-notify.h"
 
 #include <json-glib/json-glib.h>
@@ -420,8 +421,8 @@ on_http_sent(GObject *source, GAsyncResult *result, gpointer user_data)
     SoupMessage *message = g_task_get_task_data(task);
     guint status;
 
-    body = soup_session_send_and_read_finish(SOUP_SESSION(source), result,
-                                             &error);
+    body = clawt_http_send_and_read_finish(SOUP_SESSION(source), result,
+                                           &error);
 
     if (body == NULL) {
         g_task_return_error(task, g_steal_pointer(&error));
@@ -475,7 +476,8 @@ send_ntfy(GTask *task, ClawtIntegrationBinding *binding,
         return;
     }
 
-    message = soup_message_new("POST", url);
+    message = clawt_http_message_new("POST", url,
+                                     CLAWT_HTTP_CARRIES_CREDENTIALS);
 
     if (message == NULL) {
         g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
@@ -569,7 +571,8 @@ send_gotify(GTask *task, ClawtIntegrationBinding *binding,
     json_generator_set_root(generator, root);
     payload = json_generator_to_data(generator, NULL);
 
-    message = soup_message_new("POST", endpoint);
+    message = clawt_http_message_new("POST", endpoint,
+                                     CLAWT_HTTP_CARRIES_CREDENTIALS);
 
     if (message == NULL) {
         g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
@@ -661,7 +664,8 @@ send_matrix(GTask *task, ClawtIntegrationBinding *binding,
     json_generator_set_root(generator, root);
     payload = json_generator_to_data(generator, NULL);
 
-    message = soup_message_new("PUT", url);
+    message = clawt_http_message_new("PUT", url,
+                                     CLAWT_HTTP_CARRIES_CREDENTIALS);
 
     if (message == NULL) {
         g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
