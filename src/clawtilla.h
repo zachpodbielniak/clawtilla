@@ -69,6 +69,7 @@
 #include "decision/clawt-decision.h"
 #include "decision/clawt-decision-store.h"
 #include "chat/clawt-attachment.h"
+#include "chat/clawt-preamble.h"
 #include "chat/clawt-markdown.h"
 #include "chat/clawt-export.h"
 #include "chat/clawt-loop-guard.h"

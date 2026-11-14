@@ -29,6 +29,7 @@
  */
 
 #include "clawtilla.h"
+#include "clawt-http.h"
 #include "core/clawt-daemon-private.h"
 
 #include "integration/clawt-grok.h"
@@ -933,8 +934,8 @@ on_pushed(GObject *source, GAsyncResult *result, gpointer user_data)
     g_autofree gchar *reason = NULL;
     g_autofree gchar *run_uuid = NULL;
 
-    body = soup_session_send_and_read_finish(SOUP_SESSION(source), result,
-                                             &error);
+    body = clawt_http_send_and_read_finish(SOUP_SESSION(source), result,
+                                           &error);
 
     if (!push->grok->stopped && push->grok->store != NULL) {
         gsize length = 0;
@@ -1031,7 +1032,8 @@ push_reply(ClawtDaemon *daemon, ClawtIntegrationBinding *binding,
     push->grok = grok_ref(self);
     push->reply_id = reply_id;
     push->bot = g_strdup(bot);
-    push->message = soup_message_new("POST", url);
+    push->message = clawt_http_message_new("POST", url,
+                                           CLAWT_HTTP_CARRIES_CREDENTIALS);
 
     if (push->message == NULL) {
         grok_unref(push->grok);
@@ -1646,8 +1648,8 @@ on_posted(GObject *source, GAsyncResult *result, gpointer user_data)
     ClawtGrokJobState reading;
     gint64 now = g_get_real_time();
 
-    body = soup_session_send_and_read_finish(SOUP_SESSION(source), result,
-                                             &error);
+    body = clawt_http_send_and_read_finish(SOUP_SESSION(source), result,
+                                           &error);
 
     if (self->stopped) {
         if (send->done != NULL)
@@ -1937,7 +1939,8 @@ clawt_daemon_grok_send(ClawtDaemon          *daemon,
     send->job_id = g_strdup(job_id);
     send->done = done;
     send->done_data = done_data;
-    send->message = soup_message_new("POST", url);
+    send->message = clawt_http_message_new("POST", url,
+                                           CLAWT_HTTP_CARRIES_CREDENTIALS);
 
     if (send->message == NULL) {
         g_autoptr(ClawtGrokJob) settled = clawt_grok_store_settle(

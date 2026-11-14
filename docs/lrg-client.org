@@ -378,7 +378,7 @@ Each page mirrors the GTK file of the same name, feature for feature; what follo
 
 The *Alerts* button in the header opens a drawer on the right of the window: what happened, and what needed you.  Mirrors GTK's alerts panel (=clients/lrg/lrg-alerts.c=, with its rules in =clients/lrg/lrg-alerts-model.c=).
 
-A condition that arrived on its own goes here rather than in a toast, because a toast vanishes after a few seconds and leaves no trace if nobody was looking.  A refused message (~message.refused~: "alice to bob was stopped: max_hops") and a failed cloud-image download are errors, said in a sentence.  Everything else ~clawt_alert_tier_for_event()~ calls a notice or routine is recorded quietly as "kind · subject" ("alice is error" for an agent's state).  The newest 200 are kept, newest first.
+A condition that arrived on its own goes here rather than in a toast, because a toast vanishes after a few seconds and leaves no trace if nobody was looking.  A refused message (~message.refused~: "alice to bob was stopped: max_hops"), a failed cloud-image download and a routine turned off because its computer did not start (~routine.turned_off~, worded by ~clawt_routine_turned_off_alert()~) are errors, said in a sentence.  Everything else ~clawt_alert_tier_for_event()~ calls a notice or routine is recorded quietly as "kind · subject" ("alice is error" for an agent's state).  The newest 200 are kept, newest first.
 
 | Control | What it does |
 |---------+--------------|
@@ -663,7 +663,7 @@ The status line says whether the frame is live or stale (with its age, from the 
 ** Routines
 The Automation section's first page: every routine in ~clawtilla.yaml~, one lifted card each, newest listing only (each ~routine.list~ carries a sequence number and an older reply that lands late is dropped, so a removed routine cannot be drawn back). Opening the page, and any =routine.*= event while it is showing, re-reads the list; ~routine.ran~ arrives when a run starts, so "last run" updates on its own.
 
-Each card shows the description (or the id), the agent and when it next runs. The "when" comes from the model (=clawt_lrg_routine_when()=): "next Mon 25 Aug at 09:00" from =next_run=, "will never run — <reason>" when the daemon reported a =problem= with the schedule, "only when you ask" for an enabled routine with no next run, "off" otherwise. A broken routine also carries a red "broken" badge and a disabled one an "off" badge, because a routine that cannot fire must never look like a deliberately manual one. A read-only or proactive routine is badged as such, and the last run is a badge toned by its state (ok good, failed bad, missed warn) with its age; =last_run= is Unix seconds and is converted before it reaches =clawt_time_ago_label()=. =last_detail=, when present, is printed under the row.
+Each card shows the description (or the id), the agent and when it next runs. The "when" comes from the model (=clawt_lrg_routine_when()=): "next Mon 25 Aug at 09:00" from =next_run=, "will never run — <reason>" when the daemon reported a =problem= with the schedule, "only when you ask" for an enabled routine with no next run, "off" otherwise. A broken routine also carries a red "broken" badge and a disabled one an "off" badge, because a routine that cannot fire must never look like a deliberately manual one. A read-only or proactive routine is badged as such, and the last run is a badge toned by its state (ok good, failed bad, missed warn) with its age; =last_run= is Unix seconds and is converted before it reaches =clawt_time_ago_label()=. =last_detail=, when present, is printed under the row. A routine the daemon turned off because its computer did not start (=turned_off_after= in the listing) carries a red "turned off" badge and, under the row, "turned off after N failed starts: <error>" from ~clawt_routine_turned_off_note()~ beside a *Turn back on* button.
 
 *** Actions
 | Control | Frame | Notes |
@@ -671,6 +671,7 @@ Each card shows the description (or the id), the agent and when it next runs. Th
 | New routine (toolbar) | ~routine.add~ | opens the editor empty |
 | Edit… (card) | ~routine.update~ | opens the editor on that routine |
 | Run now (card and editor) | ~routine.run~ | runs it whether or not it is enabled; toasts "Started. It is in Tasks." |
+| Turn back on (card, on a routine turned off for failed starts) | ~routine.update~ | sends =enabled: true=, which clears the count and the note; toasts "Turned back on." |
 | Remove (editor) | ~routine.remove~ | asks first, then closes the editor |
 | listing | ~routine.list~ | on show and on =routine.*= |
 
@@ -682,6 +683,8 @@ The schedule choices are walked from =ClawtSchedule=, never spelled out, and the
 Under the schedule sits a preview of the next three runs ("Next: Mon 4 Aug 09:00, then Tue 5 Aug 09:00 and Wed 6 Aug 09:00. (0 9 * * 1-5)"), worked out with the same =clawt_cron_from_preset()= and =clawt_cron_next()= the daemon schedules with, and painted in the bad tone when the schedule would be refused or can never fire (30 February). GTK shows only a static hint here.
 
 Every boolean is read as a JSON boolean, falling back to the schema's own default for that key, and sent as a boolean; =jitter_seconds= is read with the int reader (GTK reads it with the string reader and so always starts it at 0). Save is refused before anything is sent, with the form left open, for a missing name, missing instructions (except on a proactive routine, which the runner gives instructions of its own), no agent, a jitter that is not a whole number, or a schedule the daemon would reject.
+
+*Turn off after failed starts* is a spin box for =max_start_failures= (0 to 1000, default 3), with ~clawt_routine_start_failures_hint()~ under it -- the sentence the GTK and web editors use.
 
 Schema options the editor has no dedicated control for are walked from =routines.*= in the schema and drawn under "More" as a switch, number or text field typed by the schema. Today that is =isolate=, which GTK's hand-written editor never offered.
 

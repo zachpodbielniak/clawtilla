@@ -160,6 +160,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/decision/clawt-decision.h \
 	$(SRCDIR)/decision/clawt-decision-store.h \
 	$(SRCDIR)/chat/clawt-attachment.h \
+	$(SRCDIR)/chat/clawt-preamble.h \
 	$(SRCDIR)/chat/clawt-markdown.h \
 	$(SRCDIR)/chat/clawt-export.h \
 	$(SRCDIR)/chat/clawt-loop-guard.h \
@@ -216,6 +217,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/clawt-enums.c \
 	$(SRCDIR)/clawt-error.c \
 	$(SRCDIR)/clawt-util.c \
+	$(SRCDIR)/clawt-http.c \
 	$(SRCDIR)/clawt-backup.c \
 	$(SRCDIR)/config/clawt-config-schema.c \
 	$(SRCDIR)/config/clawt-appearance.c \
@@ -328,6 +330,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/decision/clawt-decision.c \
 	$(SRCDIR)/decision/clawt-decision-store.c \
 	$(SRCDIR)/chat/clawt-attachment.c \
+	$(SRCDIR)/chat/clawt-preamble.c \
 	$(SRCDIR)/chat/clawt-markdown.c \
 	$(SRCDIR)/chat/clawt-export.c \
 	$(SRCDIR)/chat/clawt-loop-guard.c \

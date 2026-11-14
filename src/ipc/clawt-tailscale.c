@@ -8,6 +8,7 @@
  */
 
 #include "clawtilla.h"
+#include "clawt-http.h"
 #include "ipc/clawt-tailscale.h"
 
 #include <gio/gunixsocketaddress.h>
@@ -193,8 +194,8 @@ on_status_read(GObject *source, GAsyncResult *result, gpointer user_data)
     g_autoptr(GError) error = NULL;
     gchar *name;
 
-    body = soup_session_send_and_read_finish(SOUP_SESSION(source), result,
-                                             &error);
+    body = clawt_http_send_and_read_finish(SOUP_SESSION(source), result,
+                                           &error);
 
     if (body == NULL) {
         g_task_return_error(task, g_steal_pointer(&error));
@@ -273,8 +274,9 @@ clawt_tailscale_dns_name_async(GMainContext        *context,
     session = soup_session_new_with_options("remote-connectable", address,
                                             "timeout",
                                             LOCALAPI_TIMEOUT_SECONDS, NULL);
-    message = soup_message_new("GET",
-                               "http://local-tailscaled.sock/localapi/v0/status");
+    message = clawt_http_message_new(
+        "GET", "http://local-tailscaled.sock/localapi/v0/status",
+        CLAWT_HTTP_NO_CREDENTIALS);
     g_task_set_task_data(task, message, g_object_unref);
 
     /* Held by the task: a session freed mid-request abandons it. */

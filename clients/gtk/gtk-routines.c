@@ -49,6 +49,7 @@ typedef struct {
     GtkWidget   *locked_row;
     GtkWidget   *proactive_row;
     GtkWidget   *jitter_row;
+    GtkWidget   *max_failures_row;
 
     GtkWidget   *schedule_row;
     GtkWidget   *at_row;
@@ -148,6 +149,7 @@ on_routine_saved(GtkButton *button, gpointer user_data)
     guint weekday = adw_combo_row_get_selected(
         ADW_COMBO_ROW(dialog->weekday_row));
     guint agent = adw_combo_row_get_selected(ADW_COMBO_ROW(dialog->agent_row));
+    gint64 max_failures;
 
     (void)button;
 
@@ -172,6 +174,27 @@ on_routine_saved(GtkButton *button, gpointer user_data)
         clawt_window_toast(dialog->window,
                            "There is no agent to run it.");
         return;
+    }
+
+    /*
+     * Refused rather than read as 0: strtoll() makes 0 of anything it
+     * cannot read, and 0 here means "never turn it off" -- a typo would
+     * switch the guard off and say nothing.
+     */
+    {
+        const gchar *text = gtk_editable_get_text(
+            GTK_EDITABLE(dialog->max_failures_row));
+        gchar *end = NULL;
+
+        max_failures = g_ascii_strtoll(text, &end, 10);
+
+        if (*text == '\0' || end == NULL || *end != '\0' ||
+            max_failures < 0) {
+            clawt_window_toast(dialog->window,
+                               "Turn off after failed starts is a whole "
+                               "number, 0 or more.");
+            return;
+        }
     }
 
     json_builder_begin_object(builder);
@@ -234,6 +257,8 @@ on_routine_saved(GtkButton *button, gpointer user_data)
         builder, g_ascii_strtoll(
                      gtk_editable_get_text(GTK_EDITABLE(dialog->jitter_row)),
                      NULL, 10));
+    json_builder_set_member_name(builder, "max_start_failures");
+    json_builder_add_int_value(builder, max_failures);
     json_builder_end_object(builder);
 
     reply = clawt_window_request(dialog->window,
@@ -591,6 +616,26 @@ open_routine_editor(ClawtWindow *self, JsonObject *existing)
         "rate-limited service; `run now` and a catch-up start at once "
         "either way.");
 
+    /*
+     * How many runs in a row may find the computer down before the
+     * routine is turned off.  The explanation is libclawt's, so the
+     * three editors cannot describe the setting three ways.
+     */
+    {
+        g_autofree gchar *limit = (existing != NULL &&
+                                   json_object_has_member(existing,
+                                                          "max_start_failures"))
+            ? g_strdup_printf("%" G_GINT64_FORMAT,
+                              json_object_get_int_member(existing,
+                                                         "max_start_failures"))
+            : g_strdup("3");
+
+        dialog->max_failures_row = clawt_gtk_add_entry(
+            when, "Turn off after failed starts", limit);
+        clawt_gtk_set_row_hint(dialog->max_failures_row,
+                               clawt_routine_start_failures_hint());
+    }
+
     g_signal_connect(dialog->schedule_row, "notify::selected",
                      G_CALLBACK(on_schedule_changed), dialog);
 
@@ -637,6 +682,42 @@ open_routine_editor(ClawtWindow *self, JsonObject *existing)
 
     update_schedule_rows(dialog);
     adw_dialog_present(window, GTK_WIDGET(self));
+}
+
+/*
+ * Turns a routine back on in one click -- the one a failing computer
+ * turned off.  `enabled: true` through routine.update, the same edit the
+ * editor's switch makes, which is also what clears the note and the
+ * count: an edit, as far as the daemon is concerned.
+ */
+static void
+on_routine_turn_on(
+	GtkButton *button,
+	gpointer   user_data
+){
+	ClawtWindow *self = user_data;
+	const gchar *id = g_object_get_data(G_OBJECT(button), "routine-id");
+	g_autoptr(JsonBuilder) builder = json_builder_new();
+	g_autoptr(JsonNode) reply = NULL;
+
+	if (id == NULL)
+		return;
+
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "id");
+	json_builder_add_string_value(builder, id);
+	json_builder_set_member_name(builder, "enabled");
+	json_builder_add_boolean_value(builder, TRUE);
+	json_builder_end_object(builder);
+
+	reply = clawt_window_request(self, "routine.update",
+	                             json_builder_get_root(builder));
+
+	if (reply == NULL)
+		return;
+
+	clawt_window_toast(self, "Turned back on.");
+	clawt_gtk_refresh_routines(self);
 }
 
 static void
@@ -723,6 +804,16 @@ clawt_gtk_refresh_routines(ClawtWindow *self)
             } else if (problem != NULL) {
                 when = g_strdup_printf("will never run \342\200\224 %s",
                                        problem);
+            } else if (json_object_has_member(routine, "turned_off_after")) {
+                /*
+                 * Off because its computer would not start, which is a
+                 * different thing from somebody switching it off -- so
+                 * it says why, and the row carries the way back on.
+                 */
+                when = clawt_routine_turned_off_note(
+                    (guint)json_object_get_int_member(routine,
+                                                      "turned_off_after"),
+                    clawt_json_string(routine, "turned_off_error", NULL));
             } else if (json_object_get_boolean_member(routine, "enabled")) {
                 when = g_strdup("only when you ask");
             } else {
@@ -745,6 +836,21 @@ clawt_gtk_refresh_routines(ClawtWindow *self)
                 clawt_json_string(routine, "description",
                                   clawt_json_string(routine, "id", "?")));
             adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
+
+            if (json_object_has_member(routine, "turned_off_after")) {
+                GtkWidget *turn_on = gtk_button_new_with_label(
+                    "Turn back on");
+
+                gtk_widget_set_valign(turn_on, GTK_ALIGN_CENTER);
+                gtk_widget_add_css_class(turn_on, "suggested-action");
+                g_object_set_data_full(
+                    G_OBJECT(turn_on), "routine-id",
+                    g_strdup(clawt_json_string(routine, "id", "")), g_free);
+                g_signal_connect(turn_on, "clicked",
+                                 G_CALLBACK(on_routine_turn_on), self);
+                adw_action_row_add_suffix(ADW_ACTION_ROW(row), turn_on);
+            }
+
             clawt_gtk_row_opens_something(row);
 
             g_object_set_data_full(G_OBJECT(row), "routine",
