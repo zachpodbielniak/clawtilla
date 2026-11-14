@@ -329,7 +329,21 @@ clawt_trigger_build_prompt(ClawtTrigger *self, ClawtTriggerEvent *event)
         g_string_append(out, "`````````\n");
     }
 
-    return g_string_free(out, FALSE);
+	/*
+	 * And no line of it may pass for the daemon.  A trigger's run is
+	 * sent as the operator, whose messages the router delivers as
+	 * written, so the escaping the router gives every other sender's
+	 * text has to happen here: the payload is whoever called the
+	 * webhook, and the instructions carry event fields -- a title, a
+	 * branch name -- that they wrote too.  The fence above stops a
+	 * payload closing it; this stops one from opening a line with
+	 * [clawtilla] inside it and being read as a notice.
+	 */
+	{
+		g_autofree gchar *built = g_string_free(out, FALSE);
+
+		return clawt_preamble_escape(built);
+	}
 }
 
 gchar *

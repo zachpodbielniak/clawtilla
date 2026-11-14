@@ -34,6 +34,7 @@ struct _ClawtMailboxItem {
     gint     depth;
     gint     attempts;
     gboolean invites_reply;
+	gboolean composed;
     gint64   created_at;
     gint64   not_before;
     gint64   expires_at;
@@ -108,6 +109,7 @@ clawt_mailbox_item_copy(ClawtMailboxItem *self)
     copy->depth = self->depth;
     copy->attempts = self->attempts;
     copy->invites_reply = self->invites_reply;
+	copy->composed = self->composed;
     copy->created_at = self->created_at;
     copy->not_before = self->not_before;
     copy->expires_at = self->expires_at;
@@ -241,6 +243,50 @@ clawt_mailbox_item_set_invites_reply(ClawtMailboxItem *self, gboolean invites)
 {
     g_return_if_fail(self != NULL);
     self->invites_reply = invites;
+}
+
+gboolean
+clawt_mailbox_item_get_composed(
+	ClawtMailboxItem *self
+){
+	g_return_val_if_fail(self != NULL, FALSE);
+	return self->composed;
+}
+
+void
+clawt_mailbox_item_set_composed(
+	ClawtMailboxItem *self,
+	gboolean          composed
+){
+	g_return_if_fail(self != NULL);
+	self->composed = composed;
+}
+
+gchar *
+clawt_mailbox_item_dup_delivered_body(
+	ClawtMailboxItem *self
+){
+	const gchar *from;
+
+	g_return_val_if_fail(self != NULL, NULL);
+
+	/*
+	 * Two senders are spared, and a flag.  The daemon's own notices are
+	 * its voice.  The operator is who the marker answers to, and the
+	 * clients put CLAWT_ATTACHMENT_MARKER -- itself a [clawtilla] line
+	 * -- into what the operator sends.  A body the daemon composed
+	 * under somebody else's name (an assignment, a handoff) carries
+	 * genuine lines of its own, and its composer escaped what it quoted.
+	 * Everybody else -- a peer, a Grok bot, a trigger -- is escaped
+	 * whole.
+	 */
+	from = self->from;
+
+	if (g_strcmp0(from, CLAWT_SYSTEM_SENDER) == 0 ||
+		g_strcmp0(from, "user") == 0 || self->composed)
+		return g_strdup(self->body);
+
+	return clawt_preamble_escape(self->body);
 }
 
 gint64
