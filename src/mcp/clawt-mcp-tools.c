@@ -2206,6 +2206,45 @@ policy_summary(const gchar *tool, JsonObject *arguments)
     return g_strdup_printf("%s %s", tool, json);
 }
 
+/*
+ * Whether any turn this agent has running belongs to a task tree that
+ * has used `orchestration.tree_message_budget`.
+ *
+ * Every running turn, not the agent-wide fold: the fold names a task
+ * only when the running turns agree, so an agent working in two trees
+ * would read as working in none and keep tools one of its turns has run
+ * out of.  Any exhausted tree withholds, which is the direction max_hops
+ * errs in -- one delegation lost to an early limit against the fan-out
+ * this exists to stop.  With nothing running, the turn on record.
+ */
+static gboolean
+turn_tree_exhausted(ClawtMcpTools *self, ClawtAgent *agent)
+{
+    const gchar *agent_id = clawt_agent_get_id(agent);
+    g_autoptr(GPtrArray) rooms = NULL;
+    guint i;
+
+    if (clawt_loop_guard_get_tree_budget(self->guard) == 0)
+        return FALSE;
+
+    rooms = clawt_agent_dup_running_rooms(agent);
+
+    for (i = 0; rooms != NULL && i < rooms->len; i++) {
+        g_autofree gchar *root = clawt_loop_guard_resolve_tree(
+            self->guard, agent_id, g_ptr_array_index(rooms, i), NULL);
+
+        if (clawt_loop_guard_tree_exhausted(self->guard, root))
+            return TRUE;
+    }
+
+    {
+        g_autofree gchar *root = clawt_loop_guard_resolve_tree(
+            self->guard, agent_id, NULL, NULL);
+
+        return clawt_loop_guard_tree_exhausted(self->guard, root);
+    }
+}
+
 gboolean
 clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
                              const gchar   *agent_id,
@@ -2527,6 +2566,16 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
             clawt_agent_get_hop_depth(agent) >= (gint)limit)
             return FALSE;
     }
+
+    /*
+     * The tree budget, gated the same way and for the same reason: a
+     * request that would be refused is not offered, so the model never
+     * pays for deciding to make it.  The guard still refuses a call
+     * that arrives anyway (clawt_loop_guard_check_in_room()).
+     */
+    if (tool != NULL && tool->starts_a_hop && self->guard != NULL &&
+        turn_tree_exhausted(self, agent))
+        return FALSE;
 
     config = clawt_agent_get_config(agent);
 

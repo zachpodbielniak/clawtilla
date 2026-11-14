@@ -137,7 +137,7 @@ clawt_decision_store_new(const gchar *path, GError **error)
     }
 
     /*
-     * Since 0.19.0: who a decision was routed to and who answered it.
+     * Since 0.21.0: who a decision was routed to and who answered it.
      * Absent means every stored decision went to the operator alone,
      * which is what each one did.
      */

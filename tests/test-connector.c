@@ -43,11 +43,19 @@ test_the_builtin_catalogue_is_whole(void)
         g_assert_nonnull(builtin[i].name);
         g_assert_nonnull(builtin[i].category);
 
-        /* An OAuth connector with no endpoints cannot start a flow. */
-        if (builtin[i].auth == CLAWT_CONNECTOR_AUTH_DEVICE ||
-            builtin[i].auth == CLAWT_CONNECTOR_AUTH_PKCE) {
-            g_assert_nonnull(builtin[i].auth_url);
-            g_assert_nonnull(builtin[i].token_url);
+        /*
+         * An OAuth connector with no endpoints cannot start a flow --
+         * unless it discovers them, which only a server reached by URL
+         * can, so such an entry must name no stdio server either.
+         */
+        if ((builtin[i].auth == CLAWT_CONNECTOR_AUTH_DEVICE ||
+             builtin[i].auth == CLAWT_CONNECTOR_AUTH_PKCE) &&
+            (builtin[i].auth_url == NULL || builtin[i].token_url == NULL)) {
+            g_assert_cmpstr(builtin[i].id, ==,
+                            CLAWT_CONNECTOR_PROVIDER_REMOTE);
+            g_assert_null(builtin[i].server_command);
+            g_assert_cmpint(builtin[i].placement, ==,
+                            CLAWT_CREDENTIAL_PLACEMENT_HEADER);
         }
 
         /* And one with no name for its credential cannot pass it on. */

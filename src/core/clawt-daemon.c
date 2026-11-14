@@ -1873,8 +1873,15 @@ on_task_changed(ClawtTaskManager *manager,
      * by waiting -- and a settle is one-shot, so this cannot repeat:
      * every terminal setter refuses a task that is already finished.
      */
-    if (task != NULL && clawt_task_is_finished(task))
+    /*
+     * The tree renews first: see clawt_daemon_tree_settled() for why the
+     * order is what keeps a delegator's owed follow-up from being
+     * refused.
+     */
+    if (task != NULL && clawt_task_is_finished(task)) {
+        clawt_daemon_tree_settled(self, task);
         send_settle_notice(self, task, state);
+    }
 
     if (state != CLAWT_TASK_COMPLETED)
         return;
@@ -5096,6 +5103,7 @@ release_components(ClawtDaemon *self)
      * dropped it -- never reaches clawt_daemon_stop().
      */
     clawt_daemon_turn_teardown(self);
+    clawt_daemon_tree_teardown(self);
     clawt_daemon_handoff_teardown(self);
     clawt_daemon_wait_teardown(self);
     clawt_daemon_search_teardown(self);
@@ -5412,6 +5420,7 @@ connector_flow_free(ConnectorFlow *flow)
     g_free(flow->client_secret);
     g_free(flow->verifier);
     g_free(flow->redirect_uri);
+    g_free(flow->resource);
     g_free(flow->message);
     g_free(flow);
 }
@@ -5538,6 +5547,144 @@ clawt_daemon_connector_client_secret(ClawtDaemon *self,
 }
 
 /*
+ * Where a connector's tool server is, when it is reached by URL.
+ *
+ * The same rule clawt_connector_plan_new() applies -- the integration's
+ * own `command` or `url` wins over the catalogue -- so the server the
+ * daemon discovers a sign-in for is the server the relay dials.
+ */
+gchar *
+clawt_daemon_connector_remote_url(ClawtIntegrationBinding  *binding,
+                                  const ClawtConnectorInfo *connector)
+{
+    const gchar *command = clawt_integration_binding_get_string(binding,
+                                                                "command");
+    const gchar *url = clawt_integration_binding_get_string(binding, "url");
+
+    if (command != NULL)
+        return NULL;
+
+    if (url == NULL) {
+        if (connector->server_command != NULL)
+            return NULL;
+
+        url = connector->server_url;
+    }
+
+    if (url == NULL)
+        return NULL;
+
+    return clawt_connector_resolve_url(
+        connector, url,
+        clawt_integration_binding_get_string(binding, "instance"));
+}
+
+gchar *
+clawt_daemon_connector_auth_path(ClawtDaemon *self, const gchar *name)
+{
+    g_autofree gchar *secrets_dir =
+        clawt_config_get_path_value(self->config, "secrets.dir");
+
+    return clawt_mcp_auth_path(secrets_dir, name);
+}
+
+/*
+ * Where a credential is renewed and revoked, and as whom.
+ *
+ * One function, because renewal happens in two places (the timer and
+ * `connector.refresh`) and revocation in a third, and a discovered
+ * connector keeps its endpoints in its auth file rather than in the
+ * catalogue: three readers of the catalogue alone would be three
+ * connectors that sign in perfectly and then never renew.
+ *
+ * Endpoints the catalogue names by hand win, as they do for signing in.
+ * A client id from the configuration wins over a registered one, and
+ * takes its own secret with it -- a configured id with a registered
+ * secret would be somebody else's secret.
+ */
+gboolean
+clawt_daemon_connector_endpoints(ClawtDaemon               *self,
+                                 ClawtIntegrationBinding   *binding,
+                                 const ClawtConnectorInfo  *connector,
+                                 gchar                    **out_token_url,
+                                 gchar                    **out_client_id,
+                                 gchar                    **out_client_secret,
+                                 gchar                    **out_resource,
+                                 gchar                    **out_revoke_url,
+                                 gboolean                  *out_basic)
+{
+    const gchar *instance = clawt_integration_binding_get_string(binding,
+                                                                 "instance");
+    const gchar *client_id = clawt_integration_binding_get_string(binding,
+                                                                  "client_id");
+    g_autoptr(ClawtMcpAuthMetadata) metadata = NULL;
+    g_autoptr(ClawtMcpAuthClient) registered = NULL;
+    g_autofree gchar *path = NULL;
+
+    *out_token_url = NULL;
+    *out_client_id = NULL;
+    *out_client_secret = NULL;
+    *out_resource = NULL;
+    *out_revoke_url = NULL;
+    *out_basic = FALSE;
+
+    if (connector->auth_url != NULL && connector->token_url != NULL) {
+        *out_token_url = clawt_connector_resolve_url(connector,
+                                                     connector->token_url,
+                                                     instance);
+        *out_revoke_url = clawt_connector_resolve_url(connector,
+                                                      connector->revoke_url,
+                                                      instance);
+        *out_client_id = g_strdup(client_id);
+        *out_client_secret = clawt_daemon_connector_client_secret(self,
+                                                                  binding);
+        return *out_token_url != NULL;
+    }
+
+    path = clawt_daemon_connector_auth_path(
+        self, clawt_integration_binding_get_name(binding));
+
+    if (!clawt_mcp_auth_load(path, &metadata, &registered, NULL) ||
+        metadata == NULL) {
+        /* A catalogue with only a token endpoint still renews from it. */
+        *out_token_url = clawt_connector_resolve_url(connector,
+                                                     connector->token_url,
+                                                     instance);
+        *out_revoke_url = clawt_connector_resolve_url(connector,
+                                                      connector->revoke_url,
+                                                      instance);
+        *out_client_id = g_strdup(client_id);
+        *out_client_secret = clawt_daemon_connector_client_secret(self,
+                                                                  binding);
+        return *out_token_url != NULL;
+    }
+
+    *out_token_url = g_strdup(metadata->token_endpoint);
+    *out_revoke_url = g_strdup(metadata->revocation_endpoint);
+    *out_resource = g_strdup(metadata->resource);
+
+    if (client_id != NULL) {
+        *out_client_id = g_strdup(client_id);
+        *out_client_secret = clawt_daemon_connector_client_secret(self,
+                                                                  binding);
+    } else if (registered != NULL) {
+        *out_client_id = g_strdup(registered->client_id);
+        *out_client_secret = g_strdup(registered->client_secret);
+    }
+
+    /*
+     * HTTP Basic only with a secret to send: a public client has none,
+     * and Basic with an empty password is a different client.
+     */
+    *out_basic = *out_client_secret != NULL &&
+                 clawt_mcp_auth_uses_basic(metadata,
+                                           client_id != NULL ? NULL
+                                                             : registered);
+
+    return TRUE;
+}
+
+/*
  * Writes the credential and remembers where it went.
  *
  * The path goes in the config; the value never does.  What is
@@ -5635,6 +5782,9 @@ connector_flow_finish_token(ConnectorFlow *flow, ClawtOauthToken *token)
         connector_flow_settle(flow, FALSE, error->message);
         return;
     }
+
+    /* Signed in: whatever 401 asked for one has had its answer. */
+    g_hash_table_remove(flow->daemon->connector_sign_in_wanted, flow->name);
 
     clawt_event_bus_emit(flow->daemon->bus, "integration.changed", flow->name);
     connector_flow_settle(flow, TRUE, NULL);
@@ -5761,8 +5911,9 @@ clawt_daemon_on_connector_redirected(GObject *source, GAsyncResult *result,
 
     clawt_oauth_exchange_async(flow->token_url, flow->client_id,
                                flow->client_secret, code, flow->redirect_uri,
-                               flow->verifier, NULL, on_connector_exchanged,
-                               flow);
+                               flow->verifier, flow->resource,
+                               flow->basic_auth, NULL,
+                               on_connector_exchanged, flow);
 }
 
 /*
@@ -5943,7 +6094,11 @@ refresh_connector(ClawtDaemon *self, ClawtIntegrationConfig *instance,
     g_autoptr(ClawtOauthToken) token = NULL;
     g_autoptr(ClawtIntegrationBinding) binding = NULL;
     g_autofree gchar *token_url = NULL;
-    const gchar *client_id;
+    g_autofree gchar *client_id = NULL;
+    g_autofree gchar *secret = NULL;
+    g_autofree gchar *resource = NULL;
+    g_autofree gchar *revoke_url = NULL;
+    gboolean basic = FALSE;
     RefreshJob *job;
     gint64 now = g_get_real_time() / G_USEC_PER_SEC;
 
@@ -5963,10 +6118,9 @@ refresh_connector(ClawtDaemon *self, ClawtIntegrationConfig *instance,
     if (binding == NULL)
         return;
 
-    client_id = clawt_integration_binding_get_string(binding, "client_id");
-    token_url = clawt_connector_resolve_url(
-        connector, connector->token_url,
-        clawt_integration_binding_get_string(binding, "instance"));
+    clawt_daemon_connector_endpoints(self, binding, connector, &token_url,
+                                     &client_id, &secret, &resource,
+                                     &revoke_url, &basic);
 
     if (token_url == NULL || client_id == NULL)
         return;
@@ -5975,14 +6129,9 @@ refresh_connector(ClawtDaemon *self, ClawtIntegrationConfig *instance,
     job->daemon = self;
     job->name = g_strdup(name);
 
-    {
-        g_autofree gchar *secret =
-            clawt_daemon_connector_client_secret(self, binding);
-
-        clawt_oauth_refresh_async(token_url, client_id, secret,
-                                  token->refresh_token, NULL,
-                                  clawt_daemon_on_connector_refreshed, job);
-    }
+    clawt_oauth_refresh_async(token_url, client_id, secret,
+                              token->refresh_token, resource, basic, NULL,
+                              clawt_daemon_on_connector_refreshed, job);
 }
 
 /*
@@ -6166,6 +6315,12 @@ configure_limits(ClawtDaemon *self)
     clawt_loop_guard_set_task_budget(
         self->guard,
         clawt_config_get_double(self->config, "orchestration.task_budget_usd"));
+
+    clawt_loop_guard_set_tree_budget(
+        self->guard,
+        (guint)MAX(clawt_config_get_int(self->config,
+                                        "orchestration.tree_message_budget"),
+                   0));
 
     clawt_task_manager_set_max_depth(
         self->tasks,
@@ -7134,6 +7289,7 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      * and nothing takes it down again.
      */
     clawt_daemon_turn_setup(self);
+    clawt_daemon_tree_setup(self);
 
     /*
      * After the turn machinery, because the handoff queue drains from
@@ -7303,6 +7459,7 @@ clawt_daemon_stop(ClawtDaemon *self)
      * manager it would look an agent up in.
      */
     clawt_daemon_turn_teardown(self);
+    clawt_daemon_tree_teardown(self);
     clawt_daemon_handoff_teardown(self);
     clawt_daemon_wait_teardown(self);
     clawt_daemon_search_teardown(self);
@@ -9892,6 +10049,7 @@ clawt_daemon_finalize(GObject *object)
     g_clear_object(&self->skills);
     g_clear_pointer(&self->model_cache, g_hash_table_unref);
     g_clear_pointer(&self->connector_flows, g_hash_table_unref);
+    g_clear_pointer(&self->connector_sign_in_wanted, g_hash_table_unref);
     g_clear_pointer(&self->connector_catalog, g_ptr_array_unref);
     g_clear_pointer(&self->bind_specs, g_ptr_array_unref);
     g_free(self->config_path);
@@ -9938,5 +10096,7 @@ clawt_daemon_init(ClawtDaemon *self)
     self->connector_flows =
         g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                               (GDestroyNotify)connector_flow_free);
+    self->connector_sign_in_wanted =
+        g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
     self->running = FALSE;
 }

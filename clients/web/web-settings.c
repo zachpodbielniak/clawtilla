@@ -953,9 +953,14 @@ connectors_content(ClawtWebApp *app)
          * "not authorised" for every connector including a working one,
          * and the granted scopes never appeared.
          */
-        g_autoptr(HtmxDiv) card = clawt_web_card(
-            name, clawt_web_member(connector, "provider", NULL));
+        g_autofree gchar *subtitle = clawt_connector_row_subtitle(
+            clawt_web_member(connector, "provider", NULL),
+            clawt_web_member(connector, "account", NULL));
+        g_autoptr(HtmxDiv) card = clawt_web_card(name, subtitle);
         HtmxElement *body = clawt_web_card_body(card);
+        gboolean sign_in = clawt_web_member_bool(connector, "sign_in", FALSE);
+        g_autofree gchar *sign_in_label = clawt_connector_sign_in_label(
+            clawt_web_member(connector, "auth_server", NULL));
         g_autoptr(HtmxDiv) row = htmx_div_new();
         gint64 expires = clawt_web_member_int(connector, "expires_at", 0);
         const gchar *status = clawt_connector_state_label(
@@ -971,6 +976,20 @@ connectors_content(ClawtWebApp *app)
             "/settings/connectors/%s/remove", escaped);
 
         clawt_web_add(body, clawt_web_row("Status", status));
+
+        /*
+         * A server that refused the agent's last call says so here, and
+         * a sign-in discovery found says where it happens -- the button
+         * below is the fix for both.
+         */
+        if (clawt_web_member_bool(connector, "needs_sign_in", FALSE))
+            clawt_web_add(body, clawt_web_row(
+                "Server", "refused the agent's last call (401); sign in "
+                          "again"));
+
+        if (clawt_web_member(connector, "auth_server", NULL) != NULL)
+            clawt_web_add(body, clawt_web_row(
+                "Signs in at", clawt_web_member(connector, "auth_server", "")));
 
         if (expires > 0) {
             g_autoptr(GDateTime) when =
@@ -1013,7 +1032,8 @@ connectors_content(ClawtWebApp *app)
 
             htmx_element_add_class(HTMX_ELEMENT(link), "btn");
             htmx_element_add_class(HTMX_ELEMENT(link), "btn-primary");
-            htmx_node_set_text_content(HTMX_NODE(link), "Authorize");
+            htmx_node_set_text_content(HTMX_NODE(link),
+                                       sign_in ? sign_in_label : "Authorize");
             htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(link));
         }
 
@@ -1097,11 +1117,22 @@ connectors_content(ClawtWebApp *app)
         g_ptr_array_add(ids, NULL);
         g_ptr_array_add(labels, NULL);
 
-        clawt_web_add(form, clawt_web_field("Name", "name", NULL,
-                                            "my-slack"));
         clawt_web_add(form, clawt_web_select_field(
             "Service", "type", (const gchar *const *)ids->pdata,
             (const gchar *const *)labels->pdata, NULL));
+        clawt_web_add(form, clawt_web_field(
+            "Server URL", "url", NULL,
+            "any remote MCP server -- it says where to sign in"));
+        clawt_web_add(form, clawt_web_field("Name", "name", NULL,
+                                            "from the URL if empty"));
+
+        /*
+         * Said on the field, not only in the refusal: the label is what
+         * the agent's tools are named for once there are two accounts.
+         */
+        clawt_web_add(form, clawt_web_field(
+            "Account label", "account", NULL,
+            "work, personal -- required for a second account"));
         clawt_web_add(form, clawt_web_field(
             "Client id", "client_id", NULL,
             "from the service's own developer settings"));
@@ -2683,7 +2714,165 @@ orchestration_content(ClawtWebApp *app)
 
     clawt_web_add(box, g_steal_pointer(&card));
 
+    /*
+     * The tree budget: one number, said in what it does to a fleet, with
+     * the two exemptions that make it safe -- answers, and a delegator's
+     * owed follow-up.
+     */
+    {
+        g_autoptr(HtmxDiv) tree = clawt_web_card(
+            "Message budget per task tree", NULL);
+        HtmxElement *tree_body = clawt_web_card_body(tree);
+        g_autoptr(HtmxForm) form = clawt_web_form("/settings/orchestration");
+        g_autoptr(HtmxButton) button = clawt_web_button("Save", "primary");
+        g_autofree gchar *budget = g_strdup_printf("%" G_GINT64_FORMAT,
+            clawt_web_member_int(clawt_web_root(reply),
+                                 "tree_message_budget", 0));
+
+        clawt_web_add(tree_body, clawt_web_row(
+            "What it does",
+            "A task tree is a delegated task and everything handed on from "
+            "it. The hop limit stops a chain going too deep; this stops one "
+            "going too wide. It counts the messages agents in one tree send "
+            "each other -- one per call, however many teammates it reaches "
+            "-- and starts again whenever any task in the tree finishes. At "
+            "the limit those agents can still answer and finish their own "
+            "work, but are not offered the tools to message each other, and "
+            "you get one alert naming the tree. Answers are never counted. "
+            "0 turns it off."));
+        clawt_web_add(form, clawt_web_field(
+            "Requests between settlements", "tree_message_budget", budget,
+            "60"));
+        htmx_element_set_attribute(HTMX_ELEMENT(button), "type", "submit");
+        clawt_web_add(form, g_steal_pointer(&button));
+        clawt_web_add(tree_body, g_steal_pointer(&form));
+        clawt_web_add(box, g_steal_pointer(&tree));
+    }
+
+    /* Rounds, one form per group room. */
+    {
+        g_autoptr(HtmxDiv) rounds = clawt_web_card("Rounds in group rooms",
+                                                   NULL);
+        HtmxElement *rounds_body = clawt_web_card_body(rounds);
+        JsonArray *rooms = clawt_web_member_array(clawt_web_root(reply),
+                                                  "rooms");
+
+        clawt_web_add(rounds_body, clawt_web_row(
+            "What it does",
+            "A round starts at each message from you, a routine or a "
+            "trigger. Every member that answers starts a thread, and an "
+            "@mention in a reply carries it on. Within one thread a member "
+            "answers once -- naming somebody who already has is kept in the "
+            "room, marked as not delivered, with the reason -- and a thread "
+            "stops after this many replies. The hop count starts again each "
+            "round, so a standup no longer reaches the hop limit by itself. "
+            "0 removes the cap."));
+
+        if (rooms == NULL || json_array_get_length(rooms) == 0)
+            clawt_web_add(rounds_body, clawt_web_empty(
+                "No group rooms yet",
+                "A room with three or more members appears here."));
+
+        for (i = 0; rooms != NULL && i < json_array_get_length(rooms); i++) {
+            JsonObject *room = json_array_get_object_element(rooms, i);
+            const gchar *id = clawt_web_member(room, "id", "");
+            const gchar *name = clawt_web_member(room, "name", id);
+            gint64 round = clawt_web_member_int(room, "round", 0);
+            g_autoptr(HtmxForm) form = clawt_web_form(
+                "/settings/orchestration/room");
+            g_autoptr(HtmxButton) button = clawt_web_button("Save",
+                                                            "primary");
+            g_autofree gchar *chain = g_strdup_printf("%" G_GINT64_FORMAT,
+                clawt_web_member_int(room, "max_chain", 0));
+            g_autofree gchar *label = (round > 0)
+                ? g_strdup_printf("%s \xe2\x80\x94 replies per thread "
+                                  "(round %" G_GINT64_FORMAT " now)",
+                                  name, round)
+                : g_strdup_printf("%s \xe2\x80\x94 replies per thread",
+                                  name);
+
+            clawt_web_add(form, clawt_web_hidden("room", id));
+            clawt_web_add(form, clawt_web_field(label, "max_chain", chain,
+                                                "3"));
+            htmx_element_set_attribute(HTMX_ELEMENT(button), "type",
+                                       "submit");
+            clawt_web_add(form, g_steal_pointer(&button));
+            clawt_web_add(rounds_body, g_steal_pointer(&form));
+        }
+
+        clawt_web_add(box, g_steal_pointer(&rounds));
+    }
+
     return HTMX_ELEMENT(g_steal_pointer(&box));
+}
+
+/*
+ * A whole number from a form field, or -1 when it is not one -- refused
+ * here, naming the field, rather than sent for the daemon to refuse.
+ */
+static gint64
+form_number(HtmxRequest *request, const gchar *name)
+{
+    const gchar *text = clawt_web_form_value(request, name);
+    g_autofree gchar *trimmed = NULL;
+    gint64 value = 0;
+
+    if (text == NULL)
+        return -1;
+
+    trimmed = g_strstrip(g_strdup(text));
+
+    if (*trimmed == '\0' ||
+        !g_ascii_string_to_signed(trimmed, 10, 0, G_MAXINT32, &value, NULL))
+        return -1;
+
+    return value;
+}
+
+static HtmxResponse *
+on_orchestration_room_save(HtmxRequest *request, GHashTable *params,
+                           gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    const gchar *room = clawt_web_form_value(request, "room");
+    gint64 chain = form_number(request, "max_chain");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(HtmxElement) content = NULL;
+    g_autofree gchar *failure = NULL;
+    g_autofree gchar *said = NULL;
+
+    (void)params;
+
+    if (room == NULL || chain < 0 || chain > 100) {
+        content = orchestration_content(app);
+        return settings_response(app, request, "orchestration", content,
+                                 "Replies per thread is a whole number from "
+                                 "0 (no cap) to 100.", TRUE);
+    }
+
+    clawt_web_payload_set(payload, "room", room);
+    clawt_web_payload_set_int(payload, "max_chain", chain);
+    reply = clawt_web_app_call(app, "room.set",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        failure = g_strdup(clawt_web_app_last_error(app));
+
+    content = orchestration_content(app);
+
+    if (failure != NULL)
+        return settings_response(app, request, "orchestration", content,
+                                 failure, TRUE);
+
+    said = (chain == 0)
+        ? g_strdup_printf("Threads in %s are no longer capped; each member "
+                          "still answers once per thread.", room)
+        : g_strdup_printf("A thread in %s now stops after %" G_GINT64_FORMAT
+                          " repl%s.", room, chain, chain == 1 ? "y" : "ies");
+
+    return settings_response(app, request, "orchestration", content, said,
+                             FALSE);
 }
 
 static HtmxResponse *
@@ -2698,6 +2887,43 @@ on_orchestration_save(HtmxRequest *request, GHashTable *params,
     g_autofree gchar *failure = NULL;
 
     (void)params;
+
+    /*
+     * Two forms post here: the model's and the tree budget's.  Each
+     * sends only its own field, and the daemon takes either alone.
+     */
+    if (clawt_web_form_value(request, "tree_message_budget") != NULL) {
+        gint64 budget = form_number(request, "tree_message_budget");
+        g_autofree gchar *said = NULL;
+
+        if (budget < 0 || budget > 10000) {
+            content = orchestration_content(app);
+            return settings_response(app, request, "orchestration", content,
+                                     "The tree budget is a whole number "
+                                     "from 0 (no budget) to 10000.", TRUE);
+        }
+
+        clawt_web_payload_set_int(payload, "tree_message_budget", budget);
+        reply = clawt_web_app_call(app, "orchestration.set",
+            clawt_web_payload_take(g_steal_pointer(&payload)));
+
+        if (reply == NULL)
+            failure = g_strdup(clawt_web_app_last_error(app));
+
+        content = orchestration_content(app);
+
+        if (failure != NULL)
+            return settings_response(app, request, "orchestration", content,
+                                     failure, TRUE);
+
+        said = (budget == 0)
+            ? g_strdup("Task trees have no message budget now.")
+            : g_strdup_printf("Each task tree may send %" G_GINT64_FORMAT
+                              " requests between settlements.", budget);
+
+        return settings_response(app, request, "orchestration", content,
+                                 said, FALSE);
+    }
 
     clawt_web_payload_set(payload, "ack_check_model",
                           value != NULL ? value : "");
@@ -3072,8 +3298,18 @@ on_connector_add(HtmxRequest *request, GHashTable *params, gpointer user_data)
     g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
     g_autoptr(JsonNode) reply = NULL;
     g_autoptr(HtmxElement) content = NULL;
+    const gchar *url = clawt_web_form_value(request, "url");
+    const gchar *typed = clawt_web_form_value(request, "name");
+    gboolean remote = (url != NULL && *url != '\0');
+    g_autofree gchar *name = NULL;
+    g_autofree gchar *done = NULL;
 
     (void)params;
+
+    /* A URL is enough: the name comes from its host, as in every client. */
+    name = (typed != NULL && *typed != '\0')
+        ? g_strdup(typed)
+        : (remote ? clawt_connector_name_for_url(url) : NULL);
 
     /*
      * A connector is an integration whose type is "connector"; the
@@ -3081,20 +3317,53 @@ on_connector_add(HtmxRequest *request, GHashTable *params, gpointer user_data)
      * inventing one here would be a second creation path -- which is
      * exactly how validation got skipped for agents before.
      */
-    clawt_web_payload_set(payload, "name",
-                          clawt_web_form_value(request, "name"));
+    clawt_web_payload_set(payload, "name", name);
     clawt_web_payload_set(payload, "type", "connector");
     clawt_web_payload_set(payload, "provider",
                           clawt_web_form_value(request, "type"));
     clawt_web_payload_set(payload, "scope", "all");
     clawt_web_payload_set(payload, "client_id",
                           clawt_web_form_value(request, "client_id"));
+    if (clawt_web_form_value(request, "account") != NULL &&
+        *clawt_web_form_value(request, "account") != '\0')
+        clawt_web_payload_set(payload, "account",
+                              clawt_web_form_value(request, "account"));
+
+    if (remote)
+        clawt_web_payload_set(payload, "url", url);
 
     reply = clawt_web_app_call(app, "integration.add",
                                clawt_web_payload_take(g_steal_pointer(&payload)));
 
     if (reply == NULL)
         failure = g_strdup(clawt_web_app_last_error(app));
+
+    /*
+     * A server added by URL is asked how to sign in now -- the person has
+     * just asked for it, which is when the network is wanted.  The card
+     * then carries the sign-in and where it happens.
+     */
+    if (failure == NULL && remote) {
+        g_autoptr(ClawtWebPayload) ask = clawt_web_payload_new();
+        g_autoptr(JsonNode) found = NULL;
+
+        clawt_web_payload_set(ask, "name", name);
+        found = clawt_web_app_call(app, "connector.discover",
+                                   clawt_web_payload_take(
+                                       g_steal_pointer(&ask)));
+
+        if (found != NULL &&
+            clawt_web_member_bool(clawt_web_root(found), "sign_in", FALSE)) {
+            g_autofree gchar *where = clawt_connector_sign_in_label(
+                clawt_web_member(clawt_web_root(found), "auth_server",
+                                 NULL));
+
+            done = g_strdup_printf("Added. %s to finish.", where);
+        } else {
+            done = g_strdup("Added. It publishes no sign-in; paste a token "
+                            "for it.");
+        }
+    }
 
     content = connectors_content(app);
 
@@ -3103,7 +3372,8 @@ on_connector_add(HtmxRequest *request, GHashTable *params, gpointer user_data)
                                  failure, TRUE);
 
     return settings_response(app, request, "connectors", content,
-                             "Added. Authorize it to get a credential.",
+                             done != NULL ? done
+                             : "Added. Authorize it to get a credential.",
                              FALSE);
 }
 
@@ -3147,9 +3417,30 @@ on_connector_authorize(HtmxRequest *request, GHashTable *params,
         g_autoptr(HtmxDiv) card = clawt_web_card(
             "Authorize", "Finish this in the service's own window.");
         HtmxElement *body = clawt_web_card_body(card);
-        const gchar *url = clawt_web_member(root, "url", NULL);
+        /*
+         * The members connector.begin sends.  This read `url`, which it
+         * has never sent, so neither flow ever showed the page to open:
+         * a browser flow's link is `authorize_url`, a device flow's page
+         * is `verification_uri` (with the code filled in, when the
+         * provider offers it, as `verification_uri_complete`).
+         */
+        const gchar *url = clawt_web_member(root, "authorize_url", NULL);
         const gchar *code = clawt_web_member(root, "user_code", NULL);
         const gchar *flow = clawt_web_member(root, "flow", NULL);
+        const gchar *server = clawt_web_member(root, "auth_server", NULL);
+
+        if (url == NULL)
+            url = clawt_web_member(root, "verification_uri_complete", NULL);
+
+        if (url == NULL)
+            url = clawt_web_member(root, "verification_uri", NULL);
+
+        /* Where, before the link: what the address bar is checked against. */
+        if (server != NULL) {
+            g_autofree gchar *where = clawt_connector_sign_in_label(server);
+
+            clawt_web_add(body, clawt_web_row(where, server));
+        }
 
         if (code != NULL)
             clawt_web_add(body, clawt_web_row("Code", code));
@@ -3522,6 +3813,8 @@ clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_post(router, "/settings/fleet/pause", on_fleet_hold, app);
     htmx_router_post(router, "/settings/orchestration", on_orchestration_save,
                      app);
+    htmx_router_post(router, "/settings/orchestration/room",
+                     on_orchestration_room_save, app);
     htmx_router_post(router, "/settings/fleet/resume", on_fleet_hold, app);
 
     htmx_router_post(router, "/settings/images/download", on_image_download,

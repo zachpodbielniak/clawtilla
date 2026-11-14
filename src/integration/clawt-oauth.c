@@ -82,6 +82,28 @@ form_encode(const gchar *first_key, ...)
     return g_string_free(out, FALSE);
 }
 
+gchar *
+clawt_oauth_basic_credentials(const gchar *client_id,
+                              const gchar *client_secret)
+{
+    g_autofree gchar *id = NULL;
+    g_autofree gchar *secret = NULL;
+    g_autofree gchar *joined = NULL;
+    g_autofree gchar *encoded = NULL;
+
+    g_return_val_if_fail(client_id != NULL, NULL);
+
+    id = g_uri_escape_string(client_id, NULL, FALSE);
+    secret = g_uri_escape_string(client_secret != NULL ? client_secret : "",
+                                 NULL, FALSE);
+    joined = g_strconcat(id, ":", secret, NULL);
+    encoded = g_base64_encode((const guchar *)joined, strlen(joined));
+
+    memset(joined, 0, strlen(joined));
+
+    return g_strconcat("Basic ", encoded, NULL);
+}
+
 static SoupMessage *
 form_post(const gchar *url, gchar *body)
 {
@@ -975,7 +997,8 @@ clawt_oauth_authorize_url(const gchar *auth_url,
                           const gchar *redirect_uri,
                           const gchar *scopes,
                           const gchar *state,
-                          const gchar *challenge)
+                          const gchar *challenge,
+                          const gchar *resource)
 {
     g_autofree gchar *query = NULL;
 
@@ -991,6 +1014,7 @@ clawt_oauth_authorize_url(const gchar *auth_url,
                         "code_challenge", challenge,
                         "code_challenge_method",
                         challenge != NULL ? "S256" : NULL,
+                        "resource", resource,
                         NULL);
 
     /*
@@ -1323,6 +1347,42 @@ clawt_oauth_await_redirect_finish(GAsyncResult *result, GError **error)
 
 /* ── Code exchange and renewal ───────────────────────────────────── */
 
+gchar *
+clawt_oauth_exchange_body(const gchar *client_id,
+                          const gchar *client_secret,
+                          const gchar *code,
+                          const gchar *redirect_uri,
+                          const gchar *verifier,
+                          const gchar *resource)
+{
+    g_return_val_if_fail(code != NULL, NULL);
+
+    return form_encode("grant_type", "authorization_code",
+                       "client_id", client_id,
+                       "client_secret", client_secret,
+                       "code", code,
+                       "redirect_uri", redirect_uri,
+                       "code_verifier", verifier,
+                       "resource", resource,
+                       NULL);
+}
+
+gchar *
+clawt_oauth_refresh_body(const gchar *client_id,
+                         const gchar *client_secret,
+                         const gchar *refresh_token,
+                         const gchar *resource)
+{
+    g_return_val_if_fail(refresh_token != NULL, NULL);
+
+    return form_encode("grant_type", "refresh_token",
+                       "client_id", client_id,
+                       "client_secret", client_secret,
+                       "refresh_token", refresh_token,
+                       "resource", resource,
+                       NULL);
+}
+
 static void
 on_token_response(GObject *source, GAsyncResult *result, gpointer user_data)
 {
@@ -1364,6 +1424,8 @@ clawt_oauth_exchange_async(const gchar         *token_url,
                            const gchar         *code,
                            const gchar         *redirect_uri,
                            const gchar         *verifier,
+                           const gchar         *resource,
+                           gboolean             basic_auth,
                            GCancellable        *cancellable,
                            GAsyncReadyCallback  callback,
                            gpointer             user_data)
@@ -1374,14 +1436,25 @@ clawt_oauth_exchange_async(const gchar         *token_url,
     g_return_if_fail(token_url != NULL);
     g_return_if_fail(code != NULL);
 
+    /*
+     * With client_secret_basic the secret goes in the header and not the
+     * body: a server that accepts only Basic may refuse a request that
+     * carries it twice.
+     */
     message = form_post(token_url,
-                        form_encode("grant_type", "authorization_code",
-                                    "client_id", client_id,
-                                    "client_secret", client_secret,
-                                    "code", code,
-                                    "redirect_uri", redirect_uri,
-                                    "code_verifier", verifier,
-                                    NULL));
+                        clawt_oauth_exchange_body(client_id,
+                                                  basic_auth ? NULL
+                                                             : client_secret,
+                                                  code, redirect_uri,
+                                                  verifier, resource));
+
+    if (message != NULL && basic_auth && client_id != NULL) {
+        g_autofree gchar *header = clawt_oauth_basic_credentials(
+            client_id, client_secret);
+
+        soup_message_headers_replace(soup_message_get_request_headers(message),
+                                     "Authorization", header);
+    }
 
     if (message == NULL) {
         g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
@@ -1409,6 +1482,8 @@ clawt_oauth_refresh_async(const gchar         *token_url,
                           const gchar         *client_id,
                           const gchar         *client_secret,
                           const gchar         *refresh_token,
+                          const gchar         *resource,
+                          gboolean             basic_auth,
                           GCancellable        *cancellable,
                           GAsyncReadyCallback  callback,
                           gpointer             user_data)
@@ -1420,11 +1495,18 @@ clawt_oauth_refresh_async(const gchar         *token_url,
     g_return_if_fail(refresh_token != NULL);
 
     message = form_post(token_url,
-                        form_encode("grant_type", "refresh_token",
-                                    "client_id", client_id,
-                                    "client_secret", client_secret,
-                                    "refresh_token", refresh_token,
-                                    NULL));
+                        clawt_oauth_refresh_body(client_id,
+                                                 basic_auth ? NULL
+                                                            : client_secret,
+                                                 refresh_token, resource));
+
+    if (message != NULL && basic_auth && client_id != NULL) {
+        g_autofree gchar *header = clawt_oauth_basic_credentials(
+            client_id, client_secret);
+
+        soup_message_headers_replace(soup_message_get_request_headers(message),
+                                     "Authorization", header);
+    }
 
     if (message == NULL) {
         g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,

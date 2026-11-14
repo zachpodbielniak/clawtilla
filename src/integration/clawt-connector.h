@@ -41,6 +41,56 @@
 G_BEGIN_DECLS
 
 /**
+ * CLAWT_CONNECTOR_PROVIDER_REMOTE:
+ *
+ * The catalogue entry for any MCP server reached by URL, which finds out
+ * how to sign in from the server itself.  It sorts first in the
+ * catalogue, and a connector added with a `url` and no `provider` is one
+ * of these.
+ */
+#define CLAWT_CONNECTOR_PROVIDER_REMOTE "remote"
+
+/**
+ * clawt_connector_name_for_url:
+ * @url: a remote MCP server's URL
+ *
+ * A name for a connector somebody added by URL alone: the host's most
+ * telling label, so `https://mcp.notion.com/mcp` is `notion`.  Here so
+ * every client proposes the same name for the same URL.
+ *
+ * Returns: (transfer full) (nullable): the name, or %NULL when @url has
+ *   no host
+ */
+gchar *clawt_connector_name_for_url(const gchar *url);
+
+/**
+ * clawt_connector_row_subtitle:
+ * @provider: (nullable): the connector's provider id
+ * @account: (nullable): its account label
+ *
+ * What a connector's row says under its name: the service, and which
+ * account on it.  The label is what tells two accounts on one service
+ * apart, so every client shows it the same way.
+ *
+ * Returns: (transfer full): "github -- work", or "github"
+ */
+gchar *clawt_connector_row_subtitle(const gchar *provider,
+                                    const gchar *account);
+
+/**
+ * clawt_connector_sign_in_label:
+ * @auth_server: (nullable): the authorization server discovery found
+ *
+ * The words on a connector's sign-in button.  It names the server's host
+ * because a discovered server is the remote server's claim: the person
+ * is about to type a password into whatever it names, and the label is
+ * what they check the address bar against.
+ *
+ * Returns: (transfer full): "Sign in at auth.example", or "Sign in"
+ */
+gchar *clawt_connector_sign_in_label(const gchar *auth_server);
+
+/**
  * ClawtConnectorInfo: (copy-func clawt_connector_info_copy) (free-func clawt_connector_info_free)
  * @id: the `provider:` value, stable and lowercase
  * @name: what to call it on screen

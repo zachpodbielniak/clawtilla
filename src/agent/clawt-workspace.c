@@ -2026,7 +2026,8 @@ static const gchar TOOL_LIST_END[] =
 static gboolean
 describe_connector_directory(GString                 *out,
                              ClawtIntegrationBinding *binding,
-                             ClawtAgentConfig        *agent)
+                             ClawtAgentConfig        *agent,
+                             GPtrArray               *bindings)
 {
     ClawtConfig *fleet = (agent != NULL)
         ? clawt_agent_config_get_config(agent) : NULL;
@@ -2066,6 +2067,14 @@ describe_connector_directory(GString                 *out,
 
     /* Built only for its names, so they are spelled as the relay spells them. */
     directory = clawt_mcp_directory_new(name, mode, searches, 0, 0);
+
+    /* Named for the account, as the relay names it, when there are several. */
+    {
+        g_autofree gchar *prefix = clawt_connector_account_prefix(
+            bindings, binding, NULL, NULL);
+
+        clawt_mcp_directory_set_account(directory, prefix);
+    }
 
     if (census != NULL)
         g_string_append_printf(out,
@@ -2109,7 +2118,7 @@ describe_connector_directory(GString                 *out,
  */
 static void
 describe_integration(GString *out, ClawtIntegrationBinding *binding,
-                     ClawtAgentConfig *agent)
+                     ClawtAgentConfig *agent, GPtrArray *bindings)
 {
     const ClawtIntegrationInfo *info =
         clawt_integration_binding_get_info(binding);
@@ -2154,6 +2163,37 @@ describe_integration(GString *out, ClawtIntegrationBinding *binding,
         if (account != NULL && *account != '\0')
             g_string_append_printf(out,
                 "The account is ~%s~.\n\n", account);
+
+        /*
+         * Said here because it is the one thing about the tool names an
+         * agent cannot work out from the list: the same tool exists once
+         * per account, and the prefix is the choice of account.  Worked
+         * out by the same function the relay asks, so the file and the
+         * names it describes cannot disagree.
+         */
+        {
+            g_autoptr(GError) conflict = NULL;
+            g_auto(GStrv) siblings = NULL;
+            g_autofree gchar *prefix = clawt_connector_account_prefix(
+                bindings, binding, &siblings, &conflict);
+
+            if (prefix != NULL) {
+                g_autofree gchar *all = g_strjoinv("~, ~", siblings);
+
+                g_string_append_printf(out,
+                    "You hold several accounts on %s (~%s~), so every\n"
+                    "tool here is named for the account it acts as:\n"
+                    "~%s_~ before the tool's own name. Choose the account\n"
+                    "deliberately -- a call without the prefix is refused,\n"
+                    "not run as whichever account seems likely.\n\n",
+                    provider != NULL ? provider : "this service", all,
+                    prefix);
+            } else if (conflict != NULL) {
+                g_string_append_printf(out,
+                    "Every call here is refused until the operator fixes\n"
+                    "the account labels: %s.\n\n", conflict->message);
+            }
+        }
 
         /*
          * Said out loud so it is not discovered by trying.  An agent
@@ -2208,7 +2248,7 @@ describe_integration(GString *out, ClawtIntegrationBinding *binding,
          * four hundred tools here would put back into every prompt the
          * very text the directory exists to keep out of it.
          */
-        if (describe_connector_directory(out, binding, agent))
+        if (describe_connector_directory(out, binding, agent, bindings))
             return;
 
         if (tools != NULL && tools[0] != NULL) {
@@ -2439,7 +2479,8 @@ render_integrations_section(ClawtConfig *config, ClawtAgentConfig *agent)
         "a person on the other end of your reply.\n\n");
 
     for (i = 0; i < bindings->len; i++)
-        describe_integration(out, g_ptr_array_index(bindings, i), agent);
+        describe_integration(out, g_ptr_array_index(bindings, i), agent,
+                             bindings);
 
     g_string_append_printf(out, "%s\n", TOOLS_END);
 

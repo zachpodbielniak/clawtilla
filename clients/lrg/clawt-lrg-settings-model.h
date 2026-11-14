@@ -474,6 +474,9 @@ const gchar *clawt_lrg_settings_connector_tone(ClawtConnectorState state);
  * clawt_lrg_settings_connector_subtitle:
  * @entry: one entry of `connector.list`'s `connectors`
  *
+ * Through clawt_connector_row_subtitle(), with the sign-in the row
+ * offers when discovery found one or the server refused the last call.
+ *
  * Returns: (transfer full): "github -- work"
  */
 gchar *clawt_lrg_settings_connector_subtitle(JsonObject *entry);
@@ -496,6 +499,8 @@ gchar *clawt_lrg_settings_catalog_label(JsonObject *entry);
  * @account: (nullable): "work", "personal"
  * @client_id: (nullable): an OAuth application
  * @instance: (nullable): a self-hosted base
+ * @url: (nullable): a remote MCP server; with no @name, the name comes
+ *   from its host
  * @agents: (nullable): comma separated
  * @error: (out) (optional): why it is refused
  *
@@ -507,6 +512,7 @@ JsonNode *clawt_lrg_settings_connector_payload(const gchar  *name,
                                                const gchar  *account,
                                                const gchar  *client_id,
                                                const gchar  *instance,
+                                               const gchar  *url,
                                                const gchar  *agents,
                                                GError      **error);
 

@@ -252,6 +252,19 @@ declare -A AFFORDANCES=(
     ["decision routed to"]="clawt_decision_routed_label|clawt_decision_routed_label|clawt_decision_routed_label"
     ["ack-check model choices"]="clawt_ack_check_model_nth_value|clawt_ack_check_model_nth_value|clawt_ack_check_model_nth_value"
     #
+    # Rounds in a group room and the budget per task tree: a divider
+    # where each round starts and the note under a withheld mention,
+    # both worded by libclawt; the two settings on the Orchestration
+    # page (the budget through orchestration.set, each room's cap
+    # through room.set, neither a frame of its own); and the alert that
+    # names an exhausted tree.
+    #
+    ["round dividers"]="clawt_round_label|clawt_round_label|clawt_round_label"
+    ["withheld mentions say why"]="clawt_round_skip_note|clawt_round_skip_note|clawt_round_skip_note"
+    ["tree budget setting"]="\"tree_message_budget\"|\"tree_message_budget\"|\"tree_message_budget\""
+    ["thread cap per room"]="\"max_chain\"|\"max_chain\"|\"max_chain\""
+    ["tree budget alert names the tree"]="clawt_loop_guard_tree_alert_text|clawt_loop_guard_tree_alert_text|clawt_loop_guard_tree_alert_text"
+    #
     # The Grok page: the bots and who may reach them, handing one a job on
     # an agent's behalf, the jobs in libclawt's tones, the routine prompt
     # and the MCP key -- and the badge, counted by the daemon in all three.
@@ -529,6 +542,18 @@ declare -A AFFORDANCES=(
     ["fallback list editor"]="fallback_editor_draw|clawt_web_fallback_card|draw_fallbacks"
     ["on fallback badge"]="clawt_gtk_failover_badge|clawt_web_failover_badge|clawt_lrg_badge(agent->fallback"
     ["alert in the event's words"]="clawt_event_get_detail(event, \"message\")|clawt_event_get_detail(event, \"message\")|clawt_event_get_detail(event, \"message\")"
+    #
+    # Connector sign-in and several accounts: a remote server added by its
+    # URL alone (the name proposed from the host), a Sign in that names
+    # where it happens when discovery found a server or the server refused
+    # the agent, and the account label on every connector row -- the one
+    # thing that tells two accounts on one service apart.  Each is the
+    # library's own function, so the marker is the rule, not its wording.
+    #
+    ["connector added by URL"]="clawt_connector_name_for_url|clawt_connector_name_for_url|clawt_connector_name_for_url"
+    ["connector sign in at its server"]="clawt_connector_sign_in_label|clawt_connector_sign_in_label|clawt_connector_sign_in_label"
+    ["account label on connector rows"]="clawt_connector_row_subtitle|clawt_connector_row_subtitle|clawt_connector_row_subtitle"
+    ["account label asked for a second account"]="required for a second account|required for a second account|unique, for a second account"
     #
     # Each team's "Problems to look at" room has a sidebar row.  It sends
     # no frame of its own -- it is room.list read with a different

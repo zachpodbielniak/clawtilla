@@ -246,6 +246,42 @@ void clawt_mailbox_item_set_consult(ClawtMailboxItem *self,
                                     gboolean          consult);
 
 /**
+ * clawt_mailbox_item_get_round:
+ * @self: a #ClawtMailboxItem
+ *
+ * The round of a group room the message this item carries belongs to,
+ * or 0 outside one (clawt_message_get_round()).  Stored, so a reply
+ * written after a daemon restart still continues the right thread.
+ *
+ * Returns: the round, or 0
+ */
+guint clawt_mailbox_item_get_round(ClawtMailboxItem *self);
+
+/**
+ * clawt_mailbox_item_get_chain:
+ * @self: a #ClawtMailboxItem
+ *
+ * The thread of replies the delivered message is part of, its sender
+ * included (clawt_message_get_chain()).  The recipient's answer extends
+ * it by one.
+ *
+ * Returns: (transfer none) (nullable): the chain, or %NULL
+ */
+const gchar *clawt_mailbox_item_get_chain(ClawtMailboxItem *self);
+
+/**
+ * clawt_mailbox_item_set_round_chain:
+ * @self: a #ClawtMailboxItem
+ * @round: the round, or 0
+ * @chain: (nullable): the chain, or %NULL / "" for none
+ *
+ * Set together because one without the other describes nothing.
+ */
+void clawt_mailbox_item_set_round_chain(ClawtMailboxItem *self,
+                                        guint             round,
+                                        const gchar      *chain);
+
+/**
  * clawt_mailbox_item_dup_delivered_body:
  * @self: a #ClawtMailboxItem
  *

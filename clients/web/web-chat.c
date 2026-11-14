@@ -209,6 +209,27 @@ set_body(HtmxNode *node, const gchar *markdown)
     htmx_node_set_html_content(node, html);
 }
 
+/*
+ * Where a round of a group room starts, with clawt_round_label() --
+ * the GTK and libregnum transcripts draw the same words.
+ */
+static HtmxElement *
+round_divider(gint64 round)
+{
+    g_autoptr(HtmxDiv) row = htmx_div_new();
+    g_autoptr(HtmxSpan) label = htmx_span_new();
+    g_autofree gchar *text = clawt_round_label((guint)round);
+
+    htmx_element_add_class(HTMX_ELEMENT(row), "round-divider");
+    htmx_element_set_attribute(HTMX_ELEMENT(row), "title",
+        "A round starts at each message from a person, a routine or a "
+        "trigger. Within one thread of replies a member answers once.");
+    htmx_node_set_text_content(HTMX_NODE(label), text);
+    htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(label));
+
+    return HTMX_ELEMENT(g_steal_pointer(&row));
+}
+
 static HtmxElement *
 message_element(JsonObject *message, const gchar *agent_id,
                 gboolean has_avatar, gboolean run_start, const gchar *color)
@@ -456,6 +477,27 @@ message_element(JsonObject *message, const gchar *agent_id,
                               attachment_element(g_ptr_array_index(files, n)));
 
             htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(tray));
+        }
+    }
+
+    /*
+     * A mention that was kept and not delivered, and why -- the whole
+     * answer to "why did that member never reply", worded by libclawt.
+     * Text content, never markup: the reason names agents.
+     */
+    {
+        g_autofree gchar *note = clawt_round_skip_note(
+            clawt_web_member(message, "skipped", NULL),
+            clawt_web_member(message, "skip_reason", NULL));
+
+        if (note != NULL) {
+            g_autoptr(HtmxDiv) skip = htmx_div_new();
+
+            htmx_element_add_class(HTMX_ELEMENT(skip), "skip-note");
+            htmx_element_set_attribute(HTMX_ELEMENT(skip), "title",
+                                       clawt_round_skip_tooltip());
+            htmx_node_set_text_content(HTMX_NODE(skip), note);
+            htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(skip));
         }
     }
 
@@ -824,6 +866,7 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
     {
         g_autofree gchar *run_sender = NULL;
         g_autofree gchar *run_day = NULL;
+        gint64 run_round = 0;
         g_autoptr(JsonNode) agent_reply = clawt_web_find_agent(app, agent_id);
         g_autofree gchar *color = g_strdup(clawt_web_member(
             clawt_web_member_object(clawt_web_root(agent_reply), "settings"),
@@ -881,6 +924,20 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
 
             if (new_day)
                 clawt_web_add(inner, day_divider(ts));
+
+            /*
+             * A group room's round, marked where it changes.  A new round
+             * names its first speaker again, as a new day does.
+             */
+            {
+                gint64 round = clawt_web_member_int(one, "round", 0);
+
+                if (round > 0 && round != run_round) {
+                    clawt_web_add(inner, round_divider(round));
+                    run_round = round;
+                    run_start = TRUE;
+                }
+            }
 
             g_free(run_sender);
             run_sender = g_strdup(sender);

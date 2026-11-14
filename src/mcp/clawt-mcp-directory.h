@@ -243,6 +243,25 @@ ClawtMcpDirectory *clawt_mcp_directory_new(const gchar            *server,
 					   guint64                 min_chars);
 
 /**
+ * clawt_mcp_directory_set_account:
+ * @self: a #ClawtMcpDirectory
+ * @account: (nullable): the account's slug, or %NULL for none
+ *
+ * Presents the directory as one account among several on its service.
+ *
+ * The three tools are named for the account (`work_search_tools`)
+ * rather than the connector, and every inner tool name the directory
+ * shows -- in a search, an overview or a describe -- carries the same
+ * prefix the relay puts on a flat tool list.  An agent holding two
+ * accounts of a big server therefore reads one spelling of each tool
+ * whichever way the account is presented.  The describe and the call
+ * accept the prefixed name and the bare one; the server is always sent
+ * its own.
+ */
+void clawt_mcp_directory_set_account(ClawtMcpDirectory *self,
+				     const gchar       *account);
+
+/**
  * clawt_mcp_directory_get_server:
  * @self: a #ClawtMcpDirectory
  *

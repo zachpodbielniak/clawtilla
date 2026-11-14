@@ -889,12 +889,24 @@ clawt_lrg_settings_connector_subtitle(JsonObject *entry)
 {
     const gchar *provider = clawt_ipc_payload_string(entry, "provider");
     const gchar *account = nonempty(entry, "account");
+    g_autofree gchar *base = clawt_connector_row_subtitle(provider, account);
+    const gchar *server = nonempty(entry, "auth_server");
 
-    if (account != NULL)
-        return g_strdup_printf("%s -- %s",
-                               (provider != NULL) ? provider : "", account);
+    /*
+     * A server that refused the agent's last call is worth saying on the
+     * row itself; the sign-in that fixes it is one click further on.
+     */
+    if (clawt_ipc_payload_boolean(entry, "needs_sign_in", FALSE))
+        return g_strdup_printf("%s -- needs a sign-in", base);
 
-    return g_strdup((provider != NULL) ? provider : "");
+    if (server != NULL && clawt_ipc_payload_boolean(entry, "sign_in", FALSE) &&
+        !clawt_ipc_payload_boolean(entry, "connected", FALSE)) {
+        g_autofree gchar *label = clawt_connector_sign_in_label(server);
+
+        return g_strdup_printf("%s -- %s", base, label);
+    }
+
+    return g_steal_pointer(&base);
 }
 
 gchar *
@@ -920,10 +932,18 @@ clawt_lrg_settings_connector_payload(const gchar *name,
                                      const gchar *account,
                                      const gchar *client_id,
                                      const gchar *instance,
+                                     const gchar *url,
                                      const gchar *agents, GError **error)
 {
     g_autoptr(JsonBuilder) builder = NULL;
     g_auto(GStrv) ids = NULL;
+    g_autofree gchar *proposed = NULL;
+
+    /* A URL is enough: the name comes from its host, as in every client. */
+    if (typed(name) == NULL && typed(url) != NULL) {
+        proposed = clawt_connector_name_for_url(url);
+        name = proposed;
+    }
 
     if (typed(name) == NULL) {
         refuse(error, "It needs a name.");
@@ -950,6 +970,9 @@ clawt_lrg_settings_connector_payload(const gchar *name,
 
     if (typed(instance) != NULL)
         add_string(builder, "instance", instance);
+
+    if (typed(url) != NULL)
+        add_string(builder, "url", url);
 
     ids = clawt_lrg_settings_split_list(agents);
 

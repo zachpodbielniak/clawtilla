@@ -303,6 +303,17 @@ clawt_daemon_handle_room(
             json_builder_set_member_name(builder, "order");
             json_builder_add_int_value(builder, clawt_room_get_order(room));
 
+            /*
+             * The round the room is in and how long one thread of it may
+             * run (rooms.max_chain), for the room's header and the
+             * Orchestration settings page.
+             */
+            json_builder_set_member_name(builder, "round");
+            json_builder_add_int_value(builder, clawt_room_get_round(room));
+            json_builder_set_member_name(builder, "max_chain");
+            json_builder_add_int_value(builder,
+                                       clawt_room_get_max_chain(room));
+
             if (clawt_room_get_team(room) != NULL) {
                 json_builder_set_member_name(builder, "team");
                 json_builder_add_string_value(builder,
@@ -604,6 +615,26 @@ clawt_daemon_handle_room(
                                           "require_mention", require);
         }
 
+        /*
+         * How long one thread of a round may run.  Refused when
+         * negative rather than wrapped, and bounded so a typo cannot
+         * turn the cap into "never": past 100 replies a thread is not a
+         * conversation, and max_hops would have stopped it long before.
+         */
+        if (json_object_has_member(payload, "max_chain")) {
+            gint64 chain = clawt_ipc_payload_int(payload, "max_chain", -1);
+
+            if (chain < 0 || chain > 100)
+                return clawt_ipc_error_new(
+                    request, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "max_chain is how many replies one thread of a round "
+                    "may run to: 0 (no cap) to 100");
+
+            clawt_room_set_max_chain(room, (guint)chain);
+            clawt_config_set_room_int(self->config, room_id, "max_chain",
+                                      chain);
+        }
+
         if (!clawt_config_save(self->config, &error))
             g_warning("room %s was changed but not saved: %s", room_id,
                       error->message);
@@ -761,6 +792,27 @@ clawt_daemon_handle_room(
 				json_builder_set_member_name(builder, "consult");
 				json_builder_add_int_value(builder,
 					(gint64)clawt_message_get_consult(message));
+			}
+
+			/*
+			 * The round, and any mention withheld with its reason, as
+			 * the `message` event carries them, so a client draws a
+			 * history and a live message the same way.
+			 */
+			if (clawt_message_get_round(message) > 0) {
+				json_builder_set_member_name(builder, "round");
+				json_builder_add_int_value(builder,
+					(gint64)clawt_message_get_round(message));
+			}
+
+			if (clawt_message_get_skipped(message) != NULL) {
+				json_builder_set_member_name(builder, "skipped");
+				json_builder_add_string_value(builder,
+					clawt_message_get_skipped(message));
+				json_builder_set_member_name(builder, "skip_reason");
+				json_builder_add_string_value(builder,
+					clawt_message_get_skip_reason(message) != NULL
+						? clawt_message_get_skip_reason(message) : "");
 			}
 
             json_builder_end_object(builder);

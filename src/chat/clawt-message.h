@@ -385,6 +385,86 @@ guint clawt_message_get_merged(ClawtMessage *self);
 void clawt_message_set_merged(ClawtMessage *self, guint parts);
 
 /**
+ * clawt_message_get_round:
+ * @self: a #ClawtMessage
+ *
+ * Which round of a group room this message belongs to, or 0 outside
+ * one.  A round starts at a message from a person, a routine or a
+ * trigger (`rooms.max_chain`); the router numbers it.
+ *
+ * Returns: the round, from 1, or 0
+ */
+guint clawt_message_get_round(ClawtMessage *self);
+
+/**
+ * clawt_message_set_round:
+ * @self: a #ClawtMessage
+ * @round: the round, or 0 for none
+ *
+ * Set by the router when the message enters a group room, and read back
+ * from the transcript.
+ */
+void clawt_message_set_round(ClawtMessage *self, guint round);
+
+/**
+ * clawt_message_get_chain:
+ * @self: a #ClawtMessage
+ *
+ * The thread of replies this message is part of: every member that has
+ * answered in it, this message's sender included, comma-separated in
+ * the order they answered (see clawt_round_chain_has()).
+ *
+ * Returns: (transfer none) (nullable): the chain, or %NULL for a
+ *   message that opens a round or is in none
+ */
+const gchar *clawt_message_get_chain(ClawtMessage *self);
+
+/**
+ * clawt_message_set_chain:
+ * @self: a #ClawtMessage
+ * @chain: (nullable): the chain, or %NULL / "" for none
+ */
+void clawt_message_set_chain(ClawtMessage *self, const gchar *chain);
+
+/**
+ * clawt_message_get_skipped:
+ * @self: a #ClawtMessage
+ *
+ * The members this message named and was not delivered to, because
+ * they had already answered in its thread or the thread had reached
+ * `rooms.max_chain`.  Comma-separated; the message itself is in the
+ * room for everyone either way.
+ *
+ * Returns: (transfer none) (nullable): the members, or %NULL
+ */
+const gchar *clawt_message_get_skipped(ClawtMessage *self);
+
+/**
+ * clawt_message_get_skip_reason:
+ * @self: a #ClawtMessage
+ *
+ * Why clawt_message_get_skipped() were not reached, in a sentence a
+ * person reads under the message (clawt_round_skip_note()).
+ *
+ * Returns: (transfer none) (nullable): the reason, or %NULL
+ */
+const gchar *clawt_message_get_skip_reason(ClawtMessage *self);
+
+/**
+ * clawt_message_set_skipped:
+ * @self: a #ClawtMessage
+ * @skipped: (nullable): the members not reached, comma-separated, or
+ *   %NULL / "" for none
+ * @reason: (nullable): why
+ *
+ * Records which mentions the router withheld, and why.  Both are
+ * cleared together when @skipped is empty.
+ */
+void clawt_message_set_skipped(ClawtMessage *self,
+                               const gchar  *skipped,
+                               const gchar  *reason);
+
+/**
  * clawt_message_ack_label:
  *
  * What every client draws beside an acknowledged answer, from one

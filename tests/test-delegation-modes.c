@@ -160,7 +160,10 @@ test_consult_survives_a_restart_and_migrates(void)
 		g_autoptr(GError) error = NULL;
 		sqlite3 *db = NULL;
 
-		/* The schema as of 0.18.0: everything but consult. */
+		/*
+		 * A store from before both 0.20.0's round columns and the
+		 * consultation: the two migrations apply one after the other.
+		 */
 		g_assert_cmpint(sqlite3_open(old_path, &db), ==, SQLITE_OK);
 		g_assert_cmpint(sqlite3_exec(db,
 			"CREATE TABLE items ("
@@ -189,6 +192,25 @@ test_consult_survives_a_restart_and_migrates(void)
 		item = clawt_mailbox_get(mailbox, "old-1");
 		g_assert_nonnull(item);
 		g_assert_false(clawt_mailbox_item_get_consult(item));
+		g_assert_cmpuint(clawt_mailbox_item_get_round(item), ==, 0);
+		g_assert_null(clawt_mailbox_item_get_chain(item));
+
+		/* And it takes new work carrying all three. */
+		{
+			g_autoptr(ClawtMailboxItem) fresh = clawt_mailbox_item_new(
+				"alpha", "beta", "is it sound?");
+			g_autoptr(ClawtMailboxItem) back = NULL;
+			g_autofree gchar *fresh_id = NULL;
+
+			clawt_mailbox_item_set_consult(fresh, TRUE);
+			clawt_mailbox_item_set_round_chain(fresh, 3, "alpha");
+			fresh_id = clawt_mailbox_post(mailbox, fresh, &error);
+			g_assert_no_error(error);
+			back = clawt_mailbox_get(mailbox, fresh_id);
+			g_assert_true(clawt_mailbox_item_get_consult(back));
+			g_assert_cmpuint(clawt_mailbox_item_get_round(back), ==, 3);
+			g_assert_cmpstr(clawt_mailbox_item_get_chain(back), ==, "alpha");
+		}
 	}
 
 	clawt_test_remove_tree(dir);
@@ -703,6 +725,201 @@ test_results_wait_for_the_busy_room(void)
 		"results for you arrived in room"), ==, 1);
 	g_assert_nonnull(strstr(second, "Task t-1 is finished"));
 	g_assert_nonnull(strstr(second, "Task t-2 is finished"));
+
+	fixture_teardown(&fixture);
+}
+
+/* ── With rounds in a group room ─────────────────────────────────── */
+
+/* A three-member group; @mentions decides whether it is a mention room. */
+static ClawtRoom *
+make_group(Fixture *fixture, const gchar *room_id, gboolean mentions)
+{
+	g_autoptr(GError) error = NULL;
+	ClawtRoom *room = clawt_room_manager_create(fixture->rooms, room_id,
+		NULL, &error);
+
+	g_assert_no_error(error);
+	clawt_room_add_member(room, "chief");
+	clawt_room_add_member(room, "beta");
+	clawt_room_add_member(room, "gamma");
+	clawt_room_set_require_mention(room, mentions);
+	return room;
+}
+
+static void
+person_says(Fixture *fixture, const gchar *room_id, const gchar *body)
+{
+	g_autoptr(GError) error = NULL;
+
+	g_assert_cmpint(clawt_mailbox_router_send_to(fixture->router, "user",
+		room_id, body, NULL, 0, &error), >=, 0);
+	g_assert_no_error(error);
+}
+
+/*
+ * A consultation asked inside a round of a mention room: the item
+ * carries both the round's thread and the consultation, the member is
+ * told both the round rule and that it is a consultation, and its turn
+ * withholds the acting tools while an ordinary turn in another room
+ * does not.  The two are independent fields on one item; a merge of
+ * either onto the other would lose one of them.
+ */
+static void
+test_consultation_inside_a_round(void)
+{
+	Fixture fixture = { 0 };
+	ClawtAgent *chief;
+	ClawtAgent *beta;
+	g_autoptr(ClawtMessage) asked = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(ClawtMailboxItem) item = NULL;
+	g_autofree gchar *handed = NULL;
+
+	fixture_setup(&fixture);
+	chief = clawt_agent_manager_get(fixture.agents, "chief");
+	beta = clawt_agent_manager_get(fixture.agents, "beta");
+	make_group(&fixture, "standup", TRUE);
+	give_agent_a_link(&fixture, "beta");
+
+	/* A person opens round 1 by naming the chief, who takes its turn. */
+	person_says(&fixture, "standup", "@chief what is the plan?");
+	item = clawt_mailbox_lease(clawt_agent_get_mailbox(chief), 0);
+	g_assert_nonnull(item);
+	g_assert_cmpuint(clawt_mailbox_item_get_round(item), ==, 1);
+	begin_turn_on(chief, item, "standup");
+
+	/* The chief consults beta inside that round. */
+	asked = clawt_message_new("standup", "chief",
+		"@beta is the migration order safe?");
+	clawt_message_set_consult(asked, CLAWT_CONSULT_ASKED);
+	clawt_message_set_depth(asked, 1);
+	g_assert_cmpint(clawt_mailbox_router_send(fixture.router, asked,
+		&error), ==, 1);
+	g_assert_no_error(error);
+
+	handed = read_all(&fixture, "beta");
+	g_assert_nonnull(strstr(handed, "This is a consultation"));
+	g_assert_nonnull(strstr(handed, "round 1"));
+
+	/* Delivered, so the turn state is beta's: both fields arrived. */
+	clawt_agent_note_typing(beta, "standup", TRUE);
+	g_assert_true(clawt_agent_get_turn_consult_in(beta, "standup"));
+	{
+		ClawtMailboxItem *input = clawt_agent_get_turn_input_in(beta,
+			"standup");
+
+		g_assert_nonnull(input);
+		g_assert_true(clawt_mailbox_item_get_consult(input));
+		g_assert_cmpuint(clawt_mailbox_item_get_round(input), ==, 1);
+		g_assert_nonnull(strstr(clawt_mailbox_item_get_chain(input),
+			"chief"));
+	}
+
+	{
+		g_autoptr(GHashTable) offered = listed_names(fixture.tools, "beta",
+			"standup");
+
+		g_assert_false(g_hash_table_contains(offered,
+			"clawtilla_post_room"));
+		g_assert_true(g_hash_table_contains(offered,
+			"clawtilla_room_history"));
+	}
+
+	/* The room's record says what it was, for the clients. */
+	{
+		g_autoptr(GPtrArray) history = clawt_room_get_history(
+			clawt_room_manager_get(fixture.rooms, "standup"), 1);
+		ClawtMessage *last = g_ptr_array_index(history, 0);
+
+		g_assert_cmpint(clawt_message_get_consult(last), ==,
+			CLAWT_CONSULT_ASKED);
+		g_assert_cmpuint(clawt_message_get_round(last), ==, 1);
+	}
+
+	fixture_teardown(&fixture);
+}
+
+/*
+ * Results held for a busy group room keep their round: two answers in
+ * round 1 of a room without the mention rule wait while the chief's
+ * turn there runs, and the one delivery that follows describes round 1
+ * with both answerers in its thread -- so the chief's own reply
+ * continues that round rather than opening a thread of its own.
+ */
+static void
+test_held_results_keep_their_round(void)
+{
+	Fixture fixture = { 0 };
+	ClawtAgent *chief;
+	g_autofree gchar *first = NULL;
+	g_autofree gchar *second = NULL;
+	const gchar *answerers[] = { "beta", "gamma" };
+	guint i;
+
+	fixture_setup(&fixture);
+	chief = clawt_agent_manager_get(fixture.agents, "chief");
+	make_group(&fixture, "huddle", FALSE);
+	give_agent_a_link(&fixture, "chief");
+
+	/* Round 1, opened by a person; the chief's turn is running in it. */
+	person_says(&fixture, "huddle", "where are we on the release?");
+	g_free(read_all(&fixture, "chief"));
+	g_assert_cmpuint(clawt_room_get_round(
+		clawt_room_manager_get(fixture.rooms, "huddle")), ==, 1);
+	clawt_agent_note_typing(chief, "huddle", TRUE);
+
+	/* Two answers in that round arrive while it runs. */
+	for (i = 0; i < G_N_ELEMENTS(answerers); i++) {
+		g_autoptr(ClawtMessage) answer = clawt_message_new("huddle",
+			answerers[i], answerers[i][0] == 'b' ? "build is green"
+			                                     : "docs are done");
+		g_autoptr(ClawtMailboxItem) item = NULL;
+		g_autoptr(GError) error = NULL;
+		ClawtAgent *who = clawt_agent_manager_get(fixture.agents,
+			answerers[i]);
+
+		/*
+		 * Each answers from the turn the round's opening delivered to
+		 * it: unlinked, so the delivery is in its mailbox to take.
+		 */
+		item = clawt_mailbox_lease(clawt_agent_get_mailbox(who), 0);
+		g_assert_nonnull(item);
+		g_assert_cmpuint(clawt_mailbox_item_get_round(item), ==, 1);
+		begin_turn_on(who, item, "huddle");
+
+		clawt_message_set_invites_reply(answer, FALSE);
+		clawt_message_set_depth(answer, 1);
+		g_assert_cmpint(clawt_mailbox_router_send(fixture.router, answer,
+			&error), >=, 0);
+		g_assert_no_error(error);
+	}
+
+	first = read_all(&fixture, "chief");
+	g_assert_null(strstr(first, "build is green"));
+	g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(chief)), ==,
+		2);
+
+	/* The turn ends: one delivery, round 1, both answerers threaded. */
+	clawt_agent_note_typing(chief, "huddle", FALSE);
+	g_assert_cmpuint(clawt_mailbox_router_drain(fixture.router, "chief"), ==,
+		2);
+	second = read_all(&fixture, "chief");
+	g_assert_cmpuint(clawt_test_count_substrings(second,
+		"results for you arrived in room"), ==, 1);
+
+	clawt_agent_note_typing(chief, "huddle", TRUE);
+	{
+		ClawtMailboxItem *input = clawt_agent_get_turn_input_in(chief,
+			"huddle");
+
+		g_assert_nonnull(input);
+		g_assert_cmpuint(clawt_mailbox_item_get_round(input), ==, 1);
+		g_assert_nonnull(strstr(clawt_mailbox_item_get_chain(input),
+			"beta"));
+		g_assert_nonnull(strstr(clawt_mailbox_item_get_chain(input),
+			"gamma"));
+	}
 
 	fixture_teardown(&fixture);
 }
@@ -1343,6 +1560,10 @@ main(int argc, char **argv)
 		test_thread_new_makes_and_reports_a_room);
 	g_test_add_func("/delegation-modes/results-wait-for-busy-room",
 		test_results_wait_for_the_busy_room);
+	g_test_add_func("/delegation-modes/consultation-inside-a-round",
+		test_consultation_inside_a_round);
+	g_test_add_func("/delegation-modes/held-results-keep-their-round",
+		test_held_results_keep_their_round);
 	g_test_add_func("/delegation-modes/guard-idle-continuations",
 		test_idle_continuations_stall);
 	g_test_add_func("/delegation-modes/guard-same-error",

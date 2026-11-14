@@ -9,6 +9,7 @@
 
 #include "clawtilla.h"
 #include "mcp/clawt-mcp-relay.h"
+#include "integration/clawt-connector-accounts.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -393,6 +394,26 @@ clawt_mcp_relay_filter_inbound(const gchar *line, GStrv permitted)
     return render(object);
 }
 
+/*
+ * The names the account prefix must leave alone: a directory's own three
+ * tools, which it already names for the account.  Only while it is
+ * presenting the server as a directory -- otherwise a server tool that
+ * happens to share a name with one is an ordinary tool.
+ */
+static void
+account_exempt(const ClawtMcpRelayPolicy *policy, const gchar *out[4])
+{
+    out[0] = out[1] = out[2] = out[3] = NULL;
+
+    if (policy->directory == NULL ||
+        !clawt_mcp_directory_is_active(policy->directory))
+        return;
+
+    out[0] = clawt_mcp_directory_get_search_name(policy->directory);
+    out[1] = clawt_mcp_directory_get_describe_name(policy->directory);
+    out[2] = clawt_mcp_directory_get_call_name(policy->directory);
+}
+
 void
 clawt_mcp_relay_policy_outbound(const ClawtMcpRelayPolicy  *policy,
                                 const gchar                *line,
@@ -400,6 +421,7 @@ clawt_mcp_relay_policy_outbound(const ClawtMcpRelayPolicy  *policy,
                                 gchar                     **to_client)
 {
     g_autofree gchar *rewritten = NULL;
+    g_autofree gchar *stripped = NULL;
     g_autofree gchar *tool = NULL;
     g_autofree gchar *refusal = NULL;
     const gchar *effective = line;
@@ -416,7 +438,8 @@ clawt_mcp_relay_policy_outbound(const ClawtMcpRelayPolicy  *policy,
      * past both, which for the gate is an approval nobody was asked for.
      */
     if (!policy->filter &&
-        (policy->gate != NULL || policy->directory != NULL)) {
+        (policy->gate != NULL || policy->directory != NULL ||
+         policy->accounts)) {
         g_autoptr(JsonObject) object = NULL;
         gboolean batch = FALSE;
 
@@ -429,12 +452,32 @@ clawt_mcp_relay_policy_outbound(const ClawtMcpRelayPolicy  *policy,
     }
 
     /*
+     * The account prefix before anything else: it is the outermost name
+     * the agent sees, and everything after it -- the directory, the
+     * permitted list, the gate -- judges the server's own.  A bare name
+     * is refused here rather than run as whichever account it reached.
+     */
+    if (policy->accounts) {
+        const gchar *exempt[4];
+
+        account_exempt(policy, exempt);
+        stripped = clawt_connector_accounts_outbound(
+            line, policy->account_prefix, policy->account_siblings,
+            policy->account_conflict, (GStrv)exempt, to_client);
+
+        if (stripped == NULL)
+            return;
+
+        effective = stripped;
+    }
+
+    /*
      * The directory first, so everything after it sees the tool that
      * would actually run.  A search or a describe is answered here and
      * goes no further -- it runs nothing on the server.
      */
     if (policy->directory != NULL &&
-        clawt_mcp_directory_rewrite_outbound(policy->directory, line,
+        clawt_mcp_directory_rewrite_outbound(policy->directory, effective,
                                              &rewritten, to_client)) {
         if (rewritten == NULL)
             return;
@@ -504,12 +547,28 @@ clawt_mcp_relay_policy_inbound(const ClawtMcpRelayPolicy  *policy,
      * After the filter, never before: the directory is built from what
      * reaches it, and what reaches it is what this agent may use.
      */
-    if (policy->directory != NULL &&
-        clawt_mcp_directory_rewrite_inbound(policy->directory, filtered,
-                                            to_client, to_server))
-        return;
+    if (policy->directory == NULL ||
+        !clawt_mcp_directory_rewrite_inbound(policy->directory, filtered,
+                                             to_client, to_server))
+        *to_client = g_steal_pointer(&filtered);
 
-    *to_client = g_steal_pointer(&filtered);
+    /*
+     * The account prefix last, the mirror of outbound: whatever the agent
+     * reads -- a flat list or the directory's three -- is named for the
+     * account.  The directory names its own three already.
+     */
+    if (policy->accounts && policy->account_prefix != NULL &&
+        *to_client != NULL) {
+        const gchar *exempt[4];
+        gchar *renamed;
+
+        account_exempt(policy, exempt);
+        renamed = clawt_connector_accounts_inbound(*to_client,
+                                                   policy->account_prefix,
+                                                   (GStrv)exempt);
+        g_free(*to_client);
+        *to_client = renamed;
+    }
 }
 
 /*

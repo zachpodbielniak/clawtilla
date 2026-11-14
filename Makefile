@@ -98,6 +98,8 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/integration/clawt-grok.h \
 	$(SRCDIR)/integration/clawt-grok-store.h \
 	$(SRCDIR)/integration/clawt-oauth.h \
+	$(SRCDIR)/integration/clawt-mcp-auth.h \
+	$(SRCDIR)/integration/clawt-connector-accounts.h \
 	$(SRCDIR)/integration/clawt-matrix.h \
 	$(SRCDIR)/integration/clawt-notify.h \
 	$(SRCDIR)/config/clawt-config.h \
@@ -171,6 +173,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/chat/clawt-attachment.h \
 	$(SRCDIR)/chat/clawt-preamble.h \
 	$(SRCDIR)/chat/clawt-merge.h \
+	$(SRCDIR)/chat/clawt-round.h \
 	$(SRCDIR)/chat/clawt-markdown.h \
 	$(SRCDIR)/chat/clawt-export.h \
 	$(SRCDIR)/chat/clawt-loop-guard.h \
@@ -273,6 +276,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-skill-proposal.c \
 	$(SRCDIR)/core/daemon-step.c \
 	$(SRCDIR)/core/daemon-ack.c \
+	$(SRCDIR)/core/daemon-tree.c \
 	$(SRCDIR)/core/clawt-event-bus.c \
 	$(SRCDIR)/core/clawt-event-log.c \
 	$(SRCDIR)/integration/clawt-connector.c \
@@ -285,6 +289,8 @@ LIB_SOURCES = \
 	$(SRCDIR)/integration/clawt-grok.c \
 	$(SRCDIR)/integration/clawt-grok-store.c \
 	$(SRCDIR)/integration/clawt-oauth.c \
+	$(SRCDIR)/integration/clawt-mcp-auth.c \
+	$(SRCDIR)/integration/clawt-connector-accounts.c \
 	$(SRCDIR)/integration/clawt-matrix.c \
 	$(SRCDIR)/integration/clawt-notify.c \
 	$(SRCDIR)/config/clawt-config.c \
@@ -359,6 +365,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/chat/clawt-attachment.c \
 	$(SRCDIR)/chat/clawt-preamble.c \
 	$(SRCDIR)/chat/clawt-merge.c \
+	$(SRCDIR)/chat/clawt-round.c \
 	$(SRCDIR)/chat/clawt-markdown.c \
 	$(SRCDIR)/chat/clawt-export.c \
 	$(SRCDIR)/chat/clawt-loop-guard.c \

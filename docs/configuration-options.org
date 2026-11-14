@@ -860,7 +860,7 @@ pointed at 127.0.0.1 is refused too.
 
 - Type :: list of strings
 - Default :: unset
-- Since :: 0.18.0
+- Since :: 0.17.0
 
 Private addresses gated agents may reach anyway.
 
@@ -1015,7 +1015,7 @@ repeat is only caught if it lands inside the window.
 
 - Type :: string
 - Default :: ==
-- Since :: 0.18.0
+- Since :: 0.17.0
 
 A small model that decides whether an answer only acknowledges, as
 provider/model -- claude/claude-haiku-4-5-20251001, ollama/llama3.2.
@@ -1040,6 +1040,32 @@ A provider ai-glib reaches over HTTP, with its key configured the way
 ai_assist's is. A command-line provider would spend the 8 seconds
 starting. A message sent with reply: none never wakes its sender,
 with or without this.
+
+*** =orchestration.tree_message_budget=
+
+- Type :: integer
+- Default :: =60=
+- Since :: 0.20.0
+
+How many requests one task tree may send between settlements.
+0 disables the budget.
+
+A tree is a root task and everything delegated from it. max_hops
+bounds how deep a chain goes and says nothing about how wide: a chief
+that hands work to ten agents, each of which asks two more, is three
+hops deep and can still talk all night. This counts the deliberate
+messages sent from inside one tree -- clawtilla_message_agent,
+clawtilla_ask_agent, clawtilla_delegate, clawtilla_handoff,
+clawtilla_post_room and an @mention in a room -- one per call, however
+many teammates the call reaches.
+
+Answers are not counted and never refused, and neither is the
+follow-up turn a delegator is owed when its work settles. The count
+starts again whenever any task in the tree settles, because a
+settlement is progress and chatter is not.
+
+At the limit the messaging tools are withheld from that tree's turns,
+exactly as max_hops withholds them, and one alert names the tree.
 
 ** =orchestration.mailbox=
 
@@ -1246,7 +1272,7 @@ See docs/orchestration.org, "Incidents".
 
 - Type :: boolean
 - Default :: =true=
-- Since :: 0.18.0
+- Since :: 0.17.0
 
 Whether broken runs open incidents at all.
 
@@ -1259,7 +1285,7 @@ Retrying a failed task works either way.
 - Type :: enum
 - Values :: lead, chief, none
 - Default :: =lead=
-- Since :: 0.18.0
+- Since :: 0.17.0
 
 Who an incident report goes to: lead, chief or none.
 
@@ -1519,7 +1545,7 @@ instead.
 
 - Type :: integer
 - Default :: =3=
-- Since :: 0.18.0
+- Since :: 0.19.0
 
 How many skills one agent may propose in any 24 hours.
 
@@ -1603,6 +1629,30 @@ every delegation chain in the fleet to fix one room.
 It reaches the hop count and nothing else. The rate limit, the task
 budget and the cycle detector are untouched, so a loop that costs
 money still has three limits on it.
+
+In a group room this is the backstop rather than the limit that
+fires: rooms.max_chain ends a thread of replies first, and the depth
+starts again at each round.
+
+*** =rooms.max_chain=
+
+- Type :: integer
+- Default :: =3=
+- Since :: 0.20.0
+
+How many replies one thread may run to in a round of a group room.
+0 removes the cap; the once-per-thread rule below still applies.
+
+A round starts at a message from you, a routine or a trigger. Each
+member that answers it starts a thread, and an @mention in a reply
+carries the thread on. Within one thread a member answers once: a
+mention of a member already in that thread is recorded in the room
+and not delivered, with the reason shown beside it. A member that
+spoke in another thread of the same round still answers.
+
+Without this the hop count built up across a room's history, so an
+ordinary standup reached max_hops by itself. The depth now starts
+again at every round, and max_hops stays as the backstop.
 
 *** =rooms.turn_timeout_seconds=
 
@@ -2251,6 +2301,11 @@ two different servers and there is no way to tell which was meant.
 libresearch: where its server answers. grokbot: the Grok routine's
 webhook address, as Grok shows it under "POST to".
 
+connector: a remote MCP server, instead of the catalogue's. With
+`provider: remote` -- or no provider at all -- this is the only thing
+a connector needs: the server says how to sign in to it (see
+connectors.discovery).
+
 *** =integrations.env=
 
 - Type :: mapping
@@ -2287,6 +2342,14 @@ connector: which account on that service, in your own words.
 Two connectors for the same provider are the ordinary case -- work
 and personal, or one GitLab org and another -- and the account label
 is what tells them apart everywhere they are shown.
+
+Required, and unique per provider, for every account after the first:
+adding a second one without a label, or with one another account on
+that service already uses, is refused. An agent granted several
+accounts on one service sees each account's tools prefixed with its
+label -- `work_create_issue`, `personal_create_issue` -- and a call to
+the bare name is refused rather than run as whichever account it
+happened to reach.
 
 *** =integrations.instance=
 
@@ -2506,6 +2569,43 @@ exactly: register `http://127.0.0.1:8765/callback`.
 Bound on 127.0.0.1 only. A redirect carries an authorization code in
 a URL, and a listener on every interface offers that code to whoever
 on the network reaches the port first.
+
+A client clawtilla registers for itself by dynamic client registration
+is registered with this redirect, so changing the port means signing
+in again.
+
+*** =connectors.discovery=
+
+- Type :: boolean
+- Default :: =true=
+- Since :: 0.20.0
+
+Whether a remote connector finds out for itself how to sign in.
+
+A connector reached by URL whose catalogue entry names no endpoints
+asks the server: its RFC 9728 protected-resource document names an
+authorization server, whose RFC 8414 metadata names the endpoints,
+and RFC 7591 dynamic client registration supplies a client id when
+the connector has none. Endpoints a catalogue entry names by hand
+always win, and so does a configured `client_id`.
+
+Only when somebody asks for a sign-in -- never at daemon start. No
+request in it follows a redirect, and nothing it finds may be plain
+http unless the server itself is on loopback. Off, such a connector
+takes a pasted token only.
+
+*** =connectors.client_name=
+
+- Type :: string
+- Default :: =clawtilla=
+- Since :: 0.20.0
+
+What clawtilla calls itself when it registers with a server.
+
+Sent as `client_name` in a dynamic client registration, so it is what
+the server's consent screen shows the person approving it -- worth
+setting to something that says which machine is asking when several
+fleets sign in to one service.
 
 *** =connectors.registry_enabled=
 
@@ -3687,7 +3787,7 @@ so in its mode. Ignored unless runtime.confine is bwrap.
 - Type :: enum
 - Values :: open, gated, none
 - Default :: =open=
-- Since :: 0.18.0
+- Since :: 0.17.0
 
 Where this agent's own process may connect: open, gated or none.
 
@@ -3844,7 +3944,7 @@ works alongside any of these.
 - Type :: enum
 - Values :: on_agent_start, on_first_use
 - Default :: =on_agent_start=
-- Since :: 0.17.0
+- Since :: 0.19.0
 
 When the machine is started: with the agent, or the first time
 something runs in it.
@@ -4231,7 +4331,7 @@ gone rather than offline, which is not what the word stop suggests.
 
 - Type :: integer
 - Default :: =0=
-- Since :: 0.17.0
+- Since :: 0.19.0
 
 Most processes and threads the machine may hold at once.
 
@@ -4249,7 +4349,7 @@ rebuild and without losing what the agent installed.
 
 - Type :: string
 - Default :: unset
-- Since :: 0.17.0
+- Since :: 0.19.0
 
 Most memory the machine may use, e.g. 512m or 4g.
 
@@ -4266,7 +4366,7 @@ with `podman update` whenever it changes.
 
 - Type :: string
 - Default :: unset
-- Since :: 0.17.0
+- Since :: 0.19.0
 
 Memory and swap together, e.g. 8g; -1 for unlimited swap.
 
@@ -4409,7 +4509,7 @@ fresh handshake.
 
 - Type :: list of strings
 - Default :: unset
-- Since :: 0.17.0
+- Since :: 0.19.0
 
 A program to run when the machine does not answer, to wake it.
 

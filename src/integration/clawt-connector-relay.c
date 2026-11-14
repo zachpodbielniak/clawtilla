@@ -10,6 +10,8 @@
 #include "clawtilla.h"
 #include "clawt-http.h"
 #include "integration/clawt-connector-relay.h"
+#include "integration/clawt-connector-accounts.h"
+#include "integration/clawt-mcp-auth.h"
 
 #include "mcp/clawt-mcp-relay.h"
 
@@ -126,6 +128,10 @@ clawt_connector_plan_free(ClawtConnectorPlan *self)
     g_strfreev(self->argv);
     g_strfreev(self->envp);
     g_strfreev(self->permitted);
+    g_free(self->name);
+    g_free(self->account_prefix);
+    g_strfreev(self->account_siblings);
+    g_free(self->account_conflict);
     g_free(self->url);
     g_free(self->header_name);
     g_free(self->header_value);
@@ -148,7 +154,8 @@ clawt_connector_plan_new(const ClawtConnectorInfo *info,
 
     g_return_val_if_fail(info != NULL, NULL);
     g_return_val_if_fail(binding != NULL, NULL);
-    g_return_val_if_fail(credential != NULL, NULL);
+
+    plan->name = g_strdup(clawt_integration_binding_get_name(binding));
 
     /*
      * The integration wins over the catalogue.  Somebody who wrote a
@@ -230,13 +237,30 @@ clawt_connector_plan_new(const ClawtConnectorInfo *info,
         return NULL;
     }
 
-    formatted = clawt_connector_format_credential(info, credential);
+    /*
+     * No credential is only ever a remote server nobody has signed in to
+     * yet.  A stdio server started without one would fail somewhere
+     * inside itself, naming neither clawtilla nor the sign-in.
+     */
+    if (credential == NULL && plan->url == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_AUTH,
+                    "connector '%s' is not connected yet; run `clawtilla "
+                    "connector connect %s`",
+                    clawt_integration_binding_get_name(binding),
+                    clawt_integration_binding_get_name(binding));
+        return NULL;
+    }
 
-    if (info->placement == CLAWT_CREDENTIAL_PLACEMENT_HEADER) {
+    if (credential == NULL) {
+        plan->header_name = g_strdup(name);
+    } else if (info->placement == CLAWT_CREDENTIAL_PLACEMENT_HEADER) {
+        formatted = clawt_connector_format_credential(info, credential);
         plan->header_name = g_strdup(name);
         plan->header_value = g_steal_pointer(&formatted);
     } else {
         GPtrArray *envp = g_ptr_array_new();
+
+        formatted = clawt_connector_format_credential(info, credential);
 
         g_ptr_array_add(envp, g_strdup_printf("%s=%s", name, formatted));
 
@@ -461,8 +485,10 @@ forward_one(HttpBridge *bridge, const gchar *line)
 
     soup_message_headers_replace(headers, "Accept",
                                  "application/json, text/event-stream");
-    soup_message_headers_replace(headers, bridge->plan->header_name,
-                                 bridge->plan->header_value);
+
+    if (bridge->plan->header_value != NULL)
+        soup_message_headers_replace(headers, bridge->plan->header_name,
+                                     bridge->plan->header_value);
 
     /*
      * A streamable-HTTP server hands out a session id on initialize and
@@ -480,6 +506,36 @@ forward_one(HttpBridge *bridge, const gchar *line)
     if (response == NULL) {
         g_printerr("clawtilla: the request to the tool server failed: %s\n",
                    error->message);
+        return;
+    }
+
+    /*
+     * A 401 is answered here rather than passed through.  Passed through,
+     * it starts the agent CLI's own sign-in, which cannot work -- the
+     * relay holds the credential, not the CLI -- and the CLI reports only
+     * that the server failed.  A server that lists tools to anybody and
+     * refuses only tool calls made this invisible until the first call;
+     * so a refused tools/call becomes a tool error naming the connector
+     * and the sign-in, and the daemon is told so a client can offer one.
+     */
+    if (soup_message_get_status(message) == SOUP_STATUS_UNAUTHORIZED) {
+        const gchar *challenge = soup_message_headers_get_one(
+            soup_message_get_response_headers(message), "WWW-Authenticate");
+        g_autofree gchar *reply = clawt_mcp_auth_unauthorized_reply(
+            line, bridge->plan->name != NULL ? bridge->plan->name : "?",
+            bridge->plan->header_value != NULL);
+
+        if (reply != NULL)
+            write_line(bridge->out, reply);
+
+        if (bridge->plan->unauthorized != NULL)
+            bridge->plan->unauthorized(bridge->plan->name, challenge,
+                                       bridge->plan->header_value != NULL,
+                                       bridge->plan->unauthorized_data);
+
+        g_printerr("clawtilla: %s answered 401; the connector '%s' needs "
+                   "a sign-in\n", bridge->plan->url,
+                   bridge->plan->name != NULL ? bridge->plan->name : "?");
         return;
     }
 
@@ -603,6 +659,16 @@ clawt_connector_relay_run_full(ClawtConnectorPlan *plan,
     policy.gate = gate;
     policy.gate_data = gate_data;
     policy.directory = directory;
+
+    /*
+     * Several accounts on one service: the prefix is part of the one
+     * policy both transports apply, outermost on both sides, so the
+     * directory, the tool list and the gate all see the server's names.
+     */
+    policy.accounts = plan->accounts;
+    policy.account_prefix = plan->account_prefix;
+    policy.account_siblings = plan->account_siblings;
+    policy.account_conflict = plan->account_conflict;
 
     if (plan->url != NULL)
         return run_http(plan, &policy);
