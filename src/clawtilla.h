@@ -106,6 +106,7 @@
 #include "plugin/clawt-plugin-manager.h"
 #include "plugin/clawt-pod-module.h"
 #include "plugin/clawt-automation.h"
+#include "mcp/clawt-mcp-directory.h"
 #include "mcp/clawt-mcp-relay.h"
 #include "mcp/clawt-mcp-socket.h"
 #include "mcp/clawt-mcp-tools.h"

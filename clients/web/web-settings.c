@@ -866,6 +866,48 @@ integrations_content(ClawtWebApp *app)
 
 /* ── Connectors ──────────────────────────────────────────────────── */
 
+/*
+ * "Present as a directory: Auto / Always / Never", walked from the
+ * library's enumeration so a mode added there is offered here at once.
+ */
+static HtmxElement *
+directory_form(const gchar *escaped, const gchar *current)
+{
+    g_autofree gchar *action = g_strdup_printf(
+        "/settings/connectors/%s/directory", escaped);
+    g_autoptr(HtmxForm) form = clawt_web_form(action);
+    g_autoptr(GPtrArray) nicks = g_ptr_array_new();
+    g_autoptr(GPtrArray) labels = g_ptr_array_new();
+    guint i;
+
+    for (i = 0; i < clawt_tool_directory_mode_count(); i++) {
+        g_ptr_array_add(nicks,
+                        (gpointer)clawt_tool_directory_mode_nth_nick(i));
+        g_ptr_array_add(labels,
+                        (gpointer)clawt_tool_directory_mode_nth_label(i));
+    }
+
+    g_ptr_array_add(nicks, NULL);
+    g_ptr_array_add(labels, NULL);
+
+    clawt_web_add(form, clawt_web_select_field(
+        "Present as a directory", "directory",
+        (const gchar *const *)nicks->pdata,
+        (const gchar *const *)labels->pdata, current));
+
+    {
+        g_autoptr(HtmxDiv) buttons = htmx_div_new();
+        g_autoptr(HtmxButton) save = clawt_web_button("Save", "default");
+
+        htmx_element_add_class(HTMX_ELEMENT(buttons), "btn-row");
+        htmx_element_set_attribute(HTMX_ELEMENT(save), "type", "submit");
+        htmx_node_add_child(HTMX_NODE(buttons), HTMX_NODE(save));
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(buttons));
+    }
+
+    return HTMX_ELEMENT(g_steal_pointer(&form));
+}
+
 static HtmxElement *
 connectors_content(ClawtWebApp *app)
 {
@@ -878,6 +920,10 @@ connectors_content(ClawtWebApp *app)
                                              "connectors");
     JsonArray *available = clawt_web_member_array(clawt_web_root(catalog),
                                                   "connectors");
+    gint64 min_tools = clawt_web_member_int(clawt_web_root(reply),
+                                            "directory_min_tools", 40);
+    gint64 min_chars = clawt_web_member_int(clawt_web_root(reply),
+                                            "directory_min_chars", 100000);
     guint i;
 
     {
@@ -938,6 +984,23 @@ connectors_content(ClawtWebApp *app)
                 "Granted scopes",
                 clawt_web_member(connector, "granted_scopes", "")));
 
+        /*
+         * How many tools, and whether agents see them as a directory --
+         * libclawt's sentence, the one the other clients draw too.
+         */
+        {
+            const gchar *directory = clawt_web_member(connector, "directory",
+                                                      "auto");
+            g_autofree gchar *tools_line = clawt_mcp_directory_status_label(
+                directory,
+                clawt_web_member_int(connector, "tool_count", -1),
+                clawt_web_member_int(connector, "tool_chars", 0),
+                min_tools, min_chars);
+
+            clawt_web_add(body, clawt_web_row("Tools", tools_line));
+            clawt_web_add(body, directory_form(escaped, directory));
+        }
+
         htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
 
         {
@@ -962,6 +1025,45 @@ connectors_content(ClawtWebApp *app)
             "Remove", remove, "danger", "Remove this connector?"));
 
         htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(row));
+        htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
+    }
+
+    /*
+     * Servers with many tools: the two thresholds `auto` measures a
+     * connector against.  Per connector the choice is on its own card.
+     */
+    {
+        g_autoptr(HtmxDiv) card = clawt_web_card(
+            "Servers with many tools",
+            "Past either of these, a connector set to Auto reaches agents "
+            "as a directory -- search, describe and call -- unless the "
+            "agent's CLI searches tools itself, as Claude Code does.");
+        HtmxElement *body = clawt_web_card_body(card);
+        g_autoptr(HtmxForm) form = clawt_web_form(
+            "/settings/connectors/directory-thresholds");
+        g_autofree gchar *tools_text = g_strdup_printf("%" G_GINT64_FORMAT,
+                                                       min_tools);
+        g_autofree gchar *chars_text = g_strdup_printf("%" G_GINT64_FORMAT,
+                                                       min_chars);
+
+        clawt_web_add(form, clawt_web_field("More tools than",
+                                            "directory_min_tools",
+                                            tools_text, "40"));
+        clawt_web_add(form, clawt_web_field(
+            "More characters of tool definitions than",
+            "directory_min_chars", chars_text, "100000"));
+
+        {
+            g_autoptr(HtmxDiv) buttons = htmx_div_new();
+            g_autoptr(HtmxButton) save = clawt_web_button("Save", "primary");
+
+            htmx_element_add_class(HTMX_ELEMENT(buttons), "btn-row");
+            htmx_element_set_attribute(HTMX_ELEMENT(save), "type", "submit");
+            htmx_node_add_child(HTMX_NODE(buttons), HTMX_NODE(save));
+            htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(buttons));
+        }
+
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
         htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
     }
 
@@ -2710,6 +2812,96 @@ on_integration_add(HtmxRequest *request, GHashTable *params,
                              "should use it.", FALSE);
 }
 
+/*
+ * A connector's `directory`, through integration.update like every other
+ * connector field.
+ */
+static HtmxResponse *
+on_connector_directory(HtmxRequest *request, GHashTable *params,
+                       gpointer user_data)
+{
+    g_autofree gchar *failure = NULL;
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *name = clawt_web_param(params, "connector");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(HtmxElement) content = NULL;
+
+    clawt_web_payload_set(payload, "name", name);
+    clawt_web_payload_set(payload, "directory",
+                          clawt_web_form_value(request, "directory"));
+
+    reply = clawt_web_app_call(app, "integration.update",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        failure = g_strdup(clawt_web_app_last_error(app));
+
+    content = connectors_content(app);
+
+    if (failure != NULL)
+        return settings_response(app, request, "connectors", content,
+                                 failure, TRUE);
+
+    return settings_response(app, request, "connectors", content,
+                             "Saved. It applies the next time an agent's "
+                             "session starts.", FALSE);
+}
+
+/*
+ * The two thresholds, through connector.settings, which refuses a
+ * negative one before writing either.  A field left empty or not a
+ * number is not sent, so it keeps its value rather than becoming zero.
+ */
+static HtmxResponse *
+on_connector_directory_thresholds(HtmxRequest *request, GHashTable *params,
+                                  gpointer user_data)
+{
+    g_autofree gchar *failure = NULL;
+    ClawtWebApp *app = user_data;
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(HtmxElement) content = NULL;
+    const gchar *keys[] = { "directory_min_tools", "directory_min_chars",
+                            NULL };
+    gsize k;
+
+    (void)params;
+
+    for (k = 0; keys[k] != NULL; k++) {
+        const gchar *text = clawt_web_form_value(request, keys[k]);
+        gint64 value = 0;
+
+        if (text == NULL || *text == '\0')
+            continue;
+
+        if (!g_ascii_string_to_signed(text, 10, G_MININT64, G_MAXINT64,
+                                      &value, NULL)) {
+            content = connectors_content(app);
+            return settings_response(app, request, "connectors", content,
+                                     "A threshold has to be a whole "
+                                     "number.", TRUE);
+        }
+
+        clawt_web_payload_set_int(payload, keys[k], value);
+    }
+
+    reply = clawt_web_app_call(app, "connector.settings",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        failure = g_strdup(clawt_web_app_last_error(app));
+
+    content = connectors_content(app);
+
+    if (failure != NULL)
+        return settings_response(app, request, "connectors", content,
+                                 failure, TRUE);
+
+    return settings_response(app, request, "connectors", content, "Saved.",
+                             FALSE);
+}
+
 static HtmxResponse *
 on_connector_add(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
@@ -3169,6 +3361,10 @@ clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app)
                      app);
     htmx_router_post(router, "/settings/connectors/registry-refresh",
                      on_registry_refresh, app);
+    htmx_router_post(router, "/settings/connectors/directory-thresholds",
+                     on_connector_directory_thresholds, app);
+    htmx_router_post(router, "/settings/connectors/:connector/directory",
+                     on_connector_directory, app);
     htmx_router_get(router, "/settings/connectors/:connector/authorize",
                     on_connector_authorize, app);
     htmx_router_post(router, "/settings/connectors/:connector/await",

@@ -328,7 +328,8 @@ clawtilla connector catalog
 clawtilla connector add gh --provider github --account work \
     --command github-mcp-server --scope all
 clawtilla connector key gh          # reads stdin with the echo off
-clawtilla connector list
+clawtilla connector list            # also: how many tools, and whether a directory
+clawtilla integration set gh directory=always
 #+end_src
 
 There is deliberately no =--key= flag, for the same reason there is no
@@ -807,6 +808,18 @@ The list shows three states rather than two.  A credential that has
 expired *and can renew itself* reads as connected, because it is: the
 daemon renews it on a timer.  Showing that as broken would light the list
 up every hour and teach you to ignore the one that genuinely is.
+
+Each row also says how many tools the connector's server has and whether
+agents get it as a directory -- =clawt_mcp_directory_status_label()='s
+sentence, the same one the web and lrg clients and =clawtilla connector
+list= print.  A connector no agent has used yet says its size is
+unknown.  The connector's dialog has *Present as a directory* (Auto,
+Always, Never, walked from =clawt_tool_directory_mode_count()=), saved
+with ~integration.update~ as soon as it changes.  Under the list,
+*Servers with many tools* holds the two thresholds Auto measures against,
+~connectors.directory_min_tools~ and ~connectors.directory_min_chars~,
+written through ~connector.settings~.  See "Servers with many tools" in
+[[file:connectors.org][connectors.org]].
 
 See [[file:connectors.org][connectors.org]].
 

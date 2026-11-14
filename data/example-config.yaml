@@ -1443,6 +1443,24 @@ integrations:
     # around it and has to work out from an error that it never had it.
     tools: []
 
+    # connector: whether its tools are listed one by one or searched.
+    #
+    # A server with hundreds of tools puts every description into every
+    # model call. As a directory it is three tools instead --
+    # <name>_search_tools, <name>_describe_tool and <name>_call_tool -- and
+    # the agent looks up what it needs. The search, the description and the
+    # call all work from the tools this agent may use, so narrowing `tools:`
+    # narrows what can be found as well as what can be called.
+    #
+    # `auto` makes a directory of a server past
+    # connectors.directory_min_tools or connectors.directory_min_chars, for
+    # an agent whose CLI does not search tools itself; Claude Code does, so
+    # its agents get every tool as before. `always` makes one whatever the
+    # size or the CLI, and `never` lists every tool however many there
+    # are. See docs/connectors.org, "Servers with many tools".
+    # Values: auto, always, never
+    directory: "auto"
+
     # For a connector that can stage its writes, whether it does.
     #
     # A staged write becomes a decision in the operator's own inbox rather
@@ -1548,6 +1566,25 @@ connectors:
   # fleet that bounces every hour would refresh every hour regardless of
   # what this key says.
   registry_refresh_hours: 24
+
+  # More tools than this makes a connector's server a directory.
+  #
+  # Counted after the connector's `tools:` narrowing, because that is the
+  # list the agent would otherwise read. Forty is where a tool list starts
+  # to cost more than it helps -- and API-model engines refuse more than
+  # 128 tools a turn across every server they have. Only read when a
+  # connector's `directory` is `auto`.
+  directory_min_tools: 40
+
+  # More characters of tool definitions than this makes a directory too.
+  #
+  # The names, descriptions and input schemas together, which is what the
+  # model actually reads on every call. A server with thirty tools can
+  # still be a hundred thousand characters when each one carries a page of
+  # documentation; about where Claude Code starts searching its own tools
+  # rather than listing them. Only read when a connector's `directory` is
+  # `auto`.
+  directory_min_chars: 100000
 
 # Handing work to Grok bots, and hearing back.
 #

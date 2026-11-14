@@ -1013,8 +1013,18 @@ connect, with the auth kind each uses); ~connector.list~ (the ones you
 have, with whether each is live, when it expires and whether it can renew
 itself -- never the credential); ~connector.begin~ and ~connector.await~;
 ~connector.key~; ~connector.refresh~; ~connector.revoke~;
-~connector.registry_refresh~.  Adding and removing a connector go through
-~integration.add~ and ~integration.remove~ like any other integration.
+~connector.registry_refresh~; ~connector.settings~;
+~connector.tools_seen~.  Adding and removing a connector go through
+~integration.add~ and ~integration.remove~ like any other integration,
+and its ~directory~ is set with ~integration.update~.
+
+~connector.list~ also carries, per connector, ~directory~ (~auto~,
+~always~ or ~never~), ~tool_count~ (-1 when no relay has reported it),
+~tool_chars~, ~tool_areas~ and ~presented_as_directory~ -- whether an
+agent whose CLI does not search tools itself gets it as a directory --
+and, beside the array, the fleet's ~directory_min_tools~ and
+~directory_min_chars~.  See docs/connectors.org, "Servers with many
+tools".
 
 A secret is written by naming its *reference*: ~secret_key~,
 ~secret_backend~ (~file~, ~env~ or ~command~) and ~secret_locator~.  A
@@ -1314,6 +1324,25 @@ Takes a token and stores it 0600 under ~secrets.dir~.  The reply names
 the *file*, never the value: handing the credential back to the client
 that sent it would put a live secret into every client's memory.  Same
 rule as ~integration.matrix_login~.
+
+*** connector.settings
+
+The two thresholds that make a connector's server a directory.  Takes
+~directory_min_tools~ and ~directory_min_chars~, each optional; a member
+that is absent is left alone.  Both are checked before either is
+written, and a negative one is refused with
+~CLAWT_ERROR_INVALID_ARGUMENT~.  Replies with both current values, so an
+empty request reads them.
+
+*** connector.tools_seen
+
+Sent by a connector relay (=clawtilla connector relay=) when a whole tool
+list has arrived: ~name~, ~agent~, ~tools~, ~chars~, ~areas~ and
+~directory~.  The daemon keeps the last report per connector in
+=<state_dir>/connector-tools.yaml=; it is what ~connector.list~'s
+~tool_count~ and the agent's =TOOLS.org= are made from.  Refused with
+~CLAWT_ERROR_NOT_FOUND~ for a name that is not a connector, so a relay
+for one since removed does not bring its row back.  No client sends it.
 
 *** connector.registry_refresh
 

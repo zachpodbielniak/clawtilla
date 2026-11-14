@@ -28,6 +28,10 @@
 typedef struct {
     LrgWidget *list;
     guint      generation;
+
+    /* connectors.directory_min_tools and _min_chars, filled on refresh. */
+    LrgWidget *min_tools;
+    LrgWidget *min_chars;
 } Connectors;
 
 static Connectors connectors;
@@ -392,6 +396,79 @@ on_remove_clicked(LrgButton *button, gpointer user_data)
                       g_strdup(action->name), g_free);
 }
 
+/* ── Presenting a big server as a directory ───────────────────────── */
+
+static void
+on_directory_saved(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+                   gpointer user_data)
+{
+    if (reply != NULL)
+        clawt_lrg_toast(app, "Saved. It applies the next time an agent's "
+                             "session starts.");
+
+    refresh(app);
+}
+
+/*
+ * Saved as soon as it changes, through integration.update like every
+ * other connector field.
+ */
+static void
+on_directory_changed(LrgComboBox *combo, gpointer user_data)
+{
+    Action *action = user_data;
+    const gchar *nick = clawt_lrg_combo_id(LRG_WIDGET(combo));
+
+    if (nick == NULL)
+        return;
+
+    clawt_lrg_request(action->app, "integration.update",
+                      clawt_ipc_payload_new("name", action->name,
+                                            "directory", nick, NULL),
+                      CLAWT_LRG_REQUEST_NONE, on_directory_saved, NULL, NULL);
+}
+
+/*
+ * "Present as a directory: Auto / Always / Never", walked from the
+ * library's enumeration so a mode added there is offered here at once.
+ */
+static LrgWidget *
+directory_choice(ClawtLrgApp *app, const gchar *name, const gchar *current)
+{
+    g_autoptr(GPtrArray) nicks = g_ptr_array_new();
+    g_autoptr(GPtrArray) labels = g_ptr_array_new();
+    LrgWidget *form = clawt_lrg_form_new();
+    LrgWidget *combo;
+    Action *action = g_new0(Action, 1);
+    guint i;
+
+    for (i = 0; i < clawt_tool_directory_mode_count(); i++) {
+        g_ptr_array_add(nicks,
+                        (gpointer)clawt_tool_directory_mode_nth_nick(i));
+        g_ptr_array_add(labels,
+                        (gpointer)clawt_tool_directory_mode_nth_label(i));
+    }
+
+    g_ptr_array_add(nicks, NULL);
+    g_ptr_array_add(labels, NULL);
+
+    combo = clawt_lrg_combo((const gchar *const *)nicks->pdata,
+                            (const gchar *const *)labels->pdata,
+                            (current != NULL) ? current : "auto");
+
+    action->app = app;
+    action->name = g_strdup(name);
+    g_signal_connect_data(combo, "changed", G_CALLBACK(on_directory_changed),
+                          action,
+                          (GClosureNotify)(void (*)(void))action_free, 0);
+
+    clawt_lrg_form_add(form, "Present as a directory", combo,
+                       "Three tools that search, describe and run the "
+                       "rest, instead of every tool in every prompt.");
+
+    return form;
+}
+
 /*
  * Plain buttons in a dialog rather than a menu that runs on selection:
  * GTK learned that a list selecting its first row as it takes focus
@@ -422,6 +499,10 @@ on_actions_clicked(LrgButton *button, gpointer user_data)
     guint i;
 
     lrg_widget_set_min_size(box, 320.0f * (gfloat)app->scale, 0.0f);
+
+    clawt_lrg_take(box, directory_choice(
+        app, name, g_object_get_data(G_OBJECT(button),
+                                     "clawt-connector-directory")));
 
     for (i = 0; i < G_N_ELEMENTS(actions); i++) {
         Action *action = g_new0(Action, 1);
@@ -662,6 +743,8 @@ on_list(ClawtLrgApp *app, JsonNode *reply, const GError *error,
         gpointer user_data)
 {
     JsonArray *list;
+    gint64 min_tools;
+    gint64 min_chars;
     guint i;
 
     if (GPOINTER_TO_UINT(user_data) != connectors.generation ||
@@ -671,6 +754,22 @@ on_list(ClawtLrgApp *app, JsonNode *reply, const GError *error,
     clawt_lrg_clear(connectors.list);
     list = clawt_lrg_settings_member_array(clawt_ipc_reply_object(reply),
                                            "connectors");
+    min_tools = json_object_get_int_member_with_default(
+        clawt_ipc_reply_object(reply), "directory_min_tools", 40);
+    min_chars = json_object_get_int_member_with_default(
+        clawt_ipc_reply_object(reply), "directory_min_chars", 100000);
+
+    if (connectors.min_tools != NULL) {
+        g_autofree gchar *tools_text = g_strdup_printf("%" G_GINT64_FORMAT,
+                                                       min_tools);
+        g_autofree gchar *chars_text = g_strdup_printf("%" G_GINT64_FORMAT,
+                                                       min_chars);
+
+        lrg_text_input_set_text(LRG_TEXT_INPUT(connectors.min_tools),
+                                tools_text);
+        lrg_text_input_set_text(LRG_TEXT_INPUT(connectors.min_chars),
+                                chars_text);
+    }
 
     if (list == NULL || json_array_get_length(list) == 0)
         clawt_lrg_take(connectors.list, clawt_lrg_row(
@@ -709,13 +808,88 @@ on_list(ClawtLrgApp *app, JsonNode *reply, const GError *error,
                                g_strdup(name), g_free);
         g_object_set_data_full(G_OBJECT(open), "clawt-connector-provider",
                                g_strdup(provider), g_free);
+        g_object_set_data_full(G_OBJECT(open), "clawt-connector-directory",
+                               g_strdup(clawt_ipc_payload_string(
+                                   entry, "directory")), g_free);
         clawt_lrg_row_add_suffix(row, open);
 
         clawt_lrg_appear(app, row, i);
         clawt_lrg_take(connectors.list, row);
+
+        /*
+         * How many tools, and whether agents see them as a directory --
+         * libclawt's sentence, the one the other clients draw too.  Its
+         * own wrapping line, since a row's subtitle is one.
+         */
+        {
+            g_autofree gchar *tools_line = clawt_mcp_directory_status_label(
+                clawt_ipc_payload_string(entry, "directory"),
+                json_object_get_int_member_with_default(entry, "tool_count",
+                                                        -1),
+                json_object_get_int_member_with_default(entry, "tool_chars",
+                                                        0),
+                min_tools, min_chars);
+
+            clawt_lrg_take(connectors.list,
+                           clawt_lrg_paragraph(tools_line, "muted"));
+        }
     }
 
     clawt_lrg_app_wake(app);
+}
+
+static void
+on_thresholds_saved(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+                    gpointer user_data)
+{
+    if (reply != NULL)
+        clawt_lrg_toast(app, "Saved.");
+
+    refresh(app);
+}
+
+/*
+ * Through connector.settings, which refuses a negative threshold before
+ * writing either.  Text that is not a whole number is said so here and
+ * not sent, rather than saved as zero.
+ */
+static void
+on_thresholds_save(LrgButton *button, gpointer user_data)
+{
+    ClawtLrgApp *app = user_data;
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    LrgWidget *entries[2];
+    const gchar *keys[] = { "directory_min_tools", "directory_min_chars" };
+    guint k;
+
+    entries[0] = connectors.min_tools;
+    entries[1] = connectors.min_chars;
+
+    json_builder_begin_object(builder);
+
+    for (k = 0; k < G_N_ELEMENTS(keys); k++) {
+        const gchar *text = clawt_lrg_entry_text(entries[k]);
+        gint64 value = 0;
+
+        if (text == NULL || *text == '\0')
+            continue;
+
+        if (!g_ascii_string_to_signed(text, 10, 0, G_MAXINT64, &value,
+                                      NULL)) {
+            clawt_lrg_toast(app, "A threshold has to be a whole number, "
+                                 "zero or more.");
+            return;
+        }
+
+        json_builder_set_member_name(builder, keys[k]);
+        json_builder_add_int_value(builder, value);
+    }
+
+    json_builder_end_object(builder);
+
+    clawt_lrg_request(app, "connector.settings",
+                      json_builder_get_root(builder), CLAWT_LRG_REQUEST_NONE,
+                      on_thresholds_saved, NULL, NULL);
 }
 
 static void
@@ -754,6 +928,34 @@ build(ClawtLrgApp *app)
     g_object_unref(connectors.list);
 
     clawt_lrg_take(clawt_lrg_page_body(page), clawt_lrg_card(box));
+
+    /*
+     * Servers with many tools: the thresholds `auto` measures a
+     * connector against.  Per connector the choice is in its Actions.
+     */
+    {
+        LrgWidget *many = clawt_lrg_vbox(10.0f);
+        LrgWidget *form = clawt_lrg_form_new();
+
+        clawt_lrg_take(many, clawt_lrg_section("Servers with many tools"));
+        clawt_lrg_take(many, clawt_lrg_paragraph(
+            "Past either of these, a connector set to Auto reaches agents "
+            "as a directory -- search, describe and call -- unless the "
+            "agent's CLI searches tools itself, as Claude Code does.",
+            "muted"));
+
+        connectors.min_tools = clawt_lrg_entry("40", "40");
+        connectors.min_chars = clawt_lrg_entry("100000", "100000");
+        clawt_lrg_form_add(form, "More tools than", connectors.min_tools,
+                           NULL);
+        clawt_lrg_form_add(form, "More characters of tool definitions than",
+                           connectors.min_chars, NULL);
+        clawt_lrg_take(many, form);
+        clawt_lrg_take(many, clawt_lrg_button(
+            "Save", "primary", G_CALLBACK(on_thresholds_save), app));
+
+        clawt_lrg_take(clawt_lrg_page_body(page), clawt_lrg_card(many));
+    }
 
     return page;
 }

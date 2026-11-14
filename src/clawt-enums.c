@@ -1051,6 +1051,29 @@ clawt_credential_placement_get_type(void)
     return g_define_type_id__volatile;
 }
 
+/* Register ClawtToolDirectoryMode as a GLib enum type */
+GType
+clawt_tool_directory_mode_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_TOOL_DIRECTORY_AUTO,
+              "CLAWT_TOOL_DIRECTORY_AUTO", "auto" },
+            { CLAWT_TOOL_DIRECTORY_ALWAYS,
+              "CLAWT_TOOL_DIRECTORY_ALWAYS", "always" },
+            { CLAWT_TOOL_DIRECTORY_NEVER,
+              "CLAWT_TOOL_DIRECTORY_NEVER", "never" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id =
+            g_enum_register_static("ClawtToolDirectoryMode", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
 /* ── Nickname helpers ────────────────────────────────────────────── */
 
 /*

@@ -2388,6 +2388,115 @@ test_an_unconnected_connector_says_the_scopes_were_requested(void)
 }
 
 
+/*
+ * ── A connector with too many tools ──────────────────────────────────
+ *
+ * TOOLS.org is what an agent believes about its tools.  A directory
+ * server must be described as one -- "search it" -- with what it covers,
+ * and never enumerated: four hundred tool names here would put back into
+ * every prompt the very text the directory exists to keep out of it.
+ */
+
+static const gchar BIG_CONNECTOR_YAML[] =
+    "integrations:\n"
+    "  - name: forge\n"
+    "    type: connector\n"
+    "    scope: all\n"
+    "    provider: github\n"
+    "    tools: [issues_create, issues_list]\n"
+    "%s"
+    "agents:\n"
+    "  - id: scribe\n"
+    "    model:\n"
+    "      provider: %s\n";
+
+/* What a relay would have reported: 200 tools, in two areas. */
+static void
+record_census(Fixture *fixture, gint64 tools)
+{
+    g_autofree gchar *state = g_build_filename(fixture->dir, "state", NULL);
+    g_autofree gchar *path = clawt_tool_census_path(state);
+    ClawtToolCensus census = { (gchar *)"forge", 0, 50000,
+                               (gchar *)"issues (120), pulls (80)", 1 };
+    g_autoptr(GError) error = NULL;
+
+    census.tools = tools;
+    g_assert_cmpint(g_mkdir_with_parents(state, 0700), ==, 0);
+    g_assert_true(clawt_tool_census_store(path, &census, &error));
+    g_assert_no_error(error);
+}
+
+static gchar *
+render_tools_org(const gchar *extra, const gchar *provider, gint64 tools)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *yaml = g_strdup_printf(BIG_CONNECTOR_YAML, extra,
+                                             provider);
+    ClawtAgentConfig *agent;
+    gchar *contents;
+
+    fixture_setup(&fixture, yaml);
+    agent = first_agent(&fixture);
+
+    if (tools >= 0)
+        record_census(&fixture, tools);
+
+    g_assert_true(clawt_workspace_scaffold(agent, &error));
+    g_assert_no_error(error);
+    g_assert_true(clawt_workspace_update_tools_org(fixture.config, agent,
+                                                   &error));
+    g_assert_no_error(error);
+
+    contents = read_workspace_file(agent, "TOOLS.org");
+    g_assert_nonnull(contents);
+
+    fixture_teardown(&fixture);
+
+    return contents;
+}
+
+static void
+test_a_big_connector_is_described_as_a_directory(void)
+{
+    g_autofree gchar *tools = render_tools_org("", "opencode", 200);
+
+    g_assert_nonnull(strstr(tools, "~forge_search_tools~"));
+    g_assert_nonnull(strstr(tools, "~forge_describe_tool~"));
+    g_assert_nonnull(strstr(tools, "~forge_call_tool~"));
+    g_assert_nonnull(strstr(tools, "200 tools"));
+    g_assert_nonnull(strstr(tools, "issues (120), pulls (80)"));
+
+    /* Described, not enumerated. */
+    g_assert_null(strstr(tools, "Only these tools are available here"));
+    g_assert_null(strstr(tools, "~issues_create~"));
+}
+
+static void
+test_a_directory_follows_the_cli_and_the_mode(void)
+{
+    /* Claude Code searches tools itself, so auto lists them whole. */
+    g_autofree gchar *claude = render_tools_org("", "claude-code", 200);
+    /* A small server is a list whatever the CLI. */
+    g_autofree gchar *small = render_tools_org("", "opencode", 12);
+    /* No relay has counted it yet: auto says nothing it cannot know. */
+    g_autofree gchar *unknown = render_tools_org("", "opencode", -1);
+    /* always, even for Claude Code, even uncounted. */
+    g_autofree gchar *always = render_tools_org("    directory: always\n",
+                                                "claude-code", -1);
+    /* never, however big. */
+    g_autofree gchar *never = render_tools_org("    directory: never\n",
+                                               "opencode", 400);
+
+    g_assert_null(strstr(claude, "forge_search_tools"));
+    g_assert_nonnull(strstr(claude, "Only these tools are available here"));
+    g_assert_null(strstr(small, "forge_search_tools"));
+    g_assert_null(strstr(unknown, "forge_search_tools"));
+    g_assert_nonnull(strstr(always, "~forge_search_tools~"));
+    g_assert_null(strstr(never, "forge_search_tools"));
+}
+
+
 /* ── What the persona costs ──────────────────────────────────────── */
 
 /* Writes @bytes of filler into a workspace file, plus a newline. */
@@ -2794,6 +2903,10 @@ main(int argc, char *argv[])
                     test_a_connector_reports_the_granted_scopes);
     g_test_add_func("/workspace/connector-says-requested-when-unconnected",
                     test_an_unconnected_connector_says_the_scopes_were_requested);
+    g_test_add_func("/workspace/big-connector-is-a-directory",
+                    test_a_big_connector_is_described_as_a_directory);
+    g_test_add_func("/workspace/directory-follows-cli-and-mode",
+                    test_a_directory_follows_the_cli_and_the_mode);
     g_test_add_func("/import/link-points-at-the-original",
                     test_a_linked_workspace_points_at_the_original);
     g_test_add_func("/import/link-over-existing-is-refused",

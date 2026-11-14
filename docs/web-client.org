@@ -117,6 +117,20 @@ spending, integrations, connectors, appearance, connections and devices.
 
 =/settings/spending?period=N&by=NICK= draws two rows of tabs -- the periods from =clawt_usage_period_count()= and the groupings from =clawt_usage_group_count()=, both by index into the library's tables, so there is no list of slugs here to drift -- then ~usage.ledger~'s groups as a table with Turns, Unpriced, In, Out and Cost columns and a Fleet footer.  An unpriced turn in the period adds a notice under the table saying how many and that they are not in the cost.  *Export CSV* is a plain =<a download>= to =/settings/spending/export= with the same query; that route asks the daemon again and answers =text/csv= with a =Content-Disposition= attachment, because the browser is not necessarily on the machine running =clawtilla-web=.  The document is =clawt_usage_ledger_csv()='s, the same bytes the CLI and the other clients write.
 
+*** Connectors
+
+Each connector's card has a /Tools/ row --
+=clawt_mcp_directory_status_label()='s sentence: how many tools its server
+has and whether agents get it as a directory -- and a *Present as a
+directory* select (Auto, Always, Never, walked from
+=clawt_tool_directory_mode_count()=) that posts to
+=/settings/connectors/:connector/directory= and saves through
+~integration.update~.  A *Servers with many tools* card holds the two
+thresholds and posts to =/settings/connectors/directory-thresholds=,
+which sends ~connector.settings~; a field left empty keeps its value and
+one that is not a whole number is refused before anything is sent.  See
+"Servers with many tools" in [[file:connectors.org][connectors.org]].
+
 *** The integration editor
 
 Drawn from ~clawt_integration_fields()~, the same table the GTK client

@@ -691,6 +691,13 @@ critical fired.
   the CLI keys its login on `$HOME` and refuses one. `clawt_account_check()`
   asks a probe client (`ai_cli_client_supports_config_dir()`) rather than
   keeping its own table of which providers can.
+- **Whether a CLI searches its own tools is not a class datum yet.** The
+  tool directory (`docs/connectors.org`, "Servers with many tools") must
+  not wrap a CLI that defers and searches MCP tools itself -- Claude Code
+  does -- so `clawt_mcp_directory_cli_searches_tools()` answers it from a
+  table, TRUE for claude-code and claude-tmux. That is the shape the
+  bullet above says not to keep; the roadmap carries moving it upstream as
+  `AiCliClientClass.searches_tools`. Do not add a second copy anywhere.
 - **One `.mcp.json`, every CLI's dialect.** libreclaw translates the
   workspace's `.mcp.json` with `ai_mcp_config_endpoint_for()` for codex, grok
   and opencode, which never read it; before 0.27.0 those agents had none of
@@ -1546,6 +1553,14 @@ versions apart.
 - A refusal names the feature that imposed it, supplied by the caller. The
   relay's own message told a connector-refused agent to enable a setting about
   seeing the screen.
+- **The relay decides each message in one place.** `ClawtMcpRelayPolicy`
+  and `clawt_mcp_relay_policy_outbound()` / `_inbound()` serve the stdio
+  relay and the HTTP bridge both; the bridge once applied the tool list
+  and skipped the action-rule gate entirely. The tool directory rewrites
+  `<name>_call_tool` to the inner `tools/call` *before* the permitted list
+  and the gate look at it, and is built from the list *after* the filter --
+  so the wall and the door answer from one list, and an approval names the
+  tool that runs.
 
 ## GTK4 and libadwaita
 

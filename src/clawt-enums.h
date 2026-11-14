@@ -1013,6 +1013,27 @@ typedef enum {
     CLAWT_CREDENTIAL_PLACEMENT_HEADER
 } ClawtCredentialPlacement;
 
+/**
+ * ClawtToolDirectoryMode:
+ * @CLAWT_TOOL_DIRECTORY_AUTO: a directory when the server is big and the
+ *   agent's CLI does not search tools by itself
+ * @CLAWT_TOOL_DIRECTORY_ALWAYS: a directory whatever the size and the CLI
+ * @CLAWT_TOOL_DIRECTORY_NEVER: every tool listed, however many there are
+ *
+ * Whether a connector's tools reach an agent one by one or as three
+ * tools that search, describe and call the rest.
+ *
+ * %CLAWT_TOOL_DIRECTORY_AUTO is zero on purpose: an integration that
+ * says nothing gets the behaviour the thresholds describe, and an
+ * unknown spelling is reported and falls back to it rather than to
+ * whatever member happened to be zero.
+ */
+typedef enum {
+    CLAWT_TOOL_DIRECTORY_AUTO = 0,
+    CLAWT_TOOL_DIRECTORY_ALWAYS,
+    CLAWT_TOOL_DIRECTORY_NEVER
+} ClawtToolDirectoryMode;
+
 /* GType registration */
 GType clawt_agent_state_get_type(void) G_GNUC_CONST;
 GType clawt_agent_caps_get_type(void) G_GNUC_CONST;
@@ -1048,6 +1069,7 @@ GType clawt_run_state_get_type(void) G_GNUC_CONST;
 GType clawt_guest_flavour_get_type(void) G_GNUC_CONST;
 GType clawt_connector_auth_get_type(void) G_GNUC_CONST;
 GType clawt_credential_placement_get_type(void) G_GNUC_CONST;
+GType clawt_tool_directory_mode_get_type(void) G_GNUC_CONST;
 
 #define CLAWT_TYPE_AGENT_STATE      (clawt_agent_state_get_type())
 #define CLAWT_TYPE_AGENT_CAPS       (clawt_agent_caps_get_type())
@@ -1084,6 +1106,8 @@ GType clawt_credential_placement_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_CONNECTOR_AUTH    (clawt_connector_auth_get_type())
 #define CLAWT_TYPE_CREDENTIAL_PLACEMENT \
     (clawt_credential_placement_get_type())
+#define CLAWT_TYPE_TOOL_DIRECTORY_MODE \
+    (clawt_tool_directory_mode_get_type())
 
 /**
  * clawt_computer_type_count:

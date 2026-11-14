@@ -5067,6 +5067,8 @@ on_settings_closed(AdwDialog *dialog, gpointer user_data)
     self->settings_spending_group = NULL;
     self->settings_spending_unpriced = NULL;
     self->settings_connectors = NULL;
+    self->settings_directory_min_tools = NULL;
+    self->settings_directory_min_chars = NULL;
     self->settings_devices = NULL;
     self->settings_devices_pair = NULL;
     self->settings_catalog_row = NULL;
