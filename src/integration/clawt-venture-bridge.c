@@ -25,6 +25,16 @@ typedef struct {
     gchar *base_url;
     gchar *token;
     gchar *agent_id;
+
+    /*
+     * Whether the server would stage what the agent sends it.  Asked
+     * once per source, on the first poll, because a server too old for
+     * `?stage=1` *applies* the write and answers as if all was well --
+     * so a bridge that only read the queue would show an empty inbox
+     * while the books changed underneath it.
+     */
+    ClawtVentureStaging staging;
+    gboolean            probed;
 } Source;
 
 /*
@@ -441,8 +451,59 @@ clawt_venture_bridge_poll(ClawtVentureBridge *self)
         if (url == NULL)
             continue;
 
+        if (!source->probed) {
+            g_autofree gchar *health =
+                clawt_venture_health_url(source->base_url);
+
+            source->probed = TRUE;
+
+            if (health != NULL)
+                send_request(self, "GET", health, source->token);
+        }
+
         send_request(self, "GET", url, source->token);
     }
+}
+
+/*
+ * Which source a health URL belongs to.
+ *
+ * Re-derived from each source's base for the reason the poll URL is: a
+ * remembered "the probe I sent" would belong to whichever of two servers
+ * asked last.
+ */
+static Source *
+source_for_health_url(ClawtVentureBridge *self, const gchar *url)
+{
+    GHashTableIter iter;
+    gpointer value;
+
+    g_hash_table_iter_init(&iter, self->sources);
+
+    while (g_hash_table_iter_next(&iter, NULL, &value)) {
+        Source *source = value;
+        g_autofree gchar *candidate =
+            clawt_venture_health_url(source->base_url);
+
+        if (g_strcmp0(candidate, url) == 0)
+            return source;
+    }
+
+    return NULL;
+}
+
+ClawtVentureStaging
+clawt_venture_bridge_get_staging(ClawtVentureBridge *self,
+                                 const gchar        *name)
+{
+    Source *source;
+
+    g_return_val_if_fail(CLAWT_IS_VENTURE_BRIDGE(self),
+                         CLAWT_VENTURE_STAGING_UNKNOWN);
+
+    source = source_for(self, name);
+
+    return source != NULL ? source->staging : CLAWT_VENTURE_STAGING_UNKNOWN;
 }
 
 /* ── Raising decisions ───────────────────────────────────────────── */
@@ -726,6 +787,37 @@ clawt_venture_bridge_complete(ClawtVentureBridge *self,
         }
 
         g_ptr_array_remove_index(self->answers, index);
+        return;
+    }
+
+    source = source_for_health_url(self, url);
+
+    if (source != NULL) {
+        g_autoptr(GError) parse_error = NULL;
+
+        /*
+         * A failed probe is asked again on the next tick rather than
+         * remembered as an answer: "could not reach it" must not become
+         * "it does not stage".
+         */
+        if (error != NULL || body == NULL) {
+            source->probed = FALSE;
+            return;
+        }
+
+        source->staging = clawt_venture_health_parse(body, length,
+                                                     &parse_error);
+
+        if (source->staging == CLAWT_VENTURE_STAGING_ABSENT)
+            g_warning("venture: '%s' does not stage writes (its health "
+                      "answer has no `staged_writes: true`), so what the "
+                      "agent writes there lands at once and "
+                      "`confirm_writes` reviews nothing; upgrade that "
+                      "VENTURE server", source->name);
+        else if (parse_error != NULL)
+            g_warning("venture: '%s': %s", source->name,
+                      parse_error->message);
+
         return;
     }
 

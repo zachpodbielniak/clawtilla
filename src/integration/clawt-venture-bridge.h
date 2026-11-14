@@ -282,4 +282,16 @@ guint clawt_venture_bridge_pending_answers(ClawtVentureBridge *self);
 const gchar *clawt_venture_bridge_pending_answer_url(ClawtVentureBridge *self,
                                                      guint               n);
 
+/**
+ * clawt_venture_bridge_get_staging:
+ * @self: a #ClawtVentureBridge
+ * @name: the source, by connector instance name
+ *
+ * What the server said, on the first poll, about staging writes.
+ *
+ * Returns: %CLAWT_VENTURE_STAGING_UNKNOWN until it has answered
+ */
+ClawtVentureStaging clawt_venture_bridge_get_staging(ClawtVentureBridge *self,
+                                                     const gchar        *name);
+
 G_END_DECLS

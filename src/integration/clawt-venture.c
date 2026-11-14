@@ -478,3 +478,170 @@ clawt_venture_answer_url(const gchar *base,
 
     return join_path(base, path);
 }
+
+/* ── Health and the business-event feed ──────────────────────────── */
+
+gchar *
+clawt_venture_health_url(const gchar *base)
+{
+    return join_path(base, "/api/v1/health");
+}
+
+ClawtVentureStaging
+clawt_venture_health_parse(const gchar  *body,
+                           gssize        length,
+                           GError      **error)
+{
+    g_autoptr(JsonParser) parser = json_parser_new();
+    JsonNode *root;
+    JsonObject *object;
+    JsonNode *member;
+
+    if (body == NULL ||
+        !json_parser_load_from_data(parser, body, length, error))
+        return CLAWT_VENTURE_STAGING_UNKNOWN;
+
+    root = json_parser_get_root(parser);
+
+    /* A type check is not a pointer check: an object node can hold no object. */
+    if (root == NULL || !JSON_NODE_HOLDS_OBJECT(root) ||
+        (object = json_node_get_object(root)) == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                            "VENTURE's health answer is not a JSON object");
+        return CLAWT_VENTURE_STAGING_UNKNOWN;
+    }
+
+    member = json_object_get_member(object, "staged_writes");
+
+    /*
+     * Absent is "no", not "unknown".  The member was added with the
+     * feature, so a server that does not mention it is one that ignores
+     * `?stage=1` and applies the write -- the case this probe exists to
+     * catch.  A member that is there but is not a boolean is unknown:
+     * the server said something, just not anything this can read.
+     */
+    if (member == NULL)
+        return CLAWT_VENTURE_STAGING_ABSENT;
+
+    if (!JSON_NODE_HOLDS_VALUE(member) ||
+        json_node_get_value_type(member) != G_TYPE_BOOLEAN) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                            "VENTURE's `staged_writes` is not a boolean");
+        return CLAWT_VENTURE_STAGING_UNKNOWN;
+    }
+
+    return json_node_get_boolean(member) ? CLAWT_VENTURE_STAGING_SUPPORTED
+                                         : CLAWT_VENTURE_STAGING_ABSENT;
+}
+
+gchar *
+clawt_venture_business_events_url(const gchar *base,
+                                  gint64       organization_id,
+                                  const gchar *after,
+                                  guint        limit)
+{
+    g_autofree gchar *escaped = NULL;
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *organization = NULL;
+
+    /*
+     * The cursor came back from VENTURE and goes out in a query, so it
+     * is escaped like any other string from another program: an `&`
+     * in it would otherwise add a parameter nobody chose.
+     */
+    escaped = g_uri_escape_string(after != NULL && *after != '\0' ? after
+                                                                  : "0",
+                                  NULL, FALSE);
+
+    if (organization_id > 0)
+        organization = g_strdup_printf("organization_id=%" G_GINT64_FORMAT
+                                       "&", organization_id);
+
+    path = g_strdup_printf("/api/v1/business-events?%safter=%s&limit=%u",
+                           organization != NULL ? organization : "",
+                           escaped, CLAMP(limit, 1, 1000));
+
+    return join_path(base, path);
+}
+
+GPtrArray *
+clawt_venture_business_events_parse(const gchar  *body,
+                                    gssize        length,
+                                    gchar       **out_next_cursor,
+                                    GError      **error)
+{
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autoptr(GPtrArray) events = NULL;
+    JsonNode *root;
+    JsonObject *object;
+    JsonNode *member;
+    JsonArray *array;
+    guint i;
+
+    g_return_val_if_fail(out_next_cursor != NULL, NULL);
+
+    *out_next_cursor = NULL;
+
+    if (body == NULL ||
+        !json_parser_load_from_data(parser, body, length, error))
+        return NULL;
+
+    root = json_parser_get_root(parser);
+
+    if (root == NULL || !JSON_NODE_HOLDS_OBJECT(root) ||
+        (object = json_node_get_object(root)) == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                            "the business-event page is not a JSON object");
+        return NULL;
+    }
+
+    member = json_object_get_member(object, "events");
+
+    if (member == NULL || !JSON_NODE_HOLDS_ARRAY(member) ||
+        (array = json_node_get_array(member)) == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                            "the business-event page has no `events` list");
+        return NULL;
+    }
+
+    /*
+     * The cursor is an integer in VENTURE's answer and is kept as text
+     * here, because it is only ever handed back: reading it as a number
+     * would be a reason for it to round.
+     */
+    member = json_object_get_member(object, "next_cursor");
+
+    if (member != NULL && JSON_NODE_HOLDS_VALUE(member)) {
+        if (json_node_get_value_type(member) == G_TYPE_INT64)
+            *out_next_cursor = g_strdup_printf(
+                "%" G_GINT64_FORMAT, json_node_get_int(member));
+        else if (json_node_get_value_type(member) == G_TYPE_STRING)
+            *out_next_cursor = g_strdup(json_node_get_string(member));
+    }
+
+    if (*out_next_cursor == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                            "the business-event page has no `next_cursor`");
+        return NULL;
+    }
+
+    events = g_ptr_array_new_with_free_func(g_free);
+
+    /*
+     * Each event back out as its own JSON text, because that is what a
+     * pushed delivery's body is and the same normaliser reads both.  An
+     * element that is not an object is skipped rather than refused: one
+     * odd row must not stall the feed behind it for ever.
+     */
+    for (i = 0; i < json_array_get_length(array); i++) {
+        JsonNode *element = json_array_get_element(array, i);
+
+        if (element == NULL || !JSON_NODE_HOLDS_OBJECT(element) ||
+            json_node_get_object(element) == NULL)
+            continue;
+
+        g_ptr_array_add(events, json_to_string(element, FALSE));
+    }
+
+    return g_steal_pointer(&events);
+}

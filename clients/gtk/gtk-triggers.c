@@ -38,6 +38,9 @@ typedef struct {
     GtkWidget   *repo_row;
     GtkWidget   *branch_row;
     GtkWidget   *header_row;
+    GtkWidget   *ignore_actors_row;
+    GtkWidget   *replay_connector_row;
+    GtkWidget   *organization_row;
     GtkWidget   *directory_row;
     GtkWidget   *worktree_row;
     GtkWidget   *isolate_row;
@@ -223,6 +226,20 @@ on_trigger_saved(GtkButton *button, gpointer user_data)
     json_builder_set_member_name(builder, "header");
     json_builder_add_string_value(
         builder, gtk_editable_get_text(GTK_EDITABLE(dialog->header_row)));
+    json_builder_set_member_name(builder, "ignore_actors");
+    json_builder_add_string_value(
+        builder,
+        gtk_editable_get_text(GTK_EDITABLE(dialog->ignore_actors_row)));
+    json_builder_set_member_name(builder, "replay_connector");
+    json_builder_add_string_value(
+        builder,
+        gtk_editable_get_text(GTK_EDITABLE(dialog->replay_connector_row)));
+    json_builder_set_member_name(builder, "organization_id");
+    json_builder_add_int_value(
+        builder,
+        g_ascii_strtoll(gtk_editable_get_text(
+                            GTK_EDITABLE(dialog->organization_row)),
+                        NULL, 10));
     json_builder_set_member_name(builder, "directory");
     json_builder_add_string_value(
         builder, gtk_editable_get_text(GTK_EDITABLE(dialog->directory_row)));
@@ -570,6 +587,58 @@ open_trigger_editor(ClawtWindow *self, JsonObject *existing)
     clawt_gtk_set_row_hint(
         dialog->header_row,
         "Only for a generic sender: which header carries the event name.");
+
+    {
+        g_autoptr(GString) joined = g_string_new(NULL);
+
+        if (existing != NULL &&
+            json_object_has_member(existing, "ignore_actors") &&
+            JSON_NODE_HOLDS_ARRAY(json_object_get_member(existing,
+                                                         "ignore_actors"))) {
+            JsonArray *array = json_object_get_array_member(existing,
+                                                            "ignore_actors");
+            guint a;
+
+            for (a = 0; a < json_array_get_length(array); a++) {
+                if (joined->len > 0)
+                    g_string_append(joined, ", ");
+
+                g_string_append(joined,
+                                json_array_get_string_element(array, a));
+            }
+        }
+
+        dialog->ignore_actors_row = clawt_gtk_add_entry(
+            listen, "Ignore changes by", joined->str);
+        clawt_gtk_set_row_hint(
+            dialog->ignore_actors_row,
+            "Comma separated accounts. Name the one the agent's own "
+            "credential belongs to, so it is not woken by its own writes.");
+    }
+
+    dialog->replay_connector_row = clawt_gtk_add_entry(
+        listen, "Catch up through",
+        existing != NULL ? clawt_json_string(existing, "replay_connector", "")
+                         : "");
+    clawt_gtk_set_row_hint(
+        dialog->replay_connector_row,
+        "VENTURE only: a venture connector on this agent whose token, an "
+        "owner's, reads the business-event feed to replay what arrived "
+        "while the daemon was down. Empty means no catch-up.");
+
+    {
+        g_autofree gchar *organization = g_strdup_printf(
+            "%" G_GINT64_FORMAT,
+            existing != NULL
+                ? clawt_json_int(existing, "organization_id", 0) : 0);
+
+        dialog->organization_row = clawt_gtk_add_entry(
+            listen, "Organization", organization);
+        clawt_gtk_set_row_hint(
+            dialog->organization_row,
+            "VENTURE only: which organization's events to catch up on. "
+            "0 means the token's own.");
+    }
 
     /* ── Who runs it ── */
 

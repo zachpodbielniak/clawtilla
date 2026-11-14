@@ -76,6 +76,22 @@ const gchar *clawt_trigger_event_get_url(ClawtTriggerEvent *self);
 const gchar *clawt_trigger_event_get_number(ClawtTriggerEvent *self);
 
 /**
+ * clawt_trigger_event_get_kind:
+ * @self: a #ClawtTriggerEvent
+ *
+ * What sort of record the delivery is about, for a sender whose events
+ * are about records rather than repositories -- VENTURE's `ticket`,
+ * `invoice`, `deal`.
+ *
+ * A field of its own rather than borrowing `repo`: a `repo:` filter that
+ * quietly matched record types would be a filter whose documentation
+ * was wrong for one provider, and nobody reads the exception.
+ *
+ * Returns: (nullable): the record type
+ */
+const gchar *clawt_trigger_event_get_kind(ClawtTriggerEvent *self);
+
+/**
  * clawt_trigger_event_get_payload:
  * @self: a #ClawtTriggerEvent
  *
@@ -99,6 +115,8 @@ void clawt_trigger_event_set_title(ClawtTriggerEvent *self,
 void clawt_trigger_event_set_url(ClawtTriggerEvent *self, const gchar *url);
 void clawt_trigger_event_set_number(ClawtTriggerEvent *self,
                                     const gchar       *number);
+void clawt_trigger_event_set_kind(ClawtTriggerEvent *self,
+                                  const gchar       *kind);
 void clawt_trigger_event_set_payload(ClawtTriggerEvent *self,
                                      const gchar       *payload);
 

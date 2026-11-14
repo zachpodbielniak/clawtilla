@@ -300,6 +300,12 @@ struct _ClawtDaemon {
      */
     ClawtVentureBridge  *venture;
 
+    /*
+     * The business-event catch-up for `provider: venture` triggers with
+     * a `replay_connector`.  Opaque here; daemon-venture.c owns it.
+     */
+    struct _ClawtVentureReplay *venture_replay;
+
     /* Pods that watch the fleet and act on it. */
     ClawtAutomation *automation;
 
@@ -437,6 +443,7 @@ typedef struct {
     GPtrArray       *results;   /* HealthResult* */
     guint            timeout;
     guint            next;
+    ClawtDaemon     *daemon;    /* not owned: it outlives every run */
 } HealthRun;
 
 typedef struct {
@@ -798,6 +805,24 @@ clawt_daemon_handle_hold(ClawtDaemon  *self,
 void clawt_daemon_triggers_stop(ClawtDaemon *self);
 
 /*
+ * clawt_daemon_trigger_deliver:
+ * @self: the daemon
+ * @trigger: the trigger the delivery is for
+ * @event: an authenticated, normalised delivery
+ * @out_text: (out) (transfer none): the sentence the sender is told
+ *
+ * Deduplication, rate limit, filters, handshake and dispatch -- every
+ * step after authentication, shared by the webhook listener and the
+ * VENTURE business-event replay.
+ *
+ * Returns: the HTTP status the delivery earns
+ */
+guint clawt_daemon_trigger_deliver(ClawtDaemon        *self,
+                                   ClawtTrigger       *trigger,
+                                   ClawtTriggerEvent  *event,
+                                   const gchar       **out_text);
+
+/*
  * The VENTURE bridge's own lifecycle, in daemon-venture.c for the same
  * reason: which connectors are bound, where their tokens are and the
  * one outbound HTTP request the daemon makes on its own context are all
@@ -806,6 +831,41 @@ void clawt_daemon_triggers_stop(ClawtDaemon *self);
 void clawt_daemon_venture_start(ClawtDaemon *self);
 void clawt_daemon_venture_stop(ClawtDaemon *self);
 void clawt_daemon_venture_sync(ClawtDaemon *self);
+
+/*
+ * clawt_daemon_venture_replay_tick:
+ * @self: the daemon
+ *
+ * Reads the business-event feed for every `provider: venture` trigger
+ * that names a `replay_connector`, once.  Called by the replay timer;
+ * public to the daemon so a test can drive it without waiting a minute.
+ */
+void clawt_daemon_venture_replay_tick(ClawtDaemon *self);
+
+/*
+ * clawt_daemon_venture_replay_page:
+ * @self: the daemon
+ * @trigger_id: the trigger the page was read for
+ * @body: (array length=length): one page of `/api/v1/business-events`
+ * @length: its length, or -1
+ * @baseline: %TRUE to only find where the feed ends, delivering nothing
+ * @out_count: (out) (optional): how many events were on the page
+ * @error: (out) (optional): why the page was not taken
+ *
+ * Delivers one page through clawt_daemon_trigger_deliver() and then, and
+ * only then, saves its cursor.  Split from the HTTP so a test can drive
+ * the whole of the catch-up without a server.
+ *
+ * Returns: (transfer full) (nullable): the cursor now saved, or %NULL if
+ *   the page was not taken and must be read again
+ */
+gchar *clawt_daemon_venture_replay_page(ClawtDaemon  *self,
+                                        const gchar  *trigger_id,
+                                        const gchar  *body,
+                                        gssize        length,
+                                        gboolean      baseline,
+                                        guint        *out_count,
+                                        GError      **error);
 
 gboolean
 clawt_daemon_venture_answer(ClawtDaemon *self, ClawtDecision *decision);

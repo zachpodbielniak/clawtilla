@@ -257,6 +257,7 @@ clawt_daemon_handle_integration(
                                                        agent_config);
 
         run = g_new0(HealthRun, 1);
+        run->daemon = self;
         run->pending = clawt_ipc_server_defer(self->ipc_server, request);
         run->checks = g_ptr_array_new_with_free_func(
             (GDestroyNotify)clawt_integration_binding_unref);

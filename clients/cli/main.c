@@ -7411,7 +7411,23 @@ cmd_routine(int argc, char *argv[])
 static void
 print_trigger_usage(gboolean asked_for)
 {
-    static const gchar *text =
+    g_autoptr(GString) providers = g_string_new(NULL);
+    g_autofree gchar *text = NULL;
+    guint p;
+
+    /*
+     * Walked from the library, so a provider added there is named here
+     * the moment it exists -- the list in this help had already missed
+     * one before it was made to.
+     */
+    for (p = 0; p < clawt_trigger_provider_count(); p++) {
+        if (providers->len > 0)
+            g_string_append(providers, ", ");
+
+        g_string_append(providers, clawt_trigger_provider_nth_nick(p));
+    }
+
+    text = g_strdup_printf(
         "Usage: clawtilla trigger <verb> [...]\n"
         "\n"
         "  list                           what can start a run, and where\n"
@@ -7425,7 +7441,7 @@ print_trigger_usage(gboolean asked_for)
         "  deliveries [id]                what has been sent, and what came\n"
         "                                 of it\n"
         "\n"
-        "Providers: forgejo, gitea, github, gitlab, generic.\n"
+        "Providers: %s.\n"
         "\n"
         "A new trigger starts switched off and unverified: the first\n"
         "delivery that authenticates is captured for you to look at rather\n"
@@ -7442,7 +7458,16 @@ print_trigger_usage(gboolean asked_for)
         "                    {{actor}}. Run the tests and report.\"\n"
         "  clawtilla trigger capture ci-failed\n"
         "  clawtilla trigger set ci-failed enabled=true\n"
-        "  clawtilla trigger deliveries ci-failed\n";
+        "  clawtilla trigger deliveries ci-failed\n"
+        "\n"
+        "  # VENTURE: create its webhook with this trigger's secret as the\n"
+        "  # signing secret; ignore the agent's own writes; catch up on\n"
+        "  # business events through the 'books' connector.\n"
+        "  clawtilla trigger add paid bookkeeper provider=venture \\\n"
+        "      events=invoice.paid ignore_actors=bookkeeper-bot \\\n"
+        "      replay_connector=books organization_id=1 \\\n"
+        "      instructions=\"{{kind}} {{number}} was paid. Reconcile it.\"\n",
+        providers->str);
 
     print_usage_text(text, asked_for);
 }

@@ -228,6 +228,27 @@ add_trigger_form(HtmxElement *parent, JsonObject *existing)
             continue;
         }
 
+        /*
+         * An integer read with the integer reader.  The string reader
+         * answers its fallback for a JSON number, so the field would be
+         * drawn empty and the next save would write 0 over whatever the
+         * file said -- silently, on every edit of an unrelated field.
+         */
+        if (entry->type == CLAWT_SCHEMA_INT) {
+            g_autofree gchar *number = g_strdup_printf(
+                "%" G_GINT64_FORMAT,
+                clawt_web_member_int(existing, leaf,
+                                     entry->default_value != NULL
+                                         ? g_ascii_strtoll(
+                                               entry->default_value, NULL,
+                                               10)
+                                         : 0));
+
+            clawt_web_add(form, clawt_web_field(leaf, leaf, number,
+                                                entry->doc));
+            continue;
+        }
+
         clawt_web_add(form, clawt_web_field(leaf, leaf, value, entry->doc));
     }
 

@@ -727,6 +727,51 @@ test_a_filter_is_not_matched_by_an_absent_field(void)
     g_assert_nonnull(reason);
 }
 
+/*
+ * The loop guard.  Two actors, because a guard written against one
+ * cannot tell "ignores this user" from "ignores everybody".
+ */
+static void
+test_an_ignored_actor_does_not_run(void)
+{
+    g_autoptr(ClawtConfig) config = config_with(
+        "  - id: t\n"
+        "    agent: builder\n"
+        "    instructions: go\n"
+        "    ignore_actors: [clawtilla-bot]\n");
+    ClawtTrigger *trigger = clawt_config_get_trigger(config, "t");
+    g_autoptr(ClawtTriggerEvent) event =
+        clawt_trigger_event_new(CLAWT_TRIGGER_PROVIDER_VENTURE,
+                                "ticket.updated", NULL);
+    g_autofree gchar *reason = NULL;
+
+    clawt_trigger_event_set_actor(event, "Clawtilla-Bot");
+    g_assert_false(clawt_trigger_accepts_delivery(trigger, event, &reason));
+    g_assert_nonnull(reason);
+    g_assert_nonnull(strstr(reason, "ignore_actors"));
+
+    clawt_trigger_event_set_actor(event, "zach");
+    g_assert_true(clawt_trigger_accepts_delivery(trigger, event, NULL));
+
+    /* No actor is not an ignored actor. */
+    clawt_trigger_event_set_actor(event, NULL);
+    g_assert_true(clawt_trigger_accepts_delivery(trigger, event, NULL));
+}
+
+/* `kind` is a placeholder like the others, so the table says so. */
+static void
+test_kind_is_a_placeholder(void)
+{
+    guint i;
+    gboolean found = FALSE;
+
+    for (i = 0; i < clawt_trigger_event_placeholder_count(); i++)
+        found |= g_strcmp0(clawt_trigger_event_placeholder_nth(i),
+                           "kind") == 0;
+
+    g_assert_true(found);
+}
+
 /* ── The template ────────────────────────────────────────────────── */
 
 static ClawtTriggerEvent *
@@ -742,6 +787,7 @@ filled_event(void)
     clawt_trigger_event_set_title(event, "Fix the thing");
     clawt_trigger_event_set_url(event, "https://forge/pr/3");
     clawt_trigger_event_set_number(event, "3");
+    clawt_trigger_event_set_kind(event, "pull_request");
 
     return event;
 }
@@ -1644,6 +1690,11 @@ main(int argc, char *argv[])
                     test_a_trigger_round_trips_through_the_config);
     g_test_add_func("/trigger/room-namespace",
                     test_a_trigger_room_is_not_a_routine_room);
+
+    g_test_add_func("/trigger/filter/ignored-actor",
+                    test_an_ignored_actor_does_not_run);
+    g_test_add_func("/trigger/template/kind-placeholder",
+                    test_kind_is_a_placeholder);
 
     return g_test_run();
 }

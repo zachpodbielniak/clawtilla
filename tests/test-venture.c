@@ -73,20 +73,24 @@ test_venture_is_in_the_builtin_catalogue(void)
 }
 
 /*
- * The nine tools venturectl mcp serves.
+ * The nineteen tools venturectl mcp serves.
  *
  * Written down here as well as in the catalogue on purpose: this is the
  * one place the two projects agree in writing, and a tool renamed
  * upstream should fail here rather than as an agent quietly narrowed to
- * nothing by its own `tools:` list.
+ * nothing by its own `tools:` list.  The list is VENTURE's
+ * docs/mcp.org table, in its order.
  */
 static void
-test_the_nine_tools_are_declared(void)
+test_the_nineteen_tools_are_declared(void)
 {
     static const gchar *const expected[] = {
         "venture_schema", "venture_list", "venture_get", "venture_create",
         "venture_update", "venture_delete", "venture_reports",
-        "venture_report", "venture_confirmations", NULL
+        "venture_report", "venture_confirmations", "venture_modules",
+        "venture_links", "venture_link", "venture_dashboards",
+        "venture_dashboard", "venture_dashboard_build", "venture_factory",
+        "venture_inbox", "venture_runs", "venture_desk", NULL
     };
 
     const ClawtConnectorInfo *info = venture_entry();
@@ -98,7 +102,7 @@ test_the_nine_tools_are_declared(void)
     for (i = 0; info->known_tools[i] != NULL; i++)
         count++;
 
-    g_assert_cmpuint(count, ==, 9);
+    g_assert_cmpuint(count, ==, 19);
 
     for (i = 0; expected[i] != NULL; i++) {
         gsize j;
@@ -487,6 +491,7 @@ typedef struct {
     ClawtVentureBridge *bridge;
     GPtrArray          *sent;      /* gchar*, "METHOD url" */
     gboolean            fail;      /* answer every request with an error */
+    const gchar        *health;    /* what /api/v1/health says, or NULL */
 } BridgeFixture;
 
 /*
@@ -521,6 +526,16 @@ record_request(ClawtVentureBridge *bridge, const gchar *method,
      * with an empty *string* would be a parse failure, which is a
      * different case and has its own test.
      */
+    if (g_strcmp0(method, "GET") == 0 &&
+        g_str_has_suffix(url, "/api/v1/health")) {
+        clawt_venture_bridge_complete(
+            bridge, url,
+            fixture->health != NULL ? fixture->health
+                                    : "{\"staged_writes\": true}",
+            -1, NULL);
+        return;
+    }
+
     if (g_strcmp0(method, "GET") == 0) {
         clawt_venture_bridge_complete(bridge, url, "[]", -1, NULL);
         return;
@@ -912,7 +927,8 @@ test_a_url_secret_never_opens_a_forge(void)
         CLAWT_TRIGGER_PROVIDER_FORGEJO,
         CLAWT_TRIGGER_PROVIDER_GITEA,
         CLAWT_TRIGGER_PROVIDER_GITHUB,
-        CLAWT_TRIGGER_PROVIDER_GITLAB
+        CLAWT_TRIGGER_PROVIDER_GITLAB,
+        CLAWT_TRIGGER_PROVIDER_VENTURE
     };
 
     gsize i;
@@ -940,6 +956,7 @@ typedef struct {
     ClawtDaemon  *daemon;
     GMainContext *context;
     GPtrArray    *sent;
+    const gchar  *extra_yaml;   /* appended to the config, or NULL */
 } DaemonFixture;
 
 static void
@@ -952,6 +969,13 @@ daemon_record_request(ClawtVentureBridge *bridge, const gchar *method,
     (void)token;
 
     g_ptr_array_add(fixture->sent, g_strdup_printf("%s %s", method, url));
+
+    if (g_str_has_suffix(url, "/api/v1/health")) {
+        clawt_venture_bridge_complete(bridge, url,
+                                      "{\"staged_writes\": true}", -1,
+                                      NULL);
+        return;
+    }
 
     clawt_venture_bridge_complete(bridge, url, "[]", -1, NULL);
 }
@@ -994,9 +1018,11 @@ daemon_fixture_setup(DaemonFixture *fixture)
         "    scope: all\n"
         "    instance: \"https://books.example\"\n"
         "    token_file: \"%s\"\n"
-        "agents:\n  - id: bookkeeper\n",
+        "agents:\n  - id: bookkeeper\n"
+        "%s",
         fixture->dir, fixture->dir, fixture->dir, secrets, fixture->dir,
-        fixture->dir, token_path);
+        fixture->dir, token_path,
+        fixture->extra_yaml != NULL ? fixture->extra_yaml : "");
 
     g_assert_true(g_file_set_contents(fixture->config_path, yaml, -1,
                                       &error));
@@ -1060,11 +1086,25 @@ test_a_configured_connector_becomes_a_source(void)
     g_assert_true(clawt_venture_bridge_has_source(fixture.daemon->venture,
                                                   "books"));
 
-    /* And it polls the instance the config named, not the default. */
+    /*
+     * And it polls the instance the config named, not the default --
+     * asking first, once, whether that server stages writes at all.
+     */
     clawt_venture_bridge_poll(fixture.daemon->venture);
 
-    g_assert_cmpuint(fixture.sent->len, ==, 1);
+    g_assert_cmpuint(fixture.sent->len, ==, 2);
     g_assert_cmpstr(g_ptr_array_index(fixture.sent, 0), ==,
+                    "GET https://books.example/api/v1/health");
+    g_assert_cmpstr(g_ptr_array_index(fixture.sent, 1), ==,
+                    "GET https://books.example/api/v1/confirmations");
+    g_assert_cmpint(clawt_venture_bridge_get_staging(fixture.daemon->venture,
+                                                     "books"),
+                    ==, CLAWT_VENTURE_STAGING_SUPPORTED);
+
+    /* Once: the second poll reads the queue and nothing else. */
+    clawt_venture_bridge_poll(fixture.daemon->venture);
+    g_assert_cmpuint(fixture.sent->len, ==, 3);
+    g_assert_cmpstr(g_ptr_array_index(fixture.sent, 2), ==,
                     "GET https://books.example/api/v1/confirmations");
 
     daemon_fixture_teardown(&fixture);
@@ -1122,6 +1162,398 @@ test_answering_a_decision_reaches_venture(void)
     daemon_fixture_teardown(&fixture);
 }
 
+/* ── VENTURE's own webhooks ──────────────────────────────────────── */
+
+static GHashTable *
+signed_headers(const gchar *secret, const gchar *body, const gchar *event,
+               const gchar *delivery)
+{
+    GHashTable *headers = clawt_trigger_headers_new();
+    g_autofree gchar *hex = g_compute_hmac_for_data(
+        G_CHECKSUM_SHA256, (const guchar *)secret, strlen(secret),
+        (const guchar *)body, strlen(body));
+    g_autofree gchar *signature = g_strconcat("sha256=", hex, NULL);
+
+    /* Mixed case on purpose: header names arrive however a server sends them. */
+    clawt_trigger_headers_add(headers, "X-Venture-Signature", signature);
+    clawt_trigger_headers_add(headers, "X-Venture-Event", event);
+    clawt_trigger_headers_add(headers, "X-Venture-Delivery", delivery);
+
+    return headers;
+}
+
+static const gchar ENVELOPE[] =
+    "{\"event\":\"ticket.updated\",\"delivery\":\"0f0a9f5e\","
+    "\"occurred_at\":\"2026-09-12T09:14:02Z\",\"actor\":\"zach\","
+    "\"webhook\":{\"id\":1,\"name\":\"clawtilla\"},"
+    "\"record\":{\"type\":\"ticket\",\"id\":7,"
+    "\"label\":\"Checkout returns 500 on Apple Pay\","
+    "\"url\":\"/e/ticket/7\"},\"data\":null}";
+
+static const gchar BUSINESS_EVENT[] =
+    "{\"id\":\"6a1e0c52-9b1f-4d7c-8a51-2f0e9b3c1d44\",\"cursor\":41,"
+    "\"organization_id\":1,\"event\":\"invoice.paid\","
+    "\"occurred_at\":\"2026-11-01T10:00:00Z\",\"source_type\":\"invoice\","
+    "\"source_id\":312,\"source_version\":4}";
+
+/*
+ * Signed the way VENTURE signs, and nothing else gets in.
+ *
+ * Each refusal is a different mistake somebody can make: a webhook with
+ * no secret sends no signature; GitHub's bare-hex habit is not VENTURE's
+ * scheme; a body changed in transit -- or re-serialised by a proxy --
+ * is not the body that was signed.
+ */
+static void
+test_a_venture_delivery_must_be_signed(void)
+{
+    ClawtTriggerHandler *handler =
+        clawt_trigger_handler_for(CLAWT_TRIGGER_PROVIDER_VENTURE);
+    g_autoptr(GHashTable) good = signed_headers("s3cret", ENVELOPE,
+                                                "ticket.updated", "d-1");
+    g_autoptr(GHashTable) unsigned_ = clawt_trigger_headers_new();
+    g_autoptr(GHashTable) bare = clawt_trigger_headers_new();
+    g_autofree gchar *hex = g_compute_hmac_for_data(
+        G_CHECKSUM_SHA256, (const guchar *)"s3cret", 6,
+        (const guchar *)ENVELOPE, strlen(ENVELOPE));
+    const gchar *tampered = "{\"event\":\"ticket.deleted\"}";
+
+    g_assert_true(clawt_trigger_handler_verify(
+        handler, "s3cret", good, (const guchar *)ENVELOPE, strlen(ENVELOPE),
+        NULL));
+
+    /* The wrong secret. */
+    g_assert_false(clawt_trigger_handler_verify(
+        handler, "other", good, (const guchar *)ENVELOPE, strlen(ENVELOPE),
+        NULL));
+
+    /* No signature at all: an unsigned VENTURE webhook. */
+    clawt_trigger_headers_add(unsigned_, "X-Venture-Event", "ticket.updated");
+    g_assert_false(clawt_trigger_handler_verify(
+        handler, "s3cret", unsigned_, (const guchar *)ENVELOPE,
+        strlen(ENVELOPE), NULL));
+
+    /* The right digest without its `sha256=`. */
+    clawt_trigger_headers_add(bare, "X-Venture-Signature", hex);
+    g_assert_false(clawt_trigger_handler_verify(
+        handler, "s3cret", bare, (const guchar *)ENVELOPE, strlen(ENVELOPE),
+        NULL));
+
+    /* A different body under the original signature. */
+    g_assert_false(clawt_trigger_handler_verify(
+        handler, "s3cret", good, (const guchar *)tampered, strlen(tampered),
+        NULL));
+
+    /* And an empty configured secret is a refusal, not a waiver. */
+    g_assert_false(clawt_trigger_handler_verify(
+        handler, "", good, (const guchar *)ENVELOPE, strlen(ENVELOPE),
+        NULL));
+}
+
+/*
+ * The ordinary envelope fills the placeholders a template can name.
+ *
+ * The values asserted, not just their presence: a record id read as a
+ * string from a member VENTURE sends as an integer would be NULL, and a
+ * template saying "ticket " with no number reads to an agent as fact.
+ */
+static void
+test_the_venture_envelope_fills_the_placeholders(void)
+{
+    ClawtTriggerHandler *handler =
+        clawt_trigger_handler_for(CLAWT_TRIGGER_PROVIDER_VENTURE);
+    g_autoptr(GHashTable) headers = signed_headers("s3cret", ENVELOPE,
+                                                   "ticket.updated", "d-1");
+    g_autoptr(ClawtTriggerEvent) event = clawt_trigger_handler_normalise(
+        handler, headers, (const guchar *)ENVELOPE, strlen(ENVELOPE));
+    g_autofree gchar *expanded = NULL;
+
+    g_assert_nonnull(event);
+    g_assert_cmpint(clawt_trigger_event_get_provider(event), ==,
+                    CLAWT_TRIGGER_PROVIDER_VENTURE);
+    g_assert_cmpstr(clawt_trigger_event_get_name(event), ==,
+                    "ticket.updated");
+    g_assert_cmpstr(clawt_trigger_event_get_delivery_id(event), ==, "d-1");
+    g_assert_cmpstr(clawt_trigger_event_get_actor(event), ==, "zach");
+    g_assert_cmpstr(clawt_trigger_event_get_kind(event), ==, "ticket");
+    g_assert_cmpstr(clawt_trigger_event_get_number(event), ==, "7");
+    g_assert_cmpstr(clawt_trigger_event_get_title(event), ==,
+                    "Checkout returns 500 on Apple Pay");
+    g_assert_cmpstr(clawt_trigger_event_get_url(event), ==, "/e/ticket/7");
+
+    expanded = clawt_trigger_expand_template(
+        "{{actor}} changed {{kind}} {{number}}: {{title}}", event);
+    g_assert_cmpstr(expanded, ==,
+                    "zach changed ticket 7: Checkout returns 500 on Apple Pay");
+}
+
+/*
+ * A business event is deduplicated on its stable id, not the header.
+ *
+ * On the durable lane `X-Venture-Delivery` names the delivery
+ * obligation, and the same event read back from the replay feed has no
+ * header at all.  Keyed on the header, a delivery that arrived both ways
+ * would run an agent twice for one paid invoice.
+ */
+static void
+test_a_business_event_is_keyed_on_its_stable_id(void)
+{
+    ClawtTriggerHandler *handler =
+        clawt_trigger_handler_for(CLAWT_TRIGGER_PROVIDER_VENTURE);
+    g_autoptr(GHashTable) pushed = signed_headers(
+        "s3cret", BUSINESS_EVENT, "invoice.paid", "obligation-9");
+    g_autoptr(GHashTable) replayed = clawt_trigger_headers_new();
+    g_autoptr(ClawtTriggerEvent) a = clawt_trigger_handler_normalise(
+        handler, pushed, (const guchar *)BUSINESS_EVENT,
+        strlen(BUSINESS_EVENT));
+    g_autoptr(ClawtTriggerEvent) b = clawt_trigger_handler_normalise(
+        handler, replayed, (const guchar *)BUSINESS_EVENT,
+        strlen(BUSINESS_EVENT));
+
+    g_assert_cmpstr(clawt_trigger_event_get_delivery_id(a), ==,
+                    "6a1e0c52-9b1f-4d7c-8a51-2f0e9b3c1d44");
+    g_assert_cmpstr(clawt_trigger_event_get_delivery_id(a), ==,
+                    clawt_trigger_event_get_delivery_id(b));
+
+    /* The name comes from the body when there is no header to read. */
+    g_assert_cmpstr(clawt_trigger_event_get_name(b), ==, "invoice.paid");
+    g_assert_cmpstr(clawt_trigger_event_get_kind(b), ==, "invoice");
+    g_assert_cmpstr(clawt_trigger_event_get_number(b), ==, "312");
+
+    /* Deliberately nothing else: the lane carries no labels or amounts. */
+    g_assert_null(clawt_trigger_event_get_title(b));
+}
+
+static void
+test_a_venture_delivery_is_sniffed_as_venture(void)
+{
+    g_autoptr(GHashTable) headers = signed_headers("s", ENVELOPE,
+                                                   "ticket.created", "d");
+    ClawtTriggerProvider provider = CLAWT_TRIGGER_PROVIDER_GENERIC;
+
+    g_assert_true(clawt_trigger_sniff_provider(headers, &provider));
+    g_assert_cmpint(provider, ==, CLAWT_TRIGGER_PROVIDER_VENTURE);
+}
+
+/*
+ * The provider list every client walks has VENTURE in it.  A client
+ * offering a hand-kept list would be the one place it was missing.
+ */
+static void
+test_venture_is_a_provider_the_clients_can_offer(void)
+{
+    guint i;
+    gboolean found = FALSE;
+
+    for (i = 0; i < clawt_trigger_provider_count(); i++) {
+        if (g_strcmp0(clawt_trigger_provider_nth_nick(i), "venture") == 0) {
+            found = TRUE;
+            g_assert_cmpstr(clawt_trigger_provider_nth_label(i), ==,
+                            "VENTURE");
+        }
+    }
+
+    g_assert_true(found);
+}
+
+/* ── Whether the server stages ───────────────────────────────────── */
+
+/*
+ * Three answers, because "it said no" and "it did not say" lead to
+ * different sentences: absent is no, since `staged_writes` arrived with
+ * staging itself; a member that is not a boolean is unknown.
+ */
+static void
+test_the_health_answer_has_three_readings(void)
+{
+    g_autoptr(GError) error = NULL;
+
+    g_assert_cmpint(clawt_venture_health_parse("{\"staged_writes\":true}",
+                                               -1, NULL),
+                    ==, CLAWT_VENTURE_STAGING_SUPPORTED);
+    g_assert_cmpint(clawt_venture_health_parse("{\"staged_writes\":false}",
+                                               -1, NULL),
+                    ==, CLAWT_VENTURE_STAGING_ABSENT);
+    g_assert_cmpint(clawt_venture_health_parse("{\"status\":\"ok\"}", -1,
+                                               NULL),
+                    ==, CLAWT_VENTURE_STAGING_ABSENT);
+
+    g_assert_cmpint(clawt_venture_health_parse("{\"staged_writes\":\"yes\"}",
+                                               -1, &error),
+                    ==, CLAWT_VENTURE_STAGING_UNKNOWN);
+    g_assert_nonnull(error);
+    g_clear_error(&error);
+
+    g_assert_cmpint(clawt_venture_health_parse("[]", -1, &error), ==,
+                    CLAWT_VENTURE_STAGING_UNKNOWN);
+    g_assert_nonnull(error);
+}
+
+/*
+ * A server that would apply what it is asked to stage is said out loud,
+ * once -- and a probe that failed is asked again rather than remembered
+ * as "does not stage".
+ */
+static void
+test_a_server_that_does_not_stage_is_reported(void)
+{
+    BridgeFixture fixture = { 0 };
+    guint i;
+    guint probes = 0;
+
+    bridge_fixture_setup(&fixture);
+
+    /* Unreachable first: nothing is concluded from silence. */
+    fixture.fail = TRUE;
+    clawt_venture_bridge_poll(fixture.bridge);
+    g_assert_cmpint(clawt_venture_bridge_get_staging(fixture.bridge, "books"),
+                    ==, CLAWT_VENTURE_STAGING_UNKNOWN);
+
+    fixture.fail = FALSE;
+    fixture.health = "{\"staged_writes\": false}";
+
+    g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING,
+                          "*does not stage writes*");
+    clawt_venture_bridge_poll(fixture.bridge);
+    g_test_assert_expected_messages();
+
+    g_assert_cmpint(clawt_venture_bridge_get_staging(fixture.bridge, "books"),
+                    ==, CLAWT_VENTURE_STAGING_ABSENT);
+
+    /* Asked again after the failure, and then not again. */
+    clawt_venture_bridge_poll(fixture.bridge);
+
+    for (i = 0; i < fixture.sent->len; i++) {
+        if (g_str_has_suffix(g_ptr_array_index(fixture.sent, i),
+                             "/api/v1/health"))
+            probes++;
+    }
+
+    g_assert_cmpuint(probes, ==, 2);
+
+    bridge_fixture_teardown(&fixture);
+}
+
+/* ── The business-event feed ─────────────────────────────────────── */
+
+static void
+test_the_feed_url_escapes_its_cursor(void)
+{
+    g_autofree gchar *first = clawt_venture_business_events_url(
+        "https://books.example/", 3, NULL, 100);
+    g_autofree gchar *later = clawt_venture_business_events_url(
+        "https://books.example", 0, "41&limit=1000000", 5000);
+
+    g_assert_cmpstr(first, ==,
+                    "https://books.example/api/v1/business-events"
+                    "?organization_id=3&after=0&limit=100");
+
+    /* A cursor cannot add a parameter, and the limit is VENTURE's. */
+    g_assert_cmpstr(later, ==,
+                    "https://books.example/api/v1/business-events"
+                    "?after=41%26limit%3D1000000&limit=1000");
+}
+
+static void
+test_a_feed_page_parses(void)
+{
+    g_autofree gchar *next = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GPtrArray) events = NULL;
+    g_autofree gchar *page = g_strdup_printf(
+        "{\"events\":[%s,7,{\"id\":\"b\",\"cursor\":42,"
+        "\"source_type\":\"deal\",\"source_id\":3,\"event\":\"deal.won\"}],"
+        "\"next_cursor\":42}", BUSINESS_EVENT);
+
+    events = clawt_venture_business_events_parse(page, -1, &next, &error);
+
+    g_assert_no_error(error);
+    g_assert_nonnull(events);
+
+    /* The stray `7` is skipped rather than stalling the feed behind it. */
+    g_assert_cmpuint(events->len, ==, 2);
+    g_assert_cmpstr(next, ==, "42");
+
+    g_free(g_steal_pointer(&next));
+    g_clear_pointer(&events, g_ptr_array_unref);
+
+    /* No cursor is an error: saving nothing would replay for ever. */
+    events = clawt_venture_business_events_parse("{\"events\":[]}", -1,
+                                                 &next, &error);
+    g_assert_null(events);
+    g_assert_nonnull(error);
+}
+
+/*
+ * The catch-up, through the daemon's own delivery path.
+ *
+ * The first read only finds the end; a page read twice runs nothing
+ * twice; and the cursor is where the page said.
+ */
+static void
+test_the_feed_is_replayed_once(void)
+{
+    DaemonFixture fixture = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GPtrArray) receipts = NULL;
+    g_autofree gchar *cursor = NULL;
+    g_autofree gchar *saved = NULL;
+    g_autofree gchar *page = g_strdup_printf(
+        "{\"events\":[%s,{\"id\":\"second\",\"cursor\":42,"
+        "\"source_type\":\"deal\",\"source_id\":3,\"event\":\"deal.won\"}],"
+        "\"next_cursor\":42}", BUSINESS_EVENT);
+
+    fixture.extra_yaml =
+        "triggers:\n"
+        "  - id: ledger\n"
+        "    agent: bookkeeper\n"
+        "    provider: venture\n"
+        "    instructions: \"look at {{kind}} {{number}}\"\n"
+        "    replay_connector: books\n"
+        "    organization_id: 1\n";
+
+    daemon_fixture_setup(&fixture);
+    g_assert_nonnull(fixture.daemon->trigger_store);
+
+    /* The baseline: the end is found and nothing is delivered. */
+    cursor = clawt_daemon_venture_replay_page(fixture.daemon, "ledger", page,
+                                              -1, TRUE, NULL, &error);
+    g_assert_no_error(error);
+    g_assert_cmpstr(cursor, ==, "42");
+
+    receipts = clawt_trigger_store_list_deliveries(
+        fixture.daemon->trigger_store, "ledger", 50);
+    g_assert_cmpuint(receipts->len, ==, 0);
+    g_clear_pointer(&receipts, g_ptr_array_unref);
+
+    /* A real page is delivered -- here captured, by the handshake. */
+    g_free(g_steal_pointer(&cursor));
+    cursor = clawt_daemon_venture_replay_page(fixture.daemon, "ledger", page,
+                                              -1, FALSE, NULL, &error);
+    g_assert_no_error(error);
+
+    receipts = clawt_trigger_store_list_deliveries(
+        fixture.daemon->trigger_store, "ledger", 50);
+    g_assert_cmpuint(receipts->len, ==, 2);
+    g_clear_pointer(&receipts, g_ptr_array_unref);
+
+    /* And the same page again changes nothing. */
+    g_free(g_steal_pointer(&cursor));
+    cursor = clawt_daemon_venture_replay_page(fixture.daemon, "ledger", page,
+                                              -1, FALSE, NULL, &error);
+    g_assert_no_error(error);
+
+    receipts = clawt_trigger_store_list_deliveries(
+        fixture.daemon->trigger_store, "ledger", 50);
+    g_assert_cmpuint(receipts->len, ==, 2);
+
+    saved = clawt_trigger_store_get_cursor(fixture.daemon->trigger_store,
+                                           "ledger");
+    g_assert_cmpstr(saved, ==, "42");
+
+    daemon_fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1129,8 +1561,8 @@ main(int argc, char **argv)
 
     g_test_add_func("/venture/in-the-catalogue",
                     test_venture_is_in_the_builtin_catalogue);
-    g_test_add_func("/venture/nine-tools-declared",
-                    test_the_nine_tools_are_declared);
+    g_test_add_func("/venture/nineteen-tools-declared",
+                    test_the_nineteen_tools_are_declared);
     g_test_add_func("/venture/url-fields-join-onto-the-instance",
                     test_every_url_field_joins_onto_the_instance);
 
@@ -1178,6 +1610,29 @@ main(int argc, char **argv)
                     test_a_configured_connector_becomes_a_source);
     g_test_add_func("/venture/answering-reaches-venture",
                     test_answering_a_decision_reaches_venture);
+
+    g_test_add_func("/venture/webhook/must-be-signed",
+                    test_a_venture_delivery_must_be_signed);
+    g_test_add_func("/venture/webhook/envelope-fills-placeholders",
+                    test_the_venture_envelope_fills_the_placeholders);
+    g_test_add_func("/venture/webhook/business-event-keyed-on-id",
+                    test_a_business_event_is_keyed_on_its_stable_id);
+    g_test_add_func("/venture/webhook/sniffed",
+                    test_a_venture_delivery_is_sniffed_as_venture);
+    g_test_add_func("/venture/webhook/offered-to-clients",
+                    test_venture_is_a_provider_the_clients_can_offer);
+
+    g_test_add_func("/venture/health/three-readings",
+                    test_the_health_answer_has_three_readings);
+    g_test_add_func("/venture/health/not-staging-reported",
+                    test_a_server_that_does_not_stage_is_reported);
+
+    g_test_add_func("/venture/feed/url-escapes-cursor",
+                    test_the_feed_url_escapes_its_cursor);
+    g_test_add_func("/venture/feed/page-parses",
+                    test_a_feed_page_parses);
+    g_test_add_func("/venture/feed/replayed-once",
+                    test_the_feed_is_replayed_once);
 
     return g_test_run();
 }

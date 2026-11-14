@@ -1526,6 +1526,8 @@ GType clawt_teach_step_kind_get_type(void) G_GNUC_CONST;
  * @CLAWT_TRIGGER_PROVIDER_GITEA: Gitea
  * @CLAWT_TRIGGER_PROVIDER_GITHUB: GitHub
  * @CLAWT_TRIGGER_PROVIDER_GITLAB: GitLab
+ * @CLAWT_TRIGGER_PROVIDER_VENTURE: VENTURE's own webhooks, signed or
+ *   from its durable business-event lane
  *
  * Who is delivering an event, which decides how it is authenticated.
  *
@@ -1539,13 +1541,21 @@ GType clawt_teach_step_kind_get_type(void) G_GNUC_CONST;
  * compatibility, so sniffing cannot be the primary answer: it is a
  * fallback for a delivery nobody declared, and it may never widen what a
  * configured trigger accepts.
+ *
+ * VENTURE is not a forge but signs like one: an HMAC-SHA256 of the body
+ * behind `sha256=` in `X-Venture-Signature`.  It is a provider of its
+ * own rather than `generic` because its envelope -- `record`, `actor`,
+ * and the business-event lane's stable `id` -- is what the placeholders
+ * and the deduplication are built from.  Appended, so the stored
+ * integer of every existing trigger keeps its meaning.
  */
 typedef enum {
     CLAWT_TRIGGER_PROVIDER_GENERIC = 0,
     CLAWT_TRIGGER_PROVIDER_FORGEJO,
     CLAWT_TRIGGER_PROVIDER_GITEA,
     CLAWT_TRIGGER_PROVIDER_GITHUB,
-    CLAWT_TRIGGER_PROVIDER_GITLAB
+    CLAWT_TRIGGER_PROVIDER_GITLAB,
+    CLAWT_TRIGGER_PROVIDER_VENTURE
 } ClawtTriggerProvider;
 
 GType clawt_trigger_provider_get_type(void) G_GNUC_CONST;

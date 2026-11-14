@@ -24,6 +24,7 @@ struct _ClawtTriggerEvent {
     gchar                *title;
     gchar                *url;
     gchar                *number;
+    gchar                *kind;
     gchar                *payload;
 };
 
@@ -58,6 +59,7 @@ clawt_trigger_event_copy(ClawtTriggerEvent *self)
     copy->title = g_strdup(self->title);
     copy->url = g_strdup(self->url);
     copy->number = g_strdup(self->number);
+    copy->kind = g_strdup(self->kind);
     copy->payload = g_strdup(self->payload);
 
     return copy;
@@ -78,6 +80,7 @@ clawt_trigger_event_free(ClawtTriggerEvent *self)
     g_free(self->title);
     g_free(self->url);
     g_free(self->number);
+    g_free(self->kind);
     g_free(self->payload);
     g_free(self);
 }
@@ -111,6 +114,7 @@ GETTER(actor)
 GETTER(title)
 GETTER(url)
 GETTER(number)
+GETTER(kind)
 GETTER(payload)
 
 #undef GETTER
@@ -131,6 +135,7 @@ SETTER(actor)
 SETTER(title)
 SETTER(url)
 SETTER(number)
+SETTER(kind)
 SETTER(payload)
 
 #undef SETTER
@@ -212,7 +217,7 @@ clawt_trigger_event_set_ref(ClawtTriggerEvent *self, const gchar *ref)
  * nothing documents is one nobody uses.
  */
 static const gchar *placeholders[] = {
-    "event", "repo", "ref", "actor", "title", "url", "number"
+    "event", "repo", "ref", "actor", "title", "url", "number", "kind"
 };
 
 const gchar *
@@ -235,6 +240,8 @@ clawt_trigger_event_placeholder(ClawtTriggerEvent *self, const gchar *name)
         return self->url;
     if (g_strcmp0(name, "number") == 0)
         return self->number;
+    if (g_strcmp0(name, "kind") == 0)
+        return self->kind;
 
     return NULL;
 }

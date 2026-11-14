@@ -298,8 +298,6 @@ on_delivery(const gchar  *endpoint,
     g_autofree gchar *secret = NULL;
     g_autoptr(ClawtTriggerEvent) event = NULL;
     g_autoptr(GError) error = NULL;
-    g_autofree gchar *reason = NULL;
-    g_autoptr(JsonNode) results = NULL;
 
     if (self->trigger_store == NULL)
         return finish((Answer){ 503,
@@ -414,6 +412,41 @@ on_delivery(const gchar  *endpoint,
         }
     }
 
+    {
+        const gchar *text = NULL;
+
+        *out_status = clawt_daemon_trigger_deliver(self, trigger, event,
+                                                   &text);
+
+        return g_strdup(text);
+    }
+}
+
+/*
+ * Everything after authentication, for a delivery from any door.
+ *
+ * The webhook listener reaches it with a body it has just verified, and
+ * the VENTURE business-event replay with an event it read back over an
+ * authenticated API.  One function, so a replayed delivery meets the
+ * same deduplication, filters and handshake as a pushed one -- two paths
+ * would differ exactly once, and the difference would be an agent run
+ * twice for one invoice.
+ */
+guint
+clawt_daemon_trigger_deliver(ClawtDaemon        *self,
+                             ClawtTrigger       *trigger,
+                             ClawtTriggerEvent  *event,
+                             const gchar       **out_text)
+{
+    const gchar *trigger_id = clawt_trigger_get_id(trigger);
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *reason = NULL;
+    g_autoptr(JsonNode) results = NULL;
+
+    /* Every exit names its status and the sentence the sender is told. */
+#define DELIVER_RETURN(code_, body_) \
+    do { *out_text = (body_); return (guint)(code_); } while (0)
+
     /*
      * Deduplication, before the pending-run cap.
      *
@@ -425,8 +458,7 @@ on_delivery(const gchar  *endpoint,
     if (clawt_trigger_store_seen_delivery(
             self->trigger_store, trigger_id,
             clawt_trigger_event_get_delivery_id(event)))
-        return finish((Answer){ 200,
-                                "already had that one\n" }, out_status);
+        DELIVER_RETURN(200, "already had that one\n");
 
     if (clawt_trigger_store_recent_count(self->trigger_store, trigger_id,
                                          RATE_WINDOW_SECONDS)
@@ -436,7 +468,7 @@ on_delivery(const gchar  *endpoint,
                                    "more deliveries than this trigger's "
                                    "rate limit allows", NULL);
 
-        return finish((Answer){ 429, "slow down\n" }, out_status);
+        DELIVER_RETURN(429, "slow down\n");
     }
 
     if (!clawt_trigger_accepts_event(trigger,
@@ -451,16 +483,14 @@ on_delivery(const gchar  *endpoint,
          * deliberately did not want will keep retrying it, and a forge's
          * retry schedule outlives anybody's patience.
          */
-        return finish((Answer){ 200, "not wanted\n" },
-                      out_status);
+        DELIVER_RETURN(200, "not wanted\n");
     }
 
     if (!clawt_trigger_accepts_delivery(trigger, event, &reason)) {
         clawt_trigger_store_record(self->trigger_store, trigger_id, event,
                                    CLAWT_DELIVERY_IGNORED, reason, NULL);
 
-        return finish((Answer){ 200, "not wanted\n" },
-                      out_status);
+        DELIVER_RETURN(200, "not wanted\n");
     }
 
     /*
@@ -484,20 +514,19 @@ on_delivery(const gchar  *endpoint,
 
         clawt_event_bus_emit(self->bus, "trigger.verified", trigger_id);
 
-        return finish((Answer){ 200, "captured\n" }, out_status);
+        DELIVER_RETURN(200, "captured\n");
     }
 
     results = clawt_trigger_dispatch(trigger, self->trigger_store, event,
         clawt_trigger_event_get_delivery_id(event), run_trigger, self, &error);
     if (results == NULL)
-        return finish((Answer){ error != NULL && error->code == CLAWT_ERROR_LOOP_LIMIT ? 429 : 503,
-                                "batch could not be reserved or recorded; inspect deliveries\n" }, out_status);
+        DELIVER_RETURN(error != NULL && error->code == CLAWT_ERROR_LOOP_LIMIT ? 429 : 503, "batch could not be reserved or recorded; inspect deliveries\n");
 
     if (!results_started(results))
-        return finish((Answer){ 200, "no recipients started; inspect deliveries\n" }, out_status);
+        DELIVER_RETURN(200, "no recipients started; inspect deliveries\n");
     clawt_event_bus_emit(self->bus, "trigger.fired", trigger_id);
 
-    return finish((Answer){ 200, "accepted\n" }, out_status);
+    DELIVER_RETURN(200, "accepted\n");
 }
 
 /* ── Lifecycle ───────────────────────────────────────────────────── */

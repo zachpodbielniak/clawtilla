@@ -34,7 +34,7 @@ static const gchar *const github_server_args[] = { "stdio", NULL };
 static const gchar *const venture_server_args[] = { "mcp", NULL };
 
 /*
- * The nine tools `venturectl mcp` serves, so a `tools:` narrowing that
+ * The nineteen tools `venturectl mcp` serves, so a `tools:` narrowing that
  * names one of them wrongly is caught when the plan is built rather
  * than by an agent finding its tool list empty.
  *
@@ -46,7 +46,10 @@ static const gchar *const venture_server_args[] = { "mcp", NULL };
 static const gchar *const venture_tools[] = {
     "venture_schema", "venture_list", "venture_get", "venture_create",
     "venture_update", "venture_delete", "venture_reports", "venture_report",
-    "venture_confirmations", NULL
+    "venture_confirmations", "venture_modules", "venture_links",
+    "venture_link", "venture_dashboards", "venture_dashboard",
+    "venture_dashboard_build", "venture_factory", "venture_inbox",
+    "venture_runs", "venture_desk", NULL
 };
 
 /*

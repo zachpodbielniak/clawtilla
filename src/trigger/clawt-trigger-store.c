@@ -55,7 +55,17 @@ static const gchar SCHEMA_SQL[] =
     "  ON deliveries(trigger_id, delivery_id)"
     "  WHERE delivery_id IS NOT NULL AND delivery_id <> '';"
     "CREATE INDEX IF NOT EXISTS deliveries_by_time"
-    "  ON deliveries(trigger_id, created_at);";
+    "  ON deliveries(trigger_id, created_at);"
+    /*
+     * Where a pull-based catch-up has read to, per trigger. A table of
+     * its own rather than a column on endpoints: it describes the
+     * sender's feed, and rotating an endpoint must not rewind it.
+     */
+    "CREATE TABLE IF NOT EXISTS cursors ("
+    "  trigger_id TEXT PRIMARY KEY,"
+    "  cursor     TEXT NOT NULL,"
+    "  updated_at INTEGER NOT NULL"
+    ");";
 
 #define BUSY_TIMEOUT_MS (5000)
 
@@ -215,6 +225,7 @@ event_snapshot(ClawtTriggerEvent *event)
     SNAPSHOT_FIELD(title);
     SNAPSHOT_FIELD(url);
     SNAPSHOT_FIELD(number);
+    SNAPSHOT_FIELD(kind);
     SNAPSHOT_FIELD(payload);
 #undef SNAPSHOT_FIELD
     json_builder_end_object(builder);
@@ -276,7 +287,7 @@ clawt_trigger_store_read_event(ClawtTriggerStore *self, const gchar *trigger_id,
         gboolean valid = provider != NULL && JSON_NODE_HOLDS_VALUE(provider) &&
             json_node_get_value_type(provider) == G_TYPE_INT64 &&
             json_node_get_int(provider) >= CLAWT_TRIGGER_PROVIDER_GENERIC &&
-            json_node_get_int(provider) <= CLAWT_TRIGGER_PROVIDER_GITLAB;
+            json_node_get_int(provider) < (gint64)clawt_trigger_provider_count();
 
         /* A corrupt archive/database must return an error, never trigger
          * JSON-GLib criticals or reinterpret missing fields as defaults. */
@@ -304,6 +315,19 @@ clawt_trigger_store_read_event(ClawtTriggerStore *self, const gchar *trigger_id,
     RESTORE_FIELD(number);
     RESTORE_FIELD(payload);
 #undef RESTORE_FIELD
+    /*
+     * Optional, unlike the fields above: snapshots written before it
+     * existed have no `kind`, and refusing them would make every
+     * delivery recorded before an upgrade unreplayable for the sake of a
+     * field none of their providers ever filled.
+     */
+    {
+        JsonNode *kind = json_object_get_member(object, "kind");
+
+        if (kind != NULL && JSON_NODE_HOLDS_VALUE(kind) &&
+            json_node_get_value_type(kind) == G_TYPE_STRING)
+            clawt_trigger_event_set_kind(event, json_node_get_string(kind));
+    }
     return event;
 }
 
@@ -1054,4 +1078,66 @@ clawt_trigger_store_claim_batch(ClawtTriggerStore *self,
 	if (stmt != NULL)
 		sqlite3_finalize(stmt);
 	return ok ? g_steal_pointer(&keys) : NULL;
+}
+
+gchar *
+clawt_trigger_store_get_cursor(ClawtTriggerStore *self,
+                               const gchar       *trigger_id)
+{
+    sqlite3_stmt *stmt = NULL;
+    gchar *cursor = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_TRIGGER_STORE(self), NULL);
+    g_return_val_if_fail(trigger_id != NULL, NULL);
+
+    if (sqlite3_prepare_v2(self->db,
+                           "SELECT cursor FROM cursors WHERE trigger_id = ?",
+                           -1, &stmt, NULL) != SQLITE_OK)
+        return NULL;
+
+    sqlite3_bind_text(stmt, 1, trigger_id, -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+        cursor = g_strdup((const gchar *)sqlite3_column_text(stmt, 0));
+
+    sqlite3_finalize(stmt);
+
+    return cursor;
+}
+
+gboolean
+clawt_trigger_store_set_cursor(ClawtTriggerStore  *self,
+                               const gchar        *trigger_id,
+                               const gchar        *cursor,
+                               GError            **error)
+{
+    sqlite3_stmt *stmt = NULL;
+    gboolean ok;
+
+    g_return_val_if_fail(CLAWT_IS_TRIGGER_STORE(self), FALSE);
+    g_return_val_if_fail(trigger_id != NULL, FALSE);
+    g_return_val_if_fail(cursor != NULL, FALSE);
+
+    if (sqlite3_prepare_v2(self->db,
+                           "INSERT INTO cursors(trigger_id, cursor, updated_at)"
+                           " VALUES (?, ?, ?) ON CONFLICT(trigger_id) DO"
+                           " UPDATE SET cursor = excluded.cursor,"
+                           " updated_at = excluded.updated_at",
+                           -1, &stmt, NULL) != SQLITE_OK) {
+        set_sqlite_error(error, self->db, "saving a feed cursor");
+        return FALSE;
+    }
+
+    sqlite3_bind_text(stmt, 1, trigger_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, cursor, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 3, g_get_real_time() / G_USEC_PER_SEC);
+
+    ok = sqlite3_step(stmt) == SQLITE_DONE;
+
+    if (!ok)
+        set_sqlite_error(error, self->db, "saving a feed cursor");
+
+    sqlite3_finalize(stmt);
+
+    return ok;
 }

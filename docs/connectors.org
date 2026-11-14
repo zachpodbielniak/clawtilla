@@ -263,19 +263,35 @@ type a plugin registers appears in the =type= enumeration of every tool
 that takes one, with no release anywhere.
 
 That is why the catalogue can write the tool list down at all.  There
-are nine, and they are verbs:
+are nineteen, and they are verbs:
 
-| Tool                    | What it does                                    |
-|-------------------------+-------------------------------------------------|
-| =venture_schema=        | the record types, or one of them in full        |
-| =venture_list=          | list records of a type, filtered                |
-| =venture_get=           | fetch one by id                                 |
-| =venture_create=        | create one                                      |
-| =venture_update=        | change named fields of one                      |
-| =venture_delete=        | soft-delete one                                 |
-| =venture_reports=       | what reports there are                          |
-| =venture_report=        | run one                                         |
-| =venture_confirmations= | list, approve or reject what is waiting         |
+| Tool                      | What it does                                                |
+|---------------------------+-------------------------------------------------------------|
+| =venture_schema=          | the record types, or one of them in full                    |
+| =venture_list=            | list records of a type, filtered                            |
+| =venture_get=             | fetch one by id                                             |
+| =venture_create=          | create one                                                  |
+| =venture_update=          | change named fields of one                                  |
+| =venture_delete=          | soft-delete one                                             |
+| =venture_reports=         | what reports there are                                      |
+| =venture_report=          | run one                                                     |
+| =venture_confirmations=   | list, approve or reject what is waiting                     |
+| =venture_modules=         | which modules the server runs, and why any is off           |
+| =venture_links=           | every link touching one record                              |
+| =venture_link=            | link two records; staged like a create                      |
+| =venture_dashboards=      | the dashboards, the widget kinds, or the templates          |
+| =venture_dashboard=       | one dashboard, evaluated, or its settings or definition     |
+| =venture_dashboard_build= | make one from a template or a definition                    |
+| =venture_factory=         | the release factory: status, actions, readiness, forecast, changelog, deploy, rollback, publish |
+| =venture_inbox=           | the token's own inbox; mark a notification read             |
+| =venture_runs=            | the coding runs with cost, or the budgets                   |
+| =venture_desk=            | a ticket's clocks, timelines, sprints, triage, summaries, worklogs, macros |
+
+The list is VENTURE's =docs/mcp.org= table and =tests/test-venture.c=
+pins it, so a tool renamed upstream fails there.  The writes among the
+last ten that are several records at once (a dashboard build, a macro,
+a release publish) refuse while staging is on and say which single
+writes would propose the same thing; see VENTURE's docs.
 
 They are the entry's =known_tools=, so a =tools:= narrowing that
 misspells one is a warning naming it rather than an agent silently
@@ -372,9 +388,8 @@ while a misread "no" leaves a card to answer again.
 
 *** Polling, and what it costs
 
-VENTURE raises its change events into its *own* podomation engine, in
-its own process.  There is no change stream out of it, so this is a
-poll -- on a timer attached to the daemon's context, never from a
+The confirmation queue has no change stream out of VENTURE, so this is
+a poll -- on a timer attached to the daemon's context, never from a
 request handler and never during daemon start.  The first poll is one
 interval after the daemon comes up.
 
@@ -391,6 +406,18 @@ connector arms no timer at all.
 mcp= decides that for itself and stages by default.  Turning it off
 here stops clawtilla polling, which leaves the staged changes in
 VENTURE for somebody to find in its own web interface.
+
+*** Whether the server stages at all
+
+The first poll of each connector also asks =GET /api/v1/health=.  A
+VENTURE too old for =?stage=1= *ignores* the parameter and applies the
+write, answering as if all was well -- so a bridge that only read the
+queue would show an empty inbox while the books changed underneath it.
+When the answer lacks =staged_writes: true= the daemon warns once, and
+the connector's health check (the row in every client, and ~clawtilla
+integration check~) turns red with "this VENTURE server does not stage
+writes".  A probe that could not reach the server is asked again on the
+next poll rather than remembered as "does not stage".
 
 A confirmation already raised is matched on its own id, so the same
 card polled every minute for an hour is one decision, not sixty.  The
@@ -417,12 +444,24 @@ clock.
 *** Telling an agent that a record changed
 
 The bridge is a pull in the other direction: clawtilla asks VENTURE
-what is waiting.  For a push -- "tell the bookkeeper when a deal
-closes" -- VENTURE's podomation module raises =on_created=,
-=on_updated= and =on_deleted= for every record change from every
-surface, and podomation can POST.  That reaches clawtilla's generic
-trigger provider with no C in either project; see
-[[file:triggers.org][Triggers]] for the recipe and the loop it can make.
+what is waiting.  For a push -- "tell the bookkeeper when an invoice is
+paid" -- VENTURE sends signed webhooks, and =provider: venture= on a
+trigger verifies them, fills ={{kind}}=, ={{number}}=, ={{title}}= and
+={{actor}}= from the envelope, ignores the agent's own writes with
+=ignore_actors=, and catches up on the durable business-event lane
+through this connector's token with =replay_connector=.  See
+[[file:triggers.org::*Telling an agent that a VENTURE record changed][Triggers]].
+
+*** What is still not done
+
+- *A card cannot say which agent staged it.*  Several agents sharing one
+  token are one actor to VENTURE, so the first agent in fleet order owns
+  every card.  The fleet warns about the shared token for that reason.
+- *The answer queue is in memory.*  Recovery after a restart relies on
+  VENTURE still holding the card, which it does until its TTL.
+- *VENTURE's inbox and coding runs are not alerts here.*  An agent can
+  read them with =venture_inbox= and =venture_runs=; clawtilla does not
+  poll them into its own alerts panel.
 
 ** The open MCP registry
 

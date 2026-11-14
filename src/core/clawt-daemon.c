@@ -8031,6 +8031,25 @@ on_health_checked(GObject *source, GAsyncResult *result, gpointer user_data)
         entry->message = g_strdup(error != NULL ? error->message
                                                 : "it did not answer");
 
+    /*
+     * A live credential is not a healthy VENTURE connector when the
+     * server would apply what the agent stages.  The bridge already
+     * asked; saying so here is what puts it on the row in every client,
+     * rather than in a log line nobody opened.
+     */
+    if (entry->ok && run->daemon != NULL && run->daemon->venture != NULL &&
+        g_strcmp0(entry->type_id, "connector") == 0 &&
+        g_strcmp0(clawt_integration_binding_get_string(binding, "provider"),
+                  "venture") == 0 &&
+        clawt_venture_bridge_get_staging(run->daemon->venture, entry->name)
+            == CLAWT_VENTURE_STAGING_ABSENT) {
+        entry->ok = FALSE;
+        entry->message = g_strdup(
+            "this VENTURE server does not stage writes, so what the agent "
+            "writes lands at once and confirm_writes reviews nothing; "
+            "upgrade the server");
+    }
+
     g_ptr_array_add(run->results, entry);
 
     health_run_step(run);

@@ -12,13 +12,14 @@
  * names *the code that answers for them*, and one of the two had to give
  * the name up.
  *
- * Four forges disagree about authentication in ways that are not
+ * Four forges and VENTURE disagree about authentication in ways that are not
  * cosmetic, so each gets its own implementation rather than a switch
  * inside one:
  *
  *   Forgejo, Gitea  HMAC-SHA256 over the raw body, hex, no prefix
  *   GitHub          the same digest behind a `sha256=` prefix
  *   GitLab          no digest at all -- the shared secret, verbatim
+ *   VENTURE         GitHub's digest under X-Venture-Signature
  *   generic         a bearer token
  *
  * Every implementation takes the **raw body bytes**.  A body that has

@@ -1861,7 +1861,7 @@ static const ClawtSchemaEntry schema[] = {
 
 { "triggers.provider", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
   "generic", clawt_trigger_provider_get_type,
-  "Who is calling: forgejo, gitea, github, gitlab or generic.\n"
+  "Who is calling: forgejo, gitea, github, gitlab, venture or generic.\n"
   "\n"
   "This decides how the delivery is authenticated, and the four forges\n"
   "genuinely disagree. Forgejo and Gitea sign the body with HMAC-SHA256\n"
@@ -1872,7 +1872,13 @@ static const ClawtSchemaEntry schema[] = {
   "Naming it matters because Forgejo also sends GitHub- and\n"
   "Gitea-shaped headers for compatibility. Sniffing is a fallback for\n"
   "when nobody said, and it can never widen what a configured trigger\n"
-  "accepts.", "0.2.0" },
+  "accepts.\n"
+  "\n"
+  "venture is VENTURE's own webhook: the same `sha256=` HMAC as GitHub\n"
+  "under X-Venture-Signature, so the webhook must be created with this\n"
+  "trigger's secret as its signing secret. Its record type fills\n"
+  "{{kind}}, the record's label {{title}}, its id {{number}} and the\n"
+  "user who made the change {{actor}}.", "0.2.0" },
 
 { "triggers.secret", CLAWT_SCHEMA_SECRET, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
@@ -1902,12 +1908,47 @@ static const ClawtSchemaEntry schema[] = {
   "For `provider: generic`, the header carrying the event name.",
   "0.2.0" },
 
+{ "triggers.ignore_actors", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Changes made by these users are recorded as ignored, not run.\n"
+  "\n"
+  "The loop guard. An agent that writes what its own trigger watches --\n"
+  "a VENTURE ticket it updates, a branch it pushes -- is called back by\n"
+  "its own write, and the sender cannot tell: to it every write is an\n"
+  "ordinary user's change. Name the account the agent's credential\n"
+  "belongs to. Matched against {{actor}}, ignoring case.", "0.9.3" },
+
+{ "triggers.replay_connector", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "venture: the connector whose credential reads the business-event\n"
+  "feed, so deliveries missed while the daemon was down are caught up.\n"
+  "\n"
+  "The name of a `venture` connector integration bound to this\n"
+  "trigger's agent. Its token must belong to an owner or administrator\n"
+  "of the organization, which is who VENTURE lets read the feed. The\n"
+  "feed is read every poll interval and replayed through the same\n"
+  "deduplication as a pushed delivery, on the event's stable id, so a\n"
+  "delivery that arrives both ways runs once.\n"
+  "\n"
+  "The first read only finds where the feed ends: replaying an\n"
+  "organization's whole history into an agent is never what somebody\n"
+  "turning this on meant. Only the durable lane (`business_events` on\n"
+  "the VENTURE webhook) has a feed; ordinary record webhooks are never\n"
+  "retried by VENTURE and cannot be caught up.", "0.9.3" },
+
+{ "triggers.organization_id", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "0", NULL,
+  "venture: which organization's business events to replay.\n"
+  "\n"
+  "The `organization_id` VENTURE scopes every request by. 0 sends none,\n"
+  "which VENTURE answers for the token's default organization.", "0.9.3" },
+
 { "triggers.instructions", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED,
   NULL, NULL,
   "What the agent is asked to do, with the event fenced beneath it.\n"
   "\n"
   "Placeholders -- {{event}}, {{repo}}, {{ref}}, {{actor}}, {{title}},\n"
-  "{{url}}, {{number}} -- are expanded by hand rather than by a format\n"
+  "{{url}}, {{number}}, {{kind}} -- are expanded by hand rather than by a format\n"
   "function, because this string comes out of a configuration file and\n"
   "a stray percent sign must be a percent sign.\n"
   "\n"

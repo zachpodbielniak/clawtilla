@@ -351,4 +351,37 @@ guint clawt_trigger_store_recent_count(ClawtTriggerStore *self,
 void clawt_trigger_store_prune(ClawtTriggerStore *self,
                                gint64             retain_seconds);
 
+/**
+ * clawt_trigger_store_get_cursor:
+ * @self: a #ClawtTriggerStore
+ * @trigger_id: which trigger
+ *
+ * How far a pull-based catch-up has read the sender's feed.
+ *
+ * %NULL means it has never read it, which is different from having read
+ * an empty one: the first read only finds where the feed ends.
+ *
+ * Returns: (transfer full) (nullable): the cursor
+ */
+gchar *clawt_trigger_store_get_cursor(ClawtTriggerStore *self,
+                                      const gchar       *trigger_id);
+
+/**
+ * clawt_trigger_store_set_cursor:
+ * @self: a #ClawtTriggerStore
+ * @trigger_id: which trigger
+ * @cursor: how far it has now read
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Saved only after every event up to it has been delivered or
+ * deduplicated, so a crash between the two re-reads a page rather than
+ * skipping one.
+ *
+ * Returns: %TRUE if it was written
+ */
+gboolean clawt_trigger_store_set_cursor(ClawtTriggerStore  *self,
+                                        const gchar        *trigger_id,
+                                        const gchar        *cursor,
+                                        GError            **error);
+
 G_END_DECLS

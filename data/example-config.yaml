@@ -1685,7 +1685,7 @@ triggers:
     # Where the run reports, if not the agent's own conversation.
     room: null
 
-    # Who is calling: forgejo, gitea, github, gitlab or generic.
+    # Who is calling: forgejo, gitea, github, gitlab, venture or generic.
     #
     # This decides how the delivery is authenticated, and the four forges
     # genuinely disagree. Forgejo and Gitea sign the body with HMAC-SHA256
@@ -1697,7 +1697,13 @@ triggers:
     # Gitea-shaped headers for compatibility. Sniffing is a fallback for
     # when nobody said, and it can never widen what a configured trigger
     # accepts.
-    # Values: generic, forgejo, gitea, github, gitlab
+    #
+    # venture is VENTURE's own webhook: the same `sha256=` HMAC as GitHub
+    # under X-Venture-Signature, so the webhook must be created with this
+    # trigger's secret as its signing secret. Its record type fills
+    # {{kind}}, the record's label {{title}}, its id {{number}} and the
+    # user who made the change {{actor}}.
+    # Values: generic, forgejo, gitea, github, gitlab, venture
     provider: "generic"
 
     # The shared secret the caller proves it knows.
@@ -1723,10 +1729,42 @@ triggers:
     # For `provider: generic`, the header carrying the event name.
     header: null
 
+    # Changes made by these users are recorded as ignored, not run.
+    #
+    # The loop guard. An agent that writes what its own trigger watches --
+    # a VENTURE ticket it updates, a branch it pushes -- is called back by
+    # its own write, and the sender cannot tell: to it every write is an
+    # ordinary user's change. Name the account the agent's credential
+    # belongs to. Matched against {{actor}}, ignoring case.
+    ignore_actors: []
+
+    # venture: the connector whose credential reads the business-event
+    # feed, so deliveries missed while the daemon was down are caught up.
+    #
+    # The name of a `venture` connector integration bound to this
+    # trigger's agent. Its token must belong to an owner or administrator
+    # of the organization, which is who VENTURE lets read the feed. The
+    # feed is read every poll interval and replayed through the same
+    # deduplication as a pushed delivery, on the event's stable id, so a
+    # delivery that arrives both ways runs once.
+    #
+    # The first read only finds where the feed ends: replaying an
+    # organization's whole history into an agent is never what somebody
+    # turning this on meant. Only the durable lane (`business_events` on
+    # the VENTURE webhook) has a feed; ordinary record webhooks are never
+    # retried by VENTURE and cannot be caught up.
+    replay_connector: null
+
+    # venture: which organization's business events to replay.
+    #
+    # The `organization_id` VENTURE scopes every request by. 0 sends none,
+    # which VENTURE answers for the token's default organization.
+    organization_id: 0
+
     # What the agent is asked to do, with the event fenced beneath it.
     #
     # Placeholders -- {{event}}, {{repo}}, {{ref}}, {{actor}}, {{title}},
-    # {{url}}, {{number}} -- are expanded by hand rather than by a format
+    # {{url}}, {{number}}, {{kind}} -- are expanded by hand rather than by a format
     # function, because this string comes out of a configuration file and
     # a stray percent sign must be a percent sign.
     #

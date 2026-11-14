@@ -1517,6 +1517,7 @@ clawt_trigger_provider_get_type(void)
             { CLAWT_TRIGGER_PROVIDER_GITEA, "CLAWT_TRIGGER_PROVIDER_GITEA", "gitea" },
             { CLAWT_TRIGGER_PROVIDER_GITHUB, "CLAWT_TRIGGER_PROVIDER_GITHUB", "github" },
             { CLAWT_TRIGGER_PROVIDER_GITLAB, "CLAWT_TRIGGER_PROVIDER_GITLAB", "gitlab" },
+            { CLAWT_TRIGGER_PROVIDER_VENTURE, "CLAWT_TRIGGER_PROVIDER_VENTURE", "venture" },
             { 0, NULL, NULL }
         };
         GType g_define_type_id =
@@ -1539,7 +1540,8 @@ static const struct {
     { CLAWT_TRIGGER_PROVIDER_FORGEJO, "forgejo", "Forgejo" },
     { CLAWT_TRIGGER_PROVIDER_GITEA,   "gitea",   "Gitea" },
     { CLAWT_TRIGGER_PROVIDER_GITHUB,  "github",  "GitHub" },
-    { CLAWT_TRIGGER_PROVIDER_GITLAB,  "gitlab",  "GitLab" }
+    { CLAWT_TRIGGER_PROVIDER_GITLAB,  "gitlab",  "GitLab" },
+    { CLAWT_TRIGGER_PROVIDER_VENTURE, "venture", "VENTURE" }
 };
 
 guint

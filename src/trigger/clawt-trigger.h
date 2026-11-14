@@ -121,7 +121,8 @@ gboolean clawt_trigger_accepts_event(ClawtTrigger *self,
  * @event: the normalised delivery
  * @out_reason: (out) (optional) (transfer full): why it was not accepted
  *
- * Whether the repository and branch filters let this delivery through.
+ * Whether the repository, branch and `ignore_actors` filters let this
+ * delivery through.
  *
  * A filter set against a delivery that names no repository at all is a
  * miss, not a match: `repo: mine/thing` must not be satisfied by a
@@ -139,7 +140,7 @@ gboolean clawt_trigger_accepts_delivery(ClawtTrigger       *self,
  * @event: the delivery to expand it against
  *
  * Replaces `{{event}}`, `{{repo}}`, `{{ref}}`, `{{actor}}`, `{{title}}`,
- * `{{url}}` and `{{number}}` with what the delivery said.
+ * `{{url}}`, `{{number}}` and `{{kind}}` with what the delivery said.
  *
  * Expanded by hand, character by character. This string came out of a
  * configuration file, so it must never reach printf(): a stray percent

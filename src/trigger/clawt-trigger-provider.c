@@ -767,6 +767,141 @@ clawt_gitlab_handler_class_init(ClawtGitlabHandlerClass *klass)
     (void)klass;
 }
 
+/* ── VENTURE ─────────────────────────────────────────────────────── */
+
+#define CLAWT_TYPE_VENTURE_HANDLER (clawt_venture_handler_get_type())
+G_DECLARE_FINAL_TYPE(ClawtVentureHandler, clawt_venture_handler,
+                     CLAWT, VENTURE_HANDLER, GObject)
+
+struct _ClawtVentureHandler { GObject parent_instance; };
+
+static gboolean
+venture_verify(ClawtTriggerHandler  *self,
+               const gchar          *secret,
+               GHashTable           *headers,
+               const guchar         *body,
+               gsize                 body_length,
+               GError              **error)
+{
+    (void)self;
+
+    /*
+     * GitHub's scheme under VENTURE's own header: HMAC-SHA256 of the
+     * exact body, hex, behind `sha256=`.  A VENTURE webhook with no
+     * secret sends no signature at all, and that is a refusal here
+     * rather than a pass -- the webhook has to be given this trigger's
+     * secret when it is created, which is what makes it signed.
+     */
+    if (hmac_matches(secret, body, body_length,
+                     header(headers, "x-venture-signature"), "sha256="))
+        return TRUE;
+
+    return refuse(error);
+}
+
+static gchar *
+venture_event_name(ClawtTriggerHandler *self, GHashTable *headers)
+{
+    (void)self;
+
+    return g_strdup(header(headers, "x-venture-event"));
+}
+
+static gchar *
+venture_delivery_id(ClawtTriggerHandler *self, GHashTable *headers)
+{
+    (void)self;
+
+    return g_strdup(header(headers, "x-venture-delivery"));
+}
+
+static ClawtTriggerEvent *
+venture_normalise(ClawtTriggerHandler *self, GHashTable *headers,
+                  const guchar *body, gsize body_length)
+{
+    g_autoptr(JsonParser) parser = NULL;
+    JsonObject *object;
+    ClawtTriggerEvent *event;
+    g_autofree gchar *name = venture_event_name(self, headers);
+    g_autofree gchar *delivery = venture_delivery_id(self, headers);
+
+    object = body_object(&parser, body, body_length);
+
+    /*
+     * The business-event lane carries a stable `id` in the body, and the
+     * same id comes back from `GET /api/v1/business-events` when a
+     * stopped daemon catches up.  Deduplicating on it rather than on the
+     * header is what lets a pushed delivery and a replayed one be the
+     * same delivery; on that lane `X-Venture-Delivery` names the
+     * obligation, which a replay does not have.
+     */
+    {
+        const gchar *stable = plain(object, "id");
+
+        if (stable != NULL && plain(object, "source_type") != NULL) {
+            g_free(delivery);
+            delivery = g_strdup(stable);
+        }
+    }
+
+    if (name == NULL)
+        name = g_strdup(plain(object, "event"));
+
+    event = clawt_trigger_event_new(CLAWT_TRIGGER_PROVIDER_VENTURE, name,
+                                    delivery);
+    clawt_trigger_event_set_payload_bytes(event, body, body_length);
+
+    if (object == NULL)
+        return event;
+
+    clawt_trigger_event_set_actor(event, plain(object, "actor"));
+
+    if (json_object_has_member(object, "record")) {
+        /* The ordinary envelope: what changed, and who changed it. */
+        g_autofree gchar *number = nested_number(object, "record", "id");
+
+        clawt_trigger_event_set_kind(event, nested(object, "record", "type"));
+        clawt_trigger_event_set_title(event,
+                                      nested(object, "record", "label"));
+        clawt_trigger_event_set_url(event, nested(object, "record", "url"));
+        clawt_trigger_event_set_number(event, number);
+    } else {
+        /*
+         * The business-event lane: deliberately no names, amounts or
+         * labels, only which record the transition happened to.  The
+         * agent has to read the record through its connector to learn
+         * more, which is the point of the lane being minimal.
+         */
+        g_autofree gchar *number = number_of(object, "source_id");
+
+        clawt_trigger_event_set_kind(event, plain(object, "source_type"));
+        clawt_trigger_event_set_number(event, number);
+    }
+
+    return event;
+}
+
+static void
+clawt_venture_handler_iface_init(ClawtTriggerHandlerInterface *iface)
+{
+    iface->verify = venture_verify;
+    iface->event_name = venture_event_name;
+    iface->delivery_id = venture_delivery_id;
+    iface->normalise = venture_normalise;
+}
+
+G_DEFINE_FINAL_TYPE_WITH_CODE(
+    ClawtVentureHandler, clawt_venture_handler, G_TYPE_OBJECT,
+    G_IMPLEMENT_INTERFACE(CLAWT_TYPE_TRIGGER_HANDLER,
+                          clawt_venture_handler_iface_init))
+
+static void clawt_venture_handler_init(ClawtVentureHandler *self) { (void)self; }
+static void
+clawt_venture_handler_class_init(ClawtVentureHandlerClass *klass)
+{
+    (void)klass;
+}
+
 /* ── Generic ─────────────────────────────────────────────────────── */
 
 #define CLAWT_TYPE_GENERIC_HANDLER (clawt_generic_handler_get_type())
@@ -904,7 +1039,7 @@ clawt_generic_handler_class_init(ClawtGenericHandlerClass *klass)
 ClawtTriggerHandler *
 clawt_trigger_handler_for(ClawtTriggerProvider provider)
 {
-    static ClawtTriggerHandler *handlers[5];
+    static ClawtTriggerHandler *handlers[6];
     static gsize once = 0;
 
     if (g_once_init_enter(&once)) {
@@ -918,6 +1053,8 @@ clawt_trigger_handler_for(ClawtTriggerProvider provider)
             g_object_new(CLAWT_TYPE_GITHUB_HANDLER, NULL);
         handlers[CLAWT_TRIGGER_PROVIDER_GITLAB] =
             g_object_new(CLAWT_TYPE_GITLAB_HANDLER, NULL);
+        handlers[CLAWT_TRIGGER_PROVIDER_VENTURE] =
+            g_object_new(CLAWT_TYPE_VENTURE_HANDLER, NULL);
 
         g_once_init_leave(&once, 1);
     }
@@ -1044,6 +1181,11 @@ clawt_trigger_sniff_provider(GHashTable           *headers,
         return TRUE;
     }
 
+    if (header(headers, "x-venture-event") != NULL) {
+        *out_provider = CLAWT_TRIGGER_PROVIDER_VENTURE;
+        return TRUE;
+    }
+
     return FALSE;
 }
 
@@ -1067,6 +1209,7 @@ clawt_trigger_provider_accepts_url_secret(ClawtTriggerProvider provider)
     case CLAWT_TRIGGER_PROVIDER_GITEA:
     case CLAWT_TRIGGER_PROVIDER_GITHUB:
     case CLAWT_TRIGGER_PROVIDER_GITLAB:
+    case CLAWT_TRIGGER_PROVIDER_VENTURE:
         return FALSE;
     }
 

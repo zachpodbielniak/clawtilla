@@ -222,6 +222,82 @@ gchar *clawt_venture_answer_url(const gchar *base,
  */
 gboolean clawt_venture_answer_is_approval(const gchar *answer);
 
+/**
+ * ClawtVentureStaging:
+ * @CLAWT_VENTURE_STAGING_UNKNOWN: not asked yet, or the answer could not
+ *   be read
+ * @CLAWT_VENTURE_STAGING_SUPPORTED: the server stages a write sent with
+ *   `?stage=1`
+ * @CLAWT_VENTURE_STAGING_ABSENT: the server would apply such a write
+ *   directly, so `confirm_writes` protects nothing
+ *
+ * What a VENTURE server's `/api/v1/health` says about staged writes.
+ *
+ * Three answers, not a boolean: "it said no" and "it did not say" lead
+ * to different messages, and spending the second as the first would
+ * tell somebody their books are unprotected because a request timed out.
+ */
+typedef enum {
+    CLAWT_VENTURE_STAGING_UNKNOWN = 0,
+    CLAWT_VENTURE_STAGING_SUPPORTED,
+    CLAWT_VENTURE_STAGING_ABSENT
+} ClawtVentureStaging;
+
+/**
+ * clawt_venture_health_url:
+ * @base: the instance
+ *
+ * Returns: (transfer full) (nullable): where the server describes itself
+ */
+gchar *clawt_venture_health_url(const gchar *base);
+
+/**
+ * clawt_venture_health_parse:
+ * @body: (array length=length): the answer
+ * @length: its length, or -1 if NUL-terminated
+ * @error: (out) (optional): why it could not be read
+ *
+ * Whether the server stages writes, read from its health answer.
+ *
+ * Returns: what the server said
+ */
+ClawtVentureStaging clawt_venture_health_parse(const gchar  *body,
+                                               gssize        length,
+                                               GError      **error);
+
+/**
+ * clawt_venture_business_events_url:
+ * @base: the instance
+ * @organization_id: which organization, or 0 to name none
+ * @after: (nullable): the cursor to read after; %NULL is the start
+ * @limit: how many at most, clamped to VENTURE's 1 through 1000
+ *
+ * Returns: (transfer full) (nullable): one page of the business-event feed
+ */
+gchar *clawt_venture_business_events_url(const gchar *base,
+                                         gint64       organization_id,
+                                         const gchar *after,
+                                         guint        limit);
+
+/**
+ * clawt_venture_business_events_parse:
+ * @body: (array length=length): the page
+ * @length: its length, or -1 if NUL-terminated
+ * @out_next_cursor: (out) (transfer full): the cursor to ask after next
+ * @error: (out) (optional): why it could not be read
+ *
+ * The events on one page, each as its own JSON text -- the same bytes a
+ * pushed delivery on the durable lane carries, so one normaliser reads
+ * both.
+ *
+ * Returns: (transfer full) (element-type utf8) (nullable): the events,
+ *   or %NULL if the page could not be read
+ */
+GPtrArray *clawt_venture_business_events_parse(const gchar  *body,
+                                               gssize        length,
+                                               gchar       **out_next_cursor,
+                                               GError      **error);
+
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtVentureConfirmation,
                               clawt_venture_confirmation_free)
 

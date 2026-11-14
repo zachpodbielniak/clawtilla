@@ -124,6 +124,40 @@ clawt_trigger_accepts_delivery(ClawtTrigger       *self,
         }
     }
 
+    /*
+     * The loop guard.  An agent that writes the record type its own
+     * trigger watches -- a VENTURE ticket it updates, a branch it pushes
+     * -- is called back by its own write, writes again, and is called
+     * back again.  The sender's cascade guards cannot see it, because to
+     * the sender each write is a fresh change by an ordinary user; only
+     * the receiver knows that user is the agent.  So the agent's own
+     * account is named here and its deliveries are recorded as ignored.
+     *
+     * Compared case-insensitively: forges and VENTURE disagree about
+     * the case of a login nobody chose to capitalise.
+     */
+    {
+        g_auto(GStrv) ignored = clawt_trigger_get_string_list(self,
+                                                              "ignore_actors");
+        const gchar *actor = clawt_trigger_event_get_actor(event);
+        guint i;
+
+        for (i = 0; actor != NULL && ignored != NULL && ignored[i] != NULL;
+             i++) {
+            if (*ignored[i] == '\0' ||
+                g_ascii_strcasecmp(ignored[i], actor) != 0)
+                continue;
+
+            if (out_reason != NULL)
+                *out_reason = g_strdup_printf(
+                    "it was made by '%s', whose changes this trigger "
+                    "ignores (`ignore_actors`) so an agent is not woken "
+                    "by its own writes", actor);
+
+            return FALSE;
+        }
+    }
+
     return TRUE;
 }
 
