@@ -36,6 +36,12 @@ struct _ClawtMessage {
 	gboolean      acknowledged;
 	guint         merged;
 	gboolean      interrupted;
+
+	/* A group room's round, and the thread of replies within it. */
+	guint         round;
+	gchar        *chain;
+	gchar        *skipped;
+	gchar        *skip_reason;
 };
 
 static ClawtMessage *
@@ -119,6 +125,10 @@ clawt_message_copy(ClawtMessage *self)
 	copy->acknowledged = self->acknowledged;
 	copy->merged = self->merged;
 	copy->interrupted = self->interrupted;
+	copy->round = self->round;
+	copy->chain = g_strdup(self->chain);
+	copy->skipped = g_strdup(self->skipped);
+	copy->skip_reason = g_strdup(self->skip_reason);
 
     return copy;
 }
@@ -145,6 +155,9 @@ clawt_message_free(ClawtMessage *self)
 	g_free(self->request_room);
 	g_free(self->request_origin);
 	g_free(self->request_task);
+	g_free(self->chain);
+	g_free(self->skipped);
+	g_free(self->skip_reason);
     g_free(self);
 }
 
@@ -497,6 +510,85 @@ clawt_message_set_interrupted(
 	g_return_if_fail(self != NULL);
 
 	self->interrupted = interrupted;
+}
+
+guint
+clawt_message_get_round(
+	ClawtMessage *self
+){
+	g_return_val_if_fail(self != NULL, 0);
+
+	return self->round;
+}
+
+void
+clawt_message_set_round(
+	ClawtMessage *self,
+	guint         round
+){
+	g_return_if_fail(self != NULL);
+
+	self->round = round;
+}
+
+const gchar *
+clawt_message_get_chain(
+	ClawtMessage *self
+){
+	g_return_val_if_fail(self != NULL, NULL);
+
+	return self->chain;
+}
+
+void
+clawt_message_set_chain(
+	ClawtMessage *self,
+	const gchar  *chain
+){
+	g_return_if_fail(self != NULL);
+
+	g_free(self->chain);
+	self->chain = (chain != NULL && *chain != '\0') ? g_strdup(chain) : NULL;
+}
+
+const gchar *
+clawt_message_get_skipped(
+	ClawtMessage *self
+){
+	g_return_val_if_fail(self != NULL, NULL);
+
+	return self->skipped;
+}
+
+const gchar *
+clawt_message_get_skip_reason(
+	ClawtMessage *self
+){
+	g_return_val_if_fail(self != NULL, NULL);
+
+	return self->skip_reason;
+}
+
+void
+clawt_message_set_skipped(
+	ClawtMessage *self,
+	const gchar  *skipped,
+	const gchar  *reason
+){
+	g_return_if_fail(self != NULL);
+
+	g_free(self->skipped);
+	g_free(self->skip_reason);
+
+	/* The two travel together: a reason about nobody says nothing. */
+	if (skipped == NULL || *skipped == '\0') {
+		self->skipped = NULL;
+		self->skip_reason = NULL;
+		return;
+	}
+
+	self->skipped = g_strdup(skipped);
+	self->skip_reason = g_strdup(reason);
 }
 
 const gchar *

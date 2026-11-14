@@ -830,6 +830,18 @@ clawt_web_stylesheet(void)
     ".day-divider::before,.day-divider::after{content:'';flex:1;height:1px;"
       "background:var(--line)}"
     /*
+     * Where a round of a group room starts, drawn like the day's divider
+     * one step quieter; and the note under a message whose @mention was
+     * kept and not delivered, in the gutter so it reads as about that
+     * message rather than as one of its own.
+     */
+    ".round-divider{display:flex;align-items:center;gap:12px;"
+      "margin:18px 0 4px;font-size:11px;color:var(--muted)}"
+    ".round-divider::before,.round-divider::after{content:'';flex:1;"
+      "height:1px;background:var(--line);opacity:.6}"
+    ".skip-note{margin:2px 0 0 var(--chat-gutter);font-size:.85em;"
+      "color:var(--muted)}"
+    /*
      * The gutter stops being affordable on a narrow screen: at 360px the
      * indent takes the measure below the comfortable range, and the
      * avatar is the first thing that should go rather than the text.
@@ -1014,6 +1026,10 @@ clawt_web_stylesheet(void)
     "white-space:pre-wrap;overflow-wrap:anywhere;max-height:24rem;"
     "overflow:auto;border:1px solid var(--line);border-radius:6px;"
     "padding:8px 10px;margin:6px 0 0}"
+    ".proposal-text{font-family:var(--mono);font-size:var(--mono-size);"
+    "white-space:pre-wrap;overflow-wrap:anywhere;max-height:32rem;"
+    "overflow:auto;border:1px solid var(--line);border-radius:6px;"
+    "padding:8px 10px;margin:6px 0}"
     ".notice-bad{border-left-color:var(--bad-fg);background:var(--bad-bg);"
       "color:var(--bad-fg)}"
     ".notice-info{border-left-color:var(--info-fg);background:var(--info-bg);"

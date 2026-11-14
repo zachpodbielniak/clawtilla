@@ -51,6 +51,7 @@ the trade the mailbox makes for not re-delivering the same work twice.
 | idempotency key | so a retried tool call does not enqueue twice |
 | ~invites_reply~ | whether the recipient's closing text is sent back |
 | ~one_way~ | the sender asked for no answer (~reply: none~); since 0.16.0 |
+| ~room_round~, ~chain~ | the round of a group room the message belongs to, and the thread of replies it is part of (who has answered in it, comma-separated); the recipient's answer continues that thread.  Since 0.18.0; an older mailbox migrates with 0 and none |
 
 Timestamps are seconds since the epoch, not microseconds, because they
 are compared against SQLite's own ~strftime('%s','now')~ in the queue's

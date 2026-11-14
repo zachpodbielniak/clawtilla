@@ -17,6 +17,8 @@
 
 #include "clawt-window-private.h"
 
+#include <string.h>
+
 /*
  * The operator answers, and the daemon routes it back to whoever asked.
  */
@@ -138,10 +140,340 @@ pad_decision_row(GtkWidget *widget)
     gtk_widget_set_margin_end(widget, 12);
 }
 
+/* ── Skill proposals ─────────────────────────────────────────────── */
+
+/*
+ * Sends one of the three answers a proposal takes.
+ *
+ * Built with a JsonBuilder rather than clawt_build_payload(), because the
+ * note and the edited text are optional and a NULL in the middle of that
+ * function's argument list would end it early and silently drop the rest.
+ */
+static void
+resolve_proposal(ClawtWindow *self, const gchar *id, const gchar *action,
+                 const gchar *note, const gchar *description,
+                 const gchar *body)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autoptr(JsonNode) reply = NULL;
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "proposal");
+    json_builder_add_string_value(builder, id);
+    json_builder_set_member_name(builder, "action");
+    json_builder_add_string_value(builder, action);
+
+    if (note != NULL && *note != '\0') {
+        json_builder_set_member_name(builder, "note");
+        json_builder_add_string_value(builder, note);
+    }
+    if (description != NULL) {
+        json_builder_set_member_name(builder, "description");
+        json_builder_add_string_value(builder, description);
+    }
+    if (body != NULL) {
+        json_builder_set_member_name(builder, "body");
+        json_builder_add_string_value(builder, body);
+    }
+    json_builder_end_object(builder);
+
+    reply = clawt_window_request(self, "skill.proposal_resolve",
+                                 json_builder_get_root(builder));
+
+    if (reply != NULL) {
+        clawt_gtk_refresh_decisions(self);
+        clawt_gtk_refresh_skills(self);
+    }
+}
+
+/* Approve or Reject, with whatever the person typed as the note. */
+static void
+on_proposal_answer(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *id = g_object_get_data(G_OBJECT(button), "proposal-id");
+    const gchar *action = g_object_get_data(G_OBJECT(button), "action");
+    GtkWidget *entry = g_object_get_data(G_OBJECT(button), "entry");
+
+    if (id == NULL || action == NULL)
+        return;
+
+    resolve_proposal(self, id, action,
+                     entry != NULL ? gtk_editable_get_text(GTK_EDITABLE(entry))
+                                   : NULL,
+                     NULL, NULL);
+}
+
+static void
+on_proposal_edit_response(AdwAlertDialog *dialog, const gchar *response,
+                          gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *id = g_object_get_data(G_OBJECT(dialog), "proposal-id");
+    GtkWidget *description = g_object_get_data(G_OBJECT(dialog),
+                                               "description");
+    GtkTextView *body = g_object_get_data(G_OBJECT(dialog), "body");
+    GtkTextIter start;
+    GtkTextIter end;
+    g_autofree gchar *text = NULL;
+
+    if (g_strcmp0(response, "save") != 0 || id == NULL)
+        return;
+
+    gtk_text_buffer_get_bounds(gtk_text_view_get_buffer(body), &start, &end);
+    text = gtk_text_buffer_get_text(gtk_text_view_get_buffer(body), &start,
+                                    &end, FALSE);
+
+    resolve_proposal(self, id, "edit", NULL,
+                     gtk_editable_get_text(GTK_EDITABLE(description)), text);
+}
+
+/*
+ * Edit: the agent's text in an editor, saved as the person's version.
+ *
+ * Prefilled with what the daemon sent, which is the escaped text -- so a
+ * forged notice line in the body arrives already rewritten, and saving
+ * cannot approve the forgery back in without somebody seeing it.
+ */
+static void
+on_proposal_edit(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *id = g_object_get_data(G_OBJECT(button), "proposal-id");
+    const gchar *description = g_object_get_data(G_OBJECT(button),
+                                                 "description");
+    const gchar *body = g_object_get_data(G_OBJECT(button), "body");
+    AdwDialog *dialog;
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    GtkWidget *group = adw_preferences_group_new();
+    GtkWidget *entry = adw_entry_row_new();
+    GtkWidget *scroll = gtk_scrolled_window_new();
+    GtkWidget *view = gtk_text_view_new();
+
+    dialog = adw_alert_dialog_new(
+        "Edit the proposed skill",
+        "Saving writes your version and enables it. The agent is told the "
+        "skill is not exactly what it wrote.");
+
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(entry), "Description");
+    gtk_editable_set_text(GTK_EDITABLE(entry),
+                          description != NULL ? description : "");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), entry);
+
+    gtk_text_view_set_monospace(GTK_TEXT_VIEW(view), TRUE);
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(view), GTK_WRAP_WORD_CHAR);
+    gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(view)),
+                             body != NULL ? body : "", -1);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), view);
+    gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(scroll),
+                                               320);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_widget_add_css_class(scroll, "card");
+
+    gtk_box_append(GTK_BOX(box), group);
+    gtk_box_append(GTK_BOX(box), scroll);
+
+    adw_alert_dialog_set_extra_child(ADW_ALERT_DIALOG(dialog), box);
+    adw_alert_dialog_add_responses(ADW_ALERT_DIALOG(dialog),
+                                   "cancel", "Cancel",
+                                   "save", "Save and approve", NULL);
+    adw_alert_dialog_set_response_appearance(ADW_ALERT_DIALOG(dialog),
+                                             "save", ADW_RESPONSE_SUGGESTED);
+
+    g_object_set_data_full(G_OBJECT(dialog), "proposal-id", g_strdup(id),
+                           g_free);
+    g_object_set_data(G_OBJECT(dialog), "description", entry);
+    g_object_set_data(G_OBJECT(dialog), "body", view);
+    g_signal_connect(dialog, "response",
+                     G_CALLBACK(on_proposal_edit_response), self);
+    adw_dialog_present(dialog, GTK_WIDGET(button));
+}
+
+/* A plain-text label that wraps; never markup, since the agent wrote it. */
+static GtkWidget *
+proposal_label(const gchar *text, gboolean monospace)
+{
+    GtkWidget *label = gtk_label_new(NULL);
+
+    gtk_label_set_text(GTK_LABEL(label), text);
+    gtk_label_set_use_markup(GTK_LABEL(label), FALSE);
+    gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+    gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+    gtk_label_set_selectable(GTK_LABEL(label), TRUE);
+
+    if (monospace)
+        gtk_widget_add_css_class(label, "monospace");
+
+    return label;
+}
+
+static GtkWidget *
+proposal_button(ClawtWindow *self, const gchar *label, const gchar *id,
+                const gchar *action, GCallback callback, const gchar *style)
+{
+    GtkWidget *button = gtk_button_new_with_label(label);
+
+    g_object_set_data_full(G_OBJECT(button), "proposal-id", g_strdup(id),
+                           g_free);
+    g_object_set_data_full(G_OBJECT(button), "action", g_strdup(action),
+                           g_free);
+    g_signal_connect(button, "clicked", callback, self);
+
+    if (style != NULL)
+        gtk_widget_add_css_class(button, style);
+
+    return button;
+}
+
+/*
+ * A skill proposal's card: what the agent proposes, and the three answers.
+ *
+ * The title is the question's first line only -- the agent's id and a
+ * validated skill name, nothing it chose freely -- and the proposed text
+ * or the diff sits under it as plain monospace text, because a SKILL.md
+ * squeezed into a row title is unreadable and a title is markup.  The
+ * generic options and answer box are not offered: "edit" needs text and
+ * free text is read as a rejection, so the buttons are the honest set.
+ */
+static void
+clawt_gtk_proposal_review(ClawtWindow *self, GtkWidget *row,
+                          JsonObject *decision, JsonObject *proposal)
+{
+    const gchar *id = clawt_json_string(decision, "id", "");
+    const gchar *question = clawt_json_string(decision, "question", "");
+    const gchar *kind = clawt_json_string(proposal, "kind", "create");
+    const gchar *reason = clawt_json_string(proposal, "reason", NULL);
+    const gchar *shown = g_strcmp0(kind, "update") == 0
+        ? clawt_json_string(proposal, "diff", "")
+        : clawt_json_string(proposal, "text", "");
+    JsonArray *warnings = json_object_get_array_member(proposal, "warnings");
+    g_autofree gchar *headline = NULL;
+    GtkWidget *details = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    GtkWidget *note = gtk_entry_new();
+    GtkWidget *actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *edit;
+    guint w;
+
+    {
+        const gchar *end = strchr(question, '\n');
+
+        headline = (end != NULL) ? g_strndup(question, (gsize)(end - question))
+                                 : g_strdup(question);
+    }
+
+    adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row), FALSE);
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), headline);
+    adw_expander_row_set_subtitle(
+        ADW_EXPANDER_ROW(row),
+        "Nothing reaches a prompt until you answer.");
+
+    if (reason != NULL && *reason != '\0') {
+        g_autofree gchar *why = g_strdup_printf("Why: %s", reason);
+
+        gtk_box_append(GTK_BOX(details), proposal_label(why, FALSE));
+    }
+
+    for (w = 0; warnings != NULL && w < json_array_get_length(warnings); w++) {
+        GtkWidget *warning = proposal_label(
+            json_array_get_string_element(warnings, w), FALSE);
+
+        gtk_widget_add_css_class(warning, "warning");
+        gtk_box_append(GTK_BOX(details), warning);
+    }
+
+    if (clawt_json_boolean(proposal, "stale", FALSE)) {
+        GtkWidget *stale = proposal_label(
+            "The file changed since this was proposed, so Approve is "
+            "refused. Edit shows what is there now; or reject it.", FALSE);
+
+        gtk_widget_add_css_class(stale, "error");
+        gtk_box_append(GTK_BOX(details), stale);
+    }
+
+    gtk_box_append(GTK_BOX(details), proposal_label(shown, TRUE));
+    pad_decision_row(details);
+    adw_expander_row_add_row(ADW_EXPANDER_ROW(row), details);
+
+    gtk_entry_set_placeholder_text(GTK_ENTRY(note),
+                                   "Why (optional, sent to the agent)");
+    gtk_widget_set_hexpand(note, TRUE);
+    gtk_box_append(GTK_BOX(actions), note);
+
+    {
+        GtkWidget *approve = proposal_button(self, "Approve", id, "approve",
+                                             G_CALLBACK(on_proposal_answer),
+                                             "suggested-action");
+        GtkWidget *reject = proposal_button(self, "Reject", id, "reject",
+                                            G_CALLBACK(on_proposal_answer),
+                                            "destructive-action");
+
+        g_object_set_data(G_OBJECT(approve), "entry", note);
+        g_object_set_data(G_OBJECT(reject), "entry", note);
+        gtk_box_append(GTK_BOX(actions), approve);
+        gtk_box_append(GTK_BOX(actions), reject);
+    }
+
+    edit = proposal_button(self, "Edit", id, "edit",
+                           G_CALLBACK(on_proposal_edit), NULL);
+    g_object_set_data_full(G_OBJECT(edit), "description",
+                           g_strdup(clawt_json_string(proposal, "description",
+                                                      "")), g_free);
+    g_object_set_data_full(G_OBJECT(edit), "body",
+                           g_strdup(clawt_json_string(proposal, "body", "")),
+                           g_free);
+    gtk_box_append(GTK_BOX(actions), edit);
+
+    pad_decision_row(actions);
+    adw_expander_row_add_row(ADW_EXPANDER_ROW(row), actions);
+}
+
+/* The pending proposals, by id, or NULL when the inbox holds none. */
+static JsonNode *
+fetch_proposals(ClawtWindow *self, JsonArray *decisions)
+{
+    guint i;
+
+    for (i = 0; decisions != NULL && i < json_array_get_length(decisions);
+         i++) {
+        JsonObject *decision = json_array_get_object_element(decisions, i);
+
+        if (clawt_skill_proposal_id_is_valid(
+                clawt_json_string(decision, "id", NULL)))
+            return clawt_window_request(self, "skill.proposals", NULL);
+    }
+
+    return NULL;
+}
+
+static JsonObject *
+proposal_for(JsonNode *proposals, const gchar *id)
+{
+    JsonArray *items;
+    guint i;
+
+    if (proposals == NULL)
+        return NULL;
+
+    items = json_object_get_array_member(clawt_payload_of(proposals),
+                                         "proposals");
+
+    for (i = 0; items != NULL && i < json_array_get_length(items); i++) {
+        JsonObject *proposal = json_array_get_object_element(items, i);
+
+        if (g_strcmp0(clawt_json_string(proposal, "id", NULL), id) == 0)
+            return proposal;
+    }
+
+    return NULL;
+}
+
 static void
 refresh_decisions_once(ClawtWindow *self)
 {
     g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(JsonNode) proposals = NULL;
     JsonArray *items;
     guint i;
     guint open = 0;
@@ -157,6 +489,7 @@ refresh_decisions_once(ClawtWindow *self)
                                              "open");
     items = json_object_get_array_member(clawt_payload_of(reply),
                                          "decisions");
+    proposals = fetch_proposals(self, items);
 
     for (i = 0; i < json_array_get_length(items); i++) {
         JsonObject *decision = json_array_get_object_element(items, i);
@@ -177,7 +510,44 @@ refresh_decisions_once(ClawtWindow *self)
         gboolean is_rebuild = g_strcmp0(clawt_json_string(decision, "kind", NULL),
                                         "rebuild") == 0;
         const gchar *loses = clawt_json_string(decision, "loses", NULL);
+        JsonObject *proposal = clawt_skill_proposal_id_is_valid(id)
+                               ? proposal_for(proposals, id) : NULL;
         guint o;
+
+        /*
+         * A skill proposal draws its own card; only the two ways of
+         * closing it are shared, and both reject the draft.
+         */
+        if (proposal != NULL) {
+            clawt_gtk_proposal_review(self, row, decision, proposal);
+
+            g_object_set_data_full(G_OBJECT(drop), "decision-id",
+                                   g_strdup(id), g_free);
+            g_signal_connect(drop, "clicked",
+                             G_CALLBACK(on_decision_dismiss), self);
+            g_object_set_data_full(G_OBJECT(remove), "decision-id",
+                                   g_strdup(id), g_free);
+            g_signal_connect(remove, "clicked",
+                             G_CALLBACK(on_decision_delete), self);
+            gtk_widget_add_css_class(remove, "destructive-action");
+            gtk_box_append(GTK_BOX(closing), drop);
+            gtk_box_append(GTK_BOX(closing), remove);
+            gtk_widget_set_halign(closing, GTK_ALIGN_START);
+            pad_decision_row(closing);
+            adw_expander_row_add_row(ADW_EXPANDER_ROW(row), closing);
+
+            g_object_ref_sink(entry);
+            g_object_unref(entry);
+            g_object_ref_sink(choices);
+            g_object_unref(choices);
+            g_object_ref_sink(actions);
+            g_object_unref(actions);
+            g_object_ref_sink(answer);
+            g_object_unref(answer);
+
+            gtk_list_box_append(self->decision_list, row);
+            continue;
+        }
 
         /*
          * AdwExpanderRow, not AdwActionRow: the question is what a

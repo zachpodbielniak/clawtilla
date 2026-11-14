@@ -81,6 +81,8 @@ licence, send nothing, and exit 0.
 | ~decision answer <id> <answer>~ | free text; it routes back to the agent |
 | ~decision dismiss <id>~ | it carries on with its default |
 | ~decision delete <id>~ | gone from the inbox for good, answered or not; an open one is withdrawn first |
+| ~skill proposals~ | skills agents have proposed, each printed in full (the draft, or a change's diff) |
+| ~skill approve <proposal>~ / ~skill reject <proposal> [why]~ | settle one; the agent is told, with your reason |
 | ~wait list [agent]~ | conditions agents are waiting on, checked by code: condition, last and next check, expiry |
 | ~wait cancel <id>~ | stop one; the agent is told it is no longer waiting |
 | ~event list [subject]~ | what the fleet has been doing, from the event log |
@@ -96,7 +98,7 @@ licence, send nothing, and exit 0.
 | ~model~ | every provider and model, and which can run an agent |
 | ~image~ | container images clawtilla suggests, and your own |
 | ~image vm list/catalog/get/rm/cancel~ | disk images for VM agents |
-| ~connector catalog/list/add/connect/key/refresh/revoke/rm~ | accounts clawtilla holds the credential for |
+| ~connector catalog/list/add/connect/discover/key/refresh/revoke/rm~ | accounts clawtilla holds the credential for; ~add --url~ alone is any remote MCP server |
 | ~plugin list~ | |
 | ~integration types/list/show~ | what kinds exist, and what is configured |
 | ~integration add/set/scope/rm~ | one bot, some bots or all of them |
@@ -328,7 +330,8 @@ clawtilla connector catalog
 clawtilla connector add gh --provider github --account work \
     --command github-mcp-server --scope all
 clawtilla connector key gh          # reads stdin with the echo off
-clawtilla connector list
+clawtilla connector list            # also: how many tools, and whether a directory
+clawtilla integration set gh directory=always
 #+end_src
 
 There is deliberately no =--key= flag, for the same reason there is no
@@ -570,6 +573,29 @@ It is also the only one of the four that does not need the guest
 rebuilt: it reaches the virtual GPU rather than the cloud-init seed, so
 it applies at the VM's next boot.
 
+*** When the computer starts, its limits, and waking it
+
+The agent's computer settings carry three more things, in GTK, the web
+client and lrg alike, each drawn only for the computer types that read it
+(the daemon reports the values only for those):
+
+- *Start the computer* -- /When the agent starts/ or /On first use/, the
+  choices walked from ~clawt_computer_start_count()~.  On first use leaves
+  the machine off until the agent first runs something in it; its own
+  tools run on the host either way.  Container, distrobox, VM and ssh
+  agents.  See [[file:computers.org::#computer-start][When the machine
+  starts]].
+- *Process limit*, *Memory* and *Memory + swap* -- container and distrobox
+  agents.  Sizes are written as podman writes them (~512m~, ~4g~); empty
+  means podman's default.  A bad value is refused when saved, naming the
+  field, and a change reaches a running machine at once with ~podman
+  update~, without a rebuild.  See [[file:computers.org::#container-limits][Process
+  and memory limits]].
+- *Wake command* -- ssh agents.  One line, split into a program and its
+  arguments (~wakeonlan aa:bb:cc:dd:ee:ff~), never run through a shell;
+  a line using a pipe or a redirection is refused when saved.  See
+  [[file:computers.org::#ssh-wake][A machine that sleeps]].
+
 *** Choosing an account
 
 The agent inspector has an *Account* row beside the model and effort. Its choices come from ~account.list~ with the agent named, so it offers only the accounts the daemon will accept for that agent's provider; an account the agent already names and can no longer use is still shown, labelled, so saving cannot replace it without anybody choosing to. Saving clears the account before a provider change and sets it after, because the daemon checks the pair. The web client's agent page draws the same choices as a select.
@@ -601,6 +627,12 @@ The fleet allowlist, =egress.allow=, is on the *Shared folders* settings page un
 *** What an agent is waiting for
 
 The agent inspector has a *Waiting for* group, above the integrations: one row per pending wait the agent set with ~clawtilla_wait_until~, titled with the agent's own words for it, with the condition, a schedule line from ~clawt_wait_schedule_label()~ (~checked 4m ago · next check in 1m · expires in 23h~), what the last check saw, and a *Cancel* button.  Cancelling sends ~wait.cancel~, and the daemon tells the agent, which would otherwise go on believing it was waiting.  The list -- and only the list, never the form above it -- refills on every ~wait.changed~ event.  An agent that looks idle and is in fact waiting on a deploy is not one somebody should nudge, which is why it is on the agent's own view.  The web client's agent page draws the same list as a card with a Cancel form per row, and the libregnum client's Overview as a section.  How many an agent may have is ~max_waits~, in the agent's settings with the other fleet settings it may override.  See [[file:orchestration.org::*Waits: a condition checked by code][orchestration.org]].
+
+*** A skill an agent proposes
+
+When an agent calls ~clawtilla_skill_propose~, its decision card is drawn differently in all three graphical clients.  The title is the decision's first line only -- "kudu proposes a new skill, 'release'." -- which names the agent and a validated skill name and nothing the agent chose freely; the proposed ~SKILL.md~ (a new skill) or the diff against the skill as it is now (a change) sits under it as plain monospace text, with the agent's reason, the scan's warnings and, when the file changed since it was proposed, a caution that Approve will be refused.  The buttons are *Approve*, *Reject* and *Edit*, with an optional note that goes to the agent; Edit opens the description and body in an editor and *Save and approve* sends the person's version.  The generic option buttons and free-text answer are not offered on that card -- free text would be read as a rejection, and "edit" needs text -- while *Does not need me* and *Delete* stay, and both reject the draft.  Everything shown arrives from ~skill.proposals~ already escaped and is rendered as text, never markup.
+
+The Skills page lists what is pending under *Proposed by agents*: the skill's name, who proposed it and how long ago, and their reason, with a *Review* button that opens Decisions.  There is deliberately no Approve there -- that would be a way to approve a skill without the card that shows its text.  The GTK client builds both in =gtk-decisions.c= and =gtk-skills.c=, the web client in =web-decisions.c= (~POST /decisions/proposal~) and =web-skills.c=, and the libregnum client in =lrg-decisions.c= and =lrg-skills.c=.  See [[file:skills.org::*Skills agents propose][Skills agents propose]].
 
 *** Teams in the sidebar
 
@@ -680,19 +712,27 @@ larger than those numbers suggest.  See [[file:spending.org][Spending]].
 :CUSTOM_ID: orchestration-settings
 :END:
 
-The Orchestration settings page (GTK, web at =/settings/orchestration=, libregnum) has one control today: *Acknowledgement check*, which sets =orchestration.ack_check_model=.  The choices are walked from =clawt_ack_check_model_count()= / =_nth_value()= / =_nth_label()= -- *Off* first, then every model of every provider ai-glib reaches over HTTP -- so the three clients offer the same list and none keeps a copy.  A model written into ~clawtilla.yaml~ by hand that the catalogue does not list stays selectable as itself rather than showing as Off, so saving the page untouched cannot turn the check off.  The page reads ~orchestration.get~ and saves with ~orchestration.set~.
+The Orchestration settings page (GTK, web at =/settings/orchestration=, libregnum) has three groups.  The first is *Acknowledgement check*, which sets =orchestration.ack_check_model=.  The choices are walked from =clawt_ack_check_model_count()= / =_nth_value()= / =_nth_label()= -- *Off* first, then every model of every provider ai-glib reaches over HTTP -- so the three clients offer the same list and none keeps a copy.  A model written into ~clawtilla.yaml~ by hand that the catalogue does not list stays selectable as itself rather than showing as Off, so saving the page untouched cannot turn the check off.  The page reads ~orchestration.get~ and saves with ~orchestration.set~.
 
 What it does, in the words the page uses: when one agent answers another with only an acknowledgement, waking the agent that asked costs it a whole turn.  With a model chosen, a short answer from a turn that did nothing else is put to that model first; only a plain ACK skips the wake, and anything else, a failure, or no verdict within 8 seconds wakes the sender as before.  Off by default.  See [[file:orchestration.org][orchestration.org]] for the rules.
+
+*Message budget per task tree* sets =orchestration.tree_message_budget=: one number, *Requests between settlements*, with an apply button (GTK an =AdwEntryRow=, the web client a form posting to =/settings/orchestration=, libregnum an entry and *Save*).  The page says what it does in a fleet's terms -- a tree is a delegated task and everything handed on from it; the hop limit stops a chain going too deep and this stops one going too wide; one call is one request however many it reaches; it starts again whenever a task in the tree finishes; at the limit the tree's agents can still answer and finish their own work but are not offered the tools to message each other, and one alert names the tree; answers are never counted; 0 is off.  A value that is not a whole number from 0 to 10000 is refused on the page, naming the field, rather than sent.  It is saved with ~orchestration.set~ as an integer and reaches the daemon's loop guard at once.
+
+*Rounds in group rooms* lists every group room with an entry in ~rooms:~ (from ~orchestration.get~'s ~rooms~), one *Replies per thread* field each, showing the round the room is in, and saves =rooms.max_chain= with ~room.set~ (an integer, 0 to 100).  The group's description is the rule: a round starts at each message from you, a routine or a trigger; within one thread a member answers once; naming somebody who already has is kept in the room, marked as not delivered, with the reason; the hop count starts again each round.  A fleet with no group room sees "No group rooms yet".  See [[file:orchestration.org][orchestration.org]], "Rounds: once per thread, counted per round" and "tree_message_budget".
+
+The tree budget's alert, ~task.tree_budget~, is a notice in each client's alerts surface, worded by =clawt_loop_guard_tree_alert_text()= from the event's ~tree~, ~count~ and ~limit~ so the root task's brief, id and assignee are in the line; GTK also raises it as a toast, since the tree's agents have just gone quiet in front of whoever is watching them.
 
 *** Answers that woke nobody, and results delivered together
 :PROPERTIES:
 :CUSTOM_ID: ack-and-merge-marks
 :END:
 
-Two marks in the transcript, drawn the same way in all three clients from fields ~room.history~ and the ~message~ event both carry:
+Four marks in the transcript, drawn the same way in all three clients from fields ~room.history~ and the ~message~ event both carry:
 
 - *acknowledged (no wake)* -- =clawt_message_ack_label()= -- beside an answer the acknowledgement check recorded instead of delivering (=acknowledged=).  It is on every such message, not on a run header, because it is a fact about that one message: unmarked, an answer the asker never took a turn on reads as having been ignored.  GTK and the web client carry =clawt_message_ack_tooltip()= as the tooltip; libregnum has no tooltips, so the label is the whole of it.
 - *interrupted — not resumed* -- =clawt_message_interrupted_label()= -- on the daemon's notice that a turn was cut short and will not be rerun (=interrupted=): after a restart when it had already acted outside the fleet or was itself a rerun, or when somebody stopped the agent.  Drawn in warning colours with the body boxed (GTK: a ~warning~ chip and a ~card~; web: a ~warn~ badge and ~.msg-interrupted~; libregnum: a ~warn~ badge with =clawt_message_interrupted_tooltip()= written under it), because it says the request above it was not finished.  See [[file:mailboxes.org][mailboxes.org]], "A turn a restart cut short".
+- *Round N* -- =clawt_round_label()= -- a divider, drawn like the day's, where a new round of a group room begins (=round=).  A round starts at each message from a person, a routine or a trigger, so a standup reads as the rounds it was rather than one scroll.  A new round starts a new run, so its first speaker is named again.
+- *Not delivered to @name -- why* -- =clawt_round_skip_note()= -- a dim line under a message whose =@mention= was kept and not delivered (=skipped=, =skip_reason=): the member had already answered in that thread of replies, or the thread had reached =rooms.max_chain=.  It is the whole answer to "why did that member never reply", so it is a sentence rather than a chip.  GTK and the web client carry =clawt_round_skip_tooltip()= as the tooltip.
 - *Delivered as one turn* -- clawtilla's note when several results waiting in one room were handed to an agent as a single turn (=merged=, the number of parts).  Its body is split with =clawt_merge_split()= and drawn as its sections: the opening line, then one block per result with its label ("'oryx' answering you", "clawtilla: task t-12") as a small heading and the result's first line beneath.  The results themselves are already in the room above it; the note says they cost one wake, not N.
 
 *** An agent asking for its computer to be rebuilt
@@ -795,7 +835,7 @@ what belongs to the application rather than to any one agent:
 | Cloud images | VM disk images on this machine, and fetching more |
 | Teams | how the fleet is divided, and what each team handles |
 | Spending | what the fleet has cost, by agent, model, origin or day; unpriced turns; Export CSV |
-| Orchestration | the acknowledgement check: which model, or Off, decides whether an answer only acknowledges |
+| Orchestration | the acknowledgement check: which model, or Off, decides whether an answer only acknowledges; the message budget per task tree; how many replies one thread of a round may run to in each group room |
 | Integrations | Matrix, mail, MCP servers and notifiers, and who gets each |
 | Connectors | connected accounts, and the credential for each |
 | Appearance | colour scheme and fonts |
@@ -844,10 +884,37 @@ now/, /Revoke/ and /Remove/.  Authorizing shows the user code as the
 dialog's heading at full size -- it is about to be read off this screen
 and typed into a phone -- and waits there while you do it.
 
+A remote MCP server needs only its *Server URL* (the service list opens
+on "Remote MCP server"; the name comes from the URL's host if left
+empty).  Adding one asks the server how to sign in (~connector.discover~)
+and goes straight into the sign-in when it publishes one.  A connector
+whose discovery found an authorization server, or whose server refused
+the agent's last call with a 401, says so on its row -- "needs a
+sign-in", or "Sign in at <host>" -- and its dialog starts with a *Sign in
+at <host>* button; the browser dialog names the same host above the link,
+because that is what the address bar is checked against.
+
+Each row's subtitle is ~provider -- account~, which is what tells two
+accounts on one service apart.  The *Account label* field says it is
+required for a second account; the daemon refuses one without it, or with
+a label another account on that service already uses.
+
 The list shows three states rather than two.  A credential that has
 expired *and can renew itself* reads as connected, because it is: the
 daemon renews it on a timer.  Showing that as broken would light the list
 up every hour and teach you to ignore the one that genuinely is.
+
+Each row also says how many tools the connector's server has and whether
+agents get it as a directory -- =clawt_mcp_directory_status_label()='s
+sentence, the same one the web and lrg clients and =clawtilla connector
+list= print.  A connector no agent has used yet says its size is
+unknown.  The connector's dialog has *Present as a directory* (Auto,
+Always, Never, walked from =clawt_tool_directory_mode_count()=), saved
+with ~integration.update~ as soon as it changes.  Under the list,
+*Servers with many tools* holds the two thresholds Auto measures against,
+~connectors.directory_min_tools~ and ~connectors.directory_min_chars~,
+written through ~connector.settings~.  See "Servers with many tools" in
+[[file:connectors.org][connectors.org]].
 
 See [[file:connectors.org][connectors.org]].
 

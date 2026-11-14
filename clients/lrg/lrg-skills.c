@@ -21,6 +21,7 @@
 
 #include "clawt-lrg.h"
 #include "clawt-lrg-fleet-model.h"
+#include "clawt-lrg-work-model.h"
 
 #define SKILL_INDEX_KEY "clawt-skill-index"
 
@@ -28,6 +29,7 @@ static struct {
     ClawtLrgApp *app;
     LrgWidget   *page;
     LrgWidget   *teach_box;     /* the recordings */
+    LrgWidget   *proposals;     /* skills agents proposed, pending */
     LrgWidget   *problems;      /* skill.list's problems, as banners */
     LrgWidget   *library;       /* tiles, or why there are none */
     LrgWidget   *detail;        /* the selected skill, open */
@@ -758,6 +760,79 @@ teach_group(ClawtLrgApp *app)
     return clawt_lrg_card(content);
 }
 
+/* ── Proposed by agents ───────────────────────────────────────────── */
+
+static void
+on_review_clicked(LrgButton *button, gpointer user_data)
+{
+    clawt_lrg_show_page(user_data, CLAWT_PAGE_DECISIONS);
+}
+
+/*
+ * Skills agents proposed (clawtilla_skill_propose) and nobody has
+ * settled: what, who, and why -- the agent's reason, escaped by the
+ * daemon and drawn as plain text.  The review itself is the decision's,
+ * so Review goes there rather than this page growing a second copy of
+ * Approve / Reject / Edit.  Hidden when nothing is pending.
+ */
+static void
+lrg_pending_proposals(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+                      gpointer user_data)
+{
+    JsonArray *items = clawt_lrg_proposal_items(reply);
+    gint64 now_us = g_get_real_time();
+    LrgWidget *content;
+    guint i;
+
+    if (state.proposals == NULL)
+        return;
+
+    clawt_lrg_clear(state.proposals);
+
+    if (items == NULL || json_array_get_length(items) == 0) {
+        lrg_widget_set_visible(state.proposals, FALSE);
+        return;
+    }
+
+    content = clawt_lrg_vbox(10.0f);
+    clawt_lrg_take(content, clawt_lrg_label("Proposed by agents", "heading"));
+    clawt_lrg_take(content, clawt_lrg_paragraph(
+        "Drafts that reach no prompt until you approve them in Decisions.",
+        "muted"));
+
+    for (i = 0; i < json_array_get_length(items); i++) {
+        JsonObject *proposal = json_array_get_object_element(items, i);
+        g_autofree gchar *summary = NULL;
+        const gchar *reason;
+        LrgWidget *row;
+
+        if (proposal == NULL)
+            continue;
+
+        summary = clawt_lrg_proposal_summary(proposal, now_us);
+        reason = clawt_ipc_payload_string(proposal, "reason");
+        row = clawt_lrg_row(clawt_ipc_payload_string(proposal, "name"),
+                            summary);
+
+        if (clawt_ipc_payload_boolean(proposal, "stale", FALSE))
+            clawt_lrg_row_add_suffix(row, clawt_lrg_badge("changed since",
+                                                          "warn"));
+        clawt_lrg_row_add_suffix(row, clawt_lrg_button(
+            "Review", NULL, G_CALLBACK(on_review_clicked), app));
+        clawt_lrg_take(content, row);
+
+        if (reason != NULL && *reason != '\0') {
+            g_autofree gchar *why = g_strdup_printf("Why: %s", reason);
+
+            clawt_lrg_take(content, clawt_lrg_paragraph(why, "muted"));
+        }
+    }
+
+    clawt_lrg_take(state.proposals, clawt_lrg_card(content));
+    lrg_widget_set_visible(state.proposals, TRUE);
+    clawt_lrg_app_wake(app);
+}
+
 /* ── Refreshing ───────────────────────────────────────────────────── */
 
 static void
@@ -768,6 +843,8 @@ refresh_skills_library(ClawtLrgApp *app)
 
     clawt_lrg_request(app, "teach.list", NULL, CLAWT_LRG_QUIET,
                       on_teach_list, NULL, NULL);
+    clawt_lrg_request(app, "skill.proposals", NULL, CLAWT_LRG_QUIET,
+                      lrg_pending_proposals, NULL, NULL);
     clawt_lrg_request(app, "skill.list", NULL, CLAWT_LRG_REQUEST_NONE,
                       on_skill_list, NULL, NULL);
 }
@@ -798,6 +875,11 @@ build(ClawtLrgApp *app)
                                              app));
 
     clawt_lrg_take(body, teach_group(app));
+
+    state.proposals = clawt_lrg_vbox(0.0f);
+    lrg_widget_set_visible(state.proposals, FALSE);
+    clawt_lrg_add(body, state.proposals);
+    g_object_unref(state.proposals);
 
     state.problems = clawt_lrg_vbox(8.0f);
     clawt_lrg_add(body, state.problems);

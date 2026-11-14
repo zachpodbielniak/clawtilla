@@ -196,6 +196,7 @@ clawt_daemon_handle_misc(
         const gchar *id = clawt_ipc_payload_string(payload, "decision");
         const gchar *answer = clawt_ipc_payload_string(payload, "answer");
         g_autoptr(ClawtDecision) settled = NULL;
+        g_autoptr(ClawtSkillProposal) proposal = NULL;
         g_autoptr(GError) answer_error = NULL;
 
         if (self->decisions == NULL)
@@ -206,6 +207,30 @@ clawt_daemon_handle_misc(
             return clawt_ipc_error_new(
                 request, CLAWT_ERROR_INVALID_ARGUMENT,
                 "answering needs a decision and an answer");
+
+        /*
+         * A skill proposal is carried out before its decision is
+         * settled, so a refusal -- a draft changed since it was
+         * reviewed, an "edit" with no text -- leaves the question open
+         * for another answer instead of reporting one that did nothing.
+         */
+        if (clawt_skill_proposal_id_is_valid(id)) {
+            g_autoptr(ClawtDecision) open = clawt_decision_store_get(self->decisions, id);
+
+            if (open != NULL &&
+                clawt_decision_get_state(open) == CLAWT_DECISION_OPEN) {
+                if (!clawt_daemon_skill_proposal_check_answer(self, id, answer,
+                                                              &answer_error))
+                    return clawt_ipc_error_new(request, answer_error->code,
+                                               answer_error->message);
+
+                proposal = clawt_daemon_skill_proposal_answer(self, id, answer,
+                                                              &answer_error);
+                if (proposal == NULL)
+                    return clawt_ipc_error_new(request, answer_error->code,
+                                               answer_error->message);
+            }
+        }
 
         settled = clawt_decision_store_answer(self->decisions, id, answer,
                                               &answer_error);
@@ -230,10 +255,12 @@ clawt_daemon_handle_misc(
          * would tell the agent twice and cost it a turn to read.
          */
         /*
-         * A rebuild request is answered by doing it, or by saying it was
+         * A proposal has told its agent already, in its own words; and a
+         * rebuild request is answered by doing it, or by saying it was
          * not done -- not by quoting the answer back.
          */
-        if (!clawt_daemon_rebuild_settle(self, settled, "answered") &&
+        if (proposal == NULL &&
+            !clawt_daemon_rebuild_settle(self, settled, "answered") &&
             !clawt_daemon_policy_settle(self, settled, "answered"))
             clawt_daemon_deliver_decision_answer(self, settled);
 
@@ -290,6 +317,9 @@ clawt_daemon_handle_misc(
                 !clawt_daemon_policy_settle(self, dismissed, "dismissed"))
                 clawt_daemon_turn_release(self,
                                           clawt_decision_get_agent(dismissed));
+            /* a draft nobody will be asked about again is rejected */
+            if (clawt_decision_get_state(dismissed) == CLAWT_DECISION_OPEN)
+                clawt_daemon_skill_proposal_withdraw(self, dismissed);
             clawt_daemon_publish_decision_settled(self, dismissed, "dismissed");
         }
 
@@ -334,6 +364,7 @@ clawt_daemon_handle_misc(
                 !clawt_daemon_policy_settle(self, deleted, "deleted"))
                 clawt_daemon_turn_release(self,
                                           clawt_decision_get_agent(deleted));
+            clawt_daemon_skill_proposal_withdraw(self, deleted);
             /* only an open one was counted, so only it may bring a badge down */
             clawt_daemon_publish_decision_settled(self, deleted, "deleted");
         }

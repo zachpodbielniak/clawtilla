@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-23 Sat]
-#+updated: [2026-08-29 Sat]
+#+updated: [2026-11-14 Sat]
 #+version: 0.4.0
 
 * Connectors
@@ -144,6 +144,110 @@ says.
 The listener binds 127.0.0.1 only.  A redirect carries an authorization
 code in a URL, and a listener on every interface offers that code to
 whoever on the network reaches the port first.
+
+*** Signing in where the server says
+
+For a remote MCP server, the URL is all a connector needs:
+
+#+begin_src bash
+clawtilla connector add notion --url https://mcp.notion.com/mcp
+#+end_src
+
+#+begin_example
+Added connector 'notion'.
+It signs in at https://auth.notion.example.
+Signing in at https://auth.notion.example
+
+Open this to approve:
+    https://auth.notion.example/authorize?response_type=code&...
+#+end_example
+
+A URL with no ~--provider~ is the built-in ~remote~ entry (the first in every client's list).  Its catalogue entry names no endpoints, so the sign-in is asked of the server, the way the MCP authorization spec lays out:
+
+1. *Where is the authorization server?*  The server's RFC 9728 protected-resource document -- at the address a 401's ~WWW-Authenticate: Bearer resource_metadata="..."~ names, or at =/.well-known/oauth-protected-resource= with the server's path and then without -- lists its authorization servers.  A server that publishes none is assumed to be its own, at its origin, as clients of the 2025-03-26 spec did.
+2. *What are its endpoints?*  The authorization server's RFC 8414 metadata (=/.well-known/oauth-authorization-server=, then OpenID Connect's =/.well-known/openid-configuration=) names the authorization, token, registration and revocation endpoints.
+3. *Who is asking?*  With no ~client_id~ configured, clawtilla registers itself by RFC 7591 dynamic client registration, as a public client (~token_endpoint_auth_method: none~ where the server takes it; otherwise ~client_secret_post~ when offered, else ~client_secret_basic~, and the token endpoint is then sent the client's credentials as HTTP Basic -- whatever the registration reply says it granted wins) whose one redirect is =http://127.0.0.1:<connectors.redirect_port>/callback=, named ~connectors.client_name~ on the consent screen.  The registered id -- and a secret, if the server issues one -- is kept in =secrets.dir=/connector-auth/<name>.json at 0600 and reused for every sign-in after.
+4. *Sign in.*  Authorization code with PKCE (S256, refused otherwise) and the RFC 8707 ~resource~ parameter set to the server's URL on the authorization request, the exchange and every renewal, so the token is good for this server and no other the authorization server fronts.
+
+Three things win over anything a server publishes, because each is a decision somebody made: a catalogue entry that names ~auth_url~ and ~token_url~ (every built-in OAuth provider does), a ~client_id~ on the integration, and ~connectors.discovery: false~, which turns the whole chain off.  ~clawt_mcp_auth_plan()~ is that decision as a pure function, and =tests/test-mcp-auth.c= walks it.
+
+Discovery happens when somebody asks for a sign-in -- ~connector connect~, the Sign in button, or adding a connector by URL in any client, which asks straight away -- and never at daemon start.  To ask without signing in:
+
+#+begin_src bash
+clawtilla connector discover notion
+#+end_src
+
+#+begin_example
+Signs in at https://auth.notion.example (protected-resource); clawtilla can register itself there.
+Run `clawtilla connector connect notion` to sign in.
+#+end_example
+
+A server that publishes no sign-in is not an error: most MCP servers take a key, and the answer says so -- paste one with ~clawtilla connector key~.
+
+**** What it refuses
+
+Every URL in the chain came from the remote server, so:
+
+- *no leg follows a redirect*, not even the metadata fetches;
+- *nothing is plain http* unless it is on loopback and the configured server is on loopback too -- a public server's 401 pointing at =http://127.0.0.1:...= is refused rather than fetched;
+- *a document about somebody else is refused*: a protected-resource document describing another server, metadata whose ~issuer~ is not the one it was fetched for, and a server with no PKCE S256;
+- *a document over 64 KiB is refused* while it is being read.
+
+[[file:security.org::*Signing in where the server says][security.org]] has the reasoning for each.
+
+**** When the server says no: a 401
+
+A remote server that has not been signed in to -- or whose sign-in expired or was withdrawn -- answers 401, sometimes only for ~tools/call~ after it listed its tools to anybody.  The relay answers that itself instead of passing it to the agent's CLI, which would start a sign-in of its own that cannot work and then report only that the server failed.  The agent reads a failed tool result:
+
+#+begin_example
+The connector 'notion' needs a sign-in before its tools work (HTTP 401), and nobody has signed in yet, so nothing ran. Do not retry. Ask the person to sign in to 'notion' -- `clawtilla connector connect notion`, or Sign in on its row under Settings, Connectors.
+#+end_example
+
+and the relay tells the daemon (~connector.unauthorized~), which records it, keeps the 401's ~resource_metadata~ hint for the sign-in, and announces ~integration.changed~.  From then on every client's connector row says it needs a sign-in, its actions start with *Sign in at <host>*, and ~clawtilla connector list~ prints ~sign in needed~.  A successful sign-in clears it.
+
+A remote connector with no credential at all still gets a relay -- plenty of servers list their tools to anybody -- so its first refused call is what asks for the sign-in.  A stdio server is refused at start instead, because it has nowhere to say so.
+
+** Several accounts on one service
+
+Work and personal GitHub, two GitLab groups: several accounts on one service are the ordinary case, and every one is its own connector with its own token file.
+
+#+begin_src bash
+clawtilla connector add gh-work --provider github --account work \
+    --command github-mcp-server --scope all
+clawtilla connector add gh-home --provider github --account personal \
+    --command github-mcp-server --scope all
+#+end_src
+
+*** What happened before
+
+Checked rather than assumed.  Each connector is its own =.mcp.json= entry (~clawtilla-gh-work~, ~clawtilla-gh-home~) and its own relay process, so the agent's CLI kept the two servers apart: Claude Code named the tools ~mcp__clawtilla-gh-work__create_issue~ and ~mcp__clawtilla-gh-home__create_issue~, and nothing was silently routed to the first.  But the tool names *inside* were identical -- ~create_issue~ twice -- and the only difference was a server name the operator chose, which may not mention the account at all.  That is what a model reads when it picks a tool, what an action rule matches and what a decision card names; an agent told to "open an issue" picked whichever ~create_issue~ it saw first, and nothing made it say which account it meant.
+
+*** What happens now
+
+When an agent holds more than one account on the same ~provider~ (whatever the instance -- two GitLabs have identical tool names too), each relay renames its account's tools with the account's label and says so in each description:
+
+| Account    | The server's tool | What the agent sees                                    |
+|------------+-------------------+--------------------------------------------------------|
+| ~work~     | ~create_issue~    | ~work_create_issue~ -- "[work account] Open an issue"  |
+| ~personal~ | ~create_issue~    | ~personal_create_issue~ -- "[personal account] ..."    |
+
+A call to the bare ~create_issue~ is *refused*, naming the accounts and the prefixed name to call -- never run as whichever account it reached, because that is the guess this exists to take away.  The prefix comes off before the tool list and the action rules see the call, so ~tools:~ and rules keep naming the server's own tools.  A service the agent holds one account on is not renamed at all, and the agent's =TOOLS.org= says which of its connectors are prefixed and why.
+
+The prefix is part of the relay's one policy (~ClawtMcpRelayPolicy~), so the stdio relay and the HTTP bridge apply it identically: outermost on both sides, before the tool directory on the way out and after it on the way back.  An account presented as a directory (see "Servers with many tools") has its three tools named for the account -- ~work_search_tools~, ~work_describe_tool~, ~work_call_tool~ -- and every tool name it shows in a search or a describe carries the same prefix the flat list of the other account does: ~work_issues_create~ there, ~personal_issues_create~ here.  ~work_call_tool~ takes either the prefixed or the bare name (the account is already chosen), refuses the other account's, and sends the server its own.
+
+The label is the connector's ~account~, folded to lowercase letters, digits and underscores; an account with no label is named for its integration name.  Two labels that fold to the same prefix (~Work~ and ~work!~) are two accounts nobody can tell apart, so every call on both is refused with a message naming both connectors -- not routed to whichever registered first.  Both relays reach the same answer independently, from ~clawt_connector_account_prefix()~.
+
+*** Every new account carries a unique label
+
+Adding a second account on a service without a label, or with one another account on that service already folds to, is refused where it arrives:
+
+#+begin_example
+clawtilla: there is already a github account here ('gh-work'); give this one an account label, such as work or personal, so the two can be told apart
+#+end_example
+
+The first account may go without; it has nothing to be told apart from yet, and its prefix falls back to its name if a second arrives.  A configuration written before this rule keeps loading: the check is on *adding*, never on reading.  Every client shows the label on the connector's row (~github -- work~), and the add form says it is required for a second account.
+
+Disconnecting is per row: ~revoke~ and ~rm~ act on the one connector named, and a new sign-in on one account never touches another's token file.
 
 ** Client IDs
 
@@ -665,6 +769,124 @@ it, and has to work out from an error that it never had it.
 Leaving ~tools~ unset means every tool the server offers.  An empty list
 is treated the same, rather than as a lockout nobody asked for.
 
+** Servers with many tools
+
+Every tool a server lists is read by the model on every call: its name,
+its description and its input schema.  For a server with a dozen tools
+that is the point of listing them.  For one with four hundred it is tens
+of thousands of tokens spent before the agent has read a word of what it
+was asked, on tools it will mostly never use -- and an API-model engine
+refuses more than 128 tools a turn outright.
+
+So the relay can present a big server as a *directory*: three tools that
+stand in for all the others.
+
+| Tool                        | What it does                                                        |
+|-----------------------------+---------------------------------------------------------------------|
+| ~<name>_search_tools~       | a few words in, the best matches out, each with a one-line description and its input fields; an empty query answers with what the server covers, area by area |
+| ~<name>_describe_tool~      | one tool's exact description and input schema                       |
+| ~<name>_call_tool~          | runs one tool by name, with its arguments                           |
+
+~<name>~ is the connector's name, so a connector called ~forge~ offers
+~forge_search_tools~, ~forge_describe_tool~ and ~forge_call_tool~.  The
+search ranks with BM25 over each tool's name (counted double), its
+description and the words in its schema, plus the tool's /area/ -- the
+part of its name before the first underscore, so ~issues_create~ is in
+~issues~.  A query that is a tool's exact name always finds that tool
+first.
+
+*** When a server is a directory
+
+Each connector has a ~directory~ setting:
+
+| Value    | Meaning                                                                    |
+|----------+----------------------------------------------------------------------------|
+| ~auto~   | a directory when the server is big *and* the agent's CLI does not search tools itself (the default) |
+| ~always~ | a directory whatever its size and whatever the CLI                         |
+| ~never~  | every tool listed, however many there are                                  |
+
+"Big" is more than ~connectors.directory_min_tools~ tools (default 40)
+or more than ~connectors.directory_min_chars~ characters of tool
+definitions (default 100,000) -- names, descriptions and schemas
+together, which is what the model actually reads.  Both are counted
+/after/ the connector's ~tools:~ narrowing, because that is the list the
+agent would otherwise get.
+
+#+begin_src bash
+clawtilla integration set forge directory=always
+#+end_src
+
+*** Which CLIs search tools themselves
+
+Claude Code does: past about a tenth of its context in MCP tools it
+defers them and looks them up as it needs them.  Wrapping its servers in
+a second search would make it search a search, so under ~auto~ its
+agents get every tool as before.  ~claude-tmux~ runs the same binary and
+is answered the same way.  Every other CLI -- opencode, grok-build,
+antigravity, cursor -- reads the whole list on every call, and gets the
+directory.
+
+Whether a CLI searches is a fact about the CLI, and belongs to ai-glib as
+a class datum beside ~AiCliClientClass.config_dir_env~.  ai-glib has no
+such datum yet, so clawtilla answers it in one place,
+~clawt_mcp_directory_cli_searches_tools()~, until it does; the roadmap
+carries the move upstream.
+
+*** The search finds only what the agent may use
+
+The directory is built from the tool list *after* the permitted-list
+filter, and a call through it is checked against that same list again on
+the way out.  The predicate and the builder answer from one list, so a
+tool this agent may not use cannot be found by the search, is not
+described, and cannot be run through ~<name>_call_tool~ -- the directory
+answers "No tool named ... here" for it, in exactly the words it uses
+for a tool that does not exist, so the search cannot be used to learn
+what was withheld.
+
+*** Approvals name the tool that runs
+
+A call through the directory becomes an ordinary ~tools/call~ naming the
+inner tool /before/ anything checks it.  The permitted list, an action
+rule (~policy.check~) and an approval card therefore all see
+~pulls_merge~, never ~forge_call_tool~.  A search or a describe runs
+nothing on the server and asks nobody.
+
+The same decision is made for a connector reached over HTTP.  Until this
+release the HTTP bridge applied the permitted list and skipped the
+action-rule gate entirely; both transports now go through one function,
+~clawt_mcp_relay_policy_outbound()~.  A JSON-RPC batch is refused
+whenever a gate or a directory is in the path, since either reads one
+call per line and a batch would carry its calls past both.
+
+*** Big tool lists arrive in pages
+
+An MCP server may answer ~tools/list~ a page at a time.  When the relay
+might present a directory it follows ~nextCursor~ itself and answers the
+client once, with either the three directory tools or the whole list as
+a single page.  It stops after 64 pages and says so on stderr.  When it
+may not present one (~never~, or Claude Code under ~auto~) every page
+passes through untouched and is only counted.
+
+*** How big a server is, and where that shows
+
+clawtilla never starts a connector's server itself -- the relay does, on
+an agent's behalf, with the credential.  So the relay reports what it
+saw to the daemon (~connector.tools_seen~) whenever a full tool list
+arrives, and the daemon keeps the last report per connector in
+=<state_dir>/connector-tools.yaml=.  That is what the Connectors page in
+every client and =clawtilla connector list= show: the tool count, the
+characters of definitions, and whether agents get the server as a
+directory.  A connector no agent has used yet says its size is unknown,
+never zero.
+
+The agent's =TOOLS.org= describes a directory server as one: "search
+it", with the three tool names and the area overview from that report.
+It does not enumerate the tools, even a narrowed ~tools:~ list, since
+listing four hundred names there would put back into every prompt the
+text the directory exists to keep out.  Under ~auto~ a server no relay
+has counted yet is described as a list; the agent's next start, after a
+relay has seen it, says the right thing.
+
 ** Renewal
 
 An access token often lasts an hour.  The daemon renews any that is
@@ -773,11 +995,14 @@ that matter here:
 | ~connectors.dir~                       | where your own connector files live       |
 | ~connectors.refresh_margin_seconds~    | how early to renew                        |
 | ~connectors.redirect_port~             | the loopback port for the PKCE redirect   |
+| ~connectors.discovery~                 | ask a remote server how to sign in (on by default) |
+| ~connectors.client_name~               | what dynamic client registration calls clawtilla |
 | ~connectors.registry_enabled~          | import the open MCP registry (off by default) |
 | ~connectors.registry_url~              | where to import it from                   |
 | ~connectors.registry_refresh_hours~    | how often, once it is on                  |
 | ~integrations.provider~                | which catalogue entry                     |
-| ~integrations.account~                 | which account, in your words              |
+| ~integrations.account~                 | which account, in your words; unique per service |
+| ~integrations.url~                     | a remote MCP server; all a ~remote~ connector needs |
 | ~integrations.instance~                | for a service you host                    |
 | ~integrations.client_id~               | the application you registered            |
 | ~integrations.client_secret~           | a secret reference, if the provider needs one |
@@ -785,6 +1010,9 @@ that matter here:
 | ~integrations.token_file~              | where the credential went; set for you    |
 | ~integrations.credential_name~         | the variable or header it goes in         |
 | ~integrations.tools~                   | narrow the agent to these                 |
+| ~integrations.directory~               | ~auto~, ~always~ or ~never~ present it as a directory |
+| ~connectors.directory_min_tools~       | more tools than this is big               |
+| ~connectors.directory_min_chars~       | more characters of tool definitions than this is big |
 
 ** Troubleshooting
 
@@ -822,6 +1050,39 @@ The integration's ~tools:~ names something the pack's own ~known_tools~
 does not.  Almost always a typo; fix the integration.  A pack that
 declares no ~known_tools~ at all -- the ordinary case -- never warns
 about this, since there is nothing here to check against.
+
+*** The agent sees three tools instead of the server's
+
+The connector is presented as a directory: its server is past one of the
+thresholds and the agent's CLI does not search tools itself, or its
+~directory~ is ~always~.  Search it with ~<name>_search_tools~, or set
+~directory: never~ on the connector to list every tool again.  See
+"Servers with many tools".
+
+*** "No tool named ... here" from a directory
+
+Either the tool does not exist or the connector's ~tools:~ does not
+include it.  The directory says the same for both on purpose.
+
+*** "needs a sign-in" on a connector's row
+
+Its server answered the agent's last call with a 401: nobody has signed in yet, or the sign-in expired or was withdrawn.  Sign in from the row, or ~clawtilla connector connect <name>~.
+
+*** "offers no dynamic client registration"
+
+Discovery found the authorization server, but it does not let clients register themselves.  Register one there by hand -- redirect =http://127.0.0.1:8765/callback= -- and set ~client_id~ on the connector.
+
+*** "refused to fetch ... not https"
+
+A document in the discovery chain named a URL in the clear, or a loopback address while the server itself is not on loopback.  The server's metadata is wrong (or hostile); there is nothing to configure here except pasting a token instead.
+
+*** "this agent holds several accounts on this service"
+
+The agent called a tool by its bare name while holding more than one account on that service.  It is told the prefixed name; nothing ran.
+
+*** "both ... accounts labelled"
+
+Two accounts on one service fold to the same label.  Give one of them a different ~account~.
 
 *** "connectors.registry_enabled is off"
 

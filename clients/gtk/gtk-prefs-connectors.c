@@ -87,8 +87,20 @@ connector_run_flow(ClawtWindow *self, const gchar *name)
         const gchar *url =
             json_object_get_string_member_with_default(root, "authorize_url",
                                                        NULL);
+        const gchar *server =
+            json_object_get_string_member_with_default(root, "auth_server",
+                                                       NULL);
+        g_autofree gchar *where = (server != NULL)
+            ? clawt_connector_sign_in_label(server) : NULL;
 
-        body = g_strdup_printf("Open this to approve:\n\n%s",
+        /*
+         * Where, before the link: a discovered server is the remote
+         * server's claim, and this is what the address bar is checked
+         * against.
+         */
+        body = g_strdup_printf("%s%sOpen this to approve:\n\n%s",
+                               where != NULL ? where : "",
+                               where != NULL ? ".\n\n" : "",
                                url != NULL ? url : "(no URL)");
         dialog = ADW_ALERT_DIALOG(adw_alert_dialog_new("Waiting for you",
                                                         body));
@@ -146,6 +158,16 @@ connector_action_free(gpointer data, GClosure *closure)
 
 static void
 on_connector_connect(GtkButton *button, gpointer user_data)
+{
+    ConnectorAction *action = user_data;
+
+    adw_dialog_close(action->dialog);
+    connector_run_flow(action->window, action->name);
+}
+
+/* The same flow as Authorize again; the daemon decides where it signs in. */
+static void
+on_connector_sign_in(GtkButton *button, gpointer user_data)
 {
     ConnectorAction *action = user_data;
 
@@ -299,6 +321,93 @@ on_connector_remove(GtkButton *button, gpointer user_data)
     clawt_gtk_refresh_settings_connectors(action->window);
 }
 
+typedef struct {
+    ClawtWindow *window;
+    gchar       *name;
+} DirectoryChoice;
+
+static void
+directory_choice_free(gpointer data, GClosure *closure)
+{
+    DirectoryChoice *choice = data;
+
+    g_free(choice->name);
+    g_free(choice);
+}
+
+/*
+ * Saved the moment it changes, through the same integration.update every
+ * other connector field goes through.  It reaches an agent the next time
+ * its relay starts, which is the next time its CLI starts a session.
+ */
+static void
+on_directory_chosen(AdwComboRow *row, GParamSpec *pspec, gpointer user_data)
+{
+    DirectoryChoice *choice = user_data;
+    g_autoptr(JsonNode) reply = NULL;
+    guint selected = adw_combo_row_get_selected(row);
+
+    if (selected >= clawt_tool_directory_mode_count())
+        return;
+
+    reply = clawt_window_request(
+        choice->window, "integration.update",
+        clawt_build_payload("name", choice->name,
+                            "directory",
+                            clawt_tool_directory_mode_nth_nick(selected),
+                            NULL));
+
+    if (reply != NULL)
+        clawt_gtk_refresh_settings_connectors(choice->window);
+}
+
+/*
+ * "Present as a directory: Auto / Always / Never", walked from the
+ * library's enumeration so a mode added there is offered here at once.
+ */
+static GtkWidget *
+build_directory_choice(ClawtWindow *self, AdwDialog *dialog,
+                       const gchar *name, const gchar *current)
+{
+    GtkWidget *list = gtk_list_box_new();
+    GtkWidget *row = adw_combo_row_new();
+    GtkStringList *labels = gtk_string_list_new(NULL);
+    DirectoryChoice *choice = g_new0(DirectoryChoice, 1);
+    guint selected = 0;
+    guint i;
+
+    for (i = 0; i < clawt_tool_directory_mode_count(); i++) {
+        gtk_string_list_append(labels, clawt_tool_directory_mode_nth_label(i));
+
+        if (g_strcmp0(current, clawt_tool_directory_mode_nth_nick(i)) == 0)
+            selected = i;
+    }
+
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), GTK_SELECTION_NONE);
+    gtk_widget_add_css_class(list, "boxed-list");
+
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                  "Present as a directory");
+    adw_action_row_set_subtitle(
+        ADW_ACTION_ROW(row),
+        "Three tools that search, describe and run the rest, instead of "
+        "every tool in every prompt");
+    adw_combo_row_set_model(ADW_COMBO_ROW(row), G_LIST_MODEL(labels));
+    g_object_unref(labels);
+    adw_combo_row_set_selected(ADW_COMBO_ROW(row), selected);
+
+    choice->window = self;
+    choice->name = g_strdup(name);
+    g_signal_connect_data(row, "notify::selected",
+                          G_CALLBACK(on_directory_chosen), choice,
+                          directory_choice_free, 0);
+
+    gtk_list_box_append(GTK_LIST_BOX(list), row);
+    (void)dialog;
+
+    return list;
+}
+
 /*
  * Plain buttons in a box rather than a list.
  *
@@ -315,6 +424,10 @@ on_connector_activated(GtkListBox *list, GtkListBoxRow *row,
     const gchar *name = g_object_get_data(G_OBJECT(row), "clawt-connector");
     const gchar *provider = g_object_get_data(G_OBJECT(row),
                                               "clawt-connector-provider");
+    const gchar *server = g_object_get_data(G_OBJECT(row),
+                                            "clawt-connector-auth-server");
+    gboolean sign_in = GPOINTER_TO_INT(g_object_get_data(
+        G_OBJECT(row), "clawt-connector-sign-in"));
     AdwDialog *dialog;
     GtkWidget *toolbar;
     GtkWidget *box;
@@ -358,6 +471,32 @@ on_connector_activated(GtkListBox *list, GtkListBoxRow *row,
         gtk_widget_add_css_class(label, "dim-label");
         gtk_box_append(GTK_BOX(box), label);
     }
+
+    /*
+     * First when discovery found a server or the server refused the
+     * agent: the one action this row is asking for, named with where it
+     * happens.
+     */
+    if (sign_in) {
+        g_autofree gchar *label = clawt_connector_sign_in_label(server);
+
+        action = g_new0(ConnectorAction, 1);
+        action->window = self;
+        action->name = g_strdup(name);
+        action->dialog = dialog;
+
+        button = gtk_button_new_with_label(label);
+        gtk_widget_add_css_class(button, "suggested-action");
+        g_signal_connect_data(button, "clicked",
+                              G_CALLBACK(on_connector_sign_in), action,
+                              connector_action_free, 0);
+        gtk_box_append(GTK_BOX(box), button);
+    }
+    gtk_box_append(GTK_BOX(box),
+                   build_directory_choice(self, dialog, name,
+                                          g_object_get_data(
+                                              G_OBJECT(row),
+                                              "clawt-connector-directory")));
 
     for (i = 0; i < G_N_ELEMENTS(actions); i++) {
         action = g_new0(ConnectorAction, 1);
@@ -409,6 +548,58 @@ on_registry_refresh(GtkButton *button, gpointer user_data)
     (void)button;
 }
 
+/* Fills the threshold rows without that counting as an edit. */
+static void
+sync_directory_thresholds(ClawtWindow *self, gint64 min_tools,
+                          gint64 min_chars)
+{
+    if (self->settings_directory_min_tools == NULL)
+        return;
+
+    self->settings_directory_syncing = TRUE;
+    adw_spin_row_set_value(ADW_SPIN_ROW(self->settings_directory_min_tools),
+                           (gdouble)min_tools);
+    adw_spin_row_set_value(ADW_SPIN_ROW(self->settings_directory_min_chars),
+                           (gdouble)min_chars);
+    self->settings_directory_syncing = FALSE;
+}
+
+/*
+ * connectors.directory_min_tools and _min_chars, written through
+ * connector.settings, which checks both before saving either.
+ */
+static void
+on_directory_threshold_changed(AdwSpinRow *row, GParamSpec *pspec,
+                               gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(JsonBuilder) builder = NULL;
+
+    if (self->settings_directory_syncing)
+        return;
+
+    builder = json_builder_new();
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "directory_min_tools");
+    json_builder_add_int_value(
+        builder, (gint64)adw_spin_row_get_value(
+                     ADW_SPIN_ROW(self->settings_directory_min_tools)));
+    json_builder_set_member_name(builder, "directory_min_chars");
+    json_builder_add_int_value(
+        builder, (gint64)adw_spin_row_get_value(
+                     ADW_SPIN_ROW(self->settings_directory_min_chars)));
+    json_builder_end_object(builder);
+
+    reply = clawt_window_request(self, "connector.settings",
+                                 json_builder_get_root(builder));
+
+    if (reply != NULL)
+        clawt_gtk_refresh_settings_connectors(self);
+
+    (void)row;
+}
+
 void
 clawt_gtk_refresh_settings_connectors(ClawtWindow *self)
 {
@@ -421,6 +612,8 @@ clawt_gtk_refresh_settings_connectors(ClawtWindow *self)
     do {
         g_autoptr(JsonNode) reply = NULL;
         JsonArray *connectors;
+        gint64 min_tools;
+        gint64 min_chars;
         guint i;
 
         clawt_gtk_clear_list(GTK_LIST_BOX(self->settings_connectors));
@@ -432,6 +625,11 @@ clawt_gtk_refresh_settings_connectors(ClawtWindow *self)
 
         connectors = json_object_get_array_member(json_node_get_object(reply),
                                                   "connectors");
+        min_tools = json_object_get_int_member_with_default(
+            json_node_get_object(reply), "directory_min_tools", 40);
+        min_chars = json_object_get_int_member_with_default(
+            json_node_get_object(reply), "directory_min_chars", 100000);
+        sync_directory_thresholds(self, min_tools, min_chars);
 
         if (json_array_get_length(connectors) == 0) {
             GtkWidget *row = adw_action_row_new();
@@ -475,10 +673,55 @@ clawt_gtk_refresh_settings_connectors(ClawtWindow *self)
              */
             const gchar *icon = "channel-insecure-symbolic";
 
-            if (account != NULL && *account != '\0')
-                subtitle = g_strdup_printf("%s -- %s", provider, account);
-            else
-                subtitle = g_strdup(provider);
+            const gchar *directory =
+                json_object_get_string_member_with_default(entry, "directory",
+                                                           "auto");
+            g_autofree gchar *tools_line = clawt_mcp_directory_status_label(
+                directory,
+                json_object_get_int_member_with_default(entry, "tool_count",
+                                                        -1),
+                json_object_get_int_member_with_default(entry, "tool_chars",
+                                                        0),
+                min_tools, min_chars);
+
+            /*
+             * How many tools, and whether agents see them as a directory,
+             * on the row itself: the reason somebody opens this page
+             * after an agent's context filled up with one server.
+             */
+            subtitle = clawt_connector_row_subtitle(provider, account);
+
+            /*
+             * A server that refused the agent's last call says so on the
+             * row; one that publishes a sign-in nobody has used yet says
+             * where.  The button is one click further, in the dialog.
+             */
+            if (json_object_get_boolean_member_with_default(
+                    entry, "needs_sign_in", FALSE)) {
+                gchar *more = g_strdup_printf("%s -- needs a sign-in",
+                                              subtitle);
+
+                g_free(subtitle);
+                subtitle = more;
+            } else if (!connected &&
+                       json_object_get_boolean_member_with_default(
+                           entry, "sign_in", FALSE)) {
+                g_autofree gchar *where = clawt_connector_sign_in_label(
+                    json_object_get_string_member_with_default(
+                        entry, "auth_server", NULL));
+                gchar *more = g_strdup_printf("%s -- %s", subtitle, where);
+
+                g_free(subtitle);
+                subtitle = more;
+            }
+
+            {
+                gchar *more = g_strdup_printf("%s\n%s", subtitle,
+                                              tools_line);
+
+                g_free(subtitle);
+                subtitle = more;
+            }
 
             adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), name);
             adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
@@ -519,6 +762,16 @@ clawt_gtk_refresh_settings_connectors(ClawtWindow *self)
                                    g_strdup(name), g_free);
             g_object_set_data_full(G_OBJECT(row), "clawt-connector-provider",
                                    g_strdup(provider), g_free);
+            g_object_set_data_full(
+                G_OBJECT(row), "clawt-connector-auth-server",
+                g_strdup(json_object_get_string_member_with_default(
+                    entry, "auth_server", NULL)), g_free);
+            g_object_set_data(G_OBJECT(row), "clawt-connector-sign-in",
+                              GINT_TO_POINTER(
+                                  json_object_get_boolean_member_with_default(
+                                      entry, "sign_in", FALSE)));
+            g_object_set_data_full(G_OBJECT(row), "clawt-connector-directory",
+                                   g_strdup(directory), g_free);
 
             /*
              * This used to pass the row as its own activatable widget,
@@ -540,6 +793,7 @@ typedef struct {
     GtkWidget     *account;
     GtkWidget     *client_id;
     GtkWidget     *instance;
+    GtkWidget     *url;
     GtkWidget     *scope;
     GtkWidget     *agents;
     GtkStringList *provider_ids;
@@ -564,16 +818,25 @@ on_create_connector(GtkButton *button, gpointer user_data)
     const gchar *client_id =
         gtk_editable_get_text(GTK_EDITABLE(add->client_id));
     const gchar *instance = gtk_editable_get_text(GTK_EDITABLE(add->instance));
+    const gchar *url = gtk_editable_get_text(GTK_EDITABLE(add->url));
     const gchar *account = gtk_editable_get_text(GTK_EDITABLE(add->account));
     const gchar *agents = gtk_editable_get_text(GTK_EDITABLE(add->agents));
     const gchar *provider;
     guint selected;
-    g_autofree gchar *chosen = g_strdup(name);
+    gboolean remote = (url != NULL && *url != '\0');
+    g_autofree gchar *chosen = NULL;
 
-    if (name == NULL || *name == '\0') {
+    /* A URL is enough: the name comes from its host, as in every client. */
+    chosen = (name != NULL && *name != '\0')
+        ? g_strdup(name)
+        : (remote ? clawt_connector_name_for_url(url) : NULL);
+
+    if (chosen == NULL) {
         clawt_window_toast(add->window, "It needs a name.");
         return;
     }
+
+    name = chosen;
 
     selected = adw_combo_row_get_selected(ADW_COMBO_ROW(add->provider));
     provider = gtk_string_list_get_string(add->provider_ids, selected);
@@ -603,6 +866,11 @@ on_create_connector(GtkButton *button, gpointer user_data)
     if (instance != NULL && *instance != '\0') {
         json_builder_set_member_name(builder, "instance");
         json_builder_add_string_value(builder, instance);
+    }
+
+    if (remote) {
+        json_builder_set_member_name(builder, "url");
+        json_builder_add_string_value(builder, url);
     }
 
     if (agents != NULL && *agents != '\0') {
@@ -635,9 +903,30 @@ on_create_connector(GtkButton *button, gpointer user_data)
      * the request, and starting something that cannot succeed is worse
      * than leaving the person on a list where the next step is visible.
      */
-    if (client_id != NULL && *client_id != '\0')
+    if (client_id != NULL && *client_id != '\0') {
         connector_run_flow(add->window, chosen);
-    else
+    } else if (remote) {
+        g_autoptr(JsonNode) found = NULL;
+
+        /*
+         * Asked how to sign in now -- the person has just asked for this
+         * server, which is when the network is wanted -- and signed in to
+         * when it says.
+         */
+        found = clawt_window_request(add->window, "connector.discover",
+                                     clawt_build_payload("name", chosen,
+                                                         NULL));
+        clawt_gtk_refresh_settings_connectors(add->window);
+
+        if (found != NULL &&
+            json_object_get_boolean_member_with_default(
+                json_node_get_object(found), "sign_in", FALSE))
+            connector_run_flow(add->window, chosen);
+        else
+            clawt_window_toast(add->window,
+                               "Added. It publishes no sign-in; open it to "
+                               "paste a token.");
+    } else
         clawt_window_toast(add->window,
                            "Added. Open it to paste a token, or set a "
                            "client id to authorize.");
@@ -716,13 +1005,24 @@ on_add_connector(GtkButton *button, gpointer user_data)
                             G_LIST_MODEL(labels));
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), add->provider);
 
+    add->url = adw_entry_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(add->url),
+                                  "Server URL (any remote MCP server)");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), add->url);
+
     add->name = adw_entry_row_new();
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(add->name), "Name");
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(add->name),
+                                  "Name (from the URL if empty)");
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), add->name);
 
+    /*
+     * Said on the field, not only in the refusal: the label is what the
+     * agent's tools are named for once there are two accounts.
+     */
     add->account = adw_entry_row_new();
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(add->account),
-                                  "Account (work, personal)");
+    adw_preferences_row_set_title(
+        ADW_PREFERENCES_ROW(add->account),
+        "Account label (required for a second account)");
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), add->account);
 
     add->client_id = adw_entry_row_new();
@@ -813,6 +1113,51 @@ clawt_gtk_build_connectors_page(ClawtWindow *self)
 
     adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
                              ADW_PREFERENCES_GROUP(group));
+
+    /*
+     * Servers with many tools: when a connector becomes three tools
+     * instead of hundreds.  Per connector the choice is in its dialog;
+     * these are the thresholds `auto` measures against.
+     */
+    {
+        GtkWidget *many = adw_preferences_group_new();
+
+        adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(many),
+                                        "Servers with many tools");
+        adw_preferences_group_set_description(
+            ADW_PREFERENCES_GROUP(many),
+            "Past either of these, a connector set to Auto reaches agents "
+            "as a directory -- search, describe and call -- unless the "
+            "agent's CLI searches tools itself, as Claude Code does.");
+
+        self->settings_directory_min_tools =
+            adw_spin_row_new_with_range(1, 10000, 1);
+        adw_preferences_row_set_title(
+            ADW_PREFERENCES_ROW(self->settings_directory_min_tools),
+            "More tools than");
+        adw_spin_row_set_value(
+            ADW_SPIN_ROW(self->settings_directory_min_tools), 40);
+
+        self->settings_directory_min_chars =
+            adw_spin_row_new_with_range(1000, 10000000, 1000);
+        adw_preferences_row_set_title(
+            ADW_PREFERENCES_ROW(self->settings_directory_min_chars),
+            "More characters of tool definitions than");
+        adw_spin_row_set_value(
+            ADW_SPIN_ROW(self->settings_directory_min_chars), 100000);
+
+        g_signal_connect(self->settings_directory_min_tools, "notify::value",
+                         G_CALLBACK(on_directory_threshold_changed), self);
+        g_signal_connect(self->settings_directory_min_chars, "notify::value",
+                         G_CALLBACK(on_directory_threshold_changed), self);
+
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(many),
+                                  self->settings_directory_min_tools);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(many),
+                                  self->settings_directory_min_chars);
+        adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                                 ADW_PREFERENCES_GROUP(many));
+    }
 
     return page;
 }

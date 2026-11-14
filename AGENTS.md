@@ -703,6 +703,13 @@ critical fired.
   the CLI keys its login on `$HOME` and refuses one. `clawt_account_check()`
   asks a probe client (`ai_cli_client_supports_config_dir()`) rather than
   keeping its own table of which providers can.
+- **Whether a CLI searches its own tools is not a class datum yet.** The
+  tool directory (`docs/connectors.org`, "Servers with many tools") must
+  not wrap a CLI that defers and searches MCP tools itself -- Claude Code
+  does -- so `clawt_mcp_directory_cli_searches_tools()` answers it from a
+  table, TRUE for claude-code and claude-tmux. That is the shape the
+  bullet above says not to keep; the roadmap carries moving it upstream as
+  `AiCliClientClass.searches_tools`. Do not add a second copy anywhere.
 - **One `.mcp.json`, every CLI's dialect.** libreclaw translates the
   workspace's `.mcp.json` with `ai_mcp_config_endpoint_for()` for codex, grok
   and opencode, which never read it; before 0.27.0 those agents had none of
@@ -959,6 +966,29 @@ already means every word literally.
   but **not while the machine is running**, because starting a computer
   provisions it and provisioning a container replaces it, which would turn a
   restart after any `agent set` into destroying whatever the agent installed.
+
+- **`computer.start: on_first_use` is enforced at one door.**
+  `clawt_computer_exec()` calls `clawt_computer_ensure_started()`, which
+  starts a lazy machine once per wave of concurrent first uses (a mutex,
+  a condition and a generation, not a flag); the async path starts it
+  through `clawt_computer_lifecycle_async()` with
+  `CLAWT_COMPUTER_LIFECYCLE_FIRST_USE` first. Agent start skips the start
+  only when the computer says so -- read
+  `clawt_computer_get_start_on_first_use()`, never the config, because
+  `clawt_computer_factory_refresh()` is what decides it for the type.
+- **What a kept computer can take in place is retaken at every start.**
+  `clawt_computer_factory_refresh()` rereads the start mode, the podman
+  limits and the ssh wake command into an existing computer, so a change
+  to any of them does not wait for a rebuild. Container limits go to
+  podman as `podman update` after an inspect, only for what differs:
+  podomation's create carries no limits, and distrobox takes each one as
+  a single `--additional-flags` word.
+- **A program the operator names runs in its own process group.**
+  `clawt_run_argv_bounded()` kills the *group* at the deadline and when
+  the program itself exits; killing only the child left a provider CLI it
+  started holding the pipes, and the wait with them. Its deadline is a
+  millisecond timeout -- `g_timeout_source_new_seconds()` fired most of a
+  second early.
 
 ### VMs -- what a guest needs before it is reachable
 
@@ -1279,6 +1309,18 @@ versions apart.
   origin. A person's message, a question, a one-way notice, a mention
   room and a per-turn model are never merged. Anything new that decides
   per delivery must decide per *part* there too.
+- **A group room counts in rounds, and a tree counts in requests.** A
+  round starts at a message from a person, a routine or a trigger
+  (depth 0); the thread of replies rides on the message and the stored
+  mailbox item, and the router continues it from the delivery that
+  started the replier's turn -- never from the model. A mention of a
+  member already in its thread, or past `rooms.max_chain`, is recorded
+  and not delivered, *with the reason on the message*. The tree budget
+  is per root task (`orchestration.tree_message_budget`), counts
+  deliberate messages once per call, never counts an answer, and renews
+  in `on_task_changed()` *before* the settle notice -- that order is what
+  keeps a delegator's owed follow-up from being refused. Both keep
+  `max_hops` as the backstop; neither is a scalar.
 - **"It said ACK" is not "it did not say".** The acknowledgement check
   (`orchestration.ack_check_model`) skips a wake only on a bare ACK; a
   timeout, a failure and a garbled reply are a third verdict, logged as
@@ -1614,6 +1656,25 @@ versions apart.
 - A refusal names the feature that imposed it, supplied by the caller. The
   relay's own message told a connector-refused agent to enable a setting about
   seeing the screen.
+- **The relay decides each message in one place.** `ClawtMcpRelayPolicy`
+  and `clawt_mcp_relay_policy_outbound()` / `_inbound()` serve the stdio
+  relay and the HTTP bridge both; the bridge once applied the tool list
+  and skipped the action-rule gate entirely. The tool directory rewrites
+  `<name>_call_tool` to the inner `tools/call` *before* the permitted list
+  and the gate look at it, and is built from the list *after* the filter --
+  so the wall and the door answer from one list, and an approval names the
+  tool that runs.
+- **A URL in a server's OAuth metadata is that server's input, not ours.**
+  MCP sign-in discovery (`clawt-mcp-auth.c`) refuses redirects on every leg,
+  plain http except loopback-from-loopback, and a document about another
+  resource or issuer -- a public server's 401 naming `http://127.0.0.1:...`
+  would otherwise aim the daemon at this machine. Hand-configured endpoints
+  and `client_id` always win over what a server publishes.
+- **Two accounts on one service share tool names.** Each connector is its
+  own relay, so the CLI keeps the servers apart, but the model, action rules
+  and decision cards see `create_issue` twice. The relay prefixes each
+  account's tools with its label and refuses the bare name; never route a
+  colliding name to whichever registered first.
 
 ## GTK4 and libadwaita
 

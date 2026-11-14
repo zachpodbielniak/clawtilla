@@ -4615,10 +4615,23 @@ cmd_computer(int argc, char *argv[])
         g_auto(GStrv) tools = NULL;
         JsonObject *result;
 
-        reply = call(client, "computer.desktop",
-                     build_payload("agent", agent_id, NULL));
-        if (reply == NULL)
-            return EXIT_FAILURE;
+        /*
+         * Fifteen minutes rather than the usual two: a VM that starts on
+         * first use is booted by this very request, and a first boot
+         * runs cloud-init and installs a desktop before it answers.
+         */
+        {
+            g_autoptr(GError) desktop_error = NULL;
+
+            reply = clawt_client_request_full(
+                client, "computer.desktop",
+                build_payload("agent", agent_id, NULL), 900, &desktop_error);
+
+            if (reply == NULL) {
+                g_printerr("clawtilla: %s\n", desktop_error->message);
+                return EXIT_FAILURE;
+            }
+        }
 
         result = json_node_get_object(reply);
         relay_argv = string_array_member(result, "argv");
@@ -5713,15 +5726,19 @@ print_connector_usage(gboolean asked_for)
 "  registry-refresh        import the open MCP registry now\n"
 "  add <name> --provider <id> [options]\n"
 "                          add one, and connect it if it can\n"
-"  connect <name>          authorize, or authorize again\n"
+"  connect <name>          authorize, or sign in where the server says\n"
+"  discover <name>         ask a remote server how to sign in to it\n"
 "  key <name>              paste a token instead (read from stdin)\n"
 "  refresh <name>          renew the credential now\n"
 "  revoke <name>           forget it here and withdraw it there\n"
 "  rm <name>               remove the connector entirely\n"
 "\n"
 "Options for add:\n"
-"  --provider <id>         from `clawtilla connector catalog`\n"
-"  --account <label>       which account, in your words (work, personal)\n"
+"  --provider <id>         from `clawtilla connector catalog`; with only\n"
+"                          --url, `remote` -- any MCP server by URL\n"
+"  --account <label>       which account, in your words (work, personal);\n"
+"                          required, and unique, for a second account\n"
+"                          on the same service\n"
 "  --client-id <id>        the OAuth app you registered with the provider\n"
 "  --instance <url>        for a service you host yourself\n"
 "  --scopes \"<a b>\"        override what to ask for\n"
@@ -5742,6 +5759,15 @@ print_connector_usage(gboolean asked_for)
 "  # Or the full device flow, once you have registered an app:\n"
 "  clawtilla connector add gl --provider gitlab --client-id abc123 \\\n"
 "      --scope selected --agents researcher,scribe\n"
+"\n"
+"  # Any remote MCP server: the URL is all it needs. The server says\n"
+"  # where to sign in, and clawtilla registers itself there if it can:\n"
+"  clawtilla connector add notion --url https://mcp.notion.com/mcp\n"
+"  clawtilla connector connect notion\n"
+"\n"
+"  # A second account on the same service needs a label of its own:\n"
+"  clawtilla connector add gh-home --provider github --account personal \\\n"
+"      --command github-mcp-server --scope all\n"
 "\n"
 "  # Your own GitLab:\n"
 "  clawtilla connector add work --provider gitlab \\\n"
@@ -5817,6 +5843,12 @@ connector_connect(ClawtClient *client, const gchar *name)
         if (complete != NULL)
             g_print("or open %s, which fills it in for you.\n", complete);
     } else {
+        const gchar *server = member_or(root, "auth_server", NULL);
+
+        /* Where, before the link: the person checks the host against it. */
+        if (server != NULL)
+            g_print("Signing in at %s\n\n", server);
+
         g_print("Open this to approve:\n\n    %s\n\n",
                 member_or(root, "authorize_url", "?"));
     }
@@ -5886,6 +5918,98 @@ connector_policy_gate(const gchar *tool, gchar **refusal, gpointer user_data)
     return relay_policy_gate(user_data, tool, "external", refusal);
 }
 
+/*
+ * Tells the daemon a remote server answered 401, so every client can
+ * offer the sign-in.  Best effort: the agent has already been told, in
+ * words, what to do -- a daemon that cannot be reached loses only the
+ * button, never the explanation.
+ */
+static void
+connector_unauthorized(const gchar *name, const gchar *challenge,
+                       gboolean sent_credential, gpointer user_data)
+{
+    g_autoptr(ClawtClient) client = connect_to_daemon();
+    g_autoptr(JsonNode) ignored = NULL;
+
+    if (client == NULL)
+        return;
+
+    ignored = clawt_client_request(
+        client, "connector.unauthorized",
+        build_payload("name", name, "challenge", challenge, NULL), NULL);
+}
+
+typedef struct {
+    const gchar *name;
+    const gchar *agent_id;
+
+    /* What was last reported, so an unchanged list is not sent again. */
+    gint64       tools;
+    gboolean     active;
+} CatalogueReport;
+
+/*
+ * Tells the daemon how big the server turned out to be.
+ *
+ * The daemon never starts a connector's server itself -- the relay does,
+ * with the credential -- so this is the only place the count exists.
+ * Best effort: a daemon that is not there loses a number on a settings
+ * page, not a tool call, and nothing is written to stdout, which is the
+ * MCP channel.
+ */
+static void
+on_connector_catalogued(ClawtMcpDirectory *directory, gpointer user_data)
+{
+    CatalogueReport *report = user_data;
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) ignored = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonBuilder) builder = NULL;
+    g_autofree gchar *areas = NULL;
+    gint64 tools = clawt_mcp_directory_get_tool_count(directory);
+    gboolean active = clawt_mcp_directory_is_active(directory);
+
+    if (tools == report->tools && active == report->active)
+        return;
+
+    report->tools = tools;
+    report->active = active;
+
+    client = connect_to_daemon();
+
+    if (client == NULL)
+        return;
+
+    areas = clawt_mcp_directory_overview(directory, 2000);
+    builder = json_builder_new();
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "name");
+    json_builder_add_string_value(builder, report->name);
+
+    if (report->agent_id != NULL) {
+        json_builder_set_member_name(builder, "agent");
+        json_builder_add_string_value(builder, report->agent_id);
+    }
+
+    json_builder_set_member_name(builder, "tools");
+    json_builder_add_int_value(builder, tools);
+    json_builder_set_member_name(builder, "chars");
+    json_builder_add_int_value(
+        builder, (gint64)clawt_mcp_directory_get_char_count(directory));
+    json_builder_set_member_name(builder, "areas");
+    json_builder_add_string_value(builder, areas);
+    json_builder_set_member_name(builder, "directory");
+    json_builder_add_boolean_value(builder, active);
+    json_builder_end_object(builder);
+
+    ignored = clawt_client_request(client, "connector.tools_seen",
+                                   json_builder_get_root(builder), &error);
+
+    if (ignored == NULL && error != NULL)
+        g_printerr("clawtilla: connector '%s': could not report its tool "
+                   "count: %s\n", report->name, error->message);
+}
+
 static gint
 connector_relay(const gchar *name, const gchar *agent_id)
 {
@@ -5894,8 +6018,10 @@ connector_relay(const gchar *name, const gchar *agent_id)
     g_autoptr(ClawtIntegrationBinding) binding = NULL;
     g_autoptr(ClawtOauthToken) token = NULL;
     g_autoptr(ClawtConnectorPlan) plan = NULL;
+    g_autoptr(ClawtMcpDirectory) directory = NULL;
     g_autoptr(GError) error = NULL;
     g_autofree gchar *catalog_dir = NULL;
+    CatalogueReport report = { NULL, NULL, -1, FALSE };
     ClawtIntegrationConfig *instance;
     const ClawtIntegrationInfo *info;
     const ClawtConnectorInfo *connector;
@@ -5964,21 +6090,26 @@ connector_relay(const gchar *name, const gchar *agent_id)
     binding = clawt_integration_binding_for_instance(instance, info, NULL);
     token_file = clawt_integration_binding_get_string(binding, "token_file");
 
-    if (token_file == NULL) {
-        g_printerr("clawtilla: '%s' is not connected yet; run `clawtilla "
-                   "connector connect %s`\n", name, name);
-        return EXIT_FAILURE;
+    /*
+     * No credential yet is still a relay for a server reached by URL:
+     * plenty list their tools to anybody, and the 401 on the first call
+     * is what turns into "sign in to this connector" for the agent and
+     * a Sign in button for the person.  clawt_connector_plan_new()
+     * refuses it for a stdio server, which has nowhere to say so.
+     */
+    if (token_file != NULL) {
+        token = clawt_oauth_token_load(token_file, &error);
+
+        if (token == NULL) {
+            g_printerr("clawtilla: cannot read the credential for '%s': "
+                       "%s\n", name, error->message);
+            return EXIT_FAILURE;
+        }
     }
 
-    token = clawt_oauth_token_load(token_file, &error);
-
-    if (token == NULL) {
-        g_printerr("clawtilla: cannot read the credential for '%s': %s\n",
-                   name, error->message);
-        return EXIT_FAILURE;
-    }
-
-    plan = clawt_connector_plan_new(connector, binding, token->access_token,
+    plan = clawt_connector_plan_new(connector, binding,
+                                    token != NULL ? token->access_token
+                                                  : NULL,
                                     &error);
 
     if (plan == NULL) {
@@ -5986,10 +6117,63 @@ connector_relay(const gchar *name, const gchar *agent_id)
         return EXIT_FAILURE;
     }
 
-    if (agent_id != NULL)
-        return clawt_connector_relay_run_gated(plan, connector_policy_gate,
-                                               (gpointer)agent_id);
-    return clawt_connector_relay_run(plan);
+    plan->unauthorized = connector_unauthorized;
+
+    /*
+     * Several accounts on one service: this account's tools carry its
+     * label, decided from every connector the agent holds -- the same
+     * answer each sibling relay reaches on its own.
+     */
+    if (agent_id != NULL) {
+        ClawtAgentConfig *agent = clawt_config_get_agent(config, agent_id);
+
+        if (agent != NULL) {
+            g_autoptr(GPtrArray) bindings =
+                clawt_integration_resolve_for_agent(config, agent);
+            g_autoptr(GError) conflict = NULL;
+            guint i;
+
+            for (i = 0; bindings != NULL && i < bindings->len; i++) {
+                ClawtIntegrationBinding *mine = g_ptr_array_index(bindings,
+                                                                  i);
+
+                if (g_strcmp0(clawt_integration_binding_get_name(mine),
+                              name) != 0)
+                    continue;
+
+                plan->account_prefix = clawt_connector_account_prefix(
+                    bindings, mine, &plan->account_siblings, &conflict);
+                plan->accounts = plan->account_prefix != NULL ||
+                                 conflict != NULL;
+
+                if (conflict != NULL) {
+                    g_printerr("clawtilla: %s\n", conflict->message);
+                    plan->account_conflict = g_strdup(conflict->message);
+                }
+
+                break;
+            }
+        }
+    }
+
+    /*
+     * The directory is always in the path: it presents a big server as
+     * three tools when the connector and the agent's CLI call for it,
+     * and otherwise only counts what goes past -- which is how the
+     * Connectors page and TOOLS.org learn how big a server is.  With
+     * several accounts it is named for this one, and so is every tool
+     * name it shows.
+     */
+    directory = clawt_connector_directory_new(config, binding, agent_id);
+    clawt_mcp_directory_set_account(directory, plan->account_prefix);
+    report.name = name;
+    report.agent_id = agent_id;
+    g_signal_connect(directory, "catalogued",
+                     G_CALLBACK(on_connector_catalogued), &report);
+
+    return clawt_connector_relay_run_full(
+        plan, (agent_id != NULL) ? connector_policy_gate : NULL,
+        (gpointer)agent_id, directory);
 }
 
 static gint
@@ -6100,9 +6284,52 @@ cmd_connector(int argc, char *argv[])
                     status = g_strdup("expired -- connect again");
             }
 
-            g_print("%-14s %-10s %-10s %s\n", member_or(entry, "name", "?"),
-                    member_or(entry, "provider", "?"),
-                    member_or(entry, "scope", ""), status);
+            /*
+             * A server that refused us is worth more than the expiry: the
+             * credential may look fine and still be one it will not take.
+             */
+            if (json_object_get_boolean_member_with_default(
+                    entry, "needs_sign_in", FALSE) ||
+                (!connected && json_object_get_boolean_member_with_default(
+                                   entry, "sign_in", FALSE))) {
+                g_free(status);
+                status = g_strdup_printf(
+                    "sign in needed%s%s -- `clawtilla connector connect %s`",
+                    member_or(entry, "auth_server", NULL) != NULL
+                    ? " at " : "",
+                    member_or(entry, "auth_server", ""),
+                    member_or(entry, "name", "?"));
+            }
+
+            {
+                const gchar *account = member_or(entry, "account", NULL);
+                g_autofree gchar *provider = (account != NULL)
+                    ? g_strdup_printf("%s/%s",
+                                      member_or(entry, "provider", "?"),
+                                      account)
+                    : g_strdup(member_or(entry, "provider", "?"));
+
+                g_print("%-14s %-18s %-10s %s\n",
+                        member_or(entry, "name", "?"), provider,
+                        member_or(entry, "scope", ""), status);
+            }
+
+            /* How many tools, and whether agents get them as a directory. */
+            {
+                JsonObject *root = json_node_get_object(reply);
+                g_autofree gchar *tools = clawt_mcp_directory_status_label(
+                    member_or(entry, "directory", "auto"),
+                    json_object_get_int_member_with_default(entry,
+                                                            "tool_count", -1),
+                    json_object_get_int_member_with_default(entry,
+                                                            "tool_chars", 0),
+                    json_object_get_int_member_with_default(
+                        root, "directory_min_tools", 40),
+                    json_object_get_int_member_with_default(
+                        root, "directory_min_chars", 100000));
+
+                g_print("%-14s tools: %s\n", "", tools);
+            }
         }
 
         return EXIT_SUCCESS;
@@ -6135,6 +6362,7 @@ cmd_connector(int argc, char *argv[])
      * long way off.
      */
     if (g_strcmp0(verb, "add") != 0 && g_strcmp0(verb, "connect") != 0 &&
+        g_strcmp0(verb, "discover") != 0 &&
         g_strcmp0(verb, "key") != 0 && g_strcmp0(verb, "refresh") != 0 &&
         g_strcmp0(verb, "revoke") != 0 && g_strcmp0(verb, "rm") != 0) {
         g_printerr("clawtilla: unknown connector command '%s'\n", verb);
@@ -6151,6 +6379,7 @@ cmd_connector(int argc, char *argv[])
         g_autoptr(JsonBuilder) builder = json_builder_new();
         const gchar *client_id = NULL;
         gboolean have_provider = FALSE;
+        gboolean have_url = FALSE;
         int a;
 
         json_builder_begin_object(builder);
@@ -6193,6 +6422,9 @@ cmd_connector(int argc, char *argv[])
             if (g_strcmp0(key, "provider") == 0)
                 have_provider = TRUE;
 
+            if (g_strcmp0(key, "url") == 0)
+                have_url = TRUE;
+
             if (g_strcmp0(key, "client_id") == 0)
                 client_id = argv[a + 1];
 
@@ -6202,9 +6434,11 @@ cmd_connector(int argc, char *argv[])
 
         json_builder_end_object(builder);
 
-        if (!have_provider) {
-            g_printerr("clawtilla: connector add needs --provider; "
-                       "`clawtilla connector catalog` lists them\n");
+        /* A URL alone is a remote server; the daemon fills the provider. */
+        if (!have_provider && !have_url) {
+            g_printerr("clawtilla: connector add needs --provider, or --url "
+                       "for a remote MCP server; `clawtilla connector "
+                       "catalog` lists the providers\n");
             return EXIT_FAILURE;
         }
 
@@ -6225,6 +6459,26 @@ cmd_connector(int argc, char *argv[])
         if (client_id != NULL)
             return connector_connect(client, name);
 
+        /*
+         * A server reached by URL is asked how to sign in to it now --
+         * the person is here and has just asked for this server, which is
+         * the moment the network is wanted.
+         */
+        if (have_url) {
+            g_autoptr(JsonNode) found = call(client, "connector.discover",
+                                             build_payload("name", name,
+                                                           NULL));
+
+            if (found != NULL &&
+                json_object_get_boolean_member_with_default(
+                    json_node_get_object(found), "sign_in", FALSE)) {
+                g_print("It signs in at %s.\n",
+                        member_or(json_node_get_object(found), "auth_server",
+                                  "?"));
+                return connector_connect(client, name);
+            }
+        }
+
         g_print("\nNow give it a credential, either:\n"
                 "  clawtilla connector key %s        (paste a token)\n"
                 "  clawtilla connector connect %s    (needs --client-id)\n",
@@ -6235,6 +6489,35 @@ cmd_connector(int argc, char *argv[])
 
     if (g_strcmp0(verb, "connect") == 0)
         return connector_connect(client, name);
+
+    if (g_strcmp0(verb, "discover") == 0) {
+        JsonObject *root;
+
+        reply = call(client, "connector.discover",
+                     build_payload("name", name, NULL));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        root = json_node_get_object(reply);
+
+        if (!json_object_get_boolean_member_with_default(root, "sign_in",
+                                                         FALSE)) {
+            g_print("No sign-in found: %s\n",
+                    member_or(root, "reason", "the server publishes none"));
+            return EXIT_SUCCESS;
+        }
+
+        g_print("Signs in at %s (%s)%s.\n"
+                "Run `clawtilla connector connect %s` to sign in.\n",
+                member_or(root, "auth_server", "?"),
+                member_or(root, "source", "?"),
+                json_object_get_boolean_member_with_default(
+                    root, "registration", FALSE)
+                ? "; clawtilla can register itself there" : "",
+                name);
+        return EXIT_SUCCESS;
+    }
 
     if (g_strcmp0(verb, "key") == 0) {
         g_autofree gchar *key = NULL;
@@ -6843,6 +7126,9 @@ print_skill_usage(gboolean asked_for)
         "  assign <name> <target>     to an agent, team:<id>, or fleet\n"
         "  unassign <name> <target>   take it away again\n"
         "  reload                     rescan the library now\n"
+        "  proposals                  skills agents have proposed, waiting\n"
+        "  approve <proposal>         apply one: enable it, or write the update\n"
+        "  reject <proposal> [why]    discard one; the agent is told why\n"
         "\n"
         "An imported skill lands disabled and its scripts are left behind.\n"
         "Read it, then enable it: what a skill says goes into a model's\n"
@@ -6852,7 +7138,9 @@ print_skill_usage(gboolean asked_for)
         "  clawtilla skill import ~/src/some-repo/skills/release\n"
         "  clawtilla skill show release\n"
         "  clawtilla skill enable release\n"
-        "  clawtilla skill assign release team:engineering\n";
+        "  clawtilla skill assign release team:engineering\n"
+        "  clawtilla skill proposals\n"
+        "  clawtilla skill reject skill-proposal-1f0c... \"too specific to one repo\"\n";
 
     print_usage_text(text, asked_for);
 }
@@ -7196,6 +7484,81 @@ cmd_skill(int argc, char *argv[])
                     target);
 
         report_refusals(reply);
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "proposals") == 0) {
+        JsonArray *proposals;
+
+        reply = call(client, "skill.proposals", NULL);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        proposals = json_object_get_array_member(json_node_get_object(reply),
+                                                 "proposals");
+
+        if (proposals == NULL || json_array_get_length(proposals) == 0) {
+            g_print("No skill proposals are waiting.\n");
+            return EXIT_SUCCESS;
+        }
+
+        /*
+         * The text the agent wrote arrives escaped, and the full draft or
+         * diff is printed so the person approving it from a terminal has
+         * read what they are approving.
+         */
+        for (i = 0; i < json_array_get_length(proposals); i++) {
+            JsonObject *proposal = json_array_get_object_element(proposals, i);
+            const gchar *kind = member_or(proposal, "kind", "create");
+            const gchar *diff = member_or(proposal, "diff", "");
+
+            g_print("%s\n  %s %s '%s'\n",
+                    member_or(proposal, "id", "?"),
+                    member_or(proposal, "agent", "?"),
+                    g_strcmp0(kind, "update") == 0 ? "proposes a change to"
+                                                  : "proposes a new skill",
+                    member_or(proposal, "name", "?"));
+
+            if (*member_or(proposal, "reason", "") != '\0')
+                g_print("  why: %s\n", member_or(proposal, "reason", ""));
+            if (json_object_get_boolean_member_with_default(proposal, "stale", FALSE))
+                g_print("  ! the file changed since it was proposed; approve is refused\n");
+
+            g_print("\n%s\n", g_strcmp0(kind, "update") == 0 && *diff != '\0'
+                                  ? diff : member_or(proposal, "text", ""));
+        }
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "approve") == 0 || g_strcmp0(verb, "reject") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+
+        if (name == NULL) {
+            g_printerr("Usage: clawtilla skill %s <proposal>%s\n", verb,
+                       g_strcmp0(verb, "reject") == 0 ? " [why]" : "");
+            return EXIT_FAILURE;
+        }
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "proposal");
+        json_builder_add_string_value(builder, name);
+        json_builder_set_member_name(builder, "action");
+        json_builder_add_string_value(builder, verb);
+        if (argc > 4) {
+            json_builder_set_member_name(builder, "note");
+            json_builder_add_string_value(builder, argv[4]);
+        }
+        json_builder_end_object(builder);
+
+        reply = call(client, "skill.proposal_resolve",
+                     json_builder_get_root(builder));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("%s %s.\n", name,
+                g_strcmp0(verb, "approve") == 0 ? "approved" : "rejected");
 
         return EXIT_SUCCESS;
     }

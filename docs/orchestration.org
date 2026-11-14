@@ -127,17 +127,83 @@ cannot see is a rule it will violate.
 
 *** What stops two agents naming each other for ever
 
-~orchestration.max_hops~, and *not* the cycle detector.
+*Rounds*, with ~orchestration.max_hops~ behind them --- and *not* the
+cycle detector, which fingerprints the *body*, so two agents saying
+genuinely different things each time slip straight past it.
 
-A reply is sent one hop deeper than the turn that produced it, so a
-mutual-mention exchange climbs and is refused.  The cycle detector
-fingerprints the *body*, so two agents saying genuinely different things
-each time slip straight past it --- do not set a fleet's limits on the
-assumption that it covers this.
+Before rounds the only answer was the hop count.  A reply is sent one
+hop deeper than the turn that produced it, so a mutual-mention exchange
+climbed and was refused --- and so did everything else said in a busy
+room, because the count built up across the room's history.  An ordinary
+standup reached the ceiling by itself: 111 refusals in one session on a
+real fleet, every one of them a room (see "A room reaches it on its own"
+below).  =rooms.max_hops= could only move the ceiling.
 
-Because three agents each reply one hop deeper, an ordinary standup
-reaches the fleet ceiling on its own.  That is what ~rooms.max_hops~ is
-for, and a group is the case it was written for.
+*** Rounds: once per thread, counted per round
+
+#+begin_quote
+A round starts at a message from a person, a routine or a trigger.
+Within one thread of replies a member answers once, and a thread is only
+so long.
+#+end_quote
+
+- *A round* starts whenever you, a routine or a trigger post into a
+  group room.  The router numbers it (=clawt_room_begin_round()=), stamps
+  the message at depth 0 whatever its sender's own state said --- *the
+  room's depth resets at each round* --- and every client draws a
+  "Round N" divider there.  The count is rebuilt from the transcript, so
+  a restart does not start again at 1.
+- *A thread* is one line of replies within it.  Every member that answers
+  the round's opening message starts one; an =@mention= in a reply
+  carries it on to the member named.  The thread is the list of members
+  who have answered in it, in order, and it travels with each delivery:
+  on the message, on the mailbox item (stored, so it survives a
+  restart), and onto the answer the recipient writes --- on the link or
+  through a tool --- because the router reads it off the delivery that
+  started the recipient's turn, which is the daemon's own record and
+  never a claim the model made.
+- *Once per thread.*  A mention of a member who has already answered in
+  that thread is *recorded and not delivered*.  The message is in the
+  room for everyone; the member named does not take a turn on it.  A
+  member who spoke in a *different* thread of the same round still
+  answers --- being named by somebody new is a new question.
+- *A thread is only so long.*  =rooms.max_chain= (default 3) is how many
+  replies one thread may run to.  A message whose thread already has
+  that many reaches nobody it names.  0 removes the cap; the once per
+  thread rule stays.
+- *Said, not silent.*  A withheld mention is stored on the message as
+  ~skipped~ and ~skip_reason~ and drawn under it by every client
+  (=clawt_round_skip_note()=): "Not delivered to @alpha --- they have
+  already answered in this thread of replies (round 4)".  A member named
+  in a room who never answers otherwise reads as having ignored it.
+- *The agent is told.*  Every delivery in a round says which round it
+  is, who has already answered in the thread, and how long a thread may
+  run, so a member can tell "nobody answered" from "that name was not
+  going to reach anybody".  A rule an agent cannot see is a rule it will
+  violate.
+
+Within a round the depth is the thread's length and no more: an answer
+continuing a thread is stamped at most as deep as the thread is long, so
+a turn whose depth was folded in from somewhere deeper --- a merge,
+another room's running turn --- does not carry it into this room's
+round.  It is only ever lowered, and only on a thread the room itself
+started, so a delegation chain that passes *through* a room keeps every
+hop it had.
+
+*max_hops stays as the backstop.*  With =rooms.max_chain= at 3 and
+=orchestration.max_hops= at 8, a round can never reach the hop limit; set
+the cap to 0, or above the hop limit, and the hop limit refuses the
+thread exactly as it always did.  =tests/test-room-rounds.c= runs twenty
+rounds in two rooms at once, every member naming both others on every
+reply with =max_hops: 4=, and asserts nothing is refused and every
+round ends.  With the thread check disabled by hand the same test fails
+on its runaway bound, which is how it was checked to be testing
+anything.
+
+Only group rooms have rounds.  A pair already ends an exchange with the
+invite rule --- a deliberate message earns one answer --- and a thread of
+two members is that rule again.  The daemon's own notices open no round
+and join no thread: they are addressed to one member, never a mention.
 
 *A message that reaches nobody is still measured by the stall and hop
 checks*, and only escapes the rate limit and the cycle detector --- the
@@ -831,6 +897,7 @@ Served over each agent's link as an MCP endpoint.
 | ~clawtilla_memory_*~ | six tools over your own searchable memories |
 | ~clawtilla_message_user~ | reach the operator; replying does not |
 | ~clawtilla_ask_decision~ | put a choice in the operator's decision inbox |
+| ~clawtilla_skill_propose~ | write down a procedure it worked out -- a new skill or a change to one -- as a disabled draft and a decision for the operator; see [[file:skills.org::*Skills agents propose][Skills agents propose]] |
 | ~clawtilla_list_teams~ | who is on which team, and who leads it |
 | ~clawtilla_fleet_cost~ | what the fleet has spent, and one task's budget |
 | ~clawtilla_wait_until~ / ~clawtilla_wait_list~ / ~clawtilla_wait_cancel~ | be told when a condition holds, checked by code; see [[*Waits: a condition checked by code][Waits]] |
@@ -852,6 +919,7 @@ offered depends on a gate per tool:
 | memories | ~memories.enabled~ |
 | the decision inbox | the daemon offering the hook; no config key |
 | waits | the daemon offering the manager; a command or computer wait also needs a computer and ~clawtilla_computer_exec~ |
+| proposing a skill | the daemon offering the hook, a skills library (=skills.enabled=), and =skills.max_proposals_per_day= above 0 |
 
 There is no ~tools.delegate~ key.  Turning delegation off for one agent
 is ~deny: [clawtilla_delegate]~.
@@ -1801,13 +1869,14 @@ same source ~clawtilla_recall~ has always filtered on.
 
 The router checks each message against its resolved room, regardless of whether the sender named an agent or the room itself. A message from ~alice~ to ~bob~ and a post to ~dm:alice:bob~ therefore share the same cycle history and stall. A stall blocks both directions of that pair, leaves ~carol~'s separate conversation with ~bob~ usable, and is cleared when a person speaks in the stalled room. The original address is preserved on the caller's message; ~clawt_message_set_room_id()~ normalizes the guard's copy before accounting.
 
-Four limits, each answering a different failure.  The defaults:
+Five limits, each answering a different failure.  The defaults:
 
 #+begin_src yaml
 orchestration:
   max_hops: 8
   rate_limit_per_minute: 30
   task_budget_usd: 5.0
+  tree_message_budget: 60
   cycle_window: 10
   cycle_seconds: 300
 #+end_src
@@ -1819,13 +1888,17 @@ it remembers and ~cycle_seconds~ bounds how long it remembers it for.
 Either at ~0~ turns it off.
 
 They are checked in one place, ~clawt_loop_guard_check()~, in a fixed
-order: hops, budget, rate, cycle.  The order is load-bearing twice over.
+order: hops, budget, tree, rate, cycle.  The order is load-bearing twice over.
 The two checks with no side effects run first, so a message refused on
 hops has not consumed part of its sender's rate allowance -- and rate
 runs before cycle, because the cycle check *records* the fingerprint it
 was handed.  A message refused on rate used to have its text written into
 the cycle window anyway, so re-sending it later, legitimately, after the
-throttle cleared, was flagged as going in circles.
+throttle cleared, was flagged as going in circles.  The tree budget sits
+with rate and cycle behind the "does it reach anybody" gate, because it
+too is about what a sender spends of other agents' time, and it is
+*counted* only after cycle passes: a request refused for any reason has
+cost nobody a turn.
 
 *** max_hops
 
@@ -1927,6 +2000,12 @@ instead of another would be no better.
 Found by running a real three-agent fleet with ~max_hops: 4~ and reading
 the event log: 111 refusals in a session, every one of them a room.
 
+That was the message.  The *cause* --- a hop count that built up across
+a room's history --- is what rounds remove: the depth starts again at
+each round, a thread ends at =rooms.max_chain=, and this refusal is now
+the backstop it was always meant to be.  See "Rounds: once per thread,
+counted per round".
+
 *** When a limit fires
 
 The sender gets the error, and the daemon publishes ~message.refused~
@@ -1989,8 +2068,62 @@ $5.00 it was itself given bounds only its own turns.
 
 The practical reading: ~task_budget_usd~ bounds *one agent's work on one
 assignment*, which is still the runaway case it was built for.  It does
-not bound a fan-out.  Bound that with ~max_hops~ and by watching
-~clawtilla cost~.
+not bound a fan-out in dollars.  =orchestration.tree_message_budget=,
+below, bounds one in messages.
+
+*** tree_message_budget
+
+#+begin_src yaml
+orchestration:
+  tree_message_budget: 60
+#+end_src
+
+~max_hops~ bounds how *deep* a chain of delegations goes and says nothing
+about how *wide* it is: a chief that hands work to ten agents, each of
+which asks two more, is three hops deep and can talk all night.  This
+counts the *requests* a task tree sends --- a tree being a root task and
+everything delegated from it --- and renews whenever any task in the tree
+settles.
+
+- *Per root task, never a scalar.*  The guard keeps a count per root
+  (=clawt_loop_guard_get_tree_count()=); one fleet-wide counter would have
+  the busiest tree spend every other tree's allowance.  The daemon finds
+  a message's tree from the task it names, or else from the task the
+  sender's turn in that room is working on, and walks up the parents
+  (=src/core/daemon-tree.c=).  A message in no tree is never counted.
+- *One call is one request*, however many teammates it reaches: a post
+  naming three members of a room is counted once.
+- *Only requests.*  A deliberate message --- =clawtilla_message_agent=,
+  =clawtilla_ask_agent=, =clawtilla_delegate=, =clawtilla_handoff=,
+  =clawtilla_post_room=, an =@mention= in a room, a =reply: none= notice ---
+  counts.  An *answer* never does and is never refused: refusing it would
+  strand the delegator waiting on work that is finished.  Nor does
+  anything a person, a routine, a trigger or the daemon sent.
+- *The owed follow-up is never refused.*  When a task settles the tree
+  renews *before* the settle notice goes out
+  (=clawt_daemon_tree_settled()= is called first in =on_task_changed()=),
+  and the notice is the daemon's own message, which passes unmeasured.
+  So the turn a delegator is owed when its work comes back starts with a
+  full budget, by construction rather than by a rule somebody has to
+  remember.
+- *At the limit the tools are not there*, exactly as for ~max_hops~:
+  =clawt_mcp_tools_is_permitted()= withholds every tool that starts a hop
+  from a turn in an exhausted tree --- checked for *every* running turn,
+  not the agent-wide fold, which names a task only when the turns agree
+  and would read an agent working in two trees as working in none.  The
+  guard refuses a request that arrives anyway, saying the budget renews
+  when something in the tree settles, so the advice is the thing the
+  budget wants: finish something.
+- *One alert, naming the tree.*  The guard signals once per exhaustion
+  (=ClawtLoopGuard::tree-exhausted=) and not again until the tree
+  renews; the daemon publishes ~task.tree_budget~ with the root's brief,
+  id and assignee, and every client draws it in the alerts surface with
+  =clawt_loop_guard_tree_alert_text()=.  It is a notice: nothing broke,
+  but agents that have gone quiet read as a broken fleet to anybody not
+  told why.
+
+0 turns it off.  It is editable on each client's Orchestration settings
+page.
 
 *** cycle_window and cycle_seconds
 

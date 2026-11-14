@@ -681,6 +681,91 @@ gchar *clawt_lrg_decision_meta(JsonObject *decision, gint64 now_us);
 const gchar *clawt_lrg_decision_answer(const gchar *option,
                                        const gchar *typed);
 
+/* ── Skill proposals ──────────────────────────────────────────────── */
+
+/**
+ * clawt_lrg_proposal_title:
+ * @decision: a decision
+ *
+ * The first line of a skill proposal's question, and only that.  The
+ * daemon builds that line from an agent id and a validated skill name;
+ * everything after it is the agent's own text, escaped and fenced, and
+ * belongs in the card's body rather than its heading.
+ *
+ * Returns: (transfer full): the headline, never %NULL
+ */
+gchar *clawt_lrg_proposal_title(JsonObject *decision);
+
+/**
+ * clawt_lrg_proposal_find:
+ * @reply: (nullable): a `skill.proposals` reply
+ * @id: (nullable): a decision id
+ *
+ * The proposal a decision is about, matched by id -- the two share it.
+ * %NULL for a decision that is not a proposal by the library's own rule
+ * (clawt_skill_proposal_id_is_valid()), so a client never keeps a second
+ * copy of what a proposal id looks like.
+ *
+ * Returns: (transfer none) (nullable): the proposal
+ */
+JsonObject *clawt_lrg_proposal_find(JsonNode *reply, const gchar *id);
+
+/**
+ * clawt_lrg_proposal_items:
+ * @reply: (nullable): a `skill.proposals` reply
+ *
+ * Returns: (transfer none) (nullable): the `proposals` array
+ */
+JsonArray *clawt_lrg_proposal_items(JsonNode *reply);
+
+/**
+ * clawt_lrg_proposal_shown:
+ * @proposal: a proposal
+ *
+ * What a reviewer reads: the diff for a change to an existing skill,
+ * since that is what approving would do, and the whole proposed
+ * `SKILL.md` for a new one.  Already escaped by the daemon; drawn as
+ * plain text.
+ *
+ * Returns: (transfer none): the text, never %NULL
+ */
+const gchar *clawt_lrg_proposal_shown(JsonObject *proposal);
+
+/**
+ * clawt_lrg_proposal_summary:
+ * @proposal: a proposal
+ * @now_us: the current time in microseconds
+ *
+ * Who proposed it and how long ago.  `created_at` is microseconds here,
+ * unlike a decision's seconds, so it goes to clawt_time_ago_label() as
+ * it is.
+ *
+ * Returns: (transfer full): "kudu proposes a new skill · 5m ago"
+ */
+gchar *clawt_lrg_proposal_summary(JsonObject *proposal, gint64 now_us);
+
+/**
+ * clawt_lrg_proposal_resolve_payload:
+ * @id: the proposal
+ * @action: "approve", "reject" or "edit"
+ * @note: (nullable): words for the agent
+ * @description: (nullable): the edited description, for "edit"
+ * @body: (nullable): the edited body, for "edit"
+ * @refusal: (out) (optional): why there is no payload
+ *
+ * A `skill.proposal_resolve` payload.  An edit with an empty description
+ * or body is refused here, so the form stays up with what was typed
+ * rather than sending something the daemon will refuse.
+ *
+ * Returns: (transfer full) (nullable): the payload, or %NULL
+ */
+JsonNode *clawt_lrg_proposal_resolve_payload(const gchar  *id,
+                                             const gchar  *action,
+                                             const gchar  *note,
+                                             const gchar  *description,
+                                             const gchar  *body,
+                                             gchar       **refusal);
+
 /* ── Go to… ───────────────────────────────────────────────────────── */
 
 /**

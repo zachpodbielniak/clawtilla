@@ -199,6 +199,17 @@ declare -A AFFORDANCES=(
     #
     ["sidebar collapses"]="clawt_appearance_set_sidebar_collapsed|nav-toggle|clawt_lrg_window_toggle_sidebar"
     #
+    # Per-agent computer settings that apply to some computer types only.
+    # Each client draws the row from the agent member the daemon reports
+    # for exactly those types, so the member name is the marker: a client
+    # that stopped reading it would offer the setting everywhere or
+    # nowhere.  The limits are marked by the swap key, the one that has
+    # to be ordered against memory on a save.
+    #
+    ["computer start choice"]="\"computer_start\"|\"computer_start\"|\"computer_start\""
+    ["container limits"]="\"computer.container.memory_swap\"|\"computer.container.memory_swap\"|\"computer.container.memory_swap\""
+    ["ssh wake command"]="\"ssh_wake_command\"|\"ssh_wake_command\"|\"ssh_wake_command\""
+    #
     # The agent view's "Waiting for" list. The frames (wait.list,
     # wait.cancel) are layer 1's; this is the schedule line, which every
     # client must draw from the one library function rather than its own
@@ -236,6 +247,19 @@ declare -A AFFORDANCES=(
     ["rebuild requests say what is lost"]="\"loses\"|\"loses\"|\"loses\""
     ["ack-check model choices"]="clawt_ack_check_model_nth_value|clawt_ack_check_model_nth_value|clawt_ack_check_model_nth_value"
     #
+    # Rounds in a group room and the budget per task tree: a divider
+    # where each round starts and the note under a withheld mention,
+    # both worded by libclawt; the two settings on the Orchestration
+    # page (the budget through orchestration.set, each room's cap
+    # through room.set, neither a frame of its own); and the alert that
+    # names an exhausted tree.
+    #
+    ["round dividers"]="clawt_round_label|clawt_round_label|clawt_round_label"
+    ["withheld mentions say why"]="clawt_round_skip_note|clawt_round_skip_note|clawt_round_skip_note"
+    ["tree budget setting"]="\"tree_message_budget\"|\"tree_message_budget\"|\"tree_message_budget\""
+    ["thread cap per room"]="\"max_chain\"|\"max_chain\"|\"max_chain\""
+    ["tree budget alert names the tree"]="clawt_loop_guard_tree_alert_text|clawt_loop_guard_tree_alert_text|clawt_loop_guard_tree_alert_text"
+    #
     # The Grok page: the bots and who may reach them, handing one a job on
     # an agent's behalf, the jobs in libclawt's tones, the routine prompt
     # and the MCP key -- and the badge, counted by the daemon in all three.
@@ -249,6 +273,16 @@ declare -A AFFORDANCES=(
     ["browser view"]="clawt_gtk_build_browser_view|/f/a/:id/browser|build_browser_view"
     ["click in the browser"]="on_picture_pressed|/browser/click|on_browser_click"
     ["open a page in the browser"]="\"browser.open\"|/browser/open|\"browser.open\""
+    #
+    # Servers with many tools, on the Connectors page: each connector's
+    # tool count and whether agents see it as a directory (libclawt's
+    # sentence in all three), and the per-connector Auto / Always / Never
+    # choice.  The choice walks clawt_tool_directory_mode_*, which layer 3
+    # already compares; this row is the control it lives in.  The
+    # thresholds are connector.settings, layer 1's.
+    #
+    ["connector tool count"]="clawt_mcp_directory_status_label|clawt_mcp_directory_status_label|clawt_mcp_directory_status_label"
+    ["present as a directory"]="build_directory_choice|directory_form|directory_choice"
     #
     # A group room drawn beside the agents, and the two things you can
     # only do to one from a client.
@@ -449,6 +483,17 @@ declare -A AFFORDANCES=(
     ["skills library"]="clawt_gtk_refresh_skills|clawt_web_skills_body|refresh_skills_library"
     ["skill provenance"]="Provenance|sha256|Provenance"
     ["skill scan warnings"]="Not copied|Not copied|Not copied"
+    #
+    # Skills agents propose (clawtilla_skill_propose).  The frames are
+    # layer 1's (skill.proposals, skill.proposal_resolve); these are the
+    # three things a person needs that no frame proves: the decision card
+    # recognising a proposal by the library's own rule, the card showing
+    # the proposed text (or the diff) with Approve / Reject / Edit, and
+    # the Skills page listing what is pending, who proposed it and why.
+    #
+    ["skill proposal decisions"]="clawt_skill_proposal_id_is_valid|clawt_skill_proposal_id_is_valid|clawt_skill_proposal_id_is_valid"
+    ["skill proposal review"]="clawt_gtk_proposal_review|web_proposal_review|lrg_proposal_review"
+    ["pending skill proposals"]="append_pending_proposals|web_pending_proposals|lrg_pending_proposals"
     ["fleet recall"]="recall_entry|recall-form|recall_entry"
     ["recall results"]="refresh_recall_once|recall-hit|recall-hit"
     ["operator profile"]="operator_view|operator-profile|operator-profile"
@@ -492,6 +537,18 @@ declare -A AFFORDANCES=(
     ["fallback list editor"]="fallback_editor_draw|clawt_web_fallback_card|draw_fallbacks"
     ["on fallback badge"]="clawt_gtk_failover_badge|clawt_web_failover_badge|clawt_lrg_badge(agent->fallback"
     ["alert in the event's words"]="clawt_event_get_detail(event, \"message\")|clawt_event_get_detail(event, \"message\")|clawt_event_get_detail(event, \"message\")"
+    #
+    # Connector sign-in and several accounts: a remote server added by its
+    # URL alone (the name proposed from the host), a Sign in that names
+    # where it happens when discovery found a server or the server refused
+    # the agent, and the account label on every connector row -- the one
+    # thing that tells two accounts on one service apart.  Each is the
+    # library's own function, so the marker is the rule, not its wording.
+    #
+    ["connector added by URL"]="clawt_connector_name_for_url|clawt_connector_name_for_url|clawt_connector_name_for_url"
+    ["connector sign in at its server"]="clawt_connector_sign_in_label|clawt_connector_sign_in_label|clawt_connector_sign_in_label"
+    ["account label on connector rows"]="clawt_connector_row_subtitle|clawt_connector_row_subtitle|clawt_connector_row_subtitle"
+    ["account label asked for a second account"]="required for a second account|required for a second account|unique, for a second account"
     #
     # Each team's "Problems to look at" room has a sidebar row.  It sends
     # no frame of its own -- it is room.list read with a different

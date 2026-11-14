@@ -28,6 +28,10 @@
 typedef struct {
     LrgWidget *list;
     guint      generation;
+
+    /* connectors.directory_min_tools and _min_chars, filled on refresh. */
+    LrgWidget *min_tools;
+    LrgWidget *min_chars;
 } Connectors;
 
 static Connectors connectors;
@@ -134,6 +138,18 @@ on_begun(ClawtLrgApp *app, JsonNode *reply, const GError *error,
                                   g_free);
     } else {
         const gchar *url = clawt_ipc_payload_string(root, "authorize_url");
+        const gchar *server = clawt_ipc_payload_string(root, "auth_server");
+
+        /*
+         * Where, before the link: a discovered server is the remote
+         * server's claim, and this is what the address bar is checked
+         * against.
+         */
+        if (server != NULL) {
+            g_autofree gchar *where = clawt_connector_sign_in_label(server);
+
+            clawt_lrg_take(content, clawt_lrg_label(where, "heading"));
+        }
 
         /*
          * Opened for them, and still shown: a browser that declines to
@@ -202,6 +218,16 @@ close_menu(Action *action)
 
 static void
 on_connect_clicked(LrgButton *button, gpointer user_data)
+{
+    Action *action = user_data;
+
+    close_menu(action);
+    run_flow(action->app, action->name);
+}
+
+/* The same flow as Authorize again; the daemon decides where it signs in. */
+static void
+on_connector_sign_in(LrgButton *button, gpointer user_data)
 {
     Action *action = user_data;
 
@@ -392,6 +418,79 @@ on_remove_clicked(LrgButton *button, gpointer user_data)
                       g_strdup(action->name), g_free);
 }
 
+/* ── Presenting a big server as a directory ───────────────────────── */
+
+static void
+on_directory_saved(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+                   gpointer user_data)
+{
+    if (reply != NULL)
+        clawt_lrg_toast(app, "Saved. It applies the next time an agent's "
+                             "session starts.");
+
+    refresh(app);
+}
+
+/*
+ * Saved as soon as it changes, through integration.update like every
+ * other connector field.
+ */
+static void
+on_directory_changed(LrgComboBox *combo, gpointer user_data)
+{
+    Action *action = user_data;
+    const gchar *nick = clawt_lrg_combo_id(LRG_WIDGET(combo));
+
+    if (nick == NULL)
+        return;
+
+    clawt_lrg_request(action->app, "integration.update",
+                      clawt_ipc_payload_new("name", action->name,
+                                            "directory", nick, NULL),
+                      CLAWT_LRG_REQUEST_NONE, on_directory_saved, NULL, NULL);
+}
+
+/*
+ * "Present as a directory: Auto / Always / Never", walked from the
+ * library's enumeration so a mode added there is offered here at once.
+ */
+static LrgWidget *
+directory_choice(ClawtLrgApp *app, const gchar *name, const gchar *current)
+{
+    g_autoptr(GPtrArray) nicks = g_ptr_array_new();
+    g_autoptr(GPtrArray) labels = g_ptr_array_new();
+    LrgWidget *form = clawt_lrg_form_new();
+    LrgWidget *combo;
+    Action *action = g_new0(Action, 1);
+    guint i;
+
+    for (i = 0; i < clawt_tool_directory_mode_count(); i++) {
+        g_ptr_array_add(nicks,
+                        (gpointer)clawt_tool_directory_mode_nth_nick(i));
+        g_ptr_array_add(labels,
+                        (gpointer)clawt_tool_directory_mode_nth_label(i));
+    }
+
+    g_ptr_array_add(nicks, NULL);
+    g_ptr_array_add(labels, NULL);
+
+    combo = clawt_lrg_combo((const gchar *const *)nicks->pdata,
+                            (const gchar *const *)labels->pdata,
+                            (current != NULL) ? current : "auto");
+
+    action->app = app;
+    action->name = g_strdup(name);
+    g_signal_connect_data(combo, "changed", G_CALLBACK(on_directory_changed),
+                          action,
+                          (GClosureNotify)(void (*)(void))action_free, 0);
+
+    clawt_lrg_form_add(form, "Present as a directory", combo,
+                       "Three tools that search, describe and run the "
+                       "rest, instead of every tool in every prompt.");
+
+    return form;
+}
+
 /*
  * Plain buttons in a dialog rather than a menu that runs on selection:
  * GTK learned that a list selecting its first row as it takes focus
@@ -405,6 +504,10 @@ on_actions_clicked(LrgButton *button, gpointer user_data)
                                           "clawt-connector");
     const gchar *provider = g_object_get_data(G_OBJECT(button),
                                               "clawt-connector-provider");
+    const gchar *server = g_object_get_data(G_OBJECT(button),
+                                            "clawt-connector-auth-server");
+    gboolean sign_in = GPOINTER_TO_INT(g_object_get_data(
+        G_OBJECT(button), "clawt-connector-sign-in"));
     LrgWidget *box = clawt_lrg_vbox(8.0f);
     LrgDialog *dialog;
     static const struct {
@@ -422,6 +525,30 @@ on_actions_clicked(LrgButton *button, gpointer user_data)
     guint i;
 
     lrg_widget_set_min_size(box, 320.0f * (gfloat)app->scale, 0.0f);
+
+    /*
+     * First when discovery found a server or the server refused the
+     * agent: the one action this row is asking for, named with where it
+     * happens.
+     */
+    if (sign_in) {
+        Action *action = g_new0(Action, 1);
+        g_autofree gchar *label = clawt_connector_sign_in_label(server);
+        LrgWidget *one;
+
+        action->app = app;
+        action->name = g_strdup(name);
+        one = clawt_lrg_button(label, "primary", NULL, NULL);
+        g_signal_connect_data(one, "clicked",
+                              G_CALLBACK(on_connector_sign_in), action,
+                              (GClosureNotify)(void (*)(void))action_free, 0);
+        lrg_widget_set_halign(one, LRG_ALIGN_FILL);
+        g_ptr_array_add(made, action);
+        clawt_lrg_take(box, one);
+    }
+    clawt_lrg_take(box, directory_choice(
+        app, name, g_object_get_data(G_OBJECT(button),
+                                     "clawt-connector-directory")));
 
     for (i = 0; i < G_N_ELEMENTS(actions); i++) {
         Action *action = g_new0(Action, 1);
@@ -459,11 +586,13 @@ typedef struct {
     LrgWidget *account;
     LrgWidget *client_id;
     LrgWidget *instance;
+    LrgWidget *url;
     LrgWidget *scope;
     LrgWidget *agents;
     LrgDialog *dialog;     /* weak */
     gchar     *chosen;
     gboolean   authorise;
+    gboolean   remote;
 } AddConnector;
 
 static void
@@ -479,6 +608,28 @@ static void
 add_release(gpointer data)
 {
     g_rc_box_release_full(data, add_clear);
+}
+
+/*
+ * A server added by URL is asked how to sign in to it at once -- the
+ * person has just asked for it, which is when the network is wanted --
+ * and signed in to when it says.
+ */
+static void
+on_discovered(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+              gpointer user_data)
+{
+    JsonObject *root = clawt_ipc_reply_object(reply);
+
+    refresh(app);
+
+    if (root != NULL && clawt_ipc_payload_boolean(root, "sign_in", FALSE)) {
+        run_flow(app, user_data);
+        return;
+    }
+
+    clawt_lrg_toast(app, "Added. It publishes no sign-in; open it to paste "
+                         "a token.");
 }
 
 static void
@@ -503,6 +654,11 @@ on_connector_added(ClawtLrgApp *app, JsonNode *reply, const GError *error,
      */
     if (add->authorise)
         run_flow(app, add->chosen);
+    else if (add->remote)
+        clawt_lrg_request(app, "connector.discover",
+                          clawt_ipc_payload_new("name", add->chosen, NULL),
+                          CLAWT_LRG_REQUEST_NONE, on_discovered,
+                          g_strdup(add->chosen), g_free);
     else
         clawt_lrg_toast(app, "Added. Open it to paste a token, or set a "
                              "client id to authorize.");
@@ -515,13 +671,14 @@ on_add_response(ClawtLrgApp *app, LrgDialog *dialog, gint response,
     AddConnector *add = user_data;
     g_autoptr(GError) error = NULL;
     const gchar *client_id = clawt_lrg_entry_text(add->client_id);
+    const gchar *url = clawt_lrg_entry_text(add->url);
     JsonNode *payload;
 
     payload = clawt_lrg_settings_connector_payload(
         clawt_lrg_entry_text(add->name), clawt_lrg_combo_id(add->provider),
         clawt_lrg_combo_id(add->scope),
         clawt_lrg_entry_text(add->account), client_id,
-        clawt_lrg_entry_text(add->instance),
+        clawt_lrg_entry_text(add->instance), url,
         clawt_lrg_entry_text(add->agents), &error);
 
     if (payload == NULL) {
@@ -529,9 +686,12 @@ on_add_response(ClawtLrgApp *app, LrgDialog *dialog, gint response,
         return FALSE;
     }
 
+    /* The name the payload settled on, which may be the URL's. */
     g_free(add->chosen);
-    add->chosen = g_strdup(clawt_lrg_entry_text(add->name));
+    add->chosen = g_strdup(json_object_get_string_member(
+        json_node_get_object(payload), "name"));
     add->authorise = client_id != NULL && *client_id != '\0';
+    add->remote = url != NULL && *url != '\0';
 
     clawt_lrg_request(app, "integration.add", payload,
                       CLAWT_LRG_REQUEST_NONE, on_connector_added,
@@ -583,6 +743,7 @@ on_catalog(ClawtLrgApp *app, JsonNode *reply, const GError *error,
     add->account = clawt_lrg_entry(NULL, "work, personal");
     add->client_id = clawt_lrg_entry(NULL, "leave empty to paste a token");
     add->instance = clawt_lrg_entry(NULL, "if you host it yourself");
+    add->url = clawt_lrg_entry(NULL, "https://mcp.example.com/mcp");
     /* walked from ClawtScope, like the integration editor's */
     for (i = 0; i < clawt_lrg_settings_scope_count(); i++) {
         const gchar *nick = clawt_lrg_settings_scope_nth_nick(i);
@@ -603,8 +764,15 @@ on_catalog(ClawtLrgApp *app, JsonNode *reply, const GError *error,
                        "The kind of sign-in is beside each: a device "
                        "connector needs a client id, an api_key one a "
                        "pasted token.");
-    clawt_lrg_form_add(form, "Name", add->name, NULL);
-    clawt_lrg_form_add(form, "Account", add->account, NULL);
+    clawt_lrg_form_add(form, "Server URL", add->url,
+                       "Any remote MCP server: the URL is all it needs, "
+                       "and it says where to sign in.");
+    clawt_lrg_form_add(form, "Name", add->name,
+                       "Left empty, it comes from the URL.");
+    clawt_lrg_form_add(form, "Account", add->account,
+                       "Required, and unique, for a second account on the "
+                       "same service: it is what the agent's tools are "
+                       "named for.");
     clawt_lrg_form_add(form, "Client ID", add->client_id, NULL);
     clawt_lrg_form_add(form, "Instance", add->instance, NULL);
     clawt_lrg_form_add(form, "Who gets it", add->scope, NULL);
@@ -662,6 +830,8 @@ on_list(ClawtLrgApp *app, JsonNode *reply, const GError *error,
         gpointer user_data)
 {
     JsonArray *list;
+    gint64 min_tools;
+    gint64 min_chars;
     guint i;
 
     if (GPOINTER_TO_UINT(user_data) != connectors.generation ||
@@ -671,6 +841,22 @@ on_list(ClawtLrgApp *app, JsonNode *reply, const GError *error,
     clawt_lrg_clear(connectors.list);
     list = clawt_lrg_settings_member_array(clawt_ipc_reply_object(reply),
                                            "connectors");
+    min_tools = json_object_get_int_member_with_default(
+        clawt_ipc_reply_object(reply), "directory_min_tools", 40);
+    min_chars = json_object_get_int_member_with_default(
+        clawt_ipc_reply_object(reply), "directory_min_chars", 100000);
+
+    if (connectors.min_tools != NULL) {
+        g_autofree gchar *tools_text = g_strdup_printf("%" G_GINT64_FORMAT,
+                                                       min_tools);
+        g_autofree gchar *chars_text = g_strdup_printf("%" G_GINT64_FORMAT,
+                                                       min_chars);
+
+        lrg_text_input_set_text(LRG_TEXT_INPUT(connectors.min_tools),
+                                tools_text);
+        lrg_text_input_set_text(LRG_TEXT_INPUT(connectors.min_chars),
+                                chars_text);
+    }
 
     if (list == NULL || json_array_get_length(list) == 0)
         clawt_lrg_take(connectors.list, clawt_lrg_row(
@@ -709,13 +895,94 @@ on_list(ClawtLrgApp *app, JsonNode *reply, const GError *error,
                                g_strdup(name), g_free);
         g_object_set_data_full(G_OBJECT(open), "clawt-connector-provider",
                                g_strdup(provider), g_free);
+        g_object_set_data_full(
+            G_OBJECT(open), "clawt-connector-auth-server",
+            g_strdup(clawt_ipc_payload_string(entry, "auth_server")), g_free);
+        g_object_set_data(G_OBJECT(open), "clawt-connector-sign-in",
+                          GINT_TO_POINTER(clawt_ipc_payload_boolean(
+                              entry, "sign_in", FALSE)));
+        g_object_set_data_full(G_OBJECT(open), "clawt-connector-directory",
+                               g_strdup(clawt_ipc_payload_string(
+                                   entry, "directory")), g_free);
         clawt_lrg_row_add_suffix(row, open);
 
         clawt_lrg_appear(app, row, i);
         clawt_lrg_take(connectors.list, row);
+
+        /*
+         * How many tools, and whether agents see them as a directory --
+         * libclawt's sentence, the one the other clients draw too.  Its
+         * own wrapping line, since a row's subtitle is one.
+         */
+        {
+            g_autofree gchar *tools_line = clawt_mcp_directory_status_label(
+                clawt_ipc_payload_string(entry, "directory"),
+                json_object_get_int_member_with_default(entry, "tool_count",
+                                                        -1),
+                json_object_get_int_member_with_default(entry, "tool_chars",
+                                                        0),
+                min_tools, min_chars);
+
+            clawt_lrg_take(connectors.list,
+                           clawt_lrg_paragraph(tools_line, "muted"));
+        }
     }
 
     clawt_lrg_app_wake(app);
+}
+
+static void
+on_thresholds_saved(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+                    gpointer user_data)
+{
+    if (reply != NULL)
+        clawt_lrg_toast(app, "Saved.");
+
+    refresh(app);
+}
+
+/*
+ * Through connector.settings, which refuses a negative threshold before
+ * writing either.  Text that is not a whole number is said so here and
+ * not sent, rather than saved as zero.
+ */
+static void
+on_thresholds_save(LrgButton *button, gpointer user_data)
+{
+    ClawtLrgApp *app = user_data;
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    LrgWidget *entries[2];
+    const gchar *keys[] = { "directory_min_tools", "directory_min_chars" };
+    guint k;
+
+    entries[0] = connectors.min_tools;
+    entries[1] = connectors.min_chars;
+
+    json_builder_begin_object(builder);
+
+    for (k = 0; k < G_N_ELEMENTS(keys); k++) {
+        const gchar *text = clawt_lrg_entry_text(entries[k]);
+        gint64 value = 0;
+
+        if (text == NULL || *text == '\0')
+            continue;
+
+        if (!g_ascii_string_to_signed(text, 10, 0, G_MAXINT64, &value,
+                                      NULL)) {
+            clawt_lrg_toast(app, "A threshold has to be a whole number, "
+                                 "zero or more.");
+            return;
+        }
+
+        json_builder_set_member_name(builder, keys[k]);
+        json_builder_add_int_value(builder, value);
+    }
+
+    json_builder_end_object(builder);
+
+    clawt_lrg_request(app, "connector.settings",
+                      json_builder_get_root(builder), CLAWT_LRG_REQUEST_NONE,
+                      on_thresholds_saved, NULL, NULL);
 }
 
 static void
@@ -754,6 +1021,34 @@ build(ClawtLrgApp *app)
     g_object_unref(connectors.list);
 
     clawt_lrg_take(clawt_lrg_page_body(page), clawt_lrg_card(box));
+
+    /*
+     * Servers with many tools: the thresholds `auto` measures a
+     * connector against.  Per connector the choice is in its Actions.
+     */
+    {
+        LrgWidget *many = clawt_lrg_vbox(10.0f);
+        LrgWidget *form = clawt_lrg_form_new();
+
+        clawt_lrg_take(many, clawt_lrg_section("Servers with many tools"));
+        clawt_lrg_take(many, clawt_lrg_paragraph(
+            "Past either of these, a connector set to Auto reaches agents "
+            "as a directory -- search, describe and call -- unless the "
+            "agent's CLI searches tools itself, as Claude Code does.",
+            "muted"));
+
+        connectors.min_tools = clawt_lrg_entry("40", "40");
+        connectors.min_chars = clawt_lrg_entry("100000", "100000");
+        clawt_lrg_form_add(form, "More tools than", connectors.min_tools,
+                           NULL);
+        clawt_lrg_form_add(form, "More characters of tool definitions than",
+                           connectors.min_chars, NULL);
+        clawt_lrg_take(many, form);
+        clawt_lrg_take(many, clawt_lrg_button(
+            "Save", "primary", G_CALLBACK(on_thresholds_save), app));
+
+        clawt_lrg_take(clawt_lrg_page_body(page), clawt_lrg_card(many));
+    }
 
     return page;
 }

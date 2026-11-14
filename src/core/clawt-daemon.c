@@ -1883,8 +1883,15 @@ on_task_changed(ClawtTaskManager *manager,
      * by waiting -- and a settle is one-shot, so this cannot repeat:
      * every terminal setter refuses a task that is already finished.
      */
-    if (task != NULL && clawt_task_is_finished(task))
+    /*
+     * The tree renews first: see clawt_daemon_tree_settled() for why the
+     * order is what keeps a delegator's owed follow-up from being
+     * refused.
+     */
+    if (task != NULL && clawt_task_is_finished(task)) {
+        clawt_daemon_tree_settled(self, task);
         send_settle_notice(self, task, state);
+    }
 
     if (state != CLAWT_TASK_COMPLETED)
         return;
@@ -4009,6 +4016,22 @@ start_agent_prepare(ClawtDaemon    *self,
      */
     if (*pending == NULL) {
         ClawtComputer *existing = clawt_agent_get_computer(agent);
+        g_autoptr(GError) refresh_error = NULL;
+
+        /*
+         * And what it can take without a rebuild is retaken from the
+         * config: a kept computer would otherwise start with the limits,
+         * the start mode and the wake command it was built with, and a
+         * changed memory limit would wait for a rebuild that applying it
+         * with `podman update` exists to avoid.
+         */
+        if (existing != NULL &&
+            !clawt_computer_factory_refresh(config, existing,
+                                            &refresh_error)) {
+            clawt_agent_set_error(agent, refresh_error->message);
+            g_propagate_error(error, g_steal_pointer(&refresh_error));
+            return FALSE;
+        }
 
         if (existing != NULL)
             *pending = g_object_ref(existing);
@@ -4372,7 +4395,11 @@ clawt_daemon_start_agent(ClawtDaemon *self, const gchar *agent_id,
      * must not hold the loop, and that goes through the async form
      * below.
      */
-    if (pending != NULL) {
+    /*
+     * A computer that starts on first use is left down: the first command
+     * that needs it brings it up, through clawt_computer_exec().
+     */
+    if (pending != NULL && !clawt_computer_get_start_on_first_use(pending)) {
         g_autoptr(GError) local = NULL;
 
         if (!clawt_computer_start(pending, &local))
@@ -4527,7 +4554,15 @@ daemon_start_agent_async(ClawtDaemon *self, const gchar *agent_id,
 
     job->prepared = TRUE;
     job->config_path = g_steal_pointer(&config_path);
-    job->computer = (pending != NULL) ? g_object_ref(pending) : NULL;
+
+    /*
+     * Nothing to wait on for a computer that starts on first use, the
+     * same as for an agent with none -- the synchronous start skips it
+     * for the same reason.
+     */
+    job->computer = (pending != NULL &&
+                     !clawt_computer_get_start_on_first_use(pending))
+                    ? g_object_ref(pending) : NULL;
 
     /*
      * Nothing to wait on, so nothing to put on a thread.  The completion
@@ -4837,6 +4872,7 @@ release_components(ClawtDaemon *self)
      * dropped it -- never reaches clawt_daemon_stop().
      */
     clawt_daemon_turn_teardown(self);
+    clawt_daemon_tree_teardown(self);
     clawt_daemon_handoff_teardown(self);
     clawt_daemon_wait_teardown(self);
     clawt_daemon_search_teardown(self);
@@ -4888,6 +4924,7 @@ release_components(ClawtDaemon *self)
     g_clear_object(&self->vm_images);
     g_clear_object(&self->exchange);
     g_clear_object(&self->decisions);
+    g_clear_object(&self->skill_proposals);
     g_clear_object(&self->operator_profile);
 	g_clear_object(&self->ack_provider);
 	g_clear_object(&self->ack_provider_override);
@@ -5153,6 +5190,7 @@ connector_flow_free(ConnectorFlow *flow)
     g_free(flow->client_secret);
     g_free(flow->verifier);
     g_free(flow->redirect_uri);
+    g_free(flow->resource);
     g_free(flow->message);
     g_free(flow);
 }
@@ -5279,6 +5317,144 @@ clawt_daemon_connector_client_secret(ClawtDaemon *self,
 }
 
 /*
+ * Where a connector's tool server is, when it is reached by URL.
+ *
+ * The same rule clawt_connector_plan_new() applies -- the integration's
+ * own `command` or `url` wins over the catalogue -- so the server the
+ * daemon discovers a sign-in for is the server the relay dials.
+ */
+gchar *
+clawt_daemon_connector_remote_url(ClawtIntegrationBinding  *binding,
+                                  const ClawtConnectorInfo *connector)
+{
+    const gchar *command = clawt_integration_binding_get_string(binding,
+                                                                "command");
+    const gchar *url = clawt_integration_binding_get_string(binding, "url");
+
+    if (command != NULL)
+        return NULL;
+
+    if (url == NULL) {
+        if (connector->server_command != NULL)
+            return NULL;
+
+        url = connector->server_url;
+    }
+
+    if (url == NULL)
+        return NULL;
+
+    return clawt_connector_resolve_url(
+        connector, url,
+        clawt_integration_binding_get_string(binding, "instance"));
+}
+
+gchar *
+clawt_daemon_connector_auth_path(ClawtDaemon *self, const gchar *name)
+{
+    g_autofree gchar *secrets_dir =
+        clawt_config_get_path_value(self->config, "secrets.dir");
+
+    return clawt_mcp_auth_path(secrets_dir, name);
+}
+
+/*
+ * Where a credential is renewed and revoked, and as whom.
+ *
+ * One function, because renewal happens in two places (the timer and
+ * `connector.refresh`) and revocation in a third, and a discovered
+ * connector keeps its endpoints in its auth file rather than in the
+ * catalogue: three readers of the catalogue alone would be three
+ * connectors that sign in perfectly and then never renew.
+ *
+ * Endpoints the catalogue names by hand win, as they do for signing in.
+ * A client id from the configuration wins over a registered one, and
+ * takes its own secret with it -- a configured id with a registered
+ * secret would be somebody else's secret.
+ */
+gboolean
+clawt_daemon_connector_endpoints(ClawtDaemon               *self,
+                                 ClawtIntegrationBinding   *binding,
+                                 const ClawtConnectorInfo  *connector,
+                                 gchar                    **out_token_url,
+                                 gchar                    **out_client_id,
+                                 gchar                    **out_client_secret,
+                                 gchar                    **out_resource,
+                                 gchar                    **out_revoke_url,
+                                 gboolean                  *out_basic)
+{
+    const gchar *instance = clawt_integration_binding_get_string(binding,
+                                                                 "instance");
+    const gchar *client_id = clawt_integration_binding_get_string(binding,
+                                                                  "client_id");
+    g_autoptr(ClawtMcpAuthMetadata) metadata = NULL;
+    g_autoptr(ClawtMcpAuthClient) registered = NULL;
+    g_autofree gchar *path = NULL;
+
+    *out_token_url = NULL;
+    *out_client_id = NULL;
+    *out_client_secret = NULL;
+    *out_resource = NULL;
+    *out_revoke_url = NULL;
+    *out_basic = FALSE;
+
+    if (connector->auth_url != NULL && connector->token_url != NULL) {
+        *out_token_url = clawt_connector_resolve_url(connector,
+                                                     connector->token_url,
+                                                     instance);
+        *out_revoke_url = clawt_connector_resolve_url(connector,
+                                                      connector->revoke_url,
+                                                      instance);
+        *out_client_id = g_strdup(client_id);
+        *out_client_secret = clawt_daemon_connector_client_secret(self,
+                                                                  binding);
+        return *out_token_url != NULL;
+    }
+
+    path = clawt_daemon_connector_auth_path(
+        self, clawt_integration_binding_get_name(binding));
+
+    if (!clawt_mcp_auth_load(path, &metadata, &registered, NULL) ||
+        metadata == NULL) {
+        /* A catalogue with only a token endpoint still renews from it. */
+        *out_token_url = clawt_connector_resolve_url(connector,
+                                                     connector->token_url,
+                                                     instance);
+        *out_revoke_url = clawt_connector_resolve_url(connector,
+                                                      connector->revoke_url,
+                                                      instance);
+        *out_client_id = g_strdup(client_id);
+        *out_client_secret = clawt_daemon_connector_client_secret(self,
+                                                                  binding);
+        return *out_token_url != NULL;
+    }
+
+    *out_token_url = g_strdup(metadata->token_endpoint);
+    *out_revoke_url = g_strdup(metadata->revocation_endpoint);
+    *out_resource = g_strdup(metadata->resource);
+
+    if (client_id != NULL) {
+        *out_client_id = g_strdup(client_id);
+        *out_client_secret = clawt_daemon_connector_client_secret(self,
+                                                                  binding);
+    } else if (registered != NULL) {
+        *out_client_id = g_strdup(registered->client_id);
+        *out_client_secret = g_strdup(registered->client_secret);
+    }
+
+    /*
+     * HTTP Basic only with a secret to send: a public client has none,
+     * and Basic with an empty password is a different client.
+     */
+    *out_basic = *out_client_secret != NULL &&
+                 clawt_mcp_auth_uses_basic(metadata,
+                                           client_id != NULL ? NULL
+                                                             : registered);
+
+    return TRUE;
+}
+
+/*
  * Writes the credential and remembers where it went.
  *
  * The path goes in the config; the value never does.  What is
@@ -5376,6 +5552,9 @@ connector_flow_finish_token(ConnectorFlow *flow, ClawtOauthToken *token)
         connector_flow_settle(flow, FALSE, error->message);
         return;
     }
+
+    /* Signed in: whatever 401 asked for one has had its answer. */
+    g_hash_table_remove(flow->daemon->connector_sign_in_wanted, flow->name);
 
     clawt_event_bus_emit(flow->daemon->bus, "integration.changed", flow->name);
     connector_flow_settle(flow, TRUE, NULL);
@@ -5502,8 +5681,9 @@ clawt_daemon_on_connector_redirected(GObject *source, GAsyncResult *result,
 
     clawt_oauth_exchange_async(flow->token_url, flow->client_id,
                                flow->client_secret, code, flow->redirect_uri,
-                               flow->verifier, NULL, on_connector_exchanged,
-                               flow);
+                               flow->verifier, flow->resource,
+                               flow->basic_auth, NULL,
+                               on_connector_exchanged, flow);
 }
 
 /*
@@ -5684,7 +5864,11 @@ refresh_connector(ClawtDaemon *self, ClawtIntegrationConfig *instance,
     g_autoptr(ClawtOauthToken) token = NULL;
     g_autoptr(ClawtIntegrationBinding) binding = NULL;
     g_autofree gchar *token_url = NULL;
-    const gchar *client_id;
+    g_autofree gchar *client_id = NULL;
+    g_autofree gchar *secret = NULL;
+    g_autofree gchar *resource = NULL;
+    g_autofree gchar *revoke_url = NULL;
+    gboolean basic = FALSE;
     RefreshJob *job;
     gint64 now = g_get_real_time() / G_USEC_PER_SEC;
 
@@ -5704,10 +5888,9 @@ refresh_connector(ClawtDaemon *self, ClawtIntegrationConfig *instance,
     if (binding == NULL)
         return;
 
-    client_id = clawt_integration_binding_get_string(binding, "client_id");
-    token_url = clawt_connector_resolve_url(
-        connector, connector->token_url,
-        clawt_integration_binding_get_string(binding, "instance"));
+    clawt_daemon_connector_endpoints(self, binding, connector, &token_url,
+                                     &client_id, &secret, &resource,
+                                     &revoke_url, &basic);
 
     if (token_url == NULL || client_id == NULL)
         return;
@@ -5716,14 +5899,9 @@ refresh_connector(ClawtDaemon *self, ClawtIntegrationConfig *instance,
     job->daemon = self;
     job->name = g_strdup(name);
 
-    {
-        g_autofree gchar *secret =
-            clawt_daemon_connector_client_secret(self, binding);
-
-        clawt_oauth_refresh_async(token_url, client_id, secret,
-                                  token->refresh_token, NULL,
-                                  clawt_daemon_on_connector_refreshed, job);
-    }
+    clawt_oauth_refresh_async(token_url, client_id, secret,
+                              token->refresh_token, resource, basic, NULL,
+                              clawt_daemon_on_connector_refreshed, job);
 }
 
 /*
@@ -5907,6 +6085,12 @@ configure_limits(ClawtDaemon *self)
     clawt_loop_guard_set_task_budget(
         self->guard,
         clawt_config_get_double(self->config, "orchestration.task_budget_usd"));
+
+    clawt_loop_guard_set_tree_budget(
+        self->guard,
+        (guint)MAX(clawt_config_get_int(self->config,
+                                        "orchestration.tree_message_budget"),
+                   0));
 
     clawt_task_manager_set_max_depth(
         self->tasks,
@@ -6329,6 +6513,9 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
             g_warning("decisions: %s", decision_error->message);
     }
 
+    /* Beside the inbox the proposals' decisions are filed in. */
+    clawt_daemon_skill_proposals_open(self);
+
     {
         g_autofree gchar *transcript_db =
             g_build_filename(self->state_dir, "transcripts.db", NULL);
@@ -6635,6 +6822,9 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     clawt_mcp_tools_set_ask_decision_func(self->mcp_tools,
                                           file_decision_for_tools, self,
                                           NULL);
+    clawt_mcp_tools_set_skill_propose_func(self->mcp_tools,
+                                           clawt_daemon_skill_propose_for_tools,
+                                           self, NULL);
     clawt_mcp_tools_set_image_store(self->mcp_tools, self->vm_images);
 
     /*
@@ -6866,6 +7056,7 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      * and nothing takes it down again.
      */
     clawt_daemon_turn_setup(self);
+    clawt_daemon_tree_setup(self);
 
     /*
      * After the turn machinery, because the handoff queue drains from
@@ -7043,6 +7234,7 @@ clawt_daemon_stop(ClawtDaemon *self)
      * manager it would look an agent up in.
      */
     clawt_daemon_turn_teardown(self);
+    clawt_daemon_tree_teardown(self);
     clawt_daemon_handoff_teardown(self);
     clawt_daemon_wait_teardown(self);
     clawt_daemon_search_teardown(self);
@@ -7439,8 +7631,15 @@ clawt_daemon_add_agent_settings(JsonBuilder *builder, ClawtAgent *agent)
         case CLAWT_SCHEMA_STRING_LIST: {
             g_auto(GStrv) values =
                 clawt_agent_config_get_string_list(config, key);
+            /*
+             * A command's argv is shown as the line that splits back into
+             * it: joined with commas it would be saved back split on
+             * spaces, and an argument holding a space would come apart.
+             */
             g_autofree gchar *joined =
-                (values != NULL) ? g_strjoinv(", ", values) : NULL;
+                (entry->flags & CLAWT_SCHEMA_FLAG_ARGV)
+                ? clawt_command_line_join((const gchar * const *)values)
+                : (values != NULL) ? g_strjoinv(", ", values) : NULL;
 
             json_builder_add_string_value(builder,
                                           joined != NULL ? joined : "");
@@ -7865,6 +8064,63 @@ clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
     json_builder_set_member_name(builder, "computer_stop_removes");
     json_builder_add_boolean_value(builder,
                                    clawt_daemon_computer_stop_removes(config));
+
+    /*
+     * When the machine starts, for each type where that is a choice; left
+     * out where it is not, so no client offers a setting nothing reads.
+     */
+    if (clawt_computer_type_starts_lazily(
+            (ClawtComputerType)clawt_agent_config_get_enum(config,
+                                                           "computer.type"))) {
+        json_builder_set_member_name(builder, "computer_start");
+        json_builder_add_string_value(
+            builder, clawt_enum_to_nick(
+                         CLAWT_TYPE_COMPUTER_START,
+                         clawt_agent_config_get_enum(config,
+                                                     "computer.start")));
+    }
+
+    /*
+     * The podman limits, for both kinds of podman machine. Strings, and
+     * empty for unset, so a client's text field shows exactly what will
+     * be saved back; the process limit's 0 is shown as empty for the same
+     * reason -- it means "podman's default", not a limit of nothing.
+     */
+    if (clawt_agent_config_get_enum(config, "computer.type") ==
+            CLAWT_COMPUTER_CONTAINER ||
+        clawt_agent_config_get_enum(config, "computer.type") ==
+            CLAWT_COMPUTER_DISTROBOX) {
+        gint64 pids = clawt_agent_config_get_int(
+            config, "computer.container.pids_limit");
+        g_autofree gchar *pids_text = (pids != 0)
+            ? g_strdup_printf("%" G_GINT64_FORMAT, pids) : g_strdup("");
+        const gchar *memory = clawt_agent_config_get_string(
+            config, "computer.container.memory");
+        const gchar *swap = clawt_agent_config_get_string(
+            config, "computer.container.memory_swap");
+
+        json_builder_set_member_name(builder, "container_pids_limit");
+        json_builder_add_string_value(builder, pids_text);
+        json_builder_set_member_name(builder, "container_memory");
+        json_builder_add_string_value(builder, memory != NULL ? memory : "");
+        json_builder_set_member_name(builder, "container_memory_swap");
+        json_builder_add_string_value(builder, swap != NULL ? swap : "");
+    }
+
+    /*
+     * The wake command as one line, in the spelling that splits back into
+     * the same argv, so a field that is opened and saved changes nothing.
+     */
+    if (clawt_agent_config_get_enum(config, "computer.type") ==
+        CLAWT_COMPUTER_SSH) {
+        g_auto(GStrv) wake = clawt_agent_config_get_string_list(
+            config, "computer.ssh.wake_command");
+        g_autofree gchar *line =
+            clawt_command_line_join((const gchar * const *)wake);
+
+        json_builder_set_member_name(builder, "ssh_wake_command");
+        json_builder_add_string_value(builder, line);
+    }
 
     /*
      * Reported for a container agent so a client can show what it will
@@ -9229,6 +9485,14 @@ clawt_daemon_on_ipc_exec_finished(GObject *source, GAsyncResult *result,
     json_builder_add_string_value(builder, clawt_exec_result_get_stdout(exec));
     json_builder_set_member_name(builder, "stderr");
     json_builder_add_string_value(builder, clawt_exec_result_get_stderr(exec));
+
+    /*
+     * How long this command waited for its machine to be woken, which is
+     * not part of its timeout; 0 when it did not.
+     */
+    json_builder_set_member_name(builder, "wake_ms");
+    json_builder_add_int_value(builder,
+                               clawt_exec_result_get_wake_usec(exec) / 1000);
     json_builder_end_object(builder);
 
     clawt_ipc_pending_respond(
@@ -9256,6 +9520,8 @@ lifecycle_name(ClawtComputerLifecycle op)
         return "start";
     case CLAWT_COMPUTER_LIFECYCLE_STOP:
         return "stop";
+    case CLAWT_COMPUTER_LIFECYCLE_FIRST_USE:
+        return "first-use start";
     case CLAWT_COMPUTER_LIFECYCLE_RESTART:
     default:
         return "restart";
@@ -9371,6 +9637,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_grok,
     clawt_daemon_handle_config,
     clawt_daemon_handle_skill,
+    clawt_daemon_handle_skill_proposal,
     clawt_daemon_handle_teach,
     clawt_daemon_handle_activity,
     clawt_daemon_handle_browser,
@@ -9498,6 +9765,7 @@ clawt_daemon_finalize(GObject *object)
     g_clear_object(&self->skills);
     g_clear_pointer(&self->model_cache, g_hash_table_unref);
     g_clear_pointer(&self->connector_flows, g_hash_table_unref);
+    g_clear_pointer(&self->connector_sign_in_wanted, g_hash_table_unref);
     g_clear_pointer(&self->connector_catalog, g_ptr_array_unref);
     g_clear_pointer(&self->bind_specs, g_ptr_array_unref);
     g_free(self->config_path);
@@ -9544,5 +9812,7 @@ clawt_daemon_init(ClawtDaemon *self)
     self->connector_flows =
         g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                               (GDestroyNotify)connector_flow_free);
+    self->connector_sign_in_wanted =
+        g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
     self->running = FALSE;
 }

@@ -1763,6 +1763,23 @@ clawt_agent_config_set_from_string(ClawtAgentConfig *self,
         return clawt_agent_config_set_string(self, key, value);
 
     /*
+     * A command's argv is split into words, not on commas: an argument
+     * may hold a comma, and a list of words is what a person typing a
+     * command into a text field means. A line that would need a shell is
+     * refused here too, so a caller that skipped the check where the
+     * value arrived still cannot store an operator as an argument.
+     */
+    if (entry->flags & CLAWT_SCHEMA_FLAG_ARGV) {
+        g_auto(GStrv) words = clawt_command_line_split(value, NULL);
+
+        if (words == NULL)
+            return FALSE;
+
+        return clawt_agent_config_set_string_list(
+            self, key, words[0] != NULL ? (const gchar *const *)words : NULL);
+    }
+
+    /*
      * Comma-separated, which is how the schema table spells a list
      * default and therefore the one spelling a person has already seen.
      * Blanks are trimmed so "a, b" and "a,b" mean the same thing.
@@ -2952,6 +2969,25 @@ clawt_config_get_rooms(ClawtConfig *self)
 
             spec->max_hops = (node != NULL)
                 ? (guint)yaml_node_get_int(node) : 0;
+        }
+
+        {
+            YamlNode *node = node_at_path(entry, "max_chain", FALSE);
+            const gchar *fallback = schema_default_for("rooms.max_chain");
+            gint64 chain;
+
+            /*
+             * The schema default when the room says nothing, as
+             * catchup_messages below resolves: 0 here means "no cap",
+             * which is the opposite of what a room that declared
+             * nothing should get.  A negative number is read as 0
+             * rather than wrapped to four billion.
+             */
+            chain = (node != NULL)
+                ? yaml_node_get_int(node)
+                : g_ascii_strtoll(fallback != NULL ? fallback : "0",
+                                  NULL, 10);
+            spec->max_chain = (guint)MAX(chain, 0);
         }
 
         {

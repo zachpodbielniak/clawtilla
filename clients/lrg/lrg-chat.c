@@ -105,6 +105,7 @@ typedef struct {
     guint        history_inflight;
     GHashTable  *shown;          /* message ids drawn */
     ClawtLrgRun  run;
+    guint        run_round;      /* the group room's round last drawn */
     GPtrArray   *steps;          /* the running turn's, for the live block */
     gboolean     can_interrupt;
 
@@ -1048,6 +1049,52 @@ day_divider_new(ClawtLrgApp *app, GDateTime *when)
     return row;
 }
 
+/*
+ * A group room's marks around one message: where a round begins
+ * (@before, when the round changes) -- drawn like the day's divider,
+ * with clawt_round_label() -- and after it the note naming any mention
+ * that was kept and not delivered, with the reason.  The history and the
+ * live event path both come through here, as the GTK and web clients'
+ * do, so reopening a room shows what watching it showed.
+ */
+static void
+append_round_marks(ClawtLrgApp *app, gint64 round, const gchar *skipped,
+                   const gchar *skip_reason, gboolean before)
+{
+    g_autofree gchar *note = NULL;
+
+    if (before) {
+        if (round > 0 && (guint)round != chat.run_round) {
+            LrgWidget *row = clawt_lrg_hbox(12.0f);
+            g_autofree gchar *text = clawt_round_label((guint)round);
+            LrgInsets margin = { px(app, CHAT_ROW_MARGIN), px(app, 18.0f),
+                                 px(app, CHAT_ROW_MARGIN), 0.0f };
+
+            clawt_lrg_take(row, rule_new());
+            clawt_lrg_take(row, clawt_lrg_label(text, "caption"));
+            clawt_lrg_take(row, rule_new());
+            lrg_widget_set_margin(row, &margin);
+            clawt_lrg_take(chat.transcript, row);
+            chat.run_round = (guint)round;
+
+            /* A new round starts a new run, so its first sender is named. */
+            clawt_lrg_run_reset(&chat.run);
+        }
+        return;
+    }
+
+    note = clawt_round_skip_note(skipped, skip_reason);
+
+    if (note != NULL) {
+        LrgWidget *line = clawt_lrg_paragraph(note, "muted");
+        LrgInsets margin = { px(app, CHAT_ROW_MARGIN + CHAT_GUTTER),
+                             px(app, 2.0f), px(app, CHAT_ROW_MARGIN), 0.0f };
+
+        lrg_widget_set_margin(line, &margin);
+        clawt_lrg_take(chat.transcript, line);
+    }
+}
+
 static void
 on_task_chip(LrgButton *button, gpointer user_data)
 {
@@ -1837,6 +1884,7 @@ reset_transcript(void)
         g_ptr_array_set_size(chat.steps, 0);
 
     clawt_lrg_run_reset(&chat.run);
+    chat.run_round = 0;
 
     if (chat.transcript != NULL)
         clawt_lrg_clear(chat.transcript);
@@ -1886,6 +1934,8 @@ draw_history(ClawtLrgApp *app, JsonNode *history, GPtrArray *steps)
         if (id != NULL)
             g_hash_table_add(chat.shown, g_strdup(id));
 
+        append_round_marks(app, clawt_ipc_payload_int(message, "round", 0),
+                           NULL, NULL, TRUE);
         append_message(app, sender != NULL ? sender : "?",
                        clawt_ipc_payload_string(message, "body") != NULL
                            ? clawt_ipc_payload_string(message, "body") : "",
@@ -1895,6 +1945,10 @@ draw_history(ClawtLrgApp *app, JsonNode *history, GPtrArray *steps)
                        clawt_ipc_payload_int(message, "acknowledged", 0) != 0,
                        clawt_ipc_payload_int(message, "merged", 0),
                        clawt_ipc_payload_int(message, "interrupted", 0) != 0);
+        append_round_marks(app, 0,
+                           clawt_ipc_payload_string(message, "skipped"),
+                           clawt_ipc_payload_string(message, "skip_reason"),
+                           FALSE);
     }
 
     if (steps != NULL)
@@ -4128,12 +4182,17 @@ on_message_event(ClawtLrgApp *app, ClawtEvent *event)
 
         /* the rule goes above the first thing not yet seen */
         note_arrival(app);
+        append_round_marks(app, clawt_event_get_detail_int(event, "round"),
+                           NULL, NULL, TRUE);
         append_message(app, from != NULL ? from : "?",
                        body != NULL ? body : "", 0,
                        clawt_event_get_detail(event, "task"), 0, TRUE,
                        clawt_event_get_detail_int(event, "acknowledged") != 0,
                        clawt_event_get_detail_int(event, "merged"),
                        clawt_event_get_detail_int(event, "interrupted") != 0);
+        append_round_marks(app, 0, clawt_event_get_detail(event, "skipped"),
+                           clawt_event_get_detail(event, "skip_reason"),
+                           FALSE);
 
         /*
          * The reply is the end of the turn: the indicator drops too, but

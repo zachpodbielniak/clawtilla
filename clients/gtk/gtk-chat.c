@@ -2439,6 +2439,94 @@ clawt_gtk_append_message_marked(ClawtWindow *self, const gchar *sender,
 }
 
 /*
+ * Where a round of a group room begins: a divider like the day's, with
+ * clawt_round_label() in it, so a standup reads as the rounds it was
+ * rather than one undifferentiated scroll.
+ */
+static GtkWidget *
+round_divider(guint round)
+{
+    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    GtkWidget *left = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    GtkWidget *right = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    g_autofree gchar *text = clawt_round_label(round);
+    GtkWidget *label = gtk_label_new(text);
+
+    gtk_widget_add_css_class(row, "clawt-round-divider");
+    gtk_widget_add_css_class(label, "caption");
+    gtk_widget_add_css_class(label, "dim-label");
+    gtk_widget_set_tooltip_text(label,
+        "A round starts at each message from a person, a routine or a "
+        "trigger. Within one thread of replies a member answers once.");
+
+    gtk_widget_set_valign(left, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(right, GTK_ALIGN_CENTER);
+    gtk_widget_set_hexpand(left, TRUE);
+    gtk_widget_set_hexpand(right, TRUE);
+
+    gtk_box_append(GTK_BOX(row), left);
+    gtk_box_append(GTK_BOX(row), label);
+    gtk_box_append(GTK_BOX(row), right);
+
+    gtk_widget_set_margin_start(row, CHAT_ROW_MARGIN);
+    gtk_widget_set_margin_end(row, CHAT_ROW_MARGIN);
+    gtk_widget_set_margin_top(row, 18);
+
+    return row;
+}
+
+/*
+ * A group room's marks around one message: the round divider before it
+ * when the round changes (@before), and after it the note naming any
+ * mention that was recorded and not delivered, with the reason.  Both
+ * the history and the live event path call this on either side of
+ * clawt_gtk_append_message_marked(), so reopening a room shows what
+ * watching it showed.
+ *
+ * The note is its own dim line under the message rather than a chip,
+ * because it is a sentence: "Not delivered to @bob -- they have already
+ * answered in this thread of replies (round 4)" is the whole answer to
+ * "why did bob never reply", and a chip would cut it to a word.
+ */
+void
+clawt_gtk_append_round_marks(ClawtWindow *self, gint64 round,
+                             const gchar *skipped, const gchar *skip_reason,
+                             gboolean before)
+{
+    g_autofree gchar *note = NULL;
+    GtkWidget *label;
+
+    if (before) {
+        if (round > 0 && (guint)round != self->run_round) {
+            gtk_box_append(self->transcript, round_divider((guint)round));
+            self->run_round = (guint)round;
+
+            /* A new round starts a new run, so the sender is named. */
+            g_clear_pointer(&self->run_sender, g_free);
+        }
+        return;
+    }
+
+    note = clawt_round_skip_note(skipped, skip_reason);
+
+    if (note == NULL)
+        return;
+
+    label = gtk_label_new(note);
+    gtk_widget_add_css_class(label, "caption");
+    gtk_widget_add_css_class(label, "dim-label");
+    gtk_widget_add_css_class(label, "clawt-skip-note");
+    gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+    gtk_widget_set_halign(label, GTK_ALIGN_START);
+    gtk_widget_set_tooltip_text(label, clawt_round_skip_tooltip());
+    gtk_widget_set_margin_start(label, CHAT_ROW_MARGIN + CHAT_GUTTER);
+    gtk_widget_set_margin_end(label, CHAT_ROW_MARGIN);
+    gtk_widget_set_margin_top(label, 2);
+    gtk_box_append(self->transcript, label);
+}
+
+/*
  * Both live in gtk-follow.c now, because the Flow tab needs exactly the
  * same behaviour and had none of it -- see ClawtGtkFollow.  This stays
  * as the chat's own spelling so its call sites read as before.
@@ -2588,6 +2676,7 @@ clawt_gtk_reset_transcript(ClawtWindow *self)
 
     g_clear_pointer(&self->run_sender, g_free);
     g_clear_pointer(&self->run_day, g_free);
+    self->run_round = 0;
     clawt_gtk_clear_box(self->transcript);
     clawt_gtk_set_following(self, TRUE);
 }
@@ -4291,12 +4380,19 @@ clawt_gtk_load_history(ClawtWindow *self)
             if (id != NULL)
                 g_hash_table_add(self->shown, g_strdup(id));
 
+            clawt_gtk_append_round_marks(self,
+                                     clawt_json_int(message, "round", 0),
+                                     NULL, NULL, TRUE);
             clawt_gtk_append_message_marked(self, sender,
                                      clawt_json_string(message, "body", ""),
                                      g_strcmp0(sender, "user") == 0, ts,
                                      clawt_json_int(message, "acknowledged", 0) != 0,
                                      clawt_json_int(message, "merged", 0),
                                      clawt_json_int(message, "interrupted", 0) != 0);
+            clawt_gtk_append_round_marks(self, 0,
+                                     clawt_json_string(message, "skipped", NULL),
+                                     clawt_json_string(message, "skip_reason", NULL),
+                                     FALSE);
         }
 
         /* And anything after the last message. */

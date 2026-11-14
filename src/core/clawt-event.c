@@ -307,6 +307,15 @@ clawt_alert_tier_for_event(ClawtEvent *event)
      */
     if (g_strcmp0(kind, "spending.limit-reached") == 0)
         return CLAWT_ALERT_NOTICE;
+
+    /*
+     * A task tree used its message budget.  A notice for the same
+     * reason as the daily cap: nothing broke and the tree renews when
+     * any of its work settles, but its agents have stopped messaging
+     * each other, and that reads as a stuck fleet to anybody not told.
+     */
+    if (g_strcmp0(kind, "task.tree_budget") == 0)
+        return CLAWT_ALERT_NOTICE;
     if (g_strcmp0(kind, "agent.idle_stopped") == 0)
         return CLAWT_ALERT_ROUTINE;
 

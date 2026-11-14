@@ -174,6 +174,33 @@ clawt_daemon_handle_integration(
             return clawt_ipc_error_new(request, error->code, error->message);
         }
 
+        /*
+         * A connector given only a URL is a remote MCP server, and the
+         * catalogue has the entry for exactly that -- so "add this
+         * server" needs nothing else, from any client.
+         */
+        if (g_strcmp0(type_id, "connector") == 0 &&
+            clawt_integration_config_get_string(instance, NULL,
+                                                "provider") == NULL &&
+            clawt_integration_config_get_string(instance, NULL,
+                                                "url") != NULL)
+            clawt_integration_config_set_string(
+                instance, NULL, "provider", CLAWT_CONNECTOR_PROVIDER_REMOTE);
+
+        /*
+         * A second account on a service must carry a label of its own.
+         * Refused here, where it arrives, because the label is what the
+         * agent's tools are prefixed with and a duplicate would be
+         * refused by the relay on every call later -- the daemon can
+         * already prove that now.
+         */
+        if (!clawt_connector_check_new_account(
+                clawt_config_get_integrations(self->config), instance,
+                &error)) {
+            clawt_config_remove_integration(self->config, name);
+            return clawt_ipc_error_new(request, error->code, error->message);
+        }
+
         if (!clawt_config_save(self->config, &error)) {
             clawt_config_remove_integration(self->config, name);
             return clawt_ipc_error_new(request, error->code, error->message);

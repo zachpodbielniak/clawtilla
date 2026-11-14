@@ -334,7 +334,24 @@ struct _ClawtWindow {
     /* the acknowledgement-check model row, and whether a refresh is writing it */
     GtkWidget         *settings_ack_model;
     gboolean           settings_ack_loading;
+
+    /*
+     * The tree budget's entry, and the group the per-room thread caps
+     * are drawn into -- rebuilt on every refresh, so the rows it holds
+     * are tracked to be removed again.
+     */
+    GtkWidget         *settings_tree_budget;
+    GtkWidget         *settings_rounds_group;
+    GPtrArray         *settings_rounds_rows;
     GtkWidget         *settings_connectors;
+    /*
+     * The two directory thresholds on the Connectors page, and whether
+     * a refresh is the one writing them -- so filling the rows from the
+     * daemon's answer is not taken for somebody changing them.
+     */
+    GtkWidget         *settings_directory_min_tools;
+    GtkWidget         *settings_directory_min_chars;
+    gboolean           settings_directory_syncing;
     GtkWidget         *settings_devices;
     GtkWidget         *settings_devices_pair;
     GtkListBox        *routine_list;
@@ -467,6 +484,17 @@ struct _ClawtWindow {
     GtkWidget         *vm_ssh_host_row;
     GtkWidget         *vm_desktop_row;
     GtkWidget         *vm_desktop_input_row;
+    /*
+     * When the machine starts, its podman limits and an ssh machine's
+     * wake command.  Each is NULL unless the daemon reported the member
+     * behind it, and each row carries what it was opened with as
+     * "clawt-shown" so a save writes only what was changed.
+     */
+    GtkWidget         *computer_start_row;
+    GtkWidget         *container_pids_row;
+    GtkWidget         *container_memory_row;
+    GtkWidget         *container_swap_row;
+    GtkWidget         *ssh_wake_row;
     GtkWidget         *mount_source_row;
     GtkWidget         *mount_target_row;
     GtkWidget         *mount_mode_row;
@@ -767,6 +795,13 @@ struct _ClawtWindow {
      */
     gchar             *run_sender;
     gchar             *run_day;
+
+    /*
+     * The round of a group room the transcript last drew, so a divider
+     * marks where each new one starts.  0 outside a round; reset with
+     * the transcript.
+     */
+    guint              run_round;
 
     /*
      * The Flow view's own run state.  It draws through the same row
@@ -1075,6 +1110,11 @@ clawt_gtk_append_message_marked(ClawtWindow *self, const gchar *sender,
                                 const gchar *body, gboolean from_user,
                                 gint64 ts, gboolean acknowledged,
                                 gint64 merged, gboolean interrupted);
+
+void
+clawt_gtk_append_round_marks(ClawtWindow *self, gint64 round,
+                             const gchar *skipped, const gchar *skip_reason,
+                             gboolean before);
 
 void
 clawt_gtk_attachment_free(Attachment *attachment);

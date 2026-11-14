@@ -69,6 +69,7 @@ typedef enum {
  * @CLAWT_SCHEMA_FLAG_DANGEROUS: enabling it hands over real authority
  * @CLAWT_SCHEMA_FLAG_PER_AGENT: also valid inside an agent block
  * @CLAWT_SCHEMA_FLAG_INERT: parsed and stored, and nothing in this build reads it
+ * @CLAWT_SCHEMA_FLAG_ARGV: a list of strings that is a command's argv
  *
  * @CLAWT_SCHEMA_FLAG_COMMENTED is what keeps `--generate-config` usable:
  * a starter file that set every option would be a wall of defaults, so
@@ -89,6 +90,13 @@ typedef enum {
  * stays, its documentation says plainly that nothing reads it, and
  * clawt_config_load() warns naming it when somebody actually sets one.
  * Clearing the flag is what implementing the option looks like.
+ *
+ * @CLAWT_SCHEMA_FLAG_ARGV marks a %CLAWT_SCHEMA_STRING_LIST that is run as
+ * a program and its arguments, never through a shell. Set from one string
+ * (a client's text field, `agent set`) it is split into words the way a
+ * shell would split them, and a line using a shell operator is refused
+ * rather than split -- the comma rule every other list follows would cut
+ * an argument containing a comma in two.
  */
 typedef enum {
     CLAWT_SCHEMA_FLAG_NONE      = 0,
@@ -96,7 +104,8 @@ typedef enum {
     CLAWT_SCHEMA_FLAG_COMMENTED = 1 << 1,
     CLAWT_SCHEMA_FLAG_DANGEROUS = 1 << 2,
     CLAWT_SCHEMA_FLAG_PER_AGENT = 1 << 3,
-    CLAWT_SCHEMA_FLAG_INERT     = 1 << 4
+    CLAWT_SCHEMA_FLAG_INERT     = 1 << 4,
+    CLAWT_SCHEMA_FLAG_ARGV      = 1 << 5
 } ClawtSchemaFlags;
 
 /**

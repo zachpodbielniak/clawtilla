@@ -37,6 +37,8 @@ struct _ClawtMailboxItem {
 	gboolean composed;
 	gboolean one_way;
 	guint    replays;
+	guint    round;
+	gchar   *chain;
     gint64   created_at;
     gint64   not_before;
     gint64   expires_at;
@@ -114,6 +116,8 @@ clawt_mailbox_item_copy(ClawtMailboxItem *self)
 	copy->composed = self->composed;
 	copy->one_way = self->one_way;
 	copy->replays = self->replays;
+	copy->round = self->round;
+	copy->chain = g_strdup(self->chain);
     copy->created_at = self->created_at;
     copy->not_before = self->not_before;
     copy->expires_at = self->expires_at;
@@ -144,6 +148,7 @@ clawt_mailbox_item_free(ClawtMailboxItem *self)
 	g_free(self->request_room);
 	g_free(self->request_origin);
 	g_free(self->request_task);
+	g_free(self->chain);
     g_free(self);
 }
 
@@ -281,6 +286,35 @@ clawt_mailbox_item_set_one_way(
 ){
 	g_return_if_fail(self != NULL);
 	self->one_way = one_way;
+}
+
+guint
+clawt_mailbox_item_get_round(
+	ClawtMailboxItem *self
+){
+	g_return_val_if_fail(self != NULL, 0);
+	return self->round;
+}
+
+const gchar *
+clawt_mailbox_item_get_chain(
+	ClawtMailboxItem *self
+){
+	g_return_val_if_fail(self != NULL, NULL);
+	return self->chain;
+}
+
+void
+clawt_mailbox_item_set_round_chain(
+	ClawtMailboxItem *self,
+	guint             round,
+	const gchar      *chain
+){
+	g_return_if_fail(self != NULL);
+
+	self->round = round;
+	g_free(self->chain);
+	self->chain = (chain != NULL && *chain != '\0') ? g_strdup(chain) : NULL;
 }
 
 guint

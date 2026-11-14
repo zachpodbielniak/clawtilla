@@ -10,6 +10,8 @@
 #include "clawtilla.h"
 #include "clawt-http.h"
 #include "integration/clawt-connector-relay.h"
+#include "integration/clawt-connector-accounts.h"
+#include "integration/clawt-mcp-auth.h"
 
 #include "mcp/clawt-mcp-relay.h"
 
@@ -126,6 +128,10 @@ clawt_connector_plan_free(ClawtConnectorPlan *self)
     g_strfreev(self->argv);
     g_strfreev(self->envp);
     g_strfreev(self->permitted);
+    g_free(self->name);
+    g_free(self->account_prefix);
+    g_strfreev(self->account_siblings);
+    g_free(self->account_conflict);
     g_free(self->url);
     g_free(self->header_name);
     g_free(self->header_value);
@@ -148,7 +154,8 @@ clawt_connector_plan_new(const ClawtConnectorInfo *info,
 
     g_return_val_if_fail(info != NULL, NULL);
     g_return_val_if_fail(binding != NULL, NULL);
-    g_return_val_if_fail(credential != NULL, NULL);
+
+    plan->name = g_strdup(clawt_integration_binding_get_name(binding));
 
     /*
      * The integration wins over the catalogue.  Somebody who wrote a
@@ -230,13 +237,30 @@ clawt_connector_plan_new(const ClawtConnectorInfo *info,
         return NULL;
     }
 
-    formatted = clawt_connector_format_credential(info, credential);
+    /*
+     * No credential is only ever a remote server nobody has signed in to
+     * yet.  A stdio server started without one would fail somewhere
+     * inside itself, naming neither clawtilla nor the sign-in.
+     */
+    if (credential == NULL && plan->url == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_AUTH,
+                    "connector '%s' is not connected yet; run `clawtilla "
+                    "connector connect %s`",
+                    clawt_integration_binding_get_name(binding),
+                    clawt_integration_binding_get_name(binding));
+        return NULL;
+    }
 
-    if (info->placement == CLAWT_CREDENTIAL_PLACEMENT_HEADER) {
+    if (credential == NULL) {
+        plan->header_name = g_strdup(name);
+    } else if (info->placement == CLAWT_CREDENTIAL_PLACEMENT_HEADER) {
+        formatted = clawt_connector_format_credential(info, credential);
         plan->header_name = g_strdup(name);
         plan->header_value = g_steal_pointer(&formatted);
     } else {
         GPtrArray *envp = g_ptr_array_new();
+
+        formatted = clawt_connector_format_credential(info, credential);
 
         g_ptr_array_add(envp, g_strdup_printf("%s=%s", name, formatted));
 
@@ -333,10 +357,19 @@ clawt_connector_plan_new(const ClawtConnectorInfo *info,
  * message is forwarded here, with the header added on the way past.
  */
 typedef struct {
-    SoupSession       *session;
-    ClawtConnectorPlan *plan;
-    gchar             *session_id;
-    GOutputStream     *out;
+    SoupSession               *session;
+    ClawtConnectorPlan        *plan;
+    const ClawtMcpRelayPolicy *policy;
+    gchar                     *session_id;
+    GOutputStream             *out;
+
+    /*
+     * How deep forward_one() has recursed for pages the directory asked
+     * for itself.  The directory stops after its own page limit; this
+     * is the backstop that keeps a misbehaving server from turning that
+     * into a stack overflow.
+     */
+    guint                      depth;
 } HttpBridge;
 
 static void
@@ -345,6 +378,40 @@ write_line(GOutputStream *out, const gchar *line)
     g_output_stream_write_all(out, line, strlen(line), NULL, NULL, NULL);
     g_output_stream_write_all(out, "\n", 1, NULL, NULL, NULL);
     g_output_stream_flush(out, NULL, NULL);
+}
+
+/*
+ * A streamable-HTTP server may answer either with one JSON object or
+ * with an SSE stream carrying several.  Both are handled, because which
+ * one arrives is the server's choice per request and not a property of
+ * the server -- a client that understands only JSON works until the
+ * first tool call that streams.
+ */
+static void forward_one(HttpBridge *bridge, const gchar *line);
+
+/*
+ * One message from the server, through the same decision the stdio
+ * relay makes: filtered by the permitted list, then seen by the
+ * directory, which may answer the client with a gathered list or ask the
+ * server for the next page of one.
+ */
+static void
+deliver_one(HttpBridge *bridge, const gchar *data)
+{
+    g_autofree gchar *to_client = NULL;
+    g_autofree gchar *to_server = NULL;
+
+    clawt_mcp_relay_policy_inbound(bridge->policy, data, &to_client,
+                                   &to_server);
+
+    if (to_client != NULL)
+        write_line(bridge->out, to_client);
+
+    if (to_server != NULL && bridge->depth < 128) {
+        bridge->depth++;
+        forward_one(bridge, to_server);
+        bridge->depth--;
+    }
 }
 
 /*
@@ -379,29 +446,13 @@ deliver_response(HttpBridge *bridge, const gchar *content_type,
             if (*data == '\0')
                 continue;
 
-            if (bridge->plan->permitted != NULL) {
-                g_autofree gchar *filtered =
-                    clawt_mcp_relay_filter_inbound(data,
-                                                   bridge->plan->permitted);
-
-                write_line(bridge->out, filtered);
-            } else {
-                write_line(bridge->out, data);
-            }
+            deliver_one(bridge, data);
         }
 
         return;
     }
 
-    if (bridge->plan->permitted != NULL) {
-        g_autofree gchar *filtered =
-            clawt_mcp_relay_filter_inbound(body, bridge->plan->permitted);
-
-        write_line(bridge->out, filtered);
-        return;
-    }
-
-    write_line(bridge->out, body);
+    deliver_one(bridge, body);
 }
 
 static void
@@ -434,8 +485,10 @@ forward_one(HttpBridge *bridge, const gchar *line)
 
     soup_message_headers_replace(headers, "Accept",
                                  "application/json, text/event-stream");
-    soup_message_headers_replace(headers, bridge->plan->header_name,
-                                 bridge->plan->header_value);
+
+    if (bridge->plan->header_value != NULL)
+        soup_message_headers_replace(headers, bridge->plan->header_name,
+                                     bridge->plan->header_value);
 
     /*
      * A streamable-HTTP server hands out a session id on initialize and
@@ -453,6 +506,36 @@ forward_one(HttpBridge *bridge, const gchar *line)
     if (response == NULL) {
         g_printerr("clawtilla: the request to the tool server failed: %s\n",
                    error->message);
+        return;
+    }
+
+    /*
+     * A 401 is answered here rather than passed through.  Passed through,
+     * it starts the agent CLI's own sign-in, which cannot work -- the
+     * relay holds the credential, not the CLI -- and the CLI reports only
+     * that the server failed.  A server that lists tools to anybody and
+     * refuses only tool calls made this invisible until the first call;
+     * so a refused tools/call becomes a tool error naming the connector
+     * and the sign-in, and the daemon is told so a client can offer one.
+     */
+    if (soup_message_get_status(message) == SOUP_STATUS_UNAUTHORIZED) {
+        const gchar *challenge = soup_message_headers_get_one(
+            soup_message_get_response_headers(message), "WWW-Authenticate");
+        g_autofree gchar *reply = clawt_mcp_auth_unauthorized_reply(
+            line, bridge->plan->name != NULL ? bridge->plan->name : "?",
+            bridge->plan->header_value != NULL);
+
+        if (reply != NULL)
+            write_line(bridge->out, reply);
+
+        if (bridge->plan->unauthorized != NULL)
+            bridge->plan->unauthorized(bridge->plan->name, challenge,
+                                       bridge->plan->header_value != NULL,
+                                       bridge->plan->unauthorized_data);
+
+        g_printerr("clawtilla: %s answered 401; the connector '%s' needs "
+                   "a sign-in\n", bridge->plan->url,
+                   bridge->plan->name != NULL ? bridge->plan->name : "?");
         return;
     }
 
@@ -481,7 +564,7 @@ forward_one(HttpBridge *bridge, const gchar *line)
 }
 
 static gint
-run_http(ClawtConnectorPlan *plan)
+run_http(ClawtConnectorPlan *plan, const ClawtMcpRelayPolicy *policy)
 {
     HttpBridge bridge = { 0 };
     g_autoptr(GInputStream) stdin_stream = NULL;
@@ -507,28 +590,32 @@ run_http(ClawtConnectorPlan *plan)
 
     bridge.session = session;
     bridge.plan = plan;
+    bridge.policy = policy;
     bridge.out = stdout_stream;
 
     for (;;) {
         g_autofree gchar *line = NULL;
-        g_autofree gchar *refusal = NULL;
+        g_autofree gchar *to_server = NULL;
+        g_autofree gchar *to_client = NULL;
 
         line = g_data_input_stream_read_line(reader, NULL, NULL, NULL);
 
         if (line == NULL)
             break;
 
-        if (plan->permitted != NULL &&
-            !clawt_mcp_relay_filter_outbound(line, plan->permitted,
-                                             CONNECTOR_REFUSAL_HINT,
-                                             &refusal)) {
-            if (refusal != NULL)
-                write_line(stdout_stream, refusal);
+        /*
+         * The same decision the stdio relay makes, gate included.  This
+         * loop used to apply the permitted list and nothing else, so an
+         * action rule on a connector reached over HTTP was never asked.
+         */
+        clawt_mcp_relay_policy_outbound(policy, line, &to_server,
+                                        &to_client);
 
-            continue;
-        }
+        if (to_client != NULL)
+            write_line(stdout_stream, to_client);
 
-        forward_one(&bridge, line);
+        if (to_server != NULL)
+            forward_one(&bridge, to_server);
     }
 
     g_free(bridge.session_id);
@@ -539,7 +626,7 @@ run_http(ClawtConnectorPlan *plan)
 gint
 clawt_connector_relay_run(ClawtConnectorPlan *plan)
 {
-    return clawt_connector_relay_run_gated(plan, NULL, NULL);
+    return clawt_connector_relay_run_full(plan, NULL, NULL, NULL);
 }
 
 gint
@@ -547,24 +634,86 @@ clawt_connector_relay_run_gated(ClawtConnectorPlan *plan,
                                 ClawtMcpRelayGate   gate,
                                 gpointer            gate_data)
 {
+    return clawt_connector_relay_run_full(plan, gate, gate_data, NULL);
+}
+
+gint
+clawt_connector_relay_run_full(ClawtConnectorPlan *plan,
+                               ClawtMcpRelayGate   gate,
+                               gpointer            gate_data,
+                               ClawtMcpDirectory  *directory)
+{
+    ClawtMcpRelayPolicy policy = { 0 };
+
     g_return_val_if_fail(plan != NULL, EXIT_FAILURE);
 
-    if (plan->url != NULL)
-        return run_http(plan);
-
-    if (plan->permitted != NULL)
-        return clawt_mcp_relay_run_gated(plan->argv, plan->envp, plan->permitted,
-                                         CONNECTOR_REFUSAL_HINT, gate, gate_data);
-
-    if (gate != NULL)
-        return clawt_mcp_relay_run_unfiltered_gated(plan->argv, plan->envp,
-                                                    gate, gate_data);
-
     /*
-     * No tool list means no restriction, and it has to be said with a
-     * different call: the filtering relay reads a NULL list as "allow
+     * No tool list means no restriction, and it has to be said as a
+     * separate flag: the filtering relay reads a NULL list as "allow
      * nothing", which is the right default for a grant being enforced
      * and exactly wrong for a connector that simply was not narrowed.
      */
-    return clawt_mcp_relay_run_unfiltered(plan->argv, plan->envp);
+    policy.permitted = plan->permitted;
+    policy.filter = (plan->permitted != NULL);
+    policy.hint = CONNECTOR_REFUSAL_HINT;
+    policy.gate = gate;
+    policy.gate_data = gate_data;
+    policy.directory = directory;
+
+    /*
+     * Several accounts on one service: the prefix is part of the one
+     * policy both transports apply, outermost on both sides, so the
+     * directory, the tool list and the gate all see the server's names.
+     */
+    policy.accounts = plan->accounts;
+    policy.account_prefix = plan->account_prefix;
+    policy.account_siblings = plan->account_siblings;
+    policy.account_conflict = plan->account_conflict;
+
+    if (plan->url != NULL)
+        return run_http(plan, &policy);
+
+    return clawt_mcp_relay_run_policy(plan->argv, plan->envp, &policy);
+}
+
+ClawtMcpDirectory *
+clawt_connector_directory_new(ClawtConfig             *config,
+                              ClawtIntegrationBinding *binding,
+                              const gchar             *agent_id)
+{
+    ClawtToolDirectoryMode mode = CLAWT_TOOL_DIRECTORY_AUTO;
+    ClawtAgentConfig *agent = NULL;
+    const gchar *nick;
+    const gchar *provider = NULL;
+    gint64 min_tools;
+    gint64 min_chars;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(config), NULL);
+    g_return_val_if_fail(binding != NULL, NULL);
+
+    nick = clawt_integration_binding_get_string(binding, "directory");
+
+    /*
+     * A spelling no mode has is said out loud and read as `auto`, the
+     * documented default -- not as whichever member is zero, and not as
+     * a reason to take the connector's tools away.
+     */
+    if (!clawt_tool_directory_mode_from_nick(nick, &mode))
+        g_printerr("clawtilla: connector '%s': directory '%s' is not auto, "
+                   "always or never; using auto\n",
+                   clawt_integration_binding_get_name(binding), nick);
+
+    if (agent_id != NULL)
+        agent = clawt_config_get_agent(config, agent_id);
+
+    if (agent != NULL)
+        provider = clawt_agent_config_get_string(agent, "model.provider");
+
+    min_tools = clawt_config_get_int(config, "connectors.directory_min_tools");
+    min_chars = clawt_config_get_int(config, "connectors.directory_min_chars");
+
+    return clawt_mcp_directory_new(
+        clawt_integration_binding_get_name(binding), mode,
+        clawt_mcp_directory_cli_searches_tools(provider),
+        (guint64)MAX(min_tools, 0), (guint64)MAX(min_chars, 0));
 }

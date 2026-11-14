@@ -17,6 +17,7 @@ struct _ClawtExecResult {
     gchar    *stdout_text;
     gchar    *stderr_text;
     gboolean  truncated;
+    gint64    wake_usec;
 };
 
 static ClawtExecResult *
@@ -56,6 +57,7 @@ clawt_exec_result_copy(ClawtExecResult *self)
     copy = clawt_exec_result_new(self->exit_status, self->stdout_text,
                                  self->stderr_text);
     copy->truncated = self->truncated;
+    copy->wake_usec = self->wake_usec;
 
     return copy;
 }
@@ -114,4 +116,18 @@ clawt_exec_result_set_truncated(ClawtExecResult *self, gboolean truncated)
 {
     g_return_if_fail(self != NULL);
     self->truncated = truncated;
+}
+
+gint64
+clawt_exec_result_get_wake_usec(ClawtExecResult *self)
+{
+    g_return_val_if_fail(self != NULL, 0);
+    return self->wake_usec;
+}
+
+void
+clawt_exec_result_set_wake_usec(ClawtExecResult *self, gint64 wake_usec)
+{
+    g_return_if_fail(self != NULL);
+    self->wake_usec = wake_usec > 0 ? wake_usec : 0;
 }

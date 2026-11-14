@@ -118,9 +118,21 @@ and devices.
 
 =/settings/spending?period=N&by=NICK= draws two rows of tabs -- the periods from =clawt_usage_period_count()= and the groupings from =clawt_usage_group_count()=, both by index into the library's tables, so there is no list of slugs here to drift -- then ~usage.ledger~'s groups as a table with Turns, Unpriced, In, Out and Cost columns and a Fleet footer.  An unpriced turn in the period adds a notice under the table saying how many and that they are not in the cost.  *Export CSV* is a plain =<a download>= to =/settings/spending/export= with the same query; that route asks the daemon again and answers =text/csv= with a =Content-Disposition= attachment, because the browser is not necessarily on the machine running =clawtilla-web=.  The document is =clawt_usage_ledger_csv()='s, the same bytes the CLI and the other clients write.
 
+*** Connectors
+
+=/settings/connectors= draws one card per ~connector.list~ entry, titled with its name and subtitled ~provider -- account~ (~clawt_connector_row_subtitle()~, the same text the other clients draw), so two accounts on one service are told apart on sight.  A card whose server refused the agent's last call has a *Server* row saying so; one whose discovery found an authorization server has a *Signs in at* row, and its primary button reads *Sign in at <host>* (~clawt_connector_sign_in_label()~) instead of *Authorize* -- both lead to =/settings/connectors/<name>/authorize=, which is ~connector.begin~.
+
+The add form opens on "Remote MCP server" (the catalogue sorts it first) and takes a *Server URL*, a *Name* (from the URL's host when empty, ~clawt_connector_name_for_url()~), an *Account label* the form says is required for a second account, and a client id.  An add with a URL asks ~connector.discover~ at once and says where it signs in, or that it publishes no sign-in.
+
+The authorize page reads the members ~connector.begin~ sends -- ~authorize_url~, else ~verification_uri_complete~ or ~verification_uri~ -- and names ~auth_server~ above the link.  It read a member called ~url~ before, which the daemon has never sent, so neither flow ever showed the page to open.
+
 *** Orchestration
 
 =/settings/orchestration= is a form with one select, *Model*, built by =clawt_web_select_field()= from =clawt_ack_check_model_count()= / =_nth_value()= / =_nth_label()= with ~orchestration.get~'s =ack_check_model= selected; a value the list lacks is kept as an option, so saving untouched cannot turn the check off.  *Save* posts to the same path, which sends ~orchestration.set~ and redraws the page with the outcome.  See [[file:clients.org::#orchestration-settings][Orchestration]].
+
+Below it, *Message budget per task tree* is a second form posting =tree_message_budget= to the same path (which then sends ~orchestration.set~ with that integer alone), and *Rounds in group rooms* has one form per group room posting =room= and =max_chain= to =/settings/orchestration/room=, which sends ~room.set~.  Each field is checked to be a whole number in range before anything is sent, and the page redraws with the outcome.
+
+The transcript draws a *Round N* divider (=.round-divider=) where a group room's round changes, and a =.skip-note= under a message whose mention was kept and not delivered, with =clawt_round_skip_note()='s sentence as text content and =clawt_round_skip_tooltip()= as its title.
 
 *** Acknowledged answers and merged deliveries in the chat
 
@@ -129,6 +141,20 @@ and devices.
 *** Interrupted turns and rebuild requests
 
 =message_element()= also reads =interrupted=: the daemon's notice that a turn was cut short and will not be resumed gets a =warn= badge, =clawt_message_interrupted_label()= with =clawt_message_interrupted_tooltip()= as its =title=, and its body is boxed with =.msg-interrupted=.  On =/decisions= a rebuild request (=kind: "rebuild"=) has a =bad= *rebuild* badge, its =loses= sentence in a =.decision-loses= box, a =danger= *approve* button, and no free-text field or Answer button -- only ~approve~ rebuilds.  See [[file:clients.org][clients.org]].
+
+*** Connectors
+
+Each connector's card has a /Tools/ row --
+=clawt_mcp_directory_status_label()='s sentence: how many tools its server
+has and whether agents get it as a directory -- and a *Present as a
+directory* select (Auto, Always, Never, walked from
+=clawt_tool_directory_mode_count()=) that posts to
+=/settings/connectors/:connector/directory= and saves through
+~integration.update~.  A *Servers with many tools* card holds the two
+thresholds and posts to =/settings/connectors/directory-thresholds=,
+which sends ~connector.settings~; a field left empty keeps its value and
+one that is not a whole number is refused before anything is sent.  See
+"Servers with many tools" in [[file:connectors.org][connectors.org]].
 
 *** The integration editor
 
@@ -209,6 +235,7 @@ answers with the page it did it on.
 | =/settings/<page>/...=        | their actions: add, save, remove, health, test, authorize, revoke |
 | =/new=, =/import=, =/design=  | making an agent                         |
 | =/alerts=, =/decisions=, =/routines/...=, =/tasks/:task/cancel=, =/tasks/:task/retry=, =/incidents/:incident/retry=, =/incidents/configure= | the standing surfaces |
+| =/decisions/proposal=         | Approve, Reject or Edit a skill an agent proposed (~skill.proposal_resolve~); a refusal is shown as an error page, not swallowed by the redirect, since the proposal is still waiting |
 | =/activity/:agent/stop=, =/activity/:agent/steer=, =/f/activity= | the Activity page's actions and its polled panel |
 | =/fleet-usage/:agent/stop=, =/fleet-usage/stop-idle=, =/f/fleet-usage= | the Fleet page's actions and its polled panel (=?period== picks the window) |
 | =/a/:id/browser/open=, =/a/:id/browser/click=, =/a/:id/browser/stop=, =/a/:id/browser/frame=, =/f/a/:id/browser= | the Computer page's Browser view: its actions, its picture and its polled panel |

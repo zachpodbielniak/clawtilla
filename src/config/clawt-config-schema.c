@@ -776,6 +776,28 @@ static const ClawtSchemaEntry schema[] = {
   "starting. A message sent with reply: none never wakes its sender,\n"
   "with or without this.", "0.17.0" },
 
+{ "orchestration.tree_message_budget", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "60", NULL,
+  "How many requests one task tree may send between settlements.\n"
+  "0 disables the budget.\n"
+  "\n"
+  "A tree is a root task and everything delegated from it. max_hops\n"
+  "bounds how deep a chain goes and says nothing about how wide: a chief\n"
+  "that hands work to ten agents, each of which asks two more, is three\n"
+  "hops deep and can still talk all night. This counts the deliberate\n"
+  "messages sent from inside one tree -- clawtilla_message_agent,\n"
+  "clawtilla_ask_agent, clawtilla_delegate, clawtilla_handoff,\n"
+  "clawtilla_post_room and an @mention in a room -- one per call, however\n"
+  "many teammates the call reaches.\n"
+  "\n"
+  "Answers are not counted and never refused, and neither is the\n"
+  "follow-up turn a delegator is owed when its work settles. The count\n"
+  "starts again whenever any task in the tree settles, because a\n"
+  "settlement is progress and chatter is not.\n"
+  "\n"
+  "At the limit the messaging tools are withheld from that tree's turns,\n"
+  "exactly as max_hops withholds them, and one alert names the tree.", "0.18.0" },
+
 { "orchestration.mailbox", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Defaults for every agent's mailbox.\n"
   "\n"
@@ -1122,6 +1144,18 @@ static const ClawtSchemaEntry schema[] = {
   "The earliest steps are the ones kept, because the first part of a\nprocedure is a usable prefix of it while a slice out of the middle\nis not. Pointer motion is never counted: a drag is hundreds of\nevents and would spend the whole budget on the mouse travelling,\nso every click and scroll carries the position it happened at\ninstead.",
   "0.2.0" },
 
+{ "skills.max_proposals_per_day", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_COMMENTED,
+  "3", NULL,
+  "How many skills one agent may propose in any 24 hours.\n"
+  "\n"
+  "clawtilla_skill_propose lets an agent write down a technique it\n"
+  "worked out -- a new skill, or a change to one that exists -- as a\n"
+  "draft that reaches no prompt, with a decision in your inbox to\n"
+  "approve, edit or reject it. Every proposal spends your attention, so\n"
+  "this bounds how often one agent can ask for it; a rejected proposal\n"
+  "still counts. 0 turns proposing off, and the tool is not offered.",
+  "0.19.0" },
+
 { "rooms", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Standing rooms, created at startup if they do not exist.\n"
   "\n"
@@ -1169,7 +1203,26 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "It reaches the hop count and nothing else. The rate limit, the task\n"
   "budget and the cycle detector are untouched, so a loop that costs\n"
-  "money still has three limits on it.", "0.1.0" },
+  "money still has three limits on it.\n"
+  "\n"
+  "In a group room this is the backstop rather than the limit that\n"
+  "fires: rooms.max_chain ends a thread of replies first, and the depth\n"
+  "starts again at each round.", "0.1.0" },
+
+{ "rooms.max_chain", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, "3", NULL,
+  "How many replies one thread may run to in a round of a group room.\n"
+  "0 removes the cap; the once-per-thread rule below still applies.\n"
+  "\n"
+  "A round starts at a message from you, a routine or a trigger. Each\n"
+  "member that answers it starts a thread, and an @mention in a reply\n"
+  "carries the thread on. Within one thread a member answers once: a\n"
+  "mention of a member already in that thread is recorded in the room\n"
+  "and not delivered, with the reason shown beside it. A member that\n"
+  "spoke in another thread of the same round still answers.\n"
+  "\n"
+  "Without this the hop count built up across a room's history, so an\n"
+  "ordinary standup reached max_hops by itself. The depth now starts\n"
+  "again at every round, and max_hops stays as the backstop.", "0.18.0" },
 
 { "rooms.turn_timeout_seconds", CLAWT_SCHEMA_INT,
   CLAWT_SCHEMA_FLAG_NONE, "0", NULL,
@@ -1590,7 +1643,12 @@ static const ClawtSchemaEntry schema[] = {
   "two different servers and there is no way to tell which was meant.\n"
   "\n"
   "libresearch: where its server answers. grokbot: the Grok routine's\n"
-  "webhook address, as Grok shows it under \"POST to\".", "0.2.0" },
+  "webhook address, as Grok shows it under \"POST to\".\n"
+  "\n"
+  "connector: a remote MCP server, instead of the catalogue's. With\n"
+  "`provider: remote` -- or no provider at all -- this is the only thing\n"
+  "a connector needs: the server says how to sign in to it (see\n"
+  "connectors.discovery).", "0.2.0" },
 
 { "integrations.env", CLAWT_SCHEMA_MAPPING, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
@@ -1616,7 +1674,15 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "Two connectors for the same provider are the ordinary case -- work\n"
   "and personal, or one GitLab org and another -- and the account label\n"
-  "is what tells them apart everywhere they are shown.", "0.2.0" },
+  "is what tells them apart everywhere they are shown.\n"
+  "\n"
+  "Required, and unique per provider, for every account after the first:\n"
+  "adding a second one without a label, or with one another account on\n"
+  "that service already uses, is refused. An agent granted several\n"
+  "accounts on one service sees each account's tools prefixed with its\n"
+  "label -- `work_create_issue`, `personal_create_issue` -- and a call to\n"
+  "the bare name is refused rather than run as whichever account it\n"
+  "happened to reach.", "0.2.0" },
 
 { "integrations.instance", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
@@ -1679,6 +1745,24 @@ static const ClawtSchemaEntry schema[] = {
   "refused is worse than one that was never there -- the agent plans\n"
   "around it and has to work out from an error that it never had it.",
   "0.2.0" },
+
+{ "integrations.directory", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "auto", clawt_tool_directory_mode_get_type,
+  "connector: whether its tools are listed one by one or searched.\n"
+  "\n"
+  "A server with hundreds of tools puts every description into every\n"
+  "model call. As a directory it is three tools instead --\n"
+  "<name>_search_tools, <name>_describe_tool and <name>_call_tool -- and\n"
+  "the agent looks up what it needs. The search, the description and the\n"
+  "call all work from the tools this agent may use, so narrowing `tools:`\n"
+  "narrows what can be found as well as what can be called.\n"
+  "\n"
+  "`auto` makes a directory of a server past\n"
+  "connectors.directory_min_tools or connectors.directory_min_chars, for\n"
+  "an agent whose CLI does not search tools itself; Claude Code does, so\n"
+  "its agents get every tool as before. `always` makes one whatever the\n"
+  "size or the CLI, and `never` lists every tool however many there\n"
+  "are. See docs/connectors.org, \"Servers with many tools\".", "0.18.0" },
 
 
 /* ── connectors ──────────────────────────────────────────────────── */
@@ -1767,7 +1851,36 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "Bound on 127.0.0.1 only. A redirect carries an authorization code in\n"
   "a URL, and a listener on every interface offers that code to whoever\n"
-  "on the network reaches the port first.", "0.2.0" },
+  "on the network reaches the port first.\n"
+  "\n"
+  "A client clawtilla registers for itself by dynamic client registration\n"
+  "is registered with this redirect, so changing the port means signing\n"
+  "in again.", "0.2.0" },
+
+{ "connectors.discovery", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "true", NULL,
+  "Whether a remote connector finds out for itself how to sign in.\n"
+  "\n"
+  "A connector reached by URL whose catalogue entry names no endpoints\n"
+  "asks the server: its RFC 9728 protected-resource document names an\n"
+  "authorization server, whose RFC 8414 metadata names the endpoints,\n"
+  "and RFC 7591 dynamic client registration supplies a client id when\n"
+  "the connector has none. Endpoints a catalogue entry names by hand\n"
+  "always win, and so does a configured `client_id`.\n"
+  "\n"
+  "Only when somebody asks for a sign-in -- never at daemon start. No\n"
+  "request in it follows a redirect, and nothing it finds may be plain\n"
+  "http unless the server itself is on loopback. Off, such a connector\n"
+  "takes a pasted token only.", "0.19.0" },
+
+{ "connectors.client_name", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  "clawtilla", NULL,
+  "What clawtilla calls itself when it registers with a server.\n"
+  "\n"
+  "Sent as `client_name` in a dynamic client registration, so it is what\n"
+  "the server's consent screen shows the person approving it -- worth\n"
+  "setting to something that says which machine is asking when several\n"
+  "fleets sign in to one service.", "0.19.0" },
 
 /* ── routines ────────────────────────────────────────────────────── */
 { "connectors.registry_enabled", CLAWT_SCHEMA_BOOLEAN,
@@ -1800,6 +1913,27 @@ static const ClawtSchemaEntry schema[] = {
   "daemon last started -- a restart must not reset this clock, or a\n"
   "fleet that bounces every hour would refresh every hour regardless of\n"
   "what this key says.", "0.2.0" },
+
+{ "connectors.directory_min_tools", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "40", NULL,
+  "More tools than this makes a connector's server a directory.\n"
+  "\n"
+  "Counted after the connector's `tools:` narrowing, because that is the\n"
+  "list the agent would otherwise read. Forty is where a tool list starts\n"
+  "to cost more than it helps -- and API-model engines refuse more than\n"
+  "128 tools a turn across every server they have. Only read when a\n"
+  "connector's `directory` is `auto`.", "0.18.0" },
+
+{ "connectors.directory_min_chars", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "100000", NULL,
+  "More characters of tool definitions than this makes a directory too.\n"
+  "\n"
+  "The names, descriptions and input schemas together, which is what the\n"
+  "model actually reads on every call. A server with thirty tools can\n"
+  "still be a hundred thousand characters when each one carries a page of\n"
+  "documentation; about where Claude Code starts searching its own tools\n"
+  "rather than listing them. Only read when a connector's `directory` is\n"
+  "`auto`.", "0.18.0" },
 
 /* ── grok ────────────────────────────────────────────────────────── */
 { "grok", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
@@ -2686,6 +2820,31 @@ static const ClawtSchemaEntry schema[] = {
   "Desktop control is not a type -- it is the desktop block below, and\n"
   "works alongside any of these.", "0.1.0" },
 
+{ "agents.computer.start", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "on_agent_start", clawt_computer_start_get_type,
+  "When the machine is started: with the agent, or the first time\n"
+  "something runs in it.\n"
+  "\n"
+  "on_agent_start brings the computer up before the agent's first turn,\n"
+  "so a broken image or a dead libvirtd stops the agent at once, with the\n"
+  "reason, instead of a turn later. That is the default, and what every\n"
+  "agent did before this key existed.\n"
+  "\n"
+  "on_first_use leaves it down until the first clawtilla_computer_exec,\n"
+  "`computer exec`, wait condition or desktop call. The agent's own bash,\n"
+  "read and write run on the host either way, so an agent that mostly\n"
+  "talks, plans or delegates never pays for a VM it does not touch.\n"
+  "Callers that arrive while it is coming up share the one start, and\n"
+  "the time it takes is not counted against the command's timeout.\n"
+  "\n"
+  "Applies to container, distrobox, vm and ssh computers; a host computer\n"
+  "is a local check and always starts with the agent. A computer stopped\n"
+  "by hand under a running agent is started again by its next use.\n"
+  "\n"
+  "An agent with a VM desktop is the exception in practice: its MCP\n"
+  "client asks for the desktop when the agent starts, and that request\n"
+  "is a use.", "0.19.0" },
+
 { "agents.computer.exchange", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "true", NULL,
   "Whether the shared exchange directory is visible to this agent.\n"
@@ -2938,6 +3097,44 @@ static const ClawtSchemaEntry schema[] = {
   "gone rather than offline, which is not what the word stop suggests.",
   "0.1.0" },
 
+{ "agents.computer.container.pids_limit", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_NONE, "0", NULL,
+  "Most processes and threads the machine may hold at once.\n"
+  "\n"
+  "What stops a fork bomb, or a build with -j0, taking the host down with\n"
+  "it. 0 leaves podman's own default (2048 on Fedora, from\n"
+  "containers.conf); -1 removes the limit. Anything else is the limit.\n"
+  "\n"
+  "Read by the distrobox backend too, which is a podman container\n"
+  "underneath: computer.container.* limits reach either. Passed to podman\n"
+  "when the machine is created; a changed value is applied to the\n"
+  "existing one with `podman update` at the next start, without a\n"
+  "rebuild and without losing what the agent installed.", "0.19.0" },
+
+{ "agents.computer.container.memory", CLAWT_SCHEMA_STRING,
+  CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Most memory the machine may use, e.g. 512m or 4g.\n"
+  "\n"
+  "A whole number with an optional unit -- b, k, m or g, in powers of\n"
+  "1024 -- and at least 6m, which is podman's floor. Unset means no limit\n"
+  "beyond the host's. Past it the kernel's OOM killer picks a process\n"
+  "inside the machine, which is the point: the agent's container dies\n"
+  "rather than your desktop.\n"
+  "\n"
+  "Applies to container and distrobox computers, at creation and then\n"
+  "with `podman update` whenever it changes.", "0.19.0" },
+
+{ "agents.computer.container.memory_swap", CLAWT_SCHEMA_STRING,
+  CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Memory and swap together, e.g. 8g; -1 for unlimited swap.\n"
+  "\n"
+  "podman's own meaning, and easy to misread: this is the total, not the\n"
+  "swap alone, so memory: 4g with memory_swap: 6g allows 2g of swap. Equal\n"
+  "to memory means no swap at all. Unset lets podman allow as much swap\n"
+  "again as memory. It needs memory to be set and must not be smaller\n"
+  "than it; both are refused when they arrive rather than when podman\n"
+  "reads them.", "0.19.0" },
+
 /* ── agents.computer.ssh ─────────────────────────────────────────── */
 { "agents.computer.ssh", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
@@ -3049,6 +3246,30 @@ static const ClawtSchemaEntry schema[] = {
   "means the master is never created and every command silently pays a\n"
   "fresh handshake.",
   "0.2.0" },
+
+{ "agents.computer.ssh.wake_command", CLAWT_SCHEMA_STRING_LIST,
+  CLAWT_SCHEMA_FLAG_ARGV, NULL, NULL,
+  "A program to run when the machine does not answer, to wake it.\n"
+  "\n"
+  "For a machine that sleeps: a homelab box that suspends when idle, a\n"
+  "cloud server that is paused. Wake-on-LAN is the usual answer --\n"
+  "[wakeonlan, aa:bb:cc:dd:ee:ff] -- or a provider's own resume command.\n"
+  "It should return once the machine is on its way up; clawtilla then\n"
+  "connects as usual, and ssh's connect_timeout covers the rest of the\n"
+  "boot.\n"
+  "\n"
+  "A program and its arguments, as a list. It is never run through a\n"
+  "shell, so a pipe or a redirect would be text; written as one line in\n"
+  "a client it is split into words and refused if it uses one. Nothing\n"
+  "is substituted into it.\n"
+  "\n"
+  "Run only when a connection attempt finds nothing answering, never for\n"
+  "a refused key or login. Commands that arrive while it runs wait for\n"
+  "that one run rather than starting their own, and each is told how\n"
+  "long it waited. It gets at most 120 seconds, after which it is killed\n"
+  "along with everything it started, and the time is not taken out of\n"
+  "the command's own timeout. A wake that fails is reported with the\n"
+  "connection failure, saying which.", "0.19.0" },
 
 /* ── agents.computer.distrobox ───────────────────────────────────── */
 { "agents.computer.distrobox", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE,

@@ -38,6 +38,7 @@
 
 #include "integration/clawt-connector.h"
 #include "integration/clawt-integration.h"
+#include "mcp/clawt-mcp-relay.h"
 
 G_BEGIN_DECLS
 
@@ -51,6 +52,17 @@ G_BEGIN_DECLS
  * @header_value: (nullable): its value, already formatted
  * @permitted: (array zero-terminated=1) (nullable): the only tools the
  *   agent may use, or %NULL for all of them
+ * @name: the connector's integration name, for what the agent is told
+ * @accounts: whether the agent holds several accounts on this service,
+ *   so this one's tools are renamed for it
+ * @account_prefix: (nullable): the account's slug, or %NULL when
+ *   @accounts is set and two labels collide -- every call is refused
+ * @account_siblings: (array zero-terminated=1) (nullable): every slug on
+ *   the service, for a refusal to name
+ * @account_conflict: (nullable): why the labels collide
+ * @unauthorized: (nullable): told when a remote server answers 401, so
+ *   the daemon can offer a sign-in
+ * @unauthorized_data: data for @unauthorized
  *
  * Everything needed to reach one connector's tools, worked out before
  * anything is started.
@@ -64,7 +76,14 @@ G_BEGIN_DECLS
  * from.  That is not visible by reading the code that builds the argv;
  * it is visible by looking for the value in the result.
  *
- * Exactly one of @argv and @url is set.
+ * Exactly one of @argv and @url is set.  A @url plan may carry no
+ * credential at all (@header_value %NULL): a remote server that has not
+ * been signed in to yet still lists its tools to some clients, and its
+ * 401 is what tells the operator a sign-in is wanted.
+ *
+ * The account fields are filled by the caller, which is the one that
+ * knows every connector the agent holds;
+ * clawt_connector_account_prefix() decides them.
  *
  * Deliberately not introspectable.  Its entire purpose is to hold a live
  * credential in this process's memory for as long as a server is
@@ -72,6 +91,20 @@ G_BEGIN_DECLS
  * would belong to somebody else's garbage collector -- is the opposite
  * of what the rest of this file is for.
  */
+/**
+ * ClawtConnectorUnauthorized: (skip)
+ * @name: the connector
+ * @challenge: (nullable): the 401's `WWW-Authenticate` header
+ * @sent_credential: whether the refused request carried a credential
+ * @user_data: the plan's @unauthorized_data
+ *
+ * Told when a remote tool server refuses a request with a 401.
+ */
+typedef void (*ClawtConnectorUnauthorized)(const gchar *name,
+                                           const gchar *challenge,
+                                           gboolean     sent_credential,
+                                           gpointer     user_data);
+
 typedef struct {
     GStrv   argv;
     gchar  *url;
@@ -79,6 +112,15 @@ typedef struct {
     gchar  *header_name;
     gchar  *header_value;
     GStrv   permitted;
+
+    gchar   *name;
+    gboolean accounts;
+    gchar   *account_prefix;
+    GStrv    account_siblings;
+    gchar   *account_conflict;
+
+    ClawtConnectorUnauthorized unauthorized;
+    gpointer                   unauthorized_data;
 } ClawtConnectorPlan;
 
 /**
@@ -107,7 +149,8 @@ gchar *clawt_connector_resolve_command(const gchar *command, GError **error);
  * clawt_connector_plan_new: (skip)
  * @info: the connector from the catalogue
  * @binding: the integration as this agent has it
- * @credential: the secret, already loaded from its file
+ * @credential: (nullable): the secret, already loaded from its file;
+ *   %NULL only for a server reached by URL that nobody has signed in to
  * @error: (out) (optional): return location for a #GError
  *
  * Works out how to reach @info's tools with @credential.
@@ -152,14 +195,52 @@ gint clawt_connector_relay_run(ClawtConnectorPlan *plan);
  *   action rules, from the CLI
  * @gate_data: data for @gate
  *
- * As clawt_connector_relay_run(), asking @gate about every call. A
- * connector reached by URL is filtered inline and is not gated: its calls
- * are checked against the tool list only.
+ * As clawt_connector_relay_run(), asking @gate about every call, over
+ * stdio and over HTTP alike.
  *
  * Returns: the exit status for the process
  */
 gint clawt_connector_relay_run_gated(ClawtConnectorPlan *plan,
                                      ClawtMcpRelayGate   gate,
                                      gpointer            gate_data);
+
+/**
+ * clawt_connector_relay_run_full: (skip)
+ * @plan: what to run
+ * @gate: (scope call) (nullable): asked once per tool call, naming the
+ *   tool that would run -- never the directory in front of it
+ * @gate_data: data for @gate
+ * @directory: (nullable): counts the server's tools, and presents a big
+ *   one as three tools that search, describe and call the rest
+ *
+ * As clawt_connector_relay_run_gated(), with the directory in the path.
+ *
+ * Returns: the exit status for the process
+ */
+gint clawt_connector_relay_run_full(ClawtConnectorPlan *plan,
+                                    ClawtMcpRelayGate   gate,
+                                    gpointer            gate_data,
+                                    ClawtMcpDirectory  *directory);
+
+/**
+ * clawt_connector_directory_new:
+ * @config: the fleet's configuration
+ * @binding: the connector, as this agent has it
+ * @agent_id: (nullable): the agent the relay serves
+ *
+ * The directory for one connector relay, from the connector's
+ * `directory`, the fleet's `connectors.directory_min_tools` and
+ * `connectors.directory_min_chars`, and whether the agent's CLI searches
+ * tools by itself (clawt_mcp_directory_cli_searches_tools()).
+ *
+ * Always returns one, even for `never`: a directory that may not present
+ * itself still counts what goes past, which is how the Connectors page
+ * learns a server's size.
+ *
+ * Returns: (transfer full): the directory
+ */
+ClawtMcpDirectory *clawt_connector_directory_new(ClawtConfig             *config,
+                                                 ClawtIntegrationBinding *binding,
+                                                 const gchar             *agent_id);
 
 G_END_DECLS

@@ -198,17 +198,68 @@ gboolean clawt_computer_teardown(ClawtComputer *self, GError **error);
 gboolean clawt_computer_restart(ClawtComputer *self, GError **error);
 
 /**
+ * clawt_computer_set_start_on_first_use:
+ * @self: a #ClawtComputer
+ * @first_use: %TRUE for `computer.start: on_first_use`
+ *
+ * Whether the machine waits for its first use instead of starting with
+ * its agent. The daemon reads it to skip the start at agent start; every
+ * command then goes through clawt_computer_ensure_started().
+ */
+void clawt_computer_set_start_on_first_use(ClawtComputer *self,
+                                           gboolean       first_use);
+
+/**
+ * clawt_computer_get_start_on_first_use:
+ * @self: a #ClawtComputer
+ *
+ * Returns: %TRUE if the machine starts on first use
+ */
+gboolean clawt_computer_get_start_on_first_use(ClawtComputer *self);
+
+/**
+ * clawt_computer_ensure_started:
+ * @self: a #ClawtComputer
+ * @error: return location for a #GError
+ *
+ * Starts a machine that starts on first use, if it is not running.
+ *
+ * One start per wave: callers that arrive while a start is under way wait
+ * for it and share its answer, so five commands sent at once to a
+ * sleeping VM boot it once. A machine that started with its agent is left
+ * alone -- a stopped one stays stopped, as it always has, and its command
+ * fails saying so.
+ *
+ * Called by clawt_computer_exec() before every command, so every way into
+ * the machine -- the agent's tool, `computer exec`, a wait condition --
+ * starts it, and the time the start takes is not the command's: the
+ * command's timeout begins when the machine is up.
+ *
+ * Blocking. Reached from a main loop only through
+ * clawt_computer_lifecycle_async() with
+ * %CLAWT_COMPUTER_LIFECYCLE_FIRST_USE, or clawt_computer_exec_async().
+ *
+ * Returns: %TRUE if the machine is ready for commands, or was never
+ *   waiting for its first use
+ */
+gboolean clawt_computer_ensure_started(ClawtComputer *self, GError **error);
+
+/**
  * ClawtComputerLifecycle:
  * @CLAWT_COMPUTER_LIFECYCLE_START: bring the machine up
  * @CLAWT_COMPUTER_LIFECYCLE_STOP: take it down, leaving it there
  * @CLAWT_COMPUTER_LIFECYCLE_RESTART: both, in that order
+ * @CLAWT_COMPUTER_LIFECYCLE_FIRST_USE: clawt_computer_ensure_started():
+ *   bring up a machine that starts on first use, sharing a start already
+ *   under way; nothing for one that started with its agent
  *
- * Which of the three clawt_computer_lifecycle_async() should run.
+ * Which verb clawt_computer_lifecycle_async() should run.
  */
 typedef enum {
     CLAWT_COMPUTER_LIFECYCLE_START = 0,
     CLAWT_COMPUTER_LIFECYCLE_STOP,
-    CLAWT_COMPUTER_LIFECYCLE_RESTART
+    CLAWT_COMPUTER_LIFECYCLE_RESTART,
+    CLAWT_COMPUTER_LIFECYCLE_FIRST_USE
 } ClawtComputerLifecycle;
 
 /**
