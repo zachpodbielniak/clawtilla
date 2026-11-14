@@ -59,6 +59,7 @@ enum {
     SIGNAL_MESSAGE,
     SIGNAL_TYPING,
     SIGNAL_STEP,
+    SIGNAL_FAILOVER,
     SIGNAL_LINK_CONTESTED,
     N_SIGNALS
 };
@@ -156,6 +157,17 @@ on_link_step(ClawtLink     *link,
     (void)link;
 
     g_signal_emit(self, signals[SIGNAL_STEP], 0, step);
+}
+
+static void
+on_link_failover(ClawtLink  *link,
+                 JsonObject *payload,
+                 gpointer    user_data)
+{
+    ClawtLinkServer *self = user_data;
+
+    g_signal_emit(self, signals[SIGNAL_FAILOVER], 0,
+                  clawt_link_get_agent_id(link), payload);
 }
 
 /*
@@ -400,6 +412,7 @@ on_incoming(GSocketService    *service,
     g_signal_connect(link, "message", G_CALLBACK(on_link_message), self);
     g_signal_connect(link, "typing", G_CALLBACK(on_link_typing), self);
     g_signal_connect(link, "step", G_CALLBACK(on_link_step), self);
+    g_signal_connect(link, "failover", G_CALLBACK(on_link_failover), self);
     g_signal_connect(link, "closed", G_CALLBACK(on_link_closed), self);
 
     /*
@@ -796,6 +809,20 @@ clawt_link_server_class_init(ClawtLinkServerClass *klass)
         g_signal_new("step", CLAWT_TYPE_LINK_SERVER, G_SIGNAL_RUN_LAST,
                      0, NULL, NULL, NULL, G_TYPE_NONE, 1,
                      CLAWT_TYPE_TURN_STEP);
+
+    /**
+     * ClawtLinkServer::failover:
+     * @self: the server
+     * @agent_id: the agent
+     * @payload: (type Json.Object): the `agent.failover` payload
+     *
+     * The agent moved to a fallback backend, or came back to its own
+     * (see #ClawtLink::failover).
+     */
+    signals[SIGNAL_FAILOVER] =
+        g_signal_new("failover", CLAWT_TYPE_LINK_SERVER, G_SIGNAL_RUN_LAST,
+                     0, NULL, NULL, NULL, G_TYPE_NONE, 2,
+                     G_TYPE_STRING, JSON_TYPE_OBJECT);
 
     /**
      * ClawtLinkServer::link-contested:

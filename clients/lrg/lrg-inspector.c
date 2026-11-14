@@ -68,11 +68,24 @@ typedef struct {
     JsonNode   *images;      /* image.list */
     JsonNode   *disks;       /* image.vm_list */
     gboolean    toggling;    /* an integration switch is being put back */
+
+    /*
+     * model.fallbacks: the editor's box, its entries' controls, the
+     * account.list it offers logins from, an edit waiting to be drawn,
+     * and the list as agent.show spelled it -- NULL when it could not be
+     * read, which leaves the editor out of the save.
+     */
+    LrgWidget  *fallbacks;
+    GPtrArray  *fallback_views;     /* FallbackView */
+    GPtrArray  *fallback_pending;   /* ClawtModelFallback */
+    JsonNode   *accounts;
+    gchar      *fallbacks_saved;
 } Inspector;
 
 static Inspector ins;
 
 static void refresh(ClawtLrgApp *app);
+static void redraw_fallbacks(ClawtLrgApp *app);
 
 /* ── Small pieces ─────────────────────────────────────────────────── */
 
@@ -156,6 +169,7 @@ draw_glance(ClawtLrgApp *app, JsonNode *reply)
     LrgWidget *actions = clawt_lrg_hbox(8.0f);
     g_autofree gchar *held = NULL;
     g_autofree gchar *identity_text = NULL;
+    g_autofree gchar *fallback = NULL;
     guint i;
 
     clawt_lrg_clear(ins.glance);
@@ -187,12 +201,32 @@ draw_glance(ClawtLrgApp *app, JsonNode *reply)
     if (held != NULL)
         clawt_lrg_take(badges, clawt_lrg_badge(held, "warn"));
 
+    if (agent != NULL && json_object_has_member(agent, "failover") &&
+        JSON_NODE_HOLDS_OBJECT(json_object_get_member(agent, "failover")))
+        fallback = clawt_failover_badge(
+            json_object_get_object_member(agent, "failover"));
+
+    if (fallback != NULL)
+        clawt_lrg_take(badges, clawt_lrg_badge(fallback, "warn"));
+
     clawt_lrg_take(badges, clawt_lrg_badge(
         clawt_ipc_payload_boolean(agent, "connected", FALSE)
             ? "linked" : "not linked",
         clawt_ipc_payload_boolean(agent, "connected", FALSE)
             ? "good" : "neutral"));
     clawt_lrg_take(ins.glance, badges);
+
+    /*
+     * And the sentence: whose backend gave out, why, and when it comes
+     * back.  Redrawn by every agent.* event, agent.failover among them.
+     */
+    if (fallback != NULL) {
+        const gchar *message = clawt_ipc_payload_string(agent,
+                                                        "failover_message");
+
+        clawt_lrg_take(ins.glance, clawt_lrg_paragraph(
+            message != NULL ? message : fallback, "caption"));
+    }
 
     clawt_lrg_take(ins.glance, info_row("Id",
         clawt_ipc_payload_string(agent, "id")));
@@ -733,8 +767,12 @@ on_choices_reply(ClawtLrgApp *app, JsonNode *reply, const GError *error,
 
     fill_chooser(view, choices);
 
-    if (kind == CLAWT_LRG_AGENT_FIELD_PROVIDER)
+    if (kind == CLAWT_LRG_AGENT_FIELD_PROVIDER) {
         refill_models();
+
+        /* the fallback entries draw from the same catalogue */
+        redraw_fallbacks(app);
+    }
 
     clawt_lrg_app_wake(app);
 }
@@ -787,6 +825,340 @@ ask_for_choices(ClawtLrgApp *app)
                           CLAWT_LRG_GUARDED | CLAWT_LRG_QUIET,
                           on_choices_reply,
                           GUINT_TO_POINTER(CLAWT_LRG_AGENT_FIELD_DISK), NULL);
+}
+
+/* ── The fallback list ────────────────────────────────────────────── */
+
+/*
+ * One `model.fallbacks` entry's controls.  The model and account combos
+ * live in slots of their own because they are refilled when the
+ * provider changes: a model and a login both belong to one CLI.
+ */
+typedef struct {
+    LrgWidget *provider;
+    LrgWidget *model_slot;
+    LrgWidget *model;
+    LrgWidget *other;
+    LrgWidget *account_slot;
+    LrgWidget *account;
+    gchar     *drawn_provider;   /* the provider the slots were filled for */
+    gchar     *drawn_model;
+    gchar     *drawn_account;
+} FallbackView;
+
+static void
+fallback_view_free(gpointer data)
+{
+    FallbackView *view = data;
+
+    g_free(view->drawn_provider);
+    g_free(view->drawn_model);
+    g_free(view->drawn_account);
+    g_free(view);
+}
+
+static void
+on_fallback_model_changed(LrgComboBox *combo, gpointer user_data)
+{
+    FallbackView *view = user_data;
+
+    if (view->other != NULL)
+        lrg_widget_set_visible(view->other,
+                               g_strcmp0(clawt_lrg_combo_id(view->model),
+                                         CLAWT_LRG_AGENT_CHOICE_OTHER) == 0);
+}
+
+/*
+ * The model and account combos for @provider.  The entry's own model
+ * and login are offered back only under its own provider: "sonnet"
+ * means nothing to Codex, and a Claude login is not a Codex one.
+ */
+static void
+fill_fallback_slots(FallbackView *view, const gchar *provider)
+{
+    gboolean own = g_strcmp0(provider, view->drawn_provider) == 0;
+    g_autoptr(ClawtLrgAgentChoices) models = clawt_lrg_agent_model_choices(
+        ins.catalog, provider, own ? view->drawn_model : NULL);
+    g_autoptr(ClawtLrgAgentChoices) accounts =
+        clawt_lrg_agent_fallback_account_choices(
+            ins.accounts, provider, own ? view->drawn_account : NULL);
+
+    clawt_lrg_clear(view->model_slot);
+    view->model = clawt_lrg_combo(clawt_lrg_agent_choices_ids(models),
+                                  clawt_lrg_agent_choices_labels(models),
+                                  models->selected);
+    clawt_lrg_add(view->model_slot, view->model);
+    g_object_unref(view->model);
+
+    view->other = clawt_lrg_entry(models->other, "Model name");
+    lrg_widget_set_visible(view->other,
+                           g_strcmp0(models->selected,
+                                     CLAWT_LRG_AGENT_CHOICE_OTHER) == 0);
+    clawt_lrg_add(view->model_slot, view->other);
+    g_object_unref(view->other);
+    g_signal_connect(view->model, "changed",
+                     G_CALLBACK(on_fallback_model_changed), view);
+
+    clawt_lrg_clear(view->account_slot);
+    view->account = clawt_lrg_combo(clawt_lrg_agent_choices_ids(accounts),
+                                    clawt_lrg_agent_choices_labels(accounts),
+                                    accounts->selected);
+    clawt_lrg_add(view->account_slot, view->account);
+    g_object_unref(view->account);
+}
+
+static void
+on_fallback_provider_changed(LrgComboBox *combo, gpointer user_data)
+{
+    FallbackView *view = user_data;
+
+    fill_fallback_slots(view, clawt_lrg_combo_id(view->provider));
+}
+
+/*
+ * What the editor holds, in order.  A model left blank is kept as an
+ * empty one so that moving another entry does not lose this one;
+ * clawt_lrg_agent_fallback_spell() is what refuses it at save.
+ *
+ * Returns: (transfer full) (element-type ClawtModelFallback): the entries
+ */
+static GPtrArray *
+read_fallbacks(void)
+{
+    GPtrArray *list = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)clawt_model_fallback_free);
+    guint i;
+
+    for (i = 0; ins.fallback_views != NULL && i < ins.fallback_views->len;
+         i++) {
+        FallbackView *view = g_ptr_array_index(ins.fallback_views, i);
+        g_autofree gchar *model = clawt_lrg_agent_choice_value(
+            clawt_lrg_combo_id(view->model),
+            clawt_lrg_entry_text(view->other));
+        const gchar *provider = clawt_lrg_combo_id(view->provider);
+
+        g_ptr_array_add(list, clawt_model_fallback_new(
+            provider != NULL ? provider : "", model != NULL ? model : "",
+            clawt_lrg_combo_id(view->account)));
+    }
+
+    return list;
+}
+
+static void draw_fallbacks(ClawtLrgApp *app, GPtrArray *list);
+
+/* An edit waiting for the frame after the click that asked for it. */
+static gboolean
+on_fallbacks_redraw(gpointer user_data)
+{
+    ClawtLrgApp *app = user_data;
+    g_autoptr(GPtrArray) list = g_steal_pointer(&ins.fallback_pending);
+
+    if (list != NULL && ins.fallbacks != NULL)
+        draw_fallbacks(app, list);
+
+    clawt_lrg_app_wake(app);
+    return G_SOURCE_REMOVE;
+}
+
+/*
+ * Add, remove and move.  The list is read back from the controls and
+ * drawn again, so an unsaved choice in one entry survives moving
+ * another; nothing is sent until "Save changes".  Drawn on the next
+ * iteration rather than here, because drawing again destroys the button
+ * whose handler this is.
+ */
+static void
+on_fallback_edit(LrgButton *button, gpointer user_data)
+{
+    ClawtLrgApp *app = user_data;
+    const gchar *op = g_object_get_data(G_OBJECT(button), "clawt-op");
+    guint index = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button),
+                                                     "clawt-index"));
+    const gchar *provider = clawt_ipc_payload_string(shown_object("settings"),
+                                                     "model.provider");
+    g_autoptr(GPtrArray) list = read_fallbacks();
+    GSource *source;
+
+    if (!clawt_lrg_agent_fallback_edit(
+            list, op, index,
+            (provider != NULL && *provider != '\0')
+                ? provider : clawt_model_catalog_default_provider()))
+        return;
+
+    g_clear_pointer(&ins.fallback_pending, g_ptr_array_unref);
+    ins.fallback_pending = g_steal_pointer(&list);
+
+    source = g_idle_source_new();
+    g_source_set_callback(source, on_fallbacks_redraw, app, NULL);
+    clawt_lrg_app_attach(app, source);
+    g_source_unref(source);
+}
+
+static LrgWidget *
+fallback_button(ClawtLrgApp *app, const gchar *label, const gchar *style,
+                const gchar *op, guint index, gboolean enabled)
+{
+    LrgWidget *button = clawt_lrg_button(label, style,
+                                         G_CALLBACK(on_fallback_edit), app);
+
+    g_object_set_data(G_OBJECT(button), "clawt-op", (gpointer)op);
+    g_object_set_data(G_OBJECT(button), "clawt-index", GUINT_TO_POINTER(index));
+    lrg_widget_set_enabled(button, enabled);
+
+    return button;
+}
+
+/* The entries, drawn into the card from @list. */
+static void
+draw_fallbacks(ClawtLrgApp *app, GPtrArray *list)
+{
+    guint i;
+
+    clawt_lrg_clear(ins.fallbacks);
+    g_clear_pointer(&ins.fallback_views, g_ptr_array_unref);
+    ins.fallback_views = g_ptr_array_new_with_free_func(fallback_view_free);
+
+    if (list->len == 0)
+        clawt_lrg_take(ins.fallbacks, clawt_lrg_paragraph(
+            "No fallbacks: at a limit this agent waits for the reset.",
+            "muted"));
+
+    for (i = 0; i < list->len; i++) {
+        ClawtModelFallback *entry = g_ptr_array_index(list, i);
+        FallbackView *view = g_new0(FallbackView, 1);
+        g_autoptr(ClawtLrgAgentChoices) providers =
+            clawt_lrg_agent_provider_choices(ins.catalog, entry->provider);
+        LrgWidget *heading = clawt_lrg_hbox(8.0f);
+        LrgWidget *form = clawt_lrg_form_new();
+        g_autofree gchar *title = g_strdup_printf("Fallback %u", i + 1);
+        LrgWidget *label = clawt_lrg_label(title, "heading");
+
+        view->drawn_provider = g_strdup(entry->provider);
+        view->drawn_model = g_strdup(entry->model);
+        view->drawn_account = g_strdup(entry->account != NULL ? entry->account
+                                                              : "");
+        g_ptr_array_add(ins.fallback_views, view);
+
+        /*
+         * Each entry's own order buttons beside its own heading, so which
+         * entry a button moves is never a question.
+         */
+        lrg_widget_set_fill_weight(label, 1.0f);
+        clawt_lrg_take(heading, label);
+        clawt_lrg_take(heading, fallback_button(app, "Earlier", "flat", "up",
+                                                i, i > 0));
+        clawt_lrg_take(heading, fallback_button(app, "Later", "flat", "down",
+                                                i, i + 1 < list->len));
+        clawt_lrg_take(heading, fallback_button(app, "Remove", "danger",
+                                                "remove", i, TRUE));
+        clawt_lrg_take(ins.fallbacks, heading);
+
+        view->provider = clawt_lrg_combo(clawt_lrg_agent_choices_ids(providers),
+                                         clawt_lrg_agent_choices_labels(providers),
+                                         providers->selected);
+        clawt_lrg_form_add(form, "Provider", g_object_ref(view->provider),
+                           NULL);
+        g_object_unref(view->provider);
+
+        view->model_slot = clawt_lrg_vbox(4.0f);
+        clawt_lrg_form_add(form, "Model", g_object_ref(view->model_slot), NULL);
+        g_object_unref(view->model_slot);
+
+        view->account_slot = clawt_lrg_vbox(4.0f);
+        clawt_lrg_form_add(form, "Account", g_object_ref(view->account_slot),
+                           "A login for this entry's CLI, or its own.");
+        g_object_unref(view->account_slot);
+
+        fill_fallback_slots(view, entry->provider);
+
+        /* Connected after the selection is set, so building is not a change. */
+        g_signal_connect(view->provider, "changed",
+                         G_CALLBACK(on_fallback_provider_changed), view);
+
+        clawt_lrg_take(ins.fallbacks, form);
+    }
+
+    clawt_lrg_app_wake(app);
+}
+
+/* model.list or account.list answered: the same entries, better filled. */
+static void
+redraw_fallbacks(ClawtLrgApp *app)
+{
+    g_autoptr(GPtrArray) list = NULL;
+
+    if (ins.fallbacks == NULL || ins.fallback_views == NULL)
+        return;
+
+    list = read_fallbacks();
+    draw_fallbacks(app, list);
+}
+
+static void
+on_fallback_accounts(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+                     gpointer user_data)
+{
+    if (reply == NULL)
+        return;
+
+    g_clear_pointer(&ins.accounts, json_node_unref);
+    ins.accounts = json_node_copy(reply);
+    redraw_fallbacks(app);
+}
+
+/*
+ * The card, under the Model group whose backend it falls back from.
+ * Shown as the reason rather than as an editor when the list cannot be
+ * read: an empty editor would save the empty list over the real one.
+ */
+static guint
+build_fallbacks(ClawtLrgApp *app, guint index)
+{
+    const gchar *spelled = clawt_ipc_payload_string(shown_object("settings"),
+                                                    "model.fallbacks");
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GPtrArray) list = clawt_model_fallback_parse_list(spelled,
+                                                                &error);
+    LrgWidget *box = section_card(
+        app, ins.body, "Fallbacks",
+        "Where this agent's conversations continue, in this order, when its "
+        "own backend hits a usage limit, a rate limit, a sign-out or an "
+        "outage. It comes back at the reset. A different CLI or login starts "
+        "a fresh conversation; another sign-in to the same subscription is "
+        "refused.", index++);
+
+    g_clear_pointer(&ins.fallbacks_saved, g_free);
+    g_clear_pointer(&ins.fallback_views, g_ptr_array_unref);
+    g_clear_pointer(&ins.fallback_pending, g_ptr_array_unref);
+    ins.fallbacks = NULL;
+
+    if (list == NULL) {
+        g_autofree gchar *why = g_strdup_printf(
+            "%s. Fix it in clawtilla.yaml or with `clawtilla agent set`; this "
+            "page will not save over a list it cannot show.", error->message);
+
+        clawt_lrg_take(box, clawt_lrg_badge("cannot read the list", "bad"));
+        clawt_lrg_take(box, clawt_lrg_paragraph(why, NULL));
+        return index;
+    }
+
+    ins.fallbacks_saved = clawt_model_fallback_list_to_string(list);
+
+    ins.fallbacks = clawt_lrg_vbox(10.0f);
+    clawt_lrg_add(box, ins.fallbacks);
+    g_object_unref(ins.fallbacks);
+
+    clawt_lrg_take(box, fallback_button(app, "Add a fallback", NULL, "add", 0,
+                                        TRUE));
+
+    draw_fallbacks(app, list);
+
+    clawt_lrg_request(app, "account.list", NULL,
+                      CLAWT_LRG_GUARDED | CLAWT_LRG_QUIET,
+                      on_fallback_accounts, NULL, NULL);
+
+    return index;
 }
 
 /* ── The settings form ────────────────────────────────────────────── */
@@ -1030,6 +1402,24 @@ on_save(LrgButton *button, gpointer user_data)
                                                       value));
     }
 
+    /*
+     * The fallback list, spelled by the library.  An entry with no model
+     * stops the save before anything is sent, rather than halfway.
+     */
+    if (ins.fallbacks != NULL && ins.fallbacks_saved != NULL) {
+        g_autoptr(GPtrArray) list = read_fallbacks();
+        g_autoptr(GError) why = NULL;
+        g_autofree gchar *spelled = clawt_lrg_agent_fallback_spell(list, &why);
+
+        if (spelled == NULL) {
+            clawt_lrg_toast(app, why->message);
+            return;
+        }
+
+        g_ptr_array_add(posted, clawt_lrg_agent_setting_new("model.fallbacks",
+                                                            spelled));
+    }
+
     job = g_new0(SaveJob, 1);
     job->plan = clawt_lrg_agent_save_plan(posted,
                                           shown_object("settings"));
@@ -1158,6 +1548,10 @@ build_form(ClawtLrgApp *app, guint index)
         }
 
         clawt_lrg_take(box, form);
+
+        /* Right under the model it falls back from. */
+        if (g_strcmp0(group->prefix, "model") == 0)
+            index = build_fallbacks(app, index);
     }
 
     {
@@ -2099,6 +2493,9 @@ draw_all(ClawtLrgApp *app)
     ins.waits = NULL;
     ins.files = NULL;
     ins.save = NULL;
+    ins.fallbacks = NULL;
+    g_clear_pointer(&ins.fallback_views, g_ptr_array_unref);
+    g_clear_pointer(&ins.accounts, json_node_unref);
     ins.usage_today = NULL;
     ins.usage_total = NULL;
     ins.mount_source = NULL;
@@ -2178,6 +2575,8 @@ refresh(ClawtLrgApp *app)
         g_clear_pointer(&ins.shown, json_node_unref);
         g_clear_pointer(&ins.views, g_ptr_array_unref);
         g_clear_pointer(&ins.form, g_ptr_array_unref);
+        g_clear_pointer(&ins.fallback_views, g_ptr_array_unref);
+        ins.fallbacks = NULL;
         ins.glance = NULL;
         ins.save = NULL;
         ins.integrations = NULL;

@@ -1454,6 +1454,24 @@ clawt_egress_refusal_line(
 }
 
 const gchar *
+clawt_egress_url_wait_refusal(
+	const gchar *network
+){
+	if (g_strcmp0(network, "gated") == 0)
+		return "Your network goes through clawtilla's egress gate, and a "
+		       "URL wait would be fetched by the daemon around it, so it "
+		       "is not offered to you. Fetch the page yourself through the "
+		       "gate, or wait on a file, a task or a command instead.";
+
+	if (g_strcmp0(network, "none") == 0)
+		return "You have no network, and a URL wait would be fetched by "
+		       "the daemon on your behalf, so it is not offered to you. "
+		       "Wait on a file, a task or a command instead.";
+
+	return NULL;
+}
+
+const gchar *
 clawt_egress_allowlist_label(void)
 {
 	return "Private addresses gated agents may reach";

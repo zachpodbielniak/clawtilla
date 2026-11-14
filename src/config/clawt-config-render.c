@@ -1110,6 +1110,41 @@ clawt_config_render_agent(ClawtConfig       *config,
     }
 
     /*
+     * The fallbacks, each with its account resolved to the directory
+     * libreclaw points the CLI at -- the same translation as the agent's
+     * own account above, for the same reason.  Validation has already
+     * refused a list with an unknown account or another sign-in to a
+     * subscription the agent uses, so what reaches here is what
+     * libreclaw will accept; pay_per_use goes with it so libreclaw's own
+     * check reaches the same answer rather than dropping the entry.
+     */
+    {
+        ClawtConfig *fleet = clawt_agent_config_get_config(agent);
+        g_autoptr(GPtrArray) fallbacks = clawt_agent_config_get_fallbacks(agent);
+        guint i;
+
+        if (fallbacks->len > 0)
+            g_string_append(out, "  fallbacks:\n");
+
+        for (i = 0; i < fallbacks->len; i++) {
+            const ClawtModelFallback *entry = g_ptr_array_index(fallbacks, i);
+            g_autoptr(ClawtAccountSpec) account = fleet != NULL
+                ? clawt_config_get_account(fleet, entry->account)
+                : NULL;
+
+            g_string_append(out, "    - ");
+            append_key_value(out, 0, "provider", entry->provider);
+            append_key_value(out, 6, "model", entry->model);
+
+            if (account != NULL) {
+                append_key_value(out, 6, "config_dir", account->config_dir);
+                if (account->pay_per_use)
+                    append_key_bool(out, 6, "pay_per_use", TRUE);
+            }
+        }
+    }
+
+    /*
      * The PreToolUse hook that puts the CLI's own tools through the
      * agent's action rules -- named only when there are rules, the same
      * condition that writes the file.

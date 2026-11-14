@@ -437,6 +437,20 @@ the developer's real fleet on every ~make test~.  That went unnoticed for
 a long time, because the leftovers are indistinguishable afterwards from
 agents somebody meant to keep.
 
+*** The sandbox probe
+
+~tests/test-sandbox-probe.c~ is an integration test (~CLAWT_TEST_INTEGRATION=1~, and bwrap on ~PATH~); without either it skips. It runs ~build/<type>/tests/clawt-sandbox-probe~ -- built from ~tests/clawt-sandbox-probe.c~ by the test targets, linked against GLib only and without the sanitizers, because everything it loads has to be inside the box -- in both real bwrap boxes, then once per row of a mutation table. ~docs/security.org~, "The sandbox self-check", has the checks, the table and what the harness holds constant.
+
+#+begin_src sh
+make tests
+CLAWT_TEST_INTEGRATION=1 build/release/tests/test-sandbox-probe
+CLAWT_TEST_INTEGRATION=1 CLAWT_TEST_PROBE_TABLE=1 build/release/tests/test-sandbox-probe
+#+end_src
+
+Adding a protection to ~clawt_sandbox_wrap_argv()~ means three things in the same change: a ~ClawtSandboxMutation~ flag in ~src/computer/clawt-sandbox-private.h~ that replaces it with its weaker form (binding the host's ~/tmp~, not merely dropping the tmpfs -- dropping it leaves ~/tmp~ absent, which is no weaker), a probe check that only that protection stops, and a row in the table naming the checks per box. A row whose mutation fails nothing fails the test.
+
+Its fixture lives in the build tree rather than ~$TMPDIR~ (so the box's private ~/tmp~ guards one marker, not the whole fixture) and is left behind on a failed run as evidence; ~make clean~ removes it. ~$HOME~ and ~PATH~ are set in ~main()~ before ~g_test_init()~, because GLib caches the home directory.
+
 *** Prove the test fails without its fix
 
 Reverting the change and watching the test go red is the only thing that

@@ -253,6 +253,61 @@ clawt_web_badge(const gchar *text, const gchar *tone)
     return (HtmxSpan *)g_steal_pointer(&span);
 }
 
+/*
+ * An object member, or NULL.  Here rather than clawt_web_member_object(),
+ * which lives with the app and is not linked into the render test.
+ */
+static JsonObject *
+object_member(JsonObject *object, const gchar *name)
+{
+    JsonNode *node;
+
+    if (object == NULL || !json_object_has_member(object, name))
+        return NULL;
+
+    node = json_object_get_member(object, name);
+
+    return JSON_NODE_HOLDS_OBJECT(node) ? json_node_get_object(node) : NULL;
+}
+
+static JsonArray *
+array_member(JsonObject *object, const gchar *name)
+{
+    JsonNode *node;
+
+    if (object == NULL || !json_object_has_member(object, name))
+        return NULL;
+
+    node = json_object_get_member(object, name);
+
+    return JSON_NODE_HOLDS_ARRAY(node) ? json_node_get_array(node) : NULL;
+}
+
+HtmxSpan *
+clawt_web_failover_badge(JsonObject *agent)
+{
+    g_autoptr(HtmxSpan) badge = NULL;
+    g_autofree gchar *text = NULL;
+    const gchar *message;
+
+    /*
+     * The text and the question "is it on one" are the library's, which
+     * the GTK and lrg clients ask too -- three spellings of the badge
+     * would differ the first time somebody reworded one.
+     */
+    text = clawt_failover_badge(object_member(agent, "failover"));
+
+    if (text == NULL)
+        return NULL;
+
+    message = clawt_ipc_payload_string(agent, "failover_message");
+    badge = clawt_web_badge(text, "warn");
+    htmx_element_set_attribute(HTMX_ELEMENT(badge), "title",
+                               message != NULL ? message : text);
+
+    return (HtmxSpan *)g_steal_pointer(&badge);
+}
+
 const gchar *
 clawt_web_state_tone(const gchar *state)
 {
@@ -485,7 +540,17 @@ clawt_web_post_button(const gchar *label, const gchar *action,
 HtmxForm *
 clawt_web_form(const gchar *action)
 {
-    g_autoptr(HtmxForm) form = htmx_form_new_with_action(action, HTMX_METHOD_POST);
+    /*
+     * htmx_form_new() and the attributes by hand, not
+     * htmx_form_new_with_action(): that one lowercases the method into a
+     * string it never frees, a leak per form rendered that LeakSanitizer
+     * reports the first time a test draws one.  htmx-glib is a dependency
+     * and is not patched from here.
+     */
+    g_autoptr(HtmxForm) form = htmx_form_new();
+
+    if (action != NULL)
+        htmx_element_set_attribute(HTMX_ELEMENT(form), "action", action);
 
     htmx_element_set_attribute(HTMX_ELEMENT(form), "method", "post");
     htmx_element_set_hx_post(HTMX_ELEMENT(form), action);
@@ -695,6 +760,329 @@ clawt_web_select_field(const gchar *label, const gchar *name,
     return (HtmxDiv *)g_steal_pointer(&field);
 }
 
+
+/* ── The fallback editor ─────────────────────────────────────────── */
+
+/*
+ * The providers an agent can run on, from a model.list reply, and
+ * @current whatever it is (clawt_web_select_field() adds a value its
+ * list does not have rather than replacing it).  A provider with no
+ * `agent` member is an older daemon's, and kept: an empty list is a
+ * worse failure than one entry the daemon refuses.
+ */
+static void
+fallback_providers(JsonObject *catalog, GPtrArray *ids, GPtrArray *labels)
+{
+    JsonArray *providers = array_member(catalog, "providers");
+    guint i;
+
+    for (i = 0; providers != NULL && i < json_array_get_length(providers); i++) {
+        JsonObject *provider = json_array_get_object_element(providers, i);
+        const gchar *id = clawt_ipc_payload_string(provider, "id");
+        const gchar *label = clawt_ipc_payload_string(provider, "label");
+
+        if (id == NULL ||
+            (json_object_has_member(provider, "agent") &&
+             !clawt_ipc_payload_boolean(provider, "agent", TRUE)))
+            continue;
+
+        g_ptr_array_add(ids, g_strdup(id));
+        g_ptr_array_add(labels, g_strdup(label != NULL ? label : id));
+    }
+
+    g_ptr_array_add(ids, NULL);
+    g_ptr_array_add(labels, NULL);
+}
+
+/*
+ * One <datalist> of a provider's catalogue models, so the model is a
+ * text field that suggests rather than a select that forbids: the
+ * catalogue is curated and goes stale, and every model picker in every
+ * client also takes a name typed by hand.  @provider NULL lists every
+ * agent provider's models, for the new entry, whose provider is not
+ * chosen until it is posted.
+ */
+static HtmxDatalist *
+fallback_models(JsonObject *catalog, const gchar *provider, const gchar *id)
+{
+    g_autoptr(HtmxDatalist) list = htmx_datalist_new_with_id(id);
+    g_autoptr(GHashTable) seen = g_hash_table_new(g_str_hash, g_str_equal);
+    JsonArray *providers = array_member(catalog, "providers");
+    guint i;
+
+    for (i = 0; providers != NULL && i < json_array_get_length(providers); i++) {
+        JsonObject *object = json_array_get_object_element(providers, i);
+        JsonArray *models = array_member(object, "models");
+        guint m;
+
+        if (provider != NULL
+            ? g_strcmp0(clawt_ipc_payload_string(object, "id"), provider) != 0
+            : (json_object_has_member(object, "agent") &&
+               !clawt_ipc_payload_boolean(object, "agent", TRUE)))
+            continue;
+
+        for (m = 0; models != NULL && m < json_array_get_length(models); m++) {
+            JsonObject *model = json_array_get_object_element(models, m);
+            const gchar *model_id = clawt_ipc_payload_string(model, "id");
+            const gchar *label = clawt_ipc_payload_string(model, "label");
+            g_autoptr(HtmxOption) option = NULL;
+
+            if (model_id == NULL || g_hash_table_contains(seen, model_id))
+                continue;
+
+            g_hash_table_add(seen, (gpointer)model_id);
+            option = htmx_option_new_with_value(model_id,
+                                                label != NULL ? label : model_id);
+            htmx_node_add_child(HTMX_NODE(list), HTMX_NODE(option));
+        }
+    }
+
+    return (HtmxDatalist *)g_steal_pointer(&list);
+}
+
+/*
+ * The logins an entry for @provider may name: the CLI's own, the
+ * accounts whose provider is that CLI (clawt_model_fallback_account_fits(),
+ * the rule every client's picker asks), and @current whatever it is.
+ * @provider NULL is the new entry: every account, each saying which CLI
+ * it is a login for.
+ */
+static void
+fallback_accounts(JsonObject *accounts, const gchar *provider,
+                  const gchar *current, GPtrArray *ids, GPtrArray *labels)
+{
+    JsonArray *list = array_member(accounts, "accounts");
+    guint i;
+
+    g_ptr_array_add(ids, g_strdup(""));
+    g_ptr_array_add(labels, g_strdup("The CLI's own login"));
+
+    for (i = 0; list != NULL && i < json_array_get_length(list); i++) {
+        JsonObject *account = json_array_get_object_element(list, i);
+        const gchar *id = clawt_ipc_payload_string(account, "id");
+        const gchar *cli = clawt_ipc_payload_string(account, "provider");
+        const gchar *description = clawt_ipc_payload_string(account,
+                                                            "description");
+        gboolean fits = provider == NULL ||
+                        clawt_model_fallback_account_fits(cli, provider);
+
+        if (id == NULL || (!fits && g_strcmp0(id, current) != 0))
+            continue;
+
+        g_ptr_array_add(ids, g_strdup(id));
+        g_ptr_array_add(labels, g_strdup_printf(
+            "%s%s%s%s%s%s", id,
+            description != NULL ? " -- " : "",
+            description != NULL ? description : "",
+            provider == NULL ? " (" : "",
+            provider == NULL ? (cli != NULL ? cli : "?") : "",
+            provider == NULL ? ")"
+                             : (fits ? "" : " (a login for another CLI)")));
+    }
+
+    g_ptr_array_add(ids, NULL);
+    g_ptr_array_add(labels, NULL);
+}
+
+/* A submit button that posts which edit it is, as `op`. */
+static HtmxButton *
+fallback_op_button(const gchar *label, const gchar *variant, const gchar *op,
+                   gboolean enabled)
+{
+    g_autoptr(HtmxButton) button = clawt_web_button(label, variant);
+
+    htmx_element_set_attribute(HTMX_ELEMENT(button), "type", "submit");
+    htmx_element_set_attribute(HTMX_ELEMENT(button), "name", "op");
+    htmx_element_set_attribute(HTMX_ELEMENT(button), "value", op);
+
+    if (!enabled)
+        htmx_element_set_attribute(HTMX_ELEMENT(button), "disabled",
+                                   "disabled");
+
+    return (HtmxButton *)g_steal_pointer(&button);
+}
+
+/* The model field: a text box suggesting from @list_id. */
+static HtmxDiv *
+fallback_model_field(const gchar *name, const gchar *value,
+                     const gchar *list_id)
+{
+    g_autoptr(HtmxDiv) field = htmx_div_new();
+    g_autoptr(HtmxLabel) tag = htmx_label_new_with_text("model");
+    g_autoptr(HtmxInput) input = htmx_input_new_text(name);
+
+    htmx_element_add_class(HTMX_ELEMENT(field), "field");
+    htmx_node_add_child(HTMX_NODE(field), HTMX_NODE(tag));
+
+    if (value != NULL)
+        htmx_input_set_value(input, value);
+
+    htmx_input_set_placeholder(input, "pick or type a model name");
+    htmx_element_set_attribute(HTMX_ELEMENT(input), "list", list_id);
+    htmx_node_add_child(HTMX_NODE(field), HTMX_NODE(input));
+
+    return (HtmxDiv *)g_steal_pointer(&field);
+}
+
+HtmxDiv *
+clawt_web_fallback_card(const gchar *agent_id, const gchar *spelled,
+                        const gchar *own_provider, JsonObject *catalog,
+                        JsonObject *accounts)
+{
+    g_autoptr(HtmxDiv) card = clawt_web_card(
+        "Fallbacks",
+        "Where this agent's conversations continue, in this order, when its "
+        "own backend hits a usage limit, a rate limit, a sign-out or an "
+        "outage. It comes back at the reset. A different CLI or login starts "
+        "a fresh conversation; another sign-in to the same subscription is "
+        "refused. Each button here saves the list.");
+    HtmxElement *body = clawt_web_card_body(card);
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GPtrArray) list = clawt_model_fallback_parse_list(spelled, &error);
+    g_autoptr(GPtrArray) provider_ids = g_ptr_array_new_with_free_func(g_free);
+    g_autoptr(GPtrArray) provider_labels = g_ptr_array_new_with_free_func(g_free);
+    g_autoptr(GHashTable) lists = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                                        g_free, g_free);
+    g_autofree gchar *escaped = g_uri_escape_string(agent_id != NULL ? agent_id
+                                                                     : "",
+                                                    NULL, FALSE);
+    g_autofree gchar *action = g_strdup_printf("/a/%s/fallbacks", escaped);
+    g_autoptr(HtmxForm) form = NULL;
+    g_autofree gchar *count = NULL;
+    guint i;
+
+    /*
+     * A list this page cannot show is not offered for editing: an empty
+     * form saved back would write the empty list over the real one.
+     */
+    if (list == NULL) {
+        g_autoptr(HtmxDiv) notice = htmx_div_new();
+        g_autofree gchar *why = g_strdup_printf(
+            "%s. Fix it in clawtilla.yaml or with `clawtilla agent set`; this "
+            "page will not save over a list it cannot show.", error->message);
+
+        htmx_element_add_class(HTMX_ELEMENT(notice), "notice");
+        htmx_element_add_class(HTMX_ELEMENT(notice), "notice-bad");
+        htmx_node_set_text_content(HTMX_NODE(notice), why);
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(notice));
+
+        return (HtmxDiv *)g_steal_pointer(&card);
+    }
+
+    fallback_providers(catalog, provider_ids, provider_labels);
+    form = clawt_web_form(action);
+
+    if (list->len == 0)
+        clawt_web_add(form, clawt_web_text(
+            "No fallbacks: at a limit this agent waits for the reset.",
+            "small muted"));
+
+    for (i = 0; i < list->len; i++) {
+        ClawtModelFallback *entry = g_ptr_array_index(list, i);
+        g_autoptr(HtmxDiv) row = htmx_div_new();
+        g_autoptr(HtmxDiv) buttons = htmx_div_new();
+        g_autoptr(GPtrArray) account_ids = g_ptr_array_new_with_free_func(g_free);
+        g_autoptr(GPtrArray) account_labels =
+            g_ptr_array_new_with_free_func(g_free);
+        g_autofree gchar *heading = g_strdup_printf("Fallback %u", i + 1);
+        g_autofree gchar *provider_name = g_strdup_printf("fb_provider_%u", i);
+        g_autofree gchar *model_name = g_strdup_printf("fb_model_%u", i);
+        g_autofree gchar *account_name = g_strdup_printf("fb_account_%u", i);
+        g_autofree gchar *up = g_strdup_printf("up:%u", i);
+        g_autofree gchar *down = g_strdup_printf("down:%u", i);
+        g_autofree gchar *remove = g_strdup_printf("remove:%u", i);
+        const gchar *list_id = g_hash_table_lookup(lists, entry->provider);
+
+        /* One datalist per provider, however many entries use it. */
+        if (list_id == NULL) {
+            gchar *id = g_strdup_printf("fallback-models-%u",
+                                        g_hash_table_size(lists));
+
+            g_hash_table_insert(lists, g_strdup(entry->provider), id);
+            clawt_web_add(form, fallback_models(catalog, entry->provider, id));
+            list_id = id;
+        }
+
+        fallback_accounts(accounts, entry->provider, entry->account,
+                          account_ids, account_labels);
+
+        htmx_element_add_class(HTMX_ELEMENT(row), "fallback-entry");
+        clawt_web_add(row, clawt_web_text(heading, "small"));
+        clawt_web_add(row, clawt_web_select_field(
+            "provider", provider_name,
+            (const gchar *const *)provider_ids->pdata,
+            (const gchar *const *)provider_labels->pdata, entry->provider));
+        clawt_web_add(row, fallback_model_field(model_name, entry->model,
+                                                list_id));
+        clawt_web_add(row, clawt_web_select_field(
+            "account", account_name,
+            (const gchar *const *)account_ids->pdata,
+            (const gchar *const *)account_labels->pdata,
+            entry->account != NULL ? entry->account : ""));
+
+        htmx_element_add_class(HTMX_ELEMENT(buttons), "btn-row");
+        clawt_web_add(buttons, fallback_op_button("Earlier", "default", up,
+                                                  i > 0));
+        clawt_web_add(buttons, fallback_op_button("Later", "default", down,
+                                                  i + 1 < list->len));
+        clawt_web_add(buttons, fallback_op_button("Remove", "danger", remove,
+                                                  TRUE));
+        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(buttons));
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(row));
+    }
+
+    count = g_strdup_printf("%u", list->len);
+    clawt_web_add(form, clawt_web_hidden("fb_count", count));
+
+    if (list->len > 0) {
+        g_autoptr(HtmxDiv) row = htmx_div_new();
+
+        htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
+        clawt_web_add(row, fallback_op_button("Save fallbacks", "primary",
+                                              "save", TRUE));
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(row));
+    }
+
+    /*
+     * The entry to add, starting from the agent's own provider: the
+     * commonest fallback is a smaller model on the same CLI, or the same
+     * model on another login.
+     */
+    {
+        g_autoptr(HtmxDiv) row = htmx_div_new();
+        g_autoptr(HtmxDiv) buttons = htmx_div_new();
+        g_autoptr(GPtrArray) account_ids = g_ptr_array_new_with_free_func(g_free);
+        g_autoptr(GPtrArray) account_labels =
+            g_ptr_array_new_with_free_func(g_free);
+
+        fallback_accounts(accounts, NULL, NULL, account_ids, account_labels);
+
+        htmx_element_add_class(HTMX_ELEMENT(row), "fallback-entry");
+        clawt_web_add(row, clawt_web_text("Add a fallback", "small"));
+        clawt_web_add(row, fallback_models(catalog, NULL,
+                                           "fallback-models-new"));
+        clawt_web_add(row, clawt_web_select_field(
+            "provider", "fb_new_provider",
+            (const gchar *const *)provider_ids->pdata,
+            (const gchar *const *)provider_labels->pdata, own_provider));
+        clawt_web_add(row, fallback_model_field("fb_new_model", NULL,
+                                                "fallback-models-new"));
+        clawt_web_add(row, clawt_web_select_field(
+            "account", "fb_new_account",
+            (const gchar *const *)account_ids->pdata,
+            (const gchar *const *)account_labels->pdata, ""));
+
+        htmx_element_add_class(HTMX_ELEMENT(buttons), "btn-row");
+        clawt_web_add(buttons, fallback_op_button("Add", "default", "add",
+                                                  TRUE));
+        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(buttons));
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(row));
+    }
+
+    htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
+
+    return (HtmxDiv *)g_steal_pointer(&card);
+}
 
 /* ── What this browser looks like ────────────────────────────────── */
 

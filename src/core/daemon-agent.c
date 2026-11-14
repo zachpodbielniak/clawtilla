@@ -1689,6 +1689,51 @@ clawt_daemon_handle_agent(
         }
 
         /*
+         * Fallbacks are checked where they arrive -- the list being set,
+         * or the agent's current one against a provider or account being
+         * changed under it.  A list that would rotate subscription
+         * accounts past a usage limit, or name an account nobody
+         * declared, is refused here with the reason; accepted, it would
+         * be saved, echoed, and turn the agent into a shadow at the next
+         * revalidation, a long way from the command that caused it.
+         */
+        if (g_strcmp0(key, "model.fallbacks") == 0 ||
+            g_strcmp0(key, "model.provider") == 0 ||
+            g_strcmp0(key, "model.account") == 0) {
+            g_autoptr(GPtrArray) fallbacks = NULL;
+            g_autoptr(GError) why = NULL;
+
+            if (g_strcmp0(key, "model.fallbacks") == 0) {
+                fallbacks = clawt_model_fallback_parse_list(value, &why);
+                if (fallbacks == NULL)
+                    return clawt_ipc_error_new(request,
+                                               CLAWT_ERROR_INVALID_ARGUMENT,
+                                               why->message);
+            } else {
+                fallbacks = clawt_agent_config_get_fallbacks(config);
+            }
+
+            if (!clawt_config_check_fallbacks(
+                    self->config,
+                    g_strcmp0(key, "model.provider") == 0
+                        ? value
+                        : clawt_agent_config_get_string(config, "model.provider"),
+                    g_strcmp0(key, "model.account") == 0
+                        ? value
+                        : clawt_agent_config_get_string(config, "model.account"),
+                    fallbacks, &why)) {
+                g_autofree gchar *message = g_strdup_printf(
+                    "%s%s", why->message,
+                    g_strcmp0(key, "model.fallbacks") == 0
+                        ? "" : "; change model.fallbacks first");
+
+                return clawt_ipc_error_new(request,
+                                           CLAWT_ERROR_INVALID_ARGUMENT,
+                                           message);
+            }
+        }
+
+        /*
          * Dispatch on what the schema says the key *is*, rather than
          * writing every value as a scalar.
          *

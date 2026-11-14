@@ -1401,9 +1401,10 @@ The daemon fetches from its own network position -- the operator's LAN, the tail
 - refuses ~localhost~, names under ~.localhost~, and any address literal that ~clawt_net_address_is_public()~ refuses: loopback, RFC 1918, link-local (and so every cloud's ~169.254.169.254~), carrier-grade NAT ~100.64.0.0/10~ (which is the tailnet, and not an octet boundary -- ~100.63.255.255~ is public, ~100.64.0.1~ is not), the documentation, benchmarking, multicast and reserved ranges, and in IPv6 the loopback, unique-local (~fc00::/7~), link-local, site-local, multicast, documentation and Teredo ranges, with IPv4-mapped, NAT64 and 6to4 addresses judged by the IPv4 address inside them;
 - resolves the name itself and checks *every* address it resolves to, and then checks the address the connection actually reached before a byte of the request is written -- so a name that answers differently the second time it is asked (DNS rebinding), or a redirect to a private host, reaches nothing it should not;
 - sends no credentials (~CLAWT_HTTP_NO_CREDENTIALS~), no cookies (a session per look) and goes through no proxy;
-- reads at most 2 MiB of a body, bounded as it arrives, and gives up after 15 seconds.
+- reads at most 2 MiB of a body, bounded as it arrives, and gives up after 15 seconds;
+- is not offered at all to an agent whose ~runtime.network~ is ~gated~ or ~none~: the daemon's request would be a fetch on that agent's behalf around the egress gate, the one route out it was given. The tool refuses it with ~clawt_egress_url_wait_refusal()~'s sentence, and a URL wait set before the agent was gated is ended as impossible at its next check. Its other kinds are unaffected.
 
-The address policy is one function, ~clawt_net_address_is_public()~ in ~src/clawt-net.c~, because the egress gate is its next caller and must not grow a second opinion about what "private" means.
+The address policy is one function, ~clawt_net_address_is_public()~ in ~src/clawt-net.c~, which answers from the egress gate's own table (~clawt_net_address_classify()~), so the two cannot grow a second opinion about what "private" means.
 
 *** How long a wait lives
 

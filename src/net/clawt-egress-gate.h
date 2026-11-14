@@ -436,6 +436,25 @@ clawt_egress_refusal_line(
 );
 
 /**
+ * clawt_egress_url_wait_refusal:
+ * @network: (nullable): the agent's `runtime.network` nickname
+ *
+ * Why a URL wait (`clawtilla_wait_until` with kind url) is refused for an
+ * agent with this network, or %NULL when it may have one.
+ *
+ * The daemon makes a URL wait's request itself, from the machine's own
+ * network position, so for a gated or closed agent it would be a fetch on
+ * the agent's behalf around the gate -- the one route the gate exists to
+ * be.  Refused for both, where the wait is set and again at each check.
+ *
+ * Returns: (transfer none) (nullable): the refusal
+ */
+const gchar *
+clawt_egress_url_wait_refusal(
+	const gchar *network
+);
+
+/**
  * clawt_egress_allowlist_label:
  *
  * Returns: (transfer none): what the clients call `egress.allow`

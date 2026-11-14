@@ -168,7 +168,7 @@ static const ClawtSchemaEntry schema[] = {
   "while somebody is looking at it. An expired device is removed exactly\n"
   "as `clawtilla device revoke` would remove it, live connections and\n"
   "all; pair it again with a fresh code. The daemon's own token\n"
-  "(token_file) is the owner credential and never expires.", "0.13.0" },
+  "(token_file) is the owner credential and never expires.", "0.15.0" },
 
 { "daemon.event_log_days", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "30", NULL,
@@ -641,7 +641,7 @@ static const ClawtSchemaEntry schema[] = {
   "machine, the LAN (RFC 1918), link-local, CGNAT and tailnets\n"
   "(100.64.0.0/10), IPv6 unique-local, multicast or a cloud metadata\n"
   "service. It judges the address, after resolution, so a public name\n"
-  "pointed at 127.0.0.1 is refused too.", "0.15.0" },
+  "pointed at 127.0.0.1 is refused too.", "0.17.0" },
 
 { "egress.allow", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_COMMENTED,
   NULL, NULL,
@@ -654,7 +654,7 @@ static const ClawtSchemaEntry schema[] = {
   "opens loopback; loopback needs an address. Cloud metadata, multicast,\n"
   "the unspecified address and reserved space cannot be opened, and an\n"
   "entry naming one is refused. One bad entry refuses the whole list, at\n"
-  "load and where it is added.", "0.15.0" },
+  "load and where it is added.", "0.17.0" },
 
 /* ── plugins ─────────────────────────────────────────────────────── */
 { "plugins", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
@@ -893,7 +893,7 @@ static const ClawtSchemaEntry schema[] = {
   "of those one agent can leave running, and the refusal names its\n"
   "pending waits so it can fold a new one into an old one.\n"
   "\n"
-  "Override with max_waits on an agent. 0 removes the limit.", "0.14.0" },
+  "Override with max_waits on an agent. 0 removes the limit.", "0.15.0" },
 
 { "memories", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "What an agent remembers between conversations.\n"
@@ -1286,6 +1286,16 @@ static const ClawtSchemaEntry schema[] = {
 { "accounts.description", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
   "Whose login this is, or what it is for.", "0.2.0" },
+
+{ "accounts.pay_per_use", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "false", NULL,
+  "This login bills each use -- an API key -- rather than drawing on a\n"
+  "subscription's limit.\n"
+  "\n"
+  "Only agents.model.fallbacks reads it. Failing over to another sign-in\n"
+  "of the same subscription is refused, because rotating accounts to\n"
+  "get past a usage limit breaks the provider's terms; a pay-per-use\n"
+  "login on the same CLI pays for the work it does and is allowed.", "0.16.0" },
 
 { "integrations", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Named integrations, each handed to one agent, some agents or all of them.\n"
@@ -2345,19 +2355,61 @@ static const ClawtSchemaEntry schema[] = {
 
 { "agents.model.routing_profile", CLAWT_SCHEMA_STRING,
   CLAWT_SCHEMA_FLAG_INERT, NULL, NULL,
-  "libreclaw smart-routing profile: off, eco, auto, premium or free.\n"
+  "Reserved. Not implemented in this build: nothing reads it, and\n"
+  "nothing will until it can mean something here.\n"
   "\n"
-  "Not implemented in this build. Nothing renders it into the agent's\n"
-  "config.yaml, so libreclaw is never told about it and routes on its\n"
-  "own default.", "0.1.0" },
+  "libreclaw's smart routing (off, eco, auto, premium, free) picks a\n"
+  "model per message by scoring the prompt against a price table of\n"
+  "named providers. An agent here runs one CLI backend with one model,\n"
+  "so there is nothing for a profile to choose between -- rendering it\n"
+  "would switch on a router with a single candidate. Moving off a\n"
+  "backend that refuses is model.fallbacks; a cheaper model for one\n"
+  "scheduled job is routines.model.", "0.1.0" },
 
-{ "agents.model.fallbacks", CLAWT_SCHEMA_STRING_LIST,
-  CLAWT_SCHEMA_FLAG_INERT, NULL, NULL,
-  "Models to fall back to, in order, when the primary is unavailable.\n"
+{ "agents.model.fallbacks", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Where this agent's conversations continue, in order, when its own\n"
+  "backend refuses a turn: a usage limit, a rate limit, a sign-out or\n"
+  "an outage.\n"
   "\n"
-  "Not implemented in this build. Nothing renders it into the agent's\n"
-  "config.yaml, so an unavailable primary model fails the turn rather\n"
-  "than falling back to anything.", "0.1.0" },
+  "  fallbacks:\n"
+  "    - provider: codex-cli\n"
+  "      model: gpt-5.5\n"
+  "    - provider: claude-code\n"
+  "      model: sonnet\n"
+  "\n"
+  "libreclaw does the failing over: the next turn runs on the first\n"
+  "entry nothing is holding, and the agent returns to its own backend\n"
+  "at the reset the provider named, or after a backoff when it named\n"
+  "none. A move to another CLI or another login starts a fresh\n"
+  "conversation there; the agent's own conversation resumes when it\n"
+  "comes back. Each switch raises an agent.failover event and alert,\n"
+  "and agent status shows the fallback until the agent is back.\n"
+  "\n"
+  "Another sign-in to the same subscription is refused: an entry on\n"
+  "this agent's CLI (claude-code and claude-tmux are one Claude login)\n"
+  "with a different account, unless that account has pay_per_use set.\n"
+  "Rotating accounts to get past a usage limit breaks the provider's\n"
+  "terms. The agent is a shadow with the reason until the list is\n"
+  "fixed, and agent set refuses such a list where it arrives.\n"
+  "\n"
+  "On the command line the list is one string:\n"
+  "`clawtilla agent set ID model.fallbacks \"codex-cli:gpt-5.5,\n"
+  "claude-code:sonnet@backup\"` -- provider:model, then @account.", "0.16.0" },
+
+{ "agents.model.fallbacks.provider", CLAWT_SCHEMA_STRING,
+  CLAWT_SCHEMA_FLAG_REQUIRED, NULL, NULL,
+  "The agent CLI: one of the providers model.provider takes.", "0.16.0" },
+
+{ "agents.model.fallbacks.model", CLAWT_SCHEMA_STRING,
+  CLAWT_SCHEMA_FLAG_REQUIRED, NULL, NULL,
+  "The model that CLI is asked for.", "0.16.0" },
+
+{ "agents.model.fallbacks.account", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Which entry of accounts this fallback's CLI logs in as. Unset is the\n"
+  "CLI's default login. The account's provider must be this entry's\n"
+  "provider.", "0.16.0" },
 
 { "agents.session", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "How this agent's conversations map to AI sessions.", "0.2.0" },
@@ -2487,7 +2539,7 @@ static const ClawtSchemaEntry schema[] = {
   "Anything but open needs runtime.confine: bwrap -- outside the sandbox\n"
   "a process can ignore a proxy -- and without it the agent is disabled\n"
   "with that reason, never run on an open network instead. Takes effect\n"
-  "at the agent's next start.", "0.15.0" },
+  "at the agent's next start.", "0.17.0" },
 
 { "agents.runtime.autostart", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
