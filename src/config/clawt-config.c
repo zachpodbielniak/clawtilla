@@ -3366,6 +3366,30 @@ warn_about_rooms(ClawtConfig *self)
     }
 }
 
+/*
+ * What each trigger as written will actually do, said once at load.
+ *
+ * Here rather than in reload_triggers(), which also runs on every add and
+ * remove -- a warning per reload would repeat itself each time a client
+ * touched an unrelated trigger.  The rules themselves are in
+ * clawt_trigger_warnings(), so the loader and `config validate` cannot
+ * disagree about them.
+ */
+static void
+warn_about_triggers(ClawtConfig *self)
+{
+	guint i;
+
+	for (i = 0; i < self->triggers->len; i++) {
+		g_auto(GStrv) warnings = clawt_trigger_warnings(
+			g_ptr_array_index(self->triggers, i));
+		guint w;
+
+		for (w = 0; warnings != NULL && warnings[w] != NULL; w++)
+			g_ptr_array_add(self->warnings, g_strdup(warnings[w]));
+	}
+}
+
 static ClawtConfig *
 config_from_parser(YamlParser *parser, const gchar *path, GError **error)
 {
@@ -3403,6 +3427,7 @@ config_from_parser(YamlParser *parser, const gchar *path, GError **error)
     reload_integrations(self);
     reload_routines(self);
     reload_triggers(self);
+    warn_about_triggers(self);
 
     return self;
 }
@@ -3611,6 +3636,23 @@ clawt_config_validate(ClawtConfig *self, GError **error)
 		if (!validate_session_timeout_minutes(clawt_agent_config_get_int(agent,
 			"session.timeout_minutes"), timeout_key, error))
 			return FALSE;
+	}
+
+	/*
+	 * A trigger that cannot act on any delivery is an error here, where
+	 * somebody asked whether the file is right, and a warning at load,
+	 * where one bad trigger must not stop the daemon starting the rest.
+	 */
+	for (i = 0; i < self->triggers->len; i++) {
+		ClawtTrigger *trigger = g_ptr_array_index(self->triggers, i);
+		g_autoptr(GError) local = NULL;
+
+		if (!clawt_trigger_validate(trigger, &local)) {
+			g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+			            "trigger '%s': %s", clawt_trigger_get_id(trigger),
+			            local->message);
+			return FALSE;
+		}
 	}
 
     socket_path = clawt_config_get_string(self, "daemon.socket");
@@ -5897,6 +5939,146 @@ clawt_trigger_get_provider(ClawtTrigger *self)
         return CLAWT_TRIGGER_PROVIDER_GENERIC;
 
     return (ClawtTriggerProvider)value;
+}
+
+ClawtTriggerMode
+clawt_trigger_get_mode(ClawtTrigger *self)
+{
+	const gchar *nick;
+	const ClawtSchemaEntry *entry;
+	gint value;
+
+	g_return_val_if_fail(self != NULL, CLAWT_TRIGGER_MODE_RUN);
+
+	nick = clawt_trigger_get_string(self, "mode");
+
+	if (nick != NULL &&
+	    clawt_enum_from_nick(CLAWT_TYPE_TRIGGER_MODE, nick, &value))
+		return (ClawtTriggerMode)value;
+
+	/*
+	 * The schema's default rather than a literal here, so the getter and
+	 * the documentation cannot come to disagree about what an unreadable
+	 * mode means.
+	 */
+	entry = clawt_config_schema_lookup("triggers.mode");
+
+	if (entry != NULL && entry->default_value != NULL &&
+	    clawt_enum_from_nick(CLAWT_TYPE_TRIGGER_MODE, entry->default_value,
+	                         &value))
+		return (ClawtTriggerMode)value;
+
+	return CLAWT_TRIGGER_MODE_RUN;
+}
+
+GPtrArray *
+clawt_trigger_get_match(ClawtTrigger *self, GError **error)
+{
+	g_autoptr(GPtrArray) out = NULL;
+	YamlNode *node;
+	YamlSequence *sequence;
+	guint length;
+	guint i;
+
+	g_return_val_if_fail(self != NULL, NULL);
+
+	out = g_ptr_array_new_with_free_func(
+		(GDestroyNotify)clawt_trigger_match_free);
+	node = node_at_path(self->node, "match", FALSE);
+
+	/*
+	 * Absent, `match: null` and `match: ""` are all "no filter".  The
+	 * explicit null is how a hand edit clears one, and it has to read as
+	 * cleared rather than as a scalar where a list belonged.
+	 */
+	if (node == NULL || yaml_node_get_node_type(node) == YAML_NODE_NULL)
+		return (GPtrArray *)g_steal_pointer(&out);
+
+	if (yaml_node_get_node_type(node) == YAML_NODE_SCALAR) {
+		const gchar *text = yaml_node_get_string(node);
+
+		if (text == NULL || *text == '\0' || g_strcmp0(text, "~") == 0 ||
+		    g_ascii_strcasecmp(text, "null") == 0)
+			return (GPtrArray *)g_steal_pointer(&out);
+	}
+
+	if (yaml_node_get_node_type(node) != YAML_NODE_SEQUENCE) {
+		g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+		                    "match must be a list of path/value pairs, such "
+		                    "as [{path: action, value: opened}]");
+		return NULL;
+	}
+
+	sequence = yaml_node_get_sequence(node);
+	length = yaml_sequence_get_length(sequence);
+
+	if (length > CLAWT_TRIGGER_MATCH_MAX) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+		            "match has %u pairs, and at most %u are allowed",
+		            length, (guint)CLAWT_TRIGGER_MATCH_MAX);
+		return NULL;
+	}
+
+	for (i = 0; i < length; i++) {
+		YamlNode *element = yaml_sequence_get_element(sequence, i);
+		YamlMapping *mapping;
+		const gchar *path;
+		const gchar *value;
+		g_autoptr(GError) local = NULL;
+
+		if (element == NULL ||
+		    yaml_node_get_node_type(element) != YAML_NODE_MAPPING) {
+			g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+			            "match pair %u is not a mapping with a path and "
+			            "a value", i + 1);
+			return NULL;
+		}
+
+		mapping = yaml_node_get_mapping(element);
+		path = member_string(mapping, "path");
+		value = member_string(mapping, "value");
+
+		if (!clawt_trigger_match_check(path, value, &local)) {
+			g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+			            "match pair %u: %s", i + 1, local->message);
+			return NULL;
+		}
+
+		g_ptr_array_add(out, clawt_trigger_match_new(path, value));
+	}
+
+	return (GPtrArray *)g_steal_pointer(&out);
+}
+
+gboolean
+clawt_trigger_set_match(ClawtTrigger *self, GPtrArray *matches)
+{
+	g_autoptr(YamlNode) node = NULL;
+	g_autoptr(YamlSequence) sequence = NULL;
+	guint i;
+
+	g_return_val_if_fail(self != NULL, FALSE);
+
+	if (matches == NULL || matches->len == 0)
+		return clawt_trigger_set_string(self, "match", NULL);
+
+	sequence = yaml_sequence_new();
+
+	for (i = 0; i < matches->len; i++) {
+		ClawtTriggerMatch *match = g_ptr_array_index(matches, i);
+		g_autoptr(YamlNode) element = yaml_node_new_mapping(NULL);
+		g_autoptr(YamlNode) path = yaml_node_new_string(match->path);
+		g_autoptr(YamlNode) value = yaml_node_new_string(match->value);
+		YamlMapping *mapping = yaml_node_get_mapping(element);
+
+		yaml_mapping_set_member(mapping, "path", path);
+		yaml_mapping_set_member(mapping, "value", value);
+		yaml_sequence_add_element(sequence, element);
+	}
+
+	node = yaml_node_new_sequence(sequence);
+
+	return set_scalar(self->node, "match", node, "triggers.match");
 }
 
 gboolean

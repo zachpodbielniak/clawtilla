@@ -81,17 +81,19 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 - *Proposal:* schema key =routines.max_start_failures= (default 3, 0 = never). Count in run state beside the config, never in it. Raise an alert naming the routine and the computer error. Reset the count on any successful start or on an edit to the routine.
 - *Version:* micro if no key is added, minor with the key.
 
-** TODO Webhook payload field filter                                                               :triggers:
+** DONE Webhook payload field filter (version assigned at merge)                                    :triggers:
 - *Today:* =triggers.events=, =repo=, =branch= and =ignore_actors= exist, but there is no generic field match. The generic provider spends a turn deciding "not for me".
 - *Prior art:* =46859b327= and =server/webhook-payload-filter.test.ts=. Up to 10 dotted paths, each with text it must contain, case-insensitive. A miss is recorded as ignored and starts no run. =741176869=: null clears the filter.
 - *Proposal:* =triggers.match= as a list of =path: value= pairs in the schema. Evaluate with json-glib path lookup before enqueue. Record the ignore in the trigger's delivery log so "why didn't it fire" is answerable.
 - *Version:* minor (config key).
+- *Landed:* =triggers.match=, up to ten ={path, value}= pairs, all must match, containment after Unicode case folding; a number indexes an array and a name on an array looks in every element. A miss is =ignored= naming the pair and what the field held; an unreadable filter refuses every delivery (503, =failed=) rather than being dropped. ~trigger.match_test~ and ~clawtilla trigger check~ try a filter against the newest stored body before it is saved and list its fields. See =docs/triggers.org=.
 
-** TODO Webhook posts into a room with no AI run, and a per-trigger pending cap                     :triggers:
+** DONE Webhook posts into a room with no AI run, and a per-trigger pending cap (version assigned at merge) :triggers:
 - *Today:* =triggers.room= exists, but every delivery runs the agent. There is no per-trigger limit key.
 - *Prior art:* =813814524= (post with no run). =7f0c0cd0e= (a 1-50 cap that used to be a hard-coded 3 and silently dropped fan-out events; an out-of-range hand edit reads as the default).
 - *Proposal:* =triggers.mode: run | post= and =triggers.max_pending=. A =post= delivery lands in the room as a system message with the rendered payload and spends nothing.
 - *Version:* minor.
+- *Landed:* =triggers.mode= (=run= default, =post= recorded into =triggers.room= through =clawt_mailbox_router_note()=, so nothing runs; refused without a room) and =triggers.max_pending= (1-50, default 4, replacing the constant =CLAWT_TRIGGER_MAX_UNFINISHED=; an out-of-range hand edit reads as the default with a load warning). A delivery past the cap is 429 and a =dropped= receipt that does not take the delivery id. New outcomes =dropped= and =posted=, new event ~trigger.posted~. See =docs/triggers.org=.
 
 ** TODO Usage ledger: by model, by origin, exportable                                               :spending:
 - *Today:* =clawtilla cost --today/--days/--agent= and the Spending pages group by agent only (=docs/spending.org=). "Which routine costs me most" has no answer.

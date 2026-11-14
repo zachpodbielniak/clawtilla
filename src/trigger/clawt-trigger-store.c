@@ -93,6 +93,8 @@ clawt_delivery_outcome_get_type(void)
               "captured" },
             { CLAWT_DELIVERY_REFUSED, "CLAWT_DELIVERY_REFUSED", "refused" },
             { CLAWT_DELIVERY_FAILED, "CLAWT_DELIVERY_FAILED", "failed" },
+            { CLAWT_DELIVERY_DROPPED, "CLAWT_DELIVERY_DROPPED", "dropped" },
+            { CLAWT_DELIVERY_POSTED, "CLAWT_DELIVERY_POSTED", "posted" },
             { 0, NULL, NULL }
         };
         GType id = g_enum_register_static("ClawtDeliveryOutcome", values);
@@ -358,10 +360,46 @@ clawt_trigger_store_claim_replay(ClawtTriggerStore *self, const gchar *trigger_i
     return ok;
 }
 
+static gboolean finish_reservation(ClawtTriggerStore *self,
+                                   const gchar *trigger_id, const gchar *key,
+                                   const gchar *task_id,
+                                   ClawtDeliveryOutcome outcome,
+                                   gboolean finished, const gchar *detail,
+                                   GError **error);
+
 gboolean
 clawt_trigger_store_finish_replay(ClawtTriggerStore *self, const gchar *trigger_id,
                                  const gchar *key, const gchar *task_id,
                                  const gchar *detail, GError **error)
+{
+    return finish_reservation(self, trigger_id, key, task_id,
+                              task_id != NULL ? CLAWT_DELIVERY_RAN
+                                              : CLAWT_DELIVERY_FAILED,
+                              task_id == NULL, detail, error);
+}
+
+gboolean
+clawt_trigger_store_finish_post(
+	ClawtTriggerStore  *self,
+	const gchar        *trigger_id,
+	const gchar        *key,
+	const gchar        *detail,
+	GError            **error
+){
+	/* Finished at once: a post holds no slot, so nothing will settle it. */
+	return finish_reservation(self, trigger_id, key, NULL,
+	                          CLAWT_DELIVERY_POSTED, TRUE, detail, error);
+}
+
+static gboolean
+finish_reservation(ClawtTriggerStore    *self,
+                   const gchar          *trigger_id,
+                   const gchar          *key,
+                   const gchar          *task_id,
+                   ClawtDeliveryOutcome  outcome,
+                   gboolean              finished,
+                   const gchar          *detail,
+                   GError              **error)
 {
     sqlite3_stmt *stmt = NULL;
     gboolean ok;
@@ -376,8 +414,8 @@ clawt_trigger_store_finish_replay(ClawtTriggerStore *self, const gchar *trigger_
     }
     sqlite3_bind_text(stmt, 1, task_id, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 2, detail, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 3, task_id != NULL ? CLAWT_DELIVERY_RAN : CLAWT_DELIVERY_FAILED);
-    sqlite3_bind_int(stmt, 4, task_id == NULL);
+    sqlite3_bind_int(stmt, 3, (gint)outcome);
+    sqlite3_bind_int(stmt, 4, finished ? 1 : 0);
     sqlite3_bind_text(stmt, 5, trigger_id, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 6, key, -1, SQLITE_TRANSIENT);
     ok = sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(self->db) == 1;
@@ -743,6 +781,11 @@ clawt_trigger_store_seen_delivery(ClawtTriggerStore *self,
     return seen;
 }
 
+static void record_receipt(ClawtTriggerStore *self, const gchar *trigger_id,
+                           ClawtTriggerEvent *event,
+                           ClawtDeliveryOutcome outcome, const gchar *detail,
+                           const gchar *task_id, gboolean keyed);
+
 void
 clawt_trigger_store_record(ClawtTriggerStore    *self,
                            const gchar          *trigger_id,
@@ -751,11 +794,47 @@ clawt_trigger_store_record(ClawtTriggerStore    *self,
                            const gchar          *detail,
                            const gchar          *task_id)
 {
-    sqlite3_stmt *stmt = NULL;
-    g_autofree gchar *snapshot = NULL;
-
     g_return_if_fail(CLAWT_IS_TRIGGER_STORE(self));
     g_return_if_fail(trigger_id != NULL);
+
+    record_receipt(self, trigger_id, event, outcome, detail, task_id, TRUE);
+}
+
+void
+clawt_trigger_store_record_unkeyed(ClawtTriggerStore    *self,
+                                   const gchar          *trigger_id,
+                                   ClawtTriggerEvent    *event,
+                                   ClawtDeliveryOutcome  outcome,
+                                   const gchar          *detail)
+{
+	const gchar *delivery_id;
+	g_autofree gchar *said = NULL;
+
+	g_return_if_fail(CLAWT_IS_TRIGGER_STORE(self));
+	g_return_if_fail(trigger_id != NULL);
+
+	delivery_id = (event != NULL)
+		? clawt_trigger_event_get_delivery_id(event) : NULL;
+
+	if (delivery_id != NULL && *delivery_id != '\0')
+		said = g_strdup_printf("%s (delivery %s)",
+		                       detail != NULL ? detail : "", delivery_id);
+
+	record_receipt(self, trigger_id, event, outcome,
+	               said != NULL ? said : detail, NULL, FALSE);
+}
+
+static void
+record_receipt(ClawtTriggerStore    *self,
+               const gchar          *trigger_id,
+               ClawtTriggerEvent    *event,
+               ClawtDeliveryOutcome  outcome,
+               const gchar          *detail,
+               const gchar          *task_id,
+               gboolean              keyed)
+{
+    sqlite3_stmt *stmt = NULL;
+    g_autofree gchar *snapshot = NULL;
 
     if (event != NULL && outcome != CLAWT_DELIVERY_REFUSED)
         snapshot = event_snapshot(event);
@@ -780,7 +859,7 @@ clawt_trigger_store_record(ClawtTriggerStore    *self,
 
     sqlite3_bind_text(stmt, 1, trigger_id, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 2,
-                      event != NULL
+                      (event != NULL && keyed)
                           ? clawt_trigger_event_get_delivery_id(event)
                           : NULL,
                       -1, SQLITE_TRANSIENT);

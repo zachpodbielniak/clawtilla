@@ -86,6 +86,7 @@ typedef struct _ClawtSecretRef      ClawtSecretRef;
 /* Triggers */
 typedef struct _ClawtTriggerEvent   ClawtTriggerEvent;
 typedef struct _ClawtTriggerStore   ClawtTriggerStore;
+typedef struct _ClawtTriggerMatch   ClawtTriggerMatch;
 typedef struct _ClawtWebhookIngress ClawtWebhookIngress;
 
 /* Plugins and interfaces */

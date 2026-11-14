@@ -552,7 +552,7 @@ test_trigger_payload(void)
     ClawtLrgTriggerForm form = {
         TRUE, "push-review", "", "Review {{ref}}.", "kudu", " oryx, ,ibex ",
         "", "forgejo", "push, pull_request", "zach/clawtilla", "master", "",
-        "", TRUE, FALSE, TRUE, NULL
+        "", TRUE, FALSE, TRUE, NULL, NULL, 0, NULL
     };
     g_autoptr(GError) error = NULL;
     g_autoptr(JsonNode) created = clawt_lrg_trigger_payload(&form, &error);
@@ -582,6 +582,84 @@ test_trigger_payload(void)
     form.provider = "generic";
     form.instructions = "\n";
     g_assert_null(clawt_lrg_trigger_payload(&form, &error));
+}
+
+/*
+ * The mode, cap and conditions go as the daemon reads them, and what the
+ * daemon would refuse is refused with the form still open.
+ */
+static void
+test_trigger_payload_mode_cap_and_match(void)
+{
+    const gchar *paths[] = { "action", "  ", "labels.name", NULL };
+    const gchar *values[] = { "opened", "", "deploy", NULL };
+    g_autoptr(JsonNode) match = clawt_lrg_match_node(paths, values);
+    ClawtLrgTriggerForm form = {
+        FALSE, "deploys", "", "Deployed {{repo}}", "kudu", "", "ops",
+        "generic", "", "", "", "", "", FALSE, FALSE, TRUE, NULL,
+        "post", 7, NULL
+    };
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) payload = NULL;
+    g_autofree gchar *hints = clawt_lrg_trigger_mode_hints();
+    g_auto(GStrv) ids = NULL;
+    g_auto(GStrv) labels = NULL;
+    JsonArray *pairs;
+
+    /* The blank line is no condition; the others keep their order. */
+    pairs = json_node_get_array(match);
+    g_assert_cmpuint(json_array_get_length(pairs), ==, 2);
+    g_assert_cmpstr(json_object_get_string_member(
+        json_array_get_object_element(pairs, 1), "path"), ==, "labels.name");
+
+    form.match = match;
+    payload = clawt_lrg_trigger_payload(&form, &error);
+    g_assert_no_error(error);
+    g_assert_cmpstr(json_object_get_string_member(object_of(payload), "mode"),
+                    ==, "post");
+    g_assert_cmpint(json_object_get_int_member(object_of(payload),
+                                               "max_pending"), ==, 7);
+    g_assert_cmpuint(json_array_get_length(json_object_get_array_member(
+        object_of(payload), "match")), ==, 2);
+
+    /* A post with nowhere to land, a cap out of range, a made-up mode. */
+    form.room = " ";
+    g_assert_null(clawt_lrg_trigger_payload(&form, &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT);
+    g_clear_error(&error);
+    form.room = "ops";
+    form.max_pending = 51;
+    g_assert_null(clawt_lrg_trigger_payload(&form, &error));
+    g_clear_error(&error);
+    form.max_pending = 4;
+    form.mode = "sometimes";
+    g_assert_null(clawt_lrg_trigger_payload(&form, &error));
+    g_clear_error(&error);
+
+    /* The choices and their sentences are the library's. */
+    clawt_lrg_trigger_mode_choices(&ids, &labels);
+    g_assert_cmpuint(g_strv_length(ids), ==, clawt_trigger_mode_count());
+    g_assert_cmpstr(ids[0], ==, "run");
+    g_assert_nonnull(strstr(hints, clawt_trigger_mode_nth_hint(1)));
+}
+
+/* The check dialog's text says the verdict and each line's result. */
+static void
+test_match_report(void)
+{
+    g_autoptr(JsonNode) empty = parse("{\"note\": \"nothing yet\"}");
+    g_autoptr(JsonNode) checked = parse(
+        "{\"payload\": \"{}\", \"matches\": false,"
+        " \"reason\": \"match pair 1 of 1 failed\","
+        " \"results\": [{\"path\": \"action\", \"value\": \"opened\","
+        " \"found\": true, \"matched\": false, \"actual\": \"closed\"}]}");
+    g_autofree gchar *none = clawt_lrg_match_report(object_of(empty));
+    g_autofree gchar *report = clawt_lrg_match_report(object_of(checked));
+
+    g_assert_cmpstr(none, ==, "nothing yet");
+    g_assert_nonnull(strstr(report, "would have been ignored"));
+    g_assert_nonnull(strstr(report, "action contains \"opened\""));
+    g_assert_nonnull(strstr(report, "it is \"closed\""));
 }
 
 /* ── Tasks ────────────────────────────────────────────────────────── */
@@ -855,6 +933,9 @@ main(int argc, char *argv[])
                     test_decision_going_options_meta);
     g_test_add_func("/lrg-work/decision/answer",
                     test_decision_answer_typed_wins);
+    g_test_add_func("/lrg-work/trigger/mode-cap-match",
+                    test_trigger_payload_mode_cap_and_match);
+    g_test_add_func("/lrg-work/trigger/match-report", test_match_report);
     g_test_add_func("/lrg-work/nav/targets", test_nav_targets);
     g_test_add_func("/lrg-work/nav/filter-move", test_nav_filter_and_move);
 

@@ -276,6 +276,17 @@ declare -A AFFORDANCES=(
     ["enlarge a profile picture"]="on_avatar_preview_clicked|avatar-zoom|avatar_preview_open"
     ["trigger secret shown once"]="secret_shown_once|secret_shown_once|secret_shown_once"
     ["trigger verification capture"]="on_trigger_capture|on_trigger_capture|on_trigger_capture"
+    #
+    # A trigger's delivery mode, pending cap and payload filter.  The mode
+    # list is walked from the library (layer 3) and trigger.match_test is
+    # a frame (layer 1), but neither sees the controls themselves: a
+    # client could send `max_pending` from nowhere, or walk the modes into
+    # a help text and offer no selector.  So each control is declared.
+    #
+    ["trigger delivery mode"]="on_mode_changed|add_mode_field|clawt_lrg_trigger_mode_hints"
+    ["trigger pending cap"]="pending_row|add_pending_field|editor->pending"
+    ["trigger payload filter"]="match_row_add|add_match_editor|match_line_add"
+    ["filter path from a delivery"]="on_match_field_picked|htmx_datalist_new_with_id|on_field_picked"
     ["composer drafts"]="clawt_gtk_persist_draft|draft_key_for|chat_persist_draft"
     ["steer a busy agent"]="\"steered\"|\"steered\"|\"steered\""
     #

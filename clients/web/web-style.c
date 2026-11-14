@@ -411,6 +411,16 @@ clawt_web_stylesheet(void)
     ".field-check .check-sub{color:var(--muted);font-size:12.5px;margin:2px 0 0}"
     ".field-inline{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(12rem,100%),1fr));"
       "gap:0 16px}"
+    /*
+     * A trigger's payload conditions: path, the word, value -- one line
+     * each, the two boxes sharing the width, wrapping under each other
+     * only when the column is too narrow for both.
+     */
+    ".cond-line{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);"
+      "gap:8px;align-items:center;margin-bottom:8px}"
+    ".cond-word{color:var(--muted);font-size:12.5px}"
+    ".cond-out{margin:4px 0 16px}"
+    ".cond-out .row{font-size:13px}"
 
     /*
      * Files an agent sent.  Images inline, at a size that is worth

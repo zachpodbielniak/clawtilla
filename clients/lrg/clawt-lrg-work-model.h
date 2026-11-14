@@ -361,6 +361,50 @@ JsonNode *clawt_lrg_routine_payload(const ClawtLrgRoutineForm *form,
 void clawt_lrg_provider_choices(GStrv *ids, GStrv *labels);
 
 /**
+ * clawt_lrg_trigger_mode_choices:
+ * @ids: (out) (transfer full): mode nicks, %NULL-terminated
+ * @labels: (out) (transfer full): their labels
+ *
+ * Walked from clawt_trigger_mode_count() / _nth_nick() / _nth_label(),
+ * for the same reason the providers are.
+ */
+void clawt_lrg_trigger_mode_choices(GStrv *ids, GStrv *labels);
+
+/**
+ * clawt_lrg_trigger_mode_hints:
+ *
+ * Every mode's one-line explanation, labelled, for the hint under the
+ * selector -- all of them, since the hint does not follow the selection.
+ *
+ * Returns: (transfer full): the text
+ */
+gchar *clawt_lrg_trigger_mode_hints(void);
+
+/**
+ * clawt_lrg_match_node:
+ * @paths: (array zero-terminated=1): each condition's path
+ * @values: (array zero-terminated=1): the text each must contain
+ *
+ * The editor's condition rows as `trigger.update` takes them: a
+ * `{path, value}` object each, a row with both boxes empty left out.
+ *
+ * Returns: (transfer full): a JSON array
+ */
+JsonNode *clawt_lrg_match_node(const gchar *const *paths,
+                               const gchar *const *values);
+
+/**
+ * clawt_lrg_match_report:
+ * @reply: a `trigger.match_test` reply
+ *
+ * The verdict and each condition's result, a line each, for the top of
+ * the check dialog.
+ *
+ * Returns: (transfer full): the text
+ */
+gchar *clawt_lrg_match_report(JsonObject *reply);
+
+/**
  * clawt_lrg_trigger_state:
  * @trigger: a trigger from `trigger.list`
  * @tone: (out) (optional) (transfer none): the badge tone
@@ -462,6 +506,10 @@ gchar *clawt_lrg_delivery_subtitle(JsonObject *delivery);
  * @isolate: a conversation of its own
  * @enabled: whether it fires
  * @extras: (nullable): further schema members, already typed
+ * @mode: (nullable): the mode nick, run or post, or %NULL to leave it
+ * @max_pending: how many runs may be unfinished at once, or 0 to leave it
+ * @match: (nullable): the conditions, from clawt_lrg_match_node(), or
+ *   %NULL to leave them
  *
  * What the trigger editor holds when Save is pressed.
  */
@@ -483,6 +531,9 @@ typedef struct {
     gboolean     isolate;
     gboolean     enabled;
     JsonObject  *extras;
+    const gchar *mode;
+    gint64       max_pending;
+    JsonNode    *match;
 } ClawtLrgTriggerForm;
 
 /**
