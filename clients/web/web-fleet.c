@@ -252,6 +252,18 @@ agent_row(JsonObject *agent, const gchar *selected, ClawtPage view,
         clawt_web_add(meta, clawt_web_badge("host", "bad"));
 
     /*
+     * Running on one of its fallbacks: answers come from a model nobody
+     * picked for it, possibly in a fresh conversation.  The badge's
+     * title is the sentence saying why and until when.
+     */
+    {
+        HtmxSpan *fallback = clawt_web_failover_badge(agent);
+
+        if (fallback != NULL)
+            clawt_web_add(meta, fallback);
+    }
+
+    /*
      * What it is doing, through the same rule the GTK sidebar and the
      * CLI use.  This badge said "busy" and dropped `peer` on the floor,
      * so a page that had the answer on the wire could not say who an
@@ -1106,6 +1118,14 @@ clawt_web_topbar(ClawtWebApp *app, const gchar *agent_id, ClawtPage view)
     htmx_node_set_text_content(HTMX_NODE(title),
                                clawt_web_member(agent, "name", agent_id));
     htmx_node_add_child(HTMX_NODE(bar), HTMX_NODE(title));
+
+    /* Beside the name, on every page about this agent. */
+    {
+        HtmxSpan *fallback = clawt_web_failover_badge(agent);
+
+        if (fallback != NULL)
+            clawt_web_add(bar, fallback);
+    }
 
     htmx_element_add_class(tabs, "tabs");
 

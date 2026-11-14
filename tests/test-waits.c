@@ -1039,6 +1039,91 @@ test_waits_survive_a_daemon_restart(void)
 	daemon_teardown(&fixture);
 }
 
+/*
+ * A gated or closed agent is not offered a URL wait: the daemon would
+ * make the request from its own network position, around the gate.  An
+ * open agent on the same fleet still is, and the other kinds still are.
+ */
+static void
+test_a_gated_agent_gets_no_url_wait(void)
+{
+	DaemonFixture fixture = { 0 };
+	g_autofree gchar *yaml = NULL;
+	g_autofree gchar *stubs = NULL;
+	g_autofree gchar *stub = NULL;
+	g_autofree gchar *saved = g_strdup(g_getenv("PATH"));
+	g_autofree gchar *path = NULL;
+	gboolean is_error = FALSE;
+	gchar *reply;
+
+	/* A stub bwrap, so the sandboxed agents are not shadows here. */
+	fixture.dir = g_dir_make_tmp("clawt-waitd-XXXXXX", NULL);
+	stubs = g_build_filename(fixture.dir, "bin", NULL);
+	g_assert_cmpint(g_mkdir(stubs, 0700), ==, 0);
+	stub = g_build_filename(stubs, "bwrap", NULL);
+	g_assert_true(g_file_set_contents(stub, "#!/bin/sh\nexit 0\n", -1,
+	                                  NULL));
+	g_assert_cmpint(g_chmod(stub, 0755), ==, 0);
+	path = g_strconcat(stubs, ":", saved, NULL);
+	g_setenv("PATH", path, TRUE);
+
+	fixture.config_path = g_build_filename(fixture.dir, "config.yaml",
+	                                       NULL);
+	yaml = g_strdup_printf(
+		"daemon:\n"
+		"  tailscale: false\n"
+		"  state_dir: \"%s/state\"\n"
+		"  socket: \"%s/daemon.sock\"\n"
+		"  automation_dir: \"%s/pods\"\n"
+		"defaults:\n  workspace_root: \"%s/agents\"\n"
+		"agents:\n"
+		"  - id: kudu\n"
+		"  - id: gated\n"
+		"    runtime:\n      confine: bwrap\n      network: gated\n"
+		"  - id: closed\n"
+		"    runtime:\n      confine: bwrap\n      network: none\n",
+		fixture.dir, fixture.dir, fixture.dir, fixture.dir);
+	g_assert_true(g_file_set_contents(fixture.config_path, yaml, -1, NULL));
+	daemon_start(&fixture);
+
+	reply = call_tool(&fixture, "gated", "clawtilla_wait_until",
+		"{\"label\":\"x\",\"kind\":\"url\","
+		"\"url\":\"https://example.com/\"}", &is_error);
+	g_assert_true(is_error);
+	g_assert_nonnull(strstr(reply, "egress gate"));
+	g_free(reply);
+
+	reply = call_tool(&fixture, "closed", "clawtilla_wait_until",
+		"{\"label\":\"x\",\"kind\":\"url\","
+		"\"url\":\"https://example.com/\"}", &is_error);
+	g_assert_true(is_error);
+	g_assert_nonnull(strstr(reply, "no network"));
+	g_free(reply);
+
+	g_assert_cmpuint(clawt_wait_manager_count(fixture.daemon->waits,
+	                                          "gated"), ==, 0);
+
+	/* Another kind is still a wait for a gated agent. */
+	reply = call_tool(&fixture, "gated", "clawtilla_wait_until",
+		"{\"label\":\"x\",\"kind\":\"file\",\"path\":\"later.txt\"}",
+		&is_error);
+	g_assert_false(is_error);
+	g_free(reply);
+
+	/* And an open agent still gets its URL wait. */
+	reply = call_tool(&fixture, "kudu", "clawtilla_wait_until",
+		"{\"label\":\"x\",\"kind\":\"url\","
+		"\"url\":\"https://example.com/\"}", &is_error);
+	g_assert_false(is_error);
+	g_free(reply);
+
+	g_assert_null(clawt_egress_url_wait_refusal("open"));
+	g_assert_null(clawt_egress_url_wait_refusal(NULL));
+
+	g_setenv("PATH", saved, TRUE);
+	daemon_teardown(&fixture);
+}
+
 /* The tool refuses what it can, and the limit from the agent's config. */
 static void
 test_the_tool_refuses_with_sentences(void)
@@ -1153,6 +1238,8 @@ main(int argc, char *argv[])
 	g_test_init(&argc, &argv, NULL);
 
 	g_test_add_func("/waits/address-policy", test_the_address_policy_table);
+	g_test_add_func("/waits/gated-agent-no-url-wait",
+	                test_a_gated_agent_gets_no_url_wait);
 	g_test_add_func("/waits/url-refusal",
 	                test_urls_are_refused_before_any_lookup);
 	g_test_add_func("/waits/expiry-clamp", test_expiry_is_clamped);

@@ -362,6 +362,20 @@ clawt_lrg_agent_row_new(JsonObject *agent, GHashTable *unread,
     row->unread = clawt_lrg_unread_count(unread, row->dm_room);
 
     /*
+     * On one of its fallbacks: the badge text is the library's, asked by
+     * every client, and the sentence is what the daemon wrote.
+     */
+    if (json_object_has_member(agent, "failover") &&
+        JSON_NODE_HOLDS_OBJECT(json_object_get_member(agent, "failover"))) {
+        row->fallback = clawt_failover_badge(
+            json_object_get_object_member(agent, "failover"));
+
+        if (row->fallback != NULL)
+            row->fallback_message = g_strdup(
+                clawt_ipc_payload_string(agent, "failover_message"));
+    }
+
+    /*
      * Busy from the typing frames when there have been any, because the
      * shell does not re-list the fleet on every frame; from the listing
      * otherwise.  A stopped agent is never mid-turn, whatever was heard.
@@ -424,6 +438,8 @@ clawt_lrg_agent_row_free(ClawtLrgAgentRow *row)
     g_free(row->dm_room);
     g_free(row->color);
     g_free(row->computer);
+    g_free(row->fallback);
+    g_free(row->fallback_message);
     g_free(row);
 }
 

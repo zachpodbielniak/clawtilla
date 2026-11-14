@@ -257,6 +257,33 @@ guint clawt_mailbox_router_drain(ClawtMailboxRouter *self,
                                  const gchar        *agent_id);
 
 /**
+ * clawt_mailbox_router_add_ack_note:
+ * @self: a #ClawtMailboxRouter
+ * @agent_id: the agent whose next turn it opens
+ * @line: one line, from clawt_ack_check_note()
+ *
+ * Folds an acknowledgement that was recorded instead of delivered into
+ * @agent_id's next delivery, as a line at the top of it.  Never dropped
+ * silently: the agent that asked is told on its next turn that the
+ * answer came and needed nothing, rather than finding out by reading
+ * the room or never.
+ */
+void clawt_mailbox_router_add_ack_note(ClawtMailboxRouter *self,
+                                       const gchar        *agent_id,
+                                       const gchar        *line);
+
+/**
+ * clawt_mailbox_router_count_ack_notes:
+ * @self: a #ClawtMailboxRouter
+ * @agent_id: (nullable): an agent
+ *
+ * Returns: how many acknowledgement notes are waiting for @agent_id's
+ *   next delivery
+ */
+guint clawt_mailbox_router_count_ack_notes(ClawtMailboxRouter *self,
+                                           const gchar        *agent_id);
+
+/**
  * clawt_mailbox_router_drain_all:
  * @self: a #ClawtMailboxRouter
  *

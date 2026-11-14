@@ -184,9 +184,17 @@ clawt_lrg_agent_enum_choices(GType type, const gchar *current)
         g_autoptr(GEnumClass) klass = g_type_class_ref(type);
         guint i;
 
+        /*
+         * The network wears the library's names for its choices, as in
+         * the other two clients: "gated" alone does not say whose gate.
+         */
         for (i = 0; i < klass->n_values; i++)
-            clawt_lrg_agent_choices_add(choices, klass->values[i].value_nick,
-                                  klass->values[i].value_nick);
+            clawt_lrg_agent_choices_add(
+                choices, klass->values[i].value_nick,
+                type == CLAWT_TYPE_RUNTIME_NETWORK
+                ? clawt_egress_network_choice_label(
+                      klass->values[i].value_nick)
+                : klass->values[i].value_nick);
     } else if (G_TYPE_IS_FLAGS(type)) {
         g_autoptr(GFlagsClass) klass = g_type_class_ref(type);
         guint i;
@@ -208,6 +216,20 @@ clawt_lrg_agent_enum_choices(GType type, const gchar *current)
 
     choices_keep_current(choices, current, " (not a known value)");
     return choices;
+}
+
+/* Whether @plan already sets @key. */
+static gboolean
+plan_has(GPtrArray *plan, const gchar *key)
+{
+    guint i;
+
+    for (i = 0; i < plan->len; i++)
+        if (g_strcmp0(((ClawtLrgAgentSetting *)g_ptr_array_index(plan, i))
+                          ->key, key) == 0)
+            return TRUE;
+
+    return FALSE;
 }
 
 ClawtLrgAgentChoices *
@@ -677,6 +699,110 @@ clawt_lrg_agent_provider_note(JsonNode *catalog, const gchar *provider)
                                     "note");
 }
 
+/* ── The fallback list ────────────────────────────────────────────── */
+
+ClawtLrgAgentChoices *
+clawt_lrg_agent_fallback_account_choices(JsonNode    *reply,
+                                         const gchar *provider,
+                                         const gchar *current)
+{
+    ClawtLrgAgentChoices *choices = clawt_lrg_agent_choices_new();
+    JsonArray *accounts = member_array(clawt_ipc_reply_object(reply),
+                                       "accounts");
+    guint i;
+
+    clawt_lrg_agent_choices_add(choices, "", "The CLI's own login");
+
+    /*
+     * account.list's own "usable" is about the agent's provider and an
+     * entry may run another CLI, so each entry asks the library's rule
+     * of its own provider -- except for the one it names, which stays so
+     * that a save cannot quietly drop it.
+     */
+    for (i = 0; accounts != NULL && i < json_array_get_length(accounts); i++) {
+        JsonObject *account = element_object(accounts, i);
+        const gchar *id = clawt_ipc_payload_string(account, "id");
+        const gchar *description = clawt_ipc_payload_string(account,
+                                                            "description");
+        gboolean fits = clawt_model_fallback_account_fits(
+            clawt_ipc_payload_string(account, "provider"), provider);
+        g_autofree gchar *label = NULL;
+
+        if (id == NULL || (!fits && g_strcmp0(id, current) != 0))
+            continue;
+
+        label = g_strdup_printf(
+            "%s%s%s%s", id, description != NULL ? " -- " : "",
+            description != NULL ? description : "",
+            fits ? "" : " (a login for another CLI)");
+        clawt_lrg_agent_choices_add(choices, id, label);
+    }
+
+    choices_keep_current(choices, current, " (not declared)");
+    return choices;
+}
+
+gboolean
+clawt_lrg_agent_fallback_edit(GPtrArray   *list,
+                              const gchar *op,
+                              guint        index,
+                              const gchar *provider)
+{
+    gpointer moved;
+
+    g_return_val_if_fail(list != NULL, FALSE);
+
+    if (g_strcmp0(op, "add") == 0) {
+        g_ptr_array_add(list, clawt_model_fallback_new(
+            provider != NULL ? provider : "", "", NULL));
+        return TRUE;
+    }
+
+    if (index >= list->len)
+        return FALSE;
+
+    if (g_strcmp0(op, "remove") == 0) {
+        g_ptr_array_remove_index(list, index);
+        return TRUE;
+    }
+
+    if (g_strcmp0(op, "up") == 0 && index > 0) {
+        moved = list->pdata[index];
+        list->pdata[index] = list->pdata[index - 1];
+        list->pdata[index - 1] = moved;
+        return TRUE;
+    }
+
+    if (g_strcmp0(op, "down") == 0 && index + 1 < list->len) {
+        moved = list->pdata[index];
+        list->pdata[index] = list->pdata[index + 1];
+        list->pdata[index + 1] = moved;
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+gchar *
+clawt_lrg_agent_fallback_spell(GPtrArray *list, GError **error)
+{
+    guint i;
+
+    for (i = 0; list != NULL && i < list->len; i++) {
+        ClawtModelFallback *entry = g_ptr_array_index(list, i);
+
+        if (entry->provider == NULL || *entry->provider == '\0' ||
+            entry->model == NULL || *entry->model == '\0') {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                        "Fallback %u needs a model: pick one, or type its "
+                        "name under \"Something else\"", i + 1);
+            return NULL;
+        }
+    }
+
+    return clawt_model_fallback_list_to_string(list);
+}
+
 /* ── The settings form ────────────────────────────────────────────── */
 
 /*
@@ -763,9 +889,14 @@ clawt_lrg_agent_key_skipped(const gchar *key, const ClawtSchemaEntry *entry)
     if (g_strcmp0(key, "id") == 0)
         return TRUE;
 
-    /* Integrations and mounts have cards of their own on this page. */
+    /*
+     * Integrations, mounts and the fallback list have cards of their own
+     * on this page.  The fallback list is a list of mappings, so the walk
+     * yields its child keys -- three text boxes that would edit no entry.
+     */
     if (g_str_has_prefix(key, "integrations.") ||
-        g_str_has_prefix(key, "computer.mounts"))
+        g_str_has_prefix(key, "computer.mounts") ||
+        g_str_has_prefix(key, "model.fallbacks"))
         return TRUE;
 
     return FALSE;
@@ -1051,6 +1182,12 @@ clawt_lrg_agent_form(JsonObject *settings)
             field->hint = g_strdup(clawt_agent_confine_explanation());
         } else if (friendly_field(key, &field->label, &field->hint)) {
             /* named for what it does, with the sentence that says how */
+        } else if (g_strcmp0(key, "runtime.network") == 0) {
+            const gchar *current = string_or(settings, key, "");
+
+            field->label = g_strdup(clawt_egress_network_label());
+            field->hint = g_strdup(clawt_egress_network_choice_explanation(
+                *current != '\0' ? current : "open"));
         } else {
             field->label = clawt_lrg_agent_key_label(key);
             field->hint = first_line(entry->doc);
@@ -1174,7 +1311,12 @@ clawt_lrg_agent_save_plan(GPtrArray *posted, JsonObject *settings)
     const gchar *use;
     gboolean use_posted = FALSE;
     gboolean account_posted = FALSE;
+    gboolean provider_posted = FALSE;
+    gboolean fallbacks_posted = FALSE;
+    gboolean fallbacks_change;
     const gchar *account;
+    const gchar *provider;
+    const gchar *fallbacks;
     guint i;
 
     g_return_val_if_fail(posted != NULL, plan);
@@ -1195,11 +1337,50 @@ clawt_lrg_agent_save_plan(GPtrArray *posted, JsonObject *settings)
      * account goes back on.
      */
     account = posted_value(posted, "model.account", &account_posted);
+    provider = posted_value(posted, "model.provider", &provider_posted);
+
+    /*
+     * The fallback list is checked against the backend it falls back
+     * from, so when both change it comes off first and goes back on last
+     * -- the account's rule, one level up.  Only then: a list cleared and
+     * then refused would be a list lost.
+     */
+    fallbacks = posted_value(posted, "model.fallbacks", &fallbacks_posted);
+    fallbacks_change = fallbacks_posted && fallbacks != NULL &&
+                       g_strcmp0(fallbacks,
+                                 string_or(settings, "model.fallbacks", "")) != 0;
+
+    if (fallbacks_change &&
+        *string_or(settings, "model.fallbacks", "") != '\0' &&
+        ((account_posted && account != NULL &&
+          g_strcmp0(account, string_or(settings, "model.account", "")) != 0) ||
+         (provider_posted && provider != NULL &&
+          g_strcmp0(provider, string_or(settings, "model.provider", "")) != 0)))
+        g_ptr_array_add(plan, clawt_lrg_agent_setting_new("model.fallbacks", ""));
 
     if (account_posted && account != NULL &&
         g_strcmp0(account, string_or(settings, "model.account", "")) != 0 &&
         *string_or(settings, "model.account", "") != '\0' && *account != '\0')
         g_ptr_array_add(plan, clawt_lrg_agent_setting_new("model.account", ""));
+
+    /*
+     * Opening the network goes first.  runtime.confine comes before it
+     * in schema order, and the daemon refuses turning the sandbox off
+     * while the network is still gated -- so a save doing both would be
+     * refused halfway.  Gating it, the other way round, already lands in
+     * the right order.
+     */
+    {
+        gboolean network_posted = FALSE;
+        const gchar *network = posted_value(posted, "runtime.network",
+                                            &network_posted);
+
+        if (network_posted && g_strcmp0(network, "open") == 0 &&
+            g_strcmp0(string_or(settings, "runtime.network", ""),
+                      "open") != 0)
+            g_ptr_array_add(plan, clawt_lrg_agent_setting_new(
+                                      "runtime.network", "open"));
+    }
 
     for (i = 0; i < posted->len; i++) {
         ClawtLrgAgentSetting *setting = g_ptr_array_index(posted, i);
@@ -1208,7 +1389,16 @@ clawt_lrg_agent_save_plan(GPtrArray *posted, JsonObject *settings)
         if (setting->value == NULL)
             continue;
 
+        /* Last, below. */
+        if (g_strcmp0(setting->key, "model.fallbacks") == 0)
+            continue;
+
         if (clawt_lrg_agent_key_belongs_to_shared(setting->key, use))
+            continue;
+
+        /* Already placed first, above. */
+        if (g_strcmp0(setting->key, "runtime.network") == 0 &&
+            plan_has(plan, "runtime.network"))
             continue;
 
         /*
@@ -1224,6 +1414,10 @@ clawt_lrg_agent_save_plan(GPtrArray *posted, JsonObject *settings)
         g_ptr_array_add(plan, clawt_lrg_agent_setting_new(setting->key,
                                                     setting->value));
     }
+
+    if (fallbacks_change)
+        g_ptr_array_add(plan, clawt_lrg_agent_setting_new("model.fallbacks",
+                                                          fallbacks));
 
     order_memory_pair(plan, settings);
 

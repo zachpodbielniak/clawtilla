@@ -748,7 +748,6 @@ test_every_agent_list_round_trips(void)
 {
     static const gchar *const keys[] = {
         "persona.identity_files",
-        "model.fallbacks",
         "computer.host.allow_paths",
         "computer.host.deny_paths",
         "tools.allow",

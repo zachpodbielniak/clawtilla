@@ -597,6 +597,18 @@ client and lrg alike, each drawn only for the computer types that read it
 
 The agent inspector has an *Account* row beside the model and effort. Its choices come from ~account.list~ with the agent named, so it offers only the accounts the daemon will accept for that agent's provider; an account the agent already names and can no longer use is still shown, labelled, so saving cannot replace it without anybody choosing to. Saving clears the account before a provider change and sets it after, because the daemon checks the pair. The web client's agent page draws the same choices as a select.
 
+*** Editing the fallbacks
+
+~model.fallbacks~ is where an agent's conversations continue, in order, when its own backend hits a usage limit, a rate limit, a sign-out or an outage; the agent comes back at the reset (see "Limit failover" in [[file:agents.org][agents.org]]).  All three graphical clients edit it as an ordered list beside the model, effort and account, never as the three text fields the schema walk yields for a list of mappings -- the generic editors skip every =model.fallbacks*= key the way they skip ~computer.mounts~.
+
+Each entry is a provider picker (the agent-capable providers of ~model.list~, plus the entry's own provider whatever it is), a model picker (that provider's catalogue models, or a name typed by hand), and an account picker: /The CLI's own login/, then the accounts whose provider is the entry's CLI (~clawt_model_fallback_account_fits()~ -- ~account.list~'s own =usable= is about the agent's provider, and an entry may run another CLI), then the account the entry already names whatever it is, so saving cannot drop it.  Changing an entry's provider refills its models and its logins.  Buttons move an entry earlier or later, remove it, and add one, which starts on the agent's own provider.
+
+The list is read with ~clawt_model_fallback_parse_list()~ and sent whole as one ~agent.set model.fallbacks~ spelled by ~clawt_model_fallback_list_to_string()~; no client builds the spelling itself.  An entry without a model stops the save before anything is sent.  A list the client cannot parse is shown as the reason, not as an empty editor, because an empty editor saved back would write the empty list over the real one.  The daemon refuses a list that names an unknown account, an account for another CLI, a provider no agent runs on, or another sign-in to a subscription the agent already uses; each client shows that refusal the way it shows any other ~agent.set~ refusal.
+
+- *GTK*: a /Fallbacks/ expander row in the inspector's Settings group, under /Account/.  Each entry is a heading row ("Fallback 1", with its label) carrying up, down and remove buttons, then the same provider and model rows as the agent's own model, then an /Account/ row; the expander's =+= adds one.  Edits are kept until /Save changes/, which sends the list after the model and, when the provider or the account changes in the same save, clears the old list first -- the daemon checks the list against the backend it falls back from.  The account is now cleared only when it actually changes, because clearing an untouched one can make the primary a rotation of a fallback's login and fail the save.
+- *Web*: a /Fallbacks/ card under the agent page's settings form, a form of its own posting to =/a/:id/fallbacks=.  Each entry has a provider select, a model text field suggesting that provider's models through a =<datalist>=, an account select, and /Earlier/, /Later/ and /Remove/; a last row adds one.  The page holds no state between requests, so every button saves.
+- *lrg*: a /Fallbacks/ card on the Overview page right under the Model card, with the same three controls per entry and /Earlier/, /Later/, /Remove/ and /Add a fallback/.  /Save changes/ sends it with the rest, in the order =clawt_lrg_agent_save_plan()= gives.
+
 *** Choosing a shared computer
 
 The agent inspector has a *Use computer* row above the computer type. Its choices come from ~computer.shared~: /Its own machine/, then every machine declared under ~computers:~ that can be shared, with its type and description. A machine the agent names that is no longer declared is still shown, labelled, so saving cannot move the agent without anybody choosing to. While the agent is on a shared machine the computer type is shown greyed out -- it is the machine's -- and the per-agent image and VM rows are not drawn, because ~agent.set~ refuses those keys for it. Saving writes ~computer.use~ first. The web client's agent page draws the same select in its Computer card, hides the same rows, and says why.
@@ -604,6 +616,10 @@ The agent inspector has a *Use computer* row above the computer type. Its choice
 *** Sandboxing an agent's own tools
 
 The agent inspector has a *Sandbox its own tools (bubblewrap)* switch under Restart and *Start with the daemon*. It is ~runtime.confine~ (see =docs/agents.org=, "Sandboxing the agent's own tools"): on, the agent's CLI, everything it runs and its MCP servers start inside bubblewrap with only the workspace, mounts, login and programs they need. The sentence under it, the label, and the warning row that appears when the daemon cannot give it -- bubblewrap not installed where the daemon runs, or an embedded runtime -- all come from the library (=clawt_agent_confine_label()=, =clawt_agent_confine_explanation()=, =clawt_agent_confine_notice()=), read against the agent's =confine=, =runtime_type= and =confine_available= members. The warning says the agent is a shadow because of it, which otherwise shows only as a state with its reason elsewhere on the page. Saving writes the key only when the switch was changed, so an agent following =defaults.confine= is not pinned to the fleet's answer by being opened and saved. It applies at the agent's next start. The web client's agent page draws the same setting in its Runtime card as a select of the enum's values, with the same sentence and warning; the libregnum client draws it in the same card of its generated form.
+
+Under it is a *Network* choice, ~runtime.network~ (see =docs/agents.org=, "Where the agent may connect"): *Open*, *Through clawtilla's gate* or *None*, named by =clawt_egress_network_choice_label()= over the enum's own values, with the chosen option's one line (=clawt_egress_network_choice_explanation()=) under it. While the sandbox switch is off the choice is greyed out and the line is =clawt_egress_network_notice()= instead -- outside the sandbox a CLI can ignore a proxy, so only Open can be given -- and turning the switch off moves the choice back to Open before anything is saved. An agent already gated with its sandbox off is a shadow; its row stays live and a "Cannot be gated here" warning says why. Saving orders the two writes the way the daemon accepts them: opening the network before turning the sandbox off, gating it after turning the sandbox on. A *Network* group on the agent view shows =clawt_egress_status_line()= ("egress: gated (3 refused today)"), each recent refusal as =clawt_egress_refusal_line()= (host, port, the address it resolved to) with the gate's reason, and one row per credential-looking key saying whether the broker holds it and, if not, why -- all read off agent.show's =egress= member (=network=, =refused_today=, =refusals=, =keys=).
+
+The fleet allowlist, =egress.allow=, is on the *Shared folders* settings page under the folders: =clawt_egress_allowlist_label()= and =clawt_egress_allowlist_explanation()=, an entry row that adds one address, network or host name (~egress.allow.add~, checked by the daemon -- a metadata address comes back as a toast), and one row per entry with a remove button (~egress.allow.remove~). A list that does not parse is said under it from ~egress.allow.list~'s =problem=. The web client draws the same on its Shared folders page and in its agent page's Network card; the libregnum client in its Shared folders page and its inspector.
 
 *** What an agent is waiting for
 
@@ -681,6 +697,25 @@ The cost is the figure the provider reported for each turn, not an
 estimate.  The token counts beside it cover new input and output only:
 cached context is billed but is not reported as tokens, so the cost is
 larger than those numbers suggest.  See [[file:spending.org][Spending]].
+
+*** Orchestration
+:PROPERTIES:
+:CUSTOM_ID: orchestration-settings
+:END:
+
+The Orchestration settings page (GTK, web at =/settings/orchestration=, libregnum) has one control today: *Acknowledgement check*, which sets =orchestration.ack_check_model=.  The choices are walked from =clawt_ack_check_model_count()= / =_nth_value()= / =_nth_label()= -- *Off* first, then every model of every provider ai-glib reaches over HTTP -- so the three clients offer the same list and none keeps a copy.  A model written into ~clawtilla.yaml~ by hand that the catalogue does not list stays selectable as itself rather than showing as Off, so saving the page untouched cannot turn the check off.  The page reads ~orchestration.get~ and saves with ~orchestration.set~.
+
+What it does, in the words the page uses: when one agent answers another with only an acknowledgement, waking the agent that asked costs it a whole turn.  With a model chosen, a short answer from a turn that did nothing else is put to that model first; only a plain ACK skips the wake, and anything else, a failure, or no verdict within 8 seconds wakes the sender as before.  Off by default.  See [[file:orchestration.org][orchestration.org]] for the rules.
+
+*** Answers that woke nobody, and results delivered together
+:PROPERTIES:
+:CUSTOM_ID: ack-and-merge-marks
+:END:
+
+Two marks in the transcript, drawn the same way in all three clients from fields ~room.history~ and the ~message~ event both carry:
+
+- *acknowledged (no wake)* -- =clawt_message_ack_label()= -- beside an answer the acknowledgement check recorded instead of delivering (=acknowledged=).  It is on every such message, not on a run header, because it is a fact about that one message: unmarked, an answer the asker never took a turn on reads as having been ignored.  GTK and the web client carry =clawt_message_ack_tooltip()= as the tooltip; libregnum has no tooltips, so the label is the whole of it.
+- *Delivered as one turn* -- clawtilla's note when several results waiting in one room were handed to an agent as a single turn (=merged=, the number of parts).  Its body is split with =clawt_merge_split()= and drawn as its sections: the opening line, then one block per result with its label ("'oryx' answering you", "clawtilla: task t-12") as a small heading and the result's first line beneath.  The results themselves are already in the room above it; the note says they cost one wake, not N.
 
 *** Reordering the fleet
 
@@ -778,6 +813,7 @@ what belongs to the application rather than to any one agent:
 | Cloud images | VM disk images on this machine, and fetching more |
 | Teams | how the fleet is divided, and what each team handles |
 | Spending | what the fleet has cost, by agent, model, origin or day; unpriced turns; Export CSV |
+| Orchestration | the acknowledgement check: which model, or Off, decides whether an answer only acknowledges |
 | Integrations | Matrix, mail, MCP servers and notifiers, and who gets each |
 | Connectors | connected accounts, and the credential for each |
 | Appearance | colour scheme and fonts |
@@ -1284,6 +1320,14 @@ Each agent shows a face, a state dot, what it is doing, and badges:
 - a red *HOST* badge when the agent can run commands on the real machine
 - a *CHIEF* badge on the chief of staff
 - a green *LEAD* badge on a team lead
+- an amber *On fallback: codex-cli gpt-5.5* badge while the agent runs on
+  one of its ~model.fallbacks~ -- text from ~clawt_failover_badge()~, the
+  daemon's ~failover_message~ as its tooltip.  The inspector's /Agent/
+  group carries the same badge and sentence as a row, updated in place
+  from the sidebar's refresh when ~agent.failover~ arrives, so an edit in
+  progress is never thrown away; the web client draws it in the sidebar,
+  the top bar and the agent page's /At a glance/ card, the lrg client in
+  the sidebar and the /At a glance/ card.
 
 Mail waiting for the *agent* is in the subtitle -- =3 waiting to be
 read=, or =working… · 3 waiting= when it is mid-turn -- rather than as a
@@ -1362,6 +1406,11 @@ different question from the one the setting was turned off to answer.
 A collapsible panel on the right of the GTK client, bound to a bell in
 the header bar; an =/alerts= page in the web client, reached from the
 sidebar.  Both carry a count.
+
+An event that carries its own sentence in a =message= detail is recorded
+in those words rather than as "kind · subject": ~agent.failover~'s says
+"Scout is running on fallback codex-cli gpt-5.5 because claude-code opus
+hit its usage limit, back at 18:50".  All three clients do this.
 
 **** An alert that lands in front of you arrives read
 

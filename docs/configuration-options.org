@@ -844,6 +844,35 @@ How long a command-backend secret may take before it is an error.
 A password manager that is locked will block forever rather than fail,
 and without a timeout so will daemon startup.
 
+** =egress=
+
+Where an agent with runtime.network: gated may connect.
+
+A gated agent's sandbox has no network of its own. Its one way out is
+clawtilla's egress gate, an HTTP proxy in the daemon that resolves
+names itself and connects only to public addresses: never this
+machine, the LAN (RFC 1918), link-local, CGNAT and tailnets
+(100.64.0.0/10), IPv6 unique-local, multicast or a cloud metadata
+service. It judges the address, after resolution, so a public name
+pointed at 127.0.0.1 is refused too.
+
+*** =egress.allow=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.17.0
+
+Private addresses gated agents may reach anyway.
+
+Each entry is an address (100.101.102.103), a network
+(192.168.1.0/24, fd7a:115c:a1e0::/48) or a host name
+(nas.example.ts.net), optionally with a port (10.0.0.5:8080,
+[fd00::1]:443). A name matches the name the agent asked for and never
+opens loopback; loopback needs an address. Cloud metadata, multicast,
+the unspecified address and reserved space cannot be opened, and an
+entry naming one is refused. One bad entry refuses the whole list, at
+load and where it is added.
+
 ** =plugins=
 
 Loadable plugins: event handlers, extra tools, computer backends and
@@ -981,6 +1010,36 @@ The default suits the runaway this check exists for -- two agents
 alternating the same two replies with nothing pacing them, where a
 turn is seconds. Raise it for a fleet whose turns are minutes; a
 repeat is only caught if it lands inside the window.
+
+*** =orchestration.ack_check_model=
+
+- Type :: string
+- Default :: ==
+- Since :: 0.17.0
+
+A small model that decides whether an answer only acknowledges, as
+provider/model -- claude/claude-haiku-4-5-20251001, ollama/llama3.2.
+Empty turns the check off.
+
+An answer to a deliberate message wakes the agent that sent it, and
+that turn costs as much for "Thanks, noted." as for a page of
+findings. With a model set, an answer is put to it only when the
+answering turn made no tool calls (so ran no commands, changed no
+files and sent nothing), its steps were streamed so that is known,
+the answer is at most 600 characters, and the message it answers was
+not a task. The model is asked one question, ACK or NEEDS, with both
+texts fenced as data, and has 8 seconds.
+
+Only a plain ACK skips the wake. NEEDS, a failure, a timeout or any
+other reply wakes the sender as before. An acknowledged answer is
+still recorded in the room, marked "acknowledged (no wake)", and
+the sender's next turn opens with a one-line note of it, so nothing
+is dropped.
+
+A provider ai-glib reaches over HTTP, with its key configured the way
+ai_assist's is. A command-line provider would spend the 8 seconds
+starting. A message sent with reply: none never wakes its sender,
+with or without this.
 
 ** =orchestration.mailbox=
 
@@ -1745,6 +1804,20 @@ The directory the CLI keeps this login in. ~ is expanded.
 - Since :: 0.2.0
 
 Whose login this is, or what it is for.
+
+*** =accounts.pay_per_use=
+
+- Type :: boolean
+- Default :: =false=
+- Since :: 0.16.0
+
+This login bills each use -- an API key -- rather than drawing on a
+subscription's limit.
+
+Only agents.model.fallbacks reads it. Failing over to another sign-in
+of the same subscription is refused, because rotating accounts to
+get past a usage limit breaks the provider's terms; a pay-per-use
+login on the same CLI pays for the work it does and is allowed.
 
 ** =integrations=
 
@@ -3300,23 +3373,75 @@ default login. The account's provider must be this agent's provider.
 - Default :: unset
 - Since :: 0.1.0
 
-libreclaw smart-routing profile: off, eco, auto, premium or free.
+Reserved. Not implemented in this build: nothing reads it, and
+nothing will until it can mean something here.
 
-Not implemented in this build. Nothing renders it into the agent's
-config.yaml, so libreclaw is never told about it and routes on its
-own default.
+libreclaw's smart routing (off, eco, auto, premium, free) picks a
+model per message by scoring the prompt against a price table of
+named providers. An agent here runs one CLI backend with one model,
+so there is nothing for a profile to choose between -- rendering it
+would switch on a router with a single candidate. Moving off a
+backend that refuses is model.fallbacks; a cheaper model for one
+scheduled job is routines.model.
 
-*** =agents.model.fallbacks=
+** =agents.model.fallbacks=
 
-- Type :: list of strings
+Where this agent's conversations continue, in order, when its own
+backend refuses a turn: a usage limit, a rate limit, a sign-out or
+an outage.
+
+  fallbacks:
+    - provider: codex-cli
+      model: gpt-5.5
+    - provider: claude-code
+      model: sonnet
+
+libreclaw does the failing over: the next turn runs on the first
+entry nothing is holding, and the agent returns to its own backend
+at the reset the provider named, or after a backoff when it named
+none. A move to another CLI or another login starts a fresh
+conversation there; the agent's own conversation resumes when it
+comes back. Each switch raises an agent.failover event and alert,
+and agent status shows the fallback until the agent is back.
+
+Another sign-in to the same subscription is refused: an entry on
+this agent's CLI (claude-code and claude-tmux are one Claude login)
+with a different account, unless that account has pay_per_use set.
+Rotating accounts to get past a usage limit breaks the provider's
+terms. The agent is a shadow with the reason until the list is
+fixed, and agent set refuses such a list where it arrives.
+
+On the command line the list is one string:
+`clawtilla agent set ID model.fallbacks "codex-cli:gpt-5.5,
+claude-code:sonnet@backup"` -- provider:model, then @account.
+
+*** =agents.model.fallbacks.provider=
+
+- Type :: string
 - Default :: unset
-- Since :: 0.1.0
+- Required :: yes
+- Since :: 0.16.0
 
-Models to fall back to, in order, when the primary is unavailable.
+The agent CLI: one of the providers model.provider takes.
 
-Not implemented in this build. Nothing renders it into the agent's
-config.yaml, so an unavailable primary model fails the turn rather
-than falling back to anything.
+*** =agents.model.fallbacks.model=
+
+- Type :: string
+- Default :: unset
+- Required :: yes
+- Since :: 0.16.0
+
+The model that CLI is asked for.
+
+*** =agents.model.fallbacks.account=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.16.0
+
+Which entry of accounts this fallback's CLI logs in as. Unset is the
+CLI's default login. The account's provider must be this entry's
+provider.
 
 ** =agents.session=
 
@@ -3450,6 +3575,33 @@ for itself. A CLI installed somewhere it cannot follow -- a node
 under ~/.nvm, a tool a skill shells out to -- is named here. Read-only
 on purpose: something the agent should write is a mount, which says
 so in its mode. Ignored unless runtime.confine is bwrap.
+
+*** =agents.runtime.network=
+
+- Type :: enum
+- Values :: open, gated, none
+- Default :: =open=
+- Since :: 0.17.0
+
+Where this agent's own process may connect: open, gated or none.
+
+open shares the machine's network, LAN and tailnet included. gated
+gives the sandbox no network of its own: its only route is
+clawtilla's egress gate, an HTTP proxy reaching public addresses only
+(plus egress.allow), handed to the CLI as HTTPS_PROXY and HTTP_PROXY.
+none gives it no route at all.
+
+Under gated or none, provider keys whose CLI can be pointed elsewhere
+(ANTHROPIC_API_KEY for Claude Code, OPENAI_API_KEY for Codex) are
+brokered: the agent holds a token for its own process, and the daemon
+swaps it for the real key on the way to a fixed upstream. Others are
+passed as before and listed as unbrokered. An OAuth login is
+unaffected.
+
+Anything but open needs runtime.confine: bwrap -- outside the sandbox
+a process can ignore a proxy -- and without it the agent is disabled
+with that reason, never run on an open network instead. Takes effect
+at the agent's next start.
 
 *** =agents.runtime.autostart=
 

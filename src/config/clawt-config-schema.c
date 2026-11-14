@@ -631,6 +631,31 @@ static const ClawtSchemaEntry schema[] = {
   "A password manager that is locked will block forever rather than fail,\n"
   "and without a timeout so will daemon startup.", "0.1.0" },
 
+/* ── egress ──────────────────────────────────────────────────────── */
+{ "egress", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Where an agent with runtime.network: gated may connect.\n"
+  "\n"
+  "A gated agent's sandbox has no network of its own. Its one way out is\n"
+  "clawtilla's egress gate, an HTTP proxy in the daemon that resolves\n"
+  "names itself and connects only to public addresses: never this\n"
+  "machine, the LAN (RFC 1918), link-local, CGNAT and tailnets\n"
+  "(100.64.0.0/10), IPv6 unique-local, multicast or a cloud metadata\n"
+  "service. It judges the address, after resolution, so a public name\n"
+  "pointed at 127.0.0.1 is refused too.", "0.17.0" },
+
+{ "egress.allow", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_COMMENTED,
+  NULL, NULL,
+  "Private addresses gated agents may reach anyway.\n"
+  "\n"
+  "Each entry is an address (100.101.102.103), a network\n"
+  "(192.168.1.0/24, fd7a:115c:a1e0::/48) or a host name\n"
+  "(nas.example.ts.net), optionally with a port (10.0.0.5:8080,\n"
+  "[fd00::1]:443). A name matches the name the agent asked for and never\n"
+  "opens loopback; loopback needs an address. Cloud metadata, multicast,\n"
+  "the unspecified address and reserved space cannot be opened, and an\n"
+  "entry naming one is refused. One bad entry refuses the whole list, at\n"
+  "load and where it is added.", "0.17.0" },
+
 /* ── plugins ─────────────────────────────────────────────────────── */
 { "plugins", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Loadable plugins: event handlers, extra tools, computer backends and\n"
@@ -724,6 +749,32 @@ static const ClawtSchemaEntry schema[] = {
   "alternating the same two replies with nothing pacing them, where a\n"
   "turn is seconds. Raise it for a fleet whose turns are minutes; a\n"
   "repeat is only caught if it lands inside the window.", "0.1.0" },
+
+{ "orchestration.ack_check_model", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  "", NULL,
+  "A small model that decides whether an answer only acknowledges, as\n"
+  "provider/model -- claude/claude-haiku-4-5-20251001, ollama/llama3.2.\n"
+  "Empty turns the check off.\n"
+  "\n"
+  "An answer to a deliberate message wakes the agent that sent it, and\n"
+  "that turn costs as much for \"Thanks, noted.\" as for a page of\n"
+  "findings. With a model set, an answer is put to it only when the\n"
+  "answering turn made no tool calls (so ran no commands, changed no\n"
+  "files and sent nothing), its steps were streamed so that is known,\n"
+  "the answer is at most 600 characters, and the message it answers was\n"
+  "not a task. The model is asked one question, ACK or NEEDS, with both\n"
+  "texts fenced as data, and has 8 seconds.\n"
+  "\n"
+  "Only a plain ACK skips the wake. NEEDS, a failure, a timeout or any\n"
+  "other reply wakes the sender as before. An acknowledged answer is\n"
+  "still recorded in the room, marked \"acknowledged (no wake)\", and\n"
+  "the sender's next turn opens with a one-line note of it, so nothing\n"
+  "is dropped.\n"
+  "\n"
+  "A provider ai-glib reaches over HTTP, with its key configured the way\n"
+  "ai_assist's is. A command-line provider would spend the 8 seconds\n"
+  "starting. A message sent with reply: none never wakes its sender,\n"
+  "with or without this.", "0.17.0" },
 
 { "orchestration.mailbox", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Defaults for every agent's mailbox.\n"
@@ -1261,6 +1312,16 @@ static const ClawtSchemaEntry schema[] = {
 { "accounts.description", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
   "Whose login this is, or what it is for.", "0.2.0" },
+
+{ "accounts.pay_per_use", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "false", NULL,
+  "This login bills each use -- an API key -- rather than drawing on a\n"
+  "subscription's limit.\n"
+  "\n"
+  "Only agents.model.fallbacks reads it. Failing over to another sign-in\n"
+  "of the same subscription is refused, because rotating accounts to\n"
+  "get past a usage limit breaks the provider's terms; a pay-per-use\n"
+  "login on the same CLI pays for the work it does and is allowed.", "0.16.0" },
 
 { "integrations", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Named integrations, each handed to one agent, some agents or all of them.\n"
@@ -2320,19 +2381,61 @@ static const ClawtSchemaEntry schema[] = {
 
 { "agents.model.routing_profile", CLAWT_SCHEMA_STRING,
   CLAWT_SCHEMA_FLAG_INERT, NULL, NULL,
-  "libreclaw smart-routing profile: off, eco, auto, premium or free.\n"
+  "Reserved. Not implemented in this build: nothing reads it, and\n"
+  "nothing will until it can mean something here.\n"
   "\n"
-  "Not implemented in this build. Nothing renders it into the agent's\n"
-  "config.yaml, so libreclaw is never told about it and routes on its\n"
-  "own default.", "0.1.0" },
+  "libreclaw's smart routing (off, eco, auto, premium, free) picks a\n"
+  "model per message by scoring the prompt against a price table of\n"
+  "named providers. An agent here runs one CLI backend with one model,\n"
+  "so there is nothing for a profile to choose between -- rendering it\n"
+  "would switch on a router with a single candidate. Moving off a\n"
+  "backend that refuses is model.fallbacks; a cheaper model for one\n"
+  "scheduled job is routines.model.", "0.1.0" },
 
-{ "agents.model.fallbacks", CLAWT_SCHEMA_STRING_LIST,
-  CLAWT_SCHEMA_FLAG_INERT, NULL, NULL,
-  "Models to fall back to, in order, when the primary is unavailable.\n"
+{ "agents.model.fallbacks", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Where this agent's conversations continue, in order, when its own\n"
+  "backend refuses a turn: a usage limit, a rate limit, a sign-out or\n"
+  "an outage.\n"
   "\n"
-  "Not implemented in this build. Nothing renders it into the agent's\n"
-  "config.yaml, so an unavailable primary model fails the turn rather\n"
-  "than falling back to anything.", "0.1.0" },
+  "  fallbacks:\n"
+  "    - provider: codex-cli\n"
+  "      model: gpt-5.5\n"
+  "    - provider: claude-code\n"
+  "      model: sonnet\n"
+  "\n"
+  "libreclaw does the failing over: the next turn runs on the first\n"
+  "entry nothing is holding, and the agent returns to its own backend\n"
+  "at the reset the provider named, or after a backoff when it named\n"
+  "none. A move to another CLI or another login starts a fresh\n"
+  "conversation there; the agent's own conversation resumes when it\n"
+  "comes back. Each switch raises an agent.failover event and alert,\n"
+  "and agent status shows the fallback until the agent is back.\n"
+  "\n"
+  "Another sign-in to the same subscription is refused: an entry on\n"
+  "this agent's CLI (claude-code and claude-tmux are one Claude login)\n"
+  "with a different account, unless that account has pay_per_use set.\n"
+  "Rotating accounts to get past a usage limit breaks the provider's\n"
+  "terms. The agent is a shadow with the reason until the list is\n"
+  "fixed, and agent set refuses such a list where it arrives.\n"
+  "\n"
+  "On the command line the list is one string:\n"
+  "`clawtilla agent set ID model.fallbacks \"codex-cli:gpt-5.5,\n"
+  "claude-code:sonnet@backup\"` -- provider:model, then @account.", "0.16.0" },
+
+{ "agents.model.fallbacks.provider", CLAWT_SCHEMA_STRING,
+  CLAWT_SCHEMA_FLAG_REQUIRED, NULL, NULL,
+  "The agent CLI: one of the providers model.provider takes.", "0.16.0" },
+
+{ "agents.model.fallbacks.model", CLAWT_SCHEMA_STRING,
+  CLAWT_SCHEMA_FLAG_REQUIRED, NULL, NULL,
+  "The model that CLI is asked for.", "0.16.0" },
+
+{ "agents.model.fallbacks.account", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Which entry of accounts this fallback's CLI logs in as. Unset is the\n"
+  "CLI's default login. The account's provider must be this entry's\n"
+  "provider.", "0.16.0" },
 
 { "agents.session", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "How this agent's conversations map to AI sessions.", "0.2.0" },
@@ -2441,6 +2544,28 @@ static const ClawtSchemaEntry schema[] = {
   "under ~/.nvm, a tool a skill shells out to -- is named here. Read-only\n"
   "on purpose: something the agent should write is a mount, which says\n"
   "so in its mode. Ignored unless runtime.confine is bwrap.", "0.14.0" },
+
+{ "agents.runtime.network", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "open", clawt_runtime_network_get_type,
+  "Where this agent's own process may connect: open, gated or none.\n"
+  "\n"
+  "open shares the machine's network, LAN and tailnet included. gated\n"
+  "gives the sandbox no network of its own: its only route is\n"
+  "clawtilla's egress gate, an HTTP proxy reaching public addresses only\n"
+  "(plus egress.allow), handed to the CLI as HTTPS_PROXY and HTTP_PROXY.\n"
+  "none gives it no route at all.\n"
+  "\n"
+  "Under gated or none, provider keys whose CLI can be pointed elsewhere\n"
+  "(ANTHROPIC_API_KEY for Claude Code, OPENAI_API_KEY for Codex) are\n"
+  "brokered: the agent holds a token for its own process, and the daemon\n"
+  "swaps it for the real key on the way to a fixed upstream. Others are\n"
+  "passed as before and listed as unbrokered. An OAuth login is\n"
+  "unaffected.\n"
+  "\n"
+  "Anything but open needs runtime.confine: bwrap -- outside the sandbox\n"
+  "a process can ignore a proxy -- and without it the agent is disabled\n"
+  "with that reason, never run on an open network instead. Takes effect\n"
+  "at the agent's next start.", "0.17.0" },
 
 { "agents.runtime.autostart", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,

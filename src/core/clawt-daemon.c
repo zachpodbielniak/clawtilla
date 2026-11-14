@@ -53,6 +53,7 @@ static gboolean deliver_for_tools(const gchar   *from_agent,
                                   gint           depth,
                                   ClawtPriority  priority,
                                   const gchar   *turn_room,
+                                  gboolean       one_way,
                                   gpointer       user_data,
                                   GError       **error);
 
@@ -365,6 +366,84 @@ on_link_contested(ClawtLinkServer *server, const gchar *agent_id,
     clawt_event_bus_publish(self->bus, event);
 }
 
+/*
+ * The agent moved to a fallback backend, or came back to its own.
+ *
+ * Recorded on the agent so status shows it for as long as it holds, and
+ * published as `agent.failover` -- a notice while the agent is away,
+ * because it arrives on its own and changes what the agent costs and how
+ * well it answers, and routine when it comes back.  The sentence is
+ * built here, once, by the library, so the alert, the log and both
+ * clients say the same thing.
+ */
+static void
+on_link_failover(ClawtLinkServer *server, const gchar *agent_id,
+                 JsonObject *payload, gpointer user_data)
+{
+    ClawtDaemon *self = user_data;
+    g_autoptr(ClawtEvent) event = NULL;
+    g_autofree gchar *line = NULL;
+    ClawtAgent *agent;
+    JsonObject *backend;
+    const gchar *name = NULL;
+
+    (void)server;
+
+    agent = clawt_agent_manager_get(self->agents, agent_id);
+    if (agent == NULL || payload == NULL)
+        return;
+
+    if (clawt_agent_get_config(agent) != NULL)
+        name = clawt_agent_config_get_string(clawt_agent_get_config(agent),
+                                             "name");
+
+    clawt_agent_set_failover(agent, payload);
+    line = clawt_failover_describe(name != NULL ? name : agent_id, payload);
+
+    g_message("agent %s: %s", agent_id, line);
+
+    event = clawt_event_new("agent.failover", agent_id);
+    clawt_event_set_detail(event, "state",
+        json_object_get_string_member_with_default(payload, "state", ""));
+    clawt_event_set_detail(event, "reason",
+        json_object_get_string_member_with_default(payload, "reason", ""));
+
+    backend = json_object_has_member(payload, "active")
+        ? json_object_get_object_member(payload, "active") : NULL;
+    if (backend != NULL) {
+        clawt_event_set_detail(event, "provider",
+            json_object_get_string_member_with_default(backend, "provider",
+                                                       NULL));
+        clawt_event_set_detail(event, "model",
+            json_object_get_string_member_with_default(backend, "model",
+                                                       NULL));
+    }
+
+    backend = json_object_has_member(payload, "primary")
+        ? json_object_get_object_member(payload, "primary") : NULL;
+    if (backend != NULL) {
+        clawt_event_set_detail(event, "primary_provider",
+            json_object_get_string_member_with_default(backend, "provider",
+                                                       NULL));
+        clawt_event_set_detail(event, "primary_model",
+            json_object_get_string_member_with_default(backend, "model",
+                                                       NULL));
+    }
+
+    clawt_event_set_detail_int(event, "reset_at",
+        json_object_get_int_member_with_default(payload, "reset_at", 0));
+    clawt_event_set_detail_int(event, "retry_at",
+        json_object_get_int_member_with_default(payload, "retry_at", 0));
+    clawt_event_set_detail(event, "context_lost",
+        json_object_get_boolean_member_with_default(payload, "context_lost",
+                                                    FALSE)
+            ? "true" : "false");
+    clawt_event_set_detail(event, "message", line);
+
+    clawt_event_bus_publish(self->bus, event);
+    clawt_event_bus_emit(self->bus, "agent.changed", agent_id);
+}
+
 static void
 on_link_removed(ClawtLinkServer *server, const gchar *agent_id,
                 gpointer user_data)
@@ -378,6 +457,14 @@ on_link_removed(ClawtLinkServer *server, const gchar *agent_id,
 
     if (agent != NULL)
         clawt_agent_set_link(agent, NULL);
+
+    /*
+     * Which backend a process is on dies with the process.  An agent
+     * that only lost its link repeats the state after it reconnects; a
+     * restarted one starts on its primary and says so by saying nothing.
+     */
+    if (agent != NULL)
+        clawt_agent_set_failover(agent, NULL);
 
     clawt_event_bus_emit(self->bus, "agent.disconnected", agent_id);
 }
@@ -2451,6 +2538,18 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
         }
     }
 
+	/*
+	 * An answer to a peer that may be no more than "thanks, noted" is
+	 * put to orchestration.ack_check_model first, which either records
+	 * it without waking the peer or routes it exactly as below.  Never
+	 * for the operator's room: a person reading an acknowledgement costs
+	 * nothing, and must not be second-guessed by a model.
+	 */
+	if (!is_operator_room(destination) &&
+		clawt_daemon_ack_consider(self, agent_id, room_id, destination,
+		                          message))
+		return;
+
     if (clawt_mailbox_router_send(self->router, message, &error) < 0) {
         g_info("daemon: %s's message was not routed: %s", agent_id,
                error->message);
@@ -2991,7 +3090,7 @@ static gboolean
 deliver_for_tools(const gchar *from_agent, const gchar *target,
                   const gchar *body, const gchar *task_id, gint depth,
                   ClawtPriority priority, const gchar *turn_room,
-				  gpointer user_data, GError **error)
+				  gboolean one_way, gpointer user_data, GError **error)
 {
     ClawtDaemon *self = user_data;
 	g_autoptr(ClawtMessage) message = NULL;
@@ -3042,6 +3141,12 @@ deliver_for_tools(const gchar *from_agent, const gchar *target,
 	clawt_message_set_priority(message, priority);
 
 	/*
+	 * `reply: none`, onto the message, so the router stores it on every
+	 * item and the receiver's turn is closed from the start.
+	 */
+	clawt_message_set_one_way(message, one_way);
+
+	/*
 	 * A delegation that named a model: only the assignment itself, sent
 	 * to the assignee, runs on it -- not the delegator's later notes on
 	 * the same task, nor anything sent the other way.
@@ -3061,9 +3166,10 @@ deliver_for_tools(const gchar *from_agent, const gchar *target,
 	 * durable mailbox. Neither task assignments nor room posts need it:
 	 * tasks already have settlement notices, and room posts are not
 	 * requests to one peer. Do not guess between concurrent callers
-	 * when an older harness provides no room.
+	 * when an older harness provides no room. A one-way notice needs none
+	 * either: nothing will answer it.
 	 */
-	if (sender != NULL && task_id == NULL &&
+	if (sender != NULL && task_id == NULL && !one_way &&
 		clawt_agent_manager_get(self->agents, target) != NULL) {
 		const gchar *request_room = turn_room;
 
@@ -4032,6 +4138,22 @@ start_agent_launch(ClawtDaemon *self, const gchar *agent_id,
         }
 
         clawt_process_runtime_set_sandbox(process, sandbox);
+
+        /*
+         * And its network, retaken with the sandbox for the same reason.
+         * A gated agent whose gate cannot be bound is refused, never
+         * started with the open network instead.
+         */
+        {
+            g_autoptr(GError) why = NULL;
+
+            if (!clawt_daemon_egress_prepare_agent(self, config, process,
+                                                   &why)) {
+                clawt_agent_set_error(agent, why->message);
+                g_propagate_error(error, g_steal_pointer(&why));
+                return FALSE;
+            }
+        }
     }
 
 	prime_agent_usage(self, agent_id);
@@ -4590,10 +4712,14 @@ release_components(ClawtDaemon *self)
     g_clear_object(&self->tasks);
     g_clear_object(&self->rooms);
     g_clear_object(&self->agents);
+    clawt_daemon_egress_release(self);
     g_clear_object(&self->vm_images);
     g_clear_object(&self->exchange);
     g_clear_object(&self->decisions);
     g_clear_object(&self->operator_profile);
+	g_clear_object(&self->ack_provider);
+	g_clear_object(&self->ack_provider_override);
+	g_clear_pointer(&self->ack_provider_spec, g_free);
     g_clear_object(&self->summariser);
     g_clear_object(&self->transcripts);
     g_clear_object(&self->log);
@@ -6256,7 +6382,7 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      */
     clawt_mcp_tools_set_main_context(self->mcp_tools, self->main_context);
 
-    clawt_mcp_tools_set_deliver_turn_func(self->mcp_tools, deliver_for_tools,
+    clawt_mcp_tools_set_deliver_reply_func(self->mcp_tools, deliver_for_tools,
                                      self, NULL);
 
     /*
@@ -6379,6 +6505,8 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
                      G_CALLBACK(on_link_message), self);
     g_signal_connect(self->link_server, "step",
                      G_CALLBACK(on_link_step), self);
+    g_signal_connect(self->link_server, "failover",
+                     G_CALLBACK(on_link_failover), self);
     g_signal_connect(self->link_server, "typing",
                      G_CALLBACK(on_link_typing), self);
     g_signal_connect(self->link_server, "link-contested",
@@ -6730,6 +6858,9 @@ clawt_daemon_stop(ClawtDaemon *self)
     if (self->agents != NULL)
         clawt_agent_manager_stop_all(self->agents);
 
+    /* After the fleet, whose exits are what revoke the broker's tokens. */
+    clawt_daemon_egress_stop(self);
+
     if (self->rooms != NULL)
         clawt_room_manager_flush(self->rooms);
 
@@ -6876,6 +7007,9 @@ clawt_daemon_reload_internal(ClawtDaemon *self, GPtrArray *refusals,
      */
     clawt_daemon_render_all_agents_into(self, refusals);
 
+    /* egress.allow is read per connection, so it applies at once. */
+    clawt_daemon_egress_refresh_allowlist(self);
+
     clawt_event_bus_emit(self->bus, "daemon.reloaded", NULL);
     g_signal_emit(self, signals[SIGNAL_RELOADED], 0);
 
@@ -6976,7 +7110,13 @@ clawt_daemon_setting_needs_a_new_session(const gchar *key)
          * unconfined an hour later.
          */
         "runtime.confine",
-        "runtime.confine_paths"
+        "runtime.confine_paths",
+
+        /*
+         * The network namespace is made when the child is spawned, and
+         * the broker's token is minted for that process.
+         */
+        "runtime.network"
     };
     gsize i;
 
@@ -7116,6 +7256,20 @@ clawt_daemon_add_agent_settings(JsonBuilder *builder, ClawtAgent *agent)
             break;
         }
         }
+    }
+
+    /*
+     * The fallback list, in the spelling agent.set takes back.  A list
+     * of mappings has no agent-relative name, so the walk above skips
+     * it; without this a client's editor would open empty and saving
+     * the page would write the empty list over the real one.
+     */
+    {
+        g_autoptr(GPtrArray) fallbacks = clawt_agent_config_get_fallbacks(config);
+        g_autofree gchar *spelled = clawt_model_fallback_list_to_string(fallbacks);
+
+        json_builder_set_member_name(builder, "model.fallbacks");
+        json_builder_add_string_value(builder, spelled);
     }
 
     json_builder_end_object(builder);
@@ -7665,6 +7819,9 @@ clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
     json_builder_set_member_name(builder, "runtime_type");
     json_builder_add_string_value(
         builder, clawt_agent_config_get_string(config, "runtime.type"));
+    json_builder_set_member_name(builder, "network");
+    json_builder_add_string_value(
+        builder, clawt_agent_config_get_string(config, "runtime.network"));
     json_builder_set_member_name(builder, "confine_available");
     json_builder_add_boolean_value(
         builder, !clawt_agent_confine_wanted(config) ||
@@ -7719,6 +7876,29 @@ clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
      */
     json_builder_set_member_name(builder, "busy");
     json_builder_add_boolean_value(builder, clawt_agent_get_busy(agent));
+
+    /*
+     * Which backend it is really running on, only while that is not its
+     * own.  As libreclaw reported it plus `since`, and the sentence the
+     * alert carried, so a client can badge it and say why without a
+     * second copy of the wording.
+     */
+    if (clawt_agent_get_failover(agent) != NULL) {
+        JsonObject *failover = clawt_agent_get_failover(agent);
+        g_autofree gchar *line = clawt_failover_describe(
+            clawt_agent_config_get_string(config, "name") != NULL
+                ? clawt_agent_config_get_string(config, "name")
+                : clawt_agent_get_id(agent),
+            failover);
+        JsonNode *node = json_node_new(JSON_NODE_OBJECT);
+
+        json_node_set_object(node, failover);
+        json_builder_set_member_name(builder, "failover");
+        json_builder_add_value(builder, node);
+
+        json_builder_set_member_name(builder, "failover_message");
+        json_builder_add_string_value(builder, line);
+    }
 
     if (clawt_agent_get_activity_peer(agent) != NULL) {
         json_builder_set_member_name(builder, "peer");
@@ -9007,6 +9187,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_agent,
     clawt_daemon_handle_memory,
     clawt_daemon_handle_mount,
+    clawt_daemon_handle_egress,
     clawt_daemon_handle_image,
     clawt_daemon_handle_team,
     clawt_daemon_handle_room,
@@ -9026,6 +9207,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_teach,
     clawt_daemon_handle_activity,
     clawt_daemon_handle_browser,
+    clawt_daemon_handle_orchestration,
 };
 
 JsonNode *

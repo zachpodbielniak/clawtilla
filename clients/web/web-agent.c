@@ -395,6 +395,22 @@ shown_value(JsonObject *agent, JsonObject *settings, const gchar *key)
     return (settings != NULL) ? clawt_web_member(settings, key, "") : "";
 }
 
+/*
+ * Whether this agent's network can be chosen: only inside the sandbox,
+ * since outside it the CLI could ignore the gate.  Asked of the agent as
+ * the daemon reports it, so the page and the refusal agree.
+ */
+static gboolean
+network_editable(ClawtWebApp *app, const gchar *agent_id)
+{
+    g_autoptr(JsonNode) shown = clawt_web_find_agent(app, agent_id);
+    JsonObject *agent = clawt_web_member_object(clawt_web_root(shown),
+                                                "agent");
+
+    return g_strcmp0(clawt_web_member(agent, "confine", "none"),
+                     "bwrap") == 0;
+}
+
 static HtmxElement *
 control_for(ClawtWebApp *app, const gchar *agent_id, const ClawtSchemaEntry *entry,
             const gchar *key, const gchar *value)
@@ -507,6 +523,43 @@ control_for(ClawtWebApp *app, const gchar *agent_id, const ClawtSchemaEntry *ent
                 (const gchar *const *)choices, NULL, value));
     }
 
+    /*
+     * Where the agent may connect, with the library's names for the
+     * choices ("Through clawtilla's gate") over the enum's own values.
+     * Disabled while the sandbox is off -- a disabled select is not
+     * posted, so saving cannot write a network the daemon would refuse
+     * -- and the reason follows it in the card.
+     */
+    if (g_strcmp0(key, "runtime.network") == 0) {
+        g_auto(GStrv) choices = enum_choices(entry);
+        g_autoptr(GPtrArray) labels = g_ptr_array_new();
+        HtmxDiv *field;
+        GList *l;
+        guint i;
+
+        if (choices != NULL) {
+            for (i = 0; choices[i] != NULL; i++)
+                g_ptr_array_add(labels, (gpointer)
+                                clawt_egress_network_choice_label(choices[i]));
+
+            g_ptr_array_add(labels, NULL);
+            field = clawt_web_select_field(
+                clawt_egress_network_label(), field_name,
+                (const gchar *const *)choices,
+                (const gchar *const *)labels->pdata, value);
+
+            if (!network_editable(app, agent_id)) {
+                for (l = htmx_node_get_children(HTMX_NODE(field)); l != NULL;
+                     l = l->next)
+                    if (G_TYPE_CHECK_INSTANCE_TYPE(l->data, HTMX_TYPE_SELECT))
+                        htmx_element_set_attribute(HTMX_ELEMENT(l->data),
+                                                   "disabled", "disabled");
+            }
+
+            return HTMX_ELEMENT(field);
+        }
+    }
+
     switch (entry->type) {
     case CLAWT_SCHEMA_BOOLEAN:
         return HTMX_ELEMENT(clawt_web_switch_field(
@@ -584,6 +637,14 @@ skip_key(const gchar *key, const ClawtSchemaEntry *entry)
     if (g_str_has_prefix(key, "computer.mounts"))
         return TRUE;
 
+    /*
+     * The fallback list is a list of mappings: the walk yields its child
+     * keys, which as three text fields would edit no entry at all.  It
+     * has a card of its own, the ordered editor below the form.
+     */
+    if (g_str_has_prefix(key, "model.fallbacks"))
+        return TRUE;
+
     return FALSE;
 }
 
@@ -599,6 +660,24 @@ add_summary_card(HtmxElement *parent, JsonObject *agent,
     const gchar *detail = clawt_web_member(agent, "detail", NULL);
 
     clawt_web_add(body, clawt_web_row("State", state));
+
+    /*
+     * On one of its fallbacks: the badge, and the sentence saying why
+     * and until when -- the same words the alert carried.
+     */
+    {
+        HtmxSpan *fallback = clawt_web_failover_badge(agent);
+
+        if (fallback != NULL) {
+            g_autoptr(HtmxDiv) note = htmx_div_new();
+
+            htmx_element_add_class(HTMX_ELEMENT(note), "fallback-state");
+            clawt_web_add(HTMX_ELEMENT(note), fallback);
+            clawt_web_add(HTMX_ELEMENT(note), clawt_web_text(
+                clawt_web_member(agent, "failover_message", ""), "small"));
+            htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(note));
+        }
+    }
 
     if (detail != NULL)
         clawt_web_add(body, clawt_web_row("Detail", detail));
@@ -675,6 +754,70 @@ add_summary_card(HtmxElement *parent, JsonObject *agent,
             "What the agent is told about its computer:", "small muted"));
         htmx_node_add_child(HTMX_NODE(details), HTMX_NODE(pre));
         htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(details));
+    }
+
+    htmx_node_add_child(HTMX_NODE(parent), HTMX_NODE(card));
+}
+
+/*
+ * Where the agent may connect, what the gate refused it today and why,
+ * and which of its keys the broker holds.  The summary is the library's
+ * line, so the three clients say "egress: gated (3 refused today)" the
+ * same way; each refusal names the address as well as the host, which is
+ * what makes a rebinding name legible.
+ */
+static void
+add_egress_card(HtmxElement *parent, JsonObject *egress)
+{
+    g_autofree gchar *summary = NULL;
+    g_autoptr(HtmxDiv) card = NULL;
+    HtmxElement *body;
+    JsonArray *refusals;
+    JsonArray *keys;
+    guint i;
+
+    if (egress == NULL)
+        return;
+
+    summary = clawt_egress_status_line(
+        clawt_web_member(egress, "network", "open"),
+        (guint)clawt_web_member_int(egress, "refused_today", 0));
+    card = clawt_web_card(clawt_egress_network_label(), summary);
+    body = clawt_web_card_body(card);
+
+    refusals = clawt_web_member_array(egress, "refusals");
+
+    for (i = 0; refusals != NULL && i < json_array_get_length(refusals);
+         i++) {
+        JsonObject *refusal = json_array_get_object_element(refusals, i);
+        g_autofree gchar *line = NULL;
+
+        if (refusal == NULL)
+            continue;
+
+        line = clawt_egress_refusal_line(
+            clawt_web_member(refusal, "host", NULL),
+            (guint)clawt_web_member_int(refusal, "port", 0),
+            clawt_web_member(refusal, "address", NULL),
+            clawt_web_member(refusal, "reason", NULL));
+        clawt_web_add(body, clawt_web_text(line, "small mono"));
+    }
+
+    keys = clawt_web_member_array(egress, "keys");
+
+    for (i = 0; keys != NULL && i < json_array_get_length(keys); i++) {
+        JsonObject *key = json_array_get_object_element(keys, i);
+        gboolean brokered;
+
+        if (key == NULL)
+            continue;
+
+        brokered = clawt_web_member_bool(key, "brokered", FALSE);
+        clawt_web_add(body, clawt_web_row(
+            clawt_web_member(key, "name", "?"),
+            brokered ? "brokered: the agent holds a token, the daemon "
+                       "adds the real key"
+                     : clawt_web_member(key, "reason", "not brokered")));
     }
 
     htmx_node_add_child(HTMX_NODE(parent), HTMX_NODE(card));
@@ -944,6 +1087,8 @@ clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id)
                      clawt_web_member(root, "computer_detail", NULL),
                      clawt_web_member_object(root, "identity"));
 
+    add_egress_card(HTMX_ELEMENT(pad),
+                    clawt_web_member_object(root, "egress"));
     add_waits_card(app, HTMX_ELEMENT(pad), agent_id);
     add_avatar_card(HTMX_ELEMENT(pad), agent, agent_id);
 
@@ -1078,6 +1223,28 @@ clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id)
                         "and runs once however many commands are waiting.",
                         "small muted"));
 
+                /*
+                 * The chosen network's one line, or -- with the sandbox
+                 * off -- why it cannot be chosen, in the library's words.
+                 */
+                if (g_strcmp0(key, "runtime.network") == 0) {
+                    const gchar *confine =
+                        clawt_web_member(agent, "confine", "none");
+                    const gchar *network =
+                        clawt_web_member(agent, "network", "open");
+                    const gchar *notice =
+                        clawt_egress_network_notice(network, confine);
+
+                    if (notice != NULL)
+                        clawt_web_add(group_body, clawt_web_notice(
+                            notice, g_strcmp0(network, "open") != 0
+                                    ? "bad" : ""));
+                    else
+                        clawt_web_add(group_body, clawt_web_text(
+                            clawt_egress_network_choice_explanation(network),
+                            "small muted"));
+                }
+
                 if (g_strcmp0(key, "computer.use") == 0 && *use != '\0')
                     clawt_web_add(group_body, clawt_web_notice(
                         "This agent is on a shared computer, so the rest of its "
@@ -1114,6 +1281,25 @@ clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id)
     }
 
     htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(form));
+
+    /*
+     * The fallback list, right under the form holding the model it falls
+     * back from.  A form of its own, because its buttons edit a list and
+     * a form cannot nest in another.
+     */
+    {
+        g_autoptr(JsonNode) catalog = clawt_web_app_call(app, "model.list",
+                                                         NULL);
+        g_autoptr(JsonNode) accounts = clawt_web_app_call(app, "account.list",
+                                                          NULL);
+
+        clawt_web_add(pad, clawt_web_fallback_card(
+            agent_id,
+            settings != NULL ? clawt_web_member(settings, "model.fallbacks", "")
+                             : "",
+            clawt_web_member(agent, "provider", NULL),
+            clawt_web_root(catalog), clawt_web_root(accounts)));
+    }
 
     clawt_web_add_files_card(app, HTMX_ELEMENT(pad), agent_id);
     clawt_web_add_memory_card(app, HTMX_ELEMENT(pad), agent_id, NULL);
@@ -1180,8 +1366,9 @@ apply_form(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
 
     /*
      * The swap total goes ahead of memory when memory first would be
-     * refused against the stored swap (clawt_container_limits_swap_first()); the walk below
-     * then reaches memory_swap after memory and finds it already sent.
+     * refused against the stored swap (clawt_container_limits_swap_first());
+     * the walk below then reaches memory_swap after memory and finds it
+     * already sent.
      */
     {
         g_autofree gchar *memory = g_strdup(
@@ -1212,6 +1399,38 @@ apply_form(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
             if (reply == NULL)
                 return 0;
             changed++;
+        }
+    }
+
+    /*
+     * Opening the network goes before the schema walk: runtime.confine
+     * comes first there, and turning the sandbox off while the network
+     * is still gated is refused -- so a save that does both would fail
+     * halfway in schema order.
+     */
+    {
+        const gchar *network = clawt_web_form_value(request, "k:runtime.network");
+        const gchar *current = (settings != NULL)
+            ? clawt_web_member(settings, "runtime.network", "") : "";
+
+        if (g_strcmp0(network, "open") == 0 &&
+            g_strcmp0(current, "open") != 0 && *current != '\0') {
+            g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+            g_autoptr(JsonNode) reply = NULL;
+
+            clawt_web_payload_set(payload, "agent", agent_id);
+            clawt_web_payload_set(payload, "key", "runtime.network");
+            clawt_web_payload_set(payload, "value", "open");
+            reply = clawt_web_app_request(app, "agent.set",
+                                          clawt_web_payload_take(
+                                              g_steal_pointer(&payload)),
+                                          error);
+
+            if (reply == NULL)
+                return 0;
+
+            *out_restart = TRUE;
+            json_object_set_string_member(settings, "runtime.network", "open");
         }
     }
 
@@ -1340,6 +1559,147 @@ on_save(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
     return clawt_web_after_action(app, request, agent_id,
                                   CLAWT_PAGE_AGENT, said);
+}
+
+/*
+ * The fallback list, as the card posted it, with the one edit its button
+ * names applied -- then saved whole, in the library's spelling.
+ *
+ * Every button saves, because the page has no state between requests: a
+ * list reordered and not saved would exist nowhere.  An entry missing its
+ * provider or its model is refused here rather than dropped, since saving
+ * a shorter list than the one on screen would say so nowhere.
+ */
+static HtmxResponse *
+on_fallbacks(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+    const gchar *op = clawt_web_form_value(request, "op");
+    const gchar *count_text = clawt_web_form_value(request, "fb_count");
+    g_autoptr(GPtrArray) list = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)clawt_model_fallback_free);
+    g_autoptr(JsonNode) current = NULL;
+    g_autoptr(GPtrArray) before = NULL;
+    g_autofree gchar *spelled = NULL;
+    g_autofree gchar *was = NULL;
+    guint64 count = 0;
+    guint64 index = 0;
+    guint i;
+
+    if (count_text != NULL)
+        g_ascii_string_to_unsigned(count_text, 10, 0, 64, &count, NULL);
+
+    for (i = 0; i < (guint)count; i++) {
+        g_autofree gchar *provider_name = g_strdup_printf("fb_provider_%u", i);
+        g_autofree gchar *model_name = g_strdup_printf("fb_model_%u", i);
+        g_autofree gchar *account_name = g_strdup_printf("fb_account_%u", i);
+        g_autofree gchar *provider = g_strdup(clawt_web_form_value(request,
+                                                                   provider_name));
+        g_autofree gchar *model = g_strdup(clawt_web_form_value(request,
+                                                                model_name));
+
+        g_ptr_array_add(list, clawt_model_fallback_new(
+            provider != NULL ? g_strstrip(provider) : "",
+            model != NULL ? g_strstrip(model) : "",
+            clawt_web_form_value(request, account_name)));
+    }
+
+    if (g_strcmp0(op, "add") == 0) {
+        g_autofree gchar *provider = g_strdup(clawt_web_form_value(
+            request, "fb_new_provider"));
+        g_autofree gchar *model = g_strdup(clawt_web_form_value(
+            request, "fb_new_model"));
+
+        g_ptr_array_add(list, clawt_model_fallback_new(
+            provider != NULL ? g_strstrip(provider) : "",
+            model != NULL ? g_strstrip(model) : "",
+            clawt_web_form_value(request, "fb_new_account")));
+    } else if (op != NULL && g_str_has_prefix(op, "remove:") &&
+               g_ascii_string_to_unsigned(op + 7, 10, 0, G_MAXUINT, &index,
+                                          NULL) && index < list->len) {
+        g_ptr_array_remove_index(list, (guint)index);
+    } else if (op != NULL && g_str_has_prefix(op, "up:") &&
+               g_ascii_string_to_unsigned(op + 3, 10, 0, G_MAXUINT, &index,
+                                          NULL) &&
+               index > 0 && index < list->len) {
+        gpointer moved = list->pdata[index];
+
+        list->pdata[index] = list->pdata[index - 1];
+        list->pdata[index - 1] = moved;
+    } else if (op != NULL && g_str_has_prefix(op, "down:") &&
+               g_ascii_string_to_unsigned(op + 5, 10, 0, G_MAXUINT, &index,
+                                          NULL) &&
+               index + 1 < list->len) {
+        gpointer moved = list->pdata[index];
+
+        list->pdata[index] = list->pdata[index + 1];
+        list->pdata[index + 1] = moved;
+    }
+
+    for (i = 0; i < list->len; i++) {
+        ClawtModelFallback *entry = g_ptr_array_index(list, i);
+
+        if (*entry->provider == '\0' || *entry->model == '\0') {
+            g_autofree gchar *which = (i + 1 == list->len &&
+                                       g_strcmp0(op, "add") == 0)
+                ? g_strdup("The new fallback")
+                : g_strdup_printf("Fallback %u", i + 1);
+            g_autofree gchar *why = g_strdup_printf(
+                "%s needs both a provider and a model; nothing was saved.",
+                which);
+
+            return clawt_web_error_page(app, request, agent_id,
+                                        CLAWT_PAGE_AGENT, why);
+        }
+    }
+
+    spelled = clawt_model_fallback_list_to_string(list);
+
+    /*
+     * Compared in the library's spelling, so a list the daemon reports
+     * with other spacing is not "changed" by being posted back.
+     */
+    current = clawt_web_find_agent(app, agent_id);
+    before = clawt_model_fallback_parse_list(
+        clawt_web_member(clawt_web_member_object(clawt_web_root(current),
+                                                 "settings"),
+                         "model.fallbacks", ""), NULL);
+    was = (before != NULL) ? clawt_model_fallback_list_to_string(before) : NULL;
+
+    if (g_strcmp0(was, spelled) == 0)
+        return clawt_web_after_action(app, request, agent_id,
+                                      CLAWT_PAGE_AGENT, "Nothing changed.");
+
+    {
+        g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+        g_autoptr(JsonNode) reply = NULL;
+
+        clawt_web_payload_set(payload, "agent", agent_id);
+        clawt_web_payload_set(payload, "key", "model.fallbacks");
+        clawt_web_payload_set(payload, "value", spelled);
+
+        reply = clawt_web_app_call(app, "agent.set",
+                                   clawt_web_payload_take(
+                                       g_steal_pointer(&payload)));
+
+        /*
+         * The daemon's refusal as written: it names the account or the
+         * subscription that made the list unacceptable.
+         */
+        if (reply == NULL) {
+            g_autofree gchar *why = g_strdup(clawt_web_app_last_error(app));
+
+            return clawt_web_error_page(app, request, agent_id,
+                                        CLAWT_PAGE_AGENT, why);
+        }
+    }
+
+    return clawt_web_after_action(
+        app, request, agent_id, CLAWT_PAGE_AGENT,
+        list->len == 0
+            ? "Fallbacks cleared: at a limit the agent waits for the reset."
+            : "Fallbacks saved. Restart the agent for them to take effect.");
 }
 
 static HtmxResponse *
@@ -1598,6 +1958,7 @@ void
 clawt_web_register_agent(HtmxRouter *router, ClawtWebApp *app)
 {
     htmx_router_post(router, "/a/:id/set", on_save, app);
+    htmx_router_post(router, "/a/:id/fallbacks", on_fallbacks, app);
     htmx_router_post(router, "/a/:id/remove", on_remove, app);
     htmx_router_post(router, "/a/:id/reset", on_reset, app);
     htmx_router_post(router, "/a/:id/wait/cancel", on_wait_cancel, app);

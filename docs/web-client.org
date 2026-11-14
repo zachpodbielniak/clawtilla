@@ -111,11 +111,20 @@ The same seven the GTK client's view switcher has, in the same order.
 | Fleet    | cost per agent, the last fourteen days, idle agents to stop ([[file:clients.org::#fleet-tab][the Fleet tab]]) |
 
 And the settings pages: fleet, VM images, teams, shared folders,
-spending, integrations, connectors, appearance, connections and devices.
+spending, orchestration, integrations, connectors, appearance, connections
+and devices.
 
 *** Spending
 
 =/settings/spending?period=N&by=NICK= draws two rows of tabs -- the periods from =clawt_usage_period_count()= and the groupings from =clawt_usage_group_count()=, both by index into the library's tables, so there is no list of slugs here to drift -- then ~usage.ledger~'s groups as a table with Turns, Unpriced, In, Out and Cost columns and a Fleet footer.  An unpriced turn in the period adds a notice under the table saying how many and that they are not in the cost.  *Export CSV* is a plain =<a download>= to =/settings/spending/export= with the same query; that route asks the daemon again and answers =text/csv= with a =Content-Disposition= attachment, because the browser is not necessarily on the machine running =clawtilla-web=.  The document is =clawt_usage_ledger_csv()='s, the same bytes the CLI and the other clients write.
+
+*** Orchestration
+
+=/settings/orchestration= is a form with one select, *Model*, built by =clawt_web_select_field()= from =clawt_ack_check_model_count()= / =_nth_value()= / =_nth_label()= with ~orchestration.get~'s =ack_check_model= selected; a value the list lacks is kept as an option, so saving untouched cannot turn the check off.  *Save* posts to the same path, which sends ~orchestration.set~ and redraws the page with the outcome.  See [[file:clients.org::#orchestration-settings][Orchestration]].
+
+*** Acknowledged answers and merged deliveries in the chat
+
+=message_element()= reads =acknowledged= and =merged= off each ~room.history~ message.  An acknowledged answer gets a neutral badge, =clawt_message_ack_label()= with =clawt_message_ack_tooltip()= as its =title=, in the message's header line -- which is drawn for that message even mid-run, as the task and hop badges are.  A merged note's body is split by =clawt_merge_split()=: the preface is the message body and each section is a =.merge-section= block with a =.merge-section-label= heading.  The live ~message~ event only marks unread here; the transcript re-reads history, so both marks come from one path.
 
 *** The integration editor
 
@@ -441,6 +450,8 @@ nobody chose.
 
 ~runtime.confine~ keeps the enum's own select but not its spelling: it is labelled with =clawt_agent_confine_label()=, followed by =clawt_agent_confine_explanation()= and, when the daemon cannot sandbox the agent, the =clawt_agent_confine_notice()= warning (read off the agent's =confine=, =runtime_type= and =confine_available=) -- the same words the GTK and libregnum clients use, so a shadow caused by a missing bubblewrap is explained where somebody turned it on.
 
+~runtime.network~ is a select labelled =clawt_egress_network_label()= whose options are the enum's values named by =clawt_egress_network_choice_label()= ("Through clawtilla's gate"). Below it is the chosen option's =clawt_egress_network_choice_explanation()=, or -- when the agent's =confine= is not ~bwrap~ -- =clawt_egress_network_notice()=, and the select is ~disabled~ then, so it is not posted and a save cannot write a network the daemon would refuse. A save that opens the network applies that before the schema walk reaches ~runtime.confine~, because turning the sandbox off while the network is still gated is refused. The agent page has a *Network* card (=add_egress_card()=): =clawt_egress_status_line()= as its summary, the recent refusals as =clawt_egress_refusal_line()=, and one row per key saying whether the broker holds it, from agent.show's =egress= member. The Shared folders settings page has a card for =egress.allow= (=clawt_egress_allowlist_label()=, =clawt_egress_allowlist_explanation()=) posting to =/settings/egress/add= and =/settings/egress/remove=, which send ~egress.allow.add~ and ~egress.allow.remove~.
+
 Nine keys are the exception, and the page says nothing about them because
 it cannot: ~orchestration.mailbox.*~ and ~memories.*~ carry
 =CLAWT_SCHEMA_FLAG_PER_AGENT=, and their spelling inside an agent block
@@ -462,6 +473,32 @@ keys would do that a hundred times for a form somebody opened and closed.
 A permission changed under a running agent says so: an AI CLI lists its
 tools once, when its session starts, so the change reaches the agent's
 files and not its session.
+
+*** The fallback list has a card of its own
+
+~model.fallbacks~ is a list of mappings, so the schema walk yields its
+child keys -- three text fields that would edit no entry.  They are
+skipped, and the list is edited in a /Fallbacks/ card under the form
+(~clawt_web_fallback_card()~ in =web-ui.c=, so =tests/test-web-render.c=
+renders it).  A form cannot nest in another, so it is a form of its own,
+posting to =/a/:id/fallbacks= with =op= naming the button: =save=, =add=,
+=up:N=, =down:N= or =remove:N=.  The page has no state between requests,
+so every button saves the whole list in the library's spelling; a list
+reordered and not saved would exist nowhere.
+
+Each entry is a provider select, a model text field with a =<datalist>=
+of that provider's models (a suggestion, not a restriction: the catalogue
+goes stale), and an account select offering the CLI's own login and the
+accounts for that entry's CLI.  The add row's datalist holds every agent
+provider's models and its account select names each login's CLI, since
+its provider is not chosen until it is posted.  An entry missing its
+provider or model is refused on the page rather than dropped, and the
+daemon's refusal of a list is shown as written.  See "Editing the
+fallbacks" in [[file:clients.org][clients.org]].
+
+An agent running on a fallback carries an amber /On fallback: …/ badge,
+titled with the daemon's sentence, in the sidebar, the top bar and the
+/At a glance/ card (~clawt_web_failover_badge()~).
 
 ** Appearance
 

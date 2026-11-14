@@ -1066,6 +1066,14 @@ agent_row(ClawtLrgApp *app, const ClawtLrgSidebarEntry *entry)
     if (agent->unread > 0)
         clawt_lrg_take(badges, unread_pill(agent->unread));
 
+    /*
+     * Running on one of its fallbacks: the answers come from a model
+     * nobody picked for it.  Why and until when is on its Overview page,
+     * since nothing here has a tooltip to put it in.
+     */
+    if (agent->fallback != NULL)
+        clawt_lrg_take(badges, clawt_lrg_badge(agent->fallback, "warn"));
+
     /* an agent that can run commands on this machine looks different */
     if (agent->host)
         clawt_lrg_take(badges, clawt_lrg_badge("HOST", "bad"));

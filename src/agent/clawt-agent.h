@@ -18,6 +18,7 @@
 #endif
 
 #include <glib-object.h>
+#include <json-glib/json-glib.h>
 
 #include "clawt-enums.h"
 #include "clawt-types.h"
@@ -136,6 +137,34 @@ void              clawt_agent_set_activity(ClawtAgent  *self,
  * Returns: %TRUE while a turn is in progress
  */
 gboolean          clawt_agent_get_busy(ClawtAgent *self);
+
+/**
+ * clawt_agent_set_failover:
+ * @self: a #ClawtAgent
+ * @failover: (nullable) (transfer none): what libreclaw reported in its
+ *   last `agent.failover` frame, or %NULL when nothing is known
+ *
+ * Records which backend the agent is running on.  The object is kept as
+ * reported (`state`, `primary`, `active`, `reason`, `reset_at`,
+ * `retry_at`, `context_lost`) with `since` added, in microseconds, the
+ * first time it says `fallback`.  A report that the agent is back on its
+ * primary clears it: there is nothing left to show.
+ *
+ * State about a process, so it is cleared with the process's link -- the
+ * agent repeats it after every reconnect while it is still on a
+ * fallback, and a restarted agent starts on its primary.
+ */
+void              clawt_agent_set_failover(ClawtAgent *self,
+                                           JsonObject *failover);
+
+/**
+ * clawt_agent_get_failover:
+ * @self: a #ClawtAgent
+ *
+ * Returns: (transfer none) (nullable): the agent's failover state while
+ *   it is on a fallback, %NULL while it is on its own backend
+ */
+JsonObject       *clawt_agent_get_failover(ClawtAgent *self);
 
 /**
  * clawt_agent_get_activity_peer:
@@ -384,6 +413,53 @@ void clawt_agent_deliver_turn(ClawtAgent  *self,
  */
 void clawt_agent_deliver_item(ClawtAgent *self, ClawtMailboxItem *item,
 	gboolean replies);
+
+/**
+ * clawt_agent_deliver_merged:
+ * @self: a #ClawtAgent
+ * @delivered: (transfer none): the one item the agent is handed, whose
+ *   body holds every part
+ * @items: (element-type ClawtMailboxItem) (transfer none): the parts, in
+ *   the order they were queued
+ * @replies: (array): per part, whether its turn's closing text could
+ *   have been delivered (the router's own rule, applied to each)
+ * @peers: (array): per part, whether it came from another agent
+ *
+ * Queues one turn for several deliveries the router merged into one,
+ * folding their turn state in the safe direction: the deepest depth,
+ * replies %TRUE if any part's is, a task only when every part agrees,
+ * and any peer's origin.  The arrays are as long as @items.
+ */
+void clawt_agent_deliver_merged(ClawtAgent       *self,
+                                ClawtMailboxItem *delivered,
+                                GPtrArray        *items,
+                                const gboolean   *replies,
+                                const gboolean   *peers);
+
+/**
+ * clawt_agent_note_turn_tool:
+ * @self: a #ClawtAgent
+ * @room_id: (nullable): the turn's room, or %NULL for a call that names
+ *   none, which counts against every running turn
+ *
+ * Counts a tool call against the turn in @room_id: a streamed tool
+ * step, or a clawtilla tool call.  Read back by
+ * clawt_agent_get_turn_tool_calls_in() when the turn's answer arrives,
+ * to decide whether the answer could be a bare acknowledgement.
+ */
+void clawt_agent_note_turn_tool(ClawtAgent *self, const gchar *room_id);
+
+/**
+ * clawt_agent_get_turn_tool_calls_in:
+ * @self: a #ClawtAgent
+ * @room_id: (nullable): the turn's room
+ *
+ * Returns: how many tool calls the turn in @room_id made, or %G_MAXUINT
+ *   when no turn is on record there -- unknown, which must not read as
+ *   none
+ */
+guint clawt_agent_get_turn_tool_calls_in(ClawtAgent  *self,
+                                         const gchar *room_id);
 
 /**
  * clawt_agent_describe_turn_in:

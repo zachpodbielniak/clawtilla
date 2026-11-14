@@ -491,14 +491,17 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtTeamSpec, clawt_team_spec_free)
  * @provider: the agent CLI the login is for
  * @config_dir: the directory the CLI keeps the login in, ~ expanded
  * @description: (nullable): whose login this is
+ * @pay_per_use: the login bills each use (an API key) rather than drawing
+ *   on a subscription's limit (`accounts.pay_per_use`)
  *
  * One entry from the config's `accounts:` list.
  */
 typedef struct {
-    gchar *id;
-    gchar *provider;
-    gchar *config_dir;
-    gchar *description;
+    gchar   *id;
+    gchar   *provider;
+    gchar   *config_dir;
+    gchar   *description;
+    gboolean pay_per_use;
 } ClawtAccountSpec;
 
 void clawt_account_spec_free(ClawtAccountSpec *self);
@@ -623,6 +626,36 @@ gboolean clawt_config_remove_account(ClawtConfig *self,
 gboolean clawt_account_check(const ClawtAccountSpec *account,
                              const gchar            *agent_provider,
                              GError                **error);
+
+/**
+ * clawt_config_check_fallbacks:
+ * @self: a #ClawtConfig
+ * @provider: (nullable): the agent's own provider
+ * @account_id: (nullable): the agent's own account, or %NULL for the
+ *   CLI's default login
+ * @fallbacks: (element-type ClawtModelFallback): the list to check
+ * @error: return location for what is wrong with it
+ *
+ * Whether an agent on @provider (logged in as @account_id) can have
+ * @fallbacks.  Each entry's provider must be one an agent can run, its
+ * account must exist and be a login for that provider
+ * (clawt_account_check()), and no entry may be another sign-in to a
+ * subscription an earlier entry -- or the agent itself -- already uses.
+ *
+ * The last is libreclaw's rule, asked of lc_failover_add_fallback()
+ * rather than restated: the two halves of one refusal kept apart are how
+ * a list clawtilla accepts comes to be one libreclaw silently shortens.
+ *
+ * Called at load, where a failure makes the agent a shadow with the
+ * reason, and by `agent.set`, which refuses the list where it arrives.
+ *
+ * Returns: %TRUE when the list can be used
+ */
+gboolean clawt_config_check_fallbacks(ClawtConfig  *self,
+                                      const gchar  *provider,
+                                      const gchar  *account_id,
+                                      GPtrArray    *fallbacks,
+                                      GError      **error);
 
 /**
  * clawt_config_get_teams:
@@ -930,6 +963,35 @@ gboolean clawt_config_remove_default_mount(ClawtConfig *self,
  * Returns: (transfer full) (element-type ClawtMount): the mounts, in order
  */
 GPtrArray *clawt_agent_config_get_mounts(ClawtAgentConfig *self);
+
+/**
+ * clawt_agent_config_get_fallbacks:
+ * @self: a #ClawtAgentConfig
+ *
+ * Reads `model.fallbacks`, in order.  An entry missing its provider or
+ * its model is left out here and makes the agent a shadow at load, so a
+ * caller never sees half an entry.
+ *
+ * Returns: (transfer full) (element-type ClawtModelFallback): the
+ *   fallbacks, empty when there are none
+ */
+GPtrArray *clawt_agent_config_get_fallbacks(ClawtAgentConfig *self);
+
+/**
+ * clawt_agent_config_set_fallbacks:
+ * @self: a #ClawtAgentConfig
+ * @fallbacks: (nullable) (element-type ClawtModelFallback): the new list;
+ *   %NULL or empty removes the key
+ *
+ * Replaces `model.fallbacks` as a whole.  The list is one ordered thing
+ * and every client edits it as one -- add, remove and reorder all end in
+ * the same write -- so there is no per-entry setter to fall out of step
+ * with it.  Does not check the list: clawt_config_check_fallbacks() does.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean clawt_agent_config_set_fallbacks(ClawtAgentConfig *self,
+                                          GPtrArray        *fallbacks);
 
 /**
  * clawt_agent_config_add_mount:

@@ -116,6 +116,27 @@ ClawtMailboxItem *clawt_mailbox_lease(ClawtMailbox *self,
                                       guint         lease_seconds);
 
 /**
+ * clawt_mailbox_lease_id:
+ * @self: a #ClawtMailbox
+ * @id: the item to lease
+ * @lease_seconds: how long the caller has, or 0 for the configured default
+ *
+ * Leases one particular item, if it is deliverable now: pending, past
+ * its not_before and not expired -- the same conditions
+ * clawt_mailbox_lease() applies, so naming an item cannot take it out of
+ * its backoff early.
+ *
+ * For the router's merge, which finds the other results waiting in the
+ * same room with clawt_mailbox_list() and then takes exactly those.
+ *
+ * Returns: (transfer full) (nullable): the item, or %NULL if it is not
+ *   deliverable
+ */
+ClawtMailboxItem *clawt_mailbox_lease_id(ClawtMailbox *self,
+                                         const gchar  *id,
+                                         guint         lease_seconds);
+
+/**
  * clawt_mailbox_ack:
  * @self: a #ClawtMailbox
  * @id: the item's id

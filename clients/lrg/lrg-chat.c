@@ -1137,10 +1137,44 @@ own_bubble_new(ClawtLrgApp *app, const gchar *body)
  * time in seconds, or 0 for one that arrived without one -- which gets
  * no stamp rather than the moment it happened to be drawn.
  */
+/*
+ * A merged delivery's note as one block per result: its label as a small
+ * heading, the result beneath.  Split by clawt_merge_split(), the one
+ * reader of the format the router writes, so GTK and the web client
+ * cannot split the same note differently.
+ */
+static LrgWidget *
+merge_sections_new(ClawtLrgApp *app, const gchar *preface, gchar **labels,
+                   gchar **texts)
+{
+    LrgWidget *box = clawt_lrg_vbox(px(app, 6.0f));
+    guint i;
+
+    if (preface != NULL)
+        clawt_lrg_take(box, clawt_lrg_markdown(app, preface));
+
+    for (i = 0; labels != NULL && labels[i] != NULL; i++) {
+        LrgWidget *section = clawt_lrg_vbox(px(app, 2.0f));
+
+        clawt_lrg_take(section, clawt_lrg_label(labels[i], "heading"));
+        clawt_lrg_take(section,
+                       clawt_lrg_markdown(app, texts != NULL && texts[i] != NULL
+                                               ? texts[i] : ""));
+        clawt_lrg_take(box, clawt_lrg_card(section));
+    }
+
+    return box;
+}
+
 static void
 append_message(ClawtLrgApp *app, const gchar *sender, const gchar *body,
-               gint64 ts, const gchar *task, gint64 depth, gboolean animate)
+               gint64 ts, const gchar *task, gint64 depth, gboolean animate,
+               gboolean acknowledged, gint64 merged)
 {
+    g_autofree gchar *merge_preface = NULL;
+    g_auto(GStrv) merge_labels = NULL;
+    g_auto(GStrv) merge_texts = NULL;
+    guint n_sections = 0;
     gboolean from_user = g_strcmp0(sender, "user") == 0;
     g_autoptr(GDateTime) when = (ts > 0) ? g_date_time_new_from_unix_local(ts)
                                          : g_date_time_new_now_local();
@@ -1196,7 +1230,15 @@ append_message(ClawtLrgApp *app, const gchar *sender, const gchar *body,
         LrgWidget *line = clawt_lrg_hbox(0.0f);
         LrgWidget *gutter = clawt_lrg_hbox(0.0f);
         LrgPanel *card = lrg_panel_new();
-        LrgWidget *text = clawt_lrg_markdown(app, body);
+        LrgWidget *text;
+
+        if (merged > 0)
+            n_sections = clawt_merge_split(body, &merge_preface,
+                                           &merge_labels, &merge_texts);
+
+        text = n_sections > 0
+            ? merge_sections_new(app, merge_preface, merge_labels, merge_texts)
+            : clawt_lrg_markdown(app, body);
 
         if (run_start) {
             LrgWidget *header = clawt_lrg_hbox(px(app, 10.0f));
@@ -1263,6 +1305,24 @@ append_message(ClawtLrgApp *app, const gchar *sender, const gchar *body,
         clawt_lrg_take(row, line);
     }
 
+    /*
+     * An answer recorded without waking the agent it answers, marked on
+     * that message: unmarked, an answer the asker never took a turn on
+     * reads as having been ignored.  No tooltip to hide the reason in,
+     * so the label is the whole of it.
+     */
+    if (acknowledged) {
+        LrgWidget *ack = clawt_lrg_badge(clawt_message_ack_label(), "neutral");
+
+        lrg_widget_set_halign(ack, from_user ? LRG_ALIGN_END : LRG_ALIGN_START);
+        if (!from_user) {
+            LrgInsets pad = { px(app, CHAT_GUTTER), 0.0f, 0.0f, 0.0f };
+
+            lrg_widget_set_margin(ack, &pad);
+        }
+        clawt_lrg_take(row, ack);
+    }
+
     attachment_previews_append(app, row, body, from_user);
     attach_message_menu(row, body);
 
@@ -1291,7 +1351,7 @@ append_local(ClawtLrgApp *app, const gchar *text)
      */
     chat.following = TRUE;
     chat.auto_scrolling = FALSE;
-    append_message(app, "clawtilla", text, 0, NULL, 0, TRUE);
+    append_message(app, "clawtilla", text, 0, NULL, 0, TRUE, FALSE, 0);
     clawt_lrg_app_wake(app);
 }
 
@@ -1808,7 +1868,9 @@ draw_history(ClawtLrgApp *app, JsonNode *history, GPtrArray *steps)
                            ? clawt_ipc_payload_string(message, "body") : "",
                        ts, clawt_ipc_payload_string(message, "task"),
                        clawt_ipc_payload_int(message, "depth", 0),
-                       i + CHAT_HISTORY_ENTRANCES >= n);
+                       i + CHAT_HISTORY_ENTRANCES >= n,
+                       clawt_ipc_payload_int(message, "acknowledged", 0) != 0,
+                       clawt_ipc_payload_int(message, "merged", 0));
     }
 
     if (steps != NULL)
@@ -4044,7 +4106,9 @@ on_message_event(ClawtLrgApp *app, ClawtEvent *event)
         note_arrival(app);
         append_message(app, from != NULL ? from : "?",
                        body != NULL ? body : "", 0,
-                       clawt_event_get_detail(event, "task"), 0, TRUE);
+                       clawt_event_get_detail(event, "task"), 0, TRUE,
+                       clawt_event_get_detail_int(event, "acknowledged") != 0,
+                       clawt_event_get_detail_int(event, "merged"));
 
         /*
          * The reply is the end of the turn: the indicator drops too, but

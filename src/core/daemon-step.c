@@ -113,6 +113,20 @@ clawt_daemon_note_step(ClawtDaemon *self, ClawtTurnStep *step)
      */
     clawt_daemon_turn_activity(self, agent_id);
 
+	/*
+	 * And evidence of what the turn did.  A tool step is a command run,
+	 * a file read or written, a message sent -- anything that makes the
+	 * turn's closing text more than a reply -- so the acknowledgement
+	 * check reads this count before it considers skipping a wake.
+	 */
+	if (clawt_turn_step_get_kind(step) == CLAWT_STEP_TOOL &&
+		self->agents != NULL) {
+		ClawtAgent *agent = clawt_agent_manager_get(self->agents, agent_id);
+
+		if (agent != NULL)
+			clawt_agent_note_turn_tool(agent, room_id);
+	}
+
     event = clawt_event_new("turn.step", agent_id);
 
     clawt_event_set_detail(event, CLAWT_STEP_MEMBER_KIND,
