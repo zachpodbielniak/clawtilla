@@ -1938,7 +1938,7 @@ static const ClawtSchemaEntry schema[] = {
   "needs to act on. A post wakes nobody and costs nothing.\n"
   "\n"
   "post needs `room`: a trigger set to post with no room is refused at\n"
-  "load, and refuses every delivery until one is named.", "0.12.0" },
+  "load, and refuses every delivery until one is named.", "0.15.0" },
 
 { "triggers.max_pending", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "4", NULL,
@@ -1949,7 +1949,7 @@ static const ClawtSchemaEntry schema[] = {
   "is answered 429, so the sender retries it later, and recorded as\n"
   "dropped in the trigger's deliveries -- never silently. Every recipient\n"
   "of a fan-out takes a slot. A value outside 1 to 50 written by hand is\n"
-  "read as the default, with a warning at load.", "0.12.0" },
+  "read as the default, with a warning at load.", "0.15.0" },
 
 { "triggers.provider", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
   "generic", clawt_trigger_provider_get_type,
@@ -2025,18 +2025,18 @@ static const ClawtSchemaEntry schema[] = {
   "looks in every element (`labels.name`). The value must be contained in\n"
   "what the path holds, ignoring case. Checked before anything is queued:\n"
   "a miss is recorded in the deliveries as ignored, naming the pair that\n"
-  "failed, and starts no run. Empty, or null, means no filter.", "0.12.0" },
+  "failed, and starts no run. Empty, or null, means no filter.", "0.15.0" },
 
 { "triggers.match.path", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED,
   NULL, NULL,
   "Where in the JSON body to look, dotted, such as `repository.name`.\n"
   "No spaces, no `=` and no empty part; a bad path is refused at load.",
-  "0.12.0" },
+  "0.15.0" },
 
 { "triggers.match.value", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED,
   NULL, NULL,
   "Text the field must contain, ignoring case. An object or array is\n"
-  "searched as its JSON text.", "0.12.0" },
+  "searched as its JSON text.", "0.15.0" },
 
 { "triggers.replay_connector", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,

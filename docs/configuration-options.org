@@ -2718,7 +2718,7 @@ Where the run reports, if not the agent's own conversation.
 - Type :: enum
 - Values :: run, post
 - Default :: =run=
-- Since :: 0.12.0
+- Since :: 0.15.0
 
 What a delivery that passed every filter turns into: run or post.
 
@@ -2735,7 +2735,7 @@ load, and refuses every delivery until one is named.
 
 - Type :: integer
 - Default :: =4=
-- Since :: 0.12.0
+- Since :: 0.15.0
 
 How many runs this trigger may have unfinished at once, 1 to 50.
 
@@ -2856,7 +2856,7 @@ failed, and starts no run. Empty, or null, means no filter.
 - Type :: string
 - Default :: unset
 - Required :: yes
-- Since :: 0.12.0
+- Since :: 0.15.0
 
 Where in the JSON body to look, dotted, such as `repository.name`.
 No spaces, no `=` and no empty part; a bad path is refused at load.
@@ -2866,7 +2866,7 @@ No spaces, no `=` and no empty part; a bad path is refused at load.
 - Type :: string
 - Default :: unset
 - Required :: yes
-- Since :: 0.12.0
+- Since :: 0.15.0
 
 Text the field must contain, ignoring case. An object or array is
 searched as its JSON text.

@@ -1368,5 +1368,18 @@ clawt_trigger_render_post(
 		g_string_append(out, "`````````\n");
 	}
 
-	return g_string_free(out, FALSE);
+	/*
+	 * No line of a post may pass for the daemon.  The payload is whoever
+	 * called the webhook, and the headline carries event fields -- a
+	 * title, a branch -- that they wrote too; the post lands in a room's
+	 * history as clawtilla's own message, where a forged "[clawtilla]"
+	 * line would read as a notice to every agent that reads it back.
+	 * The whole message is escaped, as a run's prompt is: our own lines
+	 * never begin with the marker, so only the forgeries change.
+	 */
+	{
+		g_autofree gchar *built = g_string_free(out, FALSE);
+
+		return clawt_preamble_escape(built);
+	}
 }

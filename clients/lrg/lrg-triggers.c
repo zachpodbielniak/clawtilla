@@ -104,6 +104,8 @@ typedef struct {
     LrgWidget   *match_add;
     GPtrArray   *match_rows;    /* MatchLine*, in the order shown */
     gboolean     match_unreadable;
+    gchar       *shown_mode;     /* the mode the editor opened with */
+    gint64       shown_pending;  /* and the cap */
 
     GPtrArray   *extra_fields;
     GPtrArray   *extra_controls;
@@ -127,6 +129,7 @@ trigger_editor_clear(gpointer data)
 
     g_clear_object(&editor->content);
     g_clear_pointer(&editor->match_rows, g_ptr_array_unref);
+    g_free(editor->shown_mode);
     g_clear_pointer(&editor->extra_fields, g_ptr_array_unref);
     g_clear_pointer(&editor->extra_controls, g_ptr_array_unref);
     g_free(editor->id);
@@ -432,9 +435,22 @@ on_save(ClawtLrgApp *app, LrgDialog *dialog, gint response,
     form.worktree = clawt_lrg_switch_active(editor->worktree);
     form.isolate = clawt_lrg_switch_active(editor->isolate);
     form.enabled = clawt_lrg_switch_active(editor->enabled);
+    /*
+     * Mode and cap only when somebody moved them: the controls open on
+     * what the trigger already has, so sending them regardless would
+     * write the defaults into clawtilla.yaml on every save.  NULL and 0
+     * are the form's "leave it" values.
+     */
     form.mode = clawt_lrg_combo_id(editor->mode);
+
+    if (g_strcmp0(form.mode, editor->shown_mode) == 0)
+        form.mode = NULL;
+
     form.max_pending = (gint64)lrg_spin_box_get_value(
         LRG_SPIN_BOX(editor->pending));
+
+    if (form.max_pending == editor->shown_pending)
+        form.max_pending = 0;
     match = match_lines_node(editor);
 
     /*
@@ -855,6 +871,7 @@ open_editor(ClawtLrgApp *app, JsonObject *existing)
                                        (const gchar *const *)mode_labels,
                                        mode);
         clawt_lrg_form_add(form, "When it fires", editor->mode, hints);
+        editor->shown_mode = g_strdup(clawt_lrg_combo_id(editor->mode));
     }
 
     {
@@ -874,6 +891,9 @@ open_editor(ClawtLrgApp *app, JsonObject *existing)
                           ? clawt_ipc_payload_int(existing, "max_pending",
                                                   fallback)
                           : fallback));
+        /* Read back, so a value the spin box clamped compares as shown. */
+        editor->shown_pending = (gint64)lrg_spin_box_get_value(
+            LRG_SPIN_BOX(editor->pending));
         clawt_lrg_form_add(form, "Runs at once", editor->pending,
                            "How many runs may be unfinished together. A "
                            "delivery past this is answered \"try later\" "

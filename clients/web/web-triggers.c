@@ -139,6 +139,8 @@ add_mode_field(HtmxElement *form, JsonObject *existing)
 	clawt_web_add(form, clawt_web_select_field(
 		"When it fires", "mode", values, labels,
 		clawt_web_member(existing, "mode", "run")));
+	clawt_web_add(form, clawt_web_hidden(
+		"mode__shown", clawt_web_member(existing, "mode", "run")));
 	clawt_web_add(form, clawt_web_text(hints->str, "check-sub"));
 }
 
@@ -179,6 +181,7 @@ add_pending_field(HtmxElement *form, JsonObject *existing,
 	htmx_node_add_child(HTMX_NODE(field), HTMX_NODE(input));
 	htmx_node_add_child(HTMX_NODE(field), HTMX_NODE(hint));
 	clawt_web_add(form, g_steal_pointer(&field));
+	clawt_web_add(form, clawt_web_hidden("max_pending__shown", value));
 }
 
 /* One condition line: path, "contains", value. */
@@ -737,6 +740,19 @@ trigger_payload(HtmxRequest *request, const gchar *id)
 
         if (value == NULL)
             continue;
+
+        /*
+         * The mode and the cap only when they moved from what the form
+         * was drawn with, so saving a trigger that never chose either
+         * does not write the defaults into clawtilla.yaml.
+         */
+        {
+            g_autofree gchar *shown_name = g_strdup_printf("%s__shown", leaf);
+            const gchar *shown = clawt_web_form_value(request, shown_name);
+
+            if (shown != NULL && g_strcmp0(shown, value) == 0)
+                continue;
+        }
 
         if (entry->type == CLAWT_SCHEMA_INT) {
             clawt_web_payload_set_int(payload, leaf,

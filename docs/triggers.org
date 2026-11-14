@@ -804,6 +804,11 @@ was run.
 - *A line saying where it came from and that nothing ran*, because a
   reader scrolling a room cannot otherwise tell a post from a run whose
   agent has not answered yet.
+- *No line of it passes for the daemon.*  The whole message goes
+  through =clawt_preamble_escape()=, so a payload or a headline field
+  carrying a line that begins =[clawtilla]= arrives as
+  =[not from clawtilla]=; the post's own lines never begin with the
+  marker, so only forgeries change.
 - *The body*, pretty-printed when it is JSON, inside the same nine-
   backtick untrusted fence a run uses.  Nobody is asked to act on a
   post, but it is kept in the room's history, which an agent in that
@@ -1339,6 +1344,12 @@ controls, walked from the same library calls:
   line when it is clicked, libregnum with a /Use/ button beside it, and
   the web page puts them in a =<datalist>= the path boxes then complete
   from.
+
+The mode and the cap are sent only when they moved from what the
+editor opened with -- the trigger's own value, or the schema default
+when the file says nothing -- so saving a trigger that never chose
+either does not write =mode: run= and =max_pending: 4= into
+~clawtilla.yaml~.
 
 A filter the daemon cannot read arrives as ~match_error~ and is shown
 as an error above the lines, never as an empty editor whose next save

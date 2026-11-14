@@ -51,6 +51,8 @@ typedef struct {
     GtkWidget   *match_add;
     GPtrArray   *match_rows;    /* MatchRow*, in the order they are shown */
     gboolean     match_unreadable;
+    guint        shown_mode;     /* the selection the editor opened with */
+    gint64       shown_pending;  /* and the cap */
 } TriggerDialog;
 
 /*
@@ -567,21 +569,32 @@ on_trigger_saved(GtkButton *button, gpointer user_data)
         builder, adw_switch_row_get_active(
                      ADW_SWITCH_ROW(dialog->enabled_row)));
 
-    /* The nick from the library's table, as the provider is. */
+    /*
+     * Mode and cap only when somebody moved them.  The controls open on
+     * what the trigger already has -- the schema default when the file
+     * says nothing -- so sending them regardless would write `mode: run`
+     * and `max_pending: 4` into clawtilla.yaml on every save of a trigger
+     * that never chose either.  The nick comes from the library's table,
+     * as the provider's does.
+     */
     {
         guint mode = adw_combo_row_get_selected(
             ADW_COMBO_ROW(dialog->mode_row));
+        gint64 pending = (gint64)adw_spin_row_get_value(
+            ADW_SPIN_ROW(dialog->pending_row));
 
-        json_builder_set_member_name(builder, "mode");
-        json_builder_add_string_value(
-            builder, clawt_trigger_mode_nth_nick(
-                         MIN(mode, clawt_trigger_mode_count() - 1)));
+        if (mode != dialog->shown_mode) {
+            json_builder_set_member_name(builder, "mode");
+            json_builder_add_string_value(
+                builder, clawt_trigger_mode_nth_nick(
+                             MIN(mode, clawt_trigger_mode_count() - 1)));
+        }
+
+        if (pending != dialog->shown_pending) {
+            json_builder_set_member_name(builder, "max_pending");
+            json_builder_add_int_value(builder, pending);
+        }
     }
-
-    json_builder_set_member_name(builder, "max_pending");
-    json_builder_add_int_value(
-        builder, (gint64)adw_spin_row_get_value(
-                     ADW_SPIN_ROW(dialog->pending_row)));
     /*
      * A filter the daemon could not read is drawn as no rows, so an
      * untouched editor would send [] and delete it.  Sent only when
@@ -1140,6 +1153,7 @@ open_trigger_editor(ClawtWindow *self, JsonObject *existing)
         adw_combo_row_set_model(ADW_COMBO_ROW(dialog->mode_row),
                                 G_LIST_MODEL(mode_labels));
         adw_combo_row_set_selected(ADW_COMBO_ROW(dialog->mode_row), selected);
+        dialog->shown_mode = selected;
         clawt_gtk_set_row_hint(dialog->mode_row,
                                clawt_trigger_mode_nth_hint(selected));
         adw_preferences_group_add(ADW_PREFERENCES_GROUP(where),
@@ -1162,6 +1176,9 @@ open_trigger_editor(ClawtWindow *self, JsonObject *existing)
             (gdouble)(existing != NULL
                           ? clawt_json_int(existing, "max_pending", fallback)
                           : fallback));
+        /* Read back, so a value the spinner clamped compares as shown. */
+        dialog->shown_pending = (gint64)adw_spin_row_get_value(
+            ADW_SPIN_ROW(dialog->pending_row));
         clawt_gtk_set_row_hint(
             dialog->pending_row,
             "How many runs may be unfinished together. A delivery past "
