@@ -82,6 +82,7 @@ virtiofsd,runtime,virtiofsd,virtiofsd,virtiofsd
 passt,runtime,passt,passt,passt
 xorrisofs,runtime,xorriso,xorriso,libisoburn
 Xvfb,runtime,xorg-x11-server-Xvfb,xvfb,xorg-server-xvfb
+apprise,runtime,apprise,apprise,apprise
 '
 
 usage () {

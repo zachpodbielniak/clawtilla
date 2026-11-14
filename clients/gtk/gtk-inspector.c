@@ -739,6 +739,62 @@ clawt_gtk_inspector_sync_failover(ClawtWindow *self, JsonObject *agent)
                            clawt_json_string(agent, "failover_message", ""));
 }
 
+/* Sends @plan in order, stopping at the first refusal. */
+static gboolean
+apply_model_plan(ClawtWindow *self, GPtrArray *plan)
+{
+    guint i;
+
+    for (i = 0; i < plan->len; i++) {
+        ClawtModelSetting *setting = g_ptr_array_index(plan, i);
+
+        if (!clawt_gtk_apply_setting(self, setting->key, setting->value))
+            return FALSE;
+    }
+
+    return TRUE;
+}
+
+/*
+ * A save that cleared the stored fallback list and then had something
+ * refused -- the provider, the account, the model or the new list
+ * itself -- put the old list back, so no refusal leaves the agent with
+ * none.  The library says how: the old list on the new backend first,
+ * then the old backend with it.
+ */
+static void
+restore_fallbacks(ClawtWindow *self)
+{
+    g_autoptr(GPtrArray) keep = NULL;
+    g_autoptr(GPtrArray) undo = NULL;
+
+    keep = clawt_model_fallback_restore_plan(self->fallbacks_saved,
+                                             self->inspector_provider,
+                                             self->inspector_account,
+                                             self->inspector_model, FALSE);
+
+    if (apply_model_plan(self, keep)) {
+        clawt_window_toast(self, "The fallback list was not saved; the "
+                                 "agent keeps the list it had.");
+        return;
+    }
+
+    undo = clawt_model_fallback_restore_plan(self->fallbacks_saved,
+                                             self->inspector_provider,
+                                             self->inspector_account,
+                                             self->inspector_model, TRUE);
+
+    if (apply_model_plan(self, undo))
+        clawt_window_toast(self, "The fallback list was not saved, and the "
+                                 "list the agent had does not fit the new "
+                                 "provider -- so the provider and account "
+                                 "are back as they were, with that list.");
+    else
+        clawt_window_toast(self, "The fallback list could not be put back. "
+                                 "Check Model and fallbacks before saving "
+                                 "again.");
+}
+
 static void
 on_save_agent(GtkButton *button, gpointer user_data)
 {
@@ -750,6 +806,8 @@ on_save_agent(GtkButton *button, gpointer user_data)
     g_autofree gchar *model = NULL;
     g_autofree gchar *fallbacks = NULL;
     gboolean fallbacks_change = FALSE;
+    gboolean fallbacks_cleared = FALSE;
+    gboolean model_ok = TRUE;
     gboolean backend_changes;
     const gchar *account = NULL;
     const gchar *provider;
@@ -821,24 +879,27 @@ on_save_agent(GtkButton *button, gpointer user_data)
      * fallback of, so it comes off before that backend changes and goes
      * back on after -- the account's own rule, one level up.
      */
-    if (fallbacks_change && backend_changes && *self->fallbacks_saved != '\0')
-        ok &= clawt_gtk_apply_setting(self, "model.fallbacks", "");
+    if (fallbacks_change && backend_changes && *self->fallbacks_saved != '\0') {
+        fallbacks_cleared = clawt_gtk_apply_setting(self, "model.fallbacks",
+                                                    "");
+        model_ok &= fallbacks_cleared;
+    }
 
     if (account != NULL && g_strcmp0(account, self->inspector_account) != 0 &&
         self->inspector_account != NULL && *self->inspector_account != '\0')
-        ok &= clawt_gtk_apply_setting(self, "model.account", "");
+        model_ok &= clawt_gtk_apply_setting(self, "model.account", "");
 
     if (provider != NULL)
-        ok &= clawt_gtk_apply_setting(self, "model.provider", provider);
+        model_ok &= clawt_gtk_apply_setting(self, "model.provider", provider);
 
     if (account != NULL && *account != '\0' &&
         g_strcmp0(account, self->inspector_account) != 0)
-        ok &= clawt_gtk_apply_setting(self, "model.account", account);
+        model_ok &= clawt_gtk_apply_setting(self, "model.account", account);
 
     model = clawt_gtk_chooser_model(&self->inspector_models);
 
     if (model != NULL)
-        ok &= clawt_gtk_apply_setting(self, "model.model", model);
+        model_ok &= clawt_gtk_apply_setting(self, "model.model", model);
 
     ok &= clawt_gtk_apply_setting(self, "model.effort",
                                   efforts[MIN(adw_combo_row_get_selected(
@@ -846,7 +907,17 @@ on_save_agent(GtkButton *button, gpointer user_data)
 
     /* After the model it falls back from, for the reason given above. */
     if (fallbacks_change)
-        ok &= clawt_gtk_apply_setting(self, "model.fallbacks", fallbacks);
+        model_ok &= clawt_gtk_apply_setting(self, "model.fallbacks", fallbacks);
+
+    /*
+     * Cleared and then refused somewhere: the old list goes back before
+     * anything else, or the agent is left with none until somebody
+     * notices and saves again.  The page keeps showing what was typed.
+     */
+    if (fallbacks_cleared && !model_ok)
+        restore_fallbacks(self);
+
+    ok &= model_ok;
 
     /*
      * The shared machine first, and nothing else under computer.* when
@@ -1035,6 +1106,11 @@ on_save_agent(GtkButton *button, gpointer user_data)
     if (provider != NULL) {
         g_free(self->inspector_provider);
         self->inspector_provider = g_strdup(provider);
+    }
+
+    if (model != NULL) {
+        g_free(self->inspector_model);
+        self->inspector_model = g_strdup(model);
     }
 
     /*
@@ -3307,6 +3383,12 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
             ? clawt_json_string(json_object_get_object_member(payload, "settings"),
                                 "model.account", "")
             : "");
+    g_free(self->inspector_model);
+    self->inspector_model = g_strdup(
+        (payload != NULL && json_object_has_member(payload, "settings"))
+            ? clawt_json_string(json_object_get_object_member(payload, "settings"),
+                                "model.model", NULL)
+            : NULL);
 
     build_fallbacks(self,
                     group,

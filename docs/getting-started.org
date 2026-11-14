@@ -115,6 +115,7 @@ Only for the features that use them:
 | ~passt~ | ~passt~ | ~passt~ | reaching a libvirt VM's SSH |
 | ~xorriso~ | ~xorriso~ | ~libisoburn~ | the cloud-init seed that gives a VM a login |
 | ~xorg-x11-server-Xvfb~ | ~xvfb~ | ~xorg-server-xvfb~ | browser sessions (~GSURF=1~) |
+| ~apprise~ | ~apprise~ | ~apprise~ | the ~apprise~ notifier (Fedora's ~python3-apprise~ is the library; ~apprise~ is the CLI) |
 
 ~make install-deps~ installs the qemu that matches ~uname -m~.
 

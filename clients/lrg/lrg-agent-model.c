@@ -1424,6 +1424,54 @@ clawt_lrg_agent_save_plan(GPtrArray *posted, JsonObject *settings)
     return plan;
 }
 
+gboolean
+clawt_lrg_agent_plan_cleared_fallbacks(GPtrArray  *plan,
+                                       guint       accepted,
+                                       JsonObject *settings)
+{
+    guint i;
+
+    g_return_val_if_fail(plan != NULL, FALSE);
+
+    if (*string_or(settings, "model.fallbacks", "") == '\0')
+        return FALSE;
+
+    for (i = 0; i < accepted && i < plan->len; i++) {
+        ClawtLrgAgentSetting *setting = g_ptr_array_index(plan, i);
+
+        if (g_strcmp0(setting->key, "model.fallbacks") == 0)
+            return setting->value != NULL && *setting->value == '\0';
+    }
+
+    return FALSE;
+}
+
+GPtrArray *
+clawt_lrg_agent_fallback_restore_plan(JsonObject *settings,
+                                      gboolean    undo_backend)
+{
+    GPtrArray *plan = g_ptr_array_new_with_free_func(
+        clawt_lrg_agent_setting_free);
+    g_autoptr(GPtrArray) steps = NULL;
+    guint i;
+
+    /* The library decides the steps; this only changes their type. */
+    steps = clawt_model_fallback_restore_plan(
+        string_or(settings, "model.fallbacks", ""),
+        string_or(settings, "model.provider", NULL),
+        string_or(settings, "model.account", NULL),
+        string_or(settings, "model.model", NULL), undo_backend);
+
+    for (i = 0; i < steps->len; i++) {
+        ClawtModelSetting *step = g_ptr_array_index(steps, i);
+
+        g_ptr_array_add(plan, clawt_lrg_agent_setting_new(step->key,
+                                                          step->value));
+    }
+
+    return plan;
+}
+
 gchar *
 clawt_lrg_agent_saved_text(guint changed, gboolean restart_required)
 {

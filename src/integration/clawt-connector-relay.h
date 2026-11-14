@@ -67,6 +67,9 @@ G_BEGIN_DECLS
  *   the caller, which knows the agent and its state directory
  * @apps: (nullable): MCP apps, owned by the plan; set only when the
  *   connector shows its apps in chat
+ * @gateway: (nullable): the integration broker answering for this
+ *   connector -- "AnythingMCP", "Jentic One" -- so a refusal it sends is
+ *   named as its, never as clawtilla's
  *
  * Everything needed to reach one connector's tools, worked out before
  * anything is started.
@@ -128,6 +131,7 @@ typedef struct {
 
     ClawtMcpResults           *results;
     ClawtMcpApps              *apps;
+    gchar   *gateway;
 } ClawtConnectorPlan;
 
 /**

@@ -99,6 +99,7 @@ licence, send nothing, and exit 0.
 | ~image~ | container images clawtilla suggests, and your own |
 | ~image vm list/catalog/get/rm/cancel~ | disk images for VM agents |
 | ~connector catalog/list/add/connect/discover/key/refresh/revoke/rm~ | accounts clawtilla holds the credential for; ~add --url~ alone is any remote MCP server |
+| ~broker status/start/stop/restart/logs/key~ | the integration broker clawtilla runs in podman, and each gateway server's key |
 | ~plugin list~ | |
 | ~integration types/list/show~ | what kinds exist, and what is configured |
 | ~integration add/set/scope/rm~ | one bot, some bots or all of them |
@@ -250,9 +251,11 @@ keeps each token's SHA-256 -- and marks the row that is the connection
 asking.
 
 Only the owner pairs: a unix-socket client, or one holding the daemon's
-own token.  A paired device asking is refused with the reason.  Any
-connected client can list and revoke, so a laptop can cut off a lost
-phone.  Revoking closes the device's live connections as well as
+own token.  A paired device asking is refused with the reason.  Revoking
+is the owner's too, with one exception: a paired device may revoke
+itself, which is how it signs out.  Any connected client can list.  A
+device that could revoke the others could let a stolen phone cut off the
+owner's laptop.  Revoking closes the device's live connections as well as
 refusing its next one.  ~daemon.device_idle_days~ (90 by default, 0 for
 never) expires a device nobody has used for that long; a device that is
 connected counts as used.  The owner token is untouched by all of it.
@@ -260,7 +263,9 @@ connected counts as used.  The owner token is untouched by all of it.
 
 The graphical clients have the same two halves: *Pair with a code* on
 their Connections screen, and Settings, *Devices*, which lists the
-devices with when each was last seen, a *Revoke* button on each, and
+devices with when each was last seen, a *Revoke* button on each (on a
+window connected as a paired device: *Sign out this device* on its own
+row and no button on the others, from =clawt_device_row_action()=), and
 *Pair a new device*, which shows the code large with a countdown and
 says when it has been used.
 
@@ -342,6 +347,22 @@ and in the process table.
 names.  It speaks MCP on stdout and is not for people.
 
 See [[file:connectors.org][connectors.org]].
+
+*** The integration broker
+
+#+begin_src bash
+clawtilla broker status                            # state, dashboard, who reaches which server
+clawtilla agent set scout broker_server cmwgvs1dq000736li29o0luha
+clawtilla broker key scout                         # reads stdin with the echo off
+clawtilla broker key team:research
+clawtilla broker logs
+clawtilla broker restart
+#+end_src
+
+~start~, ~stop~ and ~restart~ answer at once, saying starting or
+stopping; ~status~ again says where it got to.  ~key~ prints where the key
+went, never the key.  See "An integration broker" in
+[[file:connectors.org][connectors.org]].
 
 *** Signing in to Matrix
 
@@ -608,9 +629,9 @@ Each entry is a provider picker (the agent-capable providers of ~model.list~, pl
 
 The list is read with ~clawt_model_fallback_parse_list()~ and sent whole as one ~agent.set model.fallbacks~ spelled by ~clawt_model_fallback_list_to_string()~; no client builds the spelling itself.  An entry without a model stops the save before anything is sent.  A list the client cannot parse is shown as the reason, not as an empty editor, because an empty editor saved back would write the empty list over the real one.  The daemon refuses a list that names an unknown account, an account for another CLI, a provider no agent runs on, or another sign-in to a subscription the agent already uses; each client shows that refusal the way it shows any other ~agent.set~ refusal.
 
-- *GTK*: a /Fallbacks/ expander row in the inspector's Settings group, under /Account/.  Each entry is a heading row ("Fallback 1", with its label) carrying up, down and remove buttons, then the same provider and model rows as the agent's own model, then an /Account/ row; the expander's =+= adds one.  Edits are kept until /Save changes/, which sends the list after the model and, when the provider or the account changes in the same save, clears the old list first -- the daemon checks the list against the backend it falls back from.  The account is now cleared only when it actually changes, because clearing an untouched one can make the primary a rotation of a fallback's login and fail the save.
+- *GTK*: a /Fallbacks/ expander row in the inspector's Settings group, under /Account/.  Each entry is a heading row ("Fallback 1", with its label) carrying up, down and remove buttons, then the same provider and model rows as the agent's own model, then an /Account/ row; the expander's =+= adds one.  Edits are kept until /Save changes/, which sends the list after the model and, when the provider or the account changes in the same save, clears the old list first -- the daemon checks the list against the backend it falls back from.  The account is now cleared only when it actually changes, because clearing an untouched one can make the primary a rotation of a fallback's login and fail the save.  When anything after that clear is refused -- the provider, the account, the model or the new list -- the old list is put back at once rather than left cleared: first onto the new backend, and if that is refused too, with the old provider, account and model restored under it (=clawt_model_fallback_restore_plan()=).  The toast says which happened.
 - *Web*: a /Fallbacks/ card under the agent page's settings form, a form of its own posting to =/a/:id/fallbacks=.  Each entry has a provider select, a model text field suggesting that provider's models through a =<datalist>=, an account select, and /Earlier/, /Later/ and /Remove/; a last row adds one.  The page holds no state between requests, so every button saves.
-- *lrg*: a /Fallbacks/ card on the Overview page right under the Model card, with the same three controls per entry and /Earlier/, /Later/, /Remove/ and /Add a fallback/.  /Save changes/ sends it with the rest, in the order =clawt_lrg_agent_save_plan()= gives.
+- *lrg*: a /Fallbacks/ card on the Overview page right under the Model card, with the same three controls per entry and /Earlier/, /Later/, /Remove/ and /Add a fallback/.  /Save changes/ sends it with the rest, in the order =clawt_lrg_agent_save_plan()= gives, and puts a cleared list back the same two ways when a later step is refused (=clawt_lrg_agent_plan_cleared_fallbacks()=, =clawt_lrg_agent_fallback_restore_plan()=).
 
 *** Choosing a shared computer
 
@@ -869,7 +890,10 @@ See [[file:computers.org][computers.org]] for what to do with one.
 Everything configured once and pointed at one agent, some agents or the
 whole fleet.  *+* adds one; the type decides which fields appear, so a
 Matrix instance asks for a homeserver and rooms while a notifier asks for
-a backend and quiet hours.
+a backend and quiet hours.  Choosing *Apprise* as the backend asks for the
+*Apprise URL* as a secret reference (~env:NAME~, ~file:PATH~ or
+~command:...~), like any token, never the URL itself and never shown
+back; all three clients draw it from =clawt_integration_fields()=.
 
 Two things here do real work rather than editing a file.  *Sign in* runs
 a Matrix password login and stores the resulting token in a 0600 file --
@@ -928,6 +952,16 @@ written through ~connector.settings~.  See "Servers with many tools" in
 [[file:connectors.org][connectors.org]].
 
 The dialog also has *Result budget* (=build_budget_field=), the connector's own ~max_result_bytes~ from -1 (the fleet's) through 0 (no budget) to 64 MiB, with what applies now -- =clawt_mcp_result_budget_label()= of ~connector.list~'s ~effective_max_result_bytes~ -- in its subtitle; and *Show its apps in chat* (=build_apps_switch=), which says that the view is the server's own code, run sandboxed in the browser, and that this client links to the web client rather than drawing it.  Both save through ~integration.update~ as soon as they change.  Under the list, *Big tool results* holds the fleet's ~connectors.max_result_bytes~, sent with the thresholds through ~connector.settings~.  See "Results bigger than the budget" and "Apps in chat" in [[file:connectors.org][connectors.org]].
+
+Above the accounts, an *Integration broker* group holds one row: the
+broker and its state in =clawt_broker_state_label()='s word -- "AnythingMCP
+— Starting" -- with what it is doing or why it failed and the dashboard
+URL underneath, and four buttons made sensitive from each
+~broker.status~: open the dashboard (while it runs), Start, Stop and
+Restart.  The row redraws on ~broker.changed~ while Settings is open.  The
+broker's own connectors (~broker-agent-<id>~, ~broker-team-<id>~) are in
+the list below like any other; editing one is refused with the settings
+that change it.
 
 See [[file:connectors.org][connectors.org]].
 
@@ -1389,7 +1423,8 @@ Each agent shows a face, a state dot, what it is doing, and badges:
   from the sidebar's refresh when ~agent.failover~ arrives, so an edit in
   progress is never thrown away; the web client draws it in the sidebar,
   the top bar and the agent page's /At a glance/ card, the lrg client in
-  the sidebar and the /At a glance/ card.
+  the sidebar and the /At a glance/ card -- and all three on the Fleet
+  page's row.
 
 Mail waiting for the *agent* is in the subtitle -- =3 waiting to be
 read=, or =working… · 3 waiting= when it is mid-turn -- rather than as a
@@ -2666,11 +2701,11 @@ Under Work, after Activity. Activity is what the fleet is doing this minute; Fle
 - *The period*: All time, Today, Last 7 days, Last 30 days (=clawt_usage_period_*()=; the default is 7 days) and its total, "$4.12 across 318 turns".
 - *The day's cap*, only when =orchestration.daily_fleet_budget_micros= is set: "Today $0.42 of a $5.00 daily cap", or that it is reached and new work waits. This is the cap the router already enforces, not a second budget -- see [[file:spending.org::#daily-limits][the admission limits]].
 - *A strip of the last fourteen days*, one block character per day scaled to the busiest (=clawt_usage_sparkline()=), with =·= for a day that cost nothing so an empty day is not read as a small one.
-- *A row per agent, most expensive first*: its cost and share of the period ("$1.20 · 29%"), its turns and how long since its last turn, an idle badge, and Stop on any agent that is running and idle. "Stop the idle ones" stops them all after one confirmation that names how many.
+- *A row per agent, most expensive first*: its cost and share of the period ("$1.20 · 29%"), its turns and how long since its last turn, an idle badge, the amber *On fallback* badge while it runs on one of its ~model.fallbacks~ (from the row's ~failover~, the same members ~agent.list~ carries, so its cost is visibly another backend's bill), and Stop on any agent that is running and idle. "Stop the idle ones" stops them all after one confirmation that names how many.
 
 *Idle* is a label, not an action: an agent whose last turn is older than =orchestration.idle_hours= (72 by default) is idle, one that has never taken a turn is "never used", one that is stopped is stopped (=clawt_usage_idle_state()=, a switch with no default). An idle agent still holds its process, its ports and its computer; =agents.runtime.idle_stop_hours= is what stops one. An agent the daemon put to sleep that way is drawn "asleep" rather than "stopped", because it starts again by itself: the next message queued for it wakes it, and the message waits in its durable mailbox while it comes up. A mid-turn agent is never put to sleep, whatever its last recorded turn says.
 
-The page re-reads on ~message~, ~agent.state~, ~agent.idle_stopped~ and ~spending.limit-reached~. ~clawtilla cost~ prints the same rows with LAST TURN and IDLE columns, and ~--by-day~ adds the days and the strip.
+The page re-reads on ~message~, ~agent.state~, ~agent.idle_stopped~, ~agent.failover~ and ~spending.limit-reached~. ~clawtilla cost~ prints the same rows with LAST TURN and IDLE columns, and ~--by-day~ adds the days and the strip.
 
 The GTK client keeps a row you expanded open across refreshes. The web client polls the panel every four seconds while the tab is visible and draws the steps as plain lines, since a swap that frequent would close anything somebody had opened.
 
@@ -2894,7 +2929,9 @@ Settings, *Devices*, lists the devices paired with the daemon this
 window is connected to: name, when each was last seen ("connected now",
 "seen 3 days ago" -- ~clawt_device_seen_text()~, shared with the CLI and
 the other clients), when it was paired, its id, and a *Revoke* button,
-with *this device* on the row that is this window.  *Pair a new device*
+with *this device* on the row that is this window.  On a window
+connected as a paired device the only button is *Sign out this device*,
+on its own row: revoking is the owner's (=clawt_device_row_action()=).  *Pair a new device*
 shows the code large, the addresses to dial, and a countdown; the
 dialog says so when the code is used (the ~device.paired~ event), and
 closing it unused withdraws the code.  The button is offered only to the

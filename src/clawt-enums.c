@@ -183,6 +183,46 @@ clawt_team_role_get_type(void)
     return g_define_type_id__volatile;
 }
 
+/* Register ClawtBrokerType as a GLib enum type */
+GType
+clawt_broker_type_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_BROKER_ANYTHINGMCP, "CLAWT_BROKER_ANYTHINGMCP", "anythingmcp" },
+            { CLAWT_BROKER_JENTIC, "CLAWT_BROKER_JENTIC", "jentic" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtBrokerType", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
+/* Register ClawtBrokerState as a GLib enum type */
+GType
+clawt_broker_state_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_BROKER_STATE_DISABLED, "CLAWT_BROKER_STATE_DISABLED", "disabled" },
+            { CLAWT_BROKER_STATE_STOPPED, "CLAWT_BROKER_STATE_STOPPED", "stopped" },
+            { CLAWT_BROKER_STATE_STARTING, "CLAWT_BROKER_STATE_STARTING", "starting" },
+            { CLAWT_BROKER_STATE_RUNNING, "CLAWT_BROKER_STATE_RUNNING", "running" },
+            { CLAWT_BROKER_STATE_STOPPING, "CLAWT_BROKER_STATE_STOPPING", "stopping" },
+            { CLAWT_BROKER_STATE_ERROR, "CLAWT_BROKER_STATE_ERROR", "error" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtBrokerState", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
 /* Register ClawtRestartPolicy as a GLib enum type */
 GType
 clawt_restart_policy_get_type(void)
@@ -1045,6 +1085,7 @@ clawt_notify_backend_get_type(void)
             { CLAWT_NOTIFY_BACKEND_GOTIFY, "CLAWT_NOTIFY_BACKEND_GOTIFY", "gotify" },
             { CLAWT_NOTIFY_BACKEND_MATRIX, "CLAWT_NOTIFY_BACKEND_MATRIX", "matrix" },
             { CLAWT_NOTIFY_BACKEND_COMMAND, "CLAWT_NOTIFY_BACKEND_COMMAND", "command" },
+            { CLAWT_NOTIFY_BACKEND_APPRISE, "CLAWT_NOTIFY_BACKEND_APPRISE", "apprise" },
             { 0, NULL, NULL }
         };
         GType g_define_type_id = g_enum_register_static("ClawtNotifyBackend", values);

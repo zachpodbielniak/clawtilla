@@ -473,6 +473,8 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtRoomSpec, clawt_room_spec_free)
  *   is deciding where a piece of work goes
  * @color: (nullable): accent colour, as a hex string
  * @order: where it sits in a list, lowest first
+ * @broker_server: (nullable): the team's gateway server on the
+ *   integration broker (`teams.broker_server`)
  *
  * One entry from the config's `teams:` list.
  */
@@ -482,6 +484,7 @@ typedef struct {
     gchar *description;
     gchar *color;
     gint   order;
+    gchar *broker_server;
 } ClawtTeamSpec;
 
 void clawt_team_spec_free(ClawtTeamSpec *self);
@@ -1284,6 +1287,31 @@ gboolean clawt_integration_config_covers_on_team(
     ClawtIntegrationConfig *self,
     const gchar            *agent_id,
     const gchar            *team);
+
+/**
+ * clawt_config_refresh_broker_connectors:
+ * @self: a #ClawtConfig
+ *
+ * Makes the integration broker's connectors again from the config as it
+ * now stands.  They are derived from `broker.*` and every agent's and
+ * team's `broker_server`, so an edit to one of those -- an `agent set`
+ * that writes the key without a full reload -- calls this, or the daemon
+ * would render agents against the connectors the old value made.
+ */
+void clawt_config_refresh_broker_connectors(ClawtConfig *self);
+
+/**
+ * clawt_integration_config_is_managed:
+ * @self: a #ClawtIntegrationConfig
+ *
+ * Whether clawtilla made this instance rather than reading it from the
+ * file: the integration broker's per-agent connectors, derived from
+ * `broker.*` and `broker_server`.  Such an instance is never saved, and
+ * its keys are not edited -- the settings it is derived from are.
+ *
+ * Returns: %TRUE for a connector the broker made
+ */
+gboolean clawt_integration_config_is_managed(ClawtIntegrationConfig *self);
 
 /**
  * clawt_integration_config_is_shadow:

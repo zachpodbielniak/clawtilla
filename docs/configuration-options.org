@@ -1793,6 +1793,21 @@ same function as both. The three are additive: a skill named in two
 of them is one skill, and the most specific place it was asked for is
 what gets reported.
 
+*** =teams.broker_server=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.24.0
+
+The broker's gateway server for this team's agents.
+
+For anythingmcp, the id of an MCP server made in its dashboard (the
+last part of the server's MCP URL); its connectors are what the
+team's agents may use. For jentic, the Jentic agent the team acts
+as, whose API key `clawtilla broker key team:<id>` stores. An agent
+with its own agents.broker_server uses that one instead. Unused
+unless broker.enabled is on.
+
 ** =computers=
 
 Machines several agents share.
@@ -2171,7 +2186,7 @@ cannot bind the same one, and the second to start simply fails.
 *** =integrations.backend=
 
 - Type :: enum
-- Values :: desktop, ntfy, gotify, matrix, command
+- Values :: desktop, ntfy, gotify, matrix, command, apprise
 - Default :: =desktop=
 - Since :: 0.2.0
 
@@ -2182,6 +2197,9 @@ wrong answer when the daemon is on a workstation and you are not.
 `ntfy` and `gotify` reach a phone. `matrix` posts into a room, which
 on a bridged homeserver means it reaches you wherever you already
 read messages. `command` runs a program and hands it the text.
+`apprise` (since 0.22.0) hands it to the apprise CLI, which reaches a
+hundred-odd services -- Telegram, Signal, email, Pushover, Gotify, SMS
+-- through one URL scheme; the URL is `apprise_url`.
 
 *** =integrations.token=
 
@@ -2198,6 +2216,22 @@ Resolved once when the configuration loads rather than on every
 notification: a `command` reference to a locked password manager
 blocks until it times out, and doing that each time something needed
 saying would make the notifier the slowest thing in the daemon.
+
+*** =integrations.apprise_url=
+
+- Type :: secret reference
+- Default :: unset
+- Since :: 0.23.0
+
+notify: with `backend: apprise`, the Apprise URL -- or several, one per
+line -- as a secret reference: `{file: ~/.config/clawtilla/apprise.url}`.
+
+A secret because an Apprise URL nearly always carries a credential
+(`tgram://BOT_TOKEN/CHAT_ID`, `mailtos://user:password@host`). It
+reaches apprise in a 0600 file passed with `--config`, deleted when
+apprise exits, and never on its command line, which any user on the
+machine can read. `command` names the apprise binary when it is not on
+PATH.
 
 *** =integrations.room=
 
@@ -2278,6 +2312,9 @@ mcp: the program to run, spoken to over stdio.
 This is the general way to give the fleet anything with an MCP server:
 one entry here reaches every agent in scope, instead of the same block
 pasted into each agent's .mcp.json by hand.
+
+notify: with `backend: command`, the program to run; with
+`backend: apprise`, the apprise binary when it is not on PATH.
 
 *** =integrations.args=
 
@@ -2465,7 +2502,7 @@ are. See docs/connectors.org, "Servers with many tools".
 
 - Type :: integer
 - Default :: =-1=
-- Since :: 0.24.0
+- Since :: 0.25.0
 
 connector: the most of one tool result the agent is shown, in bytes.
 
@@ -2483,7 +2520,7 @@ and anything below 1024 is read as 1024. See docs/connectors.org,
 
 - Type :: boolean
 - Default :: =false=
-- Since :: 0.24.0
+- Since :: 0.25.0
 
 connector: show its apps in chat.
 
@@ -2718,7 +2755,7 @@ rather than listing them. Only read when a connector's `directory` is
 
 - Type :: integer
 - Default :: =65536=
-- Since :: 0.24.0
+- Since :: 0.25.0
 
 The most of one connector tool result an agent is shown, in bytes.
 
@@ -2734,7 +2771,7 @@ anything longer goes to disk as it arrives.
 
 - Type :: string
 - Default :: =http://127.0.0.1:8790=
-- Since :: 0.24.0
+- Since :: 0.25.0
 
 Where the web client is reached, for an MCP app's Open in browser.
 
@@ -2742,6 +2779,143 @@ The GTK and lrg clients cannot draw an app's HTML, so they link to the
 web client's view of it: <this>/a/<agent>/app/<app>. The address
 clawtilla-web listens on by default; change it when the web client
 runs elsewhere or on another port.
+
+** =broker=
+
+An integration broker clawtilla runs for you, in podman.
+
+Ready-made app integrations -- hundreds of SaaS and business systems
+-- behind one MCP gateway on this machine. clawtilla pulls the
+pinned image, keeps the gateway's database, keys and token under
+<daemon.state_dir>/broker/, starts it with the daemon and keeps it
+running. Each agent or team names its own gateway server in
+agents.broker_server or teams.broker_server and reaches it as a
+connector, through the same relay as every other connector.
+
+Not the provider-key broker of runtime.network: gated, which is a
+different thing with a similar name. See docs/connectors.org,
+"An integration broker".
+
+*** =broker.enabled=
+
+- Type :: boolean
+- Default :: =false=
+- Since :: 0.24.0
+
+Run the broker.
+
+Off by default, because turning it on pulls an image of several
+hundred megabytes and opens ports on this machine. Started in the
+background when the daemon starts or this is turned on, never in the
+way of either: broker.status says starting while the image pulls.
+
+*** =broker.type=
+
+- Type :: enum
+- Values :: anythingmcp, jentic
+- Default :: =anythingmcp=
+- Since :: 0.24.0
+
+Which broker: anythingmcp or jentic.
+
+anythingmcp is an MCP gateway (AGPL-3.0) whose adapters turn REST,
+SOAP, GraphQL and SQL services into tools, with OAuth through your
+own client. jentic is Jentic One (Apache-2.0, a public beta whose
+schemas may change), a credential broker that checks a per-agent
+rule before it injects a stored key. Jentic One's own caveat is
+that an agent running as the same OS user can read its state, so it
+is refused unless every agent using it has runtime.confine: bwrap.
+Its telemetry and release check are always switched off.
+
+*** =broker.image=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.24.0
+
+The gateway's image, pinned to a tag.
+
+Empty means the image this release was checked against:
+docker.io/helpcodeai/anythingmcp:v0.54.0 for anythingmcp and
+ghcr.io/jentic/jentic-one-app:0.44.0 for jentic. An image with no
+tag, or tagged latest, is refused: an upgrade should be a change
+somebody made. AnythingMCP publishes amd64 only, so an aarch64
+machine names a locally built one here -- docs/connectors.org says
+how.
+
+*** =broker.database_image=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.24.0
+
+The database image beside an AnythingMCP gateway, pinned to a tag.
+
+Empty means docker.io/library/postgres:17.12-alpine. The database
+publishes no port: the two containers share a unix socket under
+<daemon.state_dir>/broker/run. Jentic One keeps SQLite files and
+runs no database container, so this is unused for jentic.
+
+*** =broker.bind=
+
+- Type :: string
+- Default :: =127.0.0.1=
+- Since :: 0.24.0
+
+The address the gateway's ports are published on.
+
+Loopback by default: the relay that reaches it runs on this machine.
+Anything wider puts the gateway's dashboard and MCP endpoint on that
+network, and the dashboard's own sign-in is all that guards it.
+
+*** =broker.port=
+
+- Type :: integer
+- Default :: =47400=
+- Since :: 0.24.0
+
+The host port of the gateway's MCP endpoint and API.
+
+For jentic this is also its dashboard, which shares the port.
+
+*** =broker.dashboard_port=
+
+- Type :: integer
+- Default :: =47300=
+- Since :: 0.24.0
+
+The host port of AnythingMCP's dashboard.
+
+Where you register the first (admin) account, sign in to SaaS apps
+with your own OAuth clients and make a gateway server for each agent
+or team. Unused for jentic, whose dashboard is on broker.port.
+
+*** =broker.connection=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.24.0
+
+Which podman runs the broker, as computer.container.connection says.
+
+Empty is this user's rootless podman. A remote podman runs the
+containers there while broker.bind and the relay still dial this
+machine, so a remote one also needs a tunnel to its ports.
+
+*** =broker.restart=
+
+- Type :: enum
+- Values :: never, on-failure, always
+- Default :: =always=
+- Since :: 0.24.0
+
+What to do when a broker container stops without being asked to.
+
+never leaves it stopped and says so; on-failure and always both
+start it again, since podman's listing does not say how a container
+ended. Five restarts within ten minutes stop the retries, so a
+gateway that cannot start is reported rather than restarted for
+ever.
 
 ** =grok=
 
@@ -3443,6 +3617,23 @@ Which team this agent belongs to, by teams.id.
 
 Unset means no team: the agent still messages and is messaged, it is
 simply not grouped and no team lead may assign to it.
+
+*** =agents.broker_server=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.24.0
+
+This agent's own gateway server on the broker.
+
+For anythingmcp, the id of an MCP server made in its dashboard (the
+last part of the server's MCP URL); the connectors assigned to that
+server are this agent's permission, and clawtilla reaches it as the
+connector broker-agent-<id>. For jentic, the Jentic agent this one
+acts as, whose API key `clawtilla broker key <id>` stores. Unset
+means the team's teams.broker_server, or no broker at all. An agent
+with runtime.network gated or none cannot reach the gateway on
+loopback and is not given it.
 
 *** =agents.team_role=
 

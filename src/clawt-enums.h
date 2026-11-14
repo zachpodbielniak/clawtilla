@@ -226,6 +226,43 @@ typedef enum {
 } ClawtRestartPolicy;
 
 /**
+ * ClawtBrokerType:
+ * @CLAWT_BROKER_ANYTHINGMCP: AnythingMCP, an MCP gateway whose adapters
+ *   turn REST, SOAP, GraphQL and SQL services into MCP tools
+ * @CLAWT_BROKER_JENTIC: Jentic One, a credential broker that checks a
+ *   per-agent rule before it injects a stored key (public beta)
+ *
+ * Which integration broker clawtilla runs when `broker.enabled` is on.
+ * A later broker is a value here, never a new config section.
+ */
+typedef enum {
+    CLAWT_BROKER_ANYTHINGMCP = 0,
+    CLAWT_BROKER_JENTIC
+} ClawtBrokerType;
+
+/**
+ * ClawtBrokerState:
+ * @CLAWT_BROKER_STATE_DISABLED: `broker.enabled` is off
+ * @CLAWT_BROKER_STATE_STOPPED: on, and not running
+ * @CLAWT_BROKER_STATE_STARTING: its containers are being pulled, created
+ *   or started, or they run and the gateway has not answered yet
+ * @CLAWT_BROKER_STATE_RUNNING: the gateway answers its health check
+ * @CLAWT_BROKER_STATE_STOPPING: its containers are being stopped
+ * @CLAWT_BROKER_STATE_ERROR: it failed, and the detail says why
+ *
+ * Where the managed integration broker is.  A start answers at once with
+ * %CLAWT_BROKER_STATE_STARTING rather than waiting on a pull.
+ */
+typedef enum {
+    CLAWT_BROKER_STATE_DISABLED = 0,
+    CLAWT_BROKER_STATE_STOPPED,
+    CLAWT_BROKER_STATE_STARTING,
+    CLAWT_BROKER_STATE_RUNNING,
+    CLAWT_BROKER_STATE_STOPPING,
+    CLAWT_BROKER_STATE_ERROR
+} ClawtBrokerState;
+
+/**
  * ClawtComputerType:
  * @CLAWT_COMPUTER_NONE: chat only, no command execution
  * @CLAWT_COMPUTER_HOST: the real machine the daemon runs on
@@ -884,6 +921,8 @@ typedef enum {
  * @CLAWT_NOTIFY_BACKEND_GOTIFY: a gotify server
  * @CLAWT_NOTIFY_BACKEND_MATRIX: a message into a Matrix room
  * @CLAWT_NOTIFY_BACKEND_COMMAND: run a program and hand it the text
+ * @CLAWT_NOTIFY_BACKEND_APPRISE: hand it to the `apprise` CLI, which
+ *   reaches a hundred-odd services through one URL scheme
  *
  * How a notification reaches the operator.
  *
@@ -897,7 +936,8 @@ typedef enum {
     CLAWT_NOTIFY_BACKEND_NTFY,
     CLAWT_NOTIFY_BACKEND_GOTIFY,
     CLAWT_NOTIFY_BACKEND_MATRIX,
-    CLAWT_NOTIFY_BACKEND_COMMAND
+    CLAWT_NOTIFY_BACKEND_COMMAND,
+    CLAWT_NOTIFY_BACKEND_APPRISE
 } ClawtNotifyBackend;
 
 /**
@@ -1099,6 +1139,8 @@ GType clawt_runtime_network_get_type(void) G_GNUC_CONST;
 GType clawt_net_address_class_get_type(void) G_GNUC_CONST;
 GType clawt_team_role_get_type(void) G_GNUC_CONST;
 GType clawt_restart_policy_get_type(void) G_GNUC_CONST;
+GType clawt_broker_type_get_type(void) G_GNUC_CONST;
+GType clawt_broker_state_get_type(void) G_GNUC_CONST;
 GType clawt_computer_type_get_type(void) G_GNUC_CONST;
 GType clawt_computer_state_get_type(void) G_GNUC_CONST;
 GType clawt_vm_backend_get_type(void) G_GNUC_CONST;
@@ -1138,6 +1180,8 @@ GType clawt_tool_directory_mode_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_NET_ADDRESS_CLASS (clawt_net_address_class_get_type())
 #define CLAWT_TYPE_TEAM_ROLE        (clawt_team_role_get_type())
 #define CLAWT_TYPE_RESTART_POLICY   (clawt_restart_policy_get_type())
+#define CLAWT_TYPE_BROKER_TYPE      (clawt_broker_type_get_type())
+#define CLAWT_TYPE_BROKER_STATE     (clawt_broker_state_get_type())
 #define CLAWT_TYPE_COMPUTER_TYPE    (clawt_computer_type_get_type())
 #define CLAWT_TYPE_COMPUTER_STATE   (clawt_computer_state_get_type())
 #define CLAWT_TYPE_VM_BACKEND       (clawt_vm_backend_get_type())

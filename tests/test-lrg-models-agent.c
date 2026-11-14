@@ -1144,6 +1144,63 @@ test_hold(void)
     g_assert_null(clawt_lrg_hold_available_update(free_fleet));
 }
 
+/*
+ * A save that cleared the stored list and was then refused puts the old
+ * list back, rather than leaving the agent with none.  Which steps were
+ * accepted decides it: the clear has to have landed.
+ */
+static void
+test_a_refused_save_does_not_lose_the_list(void)
+{
+    g_autoptr(JsonNode) settings = parse(
+        "{\"model.provider\":\"claude-code\",\"model.model\":\"opus\","
+        "\"model.account\":\"\","
+        "\"model.fallbacks\":\"codex-cli:gpt-5.5\"}");
+    g_autoptr(GPtrArray) form = posted("model.provider", "codex-cli",
+                                       "model.fallbacks", "claude-code:sonnet",
+                                       NULL);
+    g_autoptr(GPtrArray) plan =
+        clawt_lrg_agent_save_plan(form, json_node_get_object(settings));
+    g_autoptr(GPtrArray) keep = NULL;
+    g_autoptr(GPtrArray) undo = NULL;
+    JsonObject *shown = json_node_get_object(settings);
+
+    /* clear, provider, new list -- as the plan test above has it */
+    g_assert_cmpuint(plan->len, ==, 3);
+
+    /* Refused at the clear itself: nothing was lost. */
+    g_assert_false(clawt_lrg_agent_plan_cleared_fallbacks(plan, 0, shown));
+
+    /* Refused at the provider, or at the new list: the clear landed. */
+    g_assert_true(clawt_lrg_agent_plan_cleared_fallbacks(plan, 1, shown));
+    g_assert_true(clawt_lrg_agent_plan_cleared_fallbacks(plan, 2, shown));
+
+    keep = clawt_lrg_agent_fallback_restore_plan(shown, FALSE);
+    g_assert_cmpuint(keep->len, ==, 1);
+    g_assert_cmpstr(((ClawtLrgAgentSetting *)g_ptr_array_index(keep, 0))->key,
+                    ==, "model.fallbacks");
+    g_assert_cmpstr(((ClawtLrgAgentSetting *)g_ptr_array_index(keep, 0))->value,
+                    ==, "codex-cli:gpt-5.5");
+
+    undo = clawt_lrg_agent_fallback_restore_plan(shown, TRUE);
+    g_assert_cmpstr(((ClawtLrgAgentSetting *)g_ptr_array_index(undo, 1))->key,
+                    ==, "model.provider");
+    g_assert_cmpstr(((ClawtLrgAgentSetting *)g_ptr_array_index(undo, 1))->value,
+                    ==, "claude-code");
+    g_assert_cmpstr(((ClawtLrgAgentSetting *)
+                         g_ptr_array_index(undo, undo->len - 1))->value,
+                    ==, "codex-cli:gpt-5.5");
+
+    /* An agent with no list had nothing to lose. */
+    {
+        g_autoptr(JsonNode) empty = parse(
+            "{\"model.provider\":\"claude-code\",\"model.fallbacks\":\"\"}");
+
+        g_assert_false(clawt_lrg_agent_plan_cleared_fallbacks(
+            plan, 3, json_node_get_object(empty)));
+    }
+}
+
 gint
 main(gint argc, gchar **argv)
 {
@@ -1194,6 +1251,8 @@ main(gint argc, gchar **argv)
                     test_save_clears_the_fallbacks_before_the_provider);
     g_test_add_func("/lrg-agent/save/fallbacks-unchanged",
                     test_save_leaves_unchanged_fallbacks);
+    g_test_add_func("/lrg-agent/save/refused-save-keeps-the-list",
+                    test_a_refused_save_does_not_lose_the_list);
     g_test_add_func("/lrg-agent/fallbacks/accounts",
                     test_fallback_account_choices);
     g_test_add_func("/lrg-agent/fallbacks/edit", test_fallback_edit_and_spell);
@@ -1226,3 +1285,4 @@ main(gint argc, gchar **argv)
 
     return g_test_run();
 }
+

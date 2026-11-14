@@ -157,9 +157,15 @@ match_marker(
 	return p + 1;
 }
 
-gchar *
-clawt_preamble_escape(
-	const gchar *text
+/*
+ * The one walk both entry points share.  @anywhere adds the mid-line
+ * check: at every '[' -- or a zero-width character that may be hiding
+ * one -- not only at the start of a line.
+ */
+static gchar *
+escape_text(
+	const gchar *text,
+	gboolean     anywhere
 ){
 	g_autoptr(GString) out = NULL;
 	const gchar *p;
@@ -217,8 +223,24 @@ clawt_preamble_escape(
 			}
 		}
 
-		/* Anything else is copied byte for byte. */
 		c = next_char(p, &next);
+
+		/*
+		 * Mid-line, in quoted text only.  The marker is matched from
+		 * here with the same rules as at a line start, and the
+		 * zero-width characters in front of it go with it.
+		 */
+		if (anywhere && (c == '[' || is_zero_width(c))) {
+			const gchar *end = match_marker(p);
+
+			if (end != NULL) {
+				g_string_append(out, CLAWT_PREAMBLE_ESCAPED);
+				p = end;
+				continue;
+			}
+		}
+
+		/* Anything else is copied byte for byte. */
 		g_string_append_len(out, p, (gssize)(next - p));
 
 		if (is_line_break(c))
@@ -228,4 +250,18 @@ clawt_preamble_escape(
 	}
 
 	return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+gchar *
+clawt_preamble_escape(
+	const gchar *text
+){
+	return escape_text(text, FALSE);
+}
+
+gchar *
+clawt_preamble_escape_all(
+	const gchar *text
+){
+	return escape_text(text, TRUE);
 }

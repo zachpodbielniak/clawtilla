@@ -107,6 +107,7 @@ agent_row(ClawtWindow *self, JsonObject *agent, gint64 total, gint64 now,
     g_autofree gchar *share = clawt_usage_share_label(cost, total);
     g_autofree gchar *cost_text = g_strdup_printf("%s \xc2\xb7 %s", money, share);
     GtkWidget *value;
+    GtkWidget *fleet_fallback;
 
     clawt_gtk_set_row_text(row, name != NULL ? name : "?", subtitle);
 
@@ -114,6 +115,15 @@ agent_row(ClawtWindow *self, JsonObject *agent, gint64 total, gint64 now,
         adw_action_row_add_prefix(ADW_ACTION_ROW(row),
             clawt_gtk_badge(idle, clawt_gtk_tone_class(tone),
                             "How long since this agent last took a turn"));
+
+    /*
+     * On one of its fallbacks: what it costs is now another backend's
+     * bill, which is the question this page is read to answer.
+     * usage.summary carries `failover` as agent.list does.
+     */
+    fleet_fallback = clawt_gtk_failover_badge(agent);
+    if (fleet_fallback != NULL)
+        adw_action_row_add_suffix(ADW_ACTION_ROW(row), fleet_fallback);
 
     /* the state in words when it is not running: the badge is recency */
     if (state != NULL && g_strcmp0(state, "running") != 0)

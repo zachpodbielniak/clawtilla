@@ -258,6 +258,43 @@ static const ClawtConnectorInfo builtin[] = {
       NULL, NULL, NULL },
 
     /*
+     * The integration brokers clawtilla can run (`broker:` in the config,
+     * clawt-broker.h).  Each agent or team reaches its own gateway server
+     * through a connector the config loader makes with one of these as
+     * its provider, which is how the relay knows which gateway to name
+     * when one refuses a call.  Usable by hand as well, for a gateway
+     * somebody else runs: its URL and a key from its dashboard.
+     */
+    { "anythingmcp", "AnythingMCP",
+      "An MCP gateway server: the app integrations assigned to it, behind "
+      "one key.", "Integration broker",
+      CLAWT_CONNECTOR_AUTH_API_KEY,
+      NULL, NULL, NULL, NULL,
+      "make an MCP API key on the server's page of the AnythingMCP "
+      "dashboard; a key made there works for that server only",
+      "https://github.com/HelpCode-ai/anythingmcp/blob/main/docs/"
+      "api-reference.md",
+      NULL,
+      NULL, NULL, NULL,
+      NULL,
+      CLAWT_CREDENTIAL_PLACEMENT_HEADER, "Authorization", "Bearer %s",
+      NULL, NULL, NULL },
+
+    { "jentic", "Jentic One",
+      "A credential broker: APIs called through it, checked against the "
+      "agent's rules before a stored key is injected.", "Integration broker",
+      CLAWT_CONNECTOR_AUTH_API_KEY,
+      NULL, NULL, NULL, NULL,
+      "the agent's API key, from its page in the Jentic One web app",
+      "https://github.com/jentic/jentic-one/blob/main/docs/guides/"
+      "mcp-http-endpoint.md",
+      NULL,
+      NULL, NULL, NULL,
+      NULL,
+      CLAWT_CREDENTIAL_PLACEMENT_HEADER, "Authorization", "Bearer %s",
+      NULL, NULL, NULL },
+
+    /*
      * Any remote MCP server, by its URL and nothing else.
      *
      * PKCE with no endpoints is what makes it work: the sign-in is asked

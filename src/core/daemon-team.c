@@ -169,6 +169,10 @@ clawt_daemon_handle_team(
             return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
                                        "team and key are both required");
 
+        if (!clawt_broker_check_setting(self->config, NULL, team_id, key,
+                                        value, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
         if (!clawt_config_set_team_string(self->config, team_id, key, value))
             return clawt_ipc_error_new(
                 request, CLAWT_ERROR_NOT_FOUND,
@@ -180,6 +184,9 @@ clawt_daemon_handle_team(
 
         if (!clawt_config_save(self->config, &error))
             return clawt_ipc_error_new(request, error->code, error->message);
+
+        /* A team's broker_server decides its members' broker connector. */
+        clawt_config_refresh_broker_connectors(self->config);
 
         /*
          * The agents' own files describe their team, so they are
