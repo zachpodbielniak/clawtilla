@@ -15,6 +15,81 @@
 G_DEFINE_BOXED_TYPE(ClawtModelFallback, clawt_model_fallback,
                     clawt_model_fallback_copy, clawt_model_fallback_free)
 
+G_DEFINE_BOXED_TYPE(ClawtModelSetting, clawt_model_setting,
+                    clawt_model_setting_copy, clawt_model_setting_free)
+
+ClawtModelSetting *
+clawt_model_setting_new(const gchar *key, const gchar *value)
+{
+    ClawtModelSetting *self = g_new0(ClawtModelSetting, 1);
+
+    self->key = g_strdup(key);
+    self->value = g_strdup(value != NULL ? value : "");
+
+    return self;
+}
+
+ClawtModelSetting *
+clawt_model_setting_copy(const ClawtModelSetting *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    return clawt_model_setting_new(self->key, self->value);
+}
+
+void
+clawt_model_setting_free(ClawtModelSetting *self)
+{
+    if (self == NULL)
+        return;
+
+    g_free(self->key);
+    g_free(self->value);
+    g_free(self);
+}
+
+GPtrArray *
+clawt_model_fallback_restore_plan(const gchar *saved_list,
+                                  const gchar *old_provider,
+                                  const gchar *old_account,
+                                  const gchar *old_model,
+                                  gboolean     undo_backend)
+{
+    GPtrArray *plan = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)clawt_model_setting_free);
+
+    if (saved_list == NULL || *saved_list == '\0')
+        return plan;
+
+    if (undo_backend) {
+        /*
+         * The account comes off first, whatever it is now: the old
+         * provider is checked against the account still named, and a
+         * login for the new provider would refuse it.  The list is
+         * empty at this point -- it is why we are here -- so none of
+         * these is checked against one.
+         */
+        g_ptr_array_add(plan, clawt_model_setting_new("model.account", ""));
+
+        if (old_provider != NULL && *old_provider != '\0')
+            g_ptr_array_add(plan, clawt_model_setting_new("model.provider",
+                                                          old_provider));
+
+        if (old_account != NULL && *old_account != '\0')
+            g_ptr_array_add(plan, clawt_model_setting_new("model.account",
+                                                          old_account));
+
+        if (old_model != NULL && *old_model != '\0')
+            g_ptr_array_add(plan, clawt_model_setting_new("model.model",
+                                                          old_model));
+    }
+
+    g_ptr_array_add(plan, clawt_model_setting_new("model.fallbacks",
+                                                  saved_list));
+
+    return plan;
+}
+
 ClawtModelFallback *
 clawt_model_fallback_new(const gchar *provider,
                          const gchar *model,

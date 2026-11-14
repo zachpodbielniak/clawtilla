@@ -230,8 +230,9 @@ on_revoke_clicked(LrgButton *button, gpointer user_data)
     const gchar *name = g_object_get_data(G_OBJECT(button), "clawt-name");
     gboolean current = GPOINTER_TO_INT(
         g_object_get_data(G_OBJECT(button), "clawt-current"));
-    g_autofree gchar *title = g_strdup_printf("Revoke %s?",
-                                              name != NULL ? name : id);
+    g_autofree gchar *title = current
+        ? g_strdup("Sign out this device?")
+        : g_strdup_printf("Revoke %s?", name != NULL ? name : id);
 
     clawt_lrg_confirm(
         app, title,
@@ -242,7 +243,8 @@ on_revoke_clicked(LrgButton *button, gpointer user_data)
             : "Its token stops working at once and anything it has "
               "connected is closed. The daemon's own token is not "
               "affected.",
-        "Revoke", TRUE, on_revoke_confirmed, g_strdup(id), g_free);
+        current ? "Sign out" : "Revoke", TRUE, on_revoke_confirmed,
+        g_strdup(id), g_free);
 }
 
 /* ── The list ─────────────────────────────────────────────────────── */
@@ -273,8 +275,8 @@ on_list(ClawtLrgApp *app, JsonNode *reply, const GError *error,
     if (!owner)
         clawt_lrg_take(devices.list, clawt_lrg_row(
             "Connected as a paired device",
-            "Only the daemon's owner can pair another. Revoking still "
-            "works."));
+            "Only the daemon's owner can pair or revoke another. This "
+            "window can still sign itself out."));
 
     if (list == NULL || json_array_get_length(list) == 0)
         clawt_lrg_take(devices.list, clawt_lrg_row(
@@ -299,13 +301,27 @@ on_list(ClawtLrgApp *app, JsonNode *reply, const GError *error,
             "%s \302\267 paired %s \302\267 %s", seen, when,
             id != NULL ? id : "?");
         LrgWidget *row = clawt_lrg_row(name != NULL ? name : id, subtitle);
-        LrgWidget *revoke = clawt_lrg_button("Revoke", "danger",
-                                             G_CALLBACK(on_revoke_clicked),
-                                             app);
+        /*
+         * The rule the daemon enforces: the owner revokes any row, a
+         * paired device only signs itself out, and the rest get no
+         * button to be refused by.
+         */
+        const gchar *label = clawt_device_row_action_label(
+            clawt_device_row_action(owner, current));
+        LrgWidget *revoke;
 
         if (current)
             clawt_lrg_row_add_prefix(row, clawt_lrg_badge("this device",
                                                           "info"));
+
+        if (label == NULL) {
+            clawt_lrg_appear(app, row, i);
+            clawt_lrg_take(devices.list, row);
+            continue;
+        }
+
+        revoke = clawt_lrg_button(label, "danger",
+                                  G_CALLBACK(on_revoke_clicked), app);
 
         g_object_set_data_full(G_OBJECT(revoke), "clawt-device",
                                g_strdup(id), g_free);

@@ -303,6 +303,8 @@ ClawtDaemon (owns everything; clients hold no transports)
 ├── ClawtTaskManager       (delegation, each task its own libreclaw session)
 ├── ClawtMcpTools          (orchestration tools served to agents over their link)
 ├── ClawtPluginManager
+├── ClawtBroker            (the integration broker, AnythingMCP or Jentic One,
+│                           in podman; made only when broker.enabled is on)
 ├── ClawtLinkServer        (agents dial in here)
 └── ClawtIpcServer         (CLI / GTK / web dial in here)
 ```
@@ -535,6 +537,12 @@ critical fired.
   its `.in` template.
 - Prefix `cd` with `CDPATH=` in any script, or the resolved directory is echoed
   into a command substitution.
+- **`f(g_bytes_get_data(b, &length), length)` reads `length` before the
+  call that sets it** -- the order of a call's arguments is unspecified,
+  and gcc on x86-64 goes right to left. The HTTP connector bridge did
+  exactly this, so every successful reply from every remote connector was
+  an empty string, dropped in silence; only running a real server through
+  it showed it. Two statements.
 - A shared `SoupSession` cannot carry per-request state. Parking a pointer on it
   with `g_object_set_data()` breaks the moment two requests are in flight,
   which for a room listing is immediately. Allocate a struct per request.
@@ -864,6 +872,18 @@ critical fired.
   domain logs two errors. Ask `list_domains` first.
 - Never sleep uninterruptibly on a thread something has to join -- poll the
   cancellable's fd.
+- **Two of the container module's answers are empty by construction.**
+  `inspect` never fills `status`, and `logs` parses podman's multiplexed log
+  stream as JSON and returns no text. Whether a container runs is the
+  `list` action (podman's listing without `all`), compared on `ids` --
+  its `names` reads an array as a string and is always empty. The roadmap
+  carries the fix upstream.
+- A container computer runs `sleep infinity` unless given a command. A
+  service in one (the broker's containers) must name the image's own.
+- Rootless podman under pasta maps `host.containers.internal` to the
+  machine's *external* address, not its loopback: a service published on
+  127.0.0.1 is unreachable from a sibling container. Share a unix socket
+  in a bind instead.
 
 ### sqlite
 

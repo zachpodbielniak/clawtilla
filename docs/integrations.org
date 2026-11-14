@@ -509,6 +509,7 @@ mattered.
 | =gotify=   | =url=, =token= | A phone |
 | =matrix=   | =homeserver=, =room=, =token= | Wherever you read Matrix |
 | =command=  | =command=, optional =args= | Whatever you point it at |
+| =apprise=  | =apprise_url=, optional =command= | A hundred-odd services through one URL scheme |
 
 =desktop= is the wrong answer when the daemon is on a workstation and you
 are not.  It is spoken over the session bus rather than by running
@@ -542,6 +543,39 @@ integrations:
     command: receipt-print
     args: ["--header", "{{agent}}", "--body", "{{title}}"]
 #+end_src
+
+=apprise= hands the notification to the [[https://github.com/caronc/apprise][Apprise]] CLI, which reaches
+Telegram, Signal, email, Pushover, Gotify, SMS gateways and a hundred-odd
+others, each through one URL.  An Apprise URL nearly always *is* a
+credential -- =tgram://BOT_TOKEN/CHAT_ID=, =mailtos://user:password@host=
+-- so =apprise_url= is a secret reference, like a token, and every client
+asks for it as one and never shows it back:
+
+#+begin_src bash
+install -m 0600 /dev/null ~/.config/clawtilla/apprise.url
+echo 'tgram://123456:ABCDEF/987654' > ~/.config/clawtilla/apprise.url
+clawtilla integration add phone notify scope=all backend=apprise \
+    apprise_url=file:~/.config/clawtilla/apprise.url
+clawtilla integration test phone
+#+end_src
+
+A file may hold several URLs, one per line, and every one of them is
+notified.  The daemon resolves the reference when the configuration
+loads, as for any token, and at each notification writes the URLs to a
+fresh 0600 file in the temporary directory, runs ~apprise --config FILE
+--title TITLE~ with the body on standard input, and deletes the file
+when apprise exits -- whether it succeeded or not.  The URL is never on
+apprise's command line, which any user on the machine can read through
+=/proc=; =tests/test-notify.c= asserts it is not there.  The title is.
+=command= names the binary when ~apprise~ is not on the daemon's PATH.
+When apprise refuses, the failure carries what it printed on standard
+error, which names the service rather than the URL.  Quiet hours and
+the event filter work as for every other backend; =priority= is not
+passed on, since apprise's command line has no portable notion of one.
+
+The package is ~apprise~ on Fedora, Debian and Arch alike (on Fedora,
+~python3-apprise~ is only the library); see
+[[file:getting-started.org][getting-started.org]].
 
 *** Quiet hours
 

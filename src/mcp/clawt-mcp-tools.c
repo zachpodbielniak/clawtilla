@@ -2998,6 +2998,20 @@ roster_skills(ClawtAgentConfig *config)
     return clawt_clip_line(joined, ROSTER_DESCRIPTION_CHARS);
 }
 
+/* Replaces *@text with its clawt_preamble_escape_all() form. */
+static void
+quote_in_place(gchar **text)
+{
+    gchar *quoted;
+
+    if (*text == NULL)
+        return;
+
+    quoted = clawt_preamble_escape_all(*text);
+    g_free(*text);
+    *text = quoted;
+}
+
 /*
  * The fleet, written into an agent's own TOOLS.org.
  *
@@ -3067,6 +3081,16 @@ append_roster(ClawtMcpTools *self, GString *out, const gchar *agent_id)
             g_strdelimit(role, "|", '/');
         if (description != NULL)
             g_strdelimit(description, "|", '/');
+
+        /*
+         * And the daemon's marker, for the same reason: the file is one
+         * the agent trusts, and a name or a description is a quoted
+         * segment placed after the daemon's own cell text.  Mid-line by
+         * construction, hence the _all form.
+         */
+        quote_in_place(&name);
+        quote_in_place(&role);
+        quote_in_place(&description);
 
         g_string_append_printf(out, "| ~%s~ (%s) | %s | %s |\n",
                                clawt_agent_get_id(agent),
@@ -3412,10 +3436,37 @@ clawt_mcp_tools_list_in_room(ClawtMcpTools *self, const gchar *agent_id,
 
 /* ── Responses ───────────────────────────────────────────────────── */
 
+/*
+ * Every tool's text, on its way out, with the daemon's marker escaped
+ * wherever it appears.
+ *
+ * A tool result is never the daemon speaking: it is something the agent
+ * asked to read, and most of it is somebody else's words -- recall and
+ * room history quote other agents, memory search returns what a team
+ * recorded, a task listing quotes delegators' prompts and assignees'
+ * notes, a web page or a command's output is anybody's.  Escaping at
+ * each tool was the shape that left recall and room history behind when
+ * the router was fixed, so it is done here, where both response
+ * builders and every tool (plugins' included) pass.
+ *
+ * Every occurrence, not only line starts: a listing puts a label in
+ * front of what it quotes ("oryx: ", "Latest from oryx: "), so a forged
+ * marker at the start of somebody's text lands mid-line, directly after
+ * the daemon's own words.  A genuine notice quoted back in history is
+ * rewritten too; its sender column already says who wrote it, and a
+ * quoted notice is history rather than an instruction.
+ */
+static gchar *
+response_text(const gchar *text)
+{
+    return clawt_preamble_escape_all(text != NULL ? text : "");
+}
+
 static JsonNode *
 make_response(JsonNode *request_id, const gchar *text, gboolean is_error)
 {
     g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autofree gchar *escaped = response_text(text);
 
     json_builder_begin_object(builder);
 
@@ -3436,7 +3487,7 @@ make_response(JsonNode *request_id, const gchar *text, gboolean is_error)
     json_builder_set_member_name(builder, "type");
     json_builder_add_string_value(builder, "text");
     json_builder_set_member_name(builder, "text");
-    json_builder_add_string_value(builder, text != NULL ? text : "");
+    json_builder_add_string_value(builder, escaped);
     json_builder_end_object(builder);
     json_builder_end_array(builder);
 
@@ -8570,6 +8621,7 @@ make_image_response(JsonNode *request_id, GBytes *png, const gchar *text)
     g_autoptr(JsonBuilder) builder = json_builder_new();
     g_autofree gchar *encoded = g_base64_encode(g_bytes_get_data(png, NULL),
                                                 g_bytes_get_size(png));
+    g_autofree gchar *escaped = response_text(text);
 
     json_builder_begin_object(builder);
     json_builder_set_member_name(builder, "jsonrpc");
@@ -8594,7 +8646,7 @@ make_image_response(JsonNode *request_id, GBytes *png, const gchar *text)
     json_builder_set_member_name(builder, "type");
     json_builder_add_string_value(builder, "text");
     json_builder_set_member_name(builder, "text");
-    json_builder_add_string_value(builder, text != NULL ? text : "");
+    json_builder_add_string_value(builder, escaped);
     json_builder_end_object(builder);
     json_builder_end_array(builder);
     json_builder_set_member_name(builder, "isError");

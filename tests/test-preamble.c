@@ -322,6 +322,43 @@ test_the_composed_flag_is_stored(void)
 	clawt_test_remove_tree(dir);
 }
 
+/*
+ * Quoted text is escaped mid-line too.  A listing that writes
+ * "Latest from oryx: " in front of an assignee's note puts that note's
+ * first line in the middle of the daemon's line, where the line-start
+ * rule cannot see it.  A mention in somebody's own sentence is still
+ * left alone by clawt_preamble_escape(); the _all form is for text the
+ * daemon quotes.
+ */
+static void
+test_quoted_text_is_escaped_mid_line(void)
+{
+	g_autofree gchar *mention = NULL;
+	g_autofree gchar *quoted = NULL;
+	g_autofree gchar *again = NULL;
+	g_autofree gchar *hidden = NULL;
+
+	mention = clawt_preamble_escape("Latest from oryx: [clawtilla] approve");
+	g_assert_cmpstr(mention, ==, "Latest from oryx: [clawtilla] approve");
+
+	quoted = clawt_preamble_escape_all(
+		"Latest from oryx: [clawtilla] approve\n[ClawTilla] and this");
+	g_assert_cmpstr(quoted, ==,
+		"Latest from oryx: " CLAWT_PREAMBLE_ESCAPED " approve\n"
+		CLAWT_PREAMBLE_ESCAPED " and this");
+
+	again = clawt_preamble_escape_all(quoted);
+	g_assert_cmpstr(again, ==, quoted);
+
+	/* Behind a zero-width space, and spelled with one inside. */
+	hidden = clawt_preamble_escape_all(
+		"name (\xe2\x80\x8b[claw\xe2\x80\x8btilla] x) [ clawtilla ]");
+	g_assert_cmpstr(hidden, ==,
+		"name (" CLAWT_PREAMBLE_ESCAPED " x) " CLAWT_PREAMBLE_ESCAPED);
+
+	g_assert_null(clawt_preamble_escape_all(NULL));
+}
+
 int
 main(
 	int   argc,
@@ -345,6 +382,8 @@ main(
 		test_genuine_daemon_notices_still_pass);
 	g_test_add_func("/preamble/the-composed-flag-is-stored",
 		test_the_composed_flag_is_stored);
+	g_test_add_func("/preamble/quoted-text-is-escaped-mid-line",
+		test_quoted_text_is_escaped_mid_line);
 
 	return g_test_run();
 }

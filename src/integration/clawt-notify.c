@@ -14,7 +14,11 @@
 #include <json-glib/json-glib.h>
 #include <libsoup/soup.h>
 
+#include <errno.h>
 #include <string.h>
+#include <unistd.h>
+
+#include <glib/gstdio.h>
 
 #define USER_AGENT \
     "clawtilla/" G_STRINGIFY(CLAWT_VERSION_MAJOR) "." \
@@ -823,6 +827,211 @@ send_command(GTask *task, ClawtIntegrationBinding *binding,
                                   on_command_done, task);
 }
 
+/* ── Apprise ─────────────────────────────────────────────────────── */
+
+gchar *
+clawt_notify_apprise_write_config(const gchar *urls, GError **error)
+{
+    g_autofree gchar *path = NULL;
+    gint fd;
+    gsize length;
+    gsize written = 0;
+
+    g_return_val_if_fail(urls != NULL, NULL);
+
+    /*
+     * mkstemp() opens 0600 and refuses an existing name, so there is no
+     * moment at which another user could read the file or have planted
+     * one under its name.
+     */
+    fd = g_file_open_tmp("clawt-apprise-XXXXXX.txt", &path, error);
+
+    if (fd < 0)
+        return NULL;
+
+    length = strlen(urls);
+
+    while (written < length) {
+        gssize n = write(fd, urls + written, length - written);
+
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+
+            g_set_error(error, G_FILE_ERROR, g_file_error_from_errno(errno),
+                        "could not write the Apprise configuration: %s",
+                        g_strerror(errno));
+            close(fd);
+            g_unlink(path);
+            return NULL;
+        }
+
+        written += (gsize)n;
+    }
+
+    if (close(fd) != 0) {
+        g_set_error(error, G_FILE_ERROR, g_file_error_from_errno(errno),
+                    "could not write the Apprise configuration: %s",
+                    g_strerror(errno));
+        g_unlink(path);
+        return NULL;
+    }
+
+    return g_steal_pointer(&path);
+}
+
+GStrv
+clawt_notify_apprise_argv(const gchar *program,
+                          const gchar *config_path,
+                          const gchar *title)
+{
+    GStrvBuilder *builder;
+    GStrv argv;
+
+    g_return_val_if_fail(config_path != NULL, NULL);
+
+    builder = g_strv_builder_new();
+    g_strv_builder_add(builder, (program != NULL && *program != '\0')
+                                ? program : "apprise");
+    g_strv_builder_add(builder, "--config");
+    g_strv_builder_add(builder, config_path);
+
+    if (title != NULL && *title != '\0') {
+        g_strv_builder_add(builder, "--title");
+        g_strv_builder_add(builder, title);
+    }
+
+    argv = g_strv_builder_end(builder);
+    g_strv_builder_unref(builder);
+
+    return argv;
+}
+
+/* One running apprise: the file to delete once it has exited. */
+typedef struct {
+    GTask *task;
+    gchar *config_path;
+} AppriseRun;
+
+static void
+apprise_run_free(AppriseRun *run)
+{
+    /*
+     * Deleted whatever happened: the file holds the URL, and a failed
+     * send leaving it behind in the temporary directory would be the
+     * credential kept on disk for no reason.
+     */
+    if (run->config_path != NULL)
+        g_unlink(run->config_path);
+
+    g_free(run->config_path);
+    g_free(run);
+}
+
+static void
+on_apprise_done(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    AppriseRun *run = user_data;
+    GSubprocess *process = G_SUBPROCESS(source);
+    g_autoptr(GBytes) err = NULL;
+    g_autoptr(GError) error = NULL;
+    GTask *task = run->task;
+
+    if (!g_subprocess_communicate_finish(process, result, NULL, &err,
+                                         &error)) {
+        apprise_run_free(run);
+        g_task_return_error(task, g_steal_pointer(&error));
+        g_object_unref(task);
+        return;
+    }
+
+    /*
+     * apprise says which service refused and why on stderr; its exit
+     * status alone would be "exited with code 1".  Its stderr names a
+     * service, not the URL: it masks credentials in what it prints.
+     */
+    if (!g_subprocess_get_successful(process)) {
+        g_autofree gchar *said = NULL;
+
+        if (err != NULL && g_bytes_get_size(err) > 0)
+            said = clawt_notify_summarize(
+                (const gchar *)g_bytes_get_data(err, NULL), 300);
+
+        apprise_run_free(run);
+        g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                                "apprise could not send it%s%s",
+                                said != NULL ? ": " : "",
+                                said != NULL ? said : "");
+        g_object_unref(task);
+        return;
+    }
+
+    apprise_run_free(run);
+    g_task_return_boolean(task, TRUE);
+    g_object_unref(task);
+}
+
+static void
+send_apprise(GTask *task, ClawtIntegrationBinding *binding,
+             ClawtNotification *notification, const gchar *urls)
+{
+    g_auto(GStrv) argv = NULL;
+    g_autoptr(GSubprocess) process = NULL;
+    g_autoptr(GSubprocessLauncher) launcher = NULL;
+    g_autoptr(GBytes) body = NULL;
+    g_autoptr(GError) error = NULL;
+    AppriseRun *run;
+    const gchar *text;
+
+    if (urls == NULL || *urls == '\0') {
+        g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                                "an apprise notifier needs apprise_url, a "
+                                "secret reference to its URL");
+        g_object_unref(task);
+        return;
+    }
+
+    run = g_new0(AppriseRun, 1);
+    run->task = task;
+    run->config_path = clawt_notify_apprise_write_config(urls, &error);
+
+    if (run->config_path == NULL) {
+        apprise_run_free(run);
+        g_task_return_error(task, g_steal_pointer(&error));
+        g_object_unref(task);
+        return;
+    }
+
+    argv = clawt_notify_apprise_argv(
+        clawt_integration_binding_get_string(binding, "command"),
+        run->config_path, notification->title);
+
+    launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDIN_PIPE |
+                                         G_SUBPROCESS_FLAGS_STDOUT_SILENCE |
+                                         G_SUBPROCESS_FLAGS_STDERR_PIPE);
+    process = g_subprocess_launcher_spawnv(launcher,
+                                           (const gchar *const *)argv,
+                                           &error);
+
+    if (process == NULL) {
+        apprise_run_free(run);
+        g_prefix_error(&error, "could not run apprise (is it installed?): ");
+        g_task_return_error(task, g_steal_pointer(&error));
+        g_object_unref(task);
+        return;
+    }
+
+    /* The body on stdin: apprise reads it there when --body is absent. */
+    text = (notification->body != NULL && *notification->body != '\0')
+        ? notification->body
+        : (notification->title != NULL ? notification->title : "");
+    body = g_bytes_new(text, strlen(text));
+
+    g_subprocess_communicate_async(process, body,
+                                   g_task_get_cancellable(task),
+                                   on_apprise_done, run);
+}
+
 void
 clawt_notify_send_async(ClawtIntegrationBinding *binding,
                         ClawtNotification       *notification,
@@ -845,9 +1054,13 @@ clawt_notify_send_async(ClawtIntegrationBinding *binding,
 
     if (nick != NULL &&
         !clawt_enum_from_nick(CLAWT_TYPE_NOTIFY_BACKEND, nick, &backend)) {
+        /* Walked from the enum, so a backend added there is named here. */
+        g_autofree gchar *allowed = clawt_enum_nick_list(
+            CLAWT_TYPE_NOTIFY_BACKEND);
+
         g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
-                                "'%s' is not a notify backend: use desktop, "
-                                "ntfy, gotify, matrix or command", nick);
+                                "'%s' is not a notify backend: use one of %s",
+                                nick, allowed);
         g_object_unref(task);
         return;
     }
@@ -867,6 +1080,10 @@ clawt_notify_send_async(ClawtIntegrationBinding *binding,
 
     case CLAWT_NOTIFY_BACKEND_COMMAND:
         send_command(task, binding, notification);
+        return;
+
+    case CLAWT_NOTIFY_BACKEND_APPRISE:
+        send_apprise(task, binding, notification, token);
         return;
 
     case CLAWT_NOTIFY_BACKEND_DESKTOP:
@@ -983,7 +1200,16 @@ clawt_notifier_reload(ClawtNotifier *self, ClawtConfig *config)
         if (info == NULL || info->kind != CLAWT_INTEGRATION_KIND_NOTIFY)
             continue;
 
-        ref = clawt_integration_config_get_secret(instance, NULL, "token");
+        /*
+         * The credential is the token, except under Apprise, where it is
+         * the whole URL -- a key of its own so that a URL is never
+         * written where a reader expects a bare token.
+         */
+        ref = clawt_integration_config_get_secret(
+            instance, NULL,
+            g_strcmp0(clawt_integration_config_get_string(instance, NULL,
+                                                          "backend"),
+                      "apprise") == 0 ? "apprise_url" : "token");
 
         if (ref == NULL)
             continue;

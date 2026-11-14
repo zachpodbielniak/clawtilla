@@ -226,8 +226,9 @@ on_revoke_clicked(GtkButton *button, gpointer user_data)
     const gchar *name = g_object_get_data(G_OBJECT(button), "clawt-name");
     gboolean current = GPOINTER_TO_INT(
         g_object_get_data(G_OBJECT(button), "clawt-current"));
-    g_autofree gchar *heading = g_strdup_printf("Revoke %s?",
-                                                name != NULL ? name : id);
+    g_autofree gchar *heading = current
+        ? g_strdup("Sign out this device?")
+        : g_strdup_printf("Revoke %s?", name != NULL ? name : id);
     AdwAlertDialog *dialog;
 
     /*
@@ -244,7 +245,8 @@ on_revoke_clicked(GtkButton *button, gpointer user_data)
               "connected is closed. The daemon's own token is not "
               "affected."));
     adw_alert_dialog_add_response(dialog, "cancel", "Cancel");
-    adw_alert_dialog_add_response(dialog, "revoke", "Revoke");
+    adw_alert_dialog_add_response(dialog, "revoke",
+                                  current ? "Sign out" : "Revoke");
     adw_alert_dialog_set_response_appearance(dialog, "revoke",
                                              ADW_RESPONSE_DESTRUCTIVE);
     adw_alert_dialog_set_close_response(dialog, "cancel");
@@ -271,6 +273,7 @@ clawt_gtk_refresh_settings_devices(ClawtWindow *self)
         JsonObject *payload;
         JsonArray *devices;
         gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+        gboolean owner;
         guint i;
 
         clawt_gtk_clear_list(GTK_LIST_BOX(self->settings_devices));
@@ -290,9 +293,9 @@ clawt_gtk_refresh_settings_devices(ClawtWindow *self)
          * work, with the reason on the button rather than a refusal
          * after it.
          */
-        if (self->settings_devices_pair != NULL) {
-            gboolean owner = clawt_json_boolean(payload, "owner", FALSE);
+        owner = clawt_json_boolean(payload, "owner", FALSE);
 
+        if (self->settings_devices_pair != NULL) {
             gtk_widget_set_sensitive(self->settings_devices_pair, owner);
             gtk_widget_set_tooltip_text(
                 self->settings_devices_pair,
@@ -331,7 +334,14 @@ clawt_gtk_refresh_settings_devices(ClawtWindow *self)
                 "%s \302\267 paired %s \302\267 %s", seen, g_strstrip(when),
                 id);
             GtkWidget *row = adw_action_row_new();
-            GtkWidget *revoke = gtk_button_new_with_label("Revoke");
+            /*
+             * The same rule the daemon enforces: the owner revokes any
+             * row, a paired device only signs itself out, and the other
+             * rows get no button to be refused by.
+             */
+            const gchar *label = clawt_device_row_action_label(
+                clawt_device_row_action(owner, current));
+            GtkWidget *revoke;
 
             adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row),
                                                FALSE);
@@ -347,6 +357,13 @@ clawt_gtk_refresh_settings_devices(ClawtWindow *self)
                 adw_action_row_add_suffix(ADW_ACTION_ROW(row), badge);
             }
 
+            if (label == NULL) {
+                gtk_list_box_append(GTK_LIST_BOX(self->settings_devices),
+                                    row);
+                continue;
+            }
+
+            revoke = gtk_button_new_with_label(label);
             gtk_widget_set_valign(revoke, GTK_ALIGN_CENTER);
             gtk_widget_add_css_class(revoke, "destructive-action");
             g_object_set_data_full(G_OBJECT(revoke), "clawt-device",

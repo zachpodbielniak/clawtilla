@@ -25,6 +25,8 @@ struct _ClawtContainerComputer {
     gchar          *container_id;
     gchar          *connection;
     gchar          *command;
+    gchar          *env;
+    gchar          *ports;
     gboolean        keep;
 
     /* NULL for none; see clawt_container_computer_set_limits(). */
@@ -186,6 +188,36 @@ clawt_container_computer_get_command(ClawtContainerComputer *self)
 }
 
 void
+clawt_container_computer_set_env(ClawtContainerComputer *self,
+                                 const gchar            *env_json)
+{
+    g_return_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self));
+
+    g_free(self->env);
+    self->env = (env_json != NULL && *env_json != '\0') ? g_strdup(env_json)
+                                                        : NULL;
+}
+
+void
+clawt_container_computer_set_ports(ClawtContainerComputer *self,
+                                   const gchar            *ports_json)
+{
+    g_return_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self));
+
+    g_free(self->ports);
+    self->ports = (ports_json != NULL && *ports_json != '\0')
+                  ? g_strdup(ports_json) : NULL;
+}
+
+const gchar *
+clawt_container_computer_get_container_id(ClawtContainerComputer *self)
+{
+    g_return_val_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self), NULL);
+
+    return self->container_id;
+}
+
+void
 clawt_container_computer_set_network(ClawtContainerComputer *self,
                                      const gchar            *network)
 {
@@ -333,6 +365,18 @@ container_provision(ClawtComputer *computer, GError **error)
     if (self->command != NULL)
         g_hash_table_insert(params, g_strdup("command"),
                             g_strdup(self->command));
+
+    /*
+     * Only the broker's containers carry these.  An agent's computer has
+     * neither: what it needs arrives by mount, and a published port on
+     * an agent's machine would be a door nobody asked for.
+     */
+    if (self->env != NULL)
+        g_hash_table_insert(params, g_strdup("env"), g_strdup(self->env));
+
+    if (self->ports != NULL)
+        g_hash_table_insert(params, g_strdup("ports"),
+                            g_strdup(self->ports));
 
     result = clawt_pod_bridge_call_for(self->bridge, "container",
                                        self->connection, "create",
@@ -884,6 +928,8 @@ clawt_container_computer_finalize(GObject *object)
     g_clear_pointer(&self->container_id, g_free);
     g_clear_pointer(&self->connection, g_free);
     g_clear_pointer(&self->command, g_free);
+    g_clear_pointer(&self->env, g_free);
+    g_clear_pointer(&self->ports, g_free);
     g_clear_pointer(&self->limits, clawt_container_limits_free);
 
     G_OBJECT_CLASS(clawt_container_computer_parent_class)->finalize(object);

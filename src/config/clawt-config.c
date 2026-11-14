@@ -2247,6 +2247,7 @@ clawt_team_spec_free(ClawtTeamSpec *self)
     g_free(self->name);
     g_free(self->description);
     g_free(self->color);
+    g_free(self->broker_server);
     g_free(self);
 }
 
@@ -2737,6 +2738,9 @@ clawt_config_get_teams(ClawtConfig *self)
                                    "description"));
         spec->color = g_strdup(member_string(yaml_node_get_mapping(entry),
                                              "color"));
+        spec->broker_server =
+            g_strdup(member_string(yaml_node_get_mapping(entry),
+                                   "broker_server"));
 
         {
             YamlNode *node = node_at_path(entry, "order", FALSE);
@@ -4855,6 +4859,14 @@ struct _ClawtIntegrationConfig {
     gchar       *name;
     YamlNode    *node;        /* the instance's mapping, unowned */
     gchar       *shadow_reason;
+
+    /*
+     * Made by clawtilla rather than read from the file: the broker's
+     * per-agent connectors.  Such an instance owns its node, which is in
+     * no tree a save would write.
+     */
+    gboolean     managed;
+    YamlNode    *owned_node;
 };
 
 static ClawtIntegrationConfig *
@@ -4893,6 +4905,7 @@ clawt_integration_config_unref(ClawtIntegrationConfig *self)
 
     g_free(self->name);
     g_free(self->shadow_reason);
+    g_clear_pointer(&self->owned_node, yaml_node_unref);
     g_free(self);
 }
 
@@ -4932,6 +4945,14 @@ clawt_integration_config_get_type_id(ClawtIntegrationConfig *self)
     g_return_val_if_fail(self != NULL, NULL);
 
     return member_string(yaml_node_get_mapping(self->node), "type");
+}
+
+gboolean
+clawt_integration_config_is_managed(ClawtIntegrationConfig *self)
+{
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    return self->managed;
 }
 
 gboolean
@@ -5510,6 +5531,78 @@ clawt_integration_config_set_enabled(ClawtIntegrationConfig *self,
  * Rebuilds the instance list from the YAML tree, exactly as reload_agents()
  * does for agents and for the same reason.
  */
+/*
+ * The broker's connectors, one per gateway server the fleet names.
+ *
+ * Made here, where every other instance is, so the daemon's resolver, the
+ * relay a CLI starts and the bwrap box all find the same connector by the
+ * same name -- one list, not a second path through each of them.  They
+ * are kept out of the file: the config says which server an agent uses,
+ * and this is derived from it, so writing it back would be a second copy
+ * to disagree with the first.  A name somebody already used for their own
+ * integration wins, with a warning, because theirs is a decision.
+ */
+static void
+add_broker_connectors(ClawtConfig *self, GHashTable *seen)
+{
+    g_autoptr(GPtrArray) nodes = NULL;
+    guint i;
+
+    nodes = clawt_broker_connector_nodes(self, self->warnings);
+
+    for (i = 0; nodes != NULL && i < nodes->len; i++) {
+        YamlNode *node = g_ptr_array_index(nodes, i);
+        const gchar *name = member_string(yaml_node_get_mapping(node),
+                                          "name");
+        ClawtIntegrationConfig *instance;
+
+        if (name == NULL)
+            continue;
+
+        if (seen != NULL && g_hash_table_contains(seen, name)) {
+            g_ptr_array_add(self->warnings,
+                g_strdup_printf("the broker's connector '%s' is not made: "
+                                "an integration in the file already has "
+                                "that name", name));
+            continue;
+        }
+
+        instance = clawt_integration_config_new(self, name, node);
+        instance->managed = TRUE;
+        instance->owned_node = yaml_node_ref(node);
+        g_ptr_array_add(self->integrations, instance);
+    }
+}
+
+void
+clawt_config_refresh_broker_connectors(ClawtConfig *self)
+{
+    g_autoptr(GHashTable) seen = NULL;
+    guint i;
+
+    g_return_if_fail(CLAWT_IS_CONFIG(self));
+
+    /*
+     * Only the derived ones are replaced: a file instance somebody holds
+     * a pointer to stays the same object.
+     */
+    for (i = self->integrations->len; i > 0; i--) {
+        ClawtIntegrationConfig *instance =
+            g_ptr_array_index(self->integrations, i - 1);
+
+        if (instance->managed)
+            g_ptr_array_remove_index(self->integrations, i - 1);
+    }
+
+    seen = g_hash_table_new(g_str_hash, g_str_equal);
+
+    for (i = 0; i < self->integrations->len; i++)
+        g_hash_table_add(seen, (gpointer)clawt_integration_config_get_name(
+            g_ptr_array_index(self->integrations, i)));
+
+    add_broker_connectors(self, seen);
+}
+
 static void
 reload_integrations(ClawtConfig *self)
 {
@@ -5522,11 +5615,13 @@ reload_integrations(ClawtConfig *self)
     g_ptr_array_set_size(self->integrations, 0);
 
     node = node_at_path(self->root, "integrations", FALSE);
-
-    if (node == NULL || yaml_node_get_node_type(node) != YAML_NODE_SEQUENCE)
-        return;
-
     seen = g_hash_table_new(g_str_hash, g_str_equal);
+
+    if (node == NULL || yaml_node_get_node_type(node) != YAML_NODE_SEQUENCE) {
+        add_broker_connectors(self, seen);
+        return;
+    }
+
     sequence = yaml_node_get_sequence(node);
     length = yaml_sequence_get_length(sequence);
 
@@ -5569,6 +5664,8 @@ reload_integrations(ClawtConfig *self)
 
         g_ptr_array_add(self->integrations, instance);
     }
+
+    add_broker_connectors(self, seen);
 }
 
 GPtrArray *
