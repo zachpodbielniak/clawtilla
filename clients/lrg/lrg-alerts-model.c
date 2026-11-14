@@ -137,6 +137,15 @@ clawt_lrg_alerts_add_event(GPtrArray *alerts, ClawtEvent *event,
 
         line = g_strdup_printf("%s is %s", (subject != NULL) ? subject : "?",
                                (state != NULL) ? state : "?");
+    } else if (g_strcmp0(kind, "task.tree_budget") == 0) {
+        /*
+         * A task tree out of messages, named by its root task, in
+         * libclawt's words so every client says the same sentence.
+         */
+        line = clawt_loop_guard_tree_alert_text(
+            clawt_event_get_detail(event, "tree"),
+            (guint)clawt_event_get_detail_int(event, "count"),
+            (guint)clawt_event_get_detail_int(event, "limit"));
     } else if (clawt_event_get_detail(event, "message") != NULL) {
         /*
          * An event carrying its own sentence -- agent.failover's says

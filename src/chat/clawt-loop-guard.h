@@ -10,11 +10,13 @@
  * most able to run away.  Two agents that each reply politely will do so
  * until something stops them, and the cost is real money.
  *
- * Four limits, because each catches a case the others do not:
+ * Five limits, because each catches a case the others do not:
  *
  *   hops    catches a chain that grows: A asks B asks C asks D...
  *   rate    catches one agent flooding, however shallow each message
  *   budget  catches an expensive loop that is short enough to pass the rest
+ *   tree    catches a fan-out: a task tree that is shallow and wide and
+ *           talks without anything in it settling
  *   cycles  catches two agents alternating the same two replies, where
  *           every message is a fresh chain with a depth of one
  *
@@ -325,6 +327,133 @@ gdouble clawt_loop_guard_get_task_spend(ClawtLoopGuard *self,
  */
 void clawt_loop_guard_forget_task(ClawtLoopGuard *self,
                                   const gchar    *task_id);
+
+/**
+ * ClawtLoopGuardTreeFunc:
+ * @sender_id: (nullable): who is sending, or asking
+ * @room_id: (nullable): which conversation, when the caller knows
+ * @task_id: (nullable): the task the message names, if any
+ * @user_data: what was passed to clawt_loop_guard_set_tree_func()
+ *
+ * Which task tree a message, or a turn, belongs to: the id of its root
+ * task.  The guard knows neither agents nor tasks, so the daemon answers
+ * -- from @task_id when the message names one, otherwise from the task
+ * @sender_id's turn in @room_id is working on, walked up its parents.
+ *
+ * Returns: (transfer full) (nullable): the root task id, or %NULL for a
+ *   message that belongs to no tree
+ */
+typedef gchar *(*ClawtLoopGuardTreeFunc)(const gchar *sender_id,
+                                         const gchar *room_id,
+                                         const gchar *task_id,
+                                         gpointer     user_data);
+
+/**
+ * clawt_loop_guard_set_tree_func:
+ * @self: a #ClawtLoopGuard
+ * @func: (nullable) (scope notified) (closure user_data): the resolver,
+ *   or %NULL to put nothing in a tree
+ * @user_data: passed to @func
+ * @notify: (nullable): frees @user_data
+ *
+ * Teaches the guard how to find a message's task tree.  With none set
+ * nothing belongs to a tree and the tree budget counts nothing, which is
+ * what a guard built for a test of something else should do.
+ */
+void clawt_loop_guard_set_tree_func(ClawtLoopGuard         *self,
+                                    ClawtLoopGuardTreeFunc  func,
+                                    gpointer                user_data,
+                                    GDestroyNotify          notify);
+
+/**
+ * clawt_loop_guard_set_tree_budget:
+ * @self: a #ClawtLoopGuard
+ * @budget: requests one task tree may send between settlements, or 0 for
+ *   no limit (`orchestration.tree_message_budget`)
+ */
+void clawt_loop_guard_set_tree_budget(ClawtLoopGuard *self, guint budget);
+
+/**
+ * clawt_loop_guard_get_tree_budget:
+ * @self: a #ClawtLoopGuard
+ *
+ * Returns: the tree budget, or 0 when there is none
+ */
+guint clawt_loop_guard_get_tree_budget(ClawtLoopGuard *self);
+
+/**
+ * clawt_loop_guard_resolve_tree:
+ * @self: a #ClawtLoopGuard
+ * @sender_id: (nullable): who is sending, or whose turn is asking
+ * @room_id: (nullable): the conversation, when known
+ * @task_id: (nullable): a task the caller already has
+ *
+ * The root of the task tree, through the resolver set with
+ * clawt_loop_guard_set_tree_func().  The one way to ask, so the gate
+ * that withholds tools and the check that refuses a message cannot
+ * disagree about which tree they are looking at.
+ *
+ * Returns: (transfer full) (nullable): the root task id, or %NULL
+ */
+gchar *clawt_loop_guard_resolve_tree(ClawtLoopGuard *self,
+                                     const gchar    *sender_id,
+                                     const gchar    *room_id,
+                                     const gchar    *task_id);
+
+/**
+ * clawt_loop_guard_get_tree_count:
+ * @self: a #ClawtLoopGuard
+ * @root_id: (nullable): a root task id
+ *
+ * How many requests the tree under @root_id has sent since anything in
+ * it last settled.
+ *
+ * Returns: the count
+ */
+guint clawt_loop_guard_get_tree_count(ClawtLoopGuard *self,
+                                      const gchar    *root_id);
+
+/**
+ * clawt_loop_guard_tree_exhausted:
+ * @self: a #ClawtLoopGuard
+ * @root_id: (nullable): a root task id
+ *
+ * Whether the tree under @root_id has used its budget.  What
+ * clawt_mcp_tools_is_permitted() asks before offering a tool that would
+ * send a request, exactly as it asks about `max_hops`.
+ *
+ * Returns: %TRUE when no further request from that tree is allowed
+ */
+gboolean clawt_loop_guard_tree_exhausted(ClawtLoopGuard *self,
+                                         const gchar    *root_id);
+
+/**
+ * clawt_loop_guard_renew_tree:
+ * @self: a #ClawtLoopGuard
+ * @root_id: (nullable): a root task id
+ *
+ * Starts the tree's count again, and lets it raise its alert again the
+ * next time it reaches the limit.  The daemon calls this whenever any
+ * task in the tree settles: a settlement is durable progress, and the
+ * budget exists to stop the talk that is not.
+ */
+void clawt_loop_guard_renew_tree(ClawtLoopGuard *self,
+                                 const gchar    *root_id);
+
+/**
+ * clawt_loop_guard_tree_alert_text:
+ * @tree: (nullable): what the tree is called, as a person reads it
+ * @count: how many requests it sent
+ * @limit: the budget
+ *
+ * The sentence the `task.tree_budget` alert carries, from one place so
+ * the daemon and the three clients word it the same way.
+ *
+ * Returns: (transfer full): the sentence
+ */
+gchar *clawt_loop_guard_tree_alert_text(const gchar *tree,
+                                        guint        count,
+                                        guint        limit);
 
 /**
  * clawt_loop_guard_reset:

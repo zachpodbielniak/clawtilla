@@ -607,6 +607,27 @@ orchestration:
   # with or without this.
   ack_check_model: ""
 
+  # How many requests one task tree may send between settlements.
+  # 0 disables the budget.
+  #
+  # A tree is a root task and everything delegated from it. max_hops
+  # bounds how deep a chain goes and says nothing about how wide: a chief
+  # that hands work to ten agents, each of which asks two more, is three
+  # hops deep and can still talk all night. This counts the deliberate
+  # messages sent from inside one tree -- clawtilla_message_agent,
+  # clawtilla_ask_agent, clawtilla_delegate, clawtilla_handoff,
+  # clawtilla_post_room and an @mention in a room -- one per call, however
+  # many teammates the call reaches.
+  #
+  # Answers are not counted and never refused, and neither is the
+  # follow-up turn a delegator is owed when its work settles. The count
+  # starts again whenever any task in the tree settles, because a
+  # settlement is progress and chatter is not.
+  #
+  # At the limit the messaging tools are withheld from that tree's turns,
+  # exactly as max_hops withholds them, and one alert names the tree.
+  tree_message_budget: 60
+
   # Defaults for every agent's mailbox.
   #
   # Each agent has a durable queue, so a message to a stopped agent waits

@@ -76,6 +76,7 @@
 #include "chat/clawt-attachment.h"
 #include "chat/clawt-preamble.h"
 #include "chat/clawt-merge.h"
+#include "chat/clawt-round.h"
 #include "chat/clawt-markdown.h"
 #include "chat/clawt-export.h"
 #include "chat/clawt-loop-guard.h"

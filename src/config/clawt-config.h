@@ -442,6 +442,8 @@ guint clawt_config_adopt_libreclaw(ClawtAgentConfig *agent,
  * @team: (nullable): which team's group it appears under
  * @catchup_messages: how much of the room a member is caught up on when
  *   it is named
+ * @max_chain: how many replies one thread of a round may run to, or 0
+ *   for no cap (`rooms.max_chain`)
  *
  * One entry from the config's `rooms:` list.
  */
@@ -456,6 +458,7 @@ typedef struct {
     gint      order;
     gchar    *team;
     guint     catchup_messages;
+    guint     max_chain;
 } ClawtRoomSpec;
 
 void clawt_room_spec_free(ClawtRoomSpec *self);

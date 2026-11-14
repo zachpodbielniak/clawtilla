@@ -37,6 +37,16 @@ struct _ClawtRoom {
     gint       order;
     gchar     *team;
     guint      catchup_messages;
+
+    /*
+     * The round this room is in, and how long one thread of it may run.
+     * A counter per room rather than per anything else: a round is
+     * something that happens *to a room*, when a person, a routine or a
+     * trigger speaks in it.  Rebuilt from the transcript on load, so a
+     * restart does not number the next round 1 again.
+     */
+    guint      round;
+    guint      max_chain;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtRoom, clawt_room, G_TYPE_OBJECT)
@@ -316,6 +326,40 @@ clawt_room_set_max_hops(ClawtRoom *self, guint max_hops)
 }
 
 guint
+clawt_room_get_max_chain(ClawtRoom *self)
+{
+    g_return_val_if_fail(CLAWT_IS_ROOM(self), 0);
+
+    return self->max_chain;
+}
+
+void
+clawt_room_set_max_chain(ClawtRoom *self, guint max_chain)
+{
+    g_return_if_fail(CLAWT_IS_ROOM(self));
+
+    self->max_chain = max_chain;
+}
+
+guint
+clawt_room_get_round(ClawtRoom *self)
+{
+    g_return_val_if_fail(CLAWT_IS_ROOM(self), 0);
+
+    return self->round;
+}
+
+guint
+clawt_room_begin_round(ClawtRoom *self)
+{
+    g_return_val_if_fail(CLAWT_IS_ROOM(self), 0);
+
+    self->round++;
+
+    return self->round;
+}
+
+guint
 clawt_room_get_turn_timeout(ClawtRoom *self)
 {
     g_return_val_if_fail(CLAWT_IS_ROOM(self), 0);
@@ -514,6 +558,35 @@ append_to_transcript(ClawtRoom     *self,
 			(gint64)clawt_message_get_merged(message));
 	}
 
+	/*
+	 * A group room's round and thread, and any mention that was not
+	 * delivered with the reason.  Written only when set, so a pair's
+	 * transcript is unchanged; read back so the round count survives a
+	 * restart and a client opening the room later still sees why a
+	 * named member never answered.
+	 */
+	if (clawt_message_get_round(message) > 0) {
+		json_builder_set_member_name(builder, "round");
+		json_builder_add_int_value(builder,
+			(gint64)clawt_message_get_round(message));
+	}
+
+	if (clawt_message_get_chain(message) != NULL) {
+		json_builder_set_member_name(builder, "chain");
+		json_builder_add_string_value(builder,
+			clawt_message_get_chain(message));
+	}
+
+	if (clawt_message_get_skipped(message) != NULL) {
+		json_builder_set_member_name(builder, "skipped");
+		json_builder_add_string_value(builder,
+			clawt_message_get_skipped(message));
+		json_builder_set_member_name(builder, "skip_reason");
+		json_builder_add_string_value(builder,
+			clawt_message_get_skip_reason(message) != NULL
+				? clawt_message_get_skip_reason(message) : "");
+	}
+
     json_builder_end_object(builder);
 
     root = json_builder_get_root(builder);
@@ -581,6 +654,10 @@ clawt_room_restore(ClawtRoom *self, ClawtMessage *message)
     g_return_if_fail(message != NULL);
 
     g_ptr_array_add(self->messages, clawt_message_copy(message));
+
+    /* The highest round on record is the one the room is in. */
+    if (clawt_message_get_round(message) > self->round)
+        self->round = clawt_message_get_round(message);
 }
 
 gboolean
@@ -677,6 +754,18 @@ clawt_room_class_init(ClawtRoomClass *klass)
 static void
 clawt_room_init(ClawtRoom *self)
 {
+    const ClawtSchemaEntry *entry = clawt_config_schema_lookup("rooms.max_chain");
+
+    /*
+     * The schema's default, for every room -- a direct room, one an
+     * agent made with clawtilla_create_room, one a routine owns -- and
+     * not only the declared rooms whose spec carries it.  Read from the
+     * table rather than written here as a 3, so the documented default
+     * and this one are the same number.
+     */
+    self->max_chain = (entry != NULL && entry->default_value != NULL)
+        ? (guint)g_ascii_strtoull(entry->default_value, NULL, 10) : 0;
+
     self->members = g_ptr_array_new_with_free_func(g_free);
     self->messages = g_ptr_array_new_with_free_func(
         (GDestroyNotify)clawt_message_free);

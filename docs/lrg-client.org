@@ -906,6 +906,10 @@ A period combo (All time, Today, Last 7 days, Last 30 days -- the model turns ea
 *** Orchestration
 One combo, *Acknowledgement check*, walked from =clawt_ack_check_model_count()= / =_nth_value()= / =_nth_label()= (Off first).  It is rebuilt from each ~orchestration.get~ reply with the daemon's value selected -- a combo built once at page creation would show Off until the reply landed -- and =clawt_lrg_combo()= keeps a hand-written value the catalogue lacks as a choice of its own.  Changing it sends ~orchestration.set~ and reads the page back, so a refusal leaves the combo showing what is actually set.  See [[file:clients.org::#orchestration-settings][Orchestration]].
 
+Two more cards.  *Message budget per task tree*: an entry and *Save*, filled from ~orchestration.get~'s ~tree_message_budget~ on every read and saved with ~orchestration.set~ as an integer.  *Rounds in group rooms*: one line per group room in the reply's ~rooms~, its name and current round, an entry for =rooms.max_chain= and *Save*, which sends ~room.set~; the lines are rebuilt from each reply, so a room removed elsewhere does not keep a row that saves into nothing.  Both refuse a value that is not a whole number in range with a toast, before sending.
+
+The chat draws a *Round N* divider where a group room's round changes and a muted line under a message whose mention was withheld, with =clawt_round_skip_note()='s sentence; no tooltips, so the sentence is the whole of it.  The alerts panel words ~task.tree_budget~ with =clawt_loop_guard_tree_alert_text()=.
+
 *** Integrations
 ~integration.list~ rows: an on/off badge, the name, "Matrix — every agent (3)" (with "(off)" when disabled), and Edit…. "Add an integration" reads ~integration.types~ into a combo of type names (=clawt_integration_type_label()=, never the config value) with what the chosen one does and needs under it (=clawt_integration_needs_summary()=), then ~integration.add~ and straight into the editor -- one with only a name and a type reaches nobody.
 
@@ -1200,7 +1204,7 @@ A colour this client reads but the palette leaves out falls back to libadwaita's
 | ~lrg-settings-images.c~ | Cloud images | ~clawt-window.c~ (images page) |
 | ~lrg-settings-teams.c~ | Teams | ~gtk-prefs-teams.c~ |
 | ~lrg-settings-spending.c~ | Spending | ~gtk-prefs-spending.c~ |
-| ~lrg-settings-orchestration.c~ | Orchestration: the acknowledgement check | ~gtk-prefs-orchestration.c~ |
+| ~lrg-settings-orchestration.c~ | Orchestration: the acknowledgement check, the tree budget, rounds per room | ~gtk-prefs-orchestration.c~ |
 | ~lrg-settings-integrations.c~ | Integrations, Matrix sign-in | ~gtk-prefs-integrations.c~ |
 | ~lrg-settings-connectors.c~ | Connectors, device codes | ~gtk-prefs-connectors.c~ |
 | ~lrg-settings-folders.c~ | Shared folders | ~gtk-prefs-folders.c~ |

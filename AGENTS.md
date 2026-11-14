@@ -1309,6 +1309,18 @@ versions apart.
   origin. A person's message, a question, a one-way notice, a mention
   room and a per-turn model are never merged. Anything new that decides
   per delivery must decide per *part* there too.
+- **A group room counts in rounds, and a tree counts in requests.** A
+  round starts at a message from a person, a routine or a trigger
+  (depth 0); the thread of replies rides on the message and the stored
+  mailbox item, and the router continues it from the delivery that
+  started the replier's turn -- never from the model. A mention of a
+  member already in its thread, or past `rooms.max_chain`, is recorded
+  and not delivered, *with the reason on the message*. The tree budget
+  is per root task (`orchestration.tree_message_budget`), counts
+  deliberate messages once per call, never counts an answer, and renews
+  in `on_task_changed()` *before* the settle notice -- that order is what
+  keeps a delegator's owed follow-up from being refused. Both keep
+  `max_hops` as the backstop; neither is a scalar.
 - **"It said ACK" is not "it did not say".** The acknowledgement check
   (`orchestration.ack_check_model`) skips a wake only on a bare ACK; a
   timeout, a failure and a garbled reply are a third verdict, logged as

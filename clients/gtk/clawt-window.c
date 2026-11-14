@@ -1329,6 +1329,19 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
                 line = g_strdup_printf("%s is %s",
                                        subject != NULL ? subject : "?",
                                        state != NULL ? state : "?");
+            } else if (g_strcmp0(kind, "task.tree_budget") == 0) {
+                /*
+                 * A task tree out of messages, named by what its root
+                 * task was -- worded by libclawt so the three clients
+                 * say the same sentence -- and toasted as well: its
+                 * agents have just gone quiet, and the panel alone would
+                 * leave somebody watching them wondering why.
+                 */
+                line = clawt_loop_guard_tree_alert_text(
+                    clawt_event_get_detail(event, "tree"),
+                    (guint)clawt_event_get_detail_int(event, "count"),
+                    (guint)clawt_event_get_detail_int(event, "limit"));
+                clawt_window_toast(self, line);
             } else if (clawt_event_get_detail(event, "message") != NULL) {
                 /*
                  * An event that carries its own sentence -- agent.failover
@@ -1383,11 +1396,18 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
              */
             clawt_gtk_note_arrival(self);
 
+            clawt_gtk_append_round_marks(self,
+                                     clawt_event_get_detail_int(event, "round"),
+                                     NULL, NULL, TRUE);
             clawt_gtk_append_message_marked(self, from != NULL ? from : "?",
                                      body != NULL ? body : "",
                                      g_strcmp0(from, "user") == 0, 0,
                                      clawt_event_get_detail_int(event, "acknowledged") != 0,
                                      clawt_event_get_detail_int(event, "merged"));
+            clawt_gtk_append_round_marks(self, 0,
+                                     clawt_event_get_detail(event, "skipped"),
+                                     clawt_event_get_detail(event, "skip_reason"),
+                                     FALSE);
 
             /*
              * The reply is the end of the turn.  libreclaw drops the
@@ -5121,6 +5141,9 @@ on_settings_closed(AdwDialog *dialog, gpointer user_data)
     self->settings_spending_group = NULL;
     self->settings_spending_unpriced = NULL;
     self->settings_ack_model = NULL;
+    self->settings_tree_budget = NULL;
+    self->settings_rounds_group = NULL;
+    g_clear_pointer(&self->settings_rounds_rows, g_ptr_array_unref);
     self->settings_connectors = NULL;
     self->settings_directory_min_tools = NULL;
     self->settings_directory_min_chars = NULL;
@@ -6288,6 +6311,7 @@ clawt_window_finalize(GObject *object)
     g_free(self->last_toast);
     g_clear_pointer(&self->settings_bars, g_hash_table_unref);
     g_clear_pointer(&self->settings_catalog, json_node_unref);
+    g_clear_pointer(&self->settings_rounds_rows, g_ptr_array_unref);
 
     /*
      * The records only, not the widgets: those belong to the group they

@@ -162,6 +162,22 @@ load_room(ClawtRoomManager *self, ClawtRoom *room)
 			clawt_message_set_merged(message,
 				(guint)MAX(json_object_get_int_member(object, "merged"), 0));
 
+		/* The round and its thread, and any withheld mention. */
+		if (json_object_has_member(object, "round"))
+			clawt_message_set_round(message,
+				(guint)MAX(json_object_get_int_member(object, "round"), 0));
+
+		if (json_object_has_member(object, "chain"))
+			clawt_message_set_chain(message,
+				json_object_get_string_member(object, "chain"));
+
+		if (json_object_has_member(object, "skipped"))
+			clawt_message_set_skipped(message,
+				json_object_get_string_member(object, "skipped"),
+				json_object_has_member(object, "skip_reason")
+					? json_object_get_string_member(object, "skip_reason")
+					: NULL);
+
         /*
          * Restored, not appended: the transcript is append-only now, so
          * appending here would write every line back into the file it
@@ -675,6 +691,7 @@ clawt_room_manager_load(ClawtRoomManager *self, ClawtConfig *config)
             clawt_room_set_require_mention(room, spec->require_mention);
 
         clawt_room_set_max_hops(room, spec->max_hops);
+        clawt_room_set_max_chain(room, spec->max_chain);
         clawt_room_set_turn_timeout(room, spec->turn_timeout_seconds);
         clawt_room_set_order(room, spec->order);
         clawt_room_set_team(room, spec->team);

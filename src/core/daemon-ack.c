@@ -322,7 +322,17 @@ clawt_daemon_ack_consider(
 
 /* ── orchestration.* ─────────────────────────────────────────────── */
 
-/* The current setting and every choice, so a client offers the list. */
+/* Highest tree budget the page accepts; see orchestration.set below. */
+#define TREE_BUDGET_MAX (10000)
+
+/*
+ * The current settings and every choice, so a client offers the list:
+ * the acknowledgement check, the tree budget, and each group room's
+ * thread cap.  The rooms are here rather than left to room.list so the
+ * Orchestration page is one request, and so "which rooms have rounds"
+ * is answered by the daemon -- a group, and declared, since only a
+ * declared room has an entry room.set can write to.
+ */
 static JsonNode *
 orchestration_reply(
 	ClawtDaemon *self,
@@ -332,12 +342,49 @@ orchestration_reply(
 	const gchar *value = clawt_config_get_string(self->config,
 		"orchestration.ack_check_model");
 	g_autofree gchar *label = clawt_ack_check_model_label(value);
+	g_autoptr(GPtrArray) rooms = NULL;
+	guint i;
 
 	json_builder_begin_object(builder);
 	json_builder_set_member_name(builder, "ack_check_model");
 	json_builder_add_string_value(builder, value != NULL ? value : "");
 	json_builder_set_member_name(builder, "ack_check_model_label");
 	json_builder_add_string_value(builder, label);
+	json_builder_set_member_name(builder, "tree_message_budget");
+	json_builder_add_int_value(builder, clawt_config_get_int(self->config,
+		"orchestration.tree_message_budget"));
+	json_builder_set_member_name(builder, "max_hops");
+	json_builder_add_int_value(builder, clawt_config_get_int(self->config,
+		"orchestration.max_hops"));
+
+	json_builder_set_member_name(builder, "rooms");
+	json_builder_begin_array(builder);
+
+	rooms = (self->rooms != NULL) ? clawt_room_manager_list(self->rooms)
+	                              : g_ptr_array_new();
+
+	for (i = 0; i < rooms->len; i++) {
+		ClawtRoom *room = g_ptr_array_index(rooms, i);
+
+		if (!clawt_room_is_group(room) ||
+			!clawt_room_is_declared(clawt_room_get_id(room)))
+			continue;
+
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "id");
+		json_builder_add_string_value(builder, clawt_room_get_id(room));
+		json_builder_set_member_name(builder, "name");
+		json_builder_add_string_value(builder, clawt_room_get_name(room));
+		json_builder_set_member_name(builder, "max_chain");
+		json_builder_add_int_value(builder, clawt_room_get_max_chain(room));
+		json_builder_set_member_name(builder, "max_hops");
+		json_builder_add_int_value(builder, clawt_room_get_max_hops(room));
+		json_builder_set_member_name(builder, "round");
+		json_builder_add_int_value(builder, clawt_room_get_round(room));
+		json_builder_end_object(builder);
+	}
+
+	json_builder_end_array(builder);
 	json_builder_end_object(builder);
 
 	return clawt_ipc_response_new(request, json_builder_get_root(builder));
@@ -359,12 +406,22 @@ clawt_daemon_handle_orchestration(
 	if (g_strcmp0(kind, "orchestration.set") == 0) {
 		const gchar *value = clawt_ipc_payload_string(payload,
 			"ack_check_model");
+		gboolean has_budget = payload != NULL &&
+			json_object_has_member(payload, "tree_message_budget");
+		gint64 budget = clawt_ipc_payload_int(payload,
+			"tree_message_budget", -1);
 		g_autoptr(GError) error = NULL;
 
-		if (value == NULL)
+		/*
+		 * Each setting on its own: a page that saves one must not have
+		 * to resend the other, and a client from before the budget
+		 * existed still sends only the model.
+		 */
+		if (value == NULL && !has_budget)
 			return clawt_ipc_error_new(request,
 				CLAWT_ERROR_INVALID_ARGUMENT,
-				"ack_check_model is required (\"\" turns the check off)");
+				"nothing to set: send ack_check_model (\"\" turns the "
+				"check off) or tree_message_budget");
 
 		/*
 		 * Refused when it cannot be split, so a client cannot save a
@@ -372,20 +429,45 @@ clawt_daemon_handle_orchestration(
 		 * the catalogue does not list is accepted: the catalogue goes
 		 * stale, and a model named by hand is a legitimate choice.
 		 */
-		if (*value != '\0' &&
+		if (value != NULL && *value != '\0' &&
 			!clawt_ack_check_split_model(value, NULL, NULL))
 			return clawt_ipc_error_new(request,
 				CLAWT_ERROR_INVALID_ARGUMENT,
 				"ack_check_model is provider/model, or empty for off");
 
-		if (!clawt_config_set_string(self->config,
-		                             "orchestration.ack_check_model",
-		                             value) ||
-			!clawt_config_save(self->config, &error))
+		/*
+		 * Bounded both ways.  Negative has no meaning, and a number so
+		 * large it can never be reached is "off" spelled in a way that
+		 * looks like a limit.
+		 */
+		if (has_budget && (budget < 0 || budget > TREE_BUDGET_MAX))
+			return clawt_ipc_error_new(request,
+				CLAWT_ERROR_INVALID_ARGUMENT,
+				"tree_message_budget is how many requests a task tree "
+				"may send between settlements: 0 (no budget) to 10000");
+
+		if (value != NULL &&
+			!clawt_config_set_string(self->config,
+			                         "orchestration.ack_check_model", value))
+			return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+				"the acknowledgement check could not be set");
+
+		if (has_budget &&
+			!clawt_config_set_int(self->config,
+			                      "orchestration.tree_message_budget",
+			                      budget))
+			return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+				"the tree budget could not be set");
+
+		if (!clawt_config_save(self->config, &error))
 			return clawt_ipc_error_new(request,
 				error != NULL ? error->code : CLAWT_ERROR_FAILED,
 				error != NULL ? error->message
 				              : "the setting could not be saved");
+
+		/* Into the guard now, not at the next reload. */
+		if (has_budget && self->guard != NULL)
+			clawt_loop_guard_set_tree_budget(self->guard, (guint)budget);
 
 		clawt_event_bus_emit(self->bus, "config.changed", NULL);
 

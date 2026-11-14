@@ -776,6 +776,28 @@ static const ClawtSchemaEntry schema[] = {
   "starting. A message sent with reply: none never wakes its sender,\n"
   "with or without this.", "0.17.0" },
 
+{ "orchestration.tree_message_budget", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "60", NULL,
+  "How many requests one task tree may send between settlements.\n"
+  "0 disables the budget.\n"
+  "\n"
+  "A tree is a root task and everything delegated from it. max_hops\n"
+  "bounds how deep a chain goes and says nothing about how wide: a chief\n"
+  "that hands work to ten agents, each of which asks two more, is three\n"
+  "hops deep and can still talk all night. This counts the deliberate\n"
+  "messages sent from inside one tree -- clawtilla_message_agent,\n"
+  "clawtilla_ask_agent, clawtilla_delegate, clawtilla_handoff,\n"
+  "clawtilla_post_room and an @mention in a room -- one per call, however\n"
+  "many teammates the call reaches.\n"
+  "\n"
+  "Answers are not counted and never refused, and neither is the\n"
+  "follow-up turn a delegator is owed when its work settles. The count\n"
+  "starts again whenever any task in the tree settles, because a\n"
+  "settlement is progress and chatter is not.\n"
+  "\n"
+  "At the limit the messaging tools are withheld from that tree's turns,\n"
+  "exactly as max_hops withholds them, and one alert names the tree.", "0.18.0" },
+
 { "orchestration.mailbox", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Defaults for every agent's mailbox.\n"
   "\n"
@@ -1181,7 +1203,26 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "It reaches the hop count and nothing else. The rate limit, the task\n"
   "budget and the cycle detector are untouched, so a loop that costs\n"
-  "money still has three limits on it.", "0.1.0" },
+  "money still has three limits on it.\n"
+  "\n"
+  "In a group room this is the backstop rather than the limit that\n"
+  "fires: rooms.max_chain ends a thread of replies first, and the depth\n"
+  "starts again at each round.", "0.1.0" },
+
+{ "rooms.max_chain", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, "3", NULL,
+  "How many replies one thread may run to in a round of a group room.\n"
+  "0 removes the cap; the once-per-thread rule below still applies.\n"
+  "\n"
+  "A round starts at a message from you, a routine or a trigger. Each\n"
+  "member that answers it starts a thread, and an @mention in a reply\n"
+  "carries the thread on. Within one thread a member answers once: a\n"
+  "mention of a member already in that thread is recorded in the room\n"
+  "and not delivered, with the reason shown beside it. A member that\n"
+  "spoke in another thread of the same round still answers.\n"
+  "\n"
+  "Without this the hop count built up across a room's history, so an\n"
+  "ordinary standup reached max_hops by itself. The depth now starts\n"
+  "again at every round, and max_hops stays as the backstop.", "0.18.0" },
 
 { "rooms.turn_timeout_seconds", CLAWT_SCHEMA_INT,
   CLAWT_SCHEMA_FLAG_NONE, "0", NULL,
