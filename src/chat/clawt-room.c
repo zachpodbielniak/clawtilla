@@ -270,7 +270,14 @@ clawt_room_is_declared(const gchar *room_id)
      */
     return !g_str_has_prefix(room_id, "dm:") &&
            !g_str_has_prefix(room_id, "routine:") &&
-           !g_str_has_prefix(room_id, "trigger:");
+           !g_str_has_prefix(room_id, "trigger:") &&
+           !g_str_has_prefix(room_id, CLAWT_INCIDENT_ROOM_PREFIX);
+}
+
+gboolean
+clawt_room_is_listed(const gchar *room_id)
+{
+    return clawt_room_is_declared(room_id) || clawt_incident_room_is(room_id);
 }
 
 gchar *
@@ -489,6 +496,23 @@ append_to_transcript(ClawtRoom     *self,
         json_builder_add_string_value(builder,
                                       clawt_message_get_parent_id(message));
     }
+
+	/*
+	 * Only when set: an answer recorded without waking its addressee,
+	 * and the router's note of a merged delivery.  Both are what a
+	 * client draws differently, and both must survive a restart or the
+	 * room would forget why an answer went unanswered.
+	 */
+	if (clawt_message_get_acknowledged(message)) {
+		json_builder_set_member_name(builder, "acknowledged");
+		json_builder_add_boolean_value(builder, TRUE);
+	}
+
+	if (clawt_message_get_merged(message) > 0) {
+		json_builder_set_member_name(builder, "merged");
+		json_builder_add_int_value(builder,
+			(gint64)clawt_message_get_merged(message));
+	}
 
     json_builder_end_object(builder);
 

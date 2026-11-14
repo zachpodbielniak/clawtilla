@@ -955,6 +955,16 @@ clawt_daemon_turn_settle(ClawtDaemon *self, const gchar *agent_id)
      */
     clawt_daemon_handoff_pump(self);
 
+    /*
+     * And incident reports held because this agent was mid-turn when
+     * they arrived -- every one that waited, in one message per room.
+     * Before the steers below, which start the agent's next turn: a
+     * report held until "the turn ends" must go at the end, not behind
+     * whatever the operator typed meanwhile.
+     */
+    if (self->incidents != NULL)
+        clawt_incident_desk_flush(self->incidents, agent_id);
+
     if (self->steers == NULL)
         return;
 
@@ -1074,6 +1084,20 @@ clawt_daemon_turn_note_tool_call(ClawtDaemon *self,
      * "activity" can honestly mean on this side of the socket.
      */
     clawt_daemon_turn_activity(self, agent_id);
+
+	/*
+	 * A clawtilla tool call is a tool call of the turn's, and the one
+	 * kind that sends something outward.  It carries no room, so every
+	 * running turn of the agent is charged -- the direction in which the
+	 * acknowledgement check wakes somebody it need not have, never the
+	 * one in which it skips somebody it should have woken.
+	 */
+	if (self->agents != NULL) {
+		ClawtAgent *agent = clawt_agent_manager_get(self->agents, agent_id);
+
+		if (agent != NULL)
+			clawt_agent_note_turn_tool(agent, NULL);
+	}
 
     if (self->repeats != NULL)
         clawt_repeat_watch_note(self->repeats, agent_id, tool, args);

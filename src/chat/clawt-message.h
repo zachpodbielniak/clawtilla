@@ -313,6 +313,97 @@ gboolean clawt_message_get_composed(ClawtMessage *self);
 void clawt_message_set_composed(ClawtMessage *self, gboolean composed);
 
 /**
+ * clawt_message_get_one_way:
+ * @self: a #ClawtMessage
+ *
+ * Whether the sender asked for no answer (`reply: none` on
+ * clawtilla_message_agent or clawtilla_post_room).
+ *
+ * Returns: %TRUE for a one-way notice
+ */
+gboolean clawt_message_get_one_way(ClawtMessage *self);
+
+/**
+ * clawt_message_set_one_way:
+ * @self: a #ClawtMessage
+ * @one_way: %TRUE when no answer is wanted
+ *
+ * Marks a message as a one-way notice: "deployed", "your PR is merged".
+ * Setting it also clears clawt_message_set_invites_reply(), so the
+ * recipient's turn is a closed exchange from the start and its closing
+ * text goes nowhere -- the answer an FYI would otherwise earn is what
+ * cost the *sender* a whole turn to read "noted".  The router carries
+ * it onto the mailbox item, so the preamble can say "they asked for no
+ * answer" rather than "this is somebody answering you".
+ */
+void clawt_message_set_one_way(ClawtMessage *self, gboolean one_way);
+
+/**
+ * clawt_message_get_acknowledged:
+ * @self: a #ClawtMessage
+ *
+ * Whether this answer was judged a bare acknowledgement and recorded
+ * without waking the agent it answers (`orchestration.ack_check_model`).
+ *
+ * Returns: %TRUE for an answer that woke nobody
+ */
+gboolean clawt_message_get_acknowledged(ClawtMessage *self);
+
+/**
+ * clawt_message_set_acknowledged:
+ * @self: a #ClawtMessage
+ * @acknowledged: %TRUE when the answer was recorded and not delivered
+ *
+ * Set by the daemon on an answer it records instead of routing.  Kept
+ * in the transcript and sent to clients, which draw
+ * clawt_message_ack_label() beside it: an answer in the room that its
+ * addressee never took a turn on has to say so, or it reads as having
+ * been ignored.
+ */
+void clawt_message_set_acknowledged(ClawtMessage *self,
+                                    gboolean      acknowledged);
+
+/**
+ * clawt_message_get_merged:
+ * @self: a #ClawtMessage
+ *
+ * How many results this note says were delivered together as one turn,
+ * or 0 for an ordinary message.  The body is sectioned by
+ * clawt_merge_append_section() and read back with clawt_merge_split().
+ *
+ * Returns: the number of parts, or 0
+ */
+guint clawt_message_get_merged(ClawtMessage *self);
+
+/**
+ * clawt_message_set_merged:
+ * @self: a #ClawtMessage
+ * @parts: how many results the note covers
+ *
+ * Marks the router's note of a merged delivery.
+ */
+void clawt_message_set_merged(ClawtMessage *self, guint parts);
+
+/**
+ * clawt_message_ack_label:
+ *
+ * What every client draws beside an acknowledged answer, from one
+ * place so three clients cannot word it three ways.
+ *
+ * Returns: (transfer none): the label
+ */
+const gchar *clawt_message_ack_label(void);
+
+/**
+ * clawt_message_ack_tooltip:
+ *
+ * The longer explanation behind clawt_message_ack_label().
+ *
+ * Returns: (transfer none): the explanation
+ */
+const gchar *clawt_message_ack_tooltip(void);
+
+/**
  * clawt_message_set_priority:
  * @self: a #ClawtMessage
  * @priority: the band to queue at

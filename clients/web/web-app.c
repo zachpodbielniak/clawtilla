@@ -480,7 +480,7 @@ clawt_web_app_note_fleet(ClawtWebApp *self, JsonArray *agents,
         JsonObject *room = json_array_get_object_element(rooms, i);
 
         if (room == NULL ||
-            !clawt_web_member_bool(room, "declared", FALSE))
+            !clawt_room_is_listed(clawt_web_member(room, "id", NULL)))
             continue;
 
         g_hash_table_add(self->sidebar_rooms,

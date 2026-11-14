@@ -491,6 +491,73 @@ clawt_task_manager_fail(ClawtTaskManager *self,
     return TRUE;
 }
 
+gboolean
+clawt_task_manager_retry(ClawtTaskManager  *self,
+                         const gchar       *task_id,
+                         const gchar       *who,
+                         GError           **error)
+{
+    ClawtTask *task;
+    ClawtTaskState state;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), FALSE);
+
+    task = clawt_task_manager_get(self, task_id);
+
+    if (task == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "there is no task %s; tasks are held in memory, so one "
+                    "from before clawtilla last restarted is gone",
+                    task_id != NULL ? task_id : "(none)");
+        return FALSE;
+    }
+
+    state = clawt_task_get_state(task);
+
+    /*
+     * Every state named, no default: -Wswitch is what makes the next
+     * state somebody adds a decision rather than a silent "retryable".
+     */
+    switch (state) {
+    case CLAWT_TASK_FAILED:
+    case CLAWT_TASK_STALLED:
+        break;
+
+    case CLAWT_TASK_PENDING:
+    case CLAWT_TASK_RUNNING:
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "task %s is %s, not failed or stalled: it is still "
+                    "waiting for or being worked on by %s, so there is "
+                    "nothing to retry yet", task_id,
+                    clawt_enum_to_nick(CLAWT_TYPE_TASK_STATE, state),
+                    clawt_task_get_assignee(task) != NULL
+                        ? clawt_task_get_assignee(task) : "its assignee");
+        return FALSE;
+
+    case CLAWT_TASK_COMPLETED:
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "task %s already completed; retrying it would redo "
+                    "finished work. Delegate anything further as new work.",
+                    task_id);
+        return FALSE;
+
+    case CLAWT_TASK_CANCELLED:
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "task %s was cancelled%s%s, which stopped it on "
+                    "purpose; delegate it again as new work if it is "
+                    "wanted after all", task_id,
+                    clawt_task_get_cancelled_by(task) != NULL ? " by " : "",
+                    clawt_task_get_cancelled_by(task) != NULL
+                        ? clawt_task_get_cancelled_by(task) : "");
+        return FALSE;
+    }
+
+    clawt_task_reopen(task, who);
+    emit_changed(self, task);
+
+    return TRUE;
+}
+
 /*
  * A task the loop guard ended.
  *

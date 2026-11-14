@@ -631,6 +631,31 @@ static const ClawtSchemaEntry schema[] = {
   "A password manager that is locked will block forever rather than fail,\n"
   "and without a timeout so will daemon startup.", "0.1.0" },
 
+/* ── egress ──────────────────────────────────────────────────────── */
+{ "egress", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Where an agent with runtime.network: gated may connect.\n"
+  "\n"
+  "A gated agent's sandbox has no network of its own. Its one way out is\n"
+  "clawtilla's egress gate, an HTTP proxy in the daemon that resolves\n"
+  "names itself and connects only to public addresses: never this\n"
+  "machine, the LAN (RFC 1918), link-local, CGNAT and tailnets\n"
+  "(100.64.0.0/10), IPv6 unique-local, multicast or a cloud metadata\n"
+  "service. It judges the address, after resolution, so a public name\n"
+  "pointed at 127.0.0.1 is refused too.", "0.17.0" },
+
+{ "egress.allow", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_COMMENTED,
+  NULL, NULL,
+  "Private addresses gated agents may reach anyway.\n"
+  "\n"
+  "Each entry is an address (100.101.102.103), a network\n"
+  "(192.168.1.0/24, fd7a:115c:a1e0::/48) or a host name\n"
+  "(nas.example.ts.net), optionally with a port (10.0.0.5:8080,\n"
+  "[fd00::1]:443). A name matches the name the agent asked for and never\n"
+  "opens loopback; loopback needs an address. Cloud metadata, multicast,\n"
+  "the unspecified address and reserved space cannot be opened, and an\n"
+  "entry naming one is refused. One bad entry refuses the whole list, at\n"
+  "load and where it is added.", "0.17.0" },
+
 /* ── plugins ─────────────────────────────────────────────────────── */
 { "plugins", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Loadable plugins: event handlers, extra tools, computer backends and\n"
@@ -724,6 +749,32 @@ static const ClawtSchemaEntry schema[] = {
   "alternating the same two replies with nothing pacing them, where a\n"
   "turn is seconds. Raise it for a fleet whose turns are minutes; a\n"
   "repeat is only caught if it lands inside the window.", "0.1.0" },
+
+{ "orchestration.ack_check_model", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  "", NULL,
+  "A small model that decides whether an answer only acknowledges, as\n"
+  "provider/model -- claude/claude-haiku-4-5-20251001, ollama/llama3.2.\n"
+  "Empty turns the check off.\n"
+  "\n"
+  "An answer to a deliberate message wakes the agent that sent it, and\n"
+  "that turn costs as much for \"Thanks, noted.\" as for a page of\n"
+  "findings. With a model set, an answer is put to it only when the\n"
+  "answering turn made no tool calls (so ran no commands, changed no\n"
+  "files and sent nothing), its steps were streamed so that is known,\n"
+  "the answer is at most 600 characters, and the message it answers was\n"
+  "not a task. The model is asked one question, ACK or NEEDS, with both\n"
+  "texts fenced as data, and has 8 seconds.\n"
+  "\n"
+  "Only a plain ACK skips the wake. NEEDS, a failure, a timeout or any\n"
+  "other reply wakes the sender as before. An acknowledged answer is\n"
+  "still recorded in the room, marked \"acknowledged (no wake)\", and\n"
+  "the sender's next turn opens with a one-line note of it, so nothing\n"
+  "is dropped.\n"
+  "\n"
+  "A provider ai-glib reaches over HTTP, with its key configured the way\n"
+  "ai_assist's is. A command-line provider would spend the 8 seconds\n"
+  "starting. A message sent with reply: none never wakes its sender,\n"
+  "with or without this.", "0.17.0" },
 
 { "orchestration.mailbox", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Defaults for every agent's mailbox.\n"
@@ -869,6 +920,35 @@ static const ClawtSchemaEntry schema[] = {
   "pending waits so it can fold a new one into an old one.\n"
   "\n"
   "Override with max_waits on an agent. 0 removes the limit.", "0.15.0" },
+
+{ "orchestration.incidents", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Reports of runs that broke, sent to whoever leads the team.\n"
+  "\n"
+  "A delegated task that failed or stalled, an agent that would not start\n"
+  "with work waiting for it, and a routine run that did not happen each\n"
+  "open an incident: one per run (the same task failing again updates it),\n"
+  "filed in a room per team called \"Problems to look at\", and delivered\n"
+  "as a report the recipient can act on with clawtilla_task_retry. A\n"
+  "recipient that is mid-turn has its report held until the turn ends.\n"
+  "See docs/orchestration.org, \"Incidents\".", "0.17.0" },
+
+{ "orchestration.incidents.enabled", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "true", NULL,
+  "Whether broken runs open incidents at all.\n"
+  "\n"
+  "Off, nothing is filed and nobody is told; tasks still fail and stall\n"
+  "exactly as before, and their delegators still get the settle notice.\n"
+  "Retrying a failed task works either way.", "0.17.0" },
+
+{ "orchestration.incidents.to", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "lead", clawt_incident_recipient_get_type,
+  "Who an incident report goes to: lead, chief or none.\n"
+  "\n"
+  "lead is the failing agent's team lead, or the chief of staff when the\n"
+  "team has none (or two). chief is always the chief of staff. none spends\n"
+  "nobody's turn: the report is recorded in the room for you to read.\n"
+  "Never the agent whose run broke, and never the agent that delegated\n"
+  "the task -- it already has the settle notice.", "0.17.0" },
 
 { "memories", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "What an agent remembers between conversations.\n"
@@ -2535,6 +2615,28 @@ static const ClawtSchemaEntry schema[] = {
   "under ~/.nvm, a tool a skill shells out to -- is named here. Read-only\n"
   "on purpose: something the agent should write is a mount, which says\n"
   "so in its mode. Ignored unless runtime.confine is bwrap.", "0.14.0" },
+
+{ "agents.runtime.network", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "open", clawt_runtime_network_get_type,
+  "Where this agent's own process may connect: open, gated or none.\n"
+  "\n"
+  "open shares the machine's network, LAN and tailnet included. gated\n"
+  "gives the sandbox no network of its own: its only route is\n"
+  "clawtilla's egress gate, an HTTP proxy reaching public addresses only\n"
+  "(plus egress.allow), handed to the CLI as HTTPS_PROXY and HTTP_PROXY.\n"
+  "none gives it no route at all.\n"
+  "\n"
+  "Under gated or none, provider keys whose CLI can be pointed elsewhere\n"
+  "(ANTHROPIC_API_KEY for Claude Code, OPENAI_API_KEY for Codex) are\n"
+  "brokered: the agent holds a token for its own process, and the daemon\n"
+  "swaps it for the real key on the way to a fixed upstream. Others are\n"
+  "passed as before and listed as unbrokered. An OAuth login is\n"
+  "unaffected.\n"
+  "\n"
+  "Anything but open needs runtime.confine: bwrap -- outside the sandbox\n"
+  "a process can ignore a proxy -- and without it the agent is disabled\n"
+  "with that reason, never run on an open network instead. Takes effect\n"
+  "at the agent's next start.", "0.17.0" },
 
 { "agents.runtime.autostart", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,

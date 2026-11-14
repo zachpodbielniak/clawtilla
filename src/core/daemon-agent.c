@@ -189,6 +189,13 @@ clawt_daemon_handle_agent(
          */
         clawt_daemon_add_agent_settings(builder, agent);
 
+        /*
+         * Where it may connect, what the gate has refused it, and which
+         * of its keys the broker holds -- the view's "egress: gated (3
+         * refused today)" and the list under it.
+         */
+        clawt_daemon_egress_add_status(self, builder, agent);
+
         computer = clawt_agent_get_computer(agent);
 
         if (computer != NULL) {
@@ -1631,6 +1638,54 @@ clawt_daemon_handle_agent(
                     : "an embedded agent runs inside the daemon with no "
                       "process of its own to sandbox; set runtime.type to "
                       "process first");
+        }
+
+        /*
+         * A gated or closed network and no sandbox, refused together the
+         * same way: the validator would shadow the agent, and the client
+         * would have heard "saved".  Checked against the effective
+         * values, so an agent that inherits bwrap from defaults.confine
+         * can be gated without writing confine itself.
+         */
+        if (g_strcmp0(key, "runtime.network") == 0 ||
+            g_strcmp0(key, "runtime.confine") == 0) {
+            gint network = 0;
+            gint confine = 0;
+
+            if (g_strcmp0(key, "runtime.network") == 0) {
+                if (!clawt_enum_from_nick(CLAWT_TYPE_RUNTIME_NETWORK, value,
+                                          &network)) {
+                    g_autofree gchar *known =
+                        clawt_enum_nick_list(CLAWT_TYPE_RUNTIME_NETWORK);
+                    g_autofree gchar *message = g_strdup_printf(
+                        "runtime.network is one of %s", known);
+
+                    return clawt_ipc_error_new(
+                        request, CLAWT_ERROR_INVALID_ARGUMENT, message);
+                }
+            } else {
+                network = clawt_agent_config_get_enum(config,
+                                                      "runtime.network");
+            }
+
+            if (g_strcmp0(key, "runtime.confine") == 0)
+                clawt_enum_from_nick(CLAWT_TYPE_RUNTIME_CONFINE, value,
+                                     &confine);
+            else
+                confine = clawt_agent_config_get_enum(config,
+                                                      "runtime.confine");
+
+            if (network != CLAWT_RUNTIME_NETWORK_OPEN &&
+                confine != CLAWT_RUNTIME_CONFINE_BWRAP)
+                return clawt_ipc_error_new(
+                    request, CLAWT_ERROR_INVALID_ARGUMENT,
+                    g_strcmp0(key, "runtime.network") == 0
+                    ? "a gated or closed network needs the sandbox "
+                      "(runtime.confine: bwrap) -- outside it the agent's "
+                      "CLI could ignore the gate; turn sandboxing on first"
+                    : "this agent's runtime.network is not open, and only "
+                      "the sandbox can enforce that; set runtime.network "
+                      "to open first");
         }
 
         /*

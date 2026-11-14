@@ -253,6 +253,169 @@ task_tone(const gchar *state)
     return clawt_task_state_tone((ClawtTaskState)value);
 }
 
+/*
+ * The "Problems to look at" section above the tasks: who hears about a
+ * broken run, and every open incident with its Retry.  The settings sit
+ * with the incidents, as in the GTK client, because "who was told about
+ * this" is asked while looking at one.
+ */
+static void
+add_incidents_section(ClawtWebApp *app, HtmxDiv *pad)
+{
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(HtmxDiv) card = NULL;
+    g_autoptr(GPtrArray) values = g_ptr_array_new();
+    g_autoptr(GPtrArray) labels = g_ptr_array_new();
+    HtmxElement *body;
+    JsonObject *root;
+    JsonArray *incidents;
+    guint i;
+
+    reply = clawt_web_app_call(app, "incident.list", NULL);
+    root = clawt_web_root(reply);
+
+    if (root == NULL)
+        return;
+
+    card = clawt_web_card("Problems to look at",
+                          "Failed, stalled and unstartable runs, and "
+                          "routines that did not run. Each is reported to "
+                          "its team's lead in the team's Problems to look "
+                          "at room.");
+    body = clawt_web_card_body(card);
+
+    /* The recipients, walked from the library rather than named here. */
+    for (i = 0; i < clawt_incident_recipient_count(); i++) {
+        ClawtIncidentRecipient value = clawt_incident_recipient_nth(i);
+
+        g_ptr_array_add(values,
+                        (gpointer)clawt_incident_recipient_nick(value));
+        g_ptr_array_add(labels,
+                        (gpointer)clawt_incident_recipient_label(value));
+    }
+
+    g_ptr_array_add(values, NULL);
+    g_ptr_array_add(labels, NULL);
+
+    {
+        g_autoptr(HtmxForm) form = clawt_web_form("/incidents/configure");
+        g_autoptr(HtmxDiv) row = htmx_div_new();
+        g_autoptr(HtmxButton) save = clawt_web_button("Save", "primary");
+
+        clawt_web_add(form, clawt_web_switch_field(
+            "Report broken runs", "enabled",
+            "Off, nothing is filed and nobody is told.",
+            clawt_web_schema_flag(root, "enabled")));
+        clawt_web_add(form, clawt_web_select_field(
+            "Who hears about them", "to",
+            (const gchar *const *)values->pdata,
+            (const gchar *const *)labels->pdata,
+            clawt_web_member(root, "to", "lead")));
+
+        htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
+        htmx_element_set_attribute(HTMX_ELEMENT(save), "type", "submit");
+        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(save));
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(row));
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
+    }
+
+    incidents = clawt_web_member_array(root, "incidents");
+
+    if (incidents == NULL || json_array_get_length(incidents) == 0) {
+        clawt_web_add(body, clawt_web_text("Nothing has broken.",
+                                           "list-item-sub"));
+    } else {
+        g_autoptr(HtmxDiv) list = htmx_div_new();
+
+        htmx_element_add_class(HTMX_ELEMENT(list), "list");
+
+        for (i = 0; i < json_array_get_length(incidents); i++) {
+            JsonObject *incident = json_array_get_object_element(incidents, i);
+            const gchar *id = clawt_web_member(incident, "id", "?");
+            const gchar *recipient = clawt_web_member(incident, "recipient",
+                                                      NULL);
+            const gchar *note = clawt_web_member(incident, "note", NULL);
+            const gchar *reason = clawt_web_member(incident, "reason", NULL);
+            const gchar *retried_by = clawt_web_member(incident, "retried_by",
+                                                       NULL);
+            gint64 occurrences = clawt_web_member_int(incident, "occurrences",
+                                                      1);
+            g_autoptr(HtmxDiv) row = htmx_div_new();
+            g_autoptr(HtmxDiv) head = htmx_div_new();
+            g_autoptr(GString) status = g_string_new(NULL);
+            g_autofree gchar *title = g_strdup_printf(
+                "%s's run %s", clawt_web_member(incident, "agent", "?"),
+                clawt_web_member(incident, "kind_label", "broke"));
+
+            htmx_element_add_class(HTMX_ELEMENT(row), "list-item");
+            htmx_element_add_class(HTMX_ELEMENT(head), "list-item-head");
+
+            {
+                g_autoptr(HtmxSpan) label = htmx_span_new();
+
+                htmx_element_add_class(HTMX_ELEMENT(label),
+                                       "list-item-title");
+                htmx_node_set_text_content(HTMX_NODE(label), title);
+                htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(label));
+            }
+
+            clawt_web_add(head, clawt_web_badge(
+                clawt_web_member(incident, "kind", "?"), "bad"));
+            clawt_web_add(head, clawt_web_badge(
+                clawt_web_member(incident, "room", "?"), "neutral"));
+            htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(head));
+
+            if (reason != NULL) {
+                g_autofree gchar *line = clawt_web_one_line(reason, 300);
+
+                clawt_web_add(row, clawt_web_text(line, "list-item-sub"));
+            }
+
+            if (note != NULL)
+                g_string_append_printf(status, "Recorded for you: %s", note);
+            else if (clawt_web_schema_flag(incident, "queued") &&
+                     recipient != NULL)
+                g_string_append_printf(status,
+                                       "Waiting for %s to finish a turn",
+                                       recipient);
+            else if (recipient != NULL)
+                g_string_append_printf(status, "Reported to %s", recipient);
+            else
+                g_string_append(status, "Not reported yet");
+
+            if (occurrences > 1)
+                g_string_append_printf(status, " \302\267 broke %"
+                                       G_GINT64_FORMAT " times", occurrences);
+
+            if (retried_by != NULL)
+                g_string_append_printf(status, " \302\267 last retried by %s",
+                                       g_strcmp0(retried_by, "user") == 0
+                                       ? "you" : retried_by);
+
+            clawt_web_add(row, clawt_web_notice(status->str, "info"));
+
+            if (clawt_web_schema_flag(incident, "retryable")) {
+                g_autoptr(HtmxDiv) actions = htmx_div_new();
+                g_autofree gchar *escaped = g_uri_escape_string(id, NULL,
+                                                                FALSE);
+                g_autofree gchar *action = g_strdup_printf(
+                    "/incidents/%s/retry", escaped);
+
+                htmx_element_add_class(HTMX_ELEMENT(actions), "btn-row");
+                clawt_web_add(actions, clawt_web_post_button(
+                    "Retry", action, "default", NULL));
+                htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(actions));
+            }
+
+            htmx_node_add_child(HTMX_NODE(list), HTMX_NODE(row));
+        }
+
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(list));
+    }
+
+    htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(card));
+}
+
 HtmxElement *
 clawt_web_tasks_body(ClawtWebApp *app, const gchar *agent_id)
 {
@@ -291,6 +454,8 @@ clawt_web_tasks_body(ClawtWebApp *app, const gchar *agent_id)
             clawt_web_add(pad, clawt_web_text(text, "lede"));
         }
     }
+
+    add_incidents_section(app, pad);
 
     tasks = clawt_web_member_array(clawt_web_root(reply), "tasks");
 
@@ -384,6 +549,29 @@ clawt_web_tasks_body(ClawtWebApp *app, const gchar *agent_id)
                 clawt_web_add(actions, clawt_web_post_button(
                     "Cancel", action, "danger", "Cancel this task?"));
                 htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(actions));
+            }
+
+            /*
+             * Retry where the daemon would accept it -- the library's
+             * rule, so the button and the refusal cannot disagree.
+             */
+            {
+                gint value = 0;
+
+                if (clawt_enum_from_nick(CLAWT_TYPE_TASK_STATE, state,
+                                         &value) &&
+                    clawt_task_state_is_retryable((ClawtTaskState)value)) {
+                    g_autoptr(HtmxDiv) actions = htmx_div_new();
+                    g_autofree gchar *escaped = g_uri_escape_string(
+                        id, NULL, FALSE);
+                    g_autofree gchar *action = g_strdup_printf(
+                        "/tasks/%s/retry", escaped);
+
+                    htmx_element_add_class(HTMX_ELEMENT(actions), "btn-row");
+                    clawt_web_add(actions, clawt_web_post_button(
+                        "Retry", action, "default", NULL));
+                    htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(actions));
+                }
             }
 
             htmx_node_add_child(HTMX_NODE(list), HTMX_NODE(row));
@@ -796,6 +984,85 @@ on_task_cancel(HtmxRequest *request, GHashTable *params, gpointer user_data)
                                   "Cancelled.");
 }
 
+/*
+ * The operator's Retry, for a task row (`task`) or an incident row
+ * (`incident`) -- the route's parameter name is the payload's key.
+ */
+static HtmxResponse *
+retry_from(ClawtWebApp *app, HtmxRequest *request, const gchar *key,
+           const gchar *id)
+{
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *first = clawt_web_first_agent(app);
+
+    clawt_web_payload_set(payload, key, id);
+
+    reply = clawt_web_app_call(app, "task.retry",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        return clawt_web_error_page(app, request, first, CLAWT_PAGE_TASKS,
+                                    clawt_web_app_last_error(app));
+
+    return clawt_web_after_action(
+        app, request, first, CLAWT_PAGE_TASKS,
+        clawt_web_schema_flag(clawt_web_root(reply), "rerun")
+            ? "Running the routine again."
+            : "Queued for its assignee again.");
+}
+
+static HtmxResponse *
+on_task_retry(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    g_autofree gchar *id = clawt_web_param(params, "task");
+
+    return retry_from(user_data, request, "task", id);
+}
+
+static HtmxResponse *
+on_incident_retry(HtmxRequest *request, GHashTable *params,
+                  gpointer user_data)
+{
+    g_autofree gchar *id = clawt_web_param(params, "incident");
+
+    return retry_from(user_data, request, "incident", id);
+}
+
+static HtmxResponse *
+on_incidents_configure(HtmxRequest *request, GHashTable *params,
+                       gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *first = clawt_web_first_agent(app);
+    const gchar *to = clawt_web_form_value(request, "to");
+
+    (void)params;
+
+    /*
+     * A checkbox that is off sends nothing, so the flag is read as
+     * "present" and always sent -- otherwise turning it off could never
+     * be saved.
+     */
+    clawt_web_payload_set_bool(payload, "enabled",
+                               clawt_web_form_flag(request, "enabled"));
+
+    if (to != NULL && *to != '\0')
+        clawt_web_payload_set(payload, "to", to);
+
+    reply = clawt_web_app_call(app, "incident.configure",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        return clawt_web_error_page(app, request, first, CLAWT_PAGE_TASKS,
+                                    clawt_web_app_last_error(app));
+
+    return clawt_web_after_action(app, request, first, CLAWT_PAGE_TASKS,
+                                  "Saved.");
+}
+
 static RoutineAction *
 routine_action_new(ClawtWebApp *app, const gchar *kind, const gchar *done)
 {
@@ -820,4 +1087,9 @@ clawt_web_register_work(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_post(router, "/routines/:routine/remove", on_routine_action,
                      routine_action_new(app, "routine.remove", "Removed."));
     htmx_router_post(router, "/tasks/:task/cancel", on_task_cancel, app);
+    htmx_router_post(router, "/tasks/:task/retry", on_task_retry, app);
+    htmx_router_post(router, "/incidents/:incident/retry", on_incident_retry,
+                     app);
+    htmx_router_post(router, "/incidents/configure", on_incidents_configure,
+                     app);
 }

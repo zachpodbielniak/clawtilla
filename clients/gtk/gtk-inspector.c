@@ -22,6 +22,68 @@ static const gchar *use_row_value(ClawtWindow *self);
 
 /* ── Inspector ───────────────────────────────────────────────────── */
 
+/*
+ * The runtime.network nickname the combo row holds, walked from the
+ * enum the rows were drawn from -- never a list of names of our own.
+ */
+static const gchar *
+network_row_value(ClawtWindow *self)
+{
+    g_autoptr(GEnumClass) klass = NULL;
+    guint chosen;
+
+    if (self->network_row == NULL)
+        return NULL;
+
+    klass = g_type_class_ref(CLAWT_TYPE_RUNTIME_NETWORK);
+    chosen = adw_combo_row_get_selected(ADW_COMBO_ROW(self->network_row));
+
+    return chosen < klass->n_values ? klass->values[chosen].value_nick
+                                    : NULL;
+}
+
+/*
+ * What the network row says under itself: the chosen option's one line
+ * while the sandbox is on, and why it is greyed while it is off -- in
+ * the library's words, which are the refusal the daemon would give.
+ */
+static void
+sync_network_row(ClawtWindow *self)
+{
+    gboolean confined;
+    const gchar *network;
+
+    if (self->network_row == NULL || self->confine_row == NULL)
+        return;
+
+    confined = adw_switch_row_get_active(ADW_SWITCH_ROW(self->confine_row));
+
+    /*
+     * Turning the sandbox off takes the network back to open with it,
+     * since nothing else could be saved: the row shows what will be.
+     */
+    if (!confined)
+        adw_combo_row_set_selected(ADW_COMBO_ROW(self->network_row),
+                                   CLAWT_RUNTIME_NETWORK_OPEN);
+
+    network = network_row_value(self);
+    gtk_widget_set_sensitive(self->network_row, confined);
+    adw_action_row_set_subtitle(
+        ADW_ACTION_ROW(self->network_row),
+        confined ? clawt_egress_network_choice_explanation(network)
+                 : clawt_egress_network_notice(network, "none"));
+}
+
+static void
+on_network_inputs_changed(GObject *object, GParamSpec *pspec,
+                          gpointer user_data)
+{
+    (void)object;
+    (void)pspec;
+
+    sync_network_row(user_data);
+}
+
 static GtkWidget *
 info_row(const gchar *title, const gchar *value)
 {
@@ -884,13 +946,34 @@ on_save_agent(GtkButton *button, gpointer user_data)
      * fleet default off later would quietly skip every agent somebody had
      * merely opened.
      */
-    if (self->confine_row != NULL) {
-        gboolean active = adw_switch_row_get_active(
-            ADW_SWITCH_ROW(self->confine_row));
+    /*
+     * The network rides with the sandbox, and the daemon refuses either
+     * one that would leave a gated network without a box -- so the order
+     * matters: opening the network goes first, before the sandbox it
+     * depended on is turned off; gating it goes after the sandbox is on.
+     */
+    {
+        const gchar *network = network_row_value(self);
+        gboolean network_changed =
+            self->network_row != NULL &&
+            adw_combo_row_get_selected(ADW_COMBO_ROW(self->network_row)) !=
+                self->network_shown;
+        gboolean network_first = g_strcmp0(network, "open") == 0;
 
-        if (active != self->confine_shown)
-            ok &= clawt_gtk_apply_setting(self, "runtime.confine",
-                                          active ? "bwrap" : "none");
+        if (network_changed && network_first)
+            ok &= clawt_gtk_apply_setting(self, "runtime.network", network);
+
+        if (self->confine_row != NULL) {
+            gboolean active = adw_switch_row_get_active(
+                ADW_SWITCH_ROW(self->confine_row));
+
+            if (active != self->confine_shown)
+                ok &= clawt_gtk_apply_setting(self, "runtime.confine",
+                                              active ? "bwrap" : "none");
+        }
+
+        if (network_changed && !network_first)
+            ok &= clawt_gtk_apply_setting(self, "runtime.network", network);
     }
 
     if (self->team_row != NULL && self->team_ids != NULL) {
@@ -1383,6 +1466,92 @@ resolution_row(const gchar *current)
 
     return combo_row("Screen size", (const gchar *const *)values->pdata,
                      current);
+}
+
+/*
+ * Where the agent may connect, what the gate has refused it today, and
+ * which of its keys the broker holds.  The summary line is the
+ * library's, so the three clients say "egress: gated (3 refused today)"
+ * the same way; each refusal names the host, the address it resolved to
+ * and why, because "refused" about a public-looking name is what DNS
+ * rebinding looks like, and the address is what says so.
+ */
+static void
+build_egress(ClawtWindow *self, JsonObject *payload)
+{
+    JsonObject *egress = (payload != NULL &&
+                          json_object_has_member(payload, "egress"))
+                         ? json_object_get_object_member(payload, "egress")
+                         : NULL;
+    GtkWidget *group;
+    g_autofree gchar *summary = NULL;
+    JsonArray *refusals;
+    JsonArray *keys;
+    guint i;
+
+    if (egress == NULL)
+        return;
+
+    summary = clawt_egress_status_line(
+        clawt_json_string(egress, "network", "open"),
+        (guint)clawt_json_int(egress, "refused_today", 0));
+
+    group = adw_preferences_group_new();
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group),
+                                    clawt_egress_network_label());
+    adw_preferences_group_set_description(ADW_PREFERENCES_GROUP(group),
+                                          summary);
+
+    refusals = json_object_has_member(egress, "refusals")
+               ? json_object_get_array_member(egress, "refusals") : NULL;
+
+    for (i = 0; refusals != NULL && i < json_array_get_length(refusals);
+         i++) {
+        JsonObject *refusal = json_array_get_object_element(refusals, i);
+        g_autofree gchar *line = NULL;
+        GtkWidget *row;
+
+        if (refusal == NULL)
+            continue;
+
+        line = clawt_egress_refusal_line(
+            clawt_json_string(refusal, "host", NULL),
+            (guint)clawt_json_int(refusal, "port", 0),
+            clawt_json_string(refusal, "address", NULL), NULL);
+        row = info_row(line, clawt_json_string(refusal, "reason", NULL));
+        adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(row), 0);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), row);
+    }
+
+    keys = json_object_has_member(egress, "keys")
+           ? json_object_get_array_member(egress, "keys") : NULL;
+
+    for (i = 0; keys != NULL && i < json_array_get_length(keys); i++) {
+        JsonObject *key = json_array_get_object_element(keys, i);
+        gboolean brokered;
+        g_autofree gchar *title = NULL;
+        GtkWidget *row;
+
+        if (key == NULL)
+            continue;
+
+        brokered = clawt_json_boolean(key, "brokered", FALSE);
+        title = g_strdup_printf("%s: %s",
+                                clawt_json_string(key, "name", "?"),
+                                brokered ? "brokered" : "not brokered");
+        row = info_row(title, brokered
+                       ? "The agent holds a token for this process; the "
+                         "daemon adds the real key."
+                       : clawt_json_string(key, "reason", NULL));
+        adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(row), 0);
+
+        if (!brokered)
+            gtk_widget_add_css_class(row, "warning");
+
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), row);
+    }
+
+    gtk_box_append(self->inspector, group);
 }
 
 /*
@@ -3174,6 +3343,70 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
     }
 
     /*
+     * Where it may connect: Open, through clawtilla's gate, or none,
+     * named and explained by the library and walked from the enum.
+     * Greyed, with the reason, while the sandbox is off -- outside it a
+     * CLI can ignore the gate -- and kept in step with the switch above
+     * as it is flipped, before anything is saved.
+     */
+    {
+        g_autoptr(GEnumClass) klass =
+            g_type_class_ref(CLAWT_TYPE_RUNTIME_NETWORK);
+        g_autoptr(GtkStringList) labels = gtk_string_list_new(NULL);
+        const gchar *current =
+            clawt_json_string(agent, "network", "open");
+        guint i;
+
+        self->network_shown = CLAWT_RUNTIME_NETWORK_OPEN;
+
+        for (i = 0; i < klass->n_values; i++) {
+            gtk_string_list_append(
+                labels, clawt_egress_network_choice_label(
+                            klass->values[i].value_nick));
+
+            if (g_strcmp0(klass->values[i].value_nick, current) == 0)
+                self->network_shown = i;
+        }
+
+        self->network_row = adw_combo_row_new();
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(self->network_row),
+                                      clawt_egress_network_label());
+        adw_combo_row_set_model(ADW_COMBO_ROW(self->network_row),
+                                G_LIST_MODEL(labels));
+        adw_combo_row_set_selected(ADW_COMBO_ROW(self->network_row),
+                                   self->network_shown);
+        adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(self->network_row),
+                                          0);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                                  self->network_row);
+
+        /*
+         * A gated network on an agent whose sandbox is off is a shadow;
+         * the row says so in the library's words rather than being reset.
+         */
+        if (!self->confine_shown &&
+            self->network_shown != CLAWT_RUNTIME_NETWORK_OPEN) {
+            GtkWidget *row = info_row(
+                "Cannot be gated here",
+                clawt_egress_network_notice(current,
+                                            clawt_json_string(agent,
+                                                              "confine",
+                                                              "none")));
+
+            adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(row), 0);
+            gtk_widget_add_css_class(row, "warning");
+            adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), row);
+        } else {
+            sync_network_row(self);
+        }
+
+        g_signal_connect(self->confine_row, "notify::active",
+                         G_CALLBACK(on_network_inputs_changed), self);
+        g_signal_connect(self->network_row, "notify::selected",
+                         G_CALLBACK(on_network_inputs_changed), self);
+    }
+
+    /*
      * Which team, and what standing on it. Beside the chief switch
      * because the three answer one question between them: who this
      * agent may hand work to.
@@ -3352,6 +3585,7 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
 
     gtk_box_append(self->inspector, actions);
 
+    build_egress(self, payload);
     build_mounts(self, self->inspector_computer);
     build_files(self);
 

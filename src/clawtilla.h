@@ -41,6 +41,9 @@
 #include "computer/clawt-image-catalog.h"
 #include "computer/clawt-exec-result.h"
 #include "computer/clawt-sandbox.h"
+#include "net/clawt-net-policy.h"
+#include "net/clawt-egress-gate.h"
+#include "net/clawt-egress-broker.h"
 #include "computer/clawt-observable.h"
 #include "computer/clawt-screen.h"
 #include "computer/clawt-takeover.h"
@@ -70,6 +73,7 @@
 #include "decision/clawt-decision-store.h"
 #include "chat/clawt-attachment.h"
 #include "chat/clawt-preamble.h"
+#include "chat/clawt-merge.h"
 #include "chat/clawt-markdown.h"
 #include "chat/clawt-export.h"
 #include "chat/clawt-loop-guard.h"
@@ -88,6 +92,7 @@
 #include "task/clawt-handoff.h"
 #include "task/clawt-handoff-store.h"
 #include "task/clawt-routine-runner.h"
+#include "task/clawt-incident.h"
 
 #include "trigger/clawt-trigger-event.h"
 #include "trigger/clawt-trigger-provider.h"
@@ -173,6 +178,7 @@
 #include "usage/clawt-usage.h"
 #include "browser/clawt-browser.h"
 #include "mailbox/clawt-mailbox.h"
+#include "mailbox/clawt-ack-check.h"
 
 #include "agent/clawt-agent-runtime.h"
 #include "agent/clawt-process-runtime.h"

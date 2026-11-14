@@ -224,6 +224,9 @@ declare -A AFFORDANCES=(
     #
     ["spending unpriced turns"]="clawt_usage_ledger_unpriced_line|clawt_usage_ledger_unpriced_line|clawt_usage_ledger_unpriced_line"
     ["spending csv export"]="clawt_usage_ledger_csv(root)|clawt_usage_ledger_csv(root)|clawt_usage_ledger_csv(root)"
+    ["acknowledged answers"]="clawt_message_ack_label|clawt_message_ack_label|clawt_message_ack_label"
+    ["merged deliveries as sections"]="clawt_merge_split|clawt_merge_split|clawt_merge_split"
+    ["ack-check model choices"]="clawt_ack_check_model_nth_value|clawt_ack_check_model_nth_value|clawt_ack_check_model_nth_value"
     #
     # The Grok page: the bots and who may reach them, handing one a job on
     # an agent's behalf, the jobs in libclawt's tones, the routine prompt
@@ -371,6 +374,24 @@ declare -A AFFORDANCES=(
     ["sandbox an agent's own tools"]="clawt_agent_confine_label|clawt_agent_confine_label|clawt_agent_confine_label"
     ["why a sandboxed agent cannot start"]="clawt_agent_confine_notice|clawt_agent_confine_notice|clawt_agent_confine_notice"
     #
+    # The egress gate (runtime.network, egress.allow).
+    #
+    # The network choice is a schema enum, so layers 1 to 4 see a form
+    # field whether or not a client named its choices -- which is the
+    # part that makes it usable: "Through clawtilla's gate" rather than
+    # "gated", and the reason it is greyed while the sandbox is off.
+    # The agent view's "egress: gated (N refused today)", its refusal
+    # lines and its brokered-key rows are reply members, not frames.
+    # The allowlist's frames are layer 1's; its label and sentence are
+    # declared here so all three say the same thing about it.
+    #
+    ["name an agent's network choices"]="clawt_egress_network_choice_label|clawt_egress_network_choice_label|clawt_egress_network_choice_label"
+    ["why the network cannot be gated"]="clawt_egress_network_notice|clawt_egress_network_notice|clawt_egress_network_notice"
+    ["an agent's egress summary"]="clawt_egress_status_line|clawt_egress_status_line|clawt_egress_status_line"
+    ["an agent's egress refusals"]="clawt_egress_refusal_line|clawt_egress_refusal_line|clawt_egress_refusal_line"
+    ["which keys the broker holds"]="\"brokered\"|\"brokered\"|\"brokered\""
+    ["the fleet's egress allowlist"]="clawt_egress_allowlist_label|clawt_egress_allowlist_label|clawt_egress_allowlist_label"
+    #
     # Integration forms drawn from the shared field table.
     #
     # Not a frame kind and not an enumeration -- both clients send
@@ -475,6 +496,15 @@ declare -A AFFORDANCES=(
     ["connector sign in at its server"]="clawt_connector_sign_in_label|clawt_connector_sign_in_label|clawt_connector_sign_in_label"
     ["account label on connector rows"]="clawt_connector_row_subtitle|clawt_connector_row_subtitle|clawt_connector_row_subtitle"
     ["account label asked for a second account"]="required for a second account|required for a second account|unique, for a second account"
+    #
+    # Each team's "Problems to look at" room has a sidebar row.  It sends
+    # no frame of its own -- it is room.list read with a different
+    # filter -- so layer 1 cannot see a client that lists only declared
+    # rooms, and the incidents would then be readable nowhere but the
+    # Tasks page.  The marker is the library predicate every listing
+    # site calls.
+    #
+    ["incidents rooms in the sidebar"]="clawt_room_is_listed|clawt_room_is_listed|clawt_room_is_listed"
 )
 
 usage () {

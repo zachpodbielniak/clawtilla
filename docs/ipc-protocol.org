@@ -363,6 +363,26 @@ without asking: a mount reaches a computer when it is next built, and a
 container or a domain that already exists had its devices decided when it
 was created.
 
+~egress.allow.list~, ~egress.allow.add~ and ~egress.allow.remove~ edit
+=egress.allow=, the private addresses a gated agent may reach (see
+=docs/security.org=, "Egress").  The two writes take ~entry~ -- one
+address, network or host name, with an optional port -- and all three
+answer ~entries~, the list as it now stands (always present, possibly
+empty), plus ~problem~ when the list as written does not parse and so
+opens nothing.  ~.add~ checks the entry where it arrives: a metadata
+address, a multicast range or a typo is refused rather than saved.  The
+running gate reads the list per connection, so neither answers
+~restart_required~.
+
+agent.show carries an ~egress~ member beside ~agent~: ~network~ (the
+agent's ~runtime.network~ nickname), ~refused_today~ (connections the
+gate refused it since local midnight), ~refusals~ (the last twenty,
+newest first, each ~at~ in microseconds, ~host~, ~port~, ~reason~ and,
+when there was one, the refused ~address~) and ~keys~ (every
+credential-looking variable in its environment by ~name~, with
+~brokered~ and, when it is not, a ~reason~).  No key's value is in it.
+The agent object itself carries ~network~ as well, beside ~confine~.
+
 ~defaults.mount.add~ takes ~agents~ and ~teams~ separately, and also
 takes ~who~: one list of names that the *daemon* sorts into the two.
 Both graphical clients send ~who~, because a name is a team or an agent
@@ -690,6 +710,8 @@ the key is omitted rather than guessed at.
 ~room.list~, ~room.create~, ~room.set~, ~room.add~, ~room.remove~,
 ~room.history~, ~room.steps~.
 
+Each room in ~room.list~ carries ~declared~ (somebody made it) and, since incidents, ~incidents~ (a JSON boolean: it is a team's *Problems to look at* room, ~incidents:<team>~ or ~incidents:+fleet~).  Which rooms get a sidebar row is =clawt_room_is_listed()=, the same in every client: the declared ones and the incidents ones.
+
 ~room.create~ takes ~room~, an optional ~name~, comma-separated
 ~members~ and an optional ~require_mention~.  It writes a ~rooms:~ entry
 *and* makes the room, because writing the config is not creating the
@@ -764,9 +786,37 @@ the daemon stops.
 ~mailbox.list~, ~mailbox.dead~, ~mailbox.ack~, ~mailbox.requeue~,
 ~mailbox.purge~.
 
+*** orchestration.*
+
+~orchestration.get~ → ~ack_check_model~ (the stored
+~orchestration.ack_check_model~, ~""~ for off) and
+~ack_check_model_label~ (how to show it: "Off", a catalogue label, or a
+value typed into the file shown as itself).
+
+~orchestration.set~ (~ack_check_model~) writes the key, saves the file,
+publishes ~config.changed~ and answers as ~orchestration.get~ does.
+~""~ turns the check off.  A value that is not ~provider/model~ is
+refused with ~CLAWT_ERROR_INVALID_ARGUMENT~, so a client cannot save
+something the daemon would then warn about and ignore; a model the
+catalogue does not list is accepted, because the catalogue goes stale.
+A client offers the choices by walking ~clawt_ack_check_model_count()~
+/ ~_nth_value()~ / ~_nth_label()~, never a copy of the list.
+
 *** task.*
 
-~task.list~, ~task.show~, ~task.cancel~.
+~task.list~, ~task.show~, ~task.cancel~, ~task.retry~.
+
+A task object carries ~retries~ and ~retried_by~ once it has been retried, and not before.
+
+~task.retry~ takes ~task~ (a task id) *or* ~incident~ (an incident id), and an optional ~reason~ the assignee sees with the work.  It is the operator's Retry: a ~failed~ or ~stalled~ task is re-queued for its assignee with its original work and ~retried_by: "user"~; a routine's run is run again.  It answers ~task~ (the task now carrying the work -- the same id for a re-queue, the new run's for a routine) and ~rerun~ (a JSON boolean, true for a routine).  Any other task state is =INVALID_ARGUMENT= with the reason, as is an incident whose agent could not start (its work is still queued); an unknown id is =NOT_FOUND=.  See docs/orchestration.org, "Incidents: broken runs reach the lead".
+
+*** incident.*
+
+~incident.list~ answers ~enabled~ (a JSON boolean, =orchestration.incidents.enabled=), ~to~ (=orchestration.incidents.to=, a nickname a client offers by walking =clawt_incident_recipient_count()= / =clawt_incident_recipient_nth()=) and ~incidents~, newest first: the open ones, or every one the daemon still holds with ~all: true~.  Each has ~id~, ~kind~ (~failed~, ~stalled~, ~unstartable~ or ~routine-failed~) and ~kind_label~ (=clawt_incident_kind_label()=), ~agent~, ~team~, ~room~ (its incidents room), ~run_room~, ~task~, ~routine~, ~reason~, ~log_lines~ (an array), ~recipient~ (absent when nobody was given it), ~note~ (why not), ~retried_by~, ~occurrences~, ~retries~, ~opened_at~, ~updated_at~ and ~delivered_at~ (microseconds; 0 for never), and three JSON booleans: ~queued~ (waiting for its recipient's turn to end, or for the router), ~resolved~, and ~retryable~ -- whether ~task.retry~ would be accepted now, decided by the daemon so no client guesses from state names.
+
+~incident.configure~ takes ~enabled~ (a JSON boolean) and ~to~ (~lead~, ~chief~ or ~none~; anything else is =INVALID_ARGUMENT= rather than saved and read back as the default), writes them to ~clawtilla.yaml~, publishes ~incident.configured~, and answers both as they now stand.
+
+Events: ~incident.opened~ and ~incident.updated~ (a repeat, a delivery, a retry) and ~incident.resolved~, each with the incident id as subject and details ~agent~ (the agent whose run broke, which is what a pod's scope is matched against), ~kind~, ~room~, ~occurrences~, and ~team~, ~task~, ~routine~ and ~recipient~ when there is one.  All three are routine-tier: the report is in the room, and a badge would be the same news twice.
 
 *** usage.*
 
@@ -1534,6 +1584,7 @@ Every kind published, by subject:
 | the daemon | ~device.paired~ (~device~, ~name~), ~device.revoked~ (~device~), ~device.expired~ (~device~) |
 | an agent | ~computer.exec~ |
 | an agent | ~turn.timed_out~, ~turn.repeating~, ~message.steered~ |
+| an agent | ~egress.refused~ (the gate refused one of its connections; agent.show's ~egress~ has the detail) |
 | an agent | ~turn.step~ (~step_kind~, ~room_id~, ~text~, ~tool~, ~detail~, ~failed~) |
 | a task | ~handoff.queued~, ~handoff.settled~ |
 
@@ -1699,6 +1750,17 @@ held text is delivered.
 message had travelled -- which is what lets a client show a chain
 climbing towards ~max_hops~ instead of an inexplicable wall of polite
 agreement.
+
+Two more members, present only when set, on ~room.history~ entries and
+on the ~message~ event's detail alike, and integers in both so one
+reader serves either source:
+
+- ~acknowledged: 1~ --- an answer the acknowledgement check recorded
+  instead of delivering (~orchestration.ack_check_model~).  Draw
+  ~clawt_message_ack_label()~ beside it.
+- ~merged: N~ --- clawtilla's note that N results were delivered to an
+  agent as one turn.  The body is sectioned; read it with
+  ~clawt_merge_split()~ and draw the sections.
 
 ~turn.step~ is one step of a turn that is still running: a tool the
 agent reached for, or a paragraph it wrote between two of them.  It

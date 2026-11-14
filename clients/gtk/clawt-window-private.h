@@ -106,6 +106,7 @@ typedef enum {
     CLAWT_REFRESH_CONNECTORS,
     CLAWT_REFRESH_TEAMS,
     CLAWT_REFRESH_SPENDING,
+    CLAWT_REFRESH_ORCHESTRATION,
     CLAWT_REFRESH_SHARED_FOLDERS,
     CLAWT_REFRESH_SKILLS,
     CLAWT_REFRESH_RECALL,
@@ -323,11 +324,16 @@ struct _ClawtWindow {
     GtkWidget         *settings_integrations;
     GtkWidget         *settings_teams;
     GtkWidget         *settings_folders;
+    GtkWidget         *settings_egress;       /* egress.allow, a list */
+    GtkWidget         *settings_egress_entry; /* the entry it adds from */
     GtkWidget         *settings_spending;
     GtkWidget         *settings_spending_period;
     GtkWidget         *settings_spending_group;
     GtkWidget         *settings_spending_unpriced;
     gint64             settings_spending_since;
+    /* the acknowledgement-check model row, and whether a refresh is writing it */
+    GtkWidget         *settings_ack_model;
+    gboolean           settings_ack_loading;
     GtkWidget         *settings_connectors;
     GtkWidget         *settings_devices;
     GtkWidget         *settings_devices_pair;
@@ -426,6 +432,8 @@ struct _ClawtWindow {
     GtkWidget         *autostart_row;
     GtkWidget         *confine_row;   /* runtime.confine, as a switch */
     gboolean           confine_shown; /* what it held when drawn */
+    GtkWidget         *network_row;   /* runtime.network, as a combo */
+    guint              network_shown; /* the enum index drawn */
     GtkWidget         *chief_row;
     GtkWidget         *manage_fleet_row;
     GtkWidget         *team_row;
@@ -512,6 +520,12 @@ struct _ClawtWindow {
 
     /* Tasks */
     GtkListBox        *task_list;
+
+    /*
+     * The "Problems to look at" group above the tasks: the incident
+     * settings and every open incident, each with its Retry.
+     */
+    GtkListBox        *incident_list;
     GtkListBox        *activity_list;
 
     /* The Fleet page (gtk-fleet.c). */
@@ -1052,7 +1066,14 @@ clawt_gtk_append_message(ClawtWindow *self, const gchar *sender, const gchar *bo
 void
 clawt_gtk_append_message_to(ClawtWindow *self, const TranscriptView *view,
                             const gchar *sender, const gchar *body, gboolean from_user,
-                            gint64 ts, const gchar *task, gint64 depth);
+                            gint64 ts, const gchar *task, gint64 depth,
+                            gboolean acknowledged, gint64 merged);
+
+void
+clawt_gtk_append_message_marked(ClawtWindow *self, const gchar *sender,
+                                const gchar *body, gboolean from_user,
+                                gint64 ts, gboolean acknowledged,
+                                gint64 merged);
 
 void
 clawt_gtk_attachment_free(Attachment *attachment);
@@ -1428,6 +1449,14 @@ clawt_gtk_build_spending_page(ClawtWindow *self);
 
 void
 clawt_gtk_refresh_settings_spending(ClawtWindow *self);
+
+/* ── Defined in gtk-prefs-orchestration.c: the orchestration page ── */
+
+GtkWidget *
+clawt_gtk_build_orchestration_page(ClawtWindow *self);
+
+void
+clawt_gtk_refresh_settings_orchestration(ClawtWindow *self);
 
 /* ── Defined in gtk-prefs-teams.c: the teams page ────────────────── */
 

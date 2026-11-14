@@ -120,6 +120,51 @@ clawt_runtime_confine_get_type(void)
     return g_define_type_id__volatile;
 }
 
+/* Register ClawtRuntimeNetwork as a GLib enum type */
+GType
+clawt_runtime_network_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_RUNTIME_NETWORK_OPEN, "CLAWT_RUNTIME_NETWORK_OPEN", "open" },
+            { CLAWT_RUNTIME_NETWORK_GATED, "CLAWT_RUNTIME_NETWORK_GATED", "gated" },
+            { CLAWT_RUNTIME_NETWORK_NONE, "CLAWT_RUNTIME_NETWORK_NONE", "none" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtRuntimeNetwork", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
+/* Register ClawtNetAddressClass as a GLib enum type */
+GType
+clawt_net_address_class_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_NET_ADDRESS_PUBLIC, "CLAWT_NET_ADDRESS_PUBLIC", "public" },
+            { CLAWT_NET_ADDRESS_LOOPBACK, "CLAWT_NET_ADDRESS_LOOPBACK", "loopback" },
+            { CLAWT_NET_ADDRESS_PRIVATE, "CLAWT_NET_ADDRESS_PRIVATE", "private" },
+            { CLAWT_NET_ADDRESS_LINK_LOCAL, "CLAWT_NET_ADDRESS_LINK_LOCAL", "link-local" },
+            { CLAWT_NET_ADDRESS_CGNAT, "CLAWT_NET_ADDRESS_CGNAT", "cgnat" },
+            { CLAWT_NET_ADDRESS_METADATA, "CLAWT_NET_ADDRESS_METADATA", "metadata" },
+            { CLAWT_NET_ADDRESS_UNIQUE_LOCAL, "CLAWT_NET_ADDRESS_UNIQUE_LOCAL", "unique-local" },
+            { CLAWT_NET_ADDRESS_MULTICAST, "CLAWT_NET_ADDRESS_MULTICAST", "multicast" },
+            { CLAWT_NET_ADDRESS_UNSPECIFIED, "CLAWT_NET_ADDRESS_UNSPECIFIED", "unspecified" },
+            { CLAWT_NET_ADDRESS_RESERVED, "CLAWT_NET_ADDRESS_RESERVED", "reserved" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtNetAddressClass", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
 /* Register ClawtTeamRole as a GLib enum type */
 GType
 clawt_team_role_get_type(void)

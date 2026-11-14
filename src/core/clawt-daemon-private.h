@@ -113,6 +113,17 @@ struct _ClawtDaemon {
      */
     ClawtSummariser *summariser;
 
+	/*
+	 * The acknowledgement check's model (orchestration.ack_check_model),
+	 * built on the first answer that qualifies and rebuilt when the key
+	 * changes -- not at start, which would reach for a provider on every
+	 * fleet whether or not the check is on.  The override is a test's
+	 * fake and wins over the key.
+	 */
+	AiProvider *ack_provider;
+	gchar      *ack_provider_spec;
+	AiProvider *ack_provider_override;
+
     ClawtExchange      *exchange;
 
     /*
@@ -292,6 +303,16 @@ struct _ClawtDaemon {
     ClawtRoutineRunner *routines;
 
 	/*
+	 * Broken runs, filed and reported to whoever leads the team
+	 * (orchestration.incidents).  Built once the router exists, and
+	 * cleared before it.  agent_last_state remembers each agent's
+	 * previous state, which is what tells a crash (running -> error)
+	 * from a start that never got that far.
+	 */
+	ClawtIncidentDesk *incidents;
+	GHashTable        *agent_last_state;
+
+	/*
 	 * daemon-routine.c: routine runs waiting to hear whether their
 	 * agent's computer came up, keyed agent -> (routine -> gint64 run
 	 * time in microseconds); the agents whose computer last refused to
@@ -395,6 +416,14 @@ struct _ClawtDaemon {
      * can serve the bytes to a client that may be on another machine.
      */
     gchar   *attachment_dir;
+
+    /*
+     * `runtime.network: gated` and `none`: the egress gate and the
+     * provider-key broker, both made the first time an agent needs one
+     * (daemon-egress.c), never at daemon start.
+     */
+    ClawtEgressGate   *egress_gate;
+    ClawtEgressBroker *egress_broker;
     guint    sweep_source_id;
     gboolean running;
 };
@@ -1097,6 +1126,34 @@ clawt_daemon_handle_memory(
 );
 
 JsonNode *
+clawt_daemon_handle_egress(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
+
+/*
+ * The egress gate and broker (daemon-egress.c).  ensure() makes and
+ * binds them; prepare_agent() hands a process runtime its network for
+ * the next start, refusing rather than downgrading; add_status() writes
+ * an agent's `egress` member for agent.show; refresh_allowlist() reads
+ * egress.allow into the running gate; stop() and release() are the
+ * daemon's own stop and dispose.
+ */
+gboolean clawt_daemon_egress_ensure(ClawtDaemon *self, GError **error);
+gboolean clawt_daemon_egress_prepare_agent(ClawtDaemon          *self,
+                                           ClawtAgentConfig     *config,
+                                           ClawtProcessRuntime  *runtime,
+                                           GError              **error);
+void clawt_daemon_egress_add_status(ClawtDaemon *self, JsonBuilder *builder,
+                                    ClawtAgent *agent);
+void clawt_daemon_egress_refresh_allowlist(ClawtDaemon *self);
+void clawt_daemon_egress_stop(ClawtDaemon *self);
+void clawt_daemon_egress_release(ClawtDaemon *self);
+
+JsonNode *
 clawt_daemon_handle_mount(
     ClawtDaemon  *self,
     const gchar  *kind,
@@ -1441,6 +1498,34 @@ void clawt_daemon_note_step(ClawtDaemon *self, ClawtTurnStep *step);
 GPtrArray *clawt_daemon_room_steps(ClawtDaemon *self, const gchar *room_id);
 
 void clawt_daemon_add_step_object(JsonBuilder *builder, ClawtTurnStep *step);
+
+/*
+ * The acknowledgement check (daemon-ack.c).
+ *
+ * clawt_daemon_ack_consider() is asked by the link handler about an
+ * answer it is about to route to a peer.  FALSE: route it now, as
+ * always.  TRUE: the check took it, and will either record it as an
+ * acknowledgement or route it when the model has answered -- never
+ * both, never neither.
+ */
+gboolean clawt_daemon_ack_consider(ClawtDaemon  *self,
+                                   const gchar  *agent_id,
+                                   const gchar  *room_id,
+                                   const gchar  *destination,
+                                   ClawtMessage *message);
+
+/* A test's fake model; wins over orchestration.ack_check_model. */
+void clawt_daemon_ack_set_provider(ClawtDaemon *self, AiProvider *provider);
+
+/* orchestration.get / orchestration.set */
+JsonNode *
+clawt_daemon_handle_orchestration(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
 
 JsonNode *
 clawt_daemon_handle_activity(

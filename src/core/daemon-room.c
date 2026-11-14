@@ -289,6 +289,14 @@ clawt_daemon_handle_room(
             json_builder_set_member_name(builder, "declared");
             json_builder_add_boolean_value(
                 builder, clawt_room_is_declared(clawt_room_get_id(room)));
+            /*
+             * A "Problems to look at" room: derived, like a routine's,
+             * but one the operator is meant to read, so the clients list
+             * it under its team where a routine's room is left out.
+             */
+            json_builder_set_member_name(builder, "incidents");
+            json_builder_add_boolean_value(
+                builder, clawt_incident_room_is(clawt_room_get_id(room)));
             json_builder_set_member_name(builder, "require_mention");
             json_builder_add_boolean_value(
                 builder, clawt_room_get_require_mention(room));
@@ -729,6 +737,24 @@ clawt_daemon_handle_room(
             json_builder_set_member_name(builder, "depth");
             json_builder_add_int_value(builder,
                                        clawt_message_get_depth(message));
+
+			/*
+			 * Present only when true, as in the transcript: an answer
+			 * that woke nobody, and a note of results delivered as one
+			 * turn.  Both integers, as the `message` event sends them
+			 * (an event detail is a string or an int), so a client
+			 * reads either source with the one integer reader.
+			 */
+			if (clawt_message_get_acknowledged(message)) {
+				json_builder_set_member_name(builder, "acknowledged");
+				json_builder_add_int_value(builder, 1);
+			}
+
+			if (clawt_message_get_merged(message) > 0) {
+				json_builder_set_member_name(builder, "merged");
+				json_builder_add_int_value(builder,
+					(gint64)clawt_message_get_merged(message));
+			}
 
             json_builder_end_object(builder);
         }

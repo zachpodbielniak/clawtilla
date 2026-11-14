@@ -12,9 +12,10 @@
  * the daemon's own network position -- the operator's LAN, the tailnet,
  * the cloud instance's metadata service -- none of which the agent was
  * given.  So the address policy is one function here rather than a
- * check at each caller: the wait probes use it now, and the egress gate
- * the roadmap describes is the next caller, which must not grow a second
- * opinion about what "private" means.
+ * check at each caller: the wait probes and the egress gate both use it,
+ * and its table is clawt_net_address_classify() in net/clawt-net-policy.c
+ * -- one table, so neither can grow a second opinion about what
+ * "private" means.
  */
 
 #pragma once
@@ -37,6 +38,8 @@ G_BEGIN_DECLS
  * not a network this machine is on, not a cloud metadata service, not a
  * range reserved for documentation, benchmarking or multicast.
  *
+ * The answer is clawt_net_address_classify() == %CLAWT_NET_ADDRESS_PUBLIC.
+ *
  * Refused for IPv4: 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10 (carrier-grade
  * NAT, which is also the tailnet -- and not an octet boundary, so
  * 100.63.255.255 is public and 100.64.0.1 is not), 127.0.0.0/8,
@@ -48,7 +51,8 @@ G_BEGIN_DECLS
  * Refused for IPv6: the unspecified and loopback addresses, fc00::/7
  * (unique local, where AWS puts its IPv6 metadata service), fe80::/10,
  * fec0::/10, ff00::/8, 2001:db8::/32, 100::/64, 2001::/32 (Teredo) and
- * the deprecated IPv4-compatible ::/96.  An address that carries an IPv4
+ * the deprecated IPv4-compatible ::/96, the local-use NAT64 prefix
+ * 64:ff9b:1::/48, and anything outside global unicast 2000::/3.  An address that carries an IPv4
  * address inside it -- IPv4-mapped ::ffff:0:0/96, NAT64 64:ff9b::/96 and
  * 6to4 2002::/16 -- is judged by the IPv4 address it carries, because
  * that is where the packet goes.

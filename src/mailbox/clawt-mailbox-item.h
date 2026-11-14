@@ -199,6 +199,29 @@ void clawt_mailbox_item_set_composed(ClawtMailboxItem *self,
                                      gboolean          composed);
 
 /**
+ * clawt_mailbox_item_get_one_way:
+ * @self: a #ClawtMailboxItem
+ *
+ * Whether the sender asked for no answer -- see
+ * clawt_message_set_one_way(), which is where the value comes from.
+ * Stored, because an item can outlive the daemon that queued it.
+ *
+ * Returns: %TRUE for a one-way notice
+ */
+gboolean clawt_mailbox_item_get_one_way(ClawtMailboxItem *self);
+
+/**
+ * clawt_mailbox_item_set_one_way:
+ * @self: a #ClawtMailboxItem
+ * @one_way: %TRUE when no answer is wanted
+ *
+ * See clawt_message_set_one_way().  Unlike that setter this one does not
+ * touch the invite: the store reads the two columns back separately.
+ */
+void clawt_mailbox_item_set_one_way(ClawtMailboxItem *self,
+                                    gboolean          one_way);
+
+/**
  * clawt_mailbox_item_dup_delivered_body:
  * @self: a #ClawtMailboxItem
  *

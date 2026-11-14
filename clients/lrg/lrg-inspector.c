@@ -1504,6 +1504,35 @@ build_form(ClawtLrgApp *app, guint index)
                 }
             }
 
+            /*
+             * The network can be chosen only inside the sandbox; outside
+             * it the control is greyed with the library's reason, unless
+             * a network is already set -- then the agent is a shadow and
+             * the control stays live so it can be opened again.
+             */
+            if (g_strcmp0(field->key, "runtime.network") == 0) {
+                JsonObject *agent = shown_object("agent");
+                const gchar *confine =
+                    clawt_ipc_payload_string(agent, "confine");
+                const gchar *network =
+                    clawt_ipc_payload_string(agent, "network");
+                const gchar *notice =
+                    clawt_egress_network_notice(network, confine);
+                gboolean gated = network != NULL &&
+                                 g_strcmp0(network, "open") != 0;
+
+                if (notice != NULL) {
+                    if (!gated && view->control != NULL)
+                        lrg_widget_set_enabled(view->control, FALSE);
+
+                    clawt_lrg_take(outer, clawt_lrg_badge(
+                        gated ? "cannot be gated here"
+                              : "needs the sandbox", "warn"));
+                    clawt_lrg_take(outer, clawt_lrg_paragraph(notice,
+                                                              "caption"));
+                }
+            }
+
             if (field->kind == CLAWT_LRG_AGENT_FIELD_SHARED && use != NULL &&
                 *use != '\0')
                 clawt_lrg_take(outer, clawt_lrg_paragraph(
@@ -1580,6 +1609,78 @@ build_credentials(ClawtLrgApp *app, JsonObject *agent, guint index)
     for (l = names; l != NULL; l = l->next)
         clawt_lrg_take(box, info_row(l->data, clawt_ipc_payload_string(
             credentials, l->data)));
+
+    return index;
+}
+
+/*
+ * Where the agent may connect, what the gate refused it today, and which
+ * of its keys the broker holds -- in the library's words, so the three
+ * clients say "egress: gated (3 refused today)" alike.
+ */
+static guint
+build_egress(ClawtLrgApp *app, guint index)
+{
+    JsonObject *root = shown_root();
+    JsonObject *egress;
+    JsonArray *refusals;
+    JsonArray *keys;
+    g_autofree gchar *summary = NULL;
+    LrgWidget *box;
+    guint i;
+
+    if (root == NULL || !json_object_has_member(root, "egress"))
+        return index;
+
+    egress = json_object_get_object_member(root, "egress");
+
+    if (egress == NULL)
+        return index;
+
+    summary = clawt_egress_status_line(
+        clawt_ipc_payload_string(egress, "network"),
+        (guint)clawt_ipc_payload_int(egress, "refused_today", 0));
+    box = section_card(app, ins.body, clawt_egress_network_label(), summary,
+                       index++);
+
+    refusals = json_object_has_member(egress, "refusals")
+               ? json_object_get_array_member(egress, "refusals") : NULL;
+
+    for (i = 0; refusals != NULL && i < json_array_get_length(refusals);
+         i++) {
+        JsonObject *refusal = json_array_get_object_element(refusals, i);
+        g_autofree gchar *line = NULL;
+
+        if (refusal == NULL)
+            continue;
+
+        line = clawt_egress_refusal_line(
+            clawt_ipc_payload_string(refusal, "host"),
+            (guint)clawt_ipc_payload_int(refusal, "port", 0),
+            clawt_ipc_payload_string(refusal, "address"),
+            clawt_ipc_payload_string(refusal, "reason"));
+        clawt_lrg_take(box, clawt_lrg_paragraph(line, "caption"));
+    }
+
+    keys = json_object_has_member(egress, "keys")
+           ? json_object_get_array_member(egress, "keys") : NULL;
+
+    for (i = 0; keys != NULL && i < json_array_get_length(keys); i++) {
+        JsonObject *key = json_array_get_object_element(keys, i);
+        gboolean brokered;
+
+        if (key == NULL)
+            continue;
+
+        brokered = clawt_ipc_payload_boolean(key, "brokered", FALSE);
+        clawt_lrg_take(box, info_row(
+            clawt_ipc_payload_string(key, "name"),
+            brokered ? "brokered" : "not brokered"));
+
+        if (!brokered && clawt_ipc_payload_string(key, "reason") != NULL)
+            clawt_lrg_take(box, clawt_lrg_paragraph(
+                clawt_ipc_payload_string(key, "reason"), "caption"));
+    }
 
     return index;
 }
@@ -2426,6 +2527,7 @@ draw_all(ClawtLrgApp *app)
     index = build_credentials(app, agent, index);
     index = build_integrations(app, index);
     index = build_computer_detail(app, agent, index);
+    index = build_egress(app, index);
     index = build_mounts(app, agent, index);
     index = build_files(app, index);
     build_danger(app, index);

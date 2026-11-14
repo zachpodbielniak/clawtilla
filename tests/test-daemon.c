@@ -8766,6 +8766,169 @@ test_confined_agent_without_bwrap_is_a_shadow(void)
 }
 
 /*
+ * A gated network and no sandbox are refused together where they
+ * arrive, in either order; with the sandbox the write lands, and the
+ * agent's view says which keys the broker would hold.
+ */
+static void
+test_agent_set_refuses_a_gate_without_a_sandbox(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) gate = NULL;
+    g_autoptr(JsonNode) unconfine = NULL;
+    g_autoptr(JsonNode) allowed = NULL;
+    g_autoptr(JsonNode) shown = NULL;
+    g_autofree gchar *saved = g_strdup(g_getenv("PATH"));
+    g_autofree gchar *stubs = g_dir_make_tmp("clawt-bwrap-XXXXXX", NULL);
+    g_autofree gchar *stub = g_build_filename(stubs, "bwrap", NULL);
+    JsonObject *egress;
+    JsonArray *keys;
+    guint i;
+    gboolean brokered = FALSE;
+    gboolean github = FALSE;
+
+    g_assert_true(g_file_set_contents(stub, "#!/bin/sh\nexit 0\n", -1,
+                                      NULL));
+    g_assert_cmpint(g_chmod(stub, 0755), ==, 0);
+    {
+        g_autofree gchar *path = g_strconcat(stubs, ":", saved, NULL);
+
+        g_setenv("PATH", path, TRUE);
+    }
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: open\n"
+                  "  - id: boxed\n"
+                  "    env:\n"
+                  "      ANTHROPIC_API_KEY: sk-ant-not-shown\n"
+                  "      GITHUB_TOKEN: ghp-not-shown\n"
+                  "    runtime:\n"
+                  "      confine: bwrap\n"
+                  "      network: gated\n");
+    {
+        g_autoptr(GError) error = NULL;
+
+        g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+        g_assert_no_error(error);
+    }
+
+    gate = request(&fixture, "agent.set",
+                   "{\"agent\":\"open\",\"key\":\"runtime.network\","
+                   "\"value\":\"gated\"}");
+    g_assert_true(clawt_ipc_frame_is_error(gate));
+    g_assert_nonnull(strstr(json_object_get_string_member(
+                                json_node_get_object(gate), "error"),
+                            "sandbox"));
+
+    unconfine = request(&fixture, "agent.set",
+                        "{\"agent\":\"boxed\",\"key\":\"runtime.confine\","
+                        "\"value\":\"none\"}");
+    g_assert_true(clawt_ipc_frame_is_error(unconfine));
+    g_assert_nonnull(strstr(json_object_get_string_member(
+                                json_node_get_object(unconfine), "error"),
+                            "runtime.network"));
+
+    allowed = request(&fixture, "agent.set",
+                      "{\"agent\":\"boxed\",\"key\":\"runtime.network\","
+                      "\"value\":\"none\"}");
+    g_assert_false(clawt_ipc_frame_is_error(allowed));
+
+    shown = request(&fixture, "agent.show", "{\"agent\":\"boxed\"}");
+    egress = json_object_get_object_member(payload_of(shown), "egress");
+    g_assert_nonnull(egress);
+    g_assert_cmpstr(json_object_get_string_member(egress, "network"), ==,
+                    "none");
+    g_assert_cmpint(json_object_get_int_member(egress, "refused_today"), ==,
+                    0);
+    keys = json_object_get_array_member(egress, "keys");
+
+    for (i = 0; i < json_array_get_length(keys); i++) {
+        JsonObject *key = json_array_get_object_element(keys, i);
+        const gchar *name = json_object_get_string_member(key, "name");
+
+        if (g_strcmp0(name, "ANTHROPIC_API_KEY") == 0)
+            brokered = json_object_get_boolean_member(key, "brokered");
+
+        if (g_strcmp0(name, "GITHUB_TOKEN") == 0) {
+            github = TRUE;
+            g_assert_false(json_object_get_boolean_member(key, "brokered"));
+            g_assert_nonnull(json_object_get_string_member(key, "reason"));
+        }
+    }
+
+    g_assert_true(brokered);
+    g_assert_true(github);
+
+    /* No secret's value reaches the reply. */
+    {
+        g_autofree gchar *text = json_to_string(shown, FALSE);
+
+        g_assert_null(strstr(text, "sk-ant-not-shown"));
+        g_assert_null(strstr(text, "ghp-not-shown"));
+    }
+
+    g_setenv("PATH", saved, TRUE);
+    fixture_teardown(&fixture);
+    clawt_test_remove_tree(stubs);
+}
+
+/*
+ * egress.allow is edited one entry at a time and checked where it
+ * arrives: a metadata address is refused rather than saved.
+ */
+static void
+test_egress_allowlist_frames(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) added = NULL;
+    g_autoptr(JsonNode) refused = NULL;
+    g_autoptr(JsonNode) listed = NULL;
+    g_autoptr(JsonNode) removed = NULL;
+    g_autoptr(JsonNode) missing = NULL;
+    g_autofree gchar *file = NULL;
+    JsonArray *entries;
+
+    fixture_setup(&fixture, NULL);
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    added = request(&fixture, "egress.allow.add",
+                    "{\"entry\":\" 100.101.102.103:22 \"}");
+    g_assert_false(clawt_ipc_frame_is_error(added));
+
+    refused = request(&fixture, "egress.allow.add",
+                      "{\"entry\":\"169.254.169.254\"}");
+    g_assert_true(clawt_ipc_frame_is_error(refused));
+    g_assert_nonnull(strstr(json_object_get_string_member(
+                                json_node_get_object(refused), "error"),
+                            "metadata"));
+
+    listed = request(&fixture, "egress.allow.list", NULL);
+    entries = json_object_get_array_member(payload_of(listed), "entries");
+    g_assert_cmpuint(json_array_get_length(entries), ==, 1);
+    g_assert_cmpstr(json_array_get_string_element(entries, 0), ==,
+                    "100.101.102.103:22");
+    g_assert_false(json_object_has_member(payload_of(listed), "problem"));
+
+    /* Saved to the file, so it survives a restart. */
+    g_assert_true(g_file_get_contents(fixture.config_path, &file, NULL,
+                                      NULL));
+    g_assert_nonnull(strstr(file, "100.101.102.103:22"));
+
+    removed = request(&fixture, "egress.allow.remove",
+                      "{\"entry\":\"100.101.102.103:22\"}");
+    g_assert_false(clawt_ipc_frame_is_error(removed));
+    entries = json_object_get_array_member(payload_of(removed), "entries");
+    g_assert_cmpuint(json_array_get_length(entries), ==, 0);
+
+    missing = request(&fixture, "egress.allow.remove",
+                      "{\"entry\":\"10.0.0.1\"}");
+    g_assert_true(clawt_ipc_frame_is_error(missing));
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * A value the enum has never heard of is refused, naming what is
  * allowed.
  *
@@ -11784,6 +11947,10 @@ main(int argc, char *argv[])
                     test_agent_set_refuses_confining_an_embedded_agent);
     g_test_add_func("/daemon/confined-agent-without-bwrap-is-a-shadow",
                     test_confined_agent_without_bwrap_is_a_shadow);
+    g_test_add_func("/daemon/agent-set-refuses-a-gate-without-a-sandbox",
+                    test_agent_set_refuses_a_gate_without_a_sandbox);
+    g_test_add_func("/daemon/egress-allowlist-frames",
+                    test_egress_allowlist_frames);
     g_test_add_func("/daemon/agent-set-refuses-an-unknown-enum-value",
                     test_agent_set_refuses_a_value_the_enum_lacks);
     g_test_add_func("/daemon/agent-set-reports-a-role-needs-a-session",

@@ -42,6 +42,7 @@ typedef enum {
     NEEDS_BROWSER_SCRIPTS,
     NEEDS_GROK,
     NEEDS_WAITS,
+    NEEDS_RETRY,
     NEEDS_NEVER
 } ToolRequirement;
 
@@ -88,6 +89,17 @@ static const ClawtParamInfo get_agent_params[] = {
 static const ClawtParamInfo message_agent_params[] = {
     { "agent_id", "string", "Who to message.", TRUE },
     { "body",     "string", "What to say.", TRUE },
+    /*
+     * In the parameter as well as the tool description, because this is
+     * what an agent reads at the moment it decides -- and an FYI sent as
+     * `answer` costs the *sender* a turn to read "noted".
+     */
+    { "reply",    "string",
+      "answer (the default) or none. Use none for a notice that needs "
+      "nothing back -- \"deployed\", \"your PR is merged\", \"FYI, I "
+      "changed X\": they read it and their reply goes nowhere, so you are "
+      "not woken to read \"thanks, noted\". Use answer whenever you want "
+      "anything back, even a yes.", FALSE },
     { "priority", "string",
       "low, normal, high or urgent. Urgent jumps the queue, so reserve it "
       "for things that genuinely cannot wait.", FALSE },
@@ -133,6 +145,10 @@ static const ClawtParamInfo ask_decision_params[] = {
 static const ClawtParamInfo post_room_params[] = {
     { "room_id", "string", "Which room.", TRUE },
     { "body",    "string", "What to say.", TRUE },
+    { "reply",   "string",
+      "answer (the default) or none. With none, whoever this reaches "
+      "is told you want nothing back and their closing text is not "
+      "posted -- for an announcement rather than a question.", FALSE },
     { "turn_room", "string",
       "Which of your conversations this call is part of, from the "
       "[clawtilla] line on the message you are handling. Only "
@@ -187,6 +203,21 @@ static const ClawtParamInfo delegate_params[] = {
  * the recipient needs -- it is put in front of them rather than left in
  * an audit trail they cannot read.
  */
+static const ClawtParamInfo task_retry_params[] = {
+    { "incident_id", "string",
+      "The incident to retry, as a \"Problems to look at\" report names "
+      "it. Give this or task_id.", FALSE },
+    { "task_id", "string",
+      "Or the failed or stalled task to retry.", FALSE },
+    { "reason", "string",
+      "What the assignee should know this time -- what you think went "
+      "wrong. They see it with the original work.", FALSE },
+    { "turn_room", "string",
+      "Which of your conversations this call is part of, from the "
+      "[clawtilla] line on the message you are handling. Only needed "
+      "when you are working in more than one at once.", FALSE }
+};
+
 static const ClawtParamInfo handoff_params[] = {
     { "task_id",  "string", "The task you are handing over.", TRUE },
     { "agent_id", "string", "Who is taking it on.", TRUE },
@@ -671,7 +702,10 @@ static const ToolDefinition tools[] = {
          "if they are stopped -- they will see it when they start. Returns "
          "immediately without waiting for a reply. They get one answer back "
          "to you and the exchange ends there, so say everything you need to "
-         "in one message rather than expecting to go back and forth.",
+         "in one message rather than expecting to go back and forth. If you "
+         "need nothing back -- a notice, an FYI, \"done\" -- pass reply: "
+         "\"none\": they are told not to answer, and you are not woken by an "
+         "acknowledgement.",
          NEEDS_PEER_COMMS, message_agent_params, CLAWT_ACTION_MESSAGE),
 
     HOP_TOOL("clawtilla_ask_agent",
@@ -705,6 +739,16 @@ static const ToolDefinition tools[] = {
          "clawtilla_task_status, which can answer even after clawtilla "
          "has been restarted.",
          NEEDS_HANDOFF, handoff_params, CLAWT_ACTION_MESSAGE),
+
+    HOP_TOOL("clawtilla_task_retry",
+         "Send a failed or stalled run round again: a task is re-queued "
+         "for its assignee with its original work, a routine is run "
+         "again. Use it on an incident from your \"Problems to look at\" "
+         "room when the cause looks transient. It refuses work that is "
+         "still running or already finished, and work you could not have "
+         "assigned. Agents may retry one incident twice; after that, tell "
+         "your operator what needs fixing instead.",
+         NEEDS_RETRY, task_retry_params, CLAWT_ACTION_MESSAGE),
 
     TOOL("clawtilla_ask_decision",
          "Ask your operator to make a choice, without waiting for them. "
@@ -742,7 +786,8 @@ static const ToolDefinition tools[] = {
          "only *delivered* to the members you name with @their-id, and "
          "naming nobody is the normal way to take part -- do that unless "
          "you need a particular member to act on it now, because being "
-         "named costs them a whole model turn. @all is your operator's.",
+         "named costs them a whole model turn. @all is your operator's. "
+         "Pass reply: \"none\" for an announcement that wants no answer.",
          NEEDS_PEER_COMMS, post_room_params, CLAWT_ACTION_MESSAGE),
 
     TOOL("clawtilla_create_room",
@@ -1139,6 +1184,7 @@ struct _ClawtMcpTools {
 
     ClawtMcpDeliverFunc deliver;
 	ClawtMcpDeliverTurnFunc deliver_turn;
+	ClawtMcpDeliverReplyFunc deliver_reply;
     gpointer            deliver_data;
     GDestroyNotify      deliver_destroy;
 
@@ -1161,6 +1207,9 @@ struct _ClawtMcpTools {
     ClawtMcpHandoffFunc     handoff;
     gpointer                handoff_data;
     GDestroyNotify          handoff_destroy;
+
+    /* Incidents and retries, for clawtilla_task_retry; borrowed. */
+    ClawtIncidentDesk      *incidents;
 
     ClawtMcpSearchFunc      search;
     gpointer                search_data;
@@ -1499,6 +1548,7 @@ clawt_mcp_tools_set_deliver_func(ClawtMcpTools       *self,
 
     self->deliver = func;
 	self->deliver_turn = NULL;
+	self->deliver_reply = NULL;
     self->deliver_data = user_data;
     self->deliver_destroy = destroy;
 }
@@ -1513,19 +1563,45 @@ clawt_mcp_tools_set_deliver_turn_func(ClawtMcpTools *self,
 	self->deliver_turn = func;
 }
 
+void
+clawt_mcp_tools_set_deliver_reply_func(ClawtMcpTools *self,
+	ClawtMcpDeliverReplyFunc func, gpointer user_data, GDestroyNotify destroy)
+{
+	g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+	clawt_mcp_tools_set_deliver_func(self, NULL, user_data, destroy);
+	self->deliver_reply = func;
+}
+
 /* Old embedders can still deliver; the daemon supplies the richer hook. */
 static gboolean
 can_deliver(ClawtMcpTools *self)
 {
-	return self->deliver_turn != NULL || self->deliver != NULL;
+	return self->deliver_reply != NULL || self->deliver_turn != NULL ||
+		self->deliver != NULL;
 }
 
 /* Keep compatibility handling out of the individual tool implementations. */
 static gboolean
 dispatch_delivery(ClawtMcpTools *self, const gchar *from_agent,
 	const gchar *target, const gchar *body, const gchar *task_id,
-	gint depth, ClawtPriority priority, const gchar *turn_room, GError **error)
+	gint depth, ClawtPriority priority, const gchar *turn_room,
+	gboolean one_way, GError **error)
 {
+	if (self->deliver_reply != NULL)
+		return self->deliver_reply(from_agent, target, body, task_id, depth,
+			priority, turn_room, one_way, self->deliver_data, error);
+
+	/*
+	 * An older callback cannot carry it, and sending a "no answer
+	 * wanted" notice as an ordinary message would cost the very turn
+	 * the caller was trying to save -- so it is refused, by name.
+	 */
+	if (one_way) {
+		g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+			"reply: none is not available here; send it without reply "
+			"and they will answer once.");
+		return FALSE;
+	}
 	if (self->deliver_turn != NULL)
 		return self->deliver_turn(from_agent, target, body, task_id, depth,
 			priority, turn_room, self->deliver_data, error);
@@ -1626,6 +1702,15 @@ clawt_mcp_tools_set_waits(
 	g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
 
 	self->waits = waits;
+}
+
+void
+clawt_mcp_tools_set_incident_desk(ClawtMcpTools     *self,
+                                  ClawtIncidentDesk *desk)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    self->incidents = desk;
 }
 
 void
@@ -2042,6 +2127,17 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
 
     case NEEDS_ASSIGNMENT:
         if (!may_assign_to_somebody(agent))
+            return FALSE;
+        break;
+
+    case NEEDS_RETRY:
+        /*
+         * The assignment gate, because a retry puts work back on
+         * somebody's list -- and the desk, because without it there is
+         * nothing to retry with.  Which *particular* run is allowed is
+         * settled at call time, like delegation's target.
+         */
+        if (self->incidents == NULL || !may_assign_to_somebody(agent))
             return FALSE;
         break;
 
@@ -4022,6 +4118,36 @@ priority_from_arguments(JsonObject     *arguments,
         argument_string(arguments, "priority"), out_priority, out_refusal);
 }
 
+/*
+ * The `reply` argument: answer (absent too) or none.  Refused when it
+ * is anything else, before anything is queued -- a typo read as the
+ * default would send a notice that invites the answer it meant to
+ * avoid, and resending is the only remedy, which delivers it twice.
+ */
+static gboolean
+reply_mode_from_arguments(
+	JsonObject  *arguments,
+	gboolean    *out_one_way,
+	gchar      **out_refusal
+){
+	const gchar *mode = argument_string(arguments, "reply");
+
+	*out_one_way = FALSE;
+
+	if (mode == NULL || *mode == '\0' ||
+		g_ascii_strcasecmp(mode, "answer") == 0)
+		return TRUE;
+
+	if (g_ascii_strcasecmp(mode, "none") == 0) {
+		*out_one_way = TRUE;
+		return TRUE;
+	}
+
+	*out_refusal = g_strdup_printf("reply is answer or none, not '%s'. "
+		"Nothing was sent.", mode);
+	return FALSE;
+}
+
 static gchar *
 tool_message_agent(ClawtMcpTools *self,
                    const gchar   *agent_id,
@@ -4034,6 +4160,7 @@ tool_message_agent(ClawtMcpTools *self,
     ClawtPriority priority = CLAWT_PRIORITY_NORMAL;
     g_autofree gchar *refusal = NULL;
     g_autoptr(GError) error = NULL;
+	gboolean one_way = FALSE;
 
     /*
      * clawtilla_ask_agent's schema calls it "message"; both are accepted
@@ -4058,6 +4185,11 @@ tool_message_agent(ClawtMcpTools *self,
         *is_error = TRUE;
         return g_steal_pointer(&refusal);
     }
+
+	if (!reply_mode_from_arguments(arguments, &one_way, &refusal)) {
+		*is_error = TRUE;
+		return g_steal_pointer(&refusal);
+	}
 
     if (!can_deliver(self)) {
         *is_error = TRUE;
@@ -4084,7 +4216,7 @@ tool_message_agent(ClawtMcpTools *self,
     if (!dispatch_delivery(self, agent_id, target, body, NULL,
                        outbound_depth(self, agent_id, turn_room), priority,
                        turn_room,
-                       &error)) {
+                       one_way, &error)) {
         *is_error = TRUE;
         return g_strdup(error->message);
     }
@@ -4099,14 +4231,22 @@ tool_message_agent(ClawtMcpTools *self,
      * this reply deliberately said nothing, since an agent told its
      * message was expedited has no reason to look again.
      */
+	/*
+	 * And that no answer is coming, when none was asked for: an agent
+	 * that expects one waits for it, and one told otherwise stops.
+	 */
     if (priority != CLAWT_PRIORITY_NORMAL)
         return g_strdup_printf("Queued for %s at %s priority. They will see "
-                               "it when they are next running.", target,
+                               "it when they are next running.%s", target,
                                clawt_enum_to_nick(CLAWT_TYPE_PRIORITY,
-                                                  priority));
+                                                  priority),
+                               one_way ? " No answer will come back: you "
+                                         "asked for none." : "");
 
     return g_strdup_printf("Queued for %s. They will see it when they are "
-                           "next running.", target);
+                           "next running.%s", target,
+                           one_way ? " No answer will come back: you asked "
+                                     "for none." : "");
 }
 
 static gchar *
@@ -4208,7 +4348,7 @@ tool_delegate(ClawtMcpTools *self,
                            outbound_depth(self, agent_id, turn_room),
                            CLAWT_PRIORITY_NORMAL,
                            turn_room,
-                           &error)) {
+                           FALSE, &error)) {
             /*
              * The task is failed rather than left pending.  A task nobody
              * was ever told about would sit in the list for ever looking
@@ -4225,6 +4365,68 @@ tool_delegate(ClawtMcpTools *self,
         "Delegated to %s as task %s. You will be notified here when it "
         "settles -- no need to poll clawtilla_task_status or ask them how "
         "it is going.", assignee, clawt_task_get_id(task));
+}
+
+/*
+ * Sending a broken run round again.
+ *
+ * Judged in two steps, the way delegation is: the tool is offered only
+ * to an agent that can assign to somebody, and whether it may retry
+ * *this* run -- the run's assignee is somebody it could assign to, and
+ * it has not already retried it as often as an agent may -- is the
+ * desk's, asked here.  The retry itself is the desk's too, so the
+ * operator's Retry and this tool are one implementation.
+ */
+static gchar *
+tool_task_retry(ClawtMcpTools *self,
+                const gchar   *agent_id,
+                JsonObject    *arguments,
+                gboolean      *is_error)
+{
+    const gchar *task_id = argument_string(arguments, "task_id");
+    const gchar *incident_id = argument_string(arguments, "incident_id");
+    const gchar *reason = argument_string(arguments, "reason");
+    g_autofree gchar *refusal = NULL;
+    g_autofree gchar *new_task = NULL;
+    g_autoptr(GError) error = NULL;
+    gboolean rerun = FALSE;
+
+    if (task_id == NULL && incident_id == NULL) {
+        *is_error = TRUE;
+        return g_strdup("Name the run to retry: incident_id from the "
+                        "report, or task_id.");
+    }
+
+    if (self->incidents == NULL) {
+        *is_error = TRUE;
+        return g_strdup("Retrying is not available here.");
+    }
+
+    if (!clawt_incident_desk_may_retry(self->incidents, agent_id, task_id,
+                                       incident_id, &refusal)) {
+        *is_error = TRUE;
+        return g_steal_pointer(&refusal);
+    }
+
+    new_task = clawt_incident_desk_retry(self->incidents, task_id,
+                                         incident_id, agent_id, reason,
+                                         &rerun, &error);
+
+    if (new_task == NULL) {
+        *is_error = TRUE;
+        return g_strdup_printf("Not retried: %s.", error->message);
+    }
+
+    if (rerun)
+        return g_strdup_printf(
+            "The routine is running again as task %s. If it breaks again "
+            "you will get another report here -- there is no need to "
+            "watch it.", new_task);
+
+    return g_strdup_printf(
+        "Task %s is queued for its assignee again, with the original work "
+        "and your note. Its delegator hears how it ends, as before; if it "
+        "breaks again you will get another report here.", new_task);
 }
 
 /*
@@ -5547,7 +5749,7 @@ tool_message_user(ClawtMcpTools *self, const gchar *agent_id,
     if (!dispatch_delivery(self, agent_id, clawt_room_get_id(room), body, NULL,
                        outbound_depth(self, agent_id, turn_room), CLAWT_PRIORITY_NORMAL,
                        turn_room,
-                       &error)) {
+                       FALSE, &error)) {
         *is_error = TRUE;
         return g_strdup_printf("Could not reach your operator: %s",
                                error != NULL ? error->message : "unknown");
@@ -6100,12 +6302,19 @@ tool_post_room(ClawtMcpTools *self, const gchar *agent_id,
     const gchar *room_id = argument_string(arguments, "room_id");
     const gchar *body = argument_string(arguments, "body");
     g_autoptr(GError) error = NULL;
+	g_autofree gchar *refusal = NULL;
+	gboolean one_way = FALSE;
     ClawtRoom *room;
 
     if (room_id == NULL || body == NULL) {
         *is_error = TRUE;
         return g_strdup("room_id and body are both required.");
     }
+
+	if (!reply_mode_from_arguments(arguments, &one_way, &refusal)) {
+		*is_error = TRUE;
+		return g_steal_pointer(&refusal);
+	}
 
     room = room_for(self, room_id, agent_id);
 
@@ -6144,7 +6353,7 @@ tool_post_room(ClawtMcpTools *self, const gchar *agent_id,
     if (!dispatch_delivery(self, agent_id, room_id, body, NULL,
                        outbound_depth(self, agent_id, turn_room), CLAWT_PRIORITY_NORMAL,
                        turn_room,
-                       &error)) {
+                       one_way, &error)) {
         *is_error = TRUE;
         return g_strdup(error->message);
     }
@@ -6443,7 +6652,7 @@ tool_mailbox_reply(ClawtMcpTools *self, const gchar *agent_id,
                        clawt_mailbox_item_get_task_id(item),
                        outbound_depth(self, agent_id, turn_room), CLAWT_PRIORITY_NORMAL,
                        turn_room,
-                       &error)) {
+                       FALSE, &error)) {
         *is_error = TRUE;
         return g_strdup(error->message);
     }
@@ -6543,7 +6752,21 @@ wait_condition(
 	case CLAWT_WAIT_URL: {
 		const gchar *url = argument_string(arguments, "url");
 		gint64 status = argument_int(arguments, "status", 0);
-		gchar *refusal = clawt_net_url_refusal(url);
+		const gchar *gated = clawt_egress_url_wait_refusal(
+			clawt_enum_to_nick(CLAWT_TYPE_RUNTIME_NETWORK,
+			                   clawt_agent_config_get_enum(
+			                       config, "runtime.network")));
+		gchar *refusal;
+
+		/*
+		 * Before the URL is looked at: the daemon would fetch it from
+		 * its own network position, around the gate this agent sits
+		 * behind, so no URL is acceptable whatever it names.
+		 */
+		if (gated != NULL)
+			return g_strdup(gated);
+
+		refusal = clawt_net_url_refusal(url);
 
 		if (refusal != NULL)
 			return refusal;
@@ -8095,6 +8318,8 @@ tools_call(ClawtMcpTools *self,
         text = tool_delegate(self, agent_id, turn_room, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_handoff") == 0)
         text = tool_handoff(self, agent_id, turn_room, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_task_retry") == 0)
+        text = tool_task_retry(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_trigger_list") == 0)
         text = tool_trigger_list(self, agent_id);
     else if (g_strcmp0(tool_name, "clawtilla_routine_list") == 0)

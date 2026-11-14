@@ -105,13 +105,14 @@ The same seven the GTK client's view switcher has, in the same order.
 | Mailbox  | what is waiting, what died, purge and requeue              |
 | Computer | exec console, mounts, the exchange, rebuild                |
 | Routines | scheduled work, running one now, turning one back on       |
-| Tasks    | delegated work, the budget, cancelling                     |
+| Tasks    | Problems to look at (settings, open incidents, Retry), delegated work, the budget, cancelling, retrying |
 | Flow     | what the agents are saying to each other                   |
 | Activity | every running turn, to stop or steer ([[file:clients.org::#activity-tab][the Activity tab]]) |
 | Fleet    | cost per agent, the last fourteen days, idle agents to stop ([[file:clients.org::#fleet-tab][the Fleet tab]]) |
 
 And the settings pages: fleet, VM images, teams, shared folders,
-spending, integrations, connectors, appearance, connections and devices.
+spending, orchestration, integrations, connectors, appearance, connections
+and devices.
 
 *** Spending
 
@@ -124,6 +125,14 @@ spending, integrations, connectors, appearance, connections and devices.
 The add form opens on "Remote MCP server" (the catalogue sorts it first) and takes a *Server URL*, a *Name* (from the URL's host when empty, ~clawt_connector_name_for_url()~), an *Account label* the form says is required for a second account, and a client id.  An add with a URL asks ~connector.discover~ at once and says where it signs in, or that it publishes no sign-in.
 
 The authorize page reads the members ~connector.begin~ sends -- ~authorize_url~, else ~verification_uri_complete~ or ~verification_uri~ -- and names ~auth_server~ above the link.  It read a member called ~url~ before, which the daemon has never sent, so neither flow ever showed the page to open.
+
+*** Orchestration
+
+=/settings/orchestration= is a form with one select, *Model*, built by =clawt_web_select_field()= from =clawt_ack_check_model_count()= / =_nth_value()= / =_nth_label()= with ~orchestration.get~'s =ack_check_model= selected; a value the list lacks is kept as an option, so saving untouched cannot turn the check off.  *Save* posts to the same path, which sends ~orchestration.set~ and redraws the page with the outcome.  See [[file:clients.org::#orchestration-settings][Orchestration]].
+
+*** Acknowledged answers and merged deliveries in the chat
+
+=message_element()= reads =acknowledged= and =merged= off each ~room.history~ message.  An acknowledged answer gets a neutral badge, =clawt_message_ack_label()= with =clawt_message_ack_tooltip()= as its =title=, in the message's header line -- which is drawn for that message even mid-run, as the task and hop badges are.  A merged note's body is split by =clawt_merge_split()=: the preface is the message body and each section is a =.merge-section= block with a =.merge-section-label= heading.  The live ~message~ event only marks unread here; the transcript re-reads history, so both marks come from one path.
 
 *** The integration editor
 
@@ -203,7 +212,7 @@ answers with the page it did it on.
 | =/settings=, =/settings/:page= | the seven settings pages               |
 | =/settings/<page>/...=        | their actions: add, save, remove, health, test, authorize, revoke |
 | =/new=, =/import=, =/design=  | making an agent                         |
-| =/alerts=, =/decisions=, =/routines/...=, =/tasks/:task/cancel= | the standing surfaces |
+| =/alerts=, =/decisions=, =/routines/...=, =/tasks/:task/cancel=, =/tasks/:task/retry=, =/incidents/:incident/retry=, =/incidents/configure= | the standing surfaces |
 | =/activity/:agent/stop=, =/activity/:agent/steer=, =/f/activity= | the Activity page's actions and its polled panel |
 | =/fleet-usage/:agent/stop=, =/fleet-usage/stop-idle=, =/f/fleet-usage= | the Fleet page's actions and its polled panel (=?period== picks the window) |
 | =/a/:id/browser/open=, =/a/:id/browser/click=, =/a/:id/browser/stop=, =/a/:id/browser/frame=, =/f/a/:id/browser= | the Computer page's Browser view: its actions, its picture and its polled panel |
@@ -448,6 +457,8 @@ the page -- without touching that row -- would move the agent somewhere
 nobody chose.
 
 ~runtime.confine~ keeps the enum's own select but not its spelling: it is labelled with =clawt_agent_confine_label()=, followed by =clawt_agent_confine_explanation()= and, when the daemon cannot sandbox the agent, the =clawt_agent_confine_notice()= warning (read off the agent's =confine=, =runtime_type= and =confine_available=) -- the same words the GTK and libregnum clients use, so a shadow caused by a missing bubblewrap is explained where somebody turned it on.
+
+~runtime.network~ is a select labelled =clawt_egress_network_label()= whose options are the enum's values named by =clawt_egress_network_choice_label()= ("Through clawtilla's gate"). Below it is the chosen option's =clawt_egress_network_choice_explanation()=, or -- when the agent's =confine= is not ~bwrap~ -- =clawt_egress_network_notice()=, and the select is ~disabled~ then, so it is not posted and a save cannot write a network the daemon would refuse. A save that opens the network applies that before the schema walk reaches ~runtime.confine~, because turning the sandbox off while the network is still gated is refused. The agent page has a *Network* card (=add_egress_card()=): =clawt_egress_status_line()= as its summary, the recent refusals as =clawt_egress_refusal_line()=, and one row per key saying whether the broker holds it, from agent.show's =egress= member. The Shared folders settings page has a card for =egress.allow= (=clawt_egress_allowlist_label()=, =clawt_egress_allowlist_explanation()=) posting to =/settings/egress/add= and =/settings/egress/remove=, which send ~egress.allow.add~ and ~egress.allow.remove~.
 
 Nine keys are the exception, and the page says nothing about them because
 it cannot: ~orchestration.mailbox.*~ and ~memories.*~ carry

@@ -23,7 +23,7 @@
 
 #include "clawt-lrg.h"
 
-#define N_SETTINGS_PAGES (9)
+#define N_SETTINGS_PAGES (10)
 
 typedef struct {
     LrgDialog  *dialog;      /* our reference; re-presented, never rebuilt */
@@ -49,13 +49,14 @@ clawt_lrg_settings_pages(void)
         pages[0] = clawt_lrg_settings_images_page();
         pages[1] = clawt_lrg_settings_teams_page();
         pages[2] = clawt_lrg_settings_spending_page();
-        pages[3] = clawt_lrg_settings_integrations_page();
-        pages[4] = clawt_lrg_settings_connectors_page();
-        pages[5] = clawt_lrg_settings_folders_page();
-        pages[6] = clawt_lrg_settings_appearance_page();
-        pages[7] = clawt_lrg_settings_devices_page();
-        pages[8] = clawt_lrg_settings_connections_page();
-        pages[9] = NULL;
+        pages[3] = clawt_lrg_settings_orchestration_page();
+        pages[4] = clawt_lrg_settings_integrations_page();
+        pages[5] = clawt_lrg_settings_connectors_page();
+        pages[6] = clawt_lrg_settings_folders_page();
+        pages[7] = clawt_lrg_settings_appearance_page();
+        pages[8] = clawt_lrg_settings_devices_page();
+        pages[9] = clawt_lrg_settings_connections_page();
+        pages[10] = NULL;
     }
 
     return (const ClawtLrgSettingsPage *const *)pages;

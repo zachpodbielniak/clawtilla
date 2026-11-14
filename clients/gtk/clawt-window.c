@@ -1383,9 +1383,11 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
              */
             clawt_gtk_note_arrival(self);
 
-            clawt_gtk_append_message(self, from != NULL ? from : "?",
+            clawt_gtk_append_message_marked(self, from != NULL ? from : "?",
                                      body != NULL ? body : "",
-                                     g_strcmp0(from, "user") == 0, 0);
+                                     g_strcmp0(from, "user") == 0, 0,
+                                     clawt_event_get_detail_int(event, "acknowledged") != 0,
+                                     clawt_event_get_detail_int(event, "merged"));
 
             /*
              * The reply is the end of the turn.  libreclaw drops the
@@ -1677,7 +1679,12 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
         return;
     }
 
-    if (g_str_has_prefix(kind, "task."))
+    /*
+     * An incident is drawn on the Tasks page, and filing one changes no
+     * task -- so without its own prefix here a report reached the lead
+     * and the operator's page went on saying nothing had broken.
+     */
+    if (g_str_has_prefix(kind, "task.") || g_str_has_prefix(kind, "incident."))
         clawt_gtk_refresh_tasks(self);
 
     /*
@@ -5113,6 +5120,7 @@ on_settings_closed(AdwDialog *dialog, gpointer user_data)
     self->settings_spending_period = NULL;
     self->settings_spending_group = NULL;
     self->settings_spending_unpriced = NULL;
+    self->settings_ack_model = NULL;
     self->settings_connectors = NULL;
     self->settings_devices = NULL;
     self->settings_devices_pair = NULL;
@@ -5277,6 +5285,9 @@ on_settings_activate(GSimpleAction *action, GVariant *parameter,
                                    clawt_gtk_build_spending_page(self)));
     adw_preferences_dialog_add(ADW_PREFERENCES_DIALOG(dialog),
                                ADW_PREFERENCES_PAGE(
+                                   clawt_gtk_build_orchestration_page(self)));
+    adw_preferences_dialog_add(ADW_PREFERENCES_DIALOG(dialog),
+                               ADW_PREFERENCES_PAGE(
                                    clawt_gtk_build_integrations_page(self)));
     adw_preferences_dialog_add(ADW_PREFERENCES_DIALOG(dialog),
                                ADW_PREFERENCES_PAGE(
@@ -5298,6 +5309,7 @@ on_settings_activate(GSimpleAction *action, GVariant *parameter,
     clawt_gtk_refresh_settings_teams(self);
     clawt_gtk_refresh_settings_folders(self);
     clawt_gtk_refresh_settings_spending(self);
+    clawt_gtk_refresh_settings_orchestration(self);
     clawt_gtk_refresh_settings_integrations(self);
     clawt_gtk_refresh_settings_connectors(self);
     clawt_gtk_refresh_settings_devices(self);

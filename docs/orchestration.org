@@ -823,6 +823,7 @@ Served over each agent's link as an MCP endpoint.
 | ~clawtilla_task_status~ / ~clawtilla_task_result~ / ~clawtilla_task_cancel~ | follow it |
 | ~clawtilla_task_complete~ | report your own assigned task done |
 | ~clawtilla_task_progress~ | say it is still going, so ending your turn does not close it |
+| ~clawtilla_task_retry~ | send a failed or stalled run round again; see [[*Incidents: broken runs reach the lead][Incidents]] |
 | ~clawtilla_post_room~, ~clawtilla_create_room~, ~clawtilla_room_history~ | rooms |
 | ~clawtilla_mailbox_list~ / ~clawtilla_mailbox_read~ / ~clawtilla_mailbox_ack~ / ~clawtilla_mailbox_reply~ | your own mail |
 | ~clawtilla_computer_exec~, ~clawtilla_computer_state~ | your computer |
@@ -843,6 +844,7 @@ offered depends on a gate per tool:
 | peer comms | a capability every agent has, so it gates nothing today |
 | assigning (~clawtilla_delegate~) | ~agents.chief_of_staff~, or ~team_role: lead~ |
 | handing over (~clawtilla_handoff~) | the same, *and* the daemon offering the hook |
+| retrying (~clawtilla_task_retry~) | the same as assigning, *and* the daemon's incident desk; the run's assignee is checked at call time |
 | fleet admin (create agent, options) | ~agents.tools.manage_fleet~, *and* the daemon offering the hook |
 | a computer | ~computer.type~ not ~none~ |
 | memories | ~memories.enabled~ |
@@ -954,6 +956,85 @@ saying so.
 
 A fleet that declares none behaves exactly as it did before there were
 any: one group, and only the chief of staff assigns.
+
+** Incidents: broken runs reach the lead
+
+A delegated task that failed or stalled, an agent that would not start with work waiting for it, and a routine run that never happened each used to leave one line in the room it died in and nothing anywhere else. Somebody found it hours later by reading every room, and retried it by hand.
+
+Now the team's lead hears first. ~ClawtIncidentDesk~ (=src/task/clawt-incident.c=) turns each of those into an *incident*, files it in a room per team called *Problems to look at*, and delivers a report to whoever leads that team -- which the lead can act on with ~clawtilla_task_retry~, by delegating the work again, or by telling the operator what only a person can fix.
+
+*** What opens one
+
+| Kind             | When                                                                 | Keyed on            |
+|------------------+----------------------------------------------------------------------+---------------------|
+| ~failed~         | a task reaches ~failed~ -- a delivery refused, an agent that crashed mid-run | the task (or routine) |
+| ~stalled~        | a task reaches ~stalled~ -- the turn watchdog, a room budget, the loop guard | the task (or routine) |
+| ~unstartable~    | an agent's computer or launch fails while tasks are waiting for it   | each waiting task   |
+| ~routine-failed~ | a routine run is refused before it becomes a task: its agent is gone, it is read-only on a CLI that cannot be gated, its room could not be made | the routine |
+
+The desk listens to ~ClawtTaskManager::task-changed~ itself, from the moment it exists, so every path that fails or stalls a task reaches it -- there is no list of call sites to keep in step. The two kinds with no task behind them are reported by the daemon: ~start_agent_computer_failed()~ and the launch that follows it call ~clawt_incident_desk_note_unstartable()~, and ~run_routine()~ reports each refusal before it returns.
+
+*An agent that crashes mid-run fails its running tasks.* An agent going from ~running~ (or ~degraded~) to ~error~ has lost its process, and with it the work: deliveries are acknowledged at the socket and libreclaw's queue is in memory, so nothing will come back to finish a ~running~ task. Those tasks are failed with the reason -- which is what tells their delegators, and what opens the incident with the agent's last log lines, the moment those are worth having. Tasks still ~pending~ are left in the mailbox; they run when the agent does.
+
+*What is not an incident:* a task somebody cancelled, and the tasks of an agent somebody stopped. ~agent stop~ fails its tasks with "the agent handling this stopped", which is true and is that person's own decision; the desk is quiet for it (~clawt_incident_desk_quiet_begin()~). The delegators are still told, by the settle notice, because they are waiting on the work.
+
+*** One per run, not one per failure
+
+An open incident about the same run is updated rather than a second one opened: the same task, or -- for a routine, which makes a new task every run -- the same routine. Its count goes up, its reason and log lines are replaced with the latest, and the clients show "broke 3 times".
+
+It is *reported again* only when it was retried since the last report reached the recipient. A retry that failed is news; the same failure counted again is not, and a routine failing on every tick with nobody having touched it is one report and a number, not a room filling with copies. A task that completes, or is cancelled, resolves its incident, with a line in the room saying so; the next failure opens a fresh one.
+
+*** Who hears
+
+~orchestration.incidents.to~ says who, and ~clawt_incident_resolve_recipient()~ is the one answer:
+
+| Setting | Recipient |
+|---------+-----------|
+| ~lead~ (default) | the failing agent's team lead; the chief of staff when the team has no lead, two leads, or the agent is on no team |
+| ~chief~ | the chief of staff |
+| ~none~ | nobody's turn: the report is recorded in the room for the operator |
+
+Never the agent whose run broke -- a lead's own failure goes to the chief, and the chief's own goes to nobody. And never the agent that *delegated* the task: it already has the settle notice for this exact failure, in the conversation that asked for the work, and a second copy is the same news costing a second turn. A report that goes to nobody says why, in the room and on the incident (~note~).
+
+The recipient is resolved when the report is delivered, not when the failure happened, so a lead appointed while a report waited is the one it goes to.
+
+*** The room
+
+Each team has one: ~incidents:<team>~, and ~incidents:+fleet~ for agents on no team (=+= is outside the id alphabet, so no team can be called that). The room is called *Problems to look at* and carries its team, so every client lists it under the team's heading (~clawt_room_is_listed()~), and the operator reads the reports, the retries and the resolutions there. The recipient is a member, so its own tools can read the room back; the room's other half is ~incidents~, which is never an agent, the way a routine's room has ~routine~. Its transcript survives a restart like a direct room's (~clawt_room_manager_load_direct()~); the incidents themselves are held in memory, like the tasks they describe.
+
+Writing into it as the operator reaches the lead: it is an ordinary room with one agent in it.
+
+*** A busy lead's report waits
+
+A recipient that is mid-turn anywhere -- its typing set is not empty -- has its report held, not delivered and not dropped. Delivered at once it would start a second turn alongside the first (the incidents room is a session of its own), and the lead would be judging a teammate's failure halfway through its own work. When the lead's turn settles (~clawt_daemon_turn_settle()~), everything that waited for it goes in *one* message per room, ahead of anything the operator typed at it meanwhile.
+
+A report the router refuses -- a daily spending cap, the loop guard -- stays queued too, and the daemon's sweep tries again. A recipient that is stopped is not busy: the report waits in its mailbox, which is what a mailbox is for.
+
+*** The report
+
+Sent as clawtilla (~CLAWT_SYSTEM_SENDER~), with ~invites_reply~ false, depth 0, ~only_for~ the recipient and no task id. Each of those is deliberate:
+
+- *No reply invited.* An AI CLI cannot end a turn without writing something, and a turn started by a report must not route that something anywhere -- the report says so in as many words, and names ~clawtilla_message_user~ as the way to reach the operator. This is the rule from [[*A turn ending is not the work finishing][A turn ending is not the work finishing]] seen from the other side: the lead's sign-off is not a result, and it is not an answer either.
+- *Depth 0*, because a report is not a hop in anybody's chain.
+- *No task id.* The recipient is not the task's assignee, and a turn carrying the task would parent whatever the lead delegates under work that has already failed.
+
+Per incident, the report carries the agent, the run's room, the task and its delegator, the routine, how many times it broke and was retried, what to do next for that kind, and the incident id to retry with. What the run said when it stopped and the agent's last twenty log lines follow inside a fence labelled ~untrusted-incident-data~, after ~clawt_preamble_escape()~ -- so a log line opening ~[clawtilla]~ cannot speak as the daemon -- and the fence is one backtick longer than the longest run of backticks inside it (~clawt_incident_fence()~), so the quoted text cannot close it. A fixed fence is a promise the fenced text can break.
+
+*** Retrying
+
+~clawtilla_task_retry~ takes an ~incident_id~ (from the report) or a ~task_id~, and an optional ~reason~ the assignee sees with the work. It is gated like assignment, in the same two steps: offered only to an agent that can assign to somebody, and at call time the run's assignee must be somebody the caller could assign to (~clawt_team_may_assign()~) -- so a lead retries its own team's runs and the chief retries anybody's. Agents may retry one incident twice (~CLAWT_INCIDENT_MAX_AGENT_RETRIES~); the third report tells the lead to stop and explain instead, and the tool refuses. The operator's Retry is not counted: a person pressing the button has looked.
+
+What a retry does:
+
+- *A task* must be ~failed~ or ~stalled~ (~clawt_task_state_is_retryable()~). A running or pending one has nothing to retry, a completed one would be redone, and a cancelled one was stopped on purpose -- each refused with that sentence. The task is reopened in place (~clawt_task_manager_retry()~): back to ~pending~, its result, reason and finish time cleared, ~retried_by~ and ~retries~ recorded, and its original work delivered to the assignee again with the assignment contract and one line saying which attempt this is and who asked. Same task id, so its delegator is told how it ends exactly as before.
+- *A routine's run* is run again through the routine runner (~routine.run~'s path), so it reads the routine as it is now, in its own room, with its own model. The new run's task carries the incident from then on.
+- *An unstartable incident* is refused: its work is still queued for an agent that will run it once it starts, and retrying would queue it twice.
+
+Every retry is recorded on the incident and as a line in its room.
+
+*** In the clients
+
+GTK, web and libregnum show the same three things on the Tasks page: a *Problems to look at* section listing the open incidents -- whose run, what kind, what it said, who was told (or that it is waiting for them to finish a turn, or why nobody was) -- with *Retry* where the daemon would accept one (the ~retryable~ member, decided by the daemon); a *Retry* button on every failed or stalled task row; and the two settings, *Report broken runs* and *Who hears about them*, whose choices are walked from ~clawt_incident_recipient_count()~ / ~_nth()~. The incidents rooms are in every sidebar under their team. The CLI has ~clawtilla task incidents~ and ~clawtilla task retry <task-id|incident-id> [reason]~.
 
 ** Growing the fleet from a conversation
 
@@ -1136,6 +1217,8 @@ Where it is applied:
 | A handoff's reason and the task it carries  | the daemon, which composes the handoff notice                          |
 | An agent's own decision question and default | the "your decision was answered" notice                              |
 | A repeated call, a stalled exchange's text  | the daemon's note, which a room's catch-up quotes                      |
+| A broken run's reason and log lines         | the incident report, fenced as untrusted data                          |
+| A retried task's work and the retrier's note | the daemon, which composes the retry the way it composes an assignment |
 
 The router's rule lives in ~clawt_mailbox_item_dup_delivered_body()~, because the drain is the one function every delivery passes through: escaping at each call site that builds a message would be a rule about those call sites, and the next one would not know it. Three things are delivered as written. Notices from clawtilla itself are its voice. The operator is who the marker answers to, and the clients put the attachment block -- itself a ~[clawtilla]~ line -- into what the operator sends. And a body the daemon *composed* under an agent's name, an assignment or a handoff, carries genuine lines of its own; its composer escaped what it quoted and marks the message composed, a flag the mailbox stores so it survives a restart. An assignment is recognised only by the exact contract the daemon writes for that task, sent by its delegator to its assignee before it has started, so the only bytes it leaves unescaped are ones the daemon would have written itself.
 
@@ -1161,6 +1244,7 @@ reply carries ~false~:
 |-------------------------------------+-------------------------|
 | a person, a routine, a webhook      | is delivered            |
 | ~clawtilla_message_agent~ from a peer | is delivered, and ends it |
+| the same with ~reply: none~           | is not sent anywhere    |
 | ~clawtilla_delegate~ (a task)         | the *assignee's* is the result, delivered |
 | another agent's reply               | is not sent anywhere    |
 
@@ -1220,6 +1304,93 @@ quarantined as corrupt --- a fleet's queued work moved aside on upgrade.
 Rows written by an older build read as inviting a reply, which is what
 they meant.
 
+***** ~reply: none~ --- a message that wants no answer
+
+Every ~clawtilla_message_agent~ used to invite one answer.  For an FYI
+--- "deployed", "your PR is merged" --- that answer is "noted", and
+delivering it costs the *sender* a whole turn whose own closing text
+then goes nowhere.  So ~clawtilla_message_agent~ and
+~clawtilla_post_room~ take ~reply: answer | none~, ~answer~ by default.
+
+~none~ is stored on the item itself (~clawt_message_set_one_way()~, a
+~one_way~ column beside ~invites_reply~, which it clears), so the
+receiver's turn is a closed exchange from the start and its closing text
+is routed nowhere --- even in a room that requires mentions, where a
+closing text is otherwise always posted.  Stored rather than inferred
+from the cleared invite because the preamble has to say what the
+message *is*: "this is oryx answering you" about an FYI is a lie that
+invites the acknowledgement the sender opted out of.
+
+#+begin_example
+[clawtilla] The following is a one-way notice from 'oryx', another
+agent in your fleet -- not from your operator. They asked for no answer.
+What you write at the end of this turn will NOT be sent to anybody --
+read this, act on it if it changes what you are doing, and end your
+turn. Do not acknowledge it; there is nowhere for an acknowledgement to
+go. If something genuinely has to reach 'oryx', call
+clawtilla_message_agent.
+#+end_example
+
+The tool's description and the parameter's both say when to use it,
+because a tool's description is part of its behaviour.  A value other
+than ~answer~ or ~none~ is refused before anything is queued: a typo
+read as the default would send a notice that invites the very answer it
+meant to avoid.  An embedder that installs one of the older delivery
+callbacks has no way to carry the mode, so a ~reply: none~ call is
+refused there by name rather than sent as an ordinary message; the
+daemon installs ~clawt_mcp_tools_set_deliver_reply_func()~.
+
+***** An acknowledgement does not wake its sender
+
+~reply: none~ settles the case the sender saw coming.  The other is an
+ordinary question answered with "Thanks, noted." --- delivered as a
+turn like any answer, and as expensive as one.  With
+~orchestration.ack_check_model~ set (empty, the default, is off), such
+an answer is first put to a small model.
+
+It is only *considered* when the daemon knows the answer could not
+carry anything else (~clawt_ack_check_gate()~):
+
+- the answering turn made no tool calls --- counted from its streamed
+  steps and its clawtilla tool calls, so it ran no commands, changed no
+  files and sent nothing outward;
+- its steps were streamed at all (~runtime.stream_steps~).  No evidence
+  is not zero tool calls: an agent whose steps the daemon cannot see is
+  never considered;
+- it is at most 600 characters;
+- it answers a deliberate message from a peer, in the room the answer
+  goes to, that set no completion condition --- a task's delivery is
+  settled by the task's own rules and never second-guessed;
+- the room does not require mentions (there a closing text costs nobody
+  a turn unless it names somebody, which is deliberate), and it is not
+  the operator's room.
+
+The model is asked one question, ACK or NEEDS, with both texts fenced as
+data in fences longer than any backtick run inside them, through ai-glib
+and asynchronously --- no IPC handler and no link handler waits on it.
+It has 8 seconds.  The verdict is three-valued, because "it said no" and
+"it did not say" are different facts: ~ACK~ (the one that skips a wake),
+~NEEDS~, and *unsaid* --- a failure, a timeout, or any reply that is not
+the bare word.  Only ~ACK~ skips.  Everything else routes the answer
+exactly as it would have gone, and the log names which of the two
+non-ACKs it was.
+
+An ACK is never dropped.  The answer is recorded in the room, marked
+~acknowledged~ (kept in the transcript, sent on ~room.history~ and the
+~message~ event; every client draws "acknowledged (no wake)" beside it),
+and a line is folded into the sender's *next* delivery:
+
+#+begin_example
+[clawtilla] Since your last turn, without waking you:
+  - while you were away, 'oryx' acknowledged your message in room
+    'dm:chief:oryx' and needed nothing further: "Thanks, noted."
+#+end_example
+
+The notes are held in memory by the router until a delivery to that
+agent reaches its socket; the answers themselves are in their rooms for
+good.  A message sent with ~reply: none~ never wakes its sender either
+way --- that is the deterministic half, and needs no model.
+
 *** Reaching the operator is not the same as replying
 
 An agent's reply goes back into the room the message came from. So an
@@ -1247,7 +1418,7 @@ Each direct question now carries a snapshot of the calling conversation, its req
 
 Incoming peer requests, uncorrelated replies, and rows queued by an older build retain the conservative peer-origin rule. A daemon cannot reconstruct the caller of an old question by guessing. New mailbox columns migrate without discarding queued items, and the context survives a restart while either the question or its answer is queued. If a harness omits its room while several turns are active, no return context is guessed. An unambiguous last turn supplies the fallback for older harnesses.
 
-For embedders, ~clawt_mcp_tools_set_deliver_turn_func()~ installs the delivery callback that receives the caller's room; ~clawt_mcp_tools_set_deliver_func()~ remains source-compatible. ~clawt_message_set_request_context()~ and ~clawt_mailbox_item_set_request_context()~ carry the snapshot, and ~clawt_agent_deliver_item()~ preserves it with each turn. ~clawt_agent_get_turn_input_in()~ identifies the exact delivered question when its answer arrives after the typing indicator falls.
+For embedders, ~clawt_mcp_tools_set_deliver_reply_func()~ installs the delivery callback that receives the caller's room and the reply mode; ~clawt_mcp_tools_set_deliver_turn_func()~ and ~clawt_mcp_tools_set_deliver_func()~ remain source-compatible, and refuse only ~reply: none~. ~clawt_message_set_request_context()~ and ~clawt_mailbox_item_set_request_context()~ carry the snapshot, and ~clawt_agent_deliver_item()~ preserves it with each turn. ~clawt_agent_get_turn_input_in()~ identifies the exact delivered question when its answer arrives after the typing indicator falls.
 
 Refused rather than redirected on purpose.  A redirect would deliver a
 message written for the operator to somebody else --- addressed to the
@@ -1330,6 +1501,57 @@ one turn per message the question gets its own turn and its own answer,
 and the accumulation only made the acknowledgement's turn reply to an
 acknowledgement.
 
+***** One wake for many results
+
+A chief whose five workers report while it is busy used to take five
+turns, each rereading its whole context to learn one more thing.  So
+when a drain finds several items for one agent *in one room* that are
+results --- an answer from a peer, or the daemon's notice that a task
+settled --- the router hands them over as one item with a sectioned
+body (~clawt_merge_append_section()~), up to sixteen at a time:
+
+#+begin_example
+[clawtilla] 3 results for you arrived in room 'dm:chief:user' while you
+were busy. They are handed to you together, as one turn, ...
+
+── 1 of 3 · clawtilla: task t-41 ──
+[clawtilla] Task t-41 is finished. ...
+
+── 2 of 3 · clawtilla: task t-42 ──
+...
+#+end_example
+
+What is merged, and what never is:
+
+- a person's message never is, and a run of results ends at one: the
+  person's message keeps its own turn and its place in the order;
+- a question (an item that invites an answer) and a one-way notice are
+  not results;
+- a room that requires mentions builds each member's preamble from the
+  room's catch-up, which a merge would repeat per part, so its items are
+  delivered one at a time;
+- an item carrying a per-turn model asked for that one turn.
+
+The merge is contiguous in the room's own order and skips other rooms'
+items rather than stopping at them, since those are other turns.  A
+section heading inside a part is defused (~clawt_merge_escape()~), so a
+peer's text cannot split itself into two results.
+
+The per-message record --- depth, origin, whether the closing text is
+sent, task --- is folded in exactly one place,
+~clawt_agent_deliver_merged()~, and in the safe direction on every
+field: the deepest depth, so ~max_hops~ is not bought back by merging;
+the closing text sent if *any* part's would be; a task only when every
+part names the same one; and any peer's origin, so
+~clawtilla_message_user~'s guard holds when one part was a peer's.  The
+test drives two agents and two rooms each, because a test with one key
+cannot see a shared-scalar bug.
+
+The room records the merge as one note from clawtilla, sectioned the
+same way with each part's first line and carrying ~merged: N~, so a
+person reading the room sees that these results woke the agent once ---
+and every client draws it as sections (~clawt_merge_split()~).
+
 *** Sending a file
 
 ~clawtilla_message_user~ takes an optional ~attachments~ array: paths the
@@ -1401,9 +1623,10 @@ The daemon fetches from its own network position -- the operator's LAN, the tail
 - refuses ~localhost~, names under ~.localhost~, and any address literal that ~clawt_net_address_is_public()~ refuses: loopback, RFC 1918, link-local (and so every cloud's ~169.254.169.254~), carrier-grade NAT ~100.64.0.0/10~ (which is the tailnet, and not an octet boundary -- ~100.63.255.255~ is public, ~100.64.0.1~ is not), the documentation, benchmarking, multicast and reserved ranges, and in IPv6 the loopback, unique-local (~fc00::/7~), link-local, site-local, multicast, documentation and Teredo ranges, with IPv4-mapped, NAT64 and 6to4 addresses judged by the IPv4 address inside them;
 - resolves the name itself and checks *every* address it resolves to, and then checks the address the connection actually reached before a byte of the request is written -- so a name that answers differently the second time it is asked (DNS rebinding), or a redirect to a private host, reaches nothing it should not;
 - sends no credentials (~CLAWT_HTTP_NO_CREDENTIALS~), no cookies (a session per look) and goes through no proxy;
-- reads at most 2 MiB of a body, bounded as it arrives, and gives up after 15 seconds.
+- reads at most 2 MiB of a body, bounded as it arrives, and gives up after 15 seconds;
+- is not offered at all to an agent whose ~runtime.network~ is ~gated~ or ~none~: the daemon's request would be a fetch on that agent's behalf around the egress gate, the one route out it was given. The tool refuses it with ~clawt_egress_url_wait_refusal()~'s sentence, and a URL wait set before the agent was gated is ended as impossible at its next check. Its other kinds are unaffected.
 
-The address policy is one function, ~clawt_net_address_is_public()~ in ~src/clawt-net.c~, because the egress gate is its next caller and must not grow a second opinion about what "private" means.
+The address policy is one function, ~clawt_net_address_is_public()~ in ~src/clawt-net.c~, which answers from the egress gate's own table (~clawt_net_address_classify()~), so the two cannot grow a second opinion about what "private" means.
 
 *** How long a wait lives
 

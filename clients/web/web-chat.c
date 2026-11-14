@@ -218,6 +218,9 @@ message_element(JsonObject *message, const gchar *agent_id,
     const gchar *task = clawt_web_member(message, "task", NULL);
     gint64 ts = clawt_web_member_int(message, "ts", 0);
     gint64 depth = clawt_web_member_int(message, "depth", 0);
+    gboolean acknowledged =
+        clawt_web_member_int(message, "acknowledged", 0) != 0;
+    gint64 merged = clawt_web_member_int(message, "merged", 0);
     gboolean from_user = (g_strcmp0(sender, "user") == 0);
     g_autoptr(HtmxElement) row = HTMX_ELEMENT(htmx_article_new());
     g_autoptr(HtmxDiv) who = htmx_div_new();
@@ -353,7 +356,21 @@ message_element(JsonObject *message, const gchar *agent_id,
      * line, and a hop count climbing towards max_hops is the only
      * visible difference between a conversation and a loop.
      */
-    if (run_start || task != NULL || depth > 1)
+    /*
+     * An answer recorded without waking the agent it answers.  Per
+     * message, like the task and the hops: unmarked, an answer the asker
+     * never took a turn on reads as having been ignored.
+     */
+    if (acknowledged) {
+        g_autoptr(HtmxSpan) ack = clawt_web_badge(clawt_message_ack_label(),
+                                                  "neutral");
+
+        htmx_element_set_attribute(HTMX_ELEMENT(ack), "title",
+                                   clawt_message_ack_tooltip());
+        clawt_web_add(who, g_steal_pointer(&ack));
+    }
+
+    if (run_start || task != NULL || depth > 1 || acknowledged)
         htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(who));
 
     htmx_element_add_class(HTMX_ELEMENT(text), "msg-body");
@@ -369,8 +386,48 @@ message_element(JsonObject *message, const gchar *agent_id,
         g_autofree gchar *prose = NULL;
         g_autoptr(GPtrArray) files = attachment_ids(body, &prose);
 
-        set_body(HTMX_NODE(text), prose != NULL ? prose : body);
-        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(text));
+        g_autofree gchar *preface = NULL;
+        g_auto(GStrv) labels = NULL;
+        g_auto(GStrv) texts = NULL;
+        guint sections = 0;
+
+        /*
+         * A merged delivery's note is drawn as its sections, one block
+         * per result -- split by clawt_merge_split(), the one reader of
+         * the format the router writes, so the GTK and libregnum
+         * clients cannot split it differently.
+         */
+        if (merged > 0)
+            sections = clawt_merge_split(body, &preface, &labels, &texts);
+
+        if (sections > 0) {
+            g_autoptr(HtmxDiv) list = htmx_div_new();
+            guint n;
+
+            set_body(HTMX_NODE(text), preface != NULL ? preface : "");
+            htmx_element_add_class(HTMX_ELEMENT(list), "merge-sections");
+
+            for (n = 0; n < sections; n++) {
+                g_autoptr(HtmxDiv) section = htmx_div_new();
+                g_autoptr(HtmxDiv) heading = htmx_div_new();
+                g_autoptr(HtmxDiv) part = htmx_div_new();
+
+                htmx_element_add_class(HTMX_ELEMENT(section), "merge-section");
+                htmx_element_add_class(HTMX_ELEMENT(heading),
+                                       "merge-section-label");
+                htmx_node_set_text_content(HTMX_NODE(heading), labels[n]);
+                set_body(HTMX_NODE(part), texts[n] != NULL ? texts[n] : "");
+                htmx_node_add_child(HTMX_NODE(section), HTMX_NODE(heading));
+                htmx_node_add_child(HTMX_NODE(section), HTMX_NODE(part));
+                htmx_node_add_child(HTMX_NODE(list), HTMX_NODE(section));
+            }
+
+            htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(text));
+            htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(list));
+        } else {
+            set_body(HTMX_NODE(text), prose != NULL ? prose : body);
+            htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(text));
+        }
 
         if (files != NULL) {
             g_autoptr(HtmxDiv) tray = htmx_div_new();

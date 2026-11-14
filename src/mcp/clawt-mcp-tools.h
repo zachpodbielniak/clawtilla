@@ -32,6 +32,7 @@
 #include "core/clawt-event-bus.h"
 #include "memory/clawt-transcript-index.h"
 #include "task/clawt-handoff-store.h"
+#include "task/clawt-incident.h"
 #include "task/clawt-task-manager.h"
 #include "browser/clawt-browser.h"
 
@@ -126,6 +127,46 @@ typedef gboolean (*ClawtMcpDeliverTurnFunc)(const gchar *from_agent,
  */
 void clawt_mcp_tools_set_deliver_turn_func(ClawtMcpTools *self,
 	ClawtMcpDeliverTurnFunc func, gpointer user_data, GDestroyNotify destroy);
+
+/**
+ * ClawtMcpDeliverReplyFunc:
+ * @from_agent: who is sending
+ * @target: an agent id or a room id
+ * @body: the message
+ * @task_id: (nullable): the task it belongs to
+ * @depth: how far the message is from the original request
+ * @priority: the delivery band
+ * @turn_room: (nullable): the caller's conversation
+ * @one_way: %TRUE when the sender asked for no answer (`reply: none`)
+ * @user_data: data passed when the callback was installed
+ * @error: (out) (optional): return location for a #GError
+ *
+ * #ClawtMcpDeliverTurnFunc plus whether the message wants an answer.
+ * The daemon installs this one.  An embedder that installs either older
+ * callback still delivers every ordinary message, and a `reply: none`
+ * call is refused there rather than silently sent as one that invites
+ * an answer -- the opposite of what the caller asked for.
+ *
+ * Returns: %TRUE if accepted for delivery
+ */
+typedef gboolean (*ClawtMcpDeliverReplyFunc)(const gchar *from_agent,
+	const gchar *target, const gchar *body, const gchar *task_id,
+	gint depth, ClawtPriority priority, const gchar *turn_room,
+	gboolean one_way, gpointer user_data, GError **error);
+
+/**
+ * clawt_mcp_tools_set_deliver_reply_func:
+ * @self: a #ClawtMcpTools
+ * @func: (nullable) (scope notified): delivery with the calling
+ *   conversation and the reply mode
+ * @user_data: data for @func
+ * @destroy: (nullable): called when the callback is replaced
+ *
+ * Replaces any delivery callback, as the other two setters do.
+ */
+void clawt_mcp_tools_set_deliver_reply_func(ClawtMcpTools *self,
+	ClawtMcpDeliverReplyFunc func, gpointer user_data,
+	GDestroyNotify destroy);
 
 /**
  * ClawtMcpCreateRoomFunc:
@@ -699,6 +740,17 @@ void clawt_mcp_tools_set_observer(ClawtMcpTools            *self,
                                   ClawtMcpToolObserverFunc  func,
                                   gpointer                  user_data,
                                   GDestroyNotify            notify);
+
+/**
+ * clawt_mcp_tools_set_incident_desk:
+ * @self: a #ClawtMcpTools
+ * @desk: (nullable): where broken runs are filed and retried
+ *
+ * Unset, `clawtilla_task_retry` is not offered.  Borrowed: whoever owns
+ * @desk keeps it alive for as long as the tools are in use.
+ */
+void clawt_mcp_tools_set_incident_desk(ClawtMcpTools     *self,
+                                       ClawtIncidentDesk *desk);
 
 /**
  * clawt_mcp_tools_set_room_manager:
