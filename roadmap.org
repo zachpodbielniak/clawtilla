@@ -189,8 +189,9 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 - *Prior art:* =mcp-oauth-discovery.ts= (RFC 9728 protected-resource metadata, RFC 8414, DCR, the RFC 8707 =resource= parameter; it never follows a redirect). =broker-mcp-refusal.ts= turns a 401 into an actionable tool error. =608ff19fb= / =17c69990f=: a server that refused only tool calls never offered sign-in.
 - *Version:* minor.
 
-** TODO Secrets the agent never sees                                                                :security:browser:
-- *Today:* =clawt_redact_secrets()= is pattern-based. No secret-request or browser-fill tools.
+** DONE Secrets the agent never sees (version assigned at merge)                                    :security:browser:
+- *Done:* =vault:= entries (a secret reference, ~kind~ ~password~ or ~totp~, ~sites~) and =agents.browser.secrets=. =clawtilla_secret_ref= mints a one-use =secret-ref:= bound to the agent and its conversation (=ClawtSecretVault=); =clawtilla_browser_fill_secret= spends it, checks the grant and the page's host against ~sites~, resolves the value (a TOTP seed becomes the RFC 6238 code, =clawt-totp.c=), and has gsurf 0.5.13 type it as key input (~page.fill_secret~). The agent hears "Filled". Screenshots, =browser_eval=, HTML and scroll are refused until the page navigates away, by gsurf and the daemon both, failing closed. ~browser.secret_filled~ event, ~vault.list~, ~secret_hold~/~last_fill~ on sessions; GTK, web and lrg choose grants by name and show the last fill. =GSURF_MIN_VERSION= 0.5.13. See =docs/browser.org= "Secrets the agent never sees" and =docs/security.org=.
+- *Was:* =clawt_redact_secrets()= is pattern-based. No secret-request or browser-fill tools.
 - *Prior art:* =secret-vault.ts= (one-use refs bound to agent and conversation), =login-fill.ts= (types a saved password as real input; the agent hears only that it was filled), =totp.ts= (RFC 6238), =browser-secret-hold.ts= and =cdp/secrets.ts= (eval and screenshots refused while a filled secret is on the page; fail closed).
 - *Proposal:* a fill command in the gsurf control protocol (a gsurf release first, then a version floor in =make GSURF=1=). The daemon resolves a secret ref and sends keystrokes. Screenshots and =browser_eval= are refused until navigation away.
 - *Version:* minor.

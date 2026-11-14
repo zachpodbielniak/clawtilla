@@ -25,6 +25,8 @@
 typedef struct {
     GPtrArray *methods;     /* every method called, in order */
     GPtrArray *params;      /* their params, as JSON text ("" for none) */
+    gboolean   held;        /* gsurf's secret hold, as the fake keeps it */
+    gboolean   hold_fails;  /* page.secret_hold answers with an error */
 } Fake;
 
 static JsonNode *
@@ -43,11 +45,51 @@ fake_transport(ClawtBrowser *browser, const gchar *method, JsonNode *params,
     Fake *fake = user_data;
 
     (void)browser;
-    (void)error;
 
     g_ptr_array_add(fake->methods, g_strdup(method));
     g_ptr_array_add(fake->params, params != NULL ? json_to_string(params, FALSE)
                                                  : g_strdup(""));
+
+    /* The secret hold, as gsurf 0.5.13 keeps it: set by a fill (lifted at
+     * once by its submit, which navigates), lifted by navigating, and
+     * refusing screenshots and scripts in between. */
+    if (g_strcmp0(method, "navigate") == 0)
+        fake->held = FALSE;
+    if (g_strcmp0(method, "page.fill_secret") == 0) {
+        JsonNode *node = json_node_new(JSON_NODE_OBJECT);
+        JsonObject *object = json_object_new();
+
+        fake->held = !json_object_get_boolean_member_with_default(
+            json_node_get_object(params), "submit", FALSE);
+        json_object_set_boolean_member(object, "done", TRUE);
+        json_object_set_boolean_member(object, "secret_hold", TRUE);
+        json_node_take_object(node, object);
+        return node;
+    }
+    if (g_strcmp0(method, "page.secret_hold") == 0) {
+        JsonNode *node;
+        JsonObject *object;
+
+        if (fake->hold_fails) {
+            g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                                "page.secret_hold: the browser did not answer");
+            return NULL;
+        }
+        node = json_node_new(JSON_NODE_OBJECT);
+        object = json_object_new();
+        json_object_set_boolean_member(object, "secret_hold", fake->held);
+        json_node_take_object(node, object);
+        return node;
+    }
+    if (fake->held && (g_strcmp0(method, "page.screenshot") == 0 ||
+                       (g_strcmp0(method, "page.eval") == 0 &&
+                        g_strcmp0(json_object_get_string_member(json_node_get_object(params),
+                                                                "script"),
+                                  "document.readyState") != 0))) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED,
+                            "refused: a secret was typed into this page");
+        return NULL;
+    }
 
     if (g_strcmp0(method, "page.text") == 0)
         return string_node("rendered by javascript");
@@ -319,6 +361,20 @@ typedef struct {
     Fake                *fake;
 } Fixture;
 
+#define SECRET_VALUE "hunter2-zz-never-shown"
+/* "12345678901234567890" in base32: RFC 6238's SHA1 seed. */
+#define TOTP_SEED "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+
+static void
+write_secret(const gchar *dir, const gchar *name, const gchar *value)
+{
+    g_autofree gchar *path = g_build_filename(dir, name, NULL);
+    g_autoptr(GError) error = NULL;
+
+    g_file_set_contents_full(path, value, -1, G_FILE_SET_CONTENTS_NONE, 0600, &error);
+    g_assert_no_error(error);
+}
+
 static void
 fixture_setup(Fixture *fixture)
 {
@@ -327,10 +383,27 @@ fixture_setup(Fixture *fixture)
     g_autofree gchar *root = NULL;
 
     fixture->dir = g_dir_make_tmp("clawt-browser-XXXXXX", NULL);
+    write_secret(fixture->dir, "site-pass", SECRET_VALUE);
+    write_secret(fixture->dir, "site-2fa", TOTP_SEED);
     yaml = g_strdup_printf("daemon:\n  state_dir: \"%s\"\n"
                            "defaults:\n  workspace_root: \"%s/agents\"\n"
+                           "secrets:\n  dir: \"%s\"\n"
                            "browsers:\n  - id: web\n"
+                           "vault:\n"
+                           "  - name: site-pass\n"
+                           "    secret: {file: site-pass}\n"
+                           "    sites: [example.org]\n"
+                           "  - name: site-2fa\n"
+                           "    kind: totp\n"
+                           "    secret: {file: site-2fa}\n"
+                           "    sites: [example.org]\n"
+                           "  - name: elsewhere\n"
+                           "    secret: {file: site-pass}\n"
+                           "    sites: [github.com]\n"
                            "agents:\n"
+                           "  - id: keeper\n"
+                           "    browser:\n      mode: own\n"
+                           "      secrets: [site-pass, site-2fa, elsewhere]\n"
                            "  - id: surfer\n"
                            "    browser:\n      mode: own\n"
                            "  - id: scripter\n"
@@ -340,7 +413,7 @@ fixture_setup(Fixture *fixture)
                            "  - id: two\n"
                            "    browser:\n      mode: shared\n      use: web\n"
                            "  - id: plain\n",
-                           fixture->dir, fixture->dir);
+                           fixture->dir, fixture->dir, fixture->dir);
     fixture->config = clawt_config_load_from_string(yaml, &error);
     g_assert_no_error(error);
 
@@ -388,10 +461,21 @@ on_done(GObject *source, GAsyncResult *result, gpointer user_data)
     probe->arrived = TRUE;
 }
 
+static JsonNode *run_tool_in(Fixture *fixture, const gchar *agent_id, const gchar *room_id,
+                             const gchar *tool, const gchar *arguments);
+
 /* One browser tool through the deferred path, with a watchdog. */
 static JsonNode *
 run_tool(Fixture *fixture, const gchar *agent_id, const gchar *tool,
          const gchar *arguments)
+{
+    return run_tool_in(fixture, agent_id, NULL, tool, arguments);
+}
+
+/* The same, from a named conversation. */
+static JsonNode *
+run_tool_in(Fixture *fixture, const gchar *agent_id, const gchar *room_id,
+            const gchar *tool, const gchar *arguments)
 {
     g_autoptr(JsonParser) parser = json_parser_new();
     g_autofree gchar *request = g_strdup_printf(
@@ -403,7 +487,7 @@ run_tool(Fixture *fixture, const gchar *agent_id, const gchar *tool,
     g_assert_true(json_parser_load_from_data(parser, request, -1, NULL));
     g_assert_true(clawt_mcp_tools_call_defers(fixture->tools, agent_id,
                                               json_parser_get_root(parser)));
-    clawt_mcp_tools_call_async(fixture->tools, agent_id, NULL,
+    clawt_mcp_tools_call_async(fixture->tools, agent_id, room_id,
                                json_parser_get_root(parser), on_done, &probe);
 
     deadline = g_get_monotonic_time() + 10 * G_USEC_PER_SEC;
@@ -566,6 +650,322 @@ test_eval_runs_with_allow_scripts(void)
     fixture_teardown(&fixture);
 }
 
+/* ── Secrets the agent never sees ─────────────────────────────────── */
+
+/* Everything the daemon logged while the test ran (the writer is set in main). */
+static GString *log_capture;
+
+static GLogWriterOutput
+capture_writer(GLogLevelFlags level, const GLogField *fields, gsize n_fields,
+               gpointer user_data)
+{
+    gsize i;
+
+    for (i = 0; i < n_fields; i++) {
+        if (g_strcmp0(fields[i].key, "MESSAGE") == 0 && fields[i].length < 0)
+            g_string_append_printf(log_capture, "%s\n", (const gchar *)fields[i].value);
+    }
+    return g_log_writer_default(level, fields, n_fields, user_data);
+}
+
+static void
+on_bus_event(ClawtEventBus *bus, ClawtEvent *event, gpointer user_data)
+{
+    GPtrArray *events = user_data;
+    g_autoptr(JsonNode) node = clawt_event_to_json(event);
+
+    (void)bus;
+    g_ptr_array_add(events, json_to_string(node, FALSE));
+}
+
+/* A tool on the synchronous path, from @room_id. */
+static JsonNode *
+call_sync(Fixture *fixture, const gchar *agent_id, const gchar *room_id, const gchar *tool,
+          const gchar *arguments)
+{
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autofree gchar *request = g_strdup_printf(
+        "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\","
+        "\"params\":{\"name\":\"%s\",\"arguments\":%s}}", tool, arguments);
+
+    g_assert_true(json_parser_load_from_data(parser, request, -1, NULL));
+    return clawt_mcp_tools_call(fixture->tools, agent_id, room_id,
+                                json_parser_get_root(parser));
+}
+
+/* How many times @method was called. */
+static guint
+fake_count(Fake *fake, const gchar *method)
+{
+    guint count = 0;
+    guint i;
+
+    for (i = 0; i < fake->methods->len; i++) {
+        if (g_strcmp0(g_ptr_array_index(fake->methods, i), method) == 0)
+            count++;
+    }
+    return count;
+}
+
+/* The params of the last call to @method, or NULL. */
+static const gchar *
+fake_last_params_of(Fake *fake, const gchar *method)
+{
+    guint i;
+
+    for (i = fake->methods->len; i > 0; i--) {
+        if (g_strcmp0(g_ptr_array_index(fake->methods, i - 1), method) == 0)
+            return g_ptr_array_index(fake->params, i - 1);
+    }
+    return NULL;
+}
+
+/* The reference on the first line of a clawtilla_secret_ref answer. */
+static gchar *
+ref_of(JsonNode *response)
+{
+    gboolean is_error = TRUE;
+    const gchar *text = result_text(response, &is_error, NULL);
+    const gchar *end;
+
+    g_assert_false(is_error);
+    g_assert_true(g_str_has_prefix(text, CLAWT_SECRET_REF_PREFIX));
+    end = strchr(text, '\n');
+    return end != NULL ? g_strndup(text, (gsize)(end - text)) : g_strdup(text);
+}
+
+/* Keeps @response's text for the negative scan, and answers it. */
+static const gchar *
+said(GPtrArray *heard, JsonNode *response, gboolean *is_error)
+{
+    g_ptr_array_add(heard, json_to_string(response, FALSE));
+    return result_text(response, is_error, NULL);
+}
+
+/*
+ * The whole path: a reference, a fill typed by the browser, the hold on
+ * screenshots and scripts, the reference spent, its binding to the
+ * conversation, the sites, a TOTP code made at the moment of the fill,
+ * and the hold failing closed -- with the value, the seed and the code
+ * nowhere in what the agent heard, the events, or the log.
+ */
+static void
+test_secrets_never_seen(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtEventBus) bus = clawt_event_bus_new(64);
+    g_autoptr(GPtrArray) events = g_ptr_array_new_with_free_func(g_free);
+    g_autoptr(GPtrArray) heard = g_ptr_array_new_with_free_func(g_free);
+    g_autofree gchar *ref = NULL;
+    g_autofree gchar *expected = NULL;
+    gboolean is_error = FALSE;
+    const gchar *text;
+    guint i;
+
+    fixture_setup(&fixture);
+    g_string_truncate(log_capture, 0);
+    clawt_mcp_tools_set_event_bus(fixture.tools, bus);
+    g_signal_connect(bus, "event", G_CALLBACK(on_bus_event), events);
+
+    /* 0. Offered to the agent granted entries, and nobody else. */
+    g_assert_true(clawt_mcp_tools_is_permitted(fixture.tools, "keeper", "clawtilla_secret_ref"));
+    g_assert_true(clawt_mcp_tools_is_permitted(fixture.tools, "keeper",
+                                               "clawtilla_browser_fill_secret"));
+    g_assert_false(clawt_mcp_tools_is_permitted(fixture.tools, "surfer",
+                                                "clawtilla_secret_ref"));
+    g_assert_false(clawt_mcp_tools_is_permitted(fixture.tools, "surfer",
+                                                "clawtilla_browser_fill_secret"));
+
+    /* 1. The list, and a reference: names only. */
+    {
+        g_autoptr(JsonNode) listing = call_sync(&fixture, "keeper", "room-1",
+                                                "clawtilla_secret_ref", "{}");
+        g_autoptr(JsonNode) refused = call_sync(&fixture, "keeper", "room-1",
+                                                "clawtilla_secret_ref", "{\"name\":\"nope\"}");
+        g_autoptr(JsonNode) minted = call_sync(&fixture, "keeper", "room-1",
+                                               "clawtilla_secret_ref",
+                                               "{\"name\":\"site-pass\"}");
+
+        text = said(heard, listing, &is_error);
+        g_assert_false(is_error);
+        g_assert_nonnull(strstr(text, "- site-pass: a password on example.org"));
+        g_assert_nonnull(strstr(text, "- site-2fa: a one-time code on example.org"));
+        text = said(heard, refused, &is_error);
+        g_assert_true(is_error);
+        g_assert_nonnull(strstr(text, "'nope' is not a secret you may ask for"));
+        g_ptr_array_add(heard, json_to_string(minted, FALSE));
+        ref = ref_of(minted);
+    }
+
+    /* 2. The fill: gsurf gets the value, the agent hears "filled". */
+    {
+        g_autofree gchar *arguments = g_strdup_printf(
+            "{\"secret\":\"%s\",\"selector\":\"#pw\"}", ref);
+        g_autoptr(JsonNode) filled = run_tool_in(&fixture, "keeper", "room-1",
+                                                 "clawtilla_browser_fill_secret", arguments);
+        g_autoptr(JsonNode) again = NULL;
+
+        text = said(heard, filled, &is_error);
+        g_assert_false(is_error);
+        g_assert_true(g_str_has_prefix(text, "Filled site-pass into #pw."));
+        g_assert_cmpstr(fake_params_of(fixture.fake, "page.fill_secret"), ==,
+                        "{\"selector\":\"#pw\",\"text\":\"" SECRET_VALUE "\","
+                        "\"submit\":false}");
+
+        /* ...once */
+        again = run_tool_in(&fixture, "keeper", "room-1", "clawtilla_browser_fill_secret",
+                            arguments);
+        text = said(heard, again, &is_error);
+        g_assert_true(is_error);
+        g_assert_nonnull(strstr(text, "already used"));
+        g_assert_cmpuint(fake_count(fixture.fake, "page.fill_secret"), ==, 1);
+    }
+
+    /* 3. The hold: no picture, no HTML, until the page changes. */
+    {
+        g_autoptr(JsonNode) shot = run_tool(&fixture, "keeper", "clawtilla_browser_screenshot",
+                                            "{}");
+        g_autoptr(JsonNode) html = run_tool(&fixture, "keeper", "clawtilla_browser_html", "{}");
+        g_autoptr(JsonNode) read = run_tool(&fixture, "keeper", "clawtilla_browser_read", "{}");
+        g_autoptr(JsonNode) opened = NULL;
+        g_autoptr(JsonNode) after = NULL;
+        guint n_content = 0;
+
+        text = said(heard, shot, &is_error);
+        g_assert_true(is_error);
+        g_assert_nonnull(strstr(text, "a secret was just filled on this page"));
+        text = said(heard, html, &is_error);
+        g_assert_true(is_error);
+        g_assert_cmpuint(fake_count(fixture.fake, "page.screenshot"), ==, 0);
+        /* reading the text is not reading the field */
+        said(heard, read, &is_error);
+        g_assert_false(is_error);
+
+        opened = run_tool(&fixture, "keeper", "clawtilla_browser_open",
+                          "{\"url\":\"example.org\"}");
+        said(heard, opened, &is_error);
+        g_assert_false(is_error);
+        after = run_tool(&fixture, "keeper", "clawtilla_browser_screenshot", "{}");
+        g_ptr_array_add(heard, g_strdup(""));
+        result_text(after, &is_error, &n_content);
+        g_assert_false(is_error);
+        g_assert_cmpuint(n_content, ==, 2);
+    }
+
+    /* 4. Bound to the conversation; and only on the entry's sites. */
+    {
+        g_autoptr(JsonNode) minted = call_sync(&fixture, "keeper", "room-1",
+                                               "clawtilla_secret_ref",
+                                               "{\"name\":\"site-pass\"}");
+        g_autoptr(JsonNode) away = call_sync(&fixture, "keeper", "room-1",
+                                             "clawtilla_secret_ref",
+                                             "{\"name\":\"elsewhere\"}");
+        g_autofree gchar *moved = ref_of(minted);
+        g_autofree gchar *elsewhere = ref_of(away);
+        g_autofree gchar *moved_arguments = g_strdup_printf(
+            "{\"secret\":\"%s\",\"selector\":\"#pw\"}", moved);
+        g_autofree gchar *away_arguments = g_strdup_printf(
+            "{\"secret\":\"%s\",\"selector\":\"#pw\"}", elsewhere);
+        g_autoptr(JsonNode) wrong_room = run_tool_in(&fixture, "keeper", "room-2",
+                                                     "clawtilla_browser_fill_secret",
+                                                     moved_arguments);
+        g_autoptr(JsonNode) wrong_site = run_tool_in(&fixture, "keeper", "room-1",
+                                                     "clawtilla_browser_fill_secret",
+                                                     away_arguments);
+
+        text = said(heard, wrong_room, &is_error);
+        g_assert_true(is_error);
+        g_assert_nonnull(strstr(text, "another conversation"));
+        text = said(heard, wrong_site, &is_error);
+        g_assert_true(is_error);
+        g_assert_nonnull(strstr(text, "This page is on example.org, and 'elsewhere' is "
+                                      "saved for github.com only"));
+        g_assert_cmpuint(fake_count(fixture.fake, "page.fill_secret"), ==, 1);
+    }
+
+    /* 5. TOTP: the code for now, made from the seed, typed the same way. */
+    {
+        g_autoptr(JsonNode) minted = call_sync(&fixture, "keeper", "room-1",
+                                               "clawtilla_secret_ref",
+                                               "{\"name\":\"site-2fa\"}");
+        g_autofree gchar *code_ref = ref_of(minted);
+        g_autofree gchar *arguments = g_strdup_printf(
+            "{\"secret\":\"%s\",\"selector\":\"#otp\"}", code_ref);
+        g_autoptr(ClawtTotpKey) key = clawt_totp_key_parse(TOTP_SEED, NULL);
+        g_autofree gchar *before = clawt_totp_code(key, g_get_real_time() / G_USEC_PER_SEC);
+        g_autoptr(JsonNode) filled = run_tool_in(&fixture, "keeper", "room-1",
+                                                 "clawtilla_browser_fill_secret", arguments);
+        g_autofree gchar *after = clawt_totp_code(key, g_get_real_time() / G_USEC_PER_SEC);
+        g_autofree gchar *sent_before = g_strdup_printf(
+            "{\"selector\":\"#otp\",\"text\":\"%s\",\"submit\":false}", before);
+        g_autofree gchar *sent_after = g_strdup_printf(
+            "{\"selector\":\"#otp\",\"text\":\"%s\",\"submit\":false}", after);
+        const gchar *sent;
+
+        text = said(heard, filled, &is_error);
+        g_assert_false(is_error);
+        sent = fake_last_params_of(fixture.fake, "page.fill_secret");
+        g_assert_true(g_strcmp0(sent, sent_before) == 0 || g_strcmp0(sent, sent_after) == 0);
+        g_assert_null(strstr(text, before));
+        g_assert_null(strstr(text, after));
+        expected = g_strdup(before);
+    }
+
+    /* 6. Fail closed: a hold gsurf cannot be asked about stays on. */
+    {
+        g_autoptr(JsonNode) opened = NULL;
+        g_autoptr(JsonNode) shot = NULL;
+
+        fixture.fake->hold_fails = TRUE;
+        opened = run_tool(&fixture, "keeper", "clawtilla_browser_open",
+                          "{\"url\":\"example.org\"}");
+        said(heard, opened, &is_error);
+        g_assert_false(fixture.fake->held);   /* gsurf's own hold is gone... */
+        shot = run_tool(&fixture, "keeper", "clawtilla_browser_screenshot", "{}");
+        text = said(heard, shot, &is_error);
+        g_assert_true(is_error);              /* ...and ours stays on without its word */
+        g_assert_nonnull(strstr(text, "a secret was just filled"));
+        fixture.fake->hold_fails = FALSE;
+    }
+
+    /* 7. The event names the entry and the host. */
+    while (g_main_context_iteration(fixture.context, FALSE))
+        ;
+    {
+        guint filled = 0;
+
+        for (i = 0; i < events->len; i++) {
+            const gchar *line = g_ptr_array_index(events, i);
+
+            if (strstr(line, "browser.secret_filled") != NULL) {
+                filled++;
+                g_assert_nonnull(strstr(line, "example.org"));
+            }
+        }
+        g_assert_cmpuint(filled, ==, 2);
+    }
+
+    /* 8. And the negative half: never the value, the seed or the code. */
+    for (i = 0; i < heard->len; i++) {
+        const gchar *line = g_ptr_array_index(heard, i);
+
+        g_assert_null(strstr(line, SECRET_VALUE));
+        g_assert_null(strstr(line, TOTP_SEED));
+    }
+    for (i = 0; i < events->len; i++) {
+        const gchar *line = g_ptr_array_index(events, i);
+
+        g_assert_null(strstr(line, SECRET_VALUE));
+        g_assert_null(strstr(line, TOTP_SEED));
+        g_assert_null(strstr(line, expected));
+    }
+    g_assert_null(strstr(log_capture->str, SECRET_VALUE));
+    g_assert_null(strstr(log_capture->str, TOTP_SEED));
+
+    clawt_mcp_tools_set_event_bus(fixture.tools, NULL);
+    fixture_teardown(&fixture);
+}
+
 /* ── The environment a session is given ──────────────────────────── */
 
 /*
@@ -599,6 +999,8 @@ int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
+    log_capture = g_string_new(NULL);
+    g_log_set_writer_func(capture_writer, NULL, NULL);
 
     g_test_add_func("/browser/session-keys", test_session_keys);
     g_test_add_func("/browser/config/shared-keys-come-from-the-entry",
@@ -614,6 +1016,7 @@ main(int argc, char *argv[])
                     test_a_shared_session_has_one_driver);
     g_test_add_func("/browser/tools/eval-with-allow-scripts",
                     test_eval_runs_with_allow_scripts);
+    g_test_add_func("/browser/tools/secrets-never-seen", test_secrets_never_seen);
     g_test_add_func("/browser/env/extras-replace-the-allowlist",
                     test_extras_replace_the_allowlist);
 

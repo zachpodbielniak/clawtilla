@@ -261,12 +261,13 @@ GIT_SHA ?= unknown
 # link GTK.  GSURF=1 only says this build may start one, and records the
 # GSURF_DIR build as the last place to find the binary.  `make GSURF=1`
 # builds that checkout when its binary is missing, and refuses a gsurf
-# older than GSURF_MIN_VERSION, which added page.click, page.type,
-# page.key and the inline screenshot the agent tools are made of.
+# older than GSURF_MIN_VERSION: 0.5.10 added page.click, page.type,
+# page.key and the inline screenshot the agent tools are made of, and
+# 0.5.13 page.fill_secret and the secret hold the vault fills through.
 GSURF       ?= 0
 GSURF_DIR   ?= $(abspath $(CURDIR)/../gsurf)
 GSURF_BIN    = $(GSURF_DIR)/build/release/gsurf
-GSURF_MIN_VERSION = 0.5.10
+GSURF_MIN_VERSION = 0.5.13
 
 ifeq ($(GSURF),1)
 GSURF_CFLAGS = -DCLAWT_HAVE_GSURF=1 -DCLAWT_GSURF_BUILD_BIN=\"$(GSURF_BIN)\"

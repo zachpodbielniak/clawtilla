@@ -130,6 +130,8 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/usage/clawt-usage-ledger.h \
 	$(SRCDIR)/usage/clawt-usage.h \
 	$(SRCDIR)/browser/clawt-browser.h \
+	$(SRCDIR)/browser/clawt-secret-vault.h \
+	$(SRCDIR)/browser/clawt-totp.h \
 	$(SRCDIR)/mailbox/clawt-mailbox.h \
 	$(SRCDIR)/mailbox/clawt-mailbox-router.h \
 	$(SRCDIR)/mailbox/clawt-ack-check.h \
@@ -321,6 +323,8 @@ LIB_SOURCES = \
 	$(SRCDIR)/usage/clawt-usage.c \
 	$(SRCDIR)/usage/clawt-usage-ledger.c \
 	$(SRCDIR)/browser/clawt-browser.c \
+	$(SRCDIR)/browser/clawt-secret-vault.c \
+	$(SRCDIR)/browser/clawt-totp.c \
 	$(SRCDIR)/mailbox/clawt-mailbox-item.c \
 	$(SRCDIR)/mailbox/clawt-mailbox.c \
 	$(SRCDIR)/mailbox/clawt-mailbox-router.c \

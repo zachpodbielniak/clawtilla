@@ -56,7 +56,7 @@ gboolean clawt_browser_build_available(void);
  *
  * The gsurf to run, best first: beside the running binary, the install
  * location, the `GSURF_DIR` build this binary was made against, then
- * `PATH`.  A candidate older than 0.5.10 is passed over.  None found
+ * `PATH`.  A candidate older than 0.5.13 is passed over.  None found
  * names every place that was looked in, and why each was not used.
  *
  * Returns: (transfer full) (nullable): an absolute path, or %NULL
@@ -287,11 +287,90 @@ gchar *clawt_browser_dup_driver(ClawtBrowser *self, gint64 now);
 #define CLAWT_BROWSER_DRIVER_LEASE_SECONDS (120)
 
 /**
+ * CLAWT_BROWSER_SECRET_HOLD_MESSAGE:
+ *
+ * What a refused screenshot or script says while a secret is on the page.
+ */
+#define CLAWT_BROWSER_SECRET_HOLD_MESSAGE \
+    "a secret was just filled on this page, so screenshots and scripts are " \
+    "refused here until the browser navigates away -- submit the form or open " \
+    "another page; clawtilla_browser_read still works"
+
+/**
+ * clawt_browser_fill_secret:
+ * @self: a #ClawtBrowser
+ * @selector: the field, a CSS selector
+ * @value: the secret, or the one-time code made from one
+ * @submit: press Enter after it
+ * @name: the vault entry it came from, kept for the clients to show
+ * @host: (nullable): the host it was typed on, likewise
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Has gsurf type @value into the field as key input (`page.fill_secret`,
+ * gsurf 0.5.13), replacing what was there.  The session's secret hold is
+ * set *before* anything is sent, so a fill that fails half-way still
+ * refuses screenshots and scripts; it lasts until gsurf reports that
+ * the page navigated away (clawt_browser_secret_held()) or the session
+ * stops.  Blocks.  No error carries @value, and this copy of it is
+ * wiped once sent.
+ *
+ * Returns: %TRUE when gsurf typed it
+ */
+gboolean clawt_browser_fill_secret(ClawtBrowser  *self,
+                                   const gchar   *selector,
+                                   const gchar   *value,
+                                   gboolean       submit,
+                                   const gchar   *name,
+                                   const gchar   *host,
+                                   GError       **error);
+
+/**
+ * clawt_browser_get_secret_hold:
+ * @self: a #ClawtBrowser
+ *
+ * The hold as last known, without asking the browser -- for a listing
+ * on the daemon's context, which must not wait on a page.
+ *
+ * Returns: whether a secret may be on the page
+ */
+gboolean clawt_browser_get_secret_hold(ClawtBrowser *self);
+
+/**
+ * clawt_browser_secret_held:
+ * @self: a #ClawtBrowser
+ *
+ * Whether a secret is still on the page, asked of gsurf when one was
+ * filled (`page.secret_hold`).  Fails closed: only gsurf answering that
+ * its hold is gone lifts ours.  Blocks.
+ *
+ * Returns: %TRUE while screenshots and scripts must be refused
+ */
+gboolean clawt_browser_secret_held(ClawtBrowser *self);
+
+/**
+ * clawt_browser_dup_last_fill:
+ * @self: a #ClawtBrowser
+ * @out_name: (out) (optional) (transfer full) (nullable): the entry's name
+ * @out_host: (out) (optional) (transfer full) (nullable): the host
+ * @out_at: (out) (optional): unix seconds
+ *
+ * The last secret this session filled -- by name, never by value.
+ *
+ * Returns: %TRUE when there has been one
+ */
+gboolean clawt_browser_dup_last_fill(ClawtBrowser  *self,
+                                     gchar        **out_name,
+                                     gchar        **out_host,
+                                     gint64        *out_at);
+
+/**
  * clawt_browser_screenshot:
  * @self: a #ClawtBrowser
  * @error: (out) (optional): return location for a #GError
  *
- * A PNG of the visible page.  Blocks.
+ * A PNG of the visible page.  Blocks.  Refused with
+ * %CLAWT_ERROR_PERMISSION_DENIED while a secret is on it
+ * (clawt_browser_secret_held()).
  *
  * Returns: (transfer full) (nullable): the PNG's bytes
  */
@@ -331,9 +410,52 @@ JsonObject *clawt_browser_list_find(JsonObject *reply, const gchar *agent_id);
  * Domain (https://example.org/) -- driven by alpha", or that it is not
  * running and starts on the first browser call.
  *
+ * When a secret has been filled in the session, a second line follows
+ * from clawt_browser_fill_line() at the current time.
+ *
  * Returns: (transfer full): the line
  */
 gchar *clawt_browser_session_line(JsonObject *session);
+
+/**
+ * clawt_browser_fill_line:
+ * @session: (nullable): a session object with `secret_hold` and `last_fill`
+ * @now: the current time, in microseconds since the epoch
+ *
+ * What every client says about the last secret filled: by the vault
+ * entry's name and the host, never a value -- and, while the hold is on,
+ * that there will be no picture until the page changes.
+ *
+ * Returns: (transfer full) (nullable): the line, or %NULL when nothing
+ *   was filled
+ */
+gchar *clawt_browser_fill_line(JsonObject *session, gint64 now);
+
+/**
+ * clawt_vault_entry_label:
+ * @entry: one of `vault.list`'s `entries`
+ *
+ * "github -- a password, on github.com: the bot's login", the same in
+ * every client.  Names, never values: `vault.list` carries none.
+ *
+ * Returns: (transfer full): the label
+ */
+gchar *clawt_vault_entry_label(JsonObject *entry);
+
+/**
+ * clawt_vault_grants_with:
+ * @reply: (nullable): a `vault.list` reply for one agent
+ * @name: the entry being switched
+ * @granted: whether it should be granted
+ *
+ * The agent's `browser.secrets` with @name switched, in the vault's
+ * order, as the comma-separated value `agent.set` takes -- so a client
+ * toggling one entry sends the whole list, and two clients agree on its
+ * spelling.
+ *
+ * Returns: (transfer full): the list, possibly empty
+ */
+gchar *clawt_vault_grants_with(JsonObject *reply, const gchar *name, gboolean granted);
 
 /* ── The sessions a daemon holds ──────────────────────────────────── */
 

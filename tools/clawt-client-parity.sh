@@ -300,6 +300,8 @@ declare -A AFFORDANCES=(
     ["browser view"]="clawt_gtk_build_browser_view|/f/a/:id/browser|build_browser_view"
     ["click in the browser"]="on_picture_pressed|/browser/click|on_browser_click"
     ["open a page in the browser"]="\"browser.open\"|/browser/open|\"browser.open\""
+    ["choose the secrets an agent may have filled"]="on_grant_toggled|/browser/secret|on_browser_grant"
+    ["list the vault entries by name"]="clawt_vault_entry_label|clawt_vault_entry_label|clawt_vault_entry_label"
     #
     # Servers with many tools, on the Connectors page: each connector's
     # tool count and whether agents see it as a directory (libclawt's

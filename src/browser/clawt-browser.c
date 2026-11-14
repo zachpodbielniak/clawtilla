@@ -63,10 +63,16 @@ executable_dir(void)
     return exe != NULL ? g_path_get_dirname(exe) : NULL;
 }
 
-/* The oldest gsurf with page.click, page.type, page.key and an inline screenshot. */
+/*
+ * The oldest gsurf with page.fill_secret and the secret hold (0.5.13),
+ * on top of page.click, page.type, page.key and an inline screenshot
+ * (0.5.10).  An older one would answer the fill with "no such method",
+ * and -- worse -- would take a screenshot of a page a secret was just
+ * typed into, since it has no hold to refuse it with.
+ */
 #define GSURF_MIN_MAJOR (0)
 #define GSURF_MIN_MINOR (5)
-#define GSURF_MIN_MICRO (10)
+#define GSURF_MIN_MICRO (13)
 
 /*
  * Whether @path is a gsurf new enough for the tools, from its --version.
@@ -208,6 +214,18 @@ struct _ClawtBrowser {
     gchar        *driver;
     gint64        driver_seen;
 
+    /*
+     * A secret was typed into the page and it has not been seen to
+     * navigate away since.  Set before the fill is sent (fail closed),
+     * cleared only when gsurf says its own hold is gone or the session
+     * stops.  The last fill is kept for the clients to show: the entry's
+     * name and host, never what was typed.
+     */
+    gboolean      secret_hold;
+    gchar        *fill_name;
+    gchar        *fill_host;
+    gint64        fill_at;
+
     ClawtBrowserTransport transport;
     gpointer       transport_data;
     GDestroyNotify transport_destroy;
@@ -239,6 +257,8 @@ clawt_browser_finalize(GObject *object)
     g_free(self->uri);
     g_free(self->title);
     g_free(self->driver);
+    g_free(self->fill_name);
+    g_free(self->fill_host);
     g_mutex_clear(&self->lock);
     g_mutex_clear(&self->state);
 
@@ -384,6 +404,8 @@ stop_locked(ClawtBrowser *self)
     xvfb = g_steal_pointer(&self->xvfb);
     g_clear_pointer(&self->socket_path, g_free);
     g_clear_pointer(&self->driver, g_free);
+    /* A stopped browser has no page left for the secret to be on. */
+    self->secret_hold = FALSE;
     g_mutex_unlock(&self->state);
 
     /* The browser first: it is a client of the X server. */
@@ -753,11 +775,18 @@ socket_call(ClawtBrowser *self, const gchar *method, JsonNode *params,
         return NULL;
     g_socket_set_timeout(g_socket_connection_get_socket(connection), timeout_seconds);
 
-    if (!g_output_stream_write_all(g_io_stream_get_output_stream(G_IO_STREAM(connection)),
-                                   text, strlen(text), NULL, NULL, error) ||
-        !g_output_stream_write_all(g_io_stream_get_output_stream(G_IO_STREAM(connection)),
-                                   "\n", 1, NULL, NULL, error))
-        return NULL;
+    {
+        gboolean written =
+            g_output_stream_write_all(g_io_stream_get_output_stream(G_IO_STREAM(connection)),
+                                      text, strlen(text), NULL, NULL, error) &&
+            g_output_stream_write_all(g_io_stream_get_output_stream(G_IO_STREAM(connection)),
+                                      "\n", 1, NULL, NULL, error);
+
+        /* The line may carry a secret (page.fill_secret): wiped, not just freed. */
+        memset(text, 0, strlen(text));
+        if (!written)
+            return NULL;
+    }
 
     /* Events would arrive only after events.subscribe, which is never sent;
      * a line with another id is skipped all the same. */
@@ -784,7 +813,16 @@ socket_call(ClawtBrowser *self, const gchar *method, JsonNode *params,
             ? json_object_get_string_member_with_default(problem, "message", "failed")
             : "failed";
 
-        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED, "%s: %s", method, message);
+        /*
+         * gsurf's -32003 is a refusal -- kiosk mode, or the secret hold --
+         * and a caller deciding whether a page can be read needs to tell
+         * "it said no" from "it did not answer".
+         */
+        g_set_error(error, CLAWT_ERROR,
+                    problem != NULL &&
+                    json_object_get_int_member_with_default(problem, "code", 0) == -32003
+                        ? CLAWT_ERROR_PERMISSION_DENIED : CLAWT_ERROR_FAILED,
+                    "%s: %s", method, message);
         return NULL;
     }
 
@@ -973,6 +1011,125 @@ clawt_browser_dup_driver(ClawtBrowser *self, gint64 now)
     return out;
 }
 
+/* ── Secrets on the page ──────────────────────────────────────────── */
+
+gboolean
+clawt_browser_fill_secret(ClawtBrowser *self, const gchar *selector, const gchar *value,
+                          gboolean submit, const gchar *name, const gchar *host,
+                          GError **error)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autoptr(JsonNode) params = NULL;
+    g_autoptr(JsonNode) result = NULL;
+    JsonObject *object;
+
+    g_return_val_if_fail(CLAWT_IS_BROWSER(self), FALSE);
+    g_return_val_if_fail(selector != NULL, FALSE);
+    g_return_val_if_fail(value != NULL, FALSE);
+
+    /* 1. The hold first: a fill that fails half-way may have typed part
+     *    of the secret already, so nothing may read the page from here. */
+    g_mutex_lock(&self->state);
+    self->secret_hold = TRUE;
+    g_mutex_unlock(&self->state);
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "selector");
+    json_builder_add_string_value(builder, selector);
+    json_builder_set_member_name(builder, "text");
+    json_builder_add_string_value(builder, value);
+    json_builder_set_member_name(builder, "submit");
+    json_builder_add_boolean_value(builder, submit);
+    json_builder_end_object(builder);
+    params = json_builder_get_root(builder);
+
+    /* 2. gsurf types it as key input and holds the page itself. */
+    result = clawt_browser_call(self, "page.fill_secret", params, 60, error);
+
+    /* Our copy of the value, wiped rather than left for the allocator. */
+    object = json_node_get_object(params);
+    {
+        gchar *copy = (gchar *)json_object_get_string_member(object, "text");
+
+        if (copy != NULL)
+            memset(copy, 0, strlen(copy));
+    }
+    if (result == NULL)
+        return FALSE;
+
+    /* 3. What the clients show: which entry, where, when -- no value. */
+    g_mutex_lock(&self->state);
+    g_free(self->fill_name);
+    self->fill_name = g_strdup(name);
+    g_free(self->fill_host);
+    self->fill_host = g_strdup(host);
+    self->fill_at = g_get_real_time() / G_USEC_PER_SEC;
+    g_mutex_unlock(&self->state);
+    return TRUE;
+}
+
+gboolean
+clawt_browser_get_secret_hold(ClawtBrowser *self)
+{
+    gboolean held;
+
+    g_return_val_if_fail(CLAWT_IS_BROWSER(self), TRUE);
+
+    g_mutex_lock(&self->state);
+    held = self->secret_hold;
+    g_mutex_unlock(&self->state);
+    return held;
+}
+
+gboolean
+clawt_browser_secret_held(ClawtBrowser *self)
+{
+    g_autoptr(JsonNode) result = NULL;
+    gboolean lifted;
+
+    g_return_val_if_fail(CLAWT_IS_BROWSER(self), TRUE);
+
+    if (!clawt_browser_get_secret_hold(self))
+        return FALSE;
+
+    /*
+     * Lifted only on gsurf's word that its own hold is gone -- the page
+     * navigated.  Anything else, an error, a reply without the member, a
+     * browser that will not answer, keeps it: fail closed.
+     */
+    result = clawt_browser_call(self, "page.secret_hold", NULL, 10, NULL);
+    lifted = result != NULL && JSON_NODE_HOLDS_OBJECT(result) &&
+             json_object_has_member(json_node_get_object(result), "secret_hold") &&
+             !json_object_get_boolean_member(json_node_get_object(result), "secret_hold");
+    if (!lifted)
+        return TRUE;
+
+    g_mutex_lock(&self->state);
+    self->secret_hold = FALSE;
+    g_mutex_unlock(&self->state);
+    return FALSE;
+}
+
+gboolean
+clawt_browser_dup_last_fill(ClawtBrowser *self, gchar **out_name, gchar **out_host,
+                            gint64 *out_at)
+{
+    gboolean any;
+
+    g_return_val_if_fail(CLAWT_IS_BROWSER(self), FALSE);
+
+    g_mutex_lock(&self->state);
+    any = self->fill_name != NULL;
+    if (out_name != NULL)
+        *out_name = g_strdup(self->fill_name);
+    if (out_host != NULL)
+        *out_host = g_strdup(self->fill_host);
+    if (out_at != NULL)
+        *out_at = self->fill_at;
+    g_mutex_unlock(&self->state);
+    return any;
+}
+
 GBytes *
 clawt_browser_screenshot(ClawtBrowser *self, GError **error)
 {
@@ -984,6 +1141,13 @@ clawt_browser_screenshot(ClawtBrowser *self, GError **error)
     gsize length = 0;
 
     g_return_val_if_fail(CLAWT_IS_BROWSER(self), NULL);
+
+    /* Refused here as well as in gsurf: two walls, one per process. */
+    if (clawt_browser_secret_held(self)) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED,
+                            CLAWT_BROWSER_SECRET_HOLD_MESSAGE);
+        return NULL;
+    }
 
     json_builder_begin_object(builder);
     json_builder_set_member_name(builder, "inline");
@@ -1086,7 +1250,87 @@ clawt_browser_session_line(JsonObject *session)
         g_string_append_printf(line, *title != '\0' ? " (%s)" : " \xe2\x80\x94 %s", uri);
     if (*driver != '\0')
         g_string_append_printf(line, " \xe2\x80\x94 driven by %s", driver);
+    {
+        g_autofree gchar *filled = clawt_browser_fill_line(session, g_get_real_time());
+
+        if (filled != NULL)
+            g_string_append_printf(line, "\n%s", filled);
+    }
     return g_string_free(line, FALSE);
+}
+
+gchar *
+clawt_browser_fill_line(JsonObject *session, gint64 now)
+{
+    JsonObject *fill;
+    const gchar *name;
+    const gchar *host;
+    g_autofree gchar *ago = NULL;
+
+    if (session == NULL || !json_object_has_member(session, "last_fill") ||
+        !JSON_NODE_HOLDS_OBJECT(json_object_get_member(session, "last_fill")))
+        return NULL;
+    fill = json_object_get_object_member(session, "last_fill");
+    name = json_object_get_string_member_with_default(fill, "name", "");
+    host = json_object_get_string_member_with_default(fill, "host", "");
+    ago = clawt_time_ago_label(json_object_get_int_member_with_default(fill, "at", 0) *
+                               G_USEC_PER_SEC, now);
+
+    if (json_object_get_boolean_member_with_default(session, "secret_hold", FALSE))
+        return g_strdup_printf("Secret %s filled on %s %s \xe2\x80\x94 no picture until "
+                               "the page changes.", name, *host != '\0' ? host : "this page",
+                               ago);
+    return g_strdup_printf("Last secret filled: %s on %s, %s.", name,
+                           *host != '\0' ? host : "a page", ago);
+}
+
+gchar *
+clawt_vault_entry_label(JsonObject *entry)
+{
+    GString *label;
+    JsonArray *sites;
+    const gchar *description;
+    guint i;
+
+    g_return_val_if_fail(entry != NULL, NULL);
+
+    label = g_string_new(json_object_get_string_member_with_default(entry, "name", ""));
+    g_string_append(label, g_strcmp0(json_object_get_string_member_with_default(
+                                         entry, "kind", "password"), "totp") == 0
+                               ? " \xe2\x80\x94 a one-time code"
+                               : " \xe2\x80\x94 a password");
+    sites = json_object_has_member(entry, "sites")
+        ? json_object_get_array_member(entry, "sites") : NULL;
+    for (i = 0; sites != NULL && i < json_array_get_length(sites); i++)
+        g_string_append_printf(label, "%s%s", i == 0 ? ", on " : ", ",
+                               json_array_get_string_element(sites, i));
+    description = json_object_get_string_member_with_default(entry, "description", "");
+    if (*description != '\0')
+        g_string_append_printf(label, ": %s", description);
+    return g_string_free(label, FALSE);
+}
+
+gchar *
+clawt_vault_grants_with(JsonObject *reply, const gchar *name, gboolean granted)
+{
+    JsonArray *entries;
+    GString *out = g_string_new(NULL);
+    guint i;
+
+    entries = reply != NULL && json_object_has_member(reply, "entries")
+        ? json_object_get_array_member(reply, "entries") : NULL;
+    for (i = 0; entries != NULL && i < json_array_get_length(entries); i++) {
+        JsonObject *entry = json_array_get_object_element(entries, i);
+        const gchar *entry_name = json_object_get_string_member_with_default(entry, "name",
+                                                                             "");
+        gboolean on = g_strcmp0(entry_name, name) == 0
+            ? granted
+            : json_object_get_boolean_member_with_default(entry, "granted", FALSE);
+
+        if (on && *entry_name != '\0')
+            g_string_append_printf(out, "%s%s", out->len > 0 ? "," : "", entry_name);
+    }
+    return g_string_free(out, FALSE);
 }
 
 /* ── The manager ──────────────────────────────────────────────────── */

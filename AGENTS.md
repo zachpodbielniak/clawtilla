@@ -118,7 +118,7 @@ place when it is missing, older than its sources, or lacks a symbol in
 Browser sessions are opt-in too (`GSURF=1`, `GSURF_DIR` defaulting to
 `../gsurf`).  clawtilla links nothing from gsurf: a session is Xvfb plus
 a gsurf process driven over gsurf's control socket, because the daemon
-must never link GTK.  `make GSURF=1` refuses a gsurf older than 0.5.10
+must never link GTK.  `make GSURF=1` refuses a gsurf older than 0.5.13
 and builds `GSURF_DIR` when its binary is missing; building that needs
 `webkit2gtk4.1-devel` and `gtk3-devel`.  See `docs/browser.org`.
 
@@ -1138,6 +1138,15 @@ Other VM facts:
   said so. Extras replace now; `tests/test-browser.c` asserts one copy.
 - **Never `pkill gsurf`.** The person runs gsurf as their browser. Stop
   a test's processes by pid, or through the daemon.
+- **A secret is filled, never handed over.** `clawtilla_secret_ref` gives
+  the agent a one-use reference bound to it and its conversation;
+  `clawtilla_browser_fill_secret` resolves the value on the worker and
+  gsurf types it (`page.fill_secret`). Nothing the agent, a client, an
+  event or a log sees may carry the value -- `tests/test-browser.c`
+  asserts it negatively, so a new message about a fill needs adding to
+  that scan, not just to the code. The hold on screenshots and scripts
+  is lifted only on gsurf's word (`page.secret_hold` false); anything
+  else keeps it on.
 
 ### Host confinement
 

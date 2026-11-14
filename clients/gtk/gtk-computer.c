@@ -958,4 +958,5 @@ clawt_gtk_stop_watching_screen(ClawtWindow *self)
     /* And the browser poll, which would otherwise fire into a closed window. */
     clawt_gtk_browser_set_showing(self, FALSE);
     g_clear_pointer(&self->browser_agent, g_free);
+    g_clear_pointer(&self->browser_vault, json_object_unref);
 }
