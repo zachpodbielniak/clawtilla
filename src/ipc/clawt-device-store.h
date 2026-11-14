@@ -394,4 +394,47 @@ gchar *clawt_device_seen_text(gint64   last_seen,
                               gboolean connected,
                               gint64   now);
 
+/**
+ * ClawtDeviceRowAction:
+ * @CLAWT_DEVICE_ROW_ACTION_NONE: nothing this connection may do to it
+ * @CLAWT_DEVICE_ROW_ACTION_REVOKE: revoke it -- the owner, on any row
+ * @CLAWT_DEVICE_ROW_ACTION_SIGN_OUT: revoke it, which is signing this
+ *   device out -- a paired device, on its own row
+ *
+ * The button a device list draws on one row.  `device.revoke` is the
+ * owner's, except that a paired device may revoke itself: a device that
+ * could revoke the others could lock the owner's laptop out from a stolen
+ * phone, and taking itself away is the one revocation that is always the
+ * holder's own business.
+ */
+typedef enum {
+    CLAWT_DEVICE_ROW_ACTION_NONE,
+    CLAWT_DEVICE_ROW_ACTION_REVOKE,
+    CLAWT_DEVICE_ROW_ACTION_SIGN_OUT
+} ClawtDeviceRowAction;
+
+/**
+ * clawt_device_row_action:
+ * @owner: the `device.list` reply's `owner` -- this connection holds the
+ *   daemon's own token
+ * @current: the row's `current` -- it is the device this connection is
+ *
+ * Which button a row gets, the same in every client and the same rule
+ * `device.revoke` enforces, so no client offers a press whose only
+ * answer is a refusal.
+ *
+ * Returns: the row's action
+ */
+ClawtDeviceRowAction clawt_device_row_action(gboolean owner,
+                                             gboolean current);
+
+/**
+ * clawt_device_row_action_label:
+ * @action: a #ClawtDeviceRowAction
+ *
+ * Returns: (transfer none) (nullable): "Revoke", "Sign out this device",
+ *   or %NULL for no button
+ */
+const gchar *clawt_device_row_action_label(ClawtDeviceRowAction action);
+
 G_END_DECLS

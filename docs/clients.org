@@ -250,9 +250,11 @@ keeps each token's SHA-256 -- and marks the row that is the connection
 asking.
 
 Only the owner pairs: a unix-socket client, or one holding the daemon's
-own token.  A paired device asking is refused with the reason.  Any
-connected client can list and revoke, so a laptop can cut off a lost
-phone.  Revoking closes the device's live connections as well as
+own token.  A paired device asking is refused with the reason.  Revoking
+is the owner's too, with one exception: a paired device may revoke
+itself, which is how it signs out.  Any connected client can list.  A
+device that could revoke the others could let a stolen phone cut off the
+owner's laptop.  Revoking closes the device's live connections as well as
 refusing its next one.  ~daemon.device_idle_days~ (90 by default, 0 for
 never) expires a device nobody has used for that long; a device that is
 connected counts as used.  The owner token is untouched by all of it.
@@ -260,7 +262,9 @@ connected counts as used.  The owner token is untouched by all of it.
 
 The graphical clients have the same two halves: *Pair with a code* on
 their Connections screen, and Settings, *Devices*, which lists the
-devices with when each was last seen, a *Revoke* button on each, and
+devices with when each was last seen, a *Revoke* button on each (on a
+window connected as a paired device: *Sign out this device* on its own
+row and no button on the others, from =clawt_device_row_action()=), and
 *Pair a new device*, which shows the code large with a countdown and
 says when it has been used.
 
@@ -2695,7 +2699,9 @@ Settings, *Devices*, lists the devices paired with the daemon this
 window is connected to: name, when each was last seen ("connected now",
 "seen 3 days ago" -- ~clawt_device_seen_text()~, shared with the CLI and
 the other clients), when it was paired, its id, and a *Revoke* button,
-with *this device* on the row that is this window.  *Pair a new device*
+with *this device* on the row that is this window.  On a window
+connected as a paired device the only button is *Sign out this device*,
+on its own row: revoking is the owner's (=clawt_device_row_action()=).  *Pair a new device*
 shows the code large, the addresses to dial, and a countdown; the
 dialog says so when the code is used (the ~device.paired~ event), and
 closing it unused withdraws the code.  The button is offered only to the

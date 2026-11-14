@@ -2103,7 +2103,8 @@ devices_content(ClawtWebApp *app, JsonObject *pairing)
         if (!owner && reply != NULL)
             clawt_web_add(body, clawt_web_notice(
                 "This server is connected as a paired device, and only the "
-                "daemon's owner can pair another. Revoking still works.",
+                "daemon's owner can pair or revoke another. It can still "
+                "sign itself out.",
                 "info"));
 
         if (pairing == NULL && outstanding > 0) {
@@ -2165,11 +2166,18 @@ devices_content(ClawtWebApp *app, JsonObject *pairing)
                 "/settings/devices/%s/revoke", escaped);
             g_autofree gchar *confirm = g_strdup_printf(
                 current
-                    ? "Revoke %s? It is the device this server is using: "
+                    ? "Sign out %s? It is the device this server is using: "
                       "every page here loses the daemon until it is paired "
                       "again."
                     : "Revoke %s? Its token stops working and anything it "
                       "has connected is closed.", name);
+            /*
+             * The rule the daemon enforces: the owner revokes any row, a
+             * paired device only signs itself out, and the rest get no
+             * button to be refused by.
+             */
+            const gchar *action_label = clawt_device_row_action_label(
+                clawt_device_row_action(owner, current));
             g_autoptr(HtmxDiv) row = htmx_div_new();
             g_autoptr(HtmxDiv) head = htmx_div_new();
             g_autoptr(HtmxDiv) actions = htmx_div_new();
@@ -2196,8 +2204,9 @@ devices_content(ClawtWebApp *app, JsonObject *pairing)
             clawt_web_add(row, clawt_web_text(detail, "small muted"));
 
             htmx_element_add_class(HTMX_ELEMENT(actions), "btn-row");
-            clawt_web_add(actions, clawt_web_post_button(
-                "Revoke", revoke, "danger", confirm));
+            if (action_label != NULL)
+                clawt_web_add(actions, clawt_web_post_button(
+                    action_label, revoke, "danger", confirm));
             htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(actions));
 
             htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(row));

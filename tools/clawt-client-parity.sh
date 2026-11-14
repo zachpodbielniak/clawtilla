@@ -518,6 +518,9 @@ declare -A AFFORDANCES=(
     ["pair with a code"]="clawt_connection_new_paired|/settings/connections/pair|clawt_connection_pair(job->connection"
     ["pairing countdown"]="clawt_device_countdown_text|clawt_device_countdown_text|clawt_device_countdown_text"
     ["device last seen"]="clawt_device_seen_text|clawt_device_seen_text|clawt_device_seen_text"
+    # Revoke is the owner's; a paired device signs itself out.  Each
+    # client asks the library which button a row gets.
+    ["revoke or sign out per row"]="clawt_device_row_action|clawt_device_row_action|clawt_device_row_action"
     ["a code on screen learns it was used"]="\"device.paired\"|/settings/devices/pair-status|\"device.paired\""
     #
     # model.fallbacks: the ordered editor, the badge on an agent running

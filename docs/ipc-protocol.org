@@ -169,7 +169,7 @@ why each rule is the shape it is.
 | ~device.pair_cancel~ | owner | | ~{}~ |
 | ~device.redeem~ | anyone, *before* ~control.hello~ | ~code~, ~name~ (optional) | ~version~, ~daemon~, ~id~, ~name~, ~token~ |
 | ~device.list~ | any authenticated client | | ~owner~, ~idle_days~, ~pairing_expires_in~, ~devices~ |
-| ~device.revoke~ | any authenticated client | ~id~ | ~id~, ~closed~ |
+| ~device.revoke~ | the owner; a paired device for its own ~id~ only | ~id~ | ~id~, ~closed~ |
 
 "Owner" is a unix-socket client or a network client that said
 ~control.hello~ with the daemon's own token.  A paired device asking for
@@ -201,7 +201,11 @@ code is outstanding without saying which.
 
 ~device.revoke~ closes every connection the device has open -- including
 the one asking, when a device revokes itself, which then never sees the
-reply.  ~closed~ counts them.
+reply.  ~closed~ counts them.  A paired device naming any id but its own
+is refused with =PERMISSION_DENIED= before the id is looked up; the
+clients ask =clawt_device_row_action()= which button a row gets, so a
+paired device's list offers *Sign out this device* on its own row and
+nothing on the others.
 
 *** attachment.*
 

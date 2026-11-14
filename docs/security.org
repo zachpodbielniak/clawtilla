@@ -157,7 +157,9 @@ transcript and run commands like the owner can -- with three
 differences, all about losing one: it can be revoked on its own, it
 expires after ~daemon.device_idle_days~ of not being seen, and it cannot
 issue a pairing code, so a stolen device cannot pair a replacement for
-itself and outlive its own revocation.  See [[*Paired devices][Paired devices]].
+itself and outlive its own revocation.  Nor can it revoke another
+device -- only itself ("sign out this device") -- so a stolen phone
+cannot cut the owner's laptop off.  See [[*Paired devices][Paired devices]].
 
 *** Anything with the socket has the fleet
 

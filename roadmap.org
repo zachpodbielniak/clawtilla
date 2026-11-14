@@ -522,7 +522,8 @@ When somebody turns the broker on, clawtilla starts a local AnythingMCP for them
 - *Done:* a URL wait is refused for an agent whose =runtime.network= is =gated= or =none= (=clawt_egress_url_wait_refusal()=, at =clawtilla_wait_until= and again at each check), since the daemon's fetch would go around the gate. Open agents are unchanged. =docs/orchestration.org=, "URL probes fetch as nobody, from nowhere private".
 - A URL wait lets an agent with no network of its own have the daemon fetch addresses it chooses (public ones only). Gate it on the same permission the egress gate uses.
 
-** TODO Devices: may a paired device revoke other devices?                                       :security:clients:
+** DONE Devices: may a paired device revoke other devices? (version assigned at merge)           :security:clients:
+- *Decided and done:* no. ~device.revoke~ is the owner's, except that a paired device may revoke itself ("sign out this device"); another id is =PERMISSION_DENIED= before it is looked up. =clawt_device_row_action()= / =_label()= give every client the row's button: Revoke for the owner, *Sign out this device* on a device's own row, nothing on the others (GTK, web, lrg; a parity affordance row). CLI help, =docs/ipc-protocol.org=, =docs/clients.org=, =docs/security.org=, =docs/lrg-client.org=. Tests: =/devices/row-action=, =/devices/daemon/a-device-revokes-only-itself= (two devices).
 - Today any authenticated device can revoke others (it only removes access); only the owner pairs. Decide whether revoke is owner-only.
 
 ** TODO Fallback polish in the clients                                                          :clients:
