@@ -204,6 +204,24 @@ gboolean clawt_room_names_any_member(ClawtRoom         *self,
 gboolean clawt_room_is_declared(const gchar *room_id);
 
 /**
+ * clawt_room_is_listed:
+ * @room_id: (nullable): a room id
+ *
+ * Whether a client lists @room_id as a room of its own in the sidebar
+ * and the navigation search: every declared room, and each team's
+ * "Problems to look at" room.  Derived rooms are otherwise left out --
+ * a direct conversation is the agent's own row and a routine's room
+ * belongs to the routine -- but an incidents room is one the operator
+ * is meant to read, and has no other row to be found under.
+ *
+ * One answer for every client, because "which rooms get a row" decides
+ * which unread counts can ever be cleared.
+ *
+ * Returns: %TRUE if the room gets a row
+ */
+gboolean clawt_room_is_listed(const gchar *room_id);
+
+/**
  * clawt_room_member_list:
  * @self: a #ClawtRoom
  *

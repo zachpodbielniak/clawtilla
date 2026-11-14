@@ -733,6 +733,12 @@ Each card shows "origin → assignee", a state badge toned by =clawt_task_state_
 |---|---|---|
 | listing | ~task.list~ | on show and on =task.*= |
 | Cancel (pending or running only) | ~task.cancel~ | asks first, because cancelling cascades to everything the task handed on; toasts how many were cancelled |
+| Retry (failed or stalled only, =clawt_task_state_is_retryable()=) | ~task.retry~ with ~task~ | re-queues it for its assignee; toasts which |
+| Problems to look at | ~incident.list~ | above the tree, on show and on =task.*= or =incident.*=: the two settings and a card per open incident -- whose run, its kind, what it said, who was told |
+| Retry on an incident (when ~retryable~) | ~task.retry~ with ~incident~ | a routine is run again, a task re-queued |
+| Report broken runs / Who hears about them, Save | ~incident.configure~ | the recipients walked from =clawt_incident_recipient_count()= / =_nth()= |
+
+Each team's *Problems to look at* room is a sidebar entry under the team (=clawt_room_is_listed()=), opened like any room.
 
 ~task.list~ carries no timestamp for a task, so no age is drawn; GTK draws none either.
 

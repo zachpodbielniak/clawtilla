@@ -1778,12 +1778,14 @@ append_rooms_for_team(ClawtWindow *self, JsonArray *rooms,
         GtkWidget *row;
 
         /*
-         * Only rooms somebody made.  A direct conversation is already
-         * the agent's own row, and a routine's or a trigger's belongs to
-         * that routine or trigger -- listing them here would be three
-         * more entries per agent, none of which anybody chose.
+         * Only rooms somebody made, and each team's "Problems to look
+         * at".  A direct conversation is already the agent's own row,
+         * and a routine's or a trigger's belongs to that routine or
+         * trigger -- listing them here would be three more entries per
+         * agent, none of which anybody chose.  The library decides
+         * which, so the three clients list the same rooms.
          */
-        if (!clawt_json_boolean(room, "declared", FALSE))
+        if (!clawt_room_is_listed(id))
             continue;
 
         if (g_strcmp0(room_team, team != NULL ? team : "") != 0)
@@ -1796,7 +1798,14 @@ append_rooms_for_team(ClawtWindow *self, JsonArray *rooms,
 
         row = room_row(self, room, unread_for(self, id));
         gtk_list_box_append(self->sidebar, row);
-        make_row_draggable(self, row);
+
+        /*
+         * An incidents room is placed by its team, not by hand: its
+         * order is nowhere in clawtilla.yaml, so a drop would be
+         * refused and toasted.
+         */
+        if (clawt_room_is_declared(id))
+            make_row_draggable(self, row);
 
         if (g_strcmp0(id, self->selected_room_entry) == 0)
             gtk_list_box_select_row(self->sidebar, GTK_LIST_BOX_ROW(row));
@@ -1902,7 +1911,7 @@ refresh_agents_once(ClawtWindow *self)
     for (i = 0; rooms != NULL && i < json_array_get_length(rooms); i++) {
         JsonObject *room = json_array_get_object_element(rooms, i);
 
-        if (clawt_json_boolean(room, "declared", FALSE))
+        if (clawt_room_is_listed(clawt_json_string(room, "id", "")))
             g_hash_table_add(self->sidebar_rooms,
                              g_strdup(clawt_json_string(room, "id", "")));
 
