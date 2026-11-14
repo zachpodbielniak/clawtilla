@@ -750,6 +750,32 @@ static const ClawtSchemaEntry schema[] = {
   "turn is seconds. Raise it for a fleet whose turns are minutes; a\n"
   "repeat is only caught if it lands inside the window.", "0.1.0" },
 
+{ "orchestration.ack_check_model", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  "", NULL,
+  "A small model that decides whether an answer only acknowledges, as\n"
+  "provider/model -- claude/claude-haiku-4-5-20251001, ollama/llama3.2.\n"
+  "Empty turns the check off.\n"
+  "\n"
+  "An answer to a deliberate message wakes the agent that sent it, and\n"
+  "that turn costs as much for \"Thanks, noted.\" as for a page of\n"
+  "findings. With a model set, an answer is put to it only when the\n"
+  "answering turn made no tool calls (so ran no commands, changed no\n"
+  "files and sent nothing), its steps were streamed so that is known,\n"
+  "the answer is at most 600 characters, and the message it answers was\n"
+  "not a task. The model is asked one question, ACK or NEEDS, with both\n"
+  "texts fenced as data, and has 8 seconds.\n"
+  "\n"
+  "Only a plain ACK skips the wake. NEEDS, a failure, a timeout or any\n"
+  "other reply wakes the sender as before. An acknowledged answer is\n"
+  "still recorded in the room, marked \"acknowledged (no wake)\", and\n"
+  "the sender's next turn opens with a one-line note of it, so nothing\n"
+  "is dropped.\n"
+  "\n"
+  "A provider ai-glib reaches over HTTP, with its key configured the way\n"
+  "ai_assist's is. A command-line provider would spend the 8 seconds\n"
+  "starting. A message sent with reply: none never wakes its sender,\n"
+  "with or without this.", "0.17.0" },
+
 { "orchestration.mailbox", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Defaults for every agent's mailbox.\n"
   "\n"

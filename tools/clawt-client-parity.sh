@@ -224,6 +224,9 @@ declare -A AFFORDANCES=(
     #
     ["spending unpriced turns"]="clawt_usage_ledger_unpriced_line|clawt_usage_ledger_unpriced_line|clawt_usage_ledger_unpriced_line"
     ["spending csv export"]="clawt_usage_ledger_csv(root)|clawt_usage_ledger_csv(root)|clawt_usage_ledger_csv(root)"
+    ["acknowledged answers"]="clawt_message_ack_label|clawt_message_ack_label|clawt_message_ack_label"
+    ["merged deliveries as sections"]="clawt_merge_split|clawt_merge_split|clawt_merge_split"
+    ["ack-check model choices"]="clawt_ack_check_model_nth_value|clawt_ack_check_model_nth_value|clawt_ack_check_model_nth_value"
     #
     # The Grok page: the bots and who may reach them, handing one a job on
     # an agent's behalf, the jobs in libclawt's tones, the routine prompt

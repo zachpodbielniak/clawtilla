@@ -111,11 +111,20 @@ The same seven the GTK client's view switcher has, in the same order.
 | Fleet    | cost per agent, the last fourteen days, idle agents to stop ([[file:clients.org::#fleet-tab][the Fleet tab]]) |
 
 And the settings pages: fleet, VM images, teams, shared folders,
-spending, integrations, connectors, appearance, connections and devices.
+spending, orchestration, integrations, connectors, appearance, connections
+and devices.
 
 *** Spending
 
 =/settings/spending?period=N&by=NICK= draws two rows of tabs -- the periods from =clawt_usage_period_count()= and the groupings from =clawt_usage_group_count()=, both by index into the library's tables, so there is no list of slugs here to drift -- then ~usage.ledger~'s groups as a table with Turns, Unpriced, In, Out and Cost columns and a Fleet footer.  An unpriced turn in the period adds a notice under the table saying how many and that they are not in the cost.  *Export CSV* is a plain =<a download>= to =/settings/spending/export= with the same query; that route asks the daemon again and answers =text/csv= with a =Content-Disposition= attachment, because the browser is not necessarily on the machine running =clawtilla-web=.  The document is =clawt_usage_ledger_csv()='s, the same bytes the CLI and the other clients write.
+
+*** Orchestration
+
+=/settings/orchestration= is a form with one select, *Model*, built by =clawt_web_select_field()= from =clawt_ack_check_model_count()= / =_nth_value()= / =_nth_label()= with ~orchestration.get~'s =ack_check_model= selected; a value the list lacks is kept as an option, so saving untouched cannot turn the check off.  *Save* posts to the same path, which sends ~orchestration.set~ and redraws the page with the outcome.  See [[file:clients.org::#orchestration-settings][Orchestration]].
+
+*** Acknowledged answers and merged deliveries in the chat
+
+=message_element()= reads =acknowledged= and =merged= off each ~room.history~ message.  An acknowledged answer gets a neutral badge, =clawt_message_ack_label()= with =clawt_message_ack_tooltip()= as its =title=, in the message's header line -- which is drawn for that message even mid-run, as the task and hop badges are.  A merged note's body is split by =clawt_merge_split()=: the preface is the message body and each section is a =.merge-section= block with a =.merge-section-label= heading.  The live ~message~ event only marks unread here; the transcript re-reads history, so both marks come from one path.
 
 *** The integration editor
 

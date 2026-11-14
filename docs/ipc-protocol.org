@@ -784,6 +784,22 @@ the daemon stops.
 ~mailbox.list~, ~mailbox.dead~, ~mailbox.ack~, ~mailbox.requeue~,
 ~mailbox.purge~.
 
+*** orchestration.*
+
+~orchestration.get~ → ~ack_check_model~ (the stored
+~orchestration.ack_check_model~, ~""~ for off) and
+~ack_check_model_label~ (how to show it: "Off", a catalogue label, or a
+value typed into the file shown as itself).
+
+~orchestration.set~ (~ack_check_model~) writes the key, saves the file,
+publishes ~config.changed~ and answers as ~orchestration.get~ does.
+~""~ turns the check off.  A value that is not ~provider/model~ is
+refused with ~CLAWT_ERROR_INVALID_ARGUMENT~, so a client cannot save
+something the daemon would then warn about and ignore; a model the
+catalogue does not list is accepted, because the catalogue goes stale.
+A client offers the choices by walking ~clawt_ack_check_model_count()~
+/ ~_nth_value()~ / ~_nth_label()~, never a copy of the list.
+
 *** task.*
 
 ~task.list~, ~task.show~, ~task.cancel~.
@@ -1678,6 +1694,17 @@ held text is delivered.
 message had travelled -- which is what lets a client show a chain
 climbing towards ~max_hops~ instead of an inexplicable wall of polite
 agreement.
+
+Two more members, present only when set, on ~room.history~ entries and
+on the ~message~ event's detail alike, and integers in both so one
+reader serves either source:
+
+- ~acknowledged: 1~ --- an answer the acknowledgement check recorded
+  instead of delivering (~orchestration.ack_check_model~).  Draw
+  ~clawt_message_ack_label()~ beside it.
+- ~merged: N~ --- clawtilla's note that N results were delivered to an
+  agent as one turn.  The body is sectioned; read it with
+  ~clawt_merge_split()~ and draw the sections.
 
 ~turn.step~ is one step of a turn that is still running: a tool the
 agent reached for, or a paragraph it wrote between two of them.  It

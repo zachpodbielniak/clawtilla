@@ -371,8 +371,8 @@ test_every_settings_page_builds(Fixture *fixture, gconstpointer data)
         n++;
     }
 
-    /* GTK's seven pages, and Connections */
-    g_assert_cmpuint(n, ==, 8);
+    /* GTK's nine pages, and Connections */
+    g_assert_cmpuint(n, ==, 10);
     g_assert_cmpstr(pages[n - 1]->id, ==, "connections");
 }
 

@@ -659,6 +659,31 @@ orchestration:
   # repeat is only caught if it lands inside the window.
   cycle_seconds: 300
 
+  # A small model that decides whether an answer only acknowledges, as
+  # provider/model -- claude/claude-haiku-4-5-20251001, ollama/llama3.2.
+  # Empty turns the check off.
+  #
+  # An answer to a deliberate message wakes the agent that sent it, and
+  # that turn costs as much for "Thanks, noted." as for a page of
+  # findings. With a model set, an answer is put to it only when the
+  # answering turn made no tool calls (so ran no commands, changed no
+  # files and sent nothing), its steps were streamed so that is known,
+  # the answer is at most 600 characters, and the message it answers was
+  # not a task. The model is asked one question, ACK or NEEDS, with both
+  # texts fenced as data, and has 8 seconds.
+  #
+  # Only a plain ACK skips the wake. NEEDS, a failure, a timeout or any
+  # other reply wakes the sender as before. An acknowledged answer is
+  # still recorded in the room, marked "acknowledged (no wake)", and
+  # the sender's next turn opens with a one-line note of it, so nothing
+  # is dropped.
+  #
+  # A provider ai-glib reaches over HTTP, with its key configured the way
+  # ai_assist's is. A command-line provider would spend the 8 seconds
+  # starting. A message sent with reply: none never wakes its sender,
+  # with or without this.
+  ack_check_model: ""
+
   # Defaults for every agent's mailbox.
   #
   # Each agent has a durable queue, so a message to a stopped agent waits

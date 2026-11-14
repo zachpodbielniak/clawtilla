@@ -259,7 +259,9 @@ show_flow_room(ClawtWindow *self, const gchar *room_id, const gchar *label)
                                     g_strcmp0(sender, "user") == 0,
                                     clawt_json_int(message, "ts", 0),
                                     clawt_json_string(message, "task", NULL),
-                                    clawt_json_int(message, "depth", 0));
+                                    clawt_json_int(message, "depth", 0),
+                                    clawt_json_int(message, "acknowledged", 0) != 0,
+                                    clawt_json_int(message, "merged", 0));
     }
 
     gtk_stack_set_visible_child_name(GTK_STACK(self->flow_stack), "room");

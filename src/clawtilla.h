@@ -73,6 +73,7 @@
 #include "decision/clawt-decision-store.h"
 #include "chat/clawt-attachment.h"
 #include "chat/clawt-preamble.h"
+#include "chat/clawt-merge.h"
 #include "chat/clawt-markdown.h"
 #include "chat/clawt-export.h"
 #include "chat/clawt-loop-guard.h"
@@ -174,6 +175,7 @@
 #include "usage/clawt-usage.h"
 #include "browser/clawt-browser.h"
 #include "mailbox/clawt-mailbox.h"
+#include "mailbox/clawt-ack-check.h"
 
 #include "agent/clawt-agent-runtime.h"
 #include "agent/clawt-process-runtime.h"

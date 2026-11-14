@@ -113,6 +113,17 @@ struct _ClawtDaemon {
      */
     ClawtSummariser *summariser;
 
+	/*
+	 * The acknowledgement check's model (orchestration.ack_check_model),
+	 * built on the first answer that qualifies and rebuilt when the key
+	 * changes -- not at start, which would reach for a provider on every
+	 * fleet whether or not the check is on.  The override is a test's
+	 * fake and wins over the key.
+	 */
+	AiProvider *ack_provider;
+	gchar      *ack_provider_spec;
+	AiProvider *ack_provider_override;
+
     ClawtExchange      *exchange;
 
     /*
@@ -1451,6 +1462,34 @@ void clawt_daemon_note_step(ClawtDaemon *self, ClawtTurnStep *step);
 GPtrArray *clawt_daemon_room_steps(ClawtDaemon *self, const gchar *room_id);
 
 void clawt_daemon_add_step_object(JsonBuilder *builder, ClawtTurnStep *step);
+
+/*
+ * The acknowledgement check (daemon-ack.c).
+ *
+ * clawt_daemon_ack_consider() is asked by the link handler about an
+ * answer it is about to route to a peer.  FALSE: route it now, as
+ * always.  TRUE: the check took it, and will either record it as an
+ * acknowledgement or route it when the model has answered -- never
+ * both, never neither.
+ */
+gboolean clawt_daemon_ack_consider(ClawtDaemon  *self,
+                                   const gchar  *agent_id,
+                                   const gchar  *room_id,
+                                   const gchar  *destination,
+                                   ClawtMessage *message);
+
+/* A test's fake model; wins over orchestration.ack_check_model. */
+void clawt_daemon_ack_set_provider(ClawtDaemon *self, AiProvider *provider);
+
+/* orchestration.get / orchestration.set */
+JsonNode *
+clawt_daemon_handle_orchestration(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
 
 JsonNode *
 clawt_daemon_handle_activity(
