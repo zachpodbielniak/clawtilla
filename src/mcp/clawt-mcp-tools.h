@@ -226,6 +226,49 @@ void clawt_mcp_tools_set_ask_decision_func(ClawtMcpTools           *self,
                                            GDestroyNotify           destroy);
 
 /**
+ * ClawtMcpSkillProposeFunc:
+ * @agent_id: who is proposing
+ * @name: the skill's name; for an update, the skill that exists
+ * @description: when an agent should reach for it
+ * @body: the markdown
+ * @is_update: %TRUE to change an existing skill, %FALSE for a new one
+ * @reason: (nullable): why, in the agent's words
+ * @user_data: as supplied
+ * @error: return location for a #GError
+ *
+ * Writes a skill proposal's draft and raises the decision for it.
+ *
+ * A hook because the library of skills, the proposal store and the
+ * decision inbox all belong to the daemon.  Unset -- a library embedded
+ * without a daemon -- the tool is not offered.
+ *
+ * Returns: (transfer full) (nullable): what to tell the agent, or %NULL
+ *   with @error set
+ */
+typedef gchar *(*ClawtMcpSkillProposeFunc)(const gchar  *agent_id,
+                                           const gchar  *name,
+                                           const gchar  *description,
+                                           const gchar  *body,
+                                           gboolean      is_update,
+                                           const gchar  *reason,
+                                           gpointer      user_data,
+                                           GError      **error);
+
+/**
+ * clawt_mcp_tools_set_skill_propose_func:
+ * @self: a #ClawtMcpTools
+ * @func: (nullable) (scope notified): the hook
+ * @user_data: passed to @func
+ * @destroy: frees @user_data
+ *
+ * Unset, `clawtilla_skill_propose` is not offered.
+ */
+void clawt_mcp_tools_set_skill_propose_func(ClawtMcpTools            *self,
+                                            ClawtMcpSkillProposeFunc  func,
+                                            gpointer                  user_data,
+                                            GDestroyNotify            destroy);
+
+/**
  * ClawtMcpHandoffFunc:
  * @from_agent: who is giving the task up
  * @task_id: the task whose ownership is moving

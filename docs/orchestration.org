@@ -829,6 +829,7 @@ Served over each agent's link as an MCP endpoint.
 | ~clawtilla_memory_*~ | six tools over your own searchable memories |
 | ~clawtilla_message_user~ | reach the operator; replying does not |
 | ~clawtilla_ask_decision~ | put a choice in the operator's decision inbox |
+| ~clawtilla_skill_propose~ | write down a procedure it worked out -- a new skill or a change to one -- as a disabled draft and a decision for the operator; see [[file:skills.org::*Skills agents propose][Skills agents propose]] |
 | ~clawtilla_list_teams~ | who is on which team, and who leads it |
 | ~clawtilla_fleet_cost~ | what the fleet has spent, and one task's budget |
 | ~clawtilla_wait_until~ / ~clawtilla_wait_list~ / ~clawtilla_wait_cancel~ | be told when a condition holds, checked by code; see [[*Waits: a condition checked by code][Waits]] |
@@ -848,6 +849,7 @@ offered depends on a gate per tool:
 | memories | ~memories.enabled~ |
 | the decision inbox | the daemon offering the hook; no config key |
 | waits | the daemon offering the manager; a command or computer wait also needs a computer and ~clawtilla_computer_exec~ |
+| proposing a skill | the daemon offering the hook, a skills library (=skills.enabled=), and =skills.max_proposals_per_day= above 0 |
 
 There is no ~tools.delegate~ key.  Turning delegation off for one agent
 is ~deny: [clawtilla_delegate]~.

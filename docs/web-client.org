@@ -196,6 +196,7 @@ answers with the page it did it on.
 | =/settings/<page>/...=        | their actions: add, save, remove, health, test, authorize, revoke |
 | =/new=, =/import=, =/design=  | making an agent                         |
 | =/alerts=, =/decisions=, =/routines/...=, =/tasks/:task/cancel= | the standing surfaces |
+| =/decisions/proposal=         | Approve, Reject or Edit a skill an agent proposed (~skill.proposal_resolve~); a refusal is shown as an error page, not swallowed by the redirect, since the proposal is still waiting |
 | =/activity/:agent/stop=, =/activity/:agent/steer=, =/f/activity= | the Activity page's actions and its polled panel |
 | =/fleet-usage/:agent/stop=, =/fleet-usage/stop-idle=, =/f/fleet-usage= | the Fleet page's actions and its polled panel (=?period== picks the window) |
 | =/a/:id/browser/open=, =/a/:id/browser/click=, =/a/:id/browser/stop=, =/a/:id/browser/frame=, =/f/a/:id/browser= | the Computer page's Browser view: its actions, its picture and its polled panel |

@@ -144,6 +144,7 @@
 #include "skill/clawt-skill-bundled.h"
 #include "policy/clawt-policy.h"
 #include "skill/clawt-skill-commands.h"
+#include "skill/clawt-skill-proposal.h"
 #include "teach/clawt-skill-synthesizer.h"
 
 #include "link/clawt-link.h"

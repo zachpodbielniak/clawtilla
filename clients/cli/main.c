@@ -6755,6 +6755,9 @@ print_skill_usage(gboolean asked_for)
         "  assign <name> <target>     to an agent, team:<id>, or fleet\n"
         "  unassign <name> <target>   take it away again\n"
         "  reload                     rescan the library now\n"
+        "  proposals                  skills agents have proposed, waiting\n"
+        "  approve <proposal>         apply one: enable it, or write the update\n"
+        "  reject <proposal> [why]    discard one; the agent is told why\n"
         "\n"
         "An imported skill lands disabled and its scripts are left behind.\n"
         "Read it, then enable it: what a skill says goes into a model's\n"
@@ -6764,7 +6767,9 @@ print_skill_usage(gboolean asked_for)
         "  clawtilla skill import ~/src/some-repo/skills/release\n"
         "  clawtilla skill show release\n"
         "  clawtilla skill enable release\n"
-        "  clawtilla skill assign release team:engineering\n";
+        "  clawtilla skill assign release team:engineering\n"
+        "  clawtilla skill proposals\n"
+        "  clawtilla skill reject skill-proposal-1f0c... \"too specific to one repo\"\n";
 
     print_usage_text(text, asked_for);
 }
@@ -7108,6 +7113,81 @@ cmd_skill(int argc, char *argv[])
                     target);
 
         report_refusals(reply);
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "proposals") == 0) {
+        JsonArray *proposals;
+
+        reply = call(client, "skill.proposals", NULL);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        proposals = json_object_get_array_member(json_node_get_object(reply),
+                                                 "proposals");
+
+        if (proposals == NULL || json_array_get_length(proposals) == 0) {
+            g_print("No skill proposals are waiting.\n");
+            return EXIT_SUCCESS;
+        }
+
+        /*
+         * The text the agent wrote arrives escaped, and the full draft or
+         * diff is printed so the person approving it from a terminal has
+         * read what they are approving.
+         */
+        for (i = 0; i < json_array_get_length(proposals); i++) {
+            JsonObject *proposal = json_array_get_object_element(proposals, i);
+            const gchar *kind = member_or(proposal, "kind", "create");
+            const gchar *diff = member_or(proposal, "diff", "");
+
+            g_print("%s\n  %s %s '%s'\n",
+                    member_or(proposal, "id", "?"),
+                    member_or(proposal, "agent", "?"),
+                    g_strcmp0(kind, "update") == 0 ? "proposes a change to"
+                                                  : "proposes a new skill",
+                    member_or(proposal, "name", "?"));
+
+            if (*member_or(proposal, "reason", "") != '\0')
+                g_print("  why: %s\n", member_or(proposal, "reason", ""));
+            if (json_object_get_boolean_member_with_default(proposal, "stale", FALSE))
+                g_print("  ! the file changed since it was proposed; approve is refused\n");
+
+            g_print("\n%s\n", g_strcmp0(kind, "update") == 0 && *diff != '\0'
+                                  ? diff : member_or(proposal, "text", ""));
+        }
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "approve") == 0 || g_strcmp0(verb, "reject") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+
+        if (name == NULL) {
+            g_printerr("Usage: clawtilla skill %s <proposal>%s\n", verb,
+                       g_strcmp0(verb, "reject") == 0 ? " [why]" : "");
+            return EXIT_FAILURE;
+        }
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "proposal");
+        json_builder_add_string_value(builder, name);
+        json_builder_set_member_name(builder, "action");
+        json_builder_add_string_value(builder, verb);
+        if (argc > 4) {
+            json_builder_set_member_name(builder, "note");
+            json_builder_add_string_value(builder, argv[4]);
+        }
+        json_builder_end_object(builder);
+
+        reply = call(client, "skill.proposal_resolve",
+                     json_builder_get_root(builder));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("%s %s.\n", name,
+                g_strcmp0(verb, "approve") == 0 ? "approved" : "rejected");
 
         return EXIT_SUCCESS;
     }

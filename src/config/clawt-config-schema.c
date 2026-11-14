@@ -1042,6 +1042,18 @@ static const ClawtSchemaEntry schema[] = {
   "The earliest steps are the ones kept, because the first part of a\nprocedure is a usable prefix of it while a slice out of the middle\nis not. Pointer motion is never counted: a drag is hundreds of\nevents and would spend the whole budget on the mouse travelling,\nso every click and scroll carries the position it happened at\ninstead.",
   "0.2.0" },
 
+{ "skills.max_proposals_per_day", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_COMMENTED,
+  "3", NULL,
+  "How many skills one agent may propose in any 24 hours.\n"
+  "\n"
+  "clawtilla_skill_propose lets an agent write down a technique it\n"
+  "worked out -- a new skill, or a change to one that exists -- as a\n"
+  "draft that reaches no prompt, with a decision in your inbox to\n"
+  "approve, edit or reject it. Every proposal spends your attention, so\n"
+  "this bounds how often one agent can ask for it; a rejected proposal\n"
+  "still counts. 0 turns proposing off, and the tool is not offered.",
+  "0.18.0" },
+
 { "rooms", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Standing rooms, created at startup if they do not exist.\n"
   "\n"
