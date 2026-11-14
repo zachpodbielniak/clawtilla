@@ -2280,6 +2280,20 @@ The page re-reads on ~message~, ~agent.state~, ~agent.idle_stopped~ and ~spendin
 
 The GTK client keeps a row you expanded open across refreshes. The web client polls the panel every four seconds while the tab is visible and draws the steps as plain lines, since a swap that frequent would close anything somebody had opened.
 
+*** The Grok tab
+:PROPERTIES:
+:CUSTOM_ID: grok-tab
+:END:
+
+Under Work, after Fleet, in all three graphical clients (=clients/gtk/gtk-grok.c=, =clients/web/web-grok.c=, =clients/lrg/lrg-grok.c=). From top to bottom:
+
+- *Whether a job could be sent right now*, from ~grok.bots~' ~reachable~ and ~unreachable_reason~ -- the same check a send makes, so the page and a refusal say the same thing.
+- *The bots*, each with its description, the agents it is shared with, a "no key" badge when the integration names none, and whether it reports by MCP or HTTP only. *Routine prompt* shows the standing instructions to paste into Grok (~grok.routine_prompt~); *Mint MCP key* asks first, then shows the key and URL once (~grok.mcp_key~).
+- *A composer*: a bot, the agent the answer goes to (only agents some bot is shared with), the instructions and optional context, sent with ~grok.send~.
+- *The jobs*, newest first: the state in =clawt_grok_job_state_label()= and =clawt_grok_job_state_tone()=, the bot and what was asked, the agent and how long ago, Grok's run id, and -- expandable -- what the bot reported, drawn as text.
+
+The tab's badge is ~grok.jobs~' ~attention~: jobs that failed, were refused, went unanswered or came back with a question. Every client re-reads it when ~grok.job_updated~ or ~grok.bots_changed~ arrives, and the Work section's badge sums it with the decision count. The web panel also reloads itself every fifteen seconds while visible. ~clawtilla grok~ is the CLI for the same; see [[file:grok.org][grok.org]].
+
 *** The activity line
 
 Under the transcript, a spinner and a line of text, hidden when there is

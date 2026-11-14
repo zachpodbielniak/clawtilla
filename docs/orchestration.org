@@ -1330,6 +1330,12 @@ missing feature an agent invents a workaround for.  Put the file in the
 exchange and name its path.
 
 
+** Handing work to a Grok bot
+
+A Grok bot is not an agent in the fleet: it runs on xAI's side, reached through a routine's webhook, and reports back over the tailnet.  An agent a =grokbot= integration is shared with gets ~clawtilla_grok_dispatch~ and ~clawtilla_grok_jobs~, and its =TOOLS.org= lists the bots it may reach by name with what each is for.
+
+The call returns as soon as Grok has started a run.  The answer arrives later as a message from =grok:<bot>= in the room the dispatching turn was in, one hop further along than that turn -- so =max_hops= still bounds a chain that passes through a bot -- and under the task that turn was working on.  Sending a job under a task notes progress on it, which holds off the turn-end completion for the turn that sent it: the task is completed by the turn the answer starts, not by the turn that asked.  A job nobody answers is given up at its deadline and the agent is told so.  See [[file:grok.org][grok.org]].
+
 ** The decision inbox
 
 An agent that reaches a point where a human choice would change what it

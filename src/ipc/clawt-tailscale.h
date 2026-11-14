@@ -75,4 +75,45 @@ gboolean clawt_tailscale_is_tailnet_interface(const gchar *name);
  */
 gchar *clawt_tailscale_find_address(void);
 
+/**
+ * clawt_tailscale_dns_name_from_status:
+ * @body: (array length=length): tailscaled's `/localapi/v0/status` answer
+ * @length: its length, or -1
+ * @error: (out) (optional): why no name was found
+ *
+ * This machine's MagicDNS name -- `Self.DNSName`, without its trailing
+ * dot -- which is what another tailnet machine dials.
+ *
+ * Returns: (transfer full) (nullable): the name
+ */
+gchar *clawt_tailscale_dns_name_from_status(const gchar  *body,
+                                            gssize        length,
+                                            GError      **error);
+
+/**
+ * clawt_tailscale_dns_name_async:
+ * @context: (nullable): the context the answer is delivered on
+ * @cancellable: (nullable): a #GCancellable
+ * @callback: called with the answer
+ * @user_data: data for @callback
+ *
+ * Asks tailscaled, over its local socket, what this machine is called on
+ * the tailnet.  Never called during daemon start and never by a test:
+ * it reaches the machine's own tailscaled.
+ */
+void clawt_tailscale_dns_name_async(GMainContext        *context,
+                                    GCancellable        *cancellable,
+                                    GAsyncReadyCallback  callback,
+                                    gpointer             user_data);
+
+/**
+ * clawt_tailscale_dns_name_finish:
+ * @result: the #GAsyncResult
+ * @error: (out) (optional): why there is no name
+ *
+ * Returns: (transfer full) (nullable): the name
+ */
+gchar *clawt_tailscale_dns_name_finish(GAsyncResult  *result,
+                                       GError       **error);
+
 G_END_DECLS

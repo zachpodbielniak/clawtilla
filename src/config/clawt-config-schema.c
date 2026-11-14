@@ -1384,7 +1384,9 @@ static const ClawtSchemaEntry schema[] = {
 { "integrations.token", CLAWT_SCHEMA_SECRET, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
   "notify: the credential for ntfy, gotify or Matrix, as a secret\n"
-  "reference.\n"
+  "reference. libresearch: the server's token. grokbot: the routine's\n"
+  "webhook key (`crsr_...`), which is the whole of what lets anybody\n"
+  "start that bot.\n"
   "\n"
   "Resolved once when the configuration loads rather than on every\n"
   "notification: a `command` reference to a locked password manager\n"
@@ -1455,7 +1457,10 @@ static const ClawtSchemaEntry schema[] = {
   "mcp: an HTTP or SSE endpoint, instead of `command`.\n"
   "\n"
   "One or the other, never both: an entry naming a command and a URL is\n"
-  "two different servers and there is no way to tell which was meant.", "0.2.0" },
+  "two different servers and there is no way to tell which was meant.\n"
+  "\n"
+  "libresearch: where its server answers. grokbot: the Grok routine's\n"
+  "webhook address, as Grok shows it under \"POST to\".", "0.2.0" },
 
 { "integrations.env", CLAWT_SCHEMA_MAPPING, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
@@ -1599,6 +1604,8 @@ static const ClawtSchemaEntry schema[] = {
   "a provider that moves an endpoint should be fixable here rather than\n"
   "by waiting for a clawtilla release.", "0.2.0" },
 
+
+
 { "connectors.refresh_margin_seconds", CLAWT_SCHEMA_INT,
   CLAWT_SCHEMA_FLAG_NONE, "300", NULL,
   "How long before expiry to renew a token.\n"
@@ -1652,6 +1659,38 @@ static const ClawtSchemaEntry schema[] = {
   "daemon last started -- a restart must not reset this clock, or a\n"
   "fleet that bounces every hour would refresh every hour regardless of\n"
   "what this key says.", "0.2.0" },
+
+/* ── grok ────────────────────────────────────────────────────────── */
+{ "grok", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Handing work to Grok bots, and hearing back.\n"
+  "\n"
+  "Each bot is a `grokbot` integration named for it -- `chief`,\n"
+  "`research` -- whose url is a Grok routine's webhook. A job is POSTed\n"
+  "there with a callback address minted for it, and the bot reports\n"
+  "back to the daemon's webhook listener over the tailnet, by HTTP or\n"
+  "by the clawtilla MCP tools. These keys are about that return path.\n"
+  "See docs/grok.org.", "0.10.0" },
+
+{ "grok.callback_host", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "The name a Grok bot uses to reach this daemon.\n"
+  "\n"
+  "Empty means the machine's own tailnet name, asked of tailscaled --\n"
+  "the FQDN `tailscale status` shows for it. Set it when tailscaled is\n"
+  "not readable by the daemon's user. Either way the webhook listener\n"
+  "(daemon.webhook_enabled) has to be bound on the tailnet\n"
+  "(daemon.tailscale): a job is refused rather than sent with an\n"
+  "address nothing answers on.", "0.10.0" },
+
+{ "grok.job_ttl_minutes", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "120", NULL,
+  "How long a job may go unanswered before it is given up.\n"
+  "\n"
+  "Longer than the half hour an unattended Grok run's approval card\n"
+  "waits, because a run that stalls on one is the usual reason a\n"
+  "report is late. When it lapses the agent is told, with Grok's run\n"
+  "id, and a report arriving afterwards is refused. A job may ask for\n"
+  "less or more; this is the default.", "0.10.0" },
 
 { "routines", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Standing work: a prompt, an agent, and when to run it.\n"

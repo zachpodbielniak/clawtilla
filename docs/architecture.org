@@ -69,7 +69,8 @@ back.
 
 The rest of the lifecycle follows the same contract.  ~stop()~ quiesces
 every *initiator* -- the servers, the autostart, the maintenance sweep,
-the routine tick, the pods, the webhook ingress and the venture poll --
+the routine tick, the pods, the webhook ingress, the venture poll and
+the Grok deadline sweep --
 so a stopped daemon answers nothing and starts nothing, however long it
 stays in the process.  What a start built is then *released* by the next
 ~start()~ or by disposal, through one function, ~release_components()~.

@@ -37,7 +37,9 @@ typedef enum {
     NEEDS_WEB_RESEARCH,
     NEEDS_SCHEDULE,
     NEEDS_BROWSER,
-    NEEDS_BROWSER_SCRIPTS
+    NEEDS_BROWSER_SCRIPTS,
+    NEEDS_GROK,
+    NEEDS_NEVER
 } ToolRequirement;
 
 typedef struct {
@@ -416,6 +418,46 @@ static const ClawtParamInfo web_research_params[] = {
       "Let the server's model write and run follow-up searches. Slower, "
       "broader.", FALSE },
     { "pages", "integer", "Pages to read, 1 to 20. Defaults to the server's.", FALSE }
+};
+
+static const ClawtParamInfo grok_dispatch_params[] = {
+    { "bot", "string",
+      "Which Grok bot, by the name in your TOOLS.org (\"chief\" for "
+      "\"the chief Grok bot\"). A unique prefix is enough.", TRUE },
+    { "instructions", "string",
+      "What the bot should do, completely: it knows nothing of this "
+      "conversation. Say what a good result looks like.", TRUE },
+    { "context", "string",
+      "Anything the bot needs to do it -- text, links, figures. Sent as "
+      "data, separate from the instructions.", FALSE },
+    { "timeout_minutes", "integer",
+      "How long to wait for its answer before giving up. Defaults to "
+      "grok.job_ttl_minutes.", FALSE }
+};
+
+/*
+ * The bot's side: what a Grok bot calls on the /mcp/grok endpoint.
+ * Declared in this table, and never offered to an agent, so that the
+ * names are registered here like every other clawtilla_* tool and one
+ * set of parameter declarations serves both the agent-facing docs check
+ * and the endpoint's tools/list.
+ */
+static const ClawtParamInfo grok_report_params[] = {
+    { "job_id", "string", "clawtilla.id from your input.", TRUE },
+    { "job_token", "string",
+      "clawtilla.report.mcp.job_token from your input.", TRUE },
+    { "status", "string",
+      "done, failed or needs_input. Report exactly once.", TRUE },
+    { "result", "string",
+      "What you found or did; why it failed; or the question you need "
+      "answered.", TRUE }
+};
+
+static const ClawtParamInfo grok_progress_params[] = {
+    { "job_id", "string", "clawtilla.id from your input.", TRUE },
+    { "job_token", "string",
+      "clawtilla.report.mcp.job_token from your input.", TRUE },
+    { "note", "string", "A line on where the work stands.", TRUE }
 };
 
 static const ClawtParamInfo skill_read_params[] = {
@@ -922,6 +964,35 @@ static const ToolDefinition tools[] = {
          "guessing; the answer is this server's, modules included.",
          NEEDS_WEB_RESEARCH, no_params, CLAWT_ACTION_READ),
 
+    TOOL("clawtilla_grok_dispatch",
+         "Hand a piece of work to one of the Grok bots listed in your "
+         "TOOLS.org and return at once with a job id. The bot works on "
+         "its own, elsewhere; its answer arrives later as a message in "
+         "this conversation, which starts your next turn -- so finish "
+         "this one rather than waiting. Write instructions that stand on "
+         "their own.",
+         NEEDS_GROK, grok_dispatch_params, CLAWT_ACTION_EXTERNAL),
+
+    TOOL("clawtilla_grok_jobs",
+         "The work you have handed to Grok bots: which are still open, "
+         "which answered, and what they said.",
+         NEEDS_GROK, no_params, CLAWT_ACTION_READ),
+
+    TOOL("clawtilla_grok_report",
+         "Report a clawtilla job as done, failed or needing input. For a "
+         "Grok bot; never offered to an agent.",
+         NEEDS_NEVER, grok_report_params, CLAWT_ACTION_EXTERNAL),
+
+    TOOL("clawtilla_grok_progress",
+         "Say how a clawtilla job is going, before reporting it. For a "
+         "Grok bot; never offered to an agent.",
+         NEEDS_NEVER, grok_progress_params, CLAWT_ACTION_EXTERNAL),
+
+    TOOL("clawtilla_grok_assigned",
+         "The clawtilla jobs handed to this bot that are still open. For "
+         "a Grok bot; never offered to an agent.",
+         NEEDS_NEVER, no_params, CLAWT_ACTION_READ),
+
     TOOL("clawtilla_request_hands",
          "Ask a person to take the screen and do something you cannot. "
          "This does not hand the screen over and does not wait -- only a "
@@ -980,6 +1051,10 @@ struct _ClawtMcpTools {
     ClawtMcpSearchFunc      search;
     gpointer                search_data;
     GDestroyNotify          search_destroy;
+
+    ClawtMcpGrokHooks       grok;
+    gpointer                grok_data;
+    GDestroyNotify          grok_destroy;
 
     /* The daemon's browser sessions, for clawtilla_browser_*; NULL offers none. */
     ClawtBrowserManager    *browsers;
@@ -1097,6 +1172,82 @@ clawt_mcp_tools_set_search_func(ClawtMcpTools      *self,
     self->search = func;
     self->search_data = user_data;
     self->search_destroy = destroy;
+}
+
+void
+clawt_mcp_tools_set_grok_hooks(ClawtMcpTools           *self,
+                               const ClawtMcpGrokHooks *hooks,
+                               gpointer                 user_data,
+                               GDestroyNotify           destroy)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    if (self->grok_destroy != NULL && self->grok_data != NULL)
+        self->grok_destroy(self->grok_data);
+
+    if (hooks != NULL)
+        self->grok = *hooks;
+    else
+        memset(&self->grok, 0, sizeof(self->grok));
+
+    self->grok_data = user_data;
+    self->grok_destroy = destroy;
+}
+
+/* The bots an agent may reach, or NULL when it may reach none. */
+static JsonArray *
+grok_bots_for(ClawtMcpTools *self, const gchar *agent_id)
+{
+    JsonArray *bots;
+
+    if (self->grok.bots == NULL)
+        return NULL;
+
+    bots = self->grok.bots(agent_id, self->grok_data);
+
+    if (bots != NULL && json_array_get_length(bots) == 0) {
+        json_array_unref(bots);
+        return NULL;
+    }
+
+    return bots;
+}
+
+JsonNode *
+clawt_mcp_tools_grok_bot_tools(void)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    gsize i;
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "tools");
+    json_builder_begin_array(builder);
+
+    for (i = 0; i < G_N_ELEMENTS(tools); i++) {
+        g_autoptr(JsonNode) schema = NULL;
+
+        if (tools[i].requirement != NEEDS_NEVER)
+            continue;
+
+        /* no_params is a one-element sentinel, so it counts as none. */
+        schema = clawt_param_info_to_schema(tools[i].params,
+                                            tools[i].params == no_params
+                                            ? 0 : tools[i].n_params);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "name");
+        json_builder_add_string_value(builder, tools[i].name);
+        json_builder_set_member_name(builder, "description");
+        json_builder_add_string_value(builder, tools[i].description);
+        json_builder_set_member_name(builder, "inputSchema");
+        json_builder_add_value(builder, g_steal_pointer(&schema));
+        json_builder_end_object(builder);
+    }
+
+    json_builder_end_array(builder);
+    json_builder_end_object(builder);
+
+    return json_builder_get_root(builder);
 }
 
 void
@@ -1848,6 +1999,26 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
             return FALSE;
         break;
 
+    case NEEDS_GROK:
+        /*
+         * Only to an agent a `grokbot` integration is shared with, asked
+         * of the same hook the call resolves bots through, so "offered"
+         * and "works" cannot disagree about who has one.
+         */
+        {
+            JsonArray *bots = grok_bots_for(self, agent_id);
+
+            if (bots == NULL)
+                return FALSE;
+
+            json_array_unref(bots);
+        }
+        break;
+
+    case NEEDS_NEVER:
+        /* The bot's side of the Grok endpoint; an agent never has it. */
+        return FALSE;
+
     case NEEDS_SCREEN:
         /*
          * Offered only to an agent that has a screen at all. A tool an
@@ -2251,6 +2422,46 @@ clawt_mcp_tools_describe_for_agent(ClawtMcpTools *self, const gchar *agent_id)
      * sentence here reaches those agents on their next start, which
      * changing the template cannot.
      */
+    /*
+     * The Grok bots, by name, with what each is for.  An operator says
+     * "ask our chief Grok bot"; the agent can only turn that into a call
+     * if the names are in front of it, and the descriptions are what
+     * lets it pick a bot nobody named.  Walked from the same hook the
+     * tool resolves bots through.
+     */
+    {
+        g_autoptr(JsonArray) bots = grok_bots_for(self, agent_id);
+        guint b;
+
+        if (bots != NULL) {
+            g_string_append(out,
+                "* Grok bots you can hand work to\n\n"
+                "Each is a Grok bot running elsewhere. Hand one a job with\n"
+                "~clawtilla_grok_dispatch~ and its name; the answer comes\n"
+                "back later as a message in the conversation you asked from,\n"
+                "so finish your turn rather than waiting. When somebody asks\n"
+                "for \"our <name> Grok bot\", <name> is the bot's name below.\n\n"
+                "| Bot | What it is for |\n"
+                "|-----+----------------|\n");
+
+            for (b = 0; b < json_array_get_length(bots); b++) {
+                JsonObject *bot = json_array_get_object_element(bots, b);
+                const gchar *name = argument_string(bot, "name");
+                const gchar *description = argument_string(bot,
+                                                           "description");
+
+                g_string_append_printf(out, "| ~%s~ | %s |\n",
+                                       name != NULL ? name : "?",
+                                       description != NULL &&
+                                           *description != '\0'
+                                           ? description
+                                           : "(no description given)");
+            }
+
+            g_string_append(out, "\n");
+        }
+    }
+
     g_string_append(out,
         "* The tools clawtilla is giving you\n\n"
         "This section is written from the live list every time you start,\n"
@@ -6141,6 +6352,7 @@ clawt_mcp_tools_call_defers(ClawtMcpTools *self,
     tool_name = argument_string(params, "name");
 
     if (g_strcmp0(tool_name, "clawtilla_computer_exec") != 0 &&
+        g_strcmp0(tool_name, "clawtilla_grok_dispatch") != 0 &&
         !g_str_has_prefix(tool_name != NULL ? tool_name : "", "clawtilla_web_") &&
         !g_str_has_prefix(tool_name != NULL ? tool_name : "", "clawtilla_browser_")) {
         /*
@@ -6385,6 +6597,76 @@ web_call_start(ClawtMcpTools *self, const gchar *agent_id, const gchar *tool,
                               (GDestroyNotify)json_node_unref);
         web_async_free(async);
     }
+}
+
+/* ── Grok bots ───────────────────────────────────────────────────── */
+
+typedef struct {
+    GTask    *outer;        /* owned */
+    JsonNode *request_id;   /* owned, nullable */
+} GrokAsync;
+
+static void
+on_grok_dispatched(const gchar *text, gboolean is_error, gpointer data)
+{
+    GrokAsync *async = data;
+
+    g_task_return_pointer(async->outer,
+                          make_response(async->request_id,
+                                        text != NULL ? text : "",
+                                        is_error),
+                          (GDestroyNotify)json_node_unref);
+
+    g_clear_object(&async->outer);
+    g_clear_pointer(&async->request_id, json_node_unref);
+    g_free(async);
+}
+
+/*
+ * Hands one job to the daemon.  The room, the hop depth and the parent
+ * task are this turn's, worked out here by the same helpers delegation
+ * uses, so a Grok answer arriving later continues the conversation that
+ * asked for it, one hop further along, under the task that was running.
+ * Answers through @outer in every case, a refusal included, because the
+ * caller has already deferred.
+ */
+static void
+grok_call_start(ClawtMcpTools *self, const gchar *agent_id,
+                const gchar *room_id, JsonObject *arguments,
+                JsonNode *request_id, GTask *outer)
+{
+    GrokAsync *async = g_new0(GrokAsync, 1);
+    const gchar *turn_room;
+
+    async->outer = outer;
+    async->request_id = request_id != NULL ? json_node_ref(request_id)
+                                           : NULL;
+
+    if (self->grok.dispatch == NULL) {
+        on_grok_dispatched("No Grok bot is configured for you.", TRUE,
+                           async);
+        return;
+    }
+
+    turn_room = call_room(self, agent_id, room_id, arguments);
+
+    self->grok.dispatch(agent_id, turn_room,
+                        delegating_from_task(self, agent_id, turn_room),
+                        outbound_depth(self, agent_id, turn_room),
+                        arguments, on_grok_dispatched, async,
+                        self->grok_data);
+}
+
+static gchar *
+tool_grok_jobs(ClawtMcpTools *self, const gchar *agent_id,
+               gboolean *is_error)
+{
+    if (self->grok.jobs == NULL) {
+        *is_error = TRUE;
+        return g_strdup("No Grok bot is configured for you.");
+    }
+
+    return self->grok.jobs(agent_id, self->grok_data);
 }
 
 /* A call waiting on an action rule's answer. */
@@ -7050,6 +7332,12 @@ call_async_dispatch(ClawtMcpTools *self, const gchar *agent_id,
         return;
     }
 
+    if (g_strcmp0(tool, "clawtilla_grok_dispatch") == 0) {
+        grok_call_start(self, agent_id, room_id, arguments, request_id,
+                        outer);
+        return;
+    }
+
     if (g_strcmp0(tool, "clawtilla_computer_exec") != 0) {
         g_task_return_pointer(outer, tools_call(self, agent_id, room_id, request, TRUE),
                               (GDestroyNotify)json_node_unref);
@@ -7437,6 +7725,16 @@ tools_call(ClawtMcpTools *self,
         text = tool_computer_state(self, agent_id);
     else if (g_strcmp0(tool_name, "clawtilla_skill_list") == 0)
         text = tool_skill_list(self, agent_id);
+    else if (g_strcmp0(tool_name, "clawtilla_grok_jobs") == 0)
+        text = tool_grok_jobs(self, agent_id, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_grok_dispatch") == 0) {
+        /*
+         * Only reachable when the deferred path declined it, which it
+         * does for a refusal; the dispatch itself always waits on Grok.
+         */
+        text = g_strdup("Grok dispatch is not available to you.");
+        is_error = TRUE;
+    }
     else if (g_strcmp0(tool_name, "clawtilla_skill_read") == 0)
         text = tool_skill_read(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_request_hands") == 0)
@@ -7515,6 +7813,13 @@ clawt_mcp_tools_dispose(GObject *object)
         self->search_data = NULL;
     }
     self->search = NULL;
+
+    if (self->grok_destroy != NULL && self->grok_data != NULL) {
+        self->grok_destroy(self->grok_data);
+        self->grok_destroy = NULL;
+        self->grok_data = NULL;
+    }
+    memset(&self->grok, 0, sizeof(self->grok));
 
     if (self->policy_destroy != NULL && self->policy_data != NULL) {
         self->policy_destroy(self->policy_data);

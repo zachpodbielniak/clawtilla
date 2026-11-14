@@ -1576,6 +1576,87 @@ clawt_trigger_provider_nth_label(guint n)
     return trigger_providers[n].label;
 }
 
+/* ── Grok jobs ───────────────────────────────────────────────────── */
+
+/* In enumeration order, so the n'th entry's state is n. */
+static const struct {
+    ClawtGrokJobState  state;
+    const gchar       *nick;
+    const gchar       *label;
+} grok_job_states[] = {
+    { CLAWT_GROK_JOB_SENT,        "sent",        "Sending" },
+    { CLAWT_GROK_JOB_ACCEPTED,    "accepted",    "Started" },
+    { CLAWT_GROK_JOB_WORKING,     "working",     "Working" },
+    { CLAWT_GROK_JOB_DONE,        "done",        "Done" },
+    { CLAWT_GROK_JOB_FAILED,      "failed",      "Failed" },
+    { CLAWT_GROK_JOB_NEEDS_INPUT, "needs_input", "Has a question" },
+    { CLAWT_GROK_JOB_EXPIRED,     "expired",     "No answer" },
+    { CLAWT_GROK_JOB_REFUSED,     "refused",     "Not started" }
+};
+
+GType
+clawt_grok_job_state_get_type(void)
+{
+    static gsize type_id = 0;
+
+    if (g_once_init_enter(&type_id)) {
+        static GEnumValue values[G_N_ELEMENTS(grok_job_states) + 1];
+        guint i;
+        GType id;
+
+        /*
+         * Built from the table rather than a second literal list, so the
+         * nick on the wire and the nick in the table cannot disagree.
+         */
+        for (i = 0; i < G_N_ELEMENTS(grok_job_states); i++) {
+            values[i].value = (gint)grok_job_states[i].state;
+            values[i].value_name = grok_job_states[i].nick;
+            values[i].value_nick = grok_job_states[i].nick;
+        }
+
+        id = g_enum_register_static("ClawtGrokJobState", values);
+        g_once_init_leave(&type_id, id);
+    }
+
+    return type_id;
+}
+
+guint
+clawt_grok_job_state_count(void)
+{
+    return G_N_ELEMENTS(grok_job_states);
+}
+
+ClawtGrokJobState
+clawt_grok_job_state_nth(guint n)
+{
+    g_return_val_if_fail(n < G_N_ELEMENTS(grok_job_states),
+                         CLAWT_GROK_JOB_FAILED);
+
+    return grok_job_states[n].state;
+}
+
+const gchar *
+clawt_grok_job_state_nth_nick(guint n)
+{
+    g_return_val_if_fail(n < G_N_ELEMENTS(grok_job_states), "failed");
+
+    return grok_job_states[n].nick;
+}
+
+const gchar *
+clawt_grok_job_state_label(ClawtGrokJobState state)
+{
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS(grok_job_states); i++) {
+        if (grok_job_states[i].state == state)
+            return grok_job_states[i].label;
+    }
+
+    return "Unknown";
+}
+
 /* ── The pages, and the groups they are drawn in ─────────────────── */
 
 /*
@@ -1635,6 +1716,7 @@ static const struct {
     { CLAWT_PAGE_FLOW,      CLAWT_SECTION_WORK,       "flow",      "Flow" },
     { CLAWT_PAGE_ACTIVITY,  CLAWT_SECTION_WORK,       "activity",  "Activity" },
     { CLAWT_PAGE_FLEET,     CLAWT_SECTION_WORK,       "fleet",     "Fleet" },
+    { CLAWT_PAGE_GROK,      CLAWT_SECTION_WORK,       "grok",      "Grok" },
     { CLAWT_PAGE_SKILLS,    CLAWT_SECTION_LIBRARY,    "skills",    "Skills" },
     { CLAWT_PAGE_MEMORY,    CLAWT_SECTION_LIBRARY,    "memory",    "Memory" }
 };

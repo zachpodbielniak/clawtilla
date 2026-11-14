@@ -44,7 +44,8 @@ typedef enum {
     REFRESH_ROOMS     = 1 << 1,
     REFRESH_ACTIVITY  = 1 << 2,
     REFRESH_DECISIONS = 1 << 3,
-    REFRESH_USAGE     = 1 << 4
+    REFRESH_USAGE     = 1 << 4,
+    REFRESH_GROK      = 1 << 5
 } RefreshKind;
 
 typedef struct {
@@ -100,6 +101,7 @@ clawt_lrg_page_for(ClawtPage page)
     case CLAWT_PAGE_FLOW:      return clawt_lrg_flow_page();
     case CLAWT_PAGE_ACTIVITY:  return clawt_lrg_activity_page();
     case CLAWT_PAGE_FLEET:     return clawt_lrg_fleet_page();
+    case CLAWT_PAGE_GROK:      return clawt_lrg_grok_page();
     case CLAWT_PAGE_SKILLS:    return clawt_lrg_skills_page();
     case CLAWT_PAGE_MEMORY:    return clawt_lrg_memory_page();
     }
@@ -594,6 +596,29 @@ on_decisions(ClawtLrgApp *app, JsonNode *reply, const GError *error,
     clawt_lrg_update_island(app);
 }
 
+/*
+ * The Grok page's badge: the daemon's count of jobs that need somebody,
+ * read whole rather than tallied from events, so it goes down as well as
+ * up and a missed event cannot leave it wrong.
+ */
+static void
+on_grok_jobs(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+             gpointer user_data)
+{
+    JsonObject *root = clawt_ipc_reply_object(reply);
+
+    (void)error;
+    (void)user_data;
+
+    if (root == NULL)
+        return;
+
+    clawt_lrg_set_page_badge(app, CLAWT_PAGE_GROK,
+                             (guint)clawt_ipc_payload_int(root, "attention",
+                                                          0),
+                             "bad");
+}
+
 /* `usage.summary` since local midnight, in unix seconds as it wants. */
 static JsonNode *
 usage_today_payload(void)
@@ -623,6 +648,8 @@ clawt_lrg_refresh_fleet(ClawtLrgApp *app)
                       on_activity, NULL, NULL);
     clawt_lrg_request(app, "decision.list", NULL, CLAWT_LRG_QUIET,
                       on_decisions, NULL, NULL);
+    clawt_lrg_request(app, "grok.jobs", NULL, CLAWT_LRG_QUIET,
+                      on_grok_jobs, NULL, NULL);
     clawt_lrg_request(app, "usage.summary",
                       usage_today_payload(),
                       CLAWT_LRG_QUIET, on_usage, NULL, NULL);
@@ -757,6 +784,9 @@ on_refresh_due(gpointer user_data)
     if (due & REFRESH_USAGE)
         clawt_lrg_request(app, "usage.summary", usage_today_payload(),
                           CLAWT_LRG_QUIET, on_usage, NULL, NULL);
+    if (due & REFRESH_GROK)
+        clawt_lrg_request(app, "grok.jobs", NULL, CLAWT_LRG_QUIET,
+                          on_grok_jobs, NULL, NULL);
 
     return G_SOURCE_REMOVE;
 }
@@ -813,6 +843,10 @@ clawt_lrg_window_event(ClawtLrgApp *app, ClawtEvent *event)
 
     if (g_str_has_prefix(kind, "decision."))
         refresh_soon(app, REFRESH_DECISIONS);
+
+    /* both ends of a job publish it, so the badge counts down too */
+    if (g_str_has_prefix(kind, "grok."))
+        refresh_soon(app, REFRESH_GROK);
 
     if (g_str_has_prefix(kind, "control.") || g_str_has_prefix(kind, "hold"))
         clawt_lrg_hold_refresh(app);

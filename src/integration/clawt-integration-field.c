@@ -114,6 +114,21 @@ static const ClawtIntegrationField fields[] = {
       "file:~/.clawtilla/secrets/libresearch.token",
       CLAWT_FIELD_SECRET, NULL, NULL, NULL, NULL, FALSE },
 
+    /* ── grokbot ─────────────────────────────────────────────────── */
+
+    { "grokbot", "url", "Routine webhook",
+      "In Grok, open the bot's routine, add a Webhook trigger, and copy "
+      "the address it shows under \"POST to\".",
+      "https://api2.cursor.sh/automations/webhook/...",
+      CLAWT_FIELD_TEXT, NULL, NULL, NULL, NULL, TRUE },
+
+    { "grokbot", "token", "Webhook key",
+      "The key Grok shows beside that address (crsr_...). A reference "
+      "-- env:NAME, file:PATH or command:... -- never the key itself: "
+      "anybody holding it can start the bot.",
+      "file:~/.clawtilla/secrets/grok-chief.key",
+      CLAWT_FIELD_SECRET, NULL, NULL, NULL, NULL, TRUE },
+
     /* ── email ───────────────────────────────────────────────────── */
 
     { "email", "username", "Mailbox",
@@ -318,6 +333,7 @@ static const struct {
     { "mcp",       "MCP server" },
     { "connector", "Connected account" },
     { "libresearch", "Web research (libresearch)" },
+    { "grokbot",   "Grok bot" },
     { "notify",    "Notifications" }
 };
 

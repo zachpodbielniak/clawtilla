@@ -1067,6 +1067,18 @@ authentication failure and nothing else: a delivery turned away by the
 rate limit or the in-flight cap is in the receipts and publishes
 *nothing*, since an event per refusal is a way to make the daemon
 publish as fast as somebody can POST.
+*** grok.*
+
+~grok.bots~ takes nothing and returns ~bots~ -- each bot once, by ~name~, with ~description~, ~key_configured~ (the integration names a routine key), ~mcp_key~ (a key has been minted for the MCP endpoint) and ~agents~ (who it is shared with, walked from each agent's resolved bindings) -- and ~reachable~: whether a job could be sent right now.  When it could, ~callback_host~ names where bots report; when it could not, ~unreachable_reason~ says why, in the same words a send's refusal uses.  ~mcp_url~ is present when the endpoint can be reached.
+
+~grok.jobs~ takes optional ~bot~, ~agent~, ~open~ (unsettled only) and ~limit~ (50, at most 500), and returns ~jobs~ newest first -- each with ~id~, ~bot~, ~agent~, ~room~, ~task~, ~run_uuid~, ~instructions~, ~result~, ~note~, ~state~ (a =ClawtGrokJobState= nick), ~settled~, ~needs_attention~ and ~created_at~, ~updated_at~, ~expires_at~ in microseconds -- and ~attention~, the number of listed jobs that need somebody, which is the page badge.  Never a token.
+
+~grok.send~ takes ~agent~ (whose job it is; its answer goes to that agent's conversation with its operator), ~bot~ (resolved by name, case or unique prefix among the bots shared with that agent), ~instructions~, and optional ~context~ and ~timeout_minutes~.  It is answered later: after Grok has said whether it started a run, with ~job~ -- or with an error whose message says why it was not started.
+
+~grok.routine_prompt~ takes ~bot~ and returns ~text~, the standing instructions for the bot's routine.  ~grok.mcp_key~ takes ~bot~, mints a key for the MCP endpoint and returns ~key~ with ~secret_shown_once~, and ~mcp_url~ when reachable.  Only the digest is kept; minting again replaces it.
+
+~grok.job_updated~ is published whenever a job changes -- sent, accepted, a progress note, settled or expired -- with ~bot~, ~agent~ and ~state~, so a client's count goes down as well as up.  ~grok.bots_changed~ is published when an MCP key is minted.  See [[file:grok.org][grok.org]].
+
 *** skill.*
 
 ~skill.list~ returns every skill in the library, each with its
@@ -1359,6 +1371,8 @@ Every kind published, by subject:
 | an agent | ~decision.asked~, ~decision.settled~ (~decision~, ~how~: ~answered~, ~dismissed~, ~defaulted~ or ~deleted~), ~decision.deleted~ (~decision~) |
 | a routine | ~routine.ran~, ~routine.changed~ |
 | a trigger | ~trigger.fired~, ~trigger.changed~, ~trigger.refused~, ~trigger.verified~ |
+| a Grok job | ~grok.job_updated~ (~bot~, ~agent~, ~state~) |
+| a Grok bot | ~grok.bots_changed~ |
 | a skill | ~skill.changed~ |
 | a recording | ~teach.changed~ |
 | an integration | ~integration.changed~ |

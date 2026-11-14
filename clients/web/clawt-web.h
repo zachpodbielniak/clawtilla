@@ -270,6 +270,18 @@ guint clawt_web_app_unread_total(ClawtWebApp *self);
 guint clawt_web_app_open_decisions(ClawtWebApp *self);
 
 /**
+ * clawt_web_app_grok_attention:
+ * @self: a #ClawtWebApp
+ *
+ * How many Grok jobs need somebody -- failed, unanswered, refused or
+ * back with a question -- as the daemon counts them.  Cached and
+ * invalidated by any `grok.` event, as the decision count is.
+ *
+ * Returns: the count
+ */
+guint clawt_web_app_grok_attention(ClawtWebApp *self);
+
+/**
  * clawt_web_app_note_fleet:
  * @self: a #ClawtWebApp
  * @agents: (nullable): the `agents` array from an `agent.list` reply

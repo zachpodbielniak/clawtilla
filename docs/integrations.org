@@ -457,6 +457,22 @@ integrations:
 
 Not an =mcp= entry, because the tools are clawtilla's own and answered on the daemon's deferred path: a research run takes minutes, and an MCP server of its own would put that wait in a process nobody supervises. =one_per_agent=: two servers would be two answers to one question. Health check: the server's LQL environment answers. Everything else -- the tools, how agents learn LQL, what each error means -- is in [[file:research.org][research.org]].
 
+** grokbot -- handing work to a Grok bot
+
+A Grok bot, reached through one of its routines' webhook triggers. Name the integration for the bot -- =chief=, =research= -- because the name is what agents use: "ask our chief Grok bot" becomes ~clawtilla_grok_dispatch~ with =bot: chief=. The agents in scope get ~clawtilla_grok_dispatch~ and ~clawtilla_grok_jobs~, and a section of =TOOLS.org= listing every bot they may reach with its =description=.
+
+#+begin_src yaml
+integrations:
+  - name: chief
+    type: grokbot
+    scope: all
+    description: "Chief of staff: calendar, mail, errands"
+    url: "https://api2.cursor.sh/automations/webhook/..."
+    token: {file: ~/.clawtilla/secrets/grok-chief.key}
+#+end_src
+
+Not =one_per_agent= -- an agent may reach several bots -- and no identity keys, because a bot shared by the fleet is one bot several agents hand work to. Health check: on paper only (an https routine URL and a key reference), because calling the webhook would *start a run*. The bot reports back over the tailnet to the webhook listener, so =daemon.webhook_enabled= and =daemon.tailscale= must be on. Everything else -- the routine prompt, the MCP connection, the reporting contract, what each failure means -- is in [[file:grok.org][grok.org]].
+
 ** notify -- when an agent is blocked on you, or has broken
 
 ~clawtilla_message_user~ puts an agent's question where you will see it

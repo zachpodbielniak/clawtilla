@@ -116,6 +116,14 @@ struct _ClawtWebApp {
      */
     guint        open_decisions;
     gboolean     decisions_known;
+
+    /*
+     * How many Grok jobs need somebody, kept exactly as the decision
+     * count is: marked unknown by any `grok.` event and asked from a
+     * render, so the daemon decides the number.
+     */
+    guint        grok_attention;
+    gboolean     grok_known;
     guint        next_alert_id;
 
     /*
@@ -383,6 +391,29 @@ clawt_web_app_open_decisions(ClawtWebApp *self)
     self->decisions_known = TRUE;
 
     return self->open_decisions;
+}
+
+guint
+clawt_web_app_grok_attention(ClawtWebApp *self)
+{
+    g_autoptr(JsonNode) reply = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_WEB_APP(self), 0);
+
+    if (self->grok_known)
+        return self->grok_attention;
+
+    reply = clawt_web_app_call(self, "grok.jobs", NULL);
+
+    /* Unknown, not zero, when the daemon did not answer: see above. */
+    if (reply == NULL)
+        return 0;
+
+    self->grok_attention = (guint)clawt_web_member_int(clawt_web_root(reply),
+                                                       "attention", 0);
+    self->grok_known = TRUE;
+
+    return self->grok_attention;
 }
 
 guint
@@ -672,6 +703,7 @@ clawt_web_app_switch(ClawtWebApp *self, ClawtConnection *connection,
      * than zeroed: zero is a claim, and the first render will ask.
      */
     self->decisions_known = FALSE;
+    self->grok_known = FALSE;
 
     /*
      * The version belongs to the daemon, not to this process, so it is
@@ -817,6 +849,10 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
      */
     if (kind != NULL && g_str_has_prefix(kind, "decision."))
         self->decisions_known = FALSE;
+
+    /* A job sent, answered or given up, by any client or by an agent. */
+    if (kind != NULL && g_str_has_prefix(kind, "grok."))
+        self->grok_known = FALSE;
 
     /*
      * Two of the daemon's kinds are notifications; the rest is the
@@ -966,6 +1002,7 @@ on_resync(ClawtClient *client, gpointer user_data)
      * one is wrong in the direction that reads as work waiting.
      */
     self->decisions_known = FALSE;
+    self->grok_known = FALSE;
 
     tell_every_page(self, "resync");
 }

@@ -306,6 +306,12 @@ struct _ClawtDaemon {
      */
     struct _ClawtVentureReplay *venture_replay;
 
+    /*
+     * Grok bots: the job store, the POSTs in flight and the deadline
+     * sweep.  Opaque here; daemon-grok.c owns it.
+     */
+    struct _ClawtDaemonGrok *grok;
+
     /* Pods that watch the fleet and act on it. */
     ClawtAutomation *automation;
 
@@ -831,6 +837,95 @@ guint clawt_daemon_trigger_deliver(ClawtDaemon        *self,
 void clawt_daemon_venture_start(ClawtDaemon *self);
 void clawt_daemon_venture_stop(ClawtDaemon *self);
 void clawt_daemon_venture_sync(ClawtDaemon *self);
+
+/*
+ * Grok bots, in daemon-grok.c.
+ */
+
+/*
+ * ClawtDaemonGrokSent:
+ * @job: (nullable): the job as it now stands, or %NULL if none was made
+ * @refusal: (nullable): why it was not started, in words for the agent
+ * @user_data: as given
+ *
+ * How a send is answered, exactly once: started (@refusal %NULL), or not.
+ */
+typedef void (*ClawtDaemonGrokSent)(ClawtGrokJob *job,
+                                    const gchar  *refusal,
+                                    gpointer      user_data);
+
+void clawt_daemon_grok_start(ClawtDaemon *self);
+void clawt_daemon_grok_stop(ClawtDaemon *self);
+
+/*
+ * clawt_daemon_grok_send:
+ * @self: the daemon
+ * @agent_id: whose job it is; the bot must be shared with this agent
+ * @room_id: (nullable): the conversation the answer comes back into;
+ *   %NULL is the agent's conversation with its operator
+ * @task_id: (nullable): the task the asking turn was working on
+ * @depth: the hop depth the answer arrives at
+ * @bot_asked: the bot, as the agent named it
+ * @instructions: what to do
+ * @context: (nullable): data to do it with
+ * @ttl_minutes: how long to wait; 0 is grok.job_ttl_minutes
+ * @done: (scope async): called once with the outcome
+ * @done_data: for @done
+ */
+void clawt_daemon_grok_send(ClawtDaemon          *self,
+                            const gchar          *agent_id,
+                            const gchar          *room_id,
+                            const gchar          *task_id,
+                            gint                  depth,
+                            const gchar          *bot_asked,
+                            const gchar          *instructions,
+                            const gchar          *context,
+                            gint64                ttl_minutes,
+                            ClawtDaemonGrokSent   done,
+                            gpointer              done_data);
+
+/*
+ * clawt_daemon_grok_sweep:
+ * @self: the daemon
+ * @now: microseconds
+ *
+ * Gives up every open job past its deadline and tells its agent.  The
+ * timer calls it every thirty seconds; a test calls it with a clock of
+ * its own.
+ */
+void clawt_daemon_grok_sweep(ClawtDaemon *self, gint64 now);
+
+/*
+ * clawt_daemon_grok_get_store:
+ *
+ * Returns: (transfer none) (nullable): the job store, for a test
+ */
+ClawtGrokStore *clawt_daemon_grok_get_store(ClawtDaemon *self);
+
+/*
+ * clawt_daemon_grok_handle:
+ *
+ * The listener's Grok routes -- a report on /grok/<job>, or one MCP
+ * message on /mcp/grok -- answered from the store without waiting on
+ * anything.  Public to the daemon so a test can drive it without a
+ * socket.
+ *
+ * Returns: (transfer full) (nullable): the response body
+ */
+gchar *clawt_daemon_grok_handle(ClawtDaemon        *self,
+                                ClawtWebhookRoute   route,
+                                const gchar        *job_id,
+                                GHashTable         *headers,
+                                const guchar       *body,
+                                gsize               body_length,
+                                guint              *out_status,
+                                const gchar       **out_content_type);
+
+JsonNode *clawt_daemon_handle_grok(ClawtDaemon *self,
+                                   const gchar *kind,
+                                   JsonNode    *request,
+                                   JsonObject  *payload,
+                                   gboolean    *handled);
 
 /*
  * clawt_daemon_venture_replay_tick:

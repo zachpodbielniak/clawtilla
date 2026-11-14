@@ -78,6 +78,8 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/integration/clawt-integration.h \
 	$(SRCDIR)/integration/clawt-venture.h \
 	$(SRCDIR)/integration/clawt-venture-bridge.h \
+	$(SRCDIR)/integration/clawt-grok.h \
+	$(SRCDIR)/integration/clawt-grok-store.h \
 	$(SRCDIR)/integration/clawt-oauth.h \
 	$(SRCDIR)/integration/clawt-matrix.h \
 	$(SRCDIR)/integration/clawt-notify.h \
@@ -229,6 +231,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-routine.c \
 	$(SRCDIR)/core/daemon-trigger.c \
 	$(SRCDIR)/core/daemon-venture.c \
+	$(SRCDIR)/core/daemon-grok.c \
 	$(SRCDIR)/core/daemon-config.c \
 	$(SRCDIR)/core/daemon-skill.c \
 	$(SRCDIR)/core/daemon-step.c \
@@ -241,6 +244,8 @@ LIB_SOURCES = \
 	$(SRCDIR)/integration/clawt-integration-field.c \
 	$(SRCDIR)/integration/clawt-venture.c \
 	$(SRCDIR)/integration/clawt-venture-bridge.c \
+	$(SRCDIR)/integration/clawt-grok.c \
+	$(SRCDIR)/integration/clawt-grok-store.c \
 	$(SRCDIR)/integration/clawt-oauth.c \
 	$(SRCDIR)/integration/clawt-matrix.c \
 	$(SRCDIR)/integration/clawt-notify.c \

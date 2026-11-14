@@ -345,6 +345,66 @@ void clawt_mcp_tools_set_browsers(ClawtMcpTools       *self,
                                   ClawtBrowserManager *browsers);
 
 /**
+ * ClawtMcpGrokReply:
+ * @text: what the agent is told -- the job id on success, or why not
+ * @is_error: whether it was refused
+ * @reply_data: as handed to the dispatch hook
+ *
+ * How a Grok dispatch is answered, exactly once.
+ */
+typedef void (*ClawtMcpGrokReply)(const gchar *text,
+                                  gboolean     is_error,
+                                  gpointer     reply_data);
+
+/**
+ * ClawtMcpGrokHooks:
+ * @bots: the bots an agent may reach, as a #JsonArray of
+ *   `{name, description}` objects (transfer full), or %NULL for none
+ * @dispatch: sends one job and answers through the reply exactly once;
+ *   the turn's room, parent task and hop depth are worked out by the
+ *   tools and handed over
+ * @jobs: the agent's jobs, as text for the model (transfer full)
+ *
+ * What the daemon supplies so an agent can use Grok bots.  Unset, the
+ * `clawtilla_grok_*` tools are offered to nobody.
+ */
+typedef struct {
+    JsonArray *(*bots)(const gchar *agent_id, gpointer user_data);
+    void       (*dispatch)(const gchar       *agent_id,
+                           const gchar       *turn_room,
+                           const gchar       *task_id,
+                           gint               depth,
+                           JsonObject        *arguments,
+                           ClawtMcpGrokReply  reply,
+                           gpointer           reply_data,
+                           gpointer           user_data);
+    gchar     *(*jobs)(const gchar *agent_id, gpointer user_data);
+} ClawtMcpGrokHooks;
+
+/**
+ * clawt_mcp_tools_set_grok_hooks:
+ * @self: a #ClawtMcpTools
+ * @hooks: (nullable): the hooks, copied
+ * @user_data: passed to each hook
+ * @destroy: frees @user_data
+ */
+void clawt_mcp_tools_set_grok_hooks(ClawtMcpTools           *self,
+                                    const ClawtMcpGrokHooks *hooks,
+                                    gpointer                 user_data,
+                                    GDestroyNotify           destroy);
+
+/**
+ * clawt_mcp_tools_grok_bot_tools:
+ *
+ * The tools a Grok bot is offered on `/mcp/grok`, as a `tools/list`
+ * result -- declared in the same table as every agent tool and offered
+ * to no agent.
+ *
+ * Returns: (transfer full): `{"tools": [...]}`
+ */
+JsonNode *clawt_mcp_tools_grok_bot_tools(void);
+
+/**
  * clawt_mcp_tools_set_search_func:
  * @self: a #ClawtMcpTools
  * @func: (nullable) (scope notified): the hook

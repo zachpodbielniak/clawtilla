@@ -25,6 +25,9 @@ struct _ClawtWebhookIngress {
 
     ClawtWebhookDeliverFunc deliver;
     gpointer                deliver_data;
+
+    ClawtWebhookGrokFunc    grok;
+    gpointer                grok_data;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtWebhookIngress, clawt_webhook_ingress, G_TYPE_OBJECT)
@@ -66,6 +69,27 @@ clawt_webhook_route(const gchar  *method,
         return (g_strcmp0(method, "GET") == 0)
             ? CLAWT_WEBHOOK_ROUTE_HEALTH
             : CLAWT_WEBHOOK_ROUTE_WRONG_METHOD;
+
+    if (g_strcmp0(path, "/mcp/grok") == 0)
+        return (g_strcmp0(method, "POST") == 0)
+            ? CLAWT_WEBHOOK_ROUTE_GROK_MCP
+            : CLAWT_WEBHOOK_ROUTE_WRONG_METHOD;
+
+    if (g_str_has_prefix(path, "/grok/")) {
+        const gchar *job = path + strlen("/grok/");
+
+        /* As for an endpoint: nothing under a job, and 404 before 405. */
+        if (*job == '\0' || strchr(job, '/') != NULL)
+            return CLAWT_WEBHOOK_ROUTE_NONE;
+
+        if (g_strcmp0(method, "POST") != 0)
+            return CLAWT_WEBHOOK_ROUTE_WRONG_METHOD;
+
+        if (out_endpoint != NULL)
+            *out_endpoint = job;
+
+        return CLAWT_WEBHOOK_ROUTE_GROK_REPORT;
+    }
 
     if (!g_str_has_prefix(path, "/hooks/"))
         return CLAWT_WEBHOOK_ROUTE_NONE;
@@ -133,6 +157,51 @@ on_request(SoupServer        *server,
     case CLAWT_WEBHOOK_ROUTE_NONE:
         answer(message, SOUP_STATUS_NOT_FOUND, "no such endpoint\n");
         return;
+
+    case CLAWT_WEBHOOK_ROUTE_GROK_REPORT:
+    case CLAWT_WEBHOOK_ROUTE_GROK_MCP: {
+        SoupMessageBody *bounded =
+            g_object_get_data(G_OBJECT(message), "clawt-bounded-body");
+        const gchar *content_type = "text/plain";
+        g_autofree gchar *grok_reply = NULL;
+
+        if (self->grok == NULL) {
+            answer(message, SOUP_STATUS_SERVICE_UNAVAILABLE,
+                   "nothing is wired up to hear from Grok\n");
+            return;
+        }
+
+        headers = clawt_trigger_headers_new();
+        soup_message_headers_iter_init(
+            &iter, soup_server_message_get_request_headers(message));
+
+        while (soup_message_headers_iter_next(&iter, &name, &value))
+            clawt_trigger_headers_add(headers, name, value);
+
+        grok_reply = self->grok(
+            clawt_webhook_route(soup_server_message_get_method(message),
+                                path, NULL),
+            endpoint, headers,
+            (bounded != NULL) ? (const guchar *)bounded->data : NULL,
+            (bounded != NULL) ? (gsize)bounded->length : 0,
+            self->grok_data, &status, &content_type);
+
+        {
+            const gchar *text = grok_reply != NULL ? grok_reply : "";
+
+            soup_server_message_set_status(message, status, NULL);
+
+            /*
+             * A 202 to an MCP notification carries no body at all; an
+             * empty text/plain one is not what the protocol promises.
+             */
+            if (*text != '\0')
+                soup_server_message_set_response(message, content_type,
+                                                 SOUP_MEMORY_COPY, text,
+                                                 strlen(text));
+        }
+        return;
+    }
 
     case CLAWT_WEBHOOK_ROUTE_DELIVERY:
         break;
@@ -466,6 +535,33 @@ listen_on(ClawtWebhookIngress  *self,
     g_ptr_array_add(self->addresses, g_strdup(address));
 
     return TRUE;
+}
+
+void
+clawt_webhook_ingress_set_grok_func(ClawtWebhookIngress  *self,
+                                    ClawtWebhookGrokFunc  func,
+                                    gpointer              user_data)
+{
+    g_return_if_fail(CLAWT_IS_WEBHOOK_INGRESS(self));
+
+    self->grok = func;
+    self->grok_data = user_data;
+}
+
+gboolean
+clawt_webhook_ingress_is_on_tailnet(ClawtWebhookIngress *self)
+{
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_WEBHOOK_INGRESS(self), FALSE);
+
+    for (i = 0; self->addresses != NULL && i < self->addresses->len; i++) {
+        if (clawt_tailscale_is_tailnet_address(
+                g_ptr_array_index(self->addresses, i)))
+            return TRUE;
+    }
+
+    return FALSE;
 }
 
 gboolean

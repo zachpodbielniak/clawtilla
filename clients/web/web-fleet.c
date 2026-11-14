@@ -1161,7 +1161,12 @@ clawt_web_topbar(ClawtWebApp *app, const gchar *agent_id, ClawtPage view)
          * else on screen carries it.
          */
         if (section == CLAWT_SECTION_WORK) {
-            guint waiting = clawt_web_app_open_decisions(app);
+            /*
+             * And the Grok jobs that need somebody, which live in the same
+             * section: the sum, as the GTK client sums its section's pages.
+             */
+            guint waiting = clawt_web_app_open_decisions(app) +
+                            clawt_web_app_grok_attention(app);
 
             if (waiting > 0)
                 add_tab_badge(HTMX_ELEMENT(tab), waiting);
@@ -1216,6 +1221,8 @@ clawt_web_view_body(ClawtWebApp *app, const gchar *agent_id, ClawtPage view)
         return clawt_web_activity_body(app, agent_id);
     case CLAWT_PAGE_FLEET:
         return clawt_web_fleet_usage_body(app, agent_id);
+    case CLAWT_PAGE_GROK:
+        return clawt_web_grok_body(app, agent_id);
     case CLAWT_PAGE_SKILLS:
         return clawt_web_skills_body(app, agent_id);
     case CLAWT_PAGE_MEMORY:

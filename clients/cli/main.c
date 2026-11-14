@@ -7409,6 +7409,344 @@ cmd_routine(int argc, char *argv[])
 }
 
 static void
+print_grok_usage(gboolean asked_for)
+{
+    static const gchar *text =
+        "Usage: clawtilla grok <verb> [...]\n"
+        "\n"
+        "  bots                           the Grok bots, who can reach each,\n"
+        "                                 and whether a job could be sent now\n"
+        "  jobs [--bot B] [--agent A] [--open]\n"
+        "                                 work handed to Grok bots, newest first\n"
+        "  send <bot> <instructions...> --agent A [--context TEXT]\n"
+        "       [--timeout MINUTES]       hand a job to a bot on an agent's\n"
+        "                                 behalf; its answer goes to that agent\n"
+        "  test <bot> --agent A           a ping job; the bot should answer pong\n"
+        "  routine-prompt <bot>           the instructions to paste into the\n"
+        "                                 bot's routine in Grok, once\n"
+        "  mcp-key <bot>                  mint the key that connects the bot to\n"
+        "                                 clawtilla's MCP endpoint; printed ONCE\n"
+        "\n"
+        "A bot is a `grokbot` integration named for it, whose url and token\n"
+        "are a Grok routine's webhook address and key. The bot reports back\n"
+        "to this daemon's webhook listener over the tailnet, so\n"
+        "daemon.webhook_enabled and daemon.tailscale must both be on.\n"
+        "\n"
+        "Examples:\n"
+        "  clawtilla integration add chief grokbot \\\n"
+        "      url=https://api2.cursor.sh/automations/webhook/... \\\n"
+        "      token=file:~/.clawtilla/secrets/grok-chief.key \\\n"
+        "      description=\"Chief of staff: calendar, mail, errands\" \\\n"
+        "      scope=all\n"
+        "  clawtilla grok routine-prompt chief | wl-copy\n"
+        "  clawtilla grok mcp-key chief\n"
+        "  clawtilla grok test chief --agent oryx\n"
+        "  clawtilla grok send chief --agent oryx \\\n"
+        "      \"Find three venues near the office for Thursday\"\n"
+        "  clawtilla grok jobs --open\n";
+
+    print_usage_text(text, asked_for);
+}
+
+/* A value after a --flag, or NULL; and the flag's own index, consumed. */
+static const gchar *
+flag_value(int argc, char *argv[], const gchar *flag, GHashTable *used)
+{
+    int i;
+
+    for (i = 3; i + 1 < argc; i++) {
+        if (g_strcmp0(argv[i], flag) == 0) {
+            g_hash_table_add(used, GINT_TO_POINTER(i));
+            g_hash_table_add(used, GINT_TO_POINTER(i + 1));
+            return argv[i + 1];
+        }
+    }
+
+    return NULL;
+}
+
+static gboolean
+flag_present(int argc, char *argv[], const gchar *flag, GHashTable *used)
+{
+    int i;
+
+    for (i = 3; i < argc; i++) {
+        if (g_strcmp0(argv[i], flag) == 0) {
+            g_hash_table_add(used, GINT_TO_POINTER(i));
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
+static void
+print_grok_job(JsonObject *job, gint64 now)
+{
+    gint64 created = 0;
+    g_autofree gchar *age = NULL;
+    gint state = CLAWT_GROK_JOB_FAILED;
+    const gchar *result = member_or(job, "result", NULL);
+    const gchar *note = member_or(job, "note", NULL);
+
+    if (json_object_has_member(job, "created_at"))
+        created = json_object_get_int_member(job, "created_at");
+
+    age = clawt_time_ago_label(created, now);
+    clawt_enum_from_nick(CLAWT_TYPE_GROK_JOB_STATE,
+                         member_or(job, "state", "failed"), &state);
+
+    g_print("%-16s %-12s %-14s %-12s %s\n", member_or(job, "id", "?"),
+            member_or(job, "bot", "?"),
+            clawt_grok_job_state_label((ClawtGrokJobState)state),
+            member_or(job, "agent", "-"), age);
+    g_print("    asked: %s\n", member_or(job, "instructions", ""));
+
+    if (member_or(job, "run_uuid", NULL) != NULL)
+        g_print("    grok run: %s\n", member_or(job, "run_uuid", ""));
+
+    if (note != NULL && !member_flag(job, "settled", FALSE))
+        g_print("    latest: %s\n", note);
+
+    if (result != NULL && *result != '\0')
+        g_print("    %s: %s\n",
+                state == CLAWT_GROK_JOB_REFUSED ? "why" : "answer", result);
+}
+
+static int
+cmd_grok(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GHashTable) used = g_hash_table_new(NULL, NULL);
+    const gchar *verb = (argc > 2) ? argv[2] : "bots";
+    const gchar *bot = (argc > 3 && argv[3][0] != '-') ? argv[3] : NULL;
+    gint64 now = g_get_real_time();
+    guint i;
+
+    if (g_strcmp0(verb, "help") == 0 || g_strcmp0(verb, "--help") == 0 ||
+        g_strcmp0(verb, "-h") == 0) {
+        print_grok_usage(TRUE);
+        return EXIT_SUCCESS;
+    }
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    if (g_strcmp0(verb, "bots") == 0) {
+        JsonObject *root;
+        JsonArray *bots;
+
+        reply = call(client, "grok.bots", NULL);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        root = json_node_get_object(reply);
+        bots = json_object_get_array_member(root, "bots");
+
+        if (member_flag(root, "reachable", FALSE))
+            g_print("Bots report back to %s.\n\n",
+                    member_or(root, "callback_host", "?"));
+        else
+            g_print("No job can be sent right now: %s.\n\n",
+                    member_or(root, "unreachable_reason", "unknown"));
+
+        if (bots == NULL || json_array_get_length(bots) == 0) {
+            g_print("No Grok bot is shared with any agent. Add a `grokbot` "
+                    "integration: `clawtilla grok help`.\n");
+            return EXIT_SUCCESS;
+        }
+
+        for (i = 0; i < json_array_get_length(bots); i++) {
+            JsonObject *one = json_array_get_object_element(bots, i);
+            JsonArray *agents = json_object_get_array_member(one, "agents");
+            g_autoptr(GString) who = g_string_new(NULL);
+            guint a;
+
+            for (a = 0; agents != NULL && a < json_array_get_length(agents);
+                 a++) {
+                if (who->len > 0)
+                    g_string_append(who, ", ");
+                g_string_append(who,
+                                json_array_get_string_element(agents, a));
+            }
+
+            g_print("%-14s %s\n", member_or(one, "name", "?"),
+                    member_or(one, "description", ""));
+            g_print("    reachable by: %s\n", who->str);
+            g_print("    key: %s   mcp: %s\n",
+                    member_flag(one, "key_configured", FALSE) ? "set"
+                                                              : "MISSING",
+                    member_flag(one, "mcp_key", FALSE)
+                        ? "connected" : "not connected (grok mcp-key)");
+        }
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "jobs") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        const gchar *only_bot = flag_value(argc, argv, "--bot", used);
+        const gchar *agent = flag_value(argc, argv, "--agent", used);
+        JsonArray *jobs;
+
+        json_builder_begin_object(builder);
+        if (only_bot != NULL) {
+            json_builder_set_member_name(builder, "bot");
+            json_builder_add_string_value(builder, only_bot);
+        }
+        if (agent != NULL) {
+            json_builder_set_member_name(builder, "agent");
+            json_builder_add_string_value(builder, agent);
+        }
+        json_builder_set_member_name(builder, "open");
+        json_builder_add_boolean_value(builder,
+                                       flag_present(argc, argv, "--open",
+                                                    used));
+        json_builder_end_object(builder);
+
+        reply = call(client, "grok.jobs", json_builder_get_root(builder));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        jobs = json_object_get_array_member(json_node_get_object(reply),
+                                            "jobs");
+
+        if (jobs == NULL || json_array_get_length(jobs) == 0) {
+            g_print("No Grok jobs%s.\n",
+                    only_bot != NULL || agent != NULL ? " match" : " yet");
+            return EXIT_SUCCESS;
+        }
+
+        for (i = 0; i < json_array_get_length(jobs); i++)
+            print_grok_job(json_array_get_object_element(jobs, i), now);
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "send") == 0 || g_strcmp0(verb, "test") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        g_autoptr(GString) instructions = g_string_new(NULL);
+        const gchar *agent = flag_value(argc, argv, "--agent", used);
+        const gchar *context = flag_value(argc, argv, "--context", used);
+        const gchar *timeout = flag_value(argc, argv, "--timeout", used);
+        gboolean test = g_strcmp0(verb, "test") == 0;
+        int a;
+
+        if (bot == NULL || agent == NULL) {
+            g_printerr("clawtilla: say which bot, and --agent for whose job "
+                       "it is: the answer goes to that agent\n");
+            print_grok_usage(FALSE);
+            return EXIT_FAILURE;
+        }
+
+        if (test) {
+            g_string_append(instructions,
+                "This is a connection test from clawtilla. Do nothing else: "
+                "report this job straight away with status done and result "
+                "\"pong\".");
+        } else {
+            for (a = 4; a < argc; a++) {
+                if (g_hash_table_contains(used, GINT_TO_POINTER(a)))
+                    continue;
+                if (instructions->len > 0)
+                    g_string_append_c(instructions, ' ');
+                g_string_append(instructions, argv[a]);
+            }
+        }
+
+        if (instructions->len == 0) {
+            g_printerr("clawtilla: what should the bot do?\n");
+            return EXIT_FAILURE;
+        }
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "bot");
+        json_builder_add_string_value(builder, bot);
+        json_builder_set_member_name(builder, "agent");
+        json_builder_add_string_value(builder, agent);
+        json_builder_set_member_name(builder, "instructions");
+        json_builder_add_string_value(builder, instructions->str);
+        if (context != NULL) {
+            json_builder_set_member_name(builder, "context");
+            json_builder_add_string_value(builder, context);
+        }
+        if (timeout != NULL || test) {
+            json_builder_set_member_name(builder, "timeout_minutes");
+            json_builder_add_int_value(builder,
+                                       timeout != NULL
+                                           ? g_ascii_strtoll(timeout, NULL,
+                                                             10)
+                                           : 10);
+        }
+        json_builder_end_object(builder);
+
+        reply = call(client, "grok.send", json_builder_get_root(builder));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        {
+            JsonObject *job = json_object_get_object_member(
+                json_node_get_object(reply), "job");
+
+            g_print("Started job %s on %s (Grok run %s).\n",
+                    member_or(job, "id", "?"), member_or(job, "bot", "?"),
+                    member_or(job, "run_uuid", "unknown"));
+            g_print("The answer goes to %s as a message. Follow it with "
+                    "`clawtilla grok jobs --bot %s`.\n", agent,
+                    member_or(job, "bot", bot));
+        }
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "routine-prompt") == 0) {
+        if (bot == NULL) {
+            print_grok_usage(FALSE);
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "grok.routine_prompt",
+                     build_payload("bot", bot, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("%s", member_or(json_node_get_object(reply), "text", ""));
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "mcp-key") == 0) {
+        JsonObject *root;
+
+        if (bot == NULL) {
+            print_grok_usage(FALSE);
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "grok.mcp_key", build_payload("bot", bot, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        root = json_node_get_object(reply);
+
+        g_print("In Grok, ask the bot to add a remote MCP connection:\n");
+        g_print("  URL:      %s\n", member_or(root, "mcp_url",
+                                              "(not reachable yet -- see "
+                                              "`clawtilla grok bots`)"));
+        g_print("  API key:  %s\n", member_or(root, "key", "?"));
+        g_print("\nThis is the only time the key is shown. Minting another "
+                "replaces it.\nThen run `clawtilla grok routine-prompt %s` "
+                "again: it now names the MCP route.\n", bot);
+        return EXIT_SUCCESS;
+    }
+
+    g_printerr("clawtilla: unknown grok verb '%s'\n", verb);
+    print_grok_usage(FALSE);
+    return EXIT_FAILURE;
+}
+
+static void
 print_trigger_usage(gboolean asked_for)
 {
     g_autoptr(GString) providers = g_string_new(NULL);
@@ -8440,6 +8778,8 @@ static const ClawtVerb verbs[] = {
       cmd_routine },
     { "trigger", "<verb>",   "Work started by a webhook",
       cmd_trigger },
+    { "grok",    "<verb>",   "Hand work to Grok bots, and hear back",
+      cmd_grok },
     { "skill",   "<verb>",   "Procedures agents can be given",
       cmd_skill },
     { "teach",   "<verb>",   "Record a task, and write a skill from it",

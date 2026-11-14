@@ -1654,6 +1654,14 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
         clawt_gtk_refresh_decisions(self);
 
     /*
+     * Both ends of a job publish this, so the badge counts down as well
+     * as up; and a bot's key minted elsewhere changes the page's rows.
+     */
+    if (g_strcmp0(kind, "grok.job_updated") == 0 ||
+        g_strcmp0(kind, "grok.bots_changed") == 0)
+        clawt_gtk_refresh_grok_badge(self);
+
+    /*
      * `routine.ran` is published when one starts, so the list shows the
      * new "last run" without anybody reopening the page.
      */
@@ -3539,6 +3547,7 @@ reload_after_connect(gpointer user_data)
     clawt_gtk_refresh_selected(self);
     clawt_gtk_refresh_tasks(self);
     clawt_gtk_refresh_decisions(self);
+    clawt_gtk_refresh_grok_badge(self);
     clawt_gtk_refresh_routines(self);
     clawt_gtk_refresh_skills(self);
     clawt_gtk_load_history(self);
@@ -3800,6 +3809,7 @@ switch_connection(ClawtWindow *self, ClawtConnection *connection)
     clawt_gtk_refresh_agents(self);
     clawt_gtk_refresh_tasks(self);
     clawt_gtk_refresh_decisions(self);
+    clawt_gtk_refresh_grok_badge(self);
     clawt_gtk_refresh_routines(self);
 
     {
@@ -4788,6 +4798,10 @@ on_page_shown(ClawtWindow *self)
         clawt_gtk_refresh_fleet(self);
         return;
     }
+    if (clawt_gtk_current_page(self) == CLAWT_PAGE_GROK) {
+        clawt_gtk_refresh_grok(self);
+        return;
+    }
     if (clawt_gtk_current_page(self) != CLAWT_PAGE_MEMORY)
         return;
 
@@ -4965,6 +4979,7 @@ build_page(ClawtWindow *self, ClawtPage page)
     case CLAWT_PAGE_FLOW:      return clawt_gtk_build_flow_page(self);
     case CLAWT_PAGE_ACTIVITY:  return clawt_gtk_build_activity_page(self);
     case CLAWT_PAGE_FLEET:     return clawt_gtk_build_fleet_page(self);
+    case CLAWT_PAGE_GROK:      return clawt_gtk_build_grok_page(self);
     case CLAWT_PAGE_SKILLS:    return clawt_gtk_build_skill_page(self);
     case CLAWT_PAGE_MEMORY:    return clawt_gtk_build_recall_page(self);
     }

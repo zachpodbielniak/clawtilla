@@ -1625,6 +1625,73 @@ typedef enum {
 } ClawtSection;
 
 /**
+ * ClawtGrokJobState:
+ * @CLAWT_GROK_JOB_SENT: written down, the POST not yet answered
+ * @CLAWT_GROK_JOB_ACCEPTED: Grok started a run; nothing heard from it yet
+ * @CLAWT_GROK_JOB_WORKING: the bot has reported progress
+ * @CLAWT_GROK_JOB_DONE: the bot reported a result
+ * @CLAWT_GROK_JOB_FAILED: the bot said it could not, or the POST failed
+ * @CLAWT_GROK_JOB_NEEDS_INPUT: the bot stopped with a question
+ * @CLAWT_GROK_JOB_EXPIRED: nothing came back before the deadline
+ * @CLAWT_GROK_JOB_REFUSED: Grok would not start a run at all
+ *
+ * Where one piece of work handed to a Grok bot stands.
+ *
+ * The first three are open; the rest are settled and nothing moves a job
+ * out of them.  The list is walked, never written out, by everything
+ * that needs it -- the store's SQL included -- through
+ * clawt_grok_job_state_count() and clawt_grok_job_state_nth(); the
+ * classifications are in src/integration/clawt-grok.c, each a switch
+ * with no `default:`.
+ *
+ * Since 0.10.0.
+ */
+typedef enum {
+    CLAWT_GROK_JOB_SENT = 0,
+    CLAWT_GROK_JOB_ACCEPTED,
+    CLAWT_GROK_JOB_WORKING,
+    CLAWT_GROK_JOB_DONE,
+    CLAWT_GROK_JOB_FAILED,
+    CLAWT_GROK_JOB_NEEDS_INPUT,
+    CLAWT_GROK_JOB_EXPIRED,
+    CLAWT_GROK_JOB_REFUSED
+} ClawtGrokJobState;
+
+GType clawt_grok_job_state_get_type(void) G_GNUC_CONST;
+#define CLAWT_TYPE_GROK_JOB_STATE (clawt_grok_job_state_get_type())
+
+/**
+ * clawt_grok_job_state_count:
+ *
+ * Returns: how many job states there are
+ */
+guint clawt_grok_job_state_count(void);
+
+/**
+ * clawt_grok_job_state_nth:
+ * @n: an index below clawt_grok_job_state_count()
+ *
+ * Returns: the state at @n
+ */
+ClawtGrokJobState clawt_grok_job_state_nth(guint n);
+
+/**
+ * clawt_grok_job_state_nth_nick:
+ * @n: an index below clawt_grok_job_state_count()
+ *
+ * Returns: (transfer none): the nickname, as the wire spells it
+ */
+const gchar *clawt_grok_job_state_nth_nick(guint n);
+
+/**
+ * clawt_grok_job_state_label:
+ * @state: a #ClawtGrokJobState
+ *
+ * Returns: (transfer none): the state in words for a badge
+ */
+const gchar *clawt_grok_job_state_label(ClawtGrokJobState state);
+
+/**
  * ClawtPage:
  * @CLAWT_PAGE_CHAT: the transcript and composer
  * @CLAWT_PAGE_AGENT: the inspector
@@ -1639,6 +1706,8 @@ typedef enum {
  * @CLAWT_PAGE_SKILLS: the fleet's procedures, and who carries them
  * @CLAWT_PAGE_MEMORY: recall, and the operator profile
  * @CLAWT_PAGE_FLEET: what each agent costs and which are idle (since 0.8.0)
+ * @CLAWT_PAGE_GROK: the Grok bots the fleet hands work to, and every job
+ *   sent to one (since 0.10.0)
  *
  * Every page either client can show, in the order they are drawn.
  *
@@ -1659,7 +1728,8 @@ typedef enum {
     CLAWT_PAGE_ACTIVITY,
     CLAWT_PAGE_SKILLS,
     CLAWT_PAGE_MEMORY,
-    CLAWT_PAGE_FLEET
+    CLAWT_PAGE_FLEET,
+    CLAWT_PAGE_GROK
 } ClawtPage;
 
 /**

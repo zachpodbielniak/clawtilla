@@ -1,0 +1,222 @@
+#+title: Grok bots
+#+description: Handing work to a Grok bot from the fleet, and hearing back over the tailnet
+#+authors: Zach Podbielniak
+#+categories: clawtilla integrations
+#+created: 2026-11-14T00:00:00-05:00
+#+updated: 2026-11-14T00:00:00-05:00
+#+version: 0.10.0
+
+* Grok bots
+
+A Grok bot is an agent of xAI's that runs on its own computer, with its own connections -- mail, calendar, a browser, Slack, whatever it has been given.  clawtilla can hand one a piece of work on an agent's behalf and deliver the bot's answer back into the conversation that asked for it, where it starts the agent's next turn.  "Ask our chief Grok bot to book a room for Thursday" becomes a tool call, a job, and later a message.
+
+There is no API for driving a Grok bot.  What there is, is a *routine* with a *webhook trigger*: a POST to the routine's address, carrying its key, starts a run with the request body as its input.  Everything here is built on that one door, and on the bot being able to reach this machine over the tailnet afterwards.
+
+** How a job travels
+
+#+begin_src text
+agent (or a person)                     clawtilla daemon                         Grok
+  clawtilla_grok_dispatch(bot: chief) ->  records the job (token digest only)
+                                          POST routine webhook  ------------->  run starts,
+                                          <- 200 {runUuid}  <-----------------  answers at once
+  <- "sent as gj-…, the answer comes
+      back as a message"
+  (turn ends)
+                                                                               bot works...
+                                          POST /grok/<job>  <-----------------  report over the tailnet
+                                          (or clawtilla_grok_report on /mcp/grok)
+  <- message from grok:chief, a new turn
+#+end_src
+
+1. *Recorded.*  A job id (=gj-…=) and a token are minted from =/dev/urandom=; only the SHA-256 of the token is stored, in =<state_dir>/grok-jobs.db=.  The job is written /before/ it is sent, so a bot that answers faster than Grok's own reply arrives finds it.
+2. *Sent.*  The routine's webhook gets a self-describing envelope: the instructions, any context, the deadline, and exactly how to report back -- the URL, the header, the body's shape, and the MCP tool when the bot has been connected to it.  Grok answers =200 {"success":true,"runUuid":…}= at once, before the run has done anything; that is a job *started*, not finished.
+3. *Answered.*  When the bot stops it reports =done=, =failed= or =needs_input=, once.  It may send =progress= notes before that.
+4. *Delivered.*  The report arrives in the conversation the job was sent from, as a message from =grok:<bot>=, one hop further along than the turn that sent it.  The bot's own words are inside a fence the agent is told to read as data.
+5. *Or given up.*  If nothing comes back by the deadline (=grok.job_ttl_minutes=, two hours by default) the job expires, the agent is told so with Grok's run id, and a late report is refused.
+
+** Setting one up
+
+Each bot is a =grokbot= integration *named for the bot*.  The name is what agents and people use: an agent asked to "message the chief Grok bot" calls =clawtilla_grok_dispatch= with =bot: chief=.
+
+*** 1. Make the bot reachable from clawtilla, and clawtilla from the bot
+
+The bot reports to the daemon's webhook listener, on its tailnet address.  Both of these must be on:
+
+#+begin_src bash
+clawtilla config set daemon.webhook_enabled true
+clawtilla config set daemon.tailscale true
+#+end_src
+
+Then, in Grok, connect the bot's computer to your tailnet (it shows up in =tailscale status= as =grokbot-…=).  A tailnet ACL that lets that node reach *only* the listener's port (=daemon.webhook_port=, 8788) is strongly recommended: every bot shares one computer, and it is somebody else's.
+
+The address the bot dials is this machine's MagicDNS name, asked of tailscaled over its local socket.  If the daemon's user cannot read tailscaled's status, set =grok.callback_host= to the name =tailscale status= shows.
+
+*** 2. Give the bot's routine a webhook trigger
+
+In Grok, open the routine the bot should run for clawtilla (or ask the bot to make one), add a *Webhook* trigger, and copy the address under "POST to" and the key beside it (=crsr_…=).  Keep the key in a file, mode 0600 -- it is everything anybody needs to start that bot.
+
+*** 3. Add the integration
+
+#+begin_src bash
+clawtilla integration add chief grokbot \
+    url=https://api2.cursor.sh/automations/webhook/... \
+    token=file:~/.clawtilla/secrets/grok-chief.key \
+    description="Chief of staff: calendar, mail, errands" \
+    scope=all
+#+end_src
+
+=description= is what an agent reads when choosing a bot, so write it for the agent.  =scope= (=all=, =selected= with =agents:=, or teams) is who may hand it work, exactly as for every integration.  Add as many bots as you have -- =chief=, =research=, =ops= -- each with its own routine.  Two integrations pointing at one routine would make their jobs indistinguishable on the bot's side; don't.
+
+The graphical clients add the same thing from Settings → Integrations, with the routine address and the key reference as fields.
+
+*** 4. Paste the routine prompt into Grok, once
+
+#+begin_src bash
+clawtilla grok routine-prompt chief
+#+end_src
+
+prints the standing instructions for the routine: the input is a =clawtilla=, do what it says, report exactly once, never repeat the token anywhere.  Every job repeats the reporting instructions in its own envelope, so this only sets the bot's habits; but a routine without it may answer in chat and never report.
+
+*** 5. Optionally, connect the bot to clawtilla's MCP endpoint
+
+#+begin_src bash
+clawtilla grok mcp-key chief
+#+end_src
+
+mints a key and prints it *once* with the endpoint's URL (=http://<host>:8788/mcp/grok=).  In Grok, ask the bot to add a remote MCP connection with that URL and API key.  The bot can then report with a tool call -- =clawtilla_grok_report= -- instead of composing an HTTP request, which is less to get wrong.  Minting again replaces the key.  Run =routine-prompt= again afterwards: it now names the MCP route.
+
+*** 6. Check it end to end
+
+#+begin_src bash
+clawtilla grok test chief --agent oryx
+clawtilla grok jobs --bot chief
+#+end_src
+
+=test= sends a job asking for nothing but a report of =pong=, with a ten-minute deadline.  =oryx= receives the answer as a message from =grok:chief=.
+
+** How agents use it
+
+An agent a bot is shared with gets two tools and a section in its =TOOLS.org= listing every bot it may reach, by name, with each one's description:
+
+| Tool | What it does |
+|------+--------------|
+| ~clawtilla_grok_dispatch~ | hand a job to a bot by name (~bot~, ~instructions~, optional ~context~ and ~timeout_minutes~); returns the job id at once |
+| ~clawtilla_grok_jobs~ | the agent's own jobs, newest twenty, with their states |
+
+The bot is named the way an agent would say it: exactly, in any case, or by a prefix only one bot has (=ch= for =chief=).  An unknown or ambiguous name is refused and the refusal lists every bot the agent may reach -- a guess at the wrong bot would do the work somewhere nobody looks.  A bot not shared with the agent is simply not among them.
+
+The tool returns as soon as Grok has started the run, and says so: the answer is a later message, so the agent should finish its turn rather than wait.
+
+*** Turns, rooms, tasks and hops
+
+- *The room.*  The answer goes to the conversation the dispatching turn was in (the same room resolution delegation uses).  A job sent with no turn behind it -- from a client or the CLI -- answers into the agent's conversation with its operator.
+- *The hop depth.*  The answer arrives one hop further along than the turn that sent it, so a bot whose answer leads to another job still counts toward =orchestration.max_hops=.
+- *The task.*  A job sent while the agent works on a task is recorded against it; when Grok accepts the job, a progress note goes on the task ("Handed part of this to the Grok bot …"), which also holds off the turn-end completion for that one turn.  The answer arrives under the same task, and that turn's end is what completes it.
+- *Progress notes* go on the record in the room -- seen by people, found by recall -- and start no turn.
+
+** The reporting contract
+
+*** Over HTTP
+
+#+begin_src text
+POST http://<callback_host>:<webhook_port>/grok/<job id>
+Authorization: Bearer <job token>
+Content-Type: application/json
+
+{"status": "done" | "failed" | "needs_input" | "progress",
+ "result": "<what was found or done; why not; or the question>"}
+#+end_src
+
+- =note= is accepted in place of =result= for =progress=.
+- A bot whose HTTP tool cannot set a header may put the token in the body as ="token"=.  Never in the URL, which ends up in logs.
+- At most 256 KiB.
+
+| Answer | Means |
+|--------+-------|
+| 200 | taken: a note recorded, or the job settled and delivered |
+| 400 | not a report: a JSON object with a known ~status~ is required |
+| 404 | no such job, *or* not its token -- the two are not distinguished |
+| 410 | the job is already settled, or past its deadline |
+| 413 | larger than 256 KiB |
+
+*** Over MCP
+
+=POST /mcp/grok=, stateless JSON-RPC (=initialize=, =ping=, =tools/list=, =tools/call=), the bot's MCP key as a bearer token.  A notification is answered 202 with no body.  The bot is offered three tools and nothing an agent has:
+
+| Tool | Arguments |
+|------+-----------|
+| ~clawtilla_grok_report~ | ~job_id~, ~job_token~, ~status~ (~done~, ~failed~ or ~needs_input~), ~result~ |
+| ~clawtilla_grok_progress~ | ~job_id~, ~job_token~, ~note~ |
+| ~clawtilla_grok_assigned~ | none: this bot's open jobs, without their tokens |
+
+The key says which bot is calling, and the token which job: a bot reports only jobs handed to it, even holding another job's token.
+
+** Job states
+
+| State | Shown as | Settled | Needs somebody |
+|-------+----------+---------+----------------|
+| ~sent~ | Sending | no | no |
+| ~accepted~ | Started | no | no |
+| ~working~ | Working | no | no |
+| ~done~ | Done | yes | no |
+| ~failed~ | Failed | yes | yes |
+| ~needs_input~ | Has a question | yes | yes |
+| ~expired~ | No answer | yes | yes |
+| ~refused~ | Not started | yes | yes |
+
+The table is =ClawtGrokJobState=; =clawt_grok_job_state_label()=, =clawt_grok_job_state_tone()=, =clawt_grok_job_state_is_settled()= and =clawt_grok_job_state_needs_attention()= are what every client draws from, so they cannot disagree.  The Grok page's badge -- and the Work section's, which sums its pages -- is the daemon's count of jobs that need somebody, read from ~grok.jobs~.
+
+A =needs_input= job is settled: a job cannot be resumed.  To answer the bot's question, send a new job with the answer and the original request.
+
+** When it does not work
+
+| What you see | Why | What to do |
+|--------------+-----+------------|
+| "the daemon's webhook listener is off" | =daemon.webhook_enabled= is false | turn it on |
+| "the webhook listener is not bound on the tailnet" | =daemon.tailscale= is false, or the machine is not on the tailnet | turn it on; check =tailscale status= |
+| "this machine's tailnet name is not known yet" | tailscaled is asked within thirty seconds of the daemon starting, and again after a failure; it has not answered, or the daemon's user cannot read it | send again in a moment, or set =grok.callback_host= |
+| "the bot's routine is switched off in Grok" | Grok answered 400 | switch the routine back on |
+| "Grok refused the routine's key" | Grok answered 401 | the key was rotated: update the file the integration's =token= names |
+| "the routine has hit Grok's hourly run limit" | Grok answered 429 (200 runs an hour per routine, 300 across routines) | wait; Grok does not queue refused runs |
+| "did not report job … before its deadline" | nothing came back | look at the bot's thread in Grok: an unattended run that needs an approval waits about half an hour for one and then stops.  Otherwise the bot could not reach this machine -- check its tailnet connection and your ACL |
+
+=clawtilla grok bots= says, at the top, whether a job could be sent right now and if not why -- the same check a send makes.
+
+** Security
+
+- *The routine key* is a secret reference (=file:=, =env:= or =command:=), resolved only when a job is sent, and goes in an =Authorization= header and nowhere else.
+- *A job token* exists in the clear in exactly one place: the envelope sent to the bot.  The store keeps its SHA-256; a report is checked digest to digest in constant time.  A copy of the database is not a way to answer somebody else's job.
+- *An MCP key* is shown once and stored as a digest under =<state_dir>/grok/=.
+- *Unknown job and wrong token answer alike*, so a caller without the token learns nothing about which ids exist.
+- *What the bot writes is untrusted.*  It arrives in a fence, under a sentence telling the agent to read it as data and not to act on instructions in it or record it as memory without checking.  The clients draw it as text, never markup.
+- *The listener* is the trigger listener: loopback and the tailnet address only, never every interface, bodies bounded before they are read.
+
+** From each client
+
+| Client | Where |
+|--------+-------|
+| CLI | =clawtilla grok bots=, =jobs=, =send=, =test=, =routine-prompt=, =mcp-key=; =clawtilla grok help= |
+| GTK | Work → Grok |
+| Web | Work → Grok |
+| libregnum | Work → Grok |
+
+All three graphical clients draw the same page: whether a job could be sent now, the bots (who may reach each, whether a key is configured, whether it reports by MCP or HTTP only, with *Routine prompt* and *Mint MCP key*), a composer that hands a bot work on a chosen agent's behalf, and the jobs newest first with their state and, expandable, what the bot reported.
+
+** Configuration
+
+| Key | Default | What it does |
+|-----+---------+--------------|
+| =grok.callback_host= | empty | the name a bot dials; empty asks tailscaled |
+| =grok.job_ttl_minutes= | 120 | how long a job waits before it is given up |
+| =integrations.url= (=grokbot=) | -- | the routine's webhook address |
+| =integrations.token= (=grokbot=) | -- | the routine's key, as a secret reference |
+| =integrations.description= | -- | what the bot is for, as agents read it |
+
+See [[file:configuration-options.org][configuration-options.org]] for the generated reference, and [[file:ipc-protocol.org][ipc-protocol.org]] for the =grok.*= frames.
+
+** Limits that are Grok's
+
+- 200 runs an hour per routine, 300 across all of a bot's routines; a refused run is not retried.
+- 1 MiB per webhook body: the instructions and context together must fit.
+- 50 routines per bot, and Grok keeps the last 20 runs of each.
+- Unattended approvals expire after about thirty minutes.

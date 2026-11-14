@@ -42,6 +42,10 @@ G_BEGIN_DECLS
  * @CLAWT_WEBHOOK_ROUTE_DELIVERY: `POST /hooks/<endpoint>`
  * @CLAWT_WEBHOOK_ROUTE_WRONG_METHOD: the right path, the wrong verb
  * @CLAWT_WEBHOOK_ROUTE_NONE: anything else
+ * @CLAWT_WEBHOOK_ROUTE_GROK_REPORT: `POST /grok/<job>`, a Grok bot
+ *   reporting one job (since 0.10.0)
+ * @CLAWT_WEBHOOK_ROUTE_GROK_MCP: `POST /mcp/grok`, a Grok bot's MCP
+ *   connection (since 0.10.0)
  *
  * What a request is, before anything is read from it.
  */
@@ -49,7 +53,9 @@ typedef enum {
     CLAWT_WEBHOOK_ROUTE_NONE = 0,
     CLAWT_WEBHOOK_ROUTE_HEALTH,
     CLAWT_WEBHOOK_ROUTE_DELIVERY,
-    CLAWT_WEBHOOK_ROUTE_WRONG_METHOD
+    CLAWT_WEBHOOK_ROUTE_WRONG_METHOD,
+    CLAWT_WEBHOOK_ROUTE_GROK_REPORT,
+    CLAWT_WEBHOOK_ROUTE_GROK_MCP
 } ClawtWebhookRoute;
 
 /**
@@ -66,10 +72,12 @@ typedef enum {
  * this file worth being sure of, and the one a test that needs a socket
  * would have to be skipped for.
  *
- * Exactly two things are served. Anything else is
+ * Four things are served: the health line, trigger deliveries, and a
+ * Grok bot's report and MCP connection. Anything else is
  * %CLAWT_WEBHOOK_ROUTE_NONE, including a path *under* an endpoint: a
- * `/hooks/<id>/anything` that reached the lookup would hand it a shape
- * nothing downstream expects.
+ * `/hooks/<id>/anything` or `/grok/<id>/anything` that reached a lookup
+ * would hand it a shape nothing downstream expects.  For a Grok report
+ * @out_endpoint is the job id.
  *
  * Returns: what the request is
  */
@@ -114,6 +122,33 @@ typedef gchar *(*ClawtWebhookDeliverFunc)(const gchar  *endpoint,
                                           gpointer      user_data,
                                           guint        *out_status);
 
+/**
+ * ClawtWebhookGrokFunc:
+ * @route: %CLAWT_WEBHOOK_ROUTE_GROK_REPORT or %CLAWT_WEBHOOK_ROUTE_GROK_MCP
+ * @job_id: (nullable): the job, for a report
+ * @headers: (element-type utf8 utf8): the request's headers, names lowercased
+ * @body: (array length=body_length): the raw body
+ * @body_length: how many bytes of @body
+ * @user_data: data passed to clawt_webhook_ingress_set_grok_func()
+ * @out_status: (out): the HTTP status to answer with
+ * @out_content_type: (out) (transfer none): the response's type
+ *
+ * Handles what a Grok bot sends back.  On the same listener as trigger
+ * deliveries because the bot reaches it the same way, over the tailnet,
+ * and a second port would be a second thing to bind, allow through an
+ * ACL and forget.
+ *
+ * Returns: (transfer full) (nullable): the response body
+ */
+typedef gchar *(*ClawtWebhookGrokFunc)(ClawtWebhookRoute   route,
+                                       const gchar        *job_id,
+                                       GHashTable         *headers,
+                                       const guchar       *body,
+                                       gsize               body_length,
+                                       gpointer            user_data,
+                                       guint              *out_status,
+                                       const gchar       **out_content_type);
+
 #define CLAWT_TYPE_WEBHOOK_INGRESS (clawt_webhook_ingress_get_type())
 
 G_DECLARE_FINAL_TYPE(ClawtWebhookIngress, clawt_webhook_ingress,
@@ -140,6 +175,30 @@ ClawtWebhookIngress *clawt_webhook_ingress_new(guint16 port,
 void clawt_webhook_ingress_set_deliver_func(ClawtWebhookIngress     *self,
                                             ClawtWebhookDeliverFunc  func,
                                             gpointer                 user_data);
+
+/**
+ * clawt_webhook_ingress_set_grok_func:
+ * @self: a #ClawtWebhookIngress
+ * @func: (scope forever) (nullable): what to do with a Grok bot's request
+ * @user_data: data for @func
+ *
+ * Unset, the two Grok routes answer 503.
+ */
+void clawt_webhook_ingress_set_grok_func(ClawtWebhookIngress  *self,
+                                         ClawtWebhookGrokFunc  func,
+                                         gpointer              user_data);
+
+/**
+ * clawt_webhook_ingress_is_on_tailnet:
+ * @self: a #ClawtWebhookIngress
+ *
+ * Whether it actually bound a tailnet address -- the answer a Grok job
+ * needs before it hands a bot a callback address, read from what bound
+ * rather than from the configuration that asked.
+ *
+ * Returns: %TRUE when listening on a tailnet address
+ */
+gboolean clawt_webhook_ingress_is_on_tailnet(ClawtWebhookIngress *self);
 
 /**
  * clawt_webhook_ingress_start:

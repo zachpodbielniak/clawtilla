@@ -10,6 +10,10 @@
 #include "clawtilla.h"
 #include "ipc/clawt-tailscale.h"
 
+#include <gio/gunixsocketaddress.h>
+#include <json-glib/json-glib.h>
+#include <libsoup/soup.h>
+
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <netinet/in.h>
@@ -124,4 +128,171 @@ clawt_tailscale_find_address(void)
     freeifaddrs(addresses);
 
     return v6_match;
+}
+
+/* ── This machine's tailnet name ──────────────────────────────────── */
+
+#define TAILSCALED_SOCKET "/var/run/tailscale/tailscaled.sock"
+#define LOCALAPI_TIMEOUT_SECONDS (5)
+
+gchar *
+clawt_tailscale_dns_name_from_status(const gchar  *body,
+                                     gssize        length,
+                                     GError      **error)
+{
+    g_autoptr(JsonParser) parser = json_parser_new();
+    JsonNode *root;
+    JsonObject *object;
+    JsonNode *self_node;
+    JsonObject *self_object;
+    JsonNode *name;
+    g_autofree gchar *dns = NULL;
+
+    if (body == NULL ||
+        !json_parser_load_from_data(parser, body, length, error))
+        return NULL;
+
+    root = json_parser_get_root(parser);
+
+    if (root == NULL || !JSON_NODE_HOLDS_OBJECT(root) ||
+        (object = json_node_get_object(root)) == NULL ||
+        (self_node = json_object_get_member(object, "Self")) == NULL ||
+        !JSON_NODE_HOLDS_OBJECT(self_node) ||
+        (self_object = json_node_get_object(self_node)) == NULL ||
+        (name = json_object_get_member(self_object, "DNSName")) == NULL ||
+        !JSON_NODE_HOLDS_VALUE(name) ||
+        json_node_get_value_type(name) != G_TYPE_STRING) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                            "tailscaled's status names no DNSName for this "
+                            "machine");
+        return NULL;
+    }
+
+    dns = g_strdup(json_node_get_string(name));
+
+    /* A fully qualified name ends in a dot, which no URL wants. */
+    while (g_str_has_suffix(dns, "."))
+        dns[strlen(dns) - 1] = '\0';
+
+    if (*dns == '\0') {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                            "this machine has no MagicDNS name; set "
+                            "grok.callback_host");
+        return NULL;
+    }
+
+    return g_steal_pointer(&dns);
+}
+
+static void
+on_status_read(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    GTask *task = user_data;
+    SoupMessage *message = g_task_get_task_data(task);
+    g_autoptr(GBytes) body = NULL;
+    g_autoptr(GError) error = NULL;
+    gchar *name;
+
+    body = soup_session_send_and_read_finish(SOUP_SESSION(source), result,
+                                             &error);
+
+    if (body == NULL) {
+        g_task_return_error(task, g_steal_pointer(&error));
+        g_object_unref(task);
+        return;
+    }
+
+    if (!SOUP_STATUS_IS_SUCCESSFUL(soup_message_get_status(message))) {
+        g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_AUTH,
+                                "tailscaled answered %u; the daemon's user "
+                                "may not read its status -- set "
+                                "grok.callback_host",
+                                soup_message_get_status(message));
+        g_object_unref(task);
+        return;
+    }
+
+    {
+        gsize length = 0;
+        const gchar *data = g_bytes_get_data(body, &length);
+
+        name = clawt_tailscale_dns_name_from_status(data, (gssize)length,
+                                                    &error);
+    }
+
+    if (name == NULL)
+        g_task_return_error(task, g_steal_pointer(&error));
+    else
+        g_task_return_pointer(task, name, g_free);
+
+    g_object_unref(task);
+}
+
+void
+clawt_tailscale_dns_name_async(GMainContext        *context,
+                               GCancellable        *cancellable,
+                               GAsyncReadyCallback  callback,
+                               gpointer             user_data)
+{
+    g_autoptr(GSocketAddress) address = NULL;
+    g_autoptr(SoupSession) session = NULL;
+    SoupMessage *message;
+    GTask *task;
+
+    /*
+     * Pushed before the session is made: libsoup binds a session to the
+     * context that is thread-default when it is created, and attaches
+     * its sources there from inside its own callbacks -- a session built
+     * under the process default and read from the daemon's context sends
+     * and never hears the answer.
+     */
+    if (context != NULL)
+        g_main_context_push_thread_default(context);
+
+    task = g_task_new(NULL, cancellable, callback, user_data);
+    g_task_set_source_tag(task, clawt_tailscale_dns_name_async);
+
+    if (!g_file_test(TAILSCALED_SOCKET, G_FILE_TEST_EXISTS)) {
+        g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                                "tailscaled is not running here (%s is "
+                                "missing)", TAILSCALED_SOCKET);
+        g_object_unref(task);
+
+        if (context != NULL)
+            g_main_context_pop_thread_default(context);
+        return;
+    }
+
+    /*
+     * LocalAPI over its unix socket, never `tailscale status` in a
+     * subprocess: the same rule as the address, which comes from
+     * getifaddrs() rather than `tailscale ip`.  The host part of the URL
+     * is what tailscaled expects to see and names nothing on the network.
+     */
+    address = g_unix_socket_address_new(TAILSCALED_SOCKET);
+    session = soup_session_new_with_options("remote-connectable", address,
+                                            "timeout",
+                                            LOCALAPI_TIMEOUT_SECONDS, NULL);
+    message = soup_message_new("GET",
+                               "http://local-tailscaled.sock/localapi/v0/status");
+    g_task_set_task_data(task, message, g_object_unref);
+
+    /* Held by the task: a session freed mid-request abandons it. */
+    g_object_set_data_full(G_OBJECT(task), "clawt-session",
+                           g_object_ref(session), g_object_unref);
+
+    soup_session_send_and_read_async(session, message, G_PRIORITY_DEFAULT,
+                                     cancellable, on_status_read, task);
+
+    if (context != NULL)
+        g_main_context_pop_thread_default(context);
+}
+
+gchar *
+clawt_tailscale_dns_name_finish(GAsyncResult  *result,
+                                GError       **error)
+{
+    g_return_val_if_fail(g_task_is_valid(result, NULL), NULL);
+
+    return g_task_propagate_pointer(G_TASK(result), error);
 }

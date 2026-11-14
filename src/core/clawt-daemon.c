@@ -4159,6 +4159,7 @@ release_components(ClawtDaemon *self)
      * after the router and the agents are gone would find a half-built
      * daemon, and the ingress holds a pointer to this one.
      */
+    clawt_daemon_grok_stop(self);
     clawt_daemon_triggers_stop(self);
     clawt_daemon_venture_stop(self);
 
@@ -6197,6 +6198,12 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      */
     clawt_daemon_handoff_setup(self);
     clawt_daemon_search_setup(self);
+
+    /*
+     * After the trigger listener, whose Grok routes it answers, and after
+     * the tools exist, whose clawtilla_grok_* it supplies.
+     */
+    clawt_daemon_grok_start(self);
     clawt_daemon_policy_setup(self);
     clawt_daemon_idle_setup(self);
     clawt_daemon_browser_setup(self);
@@ -6333,6 +6340,7 @@ clawt_daemon_stop(ClawtDaemon *self)
     if (self->automation != NULL)
         clawt_automation_stop(self->automation);
 
+    clawt_daemon_grok_stop(self);
     clawt_daemon_triggers_stop(self);
     clawt_daemon_venture_stop(self);
 
@@ -8537,6 +8545,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_integration,
     clawt_daemon_handle_routine,
     clawt_daemon_handle_trigger,
+    clawt_daemon_handle_grok,
     clawt_daemon_handle_config,
     clawt_daemon_handle_skill,
     clawt_daemon_handle_teach,

@@ -1259,7 +1259,9 @@ integrations:
     backend: "desktop"
 
     # notify: the credential for ntfy, gotify or Matrix, as a secret
-    # reference.
+    # reference. libresearch: the server's token. grokbot: the routine's
+    # webhook key (`crsr_...`), which is the whole of what lets anybody
+    # start that bot.
     #
     # Resolved once when the configuration loads rather than on every
     # notification: a `command` reference to a locked password manager
@@ -1324,6 +1326,9 @@ integrations:
     #
     # One or the other, never both: an entry naming a command and a URL is
     # two different servers and there is no way to tell which was meant.
+    #
+    # libresearch: where its server answers. grokbot: the Grok routine's
+    # webhook address, as Grok shows it under "POST to".
     url: null
 
     # mcp: environment for the server process.
@@ -1496,6 +1501,35 @@ connectors:
   # fleet that bounces every hour would refresh every hour regardless of
   # what this key says.
   registry_refresh_hours: 24
+
+# Handing work to Grok bots, and hearing back.
+#
+# Each bot is a `grokbot` integration named for it -- `chief`,
+# `research` -- whose url is a Grok routine's webhook. A job is POSTed
+# there with a callback address minted for it, and the bot reports
+# back to the daemon's webhook listener over the tailnet, by HTTP or
+# by the clawtilla MCP tools. These keys are about that return path.
+# See docs/grok.org.
+grok:
+
+  # The name a Grok bot uses to reach this daemon.
+  #
+  # Empty means the machine's own tailnet name, asked of tailscaled --
+  # the FQDN `tailscale status` shows for it. Set it when tailscaled is
+  # not readable by the daemon's user. Either way the webhook listener
+  # (daemon.webhook_enabled) has to be bound on the tailnet
+  # (daemon.tailscale): a job is refused rather than sent with an
+  # address nothing answers on.
+  callback_host: null
+
+  # How long a job may go unanswered before it is given up.
+  #
+  # Longer than the half hour an unattended Grok run's approval card
+  # waits, because a run that stalls on one is the usual reason a
+  # report is late. When it lapses the agent is told, with Grok's run
+  # id, and a report arriving afterwards is refused. A job may ask for
+  # less or more; this is the default.
+  job_ttl_minutes: 120
 
 # Standing work: a prompt, an agent, and when to run it.
 #

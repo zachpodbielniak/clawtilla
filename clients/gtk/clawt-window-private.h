@@ -114,6 +114,7 @@ typedef enum {
     CLAWT_REFRESH_COMPUTER_MOUNTS,
     CLAWT_REFRESH_EXCHANGE,
     CLAWT_REFRESH_FLEET,
+    CLAWT_REFRESH_GROK,
     CLAWT_N_REFRESH
 } ClawtRefreshKind;
 
@@ -487,6 +488,16 @@ struct _ClawtWindow {
     GtkWidget         *fleet_budget;
     GtkWidget         *fleet_strip;
     GtkWidget         *fleet_stop_idle;
+
+    /* The Grok page (gtk-grok.c). */
+    GtkWidget         *grok_status;
+    GtkListBox        *grok_bot_list;
+    GtkListBox        *grok_job_list;
+    GtkWidget         *grok_bot_row;
+    GtkWidget         *grok_agent_row;
+    GtkWidget         *grok_context_row;
+    GtkTextView       *grok_instructions;
+    GtkWidget         *grok_send;
     GHashTable        *activity_expanded;  /* agent\x1froom of rows left open */
     guint              activity_tick;      /* ages while the page is up */
 
@@ -1218,6 +1229,21 @@ clawt_gtk_build_fleet_page(ClawtWindow *self);
 
 void
 clawt_gtk_refresh_fleet(ClawtWindow *self);
+
+/* ── Defined in gtk-grok.c: the Grok bots and their jobs ─────────── */
+
+GtkWidget *
+clawt_gtk_build_grok_page(ClawtWindow *self);
+
+void
+clawt_gtk_refresh_grok(ClawtWindow *self);
+
+/*
+ * Just the number on the tab, unless the page is showing -- then the
+ * whole page, since it carries the same count.
+ */
+void
+clawt_gtk_refresh_grok_badge(ClawtWindow *self);
 
 /* ── Defined in gtk-flow.c: the flow page ────────────────────────── */
 

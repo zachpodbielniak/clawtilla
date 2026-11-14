@@ -968,6 +968,11 @@ clawt_web_stylesheet(void)
     ".notice{border:1px solid var(--line);border-left:3px solid var(--warn-fg);"
       "background:var(--warn-bg);color:var(--warn-fg);padding:12px 16px;"
       "border-radius:var(--radius-sm);margin-bottom:16px;font-size:13px}"
+    /* A Grok bot's report or routine prompt: kept as written, wrapped. */
+    ".grok-report{font-family:var(--mono);font-size:var(--mono-size);"
+    "white-space:pre-wrap;overflow-wrap:anywhere;max-height:24rem;"
+    "overflow:auto;border:1px solid var(--line);border-radius:6px;"
+    "padding:8px 10px;margin:6px 0 0}"
     ".notice-bad{border-left-color:var(--bad-fg);background:var(--bad-bg);"
       "color:var(--bad-fg)}"
     ".notice-info{border-left-color:var(--info-fg);background:var(--info-bg);"

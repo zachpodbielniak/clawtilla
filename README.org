@@ -145,6 +145,7 @@ All under [[file:docs/][docs/]], in org-mode:
 | [[file:docs/routines.org][routines.org]] | standing work on a schedule, presets and cron |
 | [[file:docs/skills.org][skills.org]] | reusable procedures, where each CLI reads them, and why an import arrives switched off |
 | [[file:docs/research.org][research.org]] | web search, LQL queries and cited research through a libresearch server |
+| [[file:docs/grok.org][grok.org]] | handing work to Grok bots by name, and hearing back over the tailnet |
 | [[file:docs/automation.org][automation.org]] | clawtilla as a podomation module: react and act |
 | [[file:docs/plugins.org][plugins.org]] | the plugin ABI and a worked example |
 | [[file:docs/ipc-protocol.org][ipc-protocol.org]] | the client wire format |

@@ -330,6 +330,7 @@ const ClawtLrgPage *clawt_lrg_decisions_page(void);  /* lrg-decisions.c */
 const ClawtLrgPage *clawt_lrg_flow_page(void);       /* lrg-flow.c */
 const ClawtLrgPage *clawt_lrg_activity_page(void);   /* lrg-activity.c */
 const ClawtLrgPage *clawt_lrg_fleet_page(void);      /* lrg-fleet-page.c */
+const ClawtLrgPage *clawt_lrg_grok_page(void);       /* lrg-grok.c */
 const ClawtLrgPage *clawt_lrg_skills_page(void);     /* lrg-skills.c */
 const ClawtLrgPage *clawt_lrg_memory_page(void);     /* lrg-recall.c */
 

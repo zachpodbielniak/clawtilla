@@ -207,6 +207,17 @@ declare -A AFFORDANCES=(
     ["fleet days strip"]="clawt_usage_fleet_strip|clawt_usage_fleet_strip|clawt_usage_fleet_strip"
     ["stop an idle agent"]="on_fleet_stop|/fleet-usage/%s/stop|on_stop_clicked"
     ["stop the idle ones"]="on_stop_idle_confirmed|/fleet-usage/stop-idle|on_stop_idle_confirmed"
+    #
+    # The Grok page: the bots and who may reach them, handing one a job on
+    # an agent's behalf, the jobs in libclawt's tones, the routine prompt
+    # and the MCP key -- and the badge, counted by the daemon in all three.
+    #
+    ["grok bots"]="gtk_list_box_append(self->grok_bot_list, bot_row|bot_element(json_array_get_object_element|bot_row(app, json_array_get_object_element"
+    ["grok send a job"]="\"grok.send\"|\"grok.send\"|\"grok.send\""
+    ["grok jobs"]="clawt_grok_job_state_tone|clawt_grok_job_state_tone|clawt_grok_job_state_tone"
+    ["grok routine prompt"]="\"grok.routine_prompt\"|\"grok.routine_prompt\"|\"grok.routine_prompt\""
+    ["grok mcp key"]="\"grok.mcp_key\"|\"grok.mcp_key\"|\"grok.mcp_key\""
+    ["grok count on a tab"]="clawt_gtk_refresh_grok_badge|clawt_web_app_grok_attention|REFRESH_GROK"
     ["browser view"]="clawt_gtk_build_browser_view|/f/a/:id/browser|build_browser_view"
     ["click in the browser"]="on_picture_pressed|/browser/click|on_browser_click"
     ["open a page in the browser"]="\"browser.open\"|/browser/open|\"browser.open\""

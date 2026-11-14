@@ -66,6 +66,14 @@ static const gchar *const libresearch_credentials[] = {
     "token", NULL
 };
 
+static const gchar *const grokbot_required[] = {
+    "url", "token", NULL
+};
+
+static const gchar *const grokbot_credentials[] = {
+    "token", NULL
+};
+
 static const ClawtIntegrationInfo integrations[] = {
     { "matrix", CLAWT_INTEGRATION_KIND_CHANNEL,
       "Chat over Matrix, including bridged Discord and Signal rooms.",
@@ -152,6 +160,22 @@ static const ClawtIntegrationInfo integrations[] = {
       "Web search, LQL queries and cited research through a libresearch server.",
       libresearch_required, libresearch_credentials, NULL,
       NULL, TRUE, FALSE },
+
+    /*
+     * A Grok bot, reached through one of its routines' webhook triggers.
+     *
+     * Named for the bot -- `chief`, `research` -- because the name is
+     * what an agent is told to use: "ask the chief Grok bot" has to
+     * resolve to something.  Not one_per_agent, because an agent that
+     * can reach two bots is the ordinary case, and no identity keys,
+     * because a bot shared across the fleet is one bot several agents
+     * can hand work to.  The tools are clawtilla's own, answered on the
+     * deferred path, as libresearch's are.
+     */
+    { "grokbot", CLAWT_INTEGRATION_KIND_TOOLS,
+      "Hand work to a Grok bot and hear back when it is done.",
+      grokbot_required, grokbot_credentials, NULL,
+      NULL, FALSE, FALSE },
 
     { "notify", CLAWT_INTEGRATION_KIND_NOTIFY,
       "Tell you when an agent is blocked on you or has broken.",
@@ -1452,6 +1476,39 @@ clawt_integration_health_check_async(ClawtIntegrationBinding *binding,
                              (GDestroyNotify)clawt_integration_binding_unref);
         ai_libresearch_search_environment_async(client, cancellable,
                                                 on_libresearch_health, task);
+        return;
+    }
+
+    /*
+     * A Grok bot is checked on paper and never called.  Its webhook is
+     * the only thing there is to call, and calling it *starts a run* --
+     * a health check that spent one of the routine's two hundred runs an
+     * hour, and set a bot working on nothing, would be the check doing
+     * damage.  So: an https URL, and a key reference that resolves to
+     * something.  `clawtilla grok test` is the end-to-end check, run on
+     * purpose.
+     */
+    if (g_strcmp0(id, "grokbot") == 0) {
+        const gchar *url = clawt_integration_binding_get_string(binding,
+                                                                "url");
+        g_autoptr(GUri) uri = NULL;
+        g_autoptr(GError) error = NULL;
+
+        uri = url != NULL ? g_uri_parse(url, G_URI_FLAGS_NONE, &error)
+                          : NULL;
+
+        if (uri == NULL || g_strcmp0(g_uri_get_scheme(uri), "https") != 0) {
+            g_task_return_new_error(task, CLAWT_ERROR,
+                                    CLAWT_ERROR_CONFIG_INVALID,
+                                    "the routine's webhook url must be the "
+                                    "https address Grok shows under "
+                                    "\"POST to\"");
+            g_object_unref(task);
+            return;
+        }
+
+        g_task_return_boolean(task, TRUE);
+        g_object_unref(task);
         return;
     }
 
