@@ -497,7 +497,10 @@ When somebody turns the broker on, clawtilla starts a local AnythingMCP for them
 - *libreclaw:* =src/channel/lc-matrix-channel.c= (9 sites), =src/bridge/lc-bridge-client.c:539=, =lc-whisper-stt.c:186=, =lc-http-tts.c:274=, =lc-elevenlabs-tts.c:223=, =clients/client/lc-client.c:226=, =clients/bridge-mcp/main.c:83=.
 - *podomation:* most service modules (forges, chat, homeassistant, kubernetes, ntfy, gotify, vault, proxmox, caldav, qbittorrent, unifi, telegram); =network/pod-network-module.c= follows by default and its multipart and oauth2_refresh paths are unguarded. Tokens in URLs (gitea/forgejo polls, gotify websocket, telegram) are a second problem.
 
-** TODO Escape the marker in the remaining quoted text                                        :security:orchestration:
+** DONE Escape the marker in the remaining quoted text (version assigned at merge)            :security:orchestration:
+- *Done:* every MCP tool result is escaped in the two response builders in =clawt-mcp-tools.c= (recall, room history, memory, task listings, the agent listing, web and browser text, command output, plugin tools), group-room roster names in the router, and names, teams and descriptions in the TOOLS.org roster. The remaining daemon notes were checked: each already escaped what it quotes. =docs/orchestration.org=, "Nobody else's text can speak as clawtilla".
+- *Mid-line, decided:* a marker in the middle of somebody's own sentence is a mention and stays; text the daemon *quotes* after a label of its own ("Latest from oryx: ", "oryx: ", "@dana (") goes through the new =clawt_preamble_escape_all()=, which rewrites every occurrence. A quoted daemon note (recall, room history) is rewritten too: quoted, it is history, not a notice.
+- *Not covered:* tools served by a connector's own MCP server pass through the relay unescaped.
 - *Found by:* the v0.12.0 preamble work. Not yet escaped: general MCP tool output that quotes other agents (recall, room history), roster names in room preambles, and system notes beyond the ones listed in =docs/orchestration.org=. A mid-line marker ("Latest from oryx: [clawtilla] ...") is also left alone by design; decide whether quoted summaries need it.
 
 * Follow-ups found while implementing

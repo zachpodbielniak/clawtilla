@@ -695,8 +695,16 @@ room_roster(ClawtMailboxRouter *self,
         if (name != NULL && g_strcmp0(name, member) != 0) {
             g_autofree gchar *clipped =
                 clawt_clip_line(name, ROOM_ROSTER_MAX_NAME);
+            /*
+             * A display name is whatever the agent's creator typed, and
+             * this one sits under the room's [clawtilla] heading.  The
+             * clip makes it one line, so a forged marker in it can only
+             * be mid-line -- which is the case clawt_preamble_escape()
+             * leaves alone, hence the _all form.
+             */
+            g_autofree gchar *quoted = clawt_preamble_escape_all(clipped);
 
-            g_string_append_printf(out, "  @%s (%s)\n", member, clipped);
+            g_string_append_printf(out, "  @%s (%s)\n", member, quoted);
         } else {
             g_string_append_printf(out, "  @%s\n", member);
         }
