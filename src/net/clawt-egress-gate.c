@@ -9,6 +9,7 @@
 
 #include "clawtilla.h"
 #include "net/clawt-egress-gate.h"
+#include "clawt-net.h"
 
 #include <errno.h>
 #include <string.h>

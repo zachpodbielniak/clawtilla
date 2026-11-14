@@ -64,6 +64,44 @@ void clawt_client_set_tls(ClawtClient *self,
                           gboolean     accept_unknown_certificate);
 
 /**
+ * clawt_client_set_pairing_code:
+ * @self: a #ClawtClient
+ * @code: (nullable): a pairing code from `clawtilla device pair`
+ * @device_name: (nullable): what this device should be called on the
+ *   daemon, when the code was issued without a name
+ *
+ * Makes the next handshake redeem @code (`device.redeem`) instead of
+ * saying `control.hello`.  On success the daemon's reply authenticates
+ * the connection and hands over a token of this device's own, which
+ * clawt_client_get_token() then returns and every later reconnect uses.
+ * The code is spent by that one handshake whether or not it worked.
+ */
+void clawt_client_set_pairing_code(ClawtClient *self,
+                                   const gchar *code,
+                                   const gchar *device_name);
+
+/**
+ * clawt_client_get_token:
+ * @self: a #ClawtClient
+ *
+ * The token this client says hello with -- the one it was built with,
+ * or the one a pairing code was just traded for.  For writing into the
+ * client's own 0600 connections file; never for showing anybody.
+ *
+ * Returns: (transfer none) (nullable): the token
+ */
+const gchar *clawt_client_get_token(ClawtClient *self);
+
+/**
+ * clawt_client_get_device_id:
+ * @self: a #ClawtClient
+ *
+ * Returns: (transfer none) (nullable): the id the daemon gave this device
+ *   when a pairing code was redeemed, or %NULL
+ */
+const gchar *clawt_client_get_device_id(ClawtClient *self);
+
+/**
  * clawt_client_connect:
  * @self: a #ClawtClient
  * @error: (out) (optional): return location for a #GError

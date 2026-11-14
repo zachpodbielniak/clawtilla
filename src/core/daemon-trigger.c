@@ -45,7 +45,8 @@
 #define RATE_MAX_DELIVERIES (60)
 
 /*
- * How many runs one trigger may have in flight.
+ * How many runs one trigger may have in flight is `triggers.max_pending`
+ * (clawt_trigger_get_max_pending()), checked inside the batch claim.
  *
  * A push that fires a five-minute run, repeated twenty times while the
  * first is still going, is twenty concurrent agents on one machine. The
@@ -53,7 +54,9 @@
  * retrying a delivery clawtilla already accepted must stay idempotent
  * even when the queue is full, so only new work consumes a slot.
  */
-#define MAX_UNFINISHED_RUNS CLAWT_TRIGGER_MAX_UNFINISHED
+
+/* How many fields of a body `trigger.match_test` offers to pick from. */
+#define MATCH_TEST_MAX_PATHS (200)
 
 /* ── Running ─────────────────────────────────────────────────────── */
 
@@ -161,6 +164,10 @@ run_trigger(const gchar *trigger_id, const gchar *agent_id,
      */
     clawt_task_manager_start(self->tasks, clawt_task_get_id(task));
 
+    /* before delivery: the ledger asks about the first turn it causes */
+    clawt_daemon_note_task_source(self, clawt_task_get_id(task),
+                                  CLAWT_USAGE_ORIGIN_TRIGGER, trigger_id);
+
     if (clawt_mailbox_router_send_to(self->router, sender, target, prompt,
                                      clawt_task_get_id(task), 0, error) < 0) {
         clawt_task_manager_fail(self->tasks, clawt_task_get_id(task),
@@ -171,6 +178,38 @@ run_trigger(const gchar *trigger_id, const gchar *agent_id,
     }
 
     return clawt_task_get_id(task);
+}
+
+/*
+ * A `mode: post` delivery: rendered and written into the room, and
+ * nothing run.
+ *
+ * Through clawt_mailbox_router_note(), which records a message from
+ * clawtilla without a mailbox post or a drain -- so no member of the room
+ * takes a turn over it.  That is the whole point of the mode, and a
+ * routed message would wake every agent in the room instead.
+ */
+static gboolean
+post_trigger(
+	ClawtDaemon       *self,
+	ClawtTrigger      *trigger,
+	ClawtTriggerEvent *event,
+	GError           **error
+){
+	g_autofree gchar *body = NULL;
+	const gchar *room;
+
+	room = clawt_trigger_get_string(trigger, "room");
+
+	if (room == NULL || *room == '\0') {
+		g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+		                    "mode is post and no room is named");
+		return FALSE;
+	}
+
+	body = clawt_trigger_render_post(trigger, event);
+
+	return clawt_mailbox_router_note(self->router, room, body, error);
 }
 
 /* ── Secrets ─────────────────────────────────────────────────────── */
@@ -471,6 +510,26 @@ clawt_daemon_trigger_deliver(ClawtDaemon        *self,
         DELIVER_RETURN(429, "slow down\n");
     }
 
+    /*
+     * A trigger whose own configuration cannot be acted on -- a match
+     * filter that does not read, a post with no room -- refuses rather
+     * than acting on a filter or a destination it does not have.  503 and
+     * an unkeyed receipt, so the sender's retry after the fix is taken
+     * rather than answered "already had that one".
+     */
+    if (!clawt_trigger_validate(trigger, &error)) {
+        g_autofree gchar *why = g_strdup_printf(
+            "this trigger's configuration cannot be used: %s",
+            error->message);
+
+        clawt_trigger_store_record_unkeyed(self->trigger_store, trigger_id,
+                                           event, CLAWT_DELIVERY_FAILED,
+                                           why);
+
+        DELIVER_RETURN(503, "this trigger is misconfigured; inspect "
+                            "deliveries\n");
+    }
+
     if (!clawt_trigger_accepts_event(trigger,
                                      clawt_trigger_event_get_name(event))) {
         clawt_trigger_store_record(self->trigger_store, trigger_id, event,
@@ -517,10 +576,62 @@ clawt_daemon_trigger_deliver(ClawtDaemon        *self,
         DELIVER_RETURN(200, "captured\n");
     }
 
+    /*
+     * A post spends nothing and holds no slot, so the pending cap does
+     * not apply to it -- but deduplication does, through the keyed
+     * receipt, so a forge retrying a post does not post it twice.
+     */
+    if (clawt_trigger_get_mode(trigger) == CLAWT_TRIGGER_MODE_POST) {
+        g_autofree gchar *where = NULL;
+
+        if (!post_trigger(self, trigger, event, &error)) {
+            g_autofree gchar *why = g_strdup_printf(
+                "it could not be posted: %s", error->message);
+
+            clawt_trigger_store_record_unkeyed(self->trigger_store,
+                                               trigger_id, event,
+                                               CLAWT_DELIVERY_FAILED, why);
+
+            DELIVER_RETURN(503, "it could not be posted; inspect "
+                                "deliveries\n");
+        }
+
+        where = g_strdup_printf("posted into '%s'; no agent was run",
+                                clawt_trigger_get_string(trigger, "room"));
+        clawt_trigger_store_record(self->trigger_store, trigger_id, event,
+                                   CLAWT_DELIVERY_POSTED, where, NULL);
+        clawt_event_bus_emit(self->bus, "trigger.posted", trigger_id);
+
+        DELIVER_RETURN(200, "posted\n");
+    }
+
     results = clawt_trigger_dispatch(trigger, self->trigger_store, event,
         clawt_trigger_event_get_delivery_id(event), run_trigger, self, &error);
-    if (results == NULL)
-        DELIVER_RETURN(error != NULL && error->code == CLAWT_ERROR_LOOP_LIMIT ? 429 : 503, "batch could not be reserved or recorded; inspect deliveries\n");
+    if (results == NULL) {
+        /*
+         * Over the cap is the one refusal the sender is asked to retry
+         * and the one most likely to go unseen: a fan-out of push events
+         * meeting a trigger already at max_pending.  So it is recorded --
+         * unkeyed, so the retry the 429 invites is not then a duplicate
+         * -- and is never only a status code in a forge's log.
+         */
+        if (error != NULL && error->code == CLAWT_ERROR_LOOP_LIMIT) {
+            g_autofree gchar *why = g_strdup_printf(
+                "dropped: %s (max_pending is %u, with %u unfinished)",
+                error->message, clawt_trigger_get_max_pending(trigger),
+                clawt_trigger_store_count_unfinished(self->trigger_store,
+                                                     trigger_id));
+
+            clawt_trigger_store_record_unkeyed(self->trigger_store,
+                                               trigger_id, event,
+                                               CLAWT_DELIVERY_DROPPED, why);
+
+            DELIVER_RETURN(429, "this trigger has as many runs unfinished "
+                                "as it allows; retry later\n");
+        }
+
+        DELIVER_RETURN(503, "batch could not be reserved or recorded; inspect deliveries\n");
+    }
 
     if (!results_started(results))
         DELIVER_RETURN(200, "no recipients started; inspect deliveries\n");
@@ -696,9 +807,58 @@ add_trigger_object(ClawtDaemon *self, JsonBuilder *builder,
 
         case CLAWT_SCHEMA_INT:
             json_builder_set_member_name(builder, leaf);
-            json_builder_add_int_value(
-                builder, clawt_trigger_get_int(trigger, leaf));
+
+            /*
+             * The cap the daemon actually applies, not the number in the
+             * file: an out-of-range hand edit reads as the default, and an
+             * editor showing the typed value would show a cap nothing
+             * enforces.
+             */
+            if (g_strcmp0(leaf, "max_pending") == 0)
+                json_builder_add_int_value(
+                    builder, clawt_trigger_get_max_pending(trigger));
+            else
+                json_builder_add_int_value(
+                    builder, clawt_trigger_get_int(trigger, leaf));
             break;
+
+        case CLAWT_SCHEMA_LIST_OF: {
+            /*
+             * `match` is the one list of mappings a trigger holds.  One
+             * that cannot be read is reported as the error rather than as
+             * an empty list: an editor showing no rows would invite a
+             * save that quietly deletes the filter somebody wrote.
+             */
+            g_autoptr(GError) local = NULL;
+            g_autoptr(GPtrArray) matches = clawt_trigger_get_match(trigger,
+                                                                   &local);
+            guint v;
+
+            if (matches == NULL) {
+                g_autofree gchar *member = g_strdup_printf("%s_error", leaf);
+
+                json_builder_set_member_name(builder, member);
+                json_builder_add_string_value(builder, local->message);
+                break;
+            }
+
+            json_builder_set_member_name(builder, leaf);
+            json_builder_begin_array(builder);
+
+            for (v = 0; v < matches->len; v++) {
+                ClawtTriggerMatch *match = g_ptr_array_index(matches, v);
+
+                json_builder_begin_object(builder);
+                json_builder_set_member_name(builder, "path");
+                json_builder_add_string_value(builder, match->path);
+                json_builder_set_member_name(builder, "value");
+                json_builder_add_string_value(builder, match->value);
+                json_builder_end_object(builder);
+            }
+
+            json_builder_end_array(builder);
+            break;
+        }
 
         case CLAWT_SCHEMA_STRING_LIST: {
             g_auto(GStrv) values = clawt_trigger_get_string_list(trigger,
@@ -840,6 +1000,20 @@ apply_trigger_fields(ClawtTrigger *trigger, JsonObject *payload)
                                   clawt_ipc_payload_int(payload, leaf, 0));
             break;
 
+        case CLAWT_SCHEMA_LIST_OF: {
+            /*
+             * Already checked by check_trigger_fields(), so a parse that
+             * fails here is a payload that changed underneath us -- and
+             * the safe reading of that is to leave the filter alone.
+             */
+            g_autoptr(GPtrArray) matches = clawt_trigger_match_from_json(
+                json_object_get_member(payload, leaf), NULL);
+
+            if (matches != NULL)
+                clawt_trigger_set_match(trigger, matches);
+            break;
+        }
+
         case CLAWT_SCHEMA_STRING_LIST: {
             JsonNode *node = json_object_get_member(payload, leaf);
             g_auto(GStrv) values = NULL;
@@ -877,12 +1051,100 @@ apply_trigger_fields(ClawtTrigger *trigger, JsonObject *payload)
             break;
         }
 
+        case CLAWT_SCHEMA_ENUM: {
+            /*
+             * An empty choice is "the default", written as no key at all
+             * -- an empty string would be a value the enum does not have
+             * and warned about at every load.
+             */
+            const gchar *nick = clawt_ipc_payload_string(payload, leaf);
+
+            clawt_trigger_set_string(trigger, leaf,
+                                     (nick != NULL && *nick != '\0')
+                                         ? nick : NULL);
+            break;
+        }
+
         default:
             clawt_trigger_set_string(trigger, leaf,
                                      clawt_ipc_payload_string(payload, leaf));
             break;
         }
     }
+}
+
+/*
+ * Everything trigger.add and trigger.update would write, checked before
+ * any of it is.
+ *
+ * "Never accept a value the same daemon can already prove it will refuse
+ * later": a match the loader would reject, a max_pending outside 1-50, a
+ * mode the enum does not have, or a post with no room would otherwise be
+ * saved, reported as saved, and turned into a load warning and a trigger
+ * that refuses every delivery.  @trigger is the saved entry, or %NULL
+ * when adding, and fills in whatever the payload leaves alone -- so
+ * setting `mode: post` on a trigger that already has a room is fine, and
+ * clearing the room of a post trigger is not.
+ */
+static gboolean
+check_trigger_fields(
+	ClawtTrigger  *trigger,
+	JsonObject    *payload,
+	GError       **error
+){
+	ClawtTriggerMode mode;
+	const gchar *room;
+
+	if (json_object_has_member(payload, "match")) {
+		g_autoptr(GPtrArray) matches = clawt_trigger_match_from_json(
+			json_object_get_member(payload, "match"), error);
+
+		if (matches == NULL)
+			return FALSE;
+	}
+
+	if (json_object_has_member(payload, "max_pending")) {
+		gint64 pending = clawt_ipc_payload_int(payload, "max_pending", 0);
+
+		if (pending < CLAWT_TRIGGER_MAX_PENDING_MIN ||
+		    pending > CLAWT_TRIGGER_MAX_PENDING_MAX) {
+			g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+			            "max_pending must be %d to %d; got %" G_GINT64_FORMAT,
+			            CLAWT_TRIGGER_MAX_PENDING_MIN,
+			            CLAWT_TRIGGER_MAX_PENDING_MAX, pending);
+			return FALSE;
+		}
+	}
+
+	mode = (trigger != NULL) ? clawt_trigger_get_mode(trigger)
+	                         : CLAWT_TRIGGER_MODE_RUN;
+
+	if (json_object_has_member(payload, "mode")) {
+		const gchar *nick = clawt_ipc_payload_string(payload, "mode");
+		gint value = 0;
+
+		if (nick == NULL || *nick == '\0') {
+			mode = CLAWT_TRIGGER_MODE_RUN;
+		} else if (!clawt_enum_from_nick(CLAWT_TYPE_TRIGGER_MODE, nick,
+		                                 &value)) {
+			g_autofree gchar *allowed = clawt_enum_nick_list(
+				CLAWT_TYPE_TRIGGER_MODE);
+
+			g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+			            "'%s' is not a mode; it is one of: %s", nick,
+			            allowed);
+			return FALSE;
+		} else {
+			mode = (ClawtTriggerMode)value;
+		}
+	}
+
+	room = json_object_has_member(payload, "room")
+		? clawt_ipc_payload_string(payload, "room")
+		: (trigger != NULL ? clawt_trigger_get_string(trigger, "room")
+		                   : NULL);
+
+	return clawt_trigger_check_settings(trigger, mode, room, error);
 }
 
 JsonNode *
@@ -929,6 +1191,13 @@ clawt_daemon_handle_trigger(
         ClawtTrigger *trigger;
         g_autofree gchar *secret = NULL;
         g_autofree gchar *endpoint = NULL;
+
+        if (!check_trigger_fields(
+                adding || id == NULL
+                    ? NULL : clawt_config_get_trigger(self->config, id),
+                payload, &error))
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       error->message);
 
         if (adding) {
             trigger = clawt_config_add_trigger(self->config, id, &error);
@@ -1130,6 +1399,7 @@ clawt_daemon_handle_trigger(
         g_autoptr(JsonNode) results = NULL;
         gboolean matches;
         gboolean duplicate;
+        gboolean posting;
 
         if (trigger == NULL || self->trigger_store == NULL || receipt < 0)
             return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
@@ -1157,28 +1427,56 @@ clawt_daemon_handle_trigger(
             reason = g_strdup("trigger has no primary agent");
         if (reason == NULL && duplicate)
             reason = g_strdup("this receipt already has a replay reservation; inspect deliveries");
-        if (reason == NULL && clawt_trigger_store_count_unfinished(self->trigger_store, id) +
-                g_strv_length(recipients) > MAX_UNFINISHED_RUNS)
-            reason = g_strdup("recipient batch does not fit the four in-flight slots");
+        if (reason == NULL && !clawt_trigger_validate(trigger, &error)) {
+            reason = g_strdup_printf("this trigger's configuration cannot be used: %s",
+                                     error->message);
+            g_clear_error(&error);
+        }
+        if (reason == NULL &&
+            clawt_trigger_get_mode(trigger) == CLAWT_TRIGGER_MODE_RUN &&
+            clawt_trigger_store_count_unfinished(self->trigger_store, id) +
+                g_strv_length(recipients) > clawt_trigger_get_max_pending(trigger))
+            reason = g_strdup_printf("recipient batch does not fit the %u in-flight slots",
+                                     clawt_trigger_get_max_pending(trigger));
         if (reason == NULL && clawt_trigger_store_recent_count(self->trigger_store, id,
                 RATE_WINDOW_SECONDS) >= RATE_MAX_DELIVERIES)
             reason = g_strdup("trigger has reached its delivery rate limit");
-        prompt = clawt_trigger_build_prompt(trigger, event);
+        posting = clawt_trigger_get_mode(trigger) == CLAWT_TRIGGER_MODE_POST;
+        prompt = posting ? clawt_trigger_render_post(trigger, event)
+                         : clawt_trigger_build_prompt(trigger, event);
         if (execute) {
             if (reason != NULL)
                 return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED, reason);
-            results = clawt_trigger_dispatch(trigger, self->trigger_store, event,
-                key, run_trigger, self, &error);
-            if (results == NULL)
-                return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED, error->message);
-            if (results_started(results))
-                clawt_event_bus_emit(self->bus, "trigger.fired", id);
+            if (posting) {
+                /* Reserved first, as a run is, so a replay posts once. */
+                if (!clawt_trigger_store_claim_replay(self->trigger_store, id, key, &error))
+                    return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED, error->message);
+                if (!post_trigger(self, trigger, event, &error)) {
+                    clawt_trigger_store_finish_replay(self->trigger_store, id, key, NULL,
+                                                      error->message, NULL);
+                    return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED, error->message);
+                }
+                clawt_trigger_store_finish_post(self->trigger_store, id, key,
+                                                "replayed as a post; no agent was run", NULL);
+                clawt_event_bus_emit(self->bus, "trigger.posted", id);
+            } else {
+                results = clawt_trigger_dispatch(trigger, self->trigger_store, event,
+                    key, run_trigger, self, &error);
+                if (results == NULL)
+                    return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED, error->message);
+                if (results_started(results))
+                    clawt_event_bus_emit(self->bus, "trigger.fired", id);
+            }
         }
         recipient_names = g_strjoinv(", ", recipients);
-        report = g_strdup_printf("Receipt %" G_GINT64_FORMAT ": %s\nRecipients: %s\n\n%s",
+        report = g_strdup_printf("Receipt %" G_GINT64_FORMAT ": %s\n%s%s\n\n%s",
             receipt, reason != NULL ? reason :
-                (execute ? "batch execution recorded; inspect recipient results" : "matches current filters; ready for explicit replay"),
-            recipient_names, prompt);
+                (execute ? (posting ? "posted into the room; no agent was run"
+                                    : "batch execution recorded; inspect recipient results")
+                         : "matches current filters; ready for explicit replay"),
+            posting ? "Posts into: " : "Recipients: ",
+            posting ? clawt_trigger_get_string(trigger, "room") : recipient_names,
+            prompt);
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "receipt");
         json_builder_add_int_value(builder, receipt);
@@ -1265,7 +1563,39 @@ clawt_daemon_handle_trigger(
         json_builder_set_member_name(builder, "id");
         json_builder_add_string_value(builder, id);
 
-        if (clawt_ipc_payload_boolean(payload, "run", FALSE)) {
+        /*
+         * A post trigger is previewed and run as what it does: the
+         * message it would write into its room, and writing it.  Showing
+         * a run's prompt for a trigger that never runs anything would be
+         * a preview of something that cannot happen.
+         */
+        if (clawt_trigger_get_mode(trigger) == CLAWT_TRIGGER_MODE_POST) {
+            g_autofree gchar *body = clawt_trigger_render_post(trigger, event);
+            g_autofree gchar *report = NULL;
+
+            if (!clawt_trigger_validate(trigger, &error))
+                return clawt_ipc_error_new(request, CLAWT_ERROR_CONFIG_INVALID,
+                                           error->message);
+
+            if (clawt_ipc_payload_boolean(payload, "run", FALSE)) {
+                if (!post_trigger(self, trigger, event, &error))
+                    return clawt_ipc_error_new(request, error->code,
+                                               error->message);
+
+                clawt_event_bus_emit(self->bus, "trigger.posted", id);
+                json_builder_set_member_name(builder, "posted");
+                json_builder_add_string_value(
+                    builder, clawt_trigger_get_string(trigger, "room"));
+            }
+
+            report = g_strdup_printf("Posts into: %s\n\n%s",
+                                     clawt_trigger_get_string(trigger, "room"),
+                                     body);
+            json_builder_set_member_name(builder, "prompt");
+            json_builder_add_string_value(builder, body);
+            json_builder_set_member_name(builder, "report");
+            json_builder_add_string_value(builder, report);
+        } else if (clawt_ipc_payload_boolean(payload, "run", FALSE)) {
             g_autoptr(JsonNode) results = NULL;
             if (self->trigger_store == NULL)
                 return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED, "trigger store unavailable");
@@ -1359,6 +1689,96 @@ clawt_daemon_handle_trigger(
                       "delivered -- set daemon.webhook_enabled");
         }
 
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    /*
+     * A match filter against a real delivery, before it is saved.
+     *
+     * The editor's question is "would these rows have let the last thing
+     * that arrived through, and what is in it to filter on" -- answered
+     * from the newest stored body (falling back to the handshake capture),
+     * with the rows the editor is holding rather than the saved ones, so
+     * a path can be checked while it is being typed.  Nothing is run and
+     * nothing is written.
+     */
+    if (g_strcmp0(kind, "trigger.match_test") == 0) {
+        const gchar *id = clawt_ipc_payload_string(payload, "id");
+        ClawtTrigger *trigger = (id != NULL)
+            ? clawt_config_get_trigger(self->config, id) : NULL;
+        gint64 receipt = clawt_ipc_payload_int(payload, "receipt", 0);
+        g_autoptr(ClawtTriggerEvent) event = NULL;
+        g_autoptr(GPtrArray) matches = NULL;
+        g_autofree gchar *capture = NULL;
+        g_autofree gchar *reason = NULL;
+        const gchar *body = NULL;
+        gboolean matched;
+
+        if (trigger == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "there is no trigger called that");
+
+        matches = json_object_has_member(payload, "match")
+            ? clawt_trigger_match_from_json(
+                  json_object_get_member(payload, "match"), &error)
+            : clawt_trigger_get_match(trigger, &error);
+
+        if (matches == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       error->message);
+
+        if (self->trigger_store != NULL && receipt >= 0) {
+            event = clawt_trigger_store_read_event(self->trigger_store, id,
+                                                   &receipt, NULL);
+
+            if (event != NULL)
+                body = clawt_trigger_event_get_payload(event);
+            else
+                capture = clawt_trigger_store_get_capture(self->trigger_store,
+                                                          id);
+        }
+
+        if (body == NULL)
+            body = capture;
+
+        matched = clawt_trigger_match_evaluate(matches, body, &reason);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "id");
+        json_builder_add_string_value(builder, id);
+
+        if (event != NULL) {
+            json_builder_set_member_name(builder, "receipt");
+            json_builder_add_int_value(builder, receipt);
+        }
+
+        if (body != NULL) {
+            json_builder_set_member_name(builder, "payload");
+            json_builder_add_string_value(builder, body);
+        } else {
+            json_builder_set_member_name(builder, "note");
+            json_builder_add_string_value(
+                builder, "nothing has been delivered to this trigger yet, so "
+                         "there is no body to check against");
+        }
+
+        json_builder_set_member_name(builder, "matches");
+        json_builder_add_boolean_value(builder, body != NULL && matched);
+
+        if (reason != NULL) {
+            json_builder_set_member_name(builder, "reason");
+            json_builder_add_string_value(builder, reason);
+        }
+
+        json_builder_set_member_name(builder, "results");
+        json_builder_add_value(builder,
+                               clawt_trigger_match_explain(matches, body));
+        json_builder_set_member_name(builder, "paths");
+        json_builder_add_value(builder,
+                               clawt_trigger_match_paths(body,
+                                                         MATCH_TEST_MAX_PATHS));
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));

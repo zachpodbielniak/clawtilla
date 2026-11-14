@@ -1676,6 +1676,75 @@ const gchar *clawt_trigger_provider_nth_nick(guint n);
 const gchar *clawt_trigger_provider_nth_label(guint n);
 
 /**
+ * ClawtTriggerMode:
+ * @CLAWT_TRIGGER_MODE_RUN: a delivery runs the agent with the expanded
+ *   instructions, as it always has
+ * @CLAWT_TRIGGER_MODE_POST: a delivery is written into `triggers.room` as
+ *   a system message and nothing runs
+ *
+ * What a delivery that passed every filter turns into.
+ *
+ * `post` exists because a large share of webhooks want to be *seen*, not
+ * acted on -- a deploy finished, a monitor fired, a ticket moved -- and
+ * running an agent so that it can say "a deploy finished" spends a turn
+ * on reading the payload back.  A post spends nothing: the rendered event
+ * lands in the room, is recorded, and wakes nobody.
+ *
+ * Appended in this order on purpose: %CLAWT_TRIGGER_MODE_RUN is 0, so a
+ * trigger that never named a mode keeps the behaviour it had.
+ */
+typedef enum {
+	CLAWT_TRIGGER_MODE_RUN = 0,
+	CLAWT_TRIGGER_MODE_POST
+} ClawtTriggerMode;
+
+GType clawt_trigger_mode_get_type(void) G_GNUC_CONST;
+#define CLAWT_TYPE_TRIGGER_MODE (clawt_trigger_mode_get_type())
+
+/**
+ * clawt_trigger_mode_count:
+ *
+ * Returns: how many modes a trigger can be in
+ */
+guint clawt_trigger_mode_count(void);
+
+/**
+ * clawt_trigger_mode_nth:
+ * @n: an index below clawt_trigger_mode_count()
+ *
+ * Returns: the mode at @n
+ */
+ClawtTriggerMode clawt_trigger_mode_nth(guint n);
+
+/**
+ * clawt_trigger_mode_nth_nick:
+ * @n: an index below clawt_trigger_mode_count()
+ *
+ * Returns: (transfer none): the spelling used in clawtilla.yaml
+ */
+const gchar *clawt_trigger_mode_nth_nick(guint n);
+
+/**
+ * clawt_trigger_mode_nth_label:
+ * @n: an index below clawt_trigger_mode_count()
+ *
+ * Returns: (transfer none): the wording for a person, as a choice
+ */
+const gchar *clawt_trigger_mode_nth_label(guint n);
+
+/**
+ * clawt_trigger_mode_nth_hint:
+ * @n: an index below clawt_trigger_mode_count()
+ *
+ * One sentence saying what the choice costs, for the line under the
+ * selector.  In the library so every client says the same thing about
+ * which of the two spends a turn.
+ *
+ * Returns: (transfer none): the explanation
+ */
+const gchar *clawt_trigger_mode_nth_hint(guint n);
+
+/**
  * ClawtSection:
  * @CLAWT_SECTION_CHAT: the transcript and composer
  * @CLAWT_SECTION_AGENT: what this agent is, and what is queued for it

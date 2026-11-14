@@ -39,8 +39,15 @@ wait "${cli}" || true
 
 echo "busy-libreclaw: the turn ended, still up"
 
-while true
-do
-    sleep 0.05 &
-    wait $!
-done
+# Idle the way libreclaw idles between turns: alive, and with nothing
+# below it.  `exec` keeps the pid -- the agent the test is watching -- and
+# leaves no shell around to fork anything.
+#
+# This used to be a loop of `sleep 0.05 & wait $!`, which is an agent that
+# starts a fresh child twenty times a second for ever.  The test's second
+# interrupt asserts that nothing is left to signal, and one time in a few
+# hundred under load its /proc walk landed on one of those sleeps, killed
+# it and correctly said so: killed == 1, from a fixture whose idle state
+# was never idle.  A sleeping process still dies on SIGTERM, so a stop is
+# no slower than it was.
+exec sleep 600

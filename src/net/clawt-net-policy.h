@@ -12,7 +12,9 @@
  * phrased in names is a rule an attacker writes the input for.
  *
  * The classification is pure -- no resolver, no socket -- so the whole
- * table is testable as data.  100.64.0.0/10 is not an octet boundary:
+ * table is testable as data.  clawt_net_address_is_public() (the private
+ * clawt-net.h, which the wait probes use) is this table's yes or no, so
+ * the gate and the probes cannot disagree about what "private" means.  100.64.0.0/10 is not an octet boundary:
  * 100.63.255.255 is public and 100.128.0.0 is public, and a check written
  * as "starts with 100." is wrong in both directions.
  */
@@ -62,21 +64,6 @@ gboolean
 clawt_net_address_classify_string(
 	const gchar          *text,
 	ClawtNetAddressClass *out_class
-);
-
-/**
- * clawt_net_address_is_public:
- * @address: an address
- *
- * Whether @address is on the public internet: not this machine, not a
- * local network, not link-local, not CGNAT or a tailnet, not a metadata
- * service, not multicast, unspecified or reserved.
- *
- * Returns: %TRUE for a public address
- */
-gboolean
-clawt_net_address_is_public(
-	GInetAddress *address
 );
 
 /**

@@ -771,6 +771,95 @@ add_avatar_card(HtmxElement *parent, JsonObject *agent, const gchar *agent_id)
     htmx_node_add_child(HTMX_NODE(parent), HTMX_NODE(card));
 }
 
+/*
+ * What this agent is waiting for: conditions clawtilla checks by code on
+ * its behalf, each ending in one notice.  The schedule line is
+ * clawt_wait_schedule_label()'s, so it reads as the GTK and libregnum
+ * clients draw it.
+ */
+static void
+add_waits_card(
+	ClawtWebApp *app,
+	HtmxElement *parent,
+	const gchar *agent_id
+){
+	g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+	g_autoptr(JsonNode) reply = NULL;
+	g_autoptr(HtmxDiv) card = clawt_web_card(
+		"Waiting for",
+		"Conditions clawtilla checks for this agent, by code -- a pending "
+		"wait costs nothing. The agent gets one notice when each holds or "
+		"expires; cancelling one tells it.");
+	HtmxElement *body = clawt_web_card_body(card);
+	g_autofree gchar *escaped = g_uri_escape_string(agent_id, NULL, FALSE);
+	g_autofree gchar *action = g_strdup_printf("/a/%s/wait/cancel", escaped);
+	JsonArray *waits;
+	gint64 now = g_get_real_time();
+	guint i;
+
+	clawt_web_payload_set(payload, "agent", agent_id);
+	reply = clawt_web_app_call(app, "wait.list",
+	                           clawt_web_payload_take(
+	                               g_steal_pointer(&payload)));
+	waits = clawt_web_member_array(clawt_web_root(reply), "waits");
+
+	if (reply == NULL) {
+		g_autofree gchar *why = g_strdup(clawt_web_app_last_error(app));
+
+		clawt_web_add(body, clawt_web_notice(why, "bad"));
+	} else if (waits == NULL || json_array_get_length(waits) == 0) {
+		clawt_web_add(body, clawt_web_empty(
+			"Nothing",
+			"When this agent sets a wait with clawtilla_wait_until, it "
+			"shows here until it ends."));
+	}
+
+	for (i = 0; waits != NULL && i < json_array_get_length(waits); i++) {
+		JsonObject *wait = json_array_get_object_element(waits, i);
+		g_autoptr(HtmxDiv) row = htmx_div_new();
+		g_autoptr(HtmxDiv) head = htmx_div_new();
+		g_autoptr(HtmxSpan) label = htmx_span_new();
+		g_autoptr(HtmxForm) form = clawt_web_form(action);
+		g_autoptr(HtmxButton) cancel = clawt_web_button("Cancel", "default");
+		g_autofree gchar *schedule = clawt_wait_schedule_label(
+			clawt_web_member_int(wait, "last_check_at", 0),
+			clawt_web_member_int(wait, "next_check_at", 0),
+			clawt_web_member_int(wait, "expires_at", 0), now);
+		const gchar *seen = clawt_web_member(wait, "last_result", NULL);
+
+		htmx_element_add_class(HTMX_ELEMENT(row), "list-item");
+		htmx_element_add_class(HTMX_ELEMENT(head), "list-item-head");
+		htmx_element_add_class(HTMX_ELEMENT(label), "list-item-title");
+		htmx_node_set_text_content(HTMX_NODE(label),
+		                           clawt_web_member(wait, "label", "?"));
+		htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(label));
+		clawt_web_add(head, clawt_web_badge(
+			clawt_web_member(wait, "kind", "?"), "info"));
+		htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(head));
+
+		clawt_web_add(row, clawt_web_text(
+			clawt_web_member(wait, "condition", "?"), "small"));
+		clawt_web_add(row, clawt_web_text(schedule, "small muted"));
+
+		if (seen != NULL) {
+			g_autofree gchar *line = g_strdup_printf("Last check saw: %s",
+			                                         seen);
+
+			clawt_web_add(row, clawt_web_text(line, "small muted"));
+		}
+
+		clawt_web_add(form, clawt_web_hidden(
+			"wait", clawt_web_member(wait, "id", "")));
+		htmx_element_set_attribute(HTMX_ELEMENT(cancel), "type", "submit");
+		htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(cancel));
+		htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(form));
+
+		htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(row));
+	}
+
+	htmx_node_add_child(HTMX_NODE(parent), HTMX_NODE(card));
+}
+
 static void
 add_danger_card(HtmxElement *parent, const gchar *agent_id)
 {
@@ -865,6 +954,7 @@ clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id)
 
     add_egress_card(HTMX_ELEMENT(pad),
                     clawt_web_member_object(root, "egress"));
+    add_waits_card(app, HTMX_ELEMENT(pad), agent_id);
     add_avatar_card(HTMX_ELEMENT(pad), agent, agent_id);
 
     escaped = g_uri_escape_string(agent_id, NULL, FALSE);
@@ -1307,6 +1397,38 @@ on_reset(HtmxRequest *request, GHashTable *params, gpointer user_data)
 }
 
 /*
+ * Cancels one wait as the operator, which the daemon tells the agent
+ * about -- it would otherwise go on believing it was waiting.
+ */
+static HtmxResponse *
+on_wait_cancel(
+	HtmxRequest *request,
+	GHashTable  *params,
+	gpointer     user_data
+){
+	ClawtWebApp *app = user_data;
+	g_autofree gchar *agent_id = clawt_web_param(params, "id");
+	g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+	g_autoptr(JsonNode) reply = NULL;
+
+	clawt_web_payload_set(payload, "wait",
+	                      clawt_web_form_value(request, "wait"));
+
+	reply = clawt_web_app_call(app, "wait.cancel",
+	                           clawt_web_payload_take(
+	                               g_steal_pointer(&payload)));
+
+	if (reply == NULL)
+		return clawt_web_error_page(app, request, agent_id,
+		                            CLAWT_PAGE_AGENT,
+		                            clawt_web_app_last_error(app));
+
+	return clawt_web_after_action(app, request, agent_id, CLAWT_PAGE_AGENT,
+	                              "Cancelled. The agent has been told it is "
+	                              "no longer waiting.");
+}
+
+/*
  * Streams this agent's picture from the daemon's own bytes.
  *
  * Not a static file: `agent.avatar` is the only place these bytes are
@@ -1475,6 +1597,7 @@ clawt_web_register_agent(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_post(router, "/a/:id/set", on_save, app);
     htmx_router_post(router, "/a/:id/remove", on_remove, app);
     htmx_router_post(router, "/a/:id/reset", on_reset, app);
+    htmx_router_post(router, "/a/:id/wait/cancel", on_wait_cancel, app);
     htmx_router_get(router, "/a/:id/avatar", on_avatar_get, app);
     htmx_router_post(router, "/a/:id/avatar/set", on_avatar_set, app);
     htmx_router_post(router, "/a/:id/avatar/clear", on_avatar_clear, app);

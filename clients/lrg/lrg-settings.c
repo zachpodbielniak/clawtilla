@@ -10,7 +10,7 @@
  * header switcher.  Here it is one large dialog with the pages listed
  * down the left and the chosen page on the right, in GTK's order --
  * Cloud images, Teams, Spending, Integrations, Connectors, Shared
- * folders, Appearance -- plus Connections, which GTK keeps in a menu of
+ * folders, Appearance, Devices -- plus Connections, which GTK keeps in a menu of
  * its own and this client keeps beside the rest so the banner's
  * "Connections…" lands on a page rather than a second kind of window.
  *
@@ -23,7 +23,7 @@
 
 #include "clawt-lrg.h"
 
-#define N_SETTINGS_PAGES (8)
+#define N_SETTINGS_PAGES (9)
 
 typedef struct {
     LrgDialog  *dialog;      /* our reference; re-presented, never rebuilt */
@@ -53,8 +53,9 @@ clawt_lrg_settings_pages(void)
         pages[4] = clawt_lrg_settings_connectors_page();
         pages[5] = clawt_lrg_settings_folders_page();
         pages[6] = clawt_lrg_settings_appearance_page();
-        pages[7] = clawt_lrg_settings_connections_page();
-        pages[8] = NULL;
+        pages[7] = clawt_lrg_settings_devices_page();
+        pages[8] = clawt_lrg_settings_connections_page();
+        pages[9] = NULL;
     }
 
     return (const ClawtLrgSettingsPage *const *)pages;

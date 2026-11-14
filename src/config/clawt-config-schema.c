@@ -158,6 +158,18 @@ static const ClawtSchemaEntry schema[] = {
   "first time a TCP or tailnet listener needs one, so enabling either\n"
   "cannot leave the daemon open by omission.", "0.1.0" },
 
+{ "daemon.device_idle_days", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "90", NULL,
+  "Days a paired device may go unseen before its token stops working.\n"
+  "0 means never.\n"
+  "\n"
+  "A device is seen when it connects and, once a minute, for as long as\n"
+  "it stays connected -- so a laptop left open on the fleet never lapses\n"
+  "while somebody is looking at it. An expired device is removed exactly\n"
+  "as `clawtilla device revoke` would remove it, live connections and\n"
+  "all; pair it again with a fresh code. The daemon's own token\n"
+  "(token_file) is the owner credential and never expires.", "0.13.0" },
+
 { "daemon.event_log_days", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "30", NULL,
   "How many days of per-room event logs to keep. 0 disables the sweep.\n"
@@ -501,7 +513,7 @@ static const ClawtSchemaEntry schema[] = {
   "Set to bwrap, every process-runtime agent that says nothing itself is\n"
   "confined. An embedded agent cannot be -- it is the daemon -- and is\n"
   "disabled with that reason rather than run unconfined; give it\n"
-  "runtime.confine: none of its own to keep it embedded.", "0.12.0" },
+  "runtime.confine: none of its own to keep it embedded.", "0.14.0" },
 
 /* ── ai_assist ───────────────────────────────────────────────────── */
 { "defaults.avatar_max_bytes", CLAWT_SCHEMA_INT,
@@ -868,6 +880,20 @@ static const ClawtSchemaEntry schema[] = {
   "fills two years. A handoff that has not run yet is never pruned\n"
   "however old it is: it is undrained rather than finished. 0 keeps\n"
   "receipts until the count alone drops them.", "0.2.0" },
+
+{ "orchestration.max_waits_per_agent", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_PER_AGENT, "10", NULL,
+  "How many pending waits one agent may have.\n"
+  "\n"
+  "A wait (clawtilla_wait_until) is a condition clawtilla checks by code\n"
+  "-- a URL, a file, a task, the agent's computer, a command -- so the\n"
+  "model is woken once when it holds rather than on every look. A pending\n"
+  "wait costs no turns, but each one is a probe: a URL fetched once a\n"
+  "minute, a command run on the agent's computer. This bounds how many\n"
+  "of those one agent can leave running, and the refusal names its\n"
+  "pending waits so it can fold a new one into an old one.\n"
+  "\n"
+  "Override with max_waits on an agent. 0 removes the limit.", "0.14.0" },
 
 { "memories", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "What an agent remembers between conversations.\n"
@@ -1959,11 +1985,36 @@ static const ClawtSchemaEntry schema[] = {
   NULL, NULL,
   "Additional recipients for the same delivery. The primary agent runs first;\n"
   "duplicates are removed in order. Every recipient has a separate durable\n"
-  "task and outcome. A batch must fit the four unfinished-run slots in full.", "0.2.0" },
+  "task and outcome. A batch must fit the trigger's max_pending slots in\n"
+  "full.", "0.2.0" },
 
 { "triggers.room", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Where the run reports, if not the agent's own conversation.",
   "0.2.0" },
+
+{ "triggers.mode", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "run", clawt_trigger_mode_get_type,
+  "What a delivery that passed every filter turns into: run or post.\n"
+  "\n"
+  "run starts the agent with the expanded instructions, which costs a\n"
+  "turn. post writes the instructions and the event into `room` as a\n"
+  "system message and runs nothing -- for the deploy that finished or\n"
+  "the monitor that fired, which somebody wants to see and no agent\n"
+  "needs to act on. A post wakes nobody and costs nothing.\n"
+  "\n"
+  "post needs `room`: a trigger set to post with no room is refused at\n"
+  "load, and refuses every delivery until one is named.", "0.15.0" },
+
+{ "triggers.max_pending", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "4", NULL,
+  "How many runs this trigger may have unfinished at once, 1 to 50.\n"
+  "\n"
+  "A push that fires a five-minute run, twenty times while the first is\n"
+  "still going, is twenty agents on one machine. A delivery past the cap\n"
+  "is answered 429, so the sender retries it later, and recorded as\n"
+  "dropped in the trigger's deliveries -- never silently. Every recipient\n"
+  "of a fan-out takes a slot. A value outside 1 to 50 written by hand is\n"
+  "read as the default, with a warning at load.", "0.15.0" },
 
 { "triggers.provider", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
   "generic", clawt_trigger_provider_get_type,
@@ -2023,6 +2074,34 @@ static const ClawtSchemaEntry schema[] = {
   "its own write, and the sender cannot tell: to it every write is an\n"
   "ordinary user's change. Name the account the agent's credential\n"
   "belongs to. Matched against {{actor}}, ignoring case.", "0.9.3" },
+
+{ "triggers.match", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Fields the delivery's JSON body must contain, or it is ignored.\n"
+  "\n"
+  "  match:\n"
+  "    - path: pull_request.title\n"
+  "      value: release\n"
+  "    - path: labels.name\n"
+  "      value: deploy\n"
+  "\n"
+  "Up to 10 pairs, and all of them must match. The path is dotted; a\n"
+  "number indexes an array (`commits.0.message`), and a name on an array\n"
+  "looks in every element (`labels.name`). The value must be contained in\n"
+  "what the path holds, ignoring case. Checked before anything is queued:\n"
+  "a miss is recorded in the deliveries as ignored, naming the pair that\n"
+  "failed, and starts no run. Empty, or null, means no filter.", "0.15.0" },
+
+{ "triggers.match.path", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED,
+  NULL, NULL,
+  "Where in the JSON body to look, dotted, such as `repository.name`.\n"
+  "No spaces, no `=` and no empty part; a bad path is refused at load.",
+  "0.15.0" },
+
+{ "triggers.match.value", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED,
+  NULL, NULL,
+  "Text the field must contain, ignoring case. An object or array is\n"
+  "searched as its JSON text.", "0.15.0" },
 
 { "triggers.replay_connector", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
@@ -2376,7 +2455,7 @@ static const ClawtSchemaEntry schema[] = {
   "Only runtime.type: process can be confined; bwrap with embedded\n"
   "disables the agent. bubblewrap missing disables it too, with the\n"
   "reason, and it is never started unconfined instead. Takes effect at\n"
-  "the agent's next start.", "0.12.0" },
+  "the agent's next start.", "0.14.0" },
 
 { "agents.runtime.confine_paths", CLAWT_SCHEMA_STRING_LIST,
   CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
@@ -2386,7 +2465,7 @@ static const ClawtSchemaEntry schema[] = {
   "for itself. A CLI installed somewhere it cannot follow -- a node\n"
   "under ~/.nvm, a tool a skill shells out to -- is named here. Read-only\n"
   "on purpose: something the agent should write is a mount, which says\n"
-  "so in its mode. Ignored unless runtime.confine is bwrap.", "0.12.0" },
+  "so in its mode. Ignored unless runtime.confine is bwrap.", "0.14.0" },
 
 { "agents.runtime.network", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
   "open", clawt_runtime_network_get_type,
@@ -3620,6 +3699,7 @@ clawt_config_schema_get(gsize *n_entries)
  */
 static const ClawtSchemaAgentKey agent_keys[] = {
     { "daily_agent_budget_micros", "orchestration.daily_agent_budget_micros" },
+    { "max_waits",                 "orchestration.max_waits_per_agent" },
     /*
      * Fleet policy an agent may override. The `orchestration.` section
      * is the fleet's own, so the per-agent form drops it.

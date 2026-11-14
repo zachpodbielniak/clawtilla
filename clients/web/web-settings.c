@@ -43,7 +43,9 @@ static const SettingsPage settings_pages[] = {
     { "appearance",   "Appearance",
       "How this browser draws the client." },
     { "connections",  "Connections",
-      "Which daemon this server talks to." }
+      "Which daemon this server talks to." },
+    { "devices",      "Devices",
+      "Laptops and phones holding a token of their own for this daemon." }
 };
 
 /* ── The frame ───────────────────────────────────────────────────── */
@@ -430,182 +432,284 @@ teams_content(ClawtWebApp *app)
 
 /* ── Spending ────────────────────────────────────────────────────── */
 
-static const struct {
-    const gchar *slug;
-    const gchar *label;
-    gint64       seconds;
-} periods[] = {
-    { "all",   "All time",    0 },
-    { "today", "Today",       0 },
-    { "7",     "Last 7 days", 7 * 86400 },
-    { "30",    "Last 30 days", 30 * 86400 }
-};
+/*
+ * The period and grouping a request asked for, as indices into the
+ * library's own tables.  An index rather than a slug of our own, so
+ * there is no second list here to fall out of step with the GTK and
+ * libregnum pages; anything unreadable is the first of each.
+ */
+static guint
+spending_period_index(
+	HtmxRequest *request
+){
+	const gchar *word = htmx_request_get_query_param(request, "period");
+	guint64 index = 0;
 
-static gint64
-since_for(const gchar *slug)
-{
-    gint64 now = g_get_real_time() / G_USEC_PER_SEC;
-    guint i;
+	if (word == NULL || !g_ascii_string_to_unsigned(word, 10, 0,
+			clawt_usage_period_count() - 1, &index, NULL))
+		return 0;
 
-    if (g_strcmp0(slug, "today") == 0) {
-        g_autoptr(GDateTime) midnight = NULL;
-        g_autoptr(GDateTime) local = g_date_time_new_now_local();
+	return (guint)index;
+}
 
-        midnight = g_date_time_new_local(g_date_time_get_year(local),
-                                         g_date_time_get_month(local),
-                                         g_date_time_get_day_of_month(local),
-                                         0, 0, 0.0);
+static const gchar *
+spending_group_nick(
+	HtmxRequest *request
+){
+	const gchar *word = htmx_request_get_query_param(request, "by");
+	gint index = clawt_usage_group_index(word);
 
-        return g_date_time_to_unix(midnight);
-    }
+	return clawt_usage_group_nth(index >= 0 ? (guint)index : 0);
+}
 
-    for (i = 0; i < G_N_ELEMENTS(periods); i++) {
-        if (g_strcmp0(periods[i].slug, slug) == 0 && periods[i].seconds > 0)
-            return now - periods[i].seconds;
-    }
+/* One request for both the page and the download, so they cannot differ. */
+static JsonNode *
+spending_ledger(
+	ClawtWebApp *app,
+	guint        period,
+	const gchar *by
+){
+	return clawt_web_app_call(app, "usage.ledger",
+		clawt_usage_ledger_payload(
+			clawt_usage_period_since(period,
+						 g_get_real_time() / G_USEC_PER_SEC),
+			by, NULL));
+}
 
-    return 0;
+/* A row of links, one per choice, the current one marked. */
+static HtmxElement *
+spending_tabs(
+	const gchar *label,
+	guint        count,
+	guint        current,
+	gboolean     periods,
+	guint        period,
+	const gchar *by
+){
+	g_autoptr(HtmxElement) nav = HTMX_ELEMENT(htmx_nav_new());
+	guint i;
+
+	htmx_element_add_class(nav, "tabs");
+	htmx_element_set_attribute(nav, "aria-label", label);
+
+	for (i = 0; i < count; i++) {
+		g_autofree gchar *url = periods
+			? g_strdup_printf("/settings/spending?period=%u&by=%s", i, by)
+			: g_strdup_printf("/settings/spending?period=%u&by=%s", period,
+					  clawt_usage_group_nth(i));
+		g_autoptr(HtmxA) tab = htmx_a_new_with_href(url);
+
+		htmx_element_add_class(HTMX_ELEMENT(tab), "tab");
+		htmx_node_set_text_content(HTMX_NODE(tab),
+			periods ? clawt_usage_period_label(i) : clawt_usage_group_label(i));
+
+		if (i == current)
+			htmx_element_set_attribute(HTMX_ELEMENT(tab), "aria-current",
+						   "page");
+
+		htmx_node_add_child(HTMX_NODE(nav), HTMX_NODE(tab));
+	}
+
+	return HTMX_ELEMENT(g_steal_pointer(&nav));
+}
+
+static void
+spending_cells(
+	HtmxTr     *tr,
+	JsonObject *group
+){
+	g_autofree gchar *turns = g_strdup_printf(
+		"%" G_GINT64_FORMAT, clawt_web_member_int(group, "turns", 0));
+	g_autofree gchar *unpriced = g_strdup_printf(
+		"%" G_GINT64_FORMAT, clawt_web_member_int(group, "unpriced_turns", 0));
+	g_autofree gchar *in = g_strdup_printf(
+		"%" G_GINT64_FORMAT, clawt_web_member_int(group, "input_tokens", 0));
+	g_autofree gchar *out = g_strdup_printf(
+		"%" G_GINT64_FORMAT, clawt_web_member_int(group, "output_tokens", 0));
+	g_autofree gchar *cost = clawt_usage_ledger_cost_label(group);
+	const gchar *values[5];
+	guint c;
+
+	values[0] = turns;
+	values[1] = unpriced;
+	values[2] = in;
+	values[3] = out;
+	values[4] = cost;
+
+	for (c = 0; c < G_N_ELEMENTS(values); c++) {
+		g_autoptr(HtmxTd) td = htmx_td_new_with_text(values[c]);
+
+		htmx_element_add_class(HTMX_ELEMENT(td), "num");
+		htmx_node_add_child(HTMX_NODE(tr), HTMX_NODE(td));
+	}
 }
 
 static HtmxElement *
-spending_content(ClawtWebApp *app, const gchar *period)
-{
-    g_autoptr(HtmxDiv) box = htmx_div_new();
-    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
-    g_autoptr(JsonNode) reply = NULL;
-    JsonObject *root;
-    JsonArray *agents;
-    JsonObject *total;
-    g_autoptr(HtmxElement) wrap = HTMX_ELEMENT(htmx_div_new());
-    g_autoptr(HtmxTable) table = htmx_table_new();
-    g_autoptr(HtmxThead) head = htmx_thead_new();
-    g_autoptr(HtmxTbody) rows = htmx_tbody_new();
-    g_autoptr(HtmxTfoot) foot = htmx_tfoot_new();
-    guint i;
+spending_content(
+	ClawtWebApp *app,
+	HtmxRequest *request
+){
+	g_autoptr(HtmxDiv) box = htmx_div_new();
+	g_autoptr(JsonNode) reply = NULL;
+	g_autofree gchar *unpriced = NULL;
+	JsonObject *root;
+	JsonArray *groups;
+	JsonObject *total;
+	g_autoptr(HtmxElement) wrap = HTMX_ELEMENT(htmx_div_new());
+	g_autoptr(HtmxTable) table = htmx_table_new();
+	g_autoptr(HtmxThead) head = htmx_thead_new();
+	g_autoptr(HtmxTbody) rows = htmx_tbody_new();
+	g_autoptr(HtmxTfoot) foot = htmx_tfoot_new();
+	guint period = spending_period_index(request);
+	const gchar *by = spending_group_nick(request);
+	guint i;
 
-    {
-        g_autoptr(HtmxElement) nav = HTMX_ELEMENT(htmx_nav_new());
+	/* clawt_web_add() takes the reference spending_tabs() hands back */
+	clawt_web_add(box, spending_tabs("Period", clawt_usage_period_count(),
+					 period, TRUE, period, by));
+	clawt_web_add(box, spending_tabs("Group by", clawt_usage_group_count(),
+					 (guint)MAX(clawt_usage_group_index(by), 0),
+					 FALSE, period, by));
 
-        htmx_element_add_class(nav, "tabs");
+	reply = spending_ledger(app, period, by);
+	root = clawt_web_root(reply);
+	groups = clawt_web_member_array(root, "groups");
+	total = clawt_web_member_object(root, "total");
 
-        for (i = 0; i < G_N_ELEMENTS(periods); i++) {
-            g_autofree gchar *url = g_strdup_printf(
-                "/settings/spending?period=%s", periods[i].slug);
-            g_autoptr(HtmxA) tab = htmx_a_new_with_href(url);
+	{
+		g_autoptr(HtmxTr) tr = htmx_tr_new();
 
-            htmx_element_add_class(HTMX_ELEMENT(tab), "tab");
-            htmx_node_set_text_content(HTMX_NODE(tab), periods[i].label);
+		clawt_web_add(tr, htmx_th_new_with_text(clawt_usage_group_label(
+			(guint)MAX(clawt_usage_group_index(by), 0))));
+		clawt_web_add(tr, htmx_th_new_with_text("Turns"));
+		clawt_web_add(tr, htmx_th_new_with_text("Unpriced"));
+		clawt_web_add(tr, htmx_th_new_with_text("In"));
+		clawt_web_add(tr, htmx_th_new_with_text("Out"));
+		clawt_web_add(tr, htmx_th_new_with_text("Cost"));
+		htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(tr));
+	}
 
-            if (g_strcmp0(periods[i].slug, period) == 0)
-                htmx_element_set_attribute(HTMX_ELEMENT(tab), "aria-current",
-                                           "page");
+	for (i = 0; groups != NULL && i < json_array_get_length(groups); i++) {
+		JsonObject *group = json_array_get_object_element(groups, i);
+		g_autoptr(HtmxTr) tr = htmx_tr_new();
 
-            htmx_node_add_child(HTMX_NODE(nav), HTMX_NODE(tab));
-        }
+		clawt_web_add(tr, htmx_td_new_with_text(
+			clawt_web_member(group, "key", "?")));
+		spending_cells(tr, group);
+		htmx_node_add_child(HTMX_NODE(rows), HTMX_NODE(tr));
+	}
 
-        htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(nav));
-    }
+	{
+		g_autoptr(HtmxTr) tr = htmx_tr_new();
 
-    clawt_web_payload_set_int(payload, "since", since_for(period));
-    reply = clawt_web_app_call(app, "usage.summary",
-                               clawt_web_payload_take(g_steal_pointer(&payload)));
-    root = clawt_web_root(reply);
-    agents = clawt_web_member_array(root, "agents");
-    total = clawt_web_member_object(root, "total");
+		clawt_web_add(tr, htmx_td_new_with_text("Fleet"));
+		spending_cells(tr, total);
+		htmx_node_add_child(HTMX_NODE(foot), HTMX_NODE(tr));
+	}
 
-    {
-        g_autoptr(HtmxTr) tr = htmx_tr_new();
+	htmx_node_add_child(HTMX_NODE(table), HTMX_NODE(head));
+	htmx_node_add_child(HTMX_NODE(table), HTMX_NODE(rows));
+	htmx_node_add_child(HTMX_NODE(table), HTMX_NODE(foot));
 
-        clawt_web_add(tr, htmx_th_new_with_text("Agent"));
-        clawt_web_add(tr, htmx_th_new_with_text("Turns"));
-        clawt_web_add(tr, htmx_th_new_with_text("In"));
-        clawt_web_add(tr, htmx_th_new_with_text("Out"));
-        clawt_web_add(tr, htmx_th_new_with_text("Cost"));
-        htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(tr));
-    }
+	htmx_element_add_class(wrap, "table-wrap");
+	htmx_node_add_child(HTMX_NODE(wrap), HTMX_NODE(table));
+	htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(wrap));
 
-    for (i = 0; agents != NULL && i < json_array_get_length(agents); i++) {
-        JsonObject *agent = json_array_get_object_element(agents, i);
-        g_autoptr(HtmxTr) tr = htmx_tr_new();
-        g_autofree gchar *turns = g_strdup_printf(
-            "%" G_GINT64_FORMAT, clawt_web_member_int(agent, "turns", 0));
-        g_autofree gchar *in = g_strdup_printf(
-            "%" G_GINT64_FORMAT,
-            clawt_web_member_int(agent, "input_tokens", 0));
-        g_autofree gchar *out = g_strdup_printf(
-            "%" G_GINT64_FORMAT,
-            clawt_web_member_int(agent, "output_tokens", 0));
-        g_autofree gchar *cost = clawt_usage_format_cost(
-            clawt_web_member_int(agent, "cost_micros", 0));
+	/* the turns a total quietly leaves out, said where nobody misses it */
+	unpriced = clawt_usage_ledger_unpriced_line(root);
+	if (unpriced != NULL) {
+		g_autoptr(HtmxDiv) notice = htmx_div_new();
 
-        clawt_web_add(tr, htmx_td_new_with_text(
-            clawt_web_member(agent, "name",
-                             clawt_web_member(agent, "id", "?"))));
+		htmx_element_add_class(HTMX_ELEMENT(notice), "notice");
+		htmx_element_add_class(HTMX_ELEMENT(notice), "spending-unpriced");
+		clawt_web_add(notice, clawt_web_text(unpriced, NULL));
+		htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(notice));
+	}
 
-        {
-            const gchar *values[] = { turns, in, out, cost };
-            guint c;
+	{
+		g_autoptr(HtmxDiv) row = htmx_div_new();
+		g_autofree gchar *url = g_strdup_printf(
+			"/settings/spending/export?period=%u&by=%s", period, by);
+		g_autofree gchar *name = clawt_usage_ledger_csv_name(
+			root, g_get_real_time() / G_USEC_PER_SEC);
+		g_autoptr(HtmxA) download = htmx_a_new_with_href(url);
 
-            for (c = 0; c < G_N_ELEMENTS(values); c++) {
-                g_autoptr(HtmxTd) td = htmx_td_new_with_text(values[c]);
+		htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
+		htmx_element_add_class(HTMX_ELEMENT(download), "btn");
+		htmx_element_add_class(HTMX_ELEMENT(download), "spending-export");
+		htmx_element_set_attribute(HTMX_ELEMENT(download), "download", name);
+		htmx_element_set_attribute(HTMX_ELEMENT(download), "title",
+			"The table above as a spreadsheet-safe CSV file");
+		htmx_node_set_text_content(HTMX_NODE(download), "Export CSV");
+		htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(download));
+		htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(row));
+	}
 
-                htmx_element_add_class(HTMX_ELEMENT(td), "num");
-                htmx_node_add_child(HTMX_NODE(tr), HTMX_NODE(td));
-            }
-        }
+	/*
+	 * Said here, because somebody reconciling these against an invoice
+	 * should not have to work it out: IN counts *new* input tokens, and a
+	 * CLI backend bills cache reads and writes that never appear in it.
+	 * The cost column is the provider's own figure.
+	 */
+	clawt_web_add(box, clawt_web_text(
+		"Cost is the figure the provider reported for each turn, not an "
+		"estimate. IN counts only new input tokens -- cached context is "
+		"billed and is not reported as tokens, so a turn can honestly "
+		"show eight input tokens against a bill of two cents. Origin "
+		"says what started the work: you, another agent, a routine or a "
+		"trigger. Unpriced turns have no recorded price and are not in "
+		"the cost -- unknown, not free.",
+		"small muted"));
 
-        htmx_node_add_child(HTMX_NODE(rows), HTMX_NODE(tr));
-    }
+	return HTMX_ELEMENT(g_steal_pointer(&box));
+}
 
-    {
-        g_autoptr(HtmxTr) tr = htmx_tr_new();
-        g_autofree gchar *turns = g_strdup_printf(
-            "%" G_GINT64_FORMAT, clawt_web_member_int(total, "turns", 0));
-        g_autofree gchar *in = g_strdup_printf(
-            "%" G_GINT64_FORMAT,
-            clawt_web_member_int(total, "input_tokens", 0));
-        g_autofree gchar *out = g_strdup_printf(
-            "%" G_GINT64_FORMAT,
-            clawt_web_member_int(total, "output_tokens", 0));
-        g_autofree gchar *cost = clawt_usage_format_cost(
-            clawt_web_member_int(total, "cost_micros", 0));
-        const gchar *values[] = { turns, in, out, cost };
-        guint c;
+/*
+ * The same table as a file the browser saves.
+ *
+ * Content-Disposition rather than a path on disk: the machine running
+ * clawtilla-web is not necessarily the one looking at it.  The CSV is
+ * the library's, so it is byte for byte what `clawtilla cost --csv`
+ * and the other clients write.
+ */
+static HtmxResponse *
+on_spending_export(
+	HtmxRequest *request,
+	GHashTable  *params,
+	gpointer     user_data
+){
+	ClawtWebApp *app = user_data;
+	g_autoptr(JsonNode) reply = NULL;
+	g_autofree gchar *csv = NULL;
+	g_autofree gchar *name = NULL;
+	g_autofree gchar *disposition = NULL;
+	JsonObject *root;
+	HtmxResponse *response;
 
-        clawt_web_add(tr, htmx_td_new_with_text("Fleet"));
+	(void)params;
 
-        for (c = 0; c < G_N_ELEMENTS(values); c++) {
-            g_autoptr(HtmxTd) td = htmx_td_new_with_text(values[c]);
+	reply = spending_ledger(app, spending_period_index(request),
+				spending_group_nick(request));
+	root = clawt_web_root(reply);
 
-            htmx_element_add_class(HTMX_ELEMENT(td), "num");
-            htmx_node_add_child(HTMX_NODE(tr), HTMX_NODE(td));
-        }
+	if (root == NULL) {
+		/* settings_response() borrows the content; this scope owns it */
+		g_autoptr(HtmxElement) content = spending_content(app, request);
 
-        htmx_node_add_child(HTMX_NODE(foot), HTMX_NODE(tr));
-    }
+		return settings_response(app, request, "spending", content,
+					 "The daemon did not answer; nothing was exported.",
+					 TRUE);
+	}
 
-    htmx_node_add_child(HTMX_NODE(table), HTMX_NODE(head));
-    htmx_node_add_child(HTMX_NODE(table), HTMX_NODE(rows));
-    htmx_node_add_child(HTMX_NODE(table), HTMX_NODE(foot));
+	csv = clawt_usage_ledger_csv(root);
+	name = clawt_usage_ledger_csv_name(root, g_get_real_time() / G_USEC_PER_SEC);
+	disposition = g_strdup_printf("attachment; filename=\"%s\"", name);
 
-    htmx_element_add_class(wrap, "table-wrap");
-    htmx_node_add_child(HTMX_NODE(wrap), HTMX_NODE(table));
-    htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(wrap));
+	response = htmx_response_new_with_content(csv);
+	htmx_response_set_content_type(response, "text/csv; charset=utf-8");
+	htmx_response_add_header(response, "Content-Disposition", disposition);
 
-    /*
-     * Said here, because somebody reconciling these against an invoice
-     * should not have to work it out: IN counts *new* input tokens, and a
-     * CLI backend bills cache reads and writes that never appear in it.
-     * The cost column is the provider's own figure.
-     */
-    clawt_web_add(box, clawt_web_text(
-        "Cost is the figure the provider reported for each turn, not an "
-        "estimate. IN counts only new input tokens -- cached context is "
-        "billed and is not reported as tokens, so a turn can honestly "
-        "show eight input tokens against a bill of two cents.",
-        "small muted"));
-
-    return HTMX_ELEMENT(g_steal_pointer(&box));
+	return response;
 }
 
 /* ── Integrations ────────────────────────────────────────────────── */
@@ -1594,11 +1698,51 @@ connections_content(ClawtWebApp *app)
         htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
     }
 
+    /*
+     * The easy path first: an address and six digits, and this server
+     * gets a token of its own.  Pasting the owner's token stays below
+     * for a daemon on a version that cannot pair.
+     */
     {
         g_autoptr(HtmxDiv) card = clawt_web_card(
-            "Add a daemon",
-            "A socket path for one on this machine, or a host and port "
-            "for one somewhere else.");
+            "Pair with a code",
+            "On the daemon's machine run `clawtilla device pair` (or "
+            "Settings, Devices, Pair a new device), then enter its address "
+            "and the six digits here.");
+        HtmxElement *body = clawt_web_card_body(card);
+        g_autoptr(HtmxForm) form =
+            clawt_web_form("/settings/connections/pair");
+        g_autofree gchar *port = g_strdup_printf("%d",
+                                                 CLAWT_DEFAULT_TCP_PORT);
+
+        clawt_web_add(form, clawt_web_field("Name", "name", NULL,
+                                            "workstation"));
+        clawt_web_add(form, clawt_web_field(
+            "Host", "host", NULL, "100.72.0.41, as shown beside the code"));
+        clawt_web_add(form, clawt_web_field("Port", "port", port, NULL));
+        clawt_web_add(form, clawt_web_field("Code", "code", NULL,
+                                            "123 456"));
+
+        {
+            g_autoptr(HtmxDiv) row = htmx_div_new();
+            g_autoptr(HtmxButton) pair = clawt_web_button("Pair", "primary");
+
+            htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
+            htmx_element_set_attribute(HTMX_ELEMENT(pair), "type", "submit");
+            htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(pair));
+            htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(row));
+        }
+
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
+        htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
+    }
+
+    {
+        g_autoptr(HtmxDiv) card = clawt_web_card(
+            "Or add one by hand",
+            "A socket path for one on this machine, or a host, port and "
+            "the owner's token (`clawtilla daemon token`) for one somewhere "
+            "else.");
         HtmxElement *body = clawt_web_card_body(card);
         g_autoptr(HtmxForm) form = clawt_web_form("/settings/connections/add");
 
@@ -1629,6 +1773,461 @@ connections_content(ClawtWebApp *app)
     }
 
     return HTMX_ELEMENT(g_steal_pointer(&box));
+}
+
+/* ── Devices ─────────────────────────────────────────────────────── */
+
+/*
+ * The code just issued, large, with its countdown.
+ *
+ * Drawn only into the response to the button that asked for it -- a
+ * reload of the page shows that a code is outstanding and never which,
+ * so the code is on screen exactly as long as somebody is looking at
+ * the answer to their own request.
+ */
+/*
+ * Whether the code on screen has been used yet, as a small region that
+ * asks again every few seconds until it has an answer.
+ *
+ * The GTK and lrg dialogs learn it from `device.paired`; a settings page
+ * here has no event stream of its own, so it asks.  The answer is a
+ * device paired since the code was issued (@since, the daemon-side
+ * clock is not needed: `created` and @since are both this server's
+ * reading of the daemon's replies), or the code no longer being
+ * outstanding.  A final answer carries no trigger, so the asking stops.
+ */
+static HtmxElement *
+pairing_status(ClawtWebApp *app, gint64 since)
+{
+    g_autoptr(HtmxDiv) status = htmx_div_new();
+    g_autoptr(JsonNode) reply = clawt_web_app_call(app, "device.list", NULL);
+    JsonObject *root = clawt_web_root(reply);
+    JsonArray *devices = clawt_web_member_array(root, "devices");
+    const gchar *paired = NULL;
+    guint i;
+
+    htmx_element_add_class(HTMX_ELEMENT(status), "pair-status");
+
+    for (i = 0; devices != NULL && i < json_array_get_length(devices); i++) {
+        JsonObject *device = json_array_get_object_element(devices, i);
+
+        if (clawt_web_member_int(device, "created", 0) >= since)
+            paired = clawt_web_member(device, "name", "the new device");
+    }
+
+    if (paired != NULL) {
+        g_autofree gchar *text = g_strdup_printf(
+            "Paired %s. It has a token of its own now.", paired);
+
+        clawt_web_add(status, clawt_web_notice(text, "good"));
+    } else if (reply != NULL &&
+               clawt_web_member_int(root, "pairing_expires_in", 0) <= 0) {
+        clawt_web_add(status, clawt_web_text(
+            "This code is no longer waiting: it expired, was withdrawn, or "
+            "was replaced by a newer one.", "muted"));
+    } else {
+        g_autofree gchar *url = g_strdup_printf(
+            "/settings/devices/pair-status?since=%" G_GINT64_FORMAT, since);
+
+        htmx_element_set_attribute(HTMX_ELEMENT(status), "hx-get", url);
+        htmx_element_set_attribute(HTMX_ELEMENT(status), "hx-trigger",
+                                   "every 3s");
+        htmx_element_set_attribute(HTMX_ELEMENT(status), "hx-swap",
+                                   "outerHTML");
+        clawt_web_add(status, clawt_web_text(
+            "Waiting for the other device\342\200\246", "muted"));
+    }
+
+    return HTMX_ELEMENT(g_steal_pointer(&status));
+}
+
+static HtmxResponse *
+on_device_pair_status(HtmxRequest *request, GHashTable *params,
+                      gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    const gchar *since = htmx_request_get_query_param(request, "since");
+    g_autoptr(HtmxElement) status = NULL;
+
+    (void)params;
+
+    status = pairing_status(app, since != NULL
+                                     ? g_ascii_strtoll(since, NULL, 10)
+                                     : G_MAXINT64);
+
+    return clawt_web_fragment_response(status);
+}
+
+static HtmxElement *
+pairing_card(ClawtWebApp *app, JsonObject *pairing)
+{
+    g_autoptr(HtmxDiv) card = clawt_web_card(
+        "Pairing code", "On the other device: Connections, then Pair "
+                        "with a code.");
+    HtmxElement *body = clawt_web_card_body(card);
+    JsonArray *addresses = clawt_web_member_array(pairing, "addresses");
+    g_autofree gchar *display = clawt_device_code_display(
+        clawt_web_member(pairing, "code", ""));
+    gint64 left = clawt_web_member_int(pairing, "expires_in", 0);
+    g_autofree gchar *countdown = clawt_device_countdown_text(left);
+    g_autofree gchar *seconds = g_strdup_printf("%" G_GINT64_FORMAT, left);
+    g_autoptr(HtmxDiv) code = htmx_div_new();
+    g_autoptr(HtmxSpan) clock = htmx_span_new();
+    guint i;
+
+    htmx_element_add_class(HTMX_ELEMENT(code), "pair-code");
+    htmx_element_add_class(HTMX_ELEMENT(code), "mono");
+    htmx_node_set_text_content(HTMX_NODE(code), display);
+    htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(code));
+
+    {
+        g_autoptr(HtmxP) line = htmx_p_new();
+
+        htmx_element_add_class(HTMX_ELEMENT(line), "muted");
+        htmx_node_set_text_content(HTMX_NODE(line), "Good once, for ");
+        htmx_element_add_class(HTMX_ELEMENT(clock), "pair-countdown");
+        htmx_element_set_attribute(HTMX_ELEMENT(clock),
+                                   "data-pair-expires-in", seconds);
+        htmx_node_set_text_content(HTMX_NODE(clock), countdown);
+        htmx_node_add_child(HTMX_NODE(line), HTMX_NODE(clock));
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(line));
+    }
+
+    /*
+     * Where to dial, beside what to type: the code is useless without
+     * the address, and a daemon with no listener cannot be reached to
+     * redeem it at all -- better said here than as a refusal there.
+     */
+    if (addresses == NULL || json_array_get_length(addresses) == 0)
+        clawt_web_add(body, clawt_web_notice(
+            "This daemon is not listening on the network, so no other "
+            "device can reach it to use this code. Turn on "
+            "daemon.tailscale or daemon.tcp_enabled first.", "bad"));
+
+    for (i = 0; addresses != NULL && i < json_array_get_length(addresses);
+         i++)
+        clawt_web_add(body, clawt_web_row(
+            "Address", json_array_get_string_element(addresses, i)));
+
+    {
+        g_autoptr(HtmxElement) status = pairing_status(
+            app, g_get_real_time() / G_USEC_PER_SEC);
+
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(status));
+    }
+
+    {
+        g_autoptr(HtmxDiv) row = htmx_div_new();
+
+        htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
+        clawt_web_add(row, clawt_web_post_button(
+            "Withdraw the code", "/settings/devices/pair-cancel", NULL,
+            NULL));
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(row));
+    }
+
+    return HTMX_ELEMENT(g_steal_pointer(&card));
+}
+
+static HtmxElement *
+devices_content(ClawtWebApp *app, JsonObject *pairing)
+{
+    g_autoptr(HtmxDiv) box = htmx_div_new();
+    g_autoptr(JsonNode) reply = clawt_web_app_call(app, "device.list", NULL);
+    JsonObject *root = clawt_web_root(reply);
+    JsonArray *devices = clawt_web_member_array(root, "devices");
+    gboolean owner = clawt_web_member_bool(root, "owner", FALSE);
+    gint64 idle_days = clawt_web_member_int(root, "idle_days", 0);
+    gint64 outstanding = clawt_web_member_int(root, "pairing_expires_in", 0);
+    gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+    guint i;
+
+    if (reply == NULL) {
+        g_autofree gchar *failure =
+            g_strdup(clawt_web_app_last_error(app));
+
+        clawt_web_add(box, clawt_web_notice(failure, "bad"));
+    }
+
+    if (pairing != NULL)
+        clawt_web_add(box, pairing_card(app, pairing));
+
+    {
+        g_autoptr(HtmxDiv) card = clawt_web_card(
+            "Pair a new device",
+            "A six-digit code another device trades for a token of its "
+            "own: five minutes, once, and five wrong guesses retire it.");
+        HtmxElement *body = clawt_web_card_body(card);
+        g_autoptr(HtmxDiv) row = htmx_div_new();
+
+        /*
+         * Pairing is the owner's.  Said instead of offering a button
+         * whose only answer would be a refusal.
+         */
+        if (!owner && reply != NULL)
+            clawt_web_add(body, clawt_web_notice(
+                "This server is connected as a paired device, and only the "
+                "daemon's owner can pair another. Revoking still works.",
+                "info"));
+
+        if (pairing == NULL && outstanding > 0) {
+            g_autofree gchar *left = clawt_device_countdown_text(outstanding);
+            g_autofree gchar *text = g_strdup_printf(
+                "A code is waiting to be used (%s left). Asking for a new "
+                "one replaces it.", left);
+
+            clawt_web_add(body, clawt_web_text(text, "muted"));
+        }
+
+        htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
+
+        if (owner)
+            clawt_web_add(row, clawt_web_post_button(
+                "Pair a new device", "/settings/devices/pair", "primary",
+                NULL));
+
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(row));
+        htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
+    }
+
+    {
+        g_autofree gchar *subtitle = (idle_days > 0)
+            ? g_strdup_printf("A device unseen for %" G_GINT64_FORMAT
+                              " days stops working by itself "
+                              "(daemon.device_idle_days). The daemon's own "
+                              "token is never affected.", idle_days)
+            : g_strdup("Devices never expire (daemon.device_idle_days: 0). "
+                       "The daemon's own token is never affected.");
+        g_autoptr(HtmxDiv) card = clawt_web_card("Paired devices", subtitle);
+        HtmxElement *body = clawt_web_card_body(card);
+
+        if (devices == NULL || json_array_get_length(devices) == 0)
+            clawt_web_add(body, clawt_web_empty(
+                "No paired devices",
+                "Pair a laptop or phone to give it a token of its own, "
+                "which you can revoke without touching anything else."));
+
+        for (i = 0; devices != NULL && i < json_array_get_length(devices);
+             i++) {
+            JsonObject *device = json_array_get_object_element(devices, i);
+            const gchar *id = clawt_web_member(device, "id", "");
+            const gchar *name = clawt_web_member(device, "name", id);
+            gboolean current = clawt_web_member_bool(device, "current",
+                                                     FALSE);
+            g_autofree gchar *seen = clawt_device_seen_text(
+                clawt_web_member_int(device, "last_seen", 0),
+                clawt_web_member_bool(device, "connected", FALSE), now);
+            g_autoptr(GDateTime) created = g_date_time_new_from_unix_local(
+                clawt_web_member_int(device, "created", 0));
+            g_autofree gchar *when = (created != NULL)
+                ? g_date_time_format(created, "%Y-%m-%d %H:%M")
+                : g_strdup("?");
+            g_autofree gchar *detail = g_strdup_printf(
+                "%s \302\267 paired %s \302\267 %s", seen, when, id);
+            g_autofree gchar *escaped = g_uri_escape_string(id, NULL, FALSE);
+            g_autofree gchar *revoke = g_strdup_printf(
+                "/settings/devices/%s/revoke", escaped);
+            g_autofree gchar *confirm = g_strdup_printf(
+                current
+                    ? "Revoke %s? It is the device this server is using: "
+                      "every page here loses the daemon until it is paired "
+                      "again."
+                    : "Revoke %s? Its token stops working and anything it "
+                      "has connected is closed.", name);
+            g_autoptr(HtmxDiv) row = htmx_div_new();
+            g_autoptr(HtmxDiv) head = htmx_div_new();
+            g_autoptr(HtmxDiv) actions = htmx_div_new();
+
+            htmx_element_add_class(HTMX_ELEMENT(row), "list-item");
+            htmx_element_add_class(HTMX_ELEMENT(head), "list-item-head");
+
+            {
+                g_autoptr(HtmxSpan) label = htmx_span_new();
+
+                htmx_element_add_class(HTMX_ELEMENT(label),
+                                       "list-item-title");
+                htmx_node_set_text_content(HTMX_NODE(label), name);
+                htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(label));
+            }
+
+            if (current)
+                clawt_web_add(head, clawt_web_badge("this device", "info"));
+
+            if (clawt_web_member_bool(device, "connected", FALSE))
+                clawt_web_add(head, clawt_web_badge("connected", "good"));
+
+            htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(head));
+            clawt_web_add(row, clawt_web_text(detail, "small muted"));
+
+            htmx_element_add_class(HTMX_ELEMENT(actions), "btn-row");
+            clawt_web_add(actions, clawt_web_post_button(
+                "Revoke", revoke, "danger", confirm));
+            htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(actions));
+
+            htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(row));
+        }
+
+        htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
+    }
+
+    return HTMX_ELEMENT(g_steal_pointer(&box));
+}
+
+static HtmxResponse *
+on_device_pair(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *failure = NULL;
+    g_autoptr(HtmxElement) content = NULL;
+
+    (void)params;
+
+    reply = clawt_web_app_call(app, "device.pair", NULL);
+
+    if (reply == NULL)
+        failure = g_strdup(clawt_web_app_last_error(app));
+
+    content = devices_content(app, clawt_web_root(reply));
+
+    return settings_response(app, request, "devices", content, failure,
+                             failure != NULL);
+}
+
+static HtmxResponse *
+on_device_pair_cancel(HtmxRequest *request, GHashTable *params,
+                      gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *failure = NULL;
+    g_autoptr(HtmxElement) content = NULL;
+
+    (void)params;
+
+    reply = clawt_web_app_call(app, "device.pair_cancel", NULL);
+
+    if (reply == NULL)
+        failure = g_strdup(clawt_web_app_last_error(app));
+
+    content = devices_content(app, NULL);
+
+    return settings_response(app, request, "devices", content,
+                             failure != NULL ? failure
+                                             : "Withdrawn. That code no "
+                                               "longer works.",
+                             failure != NULL);
+}
+
+static HtmxResponse *
+on_device_revoke(HtmxRequest *request, GHashTable *params,
+                 gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *id = clawt_web_param(params, "device");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *failure = NULL;
+    g_autoptr(HtmxElement) content = NULL;
+
+    clawt_web_payload_set(payload, "id", id);
+    reply = clawt_web_app_call(app, "device.revoke",
+                               clawt_web_payload_take(
+                                   g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        failure = g_strdup(clawt_web_app_last_error(app));
+
+    content = devices_content(app, NULL);
+
+    return settings_response(app, request, "devices", content,
+                             failure != NULL ? failure
+                                             : "Revoked. Its token no longer "
+                                               "works, and anything it had "
+                                               "open was closed.",
+                             failure != NULL);
+}
+
+/*
+ * "Pair with a code": the easy way to add a remote daemon.  The token it
+ * produces goes straight into connections.yaml (0600) and is never drawn.
+ *
+ * Blocks this request for as long as the far end takes, the way Check
+ * does: clawt_connection_pair() runs on a context of its own.
+ */
+static HtmxResponse *
+on_connection_pair(HtmxRequest *request, GHashTable *params,
+                   gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    const gchar *name = clawt_web_form_value(request, "name");
+    const gchar *host = clawt_web_form_value(request, "host");
+    const gchar *port = clawt_web_form_value(request, "port");
+    const gchar *code = clawt_web_form_value(request, "code");
+    g_autofree gchar *path = clawt_connection_list_default_path();
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GPtrArray) list = NULL;
+    g_autoptr(HtmxElement) content = NULL;
+    g_autofree gchar *done = NULL;
+    ClawtConnection *fresh;
+    gint64 port_number = (port != NULL && *port != '\0')
+                         ? g_ascii_strtoll(port, NULL, 10)
+                         : CLAWT_DEFAULT_TCP_PORT;
+
+    (void)params;
+
+    list = clawt_connection_list_load(path, NULL);
+
+    if (list == NULL)
+        list = g_ptr_array_new_with_free_func(
+            (GDestroyNotify)clawt_connection_free);
+
+    if (port_number <= 0 || port_number > G_MAXUINT16) {
+        content = connections_content(app);
+
+        return settings_response(app, request, "connections", content,
+                                 "That is not a port.", TRUE);
+    }
+
+    if (clawt_connection_list_find(
+            list, (name != NULL && *name != '\0') ? name : host) != NULL) {
+        content = connections_content(app);
+
+        return settings_response(app, request, "connections", content,
+                                 "There is already a profile by that name.",
+                                 TRUE);
+    }
+
+    fresh = clawt_connection_new_paired(name, host, (guint16)port_number,
+                                        FALSE, FALSE, code, NULL, &error);
+
+    if (fresh == NULL) {
+        g_autofree gchar *failure = g_strdup(error->message);
+
+        content = connections_content(app);
+
+        return settings_response(app, request, "connections", content,
+                                 failure, TRUE);
+    }
+
+    g_ptr_array_add(list, fresh);
+
+    if (!clawt_connection_list_save(path, list, &error)) {
+        g_autofree gchar *failure = g_strdup_printf(
+            "Paired, but the token could not be saved: %s", error->message);
+
+        content = connections_content(app);
+
+        return settings_response(app, request, "connections", content,
+                                 failure, TRUE);
+    }
+
+    done = g_strdup_printf("Paired with %s. Press Connect to use it.",
+                           clawt_connection_get_name(fresh));
+    content = connections_content(app);
+
+    return settings_response(app, request, "connections", content, done,
+                             FALSE);
 }
 
 static HtmxResponse *
@@ -1939,11 +2538,9 @@ on_settings_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
         content = teams_content(app);
     else if (g_strcmp0(slug, "folders") == 0)
         content = folders_content(app);
-    else if (g_strcmp0(slug, "spending") == 0) {
-        const gchar *period = htmx_request_get_query_param(request, "period");
-
-        content = spending_content(app, period != NULL ? period : "all");
-    } else if (g_strcmp0(slug, "integrations") == 0)
+    else if (g_strcmp0(slug, "spending") == 0)
+        content = spending_content(app, request);
+    else if (g_strcmp0(slug, "integrations") == 0)
         content = integrations_content(app);
     else if (g_strcmp0(slug, "connectors") == 0)
         content = connectors_content(app);
@@ -1951,6 +2548,8 @@ on_settings_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
         content = appearance_content(request);
     else if (g_strcmp0(slug, "connections") == 0)
         content = connections_content(app);
+    else if (g_strcmp0(slug, "devices") == 0)
+        content = devices_content(app, NULL);
     else
         return clawt_web_redirect(request, "/settings/fleet");
 
@@ -2629,6 +3228,8 @@ clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app)
 {
     htmx_router_get(router, "/settings", on_settings_index, app);
     htmx_router_get(router, "/settings/:page", on_settings_page, app);
+    htmx_router_get(router, "/settings/spending/export", on_spending_export,
+                    app);
 
     htmx_router_post(router, "/settings/fleet/pause", on_fleet_hold, app);
     htmx_router_post(router, "/settings/fleet/resume", on_fleet_hold, app);
@@ -2703,6 +3304,15 @@ clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app)
 
     htmx_router_post(router, "/settings/connections/add", on_connection_add,
                      app);
+    htmx_router_post(router, "/settings/connections/pair",
+                     on_connection_pair, app);
+    htmx_router_post(router, "/settings/devices/pair", on_device_pair, app);
+    htmx_router_get(router, "/settings/devices/pair-status",
+                    on_device_pair_status, app);
+    htmx_router_post(router, "/settings/devices/pair-cancel",
+                     on_device_pair_cancel, app);
+    htmx_router_post(router, "/settings/devices/:device/revoke",
+                     on_device_revoke, app);
     htmx_router_post(router, "/settings/connections/:connection/use",
                      on_connection_use, app);
     htmx_router_post(router, "/settings/connections/:connection/check",

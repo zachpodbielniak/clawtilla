@@ -28,7 +28,7 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 * P0 -- confinement and dead config
 
 ** DONE Confine the agent's own CLI, not only =computer_exec=                                   :security:
-- *Done:* (version assigned at merge). ~runtime.confine: bwrap~ per agent, =defaults.confine= fleet-wide, off by default; ~runtime.confine_paths~ for read-only extras. The box, the refusals and the client switch are in =docs/security.org= ("Confining the agent's own CLI") and =docs/agents.org= ("Sandboxing the agent's own tools").
+- *Done:* v0.14.0. ~runtime.confine: bwrap~ per agent, =defaults.confine= fleet-wide, off by default; ~runtime.confine_paths~ for read-only extras. The box, the refusals and the client switch are in =docs/security.org= ("Confining the agent's own CLI") and =docs/agents.org= ("Sandboxing the agent's own tools").
 - *Today:* =docs/security.org:634= says "None of the four constrains the agent's own tools." The AI CLI is spawned unwrapped. Only =clawtilla_computer_exec= goes through =src/computer/clawt-sandbox.c=.
 - *Prior art:* =server/bot-box/= and =docs/bot-box.md=. One bwrap holds the engine CLI, every shell command it runs and its MCP servers. The data dir is replaced by an empty private folder with only the turn's workspace bound back. It adds a PID namespace, loopback-only netns, an environment allowlist, a seccomp deny list (=seccomp.ts=, 34 syscalls) and =hidepid= over /proc.
 - *Proposal:* wrap the libreclaw child launched by =ClawtAgentRuntime= (process runtime only) in the same bwrap builder =clawt-sandbox.c= already has. Bind the workspace, the agent's =.mcp.json= targets, the CLI's account directory, and the =clawtilla-mcp-server= socket path. An embedded runtime cannot be confined; refuse =confine: bwrap= with =runtime.type: embedded= at load.
@@ -61,8 +61,9 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 
 * P1 -- removing silent cost and silent failure
 
-** TODO Waits: a condition checked by code, not by the model                                       :orchestration:tools:
-- *Today:* no wait tool in =src/mcp/clawt-mcp-tools.c=. "Tell me when X" is a cron routine that wakes the model on every tick.
+** DONE Waits: a condition checked by code, not by the model                                       :orchestration:tools:
+- *Done (version assigned at merge):* =clawtilla_wait_until= / =_wait_list= / =_wait_cancel= with url, file, task, computer and command probes (=src/wait/=, =src/core/daemon-wait.c=); the address policy is =clawt_net_address_is_public()= in =src/clawt-net.c=, ready for the egress gate. Per-wait records under =<state_dir>/waits=, =orchestration.max_waits_per_agent=, =wait.list= / =wait.cancel= and a "Waiting for" list in all three clients. See =docs/orchestration.org=, "Waits".
+- *Was:* no wait tool in =src/mcp/clawt-mcp-tools.c=. "Tell me when X" is a cron routine that wakes the model on every tick.
 - *Prior art:* =server/waits.ts=, =wait-probes.ts=, =docs/superpowers/specs/2026-10-27-waits-design.md=. Three tools: =wait_until=, =list_waits=, =cancel_wait=. Waits expire (24 h default, 7 days max). URL probes run at most once a minute with backoff, and private addresses are refused.
 - *Proposal:* tools =clawtilla_wait_until= / =_wait_list= / =_wait_cancel=. Probe kinds: URL status/body match (through the egress gate's address rules), file exists/changed in the workspace, task settled, computer reachable, command exit status on the computer (=clawt_computer_exec_async()=). A satisfied wait is a mailbox delivery into the room it was set from. Waits persist under =<state_dir>= and survive a daemon restart.
 - *Rules that apply:* every timer names its context (=clawt_timeout_add_seconds()=). The wait record is per wait, never a scalar on the agent. The tool description is behaviour, so say the wait costs nothing while pending.
@@ -82,25 +83,30 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 - *Proposal:* schema key =routines.max_start_failures= (default 3, 0 = never). Count in run state beside the config, never in it. Raise an alert naming the routine and the computer error. Reset the count on any successful start or on an edit to the routine.
 - *Version:* micro if no key is added, minor with the key.
 
-** TODO Webhook payload field filter                                                               :triggers:
+** DONE Webhook payload field filter (version assigned at merge)                                    :triggers:
 - *Today:* =triggers.events=, =repo=, =branch= and =ignore_actors= exist, but there is no generic field match. The generic provider spends a turn deciding "not for me".
 - *Prior art:* =46859b327= and =server/webhook-payload-filter.test.ts=. Up to 10 dotted paths, each with text it must contain, case-insensitive. A miss is recorded as ignored and starts no run. =741176869=: null clears the filter.
 - *Proposal:* =triggers.match= as a list of =path: value= pairs in the schema. Evaluate with json-glib path lookup before enqueue. Record the ignore in the trigger's delivery log so "why didn't it fire" is answerable.
 - *Version:* minor (config key).
+- *Landed:* =triggers.match=, up to ten ={path, value}= pairs, all must match, containment after Unicode case folding; a number indexes an array and a name on an array looks in every element. A miss is =ignored= naming the pair and what the field held; an unreadable filter refuses every delivery (503, =failed=) rather than being dropped. ~trigger.match_test~ and ~clawtilla trigger check~ try a filter against the newest stored body before it is saved and list its fields. See =docs/triggers.org=.
 
-** TODO Webhook posts into a room with no AI run, and a per-trigger pending cap                     :triggers:
+** DONE Webhook posts into a room with no AI run, and a per-trigger pending cap (version assigned at merge) :triggers:
 - *Today:* =triggers.room= exists, but every delivery runs the agent. There is no per-trigger limit key.
 - *Prior art:* =813814524= (post with no run). =7f0c0cd0e= (a 1-50 cap that used to be a hard-coded 3 and silently dropped fan-out events; an out-of-range hand edit reads as the default).
 - *Proposal:* =triggers.mode: run | post= and =triggers.max_pending=. A =post= delivery lands in the room as a system message with the rendered payload and spends nothing.
 - *Version:* minor.
+- *Landed:* =triggers.mode= (=run= default, =post= recorded into =triggers.room= through =clawt_mailbox_router_note()=, so nothing runs; refused without a room) and =triggers.max_pending= (1-50, default 4, replacing the constant =CLAWT_TRIGGER_MAX_UNFINISHED=; an out-of-range hand edit reads as the default with a load warning). A delivery past the cap is 429 and a =dropped= receipt that does not take the delivery id. New outcomes =dropped= and =posted=, new event ~trigger.posted~. See =docs/triggers.org=.
 
-** TODO Usage ledger: by model, by origin, exportable                                               :spending:
+** DONE Usage ledger: by model, by origin, exportable                                               :spending:
+- *Done:* (version assigned at merge). Each new =token_usage= row is tagged by the drain that charges task budgets, from the turn state of the room libreclaw recorded it in (=clawt_agent_describe_turn_in()=, no fold), into =<state_dir>/sessions/clawtilla-ledger.db= (=src/usage/clawt-usage-ledger.c=). Origin is =clawt_usage_origin_classify()=: a routine or trigger run wins over the agent that delivered its delegated work, found up the task's parents. =usage.ledger= groups by agent, model, origin or day; =clawtilla cost --by ... [--csv]=; a Group by selector, the unpriced count and Export CSV on all three clients' Spending pages. Unpriced (negative, or zero against tokens) is counted and never summed. Design in =docs/spending.org=, "The ledger".
+- *Left:* libreclaw records the model name in =token_usage.provider=, so the provider comes from the agent's =model.provider= at tag time; a routine run in flight across a daemon restart is tagged =task:<id>=, since which run made a task is held in memory.
 - *Today:* =clawtilla cost --today/--days/--agent= and the Spending pages group by agent only (=docs/spending.org=). "Which routine costs me most" has no answer.
 - *Prior art:* =093a246b8= and =server/usage-ledger.ts=. One row per turn, grouped by bot/model/person/day/engine, CSV export that neutralises formulas. Unpriced turns are counted, not hidden.
 - *Proposal:* tag each turn with its origin (operator, peer, routine id, trigger id, task id) where the turn state already knows it, and read through =lc_database_*=. Add =cost --by model|origin= and a CSV export (CSV is the preferred tabular format). Keep "-1 means unknown, never free" visible as a separate column.
 - *Version:* minor (CLI output change).
 
-** TODO Per-device client tokens, pairing and revoke                                                :security:clients:
+** DONE Per-device client tokens, pairing and revoke                                                :security:clients:
+- *Done:* (version assigned at merge). ~clawtilla device pair/list/revoke~ and ~remote pair~; ~device.pair~, ~device.pair_cancel~, ~device.redeem~ (the one frame allowed before ~control.hello~), ~device.list~, ~device.revoke~; ~daemon.device_idle_days~ (90, 0 = never). Tokens hashed (SHA-256) in ~<state_dir>/devices.yaml~, compared in constant time; codes single use, five minutes, five guesses, ten failures a minute daemon-wide. Revoke and expiry close live connections. *Pair with a code* on every client's Connections screen and a Devices settings page in GTK, web and lrg. ~ClawtDeviceStore~ in libclawt; ~tests/test-devices.c~. See [[file:docs/security.org::*Paired devices][security.org]].
 - *Today:* one daemon bearer token, copied by hand (=docs/clients.org:172=, =clawtilla daemon token=). A lost laptop or phone means rotating it for every client, and the daemon binds the tailnet by default.
 - *Prior art:* =docs/desktop-companion.md=, =docs/phone-relay-server.md=. Six-digit code pairing, a token per device, =devices= / =devices revoke ID=. =bff8d87c0= revokes a session after its idle window.
 - *Proposal:* =clawtilla device pair= prints a short-lived code. A client exchanges it for its own token (stored 0600 in =connections.yaml=). Add =device list/revoke=, an idle expiry key, and keep the existing token as the owner credential. Tokens come from =/dev/urandom= and are compared in constant time.
@@ -444,11 +450,11 @@ When somebody turns the broker on, clawtilla starts a local AnythingMCP for them
 - *Check:* every =SoupSession= in connectors, OAuth device flow, the Grok bridge and web research that sets =Authorization=. libsoup follows redirects by default (=SOUP_MESSAGE_NO_REDIRECT= is opt-in).
 
 ** DONE Hardlink escape through read-only binds
-- *Done:* (version assigned at merge). =clawt_sandbox_check_links()= refuses a read-only file bind or a denied file with ~st_nlink > 1~, and walks denied directories for the same, in both bwrap boxes. See =docs/security.org=, "Hard links through a bind".
+- *Done:* v0.14.0. =clawt_sandbox_check_links()= refuses a read-only file bind or a denied file with ~st_nlink > 1~, and walks denied directories for the same, in both bwrap boxes. See =docs/security.org=, "Hard links through a bind".
 - *Check:* =clawt-sandbox.c= =--ro-bind= sources and =deny_paths=. A file with =st_nlink > 1= under a writable path can be reached by another name.
 
 ** DONE =TMPDIR= and =XDG_*= from an agent's =env:= inside bwrap
-- *Done:* (version assigned at merge). Real in the ~computer_exec~ bwrap box. =clawt_sandbox_wrap_environment()= now drops ~TMPDIR~, ~HOME~ and every ~XDG_*~ an agent set and supplies the box's own, for that box and the agent's own.
+- *Done:* v0.14.0. Real in the ~computer_exec~ bwrap box. =clawt_sandbox_wrap_environment()= now drops ~TMPDIR~, ~HOME~ and every ~XDG_*~ an agent set and supplies the box's own, for that box and the agent's own.
 - *Check:* since extras replace allowlisted names, an agent can point =TMPDIR= at a host path the box binds writable.
 
 ** TODO Upstream: credentials on redirects in the dependency libraries                      :security:upstream:

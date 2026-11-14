@@ -37,7 +37,7 @@ static Triggers triggers;
 static const gchar *const handled_leaves[] = {
     "description", "instructions", "agent", "agents", "room", "provider",
     "events", "repo", "branch", "header", "directory", "worktree",
-    "isolate", "enabled", NULL
+    "isolate", "enabled", "mode", "max_pending", "match", NULL
 };
 
 static void refresh_all(ClawtLrgApp *app, ClawtLrgRequestFlags flags);
@@ -98,10 +98,25 @@ typedef struct {
     LrgWidget   *worktree;
     LrgWidget   *isolate;
     LrgWidget   *enabled;
+    LrgWidget   *mode;
+    LrgWidget   *pending;
+    LrgWidget   *match_box;     /* the condition lines, one hbox each */
+    LrgWidget   *match_add;
+    GPtrArray   *match_rows;    /* MatchLine*, in the order shown */
+    gboolean     match_unreadable;
+    gchar       *shown_mode;     /* the mode the editor opened with */
+    gint64       shown_pending;  /* and the cap */
 
     GPtrArray   *extra_fields;
     GPtrArray   *extra_controls;
 } TriggerEditor;
+
+/* One "path contains value" line in the editor. */
+typedef struct {
+	LrgWidget *line;
+	LrgWidget *path;
+	LrgWidget *value;
+} MatchLine;
 
 static void
 trigger_editor_clear(gpointer data)
@@ -113,6 +128,8 @@ trigger_editor_clear(gpointer data)
                                      (gpointer *)&editor->dialog);
 
     g_clear_object(&editor->content);
+    g_clear_pointer(&editor->match_rows, g_ptr_array_unref);
+    g_free(editor->shown_mode);
     g_clear_pointer(&editor->extra_fields, g_ptr_array_unref);
     g_clear_pointer(&editor->extra_controls, g_ptr_array_unref);
     g_free(editor->id);
@@ -160,6 +177,191 @@ on_saved(ClawtLrgApp *app, JsonNode *reply, const GError *error,
     close_editor(editor);
 }
 
+/* ── The payload filter ───────────────────────────────────────────── */
+
+static void
+on_match_line_removed(LrgButton *button, gpointer user_data)
+{
+	TriggerEditor *editor = user_data;
+	MatchLine *match = g_object_get_data(G_OBJECT(button), "match-line");
+
+	if (match == NULL)
+		return;
+
+	lrg_container_remove_child(LRG_CONTAINER(editor->match_box), match->line);
+	g_ptr_array_remove(editor->match_rows, match);
+	lrg_widget_set_enabled(editor->match_add,
+	                       editor->match_rows->len < CLAWT_TRIGGER_MATCH_MAX);
+}
+
+/*
+ * A condition line, filled in when it came from the saved filter or from
+ * a field picked out of the last delivery.  The add button goes disabled
+ * at ten, so the editor cannot build what the daemon would refuse.
+ */
+static void
+match_line_add(TriggerEditor *editor, const gchar *path, const gchar *value)
+{
+	MatchLine *match;
+	LrgWidget *remove;
+
+	if (editor->match_rows->len >= CLAWT_TRIGGER_MATCH_MAX) {
+		clawt_lrg_toast(editor->app,
+		                "Ten conditions is the most a trigger can hold.");
+		return;
+	}
+
+	match = g_new0(MatchLine, 1);
+	match->line = clawt_lrg_hbox(8.0f);
+	match->path = clawt_lrg_entry(path, "pull_request.title");
+	match->value = clawt_lrg_entry(value, "release");
+	remove = clawt_lrg_button("Remove", "flat",
+	                          G_CALLBACK(on_match_line_removed), editor);
+	g_object_set_data(G_OBJECT(remove), "match-line", match);
+
+	lrg_widget_set_min_size(match->path, 220.0f, 0.0f);
+	lrg_widget_set_min_size(match->value, 160.0f, 0.0f);
+	clawt_lrg_take(match->line, match->path);
+	clawt_lrg_take(match->line, clawt_lrg_label("contains", "muted"));
+	clawt_lrg_take(match->line, match->value);
+	clawt_lrg_take(match->line, remove);
+	clawt_lrg_take(editor->match_box, match->line);
+
+	g_ptr_array_add(editor->match_rows, match);
+	lrg_widget_set_enabled(editor->match_add,
+	                       editor->match_rows->len < CLAWT_TRIGGER_MATCH_MAX);
+}
+
+static void
+on_match_add_clicked(LrgButton *button, gpointer user_data)
+{
+	match_line_add(user_data, NULL, NULL);
+}
+
+/* The lines as they stand, through the tested model. */
+static JsonNode *
+match_lines_node(TriggerEditor *editor)
+{
+	g_autofree const gchar **paths = NULL;
+	g_autofree const gchar **values = NULL;
+	guint i;
+
+	paths = g_new0(const gchar *, editor->match_rows->len + 1);
+	values = g_new0(const gchar *, editor->match_rows->len + 1);
+
+	for (i = 0; i < editor->match_rows->len; i++) {
+		MatchLine *match = g_ptr_array_index(editor->match_rows, i);
+
+		paths[i] = clawt_lrg_entry_text(match->path);
+		values[i] = clawt_lrg_entry_text(match->value);
+	}
+
+	return clawt_lrg_match_node(paths, values);
+}
+
+static void
+on_field_picked(LrgButton *button, gpointer user_data)
+{
+	TriggerEditor *editor = user_data;
+
+	match_line_add(editor, g_object_get_data(G_OBJECT(button), "path"),
+	               g_object_get_data(G_OBJECT(button), "value"));
+	clawt_lrg_toast(editor->app, "Added as a condition");
+}
+
+static gboolean
+on_check_closed(ClawtLrgApp *app, LrgDialog *dialog, gint response,
+                gpointer user_data)
+{
+	return TRUE;
+}
+
+/*
+ * The verdict for the lines being edited against the newest body, and
+ * every field in that body with a button that makes it a condition --
+ * so a path is picked from what the forge actually sends.
+ */
+static void
+on_match_checked(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+                 gpointer user_data)
+{
+	TriggerEditor *editor = user_data;
+	JsonObject *object = clawt_ipc_reply_object(reply);
+	g_autofree gchar *report = NULL;
+	LrgScrollBox *scroll;
+	LrgWidget *content;
+	JsonArray *paths = NULL;
+	guint i;
+
+	if (object == NULL)
+		return;
+
+	report = clawt_lrg_match_report(object);
+
+	if (clawt_ipc_payload_string(object, "payload") == NULL) {
+		clawt_lrg_toast(app, report);
+		return;
+	}
+
+	scroll = lrg_scroll_box_new();
+	content = clawt_lrg_vbox(6.0f);
+	clawt_lrg_take(content, clawt_lrg_paragraph(report, NULL));
+	clawt_lrg_take(content, clawt_lrg_section("Fields in it"));
+	clawt_lrg_take(content, clawt_lrg_paragraph(
+		"Use makes one a condition. A name on a list, such as labels.name, "
+		"looks in every item of it.", "muted"));
+
+	if (json_object_has_member(object, "paths") &&
+	    JSON_NODE_HOLDS_ARRAY(json_object_get_member(object, "paths")))
+		paths = json_object_get_array_member(object, "paths");
+
+	for (i = 0; paths != NULL && i < json_array_get_length(paths); i++) {
+		JsonObject *field = json_array_get_object_element(paths, i);
+		const gchar *path = clawt_ipc_payload_string(field, "path");
+		const gchar *value = clawt_ipc_payload_string(field, "value");
+		LrgWidget *row = clawt_lrg_row(path, value);
+		LrgWidget *use = clawt_lrg_button("Use", "flat",
+		                                  G_CALLBACK(on_field_picked), editor);
+
+		g_object_set_data_full(G_OBJECT(use), "path", g_strdup(path), g_free);
+		g_object_set_data_full(G_OBJECT(use), "value", g_strdup(value),
+		                       g_free);
+		clawt_lrg_row_add_suffix(row, use);
+		clawt_lrg_take(content, row);
+	}
+
+	lrg_scroll_box_set_hscroll(scroll, FALSE);
+	lrg_scroll_box_set_vscroll(scroll, TRUE);
+	lrg_scroll_box_set_child(scroll, content);
+	lrg_widget_set_min_size(LRG_WIDGET(scroll), 560.0f, 480.0f);
+	g_object_unref(content);
+
+	/* The dialog holds the editor its Use buttons add to. */
+	g_object_unref(clawt_lrg_dialog(app, "Against the last delivery", NULL,
+	                                LRG_WIDGET(scroll), "Done", FALSE,
+	                                on_check_closed, editor_ref(editor),
+	                                editor_unref));
+	g_object_unref(scroll);
+}
+
+static void
+on_match_check_clicked(LrgButton *button, gpointer user_data)
+{
+	TriggerEditor *editor = user_data;
+	g_autoptr(JsonBuilder) builder = json_builder_new();
+
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "id");
+	json_builder_add_string_value(builder, editor->id);
+	json_builder_set_member_name(builder, "match");
+	json_builder_add_value(builder, match_lines_node(editor));
+	json_builder_end_object(builder);
+
+	clawt_lrg_request(editor->app, "trigger.match_test",
+	                  json_builder_get_root(builder), CLAWT_LRG_REQUEST_NONE,
+	                  on_match_checked, editor_ref(editor), editor_unref);
+}
+
 static JsonObject *
 collect_extras(TriggerEditor *editor)
 {
@@ -205,6 +407,7 @@ on_save(ClawtLrgApp *app, LrgDialog *dialog, gint response,
         editor->instructions);
     g_autoptr(JsonObject) extras = NULL;
     g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) match = NULL;
     JsonNode *payload;
 
     if (editor->busy)
@@ -232,6 +435,31 @@ on_save(ClawtLrgApp *app, LrgDialog *dialog, gint response,
     form.worktree = clawt_lrg_switch_active(editor->worktree);
     form.isolate = clawt_lrg_switch_active(editor->isolate);
     form.enabled = clawt_lrg_switch_active(editor->enabled);
+    /*
+     * Mode and cap only when somebody moved them: the controls open on
+     * what the trigger already has, so sending them regardless would
+     * write the defaults into clawtilla.yaml on every save.  NULL and 0
+     * are the form's "leave it" values.
+     */
+    form.mode = clawt_lrg_combo_id(editor->mode);
+
+    if (g_strcmp0(form.mode, editor->shown_mode) == 0)
+        form.mode = NULL;
+
+    form.max_pending = (gint64)lrg_spin_box_get_value(
+        LRG_SPIN_BOX(editor->pending));
+
+    if (form.max_pending == editor->shown_pending)
+        form.max_pending = 0;
+    match = match_lines_node(editor);
+
+    /*
+     * No lines over a filter the daemon could not read is this editor
+     * drawing nothing, not somebody clearing it: leave it alone.
+     */
+    form.match = (editor->match_unreadable &&
+                  json_array_get_length(json_node_get_array(match)) == 0)
+        ? NULL : match;
     form.extras = extras;
 
     payload = clawt_lrg_trigger_payload(&form, &error);
@@ -543,6 +771,67 @@ open_editor(ClawtLrgApp *app, JsonObject *existing)
                                 "carries the event name.");
     clawt_lrg_take(content, form);
 
+    /* ── Only when the body contains ── */
+    add_group(content, "Only when the body contains",
+              "Each condition names a field by its dotted path and text it "
+              "must contain, ignoring case; all of them must hold. A "
+              "delivery that misses is recorded as ignored, naming the "
+              "condition, and starts nothing. None means every delivery.");
+
+    if (existing != NULL &&
+        clawt_ipc_payload_string(existing, "match_error") != NULL) {
+        /*
+         * Said rather than drawn as no lines, and flagged so on_save()
+         * sends no `match` unless lines were added: an empty editor saved
+         * over it would otherwise delete what was written.
+         */
+        LrgWidget *row = clawt_lrg_row(
+            "The filter as written cannot be read, so the trigger refuses "
+            "every delivery; add lines to replace it",
+            clawt_ipc_payload_string(existing, "match_error"));
+
+        editor->match_unreadable = TRUE;
+
+        clawt_lrg_row_add_suffix(row, clawt_lrg_badge("refuses all", "bad"));
+        clawt_lrg_take(content, clawt_lrg_card(row));
+    }
+
+    editor->match_rows = g_ptr_array_new_with_free_func(g_free);
+    editor->match_box = clawt_lrg_vbox(6.0f);
+    clawt_lrg_add(content, editor->match_box);
+    g_object_unref(editor->match_box);
+
+    {
+        LrgWidget *actions = clawt_lrg_hbox(8.0f);
+
+        editor->match_add = clawt_lrg_button(
+            "Add a condition", NULL, G_CALLBACK(on_match_add_clicked), editor);
+        clawt_lrg_add(actions, editor->match_add);
+        g_object_unref(editor->match_add);
+
+        if (!editor->creating)
+            clawt_lrg_take(actions, clawt_lrg_button(
+                                        "Check against the last delivery",
+                                        NULL,
+                                        G_CALLBACK(on_match_check_clicked),
+                                        editor));
+
+        clawt_lrg_take(content, actions);
+    }
+
+    if (existing != NULL && json_object_has_member(existing, "match") &&
+        JSON_NODE_HOLDS_ARRAY(json_object_get_member(existing, "match"))) {
+        JsonArray *pairs = json_object_get_array_member(existing, "match");
+        guint m;
+
+        for (m = 0; m < json_array_get_length(pairs); m++) {
+            JsonObject *pair = json_array_get_object_element(pairs, m);
+
+            match_line_add(editor, clawt_ipc_payload_string(pair, "path"),
+                           clawt_ipc_payload_string(pair, "value"));
+        }
+    }
+
     /* ── Who runs it ── */
     add_group(content, "Who runs it", NULL);
     form = clawt_lrg_form_new();
@@ -559,13 +848,57 @@ open_editor(ClawtLrgApp *app, JsonObject *existing)
         editor->agents = clawt_lrg_entry(others, "oryx, ibex");
         clawt_lrg_form_add(form, "Additional agents", editor->agents,
                            "Comma separated agent IDs. The primary runs "
-                           "first; duplicates are removed. Four unfinished "
-                           "runs maximum.");
+                           "first; duplicates are removed. Each takes a "
+                           "slot of Runs at once.");
     }
 
     editor->room = text_field(form, existing, "room", "Room", NULL,
-                              "Where the run reports. Empty means the "
+                              "Where the run reports, or where a post "
+                              "lands -- a post needs one. Empty means the "
                               "agent's own conversation.");
+
+    /* What a delivery turns into, walked from the library. */
+    {
+        g_auto(GStrv) mode_ids = NULL;
+        g_auto(GStrv) mode_labels = NULL;
+        g_autofree gchar *hints = clawt_lrg_trigger_mode_hints();
+        const gchar *mode = (existing != NULL &&
+                             clawt_ipc_payload_string(existing, "mode") != NULL)
+            ? clawt_ipc_payload_string(existing, "mode") : "run";
+
+        clawt_lrg_trigger_mode_choices(&mode_ids, &mode_labels);
+        editor->mode = clawt_lrg_combo((const gchar *const *)mode_ids,
+                                       (const gchar *const *)mode_labels,
+                                       mode);
+        clawt_lrg_form_add(form, "When it fires", editor->mode, hints);
+        editor->shown_mode = g_strdup(clawt_lrg_combo_id(editor->mode));
+    }
+
+    {
+        const ClawtSchemaEntry *entry =
+            clawt_config_schema_lookup("triggers.max_pending");
+        gint64 fallback = (entry != NULL && entry->default_value != NULL)
+            ? g_ascii_strtoll(entry->default_value, NULL, 10)
+            : CLAWT_TRIGGER_MAX_PENDING_MIN;
+
+        editor->pending = LRG_WIDGET(lrg_spin_box_new_with_range(
+            CLAWT_TRIGGER_MAX_PENDING_MIN, CLAWT_TRIGGER_MAX_PENDING_MAX,
+            1.0));
+        lrg_spin_box_set_digits(LRG_SPIN_BOX(editor->pending), 0);
+        lrg_spin_box_set_value(
+            LRG_SPIN_BOX(editor->pending),
+            (gdouble)(existing != NULL
+                          ? clawt_ipc_payload_int(existing, "max_pending",
+                                                  fallback)
+                          : fallback));
+        /* Read back, so a value the spin box clamped compares as shown. */
+        editor->shown_pending = (gint64)lrg_spin_box_get_value(
+            LRG_SPIN_BOX(editor->pending));
+        clawt_lrg_form_add(form, "Runs at once", editor->pending,
+                           "How many runs may be unfinished together. A "
+                           "delivery past this is answered \"try later\" "
+                           "and recorded as dropped. A post holds no slot.");
+    }
     editor->directory = text_field(form, existing, "directory", "Folder",
                                    NULL,
                                    "On the agent's computer. Empty means its "

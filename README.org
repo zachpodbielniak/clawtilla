@@ -59,7 +59,7 @@ not built.
 | Credentials | per-agent, by reference -- never literal secrets in the config |
 | Team | optional, with a role: a lead assigns inside it, a member assigns to nobody |
 | Tools | per-agent allow/deny over the orchestration tools |
-| Spending | per-agent and fleet cost, from the figure each provider reported |
+| Spending | fleet cost by agent, model, origin or day, from the figure each provider reported; unpriced turns counted apart; CSV export |
 
 ** Quick start
 

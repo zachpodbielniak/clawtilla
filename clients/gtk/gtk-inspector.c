@@ -1805,6 +1805,145 @@ build_agent_integrations(ClawtWindow *self)
     gtk_box_append(self->inspector, group);
 }
 
+/* ── Waiting for ─────────────────────────────────────────────────── */
+
+static void
+on_wait_cancel(
+	GtkButton *button,
+	gpointer   user_data
+){
+	ClawtWindow *self = user_data;
+	const gchar *id = g_object_get_data(G_OBJECT(button), "clawt-wait");
+	g_autoptr(JsonNode) reply = NULL;
+
+	if (id == NULL)
+		return;
+
+	reply = clawt_window_request(self, "wait.cancel",
+	                             clawt_build_payload("wait", id, NULL));
+
+	if (reply != NULL)
+		clawt_window_toast(self, "Cancelled. The agent has been told it "
+		                   "is no longer waiting.");
+
+	clawt_gtk_refresh_waits(self);
+}
+
+/*
+ * One row per pending wait: the agent's own words as the title, then
+ * the condition, the schedule and what the last look saw.  The schedule
+ * line is clawt_wait_schedule_label()'s, so it reads the same in all
+ * three clients.
+ */
+void
+clawt_gtk_refresh_waits(
+	ClawtWindow *self
+){
+	g_autoptr(JsonNode) reply = NULL;
+	JsonObject *root;
+	JsonArray *waits;
+	gint64 now = g_get_real_time();
+	guint i;
+
+	if (self->inspector_waits == NULL || self->selected_agent == NULL)
+		return;
+
+	reply = clawt_window_request(
+		self, "wait.list",
+		clawt_build_payload("agent", self->selected_agent, NULL));
+
+	/* The request iterates the loop; the inspector may have gone. */
+	if (self->inspector_waits == NULL)
+		return;
+
+	gtk_list_box_remove_all(self->inspector_waits);
+
+	root = clawt_ipc_reply_object(reply);
+	waits = (root != NULL && json_object_has_member(root, "waits"))
+	        ? json_object_get_array_member(root, "waits") : NULL;
+
+	if (waits == NULL || json_array_get_length(waits) == 0) {
+		GtkWidget *row = adw_action_row_new();
+
+		clawt_gtk_set_row_text(row, "Nothing",
+		                       "When this agent sets a wait with "
+		                       "clawtilla_wait_until, it shows here until "
+		                       "it ends.");
+		gtk_list_box_append(self->inspector_waits, row);
+		return;
+	}
+
+	for (i = 0; i < json_array_get_length(waits); i++) {
+		JsonObject *wait = json_array_get_object_element(waits, i);
+		GtkWidget *row = adw_action_row_new();
+		GtkWidget *cancel = gtk_button_new_with_label("Cancel");
+		g_autofree gchar *schedule = clawt_wait_schedule_label(
+			clawt_json_int(wait, "last_check_at", 0),
+			clawt_json_int(wait, "next_check_at", 0),
+			clawt_json_int(wait, "expires_at", 0), now);
+		g_autofree gchar *subtitle = NULL;
+		const gchar *seen = clawt_json_string(wait, "last_result", NULL);
+
+		subtitle = g_strdup_printf(
+			"%s\n%s%s%s", clawt_json_string(wait, "condition", "?"),
+			schedule, seen != NULL ? "\nLast check saw: " : "",
+			seen != NULL ? seen : "");
+
+		adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row), FALSE);
+		adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+		                              clawt_json_string(wait, "label", "?"));
+		adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
+
+		gtk_widget_set_valign(cancel, GTK_ALIGN_CENTER);
+		gtk_widget_add_css_class(cancel, "flat");
+		g_object_set_data_full(G_OBJECT(cancel), "clawt-wait",
+		                       g_strdup(clawt_json_string(wait, "id", "")),
+		                       g_free);
+		g_signal_connect(cancel, "clicked", G_CALLBACK(on_wait_cancel), self);
+		adw_action_row_add_suffix(ADW_ACTION_ROW(row), cancel);
+
+		gtk_list_box_append(self->inspector_waits, row);
+	}
+}
+
+/*
+ * What this agent is waiting for: conditions clawtilla checks by code
+ * on its behalf, each ending in one notice.  Shown because a wait is
+ * work that is happening while nothing appears to be -- an agent that
+ * looks idle and is in fact waiting on a deploy is not one somebody
+ * should nudge.
+ */
+static void
+build_waits(
+	ClawtWindow *self
+){
+	GtkWidget *group = adw_preferences_group_new();
+	GtkWidget *list = gtk_list_box_new();
+
+	adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group),
+	                                "Waiting for");
+	adw_preferences_group_set_description(
+		ADW_PREFERENCES_GROUP(group),
+		"Conditions clawtilla checks for this agent, by code -- a pending "
+		"wait costs nothing. The agent gets one notice when each holds or "
+		"expires; cancelling one tells it.");
+
+	gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), GTK_SELECTION_NONE);
+	gtk_widget_add_css_class(list, "boxed-list");
+	adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), list);
+
+	if (self->inspector_waits != NULL)
+		g_object_remove_weak_pointer(G_OBJECT(self->inspector_waits),
+		                             (gpointer *)&self->inspector_waits);
+
+	self->inspector_waits = GTK_LIST_BOX(list);
+	g_object_add_weak_pointer(G_OBJECT(list),
+	                          (gpointer *)&self->inspector_waits);
+
+	gtk_box_append(self->inspector, group);
+	clawt_gtk_refresh_waits(self);
+}
+
 /*
  * The agent's workspace files, each openable in $EDITOR.
  *
@@ -2760,6 +2899,7 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
             gtk_box_append(self->inspector, creds);
     }
 
+    build_waits(self);
     build_agent_integrations(self);
 
     if (clawt_json_string(payload, "computer_detail", NULL) != NULL) {

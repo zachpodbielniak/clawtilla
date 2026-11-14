@@ -78,6 +78,13 @@ typedef struct {
     gboolean          subscribed;
     gboolean          authenticated;
     gboolean          closing;
+
+    /*
+     * The paired device this connection authenticated as, or NULL for
+     * the owner -- a unix client, or a network one that presented the
+     * owner token.  Kept so revoking a device can find its sockets.
+     */
+    gchar            *device_id;
     GString          *pending;     /* queued outbound bytes, not yet sent */
     GBytes           *writing_bytes; /* the immutable buffer being written */
     gboolean          writing;
@@ -122,6 +129,8 @@ struct _ClawtIpcServer {
     GPtrArray *listeners;      /* Listener*, owned */
     gchar     *tcp_token;
     gchar     *tls_certificate;
+
+    ClawtDeviceStore *devices;    /* owned, nullable */
     gchar     *tls_key;
 
     ClawtEventBus *bus;
@@ -157,6 +166,7 @@ listener_free(gpointer data)
 static void read_next(Client *client);
 static void flush_pending(Client *client);
 static void client_unref(gpointer data);
+static void client_close(Client *client);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(Client, client_unref)
 
@@ -197,6 +207,137 @@ clawt_ipc_server_set_token(ClawtIpcServer *self, const gchar *token)
 
     g_free(self->tcp_token);
     self->tcp_token = g_strdup(token);
+}
+
+void
+clawt_ipc_server_set_device_store(ClawtIpcServer *self,
+                                  ClawtDeviceStore *store)
+{
+    g_return_if_fail(CLAWT_IS_IPC_SERVER(self));
+    g_return_if_fail(store == NULL || CLAWT_IS_DEVICE_STORE(store));
+
+    if (store != NULL)
+        g_object_ref(store);
+
+    g_clear_object(&self->devices);
+    self->devices = store;
+}
+
+gboolean
+clawt_ipc_server_check_credential(ClawtIpcServer *self, const gchar *token,
+                                  gint64 now, gchar **device_id)
+{
+    g_autofree gchar *found = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_IPC_SERVER(self), FALSE);
+
+    if (device_id != NULL)
+        *device_id = NULL;
+
+    /*
+     * Compared in constant time, like every webhook secret in this tree.
+     * g_strcmp0() stops at the first byte that differs, and this is the
+     * credential guarding the network listener -- the one that can start
+     * agents and run commands.  The link server's own comparison skips
+     * this and says why in as many words; that reason is about both ends
+     * being local and does not reach here.
+     *
+     * The owner token first, and decided by itself: nothing a device
+     * store holds -- or loses -- can change whether it opens the door.
+     */
+    if (self->tcp_token != NULL && clawt_secure_equals(token,
+                                                       self->tcp_token))
+        return TRUE;
+
+    if (self->devices == NULL)
+        return FALSE;
+
+    found = clawt_device_store_authenticate(self->devices, token, now);
+
+    if (found == NULL)
+        return FALSE;
+
+    if (device_id != NULL)
+        *device_id = g_steal_pointer(&found);
+
+    return TRUE;
+}
+
+const gchar *
+clawt_ipc_server_get_current_device(ClawtIpcServer *self)
+{
+    g_return_val_if_fail(CLAWT_IS_IPC_SERVER(self), NULL);
+
+    return (self->current != NULL) ? self->current->device_id : NULL;
+}
+
+gboolean
+clawt_ipc_server_device_is_connected(ClawtIpcServer *self, const gchar *id)
+{
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_IPC_SERVER(self), FALSE);
+
+    for (i = 0; id != NULL && i < self->clients->len; i++) {
+        Client *client = g_ptr_array_index(self->clients, i);
+
+        if (!client->closing && g_strcmp0(client->device_id, id) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+guint
+clawt_ipc_server_close_device(ClawtIpcServer *self, const gchar *id)
+{
+    guint closed = 0;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_IPC_SERVER(self), 0);
+
+    if (id == NULL)
+        return 0;
+
+    /* Backwards: client_close() removes from the array it is walking. */
+    for (i = self->clients->len; i > 0; i--) {
+        Client *client = g_ptr_array_index(self->clients, i - 1);
+
+        if (g_strcmp0(client->device_id, id) != 0)
+            continue;
+
+        client_close(client);
+        closed++;
+    }
+
+    return closed;
+}
+
+GPtrArray *
+clawt_ipc_server_sweep_devices(ClawtIpcServer *self, gint64 now)
+{
+    GPtrArray *expired;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_IPC_SERVER(self), NULL);
+
+    if (self->devices == NULL)
+        return g_ptr_array_new_with_free_func(g_free);
+
+    for (i = 0; i < self->clients->len; i++) {
+        Client *client = g_ptr_array_index(self->clients, i);
+
+        if (client->device_id != NULL && !client->closing)
+            clawt_device_store_touch(self->devices, client->device_id, now);
+    }
+
+    expired = clawt_device_store_expire_idle(self->devices, now);
+
+    for (i = 0; i < expired->len; i++)
+        clawt_ipc_server_close_device(self,
+                                      g_ptr_array_index(expired, i));
+
+    return expired;
 }
 
 void
@@ -269,6 +410,30 @@ clawt_ipc_server_is_listening_on(ClawtIpcServer *self, const gchar *host,
     return FALSE;
 }
 
+gchar **
+clawt_ipc_server_list_bound(ClawtIpcServer *self)
+{
+    g_autoptr(GPtrArray) out = g_ptr_array_new();
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_IPC_SERVER(self), NULL);
+
+    for (i = 0; i < self->listeners->len; i++) {
+        Listener *listener = g_ptr_array_index(self->listeners, i);
+
+        if (!listener->bound)
+            continue;
+
+        g_ptr_array_add(out, strchr(listener->host, ':') != NULL
+            ? g_strdup_printf("[%s]:%u", listener->host, listener->port)
+            : g_strdup_printf("%s:%u", listener->host, listener->port));
+    }
+
+    g_ptr_array_add(out, NULL);
+
+    return (gchar **)g_ptr_array_free(g_steal_pointer(&out), FALSE);
+}
+
 void
 clawt_ipc_server_set_tls(ClawtIpcServer *self, const gchar *certificate_path,
                          const gchar *key_path)
@@ -312,6 +477,7 @@ client_free(gpointer data)
         g_string_free(client->inbound, TRUE);
 
     g_clear_pointer(&client->writing_bytes, g_bytes_unref);
+    g_free(client->device_id);
 
     g_clear_object(&client->input);
     g_clear_object(&client->connection);
@@ -511,21 +677,16 @@ handle_builtin(ClawtIpcServer *self, Client *client, JsonNode *request,
 
         if (self->tcp_token != NULL && !client->authenticated) {
             const gchar *token = clawt_ipc_payload_string(payload, "token");
+            g_autofree gchar *device_id = NULL;
 
-            /*
-             * Compared in constant time, like every webhook secret in
-             * this tree.  g_strcmp0() stops at the first byte that
-             * differs, and this is the credential guarding the network
-             * listener -- the one that can start agents and run
-             * commands.  The link server's own comparison skips this and
-             * says why in as many words; that reason is about both ends
-             * being local and does not reach here.
-             */
-            if (!clawt_secure_equals(token, self->tcp_token))
+            if (!clawt_ipc_server_check_credential(
+                    self, token, g_get_real_time() / G_USEC_PER_SEC,
+                    &device_id))
                 return clawt_ipc_error_new(request, CLAWT_ERROR_AUTH,
                                            "that token was not accepted");
 
             client->authenticated = TRUE;
+            client->device_id = g_steal_pointer(&device_id);
         }
 
         json_builder_begin_object(builder);
@@ -534,6 +695,84 @@ handle_builtin(ClawtIpcServer *self, Client *client, JsonNode *request,
         json_builder_set_member_name(builder, "daemon");
         json_builder_add_string_value(builder, CLAWT_VERSION_STRING);
         json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    /*
+     * A pairing code traded for a token of the device's own.
+     *
+     * Here rather than in the daemon's handler because it is answered
+     * before authentication -- a device being paired has nothing to
+     * authenticate with yet -- and because a success authenticates this
+     * very connection, which only the server can see.  The reply is the
+     * one place a token ever crosses IPC, and it goes to the device it
+     * belongs to.
+     */
+    if (g_strcmp0(kind, "device.redeem") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        g_autoptr(GError) error = NULL;
+        g_autofree gchar *token = NULL;
+        g_autofree gchar *device_id = NULL;
+        g_autoptr(ClawtDevice) device = NULL;
+
+        if (self->devices == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
+                                       "this daemon does not pair devices");
+
+        token = clawt_device_store_redeem(
+            self->devices, clawt_ipc_payload_string(payload, "code"),
+            clawt_ipc_payload_string(payload, "name"),
+            g_get_real_time() / G_USEC_PER_SEC, &device_id, &error);
+
+        if (token == NULL)
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        device = clawt_device_store_lookup(self->devices, device_id);
+
+        /*
+         * From here on this connection *is* that device, whichever
+         * socket it came in on -- including a unix one, which gives up
+         * being the owner by asking to be paired.  One rule rather than
+         * two, and it means revoking the device a moment later closes the
+         * very connection that paired it, which is what anybody revoking
+         * a device they just paired by mistake would expect.
+         */
+        client->authenticated = TRUE;
+        g_free(client->device_id);
+        client->device_id = g_strdup(device_id);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "version");
+        json_builder_add_int_value(builder, CLAWT_IPC_VERSION);
+        json_builder_set_member_name(builder, "daemon");
+        json_builder_add_string_value(builder, CLAWT_VERSION_STRING);
+        json_builder_set_member_name(builder, "id");
+        json_builder_add_string_value(builder, device_id);
+        json_builder_set_member_name(builder, "name");
+        json_builder_add_string_value(
+            builder, device != NULL ? clawt_device_get_name(device) : "");
+        json_builder_set_member_name(builder, "token");
+        json_builder_add_string_value(builder, token);
+        json_builder_end_object(builder);
+
+        /*
+         * Told to everybody watching, so a Devices list open somewhere
+         * grows the row and the countdown that was showing the code can
+         * say it worked.  The event carries the id and the name only.
+         */
+        if (self->bus != NULL) {
+            g_autoptr(ClawtEvent) event = clawt_event_new("device.paired",
+                                                          NULL);
+
+            clawt_event_set_detail(event, "device", device_id);
+            clawt_event_set_detail(event, "name",
+                                   device != NULL
+                                       ? clawt_device_get_name(device) : "");
+            clawt_event_bus_publish(self->bus, event);
+        }
+
+        memset(token, 0, strlen(token));
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
@@ -633,7 +872,8 @@ dispatch_line(Client *client, const gchar *line, gsize length)
      * without ever saying control.hello.
      */
     if (self->tcp_token != NULL && !client->authenticated &&
-        g_strcmp0(clawt_ipc_frame_get_kind(request), "control.hello") != 0) {
+        g_strcmp0(clawt_ipc_frame_get_kind(request), "control.hello") != 0 &&
+        g_strcmp0(clawt_ipc_frame_get_kind(request), "device.redeem") != 0) {
         reply = clawt_ipc_error_new(
             request, CLAWT_ERROR_AUTH,
             "say control.hello with a token before anything else");
@@ -1228,6 +1468,7 @@ clawt_ipc_server_finalize(GObject *object)
     g_free(self->tcp_token);
     g_free(self->tls_certificate);
     g_free(self->tls_key);
+    g_clear_object(&self->devices);
 
     G_OBJECT_CLASS(clawt_ipc_server_parent_class)->finalize(object);
 }

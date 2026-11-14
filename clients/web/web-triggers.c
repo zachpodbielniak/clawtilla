@@ -93,6 +93,222 @@ add_endpoint_rows(HtmxElement *body, JsonObject *trigger)
     }
 }
 
+/* The id of the datalist a trigger's path boxes complete from. */
+static gchar *
+paths_list_id(const gchar *trigger_id)
+{
+	g_autofree gchar *safe = g_strdup(trigger_id != NULL ? trigger_id : "new");
+
+	/* An id is a word in an attribute; fold anything that is not one. */
+	g_strcanon(safe, "abcdefghijklmnopqrstuvwxyz0123456789-_", '_');
+
+	return g_strdup_printf("cond-paths-%s", safe);
+}
+
+/*
+ * The mode, as a choice with the library's two sentences under it.
+ *
+ * Both sentences rather than the selected one: the page is
+ * form-and-redraw, so a line that changed with the selection would need
+ * a script, and the two together are the comparison somebody choosing
+ * is making anyway.
+ */
+static void
+add_mode_field(HtmxElement *form, JsonObject *existing)
+{
+	g_autofree const gchar **values = NULL;
+	g_autofree const gchar **labels = NULL;
+	g_autoptr(GString) hints = g_string_new(NULL);
+	guint n = clawt_trigger_mode_count();
+	guint i;
+
+	values = g_new0(const gchar *, n + 1);
+	labels = g_new0(const gchar *, n + 1);
+
+	for (i = 0; i < n; i++) {
+		values[i] = clawt_trigger_mode_nth_nick(i);
+		labels[i] = clawt_trigger_mode_nth_label(i);
+
+		if (hints->len > 0)
+			g_string_append_c(hints, ' ');
+
+		g_string_append_printf(hints, "%s: %s", labels[i],
+		                       clawt_trigger_mode_nth_hint(i));
+	}
+
+	clawt_web_add(form, clawt_web_select_field(
+		"When it fires", "mode", values, labels,
+		clawt_web_member(existing, "mode", "run")));
+	clawt_web_add(form, clawt_web_hidden(
+		"mode__shown", clawt_web_member(existing, "mode", "run")));
+	clawt_web_add(form, clawt_web_text(hints->str, "check-sub"));
+}
+
+/* The pending cap as a number box that cannot hold a refused value. */
+static void
+add_pending_field(HtmxElement *form, JsonObject *existing,
+                  const ClawtSchemaEntry *entry)
+{
+	g_autoptr(HtmxDiv) field = htmx_div_new();
+	g_autoptr(HtmxLabel) tag = htmx_label_new_with_text("Runs at once");
+	g_autoptr(HtmxInput) input = htmx_input_new(HTMX_INPUT_NUMBER);
+	g_autoptr(HtmxP) hint = htmx_p_new();
+	g_autofree gchar *value = NULL;
+	g_autofree gchar *low = g_strdup_printf("%d", CLAWT_TRIGGER_MAX_PENDING_MIN);
+	g_autofree gchar *high = g_strdup_printf("%d", CLAWT_TRIGGER_MAX_PENDING_MAX);
+
+	value = g_strdup_printf("%" G_GINT64_FORMAT,
+		clawt_web_member_int(existing, "max_pending",
+		                     entry->default_value != NULL
+		                         ? g_ascii_strtoll(entry->default_value,
+		                                           NULL, 10)
+		                         : CLAWT_TRIGGER_MAX_PENDING_MIN));
+
+	htmx_element_add_class(HTMX_ELEMENT(field), "field");
+	htmx_input_set_name(input, "max_pending");
+	htmx_input_set_value(input, value);
+	htmx_element_set_attribute(HTMX_ELEMENT(input), "min", low);
+	htmx_element_set_attribute(HTMX_ELEMENT(input), "max", high);
+	htmx_element_set_attribute(HTMX_ELEMENT(input), "step", "1");
+	htmx_element_add_class(HTMX_ELEMENT(hint), "check-sub");
+	htmx_node_set_text_content(
+		HTMX_NODE(hint),
+		"How many runs may be unfinished together, 1 to 50. A delivery "
+		"past this is answered \"try later\" and recorded as dropped. A "
+		"post holds no slot.");
+
+	htmx_node_add_child(HTMX_NODE(field), HTMX_NODE(tag));
+	htmx_node_add_child(HTMX_NODE(field), HTMX_NODE(input));
+	htmx_node_add_child(HTMX_NODE(field), HTMX_NODE(hint));
+	clawt_web_add(form, g_steal_pointer(&field));
+	clawt_web_add(form, clawt_web_hidden("max_pending__shown", value));
+}
+
+/* One condition line: path, "contains", value. */
+static HtmxDiv *
+condition_line(guint n, const gchar *path, const gchar *value,
+               const gchar *list_id)
+{
+	g_autoptr(HtmxDiv) line = htmx_div_new();
+	g_autofree gchar *path_name = g_strdup_printf("match_path_%u", n);
+	g_autofree gchar *value_name = g_strdup_printf("match_value_%u", n);
+	g_autoptr(HtmxInput) path_box = htmx_input_new_text(path_name);
+	g_autoptr(HtmxInput) value_box = htmx_input_new_text(value_name);
+	g_autoptr(HtmxSpan) word = htmx_span_new();
+
+	htmx_element_add_class(HTMX_ELEMENT(line), "cond-line");
+
+	if (path != NULL)
+		htmx_input_set_value(path_box, path);
+
+	if (value != NULL)
+		htmx_input_set_value(value_box, value);
+
+	htmx_input_set_placeholder(path_box, "pull_request.title");
+	htmx_input_set_placeholder(value_box, "release");
+	htmx_element_set_attribute(HTMX_ELEMENT(path_box), "list", list_id);
+	htmx_element_set_attribute(HTMX_ELEMENT(path_box), "aria-label",
+	                           "Field path");
+	htmx_element_set_attribute(HTMX_ELEMENT(value_box), "aria-label",
+	                           "Text it must contain");
+	htmx_element_add_class(HTMX_ELEMENT(word), "cond-word");
+	htmx_node_set_text_content(HTMX_NODE(word), "contains");
+
+	htmx_node_add_child(HTMX_NODE(line), HTMX_NODE(path_box));
+	htmx_node_add_child(HTMX_NODE(line), HTMX_NODE(word));
+	htmx_node_add_child(HTMX_NODE(line), HTMX_NODE(value_box));
+
+	return (HtmxDiv *)g_steal_pointer(&line);
+}
+
+/*
+ * The payload conditions: what is set, plus empty lines up to the limit
+ * of ten -- three at a time, so the form is not ten boxes tall for a
+ * trigger that filters on one field.  Clearing both boxes of a line
+ * removes it; saving with more lines filled shows more empty ones next
+ * time.  The check button posts the lines as they stand, unsaved, and
+ * its answer fills the datalist the path boxes complete from.
+ */
+static void
+add_match_editor(HtmxElement *form, JsonObject *existing, const gchar *id,
+                 const gchar *escaped)
+{
+	g_autoptr(HtmxDiv) field = htmx_div_new();
+	g_autoptr(HtmxLabel) tag = htmx_label_new_with_text(
+		"Only when the body contains");
+	g_autoptr(HtmxDiv) out = htmx_div_new();
+	g_autofree gchar *list_id = paths_list_id(id);
+	g_autofree gchar *out_id = g_strdup_printf("%s-out", list_id);
+	g_autofree gchar *target = g_strdup_printf("#%s", out_id);
+	JsonArray *pairs = clawt_web_member_array(existing, "match");
+	guint have = pairs != NULL ? json_array_get_length(pairs) : 0;
+	guint shown;
+	guint n;
+
+	htmx_element_add_class(HTMX_ELEMENT(field), "field");
+	htmx_node_add_child(HTMX_NODE(field), HTMX_NODE(tag));
+
+	/*
+	 * Said rather than drawn as no lines: saving an empty editor over a
+	 * filter the daemon could not read would delete what was written.
+	 */
+	if (clawt_web_member(existing, "match_error", NULL) != NULL) {
+		g_autofree gchar *said = g_strdup_printf(
+			"The filter as written cannot be read, so the trigger refuses "
+			"every delivery: %s. It is left as it is unless you fill in "
+			"lines here to replace it.",
+			clawt_web_member(existing, "match_error", ""));
+
+		clawt_web_add(field, clawt_web_notice(said, "bad"));
+		clawt_web_add(field, clawt_web_hidden("match__unreadable", "1"));
+	}
+
+	clawt_web_add(field, clawt_web_text(
+		"A dotted path into the JSON body and text it must contain, "
+		"ignoring case; every line must hold. A miss is recorded as "
+		"ignored, naming the line, and starts nothing. A name on a list, "
+		"such as labels.name, looks in every item. Clear both boxes to "
+		"remove a line.", "check-sub"));
+
+	shown = MIN(have + 3, (guint)CLAWT_TRIGGER_MATCH_MAX);
+
+	for (n = 0; n < shown; n++) {
+		JsonObject *pair = n < have
+			? json_array_get_object_element(pairs, n) : NULL;
+
+		clawt_web_add(field, condition_line(
+			n, clawt_web_member(pair, "path", NULL),
+			clawt_web_member(pair, "value", NULL), list_id));
+	}
+
+	/* Always posted, so a form whose lines are all empty clears the filter. */
+	clawt_web_add(field, clawt_web_hidden("match__present", "1"));
+
+	htmx_element_set_id(HTMX_ELEMENT(out), out_id);
+	htmx_element_add_class(HTMX_ELEMENT(out), "cond-out");
+
+	if (id != NULL) {
+		g_autofree gchar *check = g_strdup_printf("/f/triggers/%s/match",
+		                                          escaped);
+		g_autoptr(HtmxButton) button = clawt_web_button(
+			"Check against the last delivery", "default");
+
+		/*
+		 * Inside the form, so htmx sends the lines as they stand; a
+		 * button rather than a submit, so it does not save them.
+		 */
+		htmx_element_set_attribute(HTMX_ELEMENT(button), "type", "button");
+		htmx_element_set_hx_post(HTMX_ELEMENT(button), check);
+		htmx_element_set_hx_target(HTMX_ELEMENT(button), target);
+		htmx_element_set_attribute(HTMX_ELEMENT(button), "hx-swap",
+		                           "innerHTML");
+		htmx_node_add_child(HTMX_NODE(field), HTMX_NODE(button));
+	}
+
+	htmx_node_add_child(HTMX_NODE(field), HTMX_NODE(out));
+	clawt_web_add(form, g_steal_pointer(&field));
+}
+
 static void
 add_trigger_form(HtmxElement *parent, JsonObject *existing)
 {
@@ -174,6 +390,13 @@ add_trigger_form(HtmxElement *parent, JsonObject *existing)
         if (strchr(leaf, '.') != NULL || g_strcmp0(leaf, "id") == 0)
             continue;
 
+        /* The one list of mappings a trigger holds has its own editor. */
+        if (entry->type == CLAWT_SCHEMA_LIST_OF &&
+            g_strcmp0(leaf, "match") == 0) {
+            add_match_editor(HTMX_ELEMENT(form), existing, id, escaped);
+            continue;
+        }
+
         if (entry->type == CLAWT_SCHEMA_SECTION ||
             entry->type == CLAWT_SCHEMA_MAPPING ||
             entry->type == CLAWT_SCHEMA_LIST_OF)
@@ -193,6 +416,16 @@ add_trigger_form(HtmxElement *parent, JsonObject *existing)
             clawt_web_add(form, clawt_web_select_field(
                 "Sent by", leaf, provider_values, provider_labels,
                 value != NULL ? value : "generic"));
+            continue;
+        }
+
+        if (g_strcmp0(leaf, "mode") == 0) {
+            add_mode_field(HTMX_ELEMENT(form), existing);
+            continue;
+        }
+
+        if (g_strcmp0(leaf, "max_pending") == 0) {
+            add_pending_field(HTMX_ELEMENT(form), existing, entry);
             continue;
         }
 
@@ -415,6 +648,38 @@ triggers_page(ClawtWebApp *app, HtmxRequest *request, const gchar *toast,
  * be the narrowest instruction somebody can give turning into the
  * widest.
  */
+/*
+ * The condition lines of a posted form, as `path=value` strings -- the
+ * spelling the daemon reads from a form, split at the first '=' because
+ * a path cannot hold one.  A line with both boxes empty is no line; one
+ * with only a value is sent, so the daemon can say the path is missing
+ * rather than the value silently vanishing.
+ */
+static GStrv
+match_lines(HtmxRequest *request)
+{
+	g_autoptr(GPtrArray) out = g_ptr_array_new_with_free_func(g_free);
+	guint n;
+
+	for (n = 0; n < CLAWT_TRIGGER_MATCH_MAX; n++) {
+		g_autofree gchar *path_name = g_strdup_printf("match_path_%u", n);
+		g_autofree gchar *value_name = g_strdup_printf("match_value_%u", n);
+		const gchar *path = clawt_web_form_value(request, path_name);
+		const gchar *value = clawt_web_form_value(request, value_name);
+		g_autofree gchar *trimmed = g_strstrip(g_strdup(path != NULL ? path : ""));
+
+		if (*trimmed == '\0' && (value == NULL || *value == '\0'))
+			continue;
+
+		g_ptr_array_add(out, g_strdup_printf("%s=%s", trimmed,
+		                                     value != NULL ? value : ""));
+	}
+
+	g_ptr_array_add(out, NULL);
+
+	return (GStrv)g_ptr_array_free(g_steal_pointer(&out), FALSE);
+}
+
 static JsonNode *
 trigger_payload(HtmxRequest *request, const gchar *id)
 {
@@ -444,6 +709,25 @@ trigger_payload(HtmxRequest *request, const gchar *id)
         if (entry->type == CLAWT_SCHEMA_SECRET)
             continue;
 
+        if (entry->type == CLAWT_SCHEMA_LIST_OF) {
+            if (g_strcmp0(leaf, "match") == 0 &&
+                clawt_web_form_had(request, "match__present")) {
+                g_auto(GStrv) lines = match_lines(request);
+
+                /*
+                 * No lines over a filter the daemon could not read is the
+                 * page drawing nothing, not somebody clearing it.
+                 */
+                if (lines[0] == NULL &&
+                    clawt_web_form_had(request, "match__unreadable"))
+                    continue;
+
+                clawt_web_payload_set_list(payload, leaf,
+                                           (const gchar *const *)lines);
+            }
+            continue;
+        }
+
         if (entry->type == CLAWT_SCHEMA_BOOLEAN) {
             if (clawt_web_form_had(request, leaf))
                 clawt_web_payload_set_bool(payload, leaf,
@@ -456,6 +740,19 @@ trigger_payload(HtmxRequest *request, const gchar *id)
 
         if (value == NULL)
             continue;
+
+        /*
+         * The mode and the cap only when they moved from what the form
+         * was drawn with, so saving a trigger that never chose either
+         * does not write the defaults into clawtilla.yaml.
+         */
+        {
+            g_autofree gchar *shown_name = g_strdup_printf("%s__shown", leaf);
+            const gchar *shown = clawt_web_form_value(request, shown_name);
+
+            if (shown != NULL && g_strcmp0(shown, value) == 0)
+                continue;
+        }
 
         if (entry->type == CLAWT_SCHEMA_INT) {
             clawt_web_payload_set_int(payload, leaf,
@@ -689,6 +986,104 @@ on_trigger_capture(HtmxRequest *request, GHashTable *params,
     return triggers_page(app, request, captured, FALSE);
 }
 
+/*
+ * The lines as they stand against the newest body, as a fragment for the
+ * box under them: a verdict, each line's result, every field in that
+ * body, and the datalist the path boxes complete from -- so after one
+ * check a path is picked from the forge's real shape rather than guessed.
+ */
+static HtmxResponse *
+on_trigger_match_check(HtmxRequest *request, GHashTable *params,
+                       gpointer user_data)
+{
+	ClawtWebApp *app = user_data;
+	g_autofree gchar *id = clawt_web_param(params, "trigger");
+	g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+	g_autoptr(JsonNode) reply = NULL;
+	g_autoptr(HtmxDiv) box = htmx_div_new();
+	g_auto(GStrv) lines = match_lines(request);
+	g_autofree gchar *list_id = paths_list_id(id);
+	JsonObject *root;
+	JsonArray *results;
+	JsonArray *paths;
+	guint i;
+
+	clawt_web_payload_set(payload, "id", id);
+	clawt_web_payload_set_list(payload, "match", (const gchar *const *)lines);
+	reply = clawt_web_app_call(app, "trigger.match_test",
+	                           clawt_web_payload_take(g_steal_pointer(&payload)));
+
+	if (reply == NULL) {
+		g_autofree gchar *why = g_strdup(clawt_web_app_last_error(app));
+
+		clawt_web_add(box, clawt_web_notice(why, "bad"));
+		return clawt_web_fragment_response(HTMX_ELEMENT(box));
+	}
+
+	root = clawt_web_root(reply);
+
+	if (clawt_web_member(root, "payload", NULL) == NULL) {
+		clawt_web_add(box, clawt_web_notice(
+			clawt_web_member(root, "note", "Nothing has arrived yet."),
+			"info"));
+		return clawt_web_fragment_response(HTMX_ELEMENT(box));
+	}
+
+	{
+		g_autofree gchar *verdict = clawt_web_member_bool(root, "matches", FALSE)
+			? g_strdup("The last delivery would have been let through.")
+			: g_strdup_printf("The last delivery would have been ignored: %s",
+			                  clawt_web_member(root, "reason", "no reason given"));
+
+		clawt_web_add(box, clawt_web_notice(
+			verdict, clawt_web_member_bool(root, "matches", FALSE)
+				? "info" : "warn"));
+	}
+
+	results = clawt_web_member_array(root, "results");
+
+	for (i = 0; results != NULL && i < json_array_get_length(results); i++) {
+		JsonObject *row = json_array_get_object_element(results, i);
+		g_autofree gchar *title = g_strdup_printf(
+			"%s contains \342\200\234%s\342\200\235",
+			clawt_web_member(row, "path", "?"),
+			clawt_web_member(row, "value", ""));
+		g_autofree gchar *said = !clawt_web_member_bool(row, "found", FALSE)
+			? g_strdup("no: nothing is there")
+			: g_strdup_printf("%s: it is \342\200\234%s\342\200\235",
+			                  clawt_web_member_bool(row, "matched", FALSE)
+			                      ? "yes" : "no",
+			                  clawt_web_member(row, "actual", ""));
+
+		clawt_web_add(box, clawt_web_row(title, said));
+	}
+
+	paths = clawt_web_member_array(root, "paths");
+
+	if (paths != NULL && json_array_get_length(paths) > 0) {
+		g_autoptr(HtmxDatalist) list = htmx_datalist_new_with_id(list_id);
+
+		clawt_web_add(box, clawt_web_text(
+			"Fields in it -- the path boxes above now offer these:",
+			"check-sub"));
+
+		for (i = 0; i < json_array_get_length(paths); i++) {
+			JsonObject *row = json_array_get_object_element(paths, i);
+			const gchar *path = clawt_web_member(row, "path", "");
+			const gchar *value = clawt_web_member(row, "value", "");
+			g_autoptr(HtmxOption) option = htmx_option_new_with_value(path,
+			                                                         value);
+
+			htmx_node_add_child(HTMX_NODE(list), HTMX_NODE(option));
+			clawt_web_add(box, clawt_web_row(path, value));
+		}
+
+		htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(list));
+	}
+
+	return clawt_web_fragment_response(HTMX_ELEMENT(box));
+}
+
 void
 clawt_web_register_triggers(HtmxRouter *router, ClawtWebApp *app)
 {
@@ -708,4 +1103,6 @@ clawt_web_register_triggers(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_post(router, "/triggers/:trigger/replay", on_trigger_replay, app);
     htmx_router_post(router, "/triggers/:trigger/capture", on_trigger_capture,
                      app);
+    htmx_router_post(router, "/f/triggers/:trigger/match",
+                     on_trigger_match_check, app);
 }

@@ -199,6 +199,13 @@ declare -A AFFORDANCES=(
     #
     ["sidebar collapses"]="clawt_appearance_set_sidebar_collapsed|nav-toggle|clawt_lrg_window_toggle_sidebar"
     #
+    # The agent view's "Waiting for" list. The frames (wait.list,
+    # wait.cancel) are layer 1's; this is the schedule line, which every
+    # client must draw from the one library function rather than its own
+    # wording of "next check in".
+    #
+    ["waiting for schedule"]="clawt_wait_schedule_label|clawt_wait_schedule_label|clawt_wait_schedule_label"
+    #
     # The Fleet page: what each agent costs and which sit idle, the last
     # fourteen days, and stopping the idle ones -- one at a time and all
     # at once.  The text is libclawt's in all three.
@@ -207,6 +214,16 @@ declare -A AFFORDANCES=(
     ["fleet days strip"]="clawt_usage_fleet_strip|clawt_usage_fleet_strip|clawt_usage_fleet_strip"
     ["stop an idle agent"]="on_fleet_stop|/fleet-usage/%s/stop|on_stop_clicked"
     ["stop the idle ones"]="on_stop_idle_confirmed|/fleet-usage/stop-idle|on_stop_idle_confirmed"
+    #
+    # The Spending page's ledger: the grouping is a library enumeration,
+    # so layer 3 already sees the selector -- but the unpriced-turn
+    # sentence and the CSV export are each one call, sent no frame of
+    # their own (usage.ledger is shared) and spell out nothing.  The
+    # export is a save dialog in GTK and lrg and a download in the web
+    # client; each writes libclawt's document, so the marker is that.
+    #
+    ["spending unpriced turns"]="clawt_usage_ledger_unpriced_line|clawt_usage_ledger_unpriced_line|clawt_usage_ledger_unpriced_line"
+    ["spending csv export"]="clawt_usage_ledger_csv(root)|clawt_usage_ledger_csv(root)|clawt_usage_ledger_csv(root)"
     #
     # The Grok page: the bots and who may reach them, handing one a job on
     # an agent's behalf, the jobs in libclawt's tones, the routine prompt
@@ -276,6 +293,17 @@ declare -A AFFORDANCES=(
     ["enlarge a profile picture"]="on_avatar_preview_clicked|avatar-zoom|avatar_preview_open"
     ["trigger secret shown once"]="secret_shown_once|secret_shown_once|secret_shown_once"
     ["trigger verification capture"]="on_trigger_capture|on_trigger_capture|on_trigger_capture"
+    #
+    # A trigger's delivery mode, pending cap and payload filter.  The mode
+    # list is walked from the library (layer 3) and trigger.match_test is
+    # a frame (layer 1), but neither sees the controls themselves: a
+    # client could send `max_pending` from nowhere, or walk the modes into
+    # a help text and offer no selector.  So each control is declared.
+    #
+    ["trigger delivery mode"]="on_mode_changed|add_mode_field|clawt_lrg_trigger_mode_hints"
+    ["trigger pending cap"]="pending_row|add_pending_field|editor->pending"
+    ["trigger payload filter"]="match_row_add|add_match_editor|match_line_add"
+    ["filter path from a delivery"]="on_match_field_picked|htmx_datalist_new_with_id|on_field_picked"
     ["composer drafts"]="clawt_gtk_persist_draft|draft_key_for|chat_persist_draft"
     ["steer a busy agent"]="\"steered\"|\"steered\"|\"steered\""
     #
@@ -430,6 +458,19 @@ declare -A AFFORDANCES=(
     # to decide a trace was safe to share.
     #
     ["teach caveats"]="caveats|caveats|caveats"
+    #
+    # Per-device tokens.  The four device.* kinds are compared by layer 1;
+    # these are the halves that send nothing of their own.  Pairing with
+    # a code goes through the library on the *connecting* side, inside
+    # ClawtClient's handshake, so no client spells `device.redeem` and
+    # layer 1 is blind to whether a connection screen offers it at all.
+    # The countdown and the last-seen phrasing are libclawt's, so the
+    # marker is the call in each.
+    #
+    ["pair with a code"]="clawt_connection_new_paired|/settings/connections/pair|clawt_connection_pair(job->connection"
+    ["pairing countdown"]="clawt_device_countdown_text|clawt_device_countdown_text|clawt_device_countdown_text"
+    ["device last seen"]="clawt_device_seen_text|clawt_device_seen_text|clawt_device_seen_text"
+    ["a code on screen learns it was used"]="\"device.paired\"|/settings/devices/pair-status|\"device.paired\""
 )
 
 usage () {

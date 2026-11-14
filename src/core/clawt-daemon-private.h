@@ -26,6 +26,7 @@
 #include "integration/clawt-notify.h"
 #include "plugin/clawt-automation.h"
 #include "task/clawt-handoff-store.h"
+#include "wait/clawt-wait-manager.h"
 #include "task/clawt-routine-runner.h"
 #include "integration/clawt-venture-bridge.h"
 #include "trigger/clawt-trigger-store.h"
@@ -69,6 +70,13 @@ struct _ClawtDaemon {
     ClawtMailboxRouter *router;
     ClawtLoopGuard     *guard;
     ClawtUsage         *usage;
+    /*
+     * Task id -> the routine or trigger run that created it, as a
+     * ClawtUsageOrigin.  The task itself only knows its sender, which
+     * for a routine sharing the operator's room is "user", and the
+     * usage ledger asks which routine a turn's work began at.
+     */
+    GHashTable         *task_sources;
     ClawtEventBus      *bus;
     ClawtEventLog      *log;
 
@@ -121,6 +129,13 @@ struct _ClawtDaemon {
     ClawtTakeover      *takeover;
     ClawtLinkServer    *link_server;
     ClawtIpcServer     *ipc_server;
+
+    /*
+     * Paired client devices.  NULL when <state_dir>/devices.yaml could
+     * not be read, so that pairing a new device cannot write over the
+     * ones a damaged file still holds.
+     */
+    ClawtDeviceStore   *devices;
     ClawtMcpTools      *mcp_tools;
     ClawtPodBridge     *pod_bridge;
     ClawtPluginManager *plugins;
@@ -228,6 +243,14 @@ struct _ClawtDaemon {
      * happened" hands the same work over twice.  See daemon-handoff.c.
      */
     ClawtHandoffStore *handoffs;
+
+    /*
+     * Conditions agents asked to be told about, checked by code rather
+     * than by waking the model.  One record per wait under
+     * <state_dir>/waits, so they survive a restart.  See daemon-wait.c.
+     */
+    ClawtWaitManager  *waits;
+    gulong             waits_changed_handler;
 
     /*
      * libresearch clients, keyed on agent, url and token reference, so a
@@ -830,6 +853,20 @@ clawt_daemon_handle_hold(ClawtDaemon  *self,
 void clawt_daemon_triggers_stop(ClawtDaemon *self);
 
 /*
+ * device.pair, device.list, device.revoke, and what the daemon does for
+ * paired devices on start, reload and sweep.  See src/core/daemon-device.c.
+ */
+JsonNode *
+clawt_daemon_handle_device(ClawtDaemon  *self,
+                           const gchar  *kind,
+                           JsonNode     *request,
+                           JsonObject   *payload,
+                           gboolean     *handled);
+void clawt_daemon_devices_start(ClawtDaemon *self);
+void clawt_daemon_devices_configure(ClawtDaemon *self);
+void clawt_daemon_devices_sweep(ClawtDaemon *self);
+
+/*
  * clawt_daemon_trigger_deliver:
  * @self: the daemon
  * @trigger: the trigger the delivery is for
@@ -1241,6 +1278,37 @@ clawt_daemon_handle_routine(
     gboolean     *handled
 );
 
+/* -- Waits (src/core/daemon-wait.c) ------------------------------ */
+
+/**
+ * clawt_daemon_wait_setup:
+ * @self: a #ClawtDaemon
+ *
+ * Opens the waits a previous daemon left under `<state_dir>/waits`,
+ * gives the tools their manager, and arms the tick on the daemon's own
+ * context.  A directory that cannot be opened withholds the three wait
+ * tools rather than failing the start.
+ */
+void clawt_daemon_wait_setup(ClawtDaemon *self);
+
+/**
+ * clawt_daemon_wait_teardown:
+ * @self: a #ClawtDaemon
+ *
+ * Disarms the tick and lets the manager go.  The waits stay on disk.
+ * Idempotent.
+ */
+void clawt_daemon_wait_teardown(ClawtDaemon *self);
+
+JsonNode *
+clawt_daemon_handle_wait(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
+
 JsonNode *
 clawt_daemon_handle_browser(
     ClawtDaemon  *self,
@@ -1519,5 +1587,38 @@ gboolean clawt_daemon_turn_steer(ClawtDaemon *self,
                                  const gchar *from,
                                  const gchar *target,
                                  const gchar *body);
+
+/*
+ * clawt_daemon_note_task_source:
+ * @self: the daemon
+ * @task_id: a task a routine or trigger run just created
+ * @kind: %CLAWT_USAGE_ORIGIN_ROUTINE or %CLAWT_USAGE_ORIGIN_TRIGGER
+ * @id: the routine or trigger id
+ *
+ * Remembers which run a task began at, so the usage ledger can charge
+ * every turn of its tree to that run.
+ */
+/*
+ * clawt_daemon_usage_origin:
+ * @self: the daemon
+ * @agent_id: whose turn
+ * @room: (nullable): the room libreclaw recorded it in
+ * @channel: (nullable): the channel it recorded
+ *
+ * What started a turn, from that room's turn state and the run its
+ * task tree began at.  Called by the usage drain for every new turn.
+ *
+ * Returns: (transfer full): the origin, %CLAWT_USAGE_ORIGIN_UNKNOWN when
+ *   nothing described it
+ */
+ClawtUsageOrigin *clawt_daemon_usage_origin(ClawtDaemon *self,
+                                            const gchar *agent_id,
+                                            const gchar *room,
+                                            const gchar *channel);
+
+void clawt_daemon_note_task_source(ClawtDaemon          *self,
+                                   const gchar          *task_id,
+                                   ClawtUsageOriginKind  kind,
+                                   const gchar          *id);
 
 G_END_DECLS

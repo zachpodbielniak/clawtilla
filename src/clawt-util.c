@@ -1061,6 +1061,50 @@ clawt_time_ago_label(gint64 timestamp, gint64 now)
     return g_strdup_printf("%" G_GINT64_FORMAT "d ago", seconds / 86400);
 }
 
+gchar *
+clawt_time_until_label(
+	gint64 timestamp,
+	gint64 now
+){
+	gint64 seconds = (timestamp - now) / G_USEC_PER_SEC;
+
+	if (timestamp <= now)
+		return g_strdup("now");
+
+	if (seconds < 60)
+		return g_strdup("in <1m");
+
+	if (seconds < 3600)
+		return g_strdup_printf("in %" G_GINT64_FORMAT "m", seconds / 60);
+
+	if (seconds < 86400)
+		return g_strdup_printf("in %" G_GINT64_FORMAT "h", seconds / 3600);
+
+	return g_strdup_printf("in %" G_GINT64_FORMAT "d", seconds / 86400);
+}
+
+gchar *
+clawt_wait_schedule_label(
+	gint64 last_check_at,
+	gint64 next_check_at,
+	gint64 expires_at,
+	gint64 now
+){
+	g_autofree gchar *next = clawt_time_until_label(next_check_at, now);
+	g_autofree gchar *expires = clawt_time_until_label(expires_at, now);
+
+	if (last_check_at <= 0)
+		return g_strdup_printf("not checked yet \302\267 first check %s "
+		                       "\302\267 expires %s", next, expires);
+
+	{
+		g_autofree gchar *last = clawt_time_ago_label(last_check_at, now);
+
+		return g_strdup_printf("checked %s \302\267 next check %s "
+		                       "\302\267 expires %s", last, next, expires);
+	}
+}
+
 /* ── Process trees ───────────────────────────────────────────────── */
 
 GPid
@@ -1119,6 +1163,41 @@ clawt_process_is_descendant_of(GPid pid, GPid root)
     }
 
     return FALSE;
+}
+
+gboolean
+clawt_process_has_exited(GPid pid)
+{
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *contents = NULL;
+    const gchar *line;
+
+    if (pid <= 0)
+        return TRUE;
+
+    path = g_strdup_printf("/proc/%d/status", (gint)pid);
+
+    /* Gone already, or never there: either way nothing is left to stop. */
+    if (!g_file_get_contents(path, &contents, NULL, NULL))
+        return TRUE;
+
+    line = strstr(contents, "\nState:");
+
+    if (line == NULL)
+        return TRUE;
+
+    line += strlen("\nState:");
+
+    while (*line == ' ' || *line == '\t')
+        line++;
+
+    /*
+     * Z is a zombie: exited, waiting for its parent to reap it.  X is
+     * the instant after, which /proc can briefly show.  Everything else
+     * -- running, sleeping, stopped, in disk wait -- is a process a
+     * signal can still end.
+     */
+    return *line == 'Z' || *line == 'X';
 }
 
 /*

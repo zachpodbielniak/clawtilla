@@ -823,6 +823,10 @@ clawt_lrg_window_event(ClawtLrgApp *app, ClawtEvent *event)
     /* every event is offered to the alerts drawer, which keeps what it should */
     clawt_lrg_alerts_event(app, event);
 
+    /* a settings page has no event hook of its own; Devices needs one */
+    if (g_str_has_prefix(kind, "device."))
+        clawt_lrg_settings_devices_event(app, event);
+
     if (g_str_has_prefix(kind, "agent.") || g_str_has_prefix(kind, "team.") ||
         g_strcmp0(kind, "fleet.reordered") == 0) {
         if (g_strcmp0(kind, "agent.changed") == 0)

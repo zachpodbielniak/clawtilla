@@ -400,6 +400,66 @@ gchar *clawt_connection_describe(ClawtConnection *self);
 ClawtClient *clawt_connection_create_client(ClawtConnection *self);
 
 /**
+ * clawt_connection_set_token:
+ * @self: a #ClawtConnection
+ * @token: (nullable): the bearer token to present
+ *
+ * Replaces the token a remote connection presents.
+ */
+void clawt_connection_set_token(ClawtConnection *self, const gchar *token);
+
+/**
+ * clawt_connection_pair:
+ * @self: a remote #ClawtConnection, normally with no token yet
+ * @code: the six digits `clawtilla device pair` printed; spaces and
+ *   dashes are ignored
+ * @device_name: (nullable): what to call this device on the daemon;
+ *   %NULL for this machine's host name
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Trades a pairing code for a token of this device's own, and sets it on
+ * @self.  Saving @self afterwards -- clawt_connection_list_save(), mode
+ * 0600 -- is what keeps it.
+ *
+ * Blocks for as long as the far end takes, on a #GMainContext of its
+ * own, like clawt_connection_probe(): safe from a worker thread, and it
+ * never iterates the caller's loop.  A wrong code says how many tries
+ * are left, in the daemon's words.
+ *
+ * Returns: %TRUE when @self now holds a device token
+ */
+gboolean clawt_connection_pair(ClawtConnection  *self,
+                               const gchar      *code,
+                               const gchar      *device_name,
+                               GError          **error);
+
+/**
+ * clawt_connection_new_paired:
+ * @name: (nullable): what to call the profile; %NULL for @host
+ * @host: the daemon's address
+ * @port: its port; 0 for %CLAWT_DEFAULT_TCP_PORT
+ * @tls: whether to use TLS
+ * @accept_unknown_certificate: accept a certificate that does not validate
+ * @code: the pairing code
+ * @device_name: (nullable): what to call this device on the daemon
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The "Pair with a code" path every client offers, in one place: a new
+ * remote profile, paired.  The code's shape is checked before anything
+ * is dialled, so a typo costs nothing against the guess limit.
+ *
+ * Returns: (transfer full) (nullable): the paired profile, or %NULL
+ */
+ClawtConnection *clawt_connection_new_paired(const gchar  *name,
+                                             const gchar  *host,
+                                             guint16       port,
+                                             gboolean      tls,
+                                             gboolean      accept_unknown_certificate,
+                                             const gchar  *code,
+                                             const gchar  *device_name,
+                                             GError      **error);
+
+/**
  * clawt_connection_list_default_path:
  *
  * Returns: (transfer full): `$XDG_CONFIG_HOME/clawtilla/connections.yaml`

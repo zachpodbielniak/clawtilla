@@ -496,6 +496,44 @@ const gchar *clawt_color_ink(const gchar *hex);
 gchar *clawt_time_ago_label(gint64 timestamp, gint64 now);
 
 /**
+ * clawt_time_until_label:
+ * @timestamp: when it will happen, in microseconds since the epoch
+ * @now: the current time, in the same units
+ *
+ * How long until @timestamp, as `in <1m`, `in 4m`, `in 2h` or `in 3d`,
+ * and `now` for a moment already reached -- the forward twin of
+ * clawt_time_ago_label(), for a list whose rows are about what happens
+ * next: a wait's next check and its expiry.
+ *
+ * Pure for the same reason: the GTK, web and libregnum clients all draw
+ * the waits list, and three copies of this arithmetic would be three
+ * places to disagree about whether 59 minutes is "in 59m" or "in 1h".
+ *
+ * Returns: (transfer full): the label
+ */
+gchar *clawt_time_until_label(gint64 timestamp, gint64 now);
+
+/**
+ * clawt_wait_schedule_label:
+ * @last_check_at: the last look, in microseconds, or 0 for none yet
+ * @next_check_at: the next look, in microseconds
+ * @expires_at: when the wait gives up, in microseconds
+ * @now: the current time, in the same units
+ *
+ * A wait's schedule in one line, as every client's "Waiting for" list
+ * draws it: `checked 4m ago · next check in 1m · expires in 23h`, or
+ * `not checked yet · first check in <1m · expires in 1d` before the
+ * first look.  Built here so the three clients cannot word it three
+ * ways.
+ *
+ * Returns: (transfer full): the line
+ */
+gchar *clawt_wait_schedule_label(gint64 last_check_at,
+                                 gint64 next_check_at,
+                                 gint64 expires_at,
+                                 gint64 now);
+
+/**
  * clawt_process_parent_of:
  * @pid: the process to ask about
  *
@@ -547,6 +585,28 @@ GArray *clawt_process_descendants(GPid root);
  * Returns: %TRUE if @pid descends from @root
  */
 gboolean clawt_process_is_descendant_of(GPid pid, GPid root);
+
+/**
+ * clawt_process_has_exited:
+ * @pid: the process to ask about
+ *
+ * Whether @pid has already finished, even though the kernel may still
+ * list it.
+ *
+ * A process that has exited stays in `/proc` as a zombie until its
+ * parent reaps it, and `kill()` on a zombie *succeeds* while doing
+ * nothing.  So a count of processes signalled that trusts kill()'s
+ * return value counts a CLI that had already ended as one it stopped --
+ * and an agent between turns, whose libreclaw has simply not got round
+ * to the wait yet, reports work it never interrupted.
+ *
+ * Reads the `State:` line of `/proc/<pid>/status`: `Z` (zombie) and
+ * `X` (dead) have exited.  A pid that is gone or unreadable has exited
+ * too, since there is nothing left to signal.
+ *
+ * Returns: %TRUE if @pid is a zombie, dead or gone
+ */
+gboolean clawt_process_has_exited(GPid pid);
 
 /**
  * clawt_command_shell_syntax_refusal:

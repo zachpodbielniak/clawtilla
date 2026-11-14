@@ -187,6 +187,22 @@ for. Left unset, a token is generated into <state_dir>/tcp-token the
 first time a TCP or tailnet listener needs one, so enabling either
 cannot leave the daemon open by omission.
 
+*** =daemon.device_idle_days=
+
+- Type :: integer
+- Default :: =90=
+- Since :: 0.13.0
+
+Days a paired device may go unseen before its token stops working.
+0 means never.
+
+A device is seen when it connects and, once a minute, for as long as
+it stays connected -- so a laptop left open on the fleet never lapses
+while somebody is looking at it. An expired device is removed exactly
+as `clawtilla device revoke` would remove it, live connections and
+all; pair it again with a fresh code. The daemon's own token
+(token_file) is the owner credential and never expires.
+
 *** =daemon.event_log_days=
 
 - Type :: integer
@@ -649,7 +665,7 @@ not reach whoever can open the chat.
 - Type :: enum
 - Values :: none, bwrap
 - Default :: =none=
-- Since :: 0.12.0
+- Since :: 0.14.0
 
 Whether agents' own CLIs run inside a bubblewrap sandbox: none or
 bwrap.
@@ -1165,6 +1181,24 @@ passes work around all day fills two days faster than a quiet one
 fills two years. A handoff that has not run yet is never pruned
 however old it is: it is undrained rather than finished. 0 keeps
 receipts until the count alone drops them.
+
+*** =orchestration.max_waits_per_agent=
+
+- Type :: integer
+- Default :: =10=
+- Since :: 0.14.0
+
+How many pending waits one agent may have.
+
+A wait (clawtilla_wait_until) is a condition clawtilla checks by code
+-- a URL, a file, a task, the agent's computer, a command -- so the
+model is woken once when it holds rather than on every look. A pending
+wait costs no turns, but each one is a probe: a URL fetched once a
+minute, a command run on the agent's computer. This bounds how many
+of those one agent can leave running, and the refusal names its
+pending waits so it can fold a new one into an old one.
+
+Override with max_waits on an agent. 0 removes the limit.
 
 ** =memories=
 
@@ -2750,7 +2784,8 @@ Primary agent to run when it fires.
 
 Additional recipients for the same delivery. The primary agent runs first;
 duplicates are removed in order. Every recipient has a separate durable
-task and outcome. A batch must fit the four unfinished-run slots in full.
+task and outcome. A batch must fit the trigger's max_pending slots in
+full.
 
 *** =triggers.room=
 
@@ -2759,6 +2794,39 @@ task and outcome. A batch must fit the four unfinished-run slots in full.
 - Since :: 0.2.0
 
 Where the run reports, if not the agent's own conversation.
+
+*** =triggers.mode=
+
+- Type :: enum
+- Values :: run, post
+- Default :: =run=
+- Since :: 0.15.0
+
+What a delivery that passed every filter turns into: run or post.
+
+run starts the agent with the expanded instructions, which costs a
+turn. post writes the instructions and the event into `room` as a
+system message and runs nothing -- for the deploy that finished or
+the monitor that fired, which somebody wants to see and no agent
+needs to act on. A post wakes nobody and costs nothing.
+
+post needs `room`: a trigger set to post with no room is refused at
+load, and refuses every delivery until one is named.
+
+*** =triggers.max_pending=
+
+- Type :: integer
+- Default :: =4=
+- Since :: 0.15.0
+
+How many runs this trigger may have unfinished at once, 1 to 50.
+
+A push that fires a five-minute run, twenty times while the first is
+still going, is twenty agents on one machine. A delivery past the cap
+is answered 429, so the sender retries it later, and recorded as
+dropped in the trigger's deliveries -- never silently. Every recipient
+of a fan-out takes a slot. A value outside 1 to 50 written by hand is
+read as the default, with a warning at load.
 
 *** =triggers.provider=
 
@@ -2847,6 +2915,43 @@ a VENTURE ticket it updates, a branch it pushes -- is called back by
 its own write, and the sender cannot tell: to it every write is an
 ordinary user's change. Name the account the agent's credential
 belongs to. Matched against {{actor}}, ignoring case.
+
+** =triggers.match=
+
+Fields the delivery's JSON body must contain, or it is ignored.
+
+  match:
+    - path: pull_request.title
+      value: release
+    - path: labels.name
+      value: deploy
+
+Up to 10 pairs, and all of them must match. The path is dotted; a
+number indexes an array (`commits.0.message`), and a name on an array
+looks in every element (`labels.name`). The value must be contained in
+what the path holds, ignoring case. Checked before anything is queued:
+a miss is recorded in the deliveries as ignored, naming the pair that
+failed, and starts no run. Empty, or null, means no filter.
+
+*** =triggers.match.path=
+
+- Type :: string
+- Default :: unset
+- Required :: yes
+- Since :: 0.15.0
+
+Where in the JSON body to look, dotted, such as `repository.name`.
+No spaces, no `=` and no empty part; a bad path is refused at load.
+
+*** =triggers.match.value=
+
+- Type :: string
+- Default :: unset
+- Required :: yes
+- Since :: 0.15.0
+
+Text the field must contain, ignoring case. An object or array is
+searched as its JSON text.
 
 *** =triggers.replay_connector=
 
@@ -3338,7 +3443,7 @@ the cost of sharing a fate with every other embedded agent.
 - Type :: enum
 - Values :: none, bwrap
 - Default :: unset
-- Since :: 0.12.0
+- Since :: 0.14.0
 
 Run this agent's own CLI inside a bubblewrap sandbox: none or bwrap.
 Defaults to defaults.confine.
@@ -3365,7 +3470,7 @@ the agent's next start.
 
 - Type :: list of strings
 - Default :: unset
-- Since :: 0.12.0
+- Since :: 0.14.0
 
 More paths to bind read-only into a confined agent's sandbox.
 

@@ -536,6 +536,99 @@ test_interrupt_kills_the_tree_and_keeps_the_agent(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * A zombie under the agent is not something an interrupt stopped.
+ *
+ * The CLI that has just exited stays in /proc until libreclaw reaps it,
+ * and kill() on a zombie succeeds while doing nothing -- so a count that
+ * trusted kill() said "stopped 1" over an agent that was already between
+ * turns.  On a loaded machine the gap between the exit and libreclaw's
+ * wait is long enough to land in, and the end-to-end test above did,
+ * once in a few hundred runs, with exactly this count.
+ *
+ * The fixture holds the zombie for as long as the agent lives, so this
+ * fails every time against a count that includes it rather than once in
+ * a while.
+ */
+static void
+test_a_zombie_is_not_counted_as_killed(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtProcessRuntime) runtime = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *zombie_agent = fixture_binary("zombie-libreclaw");
+    ClawtAgentConfig *agent_config;
+    GPid agent_pid;
+    GPid zombie = 0;
+    guint killed = 99;
+    guint waited;
+
+    if (!g_file_test(zombie_agent, G_FILE_TEST_IS_EXECUTABLE)) {
+        g_test_skip("the zombie libreclaw fixture is not executable");
+        return;
+    }
+
+    fixture_setup(&fixture, "agents:\n  - id: reaper\n");
+    agent_config = clawt_config_get_agent(fixture.config, "reaper");
+
+    runtime = clawt_process_runtime_new(agent_config, "/dev/null");
+    clawt_process_runtime_set_binary(runtime, zombie_agent);
+    clawt_agent_runtime_set_restart_policy(CLAWT_AGENT_RUNTIME(runtime),
+                                           CLAWT_RESTART_NEVER, 1, 0);
+
+    g_assert_true(clawt_agent_runtime_start(CLAWT_AGENT_RUNTIME(runtime),
+                                            &error));
+    g_assert_no_error(error);
+
+    agent_pid = clawt_agent_runtime_get_pid(CLAWT_AGENT_RUNTIME(runtime));
+    g_assert_cmpint(agent_pid, >, 0);
+
+    /*
+     * Wait for the shape the test is about: exactly one process below
+     * the agent, and that one exited.  Until then the fixture's child is
+     * still polling, and its own short-lived sleeps are live work an
+     * interrupt would rightly count.  Bounded, at ten seconds, so a
+     * fixture that never gets there fails rather than hangs.
+     */
+    for (waited = 0; waited < 10000 && zombie == 0; waited++) {
+        g_autoptr(GArray) below = clawt_process_descendants(agent_pid);
+
+        g_main_context_iteration(NULL, FALSE);
+
+        if (below->len == 1 &&
+            clawt_process_has_exited(g_array_index(below, GPid, 0)))
+            zombie = g_array_index(below, GPid, 0);
+        else
+            g_usleep(1000);
+    }
+
+    g_assert_cmpint(zombie, >, 0);
+
+    /*
+     * The kernel still lists it and kill() still answers for it -- the
+     * two facts that made it look like work in flight.
+     */
+    g_assert_true(still_there(zombie));
+    g_assert_true(clawt_process_is_descendant_of(zombie, agent_pid));
+
+    /* And the helper tells the living from the dead. */
+    g_assert_false(clawt_process_has_exited(agent_pid));
+    g_assert_true(clawt_process_has_exited(0));
+    g_assert_true(clawt_process_has_exited(-1));
+
+    g_assert_true(clawt_agent_runtime_interrupt(
+                      CLAWT_AGENT_RUNTIME(runtime), &killed, &error));
+    g_assert_no_error(error);
+    g_assert_cmpuint(killed, ==, 0);
+
+    /* Nothing was signalled, so certainly not the agent. */
+    g_assert_true(clawt_agent_runtime_is_alive(CLAWT_AGENT_RUNTIME(runtime)));
+    g_assert_false(clawt_process_has_exited(agent_pid));
+
+    clawt_agent_runtime_stop(CLAWT_AGENT_RUNTIME(runtime));
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -557,6 +650,8 @@ main(int argc, char **argv)
                     test_a_stopped_runtime_is_refused);
     g_test_add_func("/interrupt/kills-the-tree-and-keeps-the-agent",
                     test_interrupt_kills_the_tree_and_keeps_the_agent);
+    g_test_add_func("/interrupt/a-zombie-is-not-counted",
+                    test_a_zombie_is_not_counted_as_killed);
 
     return g_test_run();
 }

@@ -23,6 +23,7 @@
 #include <string.h>
 
 #include "clawt-test-util.h"
+#include "clawt-net.h"
 
 /* ── The address table ───────────────────────────────────────────── */
 
@@ -115,6 +116,18 @@ test_address_table(void)
 			        parsed ? clawt_enum_to_nick(CLAWT_TYPE_NET_ADDRESS_CLASS,
 			                                    klass)
 			               : "unparsed");
+	}
+
+	/*
+	 * The wait probes ask clawt_net_address_is_public(); it must be this
+	 * table's yes or no, address for address.
+	 */
+	for (i = 0; i < G_N_ELEMENTS(address_cases); i++) {
+		g_autoptr(GInetAddress) address =
+			g_inet_address_new_from_string(address_cases[i].address);
+
+		g_assert_cmpint(clawt_net_address_is_public(address), ==,
+		                address_cases[i].klass == CLAWT_NET_ADDRESS_PUBLIC);
 	}
 
 	g_assert_false(clawt_net_address_classify_string("example.com", NULL));

@@ -211,6 +211,128 @@ clawt_connection_create_client(ClawtConnection *self)
     return client;
 }
 
+void
+clawt_connection_set_token(ClawtConnection *self, const gchar *token)
+{
+    g_return_if_fail(self != NULL);
+
+    g_free(self->token);
+    self->token = g_strdup(token);
+}
+
+/*
+ * The exchange itself, on whatever context is thread-default -- which
+ * clawt_connection_pair() has just made a private one.
+ */
+static gboolean
+pair_on_this_context(ClawtConnection *self, const gchar *code,
+                     const gchar *device_name, GError **error)
+{
+    g_autoptr(ClawtClient) client = NULL;
+    const gchar *token;
+
+    client = clawt_connection_create_client(self);
+
+    /*
+     * Off: a pairing that reconnected in the background would try a
+     * code that the first attempt already spent.
+     */
+    clawt_client_set_auto_reconnect(client, FALSE);
+    clawt_client_set_pairing_code(client, code, device_name);
+
+    if (!clawt_client_connect(client, error))
+        return FALSE;
+
+    token = clawt_client_get_token(client);
+
+    if (token == NULL || *token == '\0') {
+        clawt_client_disconnect(client);
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_PROTOCOL,
+                    "the daemon accepted the code but sent no token back; "
+                    "is it older than this client?");
+        return FALSE;
+    }
+
+    clawt_connection_set_token(self, token);
+    clawt_client_disconnect(client);
+
+    return TRUE;
+}
+
+gboolean
+clawt_connection_pair(ClawtConnection *self, const gchar *code,
+                      const gchar *device_name, GError **error)
+{
+    g_autoptr(GMainContext) context = NULL;
+    g_autofree gchar *digits = NULL;
+    gboolean paired;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    /*
+     * A daemon on this machine already trusts this user completely; a
+     * token for it would be a credential that opens nothing new.
+     */
+    if (clawt_connection_is_local(self)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "a daemon on this machine needs no pairing -- its "
+                    "socket already lets you in");
+        return FALSE;
+    }
+
+    digits = clawt_device_code_normalize(code);
+
+    if (digits == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "a pairing code is %d digits, like 123 456",
+                    CLAWT_DEVICE_CODE_DIGITS);
+        return FALSE;
+    }
+
+    if (device_name == NULL || *device_name == '\0')
+        device_name = g_get_host_name();
+
+    context = g_main_context_new();
+    g_main_context_push_thread_default(context);
+
+    paired = pair_on_this_context(self, digits, device_name, error);
+
+    /* Drained before it is dropped, for clawt_connection_probe()'s reason. */
+    while (g_main_context_iteration(context, FALSE))
+        ;
+
+    g_main_context_pop_thread_default(context);
+
+    return paired;
+}
+
+ClawtConnection *
+clawt_connection_new_paired(const gchar *name, const gchar *host,
+                            guint16 port, gboolean tls,
+                            gboolean accept_unknown_certificate,
+                            const gchar *code, const gchar *device_name,
+                            GError **error)
+{
+    g_autoptr(ClawtConnection) connection = NULL;
+
+    if (host == NULL || *host == '\0') {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "pairing needs the daemon's host -- the address "
+                    "`clawtilla device pair` printed beside the code");
+        return NULL;
+    }
+
+    connection = clawt_connection_new_remote(
+        (name != NULL && *name != '\0') ? name : host, host,
+        port != 0 ? port : CLAWT_DEFAULT_TCP_PORT, NULL);
+    clawt_connection_set_tls(connection, tls, accept_unknown_certificate);
+
+    if (!clawt_connection_pair(connection, code, device_name, error))
+        return NULL;
+
+    return g_steal_pointer(&connection);
+}
+
 gchar *
 clawt_connection_list_default_path(void)
 {

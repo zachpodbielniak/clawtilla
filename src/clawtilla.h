@@ -156,6 +156,7 @@
 #include "ipc/clawt-ipc-server.h"
 #include "ipc/clawt-client.h"
 #include "ipc/clawt-connection.h"
+#include "ipc/clawt-device-store.h"
 
 #include "agent/clawt-hold.h"
 #include "core/clawt-update.h"
@@ -168,6 +169,7 @@
 #include "memory/clawt-transcript-index.h"
 #include "memory/clawt-summariser.h"
 #include "memory/clawt-operator-profile.h"
+#include "usage/clawt-usage-ledger.h"
 #include "usage/clawt-usage.h"
 #include "browser/clawt-browser.h"
 #include "mailbox/clawt-mailbox.h"

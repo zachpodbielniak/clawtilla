@@ -9,6 +9,7 @@
 
 #include "clawtilla.h"
 #include "net/clawt-net-policy.h"
+#include "clawt-net.h"
 
 #include <string.h>
 
@@ -205,13 +206,6 @@ clawt_net_address_classify_string(
 		*out_class = clawt_net_address_classify(address);
 
 	return TRUE;
-}
-
-gboolean
-clawt_net_address_is_public(
-	GInetAddress *address
-){
-	return clawt_net_address_classify(address) == CLAWT_NET_ADDRESS_PUBLIC;
 }
 
 const gchar *

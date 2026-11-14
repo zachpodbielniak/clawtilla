@@ -36,6 +36,16 @@ struct _ClawtClient {
     gboolean tls;
     gboolean accept_unknown_certificate;
 
+    /*
+     * A pairing code to redeem instead of saying hello, and what the
+     * redemption produced.  The code is spent by the first handshake
+     * that uses it, so a reconnect says an ordinary hello with the token
+     * it was given rather than trying a code that no longer exists.
+     */
+    gchar   *pair_code;
+    gchar   *pair_name;
+    gchar   *device_id;
+
     GIOStream        *stream;
     GSocketConnection *connection;
     GDataInputStream *input;
@@ -153,6 +163,34 @@ clawt_client_set_tls(ClawtClient *self, gboolean enabled,
 
     self->tls = enabled;
     self->accept_unknown_certificate = accept_unknown_certificate;
+}
+
+void
+clawt_client_set_pairing_code(ClawtClient *self, const gchar *code,
+                              const gchar *device_name)
+{
+    g_return_if_fail(CLAWT_IS_CLIENT(self));
+
+    g_free(self->pair_code);
+    g_free(self->pair_name);
+    self->pair_code = g_strdup(code);
+    self->pair_name = g_strdup(device_name);
+}
+
+const gchar *
+clawt_client_get_token(ClawtClient *self)
+{
+    g_return_val_if_fail(CLAWT_IS_CLIENT(self), NULL);
+
+    return self->token;
+}
+
+const gchar *
+clawt_client_get_device_id(ClawtClient *self)
+{
+    g_return_val_if_fail(CLAWT_IS_CLIENT(self), NULL);
+
+    return self->device_id;
 }
 
 void
@@ -712,6 +750,90 @@ on_socket_client_event(GSocketClient       *client,
 }
 
 /*
+ * What the handshake sends: `control.hello` with the token, or
+ * `device.redeem` with a pairing code when one is waiting.
+ *
+ * Both kinds are spelled as literals for `make parity`, which cannot see
+ * a kind built at runtime.
+ */
+static JsonNode *
+hello_payload(ClawtClient *self, const gchar **kind)
+{
+    g_autoptr(JsonBuilder) builder = NULL;
+
+    if (self->pair_code != NULL) {
+        *kind = "device.redeem";
+
+        builder = json_builder_new();
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "code");
+        json_builder_add_string_value(builder, self->pair_code);
+
+        if (self->pair_name != NULL) {
+            json_builder_set_member_name(builder, "name");
+            json_builder_add_string_value(builder, self->pair_name);
+        }
+
+        json_builder_end_object(builder);
+
+        return json_builder_get_root(builder);
+    }
+
+    *kind = "control.hello";
+
+    if (self->token == NULL)
+        return NULL;
+
+    builder = json_builder_new();
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "token");
+    json_builder_add_string_value(builder, self->token);
+    json_builder_end_object(builder);
+
+    return json_builder_get_root(builder);
+}
+
+/*
+ * A redeemed code is spent, whatever the answer: a second try with the
+ * same digits would only count against the guess limit.  On success the
+ * token the daemon issued becomes this client's, so a reconnect says an
+ * ordinary hello with it.
+ */
+static void
+adopt_hello_reply(ClawtClient *self, const gchar *kind, JsonNode *reply)
+{
+    JsonObject *payload;
+
+    if (g_strcmp0(kind, "device.redeem") != 0)
+        return;
+
+    if (self->pair_code != NULL)
+        memset(self->pair_code, 0, strlen(self->pair_code));
+
+    g_clear_pointer(&self->pair_code, g_free);
+
+    if (reply == NULL || !JSON_NODE_HOLDS_OBJECT(reply))
+        return;
+
+    payload = json_node_get_object(reply);
+
+    if (payload == NULL)
+        return;
+
+    if (json_object_has_member(payload, "token")) {
+        g_free(self->token);
+        self->token = g_strdup(
+            json_object_get_string_member(payload, "token"));
+    }
+
+    if (json_object_has_member(payload, "id")) {
+        g_free(self->device_id);
+        self->device_id = g_strdup(
+            json_object_get_string_member(payload, "id"));
+    }
+}
+
+/*
  * The handshake, over the same reader as everything else.
  *
  * It used to read the socket directly, which deadlocks an in-process
@@ -725,20 +847,12 @@ say_hello(ClawtClient *self, GError **error)
 {
     g_autoptr(JsonNode) payload = NULL;
     g_autoptr(JsonNode) reply = NULL;
+    const gchar *kind = NULL;
 
-    if (self->token != NULL) {
-        g_autoptr(JsonBuilder) builder = json_builder_new();
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "token");
-        json_builder_add_string_value(builder, self->token);
-        json_builder_end_object(builder);
-
-        payload = json_builder_get_root(builder);
-    }
-
-    reply = clawt_client_request(self, "control.hello",
-                                 g_steal_pointer(&payload), error);
+    payload = hello_payload(self, &kind);
+    reply = clawt_client_request(self, kind, g_steal_pointer(&payload),
+                                 error);
+    adopt_hello_reply(self, kind, reply);
 
     return reply != NULL;
 }
@@ -901,6 +1015,7 @@ clawt_client_connect(ClawtClient *self, GError **error)
 typedef struct {
     ClawtClient   *client;
     GSocketClient *socket_client;   /* kept alive across the connect */
+    const gchar   *hello_kind;      /* static: which handshake was sent */
 } ConnectAttempt;
 
 static void
@@ -921,6 +1036,14 @@ on_hello_finished(GObject *source, GAsyncResult *result, gpointer user_data)
     g_autoptr(GError) error = NULL;
 
     reply = clawt_client_request_finish(self, result, &error);
+
+    {
+        ConnectAttempt *attempt = g_task_get_task_data(task);
+
+        adopt_hello_reply(self,
+                          attempt != NULL ? attempt->hello_kind : NULL,
+                          reply);
+    }
 
     if (reply == NULL) {
         /*
@@ -973,15 +1096,14 @@ on_connected(GObject *source, GAsyncResult *result, gpointer user_data)
 
     adopt_connection(self, connection);
 
-    if (self->token != NULL) {
-        g_autoptr(JsonBuilder) builder = json_builder_new();
+    {
+        ConnectAttempt *attempt = g_task_get_task_data(task);
+        const gchar *kind = NULL;
 
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "token");
-        json_builder_add_string_value(builder, self->token);
-        json_builder_end_object(builder);
+        payload = hello_payload(self, &kind);
 
-        payload = json_builder_get_root(builder);
+        if (attempt != NULL)
+            attempt->hello_kind = kind;
     }
 
     /*
@@ -993,9 +1115,15 @@ on_connected(GObject *source, GAsyncResult *result, gpointer user_data)
      */
     cancellable = g_task_get_cancellable(task);
 
-    clawt_client_request_async(self, "control.hello",
-                               g_steal_pointer(&payload), cancellable,
-                               on_hello_finished, g_steal_pointer(&task));
+    {
+        ConnectAttempt *attempt = g_task_get_task_data(task);
+        const gchar *kind = (attempt != NULL && attempt->hello_kind != NULL)
+                            ? attempt->hello_kind : "control.hello";
+
+        clawt_client_request_async(self, kind, g_steal_pointer(&payload),
+                                   cancellable, on_hello_finished,
+                                   g_steal_pointer(&task));
+    }
 }
 
 void
@@ -1463,6 +1591,9 @@ clawt_client_finalize(GObject *object)
     g_free(self->socket_path);
     g_free(self->host);
     g_free(self->token);
+    g_free(self->pair_code);
+    g_free(self->pair_name);
+    g_free(self->device_id);
 
     G_OBJECT_CLASS(clawt_client_parent_class)->finalize(object);
 }

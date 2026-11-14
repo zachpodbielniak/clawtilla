@@ -637,6 +637,63 @@ clawt_daemon_handle_misc(
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
 
+    if (g_strcmp0(kind, "usage.ledger") == 0) {
+		GPtrArray *agents = clawt_agent_manager_list(self->agents);
+		gint64 since = clawt_ipc_payload_int(payload, "since", 0);
+		const gchar *by = clawt_ipc_payload_string(payload, "by");
+		const gchar *only = clawt_ipc_payload_string(payload, "agent");
+		g_autoptr(ClawtUsageLedger) ledger = NULL;
+		JsonNode *body;
+		JsonObject *object;
+		guint i;
+
+		/*
+		 * Refused rather than quietly read as "agent": a client asking
+		 * for a grouping this daemon does not have would otherwise draw
+		 * a table under the wrong heading and call it the answer.
+		 */
+		if (by != NULL && *by != '\0' && clawt_usage_group_index(by) < 0)
+			return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+				"usage.ledger groups by agent, model, origin or day");
+
+		if (only != NULL && *only != '\0' &&
+		    clawt_agent_manager_get(self->agents, only) == NULL)
+			return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+						   "no such agent");
+
+		ledger = clawt_usage_ledger_new(by);
+
+		for (i = 0; agents != NULL && i < agents->len; i++) {
+			const gchar *agent_id = clawt_agent_get_id(
+				g_ptr_array_index(agents, i));
+			g_autofree gchar *state_dir = NULL;
+			g_autoptr(GError) read_error = NULL;
+
+			if (only != NULL && *only != '\0' && g_strcmp0(only, agent_id) != 0)
+				continue;
+
+			state_dir = clawt_config_agent_state_dir(self->config, agent_id);
+			if (state_dir == NULL)
+				continue;
+
+			/* one unreadable file does not refuse a report on the rest */
+			if (!clawt_usage_ledger_add_agent(ledger, agent_id, state_dir,
+							  since, &read_error))
+				g_debug("usage ledger: %s: %s", agent_id,
+					read_error != NULL ? read_error->message : "unknown");
+		}
+
+		body = clawt_usage_ledger_to_json(ledger);
+		object = json_node_get_object(body);
+		json_object_set_int_member(object, "since", since);
+		json_object_set_int_member(object, "now",
+					   g_get_real_time() / G_USEC_PER_SEC);
+		if (only != NULL && *only != '\0')
+			json_object_set_string_member(object, "agent", only);
+
+		return clawt_ipc_response_new(request, body);
+	}
+
     if (g_strcmp0(kind, "attachment.put") == 0) {
         const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
         const gchar *name = clawt_ipc_payload_string(payload, "name");

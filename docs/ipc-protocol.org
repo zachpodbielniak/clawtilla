@@ -75,7 +75,7 @@ anyway.
 
 | Kind | Payload | Reply |
 |------+---------+-------|
-| ~control.hello~ | ~token~ (TCP only) | ~version~, ~daemon~ |
+| ~control.hello~ | ~token~ (TCP only): the owner token or a paired device's | ~version~, ~daemon~ |
 | ~control.status~ | | ~version~, ~config~, ~agents~, ~connected~, ~clients~, ~cursor~ |
 | ~control.subscribe~ | ~cursor~ | ~cursor~, ~resumed~, then a replay |
 | ~control.reload~ | | ~refused~ -- see below |
@@ -157,6 +157,51 @@ warns once per refused agent and once more in summary, naming them.  It
 does not refuse to come up.  A fleet that would not start because one
 operator-typed block is wrong is a far worse failure than one that starts
 and says which agents are stale.
+
+*** device.*
+
+Per-device client tokens.  See [[file:security.org::*Paired devices][security.org]] for
+why each rule is the shape it is.
+
+| Kind | Who | Payload | Reply |
+|------+-----+---------+-------|
+| ~device.pair~ | owner | ~name~ (optional) | ~code~, ~display~ ("123 456"), ~expires_in~, ~expires_at~, ~addresses~ |
+| ~device.pair_cancel~ | owner | | ~{}~ |
+| ~device.redeem~ | anyone, *before* ~control.hello~ | ~code~, ~name~ (optional) | ~version~, ~daemon~, ~id~, ~name~, ~token~ |
+| ~device.list~ | any authenticated client | | ~owner~, ~idle_days~, ~pairing_expires_in~, ~devices~ |
+| ~device.revoke~ | any authenticated client | ~id~ | ~id~, ~closed~ |
+
+"Owner" is a unix-socket client or a network client that said
+~control.hello~ with the daemon's own token.  A paired device asking for
+~device.pair~ or ~device.pair_cancel~ is refused with
+~PERMISSION_DENIED~, naming the device and where the owner credential is.
+
+~device.redeem~ is the one frame a network client may send before
+~control.hello~, because a device being paired has nothing to say hello
+with yet.  It *is* the handshake: a success authenticates the connection
+as the new device -- on any socket, a unix one included -- and its
+~token~ is the only token any reply ever carries.  ~ClawtClient~ sends it
+in place of ~control.hello~ when ~clawt_client_set_pairing_code()~ was
+called, and says an ordinary hello with the token on every reconnect.  A
+wrong code is ~AUTH~ and says how many tries are left; the daemon-wide
+rate limit is ~LOOP_LIMIT~.
+
+~expires_in~ is what a client counts down from, against its own clock.
+~expires_at~ is the daemon's clock and is right only where the two agree.
+~addresses~ is every network listener that actually bound, as
+~host:port~ -- empty when the daemon is on its unix socket alone, in
+which case no other device can reach it to redeem the code.
+
+Each entry of ~devices~ is ~id~, ~name~, ~created~ and ~last_seen~
+(seconds since the epoch), ~connected~ (a connection is open now) and
+~current~ (it is the connection asking).  Never a token and never a
+hash.  ~owner~ says whether the asking client may pair, so a client can
+offer the button only where it would work; ~pairing_expires_in~ says a
+code is outstanding without saying which.
+
+~device.revoke~ closes every connection the device has open -- including
+the one asking, when a device revokes itself, which then never sees the
+reply.  ~closed~ counts them.
 
 *** attachment.*
 
@@ -416,6 +461,12 @@ button: nothing was running, or that much was. Zero is not a failure ---
 an agent between turns has no CLI --- so the frame answers ~interrupted:
 true~ either way and the clients say which happened rather than reporting
 "stopped" over an agent that was already idle.
+
+A zombie is not counted. The CLI that has just exited stays in ~/proc~
+until libreclaw reaps it, and ~kill()~ on a zombie succeeds while doing
+nothing, so a count that trusted it answered ~killed: 1~ for an agent
+that was already between turns. ~clawt_process_has_exited()~ reads the
+~State:~ line and the interrupt skips ~Z~ and ~X~.
 
 Every pid is re-checked against the agent's process tree immediately
 before it is signalled. A pid read a moment earlier may have exited and
@@ -755,6 +806,10 @@ One unreadable database does not fail the summary -- a fleet report that
 refused because one agent's file was mid-write would say nothing about
 the other nine.
 
+~usage.ledger~ (new with the usage ledger; version assigned at merge) is the same turns grouped another way.  It takes ~since~ (unix seconds, 0 for everything), ~by~ (~agent~, ~model~, ~origin~ or ~day~; absent is ~agent~, anything else is refused with =INVALID_ARGUMENT= rather than answered under the wrong heading) and optionally ~agent~ (one agent; an unknown one is =NOT_FOUND=).  It answers ~by~, ~since~, ~now~, ~agent~ when one was asked for, ~groups~ -- each ~{key, turns, unpriced_turns, input_tokens, output_tokens, cost_micros}~ -- and a ~total~ of the same shape without ~key~.  Days are local dates (~YYYY-MM-DD~), oldest first; every other grouping is most expensive first.  An origin key is ~operator~, ~agent:<id>~, ~routine:<id>~, ~trigger:<id>~, ~task:<id>~, ~channel:<name>~, ~other:<sender>~ or ~untagged~ (=clawt_usage_origin_label()=).
+
+~unpriced_turns~ counts turns whose recorded cost is not a price -- negative, or zero against tokens (=clawt_usage_turn_is_priced()=) -- and ~cost_micros~ never includes them: unknown is not free, and a ~-1~ summed in would quietly refund a micro-dollar per turn.  A client builds the request with =clawt_usage_ledger_payload()= and draws the reply with =clawt_usage_ledger_cost_label()=, =clawt_usage_ledger_row_subtitle()=, =clawt_usage_ledger_unpriced_line()= and =clawt_usage_ledger_csv()=, so the words and the export are the same everywhere.  A new frame kind, so an older daemon answers it as an unknown kind; ~usage.summary~ is unchanged apart from no longer letting a negative cost reduce a total.
+
 *** browser.*
 
 Since 0.9.0. Every verb but ~browser.list~ takes ~agent~ and acts on the session that agent drives -- its own, or the shared one its =agents.browser.use= names -- and every verb but ~browser.list~ is deferred: a frame waits on a page and a start waits seconds for an X server.
@@ -1048,11 +1103,29 @@ both the schedule and ~enabled~ and returns the ~task~ it started.
 as events; the last carries ~agent~, ~failures~ and ~error~ and is an
 error in every client's alerts panel.
 
+*** wait.*
+
+Conditions an agent asked to be told about with ~clawtilla_wait_until~, checked by the daemon rather than by the model.  See [[file:orchestration.org::*Waits: a condition checked by code][orchestration.org]].
+
+~wait.list~ takes an optional ~agent~ and returns ~{"waits": [...]}~, the pending ones only, oldest first.  Each carries ~id~, ~agent~, ~room~ (where its notice goes), ~label~ (the agent's words), ~note~ when there is one, ~kind~ (~url~, ~file~, ~task~, ~computer~ or ~command~), ~condition~ (the daemon's phrase for it, so a client does not rebuild one per kind), ~state~ (always ~pending~ here), ~created_at~, ~last_check_at~ (0 before the first look), ~next_check_at~ and ~expires_at~ in microseconds since the epoch, ~checks~, ~failures~ (looks in a row that went unanswered, which is what the backoff counts) and ~last_result~ when a look has seen something.  A client draws the schedule with ~clawt_wait_schedule_label()~ from the three timestamps, at render time.
+
+~wait.cancel~ takes ~wait~ (the id) and ends it as the operator: any agent's wait, and the agent is sent a notice saying so, because it would otherwise go on believing it was waiting.  The reply is ~{"cancelled": "<id>"}~; an id that is not pending is ~NOT_FOUND~.
+
+Both answer ~NOT_SUPPORTED~ from a daemon with no state directory, which keeps no waits.
+
+~wait.changed~ is published, with the agent as subject and ~wait~ and ~state~ (~pending~, or ~ended~ once it has gone) as detail, when a wait is set, when it ends, and when a look sees something different from the last one -- not on every look.
+
 *** trigger.*
 
 ~trigger.list~ returns every trigger with its own schema fields plus
 four the daemon works out: ~endpoint~ (the address it answers on),
 ~pending_verification~, ~unfinished~ (runs in flight), and ~has_secret~.
+~mode~ is the nick; ~max_pending~ is the cap the daemon *applies*, so a
+hand-written value outside 1 to 50 is reported as the default it reads
+as; ~match~ is an array of ~{path, value}~ objects.  A ~match~ the
+daemon cannot read is reported as ~match_error~ (the reason) in place
+of ~match~, so an editor can say so rather than draw an empty filter a
+save would write over it.
 The reply also carries ~receiving~ -- whether the receiver is listening
 at all -- and ~listening~, the base URLs it bound, so a client can print
 a whole address rather than asking somebody to assemble one.
@@ -1072,6 +1145,25 @@ produce the latter.  ~trigger.add~ forces ~enabled~ false whatever was
 posted: the first authenticated delivery is captured rather than run,
 and an enabled trigger can never be pending.
 
+~match~ is accepted as an array of ~{path, value}~ objects, an array of
+~"path=value"~ strings, or one string with a pair per line; JSON null,
+~""~ and ~[]~ clear it.  ~trigger.add~ and ~trigger.update~ refuse,
+before anything is written, more than ten pairs, a pair
+=clawt_trigger_match_check()= rejects, a ~max_pending~ outside 1 to 50,
+a ~mode~ the enum does not have, and ~mode: post~ with no ~room~ (taking
+whichever of the two the payload does not carry from the saved trigger).
+
+~trigger.match_test~ takes an ~id~, an optional ~match~ (in any of the
+spellings above; the saved filter when absent) and an optional
+~receipt~, and checks those pairs against the newest stored delivery
+body -- or the handshake capture when there is none -- without saving or
+running anything.  It returns ~payload~ (the body checked), ~receipt~
+when it came from one, ~matches~, ~reason~ when it would have been
+ignored, ~results~ (one object per pair: ~path~, ~value~, ~found~,
+~matched~ and, when found, ~actual~ cut short) and ~paths~ (every scalar
+in the body as ~{path, value}~, at most 200, for an editor to offer).
+With nothing stored it returns a ~note~ and no ~payload~.
+
 ~trigger.remove~, ~trigger.rotate~ and ~trigger.capture~ take an ~id~.
 ~trigger.rotate~ replaces the secret *and* the endpoint and puts the
 trigger back to pending.  ~trigger.capture~ returns the held delivery
@@ -1080,7 +1172,11 @@ is still open.
 
 ~trigger.test~ takes an ~id~, an optional ~event~ name and ~run~.  With
 ~run~ false it returns the ~prompt~ the agent would be asked; with it
-true it starts the run and returns the ~task~.  It builds a synthetic
+true it starts the run and returns the ~task~.  For a ~mode: post~
+trigger ~prompt~ is the message it would post and ~report~ begins
+=Posts into: <room>=; with ~run~ true it posts, and the reply carries
+~posted~ (the room) instead of ~results~.  ~trigger.replay~ treats a
+post trigger the same way.  It builds a synthetic
 event rather than making a loopback request against the real endpoint,
 which would need the secret in a process listing.
 
@@ -1091,12 +1187,15 @@ default) and returns receipts newest first, each with ~trigger~,
 empty, because "nothing has been delivered" and "the receiver is not
 running" are different facts and only one is about the sender.
 
-~trigger.fired~, ~trigger.changed~, ~trigger.refused~ and
-~trigger.verified~ are published as events.  ~trigger.refused~ is an
+~trigger.fired~, ~trigger.posted~, ~trigger.changed~, ~trigger.refused~
+and ~trigger.verified~ are published as events.  ~trigger.posted~ is a
+~mode: post~ delivery written into its room.  ~trigger.refused~ is an
 authentication failure and nothing else: a delivery turned away by the
-rate limit or the in-flight cap is in the receipts and publishes
+rate limit or dropped at ~max_pending~ is in the receipts and publishes
 *nothing*, since an event per refusal is a way to make the daemon
-publish as fast as somebody can POST.
+publish as fast as somebody can POST.  A receipt's ~outcome~ is one of
+=ran=, =duplicate=, =ignored=, =captured=, =refused=, =failed=, =dropped=
+and =posted=.
 *** grok.*
 
 ~grok.bots~ takes nothing and returns ~bots~ -- each bot once, by ~name~, with ~description~, ~key_configured~ (the integration names a routine key), ~mcp_key~ (a key has been minted for the MCP endpoint) and ~agents~ (who it is shared with, walked from each agent's resolved bindings) -- and ~reachable~: whether a job could be sent right now.  When it could, ~callback_host~ names where bots report; when it could not, ~unreachable_reason~ says why, in the same words a send's refusal uses.  ~mcp_url~ is present when the endpoint can be reached.
@@ -1400,13 +1499,15 @@ Every kind published, by subject:
 | a team | ~team.changed~ |
 | an agent | ~decision.asked~, ~decision.settled~ (~decision~, ~how~: ~answered~, ~dismissed~, ~defaulted~ or ~deleted~), ~decision.deleted~ (~decision~) |
 | a routine | ~routine.ran~, ~routine.changed~, ~routine.turned_off~ (~agent~, ~failures~, ~error~) |
-| a trigger | ~trigger.fired~, ~trigger.changed~, ~trigger.refused~, ~trigger.verified~ |
+| an agent | ~wait.changed~ (~wait~, ~state~) |
+| a trigger | ~trigger.fired~, ~trigger.posted~, ~trigger.changed~, ~trigger.refused~, ~trigger.verified~ |
 | a Grok job | ~grok.job_updated~ (~bot~, ~agent~, ~state~) |
 | a Grok bot | ~grok.bots_changed~ |
 | a skill | ~skill.changed~ |
 | a recording | ~teach.changed~ |
 | an integration | ~integration.changed~ |
 | a cloud image | ~image.progress~ (~done~, ~total~), ~image.finished~ (~path~ or ~error~) |
+| the daemon | ~device.paired~ (~device~, ~name~), ~device.revoked~ (~device~), ~device.expired~ (~device~) |
 | an agent | ~computer.exec~ |
 | an agent | ~turn.timed_out~, ~turn.repeating~, ~message.steered~ |
 | an agent | ~egress.refused~ (the gate refused one of its connections; agent.show's ~egress~ has the detail) |
@@ -1641,6 +1742,13 @@ proves you are the owner.
 
 Over TCP: ~control.hello~ with a token, before anything else.  The daemon
 refuses to open a TCP listener without a token configured.
+
+The token is either the daemon's own -- the owner credential, from
+~daemon.token_file~ or ~<state_dir>/tcp-token~ -- or a paired device's,
+from ~device.redeem~.  The owner token is checked first and by itself, so
+nothing that happens to devices changes what it opens.  The one frame
+allowed before the hello is ~device.redeem~, which is a hello of its own
+(see ~device.*~ above).
 
 ** Noticing that the other end has gone
 

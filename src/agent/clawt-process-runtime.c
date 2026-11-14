@@ -1156,6 +1156,18 @@ process_runtime_interrupt(ClawtAgentRuntime *runtime, guint *out_killed,
         if (!clawt_process_is_descendant_of(pid, root))
             continue;
 
+        /*
+         * A zombie is not work in flight.  The CLI that has just exited
+         * stays in /proc until libreclaw reaps it, and kill() on it
+         * succeeds while doing nothing -- so counting it reported an
+         * agent that was already between turns as one that had
+         * something stopped, and a second press of the button as a
+         * first.  On a loaded machine libreclaw's wait can trail the
+         * exit by long enough for an operator to see it.
+         */
+        if (clawt_process_has_exited(pid))
+            continue;
+
         if (kill(pid, SIGTERM) == 0)
             signalled++;
     }

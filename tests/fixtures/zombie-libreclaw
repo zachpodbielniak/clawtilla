@@ -1,0 +1,29 @@
+#!/bin/sh
+# zombie-libreclaw - a fake agent whose last child has exited unreaped
+#
+# Copyright (C) 2026
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Stands in for a libreclaw that is between turns but has not yet reaped
+# the AI CLI it ran: the CLI has exited and is a zombie under the agent.
+# On a loaded machine that is a real window -- the exit and libreclaw's
+# wait are two different scheduling decisions -- and an interrupt pressed
+# inside it must not report the zombie as work it stopped.
+#
+# Built to be deterministic rather than to hope for the window.  The
+# child does not exit until this process has become `sleep`, which never
+# reaps anything, so the zombie stays for as long as the agent does.  A
+# child that simply exited early could be reaped by the shell's own
+# SIGCHLD handling before the exec, and the test would then be checking
+# nothing.
+
+set -eu
+
+(
+    while read -r comm < "/proc/$$/comm" && [ "${comm}" != "sleep" ]
+    do
+        sleep 0.01
+    done
+) &
+
+exec sleep 600

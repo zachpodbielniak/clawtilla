@@ -10685,6 +10685,315 @@ test_synthetic_fanout(void)
     fixture_teardown(&fixture);
 }
 
+/* Delivers @event straight into the post-authentication path. */
+static guint
+deliver_event(Fixture *fixture, const gchar *trigger_id,
+	ClawtTriggerEvent *event)
+{
+	const gchar *said = NULL;
+
+	return clawt_daemon_trigger_deliver(
+		fixture->daemon,
+		clawt_config_get_trigger(fixture->daemon->config, trigger_id),
+		event, &said);
+}
+
+/* Completes the handshake, so the next delivery is acted on. */
+static void
+verify_trigger(Fixture *fixture, const gchar *trigger_id)
+{
+	g_autoptr(ClawtTriggerEvent) hello = clawt_trigger_event_new(
+		CLAWT_TRIGGER_PROVIDER_GENERIC, "ping", NULL);
+
+	g_assert_true(clawt_trigger_store_capture(fixture->daemon->trigger_store,
+	                                          trigger_id, hello, NULL));
+}
+
+static const gchar *
+newest_outcome(Fixture *fixture, const gchar *trigger_id,
+	const gchar **out_detail)
+{
+	g_autoptr(GPtrArray) rows = clawt_trigger_store_list_deliveries(
+		fixture->daemon->trigger_store, trigger_id, 1);
+	static gchar outcome[32];
+	static gchar detail[512];
+
+	g_assert_cmpuint(rows->len, ==, 1);
+	g_strlcpy(outcome, g_hash_table_lookup(rows->pdata[0], "outcome"),
+	          sizeof(outcome));
+	g_strlcpy(detail, g_hash_table_lookup(rows->pdata[0], "detail") != NULL
+	          ? g_hash_table_lookup(rows->pdata[0], "detail") : "",
+	          sizeof(detail));
+
+	if (out_detail != NULL)
+		*out_detail = detail;
+
+	return outcome;
+}
+
+static guint
+count_tasks(Fixture *fixture)
+{
+	g_autoptr(GPtrArray) tasks = clawt_task_manager_list(
+		fixture->daemon->tasks, NULL, TRUE);
+
+	return tasks->len;
+}
+
+/*
+ * A post lands in the room as clawtilla's message and spends nothing: no
+ * task, nothing in any mailbox, no unfinished slot -- and a retry of the
+ * same delivery does not post twice.
+ */
+static void
+test_post_mode_spends_no_run(void)
+{
+	Fixture fixture = { 0 };
+	g_autoptr(GError) error = NULL;
+	g_autoptr(ClawtTriggerEvent) event = NULL;
+	g_autoptr(GPtrArray) history = NULL;
+	ClawtRoom *room;
+	ClawtMessage *last;
+	g_autofree gchar *last_id = NULL;
+	guint before;
+	guint count;
+
+	fixture_setup(&fixture,
+		"agents:\n  - id: builder\n"
+		"triggers:\n  - id: deploys\n    agent: builder\n    enabled: true\n"
+		"    mode: post\n    room: builder\n"
+		"    instructions: 'Deployed {{repo}}'\n");
+	g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+	g_assert_no_error(error);
+	verify_trigger(&fixture, "deploys");
+
+	event = clawt_trigger_event_new(CLAWT_TRIGGER_PROVIDER_GENERIC, "deploy",
+	                                "post-1");
+	clawt_trigger_event_set_repo(event, "zach/clawtilla");
+	clawt_trigger_event_set_payload(event, "{\"env\": \"prod\"}");
+	before = count_tasks(&fixture);
+
+	g_assert_cmpuint(deliver_event(&fixture, "deploys", event), ==, 200);
+	g_assert_cmpstr(newest_outcome(&fixture, "deploys", NULL), ==, "posted");
+	g_assert_cmpuint(count_tasks(&fixture), ==, before);
+	g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(
+		clawt_agent_manager_get(fixture.daemon->agents, "builder"))), ==, 0);
+	g_assert_cmpuint(clawt_trigger_store_count_unfinished(
+		fixture.daemon->trigger_store, "deploys"), ==, 0);
+
+	room = clawt_room_manager_get_direct(fixture.daemon->rooms, "user",
+	                                     "builder");
+	history = clawt_room_get_history(room, 0);
+	g_assert_cmpuint(history->len, >, 0);
+	last = g_ptr_array_index(history, history->len - 1);
+	g_assert_true(clawt_message_is_from_system(last));
+	g_assert_true(g_str_has_prefix(clawt_message_get_body(last),
+	                               "Deployed zach/clawtilla"));
+	g_assert_nonnull(strstr(clawt_message_get_body(last), "\"prod\""));
+
+	/* The forge retries; the room does not get it twice. */
+	last_id = g_strdup(clawt_message_get_id(last));
+	count = history->len;
+	g_assert_cmpuint(deliver_event(&fixture, "deploys", event), ==, 200);
+	g_clear_pointer(&history, g_ptr_array_unref);
+	history = clawt_room_get_history(room, 0);
+	g_assert_cmpuint(history->len, ==, count);
+	g_assert_cmpstr(clawt_message_get_id(g_ptr_array_index(
+		history, history->len - 1)), ==, last_id);
+
+	fixture_teardown(&fixture);
+}
+
+/*
+ * A filter miss starts nothing and says which pair missed; a delivery past
+ * max_pending is answered 429 and recorded as dropped, without taking the
+ * id, so the retry the 429 invites is taken once there is room.
+ */
+static void
+test_match_ignores_and_cap_drops(void)
+{
+	Fixture fixture = { 0 };
+	g_autoptr(GError) error = NULL;
+	g_autoptr(ClawtTriggerEvent) miss = NULL;
+	g_autoptr(ClawtTriggerEvent) first = NULL;
+	g_autoptr(ClawtTriggerEvent) second = NULL;
+	const gchar *detail = NULL;
+	guint before;
+
+	fixture_setup(&fixture,
+		"agents:\n  - id: builder\n"
+		"triggers:\n  - id: ci\n    agent: builder\n    enabled: true\n"
+		"    max_pending: 1\n    instructions: 'Go'\n"
+		"    match:\n      - path: pull_request.title\n"
+		"        value: release\n");
+	g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+	g_assert_no_error(error);
+	verify_trigger(&fixture, "ci");
+	before = count_tasks(&fixture);
+
+	miss = clawt_trigger_event_new(CLAWT_TRIGGER_PROVIDER_GENERIC, "push",
+	                               "miss-1");
+	clawt_trigger_event_set_payload(
+		miss, "{\"pull_request\": {\"title\": \"Fix typo\"}}");
+	g_assert_cmpuint(deliver_event(&fixture, "ci", miss), ==, 200);
+	g_assert_cmpstr(newest_outcome(&fixture, "ci", &detail), ==, "ignored");
+	g_assert_nonnull(strstr(detail, "pull_request.title"));
+	g_assert_nonnull(strstr(detail, "release"));
+	g_assert_cmpuint(count_tasks(&fixture), ==, before);
+
+	first = clawt_trigger_event_new(CLAWT_TRIGGER_PROVIDER_GENERIC, "push",
+	                                "hit-1");
+	clawt_trigger_event_set_payload(
+		first, "{\"pull_request\": {\"title\": \"RELEASE 2.0\"}}");
+	g_assert_cmpuint(deliver_event(&fixture, "ci", first), ==, 200);
+	g_assert_cmpuint(count_tasks(&fixture), ==, before + 1);
+
+	second = clawt_trigger_event_copy(first);
+	clawt_trigger_event_set_identity(second, "push", "hit-2");
+	g_assert_cmpuint(deliver_event(&fixture, "ci", second), ==, 429);
+	g_assert_cmpstr(newest_outcome(&fixture, "ci", &detail), ==, "dropped");
+	g_assert_nonnull(strstr(detail, "max_pending is 1"));
+	g_assert_nonnull(strstr(detail, "hit-2"));
+	g_assert_false(clawt_trigger_store_seen_delivery(
+		fixture.daemon->trigger_store, "ci", "hit-2"));
+	g_assert_cmpuint(count_tasks(&fixture), ==, before + 1);
+
+	fixture_teardown(&fixture);
+}
+
+/* Refused where it arrives, before the file is written. */
+static void
+test_trigger_settings_refused_on_arrival(void)
+{
+	Fixture fixture = { 0 };
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) added = NULL;
+	g_autoptr(JsonNode) roomless = NULL;
+	g_autoptr(JsonNode) too_many = NULL;
+	g_autoptr(JsonNode) bad_path = NULL;
+	g_autoptr(JsonNode) cap = NULL;
+	g_autoptr(JsonNode) ok = NULL;
+	g_autoptr(JsonNode) listed = NULL;
+	g_autoptr(JsonNode) cleared = NULL;
+	g_autoptr(GPtrArray) matches = NULL;
+	ClawtTrigger *trigger;
+	JsonObject *row;
+
+	fixture_setup(&fixture, "agents:\n  - id: builder\n");
+	g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+	g_assert_no_error(error);
+
+	added = request(&fixture, "trigger.add",
+	                "{\"id\": \"ci\", \"agent\": \"builder\","
+	                " \"instructions\": \"Go\"}");
+	g_assert_false(clawt_ipc_frame_is_error(added));
+
+	roomless = request(&fixture, "trigger.update",
+	                   "{\"id\": \"ci\", \"mode\": \"post\"}");
+	g_assert_true(clawt_ipc_frame_is_error(roomless));
+
+	too_many = request(&fixture, "trigger.update",
+	                   "{\"id\": \"ci\", \"match\": [\"a=1\",\"b=1\",\"c=1\","
+	                   "\"d=1\",\"e=1\",\"f=1\",\"g=1\",\"h=1\",\"i=1\","
+	                   "\"j=1\",\"k=1\"]}");
+	g_assert_true(clawt_ipc_frame_is_error(too_many));
+
+	bad_path = request(&fixture, "trigger.update",
+	                   "{\"id\": \"ci\", \"match\": [{\"path\": \"a..b\","
+	                   " \"value\": \"x\"}]}");
+	g_assert_true(clawt_ipc_frame_is_error(bad_path));
+
+	cap = request(&fixture, "trigger.update",
+	              "{\"id\": \"ci\", \"max_pending\": 51}");
+	g_assert_true(clawt_ipc_frame_is_error(cap));
+
+	/* None of the refusals reached the file. */
+	trigger = clawt_config_get_trigger(fixture.daemon->config, "ci");
+	g_assert_false(clawt_trigger_has_key(trigger, "mode"));
+	g_assert_false(clawt_trigger_has_key(trigger, "match"));
+	g_assert_false(clawt_trigger_has_key(trigger, "max_pending"));
+
+	ok = request(&fixture, "trigger.update",
+	             "{\"id\": \"ci\", \"mode\": \"post\", \"room\": \"builder\","
+	             " \"max_pending\": 9,"
+	             " \"match\": [{\"path\": \"action\", \"value\": \"opened\"}]}");
+	g_assert_false(clawt_ipc_frame_is_error(ok));
+
+	listed = request(&fixture, "trigger.list", NULL);
+	row = json_array_get_object_element(json_object_get_array_member(
+		payload_of(listed), "triggers"), 0);
+	g_assert_cmpstr(json_object_get_string_member(row, "mode"), ==, "post");
+	g_assert_cmpint(json_object_get_int_member(row, "max_pending"), ==, 9);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(
+		row, "match")), ==, 1);
+
+	/* null clears the filter; the room cannot now be emptied under post. */
+	cleared = request(&fixture, "trigger.update",
+	                  "{\"id\": \"ci\", \"match\": null}");
+	g_assert_false(clawt_ipc_frame_is_error(cleared));
+	trigger = clawt_config_get_trigger(fixture.daemon->config, "ci");
+	matches = clawt_trigger_get_match(trigger, NULL);
+	g_assert_cmpuint(matches->len, ==, 0);
+
+	{
+		g_autoptr(JsonNode) emptied = request(&fixture, "trigger.update",
+			"{\"id\": \"ci\", \"room\": \"\"}");
+
+		g_assert_true(clawt_ipc_frame_is_error(emptied));
+	}
+
+	fixture_teardown(&fixture);
+}
+
+/* The editor's check: the rows it holds against the newest stored body. */
+static void
+test_match_test_checks_unsaved_rows(void)
+{
+	Fixture fixture = { 0 };
+	g_autoptr(GError) error = NULL;
+	g_autoptr(ClawtTriggerEvent) event = NULL;
+	g_autoptr(JsonNode) none = NULL;
+	g_autoptr(JsonNode) checked = NULL;
+	JsonObject *reply;
+	JsonArray *results;
+
+	fixture_setup(&fixture,
+		"agents:\n  - id: builder\n"
+		"triggers:\n  - id: ci\n    agent: builder\n    instructions: Go\n");
+	g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+	g_assert_no_error(error);
+
+	none = request(&fixture, "trigger.match_test", "{\"id\": \"ci\"}");
+	g_assert_false(clawt_ipc_frame_is_error(none));
+	g_assert_false(json_object_has_member(payload_of(none), "payload"));
+	g_assert_true(json_object_has_member(payload_of(none), "note"));
+
+	event = clawt_trigger_event_new(CLAWT_TRIGGER_PROVIDER_GENERIC, "push",
+	                                "d1");
+	clawt_trigger_event_set_payload(event,
+		"{\"action\": \"opened\", \"labels\": [{\"name\": \"Deploy\"}]}");
+	clawt_trigger_store_record(fixture.daemon->trigger_store, "ci", event,
+	                           CLAWT_DELIVERY_IGNORED, NULL, NULL);
+
+	checked = request(&fixture, "trigger.match_test",
+	                  "{\"id\": \"ci\", \"match\": [\"action=OPEN\","
+	                  " \"labels.name=hotfix\"]}");
+	g_assert_false(clawt_ipc_frame_is_error(checked));
+	reply = payload_of(checked);
+	g_assert_false(json_object_get_boolean_member(reply, "matches"));
+	g_assert_nonnull(strstr(json_object_get_string_member(reply, "reason"),
+	                        "pair 2"));
+	results = json_object_get_array_member(reply, "results");
+	g_assert_true(json_object_get_boolean_member(
+		json_array_get_object_element(results, 0), "matched"));
+	g_assert_false(json_object_get_boolean_member(
+		json_array_get_object_element(results, 1), "matched"));
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(
+		reply, "paths")), ==, 2);
+
+	fixture_teardown(&fixture);
+}
+
 static void
 test_testing_a_trigger_previews_rather_than_runs(void)
 {
@@ -11474,6 +11783,10 @@ main(int argc, char *argv[])
                     test_testing_a_trigger_previews_rather_than_runs);
     g_test_add_func("/daemon/trigger/replay", test_replay_is_explicit_filtered_and_durable);
     g_test_add_func("/daemon/trigger/synthetic-fanout", test_synthetic_fanout);
+    g_test_add_func("/daemon/trigger/post-mode", test_post_mode_spends_no_run);
+    g_test_add_func("/daemon/trigger/match-and-cap", test_match_ignores_and_cap_drops);
+    g_test_add_func("/daemon/trigger/settings-refused", test_trigger_settings_refused_on_arrival);
+    g_test_add_func("/daemon/trigger/match-test", test_match_test_checks_unsaved_rows);
     g_test_add_func("/daemon/trigger/not-listening",
                     test_the_listing_says_when_nothing_is_listening);
 

@@ -116,6 +116,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/ipc/clawt-ipc-server.h \
 	$(SRCDIR)/ipc/clawt-client.h \
 	$(SRCDIR)/ipc/clawt-connection.h \
+	$(SRCDIR)/ipc/clawt-device-store.h \
 	$(SRCDIR)/mailbox/clawt-mailbox-item.h \
 	$(SRCDIR)/memory/clawt-memory.h \
 	$(SRCDIR)/memory/clawt-memory-store.h \
@@ -123,6 +124,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/memory/clawt-transcript-index.h \
 	$(SRCDIR)/memory/clawt-summariser.h \
 	$(SRCDIR)/memory/clawt-operator-profile.h \
+	$(SRCDIR)/usage/clawt-usage-ledger.h \
 	$(SRCDIR)/usage/clawt-usage.h \
 	$(SRCDIR)/browser/clawt-browser.h \
 	$(SRCDIR)/mailbox/clawt-mailbox.h \
@@ -221,6 +223,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/clawt-error.c \
 	$(SRCDIR)/clawt-util.c \
 	$(SRCDIR)/clawt-http.c \
+	$(SRCDIR)/clawt-net.c \
 	$(SRCDIR)/clawt-backup.c \
 	$(SRCDIR)/config/clawt-config-schema.c \
 	$(SRCDIR)/config/clawt-appearance.c \
@@ -253,6 +256,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-connector.c \
 	$(SRCDIR)/core/daemon-integration.c \
 	$(SRCDIR)/core/daemon-routine.c \
+	$(SRCDIR)/core/daemon-wait.c \
 	$(SRCDIR)/core/daemon-trigger.c \
 	$(SRCDIR)/core/daemon-venture.c \
 	$(SRCDIR)/core/daemon-grok.c \
@@ -285,6 +289,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/ipc/clawt-ipc-server.c \
 	$(SRCDIR)/ipc/clawt-client.c \
 	$(SRCDIR)/ipc/clawt-connection.c \
+	$(SRCDIR)/ipc/clawt-device-store.c \
 	$(SRCDIR)/memory/clawt-memory.c \
 	$(SRCDIR)/memory/clawt-memory-store.c \
 	$(SRCDIR)/memory/clawt-memory-scopes.c \
@@ -292,6 +297,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/memory/clawt-summariser.c \
 	$(SRCDIR)/memory/clawt-operator-profile.c \
 	$(SRCDIR)/usage/clawt-usage.c \
+	$(SRCDIR)/usage/clawt-usage-ledger.c \
 	$(SRCDIR)/browser/clawt-browser.c \
 	$(SRCDIR)/mailbox/clawt-mailbox-item.c \
 	$(SRCDIR)/mailbox/clawt-mailbox.c \
@@ -353,6 +359,8 @@ LIB_SOURCES = \
 	$(SRCDIR)/task/clawt-handoff.c \
 	$(SRCDIR)/task/clawt-handoff-store.c \
 	$(SRCDIR)/task/clawt-routine-runner.c \
+	$(SRCDIR)/wait/clawt-wait.c \
+	$(SRCDIR)/wait/clawt-wait-manager.c \
 	$(SRCDIR)/trigger/clawt-trigger-event.c \
 	$(SRCDIR)/trigger/clawt-trigger-provider.c \
 	$(SRCDIR)/trigger/clawt-trigger.c \
@@ -389,7 +397,8 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-teach.c \
 	$(SRCDIR)/core/clawt-update.c \
 	$(SRCDIR)/agent/clawt-hold.c \
-	$(SRCDIR)/core/daemon-hold.c
+	$(SRCDIR)/core/daemon-hold.c \
+	$(SRCDIR)/core/daemon-device.c
 
 # Object files
 LIB_OBJECTS = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(LIB_SOURCES))

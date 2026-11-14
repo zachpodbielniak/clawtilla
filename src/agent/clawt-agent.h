@@ -386,6 +386,33 @@ void clawt_agent_deliver_item(ClawtAgent *self, ClawtMailboxItem *item,
 	gboolean replies);
 
 /**
+ * clawt_agent_describe_turn_in:
+ * @self: a #ClawtAgent
+ * @room_id: (nullable): the room libreclaw recorded the turn in
+ * @origin: (out) (transfer none) (optional) (nullable): who the
+ *   delivery that set the turn up came from
+ * @task_id: (out) (transfer none) (optional) (nullable): the task it
+ *   was about
+ * @model: (out) (transfer none) (optional) (nullable): the model the
+ *   delivery asked for, if any
+ *
+ * The turn state of exactly one room, with no fallback.
+ *
+ * The other `_in` getters fold across the agent's turns when the room
+ * has none, which is the safe answer for a guard and the wrong one for
+ * a ledger: it would charge a turn nothing described to whichever room
+ * ran last.  Here a room with no turn on record is a %FALSE, so the
+ * caller can say "untagged" instead.
+ *
+ * Returns: %TRUE when a turn in @room_id is on record
+ */
+gboolean clawt_agent_describe_turn_in(ClawtAgent   *self,
+				      const gchar  *room_id,
+				      const gchar **origin,
+				      const gchar **task_id,
+				      const gchar **model);
+
+/**
  * clawt_agent_get_turn_input_in:
  * @self: a #ClawtAgent
  * @room_id: (nullable): the replying room, or the latest turn if unnamed

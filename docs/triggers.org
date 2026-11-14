@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-29 Sat]
-#+updated: [2026-08-29 Sat]
+#+updated: [2026-11-14 Sat]
 #+version: 0.2.0
 
 * Triggers
@@ -460,7 +460,8 @@ delivery comes from a registration nobody has yet seen work.
 
 ** What it acts on
 
-Three filters, all optional, all evaluated after authentication.
+Four filters, all optional, all evaluated after authentication and
+before anything is queued.
 
 *** =triggers.events=
 
@@ -505,11 +506,111 @@ payload this build does not understand run work scoped to a repository
 it never mentioned -- which is the failure that turns an unrecognised
 event into an agent doing something in the wrong place.
 
+*** =triggers.match=: what the body has to say
+
+#+begin_src yaml
+triggers:
+  - id: release-prs
+    match:
+      - path: pull_request.title
+        value: release
+      - path: action
+        value: opened
+#+end_src
+
+Up to ten =path= / =value= pairs, and *all* of them must hold.  It is
+the filter for everything the other three cannot name -- a label, a
+monitor's severity, a VENTURE record's status -- which on the generic
+provider used to mean waking the agent so that it could decide "not for
+me", a turn spent reading a payload back.
+
+- *The path is dotted* into the JSON body: ~repository.full_name~,
+  ~pull_request.user.login~.
+- *A number indexes an array*: ~commits.0.message~ is the first commit's
+  message.
+- *A name reaching an array looks in every element*:
+  ~pull_request.labels.name~ is the name of each label, so
+  =value: deploy= matches a pull request with a =deploy= label wherever
+  it sits in the list.  No index could say that.
+- *The value must be contained*, compared after Unicode case folding --
+  =Release= finds =RELEASE=, and =ü= finds =Ü=, which ASCII lowering
+  would not.  Containment rather than equality, because a title is
+  prose and an exact title is a filter that matches one pull request.
+- A number or boolean is compared as its JSON spelling (=42=, =true=),
+  and an object or array as its compact JSON text, so =value: '"draft"'=
+  can be looked for inside a whole subtree.
+
+A pair that misses names itself in the receipt, with what the field
+actually held:
+
+#+begin_src
+Sat 14 Nov 14:11  release-prs  pull_request  ignored  match pair 1 of 2
+    failed: 'pull_request.title' is 'Fix the login page', which does not
+    contain 'release'
+#+end_src
+
+A path that is not there says so (=the body has nothing at
+'pull_request.body'=), and a body that is not JSON matches nothing --
+"could not look" is not "found it".
+
+**** What a pair may be
+
+Checked when it arrives -- by ~trigger.add~ and ~trigger.update~,
+before the file is written -- and again at load:
+
+- at most ten pairs; an eleventh is refused, not dropped;
+- a path is names joined by single dots, at most 32 deep and 256 bytes,
+  with no space, control character or ~=~;
+- a value is not empty.  An empty value is contained in everything, so
+  it would be a filter that filters nothing while looking like one.
+
+~=~ is refused in a path because the command line and the web form
+both spell a pair ~path=value~, split at the first ~=~.
+
+A filter that does not pass at load is a warning naming the trigger,
+an error from =clawtilla config validate=, and a trigger that *refuses
+every delivery* -- answered 503 and recorded as =failed= -- until it is
+fixed.  Running the agent as though the filter were not there would be
+the widest possible reading of the narrowest thing somebody wrote.
+
+**** Clearing it
+
+#+begin_src yaml
+    match: null
+#+end_src
+
+An explicit null, an empty list and no key at all all mean "no
+filter".  From the command line ~match=~ with nothing after it clears
+it; from a client, removing every line does.
+
+**** Finding the path
+
+Nobody remembers a forge's payload shape.  So the newest body a trigger
+received -- ignored ones included -- can be checked against a filter
+*before* it is saved, and every field in it listed with its path:
+
+#+begin_src bash
+$ clawtilla trigger check release-prs pull_request.title=release action=opened
+ok    pull_request.title contains 'release' -- it is Release 2.0
+MISS  action contains 'opened' -- it is closed
+
+match pair 2 of 2 failed: 'action' is 'closed', which does not contain 'opened'
+
+Fields in it:
+  action                                   closed
+  number                                   42
+  pull_request.title                       Release 2.0
+  ...
+#+end_src
+
+=clawtilla trigger check <id>= with no pairs checks the saved filter.
+The clients do the same from the editor -- see below.
+
 *** A filtered delivery is a 200, not a refusal
 
-An event outside =triggers.events=, or one the repository or branch
-filter rejects, or one made by an account in =triggers.ignore_actors=,
-is answered *200 and recorded as ignored*.
+An event outside =triggers.events=, or one the repository, branch or
+=match= filter rejects, or one made by an account in
+=triggers.ignore_actors=, is answered *200 and recorded as ignored*.
 
 This is worth being firm about.  A sender told "error" for a delivery
 you simply did not ask for will keep retrying it, and a forge's retry
@@ -662,6 +763,81 @@ room list~ for a =trigger:<id>= room.
 
 =triggers.room= sends the run somewhere you name instead.
 
+** Posting instead of running: =triggers.mode=
+
+#+begin_src yaml
+triggers:
+  - id: deploys
+    agent: ops
+    mode: post
+    room: ops
+    instructions: "{{actor}} deployed {{repo}} {{ref}}"
+#+end_src
+
+=mode: run=, the default, is everything above: a delivery runs the
+agent.  =mode: post= writes the delivery into =triggers.room= as a
+message from clawtilla and runs *nothing* -- no task, no mailbox item,
+no turn, no cost.  It is for the deploy that finished and the monitor
+that fired: things somebody wants to see in a room, which no agent needs
+to act on, and which spent a turn each when the only way in was a run.
+
+What lands in the room is three parts, rendered by one function,
+=clawt_trigger_render_post()=, so a rule about what delivered text may
+contain is applied in one place:
+
+#+begin_example
+alice deployed zach/clawtilla refs/heads/master
+
+Posted by the trigger 'deploys' because generic sent 'deploy'. No agent
+was run.
+
+`````````untrusted-event-payload
+{
+  "env" : "prod",
+  ...
+}
+`````````
+#+end_example
+
+- *The instructions are the headline*, expanded with the same
+  placeholders and the same hand-written expander as a run's prompt.
+- *A line saying where it came from and that nothing ran*, because a
+  reader scrolling a room cannot otherwise tell a post from a run whose
+  agent has not answered yet.
+- *No line of it passes for the daemon.*  The whole message goes
+  through =clawt_preamble_escape()=, so a payload or a headline field
+  carrying a line that begins =[clawtilla]= arrives as
+  =[not from clawtilla]=; the post's own lines never begin with the
+  marker, so only forgeries change.
+- *The body*, pretty-printed when it is JSON, inside the same nine-
+  backtick untrusted fence a run uses.  Nobody is asked to act on a
+  post, but it is kept in the room's history, which an agent in that
+  room can read back -- and there it should still say whose text it is.
+  It is cut at 8 KiB, on a character boundary, saying how much more
+  there was; ~trigger replay~ shows the whole event.
+
+It is recorded, not sent: =clawt_mailbox_router_note()= writes it into
+the room's transcript with no mailbox post and no drain, so no member
+of the room takes a turn over it.  A routed message would wake every
+agent in the room, which is the opposite of the point.
+
+=room= is either a room id or an agent id; an agent id posts into your
+direct conversation with that agent.  A post with *no* room is refused:
+at load as a warning and a =config validate= error, by ~trigger.add~
+and ~trigger.update~ before it is written, and at delivery as 503 and
+=failed= -- a post with nowhere to go would be counted as handled and
+written nowhere.
+
+Everything before the mode is the same.  A post is authenticated,
+deduplicated, filtered and handshaken exactly as a run, so a forge
+retrying a post does not post it twice, and the first delivery is still
+captured rather than posted.  It holds no pending slot, so
+=triggers.max_pending= does not apply.  Its receipt says =posted=, and
+it publishes ~trigger.posted~ rather than ~trigger.fired~.
+
+~trigger test~ previews a post trigger as the message it would post,
+and ~trigger test --run~ and ~trigger replay <n> --run~ post it.
+
 ** Receipts
 
 Every delivery is recorded, whatever became of it, in
@@ -671,12 +847,14 @@ Every delivery is recorded, whatever became of it, in
 |---------+---------------|
 | =ran= | it started a run; the receipt names the task |
 | =duplicate= | this delivery id had been dealt with before |
-| =ignored= | outside =triggers.events=, or the repo or branch filter |
+| =ignored= | outside =triggers.events=, or the repo, branch, actor or =match= filter; the detail names which |
 | =captured= | the handshake delivery, held to be shown |
 | =refused= | it did not authenticate, or hit the rate limit |
-| =failed= | it should have run and could not |
+| =failed= | it should have run and could not, or the trigger's own configuration cannot be acted on |
+| =dropped= | the trigger already had =max_pending= runs unfinished; answered 429 |
+| =posted= | a =mode: post= trigger wrote it into its room; nothing ran |
 
-Five of the six are not errors, which is the point of recording them.
+Most of these are not errors, which is the point of recording them.
 "Nothing happened" has at least four causes -- the endpoint is wrong,
 the secret is wrong, the event was filtered out, the run failed -- and
 without a record they are indistinguishable from each other and from a
@@ -732,7 +910,7 @@ because the receipt that would have recognised it is gone.
 |-------+-------+----------------|
 | body size | 1 MiB | refused at the headers, before anything is buffered |
 | rate | 60 deliveries per endpoint per minute | a caller in a loop |
-| in flight | 4 unfinished runs per trigger | a push that fires a five-minute run, twenty times |
+| in flight | =triggers.max_pending= unfinished runs per trigger, 4 by default, 1 to 50 | a push that fires a five-minute run, twenty times |
 
 The size cap is the one with a subtlety.  It is enforced on the
 declared ~Content-Length~ at ~got-headers~, so an oversized delivery is
@@ -743,15 +921,53 @@ that declared no length is caught by the same limit a second time, in
 the handler.
 
 The in-flight cap counts only receipts that started a run.  A receipt
-that was ignored or refused counting as unfinished would fill the cap
-with deliveries the trigger deliberately did not act on.
+that was ignored, refused, dropped or posted counting as unfinished
+would fill the cap with deliveries the trigger deliberately did not act
+on.
 
-Both 429s are recorded, under different outcomes: the rate limit is a
-=refused=, the in-flight cap is a =failed=.  They are not the same
-thing -- one is a caller sending too fast, the other is this fleet not
-keeping up -- and a trigger quietly sitting at either looks identical
-to one nobody is calling.  ~trigger deliveries~ is where the difference
-shows up.
+*** =triggers.max_pending=
+
+#+begin_src yaml
+    max_pending: 2
+#+end_src
+
+The in-flight cap is per trigger.  It used to be a constant, four, and
+a constant is wrong in both directions: a trigger whose run takes an
+hour wants one at a time, and one whose ten recipients each take a
+minute cannot fit a single delivery into four.  Every recipient of a
+fan-out takes a slot, and a batch must fit whole.
+
+Settable from 1 to 50.  A client or ~trigger set~ is refused outside
+that range; a hand edit outside it -- =0=, =500=, =lots= -- reads as the
+default, 4, with a warning at load naming the trigger and the value,
+rather than as a trigger that can never run or one with no cap at all.
+
+*** Over the cap is dropped, and said
+
+A delivery past the cap is answered 429 and recorded as =dropped=, with
+the cap and the number unfinished in the detail.  Never silently: a
+burst of push events meeting a trigger already at its cap is the case
+nobody watching a forge's delivery log would notice, and "the agent
+never saw three of those pushes" is exactly what the receipt is for.
+
+The dropped receipt does *not* take the delivery's id.  The 429 invites
+the sender to retry, and a keyed receipt would make that retry a
+duplicate -- the work the 429 promised could happen later would then
+never happen at all.  The sender's id is in the detail instead
+(=(delivery 7f3a...)=), so the receipt still names which delivery it
+was.  A dropped receipt keeps the event, so ~trigger replay <n> --run~
+can run it by hand once there is room.
+
+The two 429s are recorded under different outcomes: the rate limit is
+=refused=, the cap is =dropped=.  One is a caller sending too fast, the
+other is this fleet not keeping up -- and a trigger quietly sitting at
+either looks identical to one nobody is calling.  ~trigger deliveries~
+is where the difference shows up.
+
+A VENTURE business-event page that meets the cap is read again a
+minute later, as it always was; each attempt is now a =dropped= receipt
+as well, so a trigger stuck at its cap says so once a minute rather than
+not at all.
 
 ** Secrets, and what is never printed
 
@@ -816,8 +1032,14 @@ clawtilla trigger rm <id>
 clawtilla trigger rotate <id>
 clawtilla trigger test <id> [--run]
 clawtilla trigger capture <id>
+clawtilla trigger check <id> [path=value ...]
 clawtilla trigger deliveries [id]
 #+end_src
+
+=match= is given once per pair, because a value may hold a comma --
+~trigger set ci match~pull_request.title~release match=action=opened~
+-- and ~match=~ on its own clears it.  ~mode=post~ and ~max_pending=2~
+are ordinary keys.
 
 Every =key= is a schema key, so ~clawtilla config show~ and
 [[file:configuration-options.org][configuration-options.org]] are the
@@ -880,6 +1102,7 @@ problem that is not there.
 | Event | When |
 |-------+------|
 | ~trigger.fired~ | a delivery started a run |
+| ~trigger.posted~ | a =mode: post= delivery was written into its room |
 | ~trigger.changed~ | the trigger was added, edited, removed or rotated |
 | ~trigger.refused~ | a delivery did not authenticate |
 | ~trigger.verified~ | the handshake delivery was captured |
@@ -889,12 +1112,13 @@ trigger nobody is rotating is somebody guessing at an endpoint they
 already found, which is the only signal this feature produces that is
 about an attacker rather than about a forge.
 
-All four are bindable from a podomation pod as ~on_trigger_fired~,
-~on_trigger_changed~, ~on_trigger_refused~ and ~on_trigger_verified~ --
+All five are bindable from a podomation pod as ~on_trigger_fired~,
+~on_trigger_posted~, ~on_trigger_changed~, ~on_trigger_refused~ and
+~on_trigger_verified~ --
 the DSL's lexer cannot parse a dot in an event name.  See
 [[file:automation.org][automation.org]].
 
-A rate-limited or over-cap delivery publishes *nothing*; it is in the
+A rate-limited or dropped delivery publishes *nothing*; it is in the
 receipts and nowhere else.  A limit that fired an event on every
 refusal would be a way to make the daemon publish as fast as somebody
 can POST.
@@ -917,6 +1141,10 @@ triggers:
     instructions: |
       A push landed on {{repo}} {{ref}} by {{actor}}.
       Run the test suite and report anything that broke.
+    max_pending: 2
+    match:
+      - path: head_commit.message
+        value: "[ci]"
     enabled: false
     secret:
       file: "~/.clawtilla/secrets/trigger-ci-failed"
@@ -1017,8 +1245,8 @@ that would help you debug faster would help somebody else enumerate.
 
 *** It answers 200 and nothing runs
 
-This is the common one, and it has exactly three causes.  All three are
-in the receipt.
+This is the common one, and it has four causes.  All four are in the
+receipt.
 
 - =captured= -- *it is still pending verification.*  The first
   authenticated delivery is always held.  ~clawtilla trigger capture
@@ -1029,7 +1257,11 @@ in the receipt.
   trigger only acts on 'master'=.  The usual case is =triggers.branch=
   against a push to something else, and the second usual case is an
   events list written in one forge's vocabulary against a delivery from
-  another.
+  another.  For a =match= miss the detail names the pair and what the
+  field held; ~clawtilla trigger check <id>~ shows every field of the
+  newest body, which is the quickest way to find the path you meant.
+- =posted= -- *the trigger is =mode: post=.*  It wrote the delivery into
+  its room and, by design, ran nothing.
 - =duplicate= -- *the same delivery id has been seen.*  Expected while
   a forge retries.  Unexpected if you are testing by pressing the
   forge's *Test Delivery* button repeatedly, since some forges reuse
@@ -1039,10 +1271,17 @@ in the receipt.
 And two that answer 429 rather than 200:
 
 - The rate limit, at 60 deliveries per endpoint per minute.
-- The in-flight cap, at four unfinished runs for one trigger.  A run
-  that never finishes holds a slot, so a trigger that has quietly
-  stopped firing after exactly four deliveries is this: check
-  ~clawtilla task list~ for four tasks that never ended.
+- The in-flight cap, at =triggers.max_pending= unfinished runs for one
+  trigger (four unless set), recorded as =dropped=.  A run that never
+  finishes holds a slot, so a trigger that has quietly stopped firing
+  after exactly that many deliveries is this: check ~clawtilla task
+  list~ for the tasks that never ended.
+
+And one that answers 503: the trigger's own configuration cannot be
+acted on -- a =match= that does not read, a post with no room.  The
+receipt is =failed= and names the problem, and like =dropped= it does
+not take the delivery's id, so the sender's retry after the fix is
+taken.
 
 *** The run happened but the prompt was wrong
 
@@ -1079,6 +1318,47 @@ The affordances are the same set: create, save, remove, *Rotate
 secret*, *Preview prompt* (~trigger.test~ without ~run~), *First
 delivery* (the capture) and the recent deliveries.  Neither offers a
 way to type a secret in, for the reason the CLI does not.
+
+*** Mode, cap and filter in the editor
+
+All three clients -- GTK, web and libregnum -- draw the same three
+controls, walked from the same library calls:
+
+- *When it fires*: a choice between /Run the agent/ and /Just post to
+  the room/, from =clawt_trigger_mode_count()= / =_nth_label()=, with
+  the library's one-line explanation of each from =_nth_hint()= under it
+  -- so every client says the same thing about which one costs a turn.
+  GTK follows the selection; the web and libregnum editors show both
+  sentences, since the line cannot follow a selection without a script.
+- *Runs at once*: a spinner held to 1..50 (a number box with =min= and
+  =max= on the web), filled from the cap the daemon *applies*, so an
+  out-of-range hand edit shows -- and saves back -- the default it reads
+  as.  GTK greys it out for a post, which holds no slot.
+- *Only when the body contains*: up to ten "path /contains/ value"
+  lines.  GTK and libregnum add and remove lines and stop offering more
+  at ten; the web form shows the lines that are set plus three empty
+  ones, and clearing both boxes removes a line.  On an existing trigger,
+  *Check against the last delivery* sends the lines *as they stand*,
+  unsaved, through ~trigger.match_test~: each line's result, the
+  verdict, and every field in the newest body.  GTK makes a field a
+  line when it is clicked, libregnum with a /Use/ button beside it, and
+  the web page puts them in a =<datalist>= the path boxes then complete
+  from.
+
+The mode and the cap are sent only when they moved from what the
+editor opened with -- the trigger's own value, or the schema default
+when the file says nothing -- so saving a trigger that never chose
+either does not write =mode: run= and =max_pending: 4= into
+~clawtilla.yaml~.
+
+A filter the daemon cannot read arrives as ~match_error~ and is shown
+as an error above the lines, never as an empty editor whose next save
+would delete what was written.
+
+The deliveries list shows =ignored=, =dropped= and =posted= receipts
+with their detail -- the pair that missed, the cap that was full, the
+room that was posted into -- because that sentence is the answer to
+"why didn't it run".
 
 The secret is shown once, in place, with the sentence that says so
 beside it -- the GTK dialog puts a *Copy this now* button next to it.
@@ -1140,7 +1420,7 @@ clawtilla trigger deliveries review
 
 That example runs builder, reviewer and security once each. ~agent~ is still required, so existing single-agent configurations and the primary task response remain compatible. When ~isolate~ is enabled the primary keeps its existing ~trigger:<id>~ room; additional recipients use ~trigger:<id>:<agent>~, preventing room routing from delivering all tasks to the primary agent.
 
-A batch must fit all four unfinished-run slots before any work starts: three recipients with two runs already in flight are refused in full. More than four distinct recipients are likewise refused before creating any task. The store atomically reserves all recipients in one SQLite transaction, including their capacity, before invoking a runner. Each successful recipient remains unfinished until its task settles, and a failed recipient releases its slot. A crash between reservation and outcome recording leaves uncertain reservations that suppress duplicate execution and continue to occupy slots; inspect deliveries and tasks before taking recovery action. The normal seven-day receipt retention still bounds deduplication.
+A batch must fit the trigger's =max_pending= unfinished-run slots (four unless set) before any work starts: three recipients with two runs already in flight are refused in full under the default. More distinct recipients than =max_pending= are likewise refused before creating any task. The store atomically reserves all recipients in one SQLite transaction, including their capacity, before invoking a runner. Each successful recipient remains unfinished until its task settles, and a failed recipient releases its slot. A crash between reservation and outcome recording leaves uncertain reservations that suppress duplicate execution and continue to occupy slots; inspect deliveries and tasks before taking recovery action. The normal seven-day receipt retention still bounds deduplication.
 
 A missing or failing recipient does not prevent its siblings from receiving the event. Every recipient has a durable outcome row, including its agent name and a link to the primary delivery key. Retrying the same webhook delivery ID never requeues successful siblings after a partial failure. The HTTP response acknowledges the recorded batch; inspect ~trigger deliveries~ for per-agent failures. A new batch that cannot fit returns HTTP 429 without consuming its delivery ID, allowing a later retry when capacity becomes available. Senders without delivery IDs cannot provide retry deduplication.
 
