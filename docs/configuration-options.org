@@ -1431,7 +1431,7 @@ every turn has.
 
 - Type :: integer
 - Default :: =1000=
-- Since :: 0.24.0
+- Since :: 0.26.0
 
 How many changes each memory database's journal keeps. 0 keeps every
 one.
@@ -1477,7 +1477,7 @@ and then shows what it wrote. It never writes to the event log.
 
 - Type :: integer
 - Default :: =7=
-- Since :: 0.24.0
+- Since :: 0.26.0
 
 How many days of the event log one scan reads, counting today. 0
 reads every file there is, which daemon.event_log_days bounds.
@@ -1486,7 +1486,7 @@ reads every file there is, which daemon.event_log_days bounds.
 
 - Type :: integer
 - Default :: =3=
-- Since :: 0.24.0
+- Since :: 0.26.0
 
 How many failures of one agent's tool make an issue. A tool that
 failed once is a turn's ordinary business; one that failed this many
@@ -1496,7 +1496,7 @@ times in the window is a pattern somebody should look at.
 
 - Type :: integer
 - Default :: =600=
-- Since :: 0.24.0
+- Since :: 0.26.0
 
 How long a message may wait in an agent's queue, from being queued to
 being delivered, before the wait is an issue. Messages still queued
@@ -1506,7 +1506,7 @@ past it when the scan ends are reported too.
 
 - Type :: integer
 - Default :: =10000000=
-- Since :: 0.24.0
+- Since :: 0.26.0
 
 One agent's spend in one day, in micro-dollars, that makes an issue.
 0 reports only the days a cap was reached.
@@ -4252,7 +4252,7 @@ is 0.
 
 - Type :: integer
 - Default :: =20=
-- Since :: 0.24.0
+- Since :: 0.26.0
 
 How long a turn may show nothing at all -- no step, no thought, no
 reply -- before the clients offer to stop it or to run the same
@@ -4275,7 +4275,7 @@ already running.
 
 - Type :: integer
 - Default :: =5=
-- Since :: 0.24.0
+- Since :: 0.26.0
 
 How much CPU the agent's processes must use, in percent of one core,
 for a silent turn to count as working. 0 turns the check off.
@@ -4297,7 +4297,7 @@ runtime.turn_timeout_seconds is 0.
 
 - Type :: integer
 - Default :: =7200=
-- Since :: 0.24.0
+- Since :: 0.26.0
 
 The longest a busy process tree may keep a silent turn alive, in
 seconds since the turn last reported anything. 0 is no ceiling.

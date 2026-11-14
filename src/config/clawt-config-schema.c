@@ -1076,7 +1076,7 @@ static const ClawtSchemaEntry schema[] = {
   "once there are more than this, and a change whose row has gone can no\n"
   "longer be undone -- the page says so rather than offering a button\n"
   "that cannot work. One journal per database: an agent's own, each\n"
-  "team's and the fleet's.", "0.24.0" },
+  "team's and the fleet's.", "0.26.0" },
 
 { "memories.operator_profile", CLAWT_SCHEMA_BOOLEAN,
   CLAWT_SCHEMA_FLAG_COMMENTED, "false", NULL,
@@ -1097,23 +1097,23 @@ static const ClawtSchemaEntry schema[] = {
   "groups failing tool calls, long queue waits, spending and stalled turns\n"
   "into issues and writes them as YAML. It runs out of process: the\n"
   "clients' Issues view asks the daemon to start `clawtilla sentinel`\n"
-  "and then shows what it wrote. It never writes to the event log.", "0.24.0" },
+  "and then shows what it wrote. It never writes to the event log.", "0.26.0" },
 
 { "sentinel.days", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, "7", NULL,
   "How many days of the event log one scan reads, counting today. 0\n"
-  "reads every file there is, which daemon.event_log_days bounds.", "0.24.0" },
+  "reads every file there is, which daemon.event_log_days bounds.", "0.26.0" },
 
 { "sentinel.min_failures", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "3", NULL,
   "How many failures of one agent's tool make an issue. A tool that\n"
   "failed once is a turn's ordinary business; one that failed this many\n"
-  "times in the window is a pattern somebody should look at.", "0.24.0" },
+  "times in the window is a pattern somebody should look at.", "0.26.0" },
 
 { "sentinel.queue_wait_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "600", NULL,
   "How long a message may wait in an agent's queue, from being queued to\n"
   "being delivered, before the wait is an issue. Messages still queued\n"
-  "past it when the scan ends are reported too.", "0.24.0" },
+  "past it when the scan ends are reported too.", "0.26.0" },
 
 { "sentinel.daily_spend_micros", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "10000000", NULL,
@@ -1123,7 +1123,7 @@ static const ClawtSchemaEntry schema[] = {
   "A line to report, not a limit: nothing is refused at it. The caps that\n"
   "do refuse work are orchestration.daily_fleet_budget_micros and each\n"
   "agent's own, and every time one is reached is an issue whatever this\n"
-  "says.", "0.24.0" },
+  "says.", "0.26.0" },
 
 /* ── skills ──────────────────────────────────────────────────────── */
 { "skills", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
@@ -3058,7 +3058,7 @@ static const ClawtSchemaEntry schema[] = {
   "offer says the turn has shown nothing, never that it is stuck. The\n"
   "models offered are the model.fallbacks entries on the agent's own\n"
   "CLI and login, since one turn's model is a name on the CLI it is\n"
-  "already running.", "0.24.0" },
+  "already running.", "0.26.0" },
 
 { "agents.runtime.busy_cpu_percent", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "5", NULL,
@@ -3076,7 +3076,7 @@ static const ClawtSchemaEntry schema[] = {
   "Only for runtime.type: process. An embedded agent shares the daemon's\n"
   "process, so its tree cannot be told apart from the fleet's and the\n"
   "check does nothing there. Nothing is read while\n"
-  "runtime.turn_timeout_seconds is 0.", "0.24.0" },
+  "runtime.turn_timeout_seconds is 0.", "0.26.0" },
 
 { "agents.runtime.busy_max_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "7200", NULL,
@@ -3086,7 +3086,7 @@ static const ClawtSchemaEntry schema[] = {
   "A command stuck in a loop uses CPU too, and without a ceiling it would\n"
   "hold its turn for ever. Past this many seconds with no step, message\n"
   "or tool call the CPU stops counting and runtime.turn_timeout_seconds\n"
-  "applies as it would to any silent turn.", "0.24.0" },
+  "applies as it would to any silent turn.", "0.26.0" },
 
 /* ── agents.computer ─────────────────────────────────────────────── */
 { "agents.computer", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
