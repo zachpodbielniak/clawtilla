@@ -1,0 +1,253 @@
+#+title: Roadmap
+#+description: Gap analysis against OpenMausBot 164e5d7..a6cd67c78, turned into ordered work for clawtilla
+#+authors: Zach Podbielniak
+#+categories: software planning
+#+created: [2026-11-14 Sat]
+#+updated: [2026-11-14 Sat]
+#+version: 0.1.0
+
+* About this file
+
+This lives at the repository root, not in =docs/=, on purpose: =make docs-check= fails on any =clawtilla_*= name in =docs/= that is not registered in =clawt-mcp-tools.c=, and most tools named here do not exist yet. When an item lands, its design moves into the matching =docs/*.org= page in the same change and the item here is marked DONE with the version that shipped it.
+
+Every item follows the rules in =AGENTS.md=: config keys go into =src/config/clawt-config-schema.c= first and =make config-files= regenerates the rest; a client affordance lands in GTK, web and lrg together (=make parity=); a new IPC frame kind or config key is a minor bump, a fix is a micro.
+
+** Source of the comparison
+
+- OpenMausBot (=~/source/public/OpenMausBot=), from =164e5d7= (2026-08-29) to =a6cd67c78= (2026-11-14): 9,634 commits, 8,127 files.
+- Commit hashes and paths under "Prior art" are OpenMausBot's. Paths under "Today" are clawtilla's.
+- Items marked *unverified* rest on a reader's report and were not re-checked against clawtilla's source.
+
+** Priority key
+
+- *P0*: clawtilla documents the gap itself, or it is a security boundary.
+- *P1*: removes a recurring cost or a silent failure.
+- *P2*: worthwhile, not urgent.
+- *P3*: speculative, or big for what it buys.
+
+* P0 -- confinement and dead config
+
+** TODO Confine the agent's own CLI, not only =computer_exec=                                   :security:
+- *Today:* =docs/security.org:634= says "None of the four constrains the agent's own tools." The AI CLI is spawned unwrapped. Only =clawtilla_computer_exec= goes through =src/computer/clawt-sandbox.c=.
+- *Prior art:* =server/bot-box/= and =docs/bot-box.md=. One bwrap holds the engine CLI, every shell command it runs and its MCP servers. The data dir is replaced by an empty private folder with only the turn's workspace bound back. It adds a PID namespace, loopback-only netns, an environment allowlist, a seccomp deny list (=seccomp.ts=, 34 syscalls) and =hidepid= over /proc.
+- *Proposal:* wrap the libreclaw child launched by =ClawtAgentRuntime= (process runtime only) in the same bwrap builder =clawt-sandbox.c= already has. Bind the workspace, the agent's =.mcp.json= targets, the CLI's account directory, and the =clawtilla-mcp-server= socket path. An embedded runtime cannot be confined; refuse =confine: bwrap= with =runtime.type: embedded= at load.
+- *Rules that apply:* never silently downgrade (no bwrap means SHADOW with a reason). Grant every path in both the predicate and the builder ("a wall built without the door").
+- *Lesson to copy:* =844139d5e=. A turn's =TMPDIR=/tmp= put the host /tmp back over the box's private one. Since =clawt_build_child_environment()= extras now replace allowlisted names, an agent's =env:= can do the same here. The builder must own =TMPDIR=, =HOME= and =XDG_*= inside the box.
+- *Lesson to copy:* =a9855bb06=. Refuse multiply-linked files on read-only binds, or a hardlink escapes =--ro-bind=. Check =deny_paths= (=/dev/null= over a file) for the same.
+- *Version:* minor (new config key, changes what a running agent can see).
+
+** TODO Sandbox self-check with mutations                                                         :security:test:
+- *Today:* nothing probes =clawt-sandbox.c= from inside a real box.
+- *Prior art:* =server/bot-box/self-check.ts= and =box-probe.ts=. A hostile probe runs at boot (29 checks). With =--mutate=bind-data,share-net,...=, removing one protection must fail exactly the checks that guard it.
+- *Proposal:* add =tests/test-sandbox-probe.c= behind =CLAWT_TEST_INTEGRATION=1= (it needs bwrap). It is a probe binary run inside the box that tries the escapes: read the state dir, reach loopback or the LAN, read another agent's workspace, see host pids, write through a ro bind. Then a mutation table, one entry per builder flag. This is "a parity check that has never been shown to fail" applied to the sandbox.
+- *Lesson to copy:* =844139d5e= again. Their loopback check could not fail because the harness bridge sat on the fixture's own port, and the probe counted its own spec as a leaked secret. State what the probe holds constant.
+- *Version:* none (test only).
+
+** TODO Make =model.fallbacks= do something: limit failover                                          :runtime:
+- *Today:* =docs/agents.org:272=. =model.fallbacks= and =model.routing_profile= are "rendered nowhere", so an agent whose primary is unavailable fails.
+- *Prior art:* =server/limit-failover.ts= and =limit-resets.ts=. On a usage limit or a sign-out, the conversation continues on a backup engine and returns once the limit resets. It refuses to fail over to another sign-in on the *same subscription*, because rotating accounts breaks provider terms. A pay-per-use key on the same engine is allowed.
+- *Proposal:* decide where the switch lives. libreclaw sees the provider error, so the mechanism belongs upstream: tag libreclaw, pin it, then render =ai.fallbacks= into the agent's config. clawtilla's part is rendering, the account check (=clawt_account_check()= already knows which accounts are which), and an event and alert when an agent is running on a fallback.
+- *Open question:* does the fallback list carry a provider per entry? A fallback across CLIs (claude-code to codex) loses the session; say so in the event.
+- *Version:* minor (config semantics change; libreclaw pin bump).
+
+** TODO Egress gate and provider-key broker                                                        :security:network:
+- *Today:* =allow_network= in =clawt-sandbox.c= is =--unshare-net= or nothing. A networked agent reaches the whole tailnet and LAN. Provider API keys appear to reach the agent's environment (*unverified*: inferred from the =api_key: {env: ANTHROPIC_API_KEY}= example in =docs/security.org=).
+- *Prior art:* =bot-box/egress-gate.ts= and =server/browser/egress/policy.ts= are an HTTP CONNECT proxy (SOCKS for Chrome) that resolves names itself and refuses loopback, RFC 1918, link-local, CGNAT and metadata addresses by address. No DNS trick or redirect gets past it. =bot-box/broker.ts= swaps =*_API_KEY= for a per-process token and points =*_BASE_URL= at a loopback proxy that adds the real key and pins the upstream. Keys a CLI cannot redirect are listed as =broker.unbrokered=.
+- *Proposal:* one libsoup process in the daemon with two roles. (1) A CONNECT proxy, handed to a confined agent as =HTTPS_PROXY= inside a netns whose only route is the proxy. (2) A base-URL broker for the providers ai-glib already lets us point elsewhere. 100.64.0.0/10 is not an octet boundary (see AGENTS.md on =getifaddrs()=). Try the next address when one family cannot route (=a65c88163=).
+- *Depends on:* the CLI confinement item above (an unconfined CLI can ignore =HTTPS_PROXY=).
+- *Version:* minor.
+
+* P1 -- removing silent cost and silent failure
+
+** TODO Waits: a condition checked by code, not by the model                                       :orchestration:tools:
+- *Today:* no wait tool in =src/mcp/clawt-mcp-tools.c=. "Tell me when X" is a cron routine that wakes the model on every tick.
+- *Prior art:* =server/waits.ts=, =wait-probes.ts=, =docs/superpowers/specs/2026-10-27-waits-design.md=. Three tools: =wait_until=, =list_waits=, =cancel_wait=. Waits expire (24 h default, 7 days max). URL probes run at most once a minute with backoff, and private addresses are refused.
+- *Proposal:* tools =clawtilla_wait_until= / =_wait_list= / =_wait_cancel=. Probe kinds: URL status/body match (through the egress gate's address rules), file exists/changed in the workspace, task settled, computer reachable, command exit status on the computer (=clawt_computer_exec_async()=). A satisfied wait is a mailbox delivery into the room it was set from. Waits persist under =<state_dir>= and survive a daemon restart.
+- *Rules that apply:* every timer names its context (=clawt_timeout_add_seconds()=). The wait record is per wait, never a scalar on the agent. The tool description is behaviour, so say the wait costs nothing while pending.
+- *Version:* minor.
+
+** TODO Failed runs go to the lead, with a retry tool                                               :orchestration:
+- *Today:* the turn watchdog interrupts silent turns and repeats become alerts (=src/chat/clawt-turn-watch.c=, =clawt-repeat-watch.c=). Nothing routes a dead agent run or a failed routine to the team's lead or chief, and no tool retries.
+- *Prior art:* =docs/team-incidents.md=. A failed, stalled or unstartable run, or a failed routine, opens one "Problems to look at" thread on the Chief. The report is fenced as untrusted data. The Chief retries (=retry_thread=), reassigns, or names the human fix. A busy Chief's report is queued, not dropped.
+- *Proposal:* the team's lead (or the chief of staff) gets an incident delivery in a dedicated room per team. Add a =clawtilla_task_retry= tool gated like assignment. The report carries the agent, room, task id, failure class and last log lines, fenced like other untrusted payloads.
+- *Rules that apply:* "A turn ending is not the work finishing". The incident itself must not invite a reply loop (=invites_reply= semantics).
+- *Version:* minor.
+
+** TODO Turn a routine off after N runs whose computer did not start                                :routines:
+- *Today:* no such guard in =docs/routines.org=. A dead VM fails a cron routine on every tick.
+- *Prior art:* =a78e8b3cd=. Off after three runs in a row on a computer that didn't start. =741d7746a= doesn't count a run that started before the routine was last changed.
+- *Proposal:* schema key =routines.max_start_failures= (default 3, 0 = never). Count in run state beside the config, never in it. Raise an alert naming the routine and the computer error. Reset the count on any successful start or on an edit to the routine.
+- *Version:* micro if no key is added, minor with the key.
+
+** TODO Webhook payload field filter                                                               :triggers:
+- *Today:* =triggers.events=, =repo=, =branch= and =ignore_actors= exist, but there is no generic field match. The generic provider spends a turn deciding "not for me".
+- *Prior art:* =46859b327= and =server/webhook-payload-filter.test.ts=. Up to 10 dotted paths, each with text it must contain, case-insensitive. A miss is recorded as ignored and starts no run. =741176869=: null clears the filter.
+- *Proposal:* =triggers.match= as a list of =path: value= pairs in the schema. Evaluate with json-glib path lookup before enqueue. Record the ignore in the trigger's delivery log so "why didn't it fire" is answerable.
+- *Version:* minor (config key).
+
+** TODO Webhook posts into a room with no AI run, and a per-trigger pending cap                     :triggers:
+- *Today:* =triggers.room= exists, but every delivery runs the agent. There is no per-trigger limit key.
+- *Prior art:* =813814524= (post with no run). =7f0c0cd0e= (a 1-50 cap that used to be a hard-coded 3 and silently dropped fan-out events; an out-of-range hand edit reads as the default).
+- *Proposal:* =triggers.mode: run | post= and =triggers.max_pending=. A =post= delivery lands in the room as a system message with the rendered payload and spends nothing.
+- *Version:* minor.
+
+** TODO Usage ledger: by model, by origin, exportable                                               :spending:
+- *Today:* =clawtilla cost --today/--days/--agent= and the Spending pages group by agent only (=docs/spending.org=). "Which routine costs me most" has no answer.
+- *Prior art:* =093a246b8= and =server/usage-ledger.ts=. One row per turn, grouped by bot/model/person/day/engine, CSV export that neutralises formulas. Unpriced turns are counted, not hidden.
+- *Proposal:* tag each turn with its origin (operator, peer, routine id, trigger id, task id) where the turn state already knows it, and read through =lc_database_*=. Add =cost --by model|origin= and a CSV export (CSV is the preferred tabular format). Keep "-1 means unknown, never free" visible as a separate column.
+- *Version:* minor (CLI output change).
+
+** TODO Per-device client tokens, pairing and revoke                                                :security:clients:
+- *Today:* one daemon bearer token, copied by hand (=docs/clients.org:172=, =clawtilla daemon token=). A lost laptop or phone means rotating it for every client, and the daemon binds the tailnet by default.
+- *Prior art:* =docs/desktop-companion.md=, =docs/phone-relay-server.md=. Six-digit code pairing, a token per device, =devices= / =devices revoke ID=. =bff8d87c0= revokes a session after its idle window.
+- *Proposal:* =clawtilla device pair= prints a short-lived code. A client exchanges it for its own token (stored 0600 in =connections.yaml=). Add =device list/revoke=, an idle expiry key, and keep the existing token as the owner credential. Tokens come from =/dev/urandom= and are compared in constant time.
+- *Rules that apply:* never print a bearer token from a listing command. A token may not come back over IPC except to the device being paired.
+- *Version:* minor (IPC frame kinds).
+
+* P2 -- worthwhile
+
+** TODO Delegation into a fresh or named thread                                                    :orchestration:
+- *Today:* =docs/orchestration.org:709=, "A task does not get a session of its own". This comes from libreclaw keying sessions on channel/room/sender. Tasks share context and queue behind the operator's chat. =routines.isolate= exists for routines only.
+- *Prior art:* =docs/plans/2026-09-09-thread-aware-bots.md=. =coordinator.ts= takes =thread: standing|new|<id>= and =start_thread=.
+- *Proposal:* give a task its own room (which already means its own session) when the delegator asks for =thread: new=, reusing the =routines.isolate= machinery. Report the room in the task so the delegator and the clients can follow it.
+- *Version:* minor.
+
+** TODO Consult mode, questions routed to the delegator, batched wakes                              :orchestration:
+- *Today:* clawtilla has the settled-task notice, =invites_reply=, decisions with defaults and repeat detection. It has no consult mode, a child's question goes to the operator, and wakes are per child.
+- *Prior art:* =docs/runtime-contract.md=. Each task has a mode (=work=, =consult= = answer and act on nothing, =notify=) and a reply rule (=resume=, =poll=, =none=). The requester is woken once with every settled child together. A child's question goes to the requester, with the child's default if nobody answers. Two continuations with no successful tool call, or the same error three times, end the work as stalled.
+- *Proposal:* add =mode= to =clawtilla_delegate=. =consult= runs with the acting tools withheld through the same gate =clawt_mcp_tools_describe_for_agent()= uses. Route =clawtilla_ask_decision= from a delegated turn to the delegator's room first. Coalesce settled-task notices per parent in one idle.
+- *Lesson to copy:* the contract deleted two delegation systems, six wake paths and a dozen clocks. Keep tasks and mailbox items one lineage.
+- *Version:* minor.
+
+** TODO Restart replay that will not repeat an outward action                                       :mailboxes:
+- *Today:* mailbox leases (=docs/mailboxes.org=) and pause/hold. Nothing records whether an interrupted turn already acted outward, so a redelivery can repeat a send.
+- *Prior art:* runtime-contract §5. A turn cut by a restart is rerun once, unless the host saw it act outward (sent, posted, pushed, paid). Then it ends as interrupted.
+- *Proposal:* mark the turn record when an outward tool succeeds (message_user, connector writes, computer_exec on a non-sandboxed machine, notifier sends). On recovery, an outward-marked turn becomes an interrupted notice in the room, not a redelivery.
+- *Version:* micro.
+
+** TODO Origin header that model text cannot forge                                                  :security:orchestration:
+- *Today:* deliveries carry a preamble. Whether model-written text imitating it is escaped is *unverified*.
+- *Prior art:* =server/provenance-label.ts=. One header, =[From who · what · authority]=, and look-alikes in the body are escaped.
+- *Proposal:* audit the preamble builder first. If it is not escaped, escape a leading header-shaped line in any peer or webhook body and add a test with a forged header.
+- *Version:* micro.
+
+** TODO Agent asks for a rebuild of its stuck computer                                              :computers:
+- *Today:* =clawtilla computer rebuild= is operator-only and refused while the agent runs.
+- *Prior art:* =0b39d3969= (a bot asks the person to reset), =b06c25396= (automatic reset when safe), =ee89b889c= (replace a computer that is dead or stops answering).
+- *Proposal:* =clawtilla_request_rebuild=, shaped like =clawtilla_request_hands=: it raises a decision and is never a handover. Approval runs the rebuild after stopping the agent's turn. No automatic replacement while =computer.container.keep= or a VM disk holds state.
+- *Version:* minor.
+
+** TODO Wake before reaching a remote machine                                                       :computers:
+- *Today:* =ssh= computers and remote podman (=docs/computers.org=, "Remote podman works") fail when the host sleeps.
+- *Prior art:* =6aa2fb9ab=, =f53f9b213=, =9a5cba273=. An optional wake script capped at 120 s, the whole process group killed on timeout, its time kept out of the command timeout, and each caller charged only the wake time it waited.
+- *Proposal:* =computer.ssh.wake_command= / =computers.<id>.wake_command= (argv, not a shell line), run once per concurrent wave. The homelab case is Wake-on-LAN.
+- *Version:* minor.
+
+** TODO Lazy computer start                                                                         :computers:
+- *Today:* the computer is built at the agent's first start. Whether a VM is booted at agent start or at first use is *unverified*.
+- *Prior art:* =#2335=, "A cloud computer starts only when the bot uses it."
+- *Proposal:* verify first. If agent start boots the guest, add =computer.start: on_agent_start | on_first_use=, starting through =clawt_computer_lifecycle_async()= on the first =computer_exec= or desktop call.
+- *Version:* minor if a key is added.
+
+** TODO Container resource limits                                                                   :computers:
+- *Today:* no pids or memory keys under =computer.container.*= in the schema.
+- *Prior art:* =container-limits.ts= (pids and memory+swap, updated in place). =container-isolation.ts= (a fixed capability set, checked per container).
+- *Proposal:* =computer.container.pids_limit=, =memory=, =memory_swap=, passed to podman at create and applied with =podman update= when they change. distrobox passes them through as podman arguments too, so test both backends.
+- *Version:* minor.
+
+** TODO MCP result budget                                                                           :mcp:
+- *Today:* =src/mcp/clawt-mcp-relay.c= passes results through unchanged.
+- *Prior art:* =mcp-gate.ts=, =mcp-trim.ts=, =mcp-shape.ts=. Each server's result is capped, the whole JSON is held, and the model can query it instead of re-reading. =structuredContent= is trimmed too, a cut never lands mid-surrogate, and the cut is announced at both ends.
+- *Proposal:* a per-connector =max_result_bytes=, the full result spilled under =<state_dir>=, and a query tool over it. Bound what accumulates, not the result ("a limit applied after the read").
+- *Version:* minor.
+
+** TODO MCP OAuth discovery and dynamic client registration                                         :connectors:
+- *Today:* =docs/connectors.org= remotes take a hand-configured =auth_url= and =token_url=.
+- *Prior art:* =mcp-oauth-discovery.ts= (RFC 9728 protected-resource metadata, RFC 8414, DCR, the RFC 8707 =resource= parameter; it never follows a redirect). =broker-mcp-refusal.ts= turns a 401 into an actionable tool error. =608ff19fb= / =17c69990f=: a server that refused only tool calls never offered sign-in.
+- *Version:* minor.
+
+** TODO Secrets the agent never sees                                                                :security:browser:
+- *Today:* =clawt_redact_secrets()= is pattern-based. No secret-request or browser-fill tools.
+- *Prior art:* =secret-vault.ts= (one-use refs bound to agent and conversation), =login-fill.ts= (types a saved password as real input; the agent hears only that it was filled), =totp.ts= (RFC 6238), =browser-secret-hold.ts= and =cdp/secrets.ts= (eval and screenshots refused while a filled secret is on the page; fail closed).
+- *Proposal:* a fill command in the gsurf control protocol (a gsurf release first, then a version floor in =make GSURF=1=). The daemon resolves a secret ref and sends keystrokes. Screenshots and =browser_eval= are refused until navigation away.
+- *Version:* minor.
+
+** TODO Inline choices in chat                                                                      :clients:
+- *Today:* =clawtilla_ask_decision= goes to the decisions inbox. There are no inline choices in the chat.
+- *Prior art:* =765f87467=, =server/chat-widgets.ts=. =show_widget= / =update_widget=. A press is checked against the stored widget and arrives as the person's next message. Stale presses and double taps are refused.
+- *Proposal:* render a decision inline in its room in all three clients, as a second view of the same decision. Settling it either way settles both, which needs the publish-both-ends rule for =decision.asked=.
+- *Version:* minor (parity across GTK, web and lrg).
+
+** TODO Learned skills proposed from ordinary work                                                  :skills:
+- *Today:* =teach= records, drafts and commits a skill disabled for review (=docs/teach.org=). No path from an agent's ordinary turn.
+- *Prior art:* =6140532ea=, =server/skills.ts=. A bot proposes a create or update, and it lands behind an approval card.
+- *Proposal:* =clawtilla_skill_propose= writes a draft through teach's pipeline and raises a decision. This is the AGENTS.md shape "a technique an agent explains back to you belongs in the software", done by the agent.
+- *Version:* minor.
+
+* P3 -- speculative
+
+** TODO First-reply rescue
+- *Prior art:* =45b74bb0c=. After about 20 s with no reply, offer Stop or switch AI.
+- *Note:* overlaps the turn watchdog. Worth it only if libreclaw's streamed events show "the CLI has emitted nothing at all", which is different from "it is thinking".
+
+** TODO Watchdog that counts a busy process tree as working
+- *Today:* =clawt-turn-watch.c= exempts held turns but samples no CPU.
+- *Prior art:* =fdf894efa=. A shell command whose processes are using CPU is still working.
+
+** TODO Peer words into a running turn (steer)
+- *Prior art:* =docs/specs/aside-injection-seams.md=, =steer-vs-queue.md=. Delivered via Claude Code's stdin and codex =turn/steer=. Indeterminate delivery counts as delivered.
+- *Needs:* ai-glib and libreclaw input during a turn. Upstream first.
+
+** TODO Generic ACP engine driver
+- *Prior art:* =server/drivers/acp/= and =docs/custom-engines.md=. Any ACP-over-stdio CLI becomes an engine.
+- *Needs:* lands in ai-glib, then libreclaw's =lc_provider_type_normalize()=, then the =agent= column in clawtilla's catalog. =tests/test-model-catalog.c= keeps them pinned. It also removes the silent rewrite to claude-code for unknown types.
+
+** TODO Memory review with a journal and undo
+- *Prior art:* =docs/memory.md=, =memory-journal.ts=, =memory-dream.ts=.
+- *Today:* =clawtilla_memory_add/forget/pin= act immediately.
+
+** TODO Sentinel over =events/*.ndjson=
+- *Prior art:* =server/sentinel/=. An out-of-process, read-only scanner that groups failing tool calls, queue waits and cost into issues.
+
+** TODO Saved steps: replay a desktop task with no model
+- *Prior art:* =671cf72d1=.
+
+** TODO Android device as a computer type
+- *Prior art:* =phone-screen/= and =fcaf0b076= (adb over USB, watch and take over, behind a hold and claim gate).
+- *Note:* only if Android app testing becomes a use case.
+
+** TODO Installable web client (manifest only)
+- *Today:* the web client has a phone layout. No manifest.
+- *Rule:* the manifest and icons are vendored. Nothing is fetched at page load.
+
+** TODO Open-room links
+- *Prior art:* =docs/desktop-chat-links.md= (=openmausbot://thread/<id>?bot=, checked against the owning bot).
+- *Proposal:* =clawtilla-gtk --open <room>= and an org link type for cmacs.
+
+* Audits -- bug classes they hit that may be here
+
+** TODO Credentials sent along on HTTP redirects
+- *Prior art:* =8571d788d=, =4a1e70e9e=, =0d4e3c5cb=. Requests carrying keys now refuse redirects.
+- *Check:* every =SoupSession= in connectors, OAuth device flow, the Grok bridge and web research that sets =Authorization=. libsoup follows redirects by default (=SOUP_MESSAGE_NO_REDIRECT= is opt-in).
+
+** TODO Hardlink escape through read-only binds
+- *Check:* =clawt-sandbox.c= =--ro-bind= sources and =deny_paths=. A file with =st_nlink > 1= under a writable path can be reached by another name.
+
+** TODO =TMPDIR= and =XDG_*= from an agent's =env:= inside bwrap
+- *Check:* since extras replace allowlisted names, an agent can point =TMPDIR= at a host path the box binds writable.
+
+* Design decisions to make, not gaps
+
+** Takeover: refuse or park
+clawtilla refuses an acting tool during a person's hold and tells the agent how to wait (=docs/computers.org=, "Taking the screen"). OpenMausBot parks the whole turn until hand-back (=652e43ce0=). Neither queues clicks. Parking removes the agent's chance to invent a polling loop. Refusing keeps the turn's clock and the watchdog honest. If parking is chosen, the turn watchdog must treat a parked turn as held, as it already does for waits on a person.
+
+** App settings through a tool
+OpenMausBot's =app_settings= (=docs/superpowers/specs/2026-11-12-app-settings-tool-design.md=) lets bots change settings with Undo, and anything that could lock the person out is owner-only. clawtilla has =tools.manage_fleet=. A general config tool widens what a hijacked agent can change. Not planned unless a concrete need appears.
+
+* Not pursuing
+
+- *Hosted relay, managed tunnels, cloud computers, billing, trial credit*: SaaS. Tailnet and remote podman cover the self-hosted shape.
+- *Native phone apps*: the web client plus a manifest is the cheaper route. =packages/phone-protocol= is worth reading only if a native client ever happens.
+- *Voice and live calls*: cmacs already has transcription and speech synthesis. Bridge to those rather than copying ElevenLabs or Fish integrations.
+- *Meeting-notes bot, image generation, Netlify publishing, org library, announcements, feature flags*: no fit for a single-operator, FOSS-only fleet.
+- *Team-sharing packages and presets*: single user. Keep their rule that a preset can never widen permissions, should a package format ever exist.
