@@ -926,11 +926,104 @@ test_streaming_body_limit(void)
 		;
 }
 
+/*
+ * The Grok routes, through the real listener.
+ *
+ * Every Grok test called the handler directly with a body in hand, so a
+ * route that read the request buffer without flattening it -- and handed
+ * the handler nothing -- passed them all, and the first real report was
+ * answered 400.  This one sends the bytes over a socket, fixed-length and
+ * chunked, and checks they arrive whole.
+ */
+typedef struct {
+	guint        calls;
+	const gchar *expected;
+	ClawtWebhookRoute route;
+	gchar       *job;
+} GrokCapture;
+
+static gchar *
+grok_capture(ClawtWebhookRoute route, const gchar *job_id,
+	GHashTable *headers, const guchar *body, gsize length,
+	gpointer user_data, guint *status, const gchar **content_type)
+{
+	GrokCapture *capture = user_data;
+
+	(void)headers;
+	g_assert_nonnull(body);
+	g_assert_cmpuint(length, ==, strlen(capture->expected));
+	g_assert_cmpmem(body, length, capture->expected,
+		strlen(capture->expected));
+	capture->calls++;
+	capture->route = route;
+	g_free(capture->job);
+	capture->job = g_strdup(job_id);
+	*status = SOUP_STATUS_OK;
+	*content_type = "application/json";
+	return g_strdup("{}");
+}
+
+static void
+test_grok_routes_receive_the_whole_body(void)
+{
+	g_autoptr(GSocket) reservation = NULL;
+	g_autoptr(GInetAddress) inet = g_inet_address_new_loopback(G_SOCKET_FAMILY_IPV4);
+	g_autoptr(GSocketAddress) bind_address = g_inet_socket_address_new(inet, 0);
+	g_autoptr(GSocketAddress) bound = NULL;
+	g_autoptr(ClawtWebhookIngress) ingress = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *response = NULL;
+	GrokCapture capture = { 0, "{\"status\":\"done\",\"result\":\"pong\"}",
+		CLAWT_WEBHOOK_ROUTE_NONE, NULL };
+	g_autofree gchar *fixed = NULL;
+	guint16 port;
+
+	reservation = g_socket_new(G_SOCKET_FAMILY_IPV4, G_SOCKET_TYPE_STREAM,
+		G_SOCKET_PROTOCOL_TCP, &error);
+	g_assert_no_error(error);
+	g_assert_true(g_socket_bind(reservation, bind_address, FALSE, &error));
+	bound = g_socket_get_local_address(reservation, &error);
+	g_assert_no_error(error);
+	port = g_inet_socket_address_get_port(G_INET_SOCKET_ADDRESS(bound));
+	g_assert_true(g_socket_close(reservation, &error));
+	ingress = clawt_webhook_ingress_new(port, 256 * 1024);
+	clawt_webhook_ingress_set_grok_func(ingress, grok_capture, &capture);
+	g_assert_true(clawt_webhook_ingress_start(ingress, FALSE, &error));
+	g_assert_no_error(error);
+
+	fixed = g_strdup_printf(
+		"POST /grok/gj-70d186db8fb7 HTTP/1.1\r\nHost: localhost\r\n"
+		"Content-Type: application/json\r\nContent-Length: %u\r\n"
+		"Connection: close\r\n\r\n%s",
+		(guint)strlen(capture.expected), capture.expected);
+	response = streaming_exchange(ingress, fixed);
+	g_assert_nonnull(strstr(response, " 200 "));
+	g_assert_cmpuint(capture.calls, ==, 1);
+	g_assert_cmpint(capture.route, ==, CLAWT_WEBHOOK_ROUTE_GROK_REPORT);
+	g_assert_cmpstr(capture.job, ==, "gj-70d186db8fb7");
+	g_clear_pointer(&response, g_free);
+
+	/* In two chunks: the shape that had no contiguous data unflattened. */
+	response = streaming_exchange(ingress,
+		"POST /mcp/grok HTTP/1.1\r\nHost: localhost\r\n"
+		"Content-Type: application/json\r\n"
+		"Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+		"11\r\n{\"status\":\"done\",\r\n"
+		"10\r\n\"result\":\"pong\"}\r\n0\r\n\r\n");
+	g_assert_nonnull(strstr(response, " 200 "));
+	g_assert_cmpuint(capture.calls, ==, 2);
+	g_assert_cmpint(capture.route, ==, CLAWT_WEBHOOK_ROUTE_GROK_MCP);
+
+	g_free(capture.job);
+}
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
 	g_test_add_func("/webhook/streaming-body-limit", test_streaming_body_limit);
+	g_test_add_func("/webhook/grok-routes-whole-body",
+		test_grok_routes_receive_the_whole_body);
 
     g_test_add_func("/webhook/only-two-paths",
                     test_only_health_and_hooks_are_served);

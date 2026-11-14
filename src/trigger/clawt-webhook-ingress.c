@@ -164,6 +164,9 @@ on_request(SoupServer        *server,
             g_object_get_data(G_OBJECT(message), "clawt-bounded-body");
         const gchar *content_type = "text/plain";
         g_autofree gchar *grok_reply = NULL;
+        g_autoptr(GBytes) flat = NULL;
+        gsize flat_length = 0;
+        const guchar *flat_data = NULL;
 
         if (self->grok == NULL) {
             answer(message, SOUP_STATUS_SERVICE_UNAVAILABLE,
@@ -178,12 +181,23 @@ on_request(SoupServer        *server,
         while (soup_message_headers_iter_next(&iter, &name, &value))
             clawt_trigger_headers_add(headers, name, value);
 
+        /*
+         * Flattened, and read from what flatten returned.  A body that
+         * arrived in more than one chunk has no contiguous `data` until it
+         * is flattened, so reading the field straight off the buffer
+         * handed the handler NULL -- and every real report, which arrives
+         * that way, was answered 400 "not a JSON object" while every test
+         * that called the handler directly passed.
+         */
+        if (bounded != NULL) {
+            flat = soup_message_body_flatten(bounded);
+            flat_data = g_bytes_get_data(flat, &flat_length);
+        }
+
         grok_reply = self->grok(
             clawt_webhook_route(soup_server_message_get_method(message),
                                 path, NULL),
-            endpoint, headers,
-            (bounded != NULL) ? (const guchar *)bounded->data : NULL,
-            (bounded != NULL) ? (gsize)bounded->length : 0,
+            endpoint, headers, flat_data, flat_length,
             self->grok_data, &status, &content_type);
 
         {
