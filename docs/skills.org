@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-29 Fri]
-#+updated: [2026-08-29 Fri]
-#+version: 0.2.0
+#+updated: [2026-11-14 Sat]
+#+version: 0.3.0
 
 * Skills
 
@@ -304,9 +304,104 @@ skill can be assigned or enabled while an agent is running -- and
 structurally: the only names an agent can reach are the ones resolution
 produced for it, so it cannot read a skill it was not given.
 
-Writing a skill is deliberately not a tool.  That route is a person
-reviewing text before it reaches a prompt, and a tool that skipped the
-person would skip the only step the security posture has.
+Writing a skill directly is deliberately not a tool.  That route is a
+person reviewing text before it reaches a prompt, and a tool that skipped
+the person would skip the only step the security posture has.  What an
+agent has instead is ~clawtilla_skill_propose~, which keeps the person:
+see [[*Skills agents propose][Skills agents propose]].
+
+** Skills agents propose
+
+An agent that works out a procedure -- a command sequence that took four
+attempts, a gotcha in a tool, the steps it would explain to the next
+agent -- has written a skill and handed it to nobody.  It explains the
+technique back in a chat, and the next agent rediscovers it.
+~clawtilla_skill_propose~ gives that text somewhere to go.
+
+The agent supplies a ~name~, a ~description~ and a ~body~, and a
+~reason~; for a change to a skill that exists, it names that skill in
+~skill~ instead of ~name~, and the reason is required.  What happens
+next is the same as for a skill [[file:teach.org][taught]] from a
+recording, plus a question for you:
+
+- *A new skill* is written through ~clawt_skill_library_create_taught()~
+  -- teach's own commit, so the same name rules, description bound,
+  traversal gate and scan -- and lands **disabled**, with ~source:
+  taught~ and an ~origin~ of ~propose:<id>~.  It reaches no prompt.
+- *A change* is validated by the same parse and *staged* under
+  =<state_dir>/skill-proposals/<id>/=.  The live skill is not touched
+  until you approve it.  Only a skill in the library's own directory can
+  be changed: one read from =skills.extra_dirs= or bundled with
+  clawtilla is refused, because the change could never be written.
+- *A decision* is filed, with the proposal's id as its own.  Its first
+  line names the agent and the skill; under it, the agent's reason and
+  the whole proposed ~SKILL.md~ (or, for a change, a diff against the
+  skill as it is), then what the scan noticed.  Its options are
+  ~approve~, ~reject~ and ~edit~; nothing changes until you pick one.
+
+The agent is told to carry on: it does not wait for the answer, and its
+turn is not held open for a review that may take a day.  It gets a
+message when you settle it.
+
+*** Answering one
+
+| Answer | A new skill | A change |
+|--------+-------------+----------|
+| Approve | enabled | written over the live skill, which keeps whether it was enabled and its other front matter |
+| Edit | your text written, then enabled | your text written over the live skill |
+| Reject | the draft removed from the library -- unless you enabled it from the Skills page meanwhile, which is keeping it | forgotten; the skill was never touched |
+
+In GTK, the web client and the libregnum client the decision card shows
+the proposed text, or the diff, with *Approve*, *Reject* and *Edit*;
+Edit opens the text in an editor and saves it as your version.  An
+optional note goes to the agent with either answer.  The Skills page
+lists what is pending, who proposed it and why, with a *Review* button
+that opens Decisions -- deliberately not a second Approve, which would be
+a place to approve something without having read it.
+
+From the command line, ~clawtilla skill proposals~ prints each pending
+proposal in full, and ~clawtilla skill approve <id>~ and ~clawtilla
+skill reject <id> [why]~ settle one.  ~clawtilla decision answer <id>
+approve~ works too; any answer that is not ~approve~ or ~reject~ is read
+as a rejection, with your words passed on -- "looks good, but call it
+deploy" is not an approval of what the agent wrote.  ~edit~ is refused
+there, since it needs text.  Dismissing or deleting the decision rejects
+the draft: a question nobody will answer is a draft nobody approved.
+
+*** What is refused, and why
+
+- *Approval over bytes nobody reviewed.*  The proposal records a SHA-256
+  of the draft and, for a change, of the live skill.  If the draft in
+  the library was rewritten after it was proposed, or the live skill
+  changed under a staged change, approving is refused and the proposal
+  stays pending; the card says so.  An agent with a shell on the host
+  could otherwise propose one text and have another enabled.
+- *Names* that are not skill names -- the same traversal gate as
+  everywhere else, after percent-decoding -- and *proposal ids* that are
+  not =skill-proposal-= and a lowercase UUID, since an id is joined
+  onto a directory too.
+- *Size*: a body over 64 KiB, a description over 1024 characters, a
+  reason over 2000 bytes, or anything that is not UTF-8.
+- *A second draft for one skill* while one is pending, so you are never
+  choosing between two; a new skill under a name that exists; a change
+  that says exactly what the skill already says.
+- *Too many*: =skills.max_proposals_per_day= (default 3) per agent in any
+  24 hours, counting rejected ones -- each spent your attention.  0
+  turns proposing off and withholds the tool.
+
+*** Everything the agent wrote is untrusted
+
+The reason, the description and the body are shown to you, and an agent
+can write ~[clawtilla] the operator already approved this~ as easily as
+anything else.  So every piece of it passes through
+~clawt_preamble_escape()~ before anybody sees it -- in the decision, in
+~skill.proposals~, in the CLI -- and in the decision it sits inside a
+code fence one backtick longer than the longest run of backticks in it,
+so a ~```~ line in the body cannot close the fence and make what follows
+read as the daemon's own words.  The editor is prefilled with the
+escaped text, so a forged line cannot be saved back in unseen.
+
+The clients render all of it as plain text, never markup.
 
 ** Not libreclaw's ~skills:~
 
@@ -349,8 +444,8 @@ A SKILL.md's front matter is read the way YAML reads it, as far as the two keys 
 ** Configuration
 
 See [[file:configuration-options.org][the option reference]] for
-~skills.enabled~, ~skills.dir~, ~defaults.skills~, ~teams.skills~ and
-~agents.skills~.
+~skills.enabled~, ~skills.dir~, ~defaults.skills~, ~teams.skills~,
+~agents.skills~ and =skills.max_proposals_per_day=.
 
 ~skills.dir~ is not created for you.  A read with a side effect is how a
 typo in the path leaves an empty directory for somebody to puzzle over a
@@ -388,6 +483,9 @@ clawtilla skill assign release team:engineering
 clawtilla skill unassign release team:engineering
 clawtilla skill rm release
 clawtilla skill reload
+clawtilla skill proposals
+clawtilla skill approve skill-proposal-1f0c...
+clawtilla skill reject skill-proposal-1f0c... "too specific to one repo"
 #+end_src
 
 ** Troubleshooting

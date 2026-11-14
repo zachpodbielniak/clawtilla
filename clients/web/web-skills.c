@@ -284,6 +284,71 @@ add_teach_section(ClawtWebApp *app, HtmxElement *parent)
     }
 }
 
+/*
+ * What agents have proposed and nobody has answered yet.
+ *
+ * Here as well as in the inbox, because this is where somebody looks
+ * when a disabled skill they did not write has appeared -- and the
+ * answer is who proposed it and why.  Reviewing happens on the
+ * Decisions page, where the text is shown: Approve here would be a way
+ * to approve something without having read it.
+ */
+static void
+web_pending_proposals(ClawtWebApp *app, HtmxDiv *pad)
+{
+    g_autoptr(JsonNode) reply = clawt_web_app_call(app, "skill.proposals", NULL);
+    JsonArray *proposals = clawt_web_member_array(clawt_web_root(reply),
+                                                  "proposals");
+    g_autoptr(HtmxDiv) card = NULL;
+    HtmxElement *body;
+    guint i;
+
+    if (proposals == NULL || json_array_get_length(proposals) == 0)
+        return;
+
+    card = clawt_web_card(
+        "Proposed by agents",
+        "Waiting for you in Decisions. A new skill is in the library "
+        "disabled; a change is staged and the skill is unchanged.");
+    body = clawt_web_card_body(card);
+
+    for (i = 0; i < json_array_get_length(proposals); i++) {
+        JsonObject *proposal = json_array_get_object_element(proposals, i);
+        const gchar *reason = clawt_web_member(proposal, "reason", NULL);
+        gboolean update = g_strcmp0(clawt_web_member(proposal, "kind", ""),
+                                    "update") == 0;
+        g_autofree gchar *age = clawt_web_relative_time(
+            clawt_web_member_int(proposal, "created_at", 0) / G_USEC_PER_SEC);
+        g_autofree gchar *line = g_strdup_printf(
+            "%s proposes %s%s%s",
+            clawt_web_member(proposal, "agent", "an agent"),
+            update ? "a change to this skill" : "a new skill",
+            (age != NULL && *age != '\0') ? ", " : "",
+            age != NULL ? age : "");
+        g_autoptr(HtmxDiv) item = htmx_div_new();
+        g_autoptr(HtmxDiv) head = htmx_div_new();
+        g_autoptr(HtmxA) review = htmx_a_new_with_href("/decisions");
+
+        htmx_element_add_class(HTMX_ELEMENT(item), "list-item");
+        htmx_element_add_class(HTMX_ELEMENT(head), "list-item-head");
+        clawt_web_add(head, clawt_web_badge(
+            clawt_web_member(proposal, "name", "?"),
+            update ? "info" : "neutral"));
+        htmx_node_set_text_content(HTMX_NODE(review), "Review");
+        htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(review));
+        htmx_node_add_child(HTMX_NODE(item), HTMX_NODE(head));
+
+        clawt_web_add(item, clawt_web_text(line, "small muted"));
+
+        if (reason != NULL && *reason != '\0')
+            clawt_web_add(item, clawt_web_text(reason, "small"));
+
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(item));
+    }
+
+    htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(card));
+}
+
 HtmxElement *
 clawt_web_skills_body(ClawtWebApp *app, const gchar *agent_id)
 {
@@ -306,6 +371,8 @@ clawt_web_skills_body(ClawtWebApp *app, const gchar *agent_id)
         "it, at whatever path each agent's own CLI reads. An imported "
         "skill arrives disabled and its scripts are left behind -- "
         "markdown only, on purpose.", "lede"));
+
+    web_pending_proposals(app, pad);
 
     problems = clawt_web_member_array(root, "problems");
 

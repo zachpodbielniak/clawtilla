@@ -18,6 +18,7 @@
 #endif
 
 #include "computer/clawt-computer.h"
+#include "computer/clawt-container-limits.h"
 #include "computer/clawt-pod-bridge.h"
 
 G_BEGIN_DECLS
@@ -100,6 +101,53 @@ void clawt_container_computer_set_network(ClawtContainerComputer *self,
  */
 void clawt_container_computer_set_keep(ClawtContainerComputer *self,
                                        gboolean                keep);
+
+/**
+ * clawt_container_computer_set_limits:
+ * @self: a #ClawtContainerComputer
+ * @limits: (nullable): the process and memory limits, or %NULL for none
+ *
+ * Copied. Applied with `podman update` before the container's first
+ * start and again at every start whose limits differ from what podman
+ * reports, so a changed limit reaches the existing container without a
+ * rebuild. (podomation's create request carries no limits, which is why
+ * the first application is an update too; the container never runs
+ * without them.)
+ */
+void clawt_container_computer_set_limits(ClawtContainerComputer     *self,
+                                         const ClawtContainerLimits *limits);
+
+/**
+ * clawt_container_computer_get_limits:
+ * @self: a #ClawtContainerComputer
+ *
+ * Returns: (transfer none) (nullable): the limits, or %NULL for none
+ */
+const ClawtContainerLimits *
+clawt_container_computer_get_limits(ClawtContainerComputer *self);
+
+/**
+ * clawt_container_computer_apply_limits:
+ * @self: a #ClawtContainerComputer
+ * @error: return location for a #GError
+ *
+ * Gives the existing container its limits now, with `podman update` and
+ * only for what differs; see clawt_container_limits_apply(). Run by every
+ * start, and by the daemon when a limit is changed under a running one.
+ * Blocking: call it from a worker thread.
+ *
+ * Returns: %TRUE if the container has its limits, or has none to have
+ */
+gboolean clawt_container_computer_apply_limits(ClawtContainerComputer  *self,
+                                               GError                 **error);
+
+/**
+ * clawt_container_computer_get_name:
+ * @self: a #ClawtContainerComputer
+ *
+ * Returns: (transfer none): the container's name in podman
+ */
+const gchar *clawt_container_computer_get_name(ClawtContainerComputer *self);
 
 /**
  * clawt_container_computer_build_mount_json:

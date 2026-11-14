@@ -125,8 +125,17 @@ clawt_daemon_shared_computer_get(ClawtDaemon *self, ClawtAgent *agent, GError **
     computer = g_hash_table_lookup(self->shared_computers, use);
     if (computer != NULL &&
         (!clawt_agent_computer_is_stale(agent) ||
-         clawt_computer_get_state(computer) == CLAWT_COMPUTER_STATE_RUNNING))
+         clawt_computer_get_state(computer) == CLAWT_COMPUTER_STATE_RUNNING)) {
+        /*
+         * Reused, but with what it can take in place retaken from the
+         * entry: the start mode, the limits and the wake command.
+         */
+        if (!clawt_computer_factory_refresh(clawt_agent_get_config(agent),
+                                            computer, error))
+            return NULL;
+
         return g_object_ref(computer);
+    }
 
     /* Every agent on it, so every workspace is mounted when it is created. */
     user_ids = clawt_daemon_shared_users(self, use, FALSE, NULL);

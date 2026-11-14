@@ -113,6 +113,8 @@ clawt_connector_check_new_account(
  * clawt_connector_accounts_inbound:
  * @line: one JSON-RPC message from the tool server
  * @prefix: the account's slug
+ * @exempt: (array zero-terminated=1) (nullable): names to leave as they
+ *   are -- a tool directory's own three, which it names for the account
  *
  * Renames the tools in a `tools/list` result to `<prefix>_<tool>`, and
  * says in each description which account it acts as.
@@ -123,7 +125,8 @@ clawt_connector_check_new_account(
 gchar *
 clawt_connector_accounts_inbound(
 	const gchar *line,
-	const gchar *prefix
+	const gchar *prefix,
+	GStrv        exempt
 );
 
 /**
@@ -134,6 +137,8 @@ clawt_connector_accounts_inbound(
  * @siblings: (array zero-terminated=1) (nullable): every slug on the
  *   service, for the refusal to name
  * @conflict: (nullable): why the accounts collide, when @prefix is %NULL
+ * @exempt: (array zero-terminated=1) (nullable): names that pass as they
+ *   are -- a tool directory's own three, already named for the account
  * @refusal: (out) (transfer full) (optional) (nullable): a reply to send
  *   the agent instead, when the call is refused and has an id
  *
@@ -152,6 +157,7 @@ clawt_connector_accounts_outbound(
 	const gchar  *prefix,
 	GStrv         siblings,
 	const gchar  *conflict,
+	GStrv         exempt,
 	gchar       **refusal
 );
 

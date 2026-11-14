@@ -737,6 +737,54 @@ test_the_remote_entry_sorts_first(
 	g_assert_null(first->token_url);
 }
 
+/*
+ * A server that offers only client_secret_basic refuses a secret in the
+ * body; one that offers post or public clients gets those instead.
+ */
+static void
+test_token_endpoint_auth_method_is_honoured(
+	void
+){
+	g_autoptr(ClawtMcpAuthMetadata) basic_only = NULL;
+	g_autoptr(ClawtMcpAuthMetadata) public_ok = NULL;
+	g_autoptr(ClawtMcpAuthClient) granted = NULL;
+	g_autofree gchar *header = NULL;
+	g_autofree guchar *raw = NULL;
+	g_autofree gchar *decoded = NULL;
+	gsize length = 0;
+
+	basic_only = clawt_mcp_auth_parse_server(
+		"{\"issuer\":\"https://auth.example\","
+		"\"authorization_endpoint\":\"https://auth.example/authorize\","
+		"\"token_endpoint\":\"https://auth.example/token\","
+		"\"code_challenge_methods_supported\":[\"S256\"],"
+		"\"token_endpoint_auth_methods_supported\":"
+		"[\"client_secret_basic\"]}",
+		-1, "https://auth.example", "https://mcp.example/mcp", NULL, TRUE,
+		NULL);
+	g_assert_cmpstr(basic_only->auth_method, ==, "client_secret_basic");
+	g_assert_true(clawt_mcp_auth_uses_basic(basic_only, NULL));
+
+	public_ok = clawt_mcp_auth_parse_server(GOOD_METADATA, -1,
+	                                        "https://auth.example",
+	                                        "https://mcp.example/mcp", NULL,
+	                                        TRUE, NULL);
+	g_assert_false(clawt_mcp_auth_uses_basic(public_ok, NULL));
+
+	/* What the registration granted wins over what was offered. */
+	granted = clawt_mcp_auth_parse_registration(
+		"{\"client_id\":\"c\",\"client_secret\":\"s\","
+		"\"token_endpoint_auth_method\":\"client_secret_basic\"}", -1, NULL);
+	g_assert_true(clawt_mcp_auth_uses_basic(public_ok, granted));
+
+	/* Both halves form-encoded before they are joined (RFC 6749 2.3.1). */
+	header = clawt_oauth_basic_credentials("my id", "a:b+c");
+	g_assert_true(g_str_has_prefix(header, "Basic "));
+	raw = g_base64_decode(header + 6, &length);
+	decoded = g_strndup((const gchar *)raw, length);
+	g_assert_cmpstr(decoded, ==, "my%20id:a%3Ab%2Bc");
+}
+
 int
 main(
 	int   argc,
@@ -774,6 +822,8 @@ main(
 	g_test_add_func("/mcp-auth/register/response",
 	                test_registration_response_is_read);
 	g_test_add_func("/mcp-auth/plan", test_plan_decisions);
+	g_test_add_func("/mcp-auth/token-endpoint-auth-method",
+	                test_token_endpoint_auth_method_is_honoured);
 	g_test_add_func("/mcp-auth/resource-parameter",
 	                test_resource_rides_every_leg);
 	g_test_add_func("/mcp-auth/no-redirects",

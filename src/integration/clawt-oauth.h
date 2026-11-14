@@ -426,6 +426,22 @@ gchar *clawt_oauth_await_redirect_finish(GAsyncResult  *result,
                                          GError       **error);
 
 /**
+ * clawt_oauth_basic_credentials:
+ * @client_id: the application
+ * @client_secret: its secret
+ *
+ * The `Authorization` value for RFC 6749 `client_secret_basic`: both
+ * halves form-urlencoded first (section 2.3.1), then joined by a colon
+ * and base64'd.  The encoding step is the one that gets skipped, and a
+ * secret with a `:` or a `+` in it then authenticates as somebody else's
+ * or not at all.
+ *
+ * Returns: (transfer full): `Basic <base64>`
+ */
+gchar *clawt_oauth_basic_credentials(const gchar *client_id,
+                                     const gchar *client_secret);
+
+/**
  * clawt_oauth_exchange_body:
  * @client_id: (nullable): the application
  * @client_secret: (nullable): if the provider insists on one
@@ -475,6 +491,8 @@ gchar *clawt_oauth_refresh_body(const gchar *client_id,
  * @verifier: (nullable): the PKCE verifier
  * @resource: (nullable): the RFC 8707 resource indicator, as the
  *   authorization request carried it
+ * @basic_auth: send @client_id and @client_secret as HTTP Basic
+ *   (`client_secret_basic`) rather than in the body
  * @cancellable: (nullable): a #GCancellable
  * @callback: called with the token
  * @user_data: for @callback
@@ -488,6 +506,7 @@ void clawt_oauth_exchange_async(const gchar         *token_url,
                                 const gchar         *redirect_uri,
                                 const gchar         *verifier,
                                 const gchar         *resource,
+                                gboolean             basic_auth,
                                 GCancellable        *cancellable,
                                 GAsyncReadyCallback  callback,
                                 gpointer             user_data);
@@ -510,6 +529,8 @@ ClawtOauthToken *clawt_oauth_exchange_finish(GAsyncResult  *result,
  * @refresh_token: what to renew with
  * @resource: (nullable): the RFC 8707 resource indicator the token was
  *   minted for
+ * @basic_auth: send the client's credentials as HTTP Basic rather than in
+ *   the body
  * @cancellable: (nullable): a #GCancellable
  * @callback: called with the new token
  * @user_data: for @callback
@@ -521,6 +542,7 @@ void clawt_oauth_refresh_async(const gchar         *token_url,
                                const gchar         *client_secret,
                                const gchar         *refresh_token,
                                const gchar         *resource,
+                               gboolean             basic_auth,
                                GCancellable        *cancellable,
                                GAsyncReadyCallback  callback,
                                gpointer             user_data);

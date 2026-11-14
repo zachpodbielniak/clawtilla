@@ -134,6 +134,20 @@ The authorize page reads the members ~connector.begin~ sends -- ~authorize_url~,
 
 =message_element()= reads =acknowledged= and =merged= off each ~room.history~ message.  An acknowledged answer gets a neutral badge, =clawt_message_ack_label()= with =clawt_message_ack_tooltip()= as its =title=, in the message's header line -- which is drawn for that message even mid-run, as the task and hop badges are.  A merged note's body is split by =clawt_merge_split()=: the preface is the message body and each section is a =.merge-section= block with a =.merge-section-label= heading.  The live ~message~ event only marks unread here; the transcript re-reads history, so both marks come from one path.
 
+*** Connectors
+
+Each connector's card has a /Tools/ row --
+=clawt_mcp_directory_status_label()='s sentence: how many tools its server
+has and whether agents get it as a directory -- and a *Present as a
+directory* select (Auto, Always, Never, walked from
+=clawt_tool_directory_mode_count()=) that posts to
+=/settings/connectors/:connector/directory= and saves through
+~integration.update~.  A *Servers with many tools* card holds the two
+thresholds and posts to =/settings/connectors/directory-thresholds=,
+which sends ~connector.settings~; a field left empty keeps its value and
+one that is not a whole number is refused before anything is sent.  See
+"Servers with many tools" in [[file:connectors.org][connectors.org]].
+
 *** The integration editor
 
 Drawn from ~clawt_integration_fields()~, the same table the GTK client
@@ -213,6 +227,7 @@ answers with the page it did it on.
 | =/settings/<page>/...=        | their actions: add, save, remove, health, test, authorize, revoke |
 | =/new=, =/import=, =/design=  | making an agent                         |
 | =/alerts=, =/decisions=, =/routines/...=, =/tasks/:task/cancel=, =/tasks/:task/retry=, =/incidents/:incident/retry=, =/incidents/configure= | the standing surfaces |
+| =/decisions/proposal=         | Approve, Reject or Edit a skill an agent proposed (~skill.proposal_resolve~); a refusal is shown as an error page, not swallowed by the redirect, since the proposal is still waiting |
 | =/activity/:agent/stop=, =/activity/:agent/steer=, =/f/activity= | the Activity page's actions and its polled panel |
 | =/fleet-usage/:agent/stop=, =/fleet-usage/stop-idle=, =/f/fleet-usage= | the Fleet page's actions and its polled panel (=?period== picks the window) |
 | =/a/:id/browser/open=, =/a/:id/browser/click=, =/a/:id/browser/stop=, =/a/:id/browser/frame=, =/f/a/:id/browser= | the Computer page's Browser view: its actions, its picture and its polled panel |

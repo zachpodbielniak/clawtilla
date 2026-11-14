@@ -81,6 +81,8 @@ licence, send nothing, and exit 0.
 | ~decision answer <id> <answer>~ | free text; it routes back to the agent |
 | ~decision dismiss <id>~ | it carries on with its default |
 | ~decision delete <id>~ | gone from the inbox for good, answered or not; an open one is withdrawn first |
+| ~skill proposals~ | skills agents have proposed, each printed in full (the draft, or a change's diff) |
+| ~skill approve <proposal>~ / ~skill reject <proposal> [why]~ | settle one; the agent is told, with your reason |
 | ~wait list [agent]~ | conditions agents are waiting on, checked by code: condition, last and next check, expiry |
 | ~wait cancel <id>~ | stop one; the agent is told it is no longer waiting |
 | ~event list [subject]~ | what the fleet has been doing, from the event log |
@@ -328,7 +330,8 @@ clawtilla connector catalog
 clawtilla connector add gh --provider github --account work \
     --command github-mcp-server --scope all
 clawtilla connector key gh          # reads stdin with the echo off
-clawtilla connector list
+clawtilla connector list            # also: how many tools, and whether a directory
+clawtilla integration set gh directory=always
 #+end_src
 
 There is deliberately no =--key= flag, for the same reason there is no
@@ -570,6 +573,29 @@ It is also the only one of the four that does not need the guest
 rebuilt: it reaches the virtual GPU rather than the cloud-init seed, so
 it applies at the VM's next boot.
 
+*** When the computer starts, its limits, and waking it
+
+The agent's computer settings carry three more things, in GTK, the web
+client and lrg alike, each drawn only for the computer types that read it
+(the daemon reports the values only for those):
+
+- *Start the computer* -- /When the agent starts/ or /On first use/, the
+  choices walked from ~clawt_computer_start_count()~.  On first use leaves
+  the machine off until the agent first runs something in it; its own
+  tools run on the host either way.  Container, distrobox, VM and ssh
+  agents.  See [[file:computers.org::#computer-start][When the machine
+  starts]].
+- *Process limit*, *Memory* and *Memory + swap* -- container and distrobox
+  agents.  Sizes are written as podman writes them (~512m~, ~4g~); empty
+  means podman's default.  A bad value is refused when saved, naming the
+  field, and a change reaches a running machine at once with ~podman
+  update~, without a rebuild.  See [[file:computers.org::#container-limits][Process
+  and memory limits]].
+- *Wake command* -- ssh agents.  One line, split into a program and its
+  arguments (~wakeonlan aa:bb:cc:dd:ee:ff~), never run through a shell;
+  a line using a pipe or a redirection is refused when saved.  See
+  [[file:computers.org::#ssh-wake][A machine that sleeps]].
+
 *** Choosing an account
 
 The agent inspector has an *Account* row beside the model and effort. Its choices come from ~account.list~ with the agent named, so it offers only the accounts the daemon will accept for that agent's provider; an account the agent already names and can no longer use is still shown, labelled, so saving cannot replace it without anybody choosing to. Saving clears the account before a provider change and sets it after, because the daemon checks the pair. The web client's agent page draws the same choices as a select.
@@ -601,6 +627,12 @@ The fleet allowlist, =egress.allow=, is on the *Shared folders* settings page un
 *** What an agent is waiting for
 
 The agent inspector has a *Waiting for* group, above the integrations: one row per pending wait the agent set with ~clawtilla_wait_until~, titled with the agent's own words for it, with the condition, a schedule line from ~clawt_wait_schedule_label()~ (~checked 4m ago · next check in 1m · expires in 23h~), what the last check saw, and a *Cancel* button.  Cancelling sends ~wait.cancel~, and the daemon tells the agent, which would otherwise go on believing it was waiting.  The list -- and only the list, never the form above it -- refills on every ~wait.changed~ event.  An agent that looks idle and is in fact waiting on a deploy is not one somebody should nudge, which is why it is on the agent's own view.  The web client's agent page draws the same list as a card with a Cancel form per row, and the libregnum client's Overview as a section.  How many an agent may have is ~max_waits~, in the agent's settings with the other fleet settings it may override.  See [[file:orchestration.org::*Waits: a condition checked by code][orchestration.org]].
+
+*** A skill an agent proposes
+
+When an agent calls ~clawtilla_skill_propose~, its decision card is drawn differently in all three graphical clients.  The title is the decision's first line only -- "kudu proposes a new skill, 'release'." -- which names the agent and a validated skill name and nothing the agent chose freely; the proposed ~SKILL.md~ (a new skill) or the diff against the skill as it is now (a change) sits under it as plain monospace text, with the agent's reason, the scan's warnings and, when the file changed since it was proposed, a caution that Approve will be refused.  The buttons are *Approve*, *Reject* and *Edit*, with an optional note that goes to the agent; Edit opens the description and body in an editor and *Save and approve* sends the person's version.  The generic option buttons and free-text answer are not offered on that card -- free text would be read as a rejection, and "edit" needs text -- while *Does not need me* and *Delete* stay, and both reject the draft.  Everything shown arrives from ~skill.proposals~ already escaped and is rendered as text, never markup.
+
+The Skills page lists what is pending under *Proposed by agents*: the skill's name, who proposed it and how long ago, and their reason, with a *Review* button that opens Decisions.  There is deliberately no Approve there -- that would be a way to approve a skill without the card that shows its text.  The GTK client builds both in =gtk-decisions.c= and =gtk-skills.c=, the web client in =web-decisions.c= (~POST /decisions/proposal~) and =web-skills.c=, and the libregnum client in =lrg-decisions.c= and =lrg-skills.c=.  See [[file:skills.org::*Skills agents propose][Skills agents propose]].
 
 *** Teams in the sidebar
 
@@ -858,6 +890,18 @@ The list shows three states rather than two.  A credential that has
 expired *and can renew itself* reads as connected, because it is: the
 daemon renews it on a timer.  Showing that as broken would light the list
 up every hour and teach you to ignore the one that genuinely is.
+
+Each row also says how many tools the connector's server has and whether
+agents get it as a directory -- =clawt_mcp_directory_status_label()='s
+sentence, the same one the web and lrg clients and =clawtilla connector
+list= print.  A connector no agent has used yet says its size is
+unknown.  The connector's dialog has *Present as a directory* (Auto,
+Always, Never, walked from =clawt_tool_directory_mode_count()=), saved
+with ~integration.update~ as soon as it changes.  Under the list,
+*Servers with many tools* holds the two thresholds Auto measures against,
+~connectors.directory_min_tools~ and ~connectors.directory_min_chars~,
+written through ~connector.settings~.  See "Servers with many tools" in
+[[file:connectors.org][connectors.org]].
 
 See [[file:connectors.org][connectors.org]].
 

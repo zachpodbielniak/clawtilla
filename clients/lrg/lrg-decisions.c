@@ -15,15 +15,23 @@
  * daemon writes the action and the matched rule into the question, so
  * the whole question is drawn as a wrapping paragraph rather than
  * clipped to a title line, which is what keeps the rule readable.
+ *
+ * A skill an agent proposed (clawtilla_skill_propose) is a decision too,
+ * recognised by the library's own id rule, and is drawn as a review
+ * rather than a question: the agent's reason, the scan's warnings, the
+ * diff or the whole proposed SKILL.md as plain monospace text, and
+ * Approve / Reject / Edit, which send `skill.proposal_resolve`.
  */
 
 #include "clawt-lrg.h"
 #include "clawt-lrg-work-model.h"
 
 typedef struct {
-    ClawtLrgApp *app;
-    LrgWidget   *list;
-    guint        seq;
+    ClawtLrgApp          *app;
+    LrgWidget            *list;
+    guint                 seq;
+    ClawtLrgRequestFlags  flags;       /* the refresh's, for decision.list */
+    JsonNode             *proposals;   /* the last skill.proposals reply */
 } Decisions;
 
 static Decisions decisions;
@@ -117,6 +125,186 @@ on_delete_clicked(LrgButton *button, gpointer user_data)
                       CLAWT_LRG_REQUEST_NONE, on_settled, "Deleted", NULL);
 }
 
+/* ── Skill proposals ──────────────────────────────────────────────── */
+
+/*
+ * Approve or Reject.  The note entry is read at click time and is
+ * optional: words for the agent, most useful on a rejection.
+ */
+static void
+on_proposal_action_clicked(LrgButton *button, gpointer user_data)
+{
+    const gchar *id = g_object_get_data(G_OBJECT(button), "decision-id");
+    LrgWidget *note = g_object_get_data(G_OBJECT(button), "entry");
+    const gchar *action = user_data;
+    g_autofree gchar *refusal = NULL;
+    JsonNode *payload = clawt_lrg_proposal_resolve_payload(
+        id, action, (note != NULL) ? clawt_lrg_entry_text(note) : NULL,
+        NULL, NULL, &refusal);
+
+    if (payload == NULL) {
+        clawt_lrg_toast(decisions.app, refusal);
+        return;
+    }
+
+    clawt_lrg_request(decisions.app, "skill.proposal_resolve", payload,
+                      CLAWT_LRG_REQUEST_NONE, on_settled,
+                      (gpointer)(g_strcmp0(action, "approve") == 0
+                                     ? "Approved" : "Rejected"),
+                      NULL);
+}
+
+/* The edit form's fields, and the proposal they belong to. */
+typedef struct {
+    gchar     *id;
+    LrgWidget *description;   /* borrowed: the dialog's content holds them */
+    LrgWidget *body;
+} ProposalEdit;
+
+static void
+proposal_edit_free(gpointer data)
+{
+    ProposalEdit *edit = data;
+
+    g_free(edit->id);
+    g_free(edit);
+}
+
+static gboolean
+on_proposal_edit_response(ClawtLrgApp *app, LrgDialog *dialog,
+                          gint response, gpointer user_data)
+{
+    ProposalEdit *edit = user_data;
+    g_autofree gchar *body = clawt_lrg_editor_text(edit->body);
+    g_autofree gchar *refusal = NULL;
+    JsonNode *payload = clawt_lrg_proposal_resolve_payload(
+        edit->id, "edit", NULL, clawt_lrg_entry_text(edit->description),
+        body, &refusal);
+
+    /* refused here: the dialog stays up with what was typed */
+    if (payload == NULL) {
+        clawt_lrg_toast(app, refusal);
+        return FALSE;
+    }
+
+    clawt_lrg_request(app, "skill.proposal_resolve", payload,
+                      CLAWT_LRG_REQUEST_NONE, on_settled,
+                      (gpointer)"Edited and approved", NULL);
+    return TRUE;
+}
+
+/*
+ * The proposed text, to change before it is approved.  Prefilled with
+ * what the daemon sent, which is the escaped form: a forged marker the
+ * agent wrote is visibly rewritten in the editor rather than approved
+ * back in unseen.
+ */
+static void
+on_proposal_edit_clicked(LrgButton *button, gpointer user_data)
+{
+    const gchar *id = g_object_get_data(G_OBJECT(button), "decision-id");
+    JsonObject *proposal = clawt_lrg_proposal_find(decisions.proposals, id);
+    LrgWidget *form;
+    ProposalEdit *edit;
+
+    if (proposal == NULL)
+        return;
+
+    form = clawt_lrg_form_new();
+    edit = g_new0(ProposalEdit, 1);
+    edit->id = g_strdup(id);
+    edit->description = clawt_lrg_entry(
+        clawt_ipc_payload_string(proposal, "description"), "Use this when …");
+    edit->body = clawt_lrg_editor(clawt_ipc_payload_string(proposal, "body"),
+                                  NULL);
+    clawt_lrg_form_add(form, "Description", edit->description,
+                       "The only part an agent reads before opening it.");
+    clawt_lrg_form_add(form, "Body", edit->body, NULL);
+
+    g_object_unref(clawt_lrg_dialog(decisions.app, "Edit the proposed skill",
+                     "Your version is written and approved; the agent is "
+                     "told it was edited.",
+                     form, "Save and approve", FALSE,
+                     on_proposal_edit_response, edit, proposal_edit_free));
+    g_object_unref(form);
+}
+
+static LrgWidget *
+proposal_button(const gchar *label, const gchar *style, const gchar *id,
+                GCallback on_clicked, gpointer user_data, LrgWidget *entry)
+{
+    LrgWidget *button = clawt_lrg_button(label, style, on_clicked, user_data);
+
+    g_object_set_data_full(G_OBJECT(button), "decision-id", g_strdup(id),
+                           g_free);
+    g_object_set_data(G_OBJECT(button), "entry", entry);
+    return button;
+}
+
+/*
+ * A proposal's review, in place of a question's options and answer box.
+ *
+ * Everything the agent wrote arrives escaped from the daemon and is
+ * drawn as plain text -- the reason as a paragraph, the diff or the
+ * whole SKILL.md in monospace -- never as markdown, which would render
+ * the agent's text as if it were the page's own.
+ */
+static void
+lrg_proposal_review(LrgWidget *body, const gchar *id, JsonObject *proposal)
+{
+    const gchar *reason = clawt_ipc_payload_string(proposal, "reason");
+    g_auto(GStrv) warnings = clawt_ipc_payload_strv(proposal, "warnings");
+    LrgWidget *note;
+    LrgWidget *buttons = clawt_lrg_hbox(8.0f);
+    gboolean update = g_strcmp0(clawt_ipc_payload_string(proposal, "kind"),
+                                "update") == 0;
+    guint i;
+
+    if (reason != NULL && *reason != '\0') {
+        g_autofree gchar *why = g_strdup_printf("Why: %s", reason);
+
+        clawt_lrg_take(body, clawt_lrg_paragraph(why, NULL));
+    }
+
+    for (i = 0; warnings != NULL && warnings[i] != NULL; i++) {
+        LrgWidget *line = clawt_lrg_hbox(10.0f);
+        LrgWidget *text = clawt_lrg_paragraph(warnings[i], NULL);
+
+        lrg_widget_set_fill_weight(text, 1.0f);
+        clawt_lrg_take(line, clawt_lrg_badge("Warning", "warn"));
+        clawt_lrg_take(line, text);
+        clawt_lrg_take(body, line);
+    }
+
+    if (clawt_ipc_payload_boolean(proposal, "stale", FALSE))
+        clawt_lrg_take(body, clawt_lrg_paragraph(
+                                 "The file on disk changed after this was "
+                                 "proposed, so Approve is refused. Edit "
+                                 "shows what is there now, or reject it.",
+                                 "muted"));
+
+    clawt_lrg_take(body, clawt_lrg_label(update ? "The change"
+                                                : "The proposed SKILL.md",
+                                         "caption"));
+    clawt_lrg_take(body, clawt_lrg_paragraph(clawt_lrg_proposal_shown(proposal),
+                                             "mono"));
+
+    note = clawt_lrg_entry(NULL, "Why (optional, sent to the agent)");
+    lrg_widget_set_fill_weight(note, 1.0f);
+    clawt_lrg_take(body, note);
+
+    clawt_lrg_take(buttons, proposal_button(
+        "Approve", "primary", id, G_CALLBACK(on_proposal_action_clicked),
+        (gpointer)"approve", note));
+    clawt_lrg_take(buttons, proposal_button(
+        "Edit", NULL, id, G_CALLBACK(on_proposal_edit_clicked), NULL, NULL));
+    clawt_lrg_take(buttons, proposal_button(
+        "Reject", "danger", id, G_CALLBACK(on_proposal_action_clicked),
+        (gpointer)"reject", note));
+    lrg_widget_set_halign(buttons, LRG_ALIGN_START);
+    clawt_lrg_take(body, buttons);
+}
+
 /* ── Drawing ──────────────────────────────────────────────────────── */
 
 /*
@@ -163,6 +351,8 @@ decision_card(JsonObject *decision, gint64 now_us)
     g_autofree gchar *going = clawt_lrg_decision_going(decision);
     g_autofree gchar *meta = clawt_lrg_decision_meta(decision, now_us);
     g_auto(GStrv) options = clawt_lrg_decision_options(decision);
+    g_autofree gchar *headline = NULL;
+    JsonObject *proposal = NULL;
     LrgWidget *body = clawt_lrg_vbox(8.0f);
     LrgWidget *head = clawt_lrg_hbox(8.0f);
     LrgWidget *badges = clawt_lrg_hbox(6.0f);
@@ -177,6 +367,19 @@ decision_card(JsonObject *decision, gint64 now_us)
 
     if (id == NULL)
         id = "";
+
+    /*
+     * A skill proposal, by the library's rule.  Its headline is the only
+     * line the daemon built from nothing the agent chose freely, so it
+     * alone is the heading; the fenced rest is drawn by the review.
+     */
+    if (clawt_skill_proposal_id_is_valid(id))
+        proposal = clawt_lrg_proposal_find(decisions.proposals, id);
+
+    if (proposal != NULL) {
+        headline = clawt_lrg_proposal_title(decision);
+        question = headline;
+    }
 
     /* who asked and when, with the urgency beside it */
     clawt_lrg_take(head, clawt_lrg_label(meta, "caption"));
@@ -213,6 +416,11 @@ decision_card(JsonObject *decision, gint64 now_us)
                                  "The default stops being cheap to undo "
                                  "within a day.", "muted"));
 
+    if (proposal != NULL) {
+        lrg_proposal_review(body, id, proposal);
+        goto closing_row;
+    }
+
     /*
      * The answer box and its button on one line, because they are one
      * action -- and made first, so the option buttons can read it: a
@@ -235,6 +443,11 @@ decision_card(JsonObject *decision, gint64 now_us)
     clawt_lrg_take(typed, entry);
     clawt_lrg_take(typed, send);
     clawt_lrg_take(body, typed);
+
+closing_row:
+    /* a proposal's review replaces the answer row it never drew into */
+    if (proposal != NULL)
+        g_object_unref(typed);
 
     drop = clawt_lrg_button("Does not need me", "flat",
                             G_CALLBACK(on_dismiss_clicked), NULL);
@@ -341,6 +554,28 @@ on_decisions(ClawtLrgApp *app, JsonNode *reply, const GError *error,
     }
 }
 
+/*
+ * The proposals first, then the decisions, so every proposal card is
+ * drawn knowing its proposal.  A failure here -- skills turned off -- is
+ * not a failure of the inbox: the decisions still come, and a proposal's
+ * card falls back to the plain question, which the daemon wrote whole.
+ */
+static void
+on_proposals(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+             gpointer user_data)
+{
+    if (GPOINTER_TO_UINT(user_data) != decisions.seq ||
+        decisions.list == NULL)
+        return;
+
+    g_clear_pointer(&decisions.proposals, json_node_unref);
+    if (reply != NULL)
+        decisions.proposals = json_node_ref(reply);
+
+    clawt_lrg_request(app, "decision.list", NULL, decisions.flags,
+                      on_decisions, user_data, NULL);
+}
+
 static void
 refresh_list(ClawtLrgApp *app, ClawtLrgRequestFlags flags)
 {
@@ -348,8 +583,9 @@ refresh_list(ClawtLrgApp *app, ClawtLrgRequestFlags flags)
         return;
 
     decisions.seq++;
-    clawt_lrg_request(app, "decision.list", NULL, flags, on_decisions,
-                      GUINT_TO_POINTER(decisions.seq), NULL);
+    decisions.flags = flags;
+    clawt_lrg_request(app, "skill.proposals", NULL, CLAWT_LRG_QUIET,
+                      on_proposals, GUINT_TO_POINTER(decisions.seq), NULL);
 }
 
 static LrgWidget *

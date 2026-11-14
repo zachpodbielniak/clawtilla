@@ -75,8 +75,9 @@ G_BEGIN_DECLS
  *   `"origin"` when none did and the MCP server's own origin was assumed
  *   to be the issuer, as MCP 2025-03-26 clients do
  * @auth_method: the `token_endpoint_auth_method` a registration should
- *   ask for: `"none"` when the server takes public clients, else
- *   `"client_secret_post"`
+ *   ask for: `"none"` when the server takes public clients (or lists
+ *   none), `"client_secret_post"` when it offers that, else
+ *   `"client_secret_basic"`
  *
  * Everything discovery learned about signing in to one remote MCP
  * server.  None of it is secret; it is kept in the connector's 0600
@@ -129,6 +130,8 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtMcpAuthMetadata, clawt_mcp_auth_metadata_free
  * ClawtMcpAuthClient:
  * @client_id: the client id the authorization server issued
  * @client_secret: (nullable): a secret, when the server issued one
+ * @auth_method: (nullable): the `token_endpoint_auth_method` the server
+ *   registered it with, when it said
  *
  * A client registered by RFC 7591 dynamic client registration.
  *
@@ -138,6 +141,7 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtMcpAuthMetadata, clawt_mcp_auth_metadata_free
 typedef struct {
 	gchar *client_id;
 	gchar *client_secret;
+	gchar *auth_method;
 } ClawtMcpAuthClient;
 
 #define CLAWT_TYPE_MCP_AUTH_CLIENT (clawt_mcp_auth_client_get_type())
@@ -239,6 +243,24 @@ clawt_mcp_auth_resource_candidates(
 GStrv
 clawt_mcp_auth_server_candidates(
 	const gchar *issuer
+);
+
+/**
+ * clawt_mcp_auth_uses_basic:
+ * @metadata: (nullable): what discovery found
+ * @client: (nullable): the registered client
+ *
+ * Whether the token endpoint takes the client's credentials as HTTP
+ * Basic (`client_secret_basic`): what the registration was granted,
+ * else what the server's metadata allows.  A server that offers only
+ * Basic refuses a secret in the body.
+ *
+ * Returns: %TRUE for HTTP Basic
+ */
+gboolean
+clawt_mcp_auth_uses_basic(
+	const ClawtMcpAuthMetadata *metadata,
+	const ClawtMcpAuthClient   *client
 );
 
 /**

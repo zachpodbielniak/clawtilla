@@ -1014,6 +1014,16 @@ skills:
   # instead.
   teach_max_events: 20000
 
+  # How many skills one agent may propose in any 24 hours.
+  #
+  # clawtilla_skill_propose lets an agent write down a technique it
+  # worked out -- a new skill, or a change to one that exists -- as a
+  # draft that reaches no prompt, with a decision in your inbox to
+  # approve, edit or reject it. Every proposal spends your attention, so
+  # this bounds how often one agent can ask for it; a rejected proposal
+  # still counts. 0 turns proposing off, and the tool is not offered.
+  max_proposals_per_day: 3
+
 # Standing rooms, created at startup if they do not exist.
 #
 # A room is a conversation with members. Posting into one enqueues to
@@ -1541,6 +1551,24 @@ integrations:
     # around it and has to work out from an error that it never had it.
     tools: []
 
+    # connector: whether its tools are listed one by one or searched.
+    #
+    # A server with hundreds of tools puts every description into every
+    # model call. As a directory it is three tools instead --
+    # <name>_search_tools, <name>_describe_tool and <name>_call_tool -- and
+    # the agent looks up what it needs. The search, the description and the
+    # call all work from the tools this agent may use, so narrowing `tools:`
+    # narrows what can be found as well as what can be called.
+    #
+    # `auto` makes a directory of a server past
+    # connectors.directory_min_tools or connectors.directory_min_chars, for
+    # an agent whose CLI does not search tools itself; Claude Code does, so
+    # its agents get every tool as before. `always` makes one whatever the
+    # size or the CLI, and `never` lists every tool however many there
+    # are. See docs/connectors.org, "Servers with many tools".
+    # Values: auto, always, never
+    directory: "auto"
+
     # For a connector that can stage its writes, whether it does.
     #
     # A staged write becomes a decision in the operator's own inbox rather
@@ -1673,6 +1701,25 @@ connectors:
   # fleet that bounces every hour would refresh every hour regardless of
   # what this key says.
   registry_refresh_hours: 24
+
+  # More tools than this makes a connector's server a directory.
+  #
+  # Counted after the connector's `tools:` narrowing, because that is the
+  # list the agent would otherwise read. Forty is where a tool list starts
+  # to cost more than it helps -- and API-model engines refuse more than
+  # 128 tools a turn across every server they have. Only read when a
+  # connector's `directory` is `auto`.
+  directory_min_tools: 40
+
+  # More characters of tool definitions than this makes a directory too.
+  #
+  # The names, descriptions and input schemas together, which is what the
+  # model actually reads on every call. A server with thirty tools can
+  # still be a hundred thousand characters when each one carries a page of
+  # documentation; about where Claude Code starts searching its own tools
+  # rather than listing them. Only read when a connector's `directory` is
+  # `auto`.
+  directory_min_chars: 100000
 
 # Handing work to Grok bots, and hearing back.
 #
@@ -2492,6 +2539,31 @@ agents:
       # Values: none, host, container, vm, distrobox, ssh
       type: null
 
+      # When the machine is started: with the agent, or the first time
+      # something runs in it.
+      #
+      # on_agent_start brings the computer up before the agent's first turn,
+      # so a broken image or a dead libvirtd stops the agent at once, with the
+      # reason, instead of a turn later. That is the default, and what every
+      # agent did before this key existed.
+      #
+      # on_first_use leaves it down until the first clawtilla_computer_exec,
+      # `computer exec`, wait condition or desktop call. The agent's own bash,
+      # read and write run on the host either way, so an agent that mostly
+      # talks, plans or delegates never pays for a VM it does not touch.
+      # Callers that arrive while it is coming up share the one start, and
+      # the time it takes is not counted against the command's timeout.
+      #
+      # Applies to container, distrobox, vm and ssh computers; a host computer
+      # is a local check and always starts with the agent. A computer stopped
+      # by hand under a running agent is started again by its next use.
+      #
+      # An agent with a VM desktop is the exception in practice: its MCP
+      # client asks for the desktop when the agent starts, and that request
+      # is a use.
+      # Values: on_agent_start, on_first_use
+      start: "on_agent_start"
+
       # Whether the shared exchange directory is visible to this agent.
       #
       # On by default, because otherwise every pair of agents that wants to
@@ -2718,6 +2790,41 @@ agents:
         # gone rather than offline, which is not what the word stop suggests.
         keep: true
 
+        # Most processes and threads the machine may hold at once.
+        #
+        # What stops a fork bomb, or a build with -j0, taking the host down with
+        # it. 0 leaves podman's own default (2048 on Fedora, from
+        # containers.conf); -1 removes the limit. Anything else is the limit.
+        #
+        # Read by the distrobox backend too, which is a podman container
+        # underneath: computer.container.* limits reach either. Passed to podman
+        # when the machine is created; a changed value is applied to the
+        # existing one with `podman update` at the next start, without a
+        # rebuild and without losing what the agent installed.
+        pids_limit: 0
+
+        # Most memory the machine may use, e.g. 512m or 4g.
+        #
+        # A whole number with an optional unit -- b, k, m or g, in powers of
+        # 1024 -- and at least 6m, which is podman's floor. Unset means no limit
+        # beyond the host's. Past it the kernel's OOM killer picks a process
+        # inside the machine, which is the point: the agent's container dies
+        # rather than your desktop.
+        #
+        # Applies to container and distrobox computers, at creation and then
+        # with `podman update` whenever it changes.
+        memory: null
+
+        # Memory and swap together, e.g. 8g; -1 for unlimited swap.
+        #
+        # podman's own meaning, and easy to misread: this is the total, not the
+        # swap alone, so memory: 4g with memory_swap: 6g allows 2g of swap. Equal
+        # to memory means no swap at all. Unset lets podman allow as much swap
+        # again as memory. It needs memory to be set and must not be smaller
+        # than it; both are refused when they arrive rather than when podman
+        # reads them.
+        memory_swap: null
+
       # A machine reached over ssh.
       #
       # The only backend clawtilla does not own. A container, a distrobox and
@@ -2814,6 +2921,29 @@ agents:
         # means the master is never created and every command silently pays a
         # fresh handshake.
         control_persist: 600
+
+        # A program to run when the machine does not answer, to wake it.
+        #
+        # For a machine that sleeps: a homelab box that suspends when idle, a
+        # cloud server that is paused. Wake-on-LAN is the usual answer --
+        # [wakeonlan, aa:bb:cc:dd:ee:ff] -- or a provider's own resume command.
+        # It should return once the machine is on its way up; clawtilla then
+        # connects as usual, and ssh's connect_timeout covers the rest of the
+        # boot.
+        #
+        # A program and its arguments, as a list. It is never run through a
+        # shell, so a pipe or a redirect would be text; written as one line in
+        # a client it is split into words and refused if it uses one. Nothing
+        # is substituted into it.
+        #
+        # Run only when a connection attempt finds nothing answering, never for
+        # a refused key or login. Commands that arrive while it runs wait for
+        # that one run rather than starting their own, and each is told how
+        # long it waited. It gets at most 120 seconds, after which it is killed
+        # along with everything it started, and the time is not taken out of
+        # the command's own timeout. A wake that fails is reported with the
+        # connection failure, saying which.
+        wake_command: []
 
       # Settings for computer.type: distrobox.
       #

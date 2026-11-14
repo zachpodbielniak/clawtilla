@@ -218,7 +218,7 @@ test_colliding_labels_are_refused(
 	forwarded = clawt_connector_accounts_outbound(
 		"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\","
 		"\"params\":{\"name\":\"work_create_issue\"}}",
-		NULL, NULL, first_error->message, &refusal);
+		NULL, NULL, first_error->message, NULL, &refusal);
 
 	g_assert_null(forwarded);
 	g_assert_nonnull(refusal);
@@ -238,11 +238,12 @@ test_tool_lists_are_renamed_per_account(
 		"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":["
 		"{\"name\":\"create_issue\",\"description\":\"Open an issue\"},"
 		"{\"name\":\"list_repos\"}]}}";
-	g_autofree gchar *work = clawt_connector_accounts_inbound(listed, "work");
+	g_autofree gchar *work = clawt_connector_accounts_inbound(listed, "work", NULL);
 	g_autofree gchar *home = clawt_connector_accounts_inbound(listed,
-	                                                           "personal");
+	                                                           "personal", NULL);
 	g_autofree gchar *other = clawt_connector_accounts_inbound(
-		"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[]}}", "work");
+		"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[]}}", "work",
+		NULL);
 
 	g_assert_nonnull(strstr(work, "\"work_create_issue\""));
 	g_assert_nonnull(strstr(work, "\"work_list_repos\""));
@@ -272,7 +273,7 @@ test_a_prefixed_call_reaches_its_own_account(
 		"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\","
 		"\"params\":{\"name\":\"work_create_issue\","
 		"\"arguments\":{\"title\":\"x\"}}}",
-		"work", siblings, NULL, &refusal);
+		"work", siblings, NULL, NULL, &refusal);
 
 	g_assert_null(refusal);
 	g_assert_nonnull(stripped);
@@ -282,7 +283,7 @@ test_a_prefixed_call_reaches_its_own_account(
 	/* Everything that is not a tool call goes through as it came. */
 	untouched = clawt_connector_accounts_outbound(
 		"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/list\"}", "work",
-		siblings, NULL, &refusal);
+		siblings, NULL, NULL, &refusal);
 	g_assert_cmpstr(untouched, ==,
 	                "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/list\"}");
 }
@@ -305,7 +306,7 @@ test_an_unprefixed_call_is_refused(
 	bare = clawt_connector_accounts_outbound(
 		"{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/call\","
 		"\"params\":{\"name\":\"create_issue\"}}",
-		"work", siblings, NULL, &refusal);
+		"work", siblings, NULL, NULL, &refusal);
 
 	g_assert_null(bare);
 	g_assert_nonnull(refusal);
@@ -318,7 +319,7 @@ test_an_unprefixed_call_is_refused(
 	other = clawt_connector_accounts_outbound(
 		"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\","
 		"\"params\":{\"name\":\"personal_create_issue\"}}",
-		"work", siblings, NULL, &refusal);
+		"work", siblings, NULL, NULL, &refusal);
 	g_assert_null(other);
 	g_assert_nonnull(refusal);
 
@@ -326,7 +327,7 @@ test_an_unprefixed_call_is_refused(
 	quiet = clawt_connector_accounts_outbound(
 		"{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\","
 		"\"params\":{\"name\":\"create_issue\"}}",
-		"work", siblings, NULL, &quiet_refusal);
+		"work", siblings, NULL, NULL, &quiet_refusal);
 	g_assert_null(quiet);
 	g_assert_null(quiet_refusal);
 }

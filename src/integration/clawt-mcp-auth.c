@@ -82,6 +82,7 @@ clawt_mcp_auth_client_copy(
 	out = g_new0(ClawtMcpAuthClient, 1);
 	out->client_id = g_strdup(self->client_id);
 	out->client_secret = g_strdup(self->client_secret);
+	out->auth_method = g_strdup(self->auth_method);
 
 	return out;
 }
@@ -107,6 +108,7 @@ clawt_mcp_auth_client_free(
 	wipe(self->client_secret);
 	g_free(self->client_id);
 	g_free(self->client_secret);
+	g_free(self->auth_method);
 	g_free(self);
 }
 
@@ -534,6 +536,21 @@ member_strings(
 }
 
 gboolean
+clawt_mcp_auth_uses_basic(
+	const ClawtMcpAuthMetadata *metadata,
+	const ClawtMcpAuthClient   *client
+){
+	const gchar *method = NULL;
+
+	if (client != NULL && client->auth_method != NULL)
+		method = client->auth_method;
+	else if (metadata != NULL)
+		method = metadata->auth_method;
+
+	return g_strcmp0(method, "client_secret_basic") == 0;
+}
+
+gboolean
 clawt_mcp_auth_parse_resource(
 	const gchar  *json,
 	gssize        length,
@@ -716,15 +733,19 @@ clawt_mcp_auth_parse_server(
 	 * A public client when the server takes one.  Absent means the
 	 * RFC 8414 default, client_secret_basic, which a public client is
 	 * not -- but a server that lists nothing almost always accepts
-	 * "none" from a registration that asks, so asking is right.
+	 * "none" from a registration that asks, so asking is right.  A server
+	 * that takes only a secret gets the method it names: in the body when
+	 * it offers that, as HTTP Basic when that is all it offers.
 	 */
 	auth_methods = member_strings(object,
 	                              "token_endpoint_auth_methods_supported");
 
 	if (auth_methods == NULL || strv_has(auth_methods, "none"))
 		out->auth_method = g_strdup("none");
-	else
+	else if (strv_has(auth_methods, "client_secret_post"))
 		out->auth_method = g_strdup("client_secret_post");
+	else
+		out->auth_method = g_strdup("client_secret_basic");
 
 	return g_steal_pointer(&out);
 }
@@ -826,6 +847,10 @@ clawt_mcp_auth_parse_registration(
 	out = g_new0(ClawtMcpAuthClient, 1);
 	out->client_id = g_strdup(client_id);
 	out->client_secret = g_strdup(member_string(object, "client_secret"));
+
+	/* The server may grant a different method from the one asked for. */
+	out->auth_method = g_strdup(member_string(object,
+	                                          "token_endpoint_auth_method"));
 
 	return out;
 }
@@ -1037,6 +1062,7 @@ clawt_mcp_auth_save(
 		json_builder_begin_object(builder);
 		add_member(builder, "client_id", client->client_id);
 		add_member(builder, "client_secret", client->client_secret);
+		add_member(builder, "auth_method", client->auth_method);
 		json_builder_end_object(builder);
 	}
 
@@ -1123,6 +1149,8 @@ clawt_mcp_auth_load(
 			client->client_id = g_strdup(member_string(c, "client_id"));
 			client->client_secret =
 				g_strdup(member_string(c, "client_secret"));
+			client->auth_method =
+				g_strdup(member_string(c, "auth_method"));
 			*out_client = client;
 		}
 	}

@@ -56,9 +56,15 @@ struct _ClawtSshComputer {
     gchar        *control_path;
 
     ClawtSshStatus status;
+
+    /* NULL when computer.ssh.wake_command is unset. */
+    ClawtWaker    *waker;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtSshComputer, clawt_ssh_computer, CLAWT_TYPE_COMPUTER)
+
+static ClawtSshStatus classify_connection(gint exit_status,
+                                          const gchar *stderr_text);
 
 /* ── Pure helpers, assertable with no ssh and no host ────────────── */
 
@@ -921,6 +927,129 @@ clawt_ssh_computer_get_status(ClawtSshComputer *self)
     return self->status;
 }
 
+/* ── Waking it ───────────────────────────────────────────────────── */
+
+void
+clawt_ssh_computer_set_wake_command(ClawtSshComputer    *self,
+                                    const gchar * const *argv)
+{
+    g_return_if_fail(CLAWT_IS_SSH_COMPUTER(self));
+
+    g_clear_object(&self->waker);
+
+    if (argv != NULL && argv[0] != NULL && *argv[0] != '\0')
+        self->waker = clawt_waker_new(argv, CLAWT_WAKE_MAX_SECONDS);
+}
+
+ClawtWaker *
+clawt_ssh_computer_get_waker(ClawtSshComputer *self)
+{
+    g_return_val_if_fail(CLAWT_IS_SSH_COMPUTER(self), NULL);
+
+    return self->waker;
+}
+
+gboolean
+clawt_ssh_wake_wanted(gint exit_status, const gchar *stderr_text)
+{
+    /*
+     * 255 is ssh's own failure; `true` cannot exit anything else
+     * non-zero. Within that, only the rung that is not a key or a login
+     * -- those were answered by a machine that is awake.
+     */
+    return exit_status == 255 &&
+           classify_connection(exit_status, stderr_text) ==
+               CLAWT_SSH_STATUS_UNREACHABLE;
+}
+
+/*
+ * Runs the wake command if the machine is not answering, before the
+ * command that needs it.
+ *
+ * Asked first rather than inferred from the command failing: re-running
+ * an agent's command after a failure could run it twice if the failure
+ * came after it started, and a probe can be repeated freely. A live
+ * multiplexing master is the cheap answer -- it only exists while the
+ * machine is up -- and costs no network round trip at all.
+ *
+ * @waited_usec is how long this caller waited on the wake, kept out of
+ * its command's own timeout because the command has not started yet.
+ */
+static gboolean
+ssh_wake_if_asleep(ClawtSshComputer *self, gint64 *waited_usec,
+                   GError **error)
+{
+    g_autofree gchar *binary = NULL;
+    g_autofree gchar *errors = NULL;
+    g_autofree gchar *unreachable = NULL;
+    g_autoptr(GError) probe_error = NULL;
+    g_autoptr(GError) wake_error = NULL;
+    gint exit_status = 0;
+
+    if (waited_usec != NULL)
+        *waited_usec = 0;
+
+    if (self->waker == NULL)
+        return TRUE;
+
+    binary = clawt_ssh_resolve_binary("ssh", error);
+
+    if (binary == NULL)
+        return FALSE;
+
+    if (self->control_path != NULL && self->control_persist > 0) {
+        GPtrArray *check = g_ptr_array_new_with_free_func(g_free);
+        g_auto(GStrv) argv = NULL;
+
+        g_ptr_array_add(check, g_strdup(binary));
+        append_common_options(self, check);
+        g_ptr_array_add(check, g_strdup("-O"));
+        g_ptr_array_add(check, g_strdup("check"));
+        g_ptr_array_add(check, g_strdup("--"));
+        g_ptr_array_add(check, g_strdup(self->host));
+        g_ptr_array_add(check, NULL);
+        argv = (GStrv)g_ptr_array_free(check, FALSE);
+
+        if (run_prepared((const gchar * const *)argv, NULL,
+                         PROBE_TIMEOUT_SECONDS, NULL, &exit_status, NULL,
+                         NULL, NULL) &&
+            exit_status == 0)
+            return TRUE;
+    }
+
+    /*
+     * The probe that decides. A probe that timed out is a machine that
+     * did not answer, which is what a wake is for.
+     */
+    if (run_remote_line(self, "true", PROBE_TIMEOUT_SECONDS, &exit_status,
+                        NULL, &errors, &probe_error)) {
+        if (exit_status == 0 || !clawt_ssh_wake_wanted(exit_status, errors))
+            return TRUE;
+    }
+
+    if (!clawt_waker_wake(self->waker, waited_usec, &wake_error)) {
+        unreachable = clawt_ssh_status_message(CLAWT_SSH_STATUS_UNREACHABLE,
+                                               self->host, self->workspace);
+
+        /*
+         * Both halves: the connection failure is what the agent saw, and
+         * the wake's failure is what to fix. The wake's own sentence
+         * says which way it failed.
+         */
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_COMPUTER_EXEC,
+                    "%s It did not answer, so it was woken, and %s",
+                    unreachable, wake_error->message);
+        return FALSE;
+    }
+
+    g_message("ssh computer %s: %s did not answer; woke it in %.1f s",
+              clawt_computer_get_agent_id(CLAWT_COMPUTER(self)), self->host,
+              (waited_usec != NULL) ? (gdouble)*waited_usec / G_USEC_PER_SEC
+                                    : 0.0);
+
+    return TRUE;
+}
+
 /* ── Lifecycle ───────────────────────────────────────────────────── */
 
 /*
@@ -1001,6 +1130,18 @@ ssh_provision(ClawtComputer *computer, GError **error)
                              NULL);
 
     clawt_ssh_computer_apply_mounts(self);
+
+    /*
+     * A machine that sleeps is woken before the checks below, which
+     * would otherwise all report it unreachable.
+     */
+    if (!ssh_wake_if_asleep(self, NULL, error)) {
+        self->status = CLAWT_SSH_STATUS_UNREACHABLE;
+        clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ERROR,
+                                 (error != NULL && *error != NULL)
+                                 ? (*error)->message : NULL);
+        return FALSE;
+    }
 
     /*
      * One round trip that answers "is it up, is the key known, does the
@@ -1184,6 +1325,7 @@ ssh_exec(ClawtComputer        *computer,
     ClawtExecResult *result;
     const gchar *directory;
     gint exit_status = 0;
+    gint64 waited = 0;
     gboolean truncated = FALSE;
     gboolean stderr_truncated = FALSE;
 
@@ -1225,6 +1367,14 @@ ssh_exec(ClawtComputer        *computer,
     line = join_quoted(argv, directory);
     command = build_argv_for_line(self, binary, line);
 
+    /*
+     * Woken first if it sleeps. The command's timeout starts after, so a
+     * slow wake is not charged to it; the time this command waited is
+     * kept on the result so the agent is told where it went.
+     */
+    if (!ssh_wake_if_asleep(self, &waited, error))
+        return NULL;
+
     if (!run_prepared((const gchar * const *)command, NULL, timeout_seconds,
                       cancellable, &exit_status, &stdout_text, &stderr_text,
                       error))
@@ -1240,6 +1390,7 @@ ssh_exec(ClawtComputer        *computer,
     result = clawt_exec_result_new(exit_status, bounded_stdout,
                                    bounded_stderr);
     clawt_exec_result_set_truncated(result, truncated || stderr_truncated);
+    clawt_exec_result_set_wake_usec(result, waited);
 
     return result;
 }
@@ -1428,6 +1579,7 @@ clawt_ssh_computer_dispose(GObject *object)
     ClawtSshComputer *self = CLAWT_SSH_COMPUTER(object);
 
     g_clear_object(&self->sandbox);
+    g_clear_object(&self->waker);
 
     G_OBJECT_CLASS(clawt_ssh_computer_parent_class)->dispose(object);
 }

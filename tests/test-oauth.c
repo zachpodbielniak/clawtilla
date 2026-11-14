@@ -618,7 +618,7 @@ test_a_token_is_renewed(void)
     token_url = g_strconcat(fake->base, "/token", NULL);
 
     clawt_oauth_refresh_async(token_url, "cid", NULL, "old-refresh", NULL,
-                              NULL, on_refreshed, fake);
+                              FALSE, NULL, on_refreshed, fake);
 
     g_main_loop_run(fake->loop);
 

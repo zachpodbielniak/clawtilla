@@ -285,7 +285,8 @@ render(
 gchar *
 clawt_connector_accounts_inbound(
 	const gchar *line,
-	const gchar *prefix
+	const gchar *prefix,
+	GStrv        exempt
 ){
 	g_autoptr(JsonParser) parser = json_parser_new();
 	JsonObject *object;
@@ -324,7 +325,9 @@ clawt_connector_accounts_inbound(
 		tool = json_node_get_object(element);
 		name = json_object_get_string_member_with_default(tool, "name", NULL);
 
-		if (name == NULL)
+		if (name == NULL ||
+		    (exempt != NULL &&
+		     g_strv_contains((const gchar * const *)exempt, name)))
 			continue;
 
 		renamed = g_strdup_printf("%s_%s", prefix, name);
@@ -372,6 +375,7 @@ clawt_connector_accounts_outbound(
 	const gchar  *prefix,
 	GStrv         siblings,
 	const gchar  *conflict,
+	GStrv         exempt,
 	gchar       **refusal
 ){
 	g_autoptr(JsonParser) parser = json_parser_new();
@@ -398,7 +402,10 @@ clawt_connector_accounts_outbound(
 	params = json_object_get_object_member(object, "params");
 	tool = json_object_get_string_member_with_default(params, "name", NULL);
 
-	if (tool == NULL)
+	if (tool == NULL ||
+	    (exempt != NULL &&
+	     g_strv_contains((const gchar * const *)exempt, tool) &&
+	     prefix != NULL))
 		return g_strdup(line);
 
 	/* Colliding labels: refuse, never route to whichever came first. */

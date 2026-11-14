@@ -609,6 +609,7 @@ update_note(FieldView *view)
     case CLAWT_LRG_AGENT_FIELD_EFFORT:
     case CLAWT_LRG_AGENT_FIELD_COMPUTER_TYPE:
     case CLAWT_LRG_AGENT_FIELD_RESOLUTION:
+    case CLAWT_LRG_AGENT_FIELD_COMPUTER_START:
         break;
     }
 
@@ -762,6 +763,7 @@ on_choices_reply(ClawtLrgApp *app, JsonNode *reply, const GError *error,
     case CLAWT_LRG_AGENT_FIELD_EFFORT:
     case CLAWT_LRG_AGENT_FIELD_COMPUTER_TYPE:
     case CLAWT_LRG_AGENT_FIELD_RESOLUTION:
+    case CLAWT_LRG_AGENT_FIELD_COMPUTER_START:
         return;
     }
 
@@ -1215,6 +1217,10 @@ build_control(FieldView *view)
         choices = clawt_lrg_agent_resolution_choices(field->value);
         break;
 
+    case CLAWT_LRG_AGENT_FIELD_COMPUTER_START:
+        choices = clawt_lrg_agent_computer_start_choices(field->value);
+        break;
+
     /* The current value alone, until the daemon says what else there is. */
     case CLAWT_LRG_AGENT_FIELD_TEAM:
         choices = clawt_lrg_agent_team_choices(NULL, field->value);
@@ -1296,6 +1302,7 @@ view_value(FieldView *view)
     case CLAWT_LRG_AGENT_FIELD_IMAGE:
     case CLAWT_LRG_AGENT_FIELD_DISK:
     case CLAWT_LRG_AGENT_FIELD_RESOLUTION:
+    case CLAWT_LRG_AGENT_FIELD_COMPUTER_START:
         return clawt_lrg_agent_choice_value(
             clawt_lrg_combo_id(view->control),
             view->other != NULL ? clawt_lrg_entry_text(view->other) : NULL);
@@ -1457,8 +1464,21 @@ build_form(ClawtLrgApp *app, guint index)
 
         for (f = 0; f < group->fields->len; f++) {
             ClawtLrgAgentField *field = g_ptr_array_index(group->fields, f);
-            FieldView *view = g_new0(FieldView, 1);
-            LrgWidget *outer = clawt_lrg_vbox(4.0f);
+            FieldView *view;
+            LrgWidget *outer;
+
+            /*
+             * Left off when this agent's computer does not read it -- the
+             * start choice, the podman limits and the wake command, each
+             * reported by the daemon only for the types that use it.  An
+             * undrawn field is never posted, so the save follows.
+             */
+            if (!clawt_lrg_agent_field_applies(field->key,
+                                               shown_object("agent")))
+                continue;
+
+            view = g_new0(FieldView, 1);
+            outer = clawt_lrg_vbox(4.0f);
 
             /*
              * The control lives in a slot of its own, because a chooser
