@@ -1898,7 +1898,7 @@ page until the browser navigates away. Needs a GSURF=1 build.
 - Type :: string
 - Default :: unset
 - Required :: yes
-- Since :: 0.24.0
+- Since :: 0.25.0
 
 What an agent asks for, and what agents.browser.secrets lists. The
 name is all an agent or a client ever sees of the entry's secret.
@@ -1907,7 +1907,7 @@ name is all an agent or a client ever sees of the entry's secret.
 
 - Type :: string
 - Default :: unset
-- Since :: 0.24.0
+- Since :: 0.25.0
 
 Whose login this is, or which field it belongs in.
 
@@ -1916,7 +1916,7 @@ Whose login this is, or which field it belongs in.
 - Type :: enum
 - Values :: password, totp
 - Default :: =password=
-- Since :: 0.24.0
+- Since :: 0.25.0
 
 `password` types the value itself. `totp` reads the value as a TOTP
 seed -- base32, or an otpauth://totp/ URI with its algorithm, digits
@@ -1927,7 +1927,7 @@ and period -- and types the RFC 6238 code for the current time.
 - Type :: secret reference
 - Default :: unset
 - Required :: yes
-- Since :: 0.24.0
+- Since :: 0.25.0
 
 A secret reference, never the value: {file: ...}, {env: ...} or
 {command: ...}, resolved the way secrets: says, at the moment of the
@@ -1938,7 +1938,7 @@ fill and not before.
 - Type :: list of strings
 - Default :: unset
 - Required :: yes
-- Since :: 0.24.0
+- Since :: 0.25.0
 
 The hosts the secret may be typed into: a page on any other host is
 refused, so an agent steered to a look-alike site cannot be made to
@@ -5480,7 +5480,7 @@ it running until its agent stops.
 
 - Type :: list of strings
 - Default :: unset
-- Since :: 0.24.0
+- Since :: 0.25.0
 
 The vault: entries this agent may have filled into a page, by name.
 Empty, the agent is offered no secret tools. Always the agent's own,

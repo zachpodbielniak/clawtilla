@@ -397,7 +397,7 @@ credentials:
 
 ** Secrets an agent fills but never sees
 
-Since 0.24.0, and in detail in [[file:browser.org][browser.org]].  A =vault:= entry is a secret reference with a name and the ~sites~ it may be typed on; =agents.browser.secrets= grants an agent names.  The agent gets a one-use =secret-ref:= bound to it and to its conversation (=clawtilla_secret_ref=), and spends it on =clawtilla_browser_fill_secret=; the daemon resolves the value, makes a TOTP code from a seed when the entry is ~totp~, and has gsurf type it as key input.
+Since 0.25.0, and in detail in [[file:browser.org][browser.org]].  A =vault:= entry is a secret reference with a name and the ~sites~ it may be typed on; =agents.browser.secrets= grants an agent names.  The agent gets a one-use =secret-ref:= bound to it and to its conversation (=clawtilla_secret_ref=), and spends it on =clawtilla_browser_fill_secret=; the daemon resolves the value, makes a TOTP code from a seed when the entry is ~totp~, and has gsurf type it as key input.
 
 - *What crosses which boundary.*  The value goes from the secret reference to the daemon's worker thread to gsurf's same-user control socket, once.  It is never in a tool result, an error, an event (~browser.secret_filled~ carries the name, kind, host and session), a log line, an IPC reply (~vault.list~ carries names, kinds, descriptions and sites) or the reference table.  =tests/test-browser.c= asserts each of those negatively.
 - *Where it can be typed.*  Only on the entry's ~sites~ and their subdomains, checked against the page's address at the fill.  An unreadable address is a refusal.

@@ -1040,6 +1040,12 @@ clawt_browser_fill_secret(ClawtBrowser *self, const gchar *selector, const gchar
     json_builder_add_string_value(builder, value);
     json_builder_set_member_name(builder, "submit");
     json_builder_add_boolean_value(builder, submit);
+    /* gsurf checks it again once it has found the field: the page may
+     * have moved since the caller read its address. */
+    if (host != NULL && *host != '\0') {
+        json_builder_set_member_name(builder, "host");
+        json_builder_add_string_value(builder, host);
+    }
     json_builder_end_object(builder);
     params = json_builder_get_root(builder);
 

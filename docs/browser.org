@@ -97,8 +97,8 @@ Offered only to an agent whose =agents.browser.mode= is not =none=, in a daemon 
 | =clawtilla_browser_back= | back one page |
 | =clawtilla_browser_release= | give up a shared session's wheel |
 | =clawtilla_browser_eval= | the agent's own JavaScript -- only with =agents.browser.allow_scripts= |
-| =clawtilla_secret_ref= | a one-use reference to a =vault:= entry it was granted, or the list of them -- only with =agents.browser.secrets= (since 0.24.0) |
-| =clawtilla_browser_fill_secret= | a granted secret typed into a field by reference; the agent hears only that it was filled (since 0.24.0) |
+| =clawtilla_secret_ref= | a one-use reference to a =vault:= entry it was granted, or the list of them -- only with =agents.browser.secrets= (since 0.25.0) |
+| =clawtilla_browser_fill_secret= | a granted secret typed into a field by reference; the agent hears only that it was filled (since 0.25.0) |
 
 *A reply means handed over, not done.*  gsurf answers ~page.click~ when the events reach the engine, not when the page has handled them, so every tool that can navigate -- open, click, type with submit, key, back -- waits for ~document.readyState~ to be =complete= and then reports the page it is on.  That last line is what makes a click that navigated visible to the agent without another call.
 
@@ -108,7 +108,7 @@ Click, type, key and fill_secret are =desktop-input= actions to the action rules
 
 ** Secrets the agent never sees
 
-Since 0.24.0.  A login form is where an agent most needs a browser and where it should least hold what it types.  A secret is never handed to the agent: the agent names it, and the daemon has gsurf type it.
+Since 0.25.0.  A login form is where an agent most needs a browser and where it should least hold what it types.  A secret is never handed to the agent: the agent names it, and the daemon has gsurf type it.
 
 #+begin_src yaml
 secrets:
@@ -132,8 +132,8 @@ agents:
 *** The flow
 
 1. =clawtilla_secret_ref= with ~name~ answers a reference -- ~secret-ref:~ and 32 hex digits from =/dev/urandom= -- and nothing else.  Without a name it lists the entries the agent may ask for, by name, kind and sites.  Nothing is resolved yet.
-2. =clawtilla_browser_fill_secret= with that reference as ~secret~, a ~selector~ and optionally ~submit~ spends the reference, checks the grant and the entry again, checks that the page's host is one of the entry's ~sites~, resolves the value through the ordinary secret reference (=secrets.dir=, =secrets.command_timeout_seconds=), turns a TOTP seed into the RFC 6238 code for this second, and sends gsurf ~page.fill_secret~.
-3. gsurf focuses the field, selects what is in it and types the secret as key input -- GDK key events on GTK3, ~execCommand('insertText')~ where there is no native input -- never a JavaScript value assignment.  It answers ~{done, secret_hold}~ and nothing else.
+2. =clawtilla_browser_fill_secret= with that reference as ~secret~, a ~selector~ and optionally ~submit~ spends the reference and checks the grant and the entry again on the daemon's context (the config is not a worker's to read), then on a worker refuses a session that is not running, checks that the page's host is one of the entry's ~sites~, resolves the value through the ordinary secret reference (=secrets.dir=, =secrets.command_timeout_seconds=), turns a TOTP seed into the RFC 6238 code for this second, and sends gsurf ~page.fill_secret~.
+3. gsurf finds the field, refuses if the page is no longer on the host the daemon checked (the ~host~ parameter: a redirect or a script may have moved it since), then focuses it, selects what is in it and types the secret as key input -- GDK key events on GTK3, ~execCommand('insertText')~ where there is no native input -- never a JavaScript value assignment.  It answers ~{done, secret_hold}~ and nothing else.
 4. The agent hears "Filled github into #password. Now on ...".  The event bus gets ~browser.secret_filled~ with the name, kind, host and session.
 
 *** The reference

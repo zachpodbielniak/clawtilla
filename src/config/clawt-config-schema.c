@@ -1393,26 +1393,26 @@ static const ClawtSchemaEntry schema[] = {
   "that reference and a field. The daemon resolves the value, types it\n"
   "into the field as key input, and the agent hears only that it was\n"
   "filled. Screenshots and clawtilla_browser_eval are refused on that\n"
-  "page until the browser navigates away. Needs a GSURF=1 build.", "0.24.0" },
+  "page until the browser navigates away. Needs a GSURF=1 build.", "0.25.0" },
 
 { "vault.name", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED, NULL, NULL,
   "What an agent asks for, and what agents.browser.secrets lists. The\n"
-  "name is all an agent or a client ever sees of the entry's secret.", "0.24.0" },
+  "name is all an agent or a client ever sees of the entry's secret.", "0.25.0" },
 
 { "vault.description", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
-  "Whose login this is, or which field it belongs in.", "0.24.0" },
+  "Whose login this is, or which field it belongs in.", "0.25.0" },
 
 { "vault.kind", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
   "password", clawt_vault_kind_get_type,
   "`password` types the value itself. `totp` reads the value as a TOTP\n"
   "seed -- base32, or an otpauth://totp/ URI with its algorithm, digits\n"
-  "and period -- and types the RFC 6238 code for the current time.", "0.24.0" },
+  "and period -- and types the RFC 6238 code for the current time.", "0.25.0" },
 
 { "vault.secret", CLAWT_SCHEMA_SECRET, CLAWT_SCHEMA_FLAG_REQUIRED, NULL, NULL,
   "A secret reference, never the value: {file: ...}, {env: ...} or\n"
   "{command: ...}, resolved the way secrets: says, at the moment of the\n"
-  "fill and not before.", "0.24.0" },
+  "fill and not before.", "0.25.0" },
 
 { "vault.sites", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_REQUIRED,
   NULL, NULL,
@@ -1420,7 +1420,7 @@ static const ClawtSchemaEntry schema[] = {
   "refused, so an agent steered to a look-alike site cannot be made to\n"
   "fill it there. `example.com` also matches its subdomains\n"
   "(login.example.com); a page whose address cannot be read is refused.\n"
-  "An entry without sites is never filled.", "0.24.0" },
+  "An entry without sites is never filled.", "0.25.0" },
 
 /* ── accounts ────────────────────────────────────────────────────── */
 { "accounts", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
@@ -3969,7 +3969,7 @@ static const ClawtSchemaEntry schema[] = {
   "The vault: entries this agent may have filled into a page, by name.\n"
   "Empty, the agent is offered no secret tools. Always the agent's own,\n"
   "even on a shared browser: what an agent may ask for is about the\n"
-  "agent, not the session.", "0.24.0" },
+  "agent, not the session.", "0.25.0" },
 
 { "agents.browser.width", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "1280", NULL,

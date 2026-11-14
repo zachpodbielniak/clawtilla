@@ -810,7 +810,7 @@ test_secrets_never_seen(void)
         g_assert_true(g_str_has_prefix(text, "Filled site-pass into #pw."));
         g_assert_cmpstr(fake_params_of(fixture.fake, "page.fill_secret"), ==,
                         "{\"selector\":\"#pw\",\"text\":\"" SECRET_VALUE "\","
-                        "\"submit\":false}");
+                        "\"submit\":false,\"host\":\"example.org\"}");
 
         /* ...once */
         again = run_tool_in(&fixture, "keeper", "room-1", "clawtilla_browser_fill_secret",
@@ -897,9 +897,11 @@ test_secrets_never_seen(void)
                                                  "clawtilla_browser_fill_secret", arguments);
         g_autofree gchar *after = clawt_totp_code(key, g_get_real_time() / G_USEC_PER_SEC);
         g_autofree gchar *sent_before = g_strdup_printf(
-            "{\"selector\":\"#otp\",\"text\":\"%s\",\"submit\":false}", before);
+            "{\"selector\":\"#otp\",\"text\":\"%s\",\"submit\":false,"
+            "\"host\":\"example.org\"}", before);
         g_autofree gchar *sent_after = g_strdup_printf(
-            "{\"selector\":\"#otp\",\"text\":\"%s\",\"submit\":false}", after);
+            "{\"selector\":\"#otp\",\"text\":\"%s\",\"submit\":false,"
+            "\"host\":\"example.org\"}", after);
         const gchar *sent;
 
         text = said(heard, filled, &is_error);

@@ -8596,6 +8596,16 @@ typedef struct {
     GTask         *outer;        /* owned */
     gboolean       shared;
     gint           allow_scripts;
+
+    /*
+     * clawtilla_browser_fill_secret: the entry the reference was spent
+     * on, looked up on the tools' context -- the config is not the
+     * worker's to read -- with where its value is resolved from.  A
+     * name and a reference; never a value.
+     */
+    ClawtVaultEntry *vault_entry;
+    gchar           *secrets_dir;
+    guint            secret_timeout;
 } BrowserJob;
 
 static void
@@ -8607,6 +8617,8 @@ browser_job_free(gpointer data)
     g_clear_object(&job->tools);
     g_free(job->agent_id);
     g_free(job->room_id);
+    g_clear_pointer(&job->vault_entry, clawt_vault_entry_free);
+    g_free(job->secrets_dir);
     g_free(job->tool);
     g_clear_pointer(&job->arguments, json_object_unref);
     g_clear_pointer(&job->request_id, json_node_unref);
@@ -8779,51 +8791,78 @@ uri_host(const gchar *uri)
 }
 
 /*
- * clawtilla_browser_fill_secret, on the worker.  Every refusal below is
- * a sentence about names -- the entry, the host, the field -- because
- * the agent reads all of them, and the value is never in scope of any.
+ * clawtilla_browser_fill_secret, first half, on the tools' context: spend
+ * the reference and find what it stands for.  Every refusal is a
+ * sentence about names -- the agent reads all of them, and no value is
+ * in scope here at all.  Returns the response for a refusal, or NULL
+ * with @job ready for the worker.
+ */
+static JsonNode *
+browser_fill_secret_prepare(ClawtMcpTools *self, BrowserJob *job)
+{
+    const gchar *ref = argument_string(job->arguments, "secret");
+    const gchar *selector = argument_string(job->arguments, "selector");
+    ClawtConfig *config = self->agents != NULL ? clawt_agent_manager_get_config(self->agents)
+                                               : NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *name = NULL;
+    g_autofree gchar *text = NULL;
+
+    if (selector == NULL || *selector == '\0')
+        return make_response(job->request_id, "Give the field's selector.", TRUE);
+
+    /* 1. The reference: spent here, for this agent in this conversation. */
+    name = clawt_secret_vault_redeem(self->vault, ref, job->agent_id, job->room_id,
+                                     g_get_real_time() / G_USEC_PER_SEC, &error);
+    if (name == NULL)
+        return make_response(job->request_id, error->message, TRUE);
+
+    /* 2. Still granted, still declared: either may have changed since. */
+    if (!secret_granted(self, job->agent_id, name, NULL)) {
+        text = g_strdup_printf("'%s' is no longer a secret you may have filled.", name);
+        return make_response(job->request_id, text, TRUE);
+    }
+    job->vault_entry = config != NULL ? clawt_config_get_vault_entry(config, name) : NULL;
+    if (job->vault_entry == NULL) {
+        text = g_strdup_printf("The vault entry '%s' is gone, or has lost its secret or "
+                               "its sites.", name);
+        return make_response(job->request_id, text, TRUE);
+    }
+    job->secrets_dir = config != NULL ? clawt_config_get_path_value(config, "secrets.dir")
+                                      : NULL;
+    job->secret_timeout = config != NULL
+        ? (guint)clawt_config_get_int(config, "secrets.command_timeout_seconds") : 10;
+    return NULL;
+}
+
+/*
+ * clawtilla_browser_fill_secret, second half, on the worker: the page,
+ * the value, the typing.
  */
 static JsonNode *
 browser_fill_secret(BrowserJob *job)
 {
     ClawtBrowser *browser = job->browser;
-    JsonObject *arguments = job->arguments;
-    const gchar *ref = argument_string(arguments, "secret");
-    const gchar *selector = argument_string(arguments, "selector");
-    gboolean submit = argument_boolean(arguments, "submit", FALSE);
-    ClawtConfig *config = job->tools->agents != NULL
-        ? clawt_agent_manager_get_config(job->tools->agents) : NULL;
-    g_autoptr(ClawtVaultEntry) entry = NULL;
+    ClawtVaultEntry *entry = job->vault_entry;
+    const gchar *name = entry->name;
+    const gchar *selector = argument_string(job->arguments, "selector");
+    gboolean submit = argument_boolean(job->arguments, "submit", FALSE);
     g_autoptr(GError) error = NULL;
-    g_autofree gchar *name = NULL;
     g_autofree gchar *uri = NULL;
     g_autofree gchar *host = NULL;
     g_autofree gchar *sites = NULL;
-    g_autofree gchar *secrets_dir = NULL;
     g_autofree gchar *value = NULL;
     g_autofree gchar *typed = NULL;
     g_autofree gchar *where = NULL;
     g_autofree gchar *text = NULL;
     gboolean filled;
 
-    if (selector == NULL || *selector == '\0')
-        return make_response(job->request_id, "Give the field's selector.", TRUE);
+    sites = g_strjoinv(", ", entry->sites);
 
-    /* 1. The reference: spent here, for this agent in this conversation. */
-    name = clawt_secret_vault_redeem(job->tools->vault, ref, job->agent_id, job->room_id,
-                                     g_get_real_time() / G_USEC_PER_SEC, &error);
-    if (name == NULL)
-        return make_response(job->request_id, error->message, TRUE);
-
-    /* 2. Still granted, still declared: either may have changed since. */
-    if (!secret_granted(job->tools, job->agent_id, name, NULL)) {
-        text = g_strdup_printf("'%s' is no longer a secret you may have filled.", name);
-        return make_response(job->request_id, text, TRUE);
-    }
-    entry = config != NULL ? clawt_config_get_vault_entry(config, name) : NULL;
-    if (entry == NULL) {
-        text = g_strdup_printf("The vault entry '%s' is gone, or has lost its secret or "
-                               "its sites.", name);
+    /* A stopped session's address is the last one read, not a page. */
+    if (!clawt_browser_is_running(browser)) {
+        text = g_strdup_printf("Your browser is not running, so '%s' was not filled. Open "
+                               "the login page first (it is saved for %s).", name, sites);
         return make_response(job->request_id, text, TRUE);
     }
 
@@ -8833,7 +8872,6 @@ browser_fill_secret(BrowserJob *job)
     clawt_browser_refresh_page(browser);
     uri = clawt_browser_dup_uri(browser);
     host = uri_host(uri);
-    sites = g_strjoinv(", ", entry->sites);
     if (!clawt_vault_entry_allows_host(entry, host)) {
         text = host != NULL
             ? g_strdup_printf("This page is on %s, and '%s' is saved for %s only. Nothing "
@@ -8846,12 +8884,7 @@ browser_fill_secret(BrowserJob *job)
 
     /* 4. The value, resolved now and only now; a TOTP seed becomes the
      *    code for this moment, and the seed is wiped at once. */
-    secrets_dir = config != NULL ? clawt_config_get_path_value(config, "secrets.dir") : NULL;
-    value = clawt_secret_ref_resolve(entry->secret, secrets_dir,
-                                     config != NULL
-                                         ? (guint)clawt_config_get_int(
-                                               config, "secrets.command_timeout_seconds")
-                                         : 10,
+    value = clawt_secret_ref_resolve(entry->secret, job->secrets_dir, job->secret_timeout,
                                      &error);
     if (value == NULL) {
         g_autofree gchar *described = clawt_secret_ref_describe(entry->secret);
@@ -8875,7 +8908,8 @@ browser_fill_secret(BrowserJob *job)
     }
 
     /* 5. Typed by gsurf as key input; the session holds the page from
-     *    before the first key. */
+     *    before the first key, and gsurf checks the host once more when
+     *    it has found the field -- the page may have moved since step 3. */
     filled = clawt_browser_fill_secret(browser, selector, typed, submit, name, host, &error);
     memset(typed, 0, strlen(typed));
     if (!filled) {
@@ -9274,6 +9308,20 @@ browser_call_start(ClawtMcpTools *self, const gchar *agent_id, const gchar *room
     job->outer = outer;
     job->shared = mode == CLAWT_BROWSER_SHARED;
     job->allow_scripts = clawt_agent_config_get_boolean(config, "browser.allow_scripts");
+
+    /* A secret reference is spent here, on the tools' context, where the
+     * config may be read; only the page and the value go to the worker. */
+    if (g_strcmp0(tool, "clawtilla_browser_fill_secret") == 0) {
+        JsonNode *refused = browser_fill_secret_prepare(self, job);
+
+        if (refused != NULL) {
+            job->outer = NULL;
+            browser_job_free(job);
+            g_task_return_pointer(outer, refused, (GDestroyNotify)json_node_unref);
+            g_object_unref(outer);
+            return;
+        }
+    }
 
     g_thread_unref(g_thread_new("clawt-browser-tool", browser_job_thread, job));
 }

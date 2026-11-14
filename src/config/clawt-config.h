@@ -579,7 +579,7 @@ GPtrArray *clawt_config_get_accounts(ClawtConfig *self);
  * @secret: the reference the value is resolved through, never the value
  * @sites: (array zero-terminated=1): the hosts it may be typed into
  *
- * One entry from the config's `vault:` list (since 0.24.0).  Holds no
+ * One entry from the config's `vault:` list (since 0.25.0).  Holds no
  * secret: the value is resolved through @secret at the moment of a fill.
  */
 typedef struct {

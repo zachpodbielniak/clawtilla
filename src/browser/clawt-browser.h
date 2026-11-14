@@ -303,7 +303,9 @@ gchar *clawt_browser_dup_driver(ClawtBrowser *self, gint64 now);
  * @value: the secret, or the one-time code made from one
  * @submit: press Enter after it
  * @name: the vault entry it came from, kept for the clients to show
- * @host: (nullable): the host it was typed on, likewise
+ * @host: (nullable): the host the caller checked the page is on: gsurf
+ *   refuses the fill unless the page is still there when it has found the
+ *   field, and it is kept for the clients to show
  * @error: (out) (optional): return location for a #GError
  *
  * Has gsurf type @value into the field as key input (`page.fill_secret`,
