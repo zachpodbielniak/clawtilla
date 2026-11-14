@@ -101,6 +101,7 @@ typedef struct {
     gchar       *key;            /* agent id or room id loaded */
     gchar       *room;           /* the room the daemon resolved */
     gchar       *conversation;   /* a peer, when reading one */
+    gchar       *open_peer;      /* --open's peer, for the next settle */
     guint        history_generation;
     guint        history_inflight;
     GHashTable  *shown;          /* message ids drawn */
@@ -1163,6 +1164,214 @@ sender_avatar(ClawtLrgApp *app, const gchar *sender, const gchar *name)
     return face;
 }
 
+/* ── Folding a long request from another agent ────────────────────── */
+
+/*
+ * One folded message: its two forms, and who the exchange is between.
+ * Owned by the box holding both forms, so it lives exactly as long as
+ * the widgets its callbacks touch; the callbacks borrow it.
+ */
+typedef struct {
+    ClawtLrgApp *app;
+    LrgWidget   *folded;    /* borrowed: the one-line row */
+    LrgWidget   *opened;    /* borrowed: the body and its actions */
+    gchar       *agent;
+    gchar       *peer;
+} Fold;
+
+static void
+fold_free(gpointer data)
+{
+    Fold *fold = data;
+
+    g_free(fold->agent);
+    g_free(fold->peer);
+    g_free(fold);
+}
+
+static void
+fold_open(ClawtLrgApp *app, gpointer user_data)
+{
+    Fold *fold = user_data;
+
+    lrg_widget_set_visible(fold->folded, FALSE);
+    lrg_widget_set_visible(fold->opened, TRUE);
+    clawt_lrg_app_wake(app);
+}
+
+static void
+on_fold_less(LrgButton *button, gpointer user_data)
+{
+    Fold *fold = user_data;
+
+    (void)button;
+    lrg_widget_set_visible(fold->opened, FALSE);
+    lrg_widget_set_visible(fold->folded, TRUE);
+    clawt_lrg_app_wake(fold->app);
+}
+
+/* What the exchange view asked for, so a late reply knows its pair. */
+typedef struct {
+    gchar *agent;
+    gchar *peer;
+} ExchangeAsk;
+
+static void
+exchange_ask_free(gpointer data)
+{
+    ExchangeAsk *ask = data;
+
+    g_free(ask->agent);
+    g_free(ask->peer);
+    g_free(ask);
+}
+
+/*
+ * The exchange, in a dialog: one peer's requests and this agent's
+ * written answers, from the room's own history through
+ * clawt_chat_exchange() -- the same filter the GTK and web clients use,
+ * so the three list the same lines.  The tool steps are never in it:
+ * they are fetched separately from history, and this does not ask.
+ */
+static void
+on_exchange_history(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+                    gpointer user_data)
+{
+    ExchangeAsk *ask = user_data;
+    JsonObject *root = clawt_ipc_reply_object(reply);
+    JsonArray *messages = (root != NULL &&
+                           json_object_has_member(root, "messages"))
+        ? json_object_get_array_member(root, "messages") : NULL;
+    g_autoptr(JsonArray) exchange = NULL;
+    g_autofree gchar *title = NULL;
+    LrgWidget *list;
+    LrgScrollBox *scroll;
+    guint i;
+
+    (void)error;
+
+    if (reply == NULL)
+        return;
+
+    exchange = clawt_chat_exchange(messages, ask->agent, ask->peer);
+    title = clawt_chat_exchange_title(ask->agent, ask->peer);
+    list = clawt_lrg_vbox(px(app, 14.0f));
+
+    for (i = 0; i < json_array_get_length(exchange); i++) {
+        JsonObject *message = json_array_get_object_element(exchange, i);
+        const gchar *sender = clawt_ipc_payload_string(message, "sender");
+        gint64 ts = clawt_ipc_payload_int(message, "ts", 0);
+        g_autoptr(GDateTime) at = (ts > 0)
+            ? g_date_time_new_from_unix_local(ts) : NULL;
+        g_autofree gchar *when = clawt_chat_time_label(at);
+        g_autofree gchar *who = (when != NULL)
+            ? g_strdup_printf("%s \xc2\xb7 %s", sender != NULL ? sender : "?",
+                              when)
+            : g_strdup(sender != NULL ? sender : "?");
+        LrgWidget *entry = clawt_lrg_vbox(px(app, 4.0f));
+        const gchar *body = clawt_ipc_payload_string(message, "body");
+
+        clawt_lrg_take(entry, clawt_lrg_label(who, "caption"));
+
+        /*
+         * The peer's requests on a card, the answers bare: the one
+         * difference that says who is speaking down a long column.
+         */
+        if (g_strcmp0(sender, ask->peer) == 0)
+            clawt_lrg_take(entry, clawt_lrg_card(
+                clawt_lrg_markdown(app, body != NULL ? body : "")));
+        else
+            clawt_lrg_take(entry,
+                           clawt_lrg_markdown(app, body != NULL ? body : ""));
+
+        clawt_lrg_take(list, entry);
+    }
+
+    if (json_array_get_length(exchange) == 0)
+        clawt_lrg_take(list, clawt_lrg_paragraph(
+            "Nothing between them in this conversation's recent history.",
+            "muted"));
+
+    scroll = lrg_scroll_box_new();
+    lrg_scroll_box_set_hscroll(scroll, FALSE);
+    lrg_scroll_box_set_vscroll(scroll, TRUE);
+    lrg_scroll_box_set_kinetic(scroll, TRUE);
+    lrg_scroll_box_set_child(scroll, list);
+    g_object_unref(list);
+    lrg_widget_set_min_size(LRG_WIDGET(scroll), px(app, 520.0f),
+                            px(app, 420.0f));
+
+    g_object_unref(clawt_lrg_dialog(app, title, NULL, LRG_WIDGET(scroll),
+                                    NULL, FALSE, NULL, NULL, NULL));
+    g_object_unref(scroll);
+}
+
+static void
+on_view_exchange(LrgButton *button, gpointer user_data)
+{
+    Fold *fold = user_data;
+    ExchangeAsk *ask = g_new0(ExchangeAsk, 1);
+
+    (void)button;
+    ask->agent = g_strdup(fold->agent);
+    ask->peer = g_strdup(fold->peer);
+
+    clawt_lrg_request(fold->app, "room.history",
+                      clawt_lrg_exchange_payload(fold->agent, fold->peer),
+                      CLAWT_LRG_GUARDED, on_exchange_history, ask,
+                      exchange_ask_free);
+}
+
+/*
+ * The folded form and the opened form of a message, one of them shown.
+ * Folded is a clickable row with the first line, ellipsized -- an
+ * LrgLabel draws one line, which is exactly a preview's shape.  Opened
+ * is the body the transcript would have drawn anyway, @text, with
+ * "Show less" and "View exchange" under it.
+ */
+static LrgWidget *
+fold_box_new(ClawtLrgApp *app, LrgWidget *text, const gchar *sender,
+             const gchar *viewer, const gchar *body)
+{
+    LrgWidget *box = clawt_lrg_vbox(0.0f);
+    LrgWidget *line = clawt_lrg_hbox(px(app, 8.0f));
+    LrgWidget *opened = clawt_lrg_vbox(px(app, 6.0f));
+    LrgWidget *actions = clawt_lrg_hbox(px(app, 10.0f));
+    LrgWidget *preview_label;
+    Fold *fold = g_new0(Fold, 1);
+    g_autofree gchar *preview = clawt_chat_fold_preview(body);
+
+    fold->app = app;
+    fold->agent = g_strdup(viewer);
+    fold->peer = g_strdup(sender);
+    g_object_set_data_full(G_OBJECT(box), "fold", fold, fold_free);
+
+    preview_label = clawt_lrg_label(preview, "muted");
+    lrg_label_set_ellipsize(LRG_LABEL(preview_label), TRUE);
+    lrg_widget_set_fill_weight(preview_label, 1.0f);
+    clawt_lrg_take(line, clawt_lrg_label("\xe2\x96\xb8", "muted"));
+    clawt_lrg_take(line, preview_label);
+    fold->folded = clickable_new(app, line, "clawt-row", fold_open, fold,
+                                 NULL);
+
+    clawt_lrg_take(actions, clawt_lrg_button(
+        clawt_chat_fold_show_less_label(), "flat",
+        G_CALLBACK(on_fold_less), fold));
+    clawt_lrg_take(actions, clawt_lrg_button(
+        clawt_chat_fold_view_exchange_label(), "flat",
+        G_CALLBACK(on_view_exchange), fold));
+
+    clawt_lrg_take(opened, text);
+    clawt_lrg_take(opened, actions);
+    fold->opened = opened;
+    lrg_widget_set_visible(opened, FALSE);
+
+    clawt_lrg_take(box, fold->folded);
+    clawt_lrg_take(box, opened);
+
+    return box;
+}
+
 /* The operator's turn: a bubble in the accent, on the right. */
 static LrgWidget *
 own_bubble_new(ClawtLrgApp *app, const gchar *body)
@@ -1298,6 +1507,19 @@ append_message(ClawtLrgApp *app, const gchar *sender, const gchar *body,
         text = n_sections > 0
             ? merge_sections_new(app, merge_preface, merge_labels, merge_texts)
             : clawt_lrg_markdown(app, body);
+
+        /*
+         * Another agent's long request to this one is one line until it
+         * is opened (clawt_chat_should_fold()), the rule the GTK and web
+         * transcripts ask; a merged delivery already draws as sections.
+         */
+        if (n_sections == 0) {
+            const gchar *viewer = clawt_lrg_fold_viewer(
+                room_entry(app), chat.conversation, app->agent_id);
+
+            if (clawt_chat_should_fold(sender, viewer, body))
+                text = fold_box_new(app, text, sender, viewer, body);
+        }
 
         if (run_start) {
             LrgWidget *header = clawt_lrg_hbox(px(app, 10.0f));
@@ -4486,6 +4708,9 @@ refresh(ClawtLrgApp *app)
          * under every agent it was shown for.
          */
         g_clear_pointer(&chat.conversation, g_free);
+
+        /* unless --open named one of its peer conversations */
+        chat.conversation = g_steal_pointer(&chat.open_peer);
         g_clear_pointer(&chat.room, g_free);
         skill_commands_forget();
         completion_hide();
@@ -4507,6 +4732,11 @@ refresh(ClawtLrgApp *app)
 
         load_history(app);
         lrg_canvas_set_focused_widget(app->canvas, chat.editor);
+    } else if (chat.open_peer != NULL) {
+        /* --open named a peer conversation of the agent already shown */
+        g_free(chat.conversation);
+        chat.conversation = g_steal_pointer(&chat.open_peer);
+        load_history(app);
     } else if (key != NULL && chat.room == NULL &&
                chat.history_inflight == 0) {
         /*
@@ -4737,6 +4967,20 @@ on_event(ClawtLrgApp *app, ClawtEvent *event)
 static const ClawtLrgPage page_impl = {
     CLAWT_PAGE_CHAT, build, refresh, on_event
 };
+
+void
+clawt_lrg_chat_open_conversation(ClawtLrgApp *app, const gchar *peer)
+{
+    (void)app;
+
+    /*
+     * Held, not applied: the agent is selected after this, and the
+     * page's refresh -- which clears the conversation whenever the
+     * agent changes -- is what takes it, so the two cannot race.
+     */
+    g_free(chat.open_peer);
+    chat.open_peer = g_strdup(peer);
+}
 
 const ClawtLrgPage *
 clawt_lrg_chat_page(void)

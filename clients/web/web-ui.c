@@ -1389,6 +1389,41 @@ open_document(HtmxBuilder *builder, const gchar *title,
     htmx_builder_text(builder, title);
     htmx_builder_end(builder);
 
+    /*
+     * Installable: the manifest and its icons, all served by this
+     * binary (the icons from data/web, vendored), so adding the page to
+     * a phone's home screen or as a desktop app fetches nothing from
+     * anywhere else.
+     *
+     * `use-credentials` because a manifest is fetched *without* cookies
+     * by default.  On the loopback or a tailnet that changes nothing,
+     * but behind a proxy that asks for a login -- which is what the "it
+     * has no login" note tells people to put in front of this -- the
+     * uncredentialed fetch is refused, and the browser decides the page
+     * is not installable without saying why.
+     */
+    htmx_builder_begin_void(builder, "link");
+    htmx_builder_attr(builder, "rel", "manifest");
+    htmx_builder_attr(builder, "href", CLAWT_WEB_MANIFEST_PATH);
+    htmx_builder_attr(builder, "crossorigin", "use-credentials");
+    htmx_builder_end_void(builder);
+
+    htmx_builder_begin_void(builder, "link");
+    htmx_builder_attr(builder, "rel", "icon");
+    htmx_builder_attr(builder, "type", "image/png");
+    htmx_builder_attr(builder, "href", "/static/icons/clawtilla-192.png");
+    htmx_builder_end_void(builder);
+
+    htmx_builder_begin_void(builder, "link");
+    htmx_builder_attr(builder, "rel", "apple-touch-icon");
+    htmx_builder_attr(builder, "href", "/static/icons/clawtilla-180.png");
+    htmx_builder_end_void(builder);
+
+    htmx_builder_begin_void(builder, "meta");
+    htmx_builder_attr(builder, "name", "theme-color");
+    htmx_builder_attr(builder, "content", "#FBFBFA");
+    htmx_builder_end_void(builder);
+
     htmx_builder_begin(builder, "style");
     htmx_builder_raw_html(builder, clawt_web_stylesheet());
     htmx_builder_end(builder);
@@ -1882,6 +1917,22 @@ open_document(HtmxBuilder *builder, const gchar *title,
         /* Escape closes it, the way it closes the GTK window. */
         "document.addEventListener('keydown',function(e){"
         "if(e.key==='Escape'){unzoom();}});"
+        /*
+         * A folded request's "Show less" closes the <details> it is in,
+         * and the exchange panel's Close (or Escape) empties the panel,
+         * which the stylesheet hides when it is empty.  Delegated from
+         * the document, because the transcript is swapped on every
+         * fleet event and a listener bound to a button would go with it.
+         */
+        "function unexchange(){var x=document.getElementById("
+        "'exchange-panel');if(x){x.innerHTML='';}}"
+        "document.addEventListener('click',function(e){"
+        "var l=e.target.closest?e.target.closest('.fold-less'):null;"
+        "if(l){var d=l.closest('details');if(d){d.open=false;}return;}"
+        "if(e.target.closest&&e.target.closest('.exchange-close')){"
+        "unexchange();}});"
+        "document.addEventListener('keydown',function(e){"
+        "if(e.key==='Escape'){unexchange();}});"
         "})();");
     htmx_builder_end(builder);
 
@@ -2147,6 +2198,274 @@ clawt_web_navigation_result(HtmxElement *list, const gchar *query, const gchar *
 	clawt_web_add(link, clawt_web_text(detail, "muted"));
 	htmx_node_add_child(HTMX_NODE(list), HTMX_NODE(link));
 	return 1;
+}
+
+/* ── Folded requests and the exchange ───────────────────────────── */
+
+gchar *
+clawt_web_exchange_url(const gchar *agent_id, const gchar *peer_id,
+                       gboolean fragment)
+{
+    g_autofree gchar *agent = g_uri_escape_string(agent_id != NULL
+                                                  ? agent_id : "",
+                                                  NULL, FALSE);
+    g_autofree gchar *peer = g_uri_escape_string(peer_id != NULL
+                                                 ? peer_id : "",
+                                                 NULL, FALSE);
+
+    return g_strdup_printf("%s/a/%s/exchange?with=%s",
+                           fragment ? "/f" : "", agent, peer);
+}
+
+HtmxElement *
+clawt_web_fold_element(HtmxElement *body, const gchar *agent_id,
+                       const gchar *peer_id, const gchar *message_id,
+                       const gchar *text)
+{
+    g_autoptr(HtmxElement) details = HTMX_ELEMENT(htmx_details_new());
+    g_autoptr(HtmxElement) summary = HTMX_ELEMENT(htmx_summary_new());
+    g_autoptr(HtmxSpan) line = htmx_span_new();
+    g_autoptr(HtmxDiv) actions = htmx_div_new();
+    g_autoptr(HtmxButton) less = htmx_button_new_with_label(
+        clawt_chat_fold_show_less_label());
+    g_autofree gchar *preview = clawt_chat_fold_preview(text);
+    g_autofree gchar *page = clawt_web_exchange_url(agent_id, peer_id,
+                                                    FALSE);
+    g_autofree gchar *panel = clawt_web_exchange_url(agent_id, peer_id,
+                                                     TRUE);
+    g_autoptr(HtmxA) exchange = htmx_a_new_with_href(page);
+
+    htmx_element_add_class(details, "fold");
+
+    /*
+     * An id and hx-preserve, or the request closes on every fleet event:
+     * the transcript is swapped whole, and a <details> rebuilt from the
+     * server is a closed one.  No id, no preserving -- a message the
+     * daemon sent without one simply folds again after a swap.
+     */
+    if (message_id != NULL && *message_id != '\0') {
+        g_autofree gchar *id = g_strdup_printf("fold-%s", message_id);
+
+        htmx_element_set_id(details, id);
+        htmx_element_set_attribute(details, "hx-preserve", "true");
+    }
+
+    /* the preview is plain text: a body's markdown is shown, not run */
+    htmx_element_add_class(HTMX_ELEMENT(line), "fold-preview");
+    htmx_node_set_text_content(HTMX_NODE(line), preview);
+    htmx_element_add_class(summary, "fold-line");
+    htmx_element_set_attribute(summary, "title", "Show the whole request");
+    htmx_node_add_child(HTMX_NODE(summary), HTMX_NODE(line));
+    htmx_node_add_child(HTMX_NODE(details), HTMX_NODE(summary));
+
+    clawt_web_add(details, body);
+
+    /*
+     * "Show less" is a button the page script answers (it closes the
+     * <details> around it); with scripting off the summary above still
+     * closes it.  type="button" so it is never mistaken for a submit.
+     */
+    htmx_element_add_class(HTMX_ELEMENT(actions), "fold-actions");
+    htmx_element_set_attribute(HTMX_ELEMENT(less), "type", "button");
+    htmx_element_add_class(HTMX_ELEMENT(less), "fold-less");
+    htmx_node_add_child(HTMX_NODE(actions), HTMX_NODE(less));
+
+    htmx_node_set_text_content(HTMX_NODE(exchange),
+                               clawt_chat_fold_view_exchange_label());
+    htmx_element_add_class(HTMX_ELEMENT(exchange), "fold-exchange");
+    htmx_element_set_attribute(HTMX_ELEMENT(exchange), "hx-get", panel);
+    htmx_element_set_attribute(HTMX_ELEMENT(exchange), "hx-target",
+                               "#exchange-panel");
+    htmx_element_set_attribute(HTMX_ELEMENT(exchange), "hx-swap",
+                               "innerHTML");
+    htmx_node_add_child(HTMX_NODE(actions), HTMX_NODE(exchange));
+    htmx_node_add_child(HTMX_NODE(details), HTMX_NODE(actions));
+
+    return g_steal_pointer(&details);
+}
+
+HtmxElement *
+clawt_web_exchange_element(JsonArray *exchange, const gchar *agent_id,
+                           const gchar *peer_id, gboolean in_panel)
+{
+    g_autoptr(HtmxDiv) root = htmx_div_new();
+    g_autoptr(HtmxDiv) header = htmx_div_new();
+    g_autoptr(HtmxElement) list = HTMX_ELEMENT(htmx_ol_new());
+    g_autofree gchar *title = clawt_chat_exchange_title(agent_id, peer_id);
+    guint length = (exchange != NULL) ? json_array_get_length(exchange) : 0;
+    guint i;
+
+    htmx_element_add_class(HTMX_ELEMENT(root), "exchange");
+    htmx_element_set_attribute(HTMX_ELEMENT(root), "role", "dialog");
+    htmx_element_set_attribute(HTMX_ELEMENT(root), "aria-label", title);
+    htmx_element_add_class(HTMX_ELEMENT(header), "exchange-head");
+    clawt_web_add(header, clawt_web_section_title(title));
+
+    if (in_panel) {
+        g_autoptr(HtmxButton) close = htmx_button_new_with_label("Close");
+
+        htmx_element_set_attribute(HTMX_ELEMENT(close), "type", "button");
+        htmx_element_add_class(HTMX_ELEMENT(close), "exchange-close");
+        htmx_node_add_child(HTMX_NODE(header), HTMX_NODE(close));
+    } else {
+        g_autofree gchar *escaped_agent = g_uri_escape_string(
+            agent_id != NULL ? agent_id : "", NULL, FALSE);
+        g_autofree gchar *escaped_peer = g_uri_escape_string(
+            peer_id != NULL ? peer_id : "", NULL, FALSE);
+        g_autofree gchar *back = g_strdup_printf("/a/%s/chat?with=%s",
+                                                 escaped_agent, escaped_peer);
+        g_autoptr(HtmxA) link = htmx_a_new_with_href(back);
+
+        htmx_node_set_text_content(HTMX_NODE(link),
+                                   "Back to the conversation");
+        htmx_node_add_child(HTMX_NODE(header), HTMX_NODE(link));
+    }
+
+    htmx_node_add_child(HTMX_NODE(root), HTMX_NODE(header));
+
+    if (length == 0) {
+        clawt_web_add(root, clawt_web_text(
+            "Nothing between them in this conversation's recent history.",
+            "muted"));
+
+        return HTMX_ELEMENT(g_steal_pointer(&root));
+    }
+
+    htmx_element_add_class(list, "exchange-list");
+
+    for (i = 0; i < length; i++) {
+        JsonObject *message = json_array_get_object_element(exchange, i);
+        /*
+         * Read with json-glib's own guarded readers rather than
+         * clawt_web_member(): this renderer is pure, and the test that
+         * renders it links no daemon client.
+         */
+        const gchar *sender = json_object_get_string_member_with_default(
+            message, "sender", "?");
+        gint64 ts = json_object_get_int_member_with_default(message, "ts",
+                                                            0);
+        g_autoptr(GDateTime) at = (ts > 0)
+            ? g_date_time_new_from_unix_local(ts) : NULL;
+        g_autofree gchar *when = clawt_chat_time_label(at);
+        g_autofree gchar *html = clawt_markdown_to_html(
+            json_object_get_string_member_with_default(message, "body",
+                                                       ""));
+        g_autofree gchar *who_text = (when != NULL)
+            ? g_strdup_printf("%s · %s", sender, when) : g_strdup(sender);
+        g_autoptr(HtmxElement) item = HTMX_ELEMENT(htmx_li_new());
+        g_autoptr(HtmxDiv) who = htmx_div_new();
+        g_autoptr(HtmxDiv) text = htmx_div_new();
+
+        /* the peer's requests set apart from this agent's answers */
+        htmx_element_add_class(item, g_strcmp0(sender, peer_id) == 0
+                                     ? "exchange-request"
+                                     : "exchange-answer");
+        htmx_element_add_class(HTMX_ELEMENT(who), "exchange-who");
+        htmx_node_set_text_content(HTMX_NODE(who), who_text);
+        htmx_element_add_class(HTMX_ELEMENT(text), "msg-body");
+        htmx_node_set_html_content(HTMX_NODE(text), html);
+        htmx_node_add_child(HTMX_NODE(item), HTMX_NODE(who));
+        htmx_node_add_child(HTMX_NODE(item), HTMX_NODE(text));
+        htmx_node_add_child(HTMX_NODE(list), HTMX_NODE(item));
+    }
+
+    htmx_node_add_child(HTMX_NODE(root), HTMX_NODE(list));
+
+    return HTMX_ELEMENT(g_steal_pointer(&root));
+}
+
+/* ── The web app manifest ────────────────────────────────────────── */
+
+gchar *
+clawt_web_manifest_json(void)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autoptr(JsonGenerator) generator = json_generator_new();
+    g_autoptr(JsonNode) root = NULL;
+    static const struct {
+        const gchar *src;
+        const gchar *sizes;
+        const gchar *purpose;
+    } icons[] = {
+        { "/static/icons/clawtilla-192.png", "192x192", "any" },
+        { "/static/icons/clawtilla-512.png", "512x512", "any" },
+        { "/static/icons/clawtilla-512.png", "512x512", "maskable" },
+    };
+    guint i;
+
+    json_builder_begin_object(builder);
+
+    json_builder_set_member_name(builder, "name");
+    json_builder_add_string_value(builder, "clawtilla");
+    json_builder_set_member_name(builder, "short_name");
+    json_builder_add_string_value(builder, "clawtilla");
+    json_builder_set_member_name(builder, "description");
+    json_builder_add_string_value(builder,
+        "The clawtilla fleet: agents, rooms and their computers");
+
+    /*
+     * Root-relative, never an absolute URL: the client is reached at
+     * the loopback, a tailnet address and whatever a proxy calls it, and
+     * the manifest must be right at each.  The id is fixed so an
+     * installed app survives a change of start page.
+     */
+    json_builder_set_member_name(builder, "id");
+    json_builder_add_string_value(builder, "/");
+    json_builder_set_member_name(builder, "start_url");
+    json_builder_add_string_value(builder, "/");
+    json_builder_set_member_name(builder, "scope");
+    json_builder_add_string_value(builder, "/");
+    json_builder_set_member_name(builder, "display");
+    json_builder_add_string_value(builder, "standalone");
+
+    /* the light canvas, as the stylesheet's :root spells it */
+    json_builder_set_member_name(builder, "background_color");
+    json_builder_add_string_value(builder, "#FBFBFA");
+    json_builder_set_member_name(builder, "theme_color");
+    json_builder_add_string_value(builder, "#FBFBFA");
+
+    json_builder_set_member_name(builder, "icons");
+    json_builder_begin_array(builder);
+
+    for (i = 0; i < G_N_ELEMENTS(icons); i++) {
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "src");
+        json_builder_add_string_value(builder, icons[i].src);
+        json_builder_set_member_name(builder, "sizes");
+        json_builder_add_string_value(builder, icons[i].sizes);
+        json_builder_set_member_name(builder, "type");
+        json_builder_add_string_value(builder, "image/png");
+        json_builder_set_member_name(builder, "purpose");
+        json_builder_add_string_value(builder, icons[i].purpose);
+        json_builder_end_object(builder);
+    }
+
+    json_builder_end_array(builder);
+    json_builder_end_object(builder);
+
+    root = json_builder_get_root(builder);
+    json_generator_set_root(generator, root);
+    json_generator_set_pretty(generator, TRUE);
+
+    return json_generator_to_data(generator, NULL);
+}
+
+HtmxResponse *
+clawt_web_manifest_response(void)
+{
+    g_autofree gchar *json = clawt_web_manifest_json();
+    HtmxResponse *response = htmx_response_new_with_content(json);
+
+    htmx_response_set_content_type(response, CLAWT_WEB_MANIFEST_TYPE);
+
+    /*
+     * An hour: long enough that a phone does not re-ask on every page,
+     * short enough that an upgraded client's manifest is seen the same
+     * day.
+     */
+    htmx_response_add_header(response, "Cache-Control", "max-age=3600");
+
+    return response;
 }
 
 /*

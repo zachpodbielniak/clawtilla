@@ -237,7 +237,8 @@ show_flow_room(ClawtWindow *self, const gchar *room_id, const gchar *label)
         const gchar *id = clawt_json_string(message, "id", NULL);
         TranscriptView view = { self->flow_transcript,
                                 &self->flow_run_sender,
-                                &self->flow_run_day, NULL, FALSE, NULL };
+                                &self->flow_run_day, NULL, FALSE, NULL,
+                                NULL };
 
         /*
          * A message with no id can only be drawn on the pass that

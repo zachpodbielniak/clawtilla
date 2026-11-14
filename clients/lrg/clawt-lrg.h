@@ -173,6 +173,13 @@ struct _ClawtLrgApp {
     gchar           *agent_id;     /* nullable */
     gchar           *room_id;      /* nullable */
     ClawtPage        page;
+
+    /*
+     * A `--open` target not yet opened: held until agent.list and
+     * room.list have both answered, so it can be checked against what
+     * exists (lrg-window.c).  Normalised; nullable.
+     */
+    gchar           *open_target;
     guint            generation;   /* bumped on every selection change */
 
     /* ── the fleet, as last read ── */
@@ -284,6 +291,13 @@ void clawt_lrg_select_room(ClawtLrgApp *app, const gchar *room_id);
 
 /* Re-reads agent.list and room.list and redraws the sidebar. */
 void clawt_lrg_refresh_fleet(ClawtLrgApp *app);
+
+/*
+ * For `--open` (lrg-chat.c): the next time the Chat page settles on the
+ * selected agent, it opens on its conversation with @peer instead of
+ * the operator's own.
+ */
+void clawt_lrg_chat_open_conversation(ClawtLrgApp *app, const gchar *peer);
 
 /* The currently selected agent's object from the last agent.list. */
 JsonObject *clawt_lrg_selected_agent(ClawtLrgApp *app);

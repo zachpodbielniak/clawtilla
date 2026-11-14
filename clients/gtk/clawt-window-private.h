@@ -754,6 +754,13 @@ struct _ClawtWindow {
      * the operator can read but is not in.
      */
     gchar             *selected_conversation;
+
+    /*
+     * A `--open` target that arrived before the daemon answered, opened
+     * by reload_after_connect() once there is a fleet to check it
+     * against (gtk-open.c).
+     */
+    gchar             *pending_open;
     GtkWidget         *conversation_bar;
     GtkWidget         *conversation_button;
     GMenu             *conversation_menu;
@@ -954,6 +961,12 @@ typedef struct {
     const gchar  *agent_id;     /* NULL derives a face from the name alone */
     gboolean      has_avatar;   /* whether agent_id has bytes worth asking for */
     const gchar  *color;
+    /*
+     * The agent whose conversation this is, for clawt_chat_should_fold().
+     * NULL -- a group room, the Flow tab -- folds nothing.  Last, so the
+     * views that leave it out are zero-filled to NULL.
+     */
+    const gchar  *fold_viewer;
 } TranscriptView;
 
 /*
@@ -1708,5 +1721,27 @@ clawt_gtk_refresh_tasks(ClawtWindow *self);
 
 /* Build the searchable destination picker and its window action. */
 void clawt_gtk_build_navigation(ClawtWindow *self, GtkWidget *parent);
+
+/* ── Defined in gtk-open.c: --open, and a folded request's exchange ─ */
+
+/*
+ * Opens a `--open` target held while the daemon was not yet answering.
+ * Called once the first connection has filled the window in.
+ */
+void
+clawt_gtk_open_pending(
+	ClawtWindow *self
+);
+
+/*
+ * The side panel listing a peer's requests to @agent_id and its written
+ * answers, from the room's history filtered by clawt_chat_exchange().
+ */
+void
+clawt_gtk_show_exchange(
+	ClawtWindow *self,
+	const gchar *agent_id,
+	const gchar *peer_id
+);
 
 G_END_DECLS

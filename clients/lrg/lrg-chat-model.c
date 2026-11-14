@@ -1732,6 +1732,39 @@ clawt_lrg_history_payload(const gchar *room_entry, const gchar *conversation,
                                  "limit", limit, NULL);
 }
 
+/* ── Folded requests, the exchange, and --open ────────────────────── */
+
+const gchar *
+clawt_lrg_fold_viewer(const gchar *room_entry, const gchar *conversation,
+                      const gchar *agent_id)
+{
+    if (room_entry != NULL || conversation == NULL)
+        return NULL;
+
+    return agent_id;
+}
+
+JsonNode *
+clawt_lrg_exchange_payload(const gchar *agent_id, const gchar *peer_id)
+{
+    if (agent_id == NULL || peer_id == NULL)
+        return NULL;
+
+    /* further back than the transcript's 50: an exchange is a history */
+    return clawt_ipc_payload_new("room", peer_id, "as", agent_id,
+                                 "limit", "500", NULL);
+}
+
+gboolean
+clawt_lrg_open_resolve(const gchar *target, JsonNode *agents, JsonNode *rooms,
+                       gchar **out_agent, gchar **out_peer, gchar **out_room,
+                       GError **error)
+{
+    return clawt_open_target_resolve(target, reply_array(agents, "agents"),
+                                     reply_array(rooms, "rooms"), out_agent,
+                                     out_peer, out_room, error);
+}
+
 /* ── Decisions inline ─────────────────────────────────────────────── */
 
 GPtrArray *

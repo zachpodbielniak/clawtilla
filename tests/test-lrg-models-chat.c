@@ -969,6 +969,72 @@ test_history_payload(void)
     g_assert_cmpstr(clawt_ipc_payload_string(o, "as"), ==, "ann");
 }
 
+/* Only a peer conversation folds anything, and it is the agent's. */
+static void
+test_fold_viewer(void)
+{
+    g_assert_cmpstr(clawt_lrg_fold_viewer(NULL, "chief", "ann"), ==, "ann");
+    g_assert_null(clawt_lrg_fold_viewer(NULL, NULL, "ann"));
+    g_assert_null(clawt_lrg_fold_viewer("war", NULL, NULL));
+    g_assert_null(clawt_lrg_fold_viewer("war", "chief", "ann"));
+}
+
+static void
+test_exchange_payload(void)
+{
+    g_autoptr(JsonNode) payload = clawt_lrg_exchange_payload("ann", "chief");
+    JsonObject *o = json_node_get_object(payload);
+
+    g_assert_null(clawt_lrg_exchange_payload(NULL, "chief"));
+    g_assert_null(clawt_lrg_exchange_payload("ann", NULL));
+
+    /* the direct room, read as the agent, from further back */
+    g_assert_cmpstr(clawt_ipc_payload_string(o, "room"), ==, "chief");
+    g_assert_cmpstr(clawt_ipc_payload_string(o, "as"), ==, "ann");
+    g_assert_cmpstr(clawt_ipc_payload_string(o, "limit"), ==, "500");
+}
+
+/* --open, against the two replies this client keeps. */
+static void
+test_open_resolve(void)
+{
+    g_autoptr(JsonNode) agents = parse(
+        "{\"agents\":[{\"id\":\"ann\",\"dm_room\":\"dm:ann:user\"}]}");
+    g_autoptr(JsonNode) rooms = parse(
+        "{\"rooms\":[{\"id\":\"war\",\"members\":[\"ann\",\"bob\"]},"
+        "{\"id\":\"dm:ann:bob\",\"members\":[\"ann\",\"bob\"]}]}");
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *agent = NULL;
+    g_autofree gchar *peer = NULL;
+    g_autofree gchar *room = NULL;
+
+    g_assert_true(clawt_lrg_open_resolve("ann", agents, rooms, &agent, &peer,
+                                         &room, &error));
+    g_assert_cmpstr(agent, ==, "ann");
+    g_clear_pointer(&agent, g_free);
+
+    g_assert_true(clawt_lrg_open_resolve("war", agents, rooms, &agent, &peer,
+                                         &room, &error));
+    g_assert_cmpstr(room, ==, "war");
+    g_clear_pointer(&room, g_free);
+
+    g_assert_true(clawt_lrg_open_resolve("dm:ann:bob", agents, rooms, &agent,
+                                         &peer, &room, &error));
+    g_assert_cmpstr(agent, ==, "ann");
+    g_assert_cmpstr(peer, ==, "bob");
+    g_clear_pointer(&agent, g_free);
+    g_clear_pointer(&peer, g_free);
+
+    /* nothing called that, and no listing yet: an error, not a crash */
+    g_assert_false(clawt_lrg_open_resolve("ghost", agents, rooms, &agent,
+                                          &peer, &room, &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND);
+    g_clear_error(&error);
+    g_assert_false(clawt_lrg_open_resolve("ann", NULL, NULL, &agent, &peer,
+                                          &room, &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND);
+}
+
 /* ── Decisions inline ─────────────────────────────────────────────── */
 
 /*
@@ -1116,6 +1182,10 @@ main(gint argc, gchar **argv)
     g_test_add_func("/lrg/chat/mentions", test_mentions);
     g_test_add_func("/lrg/chat/conversations", test_conversations);
     g_test_add_func("/lrg/chat/history-payload", test_history_payload);
+    g_test_add_func("/lrg/chat/fold-viewer", test_fold_viewer);
+    g_test_add_func("/lrg/chat/exchange-payload", test_exchange_payload);
+    g_test_add_func("/lrg/chat/open-resolve", test_open_resolve);
+
     g_test_add_func("/lrg/chat/inline-decisions/placed",
                     test_inline_decisions_are_placed);
     g_test_add_func("/lrg/chat/inline-decisions/follow-the-inbox",

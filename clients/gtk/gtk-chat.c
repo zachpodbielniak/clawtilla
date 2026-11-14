@@ -2039,6 +2039,110 @@ interrupted_chip_new(gboolean from_user)
     return chip;
 }
 
+/* ── Folding a long request from another agent ─────────────────── */
+
+static void
+on_fold_open(GtkButton *button, gpointer user_data)
+{
+    GtkWidget *opened = user_data;
+
+    gtk_widget_set_visible(GTK_WIDGET(button), FALSE);
+    gtk_widget_set_visible(opened, TRUE);
+}
+
+static void
+on_fold_less(GtkButton *button, gpointer user_data)
+{
+    GtkWidget *folded = user_data;
+    GtkWidget *opened = g_object_get_data(G_OBJECT(button), "opened");
+
+    gtk_widget_set_visible(opened, FALSE);
+    gtk_widget_set_visible(folded, TRUE);
+}
+
+static void
+on_view_exchange(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    clawt_gtk_show_exchange(self,
+                            g_object_get_data(G_OBJECT(button), "agent"),
+                            g_object_get_data(G_OBJECT(button), "peer"));
+}
+
+/*
+ * The folded form of a message and its opened form, one of them visible.
+ *
+ * Folded is a flat button holding the first line, because a button is
+ * what the keyboard and a screen reader can reach; a click gesture on a
+ * label is neither.  Opened is the body the transcript would have drawn
+ * anyway, with "Show less" and "View exchange" under it -- the same
+ * label widget, so selection, markdown and the measure behave as on any
+ * other message.
+ */
+static GtkWidget *
+fold_box_new(ClawtWindow *self, GtkWidget *text, const gchar *sender,
+             const gchar *viewer, const gchar *body)
+{
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    GtkWidget *folded = gtk_button_new();
+    GtkWidget *line = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *preview_label;
+    GtkWidget *opened = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    GtkWidget *actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *less = gtk_button_new_with_label(
+        clawt_chat_fold_show_less_label());
+    GtkWidget *exchange = gtk_button_new_with_label(
+        clawt_chat_fold_view_exchange_label());
+    g_autofree gchar *preview = clawt_chat_fold_preview(body);
+
+    /* plain text: the preview is the body with its markdown left in */
+    preview_label = gtk_label_new(preview);
+    gtk_label_set_ellipsize(GTK_LABEL(preview_label), PANGO_ELLIPSIZE_END);
+    gtk_label_set_single_line_mode(GTK_LABEL(preview_label), TRUE);
+    gtk_label_set_xalign(GTK_LABEL(preview_label), 0.0f);
+    gtk_widget_set_hexpand(preview_label, TRUE);
+    gtk_widget_add_css_class(preview_label, "dim-label");
+
+    gtk_box_append(GTK_BOX(line), gtk_image_new_from_icon_name(
+                                      "pan-end-symbolic"));
+    gtk_box_append(GTK_BOX(line), preview_label);
+    gtk_button_set_child(GTK_BUTTON(folded), line);
+    gtk_widget_add_css_class(folded, "flat");
+    gtk_widget_add_css_class(folded, "clawt-fold-line");
+    gtk_widget_set_tooltip_text(folded, "Show the whole request");
+
+    gtk_widget_add_css_class(less, "flat");
+    gtk_widget_add_css_class(exchange, "flat");
+    gtk_widget_set_tooltip_text(exchange,
+        "Every request from this agent and the written answers to it, "
+        "without the tool steps");
+    g_object_set_data_full(G_OBJECT(exchange), "agent", g_strdup(viewer),
+                           g_free);
+    g_object_set_data_full(G_OBJECT(exchange), "peer", g_strdup(sender),
+                           g_free);
+    g_object_set_data(G_OBJECT(less), "opened", opened);
+    gtk_box_append(GTK_BOX(actions), less);
+    gtk_box_append(GTK_BOX(actions), exchange);
+
+    gtk_box_append(GTK_BOX(opened), text);
+    gtk_box_append(GTK_BOX(opened), actions);
+    gtk_widget_set_visible(opened, FALSE);
+
+    /*
+     * Both widgets are children of @box, which outlives either signal,
+     * so handing each a borrowed pointer to its sibling is safe.
+     */
+    g_signal_connect(folded, "clicked", G_CALLBACK(on_fold_open), opened);
+    g_signal_connect(less, "clicked", G_CALLBACK(on_fold_less), folded);
+    g_signal_connect(exchange, "clicked", G_CALLBACK(on_view_exchange), self);
+
+    gtk_box_append(GTK_BOX(box), folded);
+    gtk_box_append(GTK_BOX(box), opened);
+
+    return box;
+}
+
 void
 clawt_gtk_append_message_to(ClawtWindow *self, const TranscriptView *view,
                             const gchar *sender, const gchar *body, gboolean from_user,
@@ -2336,7 +2440,23 @@ clawt_gtk_append_message_to(ClawtWindow *self, const TranscriptView *view,
         }
 
         gtk_box_append(GTK_BOX(line), gutter);
-        gtk_box_append(GTK_BOX(line), text);
+
+        /*
+         * Another agent's long request to this one is one line until
+         * somebody opens it (clawt_chat_should_fold()); a merged
+         * delivery already draws as sections and is left alone.
+         */
+        if (n_sections == 0 &&
+            clawt_chat_should_fold(sender, view->fold_viewer, body)) {
+            GtkWidget *folded = fold_box_new(self, text, sender,
+                                             view->fold_viewer, body);
+
+            gtk_box_append(GTK_BOX(line), folded);
+            gtk_widget_set_hexpand(folded, TRUE);
+        } else {
+            gtk_box_append(GTK_BOX(line), text);
+        }
+
         gtk_widget_set_hexpand(text, TRUE);
 
         /*
@@ -2444,7 +2564,10 @@ clawt_gtk_append_message(ClawtWindow *self, const gchar *sender, const gchar *bo
     TranscriptView view = { self->transcript, &self->run_sender,
                             &self->run_day, self->selected_agent,
                             self->selected_has_avatar,
-                            self->selected_color };
+                            self->selected_color,
+                            /* a group room has no agent and folds nothing */
+                            self->selected_room_entry == NULL
+                                ? self->selected_agent : NULL };
 
     clawt_gtk_append_message_to(self, &view, sender, body, from_user, ts, NULL, 0,
                                 FALSE, 0, 0, FALSE);
@@ -2466,7 +2589,10 @@ clawt_gtk_append_message_marked(ClawtWindow *self, const gchar *sender,
     TranscriptView view = { self->transcript, &self->run_sender,
                             &self->run_day, self->selected_agent,
                             self->selected_has_avatar,
-                            self->selected_color };
+                            self->selected_color,
+                            /* a group room has no agent and folds nothing */
+                            self->selected_room_entry == NULL
+                                ? self->selected_agent : NULL };
 
     clawt_gtk_append_message_to(self, &view, sender, body, from_user, ts, NULL, 0,
                                 acknowledged, merged, consult, interrupted);

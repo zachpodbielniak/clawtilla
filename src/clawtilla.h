@@ -71,6 +71,8 @@
 #include "chat/clawt-activity.h"
 #include "chat/clawt-chat-run.h"
 #include "chat/clawt-chat-layout.h"
+#include "chat/clawt-chat-fold.h"
+#include "chat/clawt-open-target.h"
 #include "decision/clawt-decision.h"
 #include "decision/clawt-decision-store.h"
 #include "decision/clawt-decision-view.h"

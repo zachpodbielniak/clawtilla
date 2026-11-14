@@ -585,6 +585,23 @@ declare -A AFFORDANCES=(
     # site calls.
     #
     ["incidents rooms in the sidebar"]="clawt_room_is_listed|clawt_room_is_listed|clawt_room_is_listed"
+    #
+    # Another agent's long request folds to one line in a peer
+    # conversation, opens in place with "Show less", and "View exchange"
+    # lists that peer's requests and this agent's answers.  No frame of
+    # its own -- the exchange is room.history read through a library
+    # filter -- so layer 1 cannot see a client that skipped it.  The
+    # markers are the library rule, its label and the filter, each of
+    # which the feature cannot work without.
+    #
+    ["fold long peer requests"]="clawt_chat_should_fold|clawt_chat_should_fold|clawt_chat_should_fold"
+    ["show less on a folded request"]="clawt_chat_fold_show_less_label|clawt_chat_fold_show_less_label|clawt_chat_fold_show_less_label"
+    ["view a peer exchange"]="clawt_chat_exchange(|clawt_chat_exchange(|clawt_chat_exchange("
+    #
+    # An open-room link -- `clawtilla-gtk --open`, `/r/<room>`,
+    # `clawtilla-lrg --open` -- checked against the rooms that exist.
+    #
+    ["open-room links"]="clawt_open_target_resolve|clawt_open_target_resolve|clawt_lrg_open_resolve"
 )
 
 usage () {

@@ -168,6 +168,8 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/chat/clawt-activity.h \
 	$(SRCDIR)/chat/clawt-chat-run.h \
 	$(SRCDIR)/chat/clawt-chat-layout.h \
+	$(SRCDIR)/chat/clawt-chat-fold.h \
+	$(SRCDIR)/chat/clawt-open-target.h \
 	$(SRCDIR)/decision/clawt-decision.h \
 	$(SRCDIR)/decision/clawt-decision-store.h \
 	$(SRCDIR)/decision/clawt-decision-view.h \
@@ -363,6 +365,8 @@ LIB_SOURCES = \
 	$(SRCDIR)/chat/clawt-activity.c \
 	$(SRCDIR)/chat/clawt-chat-run.c \
 	$(SRCDIR)/chat/clawt-chat-layout.c \
+	$(SRCDIR)/chat/clawt-chat-fold.c \
+	$(SRCDIR)/chat/clawt-open-target.c \
 	$(SRCDIR)/decision/clawt-decision.c \
 	$(SRCDIR)/decision/clawt-decision-store.c \
 	$(SRCDIR)/decision/clawt-decision-view.c \
@@ -1122,6 +1126,12 @@ install: all
 	install -m 644 $(DATADIR_SRC)/example-config.yaml $(DESTDIR)$(DATADIR)/$(PROJECT_NAME)/
 	install -m 644 $(DATADIR_SRC)/default-config.yaml $(DESTDIR)$(DATADIR)/$(PROJECT_NAME)/
 	install -d $(DESTDIR)$(DATADIR)/$(PROJECT_NAME)/connectors.d
+	@# clawtilla-web's scripts and its app icons, which it serves from
+	@# here once installed (find_static_dir() in clients/web/main.c).
+	install -d $(DESTDIR)$(DATADIR)/$(PROJECT_NAME)/web/icons
+	install -m 644 $(DATADIR_SRC)/web/*.js $(DESTDIR)$(DATADIR)/$(PROJECT_NAME)/web/
+	install -m 644 $(DATADIR_SRC)/web/icons/*.png \
+		$(DESTDIR)$(DATADIR)/$(PROJECT_NAME)/web/icons/
 	install -m 644 $(DATADIR_SRC)/connectors.d/*.yaml \
 		$(DESTDIR)$(DATADIR)/$(PROJECT_NAME)/connectors.d/
 	@for p in $(PLUGIN_OUTDIR)/*.so; do \

@@ -1876,7 +1876,8 @@ versions apart.
   `clawt_chat_day_label()`, `clawt_chat_time_label()`,
   `clawt_chat_conversation_peer()`, `clawt_transcript_is_at_bottom()`,
   `clawt_mount_sort_scope()`, `clawt_ipc_reply_refusal_text()`,
-  `clawt_task_state_tone()`.
+  `clawt_task_state_tone()`, `clawt_chat_should_fold()`,
+  `clawt_chat_exchange()`, `clawt_open_target_resolve()`.
 - **A colour decided by comparing against a spelled-out nickname is a
   colour nobody checks.** `task_tone()` compared a `ClawtTaskState` against
   `"done"` and `"complete"` -- neither is a nickname the enum produces --

@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-24 Mon]
-#+updated: [2026-08-24 Mon]
+#+updated: [2026-11-14 Sat]
 #+version: 0.1.0
 
 * Vendored web assets
@@ -12,6 +12,7 @@
 |----------------------+---------------------------+---------+---------|
 | =htmx.min.js=        | https://htmx.org          | 2.0.4   | BSD-2   |
 | =htmx-ext-sse.js=    | htmx-ext-sse              | 2.2.3   | BSD-2   |
+| =icons/clawtilla-*.png= | =data/logo.png=, this repository | -- | AGPL-3.0-or-later, with the rest of clawtilla |
 
 Checked in rather than fetched at build time, and served by
 =clawtilla-web= from its own directory rather than from a CDN.
@@ -36,10 +37,36 @@ To update one, replace the file, note the new version here, and record
 its checksum below.
 
 #+begin_src bash
-sha256sum data/web/*.js
+sha256sum data/web/*.js data/web/icons/*.png
 #+end_src
 
 #+begin_example
 e209dda5c8235479f3166defc7750e1dbcd5a5c1808b7792fc2e6733768fb447  data/web/htmx.min.js
 83eca6fa0611fe2b0bf1700b424b88b5eced38ef448ef9760a2ea08fbc875611  data/web/htmx-ext-sse.js
+d894a8f2b4c6d6b1f6b58407620f66a2f16801d047c388aa34b947eadbffa5eb  data/web/icons/clawtilla-180.png
+e66db02e7c46cdf7e2264065a1a5f0b1dc245cb3b02c64b8436df5d3053ab2fb  data/web/icons/clawtilla-192.png
+8ec5dcbe38403d7d2f803c3849ea455bd958648fa79504d853432f5697d785f6  data/web/icons/clawtilla-512.png
 #+end_example
+
+** The app icons
+
+The web app manifest's icons (see =docs/web-client.org=, "Installable,
+with no service worker") are the project logo scaled down, made once
+and checked in rather than generated at build time, so building the
+client needs no image tool.  =data/logo.png= is a 1024-pixel square
+whose art sits inside the central circle on a full-bleed background,
+which is what a =maskable= icon needs, so the 512 serves as both.  To
+remake them after the logo changes (ImageMagick 7):
+
+#+begin_src bash
+for size in 180 192 512
+do
+    magick data/logo.png -resize "${size}x${size}" -strip \
+        -define png:exclude-chunks=date,time \
+        "PNG24:data/web/icons/clawtilla-${size}.png"
+done
+#+end_src
+
+then record the new checksums above.  =tests/test-web-render.c= reads
+each PNG's header and fails if a size in the manifest does not match the
+file.

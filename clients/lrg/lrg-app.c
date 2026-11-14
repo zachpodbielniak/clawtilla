@@ -527,6 +527,7 @@ clawt_lrg_app_free(ClawtLrgApp *app)
     g_clear_pointer(&app->unread, g_hash_table_unref);
     g_clear_pointer(&app->typing, g_hash_table_unref);
     g_clear_pointer(&app->context, g_main_context_unref);
+    g_free(app->open_target);
     g_free(app->agent_id);
     g_free(app->room_id);
     g_free(app->last_toast);

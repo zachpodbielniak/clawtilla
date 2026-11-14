@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-30 Sun]
+#+updated: [2026-11-14 Sat]
 #+version: 0.2.0
 
 * Clients
@@ -370,7 +370,7 @@ file, and the user id the server assigned.  See
 ** The GTK client
 
 #+begin_src bash
-clawtilla-gtk [--socket PATH]
+clawtilla-gtk [--socket PATH] [--open ROOM]
 #+end_src
 
 GTK4 and libadwaita.  Agents are presented as chats: a sidebar of who is
@@ -2262,6 +2262,167 @@ rather than a rule in each client: it is a question about a room's
 membership, not about its id, and a client that took ~dm:a:b~ apart
 would break the day the daemon spelled a direct room differently.
 
+**** A long request is one line until you open it
+:PROPERTIES:
+:CUSTOM_ID: folded-requests
+:END:
+
+A chief's delegation brief is often a page long, and a few of them in a
+conversation bury everything around them.  So in a peer conversation,
+another agent's message that runs past six lines (~CLAWT_CHAT_FOLD_LINES~)
+is drawn as *one line*: the start of it, whitespace collapsed, cut at 160
+characters with an ellipsis (~clawt_chat_fold_preview()~).  Clicking it
+opens the whole message in place, with two controls under it:
+
+- *Show less* folds it again.
+- *View exchange* opens the exchange between the two agents beside the
+  chat: every request from that peer and the written answers this agent
+  gave to each, in order, without the tool steps between them.
+
+The rule is ~clawt_chat_should_fold()~ in the library, which all three
+clients ask with the message's sender, its body and the agent whose
+conversation is on screen:
+
+- the sender is an agent (not you, not clawtilla's own notices, not a
+  routine or a trigger -- ~clawt_chat_sender_is_agent()~), and not the
+  agent whose conversation this is;
+- the body is longer than six lines, counted as a reader sees them: a
+  source line longer than 100 characters counts once per 100
+  (~clawt_chat_fold_line_count()~), because a brief written as one
+  paragraph has one newline and fills a screen.
+
+Short requests stay open, and so does the agent's own side: its answers
+are what you came to read.  Your own chat with an agent has nothing to
+fold -- every message in it is yours or the agent's -- and a group room
+folds nothing, because every member's message there is addressed to the
+room and an agent answering you reads exactly like one agent asking
+another.  Search results never fold: =/recall= lists hits on its own
+page, where a hit is shown because somebody searched for its text.  A
+merged delivery is drawn as its sections and is not folded either.
+
+The exchange is ~clawt_chat_exchange()~ over the direct room's history
+(~room.history~ with the peer as the room and the agent as the viewer,
+500 messages back).  One pass with one piece of state: a message from
+the peer is a request and starts an answer; the agent's next lines are
+the answer; anybody else speaking -- you, a third agent -- ends it, so
+an answer to you is not listed as an answer to the peer.  clawtilla's
+own notices neither appear nor end an answer, since a settle notice
+often lands between a request and its reply.  Empty bodies are skipped.
+The heading is ~clawt_chat_exchange_title()~, "Between <peer> and
+<agent>".
+
+| Client | Folded line | Opened | The exchange |
+|--------+-------------+--------+--------------|
+| GTK | a flat button with the preview, ellipsized | the message body, then *Show less* and *View exchange* buttons | an =AdwDialog= over the window, the peer's requests on cards |
+| web | a =<details>= whose summary is the preview; works with scripting off | the body and a row with *Show less* (closes the =<details>=) and *View exchange* | a side panel fixed to the right edge (htmx), or ~/a/<id>/exchange?with=<peer>~ as a page |
+| libregnum | a clickable row with the preview, one line | the body card holding the body and both buttons | a dialog with a scroller, the peer's requests on cards |
+
+The web client's =<details>= carries the message id and =hx-preserve=,
+because the transcript is swapped whole on every fleet event and an
+opened request would otherwise snap shut whenever anything happened
+anywhere.  ~make parity~ holds the three to this with four affordance
+rows: the fold rule, its *Show less* label, the exchange filter, and
+the open-room lookup below.
+
+*** Open-room links
+:PROPERTIES:
+:CUSTOM_ID: open-room-links
+:END:
+
+A conversation can be opened from outside the window: from a shell, a
+script, a bookmark, or a =clawtilla:= link in an org file.
+
+#+begin_src bash
+clawtilla-gtk --open chief                    # the chief's chat with you
+clawtilla-gtk --open standup                  # a group room
+clawtilla-gtk --open clawtilla:dm:chief:lead  # chief's conversation with lead
+clawtilla-lrg --open chief
+xdg-open http://127.0.0.1:8790/r/chief        # the web client
+#+end_src
+
+*What a target can be.*  The room id as the daemon spells it, with an
+optional =clawtilla:= or =clawtilla://= in front (an org link's path, or
+one pasted from somewhere that writes the scheme):
+
+- a room with a row of its own -- a declared group room or a team's
+  "Problems to look at" room (~clawt_room_is_listed()~) -- opens that
+  room.  Looked for first, so a room's link keeps working if an agent
+  is later given the same name;
+- an agent's id, or its ~dm_room~, opens its chat with you;
+- a direct room between two agents opens the first member's
+  conversation with the second, as the conversation switcher would.
+
+*Checked, twice.*  The spelling is checked where it was typed
+(~clawt_open_target_normalize()~: lower-case letters, digits, =-=, =_=,
+=.= and =:=, at most 200 characters), and a bad one exits 1 with the
+reason on stderr before anything starts.  Whether it exists is checked
+against the daemon's ~agent.list~ and ~room.list~, asked when the link
+is followed rather than taken from the sidebar's last refresh
+(~clawt_open_target_resolve()~).  A name nobody has is a toast in the
+window -- "There is no agent or room called "ghost" on this daemon" --
+and the window stays where it was; a routine's room, which exists but
+has nowhere to be shown, says so instead.  Never an empty pane with the
+name on it, never a crash.
+
+*One window answers.*  ~clawtilla-gtk~ is single-instance
+(=org.clawtilla.Gtk= on the session bus).  A second ~clawtilla-gtk --open
+<room>~ hands its command line to the first and exits with its status,
+without opening a daemon connection of its own, and the first opens the
+room in its newest window and raises it.  The room is looked up on the
+daemon *that window* is showing, whatever ~--socket~ or ~--profile~ the
+second invocation named.  With no window running, the process becomes
+the window and opens the room once its daemon answers; a target that
+arrives while the daemon is still starting is held until the first
+connection and opened then.  ~clawtilla-lrg~ is not single-instance: its
+~--open~ opens the new window on the room, once ~agent.list~ and
+~room.list~ have both answered.
+
+*The web client's* link is ~/r/<room>~, which takes the same targets: a
+group room renders there as it always has, an agent or a direct room
+redirects to its chat (~/a/<agent>/chat~, with ~?with=<peer>~ for a peer
+conversation), and a name nobody has is the chat page with the same
+sentence and status 404.  A daemon that did not answer is reported as
+that, not as a missing room.
+
+**** In cmacs or Emacs: =clawtilla:= links
+:PROPERTIES:
+:CUSTOM_ID: emacs-links
+:END:
+
+=contrib/emacs/clawtilla-link.el= defines an org link type:
+
+#+begin_src org
+- [[clawtilla:chief][the chief's chat]]
+- [[clawtilla:standup]]
+- [[clawtilla:dm:chief:lead][what chief asked lead]]
+#+end_src
+
+Following one (=C-c C-o=, or =RET= with ~org-return-follows-link~) runs
+~clawtilla-gtk --open <room>~ as a process -- never through a shell --
+which lands in the window already on screen.  A target that cannot be an
+id is refused in the echo area before anything runs.
+
+Install it by putting the file on ~load-path~ and requiring it:
+
+#+begin_src emacs-lisp
+(add-to-list 'load-path "~/source/projects/clawtilla/contrib/emacs")
+(require 'clawtilla-link)
+#+end_src
+
+In Doom, copy it into the private config directory and add ~(load! "clawtilla-link")~.  It
+byte-compiles cleanly (~emacs --batch -f batch-byte-compile
+clawtilla-link.el~), uses lexical binding, and registers the link type
+after =ol= loads, so requiring it does not load org.
+
+| Option | Default | What it does |
+|--------+---------+--------------|
+| ~clawtilla-link-command~ | ="clawtilla-gtk"= | the client a link runs; ~clawtilla-lrg~ works too, opening a new window each time |
+| ~clawtilla-link-arguments~ | ~("--open")~ | arguments before the room, e.g. ~("--profile" "workstation" "--open")~ for another daemon |
+| ~clawtilla-link-web-url~ | ~nil~ | when set (="http://127.0.0.1:8790"=), links open ~<url>/r/<room>~ with ~browse-url~ instead, and HTML export writes them as real links |
+
+Output from the client goes to the hidden buffer = *clawtilla-link*=; a
+non-zero exit is reported in the echo area.
+
 *** Right-click
 
 | Where | What you get |
@@ -2932,6 +3093,10 @@ clawtilla-web [--port 8790] [--bind ADDR] [--no-tailscale] [--socket PATH]
               [--profile NAME | --host HOST [--daemon-port N] [--token T]]
 #+end_src
 
+It is installable as an app -- a manifest and vendored icons, no service
+worker; see [[file:web-client.org::#web-manifest][web-client.org]] -- and ~/r/<room>~ is its
+[[#open-room-links][open-room link]].
+
 Everything ~clawtilla-gtk~ does, served over HTTP: the same pages in the
 same six sections, the same slash commands, and the same settings pages
 behind them, driven by the same ~ClawtClient~ over the same socket.  See
@@ -3039,6 +3204,7 @@ make web-smoke WEB_SMOKE_URL=http://127.0.0.1:8790 WEB_SMOKE_AGENT=chief
 #+begin_src bash
 make LRG_BACKEND=1
 clawtilla-lrg [--socket PATH] [--profile NAME | --host HOST [--port N] [--token T]]
+              [--open ROOM]
 #+end_src
 
 Everything ~clawtilla-gtk~ does, drawn with libregnum's widgets on an

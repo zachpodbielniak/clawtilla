@@ -852,6 +852,50 @@ clawt_web_stylesheet(void)
     ".skip-note{margin:2px 0 0 var(--chat-gutter);font-size:.85em;"
       "color:var(--muted)}"
     /*
+     * Another agent's long request, folded to one line: a summary that
+     * reads as a quiet card under the gutter, its marker drawn by us so
+     * it is the same triangle in every browser.  Opened, the body is the
+     * ordinary message body inside it, and the actions sit under it.
+     */
+    ".fold{margin:0}"
+    ".fold>summary{list-style:none;cursor:pointer;display:flex;gap:7px;"
+      "align-items:center;margin-left:var(--chat-gutter);padding:6px 12px;"
+      "border-radius:var(--radius);background:var(--surface-2);"
+      "color:var(--muted);max-width:100%;box-sizing:border-box}"
+    ".fold>summary::-webkit-details-marker{display:none}"
+    ".fold>summary::before{content:'\\25B8';flex:none}"
+    ".fold[open]>summary::before{content:'\\25BE'}"
+    ".fold>summary:hover{color:var(--ink)}"
+    ".fold>summary:focus-visible{outline:2px solid var(--info-fg)}"
+    ".fold-preview{overflow:hidden;text-overflow:ellipsis;"
+      "white-space:nowrap;min-width:0}"
+    ".fold[open]>summary .fold-preview{opacity:.7}"
+    ".fold>.msg-body{margin-top:6px}"
+    ".fold-actions{display:flex;gap:14px;margin:4px 0 0 var(--chat-gutter);"
+      "font-size:.85em}"
+    ".fold-actions button,.fold-actions a{background:none;border:0;"
+      "padding:0;font:inherit;color:var(--muted);cursor:pointer;"
+      "text-decoration:none}"
+    ".fold-actions button:hover,.fold-actions a:hover{color:var(--ink)}"
+    /*
+     * The exchange beside the chat: fixed to the right edge, the whole
+     * height, gone while it is empty -- which is how Close and Escape
+     * hide it, by emptying it.  On a phone it is the whole width.
+     */
+    ".exchange-panel{position:fixed;top:0;right:0;bottom:0;z-index:40;"
+      "width:min(440px,100vw);box-sizing:border-box;overflow-y:auto;"
+      "background:var(--surface);border-left:1px solid var(--line-strong);"
+      "box-shadow:-8px 0 24px rgba(0,0,0,.12);padding:14px 16px}"
+    ".exchange-panel:empty{display:none}"
+    ".exchange-head{display:flex;align-items:baseline;gap:12px;"
+      "justify-content:space-between;margin-bottom:10px}"
+    ".exchange-list{list-style:none;margin:0;padding:0;display:flex;"
+      "flex-direction:column;gap:12px}"
+    ".exchange-who{font-size:.8em;color:var(--muted);margin-bottom:3px}"
+    ".exchange-list .msg-body{margin-left:0}"
+    ".exchange-request .msg-body{background:var(--surface-2);"
+      "border-radius:var(--radius);padding:8px 12px}"
+    /*
      * The gutter stops being affordable on a narrow screen: at 360px the
      * indent takes the measure below the comfortable range, and the
      * avatar is the first thing that should go rather than the text.
