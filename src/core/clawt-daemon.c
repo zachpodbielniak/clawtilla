@@ -4102,6 +4102,22 @@ start_agent_launch(ClawtDaemon *self, const gchar *agent_id,
         }
 
         clawt_process_runtime_set_sandbox(process, sandbox);
+
+        /*
+         * And its network, retaken with the sandbox for the same reason.
+         * A gated agent whose gate cannot be bound is refused, never
+         * started with the open network instead.
+         */
+        {
+            g_autoptr(GError) why = NULL;
+
+            if (!clawt_daemon_egress_prepare_agent(self, config, process,
+                                                   &why)) {
+                clawt_agent_set_error(agent, why->message);
+                g_propagate_error(error, g_steal_pointer(&why));
+                return FALSE;
+            }
+        }
     }
 
 	prime_agent_usage(self, agent_id);
@@ -4648,6 +4664,7 @@ release_components(ClawtDaemon *self)
     g_clear_object(&self->tasks);
     g_clear_object(&self->rooms);
     g_clear_object(&self->agents);
+    clawt_daemon_egress_release(self);
     g_clear_object(&self->vm_images);
     g_clear_object(&self->exchange);
     g_clear_object(&self->decisions);
@@ -6790,6 +6807,9 @@ clawt_daemon_stop(ClawtDaemon *self)
     if (self->agents != NULL)
         clawt_agent_manager_stop_all(self->agents);
 
+    /* After the fleet, whose exits are what revoke the broker's tokens. */
+    clawt_daemon_egress_stop(self);
+
     if (self->rooms != NULL)
         clawt_room_manager_flush(self->rooms);
 
@@ -6936,6 +6956,9 @@ clawt_daemon_reload_internal(ClawtDaemon *self, GPtrArray *refusals,
      */
     clawt_daemon_render_all_agents_into(self, refusals);
 
+    /* egress.allow is read per connection, so it applies at once. */
+    clawt_daemon_egress_refresh_allowlist(self);
+
     clawt_event_bus_emit(self->bus, "daemon.reloaded", NULL);
     g_signal_emit(self, signals[SIGNAL_RELOADED], 0);
 
@@ -7036,7 +7059,13 @@ clawt_daemon_setting_needs_a_new_session(const gchar *key)
          * unconfined an hour later.
          */
         "runtime.confine",
-        "runtime.confine_paths"
+        "runtime.confine_paths",
+
+        /*
+         * The network namespace is made when the child is spawned, and
+         * the broker's token is minted for that process.
+         */
+        "runtime.network"
     };
     gsize i;
 
@@ -7675,6 +7704,9 @@ clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
     json_builder_set_member_name(builder, "runtime_type");
     json_builder_add_string_value(
         builder, clawt_agent_config_get_string(config, "runtime.type"));
+    json_builder_set_member_name(builder, "network");
+    json_builder_add_string_value(
+        builder, clawt_agent_config_get_string(config, "runtime.network"));
     json_builder_set_member_name(builder, "confine_available");
     json_builder_add_boolean_value(
         builder, !clawt_agent_confine_wanted(config) ||
@@ -9030,6 +9062,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_agent,
     clawt_daemon_handle_memory,
     clawt_daemon_handle_mount,
+    clawt_daemon_handle_egress,
     clawt_daemon_handle_image,
     clawt_daemon_handle_team,
     clawt_daemon_handle_room,

@@ -363,6 +363,26 @@ without asking: a mount reaches a computer when it is next built, and a
 container or a domain that already exists had its devices decided when it
 was created.
 
+~egress.allow.list~, ~egress.allow.add~ and ~egress.allow.remove~ edit
+=egress.allow=, the private addresses a gated agent may reach (see
+=docs/security.org=, "Egress").  The two writes take ~entry~ -- one
+address, network or host name, with an optional port -- and all three
+answer ~entries~, the list as it now stands (always present, possibly
+empty), plus ~problem~ when the list as written does not parse and so
+opens nothing.  ~.add~ checks the entry where it arrives: a metadata
+address, a multicast range or a typo is refused rather than saved.  The
+running gate reads the list per connection, so neither answers
+~restart_required~.
+
+agent.show carries an ~egress~ member beside ~agent~: ~network~ (the
+agent's ~runtime.network~ nickname), ~refused_today~ (connections the
+gate refused it since local midnight), ~refusals~ (the last twenty,
+newest first, each ~at~ in microseconds, ~host~, ~port~, ~reason~ and,
+when there was one, the refused ~address~) and ~keys~ (every
+credential-looking variable in its environment by ~name~, with
+~brokered~ and, when it is not, a ~reason~).  No key's value is in it.
+The agent object itself carries ~network~ as well, beside ~confine~.
+
 ~defaults.mount.add~ takes ~agents~ and ~teams~ separately, and also
 takes ~who~: one list of names that the *daemon* sorts into the two.
 Both graphical clients send ~who~, because a name is a team or an agent
@@ -1492,6 +1512,7 @@ Every kind published, by subject:
 | the daemon | ~device.paired~ (~device~, ~name~), ~device.revoked~ (~device~), ~device.expired~ (~device~) |
 | an agent | ~computer.exec~ |
 | an agent | ~turn.timed_out~, ~turn.repeating~, ~message.steered~ |
+| an agent | ~egress.refused~ (the gate refused one of its connections; agent.show's ~egress~ has the detail) |
 | an agent | ~turn.step~ (~step_kind~, ~room_id~, ~text~, ~tool~, ~detail~, ~failed~) |
 | a task | ~handoff.queued~, ~handoff.settled~ |
 

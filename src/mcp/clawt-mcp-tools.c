@@ -6543,7 +6543,21 @@ wait_condition(
 	case CLAWT_WAIT_URL: {
 		const gchar *url = argument_string(arguments, "url");
 		gint64 status = argument_int(arguments, "status", 0);
-		gchar *refusal = clawt_net_url_refusal(url);
+		const gchar *gated = clawt_egress_url_wait_refusal(
+			clawt_enum_to_nick(CLAWT_TYPE_RUNTIME_NETWORK,
+			                   clawt_agent_config_get_enum(
+			                       config, "runtime.network")));
+		gchar *refusal;
+
+		/*
+		 * Before the URL is looked at: the daemon would fetch it from
+		 * its own network position, around the gate this agent sits
+		 * behind, so no URL is acceptable whatever it names.
+		 */
+		if (gated != NULL)
+			return g_strdup(gated);
+
+		refusal = clawt_net_url_refusal(url);
 
 		if (refusal != NULL)
 			return refusal;

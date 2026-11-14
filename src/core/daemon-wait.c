@@ -579,6 +579,27 @@ probe_url(
 		return;
 	}
 
+	/*
+	 * And the agent's network, which may have been gated since the wait
+	 * was set: a gated or closed agent's URL is never fetched by the
+	 * daemon, which would be a request on its behalf around the gate.
+	 */
+	{
+		ClawtAgent *agent = (self->agents != NULL)
+			? clawt_agent_manager_get(self->agents, wait->agent_id) : NULL;
+		const gchar *gated = (agent != NULL)
+			? clawt_egress_url_wait_refusal(clawt_enum_to_nick(
+				  CLAWT_TYPE_RUNTIME_NETWORK,
+				  clawt_agent_config_get_enum(
+				      clawt_agent_get_config(agent), "runtime.network")))
+			: NULL;
+
+		if (gated != NULL) {
+			report(self, wait, CLAWT_WAIT_IMPOSSIBLE, gated, NULL);
+			return;
+		}
+	}
+
 	uri = g_uri_parse(wait->url, G_URI_FLAGS_NONE, NULL);
 
 	if (uri == NULL || g_uri_get_host(uri) == NULL) {

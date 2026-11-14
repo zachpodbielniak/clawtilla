@@ -135,6 +135,7 @@ and builds `GSURF_DIR` when its binary is missing; building that needs
 | `clawtilla` | the CLI |
 | `clawtilla-gtk` | the GTK4 client |
 | `clawtilla-mcp-server` | serves the orchestration tools to an agent's CLI |
+| `clawtilla-relay` | runs inside a gated agent's bwrap box; bridges its loopback to the egress gate and broker |
 | `clawtilla-web` | the htmx web client |
 | `clawtilla-lrg` | the libregnum client (`LRG_BACKEND=1` only) |
 | `plugins/libclawt-plugin-*.so` | bundled plugins |
@@ -1130,6 +1131,24 @@ Other VM facts:
 - **A bind protects a path, not an inode.** `clawt_sandbox_check_links()`
   refuses a read-only file bind or a denied file with a second hard link
   before anything is spawned; call it wherever `wrap_argv()` is.
+- **The network is the namespace, not the proxy variable.**
+  `runtime.network: gated` puts the box in `--unshare-net` and the only
+  route out is a unix socket per agent (`<state_dir>/egress/gate/<id>.sock`)
+  that `clawtilla-relay` bridges to 127.0.0.1:3128 inside; `HTTPS_PROXY` is
+  a convenience. So gated without bwrap is a SHADOW, never an agent on the
+  open network. The relay sits between bwrap and libreclaw, so the payload
+  lookup skips it by its `comm` (`clawtilla-relay`, exactly fifteen bytes).
+  The gate and broker are made at the first gated start, never at daemon
+  start.
+- **Judge the address, after resolution, every one of them.**
+  `clawt_egress_decide()` refuses a name if *any* answer is private, and
+  the gate re-checks the address the socket reached. IPv6 forms that carry
+  an IPv4 address (mapped, compatible, NAT64, 6to4) are judged by it.
+  `clawt_net_address_classify()` is the one table.
+- **A brokered key must not be on disk inside the box.** The credentials
+  directory is under the agent's state dir, which the box binds rw; render
+  skips a key `clawt_egress_broker_plan()` brokers. A CLI is assumed *not*
+  to read a base-URL variable unless the broker's table says it does.
 - **A shared network namespace shares the abstract socket namespace.**
   A networked box reached every `@`-socket on the host -- an X server
   trusting the local user among them. `clawt_sandbox_enter()` (Landlock

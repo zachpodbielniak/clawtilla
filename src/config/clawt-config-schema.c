@@ -631,6 +631,31 @@ static const ClawtSchemaEntry schema[] = {
   "A password manager that is locked will block forever rather than fail,\n"
   "and without a timeout so will daemon startup.", "0.1.0" },
 
+/* ── egress ──────────────────────────────────────────────────────── */
+{ "egress", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Where an agent with runtime.network: gated may connect.\n"
+  "\n"
+  "A gated agent's sandbox has no network of its own. Its one way out is\n"
+  "clawtilla's egress gate, an HTTP proxy in the daemon that resolves\n"
+  "names itself and connects only to public addresses: never this\n"
+  "machine, the LAN (RFC 1918), link-local, CGNAT and tailnets\n"
+  "(100.64.0.0/10), IPv6 unique-local, multicast or a cloud metadata\n"
+  "service. It judges the address, after resolution, so a public name\n"
+  "pointed at 127.0.0.1 is refused too.", "0.17.0" },
+
+{ "egress.allow", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_COMMENTED,
+  NULL, NULL,
+  "Private addresses gated agents may reach anyway.\n"
+  "\n"
+  "Each entry is an address (100.101.102.103), a network\n"
+  "(192.168.1.0/24, fd7a:115c:a1e0::/48) or a host name\n"
+  "(nas.example.ts.net), optionally with a port (10.0.0.5:8080,\n"
+  "[fd00::1]:443). A name matches the name the agent asked for and never\n"
+  "opens loopback; loopback needs an address. Cloud metadata, multicast,\n"
+  "the unspecified address and reserved space cannot be opened, and an\n"
+  "entry naming one is refused. One bad entry refuses the whole list, at\n"
+  "load and where it is added.", "0.17.0" },
+
 /* ── plugins ─────────────────────────────────────────────────────── */
 { "plugins", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Loadable plugins: event handlers, extra tools, computer backends and\n"
@@ -2493,6 +2518,28 @@ static const ClawtSchemaEntry schema[] = {
   "under ~/.nvm, a tool a skill shells out to -- is named here. Read-only\n"
   "on purpose: something the agent should write is a mount, which says\n"
   "so in its mode. Ignored unless runtime.confine is bwrap.", "0.14.0" },
+
+{ "agents.runtime.network", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "open", clawt_runtime_network_get_type,
+  "Where this agent's own process may connect: open, gated or none.\n"
+  "\n"
+  "open shares the machine's network, LAN and tailnet included. gated\n"
+  "gives the sandbox no network of its own: its only route is\n"
+  "clawtilla's egress gate, an HTTP proxy reaching public addresses only\n"
+  "(plus egress.allow), handed to the CLI as HTTPS_PROXY and HTTP_PROXY.\n"
+  "none gives it no route at all.\n"
+  "\n"
+  "Under gated or none, provider keys whose CLI can be pointed elsewhere\n"
+  "(ANTHROPIC_API_KEY for Claude Code, OPENAI_API_KEY for Codex) are\n"
+  "brokered: the agent holds a token for its own process, and the daemon\n"
+  "swaps it for the real key on the way to a fixed upstream. Others are\n"
+  "passed as before and listed as unbrokered. An OAuth login is\n"
+  "unaffected.\n"
+  "\n"
+  "Anything but open needs runtime.confine: bwrap -- outside the sandbox\n"
+  "a process can ignore a proxy -- and without it the agent is disabled\n"
+  "with that reason, never run on an open network instead. Takes effect\n"
+  "at the agent's next start.", "0.17.0" },
 
 { "agents.runtime.autostart", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,

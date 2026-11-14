@@ -113,7 +113,8 @@ GStrv clawt_agent_confine_default_login_paths(const gchar *provider);
  * (writable), the AI CLI and every program the workspace's .mcp.json
  * names (read-only), the daemon's sockets, and `runtime.confine_paths`
  * (read-only).  $HOME is an empty tmpfs those come back on top of; /tmp is
- * private.  The network is not touched -- the CLI has a provider to reach.
+ * private.  The network follows `runtime.network`: shared when open, a
+ * namespace of its own with only loopback in it otherwise.
  * On a host computer, `computer.host.deny_paths` are denied here as well.
  *
  * Paths that do not exist are left out rather than bound: bwrap refuses

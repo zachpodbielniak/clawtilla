@@ -844,6 +844,35 @@ How long a command-backend secret may take before it is an error.
 A password manager that is locked will block forever rather than fail,
 and without a timeout so will daemon startup.
 
+** =egress=
+
+Where an agent with runtime.network: gated may connect.
+
+A gated agent's sandbox has no network of its own. Its one way out is
+clawtilla's egress gate, an HTTP proxy in the daemon that resolves
+names itself and connects only to public addresses: never this
+machine, the LAN (RFC 1918), link-local, CGNAT and tailnets
+(100.64.0.0/10), IPv6 unique-local, multicast or a cloud metadata
+service. It judges the address, after resolution, so a public name
+pointed at 127.0.0.1 is refused too.
+
+*** =egress.allow=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.17.0
+
+Private addresses gated agents may reach anyway.
+
+Each entry is an address (100.101.102.103), a network
+(192.168.1.0/24, fd7a:115c:a1e0::/48) or a host name
+(nas.example.ts.net), optionally with a port (10.0.0.5:8080,
+[fd00::1]:443). A name matches the name the agent asked for and never
+opens loopback; loopback needs an address. Cloud metadata, multicast,
+the unspecified address and reserved space cannot be opened, and an
+entry naming one is refused. One bad entry refuses the whole list, at
+load and where it is added.
+
 ** =plugins=
 
 Loadable plugins: event handlers, extra tools, computer backends and
@@ -3516,6 +3545,33 @@ for itself. A CLI installed somewhere it cannot follow -- a node
 under ~/.nvm, a tool a skill shells out to -- is named here. Read-only
 on purpose: something the agent should write is a mount, which says
 so in its mode. Ignored unless runtime.confine is bwrap.
+
+*** =agents.runtime.network=
+
+- Type :: enum
+- Values :: open, gated, none
+- Default :: =open=
+- Since :: 0.17.0
+
+Where this agent's own process may connect: open, gated or none.
+
+open shares the machine's network, LAN and tailnet included. gated
+gives the sandbox no network of its own: its only route is
+clawtilla's egress gate, an HTTP proxy reaching public addresses only
+(plus egress.allow), handed to the CLI as HTTPS_PROXY and HTTP_PROXY.
+none gives it no route at all.
+
+Under gated or none, provider keys whose CLI can be pointed elsewhere
+(ANTHROPIC_API_KEY for Claude Code, OPENAI_API_KEY for Codex) are
+brokered: the agent holds a token for its own process, and the daemon
+swaps it for the real key on the way to a fixed upstream. Others are
+passed as before and listed as unbrokered. An OAuth login is
+unaffected.
+
+Anything but open needs runtime.confine: bwrap -- outside the sandbox
+a process can ignore a proxy -- and without it the agent is disabled
+with that reason, never run on an open network instead. Takes effect
+at the agent's next start.
 
 *** =agents.runtime.autostart=
 

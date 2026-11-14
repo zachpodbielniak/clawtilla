@@ -991,9 +991,40 @@ clawt_config_render_agent(ClawtConfig       *config,
                 "A path that is missing is outside what you were given, "
                 "not a fault.";
 
+            /*
+             * And where it may connect, said for the same reason: a
+             * refused connection to the LAN reads as the LAN being down
+             * unless the agent knows the gate is there and why.
+             */
+            const gchar *network = NULL;
+
+            switch ((ClawtRuntimeNetwork)clawt_agent_config_get_enum(
+                        agent, "runtime.network")) {
+            case CLAWT_RUNTIME_NETWORK_OPEN:
+                break;
+            case CLAWT_RUNTIME_NETWORK_GATED:
+                network =
+                    "[clawtilla] Your network goes through clawtilla's "
+                    "egress gate (HTTPS_PROXY and HTTP_PROXY are set): "
+                    "the public internet is reachable; this machine, the "
+                    "LAN, tailnets and cloud metadata are refused unless "
+                    "your operator allowed them. A 403 from the gate "
+                    "names the address and the reason -- it is a "
+                    "boundary, not an outage.";
+                break;
+            case CLAWT_RUNTIME_NETWORK_NONE:
+                network =
+                    "[clawtilla] You have no network. Your model provider "
+                    "is reached through clawtilla, and nothing else is.";
+                break;
+            }
+
             directive = (computer != NULL)
-                ? g_strconcat(computer, "\n\n", sandboxed, NULL)
-                : g_strdup(sandboxed);
+                ? g_strconcat(computer, "\n\n", sandboxed,
+                              network != NULL ? "\n\n" : "",
+                              network, NULL)
+                : g_strconcat(sandboxed, network != NULL ? "\n\n" : "",
+                              network, NULL);
         } else {
             directive = g_steal_pointer(&computer);
         }
@@ -1569,6 +1600,32 @@ clawt_config_write_agent_files(ClawtConfig       *config,
         gpointer key;
         gpointer value;
 
+        /*
+         * A key the broker holds is not written here at all.  This
+         * directory is inside the agent's state directory, which a
+         * confined agent's box binds read-write -- so a key written to a
+         * file in it is a key the agent can read, and brokering it
+         * would protect nothing.  Planned by name, from the same
+         * function the runtime uses, so the two cannot disagree.
+         */
+        g_autoptr(GHashTable) names = g_hash_table_new_full(
+            g_str_hash, g_str_equal, g_free, g_free);
+        g_autoptr(ClawtEgressBrokerPlan) plan = NULL;
+
+        g_hash_table_iter_init(&iter, credentials);
+
+        while (g_hash_table_iter_next(&iter, &key, &value))
+            g_hash_table_insert(names, g_ascii_strup(key, -1),
+                                g_strdup("x"));
+
+        plan = clawt_egress_broker_plan(
+            names, clawt_agent_config_get_string(agent, "model.provider"),
+            clawt_agent_confine_wanted(agent)
+            ? (ClawtRuntimeNetwork)clawt_agent_config_get_enum(
+                  agent, "runtime.network")
+            : CLAWT_RUNTIME_NETWORK_OPEN,
+            NULL);
+
         g_hash_table_iter_init(&iter, credentials);
 
         while (g_hash_table_iter_next(&iter, &key, &value)) {
@@ -1576,6 +1633,15 @@ clawt_config_write_agent_files(ClawtConfig       *config,
                                                       NULL);
             g_autofree gchar *resolved = NULL;
             g_autoptr(GError) local = NULL;
+
+            {
+                g_autofree gchar *upper = g_ascii_strup(key, -1);
+
+                if (clawt_egress_broker_plan_is_brokered(plan, upper)) {
+                    g_unlink(path);
+                    continue;
+                }
+            }
 
             resolved = clawt_secret_ref_resolve(
                 value, secrets_dir,

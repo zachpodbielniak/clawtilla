@@ -184,9 +184,17 @@ clawt_lrg_agent_enum_choices(GType type, const gchar *current)
         g_autoptr(GEnumClass) klass = g_type_class_ref(type);
         guint i;
 
+        /*
+         * The network wears the library's names for its choices, as in
+         * the other two clients: "gated" alone does not say whose gate.
+         */
         for (i = 0; i < klass->n_values; i++)
-            clawt_lrg_agent_choices_add(choices, klass->values[i].value_nick,
-                                  klass->values[i].value_nick);
+            clawt_lrg_agent_choices_add(
+                choices, klass->values[i].value_nick,
+                type == CLAWT_TYPE_RUNTIME_NETWORK
+                ? clawt_egress_network_choice_label(
+                      klass->values[i].value_nick)
+                : klass->values[i].value_nick);
     } else if (G_TYPE_IS_FLAGS(type)) {
         g_autoptr(GFlagsClass) klass = g_type_class_ref(type);
         guint i;
@@ -208,6 +216,20 @@ clawt_lrg_agent_enum_choices(GType type, const gchar *current)
 
     choices_keep_current(choices, current, " (not a known value)");
     return choices;
+}
+
+/* Whether @plan already sets @key. */
+static gboolean
+plan_has(GPtrArray *plan, const gchar *key)
+{
+    guint i;
+
+    for (i = 0; i < plan->len; i++)
+        if (g_strcmp0(((ClawtLrgAgentSetting *)g_ptr_array_index(plan, i))
+                          ->key, key) == 0)
+            return TRUE;
+
+    return FALSE;
 }
 
 ClawtLrgAgentChoices *
@@ -1053,6 +1075,12 @@ clawt_lrg_agent_form(JsonObject *settings)
         if (g_strcmp0(key, "runtime.confine") == 0) {
             field->label = g_strdup(clawt_agent_confine_label());
             field->hint = g_strdup(clawt_agent_confine_explanation());
+        } else if (g_strcmp0(key, "runtime.network") == 0) {
+            const gchar *current = string_or(settings, key, "");
+
+            field->label = g_strdup(clawt_egress_network_label());
+            field->hint = g_strdup(clawt_egress_network_choice_explanation(
+                *current != '\0' ? current : "open"));
         } else {
             field->label = clawt_lrg_agent_key_label(key);
             field->hint = first_line(entry->doc);
@@ -1181,6 +1209,25 @@ clawt_lrg_agent_save_plan(GPtrArray *posted, JsonObject *settings)
         *string_or(settings, "model.account", "") != '\0' && *account != '\0')
         g_ptr_array_add(plan, clawt_lrg_agent_setting_new("model.account", ""));
 
+    /*
+     * Opening the network goes first.  runtime.confine comes before it
+     * in schema order, and the daemon refuses turning the sandbox off
+     * while the network is still gated -- so a save doing both would be
+     * refused halfway.  Gating it, the other way round, already lands in
+     * the right order.
+     */
+    {
+        gboolean network_posted = FALSE;
+        const gchar *network = posted_value(posted, "runtime.network",
+                                            &network_posted);
+
+        if (network_posted && g_strcmp0(network, "open") == 0 &&
+            g_strcmp0(string_or(settings, "runtime.network", ""),
+                      "open") != 0)
+            g_ptr_array_add(plan, clawt_lrg_agent_setting_new(
+                                      "runtime.network", "open"));
+    }
+
     for (i = 0; i < posted->len; i++) {
         ClawtLrgAgentSetting *setting = g_ptr_array_index(posted, i);
 
@@ -1193,6 +1240,11 @@ clawt_lrg_agent_save_plan(GPtrArray *posted, JsonObject *settings)
             continue;
 
         if (clawt_lrg_agent_key_belongs_to_shared(setting->key, use))
+            continue;
+
+        /* Already placed first, above. */
+        if (g_strcmp0(setting->key, "runtime.network") == 0 &&
+            plan_has(plan, "runtime.network"))
             continue;
 
         /*
