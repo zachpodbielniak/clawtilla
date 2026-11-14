@@ -2148,3 +2148,115 @@ clawt_web_navigation_result(HtmxElement *list, const gchar *query, const gchar *
 	htmx_node_add_child(HTMX_NODE(list), HTMX_NODE(link));
 	return 1;
 }
+
+/*
+ * One decision, drawn inline in the room it was asked from.
+ *
+ * The same record the inbox lists, through the same library sentences
+ * (clawt_decision_default_text(), clawt_decision_outcome_text()), so a
+ * person who answered on one page reads the same words on the other.
+ * The form swaps only the card: the answer comes back as this card,
+ * redrawn from the daemon's reply -- settled, or still open with the
+ * refusal written into it -- and the transcript's own refresh on the
+ * fleet event that follows draws the same thing again.
+ */
+HtmxElement *
+clawt_web_decision_inline(JsonObject *object, const gchar *notice)
+{
+    g_autoptr(HtmxDiv) card = htmx_div_new();
+    g_autoptr(ClawtDecision) decision = clawt_decision_new_from_object(object);
+    g_autofree gchar *who = NULL;
+    g_autofree gchar *dom_id = NULL;
+    const gchar * const *options;
+    guint i;
+
+    htmx_element_add_class(HTMX_ELEMENT(card), "decision-inline");
+
+    if (decision == NULL)
+        return HTMX_ELEMENT(g_steal_pointer(&card));
+
+    /* an id the swap can find again; the uuid is daemon data, so escaped */
+    dom_id = g_strdup_printf("decision-%s", clawt_decision_get_id(decision));
+    htmx_element_set_id(HTMX_ELEMENT(card), dom_id);
+
+    who = g_strdup_printf("%s asks", clawt_decision_get_agent(decision));
+    clawt_web_add(card, clawt_web_text(who, "small muted"));
+    clawt_web_add(card, clawt_web_text(clawt_decision_get_question(decision),
+                                       "decision-question"));
+
+    if (notice != NULL && *notice != '\0')
+        clawt_web_add(card, clawt_web_text(notice, "error"));
+
+    if (clawt_decision_get_state(decision) != CLAWT_DECISION_OPEN) {
+        g_autofree gchar *outcome = clawt_decision_outcome_text(decision);
+
+        htmx_element_add_class(HTMX_ELEMENT(card), "decision-inline-settled");
+        clawt_web_add(card, clawt_web_text(outcome, "small"));
+
+        return HTMX_ELEMENT(g_steal_pointer(&card));
+    }
+
+    options = clawt_decision_get_options(decision);
+
+    if (options == NULL || options[0] == NULL) {
+        /*
+         * A free-text question cannot be answered with a button; the
+         * inbox has the box for it, and says so rather than drawing a
+         * card with nothing to press.
+         */
+        g_autoptr(HtmxA) inbox = htmx_a_new_with_href("/decisions");
+
+        htmx_node_set_text_content(HTMX_NODE(inbox),
+                                   "No options offered: answer it in Decisions");
+        htmx_node_add_child(HTMX_NODE(card), HTMX_NODE(inbox));
+    } else {
+        g_autoptr(HtmxForm) form = clawt_web_form("/f/decision/answer");
+        g_autoptr(HtmxDiv) buttons = htmx_div_new();
+
+        /*
+         * The card, not the page: an answer redraws this one entry and
+         * leaves the transcript where the reader had it.  hx-sync drops
+         * a second press while the first is in flight and every button
+         * goes disabled for the wait -- the client's half of refusing a
+         * double tap; the daemon refuses whatever still gets through.
+         */
+        /*
+         * `closest`, not `#id`: the id is daemon data, and a selector
+         * built from it is one more thing that would need escaping --
+         * one that does not parse makes htmx swap nothing at all.
+         */
+        htmx_element_set_hx_target(HTMX_ELEMENT(form),
+                                   "closest .decision-inline");
+        htmx_element_set_attribute(HTMX_ELEMENT(form), "hx-swap", "outerHTML");
+        htmx_element_set_attribute(HTMX_ELEMENT(form), "hx-sync", "this:drop");
+        htmx_element_set_attribute(HTMX_ELEMENT(form), "hx-disabled-elt",
+                                   "find button");
+
+        clawt_web_add(form, clawt_web_hidden("decision",
+                                             clawt_decision_get_id(decision)));
+        clawt_web_add(form, clawt_web_hidden("via", CLAWT_DECISION_VIA_CHAT));
+
+        htmx_element_add_class(HTMX_ELEMENT(buttons), "decision-options");
+
+        for (i = 0; options[i] != NULL; i++) {
+            g_autoptr(HtmxButton) pick = clawt_web_button(options[i], "default");
+
+            htmx_element_set_attribute(HTMX_ELEMENT(pick), "type", "submit");
+            htmx_element_set_attribute(HTMX_ELEMENT(pick), "name", "answer");
+            htmx_element_set_attribute(HTMX_ELEMENT(pick), "value", options[i]);
+            htmx_node_add_child(HTMX_NODE(buttons), HTMX_NODE(pick));
+        }
+
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(buttons));
+        htmx_node_add_child(HTMX_NODE(card), HTMX_NODE(form));
+    }
+
+    {
+        g_autofree gchar *fallback = clawt_decision_default_text(decision, NULL);
+
+        if (fallback != NULL)
+            clawt_web_add(card, clawt_web_text(fallback, "small muted"));
+    }
+
+    return HTMX_ELEMENT(g_steal_pointer(&card));
+}

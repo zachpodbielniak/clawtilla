@@ -2637,6 +2637,9 @@ clawt_gtk_reset_transcript(ClawtWindow *self)
     self->unread_marker = NULL;
     self->steps_block   = NULL;
 
+    if (self->inline_decisions != NULL)
+        g_hash_table_remove_all(self->inline_decisions);
+
     if (self->steps != NULL)
         g_ptr_array_set_size(self->steps, 0);
 
@@ -4318,9 +4321,24 @@ clawt_gtk_load_history(ClawtWindow *self)
      * turn still running goes on adding to a fresh live block after
      * this, so a conversation opened mid-turn shows both.
      */
+    /*
+     * And the decisions asked from this room, merged the same way, so a
+     * question sits where it was asked -- after the message that
+     * prompted it -- with its buttons while open and how it ended once
+     * settled.  clawt_decision_precedes() takes the message's seconds.
+     */
     {
         g_autoptr(GPtrArray) steps = clawt_gtk_steps_fetch(self);
+        g_autoptr(GPtrArray) asked = clawt_gtk_inline_decisions_fetch(self);
         guint s_at = 0;
+        guint d_at = 0;
+
+        /*
+         * Both fetches iterate the main context; a newer load that began
+         * inside them owns the view, and this one must draw nothing.
+         */
+        if (generation != self->history_generation)
+            return;
 
         for (i = 0; i < json_array_get_length(messages); i++) {
             JsonObject *message = json_array_get_object_element(messages, i);
@@ -4328,6 +4346,12 @@ clawt_gtk_load_history(ClawtWindow *self)
             const gchar *id = clawt_json_string(message, "id", NULL);
             gint64 ts = clawt_json_int(message, "ts", 0);
             guint run = s_at;
+
+            while (d_at < asked->len &&
+                   clawt_decision_precedes(g_ptr_array_index(asked, d_at),
+                                           ts))
+                clawt_gtk_inline_decision_append(
+                    self, g_ptr_array_index(asked, d_at++));
 
             /*
              * Everything that happened before this message.  The
@@ -4362,6 +4386,10 @@ clawt_gtk_load_history(ClawtWindow *self)
 
         /* And anything after the last message. */
         clawt_gtk_steps_append_sealed(self, steps, s_at, steps->len);
+
+        while (d_at < asked->len)
+            clawt_gtk_inline_decision_append(self,
+                                             g_ptr_array_index(asked, d_at++));
     }
 
     /*

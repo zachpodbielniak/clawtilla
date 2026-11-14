@@ -924,9 +924,9 @@ on_venture_decision_raised(ClawtVentureBridge *bridge,
                            gpointer            user_data)
 {
     ClawtDaemon *self = user_data;
+    g_autoptr(ClawtDecision) decision = NULL;
 
     (void)bridge;
-    (void)decision_id;
 
     /*
      * The same event an agent's own `clawtilla_ask` raises, because to
@@ -934,7 +934,13 @@ on_venture_decision_raised(ClawtVentureBridge *bridge,
      * the person.  A staged write that arrived through a different door
      * must not need a different badge.
      */
-    clawt_event_bus_emit(self->bus, "decision.asked", agent_id);
+    decision = (self->decisions != NULL && decision_id != NULL)
+        ? clawt_decision_store_get(self->decisions, decision_id) : NULL;
+
+    if (decision != NULL)
+        clawt_daemon_publish_decision_asked(self, decision);
+    else if (self->bus != NULL)
+        clawt_event_bus_emit(self->bus, "decision.asked", agent_id);
 }
 
 void

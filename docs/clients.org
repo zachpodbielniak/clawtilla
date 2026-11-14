@@ -1943,6 +1943,20 @@ why it does not draw through the chat's builder.  What it does share is
 where a run begins: consecutive messages from one agent do not repeat the
 name, from the same ~clawt_chat_run_is_start()~.
 
+**** Decisions inline
+
+A decision an agent asks with ~clawtilla_ask_decision~ -- or an action rule asks or hands back -- is drawn in the room it was asked from as well as in the inbox. It is a *second view of the same record*, not a copy: the card shows who asks, the question, and while it is open the options as buttons with the default and its deadline under them ("If nobody answers: "after the release" -- quiet hours. Reversible until Tue 25 Aug 12:00."). Once settled it shows how it ended and who ended it: "You answered "now" in the chat.", "You answered … in the inbox.", "Nobody answered in time, so the default stands: …", "Dismissed in the inbox as not needing you; the default stands: …". All three clients draw both lines from ~clawt_decision_default_text()~ and ~clawt_decision_outcome_text()~, so the inbox and the chat say the same words.
+
+Pressing an option sends the same ~decision.answer~ the inbox sends, with ~via: chat~ (the inbox sends ~via: inbox~ and the CLI ~via: cli~). Settling it anywhere -- the card, the inbox, another window, the CLI, the deadline passing -- publishes ~decision.settled~ with the room, the answer and the surface, and each client folds that into the card it holds (~clawt_decision_apply_event()~), so both views change together. A deleted decision's card is taken out on ~decision.deleted~.
+
+The deadline is a clock time rather than "in 3h": a relative time in a transcript is wrong from the moment it is drawn, and nothing redraws a card whose decision has not changed.
+
+The card sits where it was asked: a room's decisions (~decision.list~ with ~room~, every state, oldest first) are merged into the history by ~clawt_decision_precedes()~ -- strictly before a message's second -- the same way turn steps are merged by ~clawt_turn_step_precedes()~. A question asked while a turn is running is drawn above the live step block, so the block stays the live edge.
+
+A double tap is refused twice over. The client stops it first -- GTK makes the options insensitive for the request's wait, the web form has ~hx-sync="this:drop"~ and disables its buttons, lrg draws "Answering…" in place of the buttons until the reply -- and the daemon refuses whatever still gets through, as it refuses a press on a card that was out of date: "Already settled: You answered "now" in the chat. Your press changed nothing; if you have changed your mind, say so in a message to chief." The refusal is shown (a toast in GTK and lrg, written into the card on the web) and the card is redrawn from the daemon's current record, so it stops offering buttons that would be refused again.
+
+A question with no options cannot be answered with a button; its card says so and points at Decisions, which has the free-text box. A decision nobody could place in a room -- a venture staging, or a policy ask while the agent was mid-turn in several rooms -- is drawn in the inbox only.
+
 *** Markdown
 
 Agent replies are rendered: bold, italic, inline code, fenced code,

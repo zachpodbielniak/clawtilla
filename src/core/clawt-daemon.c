@@ -3122,6 +3122,12 @@ file_decision_for_tools(const gchar    *agent_id,
         return NULL;
     }
 
+    /*
+     * Placed before it is stored, so the inline view and the inbox read
+     * the same room from the same row.
+     */
+    clawt_daemon_decision_place(self, decision);
+
     id = clawt_decision_store_post(self->decisions, decision, error);
 
     if (id == NULL)
@@ -3129,10 +3135,10 @@ file_decision_for_tools(const gchar    *agent_id,
 
     /*
      * Published, so a client that is open right now grows a badge
-     * without polling -- the same stream every other surface folds over.
+     * without polling -- the same stream every other surface folds over
+     * -- and a chat showing the room it was asked from draws it there.
      */
-    if (self->bus != NULL)
-        clawt_event_bus_emit(self->bus, "decision.asked", agent_id);
+    clawt_daemon_publish_decision_asked(self, decision);
 
     /*
      * And both turn budgets hold while the question is open.  Waiting on
@@ -7801,6 +7807,22 @@ clawt_daemon_add_decision_object(JsonBuilder   *builder,
     json_builder_set_member_name(builder, "settled_by_default");
     json_builder_add_boolean_value(
         builder, clawt_decision_default_has_taken_effect(decision, now));
+
+    /*
+     * Where it was asked (null when nobody could say), where a person
+     * settled it, and when -- what the inline view in the chat needs to
+     * draw the same record the inbox lists.
+     */
+    json_builder_set_member_name(builder, "room");
+    json_builder_add_string_value(builder, clawt_decision_get_room(decision));
+
+    json_builder_set_member_name(builder, "settled_via");
+    json_builder_add_string_value(builder,
+                                  clawt_decision_get_settled_via(decision));
+
+    json_builder_set_member_name(builder, "answered_at");
+    json_builder_add_int_value(builder,
+                               clawt_decision_get_answered_at(decision));
 
     json_builder_end_object(builder);
 }

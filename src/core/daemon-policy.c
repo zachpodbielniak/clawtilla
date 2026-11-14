@@ -86,6 +86,7 @@ post_ask(ClawtDaemon *self, const gchar *agent_id, const gchar *rule,
     clawt_decision_set_options(decision, options);
     clawt_decision_set_default(decision, "deny", "nobody answered in time");
     clawt_decision_set_reversible_until(decision, now + timeout);
+    clawt_daemon_decision_place(self, decision);
 
     stored = clawt_decision_store_post(self->decisions, decision, &error);
     if (stored == NULL) {
@@ -103,8 +104,7 @@ post_ask(ClawtDaemon *self, const gchar *agent_id, const gchar *rule,
     wait->reply_data = reply_data;
     g_hash_table_insert(self->policy_waits, g_strdup(stored), wait);
 
-    if (self->bus != NULL)
-        clawt_event_bus_emit(self->bus, "decision.asked", agent_id);
+    clawt_daemon_publish_decision_asked(self, decision);
 
     /* Waiting on a person is not a stall: the turn budgets hold. */
     clawt_daemon_turn_hold(self, agent_id);
@@ -127,11 +127,12 @@ post_hand_back(ClawtDaemon *self, const gchar *agent_id, const gchar *rule,
     decision = clawt_decision_new(NULL, agent_id, question);
     clawt_decision_set_options(decision, options);
     clawt_decision_set_default(decision, "dropped", "nobody took it");
+    clawt_daemon_decision_place(self, decision);
 
     if (self->decisions != NULL)
         stored = clawt_decision_store_post(self->decisions, decision, NULL);
-    if (stored != NULL && self->bus != NULL)
-        clawt_event_bus_emit(self->bus, "decision.asked", agent_id);
+    if (stored != NULL)
+        clawt_daemon_publish_decision_asked(self, decision);
 
     message = stored != NULL
         ? g_strdup_printf("Handed to the operator as decision %s under the action rule "

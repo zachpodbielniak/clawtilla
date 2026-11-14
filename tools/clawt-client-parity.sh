@@ -189,6 +189,19 @@ declare -A AFFORDANCES=(
     ["resync after a gap"]="\"resync\"|\"resync\"|\"resync\""
     ["stop the running turn"]="on_stop_turn|stop_turn_button|on_stop_turn_clicked"
     ["decision options stack"]="decision_option_button|decision-options|decision_option_button"
+    #
+    # A decision drawn inline in the room it was asked from, as a second
+    # view of the inbox's record: the card, its placement between the
+    # messages by the shared rule, the sentence saying how it ended, and
+    # a press that tells the daemon it came from the chat.  A client
+    # missing any of the four draws a question the others place, settle
+    # or attribute differently.
+    #
+    ["inline decision in chat"]="clawt_gtk_inline_decision_append|clawt_web_decision_inline|inline_card_append"
+    ["inline decision placement"]="clawt_decision_precedes|clawt_decision_precedes|clawt_decision_precedes"
+    ["inline decision outcome"]="clawt_decision_outcome_text|clawt_decision_outcome_text|clawt_decision_outcome_text"
+    ["inline press says where"]="CLAWT_DECISION_VIA_CHAT|CLAWT_DECISION_VIA_CHAT|CLAWT_DECISION_VIA_CHAT"
+    ["inline view follows settling"]="clawt_decision_apply_event|sse:fleet|clawt_lrg_inline_decision_event"
     ["sidebar face"]="clawt_gtk_build_avatar|agent-face|clawt_lrg_avatar(app, agent->name"
     #
     # The fleet sidebar folds away.  GTK's split view and its toggle;

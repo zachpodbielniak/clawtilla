@@ -3996,7 +3996,8 @@ cmd_decision(int argc, char *argv[])
 
         reply = call(client, "decision.answer",
                      build_payload("decision", argv[3],
-                                   "answer", argv[4], NULL));
+                                   "answer", argv[4],
+                                   "via", CLAWT_DECISION_VIA_CLI, NULL));
         if (reply == NULL)
             return EXIT_FAILURE;
 
