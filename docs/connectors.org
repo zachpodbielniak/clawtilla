@@ -822,15 +822,16 @@ Claude Code does: past about a tenth of its context in MCP tools it
 defers them and looks them up as it needs them.  Wrapping its servers in
 a second search would make it search a search, so under ~auto~ its
 agents get every tool as before.  ~claude-tmux~ runs the same binary and
-is answered the same way.  Every other CLI -- opencode, grok-build,
-antigravity, cursor -- reads the whole list on every call, and gets the
-directory.
+is answered the same way, and grok-build searches too.  Every other CLI
+-- opencode, codex, antigravity, cursor -- reads the whole list on every
+call, and gets the directory.
 
-Whether a CLI searches is a fact about the CLI, and belongs to ai-glib as
-a class datum beside ~AiCliClientClass.config_dir_env~.  ai-glib has no
-such datum yet, so clawtilla answers it in one place,
-~clawt_mcp_directory_cli_searches_tools()~, until it does; the roadmap
-carries the move upstream.
+Whether a CLI searches is a fact about the CLI, and ai-glib states it as
+a class datum beside ~AiCliClientClass.config_dir_env~:
+~AiCliClientClass.searches_tools~ (ai-glib v0.11.0).
+~clawt_mcp_directory_cli_searches_tools()~ builds a probe client through
+libreclaw's factory and reads ~ai_cli_client_searches_tools()~ off it, so
+a CLI that gains deferred tool loading needs no edit in clawtilla.
 
 *** The search finds only what the agent may use
 

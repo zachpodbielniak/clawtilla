@@ -276,11 +276,16 @@ test_override_modes(void)
 						 FALSE, 400, 1000000, 40,
 						 100000));
 
-	/* Who searches: Claude Code, and nobody else yet. */
+	/*
+	 * Who searches, as ai-glib's class datum says (v0.11.0): Claude
+	 * Code, claude-tmux and grok-build; opencode and codex read the
+	 * whole list.
+	 */
 	g_assert_true(clawt_mcp_directory_cli_searches_tools("claude-code"));
 	g_assert_true(clawt_mcp_directory_cli_searches_tools("claude-tmux"));
+	g_assert_true(clawt_mcp_directory_cli_searches_tools("grok-build"));
 	g_assert_false(clawt_mcp_directory_cli_searches_tools("opencode"));
-	g_assert_false(clawt_mcp_directory_cli_searches_tools("grok-build"));
+	g_assert_false(clawt_mcp_directory_cli_searches_tools("codex-cli"));
 
 	/* A spelling no mode has is reported, and read as auto, not as zero. */
 	g_assert_false(clawt_tool_directory_mode_from_nick("sometimes", &mode));
