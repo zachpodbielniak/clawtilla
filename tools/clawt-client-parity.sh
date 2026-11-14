@@ -208,6 +208,16 @@ declare -A AFFORDANCES=(
     ["stop an idle agent"]="on_fleet_stop|/fleet-usage/%s/stop|on_stop_clicked"
     ["stop the idle ones"]="on_stop_idle_confirmed|/fleet-usage/stop-idle|on_stop_idle_confirmed"
     #
+    # The Spending page's ledger: the grouping is a library enumeration,
+    # so layer 3 already sees the selector -- but the unpriced-turn
+    # sentence and the CSV export are each one call, sent no frame of
+    # their own (usage.ledger is shared) and spell out nothing.  The
+    # export is a save dialog in GTK and lrg and a download in the web
+    # client; each writes libclawt's document, so the marker is that.
+    #
+    ["spending unpriced turns"]="clawt_usage_ledger_unpriced_line|clawt_usage_ledger_unpriced_line|clawt_usage_ledger_unpriced_line"
+    ["spending csv export"]="clawt_usage_ledger_csv(root)|clawt_usage_ledger_csv(root)|clawt_usage_ledger_csv(root)"
+    #
     # The Grok page: the bots and who may reach them, handing one a job on
     # an agent's behalf, the jobs in libclawt's tones, the routine prompt
     # and the MCP key -- and the badge, counted by the daemon in all three.

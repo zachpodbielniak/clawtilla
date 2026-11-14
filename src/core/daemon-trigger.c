@@ -161,6 +161,10 @@ run_trigger(const gchar *trigger_id, const gchar *agent_id,
      */
     clawt_task_manager_start(self->tasks, clawt_task_get_id(task));
 
+    /* before delivery: the ledger asks about the first turn it causes */
+    clawt_daemon_note_task_source(self, clawt_task_get_id(task),
+                                  CLAWT_USAGE_ORIGIN_TRIGGER, trigger_id);
+
     if (clawt_mailbox_router_send_to(self->router, sender, target, prompt,
                                      clawt_task_get_id(task), 0, error) < 0) {
         clawt_task_manager_fail(self->tasks, clawt_task_get_id(task),

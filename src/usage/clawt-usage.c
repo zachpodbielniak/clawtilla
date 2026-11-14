@@ -161,7 +161,9 @@ accumulate_rows(GPtrArray        *rows,
         out->turns         += 1;
         out->input_tokens  += row->input_tokens;
         out->output_tokens += row->output_tokens;
-        out->cost_micros   += row->cost_usd_micros;
+        /* -1 is unknown, never a refund: an unpriced turn adds nothing */
+        if (row->cost_usd_micros > 0)
+            out->cost_micros += row->cost_usd_micros;
 
         if (out_max_id != NULL && row->id > *out_max_id)
             *out_max_id = row->id;
@@ -278,7 +280,8 @@ clawt_usage_read_report(const gchar       *db_path,
             out->turns         += 1;
             out->input_tokens  += row->input_tokens;
             out->output_tokens += row->output_tokens;
-            out->cost_micros   += row->cost_usd_micros;
+            if (row->cost_usd_micros > 0)
+                out->cost_micros += row->cost_usd_micros;
         }
 
         if (daily_micros != NULL && day_starts != NULL && days > 0 &&
@@ -288,7 +291,7 @@ clawt_usage_read_report(const gchar       *db_path,
 
             for (d = 0; d < days; d++) {
                 if (row->recorded_at < day_starts[d + 1]) {
-                    daily_micros[d] += row->cost_usd_micros;
+                    daily_micros[d] += MAX(row->cost_usd_micros, 0);
                     break;
                 }
             }
@@ -645,6 +648,57 @@ gint64
 clawt_usage_drain(ClawtUsage *self, const gchar *agent_id,
                   const gchar *db_path)
 {
+	return clawt_usage_drain_tagged(self, agent_id, db_path, NULL, NULL);
+}
+
+/*
+ * Writes @func's answer for each row past the watermark.
+ *
+ * A tag that cannot be written is logged and dropped: the ledger is a
+ * report, and refusing to charge a task because its turn could not be
+ * labelled would turn a missing label into a budget nobody enforces.
+ */
+static void
+tag_rows(
+	GPtrArray            *rows,
+	gint64                min_id,
+	const gchar          *agent_id,
+	const gchar          *db_path,
+	ClawtUsageOriginFunc  func,
+	gpointer              user_data
+){
+	g_autofree gchar *ledger_path = NULL;
+	guint i;
+
+	if (func == NULL || rows == NULL)
+		return;
+
+	ledger_path = clawt_usage_ledger_path_beside(db_path);
+
+	for (i = 0; i < rows->len; i++) {
+		LcDbTokenUsage *row = g_ptr_array_index(rows, i);
+		g_autoptr(ClawtUsageOrigin) origin = NULL;
+		g_autoptr(GError) error = NULL;
+
+		if (row->id <= min_id)
+			continue;
+
+		origin = func(agent_id, row->room, row->channel, user_data);
+		if (origin == NULL)
+			continue;
+
+		if (!clawt_usage_ledger_record(ledger_path, row->id, row->recorded_at,
+					       row->room, origin, &error))
+			g_warning("usage: turn %" G_GINT64_FORMAT " of %s is untagged: %s",
+				  row->id, agent_id, error->message);
+	}
+}
+
+gint64
+clawt_usage_drain_tagged(ClawtUsage *self, const gchar *agent_id,
+                         const gchar *db_path, ClawtUsageOriginFunc func,
+                         gpointer user_data)
+{
     AgentWatermark   *mark;
     ClawtUsageTotals  totals = { 0, 0, 0, 0 };
     GPtrArray        *rows;
@@ -693,6 +747,10 @@ clawt_usage_drain(ClawtUsage *self, const gchar *agent_id,
     }
 
     accumulate_rows(rows, mark->last_id, &totals, &max_id, &max_time);
+
+    /* history from before the baseline is not ours to label */
+    if (mark->primed)
+        tag_rows(rows, mark->last_id, agent_id, db_path, func, user_data);
     g_ptr_array_unref(rows);
 
     mark->last_id          = max_id;

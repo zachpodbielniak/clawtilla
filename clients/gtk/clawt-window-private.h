@@ -324,6 +324,8 @@ struct _ClawtWindow {
     GtkWidget         *settings_folders;
     GtkWidget         *settings_spending;
     GtkWidget         *settings_spending_period;
+    GtkWidget         *settings_spending_group;
+    GtkWidget         *settings_spending_unpriced;
     gint64             settings_spending_since;
     GtkWidget         *settings_connectors;
     GtkListBox        *routine_list;

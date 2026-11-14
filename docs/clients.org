@@ -585,9 +585,9 @@ where a team is changed as part of a wider edit.
 
 *** Spending
 
-The Spending page lists one row per agent with what it has cost and how
-many turns it took, a fleet total, and a period selector -- all time,
-today, the last 7 or 30 days.
+The Spending page has two selectors -- *Period* (all time, today, the last 7 or 30 days) and *Group by* (Agent, Model, Origin, Day) -- and one row per group with what it cost, how many turns it took and how many of those have no recorded price, then a fleet total.  Origin says what started the work: ~operator~, ~agent:<id>~, ~routine:<id>~, ~trigger:<id>~, ~task:<id>~, ~channel:<name>~ or ~untagged~.  When any turn in the period is unpriced a sentence under the list says how many, and that they are not in the total -- unknown, not free.
+
+*Export CSV* saves the table that is on screen: a save dialog in the GTK and libregnum clients, a download in the web client.  The file is =clawt_usage_ledger_csv()='s in all three, byte for byte what ~clawtilla cost --by ... --csv~ prints.  See [[file:spending.org::#ledger][the ledger]].
 
 The cost is the figure the provider reported for each turn, not an
 estimate.  The token counts beside it cover new input and output only:
@@ -689,7 +689,7 @@ what belongs to the application rather than to any one agent:
 |------+----------------|
 | Cloud images | VM disk images on this machine, and fetching more |
 | Teams | how the fleet is divided, and what each team handles |
-| Spending | what each agent has cost, and the fleet total |
+| Spending | what the fleet has cost, by agent, model, origin or day; unpriced turns; Export CSV |
 | Integrations | Matrix, mail, MCP servers and notifiers, and who gets each |
 | Connectors | connected accounts, and the credential for each |
 | Appearance | colour scheme and fonts |

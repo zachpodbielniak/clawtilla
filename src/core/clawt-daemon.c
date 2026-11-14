@@ -1160,6 +1160,10 @@ run_routine(const gchar *routine_id, const gchar *agent_id,
      */
     clawt_task_manager_start(self->tasks, clawt_task_get_id(task));
 
+    /* before delivery: the ledger asks about the first turn it causes */
+    clawt_daemon_note_task_source(self, clawt_task_get_id(task),
+                                  CLAWT_USAGE_ORIGIN_ROUTINE, routine_id);
+
     /*
      * With the routine's own model, when it names one: that turn only,
      * applied by libreclaw when the turn starts and put back after.
@@ -1889,6 +1893,140 @@ on_link_typing(ClawtLinkServer *server,
     clawt_event_free(event);
 }
 
+/* When the task-source table is swept of tasks that have finished. */
+#define TASK_SOURCE_PRUNE_AT (1024)
+
+void
+clawt_daemon_note_task_source(
+	ClawtDaemon          *self,
+	const gchar          *task_id,
+	ClawtUsageOriginKind  kind,
+	const gchar          *id
+){
+	if (self->task_sources == NULL || task_id == NULL || id == NULL)
+		return;
+
+	/*
+	 * A routine on a five-minute schedule adds an entry every five
+	 * minutes for as long as the daemon runs.  A finished or forgotten
+	 * task's turns have all been drained by the time a thousand more
+	 * runs have started, so those entries go.
+	 */
+	if (g_hash_table_size(self->task_sources) >= TASK_SOURCE_PRUNE_AT) {
+		GHashTableIter iter;
+		gpointer key;
+
+		g_hash_table_iter_init(&iter, self->task_sources);
+		while (g_hash_table_iter_next(&iter, &key, NULL)) {
+			ClawtTask *task = (self->tasks != NULL)
+				? clawt_task_manager_get(self->tasks, key) : NULL;
+
+			if (task == NULL || clawt_task_is_finished(task))
+				g_hash_table_iter_remove(&iter);
+		}
+	}
+
+	g_hash_table_replace(self->task_sources, g_strdup(task_id),
+			     clawt_usage_origin_new(kind, id));
+}
+
+/* How far up a delegation chain to look for the run that began it. */
+#define TASK_SOURCE_MAX_DEPTH (32)
+
+/*
+ * The routine or trigger run whose tree @task_id belongs to, or NULL.
+ *
+ * Up the parent chain, because a routine that delegates is still the
+ * routine's bill: the assignee's turns carry the child task, and only
+ * its root was created by the run.  Bounded, since a parent link is
+ * data and a cycle in it must not hang the reply path.
+ */
+static ClawtUsageOrigin *
+task_source(
+	ClawtDaemon *self,
+	const gchar *task_id
+){
+	const gchar *cursor = task_id;
+	guint depth;
+
+	for (depth = 0; cursor != NULL && depth < TASK_SOURCE_MAX_DEPTH; depth++) {
+		ClawtUsageOrigin *source = NULL;
+		ClawtTask *task;
+
+		if (self->task_sources != NULL)
+			source = g_hash_table_lookup(self->task_sources, cursor);
+		if (source != NULL)
+			return source;
+
+		task = (self->tasks != NULL)
+			? clawt_task_manager_get(self->tasks, cursor) : NULL;
+		cursor = (task != NULL) ? clawt_task_get_parent_id(task) : NULL;
+	}
+
+	return NULL;
+}
+
+/*
+ * What started one turn, for the usage ledger.
+ *
+ * The turn is looked up by the room libreclaw recorded it in, and only
+ * there: an agent runs a turn per room, and the fold the other getters
+ * fall back to would hand this turn whichever room's description was
+ * written last.
+ */
+ClawtUsageOrigin *
+clawt_daemon_usage_origin(
+	ClawtDaemon *self,
+	const gchar *agent_id,
+	const gchar *room,
+	const gchar *channel
+){
+	ClawtAgent *agent = clawt_agent_manager_get(self->agents, agent_id);
+	ClawtAgentConfig *config = clawt_config_get_agent(self->config, agent_id);
+	ClawtUsageOrigin *source;
+	ClawtUsageOrigin *origin;
+	const gchar *sender = NULL;
+	const gchar *task_id = NULL;
+	const gchar *model = NULL;
+	const gchar *id = NULL;
+	ClawtUsageOriginKind kind;
+
+	if (agent != NULL && room != NULL)
+		clawt_agent_describe_turn_in(agent, room, &sender, &task_id, &model);
+
+	source = task_source(self, task_id);
+	kind = clawt_usage_origin_classify(
+		sender,
+		sender != NULL && clawt_agent_manager_get(self->agents, sender) != NULL,
+		task_id,
+		(source != NULL && source->kind == CLAWT_USAGE_ORIGIN_ROUTINE)
+			? source->id : NULL,
+		(source != NULL && source->kind == CLAWT_USAGE_ORIGIN_TRIGGER)
+			? source->id : NULL,
+		channel, &id);
+
+	origin = clawt_usage_origin_new(kind, id);
+	origin->sender = g_strdup(sender);
+	origin->task_id = g_strdup(task_id);
+	origin->model = g_strdup(model);
+	if (config != NULL)
+		origin->provider = g_strdup(
+			clawt_agent_config_get_string(config, "model.provider"));
+
+	return origin;
+}
+
+/* The #ClawtUsageOriginFunc shape of the above, for the drain. */
+static ClawtUsageOrigin *
+origin_for_turn(
+	const gchar *agent_id,
+	const gchar *room,
+	const gchar *channel,
+	gpointer     user_data
+){
+	return clawt_daemon_usage_origin(user_data, agent_id, room, channel);
+}
+
 /*
  * Charge what an agent has spent since its last turn to the task it is
  * answering about.
@@ -1920,7 +2058,8 @@ charge_turn_to_task(ClawtDaemon *self, const gchar *agent_id,
         return;
 
     db_path = clawt_usage_database_path(state_dir);
-    cost_micros = clawt_usage_drain(self->usage, agent_id, db_path);
+    cost_micros = clawt_usage_drain_tagged(self->usage, agent_id, db_path,
+                                           origin_for_turn, self);
 
     if (task_id == NULL || cost_micros <= 0)
         return;
@@ -4303,6 +4442,7 @@ release_components(ClawtDaemon *self)
     g_clear_object(&self->notifier);
     g_clear_object(&self->guard);
     g_clear_object(&self->usage);
+    g_clear_pointer(&self->task_sources, g_hash_table_unref);
     g_clear_object(&self->tasks);
     g_clear_object(&self->rooms);
     g_clear_object(&self->agents);
@@ -5839,6 +5979,8 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     self->tasks = clawt_task_manager_new();
     self->guard = clawt_loop_guard_new();
     self->usage = clawt_usage_new();
+    self->task_sources = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                               (GDestroyNotify)clawt_usage_origin_free);
 	{
 		GPtrArray *loaded = clawt_agent_manager_list(self->agents);
 		guint index;

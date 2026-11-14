@@ -430,182 +430,284 @@ teams_content(ClawtWebApp *app)
 
 /* ── Spending ────────────────────────────────────────────────────── */
 
-static const struct {
-    const gchar *slug;
-    const gchar *label;
-    gint64       seconds;
-} periods[] = {
-    { "all",   "All time",    0 },
-    { "today", "Today",       0 },
-    { "7",     "Last 7 days", 7 * 86400 },
-    { "30",    "Last 30 days", 30 * 86400 }
-};
+/*
+ * The period and grouping a request asked for, as indices into the
+ * library's own tables.  An index rather than a slug of our own, so
+ * there is no second list here to fall out of step with the GTK and
+ * libregnum pages; anything unreadable is the first of each.
+ */
+static guint
+spending_period_index(
+	HtmxRequest *request
+){
+	const gchar *word = htmx_request_get_query_param(request, "period");
+	guint64 index = 0;
 
-static gint64
-since_for(const gchar *slug)
-{
-    gint64 now = g_get_real_time() / G_USEC_PER_SEC;
-    guint i;
+	if (word == NULL || !g_ascii_string_to_unsigned(word, 10, 0,
+			clawt_usage_period_count() - 1, &index, NULL))
+		return 0;
 
-    if (g_strcmp0(slug, "today") == 0) {
-        g_autoptr(GDateTime) midnight = NULL;
-        g_autoptr(GDateTime) local = g_date_time_new_now_local();
+	return (guint)index;
+}
 
-        midnight = g_date_time_new_local(g_date_time_get_year(local),
-                                         g_date_time_get_month(local),
-                                         g_date_time_get_day_of_month(local),
-                                         0, 0, 0.0);
+static const gchar *
+spending_group_nick(
+	HtmxRequest *request
+){
+	const gchar *word = htmx_request_get_query_param(request, "by");
+	gint index = clawt_usage_group_index(word);
 
-        return g_date_time_to_unix(midnight);
-    }
+	return clawt_usage_group_nth(index >= 0 ? (guint)index : 0);
+}
 
-    for (i = 0; i < G_N_ELEMENTS(periods); i++) {
-        if (g_strcmp0(periods[i].slug, slug) == 0 && periods[i].seconds > 0)
-            return now - periods[i].seconds;
-    }
+/* One request for both the page and the download, so they cannot differ. */
+static JsonNode *
+spending_ledger(
+	ClawtWebApp *app,
+	guint        period,
+	const gchar *by
+){
+	return clawt_web_app_call(app, "usage.ledger",
+		clawt_usage_ledger_payload(
+			clawt_usage_period_since(period,
+						 g_get_real_time() / G_USEC_PER_SEC),
+			by, NULL));
+}
 
-    return 0;
+/* A row of links, one per choice, the current one marked. */
+static HtmxElement *
+spending_tabs(
+	const gchar *label,
+	guint        count,
+	guint        current,
+	gboolean     periods,
+	guint        period,
+	const gchar *by
+){
+	g_autoptr(HtmxElement) nav = HTMX_ELEMENT(htmx_nav_new());
+	guint i;
+
+	htmx_element_add_class(nav, "tabs");
+	htmx_element_set_attribute(nav, "aria-label", label);
+
+	for (i = 0; i < count; i++) {
+		g_autofree gchar *url = periods
+			? g_strdup_printf("/settings/spending?period=%u&by=%s", i, by)
+			: g_strdup_printf("/settings/spending?period=%u&by=%s", period,
+					  clawt_usage_group_nth(i));
+		g_autoptr(HtmxA) tab = htmx_a_new_with_href(url);
+
+		htmx_element_add_class(HTMX_ELEMENT(tab), "tab");
+		htmx_node_set_text_content(HTMX_NODE(tab),
+			periods ? clawt_usage_period_label(i) : clawt_usage_group_label(i));
+
+		if (i == current)
+			htmx_element_set_attribute(HTMX_ELEMENT(tab), "aria-current",
+						   "page");
+
+		htmx_node_add_child(HTMX_NODE(nav), HTMX_NODE(tab));
+	}
+
+	return HTMX_ELEMENT(g_steal_pointer(&nav));
+}
+
+static void
+spending_cells(
+	HtmxTr     *tr,
+	JsonObject *group
+){
+	g_autofree gchar *turns = g_strdup_printf(
+		"%" G_GINT64_FORMAT, clawt_web_member_int(group, "turns", 0));
+	g_autofree gchar *unpriced = g_strdup_printf(
+		"%" G_GINT64_FORMAT, clawt_web_member_int(group, "unpriced_turns", 0));
+	g_autofree gchar *in = g_strdup_printf(
+		"%" G_GINT64_FORMAT, clawt_web_member_int(group, "input_tokens", 0));
+	g_autofree gchar *out = g_strdup_printf(
+		"%" G_GINT64_FORMAT, clawt_web_member_int(group, "output_tokens", 0));
+	g_autofree gchar *cost = clawt_usage_ledger_cost_label(group);
+	const gchar *values[5];
+	guint c;
+
+	values[0] = turns;
+	values[1] = unpriced;
+	values[2] = in;
+	values[3] = out;
+	values[4] = cost;
+
+	for (c = 0; c < G_N_ELEMENTS(values); c++) {
+		g_autoptr(HtmxTd) td = htmx_td_new_with_text(values[c]);
+
+		htmx_element_add_class(HTMX_ELEMENT(td), "num");
+		htmx_node_add_child(HTMX_NODE(tr), HTMX_NODE(td));
+	}
 }
 
 static HtmxElement *
-spending_content(ClawtWebApp *app, const gchar *period)
-{
-    g_autoptr(HtmxDiv) box = htmx_div_new();
-    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
-    g_autoptr(JsonNode) reply = NULL;
-    JsonObject *root;
-    JsonArray *agents;
-    JsonObject *total;
-    g_autoptr(HtmxElement) wrap = HTMX_ELEMENT(htmx_div_new());
-    g_autoptr(HtmxTable) table = htmx_table_new();
-    g_autoptr(HtmxThead) head = htmx_thead_new();
-    g_autoptr(HtmxTbody) rows = htmx_tbody_new();
-    g_autoptr(HtmxTfoot) foot = htmx_tfoot_new();
-    guint i;
+spending_content(
+	ClawtWebApp *app,
+	HtmxRequest *request
+){
+	g_autoptr(HtmxDiv) box = htmx_div_new();
+	g_autoptr(JsonNode) reply = NULL;
+	g_autofree gchar *unpriced = NULL;
+	JsonObject *root;
+	JsonArray *groups;
+	JsonObject *total;
+	g_autoptr(HtmxElement) wrap = HTMX_ELEMENT(htmx_div_new());
+	g_autoptr(HtmxTable) table = htmx_table_new();
+	g_autoptr(HtmxThead) head = htmx_thead_new();
+	g_autoptr(HtmxTbody) rows = htmx_tbody_new();
+	g_autoptr(HtmxTfoot) foot = htmx_tfoot_new();
+	guint period = spending_period_index(request);
+	const gchar *by = spending_group_nick(request);
+	guint i;
 
-    {
-        g_autoptr(HtmxElement) nav = HTMX_ELEMENT(htmx_nav_new());
+	/* clawt_web_add() takes the reference spending_tabs() hands back */
+	clawt_web_add(box, spending_tabs("Period", clawt_usage_period_count(),
+					 period, TRUE, period, by));
+	clawt_web_add(box, spending_tabs("Group by", clawt_usage_group_count(),
+					 (guint)MAX(clawt_usage_group_index(by), 0),
+					 FALSE, period, by));
 
-        htmx_element_add_class(nav, "tabs");
+	reply = spending_ledger(app, period, by);
+	root = clawt_web_root(reply);
+	groups = clawt_web_member_array(root, "groups");
+	total = clawt_web_member_object(root, "total");
 
-        for (i = 0; i < G_N_ELEMENTS(periods); i++) {
-            g_autofree gchar *url = g_strdup_printf(
-                "/settings/spending?period=%s", periods[i].slug);
-            g_autoptr(HtmxA) tab = htmx_a_new_with_href(url);
+	{
+		g_autoptr(HtmxTr) tr = htmx_tr_new();
 
-            htmx_element_add_class(HTMX_ELEMENT(tab), "tab");
-            htmx_node_set_text_content(HTMX_NODE(tab), periods[i].label);
+		clawt_web_add(tr, htmx_th_new_with_text(clawt_usage_group_label(
+			(guint)MAX(clawt_usage_group_index(by), 0))));
+		clawt_web_add(tr, htmx_th_new_with_text("Turns"));
+		clawt_web_add(tr, htmx_th_new_with_text("Unpriced"));
+		clawt_web_add(tr, htmx_th_new_with_text("In"));
+		clawt_web_add(tr, htmx_th_new_with_text("Out"));
+		clawt_web_add(tr, htmx_th_new_with_text("Cost"));
+		htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(tr));
+	}
 
-            if (g_strcmp0(periods[i].slug, period) == 0)
-                htmx_element_set_attribute(HTMX_ELEMENT(tab), "aria-current",
-                                           "page");
+	for (i = 0; groups != NULL && i < json_array_get_length(groups); i++) {
+		JsonObject *group = json_array_get_object_element(groups, i);
+		g_autoptr(HtmxTr) tr = htmx_tr_new();
 
-            htmx_node_add_child(HTMX_NODE(nav), HTMX_NODE(tab));
-        }
+		clawt_web_add(tr, htmx_td_new_with_text(
+			clawt_web_member(group, "key", "?")));
+		spending_cells(tr, group);
+		htmx_node_add_child(HTMX_NODE(rows), HTMX_NODE(tr));
+	}
 
-        htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(nav));
-    }
+	{
+		g_autoptr(HtmxTr) tr = htmx_tr_new();
 
-    clawt_web_payload_set_int(payload, "since", since_for(period));
-    reply = clawt_web_app_call(app, "usage.summary",
-                               clawt_web_payload_take(g_steal_pointer(&payload)));
-    root = clawt_web_root(reply);
-    agents = clawt_web_member_array(root, "agents");
-    total = clawt_web_member_object(root, "total");
+		clawt_web_add(tr, htmx_td_new_with_text("Fleet"));
+		spending_cells(tr, total);
+		htmx_node_add_child(HTMX_NODE(foot), HTMX_NODE(tr));
+	}
 
-    {
-        g_autoptr(HtmxTr) tr = htmx_tr_new();
+	htmx_node_add_child(HTMX_NODE(table), HTMX_NODE(head));
+	htmx_node_add_child(HTMX_NODE(table), HTMX_NODE(rows));
+	htmx_node_add_child(HTMX_NODE(table), HTMX_NODE(foot));
 
-        clawt_web_add(tr, htmx_th_new_with_text("Agent"));
-        clawt_web_add(tr, htmx_th_new_with_text("Turns"));
-        clawt_web_add(tr, htmx_th_new_with_text("In"));
-        clawt_web_add(tr, htmx_th_new_with_text("Out"));
-        clawt_web_add(tr, htmx_th_new_with_text("Cost"));
-        htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(tr));
-    }
+	htmx_element_add_class(wrap, "table-wrap");
+	htmx_node_add_child(HTMX_NODE(wrap), HTMX_NODE(table));
+	htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(wrap));
 
-    for (i = 0; agents != NULL && i < json_array_get_length(agents); i++) {
-        JsonObject *agent = json_array_get_object_element(agents, i);
-        g_autoptr(HtmxTr) tr = htmx_tr_new();
-        g_autofree gchar *turns = g_strdup_printf(
-            "%" G_GINT64_FORMAT, clawt_web_member_int(agent, "turns", 0));
-        g_autofree gchar *in = g_strdup_printf(
-            "%" G_GINT64_FORMAT,
-            clawt_web_member_int(agent, "input_tokens", 0));
-        g_autofree gchar *out = g_strdup_printf(
-            "%" G_GINT64_FORMAT,
-            clawt_web_member_int(agent, "output_tokens", 0));
-        g_autofree gchar *cost = clawt_usage_format_cost(
-            clawt_web_member_int(agent, "cost_micros", 0));
+	/* the turns a total quietly leaves out, said where nobody misses it */
+	unpriced = clawt_usage_ledger_unpriced_line(root);
+	if (unpriced != NULL) {
+		g_autoptr(HtmxDiv) notice = htmx_div_new();
 
-        clawt_web_add(tr, htmx_td_new_with_text(
-            clawt_web_member(agent, "name",
-                             clawt_web_member(agent, "id", "?"))));
+		htmx_element_add_class(HTMX_ELEMENT(notice), "notice");
+		htmx_element_add_class(HTMX_ELEMENT(notice), "spending-unpriced");
+		clawt_web_add(notice, clawt_web_text(unpriced, NULL));
+		htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(notice));
+	}
 
-        {
-            const gchar *values[] = { turns, in, out, cost };
-            guint c;
+	{
+		g_autoptr(HtmxDiv) row = htmx_div_new();
+		g_autofree gchar *url = g_strdup_printf(
+			"/settings/spending/export?period=%u&by=%s", period, by);
+		g_autofree gchar *name = clawt_usage_ledger_csv_name(
+			root, g_get_real_time() / G_USEC_PER_SEC);
+		g_autoptr(HtmxA) download = htmx_a_new_with_href(url);
 
-            for (c = 0; c < G_N_ELEMENTS(values); c++) {
-                g_autoptr(HtmxTd) td = htmx_td_new_with_text(values[c]);
+		htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
+		htmx_element_add_class(HTMX_ELEMENT(download), "btn");
+		htmx_element_add_class(HTMX_ELEMENT(download), "spending-export");
+		htmx_element_set_attribute(HTMX_ELEMENT(download), "download", name);
+		htmx_element_set_attribute(HTMX_ELEMENT(download), "title",
+			"The table above as a spreadsheet-safe CSV file");
+		htmx_node_set_text_content(HTMX_NODE(download), "Export CSV");
+		htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(download));
+		htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(row));
+	}
 
-                htmx_element_add_class(HTMX_ELEMENT(td), "num");
-                htmx_node_add_child(HTMX_NODE(tr), HTMX_NODE(td));
-            }
-        }
+	/*
+	 * Said here, because somebody reconciling these against an invoice
+	 * should not have to work it out: IN counts *new* input tokens, and a
+	 * CLI backend bills cache reads and writes that never appear in it.
+	 * The cost column is the provider's own figure.
+	 */
+	clawt_web_add(box, clawt_web_text(
+		"Cost is the figure the provider reported for each turn, not an "
+		"estimate. IN counts only new input tokens -- cached context is "
+		"billed and is not reported as tokens, so a turn can honestly "
+		"show eight input tokens against a bill of two cents. Origin "
+		"says what started the work: you, another agent, a routine or a "
+		"trigger. Unpriced turns have no recorded price and are not in "
+		"the cost -- unknown, not free.",
+		"small muted"));
 
-        htmx_node_add_child(HTMX_NODE(rows), HTMX_NODE(tr));
-    }
+	return HTMX_ELEMENT(g_steal_pointer(&box));
+}
 
-    {
-        g_autoptr(HtmxTr) tr = htmx_tr_new();
-        g_autofree gchar *turns = g_strdup_printf(
-            "%" G_GINT64_FORMAT, clawt_web_member_int(total, "turns", 0));
-        g_autofree gchar *in = g_strdup_printf(
-            "%" G_GINT64_FORMAT,
-            clawt_web_member_int(total, "input_tokens", 0));
-        g_autofree gchar *out = g_strdup_printf(
-            "%" G_GINT64_FORMAT,
-            clawt_web_member_int(total, "output_tokens", 0));
-        g_autofree gchar *cost = clawt_usage_format_cost(
-            clawt_web_member_int(total, "cost_micros", 0));
-        const gchar *values[] = { turns, in, out, cost };
-        guint c;
+/*
+ * The same table as a file the browser saves.
+ *
+ * Content-Disposition rather than a path on disk: the machine running
+ * clawtilla-web is not necessarily the one looking at it.  The CSV is
+ * the library's, so it is byte for byte what `clawtilla cost --csv`
+ * and the other clients write.
+ */
+static HtmxResponse *
+on_spending_export(
+	HtmxRequest *request,
+	GHashTable  *params,
+	gpointer     user_data
+){
+	ClawtWebApp *app = user_data;
+	g_autoptr(JsonNode) reply = NULL;
+	g_autofree gchar *csv = NULL;
+	g_autofree gchar *name = NULL;
+	g_autofree gchar *disposition = NULL;
+	JsonObject *root;
+	HtmxResponse *response;
 
-        clawt_web_add(tr, htmx_td_new_with_text("Fleet"));
+	(void)params;
 
-        for (c = 0; c < G_N_ELEMENTS(values); c++) {
-            g_autoptr(HtmxTd) td = htmx_td_new_with_text(values[c]);
+	reply = spending_ledger(app, spending_period_index(request),
+				spending_group_nick(request));
+	root = clawt_web_root(reply);
 
-            htmx_element_add_class(HTMX_ELEMENT(td), "num");
-            htmx_node_add_child(HTMX_NODE(tr), HTMX_NODE(td));
-        }
+	if (root == NULL) {
+		/* settings_response() borrows the content; this scope owns it */
+		g_autoptr(HtmxElement) content = spending_content(app, request);
 
-        htmx_node_add_child(HTMX_NODE(foot), HTMX_NODE(tr));
-    }
+		return settings_response(app, request, "spending", content,
+					 "The daemon did not answer; nothing was exported.",
+					 TRUE);
+	}
 
-    htmx_node_add_child(HTMX_NODE(table), HTMX_NODE(head));
-    htmx_node_add_child(HTMX_NODE(table), HTMX_NODE(rows));
-    htmx_node_add_child(HTMX_NODE(table), HTMX_NODE(foot));
+	csv = clawt_usage_ledger_csv(root);
+	name = clawt_usage_ledger_csv_name(root, g_get_real_time() / G_USEC_PER_SEC);
+	disposition = g_strdup_printf("attachment; filename=\"%s\"", name);
 
-    htmx_element_add_class(wrap, "table-wrap");
-    htmx_node_add_child(HTMX_NODE(wrap), HTMX_NODE(table));
-    htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(wrap));
+	response = htmx_response_new_with_content(csv);
+	htmx_response_set_content_type(response, "text/csv; charset=utf-8");
+	htmx_response_add_header(response, "Content-Disposition", disposition);
 
-    /*
-     * Said here, because somebody reconciling these against an invoice
-     * should not have to work it out: IN counts *new* input tokens, and a
-     * CLI backend bills cache reads and writes that never appear in it.
-     * The cost column is the provider's own figure.
-     */
-    clawt_web_add(box, clawt_web_text(
-        "Cost is the figure the provider reported for each turn, not an "
-        "estimate. IN counts only new input tokens -- cached context is "
-        "billed and is not reported as tokens, so a turn can honestly "
-        "show eight input tokens against a bill of two cents.",
-        "small muted"));
-
-    return HTMX_ELEMENT(g_steal_pointer(&box));
+	return response;
 }
 
 /* ── Integrations ────────────────────────────────────────────────── */
@@ -1873,11 +1975,9 @@ on_settings_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
         content = teams_content(app);
     else if (g_strcmp0(slug, "folders") == 0)
         content = folders_content(app);
-    else if (g_strcmp0(slug, "spending") == 0) {
-        const gchar *period = htmx_request_get_query_param(request, "period");
-
-        content = spending_content(app, period != NULL ? period : "all");
-    } else if (g_strcmp0(slug, "integrations") == 0)
+    else if (g_strcmp0(slug, "spending") == 0)
+        content = spending_content(app, request);
+    else if (g_strcmp0(slug, "integrations") == 0)
         content = integrations_content(app);
     else if (g_strcmp0(slug, "connectors") == 0)
         content = connectors_content(app);
@@ -2521,6 +2621,8 @@ clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app)
 {
     htmx_router_get(router, "/settings", on_settings_index, app);
     htmx_router_get(router, "/settings/:page", on_settings_page, app);
+    htmx_router_get(router, "/settings/spending/export", on_spending_export,
+                    app);
 
     htmx_router_post(router, "/settings/fleet/pause", on_fleet_hold, app);
     htmx_router_post(router, "/settings/fleet/resume", on_fleet_hold, app);

@@ -4769,6 +4769,8 @@ on_settings_closed(AdwDialog *dialog, gpointer user_data)
     self->settings_teams = NULL;
     self->settings_spending = NULL;
     self->settings_spending_period = NULL;
+    self->settings_spending_group = NULL;
+    self->settings_spending_unpriced = NULL;
     self->settings_connectors = NULL;
     self->settings_catalog_row = NULL;
     self->settings_url_row = NULL;
