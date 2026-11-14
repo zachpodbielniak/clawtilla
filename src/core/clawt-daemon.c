@@ -376,6 +376,24 @@ on_link_contested(ClawtLinkServer *server, const gchar *agent_id,
  * built here, once, by the library, so the alert, the log and both
  * clients say the same thing.
  */
+/*
+ * What became of a delivery the router asked an agent to steer.
+ * Applied in daemon-turn.c, where the turn state lives.
+ */
+static void
+on_link_steered(ClawtLinkServer *server, const gchar *agent_id,
+                const gchar *room_id, const gchar *item_id,
+                const gchar *outcome, const gchar *reason, gboolean asked,
+                gpointer user_data)
+{
+    ClawtDaemon *self = user_data;
+
+    (void)server;
+
+    clawt_daemon_turn_settle_steer(self, agent_id, room_id, item_id, outcome,
+                                   reason, asked);
+}
+
 static void
 on_link_failover(ClawtLinkServer *server, const gchar *agent_id,
                  JsonObject *payload, gpointer user_data)
@@ -6941,6 +6959,7 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     self->router = clawt_mailbox_router_new(self->agents, self->rooms,
                                             self->guard);
     clawt_mailbox_router_set_event_bus(self->router, self->bus);
+    clawt_mailbox_router_set_task_manager(self->router, self->tasks);
     clawt_mailbox_router_set_transcript_index(self->router,
                                               self->transcripts);
 
@@ -7141,6 +7160,8 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
                      G_CALLBACK(on_link_step), self);
     g_signal_connect(self->link_server, "failover",
                      G_CALLBACK(on_link_failover), self);
+    g_signal_connect(self->link_server, "steered",
+                     G_CALLBACK(on_link_steered), self);
     g_signal_connect(self->link_server, "typing",
                      G_CALLBACK(on_link_typing), self);
     g_signal_connect(self->link_server, "link-contested",
@@ -8336,6 +8357,13 @@ clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
         builder,
         clawt_team_role_of(clawt_agent_get_config(agent)) == CLAWT_TEAM_LEAD
             ? "lead" : "member");
+
+    /* agents.steer, for the clients' agent settings. */
+    json_builder_set_member_name(builder, "steer");
+    json_builder_add_string_value(
+        builder, clawt_steer_policy_nick((ClawtSteerPolicy)
+            clawt_agent_config_get_enum(clawt_agent_get_config(agent),
+                                        "steer")));
 
     json_builder_set_member_name(builder, "manage_fleet");
     json_builder_add_boolean_value(

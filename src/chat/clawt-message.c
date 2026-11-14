@@ -43,6 +43,9 @@ struct _ClawtMessage {
 	gchar        *chain;
 	gchar        *skipped;
 	gchar        *skip_reason;
+
+	/* Steered into a running turn: libreclaw's outcome, or NULL. */
+	gchar        *steered;
 };
 
 static ClawtMessage *
@@ -129,6 +132,7 @@ clawt_message_copy(ClawtMessage *self)
 	copy->interrupted = self->interrupted;
 	copy->round = self->round;
 	copy->chain = g_strdup(self->chain);
+	copy->steered = g_strdup(self->steered);
 	copy->skipped = g_strdup(self->skipped);
 	copy->skip_reason = g_strdup(self->skip_reason);
 
@@ -158,6 +162,7 @@ clawt_message_free(ClawtMessage *self)
 	g_free(self->request_origin);
 	g_free(self->request_task);
 	g_free(self->chain);
+	g_free(self->steered);
 	g_free(self->skipped);
 	g_free(self->skip_reason);
     g_free(self);
@@ -512,6 +517,27 @@ clawt_message_set_interrupted(
 	g_return_if_fail(self != NULL);
 
 	self->interrupted = interrupted;
+}
+
+const gchar *
+clawt_message_get_steered(
+	ClawtMessage *self
+){
+	g_return_val_if_fail(self != NULL, NULL);
+
+	return self->steered;
+}
+
+void
+clawt_message_set_steered(
+	ClawtMessage *self,
+	const gchar  *outcome
+){
+	g_return_if_fail(self != NULL);
+
+	g_free(self->steered);
+	self->steered = (outcome != NULL && *outcome != '\0')
+		? g_strdup(outcome) : NULL;
 }
 
 guint

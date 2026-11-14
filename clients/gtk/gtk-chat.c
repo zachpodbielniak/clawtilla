@@ -2039,6 +2039,27 @@ interrupted_chip_new(gboolean from_user)
     return chip;
 }
 
+/*
+ * The mark on a message steered into a running turn
+ * (clawt_message_steered_label()).  Dim, not a warning: nothing went
+ * wrong, the message simply did not wait.
+ */
+static GtkWidget *
+steered_chip_new(const gchar *outcome, gboolean from_user)
+{
+    GtkWidget *chip = gtk_label_new(clawt_message_steered_label());
+
+    gtk_widget_add_css_class(chip, "caption");
+    gtk_widget_add_css_class(chip, "dim-label");
+    gtk_widget_set_tooltip_text(chip, clawt_message_steered_tooltip(outcome));
+    gtk_widget_set_halign(chip, from_user ? GTK_ALIGN_END : GTK_ALIGN_START);
+    gtk_widget_set_margin_top(chip, 2);
+    if (!from_user)
+        gtk_widget_set_margin_start(chip, CHAT_GUTTER);
+
+    return chip;
+}
+
 /* ── Folding a long request from another agent ─────────────────── */
 
 static void
@@ -2148,7 +2169,8 @@ clawt_gtk_append_message_to(ClawtWindow *self, const TranscriptView *view,
                             const gchar *sender, const gchar *body, gboolean from_user,
                             gint64 ts, const gchar *task, gint64 depth,
                             gboolean acknowledged, gint64 merged,
-                            gint64 consult, gboolean interrupted)
+                            gint64 consult, gboolean interrupted,
+                            const gchar *steered)
 {
     g_autofree gchar *merge_preface = NULL;
     g_auto(GStrv) merge_labels = NULL;
@@ -2504,6 +2526,14 @@ clawt_gtk_append_message_to(ClawtWindow *self, const TranscriptView *view,
         gtk_widget_add_css_class(row, "clawt-interrupted");
     }
 
+    /*
+     * Steered into the turn that was already running: said under the
+     * message, so it does not read as one still waiting for a turn of
+     * its own -- the turn's next answer answers it.
+     */
+    if (steered != NULL)
+        gtk_box_append(GTK_BOX(row), steered_chip_new(steered, from_user));
+
     append_attachment_previews(self, row, body, from_user);
 
     /*
@@ -2570,7 +2600,7 @@ clawt_gtk_append_message(ClawtWindow *self, const gchar *sender, const gchar *bo
                                 ? self->selected_agent : NULL };
 
     clawt_gtk_append_message_to(self, &view, sender, body, from_user, ts, NULL, 0,
-                                FALSE, 0, 0, FALSE);
+                                FALSE, 0, 0, FALSE, NULL);
 }
 
 /*
@@ -2584,7 +2614,7 @@ clawt_gtk_append_message_marked(ClawtWindow *self, const gchar *sender,
                                 const gchar *body, gboolean from_user,
                                 gint64 ts, gboolean acknowledged,
                                 gint64 merged, gint64 consult,
-                                gboolean interrupted)
+                                gboolean interrupted, const gchar *steered)
 {
     TranscriptView view = { self->transcript, &self->run_sender,
                             &self->run_day, self->selected_agent,
@@ -2595,7 +2625,8 @@ clawt_gtk_append_message_marked(ClawtWindow *self, const gchar *sender,
                                 ? self->selected_agent : NULL };
 
     clawt_gtk_append_message_to(self, &view, sender, body, from_user, ts, NULL, 0,
-                                acknowledged, merged, consult, interrupted);
+                                acknowledged, merged, consult, interrupted,
+                                steered);
 }
 
 /*
@@ -4573,7 +4604,8 @@ clawt_gtk_load_history(ClawtWindow *self)
                                      clawt_json_int(message, "acknowledged", 0) != 0,
                                      clawt_json_int(message, "merged", 0),
                                      clawt_json_int(message, "consult", 0),
-                                     clawt_json_int(message, "interrupted", 0) != 0);
+                                     clawt_json_int(message, "interrupted", 0) != 0,
+                                     clawt_json_string(message, "steered", NULL));
             clawt_gtk_append_round_marks(self, 0,
                                      clawt_json_string(message, "skipped", NULL),
                                      clawt_json_string(message, "skip_reason", NULL),

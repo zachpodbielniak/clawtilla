@@ -1737,7 +1737,7 @@ Every kind published, by subject:
 | a cloud image | ~image.progress~ (~done~, ~total~), ~image.finished~ (~path~ or ~error~) |
 | the daemon | ~device.paired~ (~device~, ~name~), ~device.revoked~ (~device~), ~device.expired~ (~device~) |
 | an agent | ~computer.exec~ |
-| an agent | ~turn.timed_out~, ~turn.repeating~, ~message.steered~ |
+| an agent | ~turn.timed_out~, ~turn.repeating~, ~message.steered~, ~turn.steered~ |
 | an agent | ~egress.refused~ (the gate refused one of its connections; agent.show's ~egress~ has the detail) |
 | an agent | ~turn.step~ (~step_kind~, ~room_id~, ~text~, ~tool~, ~detail~, ~failed~) |
 | a task | ~handoff.queued~, ~handoff.settled~ |
@@ -1899,6 +1899,16 @@ watching that pair, so ~clawt_alert_tier_for_event()~ makes them notices
 -- classified on ~state~ rather than on the kind, since a kind-only rule
 would put every successful handoff in the loud list and teach somebody to
 stop reading it.
+
+~turn.steered~ (since 0.26.0) is published when an agent says a delivery
+was steered into the turn it was running (libreclaw's ~chat.steered~ with
+~delivered~ or ~indeterminate~), subject the agent, with ~room~,
+~message~ (the room message, now carrying ~steered~ in ~room.history~),
+~item~ (the mailbox item), ~outcome~ and ~from~.  Clients redraw the room
+on it.  ~msg.send~'s reply carries ~steering: true~ when the person's
+message goes straight into the running turn under ~agents.steer: all~
+instead of being held.  A room history message carries ~steered~ (the
+outcome) when it was steered.
 
 ~message.steered~ is published when a message to a busy agent is held
 rather than routed, subject the agent, with ~room~ and ~held~ (how many

@@ -409,6 +409,32 @@ void clawt_message_set_interrupted(ClawtMessage *self,
                                    gboolean      interrupted);
 
 /**
+ * clawt_message_get_steered:
+ * @self: a #ClawtMessage
+ *
+ * Whether the message was steered into the turn its recipient was
+ * already running, rather than waiting to become a turn of its own:
+ * libreclaw's outcome, "delivered" or "indeterminate" (which counts as
+ * delivered).  The clients draw it with clawt_message_steered_label().
+ *
+ * Returns: (transfer none) (nullable): the outcome, or %NULL when the
+ *   message was not steered
+ *
+ * Since: 0.26.0
+ */
+const gchar *clawt_message_get_steered(ClawtMessage *self);
+
+/**
+ * clawt_message_set_steered:
+ * @self: a #ClawtMessage
+ * @outcome: (nullable): "delivered", "indeterminate", or %NULL
+ *
+ * Since: 0.26.0
+ */
+void clawt_message_set_steered(ClawtMessage *self,
+                               const gchar  *outcome);
+
+/**
  * clawt_message_interrupted_label:
  *
  * What every client draws on an interrupted-turn notice

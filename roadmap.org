@@ -341,7 +341,8 @@ From OpenMausBot's =docs/specs/aside-injection-seams.md= and =steer-vs-queue.md=
 
 Their contract is a tri-state, and the third state is the important one. =refused= must mean provably not delivered, so the caller may queue the words again. =indeterminate= counts as *delivered*, because the words may already be running and running them twice is the one mistake steering must never make. Nothing is killed or restarted to inject anything.
 
-** TODO ai-glib: an =AiSteerable= interface                                                     :upstream:ai-glib:
+** DONE ai-glib: an =AiSteerable= interface (shipped as ai-glib v0.11.0)                         :upstream:ai-glib:
+- *Done:* ai-glib v0.11.0 (=d116fa0=): =AiSteerable= with the tri-state, =AiClaudeCodeClient:steerable=, claude-tmux, =AiToolExecutor=, and codex's =app-server= transport (=AiCodexCliClient:transport=, unverified against a real codex). See ai-glib's =docs/steering.org=.
 - An interface beside =AiStreamable=: =ai_steerable_can_steer()= (a class datum, like =config_dir_env=, so callers ask a probe client rather than keep a table) and =ai_steerable_steer_async()= / =_finish()= returning =AI_STEER_DELIVERED=, =AI_STEER_REFUSED= or =AI_STEER_INDETERMINATE=, plus a =GError= for refusals. The call targets the *running stream*, so the stream run object needs a handle the caller can hold. Today it lives inside =StreamRun= in =ai-cli-client.c=.
 - *Claude Code:* a streaming mode that keeps stdin open (=--input-format stream-json --output-format stream-json=) and writes the first prompt as a JSON user message. =steer= writes another; stdin closes on the =result= event. Verify against the installed CLI with a control before relying on it. =--system-prompt-file= taught us that =--help= is not the whole flag list.
 - *codex:* an =app-server= transport beside =exec=: =thread/start=, =turn/start=, =turn/steer= with the turn id, and the same event translation to =AiEvent=. This is the largest piece. It also gives codex resumable threads.
@@ -350,7 +351,8 @@ Their contract is a tri-state, and the third state is the important one. =refuse
 - Everything else: =can_steer= FALSE.
 - *Tests:* a fake CLI that records stdin, for the tri-state. Lands in ai-glib tagged, then pinned.
 
-** TODO libreclaw: steer instead of queue when asked                                             :upstream:libreclaw:
+** DONE libreclaw: steer instead of queue when asked (version assigned at merge)                 :upstream:libreclaw:
+- *Done:* libreclaw branch =feat/steering= (pins ai-glib v0.11.0). =steer: true= plus =message_id= on =chat.message_in= is steered when the session's turn is running on a client that can take input; =REFUSED= is reported then queued, =DELIVERED= / =INDETERMINATE= recorded once in the steer journal (=<persist_dir>/steered.yaml=, the restart marker keyed on the message id) and finished with =LC_ERROR_STEERED=. =chat.steered= ={message_id, room_id, outcome, reason, asked}=; the hello lists ~"steer"~ in =features=. Config =ai.steer= (default on), =channels.<id>.steer_enabled=, =ai.codex.transport= (=exec= default, =app-server= opt-in). Docs in libreclaw's =docs/bridge.org=, "Steering".
 - When a message arrives for an =LcSession= whose turn is running (=processing=), the frame carries =steer: true=, and the session's client says =can_steer=, call =steer= instead of pushing onto the =GQueue=.
   - =REFUSED=: push it as today.
   - =DELIVERED= or =INDETERMINATE=: append it to the transcript once, marked as steered, and *do not* queue it.
@@ -358,7 +360,8 @@ Their contract is a tri-state, and the third state is the important one. =refuse
 - Restart safety: the transcript marker carries the message id, so a recovering session does not deliver steered words a second time.
 - Lands in libreclaw tagged, pinning the new ai-glib, then pinned here (=build(deps): libreclaw vX.Y.Z -- steering=).
 
-** TODO clawtilla: which deliveries steer, and the turn state they carry                         :orchestration:
+** DONE clawtilla: which deliveries steer, and the turn state they carry (version assigned at merge) :orchestration:
+- *Done:* =agents.steer= (=never= / =delegator= default / =peers= / =all=, since 0.26.0) decided by =clawt_steer_decide()=; the parked =TurnSetup= is folded into the running turn's record on =chat.steered= (=clawt_agent_settle_steer()=) and its mailbox turn record joins the running turn's (=clawt_mailbox_turn_join()=); the room message is marked =steered= and =turn.steered= redraws it in GTK, web and lrg; the level is explained in all three agent settings. Two parity rows. Design in =docs/orchestration.org=, "Steering a delivery into a running turn".
 - *Policy:* =agents.steer: never | delegator | peers | all= (schema first; default =delegator=). Under =delegator=, a message steers when its sender handed out the work this agent's running turn is on, the same rule as OpenMausBot's "what the bot that handed work on sends to the thread that work runs in goes into that work". A person's message in the agent's own room under =all=. Never into a room turn from another room.
 - *Turn state:* a steered message starts no turn, so its =TurnSetup= must *merge into the running turn's record* for that room: the deepest depth, origin and task folded in the safe direction. If it is left queued instead, the next real turn pops it and inherits the wrong =replies= flag, which is the exact bug class =on_runtime_exited()= hit. =chat.steered= is the edge that does this. Without it, clawtilla cannot tell a steered message from a queued one.
 - *Cross-talk rules:* a steered message is still a hop and still passes the loop guard before it is sent. It does not earn a separate answer: the running turn's closing text answers both.

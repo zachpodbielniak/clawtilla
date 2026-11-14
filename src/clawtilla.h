@@ -86,6 +86,7 @@
 #include "chat/clawt-repeat-watch.h"
 #include "chat/clawt-turn-watch.h"
 #include "chat/clawt-steer-queue.h"
+#include "chat/clawt-steer-policy.h"
 #include "chat/clawt-draft-store.h"
 #include "chat/clawt-room.h"
 #include "chat/clawt-room-manager.h"

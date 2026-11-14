@@ -999,6 +999,12 @@ on_save_agent(GtkButton *button, gpointer user_data)
         static const gchar *const roles[] = { "member", "lead" };
 
         ok &= clawt_gtk_apply_setting(self, "team_role",
+    if (self->steer_row != NULL)
+        ok &= clawt_gtk_apply_setting(self, "steer",
+                  clawt_steer_policy_nick((ClawtSteerPolicy)
+                      adw_combo_row_get_selected(
+                          ADW_COMBO_ROW(self->steer_row))));
+
                                       roles[MIN(adw_combo_row_get_selected(
                                           ADW_COMBO_ROW(self->team_role_row)),
                                                 1)]);
@@ -1426,6 +1432,50 @@ static GtkWidget *
 combo_row(const gchar *title, const gchar *const *values,
           const gchar *selected)
 {
+/*
+ * The steer level's own explanation, under the row, following the
+ * choice -- libclawt's words, so the three clients say the same thing
+ * the daemon does.
+ */
+static void
+on_steer_selected(GObject *row, GParamSpec *pspec, gpointer user_data)
+{
+    (void)pspec;
+    (void)user_data;
+
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(row),
+        clawt_steer_policy_explanation((ClawtSteerPolicy)
+            adw_combo_row_get_selected(ADW_COMBO_ROW(row))));
+}
+
+/*
+ * agents.steer: which messages may be handed to the turn the agent is
+ * already running.  The levels are walked from libclawt in order, so
+ * the row's position is the enumeration value.
+ */
+static GtkWidget *
+steer_row_new(const gchar *current)
+{
+    g_autoptr(GtkStringList) labels = gtk_string_list_new(NULL);
+    GtkWidget *row = adw_combo_row_new();
+    guint i;
+
+    for (i = 0; i < clawt_steer_policy_count(); i++)
+        gtk_string_list_append(labels,
+                               clawt_steer_policy_label((ClawtSteerPolicy)i));
+
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                  "Messages that steer a running turn");
+    adw_combo_row_set_model(ADW_COMBO_ROW(row), G_LIST_MODEL(labels));
+    adw_combo_row_set_selected(ADW_COMBO_ROW(row),
+                               (guint)clawt_steer_policy_from_nick(current));
+    on_steer_selected(G_OBJECT(row), NULL, NULL);
+    g_signal_connect(row, "notify::selected",
+                     G_CALLBACK(on_steer_selected), NULL);
+
+    return row;
+}
+
     GtkWidget *row = adw_combo_row_new();
 
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), title);
@@ -3695,6 +3745,10 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
      * this one, and nothing on screen said so.
      */
     self->manage_fleet_row = switch_row(
+    self->steer_row = steer_row_new(clawt_json_string(agent, "steer",
+                                                      "delegator"));
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), self->steer_row);
+
         "May create agents",
         "Adds clawtilla_create_agent. It can give a new agent a container "
         "or a VM, which is a machine that runs code.",

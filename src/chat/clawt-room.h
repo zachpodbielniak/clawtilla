@@ -270,6 +270,49 @@ void clawt_room_set_transcript_path(ClawtRoom *self, const gchar *path);
 
 void clawt_room_restore(ClawtRoom *self, ClawtMessage *message);
 
+/**
+ * clawt_room_mark_steered:
+ * @self: a #ClawtRoom
+ * @message_id: (nullable): the message's id
+ * @outcome: "delivered" or "indeterminate"
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Records that a message in the room was steered into the turn its
+ * recipient was running (clawt_message_get_steered()).  The transcript
+ * is append-only, so the mark is a line of its own naming the message
+ * (`{"annotates": id, "steered": outcome}`), read back by
+ * clawt_room_restore_annotation().  Once per message.
+ *
+ * Returns: %TRUE when the message was found and marked (or already
+ *   was); %FALSE when it is not in the room, or the line could not be
+ *   written (with @error set)
+ *
+ * Since: 0.26.0
+ */
+gboolean clawt_room_mark_steered(ClawtRoom    *self,
+                                 const gchar  *message_id,
+                                 const gchar  *outcome,
+                                 GError      **error);
+
+/**
+ * clawt_room_restore_annotation:
+ * @self: a #ClawtRoom
+ * @message_id: the annotated message's id
+ * @member: what the line says about it ("steered")
+ * @value: (nullable): its value
+ *
+ * Applies one annotation line read back from the transcript to a
+ * message already restored, without writing anything.
+ *
+ * Returns: %TRUE when it applied
+ *
+ * Since: 0.26.0
+ */
+gboolean clawt_room_restore_annotation(ClawtRoom   *self,
+                                       const gchar *message_id,
+                                       const gchar *member,
+                                       const gchar *value);
+
 gboolean clawt_room_append(ClawtRoom     *self,
                            ClawtMessage  *message,
                            GError       **error);

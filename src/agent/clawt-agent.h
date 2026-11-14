@@ -480,6 +480,87 @@ guint clawt_agent_get_turn_tool_calls_in(ClawtAgent  *self,
                                          const gchar *room_id);
 
 /**
+ * ClawtSteerSettle:
+ * @CLAWT_STEER_SETTLE_UNKNOWN: no delivery was waiting under that id
+ * @CLAWT_STEER_SETTLE_QUEUED: refused; the delivery waits for its own turn
+ * @CLAWT_STEER_SETTLE_JOINED: delivered or indeterminate; its description
+ *   was folded into the turn it joined
+ *
+ * What clawt_agent_settle_steer() did with a steer's answer.
+ *
+ * Since: 0.26.0
+ */
+typedef enum {
+	CLAWT_STEER_SETTLE_UNKNOWN = 0,
+	CLAWT_STEER_SETTLE_QUEUED,
+	CLAWT_STEER_SETTLE_JOINED
+} ClawtSteerSettle;
+
+/**
+ * clawt_agent_await_steer:
+ * @self: a #ClawtAgent
+ * @item_id: the mailbox item just delivered with a steer request
+ *
+ * Marks the waiting delivery for @item_id as asked to steer: no turn
+ * takes it until clawt_agent_settle_steer() hears the answer.  Call it
+ * after clawt_agent_deliver_item(), for the item just handed over.
+ *
+ * Returns: %TRUE if such a delivery was waiting
+ *
+ * Since: 0.26.0
+ */
+gboolean clawt_agent_await_steer(ClawtAgent  *self,
+				 const gchar *item_id);
+
+/**
+ * clawt_agent_settle_steer:
+ * @self: a #ClawtAgent
+ * @room_id: (nullable): the room libreclaw says the message was for
+ * @item_id: the mailbox item the answer names
+ * @outcome: "delivered", "indeterminate" or "refused"
+ * @asked: whether the running turn's engine was asked (libreclaw's
+ *   `asked`); decides where a refused delivery now stands
+ *
+ * Applies libreclaw's chat.steered.  A refused delivery is released to
+ * be taken by its own turn.  A delivered or indeterminate one is taken
+ * out of the waiting list and folded into the turn running in its room
+ * -- deepest depth, replies if either, a peer's origin, the task only
+ * if they agree, a consultation if either -- and its mailbox turn
+ * record joins that turn's.  Nothing waits for it to start a turn,
+ * because it never will.
+ *
+ * Returns: what was done
+ *
+ * Since: 0.26.0
+ */
+ClawtSteerSettle clawt_agent_settle_steer(ClawtAgent  *self,
+					  const gchar *room_id,
+					  const gchar *item_id,
+					  const gchar *outcome,
+					  gboolean     asked);
+
+/**
+ * clawt_agent_get_turn_steer_facts:
+ * @self: a #ClawtAgent
+ * @room_id: the room
+ * @origin: (out) (transfer none) (optional) (nullable): who the running
+ *   turn is answering
+ * @task_id: (out) (transfer none) (optional) (nullable): the task it is on
+ * @consult: (out) (optional): whether it is a consultation
+ *
+ * What the steer policy needs of the turn running in @room_id.
+ *
+ * Returns: %TRUE only while a turn is running in @room_id
+ *
+ * Since: 0.26.0
+ */
+gboolean clawt_agent_get_turn_steer_facts(ClawtAgent   *self,
+					  const gchar  *room_id,
+					  const gchar **origin,
+					  const gchar **task_id,
+					  gboolean     *consult);
+
+/**
  * clawt_agent_get_turn_consult_in:
  * @self: a #ClawtAgent
  * @room_id: (nullable): the turn's room, or %NULL for a caller that

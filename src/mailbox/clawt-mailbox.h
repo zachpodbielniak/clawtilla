@@ -354,6 +354,29 @@ gboolean clawt_mailbox_turn_close(ClawtMailbox  *self,
                                   GError       **error);
 
 /**
+ * clawt_mailbox_turn_join:
+ * @self: a #ClawtMailbox
+ * @into: the record of the turn that took a steered message
+ * @from: the steered message's own record
+ * @error: return location for a #GError
+ *
+ * Moves @from's items onto @into and forgets @from, in one transaction.
+ * A steered message never starts a turn of its own: its words are part
+ * of the turn @into records.  Joined, a restart that cut that turn hands
+ * every item back as one turn, or ends it as interrupted, and never
+ * reruns the steered words alone after the turn that already read them.
+ * @into keeps the higher replay count and gains @from's outward marks.
+ *
+ * Returns: %TRUE on success, including @from already gone
+ *
+ * Since: 0.26.0
+ */
+gboolean clawt_mailbox_turn_join(ClawtMailbox  *self,
+                                 gint64         into,
+                                 gint64         from,
+                                 GError       **error);
+
+/**
  * clawt_mailbox_turn_list_open: (skip)
  * @self: a #ClawtMailbox
  *

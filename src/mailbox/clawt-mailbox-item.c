@@ -40,6 +40,7 @@ struct _ClawtMailboxItem {
 	guint    replays;
 	guint    round;
 	gchar   *chain;
+	gchar   *message_id;   /* the room message it was posted as */
     gint64   created_at;
     gint64   not_before;
     gint64   expires_at;
@@ -120,6 +121,7 @@ clawt_mailbox_item_copy(ClawtMailboxItem *self)
 	copy->replays = self->replays;
 	copy->round = self->round;
 	copy->chain = g_strdup(self->chain);
+	copy->message_id = g_strdup(self->message_id);
     copy->created_at = self->created_at;
     copy->not_before = self->not_before;
     copy->expires_at = self->expires_at;
@@ -151,6 +153,7 @@ clawt_mailbox_item_free(ClawtMailboxItem *self)
 	g_free(self->request_origin);
 	g_free(self->request_task);
 	g_free(self->chain);
+	g_free(self->message_id);
     g_free(self);
 }
 
@@ -351,6 +354,25 @@ clawt_mailbox_item_set_replays(
 ){
 	g_return_if_fail(self != NULL);
 	self->replays = replays;
+}
+
+const gchar *
+clawt_mailbox_item_get_message_id(
+	ClawtMailboxItem *self
+){
+	g_return_val_if_fail(self != NULL, NULL);
+	return self->message_id;
+}
+
+void
+clawt_mailbox_item_set_message_id(
+	ClawtMailboxItem *self,
+	const gchar      *message_id
+){
+	g_return_if_fail(self != NULL);
+	g_free(self->message_id);
+	self->message_id = (message_id != NULL && *message_id != '\0')
+		? g_strdup(message_id) : NULL;
 }
 
 gchar *

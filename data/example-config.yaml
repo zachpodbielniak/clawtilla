@@ -2387,6 +2387,39 @@ agents:
       # The default suits an agent that serves several people and should
       # keep them apart. It is the wrong shape for an orchestrator: a chief
       # of staff told "only use oryx" in the operator's room has never
+    # Which messages may be handed to the turn this agent is already
+    # running, instead of waiting to become a turn of their own.
+    #
+    # Without steering, a message for a busy agent waits and becomes its
+    # next turn: a correction ("stop, use the staging DB") arrives after
+    # the work it was meant to change has finished, and a follow-up costs a
+    # whole extra turn that rereads everything. A steered message reaches
+    # the running turn at the next point its engine accepts input -- before
+    # the next model call -- and the turn's closing answer answers it too.
+    # Nothing is killed or restarted.
+    #
+    # never: nothing steers. delegator, the default: a message steers when
+    # its sender handed out the work the running turn is on -- the agent
+    # that turn is answering, or the delegator of the task it is working.
+    # peers: as delegator, and any other agent's message in the same room.
+    # all: as peers, and your own message in your conversation with this
+    # agent (otherwise held and sent when the turn ends).
+    #
+    # No level lifts these: a message never steers into another room's
+    # turn; never into a consultation unless the consulting agent is asking
+    # again, and a consultation never steers into a turn that can act; a
+    # result held for the end of a turn, a message naming another task or
+    # a model of its own, and anything in a group room take turns of their
+    # own. A steered message is still a hop and still passes the loop guard
+    # when it is sent.
+    #
+    # Only some engines can be steered: Claude Code, claude-tmux and codex
+    # on libreclaw's ai.codex.transport app-server. On any other the agent
+    # says no and the message waits as before. Needs libreclaw 0.30.0 or
+    # later; an older agent is never asked.
+    # Values: never, delegator, peers, all
+    steer: "delegator"
+
       # heard that constraint when a peer's reply wakes the sibling session,
       # and what looks like one agent contradicting itself is three contexts
       # that have never met. Give such an agent agent mode. The cost is

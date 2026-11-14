@@ -78,6 +78,7 @@ static const gchar *SCHEMA_SQL =
 	"  consult INTEGER NOT NULL DEFAULT 0,"
 	"  room_round INTEGER NOT NULL DEFAULT 0,"
 	"  chain TEXT,"
+	"  message_id TEXT,"
     "  created_at INTEGER NOT NULL,"
     "  not_before INTEGER NOT NULL DEFAULT 0,"
     "  expires_at INTEGER NOT NULL DEFAULT 0,"
@@ -295,6 +296,18 @@ apply_schema(sqlite3 *db, GError **error)
 		return FALSE;
 	}
 
+	/*
+	 * Since 0.26.0: the room message an item delivers, so a steer's
+	 * outcome can be drawn on it.  Absent means none, which only costs
+	 * an older queued item its "steered" mark.
+	 */
+	if (!has_column(db, "items", "message_id") &&
+		sqlite3_exec(db, "ALTER TABLE items ADD COLUMN message_id TEXT",
+			NULL, NULL, NULL) != SQLITE_OK) {
+		set_sqlite_error(error, db, "adding message_id to the mailbox");
+		return FALSE;
+	}
+
 	/* Existing mailboxes must retain their queued work when upgraded. */
 	for (i = 0; i < G_N_ELEMENTS(context_columns); i++) {
 		g_autofree gchar *sql = NULL;
@@ -358,6 +371,7 @@ item_from_row(sqlite3_stmt *stmt)
 		(guint)MAX(sqlite3_column_int(stmt, 25), 0), column_text(stmt, 26));
 	clawt_mailbox_item_set_replays(item,
 		(guint)MAX(sqlite3_column_int(stmt, 27), 0));
+	clawt_mailbox_item_set_message_id(item, column_text(stmt, 28));
 
     return item;
 }
@@ -367,7 +381,7 @@ item_from_row(sqlite3_stmt *stmt)
     "idempotency_key, last_error, priority, state, depth, attempts, " \
     "created_at, not_before, expires_at, invites_reply, " \
 	"request_room, request_origin, request_task, model, composed, one_way, " \
-	"consult, room_round, chain, replays"
+	"consult, room_round, chain, replays, message_id"
 
 /* ── Depth ───────────────────────────────────────────────────────── */
 
@@ -699,8 +713,8 @@ clawt_mailbox_post(ClawtMailbox *self, ClawtMailboxItem *item, GError **error)
             " reply_to, subject, idempotency_key, priority, state, depth,"
             " attempts, created_at, not_before, expires_at, invites_reply,"
 			" request_room, request_origin, request_task, model, composed,"
-			" one_way, consult, room_round, chain)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+			" one_way, consult, room_round, chain, message_id)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             -1, &stmt, NULL) != SQLITE_OK) {
         set_sqlite_error(error, self->db, "queueing a message");
         return NULL;
@@ -745,6 +759,8 @@ clawt_mailbox_post(ClawtMailbox *self, ClawtMailboxItem *item, GError **error)
 	sqlite3_bind_int(stmt, 24, clawt_mailbox_item_get_consult(item) ? 1 : 0);
 	sqlite3_bind_int(stmt, 25, (gint)clawt_mailbox_item_get_round(item));
 	sqlite3_bind_text(stmt, 26, clawt_mailbox_item_get_chain(item), -1,
+		SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 27, clawt_mailbox_item_get_message_id(item), -1,
 		SQLITE_TRANSIENT);
 
     rc = sqlite3_step(stmt);
@@ -1517,6 +1533,69 @@ clawt_mailbox_turn_close(
 	if (!delete_turn(self, turn, error)) {
 		exec_simple(self, "ROLLBACK", NULL);
 		return FALSE;
+	}
+
+	if (!exec_simple(self, "COMMIT", error)) {
+		exec_simple(self, "ROLLBACK", NULL);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+gboolean
+clawt_mailbox_turn_join(
+	ClawtMailbox  *self,
+	gint64         into,
+	gint64         from,
+	GError       **error
+){
+	static const gchar *statements[] = {
+		/* the items, after the ones already there, in their own order */
+		"UPDATE turn_items SET turn = ?1, position = position +"
+		" (SELECT COALESCE(MAX(position), -1) + 1 FROM turn_items"
+		"  WHERE turn = ?1) WHERE turn = ?2",
+		/* the higher replay count, so the join buys no extra rerun */
+		"UPDATE turns SET replays = MAX(replays,"
+		" COALESCE((SELECT replays FROM turns WHERE id = ?2), 0))"
+		" WHERE id = ?1",
+		/* and anything the steered part is marked as having done */
+		"UPDATE turns SET outward = CASE"
+		" WHEN (SELECT outward FROM turns WHERE id = ?2) IS NULL"
+		"   OR (SELECT outward FROM turns WHERE id = ?2) = '' THEN outward"
+		" WHEN outward IS NULL OR outward = ''"
+		"   THEN (SELECT outward FROM turns WHERE id = ?2)"
+		" ELSE outward || ', ' || (SELECT outward FROM turns WHERE id = ?2)"
+		" END WHERE id = ?1",
+		"DELETE FROM turns WHERE id = ?2"
+	};
+	guint i;
+
+	g_return_val_if_fail(CLAWT_IS_MAILBOX(self), FALSE);
+
+	if (into == from)
+		return TRUE;
+
+	if (!exec_simple(self, "BEGIN IMMEDIATE", error))
+		return FALSE;
+
+	for (i = 0; i < G_N_ELEMENTS(statements); i++) {
+		sqlite3_stmt *stmt = NULL;
+
+		if (sqlite3_prepare_v2(self->db, statements[i], -1, &stmt,
+				NULL) != SQLITE_OK) {
+			set_sqlite_error(error, self->db, "joining a turn record");
+			exec_simple(self, "ROLLBACK", NULL);
+			return FALSE;
+		}
+
+		sqlite3_bind_int64(stmt, 1, into);
+		sqlite3_bind_int64(stmt, 2, from);
+
+		if (!step_write(self, stmt, "joining a turn record", error)) {
+			exec_simple(self, "ROLLBACK", NULL);
+			return FALSE;
+		}
 	}
 
 	if (!exec_simple(self, "COMMIT", error)) {

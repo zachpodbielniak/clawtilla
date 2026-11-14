@@ -646,6 +646,16 @@ critical fired.
   were delivered. Assuming the agent answers a whole drain in one turn is what
   made the turn state a scalar, and it was written into a test as the
   intention.
+  **The one exception is a steered message** (libreclaw 0.30.0, clawtilla
+  `agents.steer`): a delivery sent with `steer: true` that libreclaw hands
+  to the turn already running starts no turn of its own.  Its `TurnSetup`
+  is parked (`clawt_agent_await_steer()`, skipped by
+  `clawt_agent_begin_turn()`) until `chat.steered` says what happened, then
+  either folded into the running turn's record or released to its own turn
+  (`clawt_agent_settle_steer()`).  Never let such an entry be popped by the
+  next real turn -- that is the `on_runtime_exited()` bug class again, with
+  the wrong `replies` flag.  Everything else above stays true: one message
+  that was *not* steered is still one turn.
 - `lc_router_resolve_session_key()` keys on channel, room and sender and
   **deliberately excludes the thread**. So a routine cannot have a session of
   its own: it lands in the operator's room, sender and queue. Point routines at

@@ -271,6 +271,14 @@ declare -A AFFORDANCES=(
     # beside Approve and Decline.
     #
     ["interrupted-turn notices"]="clawt_message_interrupted_label|clawt_message_interrupted_label|clawt_message_interrupted_label"
+    #
+    # Steering (agents.steer): a message handed to the turn already
+    # running is drawn as steered, not as one waiting for a turn, with
+    # libclawt's label; and the steer level is explained in the agent's
+    # settings in libclawt's words, so the three say what the daemon does.
+    #
+    ["steered messages"]="clawt_message_steered_label|clawt_message_steered_label|clawt_message_steered_label"
+    ["explain an agent's steer level"]="clawt_steer_policy_explanation|clawt_steer_policy_explanation|clawt_steer_policy_explanation"
     ["rebuild requests say what is lost"]="\"loses\"|\"loses\"|\"loses\""
     ["ack-check model choices"]="clawt_ack_check_model_nth_value|clawt_ack_check_model_nth_value|clawt_ack_check_model_nth_value"
     #

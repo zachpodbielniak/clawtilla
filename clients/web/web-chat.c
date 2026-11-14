@@ -247,6 +247,8 @@ message_element(JsonObject *message, const gchar *agent_id,
         (gint)clawt_web_member_int(message, "consult", 0));
     gboolean interrupted =
         clawt_web_member_int(message, "interrupted", 0) != 0;
+    /* Steered into the running turn: libreclaw's outcome, or NULL. */
+    const gchar *steered = clawt_web_member(message, "steered", NULL);
     gboolean from_user = (g_strcmp0(sender, "user") == 0);
     g_autoptr(HtmxElement) row = HTMX_ELEMENT(htmx_article_new());
     g_autoptr(HtmxDiv) who = htmx_div_new();
@@ -423,8 +425,22 @@ message_element(JsonObject *message, const gchar *agent_id,
         clawt_web_add(who, g_steal_pointer(&cut));
     }
 
+    /*
+     * Handed to the turn that was already running: a quiet badge, so it
+     * does not read as a message still waiting for a turn of its own.
+     * The room refreshes on the `turn.steered` event like any other.
+     */
+    if (steered != NULL) {
+        g_autoptr(HtmxSpan) mark = clawt_web_badge(
+            clawt_message_steered_label(), "");
+
+        htmx_element_set_attribute(HTMX_ELEMENT(mark), "title",
+                                   clawt_message_steered_tooltip(steered));
+        clawt_web_add(who, g_steal_pointer(&mark));
+    }
+
     if (run_start || task != NULL || depth > 1 || acknowledged ||
-        consult != NULL || interrupted)
+        consult != NULL || interrupted || steered != NULL)
         htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(who));
 
     htmx_element_add_class(HTMX_ELEMENT(text), "msg-body");

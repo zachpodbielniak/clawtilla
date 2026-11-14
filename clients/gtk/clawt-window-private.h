@@ -467,6 +467,7 @@ struct _ClawtWindow {
     GtkWidget         *team_row;
     GtkWidget         *team_role_row;
     GStrv              team_ids;
+    GtkWidget         *steer_row;      /* agents.steer, walked from libclawt */
     gboolean           settings_need_restart;
 
     /*
@@ -1127,14 +1128,15 @@ clawt_gtk_append_message_to(ClawtWindow *self, const TranscriptView *view,
                             const gchar *sender, const gchar *body, gboolean from_user,
                             gint64 ts, const gchar *task, gint64 depth,
                             gboolean acknowledged, gint64 merged,
-                            gint64 consult, gboolean interrupted);
+                            gint64 consult, gboolean interrupted,
+                            const gchar *steered);
 
 void
 clawt_gtk_append_message_marked(ClawtWindow *self, const gchar *sender,
                                 const gchar *body, gboolean from_user,
                                 gint64 ts, gboolean acknowledged,
                                 gint64 merged, gint64 consult,
-                                gboolean interrupted);
+                                gboolean interrupted, const gchar *steered);
 
 void
 clawt_gtk_append_round_marks(ClawtWindow *self, gint64 round,
