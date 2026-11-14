@@ -177,6 +177,48 @@ ClawtRoom *clawt_room_manager_get_trigger(ClawtRoomManager *self,
                                           const gchar      *agent_id);
 
 /**
+ * clawt_room_manager_task_room_id:
+ * @task_id: a task id
+ *
+ * The id a task's own room has (`task:<id>`), without making one.  The
+ * same reason clawt_room_manager_direct_id() exists: a client that
+ * builds the id itself breaks when the format changes.
+ *
+ * Returns: (transfer full): the id
+ */
+gchar *clawt_room_manager_task_room_id(const gchar *task_id);
+
+/**
+ * clawt_room_manager_get_task:
+ * @self: a #ClawtRoomManager
+ * @task_id: which task
+ * @delegator: who handed the work over
+ * @assignee: who does it
+ *
+ * The room a task delegated with `thread: new` runs in, making it if it
+ * is not there.
+ *
+ * libreclaw keys a session on channel, room and sender, so a room of
+ * its own is a session of its own: the work does not inherit whatever
+ * the pair last talked about, and does not queue behind it.  The sender
+ * stays the delegator -- it is a peer's work, and the assignee is told
+ * so -- and both are members, so the assignee's answer lands where the
+ * delegator can read it and a reply delivered there reaches the one
+ * agent waiting on it.
+ *
+ * Not a group (two members), owned by the daemon (`task:` holds a colon,
+ * which no id somebody creates can), and held in memory like the
+ * routine and trigger rooms: it lives as long as the daemon, as the task
+ * itself does, and its transcript stays on disk after both are gone.
+ *
+ * Returns: (transfer none): the room
+ */
+ClawtRoom *clawt_room_manager_get_task(ClawtRoomManager *self,
+                                       const gchar      *task_id,
+                                       const gchar      *delegator,
+                                       const gchar      *assignee);
+
+/**
  * clawt_room_manager_list:
  * @self: a #ClawtRoomManager
  *

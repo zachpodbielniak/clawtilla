@@ -1975,6 +1975,32 @@ merge_sections_new(gchar **labels, gchar **texts, gboolean from_user)
  * it is a fact about that one message: unmarked, an answer the asker
  * never took a turn on reads as having been ignored.
  */
+/*
+ * A consultation's question or answer says so under the message: the
+ * agent that wrote the answer had no tool that acts, which is what a
+ * reader needs to know before taking it as a report of work done.
+ */
+static GtkWidget *
+consult_chip_new(gint64 consult, gboolean from_user)
+{
+    const gchar *label = clawt_message_consult_label((gint)consult);
+    GtkWidget *chip;
+
+    if (label == NULL)
+        return NULL;
+
+    chip = gtk_label_new(label);
+    gtk_widget_add_css_class(chip, "caption");
+    gtk_widget_add_css_class(chip, "dim-label");
+    gtk_widget_set_tooltip_text(chip, clawt_message_consult_tooltip());
+    gtk_widget_set_halign(chip, from_user ? GTK_ALIGN_END : GTK_ALIGN_START);
+    gtk_widget_set_margin_top(chip, 2);
+    if (!from_user)
+        gtk_widget_set_margin_start(chip, CHAT_GUTTER);
+
+    return chip;
+}
+
 static GtkWidget *
 ack_chip_new(gboolean from_user)
 {
@@ -1995,7 +2021,8 @@ void
 clawt_gtk_append_message_to(ClawtWindow *self, const TranscriptView *view,
                             const gchar *sender, const gchar *body, gboolean from_user,
                             gint64 ts, const gchar *task, gint64 depth,
-                            gboolean acknowledged, gint64 merged)
+                            gboolean acknowledged, gint64 merged,
+                            gint64 consult)
 {
     g_autofree gchar *merge_preface = NULL;
     g_auto(GStrv) merge_labels = NULL;
@@ -2317,6 +2344,13 @@ clawt_gtk_append_message_to(ClawtWindow *self, const TranscriptView *view,
     if (acknowledged)
         gtk_box_append(GTK_BOX(row), ack_chip_new(from_user));
 
+    {
+        GtkWidget *chip = consult_chip_new(consult, from_user);
+
+        if (chip != NULL)
+            gtk_box_append(GTK_BOX(row), chip);
+    }
+
     append_attachment_previews(self, row, body, from_user);
 
     /*
@@ -2380,7 +2414,7 @@ clawt_gtk_append_message(ClawtWindow *self, const gchar *sender, const gchar *bo
                             self->selected_color };
 
     clawt_gtk_append_message_to(self, &view, sender, body, from_user, ts, NULL, 0,
-                                FALSE, 0);
+                                FALSE, 0, 0);
 }
 
 /*
@@ -2393,7 +2427,7 @@ void
 clawt_gtk_append_message_marked(ClawtWindow *self, const gchar *sender,
                                 const gchar *body, gboolean from_user,
                                 gint64 ts, gboolean acknowledged,
-                                gint64 merged)
+                                gint64 merged, gint64 consult)
 {
     TranscriptView view = { self->transcript, &self->run_sender,
                             &self->run_day, self->selected_agent,
@@ -2401,7 +2435,7 @@ clawt_gtk_append_message_marked(ClawtWindow *self, const gchar *sender,
                             self->selected_color };
 
     clawt_gtk_append_message_to(self, &view, sender, body, from_user, ts, NULL, 0,
-                                acknowledged, merged);
+                                acknowledged, merged, consult);
 }
 
 /*
@@ -4261,7 +4295,8 @@ clawt_gtk_load_history(ClawtWindow *self)
                                      clawt_json_string(message, "body", ""),
                                      g_strcmp0(sender, "user") == 0, ts,
                                      clawt_json_int(message, "acknowledged", 0) != 0,
-                                     clawt_json_int(message, "merged", 0));
+                                     clawt_json_int(message, "merged", 0),
+                                     clawt_json_int(message, "consult", 0));
         }
 
         /* And anything after the last message. */

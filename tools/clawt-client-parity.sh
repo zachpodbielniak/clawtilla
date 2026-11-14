@@ -226,6 +226,19 @@ declare -A AFFORDANCES=(
     ["spending csv export"]="clawt_usage_ledger_csv(root)|clawt_usage_ledger_csv(root)|clawt_usage_ledger_csv(root)"
     ["acknowledged answers"]="clawt_message_ack_label|clawt_message_ack_label|clawt_message_ack_label"
     ["merged deliveries as sections"]="clawt_merge_split|clawt_merge_split|clawt_merge_split"
+    #
+    # Delegation modes: a consultation's question and answer are marked
+    # in the chat, a consulted task carries the badge, a task delegated
+    # with `thread: new` shows its own room and opens it, and a decision
+    # raised inside delegated work says who it was put to first.  The
+    # wording is libclawt's in all three; the room is opened by each
+    # client's own control, so that marker is the handler.
+    #
+    ["consultation in the chat"]="clawt_message_consult_label|clawt_message_consult_label|clawt_message_consult_label"
+    ["consultation task badge"]="clawt_task_consult_label|clawt_task_consult_label|clawt_task_consult_label"
+    ["a task's own room"]="clawt_task_thread_summary|clawt_task_thread_summary|clawt_task_thread_summary"
+    ["open a task's own room"]="on_task_open_room|htmx_a_new_with_href(url)|on_open_room_clicked"
+    ["decision routed to"]="clawt_decision_routed_label|clawt_decision_routed_label|clawt_decision_routed_label"
     ["ack-check model choices"]="clawt_ack_check_model_nth_value|clawt_ack_check_model_nth_value|clawt_ack_check_model_nth_value"
     #
     # The Grok page: the bots and who may reach them, handing one a job on

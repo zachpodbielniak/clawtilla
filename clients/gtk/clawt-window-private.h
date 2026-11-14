@@ -1061,13 +1061,14 @@ void
 clawt_gtk_append_message_to(ClawtWindow *self, const TranscriptView *view,
                             const gchar *sender, const gchar *body, gboolean from_user,
                             gint64 ts, const gchar *task, gint64 depth,
-                            gboolean acknowledged, gint64 merged);
+                            gboolean acknowledged, gint64 merged,
+                            gint64 consult);
 
 void
 clawt_gtk_append_message_marked(ClawtWindow *self, const gchar *sender,
                                 const gchar *body, gboolean from_user,
                                 gint64 ts, gboolean acknowledged,
-                                gint64 merged);
+                                gint64 merged, gint64 consult);
 
 void
 clawt_gtk_attachment_free(Attachment *attachment);

@@ -38,6 +38,25 @@ on_task_cancel(GtkButton *button, gpointer user_data)
         clawt_gtk_refresh_tasks(self);
 }
 
+/*
+ * Opens the room a task runs in, when it was delegated with `thread:
+ * new`.  The work is not in the conversation the two agents share, so
+ * without this a person reading the task list has no way to the
+ * transcript the result came out of.  The id is copied off the button
+ * before anything else runs: selecting a room refreshes this page,
+ * which frees the button.
+ */
+static void
+on_task_open_room(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autofree gchar *room = g_strdup(
+        g_object_get_data(G_OBJECT(button), "room-id"));
+
+    clawt_gtk_select_room(self, room);
+    clawt_gtk_show_page(self, CLAWT_PAGE_CHAT);
+}
+
 static void
 refresh_tasks_once(ClawtWindow *self)
 {
@@ -119,6 +138,35 @@ refresh_tasks_once(ClawtWindow *self)
                     ADW_ACTION_ROW(row),
                     "nobody reported this finished -- it is the last thing "
                     "the assignee wrote");
+
+            /*
+             * A consultation says so: its result is an answer, and
+             * nobody did any work to produce it.
+             */
+            if (clawt_json_boolean(task, "consult", FALSE))
+                adw_action_row_add_suffix(
+                    ADW_ACTION_ROW(row),
+                    clawt_gtk_badge(clawt_task_consult_label(), "dim-label",
+                                    clawt_message_consult_tooltip()));
+
+            /* The room the work runs in, and the way into it. */
+            {
+                const gchar *room = clawt_json_string(task, "thread_room",
+                                                      NULL);
+                g_autofree gchar *summary = clawt_task_thread_summary(room);
+
+                if (summary != NULL) {
+                    GtkWidget *open = gtk_button_new_with_label("Open room");
+
+                    gtk_widget_set_tooltip_text(open, summary);
+                    g_object_set_data_full(G_OBJECT(open), "room-id",
+                                           g_strdup(room), g_free);
+                    g_signal_connect(open, "clicked",
+                                     G_CALLBACK(on_task_open_room), self);
+                    gtk_widget_set_valign(open, GTK_ALIGN_CENTER);
+                    adw_action_row_add_suffix(ADW_ACTION_ROW(row), open);
+                }
+            }
 
             if (g_strcmp0(state, "running") == 0 ||
                 g_strcmp0(state, "pending") == 0) {

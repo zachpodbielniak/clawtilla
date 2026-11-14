@@ -887,6 +887,21 @@ clawt_daemon_handle_misc(
                                 "with clawtilla_ask_decision instead of acting on it");
                 mode = CLAWT_POLICY_DENY;
             }
+
+            /*
+             * Nor may a consultation's own CLI act: its Bash, its edits,
+             * a connector's writes.  The clawtilla tools it was offered
+             * already leave these out; this is the same rule for the
+             * tools clawtilla does not list.
+             */
+            if (mode != CLAWT_POLICY_DENY &&
+                clawt_mcp_tools_consult_withholds(tool, action) &&
+                clawt_mcp_tools_turn_is_consult(self->mcp_tools, agent_id,
+                                                clawt_ipc_payload_string(payload, "room"))) {
+                g_free(rule);
+                rule = g_strdup(CLAWT_CONSULT_RULE);
+                mode = CLAWT_POLICY_DENY;
+            }
         }
 
         if (mode == CLAWT_POLICY_ALLOW || mode == CLAWT_POLICY_DENY) {

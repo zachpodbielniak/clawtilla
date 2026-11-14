@@ -667,7 +667,7 @@ typedef struct {
 static gboolean
 reply_deliver(const gchar *from_agent, const gchar *target, const gchar *body,
               const gchar *task_id, gint depth, ClawtPriority priority,
-              const gchar *turn_room, gboolean one_way, gpointer user_data,
+              const gchar *turn_room, guint flags, gpointer user_data,
               GError **error)
 {
 	Delivered *seen = user_data;
@@ -676,7 +676,7 @@ reply_deliver(const gchar *from_agent, const gchar *target, const gchar *body,
 	(void)depth; (void)priority; (void)turn_room; (void)error;
 
 	seen->calls++;
-	seen->one_way = one_way;
+	seen->one_way = (flags & CLAWT_MCP_DELIVER_ONE_WAY) != 0;
 	return TRUE;
 }
 

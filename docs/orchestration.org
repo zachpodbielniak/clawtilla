@@ -706,18 +706,19 @@ and letting an agent conclude that work it remembers delegating was never
 delegated.  The same shape as ~clawtilla_mailbox_list~ being empty for a
 running agent.
 
-*** A task does not get a session of its own
+*** A task gets a session of its own only when it asks for one
 
-This page and ~clawt-task.h~ both used to say it did.  It has never been
-true, and the reason is in libreclaw and is deliberate:
+This page and ~clawt-task.h~ both used to say every task had one.  It
+was never true, and the reason is in libreclaw and is deliberate:
 ~lc_router_resolve_session_key()~ keys a session on channel, room and
 sender, and its own note says the thread is *intentionally* excluded --
 there a thread anchors a Matrix reply rather than dividing a
 conversation.
 
-~clawtilla_delegate~ routes into the direct room the two agents already
-share, so every task between one delegator and one assignee lands in one
-session.  Three consequences, all real:
+By default (~thread: standing~) ~clawtilla_delegate~ routes into the
+direct room the two agents already share, so every task between one
+delegator and one assignee lands in one session.  Three consequences,
+all real:
 
 - *Tasks share context.* Yesterday's assignment is in today's session,
   and so is anything the operator said to that agent in between.
@@ -728,13 +729,43 @@ session.  Three consequences, all real:
   went to.
 
 For delegation between two workers that is usually fine and sometimes
-desirable -- continuity between assignments is worth having.  For a
-*routine* it is not, which is why ~docs/routines.org~ says to point
-routines at an agent that is not also a conversational surface, and why
-~routines.isolate~ exists.  Delivering the same isolation for an ordinary
-delegated task would mean routing it into a room of its own, which takes
-its output out of the transcript somebody is reading.  That is a product
-decision rather than a repair, and it has not been made.
+desirable -- continuity between assignments is worth having.  When it is
+not, the delegator asks for ~thread: new~:
+
+#+begin_src json
+{"agent_id": "researcher", "task": "audit the build log", "thread": "new"}
+#+end_src
+
+The task then gets a room of its own, ~task:<id>~
+(~clawt_room_manager_get_task()~), with the delegator and the assignee
+as its members.  A room is a session key, so the work starts in a fresh
+context and does not queue behind the pair's conversation -- the same
+machinery ~routines.isolate~ uses for a routine, for the same reason.
+Unlike a routine's room the sender stays the delegator: it is still a
+peer's work, so the assignee is told so, the hop depth counts as for
+any delegation, and ~clawtilla_message_user~'s guard holds.
+
+What changes, and what does not:
+
+- *The room is on the task* (~clawt_task_get_thread_room()~,
+  ~thread_room~ on the wire), the tool's reply names it, and the
+  delegator can read it with ~clawtilla_room_history~.  Every client
+  shows it on the task with a control that opens it.
+- *The settle notice still goes back to the conversation that
+  delegated* (~clawt_task_get_room()~), because that is where somebody
+  is waiting.  The assignee's answer is recorded in the task's room.
+- *Its lifetime is the task's.*  Like the routine and trigger rooms it
+  is held in memory and gone at the next daemon start -- as the task
+  itself is, since tasks are held in memory -- and its transcript stays
+  on disk under the room's name.  Nothing archives or deletes it
+  earlier: a finished task's room is where its result came from.
+- An unknown value of ~thread~ is refused before anything is made; it
+  would otherwise put the work somewhere the caller did not ask for.
+
+It is opt-in for the reason this section used to give for not offering
+it at all: it moves the work out of the transcript somebody is reading.
+A delegator choosing that for one task is a decision about that task;
+doing it to every task would have been a decision about everybody's.
 
 ** The chief-of-staff pattern, worked through
 
@@ -828,7 +859,8 @@ Served over each agent's link as an MCP endpoint.
 | ~clawtilla_computer_exec~, ~clawtilla_computer_state~ | your computer |
 | ~clawtilla_memory_*~ | six tools over your own searchable memories |
 | ~clawtilla_message_user~ | reach the operator; replying does not |
-| ~clawtilla_ask_decision~ | put a choice in the operator's decision inbox |
+| ~clawtilla_ask_decision~ | put a choice in the operator's decision inbox (from a delegated turn, the delegator's first) |
+| ~clawtilla_decision_answer~ | answer a decision raised inside work you delegated |
 | ~clawtilla_list_teams~ | who is on which team, and who leads it |
 | ~clawtilla_fleet_cost~ | what the fleet has spent, and one task's budget |
 | ~clawtilla_wait_until~ / ~clawtilla_wait_list~ / ~clawtilla_wait_cancel~ | be told when a condition holds, checked by code; see [[*Waits: a condition checked by code][Waits]] |
@@ -847,6 +879,7 @@ offered depends on a gate per tool:
 | a computer | ~computer.type~ not ~none~ |
 | memories | ~memories.enabled~ |
 | the decision inbox | the daemon offering the hook; no config key |
+| answering a routed decision (~clawtilla_decision_answer~) | the daemon offering the hook, *and* being able to delegate at all |
 | waits | the daemon offering the manager; a command or computer wait also needs a computer and ~clawtilla_computer_exec~ |
 
 There is no ~tools.delegate~ key.  Turning delegation off for one agent
@@ -858,6 +891,9 @@ and ~clawtilla_agent_options~, and the permission is
 ~tools.manage_fleet~.  ~make docs-check~ fails on any ~clawtilla_*~ name
 in ~docs/~ that is not registered, which is what stopped that particular
 fiction coming back.
+
+And per turn, beside ~max_hops~: a *consultation* (below) is offered
+none of the tools that act.
 
 *A tool an agent cannot use is not offered at all.*  Listing it and then
 refusing costs the agent a turn to discover something it could have been
@@ -1469,6 +1505,82 @@ same way with each part's first line and carrying ~merged: N~, so a
 person reading the room sees that these results woke the agent once ---
 and every client draws it as sections (~clawt_merge_split()~).
 
+***** Results wait for the turn they would interrupt
+
+The merge above only ever sees what is still in the mailbox, and a
+connected agent takes every delivery at its socket: libreclaw queues it
+and runs one turn per message.  So in production the merge saw
+nothing -- five settle notices for a chief busy in its operator's room
+became five turns queued behind the running one, and the only mailbox
+the merge could fold was one that was full because nobody was
+connected.  The test drove it with no link, which is exactly the case
+that hid this.
+
+So a *result* (the same ~item_is_result()~ test) for a room in which
+the agent has a turn running is held in the mailbox
+(~result_is_held()~), and the drain on that room's falling edge -- or on
+any settle of the agent's turn, which covers an interrupt and the grace
+timer -- hands them over together.  Nothing else waits: a person's
+message, a question and a one-way notice are taken as before, and a
+result for another room goes straight through, because that room's turn
+is another session.
+
+That is the whole of "one wake per parent".  A delegator's settle
+notices all return to the room each delegation was made in, so the
+children of one task -- delegated from one turn -- report into one room
+and are folded there.  Notices for the same delegator in *different*
+rooms are not folded across them on purpose: each room is a different
+conversation and, under the partitioned session modes, a different
+context, and one turn cannot answer two of them.
+
+*** A question that cannot become work: consultations
+
+~clawtilla_ask_agent~ runs the peer with every tool it has, so a
+question can grow into delegations of its own -- "what do you think of
+this plan" answered by somebody starting on the plan.  A
+*consultation* is a question that cannot:
+
+#+begin_src json
+{"agent_id": "oryx", "message": "is this migration order safe?", "consult": true}
+{"agent_id": "oryx", "task": "review the plan in docs/plan.org", "mode": "consult"}
+#+end_src
+
+The first is ~clawtilla_ask_agent~'s ~consult~; the second is
+~clawtilla_delegate~'s ~mode~ (~work~, the default, or ~consult~), which
+makes a task whose result is an answer.  Either way the turn the
+delivery starts is offered *no tool that acts*:
+
+- the gate is ~clawt_mcp_tools_consult_withholds()~: everything whose
+  action class is not ~read~ -- delegation, messaging, posting,
+  handing off, memory writes, routines, ~clawtilla_computer_exec~,
+  connector writes -- except ~clawtilla_task_complete~, which is how a
+  consulted assignee reports the answer it was asked for;
+- the tool list leaves them out (the same per-turn gate ~max_hops~
+  uses, one step on), a call that names one anyway is refused with the
+  rule ~CLAWT_CONSULT_RULE~, and so is the CLI's own Bash, edit or
+  connector tool through the permission hook (~policy.check~) -- for
+  the providers that take it, as for read-only routines;
+- the delivery says it is a consultation and that the closing text is
+  the answer, because an agent not told why its tools are missing goes
+  looking for another way round.
+
+It is per *turn*, not per agent or room: the flag is on the delivery
+(~clawt_mailbox_item_get_consult()~, stored, so a redelivery after a
+restart is still one) and on the turn it sets up
+(~clawt_agent_get_turn_consult_in()~).  A merged turn with one
+consulted part is a consultation; a call that names no room folds
+across the agent's running turns towards withholding, as the hop depth
+folds to the deepest.  A turn that has ended withholds nothing, so the
+tools written into ~TOOLS.org~ at a start do not depend on what the last
+turn was.
+
+Only the question is a consultation.  The answer is marked for the
+clients (~consult: 2~) and is never carried onto the asker's own
+delivery: answering a consultation must not make the asker's next turn
+one.  A later note from the delegator on a consulted task is an
+ordinary message.  ~consult~ with ~reply: none~ is refused -- one asks
+for an answer and the other for none -- and so is an unknown ~mode~.
+
 *** Sending a file
 
 ~clawtilla_message_user~ takes an optional ~attachments~ array: paths the
@@ -1595,6 +1707,37 @@ Hours rather than a timestamp, because "how long until this is hard to
 undo" is the thing a model actually knows, and one asked for an
 absolute time writes a plausible one in the wrong year often enough to
 matter.
+
+*** Asked inside delegated work, it goes to the delegator first
+
+A decision filed from a turn working on a delegated task -- the turn's
+task is taken when the agent names none -- is *routed* to that task's
+delegator before the operator, when the delegator is another agent:
+the agent that handed the work over knows what it was for, and an
+operator asked about every choice inside work they gave a chief has
+been handed the chief's job.
+
+- The decision is filed as always and the operator sees it in the
+  inbox at once, with ~routed_to~ and the line
+  ~clawt_decision_routed_label()~ draws: "asked of chief first -- you
+  can answer it too".
+- The delegator is sent a notice from clawtilla, into the room the
+  delegation was made in and to it alone, quoting the question, the
+  options and the default, and naming ~clawtilla_decision_answer~.  It
+  carries no task id: the delegator's turn is not working on the
+  asker's task, and a turn that thought it was would parent its own
+  delegations under somebody else's work.
+- The delegator answers with ~clawtilla_decision_answer~, which only
+  the agent it was routed to may use; the answer is recorded with
+  ~answered_by~ and reaches the asker at once, attributed to the
+  delegator and sent by the system into the conversation the work is in
+  (the task's own room when it has one).  The operator answering first
+  wins, and the delegator is told the decision is already settled.
+- If nobody answers, the asker's default stands, exactly as for any
+  decision: it was never waiting.
+
+A decision raised outside delegated work, or in a task the operator or
+a routine created, goes to the operator alone, as it always did.
 
 *** The threshold
 
@@ -2258,6 +2401,34 @@ counting again from one.  Everything is forgotten when the turn ends.
 
 At the highest threshold the turn is interrupted.  Below it, the note in
 the thread is all there is --- see the table above for why.
+
+*** Work that has stopped moving across turns
+
+The repeat watch above sees one turn.  A task can also stall *across*
+turns: the assignee ends a turn holding it open (a progress note) and
+does nothing new the next time it is woken.  The progress guard
+(~clawt_task_manager_note_continuation()~) watches that, on every turn
+of the assignee's that ends with its task still open -- a
+*continuation*:
+
+- two continuations in a row with no successful tool call, or
+- three in a row ending in the same error,
+
+end the task as ~stalled~, with a reason that says which ("Stopped
+after 2 continuations in a row without a successful tool call",
+"Stopped after 3 identical errors in a row: ..."), and the settle notice
+tells the delegator as for any stall.
+
+The evidence comes from the turn's own record: a streamed tool step
+that did not fail, or a clawtilla tool call, is work --
+~clawtilla_task_progress~ is not, since it is the one call a turn that
+is not moving can always make; a failed step is remembered by its text.
+A turn with neither a step nor a call was not observed and counts
+neither way, because "unknown" read as "nothing" would stop a task whose
+agent simply does not stream.  A turn that waits on the task's own
+children is not a continuation and clears the record.  The numbers are
+fixed: they describe a turn that is not moving, which is not something
+a fleet tunes.
 
 *** Steering an agent that is already working
 

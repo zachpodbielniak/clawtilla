@@ -128,6 +128,23 @@ void clawt_mcp_tools_set_deliver_turn_func(ClawtMcpTools *self,
 	ClawtMcpDeliverTurnFunc func, gpointer user_data, GDestroyNotify destroy);
 
 /**
+ * ClawtMcpDeliverFlags:
+ * @CLAWT_MCP_DELIVER_NONE: an ordinary message
+ * @CLAWT_MCP_DELIVER_ONE_WAY: the sender asked for no answer
+ *   (`reply: none`)
+ * @CLAWT_MCP_DELIVER_CONSULT: a consultation (`consult: true` on
+ *   clawtilla_ask_agent): the turn it starts is offered no tool that
+ *   acts.  A task's consultation is read off the task instead.
+ *
+ * How a message an agent sends is to be answered.
+ */
+typedef enum {
+	CLAWT_MCP_DELIVER_NONE    = 0,
+	CLAWT_MCP_DELIVER_ONE_WAY = 1 << 0,
+	CLAWT_MCP_DELIVER_CONSULT = 1 << 1
+} ClawtMcpDeliverFlags;
+
+/**
  * ClawtMcpDeliverReplyFunc:
  * @from_agent: who is sending
  * @target: an agent id or a room id
@@ -136,22 +153,28 @@ void clawt_mcp_tools_set_deliver_turn_func(ClawtMcpTools *self,
  * @depth: how far the message is from the original request
  * @priority: the delivery band
  * @turn_room: (nullable): the caller's conversation
- * @one_way: %TRUE when the sender asked for no answer (`reply: none`)
+ * @flags: a mask of #ClawtMcpDeliverFlags: whether the sender asked for
+ *   no answer, whether it asked a consultation
  * @user_data: data passed when the callback was installed
  * @error: (out) (optional): return location for a #GError
  *
- * #ClawtMcpDeliverTurnFunc plus whether the message wants an answer.
+ * #ClawtMcpDeliverTurnFunc plus how the message is to be answered.
  * The daemon installs this one.  An embedder that installs either older
- * callback still delivers every ordinary message, and a `reply: none`
- * call is refused there rather than silently sent as one that invites
- * an answer -- the opposite of what the caller asked for.
+ * callback still delivers every ordinary message, and a call with any
+ * flag set is refused there rather than silently sent as an ordinary
+ * one -- a `reply: none` that invites an answer, or a consultation
+ * whose turn may act, is the opposite of what the caller asked for.
+ *
+ * @flags was a #gboolean named `one_way` before 0.18.0;
+ * %CLAWT_MCP_DELIVER_ONE_WAY is 1, so a callback written against that
+ * reads the same bit.
  *
  * Returns: %TRUE if accepted for delivery
  */
 typedef gboolean (*ClawtMcpDeliverReplyFunc)(const gchar *from_agent,
 	const gchar *target, const gchar *body, const gchar *task_id,
 	gint depth, ClawtPriority priority, const gchar *turn_room,
-	gboolean one_way, gpointer user_data, GError **error);
+	guint flags, gpointer user_data, GError **error);
 
 /**
  * clawt_mcp_tools_set_deliver_reply_func:
@@ -248,6 +271,42 @@ typedef gchar *(*ClawtMcpAskDecisionFunc)(const gchar    *agent_id,
                                           ClawtDecision  *decision,
                                           gpointer        user_data,
                                           GError        **error);
+
+/**
+ * ClawtMcpAnswerDecisionFunc:
+ * @agent_id: who is answering
+ * @decision_id: which decision
+ * @answer: the answer
+ * @user_data: as supplied
+ * @error: return location for a #GError
+ *
+ * Answers a decision that was routed to @agent_id because it delegated
+ * the work that raised it (clawtilla_decision_answer).  Whatever
+ * supplies this checks that the decision is open and is routed to the
+ * answering agent, since being its delegator is the whole of the
+ * permission.
+ *
+ * Returns: (transfer full) (nullable): what to tell the agent
+ */
+typedef gchar *(*ClawtMcpAnswerDecisionFunc)(const gchar  *agent_id,
+                                             const gchar  *decision_id,
+                                             const gchar  *answer,
+                                             gpointer      user_data,
+                                             GError      **error);
+
+/**
+ * clawt_mcp_tools_set_answer_decision_func:
+ * @self: a #ClawtMcpTools
+ * @func: (nullable) (scope notified): the hook
+ * @user_data: passed to @func
+ * @destroy: frees @user_data
+ *
+ * Unset, clawtilla_decision_answer is not offered.
+ */
+void clawt_mcp_tools_set_answer_decision_func(ClawtMcpTools              *self,
+                                              ClawtMcpAnswerDecisionFunc  func,
+                                              gpointer                    user_data,
+                                              GDestroyNotify              destroy);
 
 /**
  * clawt_mcp_tools_set_ask_decision_func:
@@ -536,6 +595,49 @@ gboolean clawt_mcp_tools_action_class(const gchar      *tool,
 void clawt_mcp_tools_set_room_read_only(ClawtMcpTools *self,
                                         const gchar   *room_id,
                                         gboolean       read_only);
+
+/**
+ * CLAWT_CONSULT_RULE:
+ *
+ * The rule a consultation's refusals name, from one place: the tools'
+ * own refusal and the CLI's permission hook say the same sentence.
+ */
+#define CLAWT_CONSULT_RULE "this turn is a consultation; answer from what you know " \
+                           "or can read, and act on nothing"
+
+/**
+ * clawt_mcp_tools_turn_is_consult:
+ * @self: a #ClawtMcpTools
+ * @agent_id: the agent
+ * @room_id: (nullable): the turn's room, or %NULL for any running turn
+ *
+ * Whether the agent's turn in @room_id is a consultation
+ * (clawt_agent_get_turn_consult_in()).  Such a turn is offered only the
+ * tools clawt_mcp_tools_consult_withholds() lets through, and any other
+ * call -- one of clawtilla's, a connector's or the CLI's own -- is
+ * refused.
+ *
+ * Returns: %TRUE for a consultation
+ */
+gboolean clawt_mcp_tools_turn_is_consult(ClawtMcpTools *self,
+                                         const gchar   *agent_id,
+                                         const gchar   *room_id);
+
+/**
+ * clawt_mcp_tools_consult_withholds:
+ * @tool: a tool name
+ * @action: its class, for a tool that is not clawtilla's
+ *
+ * Whether a consultation withholds @tool: everything that is not
+ * `read` -- delegation, messaging, connector writes, commands, files --
+ * except clawtilla_task_complete, which is how a consulted assignee
+ * reports the answer it was asked for.  One rule, read by the tool
+ * list, the call and the CLI's own permission hook alike.
+ *
+ * Returns: %TRUE when a consultation may not use @tool
+ */
+gboolean clawt_mcp_tools_consult_withholds(const gchar      *tool,
+                                           ClawtActionClass  action);
 
 /**
  * clawt_mcp_tools_room_is_read_only:

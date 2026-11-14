@@ -53,7 +53,7 @@ static gboolean deliver_for_tools(const gchar   *from_agent,
                                   gint           depth,
                                   ClawtPriority  priority,
                                   const gchar   *turn_room,
-                                  gboolean       one_way,
+                                  guint          flags,
                                   gpointer       user_data,
                                   GError       **error);
 
@@ -1960,8 +1960,18 @@ on_link_typing(ClawtLinkServer *server,
      */
     if (typing && (edge & CLAWT_TYPING_EDGE_ROOM) != 0)
         clawt_daemon_turn_begin_room(self, agent_id, room_id);
-    else if (!typing && (edge & CLAWT_TYPING_EDGE_ROOM) != 0)
+    else if (!typing && (edge & CLAWT_TYPING_EDGE_ROOM) != 0) {
         clawt_daemon_turn_settle_room(self, agent_id, room_id);
+
+        /*
+         * And whatever results were held for this room while its turn
+         * ran, handed over now as one turn (the router's
+         * result_is_held()).  Without this drain they would wait for
+         * the next unrelated delivery to come along.
+         */
+        if (self->router != NULL)
+            clawt_mailbox_router_drain(self->router, agent_id);
+    }
 
     /*
      * And the moment that decides whether the last frame is worth
@@ -2300,6 +2310,14 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
 				clawt_mailbox_item_get_request_task(input));
 		}
 
+		/*
+		 * The answer to a consultation says so, for the clients.  Marked
+		 * ANSWERED, never ASKED: the router carries only a question onto
+		 * the item, so the asker's next turn is not a consultation.
+		 */
+		if (input != NULL && clawt_mailbox_item_get_consult(input))
+			clawt_message_set_consult(message, CLAWT_CONSULT_ANSWERED);
+
         clawt_message_set_depth(
             message,
             (sender != NULL)
@@ -2471,8 +2489,29 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
                     return;
                 }
             } else if (held != NULL) {
+                guint work_calls = 0;
+                const gchar *last_error = NULL;
+                gboolean known = FALSE;
+
                 g_info("daemon: %s ended its turn but %s is still open: %s",
                        agent_id, thread_id, held);
+
+                /*
+                 * A continuation, then: the turn ended and the work did
+                 * not.  The progress guard ends the task as stalled after
+                 * two of these in a row with no successful tool call, or
+                 * three ending in the same error -- the cross-turn half
+                 * of the repeat watch, which sees only one turn.
+                 */
+                if (replier != NULL)
+                    known = clawt_agent_get_turn_evidence_in(
+                        replier, room_id, &work_calls, &last_error);
+
+                if (clawt_task_manager_note_continuation(
+                        self->tasks, thread_id, agent_id, known,
+                        work_calls, last_error))
+                    g_info("daemon: %s stopped making progress on %s and "
+                           "it has been stalled", agent_id, thread_id);
             }
         }
     }
@@ -2953,6 +2992,123 @@ ClawtAgentConfig *clawt_daemon_create_agent(ClawtDaemon  *self,
  * a VM with no disk.
  */
 /*
+ * Whom a decision raised by @agent_id goes to first, or %NULL for the
+ * operator alone: the delegator of the task the asking turn is working
+ * on, when that is another agent and the task is still open.  A task
+ * the operator or a routine created has nobody between the asker and
+ * the operator, so its decisions go where they always did.
+ */
+static const gchar *
+decision_delegator(ClawtDaemon *self, const gchar *agent_id,
+                   ClawtDecision *decision)
+{
+    ClawtTask *task;
+    const gchar *origin;
+
+    if (self->tasks == NULL || clawt_decision_get_task(decision) == NULL)
+        return NULL;
+
+    task = clawt_task_manager_get(self->tasks,
+                                  clawt_decision_get_task(decision));
+
+    if (task == NULL || clawt_task_is_finished(task) ||
+        g_strcmp0(clawt_task_get_assignee(task), agent_id) != 0)
+        return NULL;
+
+    origin = clawt_task_get_origin(task);
+
+    if (origin == NULL || g_strcmp0(origin, agent_id) == 0 ||
+        clawt_agent_manager_get(self->agents, origin) == NULL)
+        return NULL;
+
+    return origin;
+}
+
+/*
+ * The notice that puts a routed decision in front of its delegator.
+ *
+ * Into the room the delegation was made in -- the conversation that
+ * knows what the work was for -- and to the delegator alone, from the
+ * system, closed: acting on it means a tool, and the one it names is
+ * clawtilla_decision_answer.  No task id on it, because the delegator's
+ * turn is not working on the asker's task, and a turn that thought it
+ * was would parent its own delegations under somebody else's work.
+ */
+static void
+route_decision_to_delegator(ClawtDaemon *self, ClawtDecision *decision)
+{
+    const gchar *delegator = clawt_decision_get_routed_to(decision);
+    const gchar *asker = clawt_decision_get_agent(decision);
+    ClawtTask *task = clawt_task_manager_get(self->tasks,
+                                             clawt_decision_get_task(decision));
+    ClawtRoom *room = NULL;
+    g_autoptr(ClawtMessage) message = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GString) body = NULL;
+    g_autofree gchar *question = NULL;
+    g_autofree gchar *fallback = NULL;
+    g_autofree gchar *options = NULL;
+
+    if (self->router == NULL || self->rooms == NULL || delegator == NULL)
+        return;
+
+    if (task != NULL && clawt_task_get_room(task) != NULL)
+        room = clawt_room_manager_get(self->rooms, clawt_task_get_room(task));
+
+    if (room == NULL)
+        room = clawt_room_manager_get_direct(self->rooms, delegator, asker);
+
+    if (room == NULL)
+        return;
+
+    /* The asker's words, inside a notice the daemon signs. */
+    question = clawt_preamble_escape(clawt_decision_get_question(decision));
+    fallback = clawt_preamble_escape(clawt_decision_get_default(decision));
+
+    if (clawt_decision_get_options(decision) != NULL) {
+        g_autofree gchar *joined = g_strjoinv(
+            "\n  - ", (GStrv)clawt_decision_get_options(decision));
+
+        options = clawt_preamble_escape(joined);
+    }
+
+    body = g_string_new(NULL);
+    g_string_append_printf(body,
+        "[clawtilla] '%s' has a decision about task %s, which you "
+        "delegated to them, and it is put to you first.\n\n"
+        "They ask: %s\n",
+        asker, clawt_decision_get_task(decision),
+        question != NULL ? question : "");
+
+    if (options != NULL)
+        g_string_append_printf(body, "Their options:\n  - %s\n", options);
+
+    g_string_append_printf(body,
+        "If nobody answers they will: %s\n\n"
+        "Answer it with clawtilla_decision_answer (decision_id: \"%s\") if "
+        "you can -- your answer replaces their default and reaches them at "
+        "once. If it is your operator's call, leave it: it is in their "
+        "decision inbox too, and they may answer first. They carry on with "
+        "their default meanwhile, so do not tell them to wait.\n\n"
+        "[clawtilla] This conversation is room '%s'. This notice closes "
+        "the exchange -- nothing you write at the end of this turn is sent "
+        "anywhere.",
+        fallback != NULL ? fallback : "what they said",
+        clawt_decision_get_id(decision), clawt_room_get_id(room));
+
+    message = clawt_message_new(clawt_room_get_id(room), CLAWT_SYSTEM_SENDER,
+                                body->str);
+    clawt_message_set_depth(message, 0);
+    clawt_message_set_invites_reply(message, FALSE);
+    clawt_message_set_only_for(message, delegator);
+
+    if (clawt_mailbox_router_send(self->router, message, &error) < 0)
+        g_warning("decisions: %s's question could not be put to %s: %s",
+                  asker, delegator,
+                  error != NULL ? error->message : "unknown");
+}
+
+/*
  * An agent files a decision for its operator.
  *
  * The reply tells it what it is expected to do next, in as many words:
@@ -2969,6 +3125,7 @@ file_decision_for_tools(const gchar    *agent_id,
 {
     ClawtDaemon *self = user_data;
     g_autofree gchar *id = NULL;
+    const gchar *delegator;
 
     if (self->decisions == NULL) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
@@ -2976,10 +3133,23 @@ file_decision_for_tools(const gchar    *agent_id,
         return NULL;
     }
 
+    /*
+     * Raised in a delegated turn, it goes to the delegator first: the
+     * agent that handed the work over knows what it was for, and an
+     * operator asked about every choice inside work they delegated to
+     * a chief has been handed the chief's job.  Recorded before it is
+     * posted, so the inbox shows who it was put to.
+     */
+    delegator = decision_delegator(self, agent_id, decision);
+    clawt_decision_set_routed_to(decision, delegator);
+
     id = clawt_decision_store_post(self->decisions, decision, error);
 
     if (id == NULL)
         return NULL;
+
+    if (delegator != NULL)
+        route_decision_to_delegator(self, decision);
 
     /*
      * Published, so a client that is open right now grows a badge
@@ -2997,13 +3167,65 @@ file_decision_for_tools(const gchar    *agent_id,
     clawt_daemon_turn_hold(self, agent_id);
 
     return g_strdup_printf(
-        "Filed as %s. Do not wait for it: carry on with what you said "
+        "Filed as %s.%s%s%s Do not wait for it: carry on with what you said "
         "you would do (%s). If it is answered you will get a message, "
         "and you can change course then.",
         id,
+        delegator != NULL ? " It was put to " : "",
+        delegator != NULL ? delegator : "",
+        delegator != NULL ? ", who delegated this work, first; your "
+                            "operator sees it too." : "",
         clawt_decision_get_default(decision) != NULL
             ? clawt_decision_get_default(decision)
             : "your default");
+}
+
+/*
+ * A delegator answers a decision put to it.  Being the delegator it was
+ * routed to is the whole of the permission; the store refuses a second
+ * answer, so the operator answering first is a refusal here with the
+ * reason, not a silent overwrite.
+ */
+static gchar *
+answer_decision_for_tools(const gchar  *agent_id,
+                          const gchar  *decision_id,
+                          const gchar  *answer,
+                          gpointer      user_data,
+                          GError      **error)
+{
+    ClawtDaemon *self = user_data;
+    g_autoptr(ClawtDecision) decision = NULL;
+    g_autoptr(ClawtDecision) settled = NULL;
+
+    if (self->decisions == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                    "this daemon keeps no decision inbox");
+        return NULL;
+    }
+
+    decision = clawt_decision_store_get(self->decisions, decision_id);
+
+    if (decision == NULL ||
+        g_strcmp0(clawt_decision_get_routed_to(decision), agent_id) != 0) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED,
+                    "'%s' is not a decision put to you. You answer only "
+                    "the ones raised in work you delegated; the rest are "
+                    "your operator's.", decision_id);
+        return NULL;
+    }
+
+    settled = clawt_decision_store_answer_as(self->decisions, decision_id,
+                                             answer, agent_id, error);
+
+    if (settled == NULL)
+        return NULL;
+
+    clawt_daemon_deliver_decision_answer(self, settled);
+    clawt_daemon_publish_decision_settled(self, settled, "answered");
+
+    return g_strdup_printf(
+        "Answered. %s has been told, and your operator's inbox shows it "
+        "answered by you.", clawt_decision_get_agent(settled));
 }
 
 /*
@@ -3090,12 +3312,34 @@ static gboolean
 deliver_for_tools(const gchar *from_agent, const gchar *target,
                   const gchar *body, const gchar *task_id, gint depth,
                   ClawtPriority priority, const gchar *turn_room,
-				  gboolean one_way, gpointer user_data, GError **error)
+				  guint flags, gpointer user_data, GError **error)
 {
     ClawtDaemon *self = user_data;
 	g_autoptr(ClawtMessage) message = NULL;
 	ClawtAgent *sender = clawt_agent_manager_get(self->agents, from_agent);
 	g_autofree gchar *composed = NULL;
+	gboolean one_way = (flags & CLAWT_MCP_DELIVER_ONE_WAY) != 0;
+	gboolean consult = (flags & CLAWT_MCP_DELIVER_CONSULT) != 0;
+	ClawtTask *assignment = NULL;
+
+	/*
+	 * The task's own assignment: its first delivery, from its delegator,
+	 * to its assignee -- or into the task's own room, when it was given
+	 * one with `thread: new`, which is the assignee by another name.
+	 * The contract, the model and the consultation all hang off this,
+	 * and none of them may attach to a later note on the same task.
+	 */
+	if (task_id != NULL && self->tasks != NULL) {
+		ClawtTask *task = clawt_task_manager_get(self->tasks, task_id);
+
+		if (task != NULL &&
+			clawt_task_get_state(task) == CLAWT_TASK_PENDING &&
+			g_strcmp0(clawt_task_get_origin(task), from_agent) == 0 &&
+			(g_strcmp0(clawt_task_get_assignee(task), target) == 0 ||
+			 (clawt_task_get_thread_room(task) != NULL &&
+			  g_strcmp0(clawt_task_get_thread_room(task), target) == 0)))
+			assignment = task;
+	}
 
 	/*
 	 * The assignment itself: the delegator's words and then the daemon's
@@ -3113,23 +3357,15 @@ deliver_for_tools(const gchar *from_agent, const gchar *target,
 	 * the ones the daemon would have written itself, matching on text
 	 * cannot let a forgery through.
 	 */
-	if (task_id != NULL && self->tasks != NULL) {
-		ClawtTask *task = clawt_task_manager_get(self->tasks, task_id);
+	if (assignment != NULL) {
+		g_autofree gchar *guidance = clawt_task_assignment_guidance(task_id);
 
-		if (task != NULL &&
-			clawt_task_get_state(task) == CLAWT_TASK_PENDING &&
-			g_strcmp0(clawt_task_get_assignee(task), target) == 0 &&
-			g_strcmp0(clawt_task_get_origin(task), from_agent) == 0) {
-			g_autofree gchar *guidance =
-				clawt_task_assignment_guidance(task_id);
+		if (g_str_has_suffix(body, guidance)) {
+			g_autofree gchar *work = g_strndup(body,
+				strlen(body) - strlen(guidance));
+			g_autofree gchar *quoted = clawt_preamble_escape(work);
 
-			if (g_str_has_suffix(body, guidance)) {
-				g_autofree gchar *work = g_strndup(body,
-					strlen(body) - strlen(guidance));
-				g_autofree gchar *quoted = clawt_preamble_escape(work);
-
-				composed = g_strconcat(quoted, guidance, NULL);
-			}
+			composed = g_strconcat(quoted, guidance, NULL);
 		}
 	}
 
@@ -3151,15 +3387,20 @@ deliver_for_tools(const gchar *from_agent, const gchar *target,
 	 * to the assignee, runs on it -- not the delegator's later notes on
 	 * the same task, nor anything sent the other way.
 	 */
-	if (task_id != NULL && self->tasks != NULL) {
-		ClawtTask *task = clawt_task_manager_get(self->tasks, task_id);
+	if (assignment != NULL && clawt_task_get_model(assignment) != NULL)
+		clawt_message_set_model(message, clawt_task_get_model(assignment));
 
-		if (task != NULL && clawt_task_get_model(task) != NULL &&
-			g_strcmp0(clawt_task_get_assignee(task), target) == 0 &&
-			clawt_task_get_state(task) == CLAWT_TASK_PENDING)
-			clawt_message_set_model(message, clawt_task_get_model(task));
-
-	}
+	/*
+	 * A consultation: asked for by name on clawtilla_ask_agent, or read
+	 * off the task for clawtilla_delegate's `mode: consult` -- and then
+	 * only on the assignment, so the delegator's later note on the same
+	 * task does not make the assignee's next turn one.  The router
+	 * carries it onto the item and the turn it starts is offered no
+	 * tool that acts.
+	 */
+	if (consult ||
+		(assignment != NULL && clawt_task_get_consult(assignment)))
+		clawt_message_set_consult(message, CLAWT_CONSULT_ASKED);
 
 	/*
 	 * Questions carry a snapshot of the calling turn through the peer's
@@ -6413,6 +6654,9 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     clawt_mcp_tools_set_ask_decision_func(self->mcp_tools,
                                           file_decision_for_tools, self,
                                           NULL);
+    clawt_mcp_tools_set_answer_decision_func(self->mcp_tools,
+                                             answer_decision_for_tools,
+                                             self, NULL);
     clawt_mcp_tools_set_image_store(self->mcp_tools, self->vm_images);
 
     /*
@@ -7294,6 +7538,56 @@ clawt_daemon_deliver_decision_answer(ClawtDaemon *self,
 	question = clawt_preamble_escape(clawt_decision_get_question(decision));
 	fallback = clawt_preamble_escape(clawt_decision_get_default(decision));
 
+    /*
+     * Answered by the delegator it was routed to: the answer is the
+     * delegator's words, so it is escaped as theirs, attributed to
+     * them, and sent by the system into the conversation the work is
+     * in -- the task's own room when it has one, else the room the two
+     * share -- rather than as the operator, who did not say it.
+     */
+    if (clawt_decision_get_answered_by(decision) != NULL) {
+        const gchar *by = clawt_decision_get_answered_by(decision);
+        ClawtTask *task = (self->tasks != NULL)
+            ? clawt_task_manager_get(self->tasks,
+                                     clawt_decision_get_task(decision))
+            : NULL;
+        ClawtRoom *room = NULL;
+        g_autoptr(ClawtMessage) message = NULL;
+        g_autofree gchar *answer =
+            clawt_preamble_escape(clawt_decision_get_answer(decision));
+
+        if (task != NULL && clawt_task_get_thread_room(task) != NULL)
+            room = clawt_room_manager_get(self->rooms,
+                                          clawt_task_get_thread_room(task));
+        if (room == NULL)
+            room = clawt_room_manager_get_direct(self->rooms, by, agent);
+
+        body = g_strdup_printf(
+            "[clawtilla] Your decision was answered by '%s', who delegated "
+            "this work to you.\n\n"
+            "You asked: %s\n"
+            "The answer is: %s\n\n"
+            "This replaces the default you said you would take (%s). If you "
+            "have already acted on that default, say so rather than silently "
+            "redoing the work. This notice closes the exchange; act on it "
+            "with your tools.",
+            by, question != NULL ? question : "",
+            answer != NULL ? answer : "",
+            fallback != NULL ? fallback : "none stated");
+
+        message = clawt_message_new(clawt_room_get_id(room),
+                                    CLAWT_SYSTEM_SENDER, body);
+        clawt_message_set_task_id(message, clawt_decision_get_task(decision));
+        clawt_message_set_depth(message, 0);
+        clawt_message_set_invites_reply(message, FALSE);
+        clawt_message_set_only_for(message, agent);
+
+        if (clawt_mailbox_router_send(self->router, message, &error) < 0)
+            g_warning("decisions: could not tell %s its answer: %s", agent,
+                      error != NULL ? error->message : "unknown");
+        return;
+    }
+
     body = g_strdup_printf(
         "[clawtilla] Your decision was answered.\n\n"
         "You asked: %s\n"
@@ -7388,6 +7682,22 @@ clawt_daemon_add_decision_object(JsonBuilder   *builder,
     json_builder_set_member_name(builder, "settled_by_default");
     json_builder_add_boolean_value(
         builder, clawt_decision_default_has_taken_effect(decision, now));
+
+    /*
+     * Who it was put to first, and who answered, only when there is one
+     * -- a client draws clawt_decision_routed_label() from the pair.
+     */
+    if (clawt_decision_get_routed_to(decision) != NULL) {
+        json_builder_set_member_name(builder, "routed_to");
+        json_builder_add_string_value(builder,
+                                      clawt_decision_get_routed_to(decision));
+    }
+
+    if (clawt_decision_get_answered_by(decision) != NULL) {
+        json_builder_set_member_name(builder, "answered_by");
+        json_builder_add_string_value(
+            builder, clawt_decision_get_answered_by(decision));
+    }
 
     json_builder_end_object(builder);
 }
@@ -7955,6 +8265,22 @@ clawt_daemon_add_task_object(JsonBuilder *builder, ClawtTask *task)
         json_builder_set_member_name(builder, "parent");
         json_builder_add_string_value(builder,
                                       clawt_task_get_parent_id(task));
+    }
+
+    /*
+     * The room the work runs in, when it has one of its own (`thread:
+     * new`): a client offers to open it.  And whether it is a
+     * consultation.  Both only when true, like result_inferred.
+     */
+    if (clawt_task_get_thread_room(task) != NULL) {
+        json_builder_set_member_name(builder, "thread_room");
+        json_builder_add_string_value(builder,
+                                      clawt_task_get_thread_room(task));
+    }
+
+    if (clawt_task_get_consult(task)) {
+        json_builder_set_member_name(builder, "consult");
+        json_builder_add_boolean_value(builder, TRUE);
     }
 
     json_builder_set_member_name(builder, "depth");

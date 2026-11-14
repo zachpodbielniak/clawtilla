@@ -23,7 +23,40 @@ struct _ClawtTaskManager {
     GHashTable *tasks;    /* task_id -> ClawtTask (owned) */
     GPtrArray  *order;    /* task ids, oldest first, unowned */
     guint       max_depth;
+
+    /*
+     * The progress guard's record per open task: see
+     * clawt_task_manager_note_continuation().  Kept here rather than on
+     * the task because nothing outside the guard reads it, and dropped
+     * as soon as the task ends.
+     */
+    GHashTable *guards;   /* task_id -> ProgressGuard (owned) */
 };
+
+/*
+ * How many continuations in a row may pass with no successful tool
+ * call, and how many identical failures in a row, before the work is
+ * ended as stalled.  The runtime contract's numbers, and fixed: they
+ * describe a turn that is not moving, which is not something a fleet
+ * tunes.
+ */
+#define CLAWT_TASK_IDLE_CONTINUATIONS (2)
+#define CLAWT_TASK_SAME_ERRORS        (3)
+
+typedef struct {
+    guint  idle;      /* consecutive continuations with no work */
+    guint  repeats;   /* consecutive continuations ending in @error */
+    gchar *error;
+} ProgressGuard;
+
+static void
+progress_guard_free(gpointer data)
+{
+    ProgressGuard *guard = data;
+
+    g_free(guard->error);
+    g_free(guard);
+}
 
 G_DEFINE_FINAL_TYPE(ClawtTaskManager, clawt_task_manager, G_TYPE_OBJECT)
 
@@ -611,12 +644,102 @@ clawt_task_manager_orphan_agent_tasks(ClawtTaskManager *self,
     return failed;
 }
 
+gboolean
+clawt_task_manager_note_continuation(
+	ClawtTaskManager  *self,
+	const gchar       *task_id,
+	const gchar       *who,
+	gboolean           known,
+	guint              work_calls,
+	const gchar       *error
+){
+	ClawtTask *task;
+	ProgressGuard *guard;
+	g_autofree gchar *reason = NULL;
+
+	g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), FALSE);
+
+	if (task_id == NULL)
+		return FALSE;
+
+	task = g_hash_table_lookup(self->tasks, task_id);
+
+	if (task == NULL || clawt_task_is_finished(task)) {
+		g_hash_table_remove(self->guards, task_id);
+		return FALSE;
+	}
+
+	/* The assignee's continuation, and nobody else's turn in the thread. */
+	if (g_strcmp0(clawt_task_get_assignee(task), who) != 0)
+		return FALSE;
+
+	/*
+	 * Waiting on its own children is not a continuation: a parent woken
+	 * by each child's settle notice writes "still waiting on the rest"
+	 * and ends, and counting that would stop a fan-out of three when two
+	 * had reported.  It clears the guard, as any turn that waits does.
+	 */
+	if (clawt_task_manager_count_unfinished_children(self, task_id) > 0) {
+		g_hash_table_remove(self->guards, task_id);
+		return FALSE;
+	}
+
+	/*
+	 * A turn nobody observed -- no streamed step and no clawtilla call
+	 * -- is neither a strike nor a reset.  Reading it as zero would stop
+	 * a task whose agent simply does not stream; reading it as progress
+	 * would let one silent turn wipe out the record of two idle ones.
+	 */
+	if (!known)
+		return FALSE;
+
+	guard = g_hash_table_lookup(self->guards, task_id);
+
+	if (guard == NULL) {
+		guard = g_new0(ProgressGuard, 1);
+		g_hash_table_insert(self->guards, g_strdup(task_id), guard);
+	}
+
+	guard->idle = (work_calls == 0) ? guard->idle + 1 : 0;
+
+	if (error != NULL && *error != '\0') {
+		if (g_strcmp0(guard->error, error) == 0) {
+			guard->repeats++;
+		} else {
+			g_free(guard->error);
+			guard->error = g_strdup(error);
+			guard->repeats = 1;
+		}
+	} else {
+		g_clear_pointer(&guard->error, g_free);
+		guard->repeats = 0;
+	}
+
+	if (guard->repeats >= CLAWT_TASK_SAME_ERRORS)
+		reason = g_strdup_printf(
+			"Stopped after %u identical errors in a row: %s",
+			guard->repeats, guard->error);
+	else if (guard->idle >= CLAWT_TASK_IDLE_CONTINUATIONS)
+		reason = g_strdup_printf(
+			"Stopped after %u continuations in a row without a "
+			"successful tool call: the work was being held open and "
+			"nothing was moving it.", guard->idle);
+
+	if (reason == NULL)
+		return FALSE;
+
+	g_hash_table_remove(self->guards, task_id);
+
+	return clawt_task_manager_stall(self, task_id, reason);
+}
+
 static void
 clawt_task_manager_finalize(GObject *object)
 {
     ClawtTaskManager *self = CLAWT_TASK_MANAGER(object);
 
     g_clear_pointer(&self->order, g_ptr_array_unref);
+    g_clear_pointer(&self->guards, g_hash_table_unref);
     g_clear_pointer(&self->tasks, g_hash_table_unref);
 
     G_OBJECT_CLASS(clawt_task_manager_parent_class)->finalize(object);
@@ -648,4 +771,6 @@ clawt_task_manager_init(ClawtTaskManager *self)
     /* Ids are borrowed from the tasks, which own them and outlive this. */
     self->order = g_ptr_array_new();
     self->max_depth = 8;
+    self->guards = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                         progress_guard_free);
 }

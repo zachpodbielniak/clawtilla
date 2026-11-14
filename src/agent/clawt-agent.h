@@ -462,6 +462,62 @@ guint clawt_agent_get_turn_tool_calls_in(ClawtAgent  *self,
                                          const gchar *room_id);
 
 /**
+ * clawt_agent_get_turn_consult_in:
+ * @self: a #ClawtAgent
+ * @room_id: (nullable): the turn's room, or %NULL for a caller that
+ *   cannot name one
+ *
+ * Whether the turn in @room_id is a consultation, which is offered no
+ * tool that acts (clawt_mcp_tools_turn_is_consult()).
+ *
+ * A room with no turn running answers from the delivery its next turn
+ * will take, because a CLI can ask for its tool list before the typing
+ * frame that begins the turn arrives.  With no room, or nothing on
+ * record for it, any running consultation counts -- the direction that
+ * withholds.  A finished turn never does.
+ *
+ * Returns: %TRUE when that turn is a consultation
+ */
+gboolean clawt_agent_get_turn_consult_in(ClawtAgent  *self,
+                                         const gchar *room_id);
+
+/**
+ * clawt_agent_note_turn_work:
+ * @self: a #ClawtAgent
+ * @room_id: (nullable): the turn's room, or %NULL to charge every
+ *   running turn
+ * @ok: %TRUE for a tool call that succeeded and was more than a
+ *   progress note; %FALSE for a failure or a progress note
+ * @error: (nullable): what a failed call said; %NULL for a progress
+ *   note, which is evidence that the turn was observed and nothing more
+ *
+ * Records evidence of work for the task progress guard
+ * (clawt_task_manager_note_continuation()): a successful call counts, a
+ * failure is remembered by its text, and either says the turn was
+ * observed at all.
+ */
+void clawt_agent_note_turn_work(ClawtAgent  *self,
+                                const gchar *room_id,
+                                gboolean     ok,
+                                const gchar *error);
+
+/**
+ * clawt_agent_get_turn_evidence_in:
+ * @self: a #ClawtAgent
+ * @room_id: (nullable): the turn's room
+ * @work_calls: (out) (optional): successful calls the turn made
+ * @last_error: (out) (optional) (transfer none) (nullable): the text of
+ *   its last failure
+ *
+ * Returns: %TRUE when there is evidence either way; %FALSE means the
+ *   turn was not observed and must not read as one that did nothing
+ */
+gboolean clawt_agent_get_turn_evidence_in(ClawtAgent   *self,
+                                          const gchar  *room_id,
+                                          guint        *work_calls,
+                                          const gchar **last_error);
+
+/**
  * clawt_agent_describe_turn_in:
  * @self: a #ClawtAgent
  * @room_id: (nullable): the room libreclaw recorded the turn in

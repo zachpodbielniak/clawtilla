@@ -208,6 +208,26 @@ refresh_decisions_once(ClawtWindow *self)
                 clawt_gtk_badge("already decided", "error",
                                 "the deadline passed; answering changes nothing"));
 
+        /*
+         * Who it was put to first.  A decision raised inside delegated
+         * work goes to the delegator before the operator, and an item
+         * that does not say so reads as one nobody else has seen.
+         */
+        {
+            g_autofree gchar *routed = clawt_decision_routed_label(
+                clawt_json_string(decision, "routed_to", NULL),
+                clawt_json_string(decision, "answered_by", NULL),
+                clawt_json_int(decision, "state", 0) == CLAWT_DECISION_OPEN);
+
+            if (routed != NULL)
+                adw_expander_row_add_suffix(
+                    ADW_EXPANDER_ROW(row),
+                    clawt_gtk_badge(routed, "dim-label",
+                                    "raised inside delegated work, so the "
+                                    "agent that delegated it may answer "
+                                    "first"));
+        }
+
         gtk_entry_set_placeholder_text(
             GTK_ENTRY(entry),
             "\"neither, do X\" is a perfectly good answer");

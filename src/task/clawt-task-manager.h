@@ -209,6 +209,38 @@ gboolean clawt_task_manager_complete_on_turn_end(ClawtTaskManager  *self,
                                                  gchar            **held_reason);
 
 /**
+ * clawt_task_manager_note_continuation:
+ * @self: a #ClawtTaskManager
+ * @task_id: the task the turn was on
+ * @who: whose turn it was
+ * @known: whether the turn was observed at all (a streamed step or a
+ *   clawtilla call) -- %FALSE is neither a strike nor a reset
+ * @work_calls: successful tool calls the turn made, not counting
+ *   clawtilla_task_progress
+ * @error: (nullable): the text of the turn's last failure
+ *
+ * The progress guard, for a turn that ended with its task still open:
+ * a *continuation*.  Two in a row with no successful tool call, or
+ * three in a row ending in the same error, end the task as stalled with
+ * a reason that says which -- the settle notice then tells the
+ * delegator, as for any other stall.
+ *
+ * Only the assignee's own turns count.  A turn that waits on the task's
+ * own children is not a continuation and clears the record, and so
+ * does the task ending.  This is the cross-turn half of what
+ * #ClawtRepeatWatch does inside one turn; neither sees the other's
+ * case.
+ *
+ * Returns: %TRUE when the task was stalled by this call
+ */
+gboolean clawt_task_manager_note_continuation(ClawtTaskManager *self,
+                                              const gchar      *task_id,
+                                              const gchar      *who,
+                                              gboolean          known,
+                                              guint             work_calls,
+                                              const gchar      *error);
+
+/**
  * clawt_task_manager_complete:
  * @self: a #ClawtTaskManager
  * @task_id: a task id

@@ -237,6 +237,13 @@ deadline.  An open decision is withdrawn on the way out exactly as a
 dismissal would be: a turn it held is released, and a policy call
 waiting on it is refused with "The operator deleted the request".
 
+Two more members, present only when set (since 0.18.0): ~routed_to~,
+the agent a decision raised inside delegated work was put to before the
+operator (the delegator), and ~answered_by~, the agent that answered it
+when an agent did.  A client draws ~clawt_decision_routed_label()~ from
+the pair and the open state; the operator may still answer a routed
+decision, and the first answer wins.
+
 Two fields on each item are *derived by the daemon* rather than left to
 each client: ~urgent~ (the deadline is inside a day) and
 ~settled_by_default~ (it has passed while the item was still open).
@@ -803,6 +810,18 @@ A client offers the choices by walking ~clawt_ack_check_model_count()~
 *** task.*
 
 ~task.list~, ~task.show~, ~task.cancel~.
+
+Each task object carries, besides its id, parties, state and prompt,
+two members present only when set (since 0.18.0):
+
+- ~thread_room~ --- the room the work runs in when it was delegated with
+  ~thread: new~ (~task:<id>~, a libreclaw session of its own).  A client
+  offers to open it, beside ~clawt_task_thread_summary()~'s line.  The
+  settle notice does not go there; it goes back to the room the
+  delegation was made in.
+- ~consult: true~ --- delegated with ~mode: consult~: the assignee's turn
+  was offered no tool that acts, so the result is an answer.  Draw
+  ~clawt_task_consult_label()~.
 
 *** usage.*
 
@@ -1705,6 +1724,10 @@ reader serves either source:
 - ~merged: N~ --- clawtilla's note that N results were delivered to an
   agent as one turn.  The body is sectioned; read it with
   ~clawt_merge_split()~ and draw the sections.
+- ~consult: 1|2~ --- part of a consultation (since 0.18.0): ~1~ is the
+  question or the consulted task's assignment, ~2~ the answer the
+  consulted turn wrote.  Draw ~clawt_message_consult_label()~, which
+  returns nothing for a value it does not know.
 
 ~turn.step~ is one step of a turn that is still running: a tool the
 agent reached for, or a paragraph it wrote between two of them.  It

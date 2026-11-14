@@ -144,6 +144,23 @@ typedef struct {
 	 * when the answer it describes is posted.
 	 */
 	guint     tool_calls;
+
+	/*
+	 * A consultation: the turn is offered no tool that acts.  From the
+	 * delivery (clawt_mailbox_item_get_consult()), folded towards TRUE
+	 * wherever several deliveries become one turn.
+	 */
+	gboolean  consult;
+
+	/*
+	 * Evidence of work, for the task progress guard: tool calls that
+	 * succeeded and were not a progress note, whether any streamed step
+	 * arrived at all (an unstreamed turn is no evidence, not zero), and
+	 * the last failure's text.
+	 */
+	guint     work_calls;
+	gboolean  evidence;
+	gchar    *last_error;
 } TurnSetup;
 
 
@@ -155,6 +172,7 @@ turn_setup_free(gpointer data)
     g_free(setup->room);
     g_free(setup->origin);
     g_free(setup->task_id);
+	g_free(setup->last_error);
 	g_clear_pointer(&setup->input, clawt_mailbox_item_free);
     g_free(setup);
 }
@@ -859,6 +877,9 @@ trim_pending_turns(ClawtAgent *self)
 
         next->replies = next->replies && oldest->replies;
 
+        /* A folded consultation keeps the turn a consultation. */
+        next->consult = next->consult || oldest->consult;
+
         if (next->origin == NULL)
             next->origin = g_strdup(oldest->origin);
     }
@@ -1053,6 +1074,7 @@ clawt_agent_deliver_item(ClawtAgent *self, ClawtMailboxItem *item,
 		clawt_mailbox_item_get_depth(item), replies, origin, task_id);
 	setup = g_queue_peek_tail(self->pending);
 	setup->input = clawt_mailbox_item_copy(item);
+	setup->consult = clawt_mailbox_item_get_consult(item);
 }
 
 void
@@ -1069,6 +1091,7 @@ clawt_agent_deliver_merged(
 	gboolean peer_origin = FALSE;
 	gboolean tasks_agree = TRUE;
 	gint depth = 0;
+	gboolean consult = FALSE;
 	TurnSetup *setup;
 	guint i;
 
@@ -1103,6 +1126,8 @@ clawt_agent_deliver_merged(
 
 		depth = MAX(depth, clawt_mailbox_item_get_depth(item));
 		any_replies = any_replies || replies[i];
+		/* Towards withholding: one consulted part makes the turn one. */
+		consult = consult || clawt_mailbox_item_get_consult(item);
 
 		if (i == 0)
 			task_id = item_task;
@@ -1129,6 +1154,127 @@ clawt_agent_deliver_merged(
 		depth, any_replies, origin, tasks_agree ? task_id : NULL);
 	setup = g_queue_peek_tail(self->pending);
 	setup->input = clawt_mailbox_item_copy(delivered);
+	setup->consult = consult;
+}
+
+gboolean
+clawt_agent_get_turn_consult_in(
+	ClawtAgent  *self,
+	const gchar *room_id
+){
+	GHashTableIter iter;
+	gpointer key;
+	gpointer value;
+	guint i;
+
+	g_return_val_if_fail(CLAWT_IS_AGENT(self), FALSE);
+
+	if (room_id != NULL) {
+		TurnSetup *setup;
+
+		/* The turn running there is the answer. */
+		if (room_is_live(self, room_id)) {
+			setup = turn_in(self, room_id);
+			return setup != NULL && setup->consult;
+		}
+
+		/*
+		 * Nothing running there yet: the delivery its next turn will
+		 * take.  The CLI can ask for its tool list before the typing
+		 * frame that begins the turn reaches the daemon, and the turn
+		 * that list is for is the one this entry describes.
+		 */
+		for (i = 0; i < g_queue_get_length(self->pending); i++) {
+			TurnSetup *candidate = g_queue_peek_nth(self->pending, i);
+
+			if (candidate->room == NULL ||
+				g_strcmp0(room_key(candidate->room), room_key(room_id)) == 0)
+				return candidate->consult;
+		}
+	}
+
+	/*
+	 * No room, or one with nothing running and nothing waiting: any
+	 * running consultation.  The direction that withholds, as the hop
+	 * depth's fold is the deepest -- an agent mid-consultation in one
+	 * room loses its acting tools in another for as long as both run,
+	 * which costs a call; the other way round a consultation could act.
+	 * A finished turn is not consulted at all: the tools written into
+	 * TOOLS.org at a start must not depend on what the last turn was.
+	 */
+	g_hash_table_iter_init(&iter, self->turns);
+
+	while (g_hash_table_iter_next(&iter, &key, &value)) {
+		if (!g_hash_table_contains(self->typing_rooms, key))
+			continue;
+		if (((TurnSetup *)value)->consult)
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
+void
+clawt_agent_note_turn_work(
+	ClawtAgent  *self,
+	const gchar *room_id,
+	gboolean     ok,
+	const gchar *error
+){
+	GHashTableIter iter;
+	gpointer key;
+	gpointer value;
+
+	g_return_if_fail(CLAWT_IS_AGENT(self));
+
+	/*
+	 * Charged the way clawt_agent_note_turn_tool() charges a call: to
+	 * the named room's turn, or to every running turn when the call
+	 * names none.  Work credited to a turn that did none makes the
+	 * guard late; work withheld from one that did makes it stop a task
+	 * that was moving, which is the worse of the two.
+	 */
+	g_hash_table_iter_init(&iter, self->turns);
+
+	while (g_hash_table_iter_next(&iter, &key, &value)) {
+		TurnSetup *setup = value;
+
+		if (room_id != NULL
+			? g_strcmp0(key, room_key(room_id)) != 0
+			: !g_hash_table_contains(self->typing_rooms, key))
+			continue;
+
+		setup->evidence = TRUE;
+
+		if (ok) {
+			setup->work_calls++;
+		} else if (error != NULL) {
+			g_free(setup->last_error);
+			setup->last_error = g_strdup(error);
+		}
+	}
+}
+
+gboolean
+clawt_agent_get_turn_evidence_in(
+	ClawtAgent   *self,
+	const gchar  *room_id,
+	guint        *work_calls,
+	const gchar **last_error
+){
+	TurnSetup *setup;
+
+	g_return_val_if_fail(CLAWT_IS_AGENT(self), FALSE);
+
+	setup = turn_in(self, room_id);
+
+	if (work_calls != NULL)
+		*work_calls = setup != NULL ? setup->work_calls : 0;
+	if (last_error != NULL)
+		*last_error = setup != NULL ? setup->last_error : NULL;
+
+	/* A turn with neither a step nor a call is unknown, never "none". */
+	return setup != NULL && (setup->evidence || setup->work_calls > 0);
 }
 
 void

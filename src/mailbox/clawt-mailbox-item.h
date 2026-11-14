@@ -222,6 +222,30 @@ void clawt_mailbox_item_set_one_way(ClawtMailboxItem *self,
                                     gboolean          one_way);
 
 /**
+ * clawt_mailbox_item_get_consult:
+ * @self: a #ClawtMailboxItem
+ *
+ * Whether this delivery asks for a consultation -- see
+ * #ClawtConsultRole.  The turn it starts is offered no tool that acts.
+ * Stored, because an item can outlive the daemon that queued it, and a
+ * consultation redelivered after a restart must still be one.
+ *
+ * Returns: %TRUE for a consultation
+ */
+gboolean clawt_mailbox_item_get_consult(ClawtMailboxItem *self);
+
+/**
+ * clawt_mailbox_item_set_consult:
+ * @self: a #ClawtMailboxItem
+ * @consult: %TRUE for a consultation
+ *
+ * Set by the router from clawt_message_get_consult() ==
+ * %CLAWT_CONSULT_ASKED, and by nothing else.
+ */
+void clawt_mailbox_item_set_consult(ClawtMailboxItem *self,
+                                    gboolean          consult);
+
+/**
  * clawt_mailbox_item_dup_delivered_body:
  * @self: a #ClawtMailboxItem
  *

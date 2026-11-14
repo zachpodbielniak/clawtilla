@@ -1169,7 +1169,7 @@ merge_sections_new(ClawtLrgApp *app, const gchar *preface, gchar **labels,
 static void
 append_message(ClawtLrgApp *app, const gchar *sender, const gchar *body,
                gint64 ts, const gchar *task, gint64 depth, gboolean animate,
-               gboolean acknowledged, gint64 merged)
+               gboolean acknowledged, gint64 merged, gint64 consult)
 {
     g_autofree gchar *merge_preface = NULL;
     g_auto(GStrv) merge_labels = NULL;
@@ -1323,6 +1323,25 @@ append_message(ClawtLrgApp *app, const gchar *sender, const gchar *body,
         clawt_lrg_take(row, ack);
     }
 
+    /*
+     * A consultation's question or answer: the agent that answered had
+     * no tool that acts, which a reader needs before taking the answer
+     * as a report of work done.
+     */
+    if (clawt_message_consult_label((gint)consult) != NULL) {
+        LrgWidget *mark = clawt_lrg_badge(
+            clawt_message_consult_label((gint)consult), "info");
+
+        lrg_widget_set_halign(mark, from_user ? LRG_ALIGN_END
+                                              : LRG_ALIGN_START);
+        if (!from_user) {
+            LrgInsets pad = { px(app, CHAT_GUTTER), 0.0f, 0.0f, 0.0f };
+
+            lrg_widget_set_margin(mark, &pad);
+        }
+        clawt_lrg_take(row, mark);
+    }
+
     attachment_previews_append(app, row, body, from_user);
     attach_message_menu(row, body);
 
@@ -1351,7 +1370,7 @@ append_local(ClawtLrgApp *app, const gchar *text)
      */
     chat.following = TRUE;
     chat.auto_scrolling = FALSE;
-    append_message(app, "clawtilla", text, 0, NULL, 0, TRUE, FALSE, 0);
+    append_message(app, "clawtilla", text, 0, NULL, 0, TRUE, FALSE, 0, 0);
     clawt_lrg_app_wake(app);
 }
 
@@ -1870,7 +1889,8 @@ draw_history(ClawtLrgApp *app, JsonNode *history, GPtrArray *steps)
                        clawt_ipc_payload_int(message, "depth", 0),
                        i + CHAT_HISTORY_ENTRANCES >= n,
                        clawt_ipc_payload_int(message, "acknowledged", 0) != 0,
-                       clawt_ipc_payload_int(message, "merged", 0));
+                       clawt_ipc_payload_int(message, "merged", 0),
+                       clawt_ipc_payload_int(message, "consult", 0));
     }
 
     if (steps != NULL)
@@ -4108,7 +4128,8 @@ on_message_event(ClawtLrgApp *app, ClawtEvent *event)
                        body != NULL ? body : "", 0,
                        clawt_event_get_detail(event, "task"), 0, TRUE,
                        clawt_event_get_detail_int(event, "acknowledged") != 0,
-                       clawt_event_get_detail_int(event, "merged"));
+                       clawt_event_get_detail_int(event, "merged"),
+                       clawt_event_get_detail_int(event, "consult"));
 
         /*
          * The reply is the end of the turn: the indicator drops too, but

@@ -35,6 +35,7 @@ struct _ClawtMessage {
 	gboolean      one_way;
 	gboolean      acknowledged;
 	guint         merged;
+	ClawtConsultRole consult;
 };
 
 static ClawtMessage *
@@ -117,6 +118,7 @@ clawt_message_copy(ClawtMessage *self)
 	copy->one_way = self->one_way;
 	copy->acknowledged = self->acknowledged;
 	copy->merged = self->merged;
+	copy->consult = self->consult;
 
     return copy;
 }
@@ -490,4 +492,51 @@ clawt_message_ack_tooltip(void)
 	return "This answer only acknowledged a message, so clawtilla recorded "
 	       "it here instead of waking the agent that asked. That agent "
 	       "is told about it on its next turn.";
+}
+
+ClawtConsultRole
+clawt_message_get_consult(
+	ClawtMessage *self
+){
+	g_return_val_if_fail(self != NULL, CLAWT_CONSULT_NONE);
+
+	return self->consult;
+}
+
+void
+clawt_message_set_consult(
+	ClawtMessage     *self,
+	ClawtConsultRole  role
+){
+	g_return_if_fail(self != NULL);
+
+	self->consult = role;
+}
+
+/*
+ * An int rather than the enum, because the clients read the role back
+ * off the wire as a plain integer and a value from a newer daemon must
+ * fall through to "no label" rather than be cast into a role it is not.
+ */
+const gchar *
+clawt_message_consult_label(
+	gint role
+){
+	switch (role) {
+	case CLAWT_CONSULT_ASKED:
+		return "consultation";
+	case CLAWT_CONSULT_ANSWERED:
+		return "consultation answer";
+	default:
+		return NULL;
+	}
+}
+
+const gchar *
+clawt_message_consult_tooltip(void)
+{
+	return "A consultation: the agent asked was offered no tool that "
+	       "acts -- no delegation, no messaging, no connector writes, no "
+	       "commands -- so it could only answer from what it knows or can "
+	       "read.";
 }

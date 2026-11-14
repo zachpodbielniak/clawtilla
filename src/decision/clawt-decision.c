@@ -29,6 +29,8 @@ struct _ClawtDecision {
     gchar             *default_reason;
     gchar             *task;
     gchar             *answer;
+    gchar             *routed_to;
+    gchar             *answered_by;
     gint64             reversible_until;
     gint64             created_at;
     gint64             answered_at;
@@ -70,6 +72,8 @@ clawt_decision_copy(ClawtDecision *self)
     copy->default_option = g_strdup(self->default_option);
     copy->default_reason = g_strdup(self->default_reason);
     copy->task = g_strdup(self->task);
+    copy->routed_to = g_strdup(self->routed_to);
+    copy->answered_by = g_strdup(self->answered_by);
     copy->answer = g_strdup(self->answer);
     copy->reversible_until = self->reversible_until;
     copy->created_at = self->created_at;
@@ -92,6 +96,8 @@ clawt_decision_free(ClawtDecision *self)
     g_free(self->default_option);
     g_free(self->default_reason);
     g_free(self->task);
+    g_free(self->routed_to);
+    g_free(self->answered_by);
     g_free(self->answer);
     g_free(self);
 }
@@ -309,4 +315,61 @@ clawt_decision_default_has_taken_effect(ClawtDecision *self, gint64 now)
         return FALSE;
 
     return now >= self->reversible_until;
+}
+
+const gchar *
+clawt_decision_get_routed_to(ClawtDecision *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    return self->routed_to;
+}
+
+void
+clawt_decision_set_routed_to(ClawtDecision *self, const gchar *agent)
+{
+    g_return_if_fail(self != NULL);
+
+    g_free(self->routed_to);
+    self->routed_to = (agent != NULL && *agent != '\0') ? g_strdup(agent) : NULL;
+}
+
+const gchar *
+clawt_decision_get_answered_by(ClawtDecision *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    return self->answered_by;
+}
+
+void
+clawt_decision_set_answered_by(ClawtDecision *self, const gchar *who)
+{
+    g_return_if_fail(self != NULL);
+
+    g_free(self->answered_by);
+    self->answered_by = (who != NULL && *who != '\0') ? g_strdup(who) : NULL;
+}
+
+gchar *
+clawt_decision_routed_label(const gchar *routed_to, const gchar *answered_by,
+                            gboolean open)
+{
+    /*
+     * Who answered, because that is what a reader of a settled item
+     * asks; who it was put to while it is still open, because that is
+     * who is expected to move -- and the operator is told it is still
+     * theirs to answer, or a routed item reads as not their business.
+     */
+    if (answered_by != NULL && *answered_by != '\0' && !open)
+        return g_strdup_printf("answered by %s", answered_by);
+
+    if (routed_to == NULL || *routed_to == '\0')
+        return NULL;
+
+    if (open)
+        return g_strdup_printf("asked of %s first -- you can answer it too",
+                               routed_to);
+
+    return g_strdup_printf("asked of %s first", routed_to);
 }

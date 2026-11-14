@@ -3977,6 +3977,23 @@ cmd_decision(int argc, char *argv[])
                 g_print("  the deadline passed; answering changes "
                         "nothing\n");
 
+            /* Who it was put to first, when it came out of delegated work. */
+            {
+                g_autofree gchar *routed = clawt_decision_routed_label(
+                    json_object_has_member(decision, "routed_to")
+                        ? json_object_get_string_member(decision, "routed_to")
+                        : NULL,
+                    json_object_has_member(decision, "answered_by")
+                        ? json_object_get_string_member(decision,
+                                                        "answered_by")
+                        : NULL,
+                    json_object_get_int_member(decision, "state") ==
+                        CLAWT_DECISION_OPEN);
+
+                if (routed != NULL)
+                    g_print("  %s\n", routed);
+            }
+
             g_print("\n");
         }
 
@@ -4326,6 +4343,16 @@ cmd_task(int argc, char *argv[])
         if (json_object_has_member(task, "parent"))
             g_print("under:    %s\n",
                     json_object_get_string_member(task, "parent"));
+
+        /* The room it runs in, when it has one of its own. */
+        if (json_object_has_member(task, "thread_room"))
+            g_print("room:     %s  (clawtilla room history %s)\n",
+                    json_object_get_string_member(task, "thread_room"),
+                    json_object_get_string_member(task, "thread_room"));
+
+        if (json_object_has_member(task, "consult"))
+            g_print("mode:     %s -- the assignee could answer and do "
+                    "nothing else\n", clawt_task_consult_label());
 
         /*
          * The caveat goes last, where somebody reading a result has just

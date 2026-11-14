@@ -25,7 +25,9 @@ static const gchar *SCHEMA =
     "  reversible_until INTEGER NOT NULL DEFAULT 0,"
     "  created_at INTEGER NOT NULL,"
     "  answered_at INTEGER NOT NULL DEFAULT 0,"
-    "  state INTEGER NOT NULL DEFAULT 0"
+    "  state INTEGER NOT NULL DEFAULT 0,"
+    "  routed_to TEXT,"
+    "  answered_by TEXT"
     ");"
     "CREATE INDEX IF NOT EXISTS decisions_state"
     "  ON decisions(state, reversible_until, created_at);";
@@ -70,6 +72,38 @@ clawt_decision_store_init(ClawtDecisionStore *self)
     (void)self;
 }
 
+static gboolean
+add_column_if_missing(sqlite3 *db, const gchar *column, GError **error)
+{
+    sqlite3_stmt *stmt = NULL;
+    gboolean present = FALSE;
+    g_autofree gchar *sql = NULL;
+
+    if (sqlite3_prepare_v2(db, "PRAGMA table_info(decisions)", -1, &stmt,
+                           NULL) == SQLITE_OK) {
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            if (g_strcmp0((const gchar *)sqlite3_column_text(stmt, 1),
+                          column) == 0)
+                present = TRUE;
+        }
+    }
+    sqlite3_finalize(stmt);
+
+    if (present)
+        return TRUE;
+
+    sql = g_strdup_printf("ALTER TABLE decisions ADD COLUMN %s TEXT", column);
+
+    if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                    "could not add %s to the decision store: %s", column,
+                    sqlite3_errmsg(db));
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
 ClawtDecisionStore *
 clawt_decision_store_new(const gchar *path, GError **error)
 {
@@ -101,6 +135,15 @@ clawt_decision_store_new(const gchar *path, GError **error)
         sqlite3_free(message);
         return NULL;
     }
+
+    /*
+     * Since 0.18.0: who a decision was routed to and who answered it.
+     * Absent means every stored decision went to the operator alone,
+     * which is what each one did.
+     */
+    if (!add_column_if_missing(self->db, "routed_to", error) ||
+        !add_column_if_missing(self->db, "answered_by", error))
+        return NULL;
 
     return g_steal_pointer(&self);
 }
@@ -151,8 +194,8 @@ clawt_decision_store_post(
             "INSERT OR REPLACE INTO decisions"
             " (id, agent, question, options, default_option, default_reason,"
             "  task, answer, reversible_until, created_at, answered_at,"
-            "  state)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "  state, routed_to, answered_by)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             -1, &stmt, NULL) != SQLITE_OK) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
                     "could not record the decision: %s",
@@ -182,6 +225,10 @@ clawt_decision_store_post(
     sqlite3_bind_int64(stmt, 10, clawt_decision_get_created_at(decision));
     sqlite3_bind_int64(stmt, 11, clawt_decision_get_answered_at(decision));
     sqlite3_bind_int(stmt, 12, (gint)clawt_decision_get_state(decision));
+    sqlite3_bind_text(stmt, 13, clawt_decision_get_routed_to(decision), -1,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 14, clawt_decision_get_answered_by(decision), -1,
+                      SQLITE_TRANSIENT);
 
     if (sqlite3_step(stmt) != SQLITE_DONE) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
@@ -231,14 +278,16 @@ decision_from_row(sqlite3_stmt *stmt)
     clawt_decision_set_answered_at(decision, sqlite3_column_int64(stmt, 10));
     clawt_decision_set_state(
         decision, (ClawtDecisionState)sqlite3_column_int(stmt, 11));
+    clawt_decision_set_routed_to(decision, column_text(stmt, 12));
+    clawt_decision_set_answered_by(decision, column_text(stmt, 13));
 
     return decision;
 }
 
 #define SELECT_COLUMNS \
     "SELECT id, agent, question, options, default_option, default_reason," \
-    " task, answer, reversible_until, created_at, answered_at, state" \
-    " FROM decisions"
+    " task, answer, reversible_until, created_at, answered_at, state," \
+    " routed_to, answered_by FROM decisions"
 
 GPtrArray *
 clawt_decision_store_list(ClawtDecisionStore *self, gboolean open_only)
@@ -308,6 +357,17 @@ clawt_decision_store_answer(
     const gchar        *answer,
     GError            **error
 ){
+    return clawt_decision_store_answer_as(self, id, answer, NULL, error);
+}
+
+ClawtDecision *
+clawt_decision_store_answer_as(
+    ClawtDecisionStore *self,
+    const gchar        *id,
+    const gchar        *answer,
+    const gchar        *who,
+    GError            **error
+){
     g_autoptr(ClawtDecision) decision = NULL;
 
     g_return_val_if_fail(CLAWT_IS_DECISION_STORE(self), NULL);
@@ -338,6 +398,7 @@ clawt_decision_store_answer(
 
     clawt_decision_answer(decision, answer,
                           g_get_real_time() / G_USEC_PER_SEC);
+    clawt_decision_set_answered_by(decision, who);
 
     /*
      * The id is transfer-full and is not wanted here -- the caller

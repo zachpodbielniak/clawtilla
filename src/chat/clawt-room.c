@@ -507,6 +507,13 @@ append_to_transcript(ClawtRoom     *self,
 			(gint64)clawt_message_get_merged(message));
 	}
 
+	/* A consultation's question or answer; see #ClawtConsultRole. */
+	if (clawt_message_get_consult(message) != CLAWT_CONSULT_NONE) {
+		json_builder_set_member_name(builder, "consult");
+		json_builder_add_int_value(builder,
+			(gint64)clawt_message_get_consult(message));
+	}
+
     json_builder_end_object(builder);
 
     root = json_builder_get_root(builder);

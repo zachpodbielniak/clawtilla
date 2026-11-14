@@ -694,6 +694,17 @@ Two marks in the transcript, drawn the same way in all three clients from fields
 - *acknowledged (no wake)* -- =clawt_message_ack_label()= -- beside an answer the acknowledgement check recorded instead of delivering (=acknowledged=).  It is on every such message, not on a run header, because it is a fact about that one message: unmarked, an answer the asker never took a turn on reads as having been ignored.  GTK and the web client carry =clawt_message_ack_tooltip()= as the tooltip; libregnum has no tooltips, so the label is the whole of it.
 - *Delivered as one turn* -- clawtilla's note when several results waiting in one room were handed to an agent as a single turn (=merged=, the number of parts).  Its body is split with =clawt_merge_split()= and drawn as its sections: the opening line, then one block per result with its label ("'oryx' answering you", "clawtilla: task t-12") as a small heading and the result's first line beneath.  The results themselves are already in the room above it; the note says they cost one wake, not N.
 
+*** Consultations, a task's own room, and who a decision went to
+:PROPERTIES:
+:CUSTOM_ID: delegation-marks
+:END:
+
+Drawn the same way in GTK, the web client and libregnum, each in libclawt's words:
+
+- *consultation* / *consultation answer* -- =clawt_message_consult_label()= -- under a consultation's question (a ~consult: true~ ask, or a ~mode: consult~ assignment) and under the answer the consulted turn wrote (~consult~ on ~room.history~ and the ~message~ event: 1 and 2).  The answering agent had no tool that acts, which a reader needs before taking its answer as a report of work done.  GTK and the web client carry =clawt_message_consult_tooltip()= as the tooltip.
+- *A task's own room* -- on the Tasks page, a task delegated with ~thread: new~ shows =clawt_task_thread_summary()= and an *Open room* control that selects that room in the chat (~thread_room~).  The work is not in the conversation the two agents share, so without this the transcript the result came out of cannot be found.  A consulted task carries the *consultation* badge (=clawt_task_consult_label()=).
+- *Who a decision went to* -- on the Decisions page, a decision raised inside delegated work carries =clawt_decision_routed_label()=: "asked of chief first -- you can answer it too" while open, "answered by chief" once the delegator has answered (~routed_to~, ~answered_by~).  The operator answers it exactly as any other.
+
 *** Reordering the fleet
 
 Drag a row in the sidebar to move it -- a chief-of-staff to the top, the

@@ -93,6 +93,26 @@ ClawtDecision *clawt_decision_store_answer(ClawtDecisionStore *self,
                                            GError            **error);
 
 /**
+ * clawt_decision_store_answer_as:
+ * @self: a #ClawtDecisionStore
+ * @id: the decision
+ * @answer: the answer
+ * @who: (nullable): the agent answering, or %NULL for the operator
+ * @error: (out) (optional): why it was refused
+ *
+ * clawt_decision_store_answer(), recording who answered.  An agent
+ * answers only a decision routed to it, which the caller checks; the
+ * store refuses a second answer whoever gives it.
+ *
+ * Returns: (transfer full) (nullable): the settled decision
+ */
+ClawtDecision *clawt_decision_store_answer_as(ClawtDecisionStore *self,
+                                              const gchar        *id,
+                                              const gchar        *answer,
+                                              const gchar        *who,
+                                              GError            **error);
+
+/**
  * clawt_decision_store_dismiss:
  * @self: a #ClawtDecisionStore
  * @id: which one

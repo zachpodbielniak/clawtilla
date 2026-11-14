@@ -904,6 +904,15 @@ clawt_daemon_turn_settle(ClawtDaemon *self, const gchar *agent_id)
         clawt_repeat_watch_end_turn(self->repeats, agent_id);
 
     /*
+     * Results held while a turn ran are released with it.  An interrupt
+     * or the grace timer ends a turn with no falling typing frame, which
+     * is the only other place that drains them, so without this they
+     * would sit in the mailbox until something unrelated arrived.
+     */
+    if (self->router != NULL)
+        clawt_mailbox_router_drain(self->router, agent_id);
+
+    /*
      * Every room this agent was holding, not the first one found.
      *
      * An agent talking to three peers holds three rooms at once, so a
@@ -1085,8 +1094,17 @@ clawt_daemon_turn_note_tool_call(ClawtDaemon *self,
 	if (self->agents != NULL) {
 		ClawtAgent *agent = clawt_agent_manager_get(self->agents, agent_id);
 
-		if (agent != NULL)
+		if (agent != NULL) {
 			clawt_agent_note_turn_tool(agent, NULL);
+
+			/*
+			 * Work, for the task progress guard -- except a progress
+			 * note, which says the task is still going and is the one
+			 * call a turn that is not moving can always make.
+			 */
+			clawt_agent_note_turn_work(agent, NULL,
+				g_strcmp0(tool, "clawtilla_task_progress") != 0, NULL);
+		}
 	}
 
     if (self->repeats != NULL)

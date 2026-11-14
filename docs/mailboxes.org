@@ -133,6 +133,14 @@ named.  If the link refuses the merged frame every part is nacked, in
 order; if it takes it every part is acknowledged.  The queue never holds
 a merged row.
 
+A result for a room in which the agent has a turn running is not leased
+at all: it waits in the queue, behind which the drain leases the first
+item that is not held (~clawt_mailbox_lease_id()~ again), and the drain
+on that room's falling edge hands the held results over together.  A
+connected agent otherwise takes every delivery at its socket, which left
+nothing in the queue for a merge to find.  See "Results wait for the
+turn they would interrupt" in [[file:orchestration.org][orchestration.org]].
+
 ** Retry and dead letters
 
 Exponential backoff with jitter.  The delay is ~backoff_seconds~ shifted

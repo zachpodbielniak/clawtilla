@@ -1387,7 +1387,8 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
                                      body != NULL ? body : "",
                                      g_strcmp0(from, "user") == 0, 0,
                                      clawt_event_get_detail_int(event, "acknowledged") != 0,
-                                     clawt_event_get_detail_int(event, "merged"));
+                                     clawt_event_get_detail_int(event, "merged"),
+                                     clawt_event_get_detail_int(event, "consult"));
 
             /*
              * The reply is the end of the turn.  libreclaw drops the

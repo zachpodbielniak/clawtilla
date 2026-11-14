@@ -221,6 +221,8 @@ message_element(JsonObject *message, const gchar *agent_id,
     gboolean acknowledged =
         clawt_web_member_int(message, "acknowledged", 0) != 0;
     gint64 merged = clawt_web_member_int(message, "merged", 0);
+    const gchar *consult = clawt_message_consult_label(
+        (gint)clawt_web_member_int(message, "consult", 0));
     gboolean from_user = (g_strcmp0(sender, "user") == 0);
     g_autoptr(HtmxElement) row = HTMX_ELEMENT(htmx_article_new());
     g_autoptr(HtmxDiv) who = htmx_div_new();
@@ -370,7 +372,21 @@ message_element(JsonObject *message, const gchar *agent_id,
         clawt_web_add(who, g_steal_pointer(&ack));
     }
 
-    if (run_start || task != NULL || depth > 1 || acknowledged)
+    /*
+     * A consultation's question or answer: the agent that answered had
+     * no tool that acts, which a reader needs before taking the answer
+     * as a report of work done.
+     */
+    if (consult != NULL) {
+        g_autoptr(HtmxSpan) mark = clawt_web_badge(consult, "info");
+
+        htmx_element_set_attribute(HTMX_ELEMENT(mark), "title",
+                                   clawt_message_consult_tooltip());
+        clawt_web_add(who, g_steal_pointer(&mark));
+    }
+
+    if (run_start || task != NULL || depth > 1 || acknowledged ||
+        consult != NULL)
         htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(who));
 
     htmx_element_add_class(HTMX_ELEMENT(text), "msg-body");

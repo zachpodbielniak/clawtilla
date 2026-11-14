@@ -404,6 +404,66 @@ const gchar *clawt_message_ack_label(void);
 const gchar *clawt_message_ack_tooltip(void);
 
 /**
+ * ClawtConsultRole:
+ * @CLAWT_CONSULT_NONE: an ordinary message
+ * @CLAWT_CONSULT_ASKED: a consultation: a question (clawtilla_ask_agent
+ *   with `consult: true`) or a task (clawtilla_delegate with `mode:
+ *   consult`) whose turn is offered no tool that acts
+ * @CLAWT_CONSULT_ANSWERED: the answer a consultation's turn wrote
+ *
+ * Which part of a consultation a message is, if any.  Only
+ * %CLAWT_CONSULT_ASKED changes anything: the router carries it onto the
+ * mailbox item, and the turn that item starts is a consult turn.  The
+ * answer is marked for the clients alone, so a consultation reads as
+ * one in the room from both ends -- and so that answering one can never
+ * make the asker's own next turn a consultation.
+ */
+typedef enum {
+	CLAWT_CONSULT_NONE = 0,
+	CLAWT_CONSULT_ASKED,
+	CLAWT_CONSULT_ANSWERED
+} ClawtConsultRole;
+
+/**
+ * clawt_message_get_consult:
+ * @self: a #ClawtMessage
+ *
+ * Returns: which part of a consultation this message is
+ */
+ClawtConsultRole clawt_message_get_consult(ClawtMessage *self);
+
+/**
+ * clawt_message_set_consult:
+ * @self: a #ClawtMessage
+ * @role: which part of a consultation it is
+ *
+ * Marks a consultation's question or its answer.  Setting
+ * %CLAWT_CONSULT_ANSWERED is display only; see #ClawtConsultRole.
+ */
+void clawt_message_set_consult(ClawtMessage *self, ClawtConsultRole role);
+
+/**
+ * clawt_message_consult_label:
+ * @role: which part of a consultation a message is
+ *
+ * What every client draws beside a consultation's question and its
+ * answer, from one place so three clients cannot word it three ways.
+ *
+ * Returns: (transfer none) (nullable): the label, or %NULL for
+ *   %CLAWT_CONSULT_NONE and any value that is not a role
+ */
+const gchar *clawt_message_consult_label(gint role);
+
+/**
+ * clawt_message_consult_tooltip:
+ *
+ * The longer explanation behind clawt_message_consult_label().
+ *
+ * Returns: (transfer none): the explanation
+ */
+const gchar *clawt_message_consult_tooltip(void);
+
+/**
  * clawt_message_set_priority:
  * @self: a #ClawtMessage
  * @priority: the band to queue at
