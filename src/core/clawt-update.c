@@ -24,6 +24,7 @@
 
 #include "clawt-error.h"
 #include "clawt-util.h"
+#include "clawt-http.h"
 
 #include <libsoup/soup.h>
 #include <stdlib.h>
@@ -332,8 +333,8 @@ on_reply(GObject *source, GAsyncResult *result, gpointer user_data)
     const gchar *text;
     gsize length = 0;
 
-    body = soup_session_send_and_read_finish(SOUP_SESSION(source), result,
-                                             &error);
+    body = clawt_http_send_and_read_finish(SOUP_SESSION(source), result,
+                                           &error);
 
     if (g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
         return;
@@ -425,7 +426,8 @@ on_timer(gpointer user_data)
     if (self->url == NULL || *self->url == '\0')
         return G_SOURCE_REMOVE;
 
-    message = soup_message_new(SOUP_METHOD_GET, self->url);
+    message = clawt_http_message_new(SOUP_METHOD_GET, self->url,
+                                     CLAWT_HTTP_NO_CREDENTIALS);
 
     if (message == NULL) {
         record_failure(self, "the update URL is not a URL");

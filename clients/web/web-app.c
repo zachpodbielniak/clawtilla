@@ -883,6 +883,18 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
                                    to != NULL ? to : "?",
                                    reason != NULL ? reason : "a limit");
             note_alert(self, tier, kind, from, line);
+        } else if (tier == CLAWT_ALERT_ERROR &&
+                   g_strcmp0(kind, "routine.turned_off") == 0) {
+            /*
+             * Before the download branch, which would otherwise call a
+             * routine something that "could not be downloaded".  The
+             * sentence is libclawt's, the same in every client.
+             */
+            line = clawt_routine_turned_off_alert(
+                subject, (guint)clawt_event_get_detail_int(event, "failures"),
+                clawt_event_get_detail(event, "error"));
+            note_alert(self, tier, kind,
+                       clawt_event_get_detail(event, "agent"), line);
         } else if (tier == CLAWT_ALERT_ERROR) {
             line = g_strdup_printf("%s could not be downloaded: %s",
                                    subject != NULL ? subject : "an image",

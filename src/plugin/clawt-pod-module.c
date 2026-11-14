@@ -62,6 +62,9 @@ static const EventName events[] = {
     { "on_routine_ran", "routine.ran", "A scheduled routine started" },
     { "on_routine_changed", "routine.changed",
       "A routine was added, edited or removed" },
+    { "on_routine_turned_off", "routine.turned_off",
+      "A routine was turned off because its computer did not start "
+      "max_start_failures runs in a row; `failures` and `error` say why" },
     { "on_integration_changed", "integration.changed",
       "An integration was added, edited or removed" },
     { "on_daemon_started", "daemon.started", "The daemon came up" },

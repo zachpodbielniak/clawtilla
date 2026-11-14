@@ -37,7 +37,7 @@ static Routines routines;
 static const gchar *const handled_leaves[] = {
     "description", "instructions", "agent", "enabled", "schedule", "at",
     "weekday", "cron", "directory", "worktree", "read_only", "proactive",
-    "catch_up", "jitter_seconds", NULL
+    "catch_up", "jitter_seconds", "max_start_failures", NULL
 };
 
 static void refresh_list(ClawtLrgApp *app, ClawtLrgRequestFlags flags);
@@ -79,6 +79,7 @@ typedef struct {
     LrgWidget   *read_only;
     LrgWidget   *proactive;
     LrgWidget   *jitter;
+    LrgWidget   *max_failures;
 
     GPtrArray   *extra_fields;   /* ClawtLrgSchemaField */
     GPtrArray   *extra_controls; /* parallel: LrgWidget (borrowed) */
@@ -267,6 +268,12 @@ on_save(ClawtLrgApp *app, LrgDialog *dialog, gint response,
 
     if (extras == NULL)
         return FALSE;
+
+    /* Drawn by hand above, so not among the walked extras. */
+    json_object_set_int_member(
+        extras, "max_start_failures",
+        (gint64)MAX(lrg_spin_box_get_value(LRG_SPIN_BOX(editor->max_failures)),
+                    0.0));
 
     form.creating = editor->creating;
     form.id = editor->creating ? clawt_lrg_entry_text(editor->id_entry)
@@ -603,6 +610,26 @@ open_editor(ClawtLrgApp *app, JsonObject *existing)
                        "routines share one rate-limited service; `run now` "
                        "and a catch-up start at once either way.");
 
+    /*
+     * How many runs in a row may find the computer down before the
+     * routine is turned off, with libclawt's explanation -- the same
+     * words the GTK and web editors use.
+     */
+    {
+        g_autofree gchar *limit = clawt_lrg_work_field_text(
+            existing, "max_start_failures", CLAWT_LRG_FIELD_NUMBER);
+
+        editor->max_failures = LRG_WIDGET(lrg_spin_box_new_with_range(
+            0.0, 1000.0, 1.0));
+        lrg_spin_box_set_digits(LRG_SPIN_BOX(editor->max_failures), 0);
+        lrg_spin_box_set_value(LRG_SPIN_BOX(editor->max_failures),
+                               g_ascii_strtod(*limit != '\0' ? limit : "3",
+                                              NULL));
+        clawt_lrg_form_add(form, "Turn off after failed starts",
+                           editor->max_failures,
+                           clawt_routine_start_failures_hint());
+    }
+
     clawt_lrg_take(content, form);
 
     /*
@@ -706,6 +733,47 @@ on_edit_clicked(LrgButton *button, gpointer user_data)
 }
 
 static void
+on_turned_on(
+	ClawtLrgApp  *app,
+	JsonNode     *reply,
+	const GError *error,
+	gpointer      user_data
+){
+	if (reply == NULL)
+		return;
+
+	clawt_lrg_toast(app, "Turned back on.");
+	refresh_list(app, CLAWT_LRG_QUIET);
+}
+
+/*
+ * One click to turn a routine back on after its computer would not
+ * start: `enabled: true` through routine.update, which the daemon takes
+ * as the edit it is, clearing the count and the note.
+ */
+static void
+on_routine_turn_on(
+	LrgButton *button,
+	gpointer   user_data
+){
+	const gchar *id = g_object_get_data(G_OBJECT(button), "routine-id");
+	JsonObject *payload;
+	JsonNode *node;
+
+	if (id == NULL)
+		return;
+
+	payload = json_object_new();
+	json_object_set_string_member(payload, "id", id);
+	json_object_set_boolean_member(payload, "enabled", TRUE);
+	node = json_node_new(JSON_NODE_OBJECT);
+	json_node_take_object(node, payload);
+
+	clawt_lrg_request(routines.app, "routine.update", node,
+	                  CLAWT_LRG_REQUEST_NONE, on_turned_on, NULL, NULL);
+}
+
+static void
 on_row_run_clicked(LrgButton *button, gpointer user_data)
 {
     const gchar *id = g_object_get_data(G_OBJECT(button), "routine-id");
@@ -733,6 +801,8 @@ routine_card(ClawtLrgApp *app, JsonObject *routine, gint64 now_us)
 
     if (clawt_ipc_payload_string(routine, "problem") != NULL)
         clawt_lrg_row_add_prefix(row, clawt_lrg_badge("broken", "bad"));
+    else if (json_object_has_member(routine, "turned_off_after"))
+        clawt_lrg_row_add_prefix(row, clawt_lrg_badge("turned off", "bad"));
     else if (!clawt_lrg_work_boolean(routine, "routines.", "enabled"))
         clawt_lrg_row_add_prefix(row, clawt_lrg_badge("off", "neutral"));
 
@@ -765,6 +835,27 @@ routine_card(ClawtLrgApp *app, JsonObject *routine, gint64 now_us)
     /* what the last run said about itself -- a failure's reason */
     if (detail != NULL && *detail != '\0')
         clawt_lrg_take(body, clawt_lrg_paragraph(detail, "muted"));
+
+    /*
+     * Turned off because its computer would not start: why, in
+     * libclawt's words, and the click that turns it back on.
+     */
+    if (json_object_has_member(routine, "turned_off_after")) {
+        g_autofree gchar *note = clawt_routine_turned_off_note(
+            (guint)clawt_ipc_payload_int(routine, "turned_off_after", 0),
+            clawt_ipc_payload_string(routine, "turned_off_error"));
+        LrgWidget *line = clawt_lrg_hbox(8.0f);
+        LrgWidget *turn_on = clawt_lrg_button(
+            "Turn back on", "primary", G_CALLBACK(on_routine_turn_on), NULL);
+
+        g_object_set_data_full(G_OBJECT(turn_on), "routine-id",
+                               g_strdup(clawt_ipc_payload_string(routine,
+                                                                 "id")),
+                               g_free);
+        clawt_lrg_take(line, clawt_lrg_paragraph(note, NULL));
+        clawt_lrg_take(line, turn_on);
+        clawt_lrg_take(body, line);
+    }
 
     return clawt_lrg_card(body);
 }

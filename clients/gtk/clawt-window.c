@@ -1503,6 +1503,24 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
         return;
     }
 
+    /*
+     * A routine turned off because its computer would not start.  Into
+     * the panel, worded by libclawt so all three clients say the same
+     * thing; the Routines page refreshes on it below like any other
+     * `routine.` event, which is where it is turned back on.
+     */
+    if (g_strcmp0(kind, "routine.turned_off") == 0) {
+        g_autofree gchar *message = clawt_routine_turned_off_alert(
+            clawt_event_get_subject(event),
+            (guint)clawt_event_get_detail_int(event, "failures"),
+            clawt_event_get_detail(event, "error"));
+
+        clawt_window_alert(self, CLAWT_ALERT_ERROR, kind,
+                           clawt_event_get_detail(event, "agent"), message);
+        clawt_gtk_refresh_routines(self);
+        return;
+    }
+
     if (g_strcmp0(kind, "message.refused") == 0) {
         const gchar *from = clawt_event_get_detail(event, "from");
         const gchar *to = clawt_event_get_detail(event, "to");

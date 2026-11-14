@@ -260,6 +260,17 @@ struct _ClawtDaemon {
     /* Standing work, and when it is next due. */
     ClawtRoutineRunner *routines;
 
+	/*
+	 * daemon-routine.c: routine runs waiting to hear whether their
+	 * agent's computer came up, keyed agent -> (routine -> gint64 run
+	 * time in microseconds); the agents whose computer last refused to
+	 * start, with why; and the ones a routine is already starting again,
+	 * so two routines due in one tick do not start one agent twice.
+	 */
+	GHashTable        *routine_starts;
+	GHashTable        *routine_computer_down;
+	GHashTable        *routine_waking;
+
     /*
      * Which agents are being held, and what to put back afterwards.
      *
@@ -1154,6 +1165,36 @@ gboolean clawt_daemon_routine_delete(ClawtDaemon *self, const gchar *id,
 gboolean clawt_daemon_routine_for_tools(const gchar *verb, const gchar *id,
                                         JsonObject *payload,
                                         gpointer user_data, GError **error);
+
+/*
+ * daemon-routine.c: routines.max_start_failures.  A run is watched from
+ * delivery until its agent's computer either comes up or refuses to;
+ * every start path settles it, whoever began the start.
+ */
+void clawt_daemon_routine_start_watch(
+	ClawtDaemon *self,
+	const gchar *routine_id,
+	const gchar *agent_id,
+	gint64       run_at_us
+);
+void clawt_daemon_routine_starts_settle(
+	ClawtDaemon *self,
+	const gchar *agent_id,
+	const gchar *computer_error
+);
+void clawt_daemon_routine_wake_done(
+	ClawtDaemon *self,
+	const gchar *agent_id
+);
+void clawt_daemon_routine_starts_teardown(
+	ClawtDaemon *self
+);
+
+/* clawt-daemon.c: an agent start that does not hold the main loop. */
+void clawt_daemon_start_agent_background(
+	ClawtDaemon *self,
+	const gchar *agent_id
+);
 
 JsonNode *
 clawt_daemon_handle_routine(
