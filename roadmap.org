@@ -530,7 +530,11 @@ When somebody turns the broker on, clawtilla starts a local AnythingMCP for them
 - *Done:* =usage.summary= rows carry =failover= and =failover_message= from the same daemon function as =agent.list= (=clawt_daemon_add_failover_members()=), and the Fleet page badges an agent on a fallback in GTK, web and lrg (a parity row); GTK and lrg re-read it on =agent.failover=. A save that cleared the stored list and was then refused puts it back: the old list onto the new backend, then, if refused, the old provider/account/model with it (=clawt_model_fallback_restore_plan()=; GTK in =restore_fallbacks()=, lrg as two more phases of its save job, decided by =clawt_lrg_agent_plan_cleared_fallbacks()=). Tests: =/model-fallbacks/restore-plan=, =/lrg-agent/save/refused-save-keeps-the-list=, =/daemon/failover/shown-and-announced= (usage.summary).
 - The GTK Fleet page shows no "on fallback" badge (=usage.summary= lacks =failover=). In GTK and lrg, a save that changes provider and then has its fallback list refused leaves the list cleared until saved again.
 
-** TODO =tools/clawt-web-smoke.sh=: four checks fail on master                                  :test:
+** DONE =tools/clawt-web-smoke.sh=: four checks fail on master (version assigned at merge)      :test:
+- *Done:* 51 of 51 pass against a throwaway daemon and web client. Five failed (51 checks now), for four causes:
+  - *a refused traversal rendered some other string* -- a product bug. =page_with_banner()= built the page body, whose daemon calls free =clawt_web_app_last_error()=, *before* =banner_around()= took its "early" copy, because an argument is evaluated before the call. Both callers now copy first.
+  - *folders add/remove*: the script shared =/tmp=, which root owns, and the daemon rightly refuses a mount podman cannot relabel; the script now shares a directory it makes and removes.
+  - *connections* and *an unknown command*: stale markers ("Add a daemon", "No such command"); now the form's action and "There is no /nonsense".
 - The same 4 of 48 fail on an untouched build; found during the fallbacks work.
 
 * Design decisions to make, not gaps
