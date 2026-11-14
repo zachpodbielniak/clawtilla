@@ -39,8 +39,12 @@ licence, send nothing, and exit 0.
 | Command | What it does |
 |---------+--------------|
 | ~daemon~ | run the daemon in the foreground (same code as ~clawtillad~) |
-| ~daemon token~ | print the bearer token a remote client must present |
+| ~daemon token~ | print the owner's bearer token |
 | ~remote list/add/rm~ | saved daemons on other machines |
+| ~remote pair <name> <host[:port]> <code>~ | trade a pairing code for this device's own token, and save it |
+| ~device pair [--name NAME]~ | a six-digit code another device trades for a token (owner only) |
+| ~device list~ | paired devices: id, name, when paired, last seen -- never a token |
+| ~device revoke ID~ | stop that device's token working and close what it has open |
 | ~status~ | version, build, hold, update, agent and client counts |
 | ~pause [agent]~ | hold the fleet: stop delivery, let running turns finish |
 | ~resume [agent]~ | take the hold off; queued work goes out in order |
@@ -204,6 +208,57 @@ after about a minute and the verb fails with "the daemon closed the
 connection", instead of sitting out the request's 120-second deadline
 and reporting a timeout.  The same outcome a minute earlier, and a truer
 sentence -- a timeout reads as a slow daemon, and this one is not there.
+
+*** Pairing a device instead of copying the token
+
+Copying ~daemon token~ to every laptop and phone works, and losing any of
+them then means a new token for all of them.  Pairing gives each device
+a token of its own:
+
+#+begin_src sh
+# On the machine running the fleet
+clawtilla device pair --name phone
+#   Pairing code:  123 456
+#   Good for 5 minutes, once.
+#   ...
+#     clawtilla remote pair phone 100.72.0.41:8792 123456
+
+# On the device being paired
+clawtilla remote pair workstation 100.72.0.41 123456
+clawtilla --profile workstation status
+
+# Later, from either
+clawtilla device list
+clawtilla device revoke d3f9a01bc
+#+end_src
+
+The code is six digits from ~/dev/urandom~, single use, five minutes
+long, and retired by the fifth wrong guess.  ~device pair~ prints every
+address the daemon is actually listening on beside it, and says so when
+there is none -- a code on a daemon nobody can reach is a code nobody
+can use.  ~remote pair~ checks the code's shape before dialling, so a
+typo costs nothing against the guess limit; the space or dash a person
+types to read it is ignored.
+
+The token lands in ~connections.yaml~ (0600) like a pasted one and is
+never printed.  ~device list~ never prints one either -- the daemon only
+keeps each token's SHA-256 -- and marks the row that is the connection
+asking.
+
+Only the owner pairs: a unix-socket client, or one holding the daemon's
+own token.  A paired device asking is refused with the reason.  Any
+connected client can list and revoke, so a laptop can cut off a lost
+phone.  Revoking closes the device's live connections as well as
+refusing its next one.  ~daemon.device_idle_days~ (90 by default, 0 for
+never) expires a device nobody has used for that long; a device that is
+connected counts as used.  The owner token is untouched by all of it.
+[[file:security.org::*Paired devices][security.org]] has the reasons.
+
+The graphical clients have the same two halves: *Pair with a code* on
+their Connections screen, and Settings, *Devices*, which lists the
+devices with when each was last seen, a *Revoke* button on each, and
+*Pair a new device*, which shows the code large with a countdown and
+says when it has been used.
 
 *** Choosing where the daemon listens
 
@@ -697,6 +752,7 @@ what belongs to the application rather than to any one agent:
 | Integrations | Matrix, mail, MCP servers and notifiers, and who gets each |
 | Connectors | connected accounts, and the credential for each |
 | Appearance | colour scheme and fonts |
+| Devices | paired laptops and phones, last seen, Revoke, and *Pair a new device* |
 
 **** Cloud images
 
@@ -2489,11 +2545,29 @@ fail, which is a destructive way to ask a read-only question: switching
 tears down and rebuilds the whole window, so "is that machine up?" could
 not be asked without committing to the answer.
 
-*Manage connections...* adds and removes them.  A connection needs a host
-and the token from ~clawtilla daemon token~ on that machine; the port
-defaults to 8792.  TLS is only worth turning on if that daemon has a
-certificate -- inside a tailnet, WireGuard is already encrypting the
-connection.
+*Manage connections...* adds and removes them.  *Pair with a code* is
+the easy way to add one: a name, the host, and the six digits that
+~clawtilla device pair~ (or Settings, *Devices*, on the other machine)
+showed.  The exchange runs on a worker thread through
+~clawt_connection_new_paired()~, so a host that is slow to answer does
+not freeze the window, and this machine is saved with a token of its
+own.  The code's shape is checked before anything is dialled, so a typo
+costs nothing against the five-guess limit.  Below it, *Or paste a
+token* takes the host and the token from ~clawtilla daemon token~ on
+that machine -- the owner's token.  The port defaults to 8792.  TLS is
+only worth turning on if that daemon has a certificate -- inside a
+tailnet, WireGuard is already encrypting the connection.
+
+Settings, *Devices*, lists the devices paired with the daemon this
+window is connected to: name, when each was last seen ("connected now",
+"seen 3 days ago" -- ~clawt_device_seen_text()~, shared with the CLI and
+the other clients), when it was paired, its id, and a *Revoke* button,
+with *this device* on the row that is this window.  *Pair a new device*
+shows the code large, the addresses to dial, and a countdown; the
+dialog says so when the code is used (the ~device.paired~ event), and
+closing it unused withdraws the code.  The button is offered only to the
+owner -- a window connected as a paired device cannot pair another, and
+its tooltip says why.
 
 Switching connects the new daemon *before* letting go of the old one, so
 a typo in a port leaves you where you were with a toast explaining why,

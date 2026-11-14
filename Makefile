@@ -116,6 +116,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/ipc/clawt-ipc-server.h \
 	$(SRCDIR)/ipc/clawt-client.h \
 	$(SRCDIR)/ipc/clawt-connection.h \
+	$(SRCDIR)/ipc/clawt-device-store.h \
 	$(SRCDIR)/mailbox/clawt-mailbox-item.h \
 	$(SRCDIR)/memory/clawt-memory.h \
 	$(SRCDIR)/memory/clawt-memory-store.h \
@@ -282,6 +283,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/ipc/clawt-ipc-server.c \
 	$(SRCDIR)/ipc/clawt-client.c \
 	$(SRCDIR)/ipc/clawt-connection.c \
+	$(SRCDIR)/ipc/clawt-device-store.c \
 	$(SRCDIR)/memory/clawt-memory.c \
 	$(SRCDIR)/memory/clawt-memory-store.c \
 	$(SRCDIR)/memory/clawt-memory-scopes.c \
@@ -384,7 +386,8 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-teach.c \
 	$(SRCDIR)/core/clawt-update.c \
 	$(SRCDIR)/agent/clawt-hold.c \
-	$(SRCDIR)/core/daemon-hold.c
+	$(SRCDIR)/core/daemon-hold.c \
+	$(SRCDIR)/core/daemon-device.c
 
 # Object files
 LIB_OBJECTS = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(LIB_SOURCES))

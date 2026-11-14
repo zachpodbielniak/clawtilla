@@ -115,6 +115,7 @@ typedef enum {
     CLAWT_REFRESH_EXCHANGE,
     CLAWT_REFRESH_FLEET,
     CLAWT_REFRESH_GROK,
+    CLAWT_REFRESH_DEVICES,
     CLAWT_N_REFRESH
 } ClawtRefreshKind;
 
@@ -328,6 +329,8 @@ struct _ClawtWindow {
     GtkWidget         *settings_spending_unpriced;
     gint64             settings_spending_since;
     GtkWidget         *settings_connectors;
+    GtkWidget         *settings_devices;
+    GtkWidget         *settings_devices_pair;
     GtkListBox        *routine_list;
     GtkListBox        *trigger_list;
     GtkListBox        *delivery_list;
@@ -1321,6 +1324,17 @@ clawt_gtk_build_connectors_page(ClawtWindow *self);
 
 void
 clawt_gtk_refresh_settings_connectors(ClawtWindow *self);
+
+/* ── Defined in gtk-prefs-devices.c: the paired devices page ─────── */
+
+GtkWidget *
+clawt_gtk_build_devices_page(ClawtWindow *self);
+
+void
+clawt_gtk_refresh_settings_devices(ClawtWindow *self);
+
+void
+clawt_gtk_devices_on_event(ClawtWindow *self, ClawtEvent *event);
 
 /* ── Defined in gtk-prefs-folders.c: the shared folders page ─────── */
 

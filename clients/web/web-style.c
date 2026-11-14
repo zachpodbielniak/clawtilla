@@ -959,6 +959,14 @@ clawt_web_stylesheet(void)
       "border-radius:var(--radius-sm);padding:14px 16px;overflow-x:auto;"
       "max-height:26rem;overflow-y:auto;margin:0}"
     ".mono{font-family:var(--mono);font-size:var(--mono-size)}"
+    /*
+     * A pairing code is read off one screen and typed into another, so it
+     * is drawn as large as a heading and spaced so "123 456" cannot be
+     * misread as one run of digits.  After a mono rule, which it beats.
+     */
+    ".pair-code.mono{font-size:2rem;font-weight:600;letter-spacing:.15em;"
+      "margin:4px 0 8px}"
+    ".pair-code.expired{opacity:.45;text-decoration:line-through}"
     "kbd{font-family:var(--mono);font-size:11.5px;border:1px solid var(--line);"
       "border-radius:4px;background:var(--surface-2);padding:1px 5px}"
 

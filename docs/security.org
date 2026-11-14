@@ -152,6 +152,13 @@ all the authentication a remote client presents; treat
 ~<state_dir>/tcp-token~ and the client's ~connections.yaml~ as you would
 an SSH private key.
 
+A paired device's token opens the same fleet -- a device can read every
+transcript and run commands like the owner can -- with three
+differences, all about losing one: it can be revoked on its own, it
+expires after ~daemon.device_idle_days~ of not being seen, and it cannot
+issue a pairing code, so a stolen device cannot pair a replacement for
+itself and outlive its own revocation.  See [[*Paired devices][Paired devices]].
+
 *** Anything with the socket has the fleet
 
 A process running as you can connect to ~daemon.sock~ and do everything a
@@ -191,6 +198,74 @@ transcript can be rebuilt from, and
 [[file:maintenance.org][maintenance.org]] now says to keep it.  That
 makes the exposure a decision rather than an oversight, which is the
 only part of it worth changing.
+
+** Paired devices
+
+One daemon token copied to every laptop and phone meant that losing any
+of them was a rotation for all of them.  A device is paired instead and
+holds a token of its own.
+
+| Step | Where | What happens |
+|------+-------+--------------|
+| ~clawtilla device pair~ (or Settings, Devices, *Pair a new device*) | the owner | the daemon draws a six-digit code from ~/dev/urandom~, without modulo bias, good for five minutes |
+| *Pair with a code* (or ~clawtilla remote pair~) | the new device | the client connects and sends ~device.redeem~ with the code *instead of* ~control.hello~ |
+| the daemon | | compares the code in constant time, spends it, draws a 256-bit token from ~/dev/urandom~, stores its SHA-256, and replies with the token -- the only reply that ever carries one |
+| the new device | | writes the token into its own ~connections.yaml~, mode 0600, and says an ordinary ~control.hello~ with it from then on |
+
+*** What stops a guessed code
+
+- *One code at a time.*  Asking for a new one replaces the old, so there
+  is never more than one in a million to hit.
+- *Five wrong guesses retire it* (~CLAWT_DEVICE_CODE_MAX_GUESSES~).  The
+  right digits after the fifth wrong ones are refused.
+- *Ten failures a minute, daemon-wide*
+  (~CLAWT_DEVICE_REDEEM_FAILURES_PER_MINUTE~), and the eleventh is refused
+  without the code being looked at -- a refusal that still compared would
+  be the same oracle, slower.  A refused attempt does not spend the code.
+- *Single use and five minutes long*, whatever else happens.
+- *Closing the dialog withdraws it* (~device.pair_cancel~), so a code
+  nobody is going to type stops working at once.
+
+*** What the daemon keeps
+
+~<state_dir>/devices.yaml~, 0600, holds an id, a name, two times and the
+SHA-256 of each token -- never a token.  The file is not a set of
+credentials: reading it lets nobody in.  Hashing is enough here, with no
+salt or stretching, because the token is 256 random bits rather than
+something a person chose.  Presenting a token compares its hash against
+*every* stored hash in constant time, with no early exit.  The file and
+~tcp-token~ are both in the state directory's ~.gitignore~ block.
+
+A ~devices.yaml~ that will not parse turns pairing off and says so,
+rather than starting from an empty list that the next pairing would
+write over the devices the damaged file still describes.  The owner
+token keeps working either way.
+
+*** Revoking and expiring close what is open
+
+Refusing the next ~control.hello~ is not enough: a client that stays
+connected never says hello again.  ~device revoke~, and the idle sweep,
+close every connection that authenticated as that device.  A connected
+device is marked seen once a minute, so one left open on the fleet never
+lapses while somebody is looking at it.
+
+*** What never changes
+
+- The owner token (~daemon.token_file~ or ~<state_dir>/tcp-token~) is
+  checked first and by itself.  Revoking or expiring every device leaves
+  it exactly as it was; ~tests/test-devices.c~ asserts that.
+- A token crosses IPC once, in the ~device.redeem~ reply to the device
+  that redeemed the code.  ~device.list~, ~clawtilla device list~ and
+  every client's Devices page show an id, a name and two times; the
+  store's public type, ~ClawtDevice~, has no field to put a token in.
+- Who may do what: issuing or withdrawing a code needs the owner
+  credential (a unix-socket client, or the owner token); listing and
+  revoking are open to any authenticated client, since a listing carries
+  no secret and revoking only takes access away -- the laptop still in
+  your bag can cut off the phone that is not.
+- A unix-socket client that redeems a code *becomes* that device for the
+  rest of the connection, rather than staying the owner.  One rule
+  whichever socket a code arrives on.
 
 ** Sockets
 

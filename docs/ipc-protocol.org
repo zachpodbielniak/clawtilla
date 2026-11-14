@@ -75,7 +75,7 @@ anyway.
 
 | Kind | Payload | Reply |
 |------+---------+-------|
-| ~control.hello~ | ~token~ (TCP only) | ~version~, ~daemon~ |
+| ~control.hello~ | ~token~ (TCP only): the owner token or a paired device's | ~version~, ~daemon~ |
 | ~control.status~ | | ~version~, ~config~, ~agents~, ~connected~, ~clients~, ~cursor~ |
 | ~control.subscribe~ | ~cursor~ | ~cursor~, ~resumed~, then a replay |
 | ~control.reload~ | | ~refused~ -- see below |
@@ -157,6 +157,51 @@ warns once per refused agent and once more in summary, naming them.  It
 does not refuse to come up.  A fleet that would not start because one
 operator-typed block is wrong is a far worse failure than one that starts
 and says which agents are stale.
+
+*** device.*
+
+Per-device client tokens.  See [[file:security.org::*Paired devices][security.org]] for
+why each rule is the shape it is.
+
+| Kind | Who | Payload | Reply |
+|------+-----+---------+-------|
+| ~device.pair~ | owner | ~name~ (optional) | ~code~, ~display~ ("123 456"), ~expires_in~, ~expires_at~, ~addresses~ |
+| ~device.pair_cancel~ | owner | | ~{}~ |
+| ~device.redeem~ | anyone, *before* ~control.hello~ | ~code~, ~name~ (optional) | ~version~, ~daemon~, ~id~, ~name~, ~token~ |
+| ~device.list~ | any authenticated client | | ~owner~, ~idle_days~, ~pairing_expires_in~, ~devices~ |
+| ~device.revoke~ | any authenticated client | ~id~ | ~id~, ~closed~ |
+
+"Owner" is a unix-socket client or a network client that said
+~control.hello~ with the daemon's own token.  A paired device asking for
+~device.pair~ or ~device.pair_cancel~ is refused with
+~PERMISSION_DENIED~, naming the device and where the owner credential is.
+
+~device.redeem~ is the one frame a network client may send before
+~control.hello~, because a device being paired has nothing to say hello
+with yet.  It *is* the handshake: a success authenticates the connection
+as the new device -- on any socket, a unix one included -- and its
+~token~ is the only token any reply ever carries.  ~ClawtClient~ sends it
+in place of ~control.hello~ when ~clawt_client_set_pairing_code()~ was
+called, and says an ordinary hello with the token on every reconnect.  A
+wrong code is ~AUTH~ and says how many tries are left; the daemon-wide
+rate limit is ~LOOP_LIMIT~.
+
+~expires_in~ is what a client counts down from, against its own clock.
+~expires_at~ is the daemon's clock and is right only where the two agree.
+~addresses~ is every network listener that actually bound, as
+~host:port~ -- empty when the daemon is on its unix socket alone, in
+which case no other device can reach it to redeem the code.
+
+Each entry of ~devices~ is ~id~, ~name~, ~created~ and ~last_seen~
+(seconds since the epoch), ~connected~ (a connection is open now) and
+~current~ (it is the connection asking).  Never a token and never a
+hash.  ~owner~ says whether the asking client may pair, so a client can
+offer the button only where it would work; ~pairing_expires_in~ says a
+code is outstanding without saying which.
+
+~device.revoke~ closes every connection the device has open -- including
+the one asking, when a device revokes itself, which then never sees the
+reply.  ~closed~ counts them.
 
 *** attachment.*
 
@@ -1429,6 +1474,7 @@ Every kind published, by subject:
 | a recording | ~teach.changed~ |
 | an integration | ~integration.changed~ |
 | a cloud image | ~image.progress~ (~done~, ~total~), ~image.finished~ (~path~ or ~error~) |
+| the daemon | ~device.paired~ (~device~, ~name~), ~device.revoked~ (~device~), ~device.expired~ (~device~) |
 | an agent | ~computer.exec~ |
 | an agent | ~turn.timed_out~, ~turn.repeating~, ~message.steered~ |
 | an agent | ~turn.step~ (~step_kind~, ~room_id~, ~text~, ~tool~, ~detail~, ~failed~) |
@@ -1662,6 +1708,13 @@ proves you are the owner.
 
 Over TCP: ~control.hello~ with a token, before anything else.  The daemon
 refuses to open a TCP listener without a token configured.
+
+The token is either the daemon's own -- the owner credential, from
+~daemon.token_file~ or ~<state_dir>/tcp-token~ -- or a paired device's,
+from ~device.redeem~.  The owner token is checked first and by itself, so
+nothing that happens to devices changes what it opens.  The one frame
+allowed before the hello is ~device.redeem~, which is a hello of its own
+(see ~device.*~ above).
 
 ** Noticing that the other end has gone
 

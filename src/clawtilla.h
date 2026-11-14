@@ -153,6 +153,7 @@
 #include "ipc/clawt-ipc-server.h"
 #include "ipc/clawt-client.h"
 #include "ipc/clawt-connection.h"
+#include "ipc/clawt-device-store.h"
 
 #include "agent/clawt-hold.h"
 #include "core/clawt-update.h"

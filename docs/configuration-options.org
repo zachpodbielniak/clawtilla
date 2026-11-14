@@ -187,6 +187,22 @@ for. Left unset, a token is generated into <state_dir>/tcp-token the
 first time a TCP or tailnet listener needs one, so enabling either
 cannot leave the daemon open by omission.
 
+*** =daemon.device_idle_days=
+
+- Type :: integer
+- Default :: =90=
+- Since :: 0.13.0
+
+Days a paired device may go unseen before its token stops working.
+0 means never.
+
+A device is seen when it connects and, once a minute, for as long as
+it stays connected -- so a laptop left open on the fleet never lapses
+while somebody is looking at it. An expired device is removed exactly
+as `clawtilla device revoke` would remove it, live connections and
+all; pair it again with a fresh code. The daemon's own token
+(token_file) is the owner credential and never expires.
+
 *** =daemon.event_log_days=
 
 - Type :: integer
