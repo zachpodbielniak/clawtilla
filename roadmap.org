@@ -4,7 +4,7 @@
 #+categories: software planning
 #+created: [2026-11-14 Sat]
 #+updated: [2026-11-14 Sat]
-#+version: 0.3.0
+#+version: 0.4.0
 
 * About this file
 
@@ -336,7 +336,7 @@ OpenMausBot's "500+ apps" are Composio (=docs/composio.md=): a Composio project 
 - *Also:* the TOOLS.org managed region must describe a directory server as "search it" rather than enumerating hundreds of tools, or the region becomes the context problem it was meant to describe.
 - *Version:* minor.
 
-** TODO P2 An app source: AnythingMCP as a connector pack                                           :connectors:
+** P2 An app source: the comparison, and the choice                                           :connectors:
 The comparison, checked against each project's own README and docs on 2026-11-14:
 
 | | Activepieces | AnythingMCP | Jentic One |
@@ -363,16 +363,54 @@ The comparison, checked against each project's own README and docs on 2026-11-14
   - The image is amd64 only, so on the Asahi machines it must be built from its Dockerfile. Check that before relying on it.
   - It holds the SaaS credentials itself, a second credential store beside clawtilla's. Only the gateway's token is clawtilla's to hold.
 
-*Activepieces* is the most mature and has the biggest community. Use it only for its API-key pieces, or if workflows rather than tools are what is wanted. Its OAuth position rules it out as the general answer.
+*Activepieces* is undecided; see "To be decided" below. *Jentic One* is a later augmentation; see its own item below.
 
-*Jentic One* has the security model closest to clawtilla's own: the broker checks a rule, then injects the credential after the check, and records every call. But it is a beta whose catalogue is raw API operations rather than curated apps, and it says nothing yet about OAuth for SaaS. Watch it. Read its broker as prior art for the P0 egress gate and provider-key broker, which solve the same problem one layer down.
+*Decided 2026-11-14: AnythingMCP, run and managed by clawtilla.*
 
-*The work:*
-- *Connector pack:* =data/connectors.d/anythingmcp.yaml=, an =api-key= or =bearer= connector whose =server_url= is the gateway's MCP URL, with the gateway token held by clawtilla like any connector credential.
-- *Docs:* =docs/connectors.org= gains a section on running it with podman (a =Containerfile= or quadlet, never a docker command), on building the image for aarch64, and on scoping: one gateway MCP server per clawtilla agent or team, so the gateway's own per-server assignment *is* the agent's permission, and the two cannot disagree.
+*** TODO P2 A managed integration broker: clawtilla runs AnythingMCP in podman                 :connectors:computers:
+When somebody turns the broker on, clawtilla starts a local AnythingMCP for them and owns its whole lifecycle. They never write a compose file, and the gateway is just another part of the fleet.
+
+- *Config (schema first):* a new top-level =broker:= section with =broker.enabled= (default false: it pulls an image and opens a port), =broker.type: anythingmcp= (an enum, so a later broker is a value and not a new section), =broker.image= (pinned to a tag, never =latest=), =broker.bind= (default loopback only), =broker.port=, and =broker.connection= for a remote podman, as =computer.container.connection= already does. Grep the schema for "gateway" and "broker" before adding, because a concept spelled two ways becomes two settings.
+- *State under =<state_dir>/broker/= (=~/.clawtilla/broker/= by default):* the gateway's database, its encryption key (0600), the generated admin token and the adapters it was given all live there. The daemon writes for itself under =<state_dir>=, never into a key the person owns, and every test fixture already pins =daemon.state_dir=.
+- *Lifecycle:*
+  - Built on the container machinery computers already use (=clawt-pod-bridge.c=, the podomation =container= module), not on a second podman client.
+  - Started when the daemon starts and the key is on, and stopped with it.
+  - Stopping must not destroy what the person connected: the volume is under =<state_dir>=, and "keep" is not optional here.
+  - Kept alive the way an agent runtime is, with a restart policy and a state the clients can show.
+  - Daemon start must not wait on the pull or the boot: start it asynchronously (=clawt_computer_lifecycle_async()=), and let =broker.status= say "starting" instead of blocking an IPC handler.
+- *Before the first start, run it under podman once by hand, as the person would.*
+  - Their install is a Docker Compose file with Caddy in front. Rootless podman with each service as its own container, or =podman kube play= of a translated pod, has to be shown to work, not assumed.
+  - The published image is amd64 only, so on the Asahi machines =broker.image= must name a locally built one. Write that procedure in the docs from doing it, not from reading the Dockerfile.
+  - Check what the compose file runs beside the gateway (a database, a code-runner container) and whether the community edition needs each one. Code Mode's runner is a separate container, and its write mode is enterprise anyway.
+- *Wiring:*
+  - The broker registers itself as a connector, a =bearer= connector whose =server_url= is its own MCP URL and whose token clawtilla holds, so every agent's access goes through the existing connector grants and relay.
+  - One gateway MCP server per clawtilla agent or team: the gateway's per-server connector assignment then *is* the agent's permission, and the two cannot disagree.
+  - The relay names the gateway in refusals, so "AnythingMCP refused it" and "clawtilla refused it" read differently.
+- *Clients:*
+  - A Broker row on the Connectors page in GTK, web and lrg: running or stopped, the URL of the gateway's own dashboard (where SaaS sign-ins happen, with your own OAuth client), and start, stop and restart.
+  - CLI verbs: =broker status/start/stop/logs=.
+  - =make parity= rows for the affordances.
+- *Credentials:* the SaaS tokens live in the gateway's encrypted store, not clawtilla's. That is a second credential store, and the docs say so plainly and say where its key is. Only the gateway's bearer token is clawtilla's to hold, written 0600 and never returned over IPC.
+- *Hermetic tests:*
+  - The container spec (image, binds, ports, environment, volume path under the fixture's =state_dir=) is asserted as data.
+  - Starting is behind =CLAWT_TEST_INTEGRATION=1=, so =make test= still opens no socket and needs no podman.
+- *Packages:* nothing new on the host; podman is already a runtime row in =tools/clawt-install-deps.sh=.
 - *Depends on:* the tool directory above, because one gateway server with dozens of adapters is exactly the many-tools case.
-- *Later, only if the gateway earns it:* clawtilla could read AnythingMCP's adapter JSON directly. The licences match, but that would mean implementing its REST mapping in C. Run the gateway first.
-- *Version:* none for the pack and docs. A minor bump if the connector catalogue grows a gateway type.
+- *Later, only if the gateway earns it:* clawtilla could read AnythingMCP's adapter JSON itself. The licences match, but that means implementing its REST mapping in C. Run the gateway first.
+- *Docs:* =docs/connectors.org= (a broker section) and =docs/configuration-options.org= (generated), in the same change.
+- *Version:* minor (a config section, IPC frames and a page row in every client).
+
+** TODO P3 Jentic One as a later augmentation                                                       :connectors:security:
+- *What it adds that AnythingMCP does not:* a broker whose whole job is policy. It checks a per-agent rule, injects the credential only after the check, forwards the request, and records an execution log of every call; a denied call never leaves the box (their Stripe example: a refund POST returns 403). Its catalogue is OpenAPI documents plus Arazzo workflows from the Jentic public API directory, which covers APIs AnythingMCP has no adapter for. Apache-2.0, Python, Postgres or SQLite, one image for control plane and broker.
+- *Why later:*
+  - It is a 0.x public beta whose schemas and CLI may change.
+  - Telemetry is on by default in its quickstart (opt out when run).
+  - Its README describes no OAuth flow for SaaS apps, only stored credentials.
+  - Its own caveat: an agent running as the same OS user as its CLI state can read that state, so the protection holds against agents running as other users or on other machines. For clawtilla that means confined agents only, after the P0 CLI confinement work.
+- *Two ways it could fit:*
+  1. A second =broker.type= value, managed the same way as AnythingMCP: podman, state under =<state_dir>/broker/=, registered as a connector.
+  2. Prior art only, for the P0 egress gate and provider-key broker, which put the same check-then-inject step in front of provider APIs one layer down. Do this first whatever is decided about running it.
+- *Revisit when:* it leaves beta, or describes OAuth for SaaS apps.
 
 ** TODO P2 Several accounts on one service: make the agent choose                                   :connectors:
 - *Today:* =clawtilla connector add gh --provider github --account work= allows several accounts per service. Whether an agent granted two of them is made to say which one, or silently gets the first, is not verified.
@@ -420,3 +458,11 @@ OpenMausBot's =app_settings= (=docs/superpowers/specs/2026-11-12-app-settings-to
 - *Voice and live calls*: cmacs already has transcription and speech synthesis. Bridge to those rather than copying ElevenLabs or Fish integrations.
 - *Meeting-notes bot, image generation, Netlify publishing, org library, announcements, feature flags*: no fit for a single-operator, FOSS-only fleet.
 - *Team-sharing packages and presets*: single user. Keep their rule that a preset can never widen permissions, should a package format ever exist.
+
+* To be decided
+
+** Activepieces
+- *What it is:* workflow automation (an open Zapier) whose integrations ("pieces") are also MCP tools: 280+ over MCP and 760+ in total by their count. It is the most mature of the candidates, at about 25.5k stars and 62k commits. The community edition is MIT; =packages/ee/= is commercial. Postgres or SQLite, Docker.
+- *Why it was not chosen:* on a self-hosted install, Google, Slack and the like connect as "Activepieces" through *its* OAuth apps by default, and using your own client id per piece is "a paid feature" (=docs/admin-guide/guides/manage-oauth2=). For the apps people want most, self-hosting then does not keep the identity yours.
+- *What could change that:* if only its API-key pieces are wanted; if workflows (multi-step, scheduled, branching) rather than single tool calls become a need that clawtilla's routines and triggers do not cover; or if bringing your own OAuth client moves into the community edition.
+- *If adopted:* a third =broker.type=, managed the same way, restricted or documented to API-key pieces until the OAuth question is settled.
