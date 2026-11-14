@@ -454,11 +454,12 @@ append_rooms_for_team(ClawtWebApp *app, HtmxDiv *scroll, JsonArray *rooms,
         const gchar *id = clawt_web_member(room, "id", "");
 
         /*
-         * Only rooms somebody made.  A direct conversation is already
-         * the agent's own row, and a routine's or a trigger's belongs to
-         * that routine or trigger.
+         * Only rooms somebody made, and each team's "Problems to look
+         * at".  A direct conversation is already the agent's own row,
+         * and a routine's or a trigger's belongs to that routine or
+         * trigger.  The library decides which.
          */
-        if (!clawt_web_member_bool(room, "declared", FALSE))
+        if (!clawt_room_is_listed(id))
             continue;
 
         if (g_strcmp0(clawt_web_member(room, "team", ""),
@@ -480,7 +481,11 @@ append_rooms_for_team(ClawtWebApp *app, HtmxDiv *scroll, JsonArray *rooms,
          * same capability on a page that has to work without
          * JavaScript, and both write the same key.
          */
-        if (g_strcmp0(id, selected_room) == 0) {
+        /*
+         * Not for an incidents room, which its team places: its order
+         * is nowhere in clawtilla.yaml, so a move would be refused.
+         */
+        if (g_strcmp0(id, selected_room) == 0 && clawt_room_is_declared(id)) {
             g_autoptr(HtmxDiv) move = htmx_div_new();
             g_autofree gchar *escaped = g_uri_escape_string(id, NULL, FALSE);
             g_autofree gchar *up =
@@ -1592,7 +1597,7 @@ clawt_web_sidebar_entries(ClawtWebApp *app, const gchar *find, gint *index_out)
         JsonObject *room = json_array_get_object_element(rooms, i);
         const gchar *id = clawt_web_member(room, "id", NULL);
 
-        if (id == NULL || !clawt_web_member_bool(room, "declared", FALSE))
+        if (id == NULL || !clawt_room_is_listed(id))
             continue;
 
         if (g_strcmp0(id, find) == 0)

@@ -1230,6 +1230,45 @@ pending waits so it can fold a new one into an old one.
 
 Override with max_waits on an agent. 0 removes the limit.
 
+** =orchestration.incidents=
+
+Reports of runs that broke, sent to whoever leads the team.
+
+A delegated task that failed or stalled, an agent that would not start
+with work waiting for it, and a routine run that did not happen each
+open an incident: one per run (the same task failing again updates it),
+filed in a room per team called "Problems to look at", and delivered
+as a report the recipient can act on with clawtilla_task_retry. A
+recipient that is mid-turn has its report held until the turn ends.
+See docs/orchestration.org, "Incidents".
+
+*** =orchestration.incidents.enabled=
+
+- Type :: boolean
+- Default :: =true=
+- Since :: 0.17.0
+
+Whether broken runs open incidents at all.
+
+Off, nothing is filed and nobody is told; tasks still fail and stall
+exactly as before, and their delegators still get the settle notice.
+Retrying a failed task works either way.
+
+*** =orchestration.incidents.to=
+
+- Type :: enum
+- Values :: lead, chief, none
+- Default :: =lead=
+- Since :: 0.17.0
+
+Who an incident report goes to: lead, chief or none.
+
+lead is the failing agent's team lead, or the chief of staff when the
+team has none (or two). chief is always the chief of staff. none spends
+nobody's turn: the report is recorded in the room for you to read.
+Never the agent whose run broke, and never the agent that delegated
+the task -- it already has the settle notice.
+
 ** =memories=
 
 What an agent remembers between conversations.

@@ -184,6 +184,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/task/clawt-handoff.h \
 	$(SRCDIR)/task/clawt-handoff-store.h \
 	$(SRCDIR)/task/clawt-routine-runner.h \
+	$(SRCDIR)/task/clawt-incident.h \
 	$(SRCDIR)/trigger/clawt-trigger-event.h \
 	$(SRCDIR)/trigger/clawt-trigger-provider.h \
 	$(SRCDIR)/trigger/clawt-trigger.h \
@@ -366,6 +367,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/task/clawt-handoff.c \
 	$(SRCDIR)/task/clawt-handoff-store.c \
 	$(SRCDIR)/task/clawt-routine-runner.c \
+	$(SRCDIR)/task/clawt-incident.c \
 	$(SRCDIR)/wait/clawt-wait.c \
 	$(SRCDIR)/wait/clawt-wait-manager.c \
 	$(SRCDIR)/trigger/clawt-trigger-event.c \
@@ -1020,6 +1022,7 @@ test: $(TEST_BINARIES) test-plugins plugins
 	@echo "Running tests..."
 	@TMPDIR=$$(mktemp -d /tmp/clawt-run-XXXXXX); export TMPDIR; \
 	HOME="$$TMPDIR/no-home"; export HOME; \
+	LSAN_OPTIONS="suppressions=$(CURDIR)/$(TESTDIR)/lsan-upstream.supp:print_suppressions=0"; export LSAN_OPTIONS; \
 	sh $(TOOLSDIR)/clawt-test-litter.sh snapshot $(OUTDIR)/test-litter; \
 	fail=0; ran=0; \
 	for t in $(TEST_BINARIES); do \

@@ -154,6 +154,8 @@ static const gchar *usage_tail =
     "  # Hand work to a chief-of-staff and watch it delegate\n"
     "  clawtilla send chief-of-staff \"summarize this week's commits\"\n"
     "  clawtilla task list\n"
+    "  clawtilla task incidents            # broken runs, and who was told\n"
+    "  clawtilla task retry task-01m0k5    # send a failed run round again\n"
     "\n"
     "  # Look at what is queued for an agent that is currently stopped\n"
     "  clawtilla mailbox list researcher\n"
@@ -4355,6 +4357,85 @@ cmd_task(int argc, char *argv[])
         g_print("Cancelled %" G_GINT64_FORMAT " task(s).\n",
                 json_object_get_int_member(json_node_get_object(reply),
                                            "cancelled"));
+
+        return EXIT_SUCCESS;
+    }
+
+    /*
+     * Sends a failed or stalled run round again: a task by its id, or an
+     * incident (`inc-...`) from `task incidents`, which is how a routine
+     * that never made a task is retried.
+     */
+    if (g_strcmp0(verb, "retry") == 0) {
+        const gchar *key;
+
+        if (argc < 4) {
+            g_printerr("Usage: clawtilla task retry <task-id|incident-id> "
+                       "[reason]\n");
+            return EXIT_FAILURE;
+        }
+
+        key = g_str_has_prefix(argv[3], "inc-") ? "incident" : "task";
+
+        reply = call(client, "task.retry",
+                     build_payload(key, argv[3],
+                                   "reason", (argc > 4) ? argv[4] : NULL,
+                                   NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        if (json_object_get_boolean_member_with_default(
+                json_node_get_object(reply), "rerun", FALSE))
+            g_print("Running the routine again as task %s.\n",
+                    member_or(json_node_get_object(reply), "task", "?"));
+        else
+            g_print("Task %s is queued for its assignee again.\n",
+                    member_or(json_node_get_object(reply), "task", "?"));
+
+        return EXIT_SUCCESS;
+    }
+
+    /* The open incidents: broken runs, and who was told. */
+    if (g_strcmp0(verb, "incidents") == 0) {
+        JsonObject *root;
+        JsonArray *incidents;
+        guint i;
+
+        reply = call(client, "incident.list", NULL);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        root = json_node_get_object(reply);
+        incidents = json_object_get_array_member(root, "incidents");
+
+        g_print("Reports go to: %s%s\n", member_or(root, "to", "lead"),
+                json_object_get_boolean_member_with_default(root, "enabled",
+                                                            TRUE)
+                    ? "" : " (incidents are switched off)");
+
+        if (incidents == NULL || json_array_get_length(incidents) == 0) {
+            g_print("Nothing has broken.\n");
+            return EXIT_SUCCESS;
+        }
+
+        g_print("%-26s %-12s %-16s %-26s %s\n", "ID", "AGENT", "KIND",
+                "TASK", "TOLD");
+
+        for (i = 0; i < json_array_get_length(incidents); i++) {
+            JsonObject *incident = json_array_get_object_element(incidents,
+                                                                 i);
+            const gchar *told = member_or(incident, "recipient", NULL);
+
+            g_print("%-26s %-12s %-16s %-26s %s%s\n",
+                    member_or(incident, "id", "?"),
+                    member_or(incident, "agent", "?"),
+                    member_or(incident, "kind_label", "?"),
+                    member_or(incident, "task",
+                              member_or(incident, "routine", "-")),
+                    told != NULL ? told : "nobody",
+                    json_object_get_boolean_member_with_default(
+                        incident, "queued", FALSE) ? " (waiting)" : "");
+        }
 
         return EXIT_SUCCESS;
     }
@@ -9421,7 +9502,7 @@ static const ClawtVerb verbs[] = {
       cmd_account },
     { "policy-hook", "--agent ID --token-file PATH", "Claude Code's PreToolUse hook (run by the daemon's settings)",
       cmd_policy_hook },
-    { "task",    "<verb>",   "Inspect delegated tasks",
+    { "task",    "<verb>",   "Inspect delegated tasks (list, show, cancel, retry, incidents)",
       cmd_task },
     { "decision", "<verb>",  "Answer what an agent has asked you",
       cmd_decision },

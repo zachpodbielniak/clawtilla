@@ -105,7 +105,7 @@ The same seven the GTK client's view switcher has, in the same order.
 | Mailbox  | what is waiting, what died, purge and requeue              |
 | Computer | exec console, mounts, the exchange, rebuild                |
 | Routines | scheduled work, running one now, turning one back on       |
-| Tasks    | delegated work, the budget, cancelling                     |
+| Tasks    | Problems to look at (settings, open incidents, Retry), delegated work, the budget, cancelling, retrying |
 | Flow     | what the agents are saying to each other                   |
 | Activity | every running turn, to stop or steer ([[file:clients.org::#activity-tab][the Activity tab]]) |
 | Fleet    | cost per agent, the last fourteen days, idle agents to stop ([[file:clients.org::#fleet-tab][the Fleet tab]]) |
@@ -204,7 +204,7 @@ answers with the page it did it on.
 | =/settings=, =/settings/:page= | the seven settings pages               |
 | =/settings/<page>/...=        | their actions: add, save, remove, health, test, authorize, revoke |
 | =/new=, =/import=, =/design=  | making an agent                         |
-| =/alerts=, =/decisions=, =/routines/...=, =/tasks/:task/cancel= | the standing surfaces |
+| =/alerts=, =/decisions=, =/routines/...=, =/tasks/:task/cancel=, =/tasks/:task/retry=, =/incidents/:incident/retry=, =/incidents/configure= | the standing surfaces |
 | =/activity/:agent/stop=, =/activity/:agent/steer=, =/f/activity= | the Activity page's actions and its polled panel |
 | =/fleet-usage/:agent/stop=, =/fleet-usage/stop-idle=, =/f/fleet-usage= | the Fleet page's actions and its polled panel (=?period== picks the window) |
 | =/a/:id/browser/open=, =/a/:id/browser/click=, =/a/:id/browser/stop=, =/a/:id/browser/frame=, =/f/a/:id/browser= | the Computer page's Browser view: its actions, its picture and its polled panel |

@@ -1,0 +1,12 @@
+# LeakSanitizer suppressions for leaks in vendored dependencies, never in
+# clawtilla's own code.  Each entry names the upstream bug; remove it in
+# the change that pins the dependency release that fixes it.
+#
+# podomation 643fe83 (libreclaw v0.29.0), modules/container/
+# pod-container-module.c: container_open_stream() and
+# container_stream_thread_func() leave the GError from a failed or
+# cancelled event-stream read set when the module is stopping.  Fix:
+# g_clear_error(&error) before each early return/break.  See roadmap.org,
+# "Upstream: podomation container event thread leaks its GError".
+leak:container_open_stream
+leak:container_stream_thread_func

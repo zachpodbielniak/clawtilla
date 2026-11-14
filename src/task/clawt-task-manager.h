@@ -229,6 +229,26 @@ gboolean clawt_task_manager_complete(ClawtTaskManager *self,
  * Returns: %TRUE if the task existed and had not already ended
  */
 /**
+ * clawt_task_manager_retry:
+ * @self: a #ClawtTaskManager
+ * @task_id: the task
+ * @who: who is retrying it: an agent id, or "user"
+ * @error: (out) (optional): why it was refused
+ *
+ * Puts a failed or stalled task back to `pending`, for its assignee to
+ * be handed the work again.  The one way a finished task becomes
+ * unfinished, and deliberately narrow: a completed task would be redone,
+ * a cancelled one was stopped on purpose, and a pending or running one
+ * has nothing to retry.  Emits ::task-changed.
+ *
+ * Returns: %TRUE if the task was reopened
+ */
+gboolean clawt_task_manager_retry(ClawtTaskManager  *self,
+                                  const gchar       *task_id,
+                                  const gchar       *who,
+                                  GError           **error);
+
+/**
  * clawt_task_manager_stall:
  * @self: a #ClawtTaskManager
  * @task_id: a task id

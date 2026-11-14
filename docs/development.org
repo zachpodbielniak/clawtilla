@@ -496,6 +496,8 @@ make DEBUG=1 ASAN=1 clean all
 ASAN_OPTIONS=detect_leaks=1 ./build/debug/tests/test-daemon
 #+end_src
 
+=make test= sets ~LSAN_OPTIONS~ to read =tests/lsan-upstream.supp=, which suppresses leaks inside vendored dependencies and nothing else. Every entry names the upstream bug and the function it leaks in, and is removed in the change that pins the dependency release fixing it. A leak in clawtilla's own code is never suppressed: fix it. Running a test binary by hand skips the file, so set the same ~LSAN_OPTIONS~ if a dependency's known leak gets in the way.
+
 ** Upgrading libreclaw
 
 #+begin_src bash

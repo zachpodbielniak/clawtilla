@@ -484,6 +484,15 @@ declare -A AFFORDANCES=(
     ["fallback list editor"]="fallback_editor_draw|clawt_web_fallback_card|draw_fallbacks"
     ["on fallback badge"]="clawt_gtk_failover_badge|clawt_web_failover_badge|clawt_lrg_badge(agent->fallback"
     ["alert in the event's words"]="clawt_event_get_detail(event, \"message\")|clawt_event_get_detail(event, \"message\")|clawt_event_get_detail(event, \"message\")"
+    #
+    # Each team's "Problems to look at" room has a sidebar row.  It sends
+    # no frame of its own -- it is room.list read with a different
+    # filter -- so layer 1 cannot see a client that lists only declared
+    # rooms, and the incidents would then be readable nowhere but the
+    # Tasks page.  The marker is the library predicate every listing
+    # site calls.
+    #
+    ["incidents rooms in the sidebar"]="clawt_room_is_listed|clawt_room_is_listed|clawt_room_is_listed"
 )
 
 usage () {

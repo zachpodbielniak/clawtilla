@@ -921,6 +921,35 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "Override with max_waits on an agent. 0 removes the limit.", "0.15.0" },
 
+{ "orchestration.incidents", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Reports of runs that broke, sent to whoever leads the team.\n"
+  "\n"
+  "A delegated task that failed or stalled, an agent that would not start\n"
+  "with work waiting for it, and a routine run that did not happen each\n"
+  "open an incident: one per run (the same task failing again updates it),\n"
+  "filed in a room per team called \"Problems to look at\", and delivered\n"
+  "as a report the recipient can act on with clawtilla_task_retry. A\n"
+  "recipient that is mid-turn has its report held until the turn ends.\n"
+  "See docs/orchestration.org, \"Incidents\".", "0.17.0" },
+
+{ "orchestration.incidents.enabled", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "true", NULL,
+  "Whether broken runs open incidents at all.\n"
+  "\n"
+  "Off, nothing is filed and nobody is told; tasks still fail and stall\n"
+  "exactly as before, and their delegators still get the settle notice.\n"
+  "Retrying a failed task works either way.", "0.17.0" },
+
+{ "orchestration.incidents.to", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "lead", clawt_incident_recipient_get_type,
+  "Who an incident report goes to: lead, chief or none.\n"
+  "\n"
+  "lead is the failing agent's team lead, or the chief of staff when the\n"
+  "team has none (or two). chief is always the chief of staff. none spends\n"
+  "nobody's turn: the report is recorded in the room for you to read.\n"
+  "Never the agent whose run broke, and never the agent that delegated\n"
+  "the task -- it already has the settle notice.", "0.17.0" },
+
 { "memories", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "What an agent remembers between conversations.\n"
   "\n"

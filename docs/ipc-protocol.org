@@ -710,6 +710,8 @@ the key is omitted rather than guessed at.
 ~room.list~, ~room.create~, ~room.set~, ~room.add~, ~room.remove~,
 ~room.history~, ~room.steps~.
 
+Each room in ~room.list~ carries ~declared~ (somebody made it) and, since incidents, ~incidents~ (a JSON boolean: it is a team's *Problems to look at* room, ~incidents:<team>~ or ~incidents:+fleet~).  Which rooms get a sidebar row is =clawt_room_is_listed()=, the same in every client: the declared ones and the incidents ones.
+
 ~room.create~ takes ~room~, an optional ~name~, comma-separated
 ~members~ and an optional ~require_mention~.  It writes a ~rooms:~ entry
 *and* makes the room, because writing the config is not creating the
@@ -802,7 +804,19 @@ A client offers the choices by walking ~clawt_ack_check_model_count()~
 
 *** task.*
 
-~task.list~, ~task.show~, ~task.cancel~.
+~task.list~, ~task.show~, ~task.cancel~, ~task.retry~.
+
+A task object carries ~retries~ and ~retried_by~ once it has been retried, and not before.
+
+~task.retry~ takes ~task~ (a task id) *or* ~incident~ (an incident id), and an optional ~reason~ the assignee sees with the work.  It is the operator's Retry: a ~failed~ or ~stalled~ task is re-queued for its assignee with its original work and ~retried_by: "user"~; a routine's run is run again.  It answers ~task~ (the task now carrying the work -- the same id for a re-queue, the new run's for a routine) and ~rerun~ (a JSON boolean, true for a routine).  Any other task state is =INVALID_ARGUMENT= with the reason, as is an incident whose agent could not start (its work is still queued); an unknown id is =NOT_FOUND=.  See docs/orchestration.org, "Incidents: broken runs reach the lead".
+
+*** incident.*
+
+~incident.list~ answers ~enabled~ (a JSON boolean, =orchestration.incidents.enabled=), ~to~ (=orchestration.incidents.to=, a nickname a client offers by walking =clawt_incident_recipient_count()= / =clawt_incident_recipient_nth()=) and ~incidents~, newest first: the open ones, or every one the daemon still holds with ~all: true~.  Each has ~id~, ~kind~ (~failed~, ~stalled~, ~unstartable~ or ~routine-failed~) and ~kind_label~ (=clawt_incident_kind_label()=), ~agent~, ~team~, ~room~ (its incidents room), ~run_room~, ~task~, ~routine~, ~reason~, ~log_lines~ (an array), ~recipient~ (absent when nobody was given it), ~note~ (why not), ~retried_by~, ~occurrences~, ~retries~, ~opened_at~, ~updated_at~ and ~delivered_at~ (microseconds; 0 for never), and three JSON booleans: ~queued~ (waiting for its recipient's turn to end, or for the router), ~resolved~, and ~retryable~ -- whether ~task.retry~ would be accepted now, decided by the daemon so no client guesses from state names.
+
+~incident.configure~ takes ~enabled~ (a JSON boolean) and ~to~ (~lead~, ~chief~ or ~none~; anything else is =INVALID_ARGUMENT= rather than saved and read back as the default), writes them to ~clawtilla.yaml~, publishes ~incident.configured~, and answers both as they now stand.
+
+Events: ~incident.opened~ and ~incident.updated~ (a repeat, a delivery, a retry) and ~incident.resolved~, each with the incident id as subject and details ~agent~ (the agent whose run broke, which is what a pod's scope is matched against), ~kind~, ~room~, ~occurrences~, and ~team~, ~task~, ~routine~ and ~recipient~ when there is one.  All three are routine-tier: the report is in the room, and a badge would be the same news twice.
 
 *** usage.*
 

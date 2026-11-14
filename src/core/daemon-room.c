@@ -289,6 +289,14 @@ clawt_daemon_handle_room(
             json_builder_set_member_name(builder, "declared");
             json_builder_add_boolean_value(
                 builder, clawt_room_is_declared(clawt_room_get_id(room)));
+            /*
+             * A "Problems to look at" room: derived, like a routine's,
+             * but one the operator is meant to read, so the clients list
+             * it under its team where a routine's room is left out.
+             */
+            json_builder_set_member_name(builder, "incidents");
+            json_builder_add_boolean_value(
+                builder, clawt_incident_room_is(clawt_room_get_id(room)));
             json_builder_set_member_name(builder, "require_mention");
             json_builder_add_boolean_value(
                 builder, clawt_room_get_require_mention(room));

@@ -520,6 +520,12 @@ struct _ClawtWindow {
 
     /* Tasks */
     GtkListBox        *task_list;
+
+    /*
+     * The "Problems to look at" group above the tasks: the incident
+     * settings and every open incident, each with its Retry.
+     */
+    GtkListBox        *incident_list;
     GtkListBox        *activity_list;
 
     /* The Fleet page (gtk-fleet.c). */

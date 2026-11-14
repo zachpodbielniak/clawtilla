@@ -955,6 +955,16 @@ clawt_daemon_turn_settle(ClawtDaemon *self, const gchar *agent_id)
      */
     clawt_daemon_handoff_pump(self);
 
+    /*
+     * And incident reports held because this agent was mid-turn when
+     * they arrived -- every one that waited, in one message per room.
+     * Before the steers below, which start the agent's next turn: a
+     * report held until "the turn ends" must go at the end, not behind
+     * whatever the operator typed meanwhile.
+     */
+    if (self->incidents != NULL)
+        clawt_incident_desk_flush(self->incidents, agent_id);
+
     if (self->steers == NULL)
         return;
 
