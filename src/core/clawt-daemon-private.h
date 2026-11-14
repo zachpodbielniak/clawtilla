@@ -280,6 +280,11 @@ struct _ClawtDaemon {
     gchar            *sentinel_command;
 
     ClawtBusyWatch   *busy_watch;
+    /*
+     * First-reply rescue (daemon-rescue.c): room turns that have shown
+     * nothing yet, keyed agent and room.
+     */
+    ClawtRescueWatch *rescues;
     GHashTable       *turn_said;
     gint            (*turn_pid_func)(ClawtDaemon *self, const gchar *agent_id);
     guint             turn_grace_seconds;
@@ -1215,6 +1220,26 @@ clawt_daemon_handle_sentinel(
 void clawt_daemon_sentinel_set_command(ClawtDaemon *self,
                                        const gchar *command);
 void clawt_daemon_sentinel_teardown(ClawtDaemon *self);
+
+/*
+ * daemon-rescue.c: a room's turn began, showed something (a step or a
+ * reply; @room_id NULL for every room of the agent), and the sweep that
+ * offers the silent ones.  `turn.rescue` is the client surface.
+ */
+void clawt_daemon_rescue_begin(ClawtDaemon *self, const gchar *agent_id,
+                               const gchar *room_id);
+void clawt_daemon_rescue_life(ClawtDaemon *self, const gchar *agent_id,
+                              const gchar *room_id);
+void clawt_daemon_rescue_sweep(ClawtDaemon *self);
+
+JsonNode *
+clawt_daemon_handle_rescue(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
 
 JsonNode *
 clawt_daemon_handle_egress(

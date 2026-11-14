@@ -2851,6 +2851,25 @@ static const ClawtSchemaEntry schema[] = {
   "is 0.",
   "0.2.0" },
 
+{ "agents.runtime.first_reply_seconds", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_NONE, "20", NULL,
+  "How long a turn may show nothing at all -- no step, no thought, no\n"
+  "reply -- before the clients offer to stop it or to run the same\n"
+  "message on another model. 0 never offers.\n"
+  "\n"
+  "Nothing is stopped by this; it is an offer, shown beside the\n"
+  "conversation and withdrawn the moment the turn shows anything. It\n"
+  "needs runtime.stream_steps, since a turn whose steps are not\n"
+  "streamed is silent until it answers whether or not it is working.\n"
+  "\n"
+  "Silence here is what the daemon can see, which is less than what the\n"
+  "CLI is doing: libreclaw does not forward the CLI's own status lines,\n"
+  "and holds prose until a tool call or the end of the turn. So the\n"
+  "offer says the turn has shown nothing, never that it is stuck. The\n"
+  "models offered are the model.fallbacks entries on the agent's own\n"
+  "CLI and login, since one turn's model is a name on the CLI it is\n"
+  "already running.", "0.24.0" },
+
 { "agents.runtime.busy_cpu_percent", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "5", NULL,
   "How much CPU the agent's processes must use, in percent of one core,\n"

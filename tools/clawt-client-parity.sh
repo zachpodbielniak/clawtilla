@@ -557,6 +557,10 @@ declare -A AFFORDANCES=(
     # library's words, so a stale report reads as stale in all three.
     ["issues report age"]="clawt_sentinel_age_text|clawt_sentinel_age_text|clawt_sentinel_age_text"
     ["issue kind label"]="clawt_sentinel_kind_label|clawt_sentinel_kind_label|clawt_sentinel_kind_label"
+    # First-reply rescue: the offer's sentence and each switch's label are
+    # the library's, so no client claims more than the daemon can see.
+    ["first-reply rescue offer"]="clawt_rescue_offer_text|clawt_rescue_offer_text|clawt_rescue_offer_text"
+    ["first-reply switch label"]="clawt_rescue_switch_label|clawt_rescue_switch_label|clawt_rescue_switch_label"
     ["memory review undo"]="clawt_memory_journal_undo_label|clawt_memory_journal_undo_label|clawt_memory_journal_undo_label"
     ["pairing countdown"]="clawt_device_countdown_text|clawt_device_countdown_text|clawt_device_countdown_text"
     ["device last seen"]="clawt_device_seen_text|clawt_device_seen_text|clawt_device_seen_text"

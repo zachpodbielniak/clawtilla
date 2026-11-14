@@ -346,6 +346,10 @@ const ClawtLrgPage *clawt_lrg_activity_page(void);   /* lrg-activity.c */
 /* lrg-issues.c: the Activity page's Issues section (the sentinel's report). */
 void clawt_lrg_issues_build(ClawtLrgApp *app, LrgWidget *body);
 void clawt_lrg_issues_refresh(ClawtLrgApp *app);
+/* lrg-rescue.c: the chat's first-reply rescue card, above the composer.
+ * The box is the chat's (borrowed); refresh re-reads turn.rescue. */
+LrgWidget *clawt_lrg_rescue_build(ClawtLrgApp *app);
+void clawt_lrg_rescue_refresh(ClawtLrgApp *app);
 const ClawtLrgPage *clawt_lrg_fleet_page(void);      /* lrg-fleet-page.c */
 const ClawtLrgPage *clawt_lrg_grok_page(void);       /* lrg-grok.c */
 const ClawtLrgPage *clawt_lrg_skills_page(void);     /* lrg-skills.c */

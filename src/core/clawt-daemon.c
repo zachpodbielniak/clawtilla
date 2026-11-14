@@ -2374,6 +2374,9 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
      */
     clawt_daemon_turn_activity(self, agent_id);
 
+    /* A reply: whatever room it is for, that turn was not silent. */
+    clawt_daemon_rescue_life(self, agent_id, room_id);
+
     /*
      * An agent that replies without naming a room is answering whoever
      * it last ran a turn for, and the turn state records exactly that.
@@ -9989,6 +9992,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_agent,
     clawt_daemon_handle_memory,
     clawt_daemon_handle_sentinel,
+    clawt_daemon_handle_rescue,
     clawt_daemon_handle_mount,
     clawt_daemon_handle_egress,
     clawt_daemon_handle_image,

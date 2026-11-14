@@ -497,6 +497,11 @@ struct _ClawtWindow {
      * and the line above it saying how old it is.
      */
     GtkListBox        *issues_list;
+    /*
+     * The chat's first-reply rescue card (gtk-rescue.c), above the
+     * composer; hidden while there is no offer for the selected agent.
+     */
+    GtkWidget         *rescue_box;
     GtkWidget         *issues_status;
     ImageChooser       inspector_disk;
     GtkWidget         *vm_cpus_row;
@@ -1471,6 +1476,16 @@ clawt_gtk_build_issues(ClawtWindow *self, GtkBox *column);
 
 void
 clawt_gtk_refresh_issues(ClawtWindow *self);
+
+/*
+ * The chat's first-reply rescue (gtk-rescue.c): the card, built into the
+ * composer cluster, and re-read on `turn.no_reply*` and agent switches.
+ */
+GtkWidget *
+clawt_gtk_build_rescue(ClawtWindow *self);
+
+void
+clawt_gtk_refresh_rescue(ClawtWindow *self);
 
 ClawtComputerType
 clawt_gtk_computer_type_from_nick(const gchar *nick);

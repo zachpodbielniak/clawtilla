@@ -537,6 +537,9 @@ clawt_gtk_select_agent(ClawtWindow *self, const gchar *agent_id)
     g_free(self->selected_agent);
     self->selected_agent = g_strdup(agent_id);
 
+    /* The rescue card is about the agent on screen, so it is re-read. */
+    clawt_gtk_refresh_rescue(self);
+
     /*
      * And no longer a room.  The two selections are exclusive, and a
      * stale room entry would keep the sidebar highlighting a row
@@ -1746,6 +1749,11 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
      * A memory remembered, forgotten, pinned or undone: the selected
      * agent's review list redraws, and nothing above it.
      */
+    /* A turn that has shown nothing was offered, or showed something. */
+    if (g_str_has_prefix(kind, "turn.no_reply") &&
+        g_strcmp0(clawt_event_get_subject(event), self->selected_agent) == 0)
+        clawt_gtk_refresh_rescue(self);
+
     /* A scan ended: the report on disk is new, or the failure is. */
     if (g_strcmp0(kind, "sentinel.finished") == 0)
         clawt_gtk_refresh_issues(self);

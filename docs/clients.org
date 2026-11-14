@@ -2507,6 +2507,19 @@ VM and needs a start afterwards; this kills the AI CLI running the turn
 and everything it started, and leaves the agent connected with its
 session and mailbox intact. ~docs/agents.org~ has the table.
 
+*A turn that has shown nothing at all.*  After
+~agents.runtime.first_reply_seconds~ (20 by default) with no step, no
+thought and no reply, a card appears above the composer in all three
+clients (~turn.rescue~): the sentence from =clawt_rescue_offer_text()=,
+*Stop*, and *Try <model> instead* (=clawt_rescue_switch_label()=) for each
+fallback on the agent's own CLI and login -- which stops the turn and
+sends the same message again on that model, for that turn only.  It goes
+the moment the turn shows anything (~turn.no_reply_cleared~), and is
+re-read on every agent switch, so a window opened late still sees it.
+The web client draws it in the live-steps region of the operator's
+conversation, posting to =/a/:id/rescue=.  What "nothing" can and cannot
+mean is in [[file:orchestration.org::*First-reply rescue: a turn that has shown nothing][orchestration.org]].
+
 Both clients say how many processes were signalled rather than "stopped",
 because zero and several mean different things to whoever pressed it: the
 agent was between turns, or that much was running. Neither offers the

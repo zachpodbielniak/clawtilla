@@ -281,6 +281,29 @@ void clawt_web_register_review(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_issues(HtmxRouter *router, ClawtWebApp *app);
 
 /**
+ * clawt_web_register_rescue:
+ * @router: the router
+ * @app: the app
+ *
+ * The chat's first-reply rescue actions (web-rescue.c), at
+ * `/a/:id/rescue`; before clawt_web_register_views().
+ */
+void clawt_web_register_rescue(HtmxRouter *router, ClawtWebApp *app);
+
+/**
+ * clawt_web_add_rescue_card:
+ * @app: the app
+ * @parent: where the cards go
+ * @agent_id: whose turns
+ *
+ * One card per turn of @agent_id the daemon has offered to rescue, with
+ * Stop and a form per model the turn can move to; nothing when there is
+ * none.
+ */
+void clawt_web_add_rescue_card(ClawtWebApp *app, HtmxElement *parent,
+                               const gchar *agent_id);
+
+/**
  * clawt_web_add_issues_card:
  * @app: the app
  * @parent: where the card goes

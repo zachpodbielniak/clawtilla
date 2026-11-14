@@ -446,6 +446,8 @@ The Chat tab's number is =clawt_lrg_unread_badge()=: the total of =app->unread=,
 Source: =clients/lrg/lrg-chat.c=; decisions in =clients/lrg/lrg-chat-model.c=. Mirrors =clients/gtk/gtk-chat.c=, =clients/gtk/gtk-follow.c= and the chat half of =clients/gtk/clawt-window.c= (message, typing and unread handling, drafts, selection).
 
 *** What it shows
+- *The transcript*:*** What it shows
+- *First-reply rescue*: a card above the composer while the agent on screen has a turn that has shown nothing for ~agents.runtime.first_reply_seconds~ (~turn.rescue~ ~list~, re-read on ~turn.no_reply~, ~turn.no_reply_cleared~ and every agent switch, guarded): =clawt_rescue_offer_text()=, *Stop* and a *Try <model> instead* per choice (~turn.rescue~ ~stop~ / ~switch~). Implemented in =clients/lrg/lrg-rescue.c=.
 - *The transcript*: the conversation of the selected agent (its direct room with the operator) or the selected room, loaded with ~room.history~ and the room's turn steps with ~room.steps~, merged on time so each stretch of tool calls sits between the message that prompted it and the answer it produced (=clawt_lrg_steps_before()= / =clawt_turn_step_precedes()=). Both replies are guarded twice: by the shell's selection generation and by the page's own history generation, so a reply that lands after the person moved on never repaints the page they left.
 - *Runs*: consecutive messages from one sender on one day share one header (=clawt_chat_run_is_start()=). An agent's run header is its avatar (clickable to see the picture larger when it has one), its name and the clock (=clawt_chat_time_label()=); a continuation carries its time in the avatar's gutter, which is what tells a new message from a new paragraph. The operator's turns are bubbles on the right in the accent gradient (=clawt-bubble-mine=, popping in), the time once above the first; an agent's bodies sit on a soft surface card (=clawt-bubble=), flying up as they arrive.
 - *Spacing*: a new run is further apart than a new message, and a new message further than a paragraph (=clawt_appearance_get_run_spacing()=, the message gap derived from it as in GTK). Day dividers ("Today", "Yesterday", "Wednesday 25 August", from =clawt_chat_day_label()=) sit between rules.
@@ -1219,6 +1221,7 @@ A colour this client reads but the palette leaves out falls back to libadwaita's
 | ~lrg-work-model.c~, ~clawt-lrg-work-model.h~ | automation's and work's decisions | -- |
 | ~lrg-flow.c~ | the conversation graph and the agents' conversations | ~gtk-flow.c~ |
 | ~lrg-activity.c~ | every running turn, to stop or steer | ~gtk-activity.c~ |
+| ~lrg-rescue.c~ | the chat's first-reply rescue card above the composer | ~gtk-rescue.c~ |
 | ~lrg-issues.c~ | the Activity page's Issues: the sentinel's report and Scan now | ~gtk-issues.c~ |
 | ~lrg-skills.c~ | the skills library and teaching | ~gtk-skills.c~ |
 | ~lrg-recall.c~ | recall, an agent's memories, the operator profile | ~gtk-recall.c~ |

@@ -808,6 +808,14 @@ turn_steps(ClawtWebApp *app, const gchar *agent_id, const gchar *peer)
 
     fill_steps(box, steps, 0, steps->len);
 
+    /*
+     * And a turn that has shown nothing at all yet, offered to rescue
+     * (web-rescue.c).  Only in the operator's own conversation: the
+     * buttons stop the agent, which is the operator's to do.
+     */
+    if (peer == NULL)
+        clawt_web_add_rescue_card(app, HTMX_ELEMENT(box), agent_id);
+
     return HTMX_ELEMENT(g_steal_pointer(&box));
 }
 

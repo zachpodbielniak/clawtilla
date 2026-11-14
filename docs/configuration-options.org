@@ -3982,6 +3982,29 @@ this number plus runtime.busy_max_seconds while the busy check
 (runtime.busy_cpu_percent) is on, and not at all when that ceiling
 is 0.
 
+*** =agents.runtime.first_reply_seconds=
+
+- Type :: integer
+- Default :: =20=
+- Since :: 0.24.0
+
+How long a turn may show nothing at all -- no step, no thought, no
+reply -- before the clients offer to stop it or to run the same
+message on another model. 0 never offers.
+
+Nothing is stopped by this; it is an offer, shown beside the
+conversation and withdrawn the moment the turn shows anything. It
+needs runtime.stream_steps, since a turn whose steps are not
+streamed is silent until it answers whether or not it is working.
+
+Silence here is what the daemon can see, which is less than what the
+CLI is doing: libreclaw does not forward the CLI's own status lines,
+and holds prose until a tool call or the end of the turn. So the
+offer says the turn has shown nothing, never that it is stuck. The
+models offered are the model.fallbacks entries on the agent's own
+CLI and login, since one turn's model is a name on the CLI it is
+already running.
+
 *** =agents.runtime.busy_cpu_percent=
 
 - Type :: integer

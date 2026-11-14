@@ -420,4 +420,30 @@ GPtrArray *clawt_mailbox_turn_recover(ClawtMailbox       *self,
                                       gpointer            veto_data,
                                       GError            **error);
 
+/**
+ * clawt_mailbox_turn_hand_back:
+ * @self: a #ClawtMailbox
+ * @room_id: the room whose running turn is handed back
+ * @model: (nullable): the model the items run on when they are delivered
+ *   again, or %NULL for the agent's own
+ * @error: return location for a #GError
+ *
+ * Puts the items of @room_id's open turn back in the queue, now, for a
+ * person who asked for the same message to run again -- the first-reply
+ * rescue's "try another model".  Deliberately not a crash rerun: the
+ * replay count is left as it was, so a later restart can still rerun
+ * the turn once.
+ *
+ * Refused, with the reason, when the turn has already acted outside the
+ * fleet (running it again could do that twice), when its items are no
+ * longer in the queue, and when there is no open turn in @room_id.  The
+ * items and the record are one transaction.
+ *
+ * Returns: how many items went back, or 0 with @error set
+ */
+guint clawt_mailbox_turn_hand_back(ClawtMailbox  *self,
+                                   const gchar   *room_id,
+                                   const gchar   *model,
+                                   GError       **error);
+
 G_END_DECLS

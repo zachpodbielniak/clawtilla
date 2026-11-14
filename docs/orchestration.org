@@ -2644,6 +2644,51 @@ counts as a sign of life, exactly as a step does.
   process, so libreclaw's own time is inside the sum; it is idle while a
   tool runs and well under the threshold.
 
+*** First-reply rescue: a turn that has shown nothing
+
+~agents.runtime.first_reply_seconds~ (default 20; 0 never) is not a
+budget.  Nothing is stopped by it: after that long with *nothing at all*
+from a room's turn -- no step, no thought, no reply -- the daemon
+publishes ~turn.no_reply~ and the clients offer two things beside the
+conversation: *Stop*, and *Try <model> instead* for each model one turn
+can move to.  The first step, reply or settle publishes
+~turn.no_reply_cleared~ and the offer goes, so a card is never left over
+a turn that has since answered.  Keyed on agent *and* room
+(=ClawtRescueWatch=), since an agent runs a turn per room.
+
+*What the daemon can see, and the limit that follows.*  The watch is fed
+by the same steps the watchdog counts.  libreclaw forwards reasoning a
+paragraph at a time and every tool call; it drops the CLI's own status
+lines (their vocabulary is per provider -- ~claude: init~ would read as
+the agent talking) and holds prose until a tool call follows it or the
+turn ends.  So "no step yet" does separate "thinking out loud" from
+"silent", and does *not* separate "the CLI has emitted nothing" from "it
+is writing its answer" or "it is thinking without a paragraph break
+yet".  The offer is therefore worded as what is known --
+=clawt_rescue_offer_text()=: "has not replied or shown any activity for
+20 seconds. It may still be starting, or writing an answer it has not sent
+yet -- or it may be stuck" -- and never says the CLI is stuck.  With
+~runtime.stream_steps~ off there is no signal at all until the answer,
+and nothing is offered.
+
+*What "try another model" can do.*  A model for one turn is a frame
+member libreclaw applies when it takes a message off its queue, and it
+is a *name on the CLI the agent is already running*: libreclaw cannot
+move one turn to another CLI or another login.  So the choices are the
+~model.fallbacks~ entries on the agent's own provider (compared through
+libreclaw's normaliser) and login (=clawt_rescue_switch_choices()=); the
+others are listed by ~turn.rescue~ with the reason, and libreclaw still
+fails over to them by itself at a limit.
+
+The switch hands the room's running turn back to the queue *with the
+model on it* (=clawt_mailbox_turn_hand_back()=: refused when the turn
+has already acted outside the fleet, since running it again could do
+that twice; the replay count is left alone, so a later crash can still
+rerun it once) and then interrupts the agent.  The interrupt's settle
+drains the queue, so the same message goes out again on the chosen
+model, for that turn only.  Both buttons stop *everything* the agent is
+running, as ~agent.interrupt~ always does, and say so.
+
 *** The room's turn
 
 ~rooms.turn_timeout_seconds~ (default 0, disabled; positive values floored at 60) bounds how long

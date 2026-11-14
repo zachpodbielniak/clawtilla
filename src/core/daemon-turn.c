@@ -507,6 +507,9 @@ on_turn_sweep(gpointer data)
 
     note_busy_trees(self);
 
+    /* Turns that have shown nothing at all: offered, not stopped. */
+    clawt_daemon_rescue_sweep(self);
+
     wedged = clawt_turn_watch_collect_expired(self->turn_watch);
 
     for (i = 0; i < wedged->len; i++) {
@@ -769,6 +772,7 @@ clawt_daemon_turn_setup(ClawtDaemon *self)
     self->turn_watch = clawt_turn_watch_new_activity();
     self->room_watch = clawt_turn_watch_new_work();
     self->busy_watch = clawt_busy_watch_new();
+    self->rescues = clawt_rescue_watch_new();
     self->turn_said = g_hash_table_new_full(g_str_hash, g_str_equal,
                                             g_free, g_free);
     self->steers = clawt_steer_queue_new();
@@ -885,6 +889,7 @@ clawt_daemon_turn_teardown(ClawtDaemon *self)
     g_clear_object(&self->turn_watch);
     g_clear_object(&self->room_watch);
     g_clear_object(&self->busy_watch);
+    g_clear_object(&self->rescues);
     g_clear_pointer(&self->turn_said, g_hash_table_unref);
     g_clear_object(&self->steers);
 }
@@ -947,6 +952,13 @@ clawt_daemon_turn_begin_room(ClawtDaemon *self, const gchar *agent_id,
         self->room_watch == NULL || self->rooms == NULL)
         return;
 
+    /*
+     * The first-reply watch starts on the same edge, before the room
+     * budget's early return: a room with no budget still has a person
+     * waiting on its first reply.
+     */
+    clawt_daemon_rescue_begin(self, agent_id, room_id);
+
     room = clawt_room_manager_get(self->rooms, room_id);
     budget = (room != NULL) ? clawt_room_get_turn_timeout(room) : 0;
 
@@ -982,6 +994,7 @@ clawt_daemon_turn_settle_room(ClawtDaemon *self, const gchar *agent_id,
     key = room_hold_key(room_id, agent_id);
 
     settle_hold(self, key);
+    clawt_daemon_rescue_life(self, agent_id, room_id);
 
     /*
      * The steps of the turn that just ended are *kept*.
@@ -1070,6 +1083,9 @@ clawt_daemon_turn_settle(ClawtDaemon *self, const gchar *agent_id)
 
     if (self->busy_watch != NULL)
         clawt_busy_watch_forget(self->busy_watch, agent_id);
+
+    /* Every room's offer is withdrawn: the turns are over. */
+    clawt_daemon_rescue_life(self, agent_id, NULL);
 
     if (self->turn_said != NULL)
         g_hash_table_remove(self->turn_said, agent_id);
