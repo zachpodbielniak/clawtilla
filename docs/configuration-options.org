@@ -2232,6 +2232,20 @@ One timer covers every connector, so the shortest interval anybody
 asked for is the one that runs. The first poll is one interval after
 the daemon starts, never during it.
 
+*** =integrations.push_replies=
+
+- Type :: boolean
+- Default :: =true=
+- Since :: 0.11.0
+
+grokbot: hand each agent reply to the bot as a new run of its routine.
+
+When a Grok bot starts a conversation with an agent, the agent's
+reply is POSTed to the bot's routine, so the bot answers on its own.
+Each reply is a Grok run -- 200 an hour per routine, and each one
+billed. Off, replies wait in clawtilla until the bot reads them with
+clawtilla_grok_replies. A reply Grok refuses waits the same way.
+
 ** =connectors=
 
 Connected accounts: how clawtilla obtains credentials and keeps them.

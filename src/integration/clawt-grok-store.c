@@ -40,7 +40,24 @@ static const gchar SCHEMA_SQL[] =
     "  expires_at   INTEGER NOT NULL"
     ");"
     "CREATE INDEX IF NOT EXISTS jobs_by_time ON jobs(created_at);"
-    "CREATE INDEX IF NOT EXISTS jobs_by_expiry ON jobs(state, expires_at);";
+    "CREATE INDEX IF NOT EXISTS jobs_by_expiry ON jobs(state, expires_at);"
+    /*
+     * What agents said back to a bot in a conversation the bot started,
+     * kept until the bot reads it -- so a reply survives a refused or
+     * switched-off push, and a daemon restart, and the bot can always
+     * pull what it was not pushed.
+     */
+    "CREATE TABLE IF NOT EXISTS replies ("
+    "  id         INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "  bot        TEXT NOT NULL,"
+    "  agent_id   TEXT NOT NULL,"
+    "  room_id    TEXT NOT NULL,"
+    "  body       TEXT NOT NULL,"
+    "  depth      INTEGER NOT NULL DEFAULT 0,"
+    "  created_at INTEGER NOT NULL,"
+    "  read       INTEGER NOT NULL DEFAULT 0"
+    ");"
+    "CREATE INDEX IF NOT EXISTS replies_unread ON replies(bot, read, id);";
 
 #define BUSY_TIMEOUT_MS (5000)
 
@@ -496,4 +513,112 @@ clawt_grok_store_prune(ClawtGrokStore *self, gint64 before)
     sqlite3_finalize(stmt);
 
     return removed;
+}
+
+/* ── Replies to a bot ────────────────────────────────────────────── */
+
+gint64
+clawt_grok_store_add_reply(ClawtGrokStore  *self,
+                           const gchar     *bot,
+                           const gchar     *agent_id,
+                           const gchar     *room_id,
+                           const gchar     *body,
+                           gint             depth,
+                           GError         **error)
+{
+    sqlite3_stmt *stmt = NULL;
+    gint64 id = 0;
+
+    g_return_val_if_fail(CLAWT_IS_GROK_STORE(self), 0);
+
+    if (sqlite3_prepare_v2(self->db,
+            "INSERT INTO replies(bot, agent_id, room_id, body, depth,"
+            " created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            -1, &stmt, NULL) != SQLITE_OK) {
+        set_sqlite_error(error, self->db, "recording a reply to a bot");
+        return 0;
+    }
+
+    bind_text(stmt, 1, bot);
+    bind_text(stmt, 2, agent_id);
+    bind_text(stmt, 3, room_id);
+    bind_text(stmt, 4, body);
+    sqlite3_bind_int(stmt, 5, depth);
+    sqlite3_bind_int64(stmt, 6, g_get_real_time());
+
+    if (sqlite3_step(stmt) == SQLITE_DONE)
+        id = sqlite3_last_insert_rowid(self->db);
+    else
+        set_sqlite_error(error, self->db, "recording a reply to a bot");
+
+    sqlite3_finalize(stmt);
+
+    return id;
+}
+
+void
+clawt_grok_store_mark_reply_read(ClawtGrokStore *self, gint64 id)
+{
+    sqlite3_stmt *stmt = NULL;
+
+    g_return_if_fail(CLAWT_IS_GROK_STORE(self));
+
+    if (sqlite3_prepare_v2(self->db,
+            "UPDATE replies SET read = 1 WHERE id = ?",
+            -1, &stmt, NULL) != SQLITE_OK)
+        return;
+
+    sqlite3_bind_int64(stmt, 1, id);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+}
+
+JsonArray *
+clawt_grok_store_take_replies(ClawtGrokStore *self,
+                              const gchar    *bot,
+                              const gchar    *agent_id,
+                              guint           limit)
+{
+    sqlite3_stmt *stmt = NULL;
+    JsonArray *out = json_array_new();
+    g_autoptr(GArray) ids = g_array_new(FALSE, FALSE, sizeof(gint64));
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_GROK_STORE(self), out);
+
+    if (sqlite3_prepare_v2(self->db,
+            "SELECT id, agent_id, room_id, body, depth, created_at"
+            " FROM replies WHERE bot = ?1 AND read = 0"
+            " AND (?2 IS NULL OR agent_id = ?2) ORDER BY id LIMIT ?3",
+            -1, &stmt, NULL) != SQLITE_OK)
+        return out;
+
+    bind_text(stmt, 1, bot);
+    bind_text(stmt, 2, agent_id);
+    sqlite3_bind_int(stmt, 3, (gint)MAX(limit, 1));
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        JsonObject *reply = json_object_new();
+        gint64 id = sqlite3_column_int64(stmt, 0);
+
+        json_object_set_int_member(reply, "id", id);
+        json_object_set_string_member(reply, "agent", column_text(stmt, 1));
+        json_object_set_string_member(reply, "conversation",
+                                      column_text(stmt, 2));
+        json_object_set_string_member(reply, "body", column_text(stmt, 3));
+        json_object_set_int_member(reply, "depth",
+                                   sqlite3_column_int(stmt, 4));
+        json_object_set_int_member(reply, "created_at",
+                                   sqlite3_column_int64(stmt, 5));
+        json_array_add_object_element(out, reply);
+        g_array_append_val(ids, id);
+    }
+
+    sqlite3_finalize(stmt);
+
+    /* Taken is read: a reply handed over twice would be answered twice. */
+    for (i = 0; i < ids->len; i++)
+        clawt_grok_store_mark_reply_read(self, g_array_index(ids, gint64, i));
+
+    return out;
 }

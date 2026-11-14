@@ -471,7 +471,7 @@ integrations:
     token: {file: ~/.clawtilla/secrets/grok-chief.key}
 #+end_src
 
-Not =one_per_agent= -- an agent may reach several bots -- and no identity keys, because a bot shared by the fleet is one bot several agents hand work to. Health check: on paper only (an https routine URL and a key reference), because calling the webhook would *start a run*. The bot reports back over the tailnet to the webhook listener, so =daemon.webhook_enabled= and =daemon.tailscale= must be on. Everything else -- the routine prompt, the MCP connection, the reporting contract, what each failure means -- is in [[file:grok.org][grok.org]].
+Not =one_per_agent= -- an agent may reach several bots -- and no identity keys, because a bot shared by the fleet is one bot several agents hand work to. Health check: on paper only (an https routine URL and a key reference), because calling the webhook would *start a run*. The bot reports back over the tailnet to the webhook listener, so =daemon.webhook_enabled= and =daemon.tailscale= must be on. A bot connected over MCP can also start conversations with the agents it is shared with; their replies go back to it as new runs of its routine unless =push_replies= is off. Everything else -- the routine prompt, the MCP connection, the reporting contract, conversations, what each failure means -- is in [[file:grok.org][grok.org]].
 
 ** notify -- when an agent is blocked on you, or has broken
 

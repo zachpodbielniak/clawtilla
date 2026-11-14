@@ -153,4 +153,52 @@ GPtrArray *clawt_grok_store_due(ClawtGrokStore *self, gint64 now);
  */
 guint clawt_grok_store_prune(ClawtGrokStore *self, gint64 before);
 
+/**
+ * clawt_grok_store_add_reply:
+ * @self: a #ClawtGrokStore
+ * @bot: the bot the reply is for
+ * @agent_id: the agent that wrote it
+ * @room_id: the conversation
+ * @body: what it said
+ * @depth: the hop depth it travels at
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Keeps an agent's reply to a bot until the bot reads it.
+ *
+ * Returns: the reply's id, or 0 if it was not written
+ */
+gint64 clawt_grok_store_add_reply(ClawtGrokStore  *self,
+                                  const gchar     *bot,
+                                  const gchar     *agent_id,
+                                  const gchar     *room_id,
+                                  const gchar     *body,
+                                  gint             depth,
+                                  GError         **error);
+
+/**
+ * clawt_grok_store_mark_reply_read:
+ * @self: a #ClawtGrokStore
+ * @id: the reply
+ *
+ * Marks a reply delivered -- after a push Grok accepted.
+ */
+void clawt_grok_store_mark_reply_read(ClawtGrokStore *self, gint64 id);
+
+/**
+ * clawt_grok_store_take_replies:
+ * @self: a #ClawtGrokStore
+ * @bot: whose replies
+ * @agent_id: (nullable): from one agent only
+ * @limit: how many at most, oldest first
+ *
+ * The unread replies for @bot, marked read as they are handed over.
+ *
+ * Returns: (transfer full): `{id, agent, conversation, body, depth,
+ *   created_at}` objects
+ */
+JsonArray *clawt_grok_store_take_replies(ClawtGrokStore *self,
+                                         const gchar    *bot,
+                                         const gchar    *agent_id,
+                                         guint           limit);
+
 G_END_DECLS

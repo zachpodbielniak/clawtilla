@@ -460,6 +460,18 @@ static const ClawtParamInfo grok_progress_params[] = {
     { "note", "string", "A line on where the work stands.", TRUE }
 };
 
+static const ClawtParamInfo grok_message_params[] = {
+    { "agent", "string",
+      "Which agent, by the id clawtilla_grok_agents lists.", TRUE },
+    { "message", "string",
+      "What to say. The agent knows nothing of your conversations "
+      "elsewhere, so say it completely.", TRUE }
+};
+
+static const ClawtParamInfo grok_replies_params[] = {
+    { "agent", "string", "Only replies from this agent.", FALSE }
+};
+
 static const ClawtParamInfo skill_read_params[] = {
     { "name", "string", "Which skill, by the name in the listing.", TRUE }
 };
@@ -992,6 +1004,23 @@ static const ToolDefinition tools[] = {
          "The clawtilla jobs handed to this bot that are still open. For "
          "a Grok bot; never offered to an agent.",
          NEEDS_NEVER, no_params, CLAWT_ACTION_READ),
+
+    TOOL("clawtilla_grok_agents",
+         "The clawtilla agents this bot may talk to, with what each is "
+         "for. For a Grok bot; never offered to an agent.",
+         NEEDS_NEVER, no_params, CLAWT_ACTION_READ),
+
+    TOOL("clawtilla_grok_message",
+         "Send a clawtilla agent a message, starting or continuing a "
+         "conversation with it. Its reply comes back as a new run of your "
+         "routine, or from clawtilla_grok_replies. For a Grok bot; never "
+         "offered to an agent.",
+         NEEDS_NEVER, grok_message_params, CLAWT_ACTION_EXTERNAL),
+
+    TOOL("clawtilla_grok_replies",
+         "Agents' replies you have not been sent yet, oldest first; each "
+         "is handed over once. For a Grok bot; never offered to an agent.",
+         NEEDS_NEVER, grok_replies_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_request_hands",
          "Ask a person to take the screen and do something you cannot. "
@@ -2441,6 +2470,10 @@ clawt_mcp_tools_describe_for_agent(ClawtMcpTools *self, const gchar *agent_id)
                 "back later as a message in the conversation you asked from,\n"
                 "so finish your turn rather than waiting. When somebody asks\n"
                 "for \"our <name> Grok bot\", <name> is the bot's name below.\n\n"
+                "A bot may also message you first: it arrives from\n"
+                "~grok:<name>~, and your reply in that conversation is sent\n"
+                "back to that bot -- answer it as you would a person. To\n"
+                "hand it work of your own, use ~clawtilla_grok_dispatch~.\n\n"
                 "| Bot | What it is for |\n"
                 "|-----+----------------|\n");
 

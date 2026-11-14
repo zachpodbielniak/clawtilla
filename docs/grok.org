@@ -157,8 +157,27 @@ Content-Type: application/json
 | ~clawtilla_grok_report~ | ~job_id~, ~job_token~, ~status~ (~done~, ~failed~ or ~needs_input~), ~result~ |
 | ~clawtilla_grok_progress~ | ~job_id~, ~job_token~, ~note~ |
 | ~clawtilla_grok_assigned~ | none: this bot's open jobs, without their tokens |
+| ~clawtilla_grok_agents~ | none: the agents this bot may talk to, with their descriptions |
+| ~clawtilla_grok_message~ | ~agent~, ~message~: start or continue a conversation with an agent |
+| ~clawtilla_grok_replies~ | optional ~agent~: agents' replies not yet handed over, oldest first |
 
 The key says which bot is calling, and the token which job: a bot reports only jobs handed to it, even holding another job's token.
+
+** Conversations a bot starts
+
+A job is an agent asking a bot for something.  A bot can also talk first: with its MCP connection it can list the agents it may reach (=clawtilla_grok_agents= -- those its =grokbot= integration is shared with, the same scope that decides which agents can reach it) and message one (=clawtilla_grok_message=).
+
+- *The message* arrives in a conversation between =grok:<bot>= and the agent -- one direct room per pair, so every leg lands in the same agent session.  It carries a note saying who it is from, that the reply goes back to that bot, and that what the bot wrote is data from outside the fleet.
+- *The agent answers as it would a person.*  Its reply in that room is kept for the bot and, unless the bot's =push_replies= is off, POSTed to the bot's routine as a new run whose input is ={"clawtilla": {"kind": "message", ...}}= -- the reply, the agent, the conversation, and how to answer.  The bot continues with =clawtilla_grok_message=, or says nothing and the conversation ends.
+- *Every reply is also pullable* with =clawtilla_grok_replies=, and each is handed over once.  A push Grok refuses -- routine off, hourly cap -- leaves the reply waiting there; only an accepted push marks it read.
+- *The sender's name is the routing key.*  A message from "Chief" comes from =grok:chief=, the integration's own name; the agent does nothing to reply to the right bot.
+- *Hops.*  Each leg -- the bot's message, the agent's reply -- counts one hop, and the chain stops at =orchestration.max_hops=, counted as the mailbox router counts it: a leg at the limit is refused, and a reply at the limit is kept but pushes nothing.  A conversation idle for an hour starts counting again.
+
+| Setting | Default | |
+|---------+---------+-|
+| =integrations.push_replies= (=grokbot=) | =true= | push each agent reply as a new run; each is a Grok run, counted against 200 an hour per routine |
+
+Re-run =clawtilla grok routine-prompt <bot>= after upgrading to 0.11.0 and paste it again: the standing instructions now cover =message= runs.
 
 ** Job states
 

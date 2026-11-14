@@ -251,6 +251,26 @@ gchar *clawt_grok_envelope(ClawtGrokJob *job,
                            const gchar  *mcp_url);
 
 /**
+ * clawt_grok_message_envelope:
+ * @bot: the bot's name here
+ * @agent_id: the agent that replied
+ * @conversation: the conversation's id, its room
+ * @body: what the agent said
+ * @mcp_url: (nullable): the MCP endpoint, when the bot is connected to it
+ *
+ * The body POSTed to a bot's routine to hand it an agent's reply in a
+ * conversation the bot started: `{"clawtilla": {"kind": "message", ...}}`,
+ * saying how to answer and that silence ends it.
+ *
+ * Returns: (transfer full): the JSON text
+ */
+gchar *clawt_grok_message_envelope(const gchar *bot,
+                                   const gchar *agent_id,
+                                   const gchar *conversation,
+                                   const gchar *body,
+                                   const gchar *mcp_url);
+
+/**
  * clawt_grok_routine_prompt:
  * @bot: the bot's name here
  * @description: (nullable): what it is for

@@ -442,6 +442,7 @@ fixture_setup(Fixture *fixture)
         "    url: \"https://grok.invalid/automations/webhook/1\"\n"
         "    token: \"file:%s\"\n"
         "    description: \"Chief of staff\"\n"
+        "    push_replies: false\n"
         "    scope: selected\n"
         "    agents: [oryx]\n"
         "  - name: research\n"
@@ -456,6 +457,7 @@ fixture_setup(Fixture *fixture)
         "    token: \"file:%s\"\n"
         "    scope: selected\n"
         "    agents: [ibex]\n"
+        "orchestration:\n  max_hops: 4\n"
         "agents:\n  - id: oryx\n  - id: ibex\n",
         fixture->dir, fixture->dir, fixture->dir, fixture->dir,
         fixture->dir, key, key, key);
@@ -911,6 +913,134 @@ test_tools_org_names_the_reachable_bots(void)
     fixture_teardown(&fixture);
 }
 
+static gchar *
+call_tool(Fixture *fixture, const gchar *key, const gchar *tool,
+          const gchar *arguments)
+{
+    g_autofree gchar *body = g_strdup_printf(
+        "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\","
+        "\"params\":{\"name\":\"%s\",\"arguments\":%s}}", tool, arguments);
+    guint status = 0;
+
+    return mcp(fixture, key, body, &status);
+}
+
+/*
+ * A bot talking first: it may reach only the agents it is shared with,
+ * its message arrives from grok:<bot>, the agent's reply is kept for the
+ * bot and handed over once, and anything that is not an agent replying
+ * in a bot's conversation is left alone.
+ */
+static void
+test_a_bot_can_start_a_conversation(void)
+{
+    Fixture fixture = { 0 };
+    g_autofree gchar *key = NULL;
+    g_autofree gchar *reply = NULL;
+    ClawtRoom *room;
+
+    fixture_setup(&fixture);
+    key = mint(&fixture, "chief");
+
+    reply = call_tool(&fixture, key, "clawtilla_grok_agents", "{}");
+    g_assert_nonnull(strstr(reply, "oryx"));
+    g_assert_null(strstr(reply, "ibex"));
+
+    /* Not shared with ibex: refused, naming the one it may reach. */
+    g_free(g_steal_pointer(&reply));
+    reply = call_tool(&fixture, key, "clawtilla_grok_message",
+                      "{\"agent\":\"ibex\",\"message\":\"hello\"}");
+    g_assert_nonnull(strstr(reply, "\"isError\":true"));
+    g_assert_nonnull(strstr(reply, "oryx"));
+    g_assert_cmpuint(fixture.messages->len, ==, 0);
+
+    /* Named in another case, it still reaches oryx. */
+    g_free(g_steal_pointer(&reply));
+    reply = call_tool(&fixture, key, "clawtilla_grok_message",
+                      "{\"agent\":\"Oryx\",\"message\":\"hello\"}");
+    g_assert_nonnull(strstr(reply, "\"isError\":false"));
+    g_assert_nonnull(strstr(reply, "clawtilla_grok_replies"));
+    g_assert_cmpuint(fixture.messages->len, ==, 1);
+    g_assert_cmpstr(g_ptr_array_index(fixture.messages, 0), ==,
+                    "grok:chief");
+
+    room = clawt_room_manager_get_direct(fixture.daemon->rooms,
+                                         "grok:chief", "oryx");
+
+    /* Not an agent, and not a bot's room: neither is a reply. */
+    clawt_daemon_grok_take_agent_reply(fixture.daemon,
+                                       clawt_room_get_id(room),
+                                       "grok:chief", "echo");
+    clawt_daemon_grok_take_agent_reply(fixture.daemon, "dm:ibex:oryx",
+                                       "oryx", "elsewhere");
+
+    clawt_daemon_grok_take_agent_reply(fixture.daemon,
+                                       clawt_room_get_id(room), "oryx",
+                                       "hi back");
+
+    g_free(g_steal_pointer(&reply));
+    reply = call_tool(&fixture, key, "clawtilla_grok_replies", "{}");
+    g_assert_nonnull(strstr(reply, "hi back"));
+    g_assert_null(strstr(reply, "echo"));
+    g_assert_null(strstr(reply, "elsewhere"));
+
+    /* Handed over once. */
+    g_free(g_steal_pointer(&reply));
+    reply = call_tool(&fixture, key, "clawtilla_grok_replies", "{}");
+    g_assert_nonnull(strstr(reply, "No replies are waiting"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A bot and an agent answering each other count a hop a leg, and the
+ * chain stops at orchestration.max_hops (4 in the fixture), counted as
+ * the router counts it: a leg at the limit is refused.
+ */
+static void
+test_a_conversation_stops_at_max_hops(void)
+{
+    Fixture fixture = { 0 };
+    g_autofree gchar *key = NULL;
+    g_autofree gchar *reply = NULL;
+    ClawtRoom *room;
+
+    fixture_setup(&fixture);
+    key = mint(&fixture, "chief");
+    room = clawt_room_manager_get_direct(fixture.daemon->rooms,
+                                         "grok:chief", "oryx");
+
+    /* 1: the bot speaks. */
+    reply = call_tool(&fixture, key, "clawtilla_grok_message",
+                      "{\"agent\":\"oryx\",\"message\":\"one\"}");
+    g_assert_nonnull(strstr(reply, "\"isError\":false"));
+
+    /* 2: the agent answers. */
+    clawt_daemon_grok_take_agent_reply(fixture.daemon,
+                                       clawt_room_get_id(room), "oryx",
+                                       "two");
+
+    /* 3: the bot again -- still within the limit. */
+    g_free(g_steal_pointer(&reply));
+    reply = call_tool(&fixture, key, "clawtilla_grok_message",
+                      "{\"agent\":\"oryx\",\"message\":\"three\"}");
+    g_assert_nonnull(strstr(reply, "\"isError\":false"));
+
+    /* 4: the agent answers; kept, but it would push nothing. */
+    clawt_daemon_grok_take_agent_reply(fixture.daemon,
+                                       clawt_room_get_id(room), "oryx",
+                                       "four");
+
+    /* 5: refused, naming the setting. */
+    g_free(g_steal_pointer(&reply));
+    reply = call_tool(&fixture, key, "clawtilla_grok_message",
+                      "{\"agent\":\"oryx\",\"message\":\"five\"}");
+    g_assert_nonnull(strstr(reply, "\"isError\":true"));
+    g_assert_nonnull(strstr(reply, "orchestration.max_hops"));
+
+    fixture_teardown(&fixture);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -954,6 +1084,10 @@ main(int argc, char **argv)
     g_test_add_func("/grok/listener/routes", test_the_listener_routes_grok);
     g_test_add_func("/grok/tools/tools-org-names-bots",
                     test_tools_org_names_the_reachable_bots);
+    g_test_add_func("/grok/conversation/bot-starts-one",
+                    test_a_bot_can_start_a_conversation);
+    g_test_add_func("/grok/conversation/stops-at-max-hops",
+                    test_a_conversation_stops_at_max_hops);
 
     return g_test_run();
 }

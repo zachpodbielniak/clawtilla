@@ -1432,6 +1432,15 @@ integrations:
     # the daemon starts, never during it.
     poll_seconds: 60
 
+    # grokbot: hand each agent reply to the bot as a new run of its routine.
+    #
+    # When a Grok bot starts a conversation with an agent, the agent's
+    # reply is POSTed to the bot's routine, so the bot answers on its own.
+    # Each reply is a Grok run -- 200 an hour per routine, and each one
+    # billed. Off, replies wait in clawtilla until the bot reads them with
+    # clawtilla_grok_replies. A reply Grok refuses waits the same way.
+    push_replies: true
+
 # Connected accounts: how clawtilla obtains credentials and keeps them.
 #
 # A connector integration gives an agent the tools of a service without

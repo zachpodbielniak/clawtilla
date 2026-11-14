@@ -903,6 +903,18 @@ void clawt_daemon_grok_sweep(ClawtDaemon *self, gint64 now);
 ClawtGrokStore *clawt_daemon_grok_get_store(ClawtDaemon *self);
 
 /*
+ * clawt_daemon_grok_take_agent_reply:
+ *
+ * An agent's message in a room: kept for, and pushed to, the bot whose
+ * conversation it is -- or ignored when the room is not one.  The event
+ * bus calls it for every `message`; public to the daemon so a test can.
+ */
+void clawt_daemon_grok_take_agent_reply(ClawtDaemon *self,
+                                        const gchar *room_id,
+                                        const gchar *from,
+                                        const gchar *text);
+
+/*
  * clawt_daemon_grok_handle:
  *
  * The listener's Grok routes -- a report on /grok/<job>, or one MCP

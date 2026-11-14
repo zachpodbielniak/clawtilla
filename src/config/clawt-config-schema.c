@@ -1581,6 +1581,17 @@ static const ClawtSchemaEntry schema[] = {
   "asked for is the one that runs. The first poll is one interval after\n"
   "the daemon starts, never during it.", "0.2.0" },
 
+{ "integrations.push_replies", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "true", NULL,
+  "grokbot: hand each agent reply to the bot as a new run of its routine.\n"
+  "\n"
+  "When a Grok bot starts a conversation with an agent, the agent's\n"
+  "reply is POSTed to the bot's routine, so the bot answers on its own.\n"
+  "Each reply is a Grok run -- 200 an hour per routine, and each one\n"
+  "billed. Off, replies wait in clawtilla until the bot reads them with\n"
+  "clawtilla_grok_replies. A reply Grok refuses waits the same way.",
+  "0.11.0" },
+
 { "connectors", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Connected accounts: how clawtilla obtains credentials and keeps them.\n"
   "\n"

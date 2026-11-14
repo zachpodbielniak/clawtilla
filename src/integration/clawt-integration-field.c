@@ -129,6 +129,13 @@ static const ClawtIntegrationField fields[] = {
       "file:~/.clawtilla/secrets/grok-chief.key",
       CLAWT_FIELD_SECRET, NULL, NULL, NULL, NULL, TRUE },
 
+    { "grokbot", "push_replies", "Send agents' replies to the bot",
+      "Each reply starts a run of the routine, so the bot answers on its "
+      "own; each run counts against Grok's hourly limit. Off, the bot "
+      "reads replies with clawtilla_grok_replies.",
+      NULL,
+      CLAWT_FIELD_BOOLEAN, NULL, NULL, NULL, NULL, FALSE },
+
     /* ── email ───────────────────────────────────────────────────── */
 
     { "email", "username", "Mailbox",
