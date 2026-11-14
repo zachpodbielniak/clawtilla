@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-26 Wed]
-#+version: 0.1.0
+#+updated: [2026-11-14 Sat]
+#+version: 0.2.0
 
 * Getting started
 
@@ -16,49 +16,111 @@ takes about ten minutes, most of which is the first build.
 clawtilla builds on the bare host.  Everything comes from ~pkg-config~,
 plus GCC and GNU make.
 
-*** Fedora packages
+*** Installing them in one step
 
-| Package | Why |
-|---------+-----|
-| ~glib2-devel~ | glib, gobject, gio, gio-unix, gmodule |
-| ~libsoup3-devel~ | HTTP, via libreclaw |
-| ~json-glib-devel~ | the wire protocols |
-| ~cmark-devel~ | markdown rendering |
-| ~sqlite-devel~ | the mailbox store |
-| ~libetpan-devel~ | the email integration |
-| ~libpq-devel~ | libreclaw's postgres memory |
-| ~libdex-devel~ | futures |
-| ~libyaml-devel~ | yaml-glib |
-| ~libxml2-devel~ | ai-glib's HTML-parsing search providers |
-| ~libvirt-devel~ | podomation's ~vm_virtmanager~ module |
-| ~gobject-introspection-devel~ | the ~.gir~ / ~.typelib~ step |
-| ~gtk4-devel~ | the GTK client |
-| ~libadwaita-devel~ | the GTK client |
+#+begin_src sh
+make install-deps
+#+end_src
+
+That reads ~/etc/os-release~ and installs everything below with the
+distribution's own package manager: ~dnf~ on Fedora, ~apt-get~ on Debian,
+Ubuntu and their derivatives (Mint, Pop!_OS), ~pacman~ on Arch and its
+derivatives (EndeavourOS, Manjaro).  It runs through ~sudo~ when you are
+not root, and the package manager asks before it changes anything.
+
+| Option, via ~INSTALL_DEPS_FLAGS=~ | Does |
+|---+---|
+| ~--build-only~ | only what compiling needs: no podman, qemu, libvirt daemon or Xvfb |
+| ~--runtime-only~ | only the runtime tools |
+| ~--print~ | print the package list and install nothing |
+| ~--dry-run~ | print the package-manager command instead of running it |
+| ~--yes~ | do not ask for confirmation (a ~Containerfile~, CI) |
+| ~--distro fedora\vert{}debian\vert{}arch~ | skip detection |
+
+#+begin_src sh
+make install-deps INSTALL_DEPS_FLAGS=--build-only
+make install-deps INSTALL_DEPS_FLAGS='--print --distro debian'
+#+end_src
+
+Two cases are refused rather than guessed at:
+
+- *An ostree-booted host* -- Silverblue, Kinoite, Immutablue, Hyacinth
+  Macaw.  ~/usr~ is read-only and the packages belong in the image build,
+  so it prints the list to layer and exits 2.
+- *Enterprise Linux* -- CentOS Stream, RHEL, Rocky, Alma.  Its
+  ~os-release~ says ~ID_LIKE="rhel fedora"~, but it is not Fedora minus
+  things: libetpan and distrobox are in EPEL or nowhere, and several names
+  differ.  Answering "fedora" would start a ~dnf~ run that fails halfway.
+
+The mapping lives in one table in ~tools/clawt-install-deps.sh~.
+~tests/test-install-deps.sh~ fails when a ~PKG_DEPS~ list in ~config.mk~
+or a bundled dependency names something that table does not map, and
+when the table can install a package this page does not name -- so adding
+a dependency means adding a row there and a row here.
+
+*** Build packages
+
+| Fedora | Debian / Ubuntu | Arch | Why |
+|---+---+---+---|
+| ~gcc~ ~make~ ~pkgconf-pkg-config~ ~git~ | ~build-essential~ ~pkg-config~ ~git~ | ~base-devel~ ~git~ | the toolchain |
+| ~glib2-devel~ | ~libglib2.0-dev~ | ~glib2~ | glib, gobject, gio, gio-unix, gmodule |
+| ~libsoup3-devel~ | ~libsoup-3.0-dev~ | ~libsoup3~ | HTTP, via libreclaw |
+| ~json-glib-devel~ | ~libjson-glib-dev~ | ~json-glib~ | the wire protocols |
+| ~cmark-devel~ | ~libcmark-dev~ | ~cmark~ | markdown rendering |
+| ~sqlite-devel~ | ~libsqlite3-dev~ | ~sqlite~ | the mailbox store |
+| ~libetpan-devel~ | ~libetpan-dev~ | ~libetpan~ | the email integration |
+| ~libpq-devel~ | ~libpq-dev~ | ~postgresql-libs~ | libreclaw's postgres memory |
+| ~libdex-devel~ | ~libdex-dev~ | ~libdex~ | futures |
+| ~libxml2-devel~ | ~libxml2-dev~ | ~libxml2~ | ai-glib's HTML-parsing search providers |
+| ~gstreamer1-devel~ | ~libgstreamer1.0-dev~ | ~gstreamer~ | ai-glib's voice sessions |
+| ~gstreamer1-plugins-base-devel~ | ~libgstreamer-plugins-base1.0-dev~ | ~gst-plugins-base-libs~ | ai-glib's voice sessions (~gstreamer-app-1.0~) |
+| ~libyaml-devel~ | ~libyaml-dev~ | ~libyaml~ | yaml-glib |
+| ~libgudev-devel~ | ~libgudev-1.0-dev~ | ~libgudev~ | podomation |
+| ~libvirt-devel~ | ~libvirt-dev~ | ~libvirt~ | podomation's ~vm_virtmanager~ module |
+| ~gobject-introspection-devel~ | ~libgirepository1.0-dev~ ~gobject-introspection~ | ~gobject-introspection~ | the ~.gir~ / ~.typelib~ step |
+| ~gtk4-devel~ | ~libgtk-4-dev~ | ~gtk4~ | the GTK client |
+| ~libadwaita-devel~ | ~libadwaita-1-dev~ | ~libadwaita~ | the GTK client |
 
 Every one of those is needed to *build*, whether or not you will use what
 it is for: a package missing from ~PKG_DEPS~ makes ~pkg-config~ fail for
 the whole list at once, which blanks ~PKG_CFLAGS~ and surfaces as a
 misleading ~glib.h: No such file or directory~.  The one exception is
-~gobject-introspection-devel~, whose step is skipped with a message when
-it is absent; the GTK client is skipped the same way without libadwaita,
-because everything else here is headless and still useful.
+introspection, whose step is skipped with a message when it is absent;
+the GTK client is skipped the same way without libadwaita, because
+everything else here is headless and still useful.
 
-Runtime, only for the features that use them:
+Arch has no ~libpq~ package of its own; ~postgresql-libs~ carries it.
 
-| Package | Needed for |
-|---------+------------|
-| ~podman~ | ~computer.type: container~ |
-| ~distrobox~ | ~computer.type: distrobox~ |
-| ~bubblewrap~ | ~computer.host.confine: bwrap~ |
-| ~libvirt-daemon-kvm~, ~libvirt-client~ | ~computer.vm.backend: libvirt~ |
-| ~qemu-system-x86-core~ (or ~-aarch64-~) | either VM backend |
-| ~qemu-img~ | VM disk creation |
-| ~virtiofsd~ | mount paths into VMs |
-| ~passt~ | reaching a libvirt VM's SSH |
-| ~xorriso~ | the cloud-init seed that gives a VM a login |
+The names were checked against each distribution's own metadata (Fedora
+45, Ubuntu 24.04, Arch) on 2026-11-14.  That says the packages *exist*,
+not that a release's versions are new enough: libsoup 3, libdex and
+libadwaita move quickly, and an older LTS may carry versions this tree
+does not build against.  If ~make~ fails on a version, the distribution
+is the thing that is too old.
+
+*** Runtime packages
+
+Only for the features that use them:
+
+| Fedora | Debian / Ubuntu | Arch | Needed for |
+|---+---+---+---|
+| ~podman~ | ~podman~ | ~podman~ | ~computer.type: container~ |
+| ~distrobox~ | ~distrobox~ | ~distrobox~ | ~computer.type: distrobox~ |
+| ~bubblewrap~ | ~bubblewrap~ | ~bubblewrap~ | ~computer.host.confine: bwrap~ |
+| ~libvirt-daemon-kvm~ ~libvirt-client~ | ~libvirt-daemon-system~ ~libvirt-clients~ | ~libvirt~ | ~computer.vm.backend: libvirt~ |
+| ~qemu-system-x86-core~ | ~qemu-system-x86~ | ~qemu-system-x86~ | either VM backend, on x86_64 |
+| ~qemu-system-aarch64-core~ | ~qemu-system-arm~ | ~qemu-system-aarch64~ | either VM backend, on aarch64 (Asahi) |
+| ~qemu-img~ | ~qemu-utils~ | ~qemu-img~ | VM disk creation |
+| ~virtiofsd~ | ~virtiofsd~ | ~virtiofsd~ | mount paths into VMs |
+| ~passt~ | ~passt~ | ~passt~ | reaching a libvirt VM's SSH |
+| ~xorriso~ | ~xorriso~ | ~libisoburn~ | the cloud-init seed that gives a VM a login |
+| ~xorg-x11-server-Xvfb~ | ~xvfb~ | ~xorg-server-xvfb~ | browser sessions (~GSURF=1~) |
+
+~make install-deps~ installs the qemu that matches ~uname -m~.
 
 On Immutablue / Hyacinth Macaw these are layered into the image rather
-than installed on the host.  ~libadwaita-devel~, ~libxml2-devel~ and
+than installed on the host; ~make install-deps INSTALL_DEPS_FLAGS=--print~
+prints the Fedora list to layer.  ~libadwaita-devel~, ~libxml2-devel~ and
 ~libvirt-devel~ are the three most likely to be missing from an older
 image.
 

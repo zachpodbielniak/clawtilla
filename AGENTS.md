@@ -71,6 +71,8 @@ the second is what clawtilla adds:
 | `libdex-1` | `libdex-devel` | async futures |
 | `yaml-0.1` | `libyaml-devel` | yaml-glib |
 | `libxml-2.0` | `libxml2-devel` | ai-glib's HTML-parsing search tools |
+| `gstreamer-1.0`, `gstreamer-app-1.0` | `gstreamer1-devel`, `gstreamer1-plugins-base-devel` | ai-glib's voice sessions |
+| `gudev-1.0` | `libgudev-devel` | podomation |
 | `gtk4` | `gtk4-devel` | GTK client |
 | `libadwaita-1` | `libadwaita-devel` | GTK client |
 | `libvirt` | `libvirt-devel` | podomation's vm_virtmanager module |
@@ -86,7 +88,15 @@ the second is what clawtilla adds:
 | `Xvfb` | `xorg-x11-server-Xvfb` | browser sessions, `GSURF=1` (runtime) |
 | — | `gobject-introspection-devel` | `.gir`/`.typelib` (auto-skipped if absent) |
 
-Adding a dependency means adding it to `PKG_DEPS` in `config.mk` *and*
+`make install-deps` installs all of these on Fedora, Debian/Ubuntu or Arch
+(`tools/clawt-install-deps.sh`, detected from `/etc/os-release`), refuses
+an ostree-booted host with the list to layer, and refuses Enterprise
+Linux rather than treating it as Fedora. `docs/getting-started.org` has
+the Debian and Arch names.
+
+Adding a dependency means adding it to `PKG_DEPS` in `config.mk`, a row
+in `tools/clawt-install-deps.sh`'s table and in `docs/getting-started.org`
+(`tests/test-install-deps.sh` fails on either omission), *and*
 layering the package into the image. A package missing from `PKG_DEPS`
 makes `pkg-config` fail for the whole list at once, which blanks
 `PKG_CFLAGS` and surfaces as a misleading `glib.h: No such file or

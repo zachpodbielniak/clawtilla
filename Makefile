@@ -38,6 +38,23 @@ __MIXED := 1
 endif
 endif
 
+# The distribution's packages, not the vendored ones: Fedora, Debian/Ubuntu
+# or Arch, detected from /etc/os-release.  An ostree-booted host is refused
+# with the package list printed, because its packages belong in the image.
+# INSTALL_DEPS_FLAGS passes options through (--build-only, --yes, --print).
+#
+# It is the first thing run on a machine with none of the packages, and
+# parsing the rest of this file probes pkg-config fifteen times -- so asked
+# for on its own, everything below is skipped and the target that fixes
+# the problem does not open with a page of "Package glib-2.0 was not
+# found".  It must be *all* of it: skipping only config.mk left OUTDIR
+# empty and a $(shell find $(OUTDIR) ...) further down walked /.
+INSTALL_DEPS_FLAGS ?=
+.PHONY: install-deps  ## Install build and runtime packages for Fedora, Debian/Ubuntu or Arch
+install-deps:
+	@bash tools/clawt-install-deps.sh $(INSTALL_DEPS_FLAGS)
+
+ifneq ($(strip $(MAKECMDGOALS)),install-deps)
 ifndef __MIXED
 
 # Capture git commit SHA for version info; append -UNSTAGED if the tree is dirty
@@ -1079,3 +1096,5 @@ test-gtk-navigation:
 	@echo 'GTK navigation test requires gtk4-devel and libadwaita-devel.' >&2
 	@exit 1
 endif
+
+endif # install-deps on its own
