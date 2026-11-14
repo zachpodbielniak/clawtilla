@@ -4926,11 +4926,68 @@ test_a_guest_is_given_a_cpu_worth_having(void)
  * Exactly what a wedged podman looks like, and the only case in which the
  * exec deadline matters: any answer at all, even an error, ends the wait
  * on its own.
+ *
+ * Silent about everything except the event stream, whose response
+ * headers it does send.  The container module opens that stream on its
+ * own thread the moment it is loaded, and podomation's
+ * container_stream_thread_func() leaks the GError of a header read that
+ * fails while the module is being stopped: when container_http_stream()
+ * returns NULL and `streaming` is already FALSE it breaks out of the loop
+ * without g_clear_error().  A podman that never answered the headers kept
+ * that thread parked in exactly that read, so the teardown's stop landed
+ * in it whenever the thread had not yet noticed the hang-up -- a 40-byte
+ * LeakSanitizer report from this test under load, and nothing wrong with
+ * clawtilla.  With the headers answered the thread waits in the body
+ * read instead, whose error podomation does free.  That is also the
+ * shape a wedged podman has: the event stream is up and quiet, and the
+ * exec is what never comes back.
  */
 typedef struct {
     GSocketListener *listener;
     GCancellable    *cancel;
+    GMutex           lock;
+    GCond            cond;
+    gboolean         events_answered;
 } SilentPodman;
+
+/*
+ * Answer @conn's response headers if it is the event stream.
+ *
+ * One read is enough to see the request line: the module writes the
+ * whole request in one call, and the path is in its first line.
+ */
+static void
+silent_podman_answer_events(SilentPodman *mute, GSocketConnection *conn)
+{
+    static const gchar headers[] =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "\r\n";
+    gchar request[1024];
+    gssize got;
+
+    got = g_input_stream_read(g_io_stream_get_input_stream(G_IO_STREAM(conn)),
+                              request, sizeof(request) - 1, mute->cancel,
+                              NULL);
+
+    if (got <= 0)
+        return;
+
+    request[got] = '\0';
+
+    if (strstr(request, "/libpod/events") == NULL)
+        return;
+
+    if (!g_output_stream_write_all(
+            g_io_stream_get_output_stream(G_IO_STREAM(conn)), headers,
+            strlen(headers), NULL, mute->cancel, NULL))
+        return;
+
+    g_mutex_lock(&mute->lock);
+    mute->events_answered = TRUE;
+    g_cond_broadcast(&mute->cond);
+    g_mutex_unlock(&mute->lock);
+}
 
 static gpointer
 silent_podman(gpointer data)
@@ -4945,12 +5002,38 @@ silent_podman(gpointer data)
      * and not the one this test is about.
      */
     while ((conn = g_socket_listener_accept(mute->listener, NULL,
-                                            mute->cancel, NULL)) != NULL)
+                                            mute->cancel, NULL)) != NULL) {
+        silent_podman_answer_events(mute, conn);
         g_ptr_array_add(held, conn);
+    }
 
     g_ptr_array_unref(held);
 
     return NULL;
+}
+
+/*
+ * Wait, at most ten seconds, for the module's event stream to have had
+ * its headers.  Bounded so a module that never opens the stream fails
+ * the assertion after it rather than hanging the trapped subprocess.
+ */
+static gboolean
+silent_podman_wait_for_events(SilentPodman *mute)
+{
+    gint64 deadline = g_get_monotonic_time() + 10 * G_USEC_PER_SEC;
+    gboolean answered;
+
+    g_mutex_lock(&mute->lock);
+
+    while (!mute->events_answered) {
+        if (!g_cond_wait_until(&mute->cond, &mute->lock, deadline))
+            break;
+    }
+
+    answered = mute->events_answered;
+    g_mutex_unlock(&mute->lock);
+
+    return answered;
 }
 
 /*
@@ -4996,6 +5079,9 @@ test_container_exec_gives_up_at_its_timeout(void)
 
         mute.listener = listener;
         mute.cancel = g_cancellable_new();
+        g_mutex_init(&mute.lock);
+        g_cond_init(&mute.cond);
+        mute.events_answered = FALSE;
         server = g_thread_new("silent-podman", silent_podman, &mute);
 
         bridge = clawt_pod_bridge_new(CLAWT_TEST_POD_MODULE_DIR);
@@ -5015,11 +5101,20 @@ test_container_exec_gives_up_at_its_timeout(void)
                                               NULL)) {
             g_cancellable_cancel(mute.cancel);
             g_thread_join(server);
+            g_mutex_clear(&mute.lock);
+            g_cond_clear(&mute.cond);
             g_clear_object(&mute.cancel);
             g_socket_listener_close(listener);
             clawt_test_remove_tree(dir);
             return;
         }
+
+        /*
+         * Past the event stream's headers before anything else, so the
+         * module's stop at the end finds its thread in the body read --
+         * see SilentPodman for the podomation leak the header read has.
+         */
+        g_assert_true(silent_podman_wait_for_events(&mute));
 
         computer = clawt_container_computer_new("stuck", bridge,
                                                 "example:1");
@@ -5042,6 +5137,8 @@ test_container_exec_gives_up_at_its_timeout(void)
 
         g_cancellable_cancel(mute.cancel);
         g_thread_join(server);
+        g_mutex_clear(&mute.lock);
+        g_cond_clear(&mute.cond);
         g_clear_object(&mute.cancel);
         g_socket_listener_close(listener);
         clawt_test_remove_tree(dir);

@@ -397,6 +397,12 @@ an agent between turns has no CLI --- so the frame answers ~interrupted:
 true~ either way and the clients say which happened rather than reporting
 "stopped" over an agent that was already idle.
 
+A zombie is not counted. The CLI that has just exited stays in ~/proc~
+until libreclaw reaps it, and ~kill()~ on a zombie succeeds while doing
+nothing, so a count that trusted it answered ~killed: 1~ for an agent
+that was already between turns. ~clawt_process_has_exited()~ reads the
+~State:~ line and the interrupt skips ~Z~ and ~X~.
+
 Every pid is re-checked against the agent's process tree immediately
 before it is signalled. A pid read a moment earlier may have exited and
 been reused by then, and what inherits a recycled pid belongs to somebody

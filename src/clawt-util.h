@@ -549,6 +549,28 @@ GArray *clawt_process_descendants(GPid root);
 gboolean clawt_process_is_descendant_of(GPid pid, GPid root);
 
 /**
+ * clawt_process_has_exited:
+ * @pid: the process to ask about
+ *
+ * Whether @pid has already finished, even though the kernel may still
+ * list it.
+ *
+ * A process that has exited stays in `/proc` as a zombie until its
+ * parent reaps it, and `kill()` on a zombie *succeeds* while doing
+ * nothing.  So a count of processes signalled that trusts kill()'s
+ * return value counts a CLI that had already ended as one it stopped --
+ * and an agent between turns, whose libreclaw has simply not got round
+ * to the wait yet, reports work it never interrupted.
+ *
+ * Reads the `State:` line of `/proc/<pid>/status`: `Z` (zombie) and
+ * `X` (dead) have exited.  A pid that is gone or unreadable has exited
+ * too, since there is nothing left to signal.
+ *
+ * Returns: %TRUE if @pid is a zombie, dead or gone
+ */
+gboolean clawt_process_has_exited(GPid pid);
+
+/**
  * clawt_command_shell_syntax_refusal:
  * @command: (nullable): a command line as somebody wrote it
  *
