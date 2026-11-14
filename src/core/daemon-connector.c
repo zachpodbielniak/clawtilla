@@ -9,6 +9,7 @@
 
 #include "clawtilla.h"
 
+#include <errno.h>
 #include <glib/gstdio.h>
 #include <string.h>
 
@@ -1292,4 +1293,92 @@ clawt_daemon_handle_connector(
 
     *handled = FALSE;
     return NULL;
+}
+
+/* ── Moving credentials into a directory each ────────────────────── */
+
+void
+clawt_daemon_connector_migrate_tokens(ClawtDaemon *self)
+{
+    g_autofree gchar *secrets_dir = NULL;
+    GPtrArray *integrations;
+    gboolean changed = FALSE;
+    guint i;
+
+    g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+    secrets_dir = clawt_config_get_path_value(self->config, "secrets.dir");
+    integrations = clawt_config_get_integrations(self->config);
+
+    if (secrets_dir == NULL)
+        return;
+
+    /*
+     * Before any agent starts, because a confined agent's box is built
+     * from where the credential is *then*: a flat file bound into a box
+     * goes on showing the inode it was, so the first renewal after the
+     * box started would have been invisible inside it, and a credential
+     * forgotten while it ran would have stayed readable there.
+     */
+    for (i = 0; integrations != NULL && i < integrations->len; i++) {
+        ClawtIntegrationConfig *instance = g_ptr_array_index(integrations, i);
+        const gchar *name = clawt_integration_config_get_name(instance);
+        const gchar *configured;
+        g_autofree gchar *legacy = NULL;
+        g_autofree gchar *current = NULL;
+        g_autofree gchar *dir = NULL;
+        g_autoptr(GError) error = NULL;
+
+        if (g_strcmp0(clawt_integration_config_get_type_id(instance),
+                      "connector") != 0 || name == NULL)
+            continue;
+
+        configured = clawt_integration_config_get_string(instance, NULL,
+                                                         "token_file");
+        legacy = clawt_connector_legacy_token_path(secrets_dir, name);
+
+        /* A path somebody chose is theirs; only the daemon's own moves. */
+        if (configured == NULL || g_strcmp0(configured, legacy) != 0)
+            continue;
+
+        current = clawt_connector_token_path(secrets_dir, name);
+        dir = clawt_connector_token_dir(secrets_dir, name);
+
+        if (!clawt_ensure_dir(dir, 0700, &error)) {
+            g_warning("connector '%s': cannot make %s, so its credential "
+                      "stays at %s: %s", name, dir, legacy, error->message);
+            continue;
+        }
+
+        /*
+         * The file may already have moved -- a previous start whose
+         * config save failed -- in which case only the path is left to
+         * fix.  A flat file beside a newer one is the older of the two.
+         */
+        if (g_file_test(legacy, G_FILE_TEST_EXISTS)) {
+            if (g_file_test(current, G_FILE_TEST_EXISTS)) {
+                g_unlink(legacy);
+            } else if (g_rename(legacy, current) != 0) {
+                g_warning("connector '%s': cannot move %s to %s: %s", name,
+                          legacy, current, g_strerror(errno));
+                continue;
+            }
+        } else if (!g_file_test(current, G_FILE_TEST_EXISTS)) {
+            continue;
+        }
+
+        clawt_integration_config_set_string(instance, NULL, "token_file",
+                                            current);
+        changed = TRUE;
+    }
+
+    if (changed) {
+        g_autoptr(GError) error = NULL;
+
+        if (!clawt_config_save(self->config, &error))
+            g_warning("moved connector credentials into %s/connectors, but "
+                      "the configuration naming them could not be saved: "
+                      "%s; this daemon uses the new paths, and the next "
+                      "start tries again", secrets_dir, error->message);
+    }
 }

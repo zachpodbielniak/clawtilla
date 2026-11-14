@@ -529,9 +529,12 @@ typedef struct {
 } GateLog;
 
 static gboolean
-recording_gate(const gchar *tool, gchar **refusal, gpointer user_data)
+recording_gate(const gchar *tool, JsonObject *arguments, gchar **refusal,
+               gpointer user_data)
 {
 	GateLog *log = user_data;
+
+	(void)arguments;
 
 	g_ptr_array_add(log->asked, g_strdup(tool));
 

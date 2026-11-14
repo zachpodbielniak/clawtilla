@@ -95,6 +95,9 @@ licence, send nothing, and exit 0.
 | ~config reload~ | re-read the config file the daemon was started with |
 | ~folders list/add/rm~ | folders every agent with a computer gets |
 | ~memory list/search <agent>~ | what an agent has remembered; read-only |
+| ~sentinel [--output FILE] [--days N]~ | read the event log (read-only) for recurring trouble, as YAML; offline |
+| ~memory journal <agent>~ | every remember, forget and pin, and whether each can be undone |
+| ~memory undo <agent> <change> [--scope S]~ | take one change back; never adds words of its own |
 | ~model~ | every provider and model, and which can run an agent |
 | ~image~ | container images clawtilla suggests, and your own |
 | ~image vm list/catalog/get/rm/cancel~ | disk images for VM agents |
@@ -646,6 +649,8 @@ Under it is a *Network* choice, ~runtime.network~ (see =docs/agents.org=, "Where
 The fleet allowlist, =egress.allow=, is on the *Shared folders* settings page under the folders: =clawt_egress_allowlist_label()= and =clawt_egress_allowlist_explanation()=, an entry row that adds one address, network or host name (~egress.allow.add~, checked by the daemon -- a metadata address comes back as a toast), and one row per entry with a remove button (~egress.allow.remove~). A list that does not parse is said under it from ~egress.allow.list~'s =problem=. The web client draws the same on its Shared folders page and in its agent page's Network card; the libregnum client in its Shared folders page and its inspector.
 
 *** What an agent is waiting for
+
+The agent inspector has a *Memory review* group below *Waiting for*: the journal of every memory the agent remembered, forgot or pinned (~memory.journal~), newest first, each row titled with what happened and the start of the memory ("Forgot: The deploy key lives in vault"), the sentence saying who and when, and which shared database it was in when it was not the agent's own.  A row the daemon would undo has a button saying what the undo does -- *Archive it*, *Bring it back*, *Unpin it*, *Pin it again* (=clawt_memory_journal_undo_label()=) -- which sends ~memory.undo~; a row it would not has the reason instead (a later change to the same memory has to be undone first, it replaced an earlier version, it is already undone).  The list alone refills on ~memory.changed~.  The web client's agent page draws it as a card with an undo form per row, and the libregnum client's Overview as a section.  See [[file:agents.org::*Memory review: a journal and undo][agents.org]].
 
 The agent inspector has a *Waiting for* group, above the integrations: one row per pending wait the agent set with ~clawtilla_wait_until~, titled with the agent's own words for it, with the condition, a schedule line from ~clawt_wait_schedule_label()~ (~checked 4m ago · next check in 1m · expires in 23h~), what the last check saw, and a *Cancel* button.  Cancelling sends ~wait.cancel~, and the daemon tells the agent, which would otherwise go on believing it was waiting.  The list -- and only the list, never the form above it -- refills on every ~wait.changed~ event.  An agent that looks idle and is in fact waiting on a deploy is not one somebody should nudge, which is why it is on the agent's own view.  The web client's agent page draws the same list as a card with a Cancel form per row, and the libregnum client's Overview as a section.  How many an agent may have is ~max_waits~, in the agent's settings with the other fleet settings it may override.  See [[file:orchestration.org::*Waits: a condition checked by code][orchestration.org]].
 
@@ -1764,7 +1769,7 @@ so.  ~make parity~ compares which enumerations each client walks.
 | Screen | what is on the agent's desktop, and the controls for taking it |
 | Mounts | the paths from this machine that appear inside the computer, host spelling first |
 | Exchange | the shared drop-box every computer gets |
-| Browser | the agent's web browser: the page it is on, a picture of it, an address to open, and Stop ([[file:browser.org][browser.org]]) |
+| Browser | the agent's web browser: the page it is on, a picture of it, an address to open, Stop, and which vault secrets it may have filled ([[file:browser.org][browser.org]]) |
 
 Shell is first because it is the one every computer has -- a container
 with no desktop still runs commands -- and it is where a link with no
@@ -1773,6 +1778,8 @@ which the daemon answers per agent from
 ~clawt_computer_type_has_screen()~.
 
 Browser is drawn only for an agent whose =agents.browser.mode= is not =none= (the agent row's ~browser~ member), and it is the one view an agent with a browser and no computer gets. It reads ~browser.frame~ every three seconds while it is showing -- one request in flight, and never one that starts a session: watching is not asking for a browser. The line above the picture is =clawt_browser_session_line()=, the same words in every client. A click on the picture is a click in the page (~browser.click~) in GTK and the web client, where the picture is drawn at its own size so the click's coordinates are the page's; the libregnum client takes "x,y" in an entry, as its Screen view does, because an =LrgImage= takes no pointer.
+
+Since 0.25.0 the view also lists the =vault:= entries by name (=clawt_vault_entry_label()=, from ~vault.list~ with the agent): a check button each in GTK, inside a "Secrets it may have filled" expander; an Allow / Revoke form each in the web client; a switch each in the libregnum client.  Changing one sends the whole list through ~agent.set~ ~browser.secrets~, built by =clawt_vault_grants_with()= so every client spells it the same.  No value is ever shown -- ~vault.list~ carries none.  When a secret has been filled the session line gains a second line from =clawt_browser_fill_line()=: the entry's name, the host and how long ago, and while the hold is on, that there is no picture until the page changes; the daemon sends none, so GTK and lrg clear the picture and the web client does not draw one.
 
 The web client puts the sub-view in the *path* (=/a/<id>/computer/screen=)
 rather than in a cookie, so a link to somebody's screen survives being
@@ -1810,6 +1817,16 @@ downscaled where the pixels are, so the two sizes differ, and both
 clients are told both -- a control that silently mis-clicked by a factor
 of three would read as the pointer being unreliable rather than as
 arithmetic.
+
+*Saved steps*, under the screen in all three clients: what the agent's
+last turn pressed on it (~steps.last~), one line per step, with a name
+field and *Save* when the daemon says the turn can be replayed exactly
+-- and the reason when it cannot (a call that is not a plain key, text,
+move, click or scroll; a secret typed; no picture from before the first
+step).  Each saved list has *Replay* and *Delete*.  Replay runs only
+while you hold the screen and only when a fresh picture of it hashes the
+same as the one taken before the steps were recorded; otherwise it
+sends nothing and says why.  See [[file:computers.org::#saved-steps][computers.org]].
 
 *Open in a viewer* appears for a VM whose domain is running.  The GTK
 client spawns ~remote-viewer~ and names the package when it is missing;
@@ -2538,6 +2555,19 @@ VM and needs a start afterwards; this kills the AI CLI running the turn
 and everything it started, and leaves the agent connected with its
 session and mailbox intact. ~docs/agents.org~ has the table.
 
+*A turn that has shown nothing at all.*  After
+~agents.runtime.first_reply_seconds~ (20 by default) with no step, no
+thought and no reply, a card appears above the composer in all three
+clients (~turn.rescue~): the sentence from =clawt_rescue_offer_text()=,
+*Stop*, and *Try <model> instead* (=clawt_rescue_switch_label()=) for each
+fallback on the agent's own CLI and login -- which stops the turn and
+sends the same message again on that model, for that turn only.  It goes
+the moment the turn shows anything (~turn.no_reply_cleared~), and is
+re-read on every agent switch, so a window opened late still sees it.
+The web client draws it in the live-steps region of the operator's
+conversation, posting to =/a/:id/rescue=.  What "nothing" can and cannot
+mean is in [[file:orchestration.org::*First-reply rescue: a turn that has shown nothing][orchestration.org]].
+
 Both clients say how many processes were signalled rather than "stopped",
 because zero and several mean different things to whoever pressed it: the
 agent was between turns, or that much was running. Neither offers the
@@ -2681,6 +2711,8 @@ Two actions, each labelled with what it actually does:
 
 - *Stop agent* is ~agent.interrupt~, which has no narrower form: it ends every turn the agent is running, not only the row it was pressed on. So it is labelled with the agent, and the confirmation says how many turns that is (~clawt_activity_stop_prompt()~, the same words in both clients).
 - *Steer* is ~msg.send~ to the agent. A busy agent holds it and folds it into the running turn at its next step, and the reply says ~steered~; if the turn ended in the meantime it arrives as an ordinary message, and the client says that instead. Steering reaches only the agent's conversation with you, so it is offered only on that row (~steerable~ in the listing). Every other row says so, and points at stopping it or messaging it there.
+
+Below the turns, *Issues*: what keeps going wrong rather than what is running.  *Scan now* asks the daemon to start ~clawtilla sentinel~ (~sentinel.scan~), which reads the event log without changing it; the list is the report it wrote (~sentinel.report~), redrawn on ~sentinel.finished~.  Each row is one issue with a badge for its kind (=clawt_sentinel_kind_label()=: Failing tool, Slow queue, Spending, Stalled turns), red when it is bad and amber when it is a warning, a title ("bash failed 7 times for alpha"), and when it last happened with the last detail seen.  The line above says how old the report is (=clawt_sentinel_age_text()=), so a week-old report is not read as the present.  Read when the page is shown and when a scan finishes, never on the page's ten-second tick.  See [[file:maintenance.org::*The sentinel: what keeps going wrong][maintenance.org]].
 
 ~clawtilla activity~ prints the same listing, with the last step of each turn.
 

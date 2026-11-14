@@ -105,8 +105,10 @@ static const Mutation mutations[] = {
 	  "host_tmp",
 	  "host_tmp" },
 	{ "share-home", CLAWT_SANDBOX_MUTATE_SHARE_HOME, FALSE,
-	  "daemon_state,other_workspace,home_ssh,home_documents",
-	  "daemon_state,other_workspace,home_ssh,home_documents" },
+	  "daemon_state,other_workspace,home_ssh,home_documents,"
+	  "connector_secret_other,connector_secret_loose",
+	  "daemon_state,other_workspace,home_ssh,home_documents,"
+	  "connector_secret_other,connector_secret_loose" },
 	{ "widen-root", CLAWT_SANDBOX_MUTATE_WIDEN_ROOT, FALSE,
 	  "other_workspace",
 	  "other_workspace" },
@@ -123,7 +125,7 @@ static const Mutation mutations[] = {
 	  "controlling_tty",
 	  "" },
 	{ "ro-writable", CLAWT_SANDBOX_MUTATE_RO_WRITABLE, FALSE,
-	  "ro_bind_write",
+	  "connector_secret_granted,ro_bind_write",
 	  "ro_bind_write" },
 	{ "skip-denials", CLAWT_SANDBOX_MUTATE_SKIP_DENIALS, FALSE,
 	  "denied_read",
@@ -158,6 +160,10 @@ typedef struct {
 	gchar *host_tmp_dir;  /* under the real /tmp */
 	gchar *host_tmp;      /* the marker in it */
 	gchar *probe;         /* the probe, copied into the workspace */
+	gchar *secrets;       /* secrets.dir, at its default under home */
+	gchar *granted_token; /* this agent's connector's credential */
+	gchar *other_token;   /* another agent's connector's credential */
+	gchar *loose_secret;  /* a secret in secrets.dir no connector names */
 	gchar *secret_name;
 	gchar *loopback;      /* "127.0.0.1:port" */
 	gchar *lan;           /* "a.b.c.d:port", or NULL */
@@ -402,6 +408,21 @@ fixture_create(
 	path = g_build_filename(fixture.other, "MEMORY.org", NULL);
 	write_file(path, "another agent's memory\n");
 	g_clear_pointer(&path, g_free);
+
+	/*
+	 * secrets.dir at its default, under the fixture's home: this agent's
+	 * connector, another agent's, and a loose secret beside them.
+	 */
+	fixture.secrets = g_build_filename(fixture.state, "secrets", NULL);
+	fixture.granted_token = clawt_connector_token_path(fixture.secrets,
+	                                                   "granted");
+	fixture.other_token = clawt_connector_token_path(fixture.secrets,
+	                                                 "theirs");
+	fixture.loose_secret = g_build_filename(fixture.secrets, "loose-secret",
+	                                        NULL);
+	write_file(fixture.granted_token, "{\"access_token\":\"granted\"}\n");
+	write_file(fixture.other_token, "{\"access_token\":\"theirs\"}\n");
+	write_file(fixture.loose_secret, "a loose secret\n");
 	path = g_build_filename(fixture.shared, "private", "key", NULL);
 	write_file(path, "denied directory contents\n");
 	g_clear_pointer(&path, g_free);
@@ -593,6 +614,18 @@ load_config_full(
 		"  state_dir: \"%s\"\n"
 		"defaults:\n"
 		"  workspace_root: \"%s/agents\"\n"
+		"integrations:\n"
+		"  - name: granted\n"
+		"    type: connector\n"
+		"    provider: bearer\n"
+		"    url: https://mcp.example.com/granted\n"
+		"    scope: selected\n"
+		"    agents: [%s]\n"
+		"  - name: theirs\n"
+		"    type: connector\n"
+		"    provider: bearer\n"
+		"    url: https://mcp.example.com/theirs\n"
+		"    scope: none\n"
 		"agents:\n"
 		"  - id: %s\n"
 		"    workspace: \"%s\"\n"
@@ -619,7 +652,7 @@ load_config_full(
 		"        allow_network: %s\n"
 		"        allow_paths: [\"%s\"]\n"
 		"        deny_paths: [\"%s/private\", \"%s/token\"%s]\n",
-		fixture.state, fixture.state, AGENT_ID, fixture.workspace,
+		fixture.state, fixture.state, AGENT_ID, AGENT_ID, fixture.workspace,
 		fixture.shared, fixture.evil, fixture.evil, fixture.evil,
 		fixture.ro_share, extra_mount, exec_network ? "true" : "false",
 		fixture.shared, fixture.shared, fixture.shared, extra_deny);
@@ -701,6 +734,15 @@ write_spec(
 		g_key_file_set_string(spec, group, "home_ssh", ssh);
 		g_key_file_set_string(spec, group, "home_documents", documents);
 		g_key_file_set_string(spec, group, "host_tmp", fixture.host_tmp);
+		g_key_file_set_string(spec, group, "connector_secret_other",
+		                      fixture.other_token);
+		g_key_file_set_string(spec, group, "connector_secret_loose",
+		                      fixture.loose_secret);
+
+		/* Only the agent box holds the agent's connectors. */
+		if (box == BOX_AGENT)
+			g_key_file_set_string(spec, group, "connector_secret_granted",
+			                      fixture.granted_token);
 		g_key_file_set_string_list(spec, group, "denied", denied, 2);
 		g_key_file_set_string(spec, group, "ro_dir", fixture.ro_share);
 		g_key_file_set_string(spec, group, "ro_file", ro_file);
@@ -1278,7 +1320,8 @@ test_real_boxes_hold(
 				"daemon_state", "other_workspace", "home_ssh",
 				"home_documents", "host_tmp", "denied_read",
 				"ro_bind_write", "hardlink_write", "hardlink_deny",
-				"host_pids", "env_override", "env_secret", NULL
+				"host_pids", "env_override", "env_secret",
+				"connector_secret_other", "connector_secret_loose", NULL
 			};
 			guint i;
 
@@ -1299,6 +1342,13 @@ test_real_boxes_hold(
 		                                        "controlling_tty")) !=
 		        OUTCOME_HELD)
 			g_test_fail_printf("the agent box did not run controlling_tty");
+
+		if (box == BOX_AGENT &&
+		    GPOINTER_TO_INT(g_hash_table_lookup(outcomes,
+		                                        "connector_secret_granted")) !=
+		        OUTCOME_HELD)
+			g_test_fail_printf("the agent box did not let its own connector "
+			                   "read its credential");
 
 		if (box == BOX_AGENT && clawt_sandbox_can_scope_abstract_sockets() &&
 		    GPOINTER_TO_INT(g_hash_table_lookup(outcomes,

@@ -1427,6 +1427,23 @@ Counting turns from the daemon would need a per-turn channel to the
 agent, and the only one there is is the delivery preamble -- which not
 every turn has.
 
+*** =memories.journal_keep=
+
+- Type :: integer
+- Default :: =1000=
+- Since :: 0.26.0
+
+How many changes each memory database's journal keeps. 0 keeps every
+one.
+
+Every remember, forget, pin and unpin is written to a journal beside
+the memories it changed, with who made it, and the Memory review page
+in each client lists it with an Undo per row. The oldest rows go first
+once there are more than this, and a change whose row has gone can no
+longer be undone -- the page says so rather than offering a button
+that cannot work. One journal per database: an agent's own, each
+team's and the fleet's.
+
 *** =memories.operator_profile=
 
 - Type :: boolean
@@ -1445,6 +1462,59 @@ fleet-scope memories in the `operator` category, which agents record.
 Both are written into a marked region of every agent's USER.org, so a
 change reaches the whole fleet rather than only agents made afterwards.
 Off removes the region again.
+
+** =sentinel=
+
+What `clawtilla sentinel` looks for in the event log.
+
+The sentinel is a read-only scan of <state_dir>/events/*.ndjson that
+groups failing tool calls, long queue waits, spending and stalled turns
+into issues and writes them as YAML. It runs out of process: the
+clients' Issues view asks the daemon to start `clawtilla sentinel`
+and then shows what it wrote. It never writes to the event log.
+
+*** =sentinel.days=
+
+- Type :: integer
+- Default :: =7=
+- Since :: 0.26.0
+
+How many days of the event log one scan reads, counting today. 0
+reads every file there is, which daemon.event_log_days bounds.
+
+*** =sentinel.min_failures=
+
+- Type :: integer
+- Default :: =3=
+- Since :: 0.26.0
+
+How many failures of one agent's tool make an issue. A tool that
+failed once is a turn's ordinary business; one that failed this many
+times in the window is a pattern somebody should look at.
+
+*** =sentinel.queue_wait_seconds=
+
+- Type :: integer
+- Default :: =600=
+- Since :: 0.26.0
+
+How long a message may wait in an agent's queue, from being queued to
+being delivered, before the wait is an issue. Messages still queued
+past it when the scan ends are reported too.
+
+*** =sentinel.daily_spend_micros=
+
+- Type :: integer
+- Default :: =10000000=
+- Since :: 0.26.0
+
+One agent's spend in one day, in micro-dollars, that makes an issue.
+0 reports only the days a cap was reached.
+
+A line to report, not a limit: nothing is refused at it. The caps that
+do refuse work are orchestration.daily_fleet_budget_micros and each
+agent's own, and every time one is reached is an issue whatever this
+says.
 
 ** =skills=
 
@@ -1870,6 +1940,81 @@ Identifier, and what agents.browser.use names.
 - Since :: 0.9.0
 
 What this session is for -- say which logins it holds.
+
+** =vault=
+
+Secrets an agent can have typed into a web page without ever seeing
+them: passwords, and TOTP seeds the daemon turns into one-time codes.
+
+  vault:
+    - name: github
+      secret: {command: "pass show web/github"}
+      sites: [github.com]
+    - name: github-2fa
+      kind: totp
+      secret: {file: github-totp}
+      sites: [github.com]
+
+An agent may ask only for the names its agents.browser.secrets lists.
+It calls clawtilla_secret_ref for a one-use reference bound to it and
+to the conversation it is in, then clawtilla_browser_fill_secret with
+that reference and a field. The daemon resolves the value, types it
+into the field as key input, and the agent hears only that it was
+filled. Screenshots and clawtilla_browser_eval are refused on that
+page until the browser navigates away. Needs a GSURF=1 build.
+
+*** =vault.name=
+
+- Type :: string
+- Default :: unset
+- Required :: yes
+- Since :: 0.25.0
+
+What an agent asks for, and what agents.browser.secrets lists. The
+name is all an agent or a client ever sees of the entry's secret.
+
+*** =vault.description=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.25.0
+
+Whose login this is, or which field it belongs in.
+
+*** =vault.kind=
+
+- Type :: enum
+- Values :: password, totp
+- Default :: =password=
+- Since :: 0.25.0
+
+`password` types the value itself. `totp` reads the value as a TOTP
+seed -- base32, or an otpauth://totp/ URI with its algorithm, digits
+and period -- and types the RFC 6238 code for the current time.
+
+*** =vault.secret=
+
+- Type :: secret reference
+- Default :: unset
+- Required :: yes
+- Since :: 0.25.0
+
+A secret reference, never the value: {file: ...}, {env: ...} or
+{command: ...}, resolved the way secrets: says, at the moment of the
+fill and not before.
+
+*** =vault.sites=
+
+- Type :: list of strings
+- Default :: unset
+- Required :: yes
+- Since :: 0.25.0
+
+The hosts the secret may be typed into: a page on any other host is
+refused, so an agent steered to a look-alike site cannot be made to
+fill it there. `example.com` also matches its subdomains
+(login.example.com); a page whose address cannot be read is refused.
+An entry without sites is never filled.
 
 ** =accounts=
 
@@ -4156,7 +4301,69 @@ Watched in two places, on purpose. The daemon watches activity and
 publishes turn.timed_out; the same number is rendered into the
 agent's own session.watchdog_timeout_seconds. That inner watchdog
 measures total duration, even while output arrives or a decision is
-pending; a positive value therefore also caps the whole turn.
+pending; a positive value therefore also caps the whole turn -- at
+this number plus runtime.busy_max_seconds while the busy check
+(runtime.busy_cpu_percent) is on, and not at all when that ceiling
+is 0.
+
+*** =agents.runtime.first_reply_seconds=
+
+- Type :: integer
+- Default :: =20=
+- Since :: 0.26.0
+
+How long a turn may show nothing at all -- no step, no thought, no
+reply -- before the clients offer to stop it or to run the same
+message on another model. 0 never offers.
+
+Nothing is stopped by this; it is an offer, shown beside the
+conversation and withdrawn the moment the turn shows anything. It
+needs runtime.stream_steps, since a turn whose steps are not
+streamed is silent until it answers whether or not it is working.
+
+Silence here is what the daemon can see, which is less than what the
+CLI is doing: libreclaw does not forward the CLI's own status lines,
+and holds prose until a tool call or the end of the turn. So the
+offer says the turn has shown nothing, never that it is stuck. The
+models offered are the model.fallbacks entries on the agent's own
+CLI and login, since one turn's model is a name on the CLI it is
+already running.
+
+*** =agents.runtime.busy_cpu_percent=
+
+- Type :: integer
+- Default :: =5=
+- Since :: 0.26.0
+
+How much CPU the agent's processes must use, in percent of one core,
+for a silent turn to count as working. 0 turns the check off.
+
+A turn running one long command -- a test suite, a build -- reports
+nothing between the tool starting and the tool finishing, so
+runtime.turn_timeout_seconds would read forty minutes of compiling as
+a wedged turn. Each watchdog sweep (every five seconds) reads the CPU
+time of the agent's process tree from /proc; a tree that used at
+least this much since the last sweep counts as a sign of life. A
+command waiting on the network uses none and is still stopped.
+
+Only for runtime.type: process. An embedded agent shares the daemon's
+process, so its tree cannot be told apart from the fleet's and the
+check does nothing there. Nothing is read while
+runtime.turn_timeout_seconds is 0.
+
+*** =agents.runtime.busy_max_seconds=
+
+- Type :: integer
+- Default :: =7200=
+- Since :: 0.26.0
+
+The longest a busy process tree may keep a silent turn alive, in
+seconds since the turn last reported anything. 0 is no ceiling.
+
+A command stuck in a loop uses CPU too, and without a ceiling it would
+hold its turn for ever. Past this many seconds with no step, message
+or tool call the CPU stops counting and runtime.turn_timeout_seconds
+applies as it would to any silent turn.
 
 ** =agents.computer=
 
@@ -5458,6 +5665,17 @@ user without a single visible step.
 Stop the session after this many minutes without a browser call. The
 profile stays, so a login survives; the open page does not. 0 keeps
 it running until its agent stops.
+
+*** =agents.browser.secrets=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.25.0
+
+The vault: entries this agent may have filled into a page, by name.
+Empty, the agent is offered no secret tools. Always the agent's own,
+even on a shared browser: what an agent may ask for is about the
+agent, not the session.
 
 *** =agents.browser.width=
 

@@ -190,8 +190,9 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 - *Prior art:* =mcp-oauth-discovery.ts= (RFC 9728 protected-resource metadata, RFC 8414, DCR, the RFC 8707 =resource= parameter; it never follows a redirect). =broker-mcp-refusal.ts= turns a 401 into an actionable tool error. =608ff19fb= / =17c69990f=: a server that refused only tool calls never offered sign-in.
 - *Version:* minor.
 
-** TODO Secrets the agent never sees                                                                :security:browser:
-- *Today:* =clawt_redact_secrets()= is pattern-based. No secret-request or browser-fill tools.
+** DONE Secrets the agent never sees v0.25.0                                    :security:browser:
+- *Done:* =vault:= entries (a secret reference, ~kind~ ~password~ or ~totp~, ~sites~) and =agents.browser.secrets=. =clawtilla_secret_ref= mints a one-use =secret-ref:= bound to the agent and its conversation (=ClawtSecretVault=); =clawtilla_browser_fill_secret= spends it, checks the grant and the page's host against ~sites~, resolves the value (a TOTP seed becomes the RFC 6238 code, =clawt-totp.c=), and has gsurf 0.5.13 type it as key input (~page.fill_secret~). The agent hears "Filled". Screenshots, =browser_eval=, HTML and scroll are refused until the page navigates away, by gsurf and the daemon both, failing closed. ~browser.secret_filled~ event, ~vault.list~, ~secret_hold~/~last_fill~ on sessions; GTK, web and lrg choose grants by name and show the last fill. =GSURF_MIN_VERSION= 0.5.13. See =docs/browser.org= "Secrets the agent never sees" and =docs/security.org=.
+- *Was:* =clawt_redact_secrets()= is pattern-based. No secret-request or browser-fill tools.
 - *Prior art:* =secret-vault.ts= (one-use refs bound to agent and conversation), =login-fill.ts= (types a saved password as real input; the agent hears only that it was filled), =totp.ts= (RFC 6238), =browser-secret-hold.ts= and =cdp/secrets.ts= (eval and screenshots refused while a filled secret is on the page; fail closed).
 - *Proposal:* a fill command in the gsurf control protocol (a gsurf release first, then a version floor in =make GSURF=1=). The daemon resolves a secret ref and sends keystrokes. Screenshots and =browser_eval= are refused until navigation away.
 - *Version:* minor.
@@ -212,12 +213,13 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 
 * P3 -- speculative
 
-** TODO First-reply rescue
-- *Prior art:* =45b74bb0c=. After about 20 s with no reply, offer Stop or switch AI.
-- *Note:* overlaps the turn watchdog. Worth it only if libreclaw's streamed events show "the CLI has emitted nothing at all", which is different from "it is thinking".
+** DONE First-reply rescue v0.26.0, with a limit
+- *Done:* after ~agents.runtime.first_reply_seconds~ (20; 0 never) with no step, thought or reply in a room's turn, ~turn.no_reply~; the first sign of life or the settle publishes ~turn.no_reply_cleared~ (=ClawtRescueWatch=, keyed agent and room). A card above the composer in GTK, web and lrg offers *Stop* and *Try <model> instead* per ~model.fallbacks~ entry on the agent's own CLI and login (~turn.rescue~ ~list~/~stop~/~switch~); a switch hands the room's running turn back with the model on it (=clawt_mailbox_turn_hand_back()=, refused once the turn acted outward) and interrupts, so the same message runs again on that model for that turn. Design in =docs/orchestration.org=, "First-reply rescue". Tests: =tests/test-rescue.c=.
+- *The limit:* libreclaw's streamed steps distinguish "thinking out loud" (a ~thinking~ step) from silence, but *not* "the CLI emitted nothing" from "it is writing its answer": it drops the CLI's status lines and holds prose until a tool call or the end. So the offer says the turn has shown nothing, never that it is stuck, and nothing is offered with ~stream_steps~ off. A per-turn switch can only change the model on the CLI and login already running; cross-CLI fallbacks are listed with that reason. Telling "emitted nothing" apart would need libreclaw to forward a first-byte or status event.
 
-** TODO Watchdog that counts a busy process tree as working
-- *Today:* =clawt-turn-watch.c= exempts held turns but samples no CPU.
+** DONE Watchdog that counts a busy process tree as working v0.26.0
+- *Done:* =ClawtBusyWatch= (=src/chat/clawt-busy-watch.c=) reads the agent's process tree from =/proc= once per watchdog sweep through an injectable reader; a tree that used at least ~agents.runtime.busy_cpu_percent~ (default 5; 0 off) of one core since the last sweep counts as activity for the turn watch. Descendants' own and reaped-children time, the root's reaped children only; a falling total is a new baseline, never work. ~agents.runtime.busy_max_seconds~ (default 7200, 0 none) bounds it from the last thing the turn reported, so a looping command cannot hold a turn for ever. libreclaw's inner duration watchdog is rendered as the budget plus that ceiling while the check is on (it would otherwise cut the build the daemon just called working). Embedded agents cannot be measured and are skipped. Design in =docs/orchestration.org=, "The turn watchdog". Tests: =tests/test-busy-watch.c= (fake /proc, two agents, the ceiling), =tests/test-turn-hygiene.c= (the rendered cap).
+- *Was:* =clawt-turn-watch.c= exempted held turns but sampled no CPU.
 - *Prior art:* =fdf894efa=. A shell command whose processes are using CPU is still working.
 
 ** DONE Generic ACP engine driver (version assigned at merge)
@@ -225,14 +227,18 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 - *Prior art:* =server/drivers/acp/= and =docs/custom-engines.md=. Any ACP-over-stdio CLI becomes an engine.
 - *Needs:* lands in ai-glib, then libreclaw's =lc_provider_type_normalize()=, then the =agent= column in clawtilla's catalog. =tests/test-model-catalog.c= keeps them pinned. It also removes the silent rewrite to claude-code for unknown types.
 
-** TODO Memory review with a journal and undo
-- *Prior art:* =docs/memory.md=, =memory-journal.ts=, =memory-dream.ts=.
-- *Today:* =clawtilla_memory_add/forget/pin= act immediately.
+** DONE Memory review with a journal and undo v0.26.0
+- *Done:* every memory database keeps a ~memory_journal~ written by the store itself (=clawt_memory_store_add()=, =_forget_as()=, =_pin_as()=), so no caller can skip it; =clawt_memory_store_undo()= reverses one row (an add is archived, a forget restored, a pin flipped back) in one transaction, refusing an undone row, an undo row, an add that replaced an earlier version, a vanished memory, and a row with a later change still standing. ~memories.journal_keep~ (1000) bounds it. ~memory.journal~ / ~memory.undo~ (a shared database's row only from the agent that made it, checked in the daemon), ~memory.changed~ events; a *Memory review* group in the GTK inspector, the web agent page and the lrg Overview, with the undo labelled by =clawt_memory_journal_undo_label()=; =clawtilla memory journal|undo=. Design in =docs/agents.org=, "Memory review: a journal and undo". Tests: =tests/test-memory-journal.c=.
+- *Not done:* the periodic review ("dream", =memory-dream.ts=). It is a model call per pass nobody asked for, and a model rewriting memories is the kind of change the journal exists to make reviewable one at a time; documented in the same section.
+- *Was:* =clawtilla_memory_add/forget/pin= acted immediately with no record.
 
-** TODO Sentinel over =events/*.ndjson=
-- *Prior art:* =server/sentinel/=. An out-of-process, read-only scanner that groups failing tool calls, queue waits and cost into issues.
+** DONE Sentinel over =events/*.ndjson= v0.26.0
+- *Done:* =clawtilla sentinel= (offline CLI verb, =src/core/clawt-sentinel.c=) maps the day files read-only and groups failing tool calls (~turn.step~ failed, ~computer.exec~ non-zero), queue waits (~mailbox.queued~ → ~mailbox.delivered~, FIFO per agent, plus still-queued), spend (new ~turn.cost~ events from the daemon's per-turn drain, and ~spending.limit-reached~) and stalls into issues, written as YAML to =<state_dir>/sentinel.yaml=; a report path inside the log is refused. Keys ~sentinel.days~, ~.min_failures~, ~.queue_wait_seconds~, ~.daily_spend_micros~. ~sentinel.scan~ starts it as the daemon's child (never in the daemon's loop) and publishes ~sentinel.finished~; ~sentinel.report~ reads the file. An *Issues* section on the Activity page in GTK, web and lrg. Design in =docs/maintenance.org=, "The sentinel". Tests: =tests/test-sentinel.c= (each grouping at its line, the files' bytes and times unchanged, the YAML round trip, the daemon running the real CLI).
+- *Limits:* the queue pairing is FIFO per agent; cost exists only from ~turn.cost~ onwards; it reports and never acts.
 
-** TODO Saved steps: replay a desktop task with no model
+** DONE Saved steps: replay a desktop task with no model v0.26.0
+- *Done:* the relay's gate now passes a call's arguments to ~computer.control~ (=ClawtMcpRelayGate= gained ~arguments~), where =ClawtStepRecorder= keeps each agent's turn of acting desktop calls as =ClawtInputEvent= steps -- only those that map exactly (keys, text, moves, clicks, scrolls in gowl's and gnome-desktop-mcp's spellings); anything else, a typed secret, or no picture of the screen from before the first step makes the turn unsaveable, with the reason. A picture is requested at each turn's start and the first step's checkpoint is its SHA-256. ~steps.last/save/list/delete/replay~ (YAML at =<state_dir>/saved-steps/<agent>.yaml=, 0600); replay only while the operator holds the screen (the takeover that also refuses the agent's acting calls), only when a fresh picture hashes the same, step by step through ~computer.input~'s path, stopping when the screen is released; ~steps.changed~, ~steps.replayed~. *Saved steps* under the Screen view in GTK, web and lrg. Design in =docs/computers.org=, "Saved steps". Tests: =tests/test-saved-steps.c=.
+- *Limits:* the checkpoint is an exact frame hash, so a ticking clock on screen blocks replay (refused, never guessed); no window-title checkpoint; the replay itself needs a live compositor and is outside the hermetic suite.
 - *Prior art:* =671cf72d1=.
 
 ** DEFERRED Android device as a computer type

@@ -654,6 +654,7 @@ clawt_gtk_refresh_computer(ClawtWindow *self, JsonObject *agent)
 
     sync_screen_tab(self, agent);
     clawt_gtk_browser_set_agent(self, agent);
+    clawt_gtk_refresh_saved_steps(self);
 
     /*
      * A different agent means the watch on the old one has to go, and it
@@ -819,6 +820,9 @@ build_screen_view(ClawtWindow *self)
     gtk_box_append(GTK_BOX(box), buttons);
     gtk_box_append(GTK_BOX(box), input_box);
 
+    /* What the agent pressed here, kept to do again (gtk-steps.c). */
+    gtk_box_append(GTK_BOX(box), clawt_gtk_build_saved_steps(self));
+
     return box;
 }
 
@@ -958,4 +962,5 @@ clawt_gtk_stop_watching_screen(ClawtWindow *self)
     /* And the browser poll, which would otherwise fire into a closed window. */
     clawt_gtk_browser_set_showing(self, FALSE);
     g_clear_pointer(&self->browser_agent, g_free);
+    g_clear_pointer(&self->browser_vault, json_object_unref);
 }

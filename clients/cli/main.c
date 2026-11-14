@@ -2443,15 +2443,103 @@ cmd_memory(int argc, char *argv[])
     guint i;
 
     if (verb == NULL || target == NULL ||
-        (g_strcmp0(verb, "list") != 0 && g_strcmp0(verb, "search") != 0)) {
+        (g_strcmp0(verb, "list") != 0 && g_strcmp0(verb, "search") != 0 &&
+         g_strcmp0(verb, "journal") != 0 && g_strcmp0(verb, "undo") != 0)) {
         g_printerr("Usage: clawtilla memory list <agent> [--category C]\n");
         g_printerr("       clawtilla memory search <agent> <query>\n");
+        g_printerr("       clawtilla memory journal <agent>\n");
+        g_printerr("       clawtilla memory undo <agent> <change> "
+                   "[--scope agent|team|fleet]\n");
         return EXIT_FAILURE;
     }
 
     client = connect_to_daemon();
     if (client == NULL)
         return EXIT_FAILURE;
+
+    /*
+     * The review: every remember, forget and pin, and an undo per row.
+     * Undo is the one write this verb has, and it only ever takes back
+     * a change the agent made -- it never puts words in its mouth.
+     */
+    if (g_strcmp0(verb, "journal") == 0) {
+        JsonArray *rows;
+
+        reply = call(client, "memory.journal",
+                     build_payload("agent", target, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        rows = json_object_get_array_member(json_node_get_object(reply),
+                                               "entries");
+
+        if (rows == NULL || json_array_get_length(rows) == 0) {
+            g_print("No changes recorded.\n");
+            return EXIT_SUCCESS;
+        }
+
+        for (i = 0; i < json_array_get_length(rows); i++) {
+            JsonObject *entry = json_array_get_object_element(rows, i);
+            gboolean undoable = json_object_has_member(entry, "undoable") &&
+                json_object_get_boolean_member(entry, "undoable");
+
+            g_print("#%" G_GINT64_FORMAT "  [%s]  %s\n",
+                    json_object_get_int_member(entry, "id"),
+                    member_or(entry, "scope", "agent"),
+                    member_or(entry, "line", ""));
+
+            if (undoable)
+                g_print("    undo: clawtilla memory undo %s %" G_GINT64_FORMAT
+                        "%s%s  (%s)\n", target,
+                        json_object_get_int_member(entry, "id"),
+                        g_strcmp0(member_or(entry, "scope", "agent"),
+                                  "agent") != 0 ? " --scope " : "",
+                        g_strcmp0(member_or(entry, "scope", "agent"),
+                                  "agent") != 0
+                            ? member_or(entry, "scope", "") : "",
+                        clawt_memory_journal_undo_label(
+                            member_or(entry, "action", NULL)));
+            else if (member_or(entry, "why_not", NULL) != NULL &&
+                     g_strcmp0(member_or(entry, "action", ""), "undo") != 0)
+                g_print("    not undoable: %s\n",
+                        member_or(entry, "why_not", ""));
+        }
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "undo") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        const gchar *scope = "agent";
+        int arg;
+
+        if (argc < 5) {
+            g_printerr("Usage: clawtilla memory undo <agent> <change> "
+                       "[--scope agent|team|fleet]\n");
+            return EXIT_FAILURE;
+        }
+
+        for (arg = 5; arg + 1 < argc; arg++)
+            if (g_strcmp0(argv[arg], "--scope") == 0)
+                scope = argv[arg + 1];
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "agent");
+        json_builder_add_string_value(builder, target);
+        json_builder_set_member_name(builder, "scope");
+        json_builder_add_string_value(builder, scope);
+        json_builder_set_member_name(builder, "id");
+        json_builder_add_int_value(builder,
+                                   g_ascii_strtoll(argv[4], NULL, 10));
+        json_builder_end_object(builder);
+
+        reply = call(client, "memory.undo", json_builder_get_root(builder));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Undone.\n");
+        return EXIT_SUCCESS;
+    }
 
     if (g_strcmp0(verb, "search") == 0) {
         if (argc < 5) {
@@ -4082,7 +4170,8 @@ cmd_browser(int argc, char *argv[])
     if (g_strcmp0(verb, "-h") == 0 || g_strcmp0(verb, "--help") == 0 ||
         g_strcmp0(verb, "help") == 0) {
         g_print("Usage: clawtilla browser [list | open AGENT URL | click AGENT X Y |\n"
-                "                          stop AGENT | screenshot AGENT FILE]\n"
+                "                          stop AGENT | screenshot AGENT FILE |\n"
+                "                          secrets AGENT]\n"
                 "\n"
                 "The web browsers agents drive (agents.browser.mode). A session\n"
                 "starts on the agent's first browser call; open starts it too.\n"
@@ -4092,7 +4181,8 @@ cmd_browser(int argc, char *argv[])
                 "  clawtilla browser open research example.org\n"
                 "  clawtilla browser screenshot research page.png\n"
                 "  clawtilla browser click research 40 20   # page pixels\n"
-                "  clawtilla browser stop research\n");
+                "  clawtilla browser stop research\n"
+                "  clawtilla browser secrets research       # vault entries it may fill\n");
         return EXIT_SUCCESS;
     }
 
@@ -4184,6 +4274,13 @@ cmd_browser(int argc, char *argv[])
         if (reply == NULL)
             return EXIT_FAILURE;
         encoded = member_or(json_node_get_object(reply), "png_base64", NULL);
+        if (encoded == NULL &&
+            json_object_get_boolean_member_with_default(json_node_get_object(reply),
+                                                        "secret_hold", FALSE)) {
+            g_printerr("A secret was filled on %s's page: no picture until it navigates "
+                       "away.\n", argv[3]);
+            return EXIT_FAILURE;
+        }
         if (encoded == NULL) {
             g_printerr("%s's browser is not running; nothing to take a picture of.\n",
                        argv[3]);
@@ -4195,6 +4292,34 @@ cmd_browser(int argc, char *argv[])
             return EXIT_FAILURE;
         }
         g_print("Wrote %s (%" G_GSIZE_FORMAT " bytes).\n", argv[4], length);
+        return EXIT_SUCCESS;
+    }
+
+    /* The vault entries an agent may have filled: names, never values. */
+    if (g_strcmp0(verb, "secrets") == 0 && argc > 3) {
+        JsonObject *root;
+        JsonArray *vault_entries;
+        guint i;
+
+        reply = call(client, "vault.list", clawt_ipc_payload_new("agent", argv[3], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        root = json_node_get_object(reply);
+        vault_entries = json_object_has_member(root, "entries")
+            ? json_object_get_array_member(root, "entries") : NULL;
+        if (vault_entries == NULL || json_array_get_length(vault_entries) == 0) {
+            g_print("No vault entries (vault: in clawtilla.yaml).\n");
+            return EXIT_SUCCESS;
+        }
+        for (i = 0; i < json_array_get_length(vault_entries); i++) {
+            JsonObject *entry = json_array_get_object_element(vault_entries, i);
+            g_autofree gchar *label = clawt_vault_entry_label(entry);
+
+            g_print("[%s] %s\n",
+                    json_object_get_boolean_member_with_default(entry, "granted", FALSE)
+                        ? "x" : " ", label);
+        }
+        g_print("Change with: clawtilla agent set %s browser.secrets NAME,NAME\n", argv[3]);
         return EXIT_SUCCESS;
     }
 
@@ -4494,7 +4619,8 @@ static gboolean relay_policy_gate(const gchar *agent_id, const gchar *tool,
                                   const gchar *klass, gchar **refusal);
 
 static gboolean
-desktop_control_gate(const gchar *tool, gchar **refusal, gpointer user_data)
+desktop_control_gate(const gchar *tool, JsonObject *arguments,
+                     gchar **refusal, gpointer user_data)
 {
     const gchar *agent_id = user_data;
     g_autoptr(ClawtClient) client = NULL;
@@ -4522,9 +4648,33 @@ desktop_control_gate(const gchar *tool, gchar **refusal, gpointer user_data)
     if (client == NULL)
         return TRUE;
 
-    reply = clawt_client_request(
-        client, "computer.control",
-        build_payload("agent", agent_id, "tool", tool, NULL), &error);
+    /*
+     * The arguments go too: the gate is the one place a desktop call is
+     * seen, and saved steps record what was pressed, not only that
+     * something was.
+     */
+    {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "agent");
+        json_builder_add_string_value(builder, agent_id);
+        json_builder_set_member_name(builder, "tool");
+        json_builder_add_string_value(builder, tool);
+
+        if (arguments != NULL) {
+            JsonNode *copy = json_node_new(JSON_NODE_OBJECT);
+
+            json_node_set_object(copy, arguments);
+            json_builder_set_member_name(builder, "arguments");
+            json_builder_add_value(builder, copy);
+        }
+
+        json_builder_end_object(builder);
+
+        reply = clawt_client_request(client, "computer.control",
+                                     json_builder_get_root(builder), &error);
+    }
 
     if (reply == NULL || !JSON_NODE_HOLDS_OBJECT(reply))
         return TRUE;
@@ -5942,8 +6092,11 @@ relay_policy_gate(const gchar *agent_id, const gchar *tool, const gchar *klass,
 }
 
 static gboolean
-connector_policy_gate(const gchar *tool, gchar **refusal, gpointer user_data)
+connector_policy_gate(const gchar *tool, JsonObject *arguments,
+                      gchar **refusal, gpointer user_data)
 {
+    (void)arguments;
+
     *refusal = NULL;
     return relay_policy_gate(user_data, tool, "external", refusal);
 }
@@ -6055,7 +6208,7 @@ connector_relay(const gchar *name, const gchar *agent_id)
     ClawtIntegrationConfig *instance;
     const ClawtIntegrationInfo *info;
     const ClawtConnectorInfo *connector;
-    const gchar *token_file;
+    g_autofree gchar *token_file = NULL;
 
     if (name == NULL) {
         g_printerr("clawtilla: connector relay needs a name\n");
@@ -6118,7 +6271,24 @@ connector_relay(const gchar *name, const gchar *agent_id)
     }
 
     binding = clawt_integration_binding_for_instance(instance, info, NULL);
-    token_file = clawt_integration_binding_get_string(binding, "token_file");
+
+    /*
+     * Where the daemon keeps it now, which may be newer than this
+     * config: a confined relay reads the clawtilla.yaml its box started
+     * with, and its connector's directory is what is bound in.
+     */
+    {
+        g_autofree gchar *secrets_dir =
+            clawt_config_get_path_value(config, "secrets.dir");
+
+        if (secrets_dir != NULL)
+            token_file = clawt_connector_find_token_file(
+                secrets_dir, name,
+                clawt_integration_binding_get_string(binding, "token_file"));
+        else
+            token_file = g_strdup(clawt_integration_binding_get_string(
+                binding, "token_file"));
+    }
 
     /*
      * No credential yet is still a relay for a server reached by URL:
@@ -10023,6 +10193,150 @@ cmd_device(int argc, char *argv[])
     }
 }
 
+/*
+ * The sentinel: a read-only scan of the event log for recurring trouble.
+ *
+ * Offline, like `backup`: it reads <state_dir>/events itself and never
+ * talks to the daemon, which is what lets the daemon run it as a child
+ * without a scan of a week of logs ever holding the daemon's loop.  The
+ * thresholds are the config's sentinel.* unless a flag says otherwise.
+ */
+static gint
+cmd_sentinel(int argc, char *argv[])
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) report = NULL;
+    g_autofree gchar *state_dir = NULL;
+    g_autofree gchar *events = NULL;
+    g_autofree gchar *output = NULL;
+    ClawtSentinelOptions options;
+    int arg;
+
+    clawt_sentinel_options_init(&options);
+
+    for (arg = 2; arg < argc; arg++) {
+        const gchar *flag = argv[arg];
+        const gchar *value = (arg + 1 < argc) ? argv[arg + 1] : NULL;
+
+        if (g_strcmp0(flag, "-h") == 0 || g_strcmp0(flag, "--help") == 0) {
+            g_print("Usage: clawtilla sentinel [--events DIR] [--output FILE|-]\n"
+                    "                          [--days N] [--min-failures N]\n"
+                    "                          [--queue-wait SECONDS]\n"
+                    "                          [--daily-spend MICROS]\n"
+                    "\n"
+                    "Reads the event log (read-only) and groups failing tool\n"
+                    "calls, long queue waits, spending and stalled turns into\n"
+                    "issues, written as YAML. Defaults come from sentinel.* in\n"
+                    "the config; the report goes to <state_dir>/sentinel.yaml,\n"
+                    "which is what the clients' Issues view shows.\n"
+                    "\n"
+                    "Examples:\n"
+                    "  clawtilla sentinel\n"
+                    "  clawtilla sentinel --days 1 --output -\n"
+                    "  clawtilla sentinel --events ~/.clawtilla/events "
+                    "--min-failures 5\n");
+            return EXIT_SUCCESS;
+        }
+
+        if (value == NULL) {
+            g_printerr("clawtilla sentinel: %s needs a value\n", flag);
+            return EXIT_FAILURE;
+        }
+
+        if (g_strcmp0(flag, "--events") == 0)
+            events = g_strdup(value);
+        else if (g_strcmp0(flag, "--output") == 0)
+            output = g_strdup(value);
+        else if (g_strcmp0(flag, "--days") == 0)
+            options.days = (guint)g_ascii_strtoull(value, NULL, 10);
+        else if (g_strcmp0(flag, "--min-failures") == 0)
+            options.min_failures = (guint)g_ascii_strtoull(value, NULL, 10);
+        else if (g_strcmp0(flag, "--queue-wait") == 0)
+            options.queue_wait_seconds =
+                (guint)g_ascii_strtoull(value, NULL, 10);
+        else if (g_strcmp0(flag, "--daily-spend") == 0)
+            options.daily_spend_micros = g_ascii_strtoll(value, NULL, 10);
+        else {
+            g_printerr("clawtilla sentinel: unknown option %s\n", flag);
+            return EXIT_FAILURE;
+        }
+
+        arg++;
+    }
+
+    /*
+     * The config supplies the defaults and the state directory.  A flag
+     * given on the command line wins; a config that will not load is
+     * only fatal when nothing else said where the log is.
+     */
+    config = clawt_config_load(opt_config_path, &error);
+
+    if (config != NULL) {
+        state_dir = clawt_config_get_path_value(config, "daemon.state_dir");
+
+        if (!g_strv_contains((const gchar * const *)argv, "--days"))
+            options.days = (guint)MAX(clawt_config_get_int(config,
+                "sentinel.days"), 0);
+        if (!g_strv_contains((const gchar * const *)argv, "--min-failures"))
+            options.min_failures = (guint)MAX(clawt_config_get_int(config,
+                "sentinel.min_failures"), 0);
+        if (!g_strv_contains((const gchar * const *)argv, "--queue-wait"))
+            options.queue_wait_seconds = (guint)MAX(clawt_config_get_int(
+                config, "sentinel.queue_wait_seconds"), 0);
+        if (!g_strv_contains((const gchar * const *)argv, "--daily-spend"))
+            options.daily_spend_micros = MAX(clawt_config_get_int(config,
+                "sentinel.daily_spend_micros"), 0);
+    } else if (events == NULL) {
+        g_printerr("clawtilla sentinel: %s\n", error->message);
+        return EXIT_FAILURE;
+    }
+
+    if (events == NULL)
+        events = g_build_filename(state_dir, "events", NULL);
+
+    if (output == NULL)
+        output = (state_dir != NULL)
+            ? g_build_filename(state_dir, "sentinel.yaml", NULL)
+            : g_strdup("-");
+
+    report = clawt_sentinel_scan(events, &options, &error);
+
+    if (report == NULL) {
+        g_printerr("clawtilla sentinel: could not read %s: %s\n", events,
+                   error->message);
+        return EXIT_FAILURE;
+    }
+
+    if (g_strcmp0(output, "-") == 0) {
+        g_autofree gchar *text = clawt_sentinel_report_to_yaml(report,
+                                                                &error);
+
+        if (text == NULL) {
+            g_printerr("clawtilla sentinel: %s\n", error->message);
+            return EXIT_FAILURE;
+        }
+
+        g_print("%s", text);
+        return EXIT_SUCCESS;
+    }
+
+    if (!clawt_sentinel_write_report(report, output, events, &error)) {
+        g_printerr("clawtilla sentinel: %s\n", error->message);
+        return EXIT_FAILURE;
+    }
+
+    {
+        JsonObject *root = json_node_get_object(report);
+        JsonArray *issues = json_object_get_array_member(root, "issues");
+
+        g_print("%u issue%s written to %s\n", json_array_get_length(issues),
+                json_array_get_length(issues) == 1 ? "" : "s", output);
+    }
+
+    return EXIT_SUCCESS;
+}
+
 static gint
 cmd_cp(int argc, char *argv[])
 {
@@ -10117,6 +10431,8 @@ static const ClawtVerb verbs[] = {
       cmd_cost },
     { "memory",  "<verb>",   "What an agent has written down",
       cmd_memory },
+    { "sentinel", "[--output FILE|-]", "Scan the event log for recurring trouble (read-only)",
+      cmd_sentinel },
     { "computer", "<verb>",  "Run commands on an agent's computer",
       cmd_computer },
     { "activity", "",        "Every turn running across the fleet",

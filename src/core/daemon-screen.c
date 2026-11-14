@@ -638,6 +638,20 @@ clawt_daemon_handle_screen(
              * screen would have every command and no clicks.
              */
             clawt_daemon_teach_note_desktop(self, agent_id, tool);
+
+            /*
+             * And into the agent's saved-steps run, with the call's
+             * arguments, which only this gate sees.  A call the recorder
+             * cannot repeat exactly marks the run unsaveable there.
+             */
+            clawt_daemon_steps_note_call(
+                self, agent_id, tool,
+                (payload != NULL &&
+                 json_object_has_member(payload, "arguments") &&
+                 JSON_NODE_HOLDS_OBJECT(json_object_get_member(
+                     payload, "arguments")))
+                    ? json_object_get_object_member(payload, "arguments")
+                    : NULL);
         }
 
         json_builder_begin_object(builder);

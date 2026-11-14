@@ -89,6 +89,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/integration/clawt-integration-field.h \
 	$(SRCDIR)/core/clawt-event-bus.h \
 	$(SRCDIR)/core/clawt-event-log.h \
+	$(SRCDIR)/core/clawt-sentinel.h \
 	$(SRCDIR)/integration/clawt-connector.h \
 	$(SRCDIR)/integration/clawt-connector-relay.h \
 	$(SRCDIR)/integration/clawt-connector-registry.h \
@@ -110,6 +111,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/computer/clawt-exchange.h \
 	$(SRCDIR)/computer/clawt-observable.h \
 	$(SRCDIR)/computer/clawt-screen.h \
+	$(SRCDIR)/computer/clawt-saved-steps.h \
 	$(SRCDIR)/computer/clawt-takeover.h \
 	$(SRCDIR)/computer/clawt-observer.h \
 	$(SRCDIR)/computer/clawt-image-catalog.h \
@@ -124,6 +126,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/mailbox/clawt-mailbox-item.h \
 	$(SRCDIR)/memory/clawt-memory.h \
 	$(SRCDIR)/memory/clawt-memory-store.h \
+	$(SRCDIR)/memory/clawt-memory-journal.h \
 	$(SRCDIR)/memory/clawt-memory-scopes.h \
 	$(SRCDIR)/memory/clawt-transcript-index.h \
 	$(SRCDIR)/memory/clawt-summariser.h \
@@ -132,6 +135,8 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/usage/clawt-task-sources.h \
 	$(SRCDIR)/usage/clawt-usage.h \
 	$(SRCDIR)/browser/clawt-browser.h \
+	$(SRCDIR)/browser/clawt-secret-vault.h \
+	$(SRCDIR)/browser/clawt-totp.h \
 	$(SRCDIR)/mailbox/clawt-mailbox.h \
 	$(SRCDIR)/mailbox/clawt-mailbox-router.h \
 	$(SRCDIR)/mailbox/clawt-ack-check.h \
@@ -184,6 +189,8 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/chat/clawt-loop-guard.h \
 	$(SRCDIR)/chat/clawt-repeat-watch.h \
 	$(SRCDIR)/chat/clawt-turn-watch.h \
+	$(SRCDIR)/chat/clawt-busy-watch.h \
+	$(SRCDIR)/chat/clawt-rescue.h \
 	$(SRCDIR)/chat/clawt-steer-queue.h \
 	$(SRCDIR)/chat/clawt-steer-policy.h \
 	$(SRCDIR)/chat/clawt-draft-store.h \
@@ -252,6 +259,9 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-misc.c \
 	$(SRCDIR)/core/daemon-agent.c \
 	$(SRCDIR)/core/daemon-memory.c \
+	$(SRCDIR)/core/daemon-sentinel.c \
+	$(SRCDIR)/core/daemon-rescue.c \
+	$(SRCDIR)/core/daemon-steps.c \
 	$(SRCDIR)/core/daemon-mount.c \
 	$(SRCDIR)/core/daemon-egress.c \
 	$(SRCDIR)/core/daemon-broker.c \
@@ -288,6 +298,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-tree.c \
 	$(SRCDIR)/core/clawt-event-bus.c \
 	$(SRCDIR)/core/clawt-event-log.c \
+	$(SRCDIR)/core/clawt-sentinel.c \
 	$(SRCDIR)/integration/clawt-connector.c \
 	$(SRCDIR)/integration/clawt-connector-relay.c \
 	$(SRCDIR)/integration/clawt-connector-registry.c \
@@ -319,6 +330,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/ipc/clawt-device-store.c \
 	$(SRCDIR)/memory/clawt-memory.c \
 	$(SRCDIR)/memory/clawt-memory-store.c \
+	$(SRCDIR)/memory/clawt-memory-journal.c \
 	$(SRCDIR)/memory/clawt-memory-scopes.c \
 	$(SRCDIR)/memory/clawt-transcript-index.c \
 	$(SRCDIR)/memory/clawt-summariser.c \
@@ -327,6 +339,8 @@ LIB_SOURCES = \
 	$(SRCDIR)/usage/clawt-usage-ledger.c \
 	$(SRCDIR)/usage/clawt-task-sources.c \
 	$(SRCDIR)/browser/clawt-browser.c \
+	$(SRCDIR)/browser/clawt-secret-vault.c \
+	$(SRCDIR)/browser/clawt-totp.c \
 	$(SRCDIR)/mailbox/clawt-mailbox-item.c \
 	$(SRCDIR)/mailbox/clawt-mailbox.c \
 	$(SRCDIR)/mailbox/clawt-mailbox-router.c \
@@ -347,6 +361,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/net/clawt-egress-broker.c \
 	$(SRCDIR)/computer/clawt-observable.c \
 	$(SRCDIR)/computer/clawt-screen.c \
+	$(SRCDIR)/computer/clawt-saved-steps.c \
 	$(SRCDIR)/computer/clawt-takeover.c \
 	$(SRCDIR)/computer/clawt-observer.c \
 	$(SRCDIR)/computer/clawt-computer.c \
@@ -385,6 +400,8 @@ LIB_SOURCES = \
 	$(SRCDIR)/chat/clawt-loop-guard.c \
 	$(SRCDIR)/chat/clawt-repeat-watch.c \
 	$(SRCDIR)/chat/clawt-turn-watch.c \
+	$(SRCDIR)/chat/clawt-busy-watch.c \
+	$(SRCDIR)/chat/clawt-rescue.c \
 	$(SRCDIR)/chat/clawt-steer-queue.c \
 	$(SRCDIR)/chat/clawt-steer-policy.c \
 	$(SRCDIR)/chat/clawt-draft-store.c \
@@ -1047,6 +1064,8 @@ $(OUTDIR)/tests/test-sandbox-probe: $(SANDBOX_PROBE)
 $(OUTDIR)/tests/test-backup: $(CLI_BIN_TARGET)
 # The offline validator test exercises argument parsing in the real CLI.
 $(OUTDIR)/tests/test-config-offline: $(CLI_BIN_TARGET)
+# The sentinel test runs the real CLI as the daemon's child.
+$(OUTDIR)/tests/test-sentinel: $(CLI_BIN_TARGET)
 
 .PHONY: test  ## Build and run the hermetic test suite
 test: $(TEST_BINARIES) test-plugins plugins

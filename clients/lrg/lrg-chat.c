@@ -4496,6 +4496,10 @@ build_composer(ClawtLrgApp *app)
     clawt_lrg_add(chat.activity, chat.activity_label);
     g_object_unref(chat.activity_label);
     lrg_widget_set_visible(chat.activity, FALSE);
+
+    /* A turn that has shown nothing, offered to rescue (lrg-rescue.c). */
+    clawt_lrg_take(composer, clawt_lrg_rescue_build(app));
+
     clawt_lrg_add(composer, chat.activity);
     g_object_unref(chat.activity);
 
@@ -4715,6 +4719,9 @@ refresh(ClawtLrgApp *app)
 
     notice_connection(app);
 
+    /* The rescue card is about the agent on screen. */
+    clawt_lrg_rescue_refresh(app);
+
     if (!chat.primed || g_strcmp0(key, chat.key) != 0) {
         g_autofree gchar *leaving = editor_text();
         g_autofree gchar *held = NULL;
@@ -4918,6 +4925,14 @@ on_event(ClawtLrgApp *app, ClawtEvent *event)
 
     if (g_strcmp0(kind, "agent.typing") == 0) {
         on_typing_event(app, event);
+        return;
+    }
+
+    /* A silent turn offered to rescue, or no longer silent. */
+    if (g_str_has_prefix(kind, "turn.no_reply")) {
+        if (app->agent_id != NULL &&
+            g_strcmp0(clawt_event_get_subject(event), app->agent_id) == 0)
+            clawt_lrg_rescue_refresh(app);
         return;
     }
 

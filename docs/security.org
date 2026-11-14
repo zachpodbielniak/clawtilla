@@ -395,6 +395,15 @@ credentials:
   created, and the agent started cleanly and never authenticated, which
   looks exactly like an agent nobody is talking to
 
+** Secrets an agent fills but never sees
+
+Since 0.25.0, and in detail in [[file:browser.org][browser.org]].  A =vault:= entry is a secret reference with a name and the ~sites~ it may be typed on; =agents.browser.secrets= grants an agent names.  The agent gets a one-use =secret-ref:= bound to it and to its conversation (=clawtilla_secret_ref=), and spends it on =clawtilla_browser_fill_secret=; the daemon resolves the value, makes a TOTP code from a seed when the entry is ~totp~, and has gsurf type it as key input.
+
+- *What crosses which boundary.*  The value goes from the secret reference to the daemon's worker thread to gsurf's same-user control socket, once.  It is never in a tool result, an error, an event (~browser.secret_filled~ carries the name, kind, host and session), a log line, an IPC reply (~vault.list~ carries names, kinds, descriptions and sites) or the reference table.  =tests/test-browser.c= asserts each of those negatively.
+- *Where it can be typed.*  Only on the entry's ~sites~ and their subdomains, checked against the page's address at the fill.  An unreadable address is a refusal.
+- *Reading it back.*  Screenshots and scripts are refused on a page a secret was typed into until the browser navigates away -- by gsurf and by the daemon, each failing closed.
+- *Not a boundary against the page.*  The site gets the secret; that is the point.  A malicious page, or a page the agent was steered to on an allowed host, can read its own field.  Choose ~sites~ narrowly.
+
 ** A credential never follows a redirect
 
 libsoup follows a 301, 302, 303, 307 or 308 by default, keeps every request header it was given -- ~Authorization~, ~X-Gotify-Key~, whatever a connector's ~header_name~ is -- and on a 307 or 308 sends the body again. So until this was closed, a server that answered with a redirect received nothing worse than any other reply, and the host it named received the bearer token, the OAuth client secret or the Matrix password. Turning that off is opt-in, per message (~SOUP_MESSAGE_NO_REDIRECT~).
@@ -470,6 +479,24 @@ Two things the broker buys regardless of confinement: one place to
 revoke, and a per-agent tool list enforced before the call reaches the
 service.
 
+*** Connectors in a confined box
+
+Under ~runtime.confine: bwrap~ the relay is not on the host: the agent's CLI starts ~clawtilla connector relay~ from its =.mcp.json=, so the relay is in the agent's box and reads the credential from in there. Nothing used to put the credential in the box -- =secrets.dir= is under the daemon's home, which the box covers with an empty tmpfs -- so every credentialed connector failed for every confined agent with ~cannot read the credential for '<name>': ... No such file or directory~, while the predicate side (the =.mcp.json= entry, the agent's TOOLS.org) said the tools were there. A wall built without the door.
+
+What the box binds now, read-only, one by one (~clawt_agent_confine_connector_paths()~, from the same ~clawt_integration_resolve_for_agent()~ that writes the agent's =.mcp.json=):
+
+- each granted connector's own directory, =secrets.dir/connectors/<name>/=, holding its ~token.json~;
+- a granted connector's ~token_file~ when it names a file somewhere else -- a key written by hand, an integration broker's key -- as that file;
+- ~connectors.dir~, the catalogue overlay, which is descriptions and no secrets.
+
+Never =secrets.dir= itself, never =connector-auth/= (the OAuth registrations, which only the daemon reads), never a connector scoped to another agent or to nobody, never a loose secret beside them. ~tests/test-agent-confine.c~ asserts the list as data and the argv the builder makes from it; the sandbox probe (below) asserts from inside a real box that another agent's connector credential and a loose file in =secrets.dir= cannot be read, and that the granted one can be read and not written.
+
+*Why a directory each, not the file.*  A bind is of the inode the path named when the box started. The daemon writes a credential by writing a new file and renaming it into place, so a file bind went on showing the token the box started with: the first renewal after an agent started was invisible inside its box, every relay started after that sent an expired token, and a credential forgotten while the agent ran stayed readable there. A directory bind sees the rename. So each connector's credential has a directory of its own (=clawt_connector_token_dir()=), which the daemon creates, empty and 0700, before it builds the box -- a connector connected while the agent runs is seen by its next relay -- and never removes, because one made again would not be the directory the running boxes hold. The daemon moves a credential still in the old flat layout (=secrets.dir/connector-<name>.json=) into its directory when it starts, before any agent, and points ~token_file~ at it. A ~token_file~ somebody chose is never moved; a change to one reaches a confined agent at its next start.
+
+*Renewal stays in the daemon.*  The relay never writes a credential, so nothing is bound writable: it asks the daemon to renew over IPC (~connector.refresh~) before it reads, the daemon writes the new token into the connector's directory, and the relay reads it there. The reply carries no credential. A relay reads the ~clawtilla.yaml~ its box started with, which may name the old flat path or no ~token_file~ at all; ~clawt_connector_find_token_file()~ prefers the daemon's own file when it exists, so neither matters.
+
+*What this does not change.*  The agent's own tools run in the same box as its relays, so a confined agent can read the credentials of the connectors it holds -- the same as an unconfined agent can, and the same as an integration broker's key, which is bound for the same reason. What the box adds is everything else: other agents' connectors, the OAuth registrations, the rest of =secrets.dir= and of the home directory. A credential the agent must not be able to read belongs to a container or VM agent, whose relay runs on the host.
+
 *** Revoking is two things
 
 Deleting clawtilla's copy stops the fleet using it.  It does not stop the
@@ -542,7 +569,7 @@ With =broker.enabled= on, clawtilla runs AnythingMCP or Jentic One in rootless p
 - *A second credential store.*  The SaaS tokens the gateway holds are in its own encrypted store under =<state_dir>/broker/=, encrypted with a key that lives beside it (=encryption-key=, or =jentic-encryption-key=), 0600.  It is not =secrets.dir= and nothing in clawtilla reads it; backing up, rotating and revoking those tokens happen in the gateway's dashboard.
 - *Only the keys are clawtilla's.*  One per gateway server, at =<state_dir>/broker/keys/=, 0600, in the shape every connector token has; written by ~broker.key~, which answers with the path, and never returned over IPC -- ~broker.status~ reports ~key_stored~, a boolean.  No instance-wide gateway token exists: AnythingMCP's ~MCP_BEARER_TOKEN~, which reaches every server of every workspace, is never set, and each key made on a server's page is refused (403) by every other server.
 - *Loopback by default.*  The ports are published on =broker.bind=, 127.0.0.1 unless somebody widens it; the database publishes no port and listens on no TCP socket, reached by the gateway through a unix socket in =<state_dir>/broker/run=.  An agent with ~runtime.network~ ~gated~ or ~none~ is not given the broker at all, since its sandbox's loopback is not this one.
-- *Jentic One only for confined agents.*  Its own threat model says an agent running as the same OS user can read its credential database and encryption key.  It is refused while any agent naming a gateway server lacks ~runtime.confine: bwrap~, and a confined agent's box binds exactly its own key file read-only -- the relay that reads it runs in the box -- and nothing else of =<state_dir>/broker/=.  =tests/test-agent-confine.c= checks the box for the key and for the absence of everything beside it; the predicate (~clawt_broker_assignment_for_agent()~) and the box are answered by one function.  Its telemetry, release check and OTLP exporters are always off.
+- *Jentic One only for confined agents.*  Its own threat model says an agent running as the same OS user can read its credential database and encryption key.  It is refused while any agent naming a gateway server lacks ~runtime.confine: bwrap~, and a confined agent's box binds exactly its own key file read-only -- the relay that reads it runs in the box -- and nothing else of =<state_dir>/broker/=.  =tests/test-agent-confine.c= checks the box for the key and for the absence of everything beside it; the key reaches the box the way every connector credential does, through ~clawt_agent_confine_connector_paths()~ (the gateway connector's ~token_file~, bound as that one file; see *Connectors in a confined box*), and that connector, scoped to exactly the agents given the server, is made from ~clawt_broker_assignments()~. A key stored with ~broker.key~ while the agent runs reaches its box at the agent's next start.  Its telemetry, release check and OTLP exporters are always off.
 - *Secrets in the containers' environment.*  The database password, the JWT secret and the encryption key reach the containers as environment, so ~podman inspect~ shows them -- to this user, who can read =<state_dir>= anyway.  They are in no argv, no IPC reply, and no log line clawtilla writes; ~broker.logs~ runs what the containers print through ~clawt_redact_secrets()~, which is best effort.
 - *Images are pinned.*  An image with no tag or tagged ~latest~ is refused at start.
 - *A refusal names who refused.*  The gateway's refusals are prefixed with its name and its reason is repeated only in one bounded line from a recognised shape, never the raw body; clawtilla's own refusals say clawtilla.
@@ -808,6 +835,9 @@ What is in the box:
 | the CLI's login directory | writable | OAuth tokens are refreshed in place |
 | the AI CLI, libreclaw, the ~.mcp.json~ programs | read-only | including a script's interpreter and an npm package's directory |
 | absolute paths in ~.mcp.json~ ~args~ | read-only | a token file, a config file |
+| each granted connector's directory, =secrets.dir/connectors/<name>= | read-only | its relay runs in the box and reads the credential there; see *Connectors in a confined box* |
+| a granted connector's ~token_file~ named outside that directory | read-only, the file | a key somebody wrote by hand, a broker's key |
+| ~connectors.dir~, when the agent holds a connector | read-only | the catalogue the relay looks its provider up in |
 | the link socket and the IPC socket | each socket file | not the directory: it holds every agent's link |
 | ~runtime.confine_paths~ | read-only | anything the builder cannot find for itself |
 | ~/etc/resolv.conf~'s target | read-only | on systemd-resolved it is a symlink into ~/run~ |
@@ -863,6 +893,9 @@ What the probe tries, and what it reports for each (~held~, ~leaked~, or ~skippe
 | ~host_pids~ | see the daemon or another host process in ~/proc~ (pid *and* start time, so a box pid with the same number is not a match) |
 | ~loopback~, ~lan~ | connect to a listener on 127.0.0.1 and on a LAN address of the machine |
 | ~abstract_unix~ | connect to an abstract unix socket |
+| ~connector_secret_granted~ | the door, agent box only: the credential of the agent's own connector must be readable and must not be writable, or its relay cannot run (a failure here is reported as a leak, so the run fails) |
+| ~connector_secret_other~ | read another agent's connector credential in =secrets.dir/connectors/= |
+| ~connector_secret_loose~ | read a secret in =secrets.dir= that no granted connector names |
 | ~env_override~ | ~TMPDIR~, ~HOME~ or ~XDG_*~ carrying what the agent's ~env:~ set |
 | ~env_secret~ | a daemon variable outside the allowlist, or any name nobody passed |
 | ~controlling_tty~ | open ~/dev/tty~ (TIOCSTI into the daemon's terminal) |
@@ -872,13 +905,13 @@ The mutation table, one row per protection the builder applies, and the checks e
 | Mutation | Protection taken out | Agent box fails | Exec box fails |
 |----------+----------------------+-----------------+----------------|
 | ~share-tmp~ | ~--tmpfs /tmp~ (the host's is bound) | ~host_tmp~ | ~host_tmp~ |
-| ~share-home~ | the private home / no home (the real one is bound) | ~daemon_state~, ~other_workspace~, ~home_ssh~, ~home_documents~ | the same |
+| ~share-home~ | the private home / no home (the real one is bound) | ~daemon_state~, ~other_workspace~, ~home_ssh~, ~home_documents~, ~connector_secret_other~, ~connector_secret_loose~ | the same |
 | ~widen-root~ | binding exactly the root (its parent is bound) | ~other_workspace~ | ~other_workspace~ |
 | ~share-net~ | ~--unshare-net~ | -- (networked by design) | ~loopback~, ~lan~ |
 | ~share-abstract~ | the Landlock scope | ~abstract_unix~ | -- (the network namespace also holds it) |
 | ~share-pid~ | ~--unshare-pid~ | ~host_pids~ | ~host_pids~ |
 | ~share-session~ | ~--new-session~ | ~controlling_tty~ | -- (not started from a terminal) |
-| ~ro-writable~ | ~--ro-bind~ for ~mode: ro~ | ~ro_bind_write~ | ~ro_bind_write~ |
+| ~ro-writable~ | ~--ro-bind~ for ~mode: ro~ (and for the granted connector's directory) | ~ro_bind_write~, ~connector_secret_granted~ | ~ro_bind_write~ |
 | ~skip-denials~ | the ~deny_paths~ operations | ~denied_read~ | ~denied_read~ |
 | ~agent-env-wins~ | dropping ~TMPDIR~/~HOME~/~XDG_*~ from ~env:~ | ~env_override~ | ~env_override~ |
 | ~skip-link-check~ | ~clawt_sandbox_check_links()~ | ~hardlink_write~, ~hardlink_deny~ | the same |
@@ -943,6 +976,16 @@ The box has no interface but loopback. The daemon serves one unix socket per gat
 The choice against the alternatives: a unix socket crosses a network namespace and a TCP port does not, so no veth, no slirp and no root are needed, and the namespace being empty is the enforcement -- the proxy variables are a convenience the CLI follows, not the wall. ~NO_PROXY~ is set to loopback so the broker is not sent through the gate, which would refuse it as this machine.
 
 Both are started the first time a gated or closed agent starts, never at daemon start, and binding them waits on nothing. A gate socket that cannot be bound, a relay that cannot be found (beside the daemon, one directory up, then ~PATH~) or a broker that is not listening while there is a key to broker each refuse the start, naming why.
+
+*** Connectors from a gated box
+
+A connector's relay runs in the agent's box, so under ~gated~ it has the agent's route and no other. Every request a relay makes for a remote connector goes through the egress gate: the process runtime starts a gated agent with ~CLAWTILLA_EGRESS_PROXY~ (=CLAWT_EGRESS_PROXY_ENV=) naming the gate inside the namespace, and the relay sets that as its only proxy rather than trusting ~HTTPS_PROXY~ -- whether libsoup follows that depends on the machine's GIO proxy module, and ~NO_PROXY~ names 127.0.0.1, which in a gated namespace is the box's own loopback and not the host's the connector's URL means. Without the route a gated relay reached nothing at all, and the request was never answered, which the agent saw as a tool that hangs.
+
+The gate then judges the connector's server like anything else the agent reaches: a public server works, and a server on this machine, the LAN or the tailnet is refused unless its address is in =egress.allow=. The refusal reaches the agent as a tool error naming the gate's reason and =egress.allow=, and the request is answered either way: ~clawt_connector_relay_failure_reply()~ answers any request whose server could not be reached or refused it with something that is not JSON-RPC.
+
+Decided against: having the daemon proxy connector traffic itself, outside the gate. That would be a second way out of a gated box with rules of its own, and it would not keep the credential out of the box -- the relay holds it either way -- so the agent would gain a route to private addresses the operator never opened. An address in =egress.allow= opens it to the agent's own tools too; that is the honest statement of what a gated agent holding a connector to a private server can reach, and the operator writes it down. Over ~https~ the gate sees only a ~CONNECT~ and never the credential; over plain ~http~ the request, its ~Authorization~ header included, passes through the gate, which is the daemon. A stdio connector's server is started by the relay with the agent's environment, ~HTTPS_PROXY~ included; whether it follows the variable is up to the server, and one that does not has no route.
+
+An integration broker's connector is not given to a gated or closed agent at all (=clawt_broker_agent_refusal()=): its gateway is on this machine's loopback.
 
 *** The egress gate
 

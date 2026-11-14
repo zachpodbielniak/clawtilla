@@ -170,7 +170,6 @@ clawt_web_activity_body(ClawtWebApp *app, const gchar *agent_id)
     g_autoptr(HtmxElement) view = HTMX_ELEMENT(htmx_main_new());
     g_autoptr(HtmxDiv) pad = htmx_div_new();
 
-    (void)agent_id;
     htmx_element_add_class(view, "view");
     htmx_element_add_class(HTMX_ELEMENT(pad), "view-pad");
 
@@ -179,6 +178,9 @@ clawt_web_activity_body(ClawtWebApp *app, const gchar *agent_id)
         "Every turn running across the fleet. Stop interrupts the whole "
         "agent, not one turn.", "lede"));
     htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(activity_panel(app)));
+
+    /* What keeps going wrong, outside the polled fragment (web-issues.c). */
+    clawt_web_add_issues_card(app, HTMX_ELEMENT(pad), agent_id);
     htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
 
     return g_steal_pointer(&view);

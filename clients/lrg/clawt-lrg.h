@@ -343,6 +343,16 @@ const ClawtLrgPage *clawt_lrg_tasks_page(void);      /* lrg-tasks.c */
 const ClawtLrgPage *clawt_lrg_decisions_page(void);  /* lrg-decisions.c */
 const ClawtLrgPage *clawt_lrg_flow_page(void);       /* lrg-flow.c */
 const ClawtLrgPage *clawt_lrg_activity_page(void);   /* lrg-activity.c */
+/* lrg-issues.c: the Activity page's Issues section (the sentinel's report). */
+void clawt_lrg_issues_build(ClawtLrgApp *app, LrgWidget *body);
+void clawt_lrg_issues_refresh(ClawtLrgApp *app);
+/* lrg-rescue.c: the chat's first-reply rescue card, above the composer.
+ * The box is the chat's (borrowed); refresh re-reads turn.rescue. */
+LrgWidget *clawt_lrg_rescue_build(ClawtLrgApp *app);
+void clawt_lrg_rescue_refresh(ClawtLrgApp *app);
+/* lrg-steps.c: the Screen view's saved steps, under the screen. */
+LrgWidget *clawt_lrg_steps_build(ClawtLrgApp *app);
+void clawt_lrg_steps_refresh(ClawtLrgApp *app);
 const ClawtLrgPage *clawt_lrg_fleet_page(void);      /* lrg-fleet-page.c */
 const ClawtLrgPage *clawt_lrg_grok_page(void);       /* lrg-grok.c */
 const ClawtLrgPage *clawt_lrg_skills_page(void);     /* lrg-skills.c */

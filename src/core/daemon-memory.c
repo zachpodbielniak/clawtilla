@@ -128,6 +128,13 @@ clawt_daemon_handle_memory(
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
 
+    /* ── the journal, and undo ── */
+    if (g_strcmp0(kind, "memory.journal") == 0)
+        return clawt_daemon_memory_journal(self, request, payload);
+
+    if (g_strcmp0(kind, "memory.undo") == 0)
+        return clawt_daemon_memory_undo(self, request, payload);
+
     /* ── recall ── */
     if (g_strcmp0(kind, "memory.recall") == 0) {
         const gchar *query = clawt_ipc_payload_string(payload, "query");
@@ -293,4 +300,208 @@ clawt_daemon_handle_memory(
 
     *handled = FALSE;
     return NULL;
+}
+
+/* ── The journal ─────────────────────────────────────────────────── */
+
+static gint journal_newest_first(gconstpointer a, gconstpointer b);
+
+/*
+ * One agent's view of the journals: everything in its own database,
+ * whoever made the change, and its *own* changes in its team's and the
+ * fleet's -- what it did to shared memories is its review, and what a
+ * teammate did is the teammate's.
+ */
+JsonNode *
+clawt_daemon_memory_journal(
+	ClawtDaemon *self,
+	JsonNode    *request,
+	JsonObject  *payload
+){
+	g_autoptr(JsonBuilder) builder = json_builder_new();
+	g_autoptr(GPtrArray) all = NULL;
+	const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+	ClawtAgent *agent = (agent_id != NULL)
+		? clawt_agent_manager_get(self->agents, agent_id) : NULL;
+	guint limit = (guint)CLAMP(clawt_ipc_payload_int(payload, "limit", 50),
+		1, 500);
+	guint i;
+
+	if (agent == NULL)
+		return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+			"no such agent");
+
+	if (clawt_agent_get_memory(agent) == NULL)
+		return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
+			"that agent has no memory store; memories.enabled is off");
+
+	all = g_ptr_array_new_with_free_func(
+		(GDestroyNotify)clawt_memory_journal_entry_free);
+
+	for (i = 0; i < clawt_memory_scope_count(); i++) {
+		ClawtMemoryScope scope = clawt_memory_scope_nth(i);
+		ClawtMemoryStore *store = clawt_agent_manager_memory_store_for_scope(
+			self->agents, agent_id, scope);
+		g_autoptr(GPtrArray) rows = NULL;
+		guint j;
+
+		if (store == NULL)
+			continue;
+
+		rows = clawt_memory_store_journal(store,
+			(scope == CLAWT_MEMORY_SCOPE_AGENT) ? NULL : agent_id, limit,
+			NULL);
+
+		for (j = 0; rows != NULL && j < rows->len; j++) {
+			ClawtMemoryJournalEntry *entry = g_ptr_array_index(rows, j);
+
+			entry->scope = g_strdup(clawt_memory_scope_nth_nick(i));
+			g_ptr_array_add(all, clawt_memory_journal_entry_copy(entry));
+		}
+	}
+
+	/* Newest first across the three, then cut to the limit. */
+	g_ptr_array_sort(all, journal_newest_first);
+
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "agent");
+	json_builder_add_string_value(builder, agent_id);
+	json_builder_set_member_name(builder, "keep");
+	json_builder_add_int_value(builder,
+		clawt_config_get_int(self->config, "memories.journal_keep"));
+	json_builder_set_member_name(builder, "entries");
+	json_builder_begin_array(builder);
+
+	for (i = 0; i < all->len && i < limit; i++) {
+		ClawtMemoryJournalEntry *entry = g_ptr_array_index(all, i);
+		g_autofree gchar *line = clawt_memory_journal_describe(entry);
+
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "id");
+		json_builder_add_int_value(builder, entry->id);
+		clawt_daemon_add_string_member(builder, "scope", entry->scope);
+		json_builder_set_member_name(builder, "at");
+		json_builder_add_int_value(builder, entry->at);
+		clawt_daemon_add_string_member(builder, "action", entry->action);
+		clawt_daemon_add_string_member(builder, "memory_id",
+			entry->memory_id);
+		clawt_daemon_add_string_member(builder, "actor", entry->actor);
+		clawt_daemon_add_string_member(builder, "excerpt", entry->excerpt);
+		clawt_daemon_add_string_member(builder, "line", line);
+
+		if (entry->undoes > 0) {
+			json_builder_set_member_name(builder, "undoes");
+			json_builder_add_int_value(builder, entry->undoes);
+		}
+
+		json_builder_set_member_name(builder, "undone_at");
+		json_builder_add_int_value(builder, entry->undone_at);
+		clawt_daemon_add_string_member(builder, "undone_by",
+			entry->undone_by);
+		json_builder_set_member_name(builder, "undoable");
+		json_builder_add_boolean_value(builder, entry->undoable);
+		clawt_daemon_add_string_member(builder, "why_not", entry->why_not);
+		json_builder_end_object(builder);
+	}
+
+	json_builder_end_array(builder);
+	json_builder_end_object(builder);
+
+	return clawt_ipc_response_new(request, json_builder_get_root(builder));
+}
+
+static gint
+journal_newest_first(
+	gconstpointer a,
+	gconstpointer b
+){
+	const ClawtMemoryJournalEntry *x =
+		*(const ClawtMemoryJournalEntry * const *)a;
+	const ClawtMemoryJournalEntry *y =
+		*(const ClawtMemoryJournalEntry * const *)b;
+
+	if (x->at != y->at)
+		return (x->at > y->at) ? -1 : 1;
+
+	/* Same second: the row id is each database's own order. */
+	if (x->id != y->id)
+		return (x->id > y->id) ? -1 : 1;
+
+	return 0;
+}
+
+JsonNode *
+clawt_daemon_memory_undo(
+	ClawtDaemon *self,
+	JsonNode    *request,
+	JsonObject  *payload
+){
+	g_autoptr(JsonBuilder) builder = json_builder_new();
+	g_autoptr(GError) error = NULL;
+	const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+	const gchar *scope_nick = clawt_ipc_payload_string(payload, "scope");
+	gint64 entry_id = clawt_ipc_payload_int(payload, "id", 0);
+	gint scope = CLAWT_MEMORY_SCOPE_AGENT;
+	ClawtMemoryStore *store;
+	g_autoptr(GPtrArray) mine = NULL;
+	gboolean allowed = FALSE;
+	guint i;
+
+	if (agent_id == NULL ||
+		clawt_agent_manager_get(self->agents, agent_id) == NULL)
+		return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+			"no such agent");
+
+	if (entry_id <= 0)
+		return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+			"memory.undo needs the journal row's id");
+
+	if (scope_nick != NULL &&
+		!clawt_enum_from_nick(CLAWT_TYPE_MEMORY_SCOPE, scope_nick, &scope))
+		return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+			"scope is agent, team or fleet");
+
+	store = clawt_agent_manager_memory_store_for_scope(self->agents,
+		agent_id, (ClawtMemoryScope)scope);
+
+	if (store == NULL)
+		return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+			"that agent has no such memory database");
+
+	/*
+	 * In a shared database a row is this agent's to review only when it
+	 * made the change.  The same rule as the listing, applied where the
+	 * undo is decided rather than trusted to the client that drew it.
+	 */
+	if (scope != CLAWT_MEMORY_SCOPE_AGENT) {
+		mine = clawt_memory_store_journal(store, agent_id, G_MAXINT, NULL);
+
+		for (i = 0; mine != NULL && i < mine->len; i++)
+			if (((ClawtMemoryJournalEntry *)
+					g_ptr_array_index(mine, i))->id == entry_id)
+				allowed = TRUE;
+
+		if (!allowed)
+			return clawt_ipc_error_new(request,
+				CLAWT_ERROR_PERMISSION_DENIED,
+				"that change to a shared memory was not made by this "
+				"agent; review it from the agent that made it");
+	}
+
+	if (!clawt_memory_store_undo(store, entry_id, "operator", &error))
+		return clawt_ipc_error_new(request, error->code, error->message);
+
+	if (self->bus != NULL) {
+		g_autoptr(ClawtEvent) event = clawt_event_new("memory.changed",
+			agent_id);
+
+		clawt_event_bus_publish(self->bus, event);
+	}
+
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "undone");
+	json_builder_add_boolean_value(builder, TRUE);
+	json_builder_end_object(builder);
+
+	return clawt_ipc_response_new(request, json_builder_get_root(builder));
 }

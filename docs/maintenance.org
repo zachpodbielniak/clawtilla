@@ -76,6 +76,59 @@ loses.  And it is *git-ignored* -- clawtilla's block in ~.gitignore~
 lists ~events/~ -- so ~daemon.git~ is not a backup of it, whatever else
 that repository is holding.
 
+*** The sentinel: what keeps going wrong
+
+Nobody reads the event log until something has gone wrong, and by then
+the same tool has failed forty times.  ~clawtilla sentinel~ reads it --
+*read-only* -- and groups what it finds into issues, written as YAML to
+~<state_dir>/sentinel.yaml~:
+
+| Kind | From | Reported when |
+|------+------+---------------|
+| ~tool_failure~ | ~turn.step~ with ~failed~, ~computer.exec~ with a non-zero ~exit~ | one agent's tool fails ~sentinel.min_failures~ times (3) |
+| ~queue_wait~ | ~mailbox.queued~ then ~mailbox.delivered~, first in first out per agent | a message waited ~sentinel.queue_wait_seconds~ (600) or more, or is still queued past it |
+| ~spend~ | ~turn.cost~, ~spending.limit-reached~ | one agent's day reached ~sentinel.daily_spend_micros~ ($10), or any cap was reached |
+| ~stall~ | ~turn.timed_out~, ~turn.repeating~, ~exchange.stalled~, ~message.refused~ | any |
+
+Each issue carries ~kind~, ~severity~ (~bad~ or ~warning~), ~subject~
+(the agent), ~key~ (the tool, the day, the event kind), a ~title~ to
+read, ~count~, ~first_at~ and ~last_at~ (unix seconds), ~value~ (the
+longest wait in seconds, or the spend in micro-dollars) and ~sample~
+(the last detail seen).  Worst first, at most 200.  ~sentinel.days~ (7)
+is the window, counting today; 0 reads every day file.
+
+#+begin_src sh
+clawtilla sentinel                       # write <state_dir>/sentinel.yaml
+clawtilla sentinel --days 1 --output -   # print today's to stdout
+#+end_src
+
+*It never writes to the event log*, and that is structural rather than
+careful: day files are mapped read-only (=g_mapped_file_new()= with
+=writable= FALSE), and a report path inside the log directory is
+refused, symlinks resolved.  A line that is not an event -- the torn
+last line of a daemon killed mid-write -- is counted as ~skipped~ and
+passed over.
+
+*It runs out of process.*  The clients' *Issues* section (on the
+Activity page in all three) asks the daemon to start it
+(~sentinel.scan~); the daemon runs =clawtilla -c <config> sentinel=
+as a child, resolved beside the daemon, then the install location, then
+=PATH=, and publishes ~sentinel.finished~ when it exits; the list is
+the YAML file it wrote (~sentinel.report~).  A week of logs is never
+read on the loop every client is waiting on.
+
+What it cannot see, said rather than implied:
+
+- The queue pairing is first in, first out per agent and does not know a
+  merged delivery's parts, so a wait is the time from a queueing to the
+  next delivery to that agent.  A daemon restart in the window is read
+  as it was logged.
+- Cost comes only from ~turn.cost~, which the daemon publishes when it
+  drains an agent's spend at the end of a turn; a log from before this
+  version has none.
+- It reports; it does not act.  Nothing is refused or stopped because of
+  an issue -- the caps and the watchdog are what do that.
+
 ** One daemon per state directory
 
 Not a convention: the daemon takes an exclusive ~flock~ on

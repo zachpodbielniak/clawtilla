@@ -260,6 +260,39 @@ struct _ClawtDaemon {
     GHashTable       *room_steps;
     GHashTable       *turn_grace;   /* agent id -> GSource*, see arm_grace() */
     GSource          *turn_sweep;
+
+    /*
+     * The busy check: a silent turn whose process tree is using the CPU
+     * is working (agents.runtime.busy_cpu_percent).  @turn_said is agent
+     * id -> monotonic usec on the turn watch's clock of the last thing
+     * the turn actually reported, which is what busy_max_seconds counts
+     * from -- CPU never moves it, or a looping command would hold its
+     * turn for ever.  @turn_pid_func answers an agent's root pid; NULL
+     * asks the runtime, and a test puts a fake process table behind it.
+     */
+    /*
+     * The sentinel (daemon-sentinel.c): the running `clawtilla sentinel`
+     * child, if any, what the last one said when it failed, and -- for
+     * tests -- the command to run instead of the CLI found beside us.
+     */
+    GSubprocess      *sentinel_child;
+    gchar            *sentinel_error;
+    gchar            *sentinel_command;
+
+    ClawtBusyWatch   *busy_watch;
+    /*
+     * First-reply rescue (daemon-rescue.c): room turns that have shown
+     * nothing yet, keyed agent and room.
+     */
+    ClawtRescueWatch *rescues;
+    /*
+     * Saved steps (daemon-steps.c): each agent's desktop input per
+     * turn, and the agents a replay is running on now.
+     */
+    ClawtStepRecorder *step_recorder;
+    GHashTable        *replays;
+    GHashTable       *turn_said;
+    gint            (*turn_pid_func)(ClawtDaemon *self, const gchar *agent_id);
     guint             turn_grace_seconds;
 
     /*
@@ -843,6 +876,14 @@ clawt_daemon_store_connector_token(ClawtDaemon      *self,
 void
 clawt_daemon_sweep_connector_flows(ClawtDaemon *self);
 
+/*
+ * Moves every connector credential still in the flat layout
+ * (`secrets.dir/connector-<name>.json`) into its own directory, and
+ * points the configuration at it.  Run once, at start, before any agent.
+ */
+void
+clawt_daemon_connector_migrate_tokens(ClawtDaemon *self);
+
 void
 clawt_daemon_warm_model_cache(ClawtDaemon *self);
 
@@ -1175,6 +1216,62 @@ clawt_daemon_handle_agent(
 
 JsonNode *
 clawt_daemon_handle_memory(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
+
+JsonNode *
+clawt_daemon_handle_sentinel(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
+
+/*
+ * daemon-sentinel.c: the command a scan runs (NULL for the CLI resolved
+ * beside the daemon; a test names its own), and dropping a running scan
+ * when the daemon stops.
+ */
+void clawt_daemon_sentinel_set_command(ClawtDaemon *self,
+                                       const gchar *command);
+void clawt_daemon_sentinel_teardown(ClawtDaemon *self);
+
+/*
+ * daemon-rescue.c: a room's turn began, showed something (a step or a
+ * reply; @room_id NULL for every room of the agent), and the sweep that
+ * offers the silent ones.  `turn.rescue` is the client surface.
+ */
+void clawt_daemon_rescue_begin(ClawtDaemon *self, const gchar *agent_id,
+                               const gchar *room_id);
+void clawt_daemon_rescue_life(ClawtDaemon *self, const gchar *agent_id,
+                              const gchar *room_id);
+void clawt_daemon_rescue_sweep(ClawtDaemon *self);
+
+/*
+ * daemon-steps.c: saved steps.  A turn began or ended (the agent edge),
+ * and an acting desktop call passed the gate, with its arguments.
+ */
+void clawt_daemon_steps_turn_began(ClawtDaemon *self, const gchar *agent_id);
+void clawt_daemon_steps_turn_ended(ClawtDaemon *self, const gchar *agent_id);
+void clawt_daemon_steps_note_call(ClawtDaemon *self, const gchar *agent_id,
+                                  const gchar *tool, JsonObject *arguments);
+
+JsonNode *
+clawt_daemon_handle_steps(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
+
+JsonNode *
+clawt_daemon_handle_rescue(
     ClawtDaemon  *self,
     const gchar  *kind,
     JsonNode     *request,
@@ -1611,6 +1708,22 @@ ClawtRoom *clawt_daemon_create_room(ClawtDaemon  *self,
                                     GError      **error);
 
 void clawt_daemon_turn_sweep_now(ClawtDaemon *self);
+
+/* memory.journal and memory.undo; see daemon-memory.c. */
+JsonNode *clawt_daemon_memory_journal(ClawtDaemon *self, JsonNode *request,
+                                      JsonObject *payload);
+JsonNode *clawt_daemon_memory_undo(ClawtDaemon *self, JsonNode *request,
+                                   JsonObject *payload);
+
+/*
+ * For tests: where an agent's root process id comes from (NULL asks the
+ * runtime), and the busy check's own watch, so a test can give it a fake
+ * process table.
+ */
+void clawt_daemon_turn_set_pid_func(ClawtDaemon *self,
+                                    gint (*func)(ClawtDaemon *self,
+                                                 const gchar *agent_id));
+ClawtBusyWatch *clawt_daemon_turn_get_busy_watch(ClawtDaemon *self);
 
 void clawt_daemon_turn_settle_room(ClawtDaemon *self, const gchar *agent_id,
                                    const gchar *room_id);

@@ -572,6 +572,70 @@ const gchar *clawt_config_get_computer_string(ClawtConfig *self,
 GPtrArray *clawt_config_get_accounts(ClawtConfig *self);
 
 /**
+ * ClawtVaultEntry:
+ * @name: what an agent asks for (`vault.name`)
+ * @description: (nullable): whose login it is
+ * @kind: a password, or a TOTP seed the daemon turns into a code
+ * @secret: the reference the value is resolved through, never the value
+ * @sites: (array zero-terminated=1): the hosts it may be typed into
+ *
+ * One entry from the config's `vault:` list (since 0.25.0).  Holds no
+ * secret: the value is resolved through @secret at the moment of a fill.
+ */
+typedef struct {
+    gchar          *name;
+    gchar          *description;
+    ClawtVaultKind  kind;
+    ClawtSecretRef *secret;
+    GStrv           sites;
+} ClawtVaultEntry;
+
+/**
+ * clawt_vault_entry_free:
+ * @self: (nullable): a #ClawtVaultEntry
+ *
+ * Frees @self.
+ */
+void clawt_vault_entry_free(ClawtVaultEntry *self);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtVaultEntry, clawt_vault_entry_free)
+
+/**
+ * clawt_config_get_vault:
+ * @self: a #ClawtConfig
+ *
+ * The `vault:` entries, in file order.  One missing its name, its secret
+ * or its sites, or with a kind or reference that does not parse, is
+ * skipped with a warning: an entry that cannot be filled safely is not
+ * offered at all.
+ *
+ * Returns: (transfer full) (element-type ClawtVaultEntry): the entries
+ */
+GPtrArray *clawt_config_get_vault(ClawtConfig *self);
+
+/**
+ * clawt_config_get_vault_entry: (skip)
+ * @self: a #ClawtConfig
+ * @name: the entry's name
+ *
+ * Returns: (transfer full) (nullable): the entry, or %NULL
+ */
+ClawtVaultEntry *clawt_config_get_vault_entry(ClawtConfig *self, const gchar *name);
+
+/**
+ * clawt_vault_entry_allows_host:
+ * @self: a #ClawtVaultEntry
+ * @host: (nullable): the host of the page a fill would type into
+ *
+ * Whether @host is one of the entry's sites or a subdomain of one,
+ * compared without case.  %NULL or empty fails: a page whose address
+ * cannot be read is never filled.
+ *
+ * Returns: %TRUE when the secret may be typed on @host
+ */
+gboolean clawt_vault_entry_allows_host(ClawtVaultEntry *self, const gchar *host);
+
+/**
  * clawt_config_get_account: (skip)
  * @self: a #ClawtConfig
  * @account_id: which account

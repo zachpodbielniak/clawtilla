@@ -872,6 +872,18 @@ memories:
   # # every turn has.
   # nudge_turns: 0
 
+  # How many changes each memory database's journal keeps. 0 keeps every
+  # one.
+  #
+  # Every remember, forget, pin and unpin is written to a journal beside
+  # the memories it changed, with who made it, and the Memory review page
+  # in each client lists it with an Undo per row. The oldest rows go first
+  # once there are more than this, and a change whose row has gone can no
+  # longer be undone -- the page says so rather than offering a button
+  # that cannot work. One journal per database: an agent's own, each
+  # team's and the fleet's.
+  journal_keep: 1000
+
   # # Whether the fleet keeps a profile of the person it works for.
   # #
   # # A fleet-scope memory a newly created agent inherits, so it starts
@@ -885,6 +897,38 @@ memories:
   # # change reaches the whole fleet rather than only agents made afterwards.
   # # Off removes the region again.
   # operator_profile: false
+
+# What `clawtilla sentinel` looks for in the event log.
+#
+# The sentinel is a read-only scan of <state_dir>/events/*.ndjson that
+# groups failing tool calls, long queue waits, spending and stalled turns
+# into issues and writes them as YAML. It runs out of process: the
+# clients' Issues view asks the daemon to start `clawtilla sentinel`
+# and then shows what it wrote. It never writes to the event log.
+sentinel:
+
+  # How many days of the event log one scan reads, counting today. 0
+  # reads every file there is, which daemon.event_log_days bounds.
+  days: 7
+
+  # How many failures of one agent's tool make an issue. A tool that
+  # failed once is a turn's ordinary business; one that failed this many
+  # times in the window is a pattern somebody should look at.
+  min_failures: 3
+
+  # How long a message may wait in an agent's queue, from being queued to
+  # being delivered, before the wait is an issue. Messages still queued
+  # past it when the scan ends are reported too.
+  queue_wait_seconds: 600
+
+  # One agent's spend in one day, in micro-dollars, that makes an issue.
+  # 0 reports only the days a cap was reached.
+  #
+  # A line to report, not a limit: nothing is refused at it. The caps that
+  # do refuse work are orchestration.daily_fleet_budget_micros and each
+  # agent's own, and every time one is reached is an issue whatever this
+  # says.
+  daily_spend_micros: 10000000
 
 # Reusable procedure, shared across the fleet.
 #
@@ -1007,6 +1051,27 @@ skills:
 # # open page -- and drive it one at a time: a call while another agent
 # # drives is refused, naming that agent. Needs a GSURF=1 build.
 # browsers: []
+
+# # Secrets an agent can have typed into a web page without ever seeing
+# # them: passwords, and TOTP seeds the daemon turns into one-time codes.
+# #
+# #   vault:
+# #     - name: github
+# #       secret: {command: "pass show web/github"}
+# #       sites: [github.com]
+# #     - name: github-2fa
+# #       kind: totp
+# #       secret: {file: github-totp}
+# #       sites: [github.com]
+# #
+# # An agent may ask only for the names its agents.browser.secrets lists.
+# # It calls clawtilla_secret_ref for a one-use reference bound to it and
+# # to the conversation it is in, then clawtilla_browser_fill_secret with
+# # that reference and a field. The daemon resolves the value, types it
+# # into the field as key input, and the agent hears only that it was
+# # filled. Screenshots and clawtilla_browser_eval are refused on that
+# # page until the browser navigates away. Needs a GSURF=1 build.
+# vault: []
 
 # # Separate logins for an agent CLI, so two agents on one machine can
 # # spend two subscriptions.

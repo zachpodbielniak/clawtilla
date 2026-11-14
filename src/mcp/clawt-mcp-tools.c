@@ -40,6 +40,7 @@ typedef enum {
     NEEDS_SCHEDULE,
     NEEDS_BROWSER,
     NEEDS_BROWSER_SCRIPTS,
+    NEEDS_BROWSER_SECRETS,
     NEEDS_GROK,
     NEEDS_WAITS,
     NEEDS_DECISION_ANSWER,
@@ -379,6 +380,19 @@ static const ClawtParamInfo browser_scroll_params[] = {
 static const ClawtParamInfo browser_eval_params[] = {
     { "script", "string", "JavaScript to run in the page; its last value is "
       "returned as JSON.", TRUE }
+};
+
+static const ClawtParamInfo secret_ref_params[] = {
+    { "name", "string", "The vault entry to fill, by name. Leave it out to list "
+      "the ones you may ask for, with what each is and its sites.", FALSE }
+};
+
+static const ClawtParamInfo browser_fill_secret_params[] = {
+    { "secret", "string", "The secret-ref:... that clawtilla_secret_ref gave you "
+      "in this conversation. It works once.", TRUE },
+    { "selector", "string", "A CSS selector for the field: a password box, or "
+      "the box a one-time code goes in.", TRUE },
+    { "submit", "boolean", "Press Enter afterwards and wait for the page.", FALSE }
 };
 
 static const ClawtParamInfo message_user_params[] = {
@@ -1113,6 +1127,26 @@ static const ToolDefinition tools[] = {
          "for anything a person would do.",
          NEEDS_BROWSER_SCRIPTS, browser_eval_params, CLAWT_ACTION_EXEC),
 
+    TOOL("clawtilla_secret_ref",
+         "Ask for a one-use reference to a saved secret -- a password, or a "
+         "one-time 2FA code -- by its vault name, to pass to "
+         "clawtilla_browser_fill_secret. You never see the secret itself: "
+         "the reference works once, only for you, only in this conversation, "
+         "and for ten minutes. Never type a secret yourself; ask for it "
+         "this way.",
+         NEEDS_BROWSER_SECRETS, secret_ref_params, CLAWT_ACTION_READ),
+
+    TOOL("clawtilla_browser_fill_secret",
+         "Fill a field with a saved secret, by the reference clawtilla_secret_ref "
+         "gave you. The browser types it as real key input; you are told "
+         "only that it was filled. Only on the sites the secret is saved "
+         "for. Afterwards screenshots and clawtilla_browser_eval are "
+         "refused on that page until the browser navigates away, so "
+         "submit the form (submit: true, or click the button) when the "
+         "fields are done.",
+         NEEDS_BROWSER_SECRETS, browser_fill_secret_params,
+         CLAWT_ACTION_DESKTOP_INPUT),
+
     TOOL("clawtilla_skill_list",
          "The procedures you have been given, with what each is for. Your "
          "own TOOLS.org lists them too; call this when you want the list as "
@@ -1342,6 +1376,13 @@ struct _ClawtMcpTools {
     /* The daemon's browser sessions, for clawtilla_browser_*; NULL offers none. */
     ClawtBrowserManager    *browsers;
 
+    /*
+     * One-use references to vault entries (clawtilla_secret_ref), owned:
+     * a reference lives exactly as long as the tools that minted it, so
+     * a daemon restart forgets every unused one.
+     */
+    ClawtSecretVault       *vault;
+
     ClawtMcpPolicyFunc      policy;
     gpointer                policy_data;
     GDestroyNotify          policy_destroy;
@@ -1538,6 +1579,15 @@ clawt_mcp_tools_grok_bot_tools(void)
     json_builder_end_object(builder);
 
     return json_builder_get_root(builder);
+}
+
+void
+clawt_mcp_tools_forget_secret_refs(ClawtMcpTools *self, const gchar *agent_id)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    if (agent_id != NULL)
+        clawt_secret_vault_forget_agent(self->vault, agent_id);
 }
 
 void
@@ -2661,6 +2711,26 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
             !clawt_agent_config_get_boolean(clawt_agent_get_config(agent),
                                             "browser.allow_scripts"))
             return FALSE;
+        break;
+
+    case NEEDS_BROWSER_SECRETS:
+        /*
+         * A browser, and at least one vault entry granted by name.  The
+         * grant is checked again at each call, against the entry asked
+         * for: offering the tools says only that there is something to
+         * ask for.
+         */
+        if (self->browsers == NULL ||
+            clawt_agent_config_get_enum(clawt_agent_get_config(agent), "browser.mode") ==
+                CLAWT_BROWSER_NONE)
+            return FALSE;
+        {
+            g_auto(GStrv) granted = clawt_agent_config_get_string_list(
+                clawt_agent_get_config(agent), "browser.secrets");
+
+            if (granted == NULL || granted[0] == NULL)
+                return FALSE;
+        }
         break;
 
     case NEEDS_GROK:
@@ -6176,6 +6246,109 @@ tool_computer_exec(ClawtMcpTools *self,
     return text;
 }
 
+/* Whether @name is one of the vault entries @agent_id's browser.secrets grants. */
+static gboolean
+secret_granted(ClawtMcpTools *self, const gchar *agent_id, const gchar *name,
+               gchar **out_granted)
+{
+    ClawtAgent *agent = self->agents != NULL ? clawt_agent_manager_get(self->agents, agent_id)
+                                             : NULL;
+    g_auto(GStrv) granted = NULL;
+    gboolean found = FALSE;
+    guint i;
+
+    if (out_granted != NULL)
+        *out_granted = NULL;
+    if (agent == NULL)
+        return FALSE;
+    granted = clawt_agent_config_get_string_list(clawt_agent_get_config(agent),
+                                                 "browser.secrets");
+    for (i = 0; granted != NULL && granted[i] != NULL; i++) {
+        if (g_strcmp0(granted[i], name) == 0)
+            found = TRUE;
+    }
+    if (out_granted != NULL && granted != NULL)
+        *out_granted = g_strjoinv(", ", granted);
+    return found;
+}
+
+/*
+ * clawtilla_secret_ref: a reference, never a value.  The value is not
+ * even resolved here -- only at the fill, on a worker -- so an agent
+ * that asks and never fills has caused nothing to be read.
+ */
+static gchar *
+tool_secret_ref(ClawtMcpTools *self, const gchar *agent_id, const gchar *room_id,
+                JsonObject *arguments, gboolean *is_error)
+{
+    const gchar *name = argument_string(arguments, "name");
+    ClawtConfig *config = self->agents != NULL ? clawt_agent_manager_get_config(self->agents)
+                                               : NULL;
+    g_autoptr(ClawtVaultEntry) entry = NULL;
+    g_autofree gchar *granted = NULL;
+    g_autofree gchar *ref = NULL;
+    g_autofree gchar *sites = NULL;
+    g_autoptr(GError) error = NULL;
+
+    *is_error = TRUE;
+
+    /* No name: the entries this agent may ask for, by name only. */
+    if (name == NULL || *name == '\0') {
+        ClawtAgent *agent = self->agents != NULL
+            ? clawt_agent_manager_get(self->agents, agent_id) : NULL;
+        g_auto(GStrv) names = agent != NULL
+            ? clawt_agent_config_get_string_list(clawt_agent_get_config(agent),
+                                                 "browser.secrets")
+            : NULL;
+        GString *out = g_string_new("The secrets you may have filled:\n");
+        guint i;
+
+        for (i = 0; names != NULL && names[i] != NULL; i++) {
+            g_autoptr(ClawtVaultEntry) listed = config != NULL
+                ? clawt_config_get_vault_entry(config, names[i]) : NULL;
+            g_autofree gchar *where = listed != NULL ? g_strjoinv(", ", listed->sites) : NULL;
+
+            if (listed == NULL)
+                g_string_append_printf(out, "- %s (not usable: not declared, or no sites)\n",
+                                       names[i]);
+            else
+                g_string_append_printf(out, "- %s: %s on %s%s%s\n", names[i],
+                                       listed->kind == CLAWT_VAULT_TOTP
+                                           ? "a one-time code" : "a password",
+                                       where,
+                                       listed->description != NULL ? " -- " : "",
+                                       listed->description != NULL ? listed->description
+                                                                   : "");
+        }
+        *is_error = FALSE;
+        return g_string_free(out, FALSE);
+    }
+    if (!secret_granted(self, agent_id, name, &granted))
+        return g_strdup_printf("'%s' is not a secret you may ask for. Yours are: %s.", name,
+                               granted != NULL && *granted != '\0' ? granted : "none");
+    entry = config != NULL ? clawt_config_get_vault_entry(config, name) : NULL;
+    if (entry == NULL)
+        return g_strdup_printf("There is no usable vault entry '%s': it is not declared "
+                               "under vault:, or it has no secret or no sites. Tell the "
+                               "person.", name);
+
+    ref = clawt_secret_vault_mint(self->vault, agent_id, room_id, name,
+                                  g_get_real_time() / G_USEC_PER_SEC, &error);
+    if (ref == NULL)
+        return g_strdup_printf("No reference could be made: %s",
+                               error != NULL ? error->message : "no reason given");
+
+    sites = g_strjoinv(", ", entry->sites);
+    *is_error = FALSE;
+    return g_strdup_printf("%s\n\nThat is a reference to %s (%s, for %s), not the "
+                           "secret. Pass it as secret to clawtilla_browser_fill_secret "
+                           "with the field's selector, in this conversation, within %d "
+                           "minutes. It works once.",
+                           ref, name,
+                           entry->kind == CLAWT_VAULT_TOTP ? "a one-time code" : "a password",
+                           sites, CLAWT_SECRET_REF_TTL_SECONDS / 60);
+}
+
 static gchar *
 tool_computer_state(ClawtMcpTools *self, const gchar *agent_id)
 {
@@ -6723,6 +6896,22 @@ own_memory(ClawtMcpTools *self, const gchar *agent_id)
     return (agent != NULL) ? clawt_agent_get_memory(agent) : NULL;
 }
 
+/*
+ * A memory changed: a client showing that agent's Memory review redraws.
+ * The journal row was written by the store; this only says where to look.
+ */
+static void
+publish_memory_changed(ClawtMcpTools *self, const gchar *agent_id)
+{
+    g_autoptr(ClawtEvent) event = NULL;
+
+    if (self->bus == NULL)
+        return;
+
+    event = clawt_event_new("memory.changed", agent_id);
+    clawt_event_bus_publish(self->bus, event);
+}
+
 static gchar *
 tool_memory_add(ClawtMcpTools *self, const gchar *agent_id,
                 JsonObject *arguments, gboolean *is_error)
@@ -6796,6 +6985,8 @@ tool_memory_add(ClawtMcpTools *self, const gchar *agent_id,
         return g_strdup_printf("Could not remember that: %s",
                                error->message);
     }
+
+    publish_memory_changed(self, agent_id);
 
     return g_strdup_printf("Remembered as %s.", id);
 }
@@ -6902,10 +7093,12 @@ tool_memory_forget(ClawtMcpTools *self, const gchar *agent_id,
         return g_strdup("You have no memory store.");
     }
 
-    if (!clawt_memory_store_forget(store, id, &error)) {
+    if (!clawt_memory_store_forget_as(store, id, agent_id, &error)) {
         *is_error = TRUE;
         return g_strdup(error->message);
     }
+
+    publish_memory_changed(self, agent_id);
 
     return g_strdup_printf("Forgotten: %s is out of every listing and "
                            "search, and still on disk.", id);
@@ -6925,10 +7118,12 @@ tool_memory_pin(ClawtMcpTools *self, const gchar *agent_id,
         return g_strdup("You have no memory store.");
     }
 
-    if (!clawt_memory_store_pin(store, id, pinned, &error)) {
+    if (!clawt_memory_store_pin_as(store, id, pinned, agent_id, &error)) {
         *is_error = TRUE;
         return g_strdup(error->message);
     }
+
+    publish_memory_changed(self, agent_id);
 
     return g_strdup_printf("%s is now %s.", id,
                            pinned ? "pinned" : "unpinned");
@@ -8413,14 +8608,26 @@ clawt_mcp_tools_call_async(ClawtMcpTools       *self,
  * the context the outer task was made on, which is the tools' own.
  */
 typedef struct {
-    ClawtBrowser *browser;
-    gchar        *agent_id;
-    gchar        *tool;
-    JsonObject   *arguments;    /* owned ref, nullable */
-    JsonNode     *request_id;   /* owned, nullable */
-    GTask        *outer;        /* owned */
-    gboolean      shared;
-    gint          allow_scripts;
+    ClawtBrowser  *browser;
+    ClawtMcpTools *tools;        /* owned ref: the vault, the config, the bus */
+    gchar         *agent_id;
+    gchar         *room_id;      /* the conversation, for a secret reference */
+    gchar         *tool;
+    JsonObject    *arguments;    /* owned ref, nullable */
+    JsonNode      *request_id;   /* owned, nullable */
+    GTask         *outer;        /* owned */
+    gboolean       shared;
+    gint           allow_scripts;
+
+    /*
+     * clawtilla_browser_fill_secret: the entry the reference was spent
+     * on, looked up on the tools' context -- the config is not the
+     * worker's to read -- with where its value is resolved from.  A
+     * name and a reference; never a value.
+     */
+    ClawtVaultEntry *vault_entry;
+    gchar           *secrets_dir;
+    guint            secret_timeout;
 } BrowserJob;
 
 static void
@@ -8429,7 +8636,11 @@ browser_job_free(gpointer data)
     BrowserJob *job = data;
 
     g_clear_object(&job->browser);
+    g_clear_object(&job->tools);
     g_free(job->agent_id);
+    g_free(job->room_id);
+    g_clear_pointer(&job->vault_entry, clawt_vault_entry_free);
+    g_free(job->secrets_dir);
     g_free(job->tool);
     g_clear_pointer(&job->arguments, json_object_unref);
     g_clear_pointer(&job->request_id, json_node_unref);
@@ -8543,6 +8754,214 @@ static const gchar browser_links_script[] =
     "  if (out.length >= 150) break; }"
     " return out.join('\\n'); })()";
 
+/* ── Secrets on the page ──────────────────────────────────────────── */
+
+/*
+ * browser.secret_filled, published on the tools' context: the bus is not
+ * thread-safe, and the fill runs on a worker.  Names only -- the entry,
+ * its kind, the host and the session -- never what was typed.
+ */
+typedef struct {
+    ClawtMcpTools *tools;
+    gchar         *agent_id;
+    gchar         *name;
+    gchar         *kind;
+    gchar         *host;
+    gchar         *session;
+} FillNotice;
+
+static void
+fill_notice_free(gpointer data)
+{
+    FillNotice *notice = data;
+
+    g_object_unref(notice->tools);
+    g_free(notice->agent_id);
+    g_free(notice->name);
+    g_free(notice->kind);
+    g_free(notice->host);
+    g_free(notice->session);
+    g_free(notice);
+}
+
+static gboolean
+fill_notice_publish(gpointer data)
+{
+    FillNotice *notice = data;
+    g_autoptr(ClawtEvent) event = NULL;
+
+    if (notice->tools->bus == NULL)
+        return G_SOURCE_REMOVE;
+    event = clawt_event_new("browser.secret_filled", notice->agent_id);
+    clawt_event_set_detail(event, "name", notice->name);
+    clawt_event_set_detail(event, "kind", notice->kind);
+    clawt_event_set_detail(event, "host", notice->host);
+    clawt_event_set_detail(event, "session", notice->session);
+    clawt_event_bus_publish(notice->tools->bus, event);
+    return G_SOURCE_REMOVE;
+}
+
+/* The host of @uri, lower-cased, or NULL. */
+static gchar *
+uri_host(const gchar *uri)
+{
+    g_autoptr(GUri) parsed = uri != NULL ? g_uri_parse(uri, G_URI_FLAGS_NONE, NULL) : NULL;
+
+    if (parsed == NULL || g_uri_get_host(parsed) == NULL || *g_uri_get_host(parsed) == '\0')
+        return NULL;
+    return g_ascii_strdown(g_uri_get_host(parsed), -1);
+}
+
+/*
+ * clawtilla_browser_fill_secret, first half, on the tools' context: spend
+ * the reference and find what it stands for.  Every refusal is a
+ * sentence about names -- the agent reads all of them, and no value is
+ * in scope here at all.  Returns the response for a refusal, or NULL
+ * with @job ready for the worker.
+ */
+static JsonNode *
+browser_fill_secret_prepare(ClawtMcpTools *self, BrowserJob *job)
+{
+    const gchar *ref = argument_string(job->arguments, "secret");
+    const gchar *selector = argument_string(job->arguments, "selector");
+    ClawtConfig *config = self->agents != NULL ? clawt_agent_manager_get_config(self->agents)
+                                               : NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *name = NULL;
+    g_autofree gchar *text = NULL;
+
+    if (selector == NULL || *selector == '\0')
+        return make_response(job->request_id, "Give the field's selector.", TRUE);
+
+    /* 1. The reference: spent here, for this agent in this conversation. */
+    name = clawt_secret_vault_redeem(self->vault, ref, job->agent_id, job->room_id,
+                                     g_get_real_time() / G_USEC_PER_SEC, &error);
+    if (name == NULL)
+        return make_response(job->request_id, error->message, TRUE);
+
+    /* 2. Still granted, still declared: either may have changed since. */
+    if (!secret_granted(self, job->agent_id, name, NULL)) {
+        text = g_strdup_printf("'%s' is no longer a secret you may have filled.", name);
+        return make_response(job->request_id, text, TRUE);
+    }
+    job->vault_entry = config != NULL ? clawt_config_get_vault_entry(config, name) : NULL;
+    if (job->vault_entry == NULL) {
+        text = g_strdup_printf("The vault entry '%s' is gone, or has lost its secret or "
+                               "its sites.", name);
+        return make_response(job->request_id, text, TRUE);
+    }
+    job->secrets_dir = config != NULL ? clawt_config_get_path_value(config, "secrets.dir")
+                                      : NULL;
+    job->secret_timeout = config != NULL
+        ? (guint)clawt_config_get_int(config, "secrets.command_timeout_seconds") : 10;
+    return NULL;
+}
+
+/*
+ * clawtilla_browser_fill_secret, second half, on the worker: the page,
+ * the value, the typing.
+ */
+static JsonNode *
+browser_fill_secret(BrowserJob *job)
+{
+    ClawtBrowser *browser = job->browser;
+    ClawtVaultEntry *entry = job->vault_entry;
+    const gchar *name = entry->name;
+    const gchar *selector = argument_string(job->arguments, "selector");
+    gboolean submit = argument_boolean(job->arguments, "submit", FALSE);
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *host = NULL;
+    g_autofree gchar *sites = NULL;
+    g_autofree gchar *value = NULL;
+    g_autofree gchar *typed = NULL;
+    g_autofree gchar *where = NULL;
+    g_autofree gchar *text = NULL;
+    gboolean filled;
+
+    sites = g_strjoinv(", ", entry->sites);
+
+    /* A stopped session's address is the last one read, not a page. */
+    if (!clawt_browser_is_running(browser)) {
+        text = g_strdup_printf("Your browser is not running, so '%s' was not filled. Open "
+                               "the login page first (it is saved for %s).", name, sites);
+        return make_response(job->request_id, text, TRUE);
+    }
+
+    /* 3. The page has to be on one of the entry's sites: an agent steered
+     *    to a look-alike page must not be able to fill it there.  An
+     *    address that cannot be read is refused, not assumed. */
+    clawt_browser_refresh_page(browser);
+    uri = clawt_browser_dup_uri(browser);
+    host = uri_host(uri);
+    if (!clawt_vault_entry_allows_host(entry, host)) {
+        text = host != NULL
+            ? g_strdup_printf("This page is on %s, and '%s' is saved for %s only. Nothing "
+                              "was filled.", host, name, sites)
+            : g_strdup_printf("The browser's address could not be read, so '%s' was not "
+                              "filled. Open the login page first (it is saved for %s).",
+                              name, sites);
+        return make_response(job->request_id, text, TRUE);
+    }
+
+    /* 4. The value, resolved now and only now; a TOTP seed becomes the
+     *    code for this moment, and the seed is wiped at once. */
+    value = clawt_secret_ref_resolve(entry->secret, job->secrets_dir, job->secret_timeout,
+                                     &error);
+    if (value == NULL) {
+        g_autofree gchar *described = clawt_secret_ref_describe(entry->secret);
+
+        text = g_strdup_printf("The secret '%s' could not be read (%s). Tell the person; "
+                               "do not ask for it.", name, described);
+        return make_response(job->request_id, text, TRUE);
+    }
+    if (entry->kind == CLAWT_VAULT_TOTP) {
+        g_autoptr(ClawtTotpKey) key = clawt_totp_key_parse(value, &error);
+
+        memset(value, 0, strlen(value));
+        if (key == NULL) {
+            text = g_strdup_printf("The saved 2FA seed '%s' is not usable: %s. Tell the "
+                                   "person.", name, error->message);
+            return make_response(job->request_id, text, TRUE);
+        }
+        typed = clawt_totp_code(key, g_get_real_time() / G_USEC_PER_SEC);
+    } else {
+        typed = g_steal_pointer(&value);
+    }
+
+    /* 5. Typed by gsurf as key input; the session holds the page from
+     *    before the first key, and gsurf checks the host once more when
+     *    it has found the field -- the page may have moved since step 3. */
+    filled = clawt_browser_fill_secret(browser, selector, typed, submit, name, host, &error);
+    memset(typed, 0, strlen(typed));
+    if (!filled) {
+        text = g_strdup_printf("The browser could not fill '%s': %s. The reference is "
+                               "spent; ask for another to try again.", name,
+                               error != NULL ? error->message : "no reason given");
+        return make_response(job->request_id, text, TRUE);
+    }
+
+    {
+        FillNotice *notice = g_new0(FillNotice, 1);
+
+        notice->tools = g_object_ref(job->tools);
+        notice->agent_id = g_strdup(job->agent_id);
+        notice->name = g_strdup(name);
+        notice->kind = g_strdup(entry->kind == CLAWT_VAULT_TOTP ? "totp" : "password");
+        notice->host = g_strdup(host);
+        notice->session = g_strdup(clawt_browser_get_id(browser));
+        g_main_context_invoke_full(job->tools->main_context, G_PRIORITY_DEFAULT,
+                                   fill_notice_publish, notice, fill_notice_free);
+    }
+
+    if (submit)
+        clawt_browser_wait_loaded(browser, 20);
+    where = browser_where(browser);
+    text = g_strdup_printf("Filled %s into %s%s. %s.", name, selector,
+                           submit ? " and pressed Enter" : "", where);
+    return make_response(job->request_id, text, FALSE);
+}
+
 /* Runs one tool on the worker.  Returns the response node. */
 static JsonNode *
 browser_job_run(BrowserJob *job)
@@ -8569,6 +8988,26 @@ browser_job_run(BrowserJob *job)
     /* One driver at a time on a shared session; the claim is renewed by every call. */
     if (job->shared && !clawt_browser_claim(browser, job->agent_id, now, &error))
         return make_response(job->request_id, error->message, TRUE);
+
+    if (g_strcmp0(tool, "clawtilla_browser_fill_secret") == 0)
+        return browser_fill_secret(job);
+
+    /*
+     * What reads the page back -- a picture, the agent's own script, and
+     * the HTML and scroll tools that are scripts underneath -- is refused
+     * while a secret may be on it.  gsurf refuses too; asking first gives
+     * the agent the remedy rather than a protocol error.
+     */
+    if ((g_strcmp0(tool, "clawtilla_browser_screenshot") == 0 ||
+         g_strcmp0(tool, "clawtilla_browser_eval") == 0 ||
+         g_strcmp0(tool, "clawtilla_browser_html") == 0 ||
+         g_strcmp0(tool, "clawtilla_browser_scroll") == 0) &&
+        clawt_browser_secret_held(browser)) {
+        g_autofree gchar *refusal = g_strdup_printf("Refused: %s.",
+                                                    CLAWT_BROWSER_SECRET_HOLD_MESSAGE);
+
+        return make_response(job->request_id, refusal, TRUE);
+    }
 
     if (g_strcmp0(tool, "clawtilla_browser_open") == 0) {
         const gchar *url = argument_string(arguments, "url");
@@ -8850,8 +9289,9 @@ browser_job_thread(gpointer data)
 
 /* Starts a browser tool on a worker thread; @outer is answered from there. */
 static void
-browser_call_start(ClawtMcpTools *self, const gchar *agent_id, const gchar *tool,
-                   JsonObject *arguments, JsonNode *request_id, GTask *outer)
+browser_call_start(ClawtMcpTools *self, const gchar *agent_id, const gchar *room_id,
+                   const gchar *tool, JsonObject *arguments, JsonNode *request_id,
+                   GTask *outer)
 {
     ClawtAgent *agent = self->agents != NULL
         ? clawt_agent_manager_get(self->agents, agent_id) : NULL;
@@ -8881,13 +9321,29 @@ browser_call_start(ClawtMcpTools *self, const gchar *agent_id, const gchar *tool
                             (gint)clawt_agent_config_get_int(config, "browser.width"),
                             (gint)clawt_agent_config_get_int(config, "browser.height"),
                             (gint)clawt_agent_config_get_int(config, "browser.idle_minutes"));
+    job->tools = g_object_ref(self);
     job->agent_id = g_strdup(agent_id);
+    job->room_id = g_strdup(room_id);
     job->tool = g_strdup(tool);
     job->arguments = arguments != NULL ? json_object_ref(arguments) : NULL;
     job->request_id = request_id != NULL ? json_node_ref(request_id) : NULL;
     job->outer = outer;
     job->shared = mode == CLAWT_BROWSER_SHARED;
     job->allow_scripts = clawt_agent_config_get_boolean(config, "browser.allow_scripts");
+
+    /* A secret reference is spent here, on the tools' context, where the
+     * config may be read; only the page and the value go to the worker. */
+    if (g_strcmp0(tool, "clawtilla_browser_fill_secret") == 0) {
+        JsonNode *refused = browser_fill_secret_prepare(self, job);
+
+        if (refused != NULL) {
+            job->outer = NULL;
+            browser_job_free(job);
+            g_task_return_pointer(outer, refused, (GDestroyNotify)json_node_unref);
+            g_object_unref(outer);
+            return;
+        }
+    }
 
     g_thread_unref(g_thread_new("clawt-browser-tool", browser_job_thread, job));
 }
@@ -8925,7 +9381,10 @@ call_async_dispatch(ClawtMcpTools *self, const gchar *agent_id,
     }
 
     if (g_str_has_prefix(tool != NULL ? tool : "", "clawtilla_browser_")) {
-        browser_call_start(self, agent_id, tool, arguments, request_id, outer);
+        /* The conversation a secret reference is bound to, resolved the
+         * same way the synchronous path resolves it for the mint. */
+        browser_call_start(self, agent_id, call_room(self, agent_id, room_id, arguments),
+                           tool, arguments, request_id, outer);
         return;
     }
 
@@ -9325,6 +9784,8 @@ tools_call(ClawtMcpTools *self,
         text = tool_computer_exec(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_computer_state") == 0)
         text = tool_computer_state(self, agent_id);
+    else if (g_strcmp0(tool_name, "clawtilla_secret_ref") == 0)
+        text = tool_secret_ref(self, agent_id, turn_room, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_skill_list") == 0)
         text = tool_skill_list(self, agent_id);
     else if (g_strcmp0(tool_name, "clawtilla_grok_jobs") == 0)
@@ -9465,6 +9926,7 @@ clawt_mcp_tools_dispose(GObject *object)
     g_clear_pointer(&self->tool_providers, g_ptr_array_unref);
     g_clear_object(&self->agents);
     g_clear_object(&self->browsers);
+    g_clear_object(&self->vault);
     g_clear_object(&self->tasks);
     g_clear_object(&self->guard);
 
@@ -9483,5 +9945,5 @@ clawt_mcp_tools_class_init(ClawtMcpToolsClass *klass)
 static void
 clawt_mcp_tools_init(ClawtMcpTools *self)
 {
-    (void)self;
+    self->vault = clawt_secret_vault_new();
 }

@@ -310,8 +310,11 @@ GPtrArray *clawt_broker_assignments(ClawtConfig *config,
  * @config: a #ClawtConfig
  * @agent_id: an agent
  *
- * The one place both the connector the config loader makes and the
- * bwrap box that must let its relay read the key are answered from.
+ * The assignment clawt_broker_assignments() makes for @agent_id.  The
+ * bwrap box no longer asks this: it binds the key as the token_file of
+ * the gateway connector the config loader made from the same
+ * assignments, through clawt_agent_confine_connector_paths(), the list
+ * every connector credential goes through.
  *
  * Returns: (transfer full) (nullable): @agent_id's assignment, or %NULL
  */

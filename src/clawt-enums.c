@@ -481,6 +481,24 @@ clawt_browser_mode_get_type(void)
     return g_define_type_id__volatile;
 }
 
+/* Register ClawtVaultKind as a GLib enum type */
+GType
+clawt_vault_kind_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_VAULT_PASSWORD, "CLAWT_VAULT_PASSWORD", "password" },
+            { CLAWT_VAULT_TOTP, "CLAWT_VAULT_TOTP", "totp" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtVaultKind", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
 /* Register ClawtComputerState as a GLib enum type */
 GType
 clawt_computer_state_get_type(void)

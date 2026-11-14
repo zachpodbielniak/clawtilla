@@ -686,6 +686,22 @@ This is ~memories.*~, the searchable per-agent sqlite store, and not
 ~agents.memory~, which is libreclaw's ~MEMORY.md~ size budget.  The two
 are unrelated and the plural is the whole distinction.
 
+~memory.journal~ (~agent~, optional ~limit~, default 50, at most 500) →
+~agent~, ~keep~ (~memories.journal_keep~) and ~entries~, newest first
+across the agent's own database and its own changes in its team's and the
+fleet's.  Each entry carries ~id~ (the row, unique within its database),
+~scope~, ~at~ (unix seconds), ~action~ (~add~, ~forget~, ~pin~, ~unpin~,
+~undo~), ~memory_id~, ~actor~, ~excerpt~, ~line~ (the sentence from
+=clawt_memory_journal_describe()=), ~undoes~ on an undo row, ~undone_at~,
+~undone_by~, ~undoable~ (a JSON boolean) and ~why_not~ when it is not.
+An agent with ~memories.enabled~ off is ~CLAWT_ERROR_NOT_SUPPORTED~.
+
+~memory.undo~ (~agent~, ~scope~ -- ~agent~ by default -- and ~id~) →
+~undone~.  Refused with the store's sentence for a row that cannot be
+undone, ~CLAWT_ERROR_NOT_FOUND~ for one older than the journal keeps, and
+~CLAWT_ERROR_PERMISSION_DENIED~ for a row in a shared database that this
+agent did not make.  Publishes ~memory.changed~.
+
 ~memory.recall~ (~query~, and optionally ~agent~, ~days~ and ~limit~) →
 ~hits~, ~full_text~ and ~indexed~.  This searches the *transcript*, not
 the memories: every message the fleet has routed, across every room and
@@ -895,6 +911,68 @@ two members present only when set (since 0.22.0):
   was offered no tool that acts, so the result is an answer.  Draw
   ~clawt_task_consult_label()~.
 
+*** turn.rescue
+
+~turn.rescue~ takes ~action~:
+
+- ~list~ (the default; ~agent~ optional) → ~offers~, one per turn the
+  daemon has offered to rescue: ~agent~, ~room~, ~seconds~ (silent for),
+  ~choices~ (model names one turn can move to) and ~not_offered~ (one
+  sentence per fallback that cannot be used for one turn, saying why).
+- ~stop~ (~agent~) → ~done~, ~killed~: ~agent.interrupt~.
+- ~switch~ (~agent~, ~room~, ~model~) → ~done~, ~killed~: hands the
+  room's running turn back to the queue with ~model~ on it, then
+  interrupts the agent, whose settle delivers it again.  Refused when
+  ~model~ is not one of the choices, when there is no running turn in
+  ~room~, and when the turn has already acted outside the fleet.
+
+Events, subject the agent: ~turn.no_reply~ (~room~, ~seconds~,
+~choices~ comma separated) when a room's turn has shown nothing for
+~agents.runtime.first_reply_seconds~, and ~turn.no_reply_cleared~
+(~room~) when it shows anything or ends.  See
+[[file:orchestration.org::*First-reply rescue: a turn that has shown nothing][orchestration.org]].
+
+*** steps.*
+
+Saved steps (see [[file:computers.org::#saved-steps][computers.org]]).  Each takes ~agent~; ~save~,
+~replay~ and ~delete~ take ~name~.
+
+- ~steps.last~ → the agent's last turn that touched its screen, or an
+  empty object: ~finished_at~, ~calls~, ~saveable~ (a JSON boolean),
+  ~why_not~ and ~steps~ (one line per step, from
+  =clawt_saved_step_describe()=).
+- ~steps.save~ → ~saved~.  Refused, with the recorder's reason, for a
+  turn that cannot be saved; a name is letters, digits, spaces, ~-~,
+  ~_~ and ~.~.
+- ~steps.list~ → ~replaying~ and ~saved~ (~name~, ~created_at~, ~steps~).
+- ~steps.delete~ → ~deleted~.
+- ~steps.replay~ → ~started~, ~steps~; answered at once, and the end is
+  the ~steps.replayed~ event (~name~, ~ok~, ~done~, ~steps~, ~error~).
+  Refused for an agent with no screen, a screen not held, and a replay
+  already running.
+
+~computer.control~ takes ~arguments~ (the call's own object) beside
+~tool~, which is what the steps are recorded from.  Events, subject the
+agent: ~steps.changed~, ~steps.replayed~.
+
+*** sentinel.*
+
+~sentinel.scan~ (no payload) → ~started~ and ~running~.  Starts
+=clawtilla sentinel= as the daemon's child and answers at once;
+~started~ is false when a scan was already running.  When the child
+exits the daemon publishes ~sentinel.finished~ (~ok~, and ~error~ with
+the child's last words when it failed).  The daemon never reads the
+event log for this.  ~CLAWT_ERROR_NOT_FOUND~ when the CLI cannot be
+found, naming where it looked.
+
+~sentinel.report~ (no payload) → ~path~, ~running~, ~error~ (the last
+scan's failure, or a report that could not be read) and ~report~: the
+YAML file as JSON, ~sentinel~ (~version~, ~scanned_at~, ~since~,
+~files~, ~events~, ~skipped~, ~truncated~) and ~issues~.  ~report~ is
+absent when nothing has been scanned yet, which is a different answer
+from a scan that found nothing (an empty ~issues~).  See
+[[file:maintenance.org::*The sentinel: what keeps going wrong][maintenance.org]].
+
 *** usage.*
 
 ~usage.summary~ (~since~, unix seconds, 0 for everything) → ~agents~, one
@@ -936,6 +1014,14 @@ Since 0.9.0. Every verb but ~browser.list~ takes ~agent~ and acts on the session
 - ~browser.open~ (~url~; ~https://~ is assumed without a scheme) starts the session if it must, navigates, and waits up to twenty seconds for the load.
 - ~browser.click~ (~x~, ~y~, in the page's CSS pixels) is a person's click. It does not take a shared session's driver lease, since a person at the Computer page outranks an agent.
 - ~browser.stop~ stops it. The profile and its logins stay; the open page does not.
+
+Since 0.25.0 every session object -- in ~browser.list~ and in each ~browser.*~ reply -- also carries ~secret_hold~ (a secret was filled on the page and it has not been seen to navigate away) and ~last_fill~ (~{name, host, at}~: the vault entry's name, the host it was typed on and unix seconds, or ~null~). Never a value. While ~secret_hold~ is true ~browser.frame~ answers without ~png_base64~ rather than with an error: the daemon takes no picture of a page a secret is on. Clients draw both through =clawt_browser_session_line()=, whose second line is =clawt_browser_fill_line()=.
+
+*** vault.list
+
+Since 0.25.0. The =vault:= entries, for a client choosing which ones an agent may have filled. Takes an optional ~agent~ (an unknown one is =NOT_FOUND=). Answers ~entries~, each ~{name, kind, description, sites}~ (~kind~ is ~password~ or ~totp~), and with ~agent~ also ~agent~, ~browser~ (whether its =agents.browser.mode= is not =none=) and a ~granted~ boolean per entry. Names only: neither the value nor the reference it is resolved through crosses the socket. An entry missing its secret or its sites is not listed, since it is never filled.
+
+A grant is changed with ~agent.set~ ~browser.secrets~, the whole list comma-separated (=clawt_vault_grants_with()= builds it from a ~vault.list~ reply); a name that is not a usable vault entry is refused there with =NOT_FOUND=.
 
 *** computer.*
 
@@ -1752,6 +1838,11 @@ Every kind published, by subject:
 | an agent | ~decision.asked~ (~decision~, ~room~), ~decision.settled~ (~decision~, ~how~: ~answered~, ~dismissed~, ~defaulted~ or ~deleted~, ~room~, ~answer~, ~via~), ~decision.deleted~ (~decision~, ~room~) |
 | a routine | ~routine.ran~, ~routine.changed~, ~routine.turned_off~ (~agent~, ~failures~, ~error~) |
 | an agent | ~wait.changed~ (~wait~, ~state~) |
+| an agent | ~steps.changed~, ~steps.replayed~ (~name~, ~ok~, ~done~, ~steps~, ~error~) |
+| an agent | ~turn.no_reply~ (~room~, ~seconds~, ~choices~), ~turn.no_reply_cleared~ (~room~) |
+| the daemon | ~sentinel.finished~ (~ok~, ~error~) |
+| an agent | ~turn.cost~ (~cost_micros~, ~task~): what a turn just cost, for the sentinel |
+| an agent | ~memory.changed~ (a memory tool call or an undo changed what it remembers) |
 | a trigger | ~trigger.fired~, ~trigger.posted~, ~trigger.changed~, ~trigger.refused~, ~trigger.verified~ |
 | a Grok job | ~grok.job_updated~ (~bot~, ~agent~, ~state~) |
 | a Grok bot | ~grok.bots_changed~ |
@@ -1762,6 +1853,7 @@ Every kind published, by subject:
 | a cloud image | ~image.progress~ (~done~, ~total~), ~image.finished~ (~path~ or ~error~) |
 | the daemon | ~device.paired~ (~device~, ~name~), ~device.revoked~ (~device~), ~device.expired~ (~device~) |
 | an agent | ~computer.exec~ |
+| an agent | ~browser.secret_filled~ (~name~, ~kind~, ~host~, ~session~: never the value) |
 | an agent | ~turn.timed_out~, ~turn.repeating~, ~message.steered~, ~turn.steered~ |
 | an agent | ~egress.refused~ (the gate refused one of its connections; agent.show's ~egress~ has the detail) |
 | an agent | ~turn.step~ (~step_kind~, ~room_id~, ~text~, ~tool~, ~detail~, ~failed~) |

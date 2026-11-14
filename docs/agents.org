@@ -597,6 +597,54 @@ it in a fleet.  Why it matters is in ~docs/security.org~: memory is a
 prompt-injection *persistence* vector, and an instruction an agent copies
 into its own memory is read back later as its own conclusion.
 
+** Memory review: a journal and undo
+
+~clawtilla_memory_add~, ~_forget~ and ~_pin~ act at once, from inside one
+conversation, and a memory is read back later as the agent's own
+conclusion.  So every change is journaled, and a person can take any of
+them back.
+
+- *The journal is the store's.*  Each memory database -- an agent's own,
+  each team's, the fleet's -- has a ~memory_journal~ table beside its
+  memories.  ~clawt_memory_store_add()~, ~_forget_as()~ and ~_pin_as()~
+  write the row in the same function that makes the change, so a pod's
+  ~memory_add~, the summariser and anything added later are on the record
+  too; nothing depends on a caller remembering to.  A row holds the
+  action (~add~, ~forget~, ~pin~, ~unpin~, ~undo~), the memory, who made
+  it (the agent's id; for an add, the memory's ~source~), the start of the
+  text, and the flags the change overwrote.
+- *Undo reverses one row.*  An add is archived (out of every listing and
+  search, still on disk -- nothing here deletes a row); a forget brings
+  the memory back; a pin or unpin flips back.  The change, the mark on the
+  row and the undo's own row are one transaction.
+- *It refuses rather than guess:* a row already undone; an undo row; an
+  add that replaced an earlier version of the same id (the earlier text is
+  not kept, so the undo would only hide the new one); a memory no longer
+  on disk; and a row with a *later* change to the same memory still
+  standing, until that one is undone first.  The listing says which, per
+  row, from the same function the undo asks.
+- *Bounded:* ~memories.journal_keep~ (default 1000) rows per database;
+  the oldest go first, and a change whose row has gone can no longer be
+  undone.
+- *Whose rows:* an agent's review lists everything in its own database,
+  whoever made the change, and only its *own* changes in its team's and
+  the fleet's.  The daemon applies the same rule to ~memory.undo~, so a
+  client cannot undo a teammate's shared memory from the wrong agent.
+
+In the clients it is the *Memory review* group of the agent inspector
+(GTK), the agent page (web) and the Overview (libregnum), refilled by
+~memory.changed~; on the command line, ~clawtilla memory journal <agent>~
+and ~clawtilla memory undo <agent> <change> [--scope team|fleet]~.
+
+*** No periodic review ("dream")
+
+OpenMausBot's ~memory-dream.ts~ periodically asks a model to merge,
+prune and rewrite memories.  Not done here: every pass is model spend
+nobody asked for, billed to whoever set it, and a rewrite of a memory is
+exactly the kind of change this journal exists to make reviewable one at
+a time.  The journal and undo cover the case that matters -- a wrong
+change that a person noticed -- without spending anything.
+
 ** Recall: searching what was said
 
 ~clawtilla_memory_*~ searches what an agent chose to write down.
@@ -938,6 +986,7 @@ Things worth knowing before turning it on:
 - *Only a process runtime can be confined.* ~embedded~ with ~bwrap~ is refused when set and disables the agent at load; an embedded agent that inherits bwrap from =defaults.confine= is disabled too, with a message naming that key, until it says ~confine: none~ itself.
 - *No bubblewrap means a shadow agent*, with the reason, at load and again at start. It is never run unconfined instead. All three clients show the reason beside the setting.
 - *A read-only bind of a file with a second hard link is refused*, and so is a denied file (or a file in a denied directory) with one, because the other name reaches it around the bind.
+- *Its connectors work, and only its connectors.* The relay for each connector the agent holds runs in the box, so the box binds, read-only, that connector's own directory under =secrets.dir/connectors/= (and a ~token_file~ named elsewhere, as the file), plus ~connectors.dir~. Nothing else of =secrets.dir=: another agent's connectors and the OAuth registrations stay out. A renewal the daemon writes is seen by the next relay; a connector connected while the agent runs is too. Granting a connector the agent did not have at start needs a restart, like anything else in its =.mcp.json=. See =docs/security.org=, "Connectors in a confined box".
 - *Stopping is still clean.* bwrap forwards no signals, so SIGTERM goes to libreclaw inside the box; the ~pid~ an agent listing reports is libreclaw's, and an interrupt kills what is below libreclaw.
 
 In the clients the switch is under Runtime, labelled "Sandbox its own tools (bubblewrap)", with a sentence saying what it does and a warning when it cannot be given here.
@@ -963,6 +1012,7 @@ Things worth knowing:
 
 - *It needs the sandbox.* ~gated~ or ~none~ without ~runtime.confine: bwrap~ (on the agent or from =defaults.confine=) disables the agent with that reason, and ~agent.set~ refuses either half of the pair. It is never run on an open network instead. The clients grey the choice out while the sandbox is off and say why.
 - *Private addresses the fleet should reach go in =egress.allow=*: an address, a network or a host name, with an optional port -- a tailnet service, say. The clients edit it beside the shared folders; metadata addresses are refused.
+- *Its connectors go through the gate too.* A remote connector's relay runs in the box and sends every request through the gate (it is started with ~CLAWTILLA_EGRESS_PROXY~ and ignores ~NO_PROXY~, whose 127.0.0.1 is the box's own). A public server works; one on this machine or the LAN needs its address in =egress.allow=, and until then each call comes back as a tool error naming the gate's reason and that setting. An integration broker's connector is not given to a gated agent at all.
 - *A refusal is a 403 naming the address and the reason*, and the agent is told in its per-turn directive that the gate is there, so it reads a refused LAN address as a boundary rather than an outage.
 - *The agent's view says what happened*: "egress: gated (3 refused today)", the last refusals with host, address and reason, and whether each key is brokered.
 - *It takes effect at the next start*, like the sandbox.

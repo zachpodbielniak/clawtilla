@@ -51,6 +51,18 @@ G_BEGIN_DECLS
 #define CLAWT_EGRESS_BROKER_PORT 3129
 
 /**
+ * CLAWT_EGRESS_PROXY_ENV:
+ *
+ * The variable a gated agent's process is started with, naming the
+ * gate's address inside its namespace.  A connector relay started in the
+ * box sends every request through it, ignoring NO_PROXY: in a gated
+ * namespace 127.0.0.1 is the box's own loopback, and the gate is the only
+ * route to anything else.  Not a permission -- the namespace is -- only
+ * the route.
+ */
+#define CLAWT_EGRESS_PROXY_ENV "CLAWTILLA_EGRESS_PROXY"
+
+/**
  * CLAWT_EGRESS_MAX_HEAD:
  *
  * The most bytes the gate reads looking for the end of a request head.

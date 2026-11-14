@@ -98,6 +98,57 @@ team_of(ClawtAgentManager *self, const gchar *agent_id)
     return (team != NULL && *team != '\0') ? team : NULL;
 }
 
+/*
+ * memories.journal_keep, applied to a store as it is handed out.  A
+ * setter call per hand-out rather than once at open, because the shared
+ * scopes' stores are opened lazily in clawt-memory-scopes.c, which has no
+ * config -- and a reload that changes the bound then reaches every
+ * store the next time it is used.
+ */
+static ClawtMemoryStore *
+with_journal_keep(ClawtAgentManager *self, ClawtMemoryStore *store)
+{
+    if (store != NULL && self->config != NULL)
+        clawt_memory_store_set_journal_keep(
+            store, (guint)MAX(clawt_config_get_int(
+                                  self->config, "memories.journal_keep"),
+                              0));
+
+    return store;
+}
+
+ClawtMemoryStore *
+clawt_agent_manager_memory_store_for_scope(ClawtAgentManager *self,
+                                           const gchar *agent_id,
+                                           ClawtMemoryScope scope)
+{
+    ClawtAgent *agent;
+    ClawtMemoryScopes *scopes;
+
+    g_return_val_if_fail(CLAWT_IS_AGENT_MANAGER(self), NULL);
+
+    agent = (agent_id != NULL) ? clawt_agent_manager_get(self, agent_id)
+                               : NULL;
+
+    if (agent == NULL)
+        return NULL;
+
+    if (scope == CLAWT_MEMORY_SCOPE_AGENT)
+        return with_journal_keep(self, clawt_agent_get_memory(agent));
+
+    scopes = clawt_agent_manager_get_memory_scopes(self);
+
+    if (scopes == NULL)
+        return NULL;
+
+    if (scope == CLAWT_MEMORY_SCOPE_TEAM && team_of(self, agent_id) == NULL)
+        return NULL;
+
+    return with_journal_keep(self, clawt_memory_scopes_open_for_read(
+        scopes, scope,
+        (scope == CLAWT_MEMORY_SCOPE_TEAM) ? team_of(self, agent_id) : NULL));
+}
+
 ClawtMemoryStore *
 clawt_agent_manager_memory_write_store(ClawtAgentManager *self,
                                        const gchar *agent_id,
@@ -129,7 +180,7 @@ clawt_agent_manager_memory_write_store(ClawtAgentManager *self,
      * write is the one a search reads from.
      */
     if (scope == CLAWT_MEMORY_SCOPE_AGENT)
-        return clawt_agent_get_memory(agent);
+        return with_journal_keep(self, clawt_agent_get_memory(agent));
 
     scopes = clawt_agent_manager_get_memory_scopes(self);
 
@@ -140,10 +191,10 @@ clawt_agent_manager_memory_write_store(ClawtAgentManager *self,
         return NULL;
     }
 
-    return clawt_memory_scopes_open_for_write(
+    return with_journal_keep(self, clawt_memory_scopes_open_for_write(
         scopes, scope,
         (scope == CLAWT_MEMORY_SCOPE_TEAM) ? team_of(self, agent_id) : NULL,
-        error);
+        error));
 }
 
 GPtrArray *
@@ -335,7 +386,8 @@ build_agent(ClawtAgentManager *self, ClawtAgentConfig *agent_config)
             g_warning("agent %s: its memory could not be opened: %s",
                       agent_id, memory_error->message);
         else
-            clawt_agent_set_memory(agent, memory);
+            clawt_agent_set_memory(agent,
+                                   with_journal_keep(self, memory));
     }
 
     g_signal_connect(agent, "state-changed",

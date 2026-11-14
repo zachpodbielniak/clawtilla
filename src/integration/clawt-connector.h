@@ -278,11 +278,32 @@ gchar *clawt_connector_format_credential(const ClawtConnectorInfo *info,
                                          const gchar              *value);
 
 /**
+ * clawt_connector_token_dir:
+ * @secrets_dir: where the daemon keeps credentials
+ * @name: the integration instance's name
+ *
+ * The directory one connector's credential is kept in,
+ * `<secrets_dir>/connectors/<name>`, and nothing else is.
+ *
+ * A directory of its own because a confined agent's box binds it
+ * read-only: a directory bind sees a renewal the daemon renames into
+ * place, where a bind of the file would go on showing the file the box
+ * started with.  @name is folded so it cannot climb out of
+ * `connectors/` or name it: a separator becomes an underscore, and so
+ * does a leading dot or an empty name.
+ *
+ * Returns: (transfer full): the path
+ */
+gchar *clawt_connector_token_dir(const gchar *secrets_dir,
+                                 const gchar *name);
+
+/**
  * clawt_connector_token_path:
  * @secrets_dir: where the daemon keeps credentials
  * @name: the integration instance's name
  *
- * Where one connector's credential is kept.
+ * Where one connector's credential is kept: `token.json` in
+ * clawt_connector_token_dir().
  *
  * Keyed by the instance name rather than by the provider, because two
  * accounts on one service is the ordinary case and sharing a file
@@ -293,6 +314,43 @@ gchar *clawt_connector_format_credential(const ClawtConnectorInfo *info,
  */
 gchar *clawt_connector_token_path(const gchar *secrets_dir,
                                   const gchar *name);
+
+/**
+ * clawt_connector_legacy_token_path:
+ * @secrets_dir: where the daemon keeps credentials
+ * @name: the integration instance's name
+ *
+ * Where clawtilla kept a connector's credential before each had a
+ * directory of its own: flat in @secrets_dir, as
+ * `connector-<name>.json`.  The daemon moves such a file to
+ * clawt_connector_token_path() when it starts.
+ *
+ * Returns: (transfer full): the path
+ */
+gchar *clawt_connector_legacy_token_path(const gchar *secrets_dir,
+                                         const gchar *name);
+
+/**
+ * clawt_connector_find_token_file:
+ * @secrets_dir: where the daemon keeps credentials
+ * @name: the integration instance's name
+ * @configured: (nullable): the instance's `token_file`
+ *
+ * Which file holds a connector's credential now.
+ *
+ * A @configured path that is neither the daemon's own nor the old flat
+ * one was chosen by somebody and is returned as it is.  Otherwise the
+ * daemon's own file wins when it exists, because the configuration a
+ * reader holds may be older than the credential: a confined relay
+ * reads the clawtilla.yaml its box was started with, so a connector
+ * moved or connected since then is found only here.
+ *
+ * Returns: (transfer full) (nullable): the path, or %NULL when nothing
+ *   names one
+ */
+gchar *clawt_connector_find_token_file(const gchar *secrets_dir,
+                                       const gchar *name,
+                                       const gchar *configured);
 
 /**
  * clawt_connector_info_copy:

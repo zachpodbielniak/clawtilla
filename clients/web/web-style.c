@@ -539,6 +539,11 @@ clawt_web_stylesheet(void)
     "margin:.5rem 0 .25rem}"
     ".turn-step{margin:0;font-size:.85rem;color:var(--muted);"
     "line-height:1.45}"
+    /* First-reply rescue: a card under the live steps (web-rescue.c). */
+    ".rescue-card{border:1px solid var(--line);border-radius:var(--radius);"
+    "padding:.6rem .75rem;margin:.5rem 0;background:var(--surface-2)}"
+    ".rescue-card .row-actions{display:flex;flex-wrap:wrap;gap:.5rem;"
+    "margin:.4rem 0}"
     /*
      * The step text can be a whole command line, so it wraps rather
      * than widening its container.  A wrapping element still reports

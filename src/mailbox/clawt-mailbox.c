@@ -1838,6 +1838,92 @@ clawt_mailbox_turn_recover(
 }
 
 guint
+clawt_mailbox_turn_hand_back(
+	ClawtMailbox  *self,
+	const gchar   *room_id,
+	const gchar   *model,
+	GError       **error
+){
+	g_autoptr(GPtrArray) open = NULL;
+	ClawtTurnRecord *record = NULL;
+	const gchar *why = NULL;
+	sqlite3_stmt *stmt = NULL;
+	guint returned = 0;
+	guint i;
+
+	g_return_val_if_fail(CLAWT_IS_MAILBOX(self), 0);
+
+	open = clawt_mailbox_turn_list_open(self);
+
+	/* The newest open turn in that room: the one running now. */
+	for (i = 0; i < open->len; i++) {
+		ClawtTurnRecord *candidate = g_ptr_array_index(open, i);
+
+		if (g_strcmp0(candidate->room, room_id) == 0 &&
+			(record == NULL || candidate->opened_at >= record->opened_at))
+			record = candidate;
+	}
+
+	if (record == NULL) {
+		g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+			"there is no running turn in that room to run again");
+		return 0;
+	}
+
+	if (record->outward != NULL && *record->outward != '\0')
+		why = "it has already acted outside the fleet, so running it again "
+			"could do that twice";
+	else
+		items_can_return(self, record->items, &why);
+
+	if (why != NULL) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+			"the turn cannot be run again: %s", why);
+		return 0;
+	}
+
+	if (!exec_simple(self, "BEGIN IMMEDIATE", error))
+		return 0;
+
+	for (i = 0; record->items[i] != NULL; i++) {
+		if (sqlite3_prepare_v2(self->db,
+				"UPDATE items SET state = ?, model = ?, not_before = 0,"
+				" lease_expires_at = 0 WHERE id = ? AND state = ?",
+				-1, &stmt, NULL) != SQLITE_OK) {
+			set_sqlite_error(error, self->db, "handing a turn back");
+			exec_simple(self, "ROLLBACK", NULL);
+			return 0;
+		}
+
+		sqlite3_bind_int(stmt, 1, CLAWT_MAILBOX_PENDING);
+		sqlite3_bind_text(stmt, 2, model, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 3, record->items[i], -1, SQLITE_TRANSIENT);
+		sqlite3_bind_int(stmt, 4, CLAWT_MAILBOX_ACKED);
+
+		if (!step_write(self, stmt, "handing a turn back", error)) {
+			exec_simple(self, "ROLLBACK", NULL);
+			return 0;
+		}
+
+		returned++;
+	}
+
+	if (!delete_turn(self, record->id, error)) {
+		exec_simple(self, "ROLLBACK", NULL);
+		return 0;
+	}
+
+	if (!exec_simple(self, "COMMIT", error)) {
+		exec_simple(self, "ROLLBACK", NULL);
+		return 0;
+	}
+
+	emit_depth_changed(self);
+
+	return returned;
+}
+
+guint
 clawt_mailbox_turn_count_open(
 	ClawtMailbox *self
 ){

@@ -499,6 +499,30 @@ struct _ClawtWindow {
      * takes the list with it.
      */
     GtkListBox        *inspector_waits;
+    /*
+     * The inspector's "Memory review" list (gtk-review.c), refilled on
+     * its own by `memory.changed`.  Weak, for the same reason.
+     */
+    GtkListBox        *inspector_memory_review;
+    /*
+     * The Activity page's Issues (gtk-issues.c): the sentinel's report,
+     * and the line above it saying how old it is.
+     */
+    GtkListBox        *issues_list;
+    /*
+     * The chat's first-reply rescue card (gtk-rescue.c), above the
+     * composer; hidden while there is no offer for the selected agent.
+     */
+    GtkWidget         *rescue_box;
+    /*
+     * The Screen view's saved steps (gtk-steps.c): the last turn's line,
+     * the name field and Save, and the saved lists.
+     */
+    GtkWidget         *steps_last;
+    GtkWidget         *steps_name;
+    GtkWidget         *steps_save;
+    GtkWidget         *steps_list;
+    GtkWidget         *issues_status;
     ImageChooser       inspector_disk;
     GtkWidget         *vm_cpus_row;
     GtkWidget         *vm_memory_row;
@@ -544,6 +568,10 @@ struct _ClawtWindow {
     guint              browser_generation;
     gboolean           browser_in_flight;
     gboolean           browser_again;
+    /* The vault entries this agent may have filled: names, never values */
+    GtkBox            *browser_secrets;
+    JsonObject        *browser_vault;     /* the last vault.list reply, owned */
+    gboolean           browser_vault_filling;   /* drawing it: toggles are not the person */
     GtkListBox        *computer_mount_list;
     GtkListBox        *exchange_list;
 
@@ -1452,6 +1480,47 @@ clawt_gtk_build_inspector_page(ClawtWindow *self);
  */
 void
 clawt_gtk_refresh_waits(ClawtWindow *self);
+
+/*
+ * The inspector's Memory review group (gtk-review.c): built into the
+ * inspector, and refilled for every `memory.changed` about the selected
+ * agent.
+ */
+void
+clawt_gtk_build_memory_review(ClawtWindow *self);
+
+void
+clawt_gtk_refresh_memory_review(ClawtWindow *self);
+
+/*
+ * The Activity page's Issues (gtk-issues.c): built under the running
+ * turns, read when the page is shown and on `sentinel.finished`.
+ */
+void
+clawt_gtk_build_issues(ClawtWindow *self, GtkBox *column);
+
+void
+clawt_gtk_refresh_issues(ClawtWindow *self);
+
+/*
+ * The chat's first-reply rescue (gtk-rescue.c): the card, built into the
+ * composer cluster, and re-read on `turn.no_reply*` and agent switches.
+ */
+GtkWidget *
+clawt_gtk_build_rescue(ClawtWindow *self);
+
+void
+clawt_gtk_refresh_rescue(ClawtWindow *self);
+
+/*
+ * The Screen view's saved steps (gtk-steps.c): built under the screen,
+ * re-read with the computer page and on `steps.*` events.
+ */
+GtkWidget *
+clawt_gtk_build_saved_steps(ClawtWindow *self);
+
+void
+clawt_gtk_refresh_saved_steps(ClawtWindow *self);
 
 ClawtComputerType
 clawt_gtk_computer_type_from_nick(const gchar *nick);

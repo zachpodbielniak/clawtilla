@@ -1065,6 +1065,19 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "A prompt suffix reaches every turn, so this number is what the\nreminder asks the agent for rather than something clawtilla counts.\nCounting turns from the daemon would need a per-turn channel to the\nagent, and the only one there is is the delivery preamble -- which not\nevery turn has.", "0.2.0" },
 
+{ "memories.journal_keep", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "1000", NULL,
+  "How many changes each memory database's journal keeps. 0 keeps every\n"
+  "one.\n"
+  "\n"
+  "Every remember, forget, pin and unpin is written to a journal beside\n"
+  "the memories it changed, with who made it, and the Memory review page\n"
+  "in each client lists it with an Undo per row. The oldest rows go first\n"
+  "once there are more than this, and a change whose row has gone can no\n"
+  "longer be undone -- the page says so rather than offering a button\n"
+  "that cannot work. One journal per database: an agent's own, each\n"
+  "team's and the fleet's.", "0.26.0" },
+
 { "memories.operator_profile", CLAWT_SCHEMA_BOOLEAN,
   CLAWT_SCHEMA_FLAG_COMMENTED, "false", NULL,
   "Whether the fleet keeps a profile of the person it works for.\n"
@@ -1075,6 +1088,42 @@ static const ClawtSchemaEntry schema[] = {
   "something to build.\n"
   "\n"
   "Two halves: `<state_dir>/OPERATOR.org`, which you write, and\nfleet-scope memories in the `operator` category, which agents record.\nBoth are written into a marked region of every agent's USER.org, so a\nchange reaches the whole fleet rather than only agents made afterwards.\nOff removes the region again.", "0.2.0" },
+
+/* ── sentinel ────────────────────────────────────────────────────── */
+{ "sentinel", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "What `clawtilla sentinel` looks for in the event log.\n"
+  "\n"
+  "The sentinel is a read-only scan of <state_dir>/events/*.ndjson that\n"
+  "groups failing tool calls, long queue waits, spending and stalled turns\n"
+  "into issues and writes them as YAML. It runs out of process: the\n"
+  "clients' Issues view asks the daemon to start `clawtilla sentinel`\n"
+  "and then shows what it wrote. It never writes to the event log.", "0.26.0" },
+
+{ "sentinel.days", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, "7", NULL,
+  "How many days of the event log one scan reads, counting today. 0\n"
+  "reads every file there is, which daemon.event_log_days bounds.", "0.26.0" },
+
+{ "sentinel.min_failures", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "3", NULL,
+  "How many failures of one agent's tool make an issue. A tool that\n"
+  "failed once is a turn's ordinary business; one that failed this many\n"
+  "times in the window is a pattern somebody should look at.", "0.26.0" },
+
+{ "sentinel.queue_wait_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "600", NULL,
+  "How long a message may wait in an agent's queue, from being queued to\n"
+  "being delivered, before the wait is an issue. Messages still queued\n"
+  "past it when the scan ends are reported too.", "0.26.0" },
+
+{ "sentinel.daily_spend_micros", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "10000000", NULL,
+  "One agent's spend in one day, in micro-dollars, that makes an issue.\n"
+  "0 reports only the days a cap was reached.\n"
+  "\n"
+  "A line to report, not a limit: nothing is refused at it. The caps that\n"
+  "do refuse work are orchestration.daily_fleet_budget_micros and each\n"
+  "agent's own, and every time one is reached is an issue whatever this\n"
+  "says.", "0.26.0" },
 
 /* ── skills ──────────────────────────────────────────────────────── */
 { "skills", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
@@ -1372,6 +1421,55 @@ static const ClawtSchemaEntry schema[] = {
 { "browsers.description", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
   "What this session is for -- say which logins it holds.", "0.9.0" },
+
+/* ── vault ───────────────────────────────────────────────────────── */
+{ "vault", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
+  "Secrets an agent can have typed into a web page without ever seeing\n"
+  "them: passwords, and TOTP seeds the daemon turns into one-time codes.\n"
+  "\n"
+  "  vault:\n"
+  "    - name: github\n"
+  "      secret: {command: \"pass show web/github\"}\n"
+  "      sites: [github.com]\n"
+  "    - name: github-2fa\n"
+  "      kind: totp\n"
+  "      secret: {file: github-totp}\n"
+  "      sites: [github.com]\n"
+  "\n"
+  "An agent may ask only for the names its agents.browser.secrets lists.\n"
+  "It calls clawtilla_secret_ref for a one-use reference bound to it and\n"
+  "to the conversation it is in, then clawtilla_browser_fill_secret with\n"
+  "that reference and a field. The daemon resolves the value, types it\n"
+  "into the field as key input, and the agent hears only that it was\n"
+  "filled. Screenshots and clawtilla_browser_eval are refused on that\n"
+  "page until the browser navigates away. Needs a GSURF=1 build.", "0.25.0" },
+
+{ "vault.name", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED, NULL, NULL,
+  "What an agent asks for, and what agents.browser.secrets lists. The\n"
+  "name is all an agent or a client ever sees of the entry's secret.", "0.25.0" },
+
+{ "vault.description", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Whose login this is, or which field it belongs in.", "0.25.0" },
+
+{ "vault.kind", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "password", clawt_vault_kind_get_type,
+  "`password` types the value itself. `totp` reads the value as a TOTP\n"
+  "seed -- base32, or an otpauth://totp/ URI with its algorithm, digits\n"
+  "and period -- and types the RFC 6238 code for the current time.", "0.25.0" },
+
+{ "vault.secret", CLAWT_SCHEMA_SECRET, CLAWT_SCHEMA_FLAG_REQUIRED, NULL, NULL,
+  "A secret reference, never the value: {file: ...}, {env: ...} or\n"
+  "{command: ...}, resolved the way secrets: says, at the moment of the\n"
+  "fill and not before.", "0.25.0" },
+
+{ "vault.sites", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_REQUIRED,
+  NULL, NULL,
+  "The hosts the secret may be typed into: a page on any other host is\n"
+  "refused, so an agent steered to a look-alike site cannot be made to\n"
+  "fill it there. `example.com` also matches its subdomains\n"
+  "(login.example.com); a page whose address cannot be read is refused.\n"
+  "An entry without sites is never filled.", "0.25.0" },
 
 /* ── accounts ────────────────────────────────────────────────────── */
 { "accounts", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
@@ -2985,8 +3083,58 @@ static const ClawtSchemaEntry schema[] = {
   "publishes turn.timed_out; the same number is rendered into the\n"
   "agent's own session.watchdog_timeout_seconds. That inner watchdog\n"
   "measures total duration, even while output arrives or a decision is\n"
-  "pending; a positive value therefore also caps the whole turn.",
+  "pending; a positive value therefore also caps the whole turn -- at\n"
+  "this number plus runtime.busy_max_seconds while the busy check\n"
+  "(runtime.busy_cpu_percent) is on, and not at all when that ceiling\n"
+  "is 0.",
   "0.2.0" },
+
+{ "agents.runtime.first_reply_seconds", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_NONE, "20", NULL,
+  "How long a turn may show nothing at all -- no step, no thought, no\n"
+  "reply -- before the clients offer to stop it or to run the same\n"
+  "message on another model. 0 never offers.\n"
+  "\n"
+  "Nothing is stopped by this; it is an offer, shown beside the\n"
+  "conversation and withdrawn the moment the turn shows anything. It\n"
+  "needs runtime.stream_steps, since a turn whose steps are not\n"
+  "streamed is silent until it answers whether or not it is working.\n"
+  "\n"
+  "Silence here is what the daemon can see, which is less than what the\n"
+  "CLI is doing: libreclaw does not forward the CLI's own status lines,\n"
+  "and holds prose until a tool call or the end of the turn. So the\n"
+  "offer says the turn has shown nothing, never that it is stuck. The\n"
+  "models offered are the model.fallbacks entries on the agent's own\n"
+  "CLI and login, since one turn's model is a name on the CLI it is\n"
+  "already running.", "0.26.0" },
+
+{ "agents.runtime.busy_cpu_percent", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "5", NULL,
+  "How much CPU the agent's processes must use, in percent of one core,\n"
+  "for a silent turn to count as working. 0 turns the check off.\n"
+  "\n"
+  "A turn running one long command -- a test suite, a build -- reports\n"
+  "nothing between the tool starting and the tool finishing, so\n"
+  "runtime.turn_timeout_seconds would read forty minutes of compiling as\n"
+  "a wedged turn. Each watchdog sweep (every five seconds) reads the CPU\n"
+  "time of the agent's process tree from /proc; a tree that used at\n"
+  "least this much since the last sweep counts as a sign of life. A\n"
+  "command waiting on the network uses none and is still stopped.\n"
+  "\n"
+  "Only for runtime.type: process. An embedded agent shares the daemon's\n"
+  "process, so its tree cannot be told apart from the fleet's and the\n"
+  "check does nothing there. Nothing is read while\n"
+  "runtime.turn_timeout_seconds is 0.", "0.26.0" },
+
+{ "agents.runtime.busy_max_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "7200", NULL,
+  "The longest a busy process tree may keep a silent turn alive, in\n"
+  "seconds since the turn last reported anything. 0 is no ceiling.\n"
+  "\n"
+  "A command stuck in a loop uses CPU too, and without a ceiling it would\n"
+  "hold its turn for ever. Past this many seconds with no step, message\n"
+  "or tool call the CPU stops counting and runtime.turn_timeout_seconds\n"
+  "applies as it would to any silent turn.", "0.26.0" },
 
 /* ── agents.computer ─────────────────────────────────────────────── */
 { "agents.computer", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
@@ -3962,6 +4110,13 @@ static const ClawtSchemaEntry schema[] = {
   "Stop the session after this many minutes without a browser call. The\n"
   "profile stays, so a login survives; the open page does not. 0 keeps\n"
   "it running until its agent stops.", "0.9.0" },
+
+{ "agents.browser.secrets", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "The vault: entries this agent may have filled into a page, by name.\n"
+  "Empty, the agent is offered no secret tools. Always the agent's own,\n"
+  "even on a shared browser: what an agent may ask for is about the\n"
+  "agent, not the session.", "0.25.0" },
 
 { "agents.browser.width", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "1280", NULL,
