@@ -233,6 +233,36 @@ GStrv clawt_sandbox_wrap_environment(ClawtSandbox        *self,
 gboolean clawt_sandbox_environment_is_owned(const gchar *name);
 
 /**
+ * clawt_sandbox_enter:
+ * @self: (nullable): the #ClawtSandbox whose box the child is about to run
+ *
+ * What bubblewrap cannot do, applied to the calling process: a Landlock
+ * domain scoped so that connect() to an abstract unix socket made outside
+ * it fails with EPERM.
+ *
+ * Abstract sockets live in the network namespace, so any box that keeps
+ * the host's network reached all of them -- an X server that trusts the
+ * local user is the one that matters.  Call it from the
+ * #GSpawnChildSetupFunc of whatever spawns the output of
+ * clawt_sandbox_wrap_argv(), after that call: wrap_argv() decides,
+ * in the parent, whether it can be applied (Landlock ABI 6, Linux 6.12,
+ * and a bwrap that is not setuid) and says so once when it cannot.
+ *
+ * Async-signal-safe.  Does nothing for a mode other than bwrap.
+ */
+void clawt_sandbox_enter(ClawtSandbox *self);
+
+/**
+ * clawt_sandbox_can_scope_abstract_sockets:
+ *
+ * Whether this kernel has Landlock scopes (ABI 6), which is what
+ * clawt_sandbox_enter() needs.
+ *
+ * Returns: %TRUE if abstract unix sockets can be closed off
+ */
+gboolean clawt_sandbox_can_scope_abstract_sockets(void);
+
+/**
  * clawt_sandbox_is_available:
  * @self: a #ClawtSandbox
  * @error: (out) (optional): return location for a #GError

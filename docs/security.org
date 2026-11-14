@@ -656,7 +656,7 @@ What is in the box:
 
 The login directory is the ~accounts:~ entry's ~config_dir~ when the agent has one, otherwise the CLI's default (=~/.claude= and =~/.claude.json=, =~/.codex=, =~/.grok=, opencode's XDG directories). A path that does not exist is left out rather than bound: bwrap refuses to start on a missing source. On a ~host~ computer, ~computer.host.deny_paths~ are denied in this box as well, so the sentence the agent is given about them is true of its own tools too.
 
-What it does not do: the network is left alone (the CLI has a provider to reach; limiting where it connects is an egress gate's job, and that is not built), and the PID namespace is new but ~/proc~ is the box's own. bwrap does not forward signals, so a stop sends SIGTERM to libreclaw inside the box rather than to bwrap -- killing bwrap would end libreclaw with SIGKILL through ~--die-with-parent~ and skip its clean shutdown -- and an interrupt walks the tree below libreclaw, not below bwrap.
+What it does not do: the network is left alone (the CLI has a provider to reach; limiting where it connects is an egress gate's job, and that is not built) -- so loopback services and the LAN are reachable from the box -- except for abstract unix sockets, below. The PID namespace is new but ~/proc~ is the box's own. bwrap does not forward signals, so a stop sends SIGTERM to libreclaw inside the box rather than to bwrap -- killing bwrap would end libreclaw with SIGKILL through ~--die-with-parent~ and skip its clean shutdown -- and an interrupt walks the tree below libreclaw, not below bwrap.
 
 *The box owns ~TMPDIR~, ~HOME~ and every ~XDG_*~.*  An agent's ~env:~ replaces allowlisted names, so it could set ~TMPDIR~ to a host directory the box binds writable -- the exchange, a mount -- and every temporary file would land there, outlive the box and reach other agents. Inside a box (this one, and the ~confine: bwrap~ box ~clawtilla_computer_exec~ uses) those variables are dropped from whatever the agent set and replaced: ~TMPDIR=/tmp~, ~HOME~ the daemon's home, the XDG base directories the daemon's own, ~XDG_RUNTIME_DIR~ an empty 0700 directory at the daemon's spelling. An unconfined agent keeps what it set.
 
@@ -665,6 +665,81 @@ What it does not do: the network is left alone (the CLI has a provider to reach;
 *** Hard links through a bind
 
 A bind protects a path, not an inode. A file bound read-only that has a second name under a writable bind is writable through that name; a denied file covered with ~/dev/null~ is readable through its other one; a denied directory covered with a tmpfs hides its names, not the files in it. So a ~bwrap~ box -- either kind -- refuses to start when a read-only *file* bind or a denied file has ~st_nlink > 1~, and walks a denied directory (to 20000 entries) for the same, naming the file and how to find its other names. Anything under ~/usr~ and ~/etc~ is exempt: those are root's, and ~fs.protected_hardlinks~ stops an agent naming them again. A read-only *directory* bind is not walked -- the CLI's install can be large -- so a second name for a file inside one is not caught; that would need the operator to have bound a writable directory inside a read-only one, which the mount list already shows.
+
+*** Abstract unix sockets
+
+An abstract unix socket (~@/tmp/.X11-unix/X0~, and anything else bound with a leading NUL) has no file to bind or deny: its namespace is the network namespace's. So every box that keeps the host's network -- every agent-CLI box, and a ~clawtilla_computer_exec~ box with ~allow_network: true~, the default -- could connect to all of them. The one that matters is an X server that trusts the local user (an ~Xvfb~, or any display with ~xhost +si:localuser:~): that is every window and every keystroke. The self-check below found this from inside a real box; an Xvfb on the development machine accepted the connection with no cookie.
+
+bwrap cannot close it, and Landlock can. ~clawt_sandbox_enter()~ runs in the child between fork and exec of bwrap -- from the process runtime's child setup and the host computer's -- and puts it in a Landlock domain with ~LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET~ and nothing else: no filesystem or network rights are handled, so bwrap's mounts and the agent's TCP are untouched, and ~connect()~ to an abstract socket made outside the box fails with ~EPERM~. Sockets with a path (the agent's link, the IPC socket) are files and unaffected. It is applied in every bwrap box, offline ones included, so it does not rest on the network namespace.
+
+It needs Landlock ABI 6 (Linux 6.12) and a bwrap that is not setuid, because the scope needs ~no_new_privs~ and a setuid bwrap cannot build its namespaces under it. Without either, the daemon says once, at the first networked box, that abstract sockets are reachable here; it does not refuse the box, because a networked box is documented as networked.
+
+*** The sandbox self-check
+
+~tests/test-sandbox-probe.c~ runs a hostile program, ~tests/clawt-sandbox-probe.c~, inside both real boxes -- the agent-CLI box built by ~clawt_agent_confine_build()~ and ~clawt_process_runtime_prepare()~, and the exec box built by ~clawt_computer_factory_create()~ and run by ~clawt_computer_exec()~ -- and expects every escape to fail. Then it takes the protections out one at a time and requires each to fail *exactly* the checks its row names. A protection whose removal fails nothing is a test failure: a check that has never been shown to fail may not be able to.
+
+Run it with:
+
+#+begin_src sh
+make tests
+CLAWT_TEST_INTEGRATION=1 build/release/tests/test-sandbox-probe
+# the table, as the run saw it
+CLAWT_TEST_INTEGRATION=1 CLAWT_TEST_PROBE_TABLE=1 build/release/tests/test-sandbox-probe
+#+end_src
+
+It skips without ~CLAWT_TEST_INTEGRATION=1~ and without bwrap, and ~make test-integration~ runs it with the rest.
+
+What the probe tries, and what it reports for each (~held~, ~leaked~, or ~skipped~ with the reason):
+
+| Check | The escape |
+|-------+-----------|
+| ~own_workspace_writable~ | the control: its own workspace must be writable, or every other answer is a broken box |
+| ~daemon_state~ | read ~<state_dir>/tcp-token~ |
+| ~other_workspace~ | read another agent's workspace |
+| ~home_ssh~, ~home_documents~ | read =~/.ssh= and =~/Documents= |
+| ~host_tmp~ | read a file in the host's ~/tmp~ |
+| ~denied_read~ | read a denied directory's file and a denied file |
+| ~ro_bind_write~ | create a file in, or open for writing, a ~mode: ro~ mount |
+| ~hardlink_write~ | write a read-only-bound file through a second name in the workspace |
+| ~hardlink_deny~ | read a denied file through a second name in the workspace |
+| ~host_pids~ | see the daemon or another host process in ~/proc~ (pid *and* start time, so a box pid with the same number is not a match) |
+| ~loopback~, ~lan~ | connect to a listener on 127.0.0.1 and on a LAN address of the machine |
+| ~abstract_unix~ | connect to an abstract unix socket |
+| ~env_override~ | ~TMPDIR~, ~HOME~ or ~XDG_*~ carrying what the agent's ~env:~ set |
+| ~env_secret~ | a daemon variable outside the allowlist, or any name nobody passed |
+| ~controlling_tty~ | open ~/dev/tty~ (TIOCSTI into the daemon's terminal) |
+
+The mutation table, one row per protection the builder applies, and the checks each must fail:
+
+| Mutation | Protection taken out | Agent box fails | Exec box fails |
+|----------+----------------------+-----------------+----------------|
+| ~share-tmp~ | ~--tmpfs /tmp~ (the host's is bound) | ~host_tmp~ | ~host_tmp~ |
+| ~share-home~ | the private home / no home (the real one is bound) | ~daemon_state~, ~other_workspace~, ~home_ssh~, ~home_documents~ | the same |
+| ~widen-root~ | binding exactly the root (its parent is bound) | ~other_workspace~ | ~other_workspace~ |
+| ~share-net~ | ~--unshare-net~ | -- (networked by design) | ~loopback~, ~lan~ |
+| ~share-abstract~ | the Landlock scope | ~abstract_unix~ | -- (the network namespace also holds it) |
+| ~share-pid~ | ~--unshare-pid~ | ~host_pids~ | ~host_pids~ |
+| ~share-session~ | ~--new-session~ | ~controlling_tty~ | -- (not started from a terminal) |
+| ~ro-writable~ | ~--ro-bind~ for ~mode: ro~ | ~ro_bind_write~ | ~ro_bind_write~ |
+| ~skip-denials~ | the ~deny_paths~ operations | ~denied_read~ | ~denied_read~ |
+| ~agent-env-wins~ | dropping ~TMPDIR~/~HOME~/~XDG_*~ from ~env:~ | ~env_override~ | ~env_override~ |
+| ~skip-link-check~ | ~clawt_sandbox_check_links()~ | ~hardlink_write~, ~hardlink_deny~ | the same |
+| ~inherit-env~ | the environment allowlist (the harness hands over the daemon's whole environment) | ~env_secret~ | ~env_secret~ |
+
+The mutations go through ~clawt_sandbox_test_set_mutations()~ in ~src/computer/clawt-sandbox-private.h~, which is not in ~<clawtilla.h>~, not installed, and reached by no config key, variable or IPC frame. ~inherit-env~ is the harness's own, because the allowlist is ~clawt_build_child_environment()~'s and not the sandbox's. Two more tests close what the table cannot see: the agent box started through ~clawt_agent_runtime_start()~ itself, and an exec box with ~allow_network: true~, both of which must hold ~abstract_unix~ -- the first proves the runtime's child setup applies the scope, the second the host computer's.
+
+Not in the table, on purpose: ~--ro-bind /usr~ and ~/etc~ (the probe is not root, so the files there are unwritable whichever way they are bound, and no check could tell the difference), ~--die-with-parent~ (lifetime, not reach) and ~--perms 0700~ (only another user would notice).
+
+What the probe and the harness hold constant, so a check fails only for the protection under test -- the lesson of a self-check elsewhere whose loopback check could not fail because the harness's own bridge sat on the fixture's port, and whose probe counted its own spec as a leaked secret:
+
+- The spec says *where* things are, never what they hold. The secret's name is in it and its value is not, and the probe never counts its own spec, binary or argv.
+- The probe starts no listeners. The test opens them on ephemeral ports nothing bridges into any box, and drains their backlogs between runs so a full one cannot turn "reachable" into a timeout.
+- The fixture lives in the build tree, not ~/tmp~, so the private ~/tmp~ is guarding the one marker that is in the host's ~/tmp~ and not the whole fixture besides. It is laid out like the defaults -- the state directory is =~/.clawtilla= with workspaces under it -- so the home protection is tested against the layout people have.
+- ~PATH~ is ~/usr/bin:/bin~ and ~$HOME~ is the fixture's, so an AI CLI installed under the developer's home is not bound in and the box is the same on every machine.
+- A file covered with ~/dev/null~ opens and reads empty, so "read" means at least one byte came back.
+- A check the machine cannot make is skipped with the reason (no LAN address, no Landlock scopes), and a mutation row whose every check was skipped is reported as not applicable rather than passed or failed.
+
+There is no ~clawtilla sandbox check~ command. The probe is a test binary built beside the tests, not something ~make install~ ships, and a check worth trusting on demand would have to run the agent's *real* box with its real mounts and login directory -- which means a daemon-side frame that builds and spawns a box, three client buttons and parity rows, for a result the integration test already gives on the machine that builds clawtilla. If it is wanted, the probe would move to ~libexec~ and the daemon would run it through ~clawt_process_runtime_prepare()~ with the agent's own configuration.
 
 *** Privilege escalation
 

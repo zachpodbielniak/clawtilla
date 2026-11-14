@@ -37,12 +37,13 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 - *Lesson to copy:* =a9855bb06=. Refuse multiply-linked files on read-only binds, or a hardlink escapes =--ro-bind=. Check =deny_paths= (=/dev/null= over a file) for the same.
 - *Version:* minor (new config key, changes what a running agent can see).
 
-** TODO Sandbox self-check with mutations                                                         :security:test:
+** DONE Sandbox self-check with mutations                                                         :security:test:
+- *Done:* (version assigned at merge). =tests/clawt-sandbox-probe.c= runs inside both real bwrap boxes and tries 17 escapes; =tests/test-sandbox-probe.c= (behind =CLAWT_TEST_INTEGRATION=1=) expects all to hold, then takes out one protection at a time through =clawt_sandbox_test_set_mutations()= and requires each to fail exactly the checks its table row names. It found one real hole, now closed: a box that keeps the host's network (every agent-CLI box, and an exec box with =allow_network=) reached the host's abstract unix sockets, including an X server that trusts the local user. =clawt_sandbox_enter()= applies a Landlock scope in the child. See =docs/security.org=, "The sandbox self-check". No =clawtilla sandbox check= command: the probe is a test binary, not something installed (see that section for why).
 - *Today:* nothing probes =clawt-sandbox.c= from inside a real box.
 - *Prior art:* =server/bot-box/self-check.ts= and =box-probe.ts=. A hostile probe runs at boot (29 checks). With =--mutate=bind-data,share-net,...=, removing one protection must fail exactly the checks that guard it.
 - *Proposal:* add =tests/test-sandbox-probe.c= behind =CLAWT_TEST_INTEGRATION=1= (it needs bwrap). It is a probe binary run inside the box that tries the escapes: read the state dir, reach loopback or the LAN, read another agent's workspace, see host pids, write through a ro bind. Then a mutation table, one entry per builder flag. This is "a parity check that has never been shown to fail" applied to the sandbox.
 - *Lesson to copy:* =844139d5e= again. Their loopback check could not fail because the harness bridge sat on the fixture's own port, and the probe counted its own spec as a leaked secret. State what the probe holds constant.
-- *Version:* none (test only).
+- *Version:* patch (the probe is test only; the Landlock scope changes what a running box can reach).
 
 ** TODO Make =model.fallbacks= do something: limit failover                                          :runtime:
 - *Today:* =docs/agents.org:272=. =model.fallbacks= and =model.routing_profile= are "rendered nowhere", so an agent whose primary is unavailable fails.

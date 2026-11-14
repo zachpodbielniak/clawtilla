@@ -297,6 +297,13 @@ on_process_exited(GObject *source, GAsyncResult *result, gpointer user_data)
 static void
 die_with_parent(gpointer user_data)
 {
+    /*
+     * And, for a confined agent, the Landlock scope bwrap cannot apply
+     * (clawt_sandbox_enter()): the box keeps the host's network, and with
+     * it every abstract unix socket on the machine.
+     */
+    clawt_sandbox_enter((ClawtSandbox *)user_data);
+
 #if defined(__linux__)
     prctl(PR_SET_PDEATHSIG, SIGTERM);
 #elif defined(__FreeBSD__)
@@ -502,8 +509,8 @@ process_runtime_start(ClawtAgentRuntime *runtime, GError **error)
      * TMPDIR, HOME and XDG_* the sandbox owns.
      */
     g_subprocess_launcher_set_environ(launcher, environment);
-    g_subprocess_launcher_set_child_setup(launcher, die_with_parent, NULL,
-                                          NULL);
+    g_subprocess_launcher_set_child_setup(launcher, die_with_parent,
+                                          self->sandbox, NULL);
 
     /*
      * The previous one is released first.  Every restart overwrote this
