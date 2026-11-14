@@ -47,7 +47,15 @@ typedef struct {
     const ClawtMcpRelayPolicy *policy;
 
     GDataInputStream  *from_client;
-    GDataInputStream  *from_guest;
+
+    /*
+     * The server's side is read in chunks through a bounded reader, not
+     * a line at a time: g_data_input_stream_read_line_async() grows its
+     * buffer until it finds a newline, so the size of one message was
+     * the server's to choose.
+     */
+    GInputStream      *from_guest;
+    ClawtMcpReader    *guest_reader;
     GOutputStream     *to_client;
     GOutputStream     *to_guest;
 
@@ -216,6 +224,25 @@ build_batch_refusal(void)
     json_object_set_object_member(reply, "error", error);
 
     return render(reply);
+}
+
+gchar *
+clawt_mcp_relay_oversized_line(const ClawtMcpRelayPolicy *policy,
+                               const ClawtMcpOversized   *oversized)
+{
+    g_return_val_if_fail(policy != NULL, NULL);
+    g_return_val_if_fail(oversized != NULL, NULL);
+
+    if (policy->results != NULL)
+        return clawt_mcp_results_oversized(policy->results, oversized);
+
+    if (oversized->id_json == NULL)
+        return NULL;
+
+    return clawt_mcp_result_oversized_reply(
+        oversized->id_json, oversized->total, oversized->head,
+        oversized->head_length, CLAWT_MCP_RESULT_MIN_BUDGET, NULL, NULL,
+        oversized->result_id);
 }
 
 gchar *
@@ -523,7 +550,27 @@ clawt_mcp_relay_policy_outbound(const ClawtMcpRelayPolicy  *policy,
         }
     }
 
-    *to_server = g_strdup(effective);
+    /*
+     * Apps last on the way out: they judge the server's own names, which
+     * is what everything above has turned the agent's into.
+     */
+    if (policy->apps != NULL) {
+        g_autofree gchar *app_line = NULL;
+
+        clawt_mcp_apps_outbound(policy->apps, effective, &app_line,
+                                to_client);
+
+        if (app_line == NULL)
+            return;
+
+        *to_server = g_steal_pointer(&app_line);
+    } else {
+        *to_server = g_strdup(effective);
+    }
+
+    /* Noted as sent, so the answer can be told from every other reply. */
+    if (policy->results != NULL)
+        clawt_mcp_results_note_outbound(policy->results, *to_server);
 }
 
 void
@@ -533,15 +580,44 @@ clawt_mcp_relay_policy_inbound(const ClawtMcpRelayPolicy  *policy,
                                gchar                     **to_server)
 {
     g_autofree gchar *filtered = NULL;
+    g_autofree gchar *observed = NULL;
+    g_autofree gchar *budgeted = NULL;
+    g_autofree gchar *app_read = NULL;
+    g_autofree gchar *directory_next = NULL;
+    const gchar *effective = line;
 
     *to_client = NULL;
     *to_server = NULL;
 
     g_return_if_fail(policy != NULL);
 
+    /*
+     * Apps first: a view is handed the whole result, before any budget
+     * cuts it, and the answer to the relay's own read of a view stops
+     * here rather than reaching a client that never asked for it.
+     */
+    if (policy->apps != NULL) {
+        observed = clawt_mcp_apps_inbound(policy->apps, effective, &app_read);
+
+        if (observed == NULL) {
+            *to_server = g_steal_pointer(&app_read);
+            return;
+        }
+
+        effective = observed;
+    }
+
+    /* The budget, on what the agent would otherwise read whole. */
+    if (policy->results != NULL) {
+        budgeted = clawt_mcp_results_inbound(policy->results, effective);
+
+        if (budgeted != NULL)
+            effective = budgeted;
+    }
+
     filtered = policy->filter
-        ? clawt_mcp_relay_filter_inbound(line, policy->permitted)
-        : g_strdup(line);
+        ? clawt_mcp_relay_filter_inbound(effective, policy->permitted)
+        : g_strdup(effective);
 
     /*
      * After the filter, never before: the directory is built from what
@@ -549,8 +625,16 @@ clawt_mcp_relay_policy_inbound(const ClawtMcpRelayPolicy  *policy,
      */
     if (policy->directory == NULL ||
         !clawt_mcp_directory_rewrite_inbound(policy->directory, filtered,
-                                             to_client, to_server))
+                                             to_client, &directory_next))
         *to_client = g_steal_pointer(&filtered);
+
+    /*
+     * One request of the relay's own at a time: a view's read answers a
+     * tool call and the directory's next page answers a tool list, so
+     * the two never arise from the same message.
+     */
+    *to_server = (app_read != NULL) ? g_steal_pointer(&app_read)
+                                    : g_steal_pointer(&directory_next);
 
     /*
      * The account prefix last, the mirror of outbound: whatever the agent
@@ -588,6 +672,7 @@ write_line(GOutputStream *stream, const gchar *line)
 
 static void relay_read_next(Relay             *relay,
                             GDataInputStream  *source);
+static void relay_read_guest(Relay *relay);
 
 static void
 direction_closed(Relay *relay)
@@ -636,12 +721,8 @@ on_line(GObject *source, GAsyncResult *result, gpointer user_data)
         g_autofree gchar *to_client = NULL;
         g_autofree gchar *to_server = NULL;
 
-        if (stream == relay->from_client)
-            clawt_mcp_relay_policy_outbound(relay->policy, line, &to_server,
-                                            &to_client);
-        else
-            clawt_mcp_relay_policy_inbound(relay->policy, line, &to_client,
-                                           &to_server);
+        clawt_mcp_relay_policy_outbound(relay->policy, line, &to_server,
+                                        &to_client);
 
         /*
          * Answered here rather than forwarded when it is a refusal: the
@@ -668,6 +749,77 @@ relay_read_next(Relay *relay, GDataInputStream *source)
                                         on_line, relay);
 }
 
+/*
+ * One message from the server, whole or described, through the inbound
+ * half of the policy.  A message too big to hold is answered from what
+ * was seen of it, and that answer goes through the policy like any
+ * other.
+ */
+static void
+on_guest_message(const gchar             *message,
+                 gsize                    length,
+                 const ClawtMcpOversized *oversized,
+                 gpointer                 user_data)
+{
+    Relay *relay = user_data;
+    g_autofree gchar *line = NULL;
+    g_autofree gchar *to_client = NULL;
+    g_autofree gchar *to_server = NULL;
+
+    (void)length;
+
+    line = (message != NULL)
+        ? g_strdup(message)
+        : clawt_mcp_relay_oversized_line(relay->policy, oversized);
+
+    if (line == NULL)
+        return;
+
+    clawt_mcp_relay_policy_inbound(relay->policy, line, &to_client,
+                                   &to_server);
+
+    if (to_client != NULL)
+        (void)write_line(relay->to_client, to_client);
+
+    if (to_server != NULL)
+        (void)write_line(relay->to_guest, to_server);
+}
+
+static void
+on_guest_bytes(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    Relay *relay = user_data;
+    g_autoptr(GBytes) bytes = NULL;
+    g_autoptr(GError) error = NULL;
+    gsize length = 0;
+    const gchar *data;
+
+    bytes = g_input_stream_read_bytes_finish(G_INPUT_STREAM(source), result,
+                                             &error);
+
+    if (bytes == NULL || g_bytes_get_size(bytes) == 0) {
+        if (error != NULL)
+            g_printerr("clawtilla: relay: %s\n", error->message);
+
+        clawt_mcp_reader_finish(relay->guest_reader);
+        direction_closed(relay);
+        return;
+    }
+
+    data = g_bytes_get_data(bytes, &length);
+    clawt_mcp_reader_feed(relay->guest_reader, data, length);
+
+    relay_read_guest(relay);
+}
+
+static void
+relay_read_guest(Relay *relay)
+{
+    g_input_stream_read_bytes_async(relay->from_guest, RELAY_BUFFER_BYTES,
+                                    G_PRIORITY_DEFAULT, NULL, on_guest_bytes,
+                                    relay);
+}
+
 gint
 clawt_mcp_relay_run_policy(GStrv                      argv,
                            GStrv                      envp,
@@ -679,7 +831,7 @@ clawt_mcp_relay_run_policy(GStrv                      argv,
     g_autoptr(GInputStream) stdin_stream = NULL;
     g_autoptr(GOutputStream) stdout_stream = NULL;
     g_autoptr(GDataInputStream) from_client = NULL;
-    g_autoptr(GDataInputStream) from_guest = NULL;
+    g_autoptr(ClawtMcpReader) guest_reader = NULL;
     g_autoptr(GMainLoop) loop = NULL;
     g_autoptr(GError) error = NULL;
 
@@ -731,27 +883,30 @@ clawt_mcp_relay_run_policy(GStrv                      argv,
     stdout_stream = g_unix_output_stream_new(STDOUT_FILENO, FALSE);
 
     from_client = g_data_input_stream_new(stdin_stream);
-    from_guest =
-        g_data_input_stream_new(g_subprocess_get_stdout_pipe(child));
 
     g_buffered_input_stream_set_buffer_size(
         G_BUFFERED_INPUT_STREAM(from_client), RELAY_BUFFER_BYTES);
-    g_buffered_input_stream_set_buffer_size(
-        G_BUFFERED_INPUT_STREAM(from_guest), RELAY_BUFFER_BYTES);
 
     loop = g_main_loop_new(NULL, FALSE);
+
+    guest_reader = clawt_mcp_reader_new(
+        CLAWT_MCP_FRAMING_LINES, CLAWT_MCP_RESULT_HOLD_MAX,
+        (policy->results != NULL)
+            ? clawt_mcp_results_get_spill_dir(policy->results) : NULL,
+        on_guest_message, &relay);
 
     relay.loop = loop;
     relay.policy = policy;
     relay.from_client = from_client;
-    relay.from_guest = from_guest;
+    relay.from_guest = g_subprocess_get_stdout_pipe(child);
+    relay.guest_reader = guest_reader;
     relay.to_client = stdout_stream;
     relay.to_guest = g_subprocess_get_stdin_pipe(child);
     relay.child = child;
     relay.open_directions = 2;
 
     relay_read_next(&relay, from_client);
-    relay_read_next(&relay, from_guest);
+    relay_read_guest(&relay);
 
     g_main_loop_run(loop);
 

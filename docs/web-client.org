@@ -164,6 +164,36 @@ which sends ~connector.settings~; a field left empty keeps its value and
 one that is not a whole number is refused before anything is sent.  See
 "Servers with many tools" in [[file:connectors.org][connectors.org]].
 
+Each card also has a *Result budget* form (=clawt_web_budget_form()=, posting to =/settings/connectors/:connector/budget=): the connector's own ~max_result_bytes~, empty for the fleet's (-1), 0 for none, with what applies now -- ~connector.list~'s ~max_result_label~ -- beside it; anything that is not a whole number of at least -1 is refused before it is sent.  And a *Show its apps in chat* switch (=clawt_web_apps_form()=, =/settings/connectors/:connector/apps=), saved as ~show_apps~ through ~integration.update~.  The fleet's budget, ~connectors.max_result_bytes~, is on a *Results bigger than the budget* card (=clawt_web_fleet_budget()=) and goes with the thresholds through ~connector.settings~.  See "Results bigger than the budget" and "Apps in chat" in [[file:connectors.org][connectors.org]].
+
+*** Trimmed results and apps in the transcript
+
+A status step whose text passes ~clawt_mcp_result_is_notice()~ -- "Result trimmed: ..." -- is drawn as a warning (=turn-step warn trimmed-notice=), where the turn's tool calls are.
+
+A step that carries an app (~clawt_turn_step_get_app_id()~) is drawn as a *closed* card: its title and an *Open app* button whose ~hx-get~ is =/a/<agent>/app/<app>/frame=.  Nothing is fetched until the button is pressed -- the page never fetches at load, and a transcript of forty app calls must not be forty documents.  The card keeps ~hx-preserve~, so an app somebody opened survives the transcript being swapped on the next event.
+
+The frame route asks the daemon for the app (~connector.app_get~) and answers with =clawt_web_app_frame()=:
+
+- an ~<iframe>~ with ~sandbox="allow-scripts"~ (=CLAWT_MCP_APP_IFRAME_SANDBOX=) and nothing else -- no ~allow-same-origin~, so its origin is opaque and it cannot read the page, its cookies or its storage, no forms, no popups, no top navigation -- no ~allow~ attribute, and ~referrerpolicy="no-referrer"~;
+- ~srcdoc~ set verbatim to the daemon's ~document~, which begins with the app's Content-Security-Policy as a ~<meta>~ before a byte of the server's (see [[file:connectors.org][connectors.org]], "How it is drawn", and [[file:security.org][security.org]]);
+- the origins the view asked for and was refused, in a note under it;
+- in place of the frame, the reason, when the view could not be kept (~blocked~).
+
+The tool's input and result travel on the frame as ~data-app-input~ and ~data-app-result~ attributes, escaped by the renderer, rather than in a ~<script type="application/json">~, whose contents are raw text that a ~</script>~ in a tool result would end.
+
+A small host bridge in the page head speaks the MCP Apps protocol to the frame over ~postMessage~.  It answers only messages whose ~source~ is an ~iframe.app-view~'s window, and posts with target ~"*"~ because an opaque origin cannot be named:
+
+| From the view                    | The bridge                                                        |
+|----------------------------------+-------------------------------------------------------------------|
+| ~ui/initialize~                  | answers with the protocol version, ~hostInfo: clawtilla~, no capabilities, and the light or dark theme |
+| ~ui/notifications/initialized~   | sends ~ui/notifications/tool-input~ and ~ui/notifications/tool-result~ |
+| ~ui/notifications/size-changed~  | resizes the frame, between 120 and 1600 pixels                    |
+| anything else that has an id     | a JSON-RPC error, -32601 "not supported by clawtilla"              |
+
+So a view shows what its tool returned and cannot call tools, send a message or open a link through clawtilla.
+
+=/a/<agent>/app/<app>= is the same frame on a page of its own, in the ordinary page shell: what GTK and lrg open, since they cannot draw it.
+
 *** The integration editor
 
 Drawn from ~clawt_integration_fields()~, the same table the GTK client
@@ -250,6 +280,7 @@ answers with the page it did it on.
 | =/triggers/...=, =/f/triggers/:trigger/match= | the Triggers page's actions, and the fragment a trigger's "Check against the last delivery" swaps in under its condition lines |
 | =/r/:id=                      | a group room; also the open-room link, which redirects an agent or a direct room to its chat and answers a name nobody has with 404 and a sentence (see [[file:clients.org::#open-room-links][open-room links]]) |
 | =/a/:id/exchange=, =/f/a/:id/exchange= | the exchange between two agents (~?with=<peer>~), as a page and as the side panel's fragment; registered with the chat routes, ahead of =/a/:id/:view= |
+| =/a/:id/app/:app=, =/a/:id/app/:app/frame= | an MCP app shown in chat: its own page (what GTK and lrg link to) and the fragment the chat's *Open app* swaps in; registered with the chat routes, ahead of =/a/:id/:view= |
 | =/manifest.webmanifest=       | the web app manifest, ~application/manifest+json~ |
 | =/events=                     | the SSE stream                          |
 | =/static=                     | the vendored scripts and the app icons  |

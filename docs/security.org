@@ -520,6 +520,25 @@ A remote tool server's 401 is answered by the relay rather than forwarded.  Forw
 
 Two accounts on one service granted to one agent advertise identical tool names.  The relay renames each account's tools with its label and refuses the bare name, and two labels that fold to the same prefix make every call on both refused -- see [[file:connectors.org::*Several accounts on one service][connectors.org]].  This is a guard against an agent acting as the wrong account by accident, the same class of failure as the rest of this section; it does not stop an agent that decides to use the account it was told not to.
 
+*** A held result is its agent's, and is bounded while it is read
+
+A connector's result past its budget is kept whole, 0600 in a 0700 directory under =<state_dir>/agents/<id>/mcp-results/=, for a day.  ~clawtilla_mcp_result_query~ resolves a result id inside the *calling* agent's directory and nowhere else: an id is checked for its shape (~r~ and sixteen hex digits) before it is joined to a path, and an id that is missing, malformed or another agent's gets one answer, word for word, so asking cannot reveal what another agent's tools returned.  The sweep removes only files named like held results, because the directory is inside the agent's own state, which a bwrap box binds writable.
+
+The relay reads a server's messages a chunk at a time and holds at most 64 MiB of one in memory; the rest is written to the held result as it arrives.  Before this, one line was read whole before anything looked at it, so a server -- or anything able to answer in its place -- chose how much memory the relay committed.  Text the server wrote is escaped with ~clawt_preamble_escape()~ in a trimmed result and in every query answer, so a ~[clawtilla]~ line in it reads as quoted text, never as one of clawtilla's two notes.  See [[file:connectors.org::*Results bigger than the budget][connectors.org]].
+
+*** An MCP app runs in a frame with no origin of its own
+
+An MCP app's view is the server's own HTML and script, run in the operator's browser -- which is why *Show its apps in chat* is off by default.  It is held apart from the web client four ways:
+
+- *An opaque origin.*  The ~<iframe>~'s ~sandbox~ is exactly ~allow-scripts~ (=CLAWT_MCP_APP_IFRAME_SANDBOX=).  Without ~allow-same-origin~ the frame is not the web client's origin: it cannot read the page, call the web client's routes with the page's standing, or touch its storage or cookies.  No forms, popups, modals, downloads or top-level navigation, and no ~allow~ attribute, so no camera, microphone, geolocation or clipboard.  ~referrerpolicy~ is ~no-referrer~.
+- *A policy before a byte of the view.*  The ~srcdoc~ is built by the daemon: a doctype, then a Content-Security-Policy ~<meta>~, then the view with its own BOM and doctype removed.  ~default-src 'none'~; script and style only inline and from the origins the view declared and the host's filter kept (~https://~, a dotted host, no path, query, quote, semicolon, comma or whitespace, sixteen per list; ~http://localhost~ only for a local server); ~connect-src 'none'~ unless declared; ~frame-src~, ~object-src~, ~base-uri~ and ~form-action~ all ~'none'~.  ~'self'~ is never named.  What was refused is shown under the frame.
+- *Fetched when opened.*  The chat carries a closed card; the frame is fetched from the web client, which asks the daemon, only when somebody presses *Open app*.
+- *A bridge that grants nothing.*  The page answers the view's ~ui/initialize~ and hands it the tool's input and result, which it was going to see anyway; every other request -- calling a tool, sending a message, opening a link -- is refused, and only messages from that frame's own window are answered.
+
+What it does not stop: a view that declared an origin it may reach can send what it was shown -- the tool's result -- to that origin.  That is the server's own data going back to the server's own declared host, and the reason the switch is per server and off by default.  GTK and lrg never render a view; they open the web client's page for it.
+
+The view itself is read by the relay (which holds the credential) and kept 0600 under =<state_dir>/agents/<id>/mcp-apps/=; ~connector.app_get~ looks an app up under the agent named and nowhere else.  See [[file:connectors.org::*Apps in chat][connectors.org]].
+
 *** A format string from a config file never reaches printf
 
 ~credential_format~ decorates a credential (~Bearer %s~) and is read from

@@ -125,6 +125,30 @@ typedef struct _ClawtTurnStep ClawtTurnStep;
  */
 #define CLAWT_STEP_MEMBER_TS     "ts"
 
+/**
+ * CLAWT_STEP_MEMBER_APP:
+ *
+ * The MCP app a status step shows, by id, when it shows one.  The web
+ * client draws the app; GTK and lrg link to %CLAWT_STEP_MEMBER_APP_URL.
+ */
+#define CLAWT_STEP_MEMBER_APP     "app_id"
+
+/**
+ * CLAWT_STEP_MEMBER_APP_URL:
+ *
+ * Where the web client shows that app, decided by the daemon from
+ * `connectors.apps_web_url` so no client has to know it.
+ */
+#define CLAWT_STEP_MEMBER_APP_URL "app_url"
+
+/**
+ * CLAWT_STEP_MEMBER_APP_TITLE:
+ *
+ * What the app is called -- the tool's title, or its name -- for the
+ * link GTK and lrg draw and the card the web client draws.
+ */
+#define CLAWT_STEP_MEMBER_APP_TITLE "app_title"
+
 
 /**
  * clawt_turn_step_new:
@@ -183,6 +207,45 @@ ClawtTurnStep *clawt_turn_step_new_from_object(JsonObject  *object,
 
 ClawtTurnStep *clawt_turn_step_copy(ClawtTurnStep *self);
 void           clawt_turn_step_free(ClawtTurnStep *self);
+
+/**
+ * clawt_turn_step_set_app:
+ * @self: a step
+ * @app_id: (nullable): the MCP app the step shows
+ * @app_url: (nullable): where the web client shows it
+ * @app_title: (nullable): what the app is called
+ *
+ * Makes a status step the place an MCP app appears in the conversation.
+ */
+void clawt_turn_step_set_app(ClawtTurnStep *self,
+                             const gchar   *app_id,
+                             const gchar   *app_url,
+                             const gchar   *app_title);
+
+/**
+ * clawt_turn_step_get_app_title:
+ * @self: a step
+ *
+ * Returns: (transfer none) (nullable): what the app the step shows is
+ *   called
+ */
+const gchar *clawt_turn_step_get_app_title(ClawtTurnStep *self);
+
+/**
+ * clawt_turn_step_get_app_id:
+ * @self: a step
+ *
+ * Returns: (transfer none) (nullable): the app the step shows
+ */
+const gchar *clawt_turn_step_get_app_id(ClawtTurnStep *self);
+
+/**
+ * clawt_turn_step_get_app_url:
+ * @self: a step
+ *
+ * Returns: (transfer none) (nullable): where the web client shows it
+ */
+const gchar *clawt_turn_step_get_app_url(ClawtTurnStep *self);
 
 ClawtStepKind  clawt_turn_step_get_kind(ClawtTurnStep *self);
 const gchar   *clawt_turn_step_get_agent_id(ClawtTurnStep *self);

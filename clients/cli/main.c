@@ -5967,6 +5967,112 @@ connector_unauthorized(const gchar *name, const gchar *challenge,
         build_payload("name", name, "challenge", challenge, NULL), NULL);
 }
 
+/*
+ * Tells the daemon a result was trimmed, so the conversation shows a
+ * notice where the turn's tool calls are.  Best effort, like the rest of
+ * these: the agent was told in the result itself, which is what matters.
+ */
+static void
+connector_result_trimmed(const gchar *connector, const gchar *tool,
+                         gsize original_bytes, gsize kept_bytes,
+                         const gchar *result_id, gpointer user_data)
+{
+    const gchar *agent_id = user_data;
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) ignored = NULL;
+    g_autoptr(JsonBuilder) builder = NULL;
+    const gchar *room = g_getenv("CLAWTILLA_ROOM_ID");
+
+    if (agent_id == NULL || (client = connect_to_daemon()) == NULL)
+        return;
+
+    builder = json_builder_new();
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "name");
+    json_builder_add_string_value(builder, connector != NULL ? connector : "");
+    json_builder_set_member_name(builder, "agent");
+    json_builder_add_string_value(builder, agent_id);
+
+    if (room != NULL && *room != '\0') {
+        json_builder_set_member_name(builder, "room");
+        json_builder_add_string_value(builder, room);
+    }
+
+    if (tool != NULL) {
+        json_builder_set_member_name(builder, "tool");
+        json_builder_add_string_value(builder, tool);
+    }
+
+    json_builder_set_member_name(builder, "original_bytes");
+    json_builder_add_int_value(builder, (gint64)original_bytes);
+    json_builder_set_member_name(builder, "kept_bytes");
+    json_builder_add_int_value(builder, (gint64)kept_bytes);
+
+    if (result_id != NULL) {
+        json_builder_set_member_name(builder, "result_id");
+        json_builder_add_string_value(builder, result_id);
+    }
+
+    json_builder_end_object(builder);
+
+    ignored = clawt_client_request(client, "connector.result_trimmed",
+                                   json_builder_get_root(builder), NULL);
+}
+
+/*
+ * Hands the daemon one call of an app's tool, view and all.  The relay
+ * is the only thing that can read the view -- it holds the credential
+ * and the connection -- so it is read here and kept there.
+ */
+static void
+connector_app_seen(JsonObject *report, gpointer user_data)
+{
+    const gchar *agent_id = user_data;
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) ignored = NULL;
+    g_autoptr(JsonObject) payload = NULL;
+    g_autoptr(JsonNode) node = NULL;
+    g_autoptr(GError) error = NULL;
+    const gchar *room = g_getenv("CLAWTILLA_ROOM_ID");
+
+    if (agent_id == NULL || (client = connect_to_daemon()) == NULL)
+        return;
+
+    payload = json_object_new();
+    json_object_set_string_member(payload, "agent", agent_id);
+
+    if (room != NULL && *room != '\0')
+        json_object_set_string_member(payload, "room", room);
+
+    json_object_set_object_member(payload, "app", json_object_ref(report));
+
+    node = json_node_new(JSON_NODE_OBJECT);
+    json_node_set_object(node, payload);
+
+    ignored = clawt_client_request(client, "connector.app", node, &error);
+
+    if (ignored == NULL && error != NULL)
+        g_printerr("clawtilla: could not hand the daemon an app: %s\n",
+                   error->message);
+}
+
+/* Whether a remote server is on this machine, which lets its views reach it. */
+static gboolean
+url_is_loopback(const gchar *url)
+{
+    g_autoptr(GUri) uri = NULL;
+    const gchar *host;
+
+    if (url == NULL ||
+        (uri = g_uri_parse(url, G_URI_FLAGS_NONE, NULL)) == NULL)
+        return FALSE;
+
+    host = g_uri_get_host(uri);
+
+    return g_strcmp0(host, "localhost") == 0 ||
+           g_strcmp0(host, "127.0.0.1") == 0 || g_strcmp0(host, "::1") == 0;
+}
+
 typedef struct {
     const gchar *name;
     const gchar *agent_id;
@@ -6192,6 +6298,33 @@ connector_relay(const gchar *name, const gchar *agent_id)
      * several accounts it is named for this one, and so is every tool
      * name it shows.
      */
+    /*
+     * The result budget: the connector's own, else the fleet's.  Whole
+     * results are kept only for an agent -- a relay run by hand has
+     * nobody to read them back.
+     */
+    {
+        gint64 budget = clawt_mcp_result_budget_resolve(
+            clawt_integration_binding_get_int(binding, "max_result_bytes"),
+            clawt_config_get_int(config, "connectors.max_result_bytes"));
+        g_autofree gchar *spill_dir = (agent_id != NULL)
+            ? clawt_mcp_result_spill_dir(config, agent_id) : NULL;
+
+        plan->results = clawt_mcp_results_new(name, (gsize)budget,
+                                              spill_dir);
+        clawt_mcp_results_set_trimmed_func(plan->results,
+                                           connector_result_trimmed,
+                                           (gpointer)agent_id);
+    }
+
+    /* Apps, only for a connector somebody switched them on for. */
+    if (clawt_integration_binding_get_boolean(binding, "show_apps")) {
+        plan->apps = clawt_mcp_apps_new(
+            name, plan->argv != NULL || url_is_loopback(plan->url));
+        clawt_mcp_apps_set_seen_func(plan->apps, connector_app_seen,
+                                     (gpointer)agent_id);
+    }
+
     directory = clawt_connector_directory_new(config, binding, agent_id);
     clawt_mcp_directory_set_account(directory, plan->account_prefix);
     report.name = name;

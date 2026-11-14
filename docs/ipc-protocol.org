@@ -1154,9 +1154,21 @@ itself -- never the credential); ~connector.begin~ and ~connector.await~;
 ~connector.discover~; ~connector.unauthorized~;
 ~connector.key~; ~connector.refresh~; ~connector.revoke~;
 ~connector.registry_refresh~; ~connector.settings~;
-~connector.tools_seen~.  Adding and removing a connector go through
+~connector.tools_seen~; ~connector.result_trimmed~; ~connector.app~;
+~connector.app_get~.  Adding and removing a connector go through
 ~integration.add~ and ~integration.remove~ like any other integration,
-and its ~directory~ is set with ~integration.update~.
+and its ~directory~, ~max_result_bytes~ and ~show_apps~ are set with
+~integration.update~ (an integer field takes a JSON number or a string
+that is one; anything else is refused rather than read as 0, and
+~max_result_bytes~ below -1 is refused).
+
+Each ~connector.list~ entry carries ~max_result_bytes~ (the connector's
+own, -1 when it sets none), ~effective_max_result_bytes~ (resolved with
+the fleet's by ~clawt_mcp_result_budget_resolve()~, 0 for none),
+~max_result_label~ (=clawt_mcp_result_budget_label()=) and ~show_apps~ (a
+JSON boolean).  ~connector.settings~ takes and answers
+~max_result_bytes~, the fleet's ~connectors.max_result_bytes~, beside the
+two directory thresholds, and so does ~connector.list~'s top level.
 
 ~connector.list~ also carries, per connector, ~directory~ (~auto~,
 ~always~ or ~never~), ~tool_count~ (-1 when no relay has reported it),
@@ -1561,6 +1573,47 @@ list has arrived: ~name~, ~agent~, ~tools~, ~chars~, ~areas~ and
 ~tool_count~ and the agent's =TOOLS.org= are made from.  Refused with
 ~CLAWT_ERROR_NOT_FOUND~ for a name that is not a connector, so a relay
 for one since removed does not bring its row back.  No client sends it.
+
+*** connector.result_trimmed
+
+Sent by a connector relay when it trimmed a result to the connector's
+budget: ~name~, ~agent~, ~room~ (from ~CLAWTILLA_ROOM_ID~, absent for a
+relay run by hand), ~tool~, ~original_bytes~, ~kept_bytes~ and
+~result_id~.  The daemon checks the agent holds that connector and puts a
+status step in the room whose text is =clawt_mcp_result_notice()='s --
+every client draws it as a warning (=clawt_mcp_result_is_notice()=).
+With no room it records nothing and answers ~{}~.  No client sends it.
+
+*** connector.app
+
+Sent by a connector relay with *Show its apps in chat* on, when a tool
+that ships a view was called: ~agent~, ~room~, and ~app~ -- ~connector~,
+~tool~, ~title~, ~resource_uri~, ~html~ (or ~blocked~, why there is none),
+~csp~, ~refused~, ~input~ and ~result~.  Refused with
+~CLAWT_ERROR_NOT_FOUND~ when the agent holds no such connector and
+~CLAWT_ERROR_PERMISSION_DENIED~ when the connector's ~show_apps~ is off --
+asked again here, because the relay may predate the switch.  The daemon
+gives it an id (~a~ and sixteen hex digits), keeps it 0600 under
+=<state_dir>/agents/<agent>/mcp-apps/=, and puts a status step in the
+room carrying ~app_id~, ~app_url~ (=clawt_mcp_app_web_url()= of
+~connectors.apps_web_url~) and ~app_title~.  Answers ~id~.  No client
+sends it.
+
+*** connector.app_get
+
+Takes ~agent~ and ~app~ and answers one app: ~id~, ~agent~, ~connector~,
+~tool~, ~title~, ~resource_uri~, ~room~, ~blocked~, ~document~ (the whole
+~srcdoc~, the Content-Security-Policy ~<meta>~ first --
+=clawt_mcp_app_build_document()=), ~csp~, ~sandbox~ (=allow-scripts=),
+~url~, ~created_at~, ~refused~, ~input~ and ~result~.  An app is looked up
+under the agent named and nowhere else; an id that is not there is
+~CLAWT_ERROR_NOT_FOUND~ whatever the reason.  The web client sets
+~document~ verbatim; GTK and lrg ask it before opening ~url~, so a swept
+app is a toast rather than a browser on a missing page.
+
+A ~turn.step~ event and a ~room.steps~ element may carry ~app_id~,
+~app_url~ and ~app_title~ (=CLAWT_STEP_MEMBER_APP=, =_APP_URL=,
+=_APP_TITLE=) for a step that shows an app.
 
 *** connector.registry_refresh
 

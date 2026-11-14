@@ -1683,6 +1683,16 @@ versions apart.
   and the gate look at it, and is built from the list *after* the filter --
   so the wall and the door answer from one list, and an approval names the
   tool that runs.
+- **The relay reads a server through a bounded reader, not a line at a
+  time.**  ~ClawtMcpReader~ holds at most `CLAWT_MCP_RESULT_HOLD_MAX` of
+  one message and writes the rest to the held result as it arrives; the
+  stdio relay and the HTTP bridge both use it, and a result budget or an
+  app is one more member of `ClawtMcpRelayPolicy`, never a step one
+  transport takes.  A cut goes through `clawt_mcp_result_safe_cut()` --
+  UTF-8, `\uXXXX` and escaped surrogate pairs -- and a held result is read
+  only from the calling agent's own directory.  An MCP app's view is
+  drawn only by the web client, in `sandbox="allow-scripts"` with the
+  daemon-built `srcdoc`; GTK and lrg link to it.
 - **A URL in a server's OAuth metadata is that server's input, not ours.**
   MCP sign-in discovery (`clawt-mcp-auth.c`) refuses redirects on every leg,
   plain http except loopback-from-loopback, and a document about another

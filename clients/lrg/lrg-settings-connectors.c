@@ -32,6 +32,9 @@ typedef struct {
     /* connectors.directory_min_tools and _min_chars, filled on refresh. */
     LrgWidget *min_tools;
     LrgWidget *min_chars;
+
+    /* connectors.max_result_bytes, the fleet's result budget. */
+    LrgWidget *fleet_budget;
 } Connectors;
 
 static Connectors connectors;
@@ -491,6 +494,122 @@ directory_choice(ClawtLrgApp *app, const gchar *name, const gchar *current)
     return form;
 }
 
+/* ── The result budget and apps in chat ───────────────────────────── */
+
+static void
+on_connector_field_saved(ClawtLrgApp *app, JsonNode *reply,
+                         const GError *error, gpointer user_data)
+{
+    if (reply != NULL)
+        clawt_lrg_toast(app, "Saved. It applies the next time an agent's "
+                             "session starts.");
+
+    refresh(app);
+}
+
+/*
+ * A number typed in and saved with its own button: the budget is a JSON
+ * integer on the wire, and text that is not one is refused here rather
+ * than sent and read as 0, which would be "no budget".
+ */
+static void
+on_budget_save(LrgButton *button, gpointer user_data)
+{
+    Action *action = user_data;
+    LrgWidget *entry = g_object_get_data(G_OBJECT(button),
+                                         "clawt-budget-entry");
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    gint64 value = 0;
+
+    if (!clawt_lrg_settings_budget_value(clawt_lrg_entry_text(entry), TRUE,
+                                         &value)) {
+        clawt_lrg_toast(action->app, "A budget is a whole number of bytes, "
+                                     "0 for none, or empty for the "
+                                     "fleet's.");
+        return;
+    }
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "name");
+    json_builder_add_string_value(builder, action->name);
+    json_builder_set_member_name(builder, "max_result_bytes");
+    json_builder_add_int_value(builder, value);
+    json_builder_end_object(builder);
+
+    clawt_lrg_request(action->app, "integration.update",
+                      json_builder_get_root(builder), CLAWT_LRG_REQUEST_NONE,
+                      on_connector_field_saved, NULL, NULL);
+}
+
+/* "Result budget": the connector's max_result_bytes, with what applies. */
+static LrgWidget *
+budget_field(ClawtLrgApp *app, const gchar *name, const gchar *current,
+             const gchar *hint)
+{
+    LrgWidget *form = clawt_lrg_form_new();
+    LrgWidget *box = clawt_lrg_vbox(6.0f);
+    LrgWidget *entry = clawt_lrg_entry(current != NULL ? current : "",
+                                       "the fleet's");
+    LrgWidget *save;
+    Action *action = g_new0(Action, 1);
+
+    action->app = app;
+    action->name = g_strdup(name);
+    save = clawt_lrg_button("Save the budget", "flat", NULL, NULL);
+    g_object_set_data(G_OBJECT(save), "clawt-budget-entry", entry);
+    g_signal_connect_data(save, "clicked", G_CALLBACK(on_budget_save),
+                          action,
+                          (GClosureNotify)(void (*)(void))action_free, 0);
+
+    clawt_lrg_form_add(form, "Result budget", entry, hint);
+    clawt_lrg_take(box, form);
+    clawt_lrg_take(box, save);
+
+    return box;
+}
+
+static void
+on_apps_toggled(LrgCheckbox *toggle, gboolean checked, gpointer user_data)
+{
+    Action *action = user_data;
+
+    clawt_lrg_request(action->app, "integration.update",
+                      clawt_ipc_payload_new("name", action->name,
+                                            "show_apps",
+                                            checked ? "true" : "false",
+                                            NULL),
+                      CLAWT_LRG_REQUEST_NONE, on_connector_field_saved, NULL,
+                      NULL);
+}
+
+/*
+ * "Show its apps in chat".  lrg cannot draw an app's HTML, so here an
+ * app is a link to the web client's view of it; saying so is part of
+ * the explanation, because the switch would otherwise look broken.
+ */
+static LrgWidget *
+apps_toggle(ClawtLrgApp *app, const gchar *name, gboolean current)
+{
+    LrgWidget *box = clawt_lrg_vbox(4.0f);
+    LrgWidget *toggle = clawt_lrg_switch("Show its apps in chat", current);
+    Action *action = g_new0(Action, 1);
+
+    action->app = app;
+    action->name = g_strdup(name);
+    g_signal_connect_data(toggle, "toggled", G_CALLBACK(on_apps_toggled),
+                          action,
+                          (GClosureNotify)(void (*)(void))action_free, 0);
+
+    clawt_lrg_take(box, toggle);
+    clawt_lrg_take(box, clawt_lrg_paragraph(
+        "When one of its tools ships an interactive view, the call appears "
+        "in the conversation as an app. The view is the server's own code; "
+        "the web client runs it in a sandboxed frame, and here it opens in "
+        "the browser.", "muted"));
+
+    return box;
+}
+
 /*
  * Plain buttons in a dialog rather than a menu that runs on selection:
  * GTK learned that a list selecting its first row as it takes focus
@@ -549,6 +668,13 @@ on_actions_clicked(LrgButton *button, gpointer user_data)
     clawt_lrg_take(box, directory_choice(
         app, name, g_object_get_data(G_OBJECT(button),
                                      "clawt-connector-directory")));
+    clawt_lrg_take(box, budget_field(
+        app, name,
+        g_object_get_data(G_OBJECT(button), "clawt-connector-budget"),
+        g_object_get_data(G_OBJECT(button), "clawt-connector-budget-hint")));
+    clawt_lrg_take(box, apps_toggle(
+        app, name, GPOINTER_TO_INT(g_object_get_data(
+                       G_OBJECT(button), "clawt-connector-show-apps"))));
 
     for (i = 0; i < G_N_ELEMENTS(actions); i++) {
         Action *action = g_new0(Action, 1);
@@ -858,6 +984,17 @@ on_list(ClawtLrgApp *app, JsonNode *reply, const GError *error,
                                 chars_text);
     }
 
+    if (connectors.fleet_budget != NULL) {
+        g_autofree gchar *budget_text = g_strdup_printf(
+            "%" G_GINT64_FORMAT, json_object_get_int_member_with_default(
+                                     clawt_ipc_reply_object(reply),
+                                     "max_result_bytes",
+                                     clawt_mcp_result_default_budget()));
+
+        lrg_text_input_set_text(LRG_TEXT_INPUT(connectors.fleet_budget),
+                                budget_text);
+    }
+
     if (list == NULL || json_array_get_length(list) == 0)
         clawt_lrg_take(connectors.list, clawt_lrg_row(
             "No connected accounts",
@@ -904,6 +1041,15 @@ on_list(ClawtLrgApp *app, JsonNode *reply, const GError *error,
         g_object_set_data_full(G_OBJECT(open), "clawt-connector-directory",
                                g_strdup(clawt_ipc_payload_string(
                                    entry, "directory")), g_free);
+        g_object_set_data_full(
+            G_OBJECT(open), "clawt-connector-budget",
+            clawt_lrg_settings_connector_budget_text(entry), g_free);
+        g_object_set_data_full(
+            G_OBJECT(open), "clawt-connector-budget-hint",
+            clawt_lrg_settings_connector_budget_hint(entry), g_free);
+        g_object_set_data(G_OBJECT(open), "clawt-connector-show-apps",
+                          GINT_TO_POINTER(
+                              clawt_lrg_settings_connector_show_apps(entry)));
         clawt_lrg_row_add_suffix(row, open);
 
         clawt_lrg_appear(app, row, i);
@@ -985,6 +1131,60 @@ on_thresholds_save(LrgButton *button, gpointer user_data)
                       on_thresholds_saved, NULL, NULL);
 }
 
+/* connectors.max_result_bytes, through connector.settings. */
+static void
+on_fleet_budget_save(LrgButton *button, gpointer user_data)
+{
+    ClawtLrgApp *app = user_data;
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    gint64 value = 0;
+
+    if (!clawt_lrg_settings_budget_value(
+            clawt_lrg_entry_text(connectors.fleet_budget), FALSE, &value)) {
+        clawt_lrg_toast(app, "The budget is a whole number of bytes, 0 for "
+                             "none.");
+        return;
+    }
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "max_result_bytes");
+    json_builder_add_int_value(builder, value);
+    json_builder_end_object(builder);
+
+    clawt_lrg_request(app, "connector.settings",
+                      json_builder_get_root(builder), CLAWT_LRG_REQUEST_NONE,
+                      on_thresholds_saved, NULL, NULL);
+}
+
+/* "Result budget" for every connector that does not set its own. */
+static LrgWidget *
+fleet_budget_field(ClawtLrgApp *app)
+{
+    LrgWidget *box = clawt_lrg_vbox(10.0f);
+    LrgWidget *form = clawt_lrg_form_new();
+
+    clawt_lrg_take(box, clawt_lrg_section("Results bigger than the budget"));
+    clawt_lrg_take(box, clawt_lrg_paragraph(
+        "A tool result past this many bytes is trimmed before the agent "
+        "reads it, with a note at both ends; the whole result is kept for "
+        "a day for the agent to query. A connector can set its own in its "
+        "Actions. 0 turns the budget off.", "muted"));
+
+    {
+        g_autofree gchar *fallback = g_strdup_printf(
+            "%" G_GINT64_FORMAT, clawt_mcp_result_default_budget());
+
+        connectors.fleet_budget = clawt_lrg_entry(fallback, fallback);
+    }
+    clawt_lrg_form_add(form, "Result budget, in bytes",
+                       connectors.fleet_budget, NULL);
+    clawt_lrg_take(box, form);
+    clawt_lrg_take(box, clawt_lrg_button(
+        "Save", "primary", G_CALLBACK(on_fleet_budget_save), app));
+
+    return box;
+}
+
 static void
 refresh(ClawtLrgApp *app)
 {
@@ -1049,6 +1249,9 @@ build(ClawtLrgApp *app)
 
         clawt_lrg_take(clawt_lrg_page_body(page), clawt_lrg_card(many));
     }
+
+    clawt_lrg_take(clawt_lrg_page_body(page),
+                   clawt_lrg_card(fleet_budget_field(app)));
 
     return page;
 }

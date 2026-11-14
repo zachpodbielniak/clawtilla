@@ -408,6 +408,152 @@ build_directory_choice(ClawtWindow *self, AdwDialog *dialog,
     return list;
 }
 
+typedef struct {
+    ClawtWindow *window;
+    gchar       *name;
+    gboolean     syncing;
+} BudgetChoice;
+
+static void
+budget_choice_free(gpointer data, GClosure *closure)
+{
+    BudgetChoice *choice = data;
+
+    g_free(choice->name);
+    g_free(choice);
+    (void)closure;
+}
+
+/*
+ * The connector's own budget, saved as it changes.  -1 hands the
+ * decision back to the fleet's connectors.max_result_bytes, 0 turns the
+ * budget off for this connector, anything else is bytes (the daemon
+ * reads below 1024 as 1024).  Sent as a JSON integer: a value the daemon
+ * cannot read is refused, never taken as 0.
+ */
+static void
+on_budget_changed(AdwSpinRow *row, GParamSpec *pspec, gpointer user_data)
+{
+    BudgetChoice *choice = user_data;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(JsonBuilder) builder = NULL;
+
+    if (choice->syncing)
+        return;
+
+    builder = json_builder_new();
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "name");
+    json_builder_add_string_value(builder, choice->name);
+    json_builder_set_member_name(builder, "max_result_bytes");
+    json_builder_add_int_value(builder,
+                               (gint64)adw_spin_row_get_value(row));
+    json_builder_end_object(builder);
+
+    reply = clawt_window_request(choice->window, "integration.update",
+                                 json_builder_get_root(builder));
+
+    if (reply != NULL)
+        clawt_gtk_refresh_settings_connectors(choice->window);
+
+    (void)pspec;
+}
+
+/*
+ * "Largest result shown": the connector's own max_result_bytes, with
+ * what it currently resolves to in the subtitle -- the library's label,
+ * so all three clients say the same thing about the same number.
+ */
+static GtkWidget *
+build_budget_field(ClawtWindow *self, const gchar *name, gint64 own,
+                   gint64 effective)
+{
+    GtkWidget *list = gtk_list_box_new();
+    GtkWidget *row = adw_spin_row_new_with_range(-1, 64.0 * 1024 * 1024,
+                                                 1024);
+    BudgetChoice *choice = g_new0(BudgetChoice, 1);
+    g_autofree gchar *label = clawt_mcp_result_budget_label(effective);
+    g_autofree gchar *subtitle = g_strdup_printf(
+        "Now %s. A tool result past this is trimmed, announced at both "
+        "ends, and kept whole for the agent to query. -1 uses the fleet's "
+        "budget, 0 turns it off.", label);
+
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), GTK_SELECTION_NONE);
+    gtk_widget_add_css_class(list, "boxed-list");
+
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                  "Largest result shown (bytes)");
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
+
+    choice->window = self;
+    choice->name = g_strdup(name);
+    choice->syncing = TRUE;
+    adw_spin_row_set_value(ADW_SPIN_ROW(row), (gdouble)own);
+    choice->syncing = FALSE;
+
+    g_signal_connect_data(row, "notify::value",
+                          G_CALLBACK(on_budget_changed), choice,
+                          budget_choice_free, 0);
+
+    gtk_list_box_append(GTK_LIST_BOX(list), row);
+
+    return list;
+}
+
+static void
+on_apps_switched(AdwSwitchRow *row, GParamSpec *pspec, gpointer user_data)
+{
+    DirectoryChoice *choice = user_data;
+    g_autoptr(JsonNode) reply = NULL;
+
+    reply = clawt_window_request(
+        choice->window, "integration.update",
+        clawt_build_payload("name", choice->name,
+                            "show_apps",
+                            adw_switch_row_get_active(row) ? "true" : "false",
+                            NULL));
+
+    if (reply != NULL)
+        clawt_gtk_refresh_settings_connectors(choice->window);
+
+    (void)pspec;
+}
+
+/*
+ * "Show its apps in chat": the integration's show_apps.  This client
+ * cannot draw an app's HTML, so the subtitle says where it goes -- a
+ * link to the web client's sandboxed view of it.
+ */
+static GtkWidget *
+build_apps_switch(ClawtWindow *self, const gchar *name, gboolean active)
+{
+    GtkWidget *list = gtk_list_box_new();
+    GtkWidget *row = adw_switch_row_new();
+    DirectoryChoice *choice = g_new0(DirectoryChoice, 1);
+
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), GTK_SELECTION_NONE);
+    gtk_widget_add_css_class(list, "boxed-list");
+
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                  "Show its apps in chat");
+    adw_action_row_set_subtitle(
+        ADW_ACTION_ROW(row),
+        "When a tool ships an interactive view, it appears in the "
+        "conversation. The view is the server's own code, run in your "
+        "browser in a sandbox; this window links to it in the web client.");
+    adw_switch_row_set_active(ADW_SWITCH_ROW(row), active);
+
+    choice->window = self;
+    choice->name = g_strdup(name);
+    g_signal_connect_data(row, "notify::active",
+                          G_CALLBACK(on_apps_switched), choice,
+                          directory_choice_free, 0);
+
+    gtk_list_box_append(GTK_LIST_BOX(list), row);
+
+    return list;
+}
+
 /*
  * Plain buttons in a box rather than a list.
  *
@@ -497,6 +643,19 @@ on_connector_activated(GtkListBox *list, GtkListBoxRow *row,
                                           g_object_get_data(
                                               G_OBJECT(row),
                                               "clawt-connector-directory")));
+    gtk_box_append(GTK_BOX(box),
+                   build_budget_field(
+                       self, name,
+                       GPOINTER_TO_INT(g_object_get_data(
+                           G_OBJECT(row), "clawt-connector-max-result")),
+                       GPOINTER_TO_INT(g_object_get_data(
+                           G_OBJECT(row),
+                           "clawt-connector-effective-max-result"))));
+    gtk_box_append(GTK_BOX(box),
+                   build_apps_switch(
+                       self, name,
+                       GPOINTER_TO_INT(g_object_get_data(
+                           G_OBJECT(row), "clawt-connector-show-apps"))));
 
     for (i = 0; i < G_N_ELEMENTS(actions); i++) {
         action = g_new0(ConnectorAction, 1);
@@ -551,12 +710,17 @@ on_registry_refresh(GtkButton *button, gpointer user_data)
 /* Fills the threshold rows without that counting as an edit. */
 static void
 sync_directory_thresholds(ClawtWindow *self, gint64 min_tools,
-                          gint64 min_chars)
+                          gint64 min_chars, gint64 max_result_bytes)
 {
     if (self->settings_directory_min_tools == NULL)
         return;
 
     self->settings_directory_syncing = TRUE;
+
+    if (self->settings_max_result_bytes != NULL)
+        adw_spin_row_set_value(ADW_SPIN_ROW(self->settings_max_result_bytes),
+                               (gdouble)max_result_bytes);
+
     adw_spin_row_set_value(ADW_SPIN_ROW(self->settings_directory_min_tools),
                            (gdouble)min_tools);
     adw_spin_row_set_value(ADW_SPIN_ROW(self->settings_directory_min_chars),
@@ -589,6 +753,14 @@ on_directory_threshold_changed(AdwSpinRow *row, GParamSpec *pspec,
     json_builder_add_int_value(
         builder, (gint64)adw_spin_row_get_value(
                      ADW_SPIN_ROW(self->settings_directory_min_chars)));
+
+    if (self->settings_max_result_bytes != NULL) {
+        json_builder_set_member_name(builder, "max_result_bytes");
+        json_builder_add_int_value(
+            builder, (gint64)adw_spin_row_get_value(
+                         ADW_SPIN_ROW(self->settings_max_result_bytes)));
+    }
+
     json_builder_end_object(builder);
 
     reply = clawt_window_request(self, "connector.settings",
@@ -629,7 +801,11 @@ clawt_gtk_refresh_settings_connectors(ClawtWindow *self)
             json_node_get_object(reply), "directory_min_tools", 40);
         min_chars = json_object_get_int_member_with_default(
             json_node_get_object(reply), "directory_min_chars", 100000);
-        sync_directory_thresholds(self, min_tools, min_chars);
+        sync_directory_thresholds(
+            self, min_tools, min_chars,
+            json_object_get_int_member_with_default(
+                json_node_get_object(reply), "max_result_bytes",
+                clawt_mcp_result_default_budget()));
 
         if (json_array_get_length(connectors) == 0) {
             GtkWidget *row = adw_action_row_new();
@@ -772,6 +948,28 @@ clawt_gtk_refresh_settings_connectors(ClawtWindow *self)
                                       entry, "sign_in", FALSE)));
             g_object_set_data_full(G_OBJECT(row), "clawt-connector-directory",
                                    g_strdup(directory), g_free);
+
+            /*
+             * The budget and the apps switch, for the dialog.  Ints in a
+             * pointer: a budget is at most 64 MiB, which fits.  The
+             * switch is a JSON boolean and read with the boolean reader.
+             */
+            g_object_set_data(
+                G_OBJECT(row), "clawt-connector-max-result",
+                GINT_TO_POINTER((gint)CLAMP(
+                    json_object_get_int_member_with_default(
+                        entry, "max_result_bytes", -1),
+                    -1, G_MAXINT)));
+            g_object_set_data(
+                G_OBJECT(row), "clawt-connector-effective-max-result",
+                GINT_TO_POINTER((gint)CLAMP(
+                    json_object_get_int_member_with_default(
+                        entry, "effective_max_result_bytes", 0),
+                    0, G_MAXINT)));
+            g_object_set_data(
+                G_OBJECT(row), "clawt-connector-show-apps",
+                GINT_TO_POINTER(json_object_get_boolean_member_with_default(
+                    entry, "show_apps", FALSE)));
 
             /*
              * This used to pass the row as its own activatable widget,
@@ -1157,6 +1355,39 @@ clawt_gtk_build_connectors_page(ClawtWindow *self)
                                   self->settings_directory_min_chars);
         adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
                                  ADW_PREFERENCES_GROUP(many));
+    }
+
+    /*
+     * The fleet's result budget, connectors.max_result_bytes: what every
+     * connector that does not set its own is held to.
+     */
+    {
+        GtkWidget *budget = adw_preferences_group_new();
+
+        adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(budget),
+                                        "Big tool results");
+        adw_preferences_group_set_description(
+            ADW_PREFERENCES_GROUP(budget),
+            "A connector's tool result past this many bytes is trimmed "
+            "before the agent reads it, with a note at both ends; the "
+            "whole result is kept for a day for the agent to query. Each "
+            "connector can set its own. 0 turns the budget off.");
+
+        self->settings_max_result_bytes =
+            adw_spin_row_new_with_range(0, 64.0 * 1024 * 1024, 1024);
+        adw_preferences_row_set_title(
+            ADW_PREFERENCES_ROW(self->settings_max_result_bytes),
+            "Largest result shown (bytes)");
+        adw_spin_row_set_value(
+            ADW_SPIN_ROW(self->settings_max_result_bytes),
+            (gdouble)clawt_mcp_result_default_budget());
+        g_signal_connect(self->settings_max_result_bytes, "notify::value",
+                         G_CALLBACK(on_directory_threshold_changed), self);
+
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(budget),
+                                  self->settings_max_result_bytes);
+        adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                                 ADW_PREFERENCES_GROUP(budget));
     }
 
     return page;

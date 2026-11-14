@@ -21,6 +21,9 @@ struct _ClawtTurnStep {
     gchar         *detail;
     gboolean       failed;
     gint64         timestamp;
+    gchar         *app_id;
+    gchar         *app_url;
+    gchar         *app_title;
 };
 
 G_DEFINE_BOXED_TYPE(ClawtTurnStep, clawt_turn_step,
@@ -90,6 +93,14 @@ clawt_turn_step_new_from_event(ClawtEvent *event)
      * differ for one replayed out of a room's history, where the event
      * is a fresh envelope around an old step.
      */
+    clawt_turn_step_set_app(self,
+                            clawt_event_get_detail(event,
+                                                   CLAWT_STEP_MEMBER_APP),
+                            clawt_event_get_detail(event,
+                                                   CLAWT_STEP_MEMBER_APP_URL),
+                            clawt_event_get_detail(event,
+                                                   CLAWT_STEP_MEMBER_APP_TITLE));
+
     if (clawt_event_get_detail_int(event, CLAWT_STEP_MEMBER_TS) > 0)
         self->timestamp = clawt_event_get_detail_int(event,
                                                      CLAWT_STEP_MEMBER_TS);
@@ -151,6 +162,11 @@ clawt_turn_step_new_from_object(JsonObject *object, const gchar *agent_id)
                                object_string(object, CLAWT_STEP_MEMBER_DETAIL),
                                failed);
 
+    clawt_turn_step_set_app(self,
+                            object_string(object, CLAWT_STEP_MEMBER_APP),
+                            object_string(object, CLAWT_STEP_MEMBER_APP_URL),
+                            object_string(object, CLAWT_STEP_MEMBER_APP_TITLE));
+
     /*
      * The wire's time, or none at all.
      *
@@ -180,6 +196,8 @@ clawt_turn_step_copy(ClawtTurnStep *self)
                                self->text, self->tool_name, self->detail,
                                self->failed);
     copy->timestamp = self->timestamp;
+    clawt_turn_step_set_app(copy, self->app_id, self->app_url,
+                            self->app_title);
 
     return copy;
 }
@@ -195,7 +213,50 @@ clawt_turn_step_free(ClawtTurnStep *self)
     g_free(self->text);
     g_free(self->tool_name);
     g_free(self->detail);
+    g_free(self->app_id);
+    g_free(self->app_url);
+    g_free(self->app_title);
     g_free(self);
+}
+
+void
+clawt_turn_step_set_app(ClawtTurnStep *self,
+                        const gchar   *app_id,
+                        const gchar   *app_url,
+                        const gchar   *app_title)
+{
+    g_return_if_fail(self != NULL);
+
+    g_free(self->app_id);
+    g_free(self->app_url);
+    g_free(self->app_title);
+    self->app_id = g_strdup(app_id);
+    self->app_url = g_strdup(app_url);
+    self->app_title = g_strdup(app_title);
+}
+
+const gchar *
+clawt_turn_step_get_app_title(ClawtTurnStep *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    return self->app_title;
+}
+
+const gchar *
+clawt_turn_step_get_app_id(ClawtTurnStep *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    return self->app_id;
+}
+
+const gchar *
+clawt_turn_step_get_app_url(ClawtTurnStep *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    return self->app_url;
 }
 
 #define GETTER(name, field, type, fallback)          \

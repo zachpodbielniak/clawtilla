@@ -37,6 +37,8 @@
 #include <glib.h>
 
 #include "mcp/clawt-mcp-directory.h"
+#include "mcp/clawt-mcp-result.h"
+#include "mcp/clawt-mcp-app.h"
 
 G_BEGIN_DECLS
 
@@ -228,6 +230,9 @@ gchar *clawt_mcp_relay_filter_inbound(const gchar *line,
  * @account_siblings: (array zero-terminated=1) (nullable): every prefix
  *   on the service, for a refusal to name
  * @account_conflict: (nullable): why the labels collide
+ * @results: (nullable): the result budget -- a tool call's answer past
+ *   it is trimmed and kept whole for clawtilla_mcp_result_query
+ * @apps: (nullable): MCP apps, when the connector shows them in chat
  *
  * Everything the relay decides about a message, in one place, so the
  * stdio relay and the HTTP bridge decide it the same way.
@@ -248,6 +253,8 @@ typedef struct {
     const gchar       *account_prefix;
     GStrv              account_siblings;
     const gchar       *account_conflict;
+    ClawtMcpResults   *results;
+    ClawtMcpApps      *apps;
 } ClawtMcpRelayPolicy;
 
 /**
@@ -266,8 +273,12 @@ typedef struct {
  * its call into a call of the inner tool; the permitted list is checked
  * against *that*, and so is the gate.  An action rule, an approval card
  * or a refusal therefore always names the tool that would run, never the
- * directory in front of it.  Both outs %NULL means the message is
- * dropped -- a refused notification, which has nothing to answer into.
+ * directory in front of it.  Then apps, last, because they judge the
+ * server's own tool names: `initialize` advertises the extension, and a
+ * call of a tool that belongs to an app's view is refused.  What goes to
+ * the server is noted by the result budget, so the answer to a tool call
+ * can be told apart.  Both outs %NULL means the message is dropped -- a
+ * refused notification, which has nothing to answer into.
  */
 void clawt_mcp_relay_policy_outbound(const ClawtMcpRelayPolicy  *policy,
                                      const gchar                *line,
@@ -283,9 +294,12 @@ void clawt_mcp_relay_policy_outbound(const ClawtMcpRelayPolicy  *policy,
  *   own for the server -- the next page of a tool list the directory is
  *   gathering
  *
- * Decides what becomes of a message on its way to the client: the
- * permitted list first, then the directory, so the directory is built
- * from exactly the tools the list allows.
+ * Decides what becomes of a message on its way to the client.  Apps
+ * first, because a view is handed the whole result and the relay's own
+ * `resources/read` answer stops here; then the result budget, which trims
+ * a tool call's answer and keeps the whole of it; then the permitted
+ * list, then the directory, so the directory is built from exactly the
+ * tools the list allows; the account prefix last.
  */
 void clawt_mcp_relay_policy_inbound(const ClawtMcpRelayPolicy  *policy,
                                     const gchar                *line,
@@ -305,5 +319,19 @@ void clawt_mcp_relay_policy_inbound(const ClawtMcpRelayPolicy  *policy,
 gint clawt_mcp_relay_run_policy(GStrv                      argv,
                                 GStrv                      envp,
                                 const ClawtMcpRelayPolicy *policy);
+
+/**
+ * clawt_mcp_relay_oversized_line: (skip)
+ * @policy: what is being enforced
+ * @oversized: what a #ClawtMcpReader saw of a message too big to hold
+ *
+ * The line to hand the client instead of a message too big to hold: the
+ * budget's reply when there is one, the bare reply otherwise.
+ *
+ * Returns: (transfer full) (nullable): one JSON-RPC line, or %NULL when
+ *   the message had no id to answer
+ */
+gchar *clawt_mcp_relay_oversized_line(const ClawtMcpRelayPolicy *policy,
+                                      const ClawtMcpOversized   *oversized);
 
 G_END_DECLS

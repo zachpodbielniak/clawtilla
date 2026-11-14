@@ -1686,13 +1686,84 @@ step_label(const gchar *text, const gchar *tone, gboolean monospace)
     LrgWidget *label = clawt_lrg_paragraph(text, monospace ? "mono"
                                                            : "caption");
 
-    /* only a failure is coloured, or colour stops meaning anything */
-    if (g_strcmp0(tone, "bad") == 0)
-        lrg_widget_add_class(label, clawt_lrg_tone_class("bad"));
+    /*
+     * Only a failure and a trimmed result are coloured, or colour stops
+     * meaning anything.  @tone is clawt_lrg_step_tone()'s answer.
+     */
+    if (tone != NULL)
+        lrg_widget_add_class(label, clawt_lrg_tone_class(tone));
     else
         lrg_widget_add_class(label, "muted");
 
     return label;
+}
+
+static void
+on_app_found(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+             gpointer user_data)
+{
+    const gchar *url;
+
+    (void)user_data;
+
+    /* A refusal was toasted already; there is nothing to open. */
+    if (error != NULL || reply == NULL || !JSON_NODE_HOLDS_OBJECT(reply))
+        return;
+
+    url = json_object_get_string_member_with_default(
+        json_node_get_object(reply), "url", NULL);
+
+    if (url != NULL)
+        clawt_lrg_open_uri(app, url);
+}
+
+/*
+ * Asks the daemon for the app before opening it: an app is swept after
+ * thirty days while the step that names it can stay on screen, and a
+ * browser opened on "not found" is a worse answer than a toast.  The
+ * reply's address is the daemon's current connectors.apps_web_url.
+ */
+static void
+on_app_link_clicked(LrgButton *button, gpointer user_data)
+{
+    const gchar *agent_id = g_object_get_data(G_OBJECT(button),
+                                              "clawt-app-agent");
+    const gchar *app_id = g_object_get_data(G_OBJECT(button), "clawt-app-id");
+
+    if (agent_id == NULL || app_id == NULL)
+        return;
+
+    clawt_lrg_request(user_data, "connector.app_get",
+                      clawt_ipc_payload_new("agent", agent_id, "app", app_id,
+                                            NULL),
+                      0, on_app_found, NULL, NULL);
+}
+
+/*
+ * An MCP app in the conversation.  lrg has no HTML engine, so it links
+ * to the web client's view of the app, which draws it in its sandboxed
+ * frame -- the recorded parity choice for this feature.
+ */
+static LrgWidget *
+app_link(ClawtLrgApp *app, ClawtTurnStep *step)
+{
+    g_autofree gchar *label = NULL;
+    g_autofree gchar *url = NULL;
+    LrgWidget *button;
+
+    if (!clawt_lrg_step_app_link(step, &label, &url))
+        return NULL;
+
+    button = clawt_lrg_button(label, "flat", G_CALLBACK(on_app_link_clicked),
+                              app);
+    g_object_set_data_full(G_OBJECT(button), "clawt-app-agent",
+                           g_strdup(clawt_turn_step_get_agent_id(step)),
+                           g_free);
+    g_object_set_data_full(G_OBJECT(button), "clawt-app-id",
+                           g_strdup(clawt_turn_step_get_app_id(step)),
+                           g_free);
+
+    return button;
 }
 
 /*
@@ -1722,7 +1793,7 @@ step_run_new(ClawtLrgApp *app, GPtrArray *steps, guint from, guint to,
             continue;
 
         line = clawt_turn_step_summary(step);
-        clawt_lrg_take(inner, step_label(line, clawt_turn_step_tone(step),
+        clawt_lrg_take(inner, step_label(line, clawt_lrg_step_tone(step),
                                          TRUE));
     }
 
@@ -1766,9 +1837,13 @@ steps_box_new(ClawtLrgApp *app, GPtrArray *steps, guint from, guint end)
 
         {
             g_autofree gchar *line = clawt_lrg_step_line(step);
+            LrgWidget *link = app_link(app, step);
 
-            clawt_lrg_take(box, step_label(line, clawt_turn_step_tone(step),
+            clawt_lrg_take(box, step_label(line, clawt_lrg_step_tone(step),
                                            FALSE));
+
+            if (link != NULL)
+                clawt_lrg_take(box, link);
         }
 
         i++;

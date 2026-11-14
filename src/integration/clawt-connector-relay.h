@@ -63,6 +63,10 @@ G_BEGIN_DECLS
  * @unauthorized: (nullable): told when a remote server answers 401, so
  *   the daemon can offer a sign-in
  * @unauthorized_data: data for @unauthorized
+ * @results: (nullable): the result budget, owned by the plan; filled by
+ *   the caller, which knows the agent and its state directory
+ * @apps: (nullable): MCP apps, owned by the plan; set only when the
+ *   connector shows its apps in chat
  *
  * Everything needed to reach one connector's tools, worked out before
  * anything is started.
@@ -121,6 +125,9 @@ typedef struct {
 
     ClawtConnectorUnauthorized unauthorized;
     gpointer                   unauthorized_data;
+
+    ClawtMcpResults           *results;
+    ClawtMcpApps              *apps;
 } ClawtConnectorPlan;
 
 /**

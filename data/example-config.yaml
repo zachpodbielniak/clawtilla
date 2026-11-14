@@ -1609,6 +1609,31 @@ integrations:
     # Values: auto, always, never
     directory: "auto"
 
+    # connector: the most of one tool result the agent is shown, in bytes.
+    #
+    # A result bigger than this is trimmed before the agent reads it -- the
+    # text cut on a character boundary, a JSON array cut to the records that
+    # fit, structuredContent trimmed the same way -- with a [clawtilla] note
+    # at the start and the end saying what was cut. The whole result is kept
+    # under the agent's state directory and the agent reads the rest with
+    # clawtilla_mcp_result_query. -1 (the default) means the fleet's
+    # connectors.max_result_bytes, 0 means no budget for this connector,
+    # and anything below 1024 is read as 1024. See docs/connectors.org,
+    # "Results bigger than the budget".
+    max_result_bytes: -1
+
+    # connector: show its apps in chat.
+    #
+    # An MCP server can ship an interactive view (an MCP App, a ui://
+    # resource) for a tool. With this on, the relay tells the server it can
+    # show them, reads the view when the tool is called, and the call
+    # appears in the conversation as an app: the web client draws it in a
+    # sandboxed frame when somebody opens it, and the GTK and lrg clients
+    # offer it in the browser. Off by default, because the view is the
+    # server's own code running in your browser. See docs/connectors.org,
+    # "Apps in chat".
+    show_apps: false
+
     # For a connector that can stage its writes, whether it does.
     #
     # A staged write becomes a decision in the operator's own inbox rather
@@ -1760,6 +1785,25 @@ connectors:
   # rather than listing them. Only read when a connector's `directory` is
   # `auto`.
   directory_min_chars: 100000
+
+  # The most of one connector tool result an agent is shown, in bytes.
+  #
+  # For every connector that does not set max_result_bytes itself. Past
+  # it the result is trimmed, announced at both ends, and kept whole
+  # under the agent's state directory for clawtilla_mcp_result_query, so
+  # one listing of a big repository does not spend the whole context. 0
+  # turns the budget off; anything below 1024 is read as 1024. Whatever
+  # this says, the relay holds at most 64 MiB of one message in memory --
+  # anything longer goes to disk as it arrives.
+  max_result_bytes: 65536
+
+  # Where the web client is reached, for an MCP app's Open in browser.
+  #
+  # The GTK and lrg clients cannot draw an app's HTML, so they link to the
+  # web client's view of it: <this>/a/<agent>/app/<app>. The address
+  # clawtilla-web listens on by default; change it when the web client
+  # runs elsewhere or on another port.
+  apps_web_url: "http://127.0.0.1:8790"
 
 # Handing work to Grok bots, and hearing back.
 #
