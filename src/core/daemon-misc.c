@@ -597,6 +597,9 @@ clawt_daemon_handle_misc(
             json_builder_add_boolean_value(builder,
                 clawt_daemon_idle_is_asleep(self, clawt_agent_get_id(agent)));
 
+            /* The Fleet page badges an agent on a fallback, as the sidebar does. */
+            clawt_daemon_add_failover_members(builder, agent);
+
             if (days > 0) {
                 json_builder_set_member_name(builder, "daily");
                 json_builder_begin_array(builder);

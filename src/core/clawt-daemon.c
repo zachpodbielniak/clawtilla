@@ -2138,6 +2138,42 @@ on_link_typing(ClawtLinkServer *server,
     clawt_event_free(event);
 }
 
+/*
+ * `failover` and `failover_message` on an agent's object, while it runs
+ * on one of its fallbacks.  One function for every reply that describes
+ * an agent -- agent.list and usage.summary -- because the Fleet page read
+ * the second and a copy of this block written for it would be the place
+ * the two drift.
+ */
+void
+clawt_daemon_add_failover_members(
+	JsonBuilder *builder,
+	ClawtAgent  *agent
+){
+	JsonObject *failover = clawt_agent_get_failover(agent);
+	ClawtAgentConfig *config;
+	g_autofree gchar *line = NULL;
+	JsonNode *node;
+
+	if (failover == NULL)
+		return;
+
+	config = clawt_agent_get_config(agent);
+	line = clawt_failover_describe(
+		(config != NULL && clawt_agent_config_get_string(config, "name") != NULL)
+			? clawt_agent_config_get_string(config, "name")
+			: clawt_agent_get_id(agent),
+		failover);
+
+	node = json_node_new(JSON_NODE_OBJECT);
+	json_node_set_object(node, failover);
+	json_builder_set_member_name(builder, "failover");
+	json_builder_add_value(builder, node);
+
+	json_builder_set_member_name(builder, "failover_message");
+	json_builder_add_string_value(builder, line);
+}
+
 /* When the task-source table is swept of tasks that have finished. */
 #define TASK_SOURCE_PRUNE_AT (1024)
 
@@ -8290,22 +8326,7 @@ clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
      * alert carried, so a client can badge it and say why without a
      * second copy of the wording.
      */
-    if (clawt_agent_get_failover(agent) != NULL) {
-        JsonObject *failover = clawt_agent_get_failover(agent);
-        g_autofree gchar *line = clawt_failover_describe(
-            clawt_agent_config_get_string(config, "name") != NULL
-                ? clawt_agent_config_get_string(config, "name")
-                : clawt_agent_get_id(agent),
-            failover);
-        JsonNode *node = json_node_new(JSON_NODE_OBJECT);
-
-        json_node_set_object(node, failover);
-        json_builder_set_member_name(builder, "failover");
-        json_builder_add_value(builder, node);
-
-        json_builder_set_member_name(builder, "failover_message");
-        json_builder_add_string_value(builder, line);
-    }
+    clawt_daemon_add_failover_members(builder, agent);
 
     if (clawt_agent_get_activity_peer(agent) != NULL) {
         json_builder_set_member_name(builder, "peer");

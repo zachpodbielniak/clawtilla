@@ -1795,6 +1795,17 @@ ClawtUsageOrigin *clawt_daemon_usage_origin(ClawtDaemon *self,
                                             const gchar *room,
                                             const gchar *channel);
 
+/*
+ * clawt_daemon_add_failover_members:
+ * @builder: a builder inside an agent's object
+ * @agent: the agent
+ *
+ * Adds `failover` and `failover_message` while @agent is on a fallback,
+ * and nothing otherwise.
+ */
+void clawt_daemon_add_failover_members(JsonBuilder *builder,
+                                       ClawtAgent  *agent);
+
 void clawt_daemon_note_task_source(ClawtDaemon          *self,
                                    const gchar          *task_id,
                                    ClawtUsageOriginKind  kind,

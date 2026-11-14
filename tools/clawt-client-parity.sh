@@ -531,6 +531,8 @@ declare -A AFFORDANCES=(
     #
     ["fallback list editor"]="fallback_editor_draw|clawt_web_fallback_card|draw_fallbacks"
     ["on fallback badge"]="clawt_gtk_failover_badge|clawt_web_failover_badge|clawt_lrg_badge(agent->fallback"
+    # The same badge on the Fleet page, from usage.summary's `failover`.
+    ["on fallback badge on the Fleet page"]="fleet_fallback|fleet_fallback|fleet_fallback"
     ["alert in the event's words"]="clawt_event_get_detail(event, \"message\")|clawt_event_get_detail(event, \"message\")|clawt_event_get_detail(event, \"message\")"
     #
     # Connector sign-in and several accounts: a remote server added by its
