@@ -199,6 +199,17 @@ declare -A AFFORDANCES=(
     #
     ["sidebar collapses"]="clawt_appearance_set_sidebar_collapsed|nav-toggle|clawt_lrg_window_toggle_sidebar"
     #
+    # Per-agent computer settings that apply to some computer types only.
+    # Each client draws the row from the agent member the daemon reports
+    # for exactly those types, so the member name is the marker: a client
+    # that stopped reading it would offer the setting everywhere or
+    # nowhere.  The limits are marked by the swap key, the one that has
+    # to be ordered against memory on a save.
+    #
+    ["computer start choice"]="\"computer_start\"|\"computer_start\"|\"computer_start\""
+    ["container limits"]="\"computer.container.memory_swap\"|\"computer.container.memory_swap\"|\"computer.container.memory_swap\""
+    ["ssh wake command"]="\"ssh_wake_command\"|\"ssh_wake_command\"|\"ssh_wake_command\""
+    #
     # The agent view's "Waiting for" list. The frames (wait.list,
     # wait.cancel) are layer 1's; this is the schedule line, which every
     # client must draw from the one library function rather than its own
@@ -254,6 +265,16 @@ declare -A AFFORDANCES=(
     ["browser view"]="clawt_gtk_build_browser_view|/f/a/:id/browser|build_browser_view"
     ["click in the browser"]="on_picture_pressed|/browser/click|on_browser_click"
     ["open a page in the browser"]="\"browser.open\"|/browser/open|\"browser.open\""
+    #
+    # Servers with many tools, on the Connectors page: each connector's
+    # tool count and whether agents see it as a directory (libclawt's
+    # sentence in all three), and the per-connector Auto / Always / Never
+    # choice.  The choice walks clawt_tool_directory_mode_*, which layer 3
+    # already compares; this row is the control it lives in.  The
+    # thresholds are connector.settings, layer 1's.
+    #
+    ["connector tool count"]="clawt_mcp_directory_status_label|clawt_mcp_directory_status_label|clawt_mcp_directory_status_label"
+    ["present as a directory"]="build_directory_choice|directory_form|directory_choice"
     #
     # A group room drawn beside the agents, and the two things you can
     # only do to one from a client.
@@ -454,6 +475,17 @@ declare -A AFFORDANCES=(
     ["skills library"]="clawt_gtk_refresh_skills|clawt_web_skills_body|refresh_skills_library"
     ["skill provenance"]="Provenance|sha256|Provenance"
     ["skill scan warnings"]="Not copied|Not copied|Not copied"
+    #
+    # Skills agents propose (clawtilla_skill_propose).  The frames are
+    # layer 1's (skill.proposals, skill.proposal_resolve); these are the
+    # three things a person needs that no frame proves: the decision card
+    # recognising a proposal by the library's own rule, the card showing
+    # the proposed text (or the diff) with Approve / Reject / Edit, and
+    # the Skills page listing what is pending, who proposed it and why.
+    #
+    ["skill proposal decisions"]="clawt_skill_proposal_id_is_valid|clawt_skill_proposal_id_is_valid|clawt_skill_proposal_id_is_valid"
+    ["skill proposal review"]="clawt_gtk_proposal_review|web_proposal_review|lrg_proposal_review"
+    ["pending skill proposals"]="append_pending_proposals|web_pending_proposals|lrg_pending_proposals"
     ["fleet recall"]="recall_entry|recall-form|recall_entry"
     ["recall results"]="refresh_recall_once|recall-hit|recall-hit"
     ["operator profile"]="operator_view|operator-profile|operator-profile"
@@ -497,6 +529,15 @@ declare -A AFFORDANCES=(
     ["fallback list editor"]="fallback_editor_draw|clawt_web_fallback_card|draw_fallbacks"
     ["on fallback badge"]="clawt_gtk_failover_badge|clawt_web_failover_badge|clawt_lrg_badge(agent->fallback"
     ["alert in the event's words"]="clawt_event_get_detail(event, \"message\")|clawt_event_get_detail(event, \"message\")|clawt_event_get_detail(event, \"message\")"
+    #
+    # Each team's "Problems to look at" room has a sidebar row.  It sends
+    # no frame of its own -- it is room.list read with a different
+    # filter -- so layer 1 cannot see a client that lists only declared
+    # rooms, and the incidents would then be readable nowhere but the
+    # Tasks page.  The marker is the library predicate every listing
+    # site calls.
+    #
+    ["incidents rooms in the sidebar"]="clawt_room_is_listed|clawt_room_is_listed|clawt_room_is_listed"
 )
 
 usage () {

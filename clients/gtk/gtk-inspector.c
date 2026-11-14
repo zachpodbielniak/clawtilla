@@ -18,6 +18,7 @@
 #include "clawt-window-private.h"
 
 static gboolean     apply_schema_rows(ClawtWindow *self);
+static gboolean     apply_computer_limits(ClawtWindow *self);
 static const gchar *use_row_value(ClawtWindow *self);
 
 /* ── Inspector ───────────────────────────────────────────────────── */
@@ -929,6 +930,10 @@ on_save_agent(GtkButton *button, gpointer user_data)
             ok &= clawt_gtk_apply_setting(self, "computer.container.image", image);
     }
 
+    /* The same rule as above: on a shared machine these are the machine's. */
+    if (*use_row_value(self) == '\0')
+        ok &= apply_computer_limits(self);
+
     ok &= clawt_gtk_apply_setting(self, "runtime.restart",
                                   restarts[MIN(adw_combo_row_get_selected(
                                          ADW_COMBO_ROW(self->restart_row)),
@@ -1594,6 +1599,152 @@ switch_row(const gchar *title, const gchar *subtitle, gboolean active)
     adw_switch_row_set_active(ADW_SWITCH_ROW(row), active);
 
     return row;
+}
+
+/*
+ * A text row that remembers what it was opened with.
+ *
+ * The rows below are written only when changed, and "changed" has to
+ * include "cleared": an empty field is how a memory limit or a wake
+ * command is taken off, so skipping empty text the way the VM rows do
+ * would make those impossible to remove from here -- while writing every
+ * field back on every save would pin podman's defaults onto an agent
+ * somebody merely opened.
+ */
+static GtkWidget *
+remembering_entry_row(const gchar *title, const gchar *value,
+                      const gchar *hint)
+{
+    GtkWidget *row = entry_row(title, value);
+
+    g_object_set_data_full(G_OBJECT(row), "clawt-shown",
+                           g_strdup(value != NULL ? value : ""), g_free);
+    clawt_gtk_set_row_hint(row, hint);
+
+    return row;
+}
+
+/* What a remembering row holds now, trimmed, or NULL when unchanged. */
+static gchar *
+remembering_entry_changed(GtkWidget *row)
+{
+    g_autofree gchar *text = NULL;
+
+    if (row == NULL)
+        return NULL;
+
+    text = g_strstrip(g_strdup(gtk_editable_get_text(GTK_EDITABLE(row))));
+
+    if (g_strcmp0(text, g_object_get_data(G_OBJECT(row), "clawt-shown")) == 0)
+        return NULL;
+
+    return (gchar *)g_steal_pointer(&text);
+}
+
+/*
+ * When the machine starts, walked from the library's enumeration so a
+ * choice added there is offered here, with the library's own labels.
+ * The index it opened on is kept: the row is written only when moved,
+ * so an agent following the fleet's default is not pinned to it.
+ */
+static GtkWidget *
+computer_start_row_build(const gchar *current)
+{
+    g_autoptr(GtkStringList) labels = gtk_string_list_new(NULL);
+    GtkWidget *row = adw_combo_row_new();
+    guint n = clawt_computer_start_count();
+    guint selected = 0;
+    guint i;
+
+    for (i = 0; i < n; i++) {
+        gtk_string_list_append(labels, clawt_computer_start_nth_label(i));
+
+        if (g_strcmp0(clawt_computer_start_nth_nick(i), current) == 0)
+            selected = i;
+    }
+
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                  "Start the computer");
+    adw_combo_row_set_model(ADW_COMBO_ROW(row), G_LIST_MODEL(labels));
+    adw_combo_row_set_selected(ADW_COMBO_ROW(row), selected);
+    clawt_gtk_set_row_hint(row,
+        "On first use leaves the machine off until the agent first runs a "
+        "command in it; the agent's own tools run on the host either way.");
+    adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(row), 0);
+    g_object_set_data(G_OBJECT(row), "clawt-shown",
+                      GUINT_TO_POINTER(selected));
+
+    return row;
+}
+
+/*
+ * Writes the start choice, the podman limits and the wake command, each
+ * only when it was changed here.  A limit reaches a running machine in
+ * place (podman update); the start choice and the wake command are read
+ * the next time they are needed.
+ */
+static gboolean
+apply_computer_limits(ClawtWindow *self)
+{
+    gboolean ok = TRUE;
+
+    if (self->computer_start_row != NULL) {
+        guint selected = adw_combo_row_get_selected(
+            ADW_COMBO_ROW(self->computer_start_row));
+
+        if (selected < clawt_computer_start_count() &&
+            selected != GPOINTER_TO_UINT(g_object_get_data(
+                            G_OBJECT(self->computer_start_row),
+                            "clawt-shown")))
+            ok &= clawt_gtk_apply_setting(
+                self, "computer.start",
+                clawt_computer_start_nth_nick(selected));
+    }
+
+    {
+        g_autofree gchar *pids =
+            remembering_entry_changed(self->container_pids_row);
+
+        if (pids != NULL)
+            ok &= clawt_gtk_apply_setting(
+                self, "computer.container.pids_limit", pids);
+    }
+
+    if (self->container_memory_row != NULL &&
+        self->container_swap_row != NULL) {
+        g_autofree gchar *memory =
+            remembering_entry_changed(self->container_memory_row);
+        g_autofree gchar *swap =
+            remembering_entry_changed(self->container_swap_row);
+        gboolean swap_first = memory != NULL && swap != NULL &&
+            clawt_container_limits_swap_first(
+                g_object_get_data(G_OBJECT(self->container_memory_row),
+                                  "clawt-shown"),
+                g_object_get_data(G_OBJECT(self->container_swap_row),
+                                  "clawt-shown"),
+                memory, swap);
+
+        if (swap_first)
+            ok &= clawt_gtk_apply_setting(
+                self, "computer.container.memory_swap", swap);
+        if (memory != NULL)
+            ok &= clawt_gtk_apply_setting(
+                self, "computer.container.memory", memory);
+        if (swap != NULL && !swap_first)
+            ok &= clawt_gtk_apply_setting(
+                self, "computer.container.memory_swap", swap);
+    }
+
+    {
+        g_autofree gchar *wake = remembering_entry_changed(self->ssh_wake_row);
+
+        /* One command line; the daemon splits it and refuses shell syntax. */
+        if (wake != NULL)
+            ok &= clawt_gtk_apply_setting(
+                self, "computer.ssh.wake_command", wake);
+    }
+
+    return ok;
 }
 
 /*
@@ -3291,6 +3442,88 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
             clawt_json_string(agent, "vm_ssh_host", ""));
         adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
                                   self->vm_ssh_host_row);
+    }
+
+    /*
+     * When the machine starts, the podman limits and the wake command.
+     * Each is drawn from the member the daemon reports for it, and the
+     * daemon reports one only for the types that read it -- so a row is
+     * never offered for a setting nothing would read.  Not on a shared
+     * machine: those keys are the machine's.
+     */
+    self->computer_start_row = NULL;
+    self->container_pids_row = NULL;
+    self->container_memory_row = NULL;
+    self->container_swap_row = NULL;
+    self->ssh_wake_row = NULL;
+
+    if (*use_row_value(self) == '\0' &&
+        json_object_has_member(agent, "computer_start")) {
+        self->computer_start_row = computer_start_row_build(
+            clawt_json_string(agent, "computer_start", NULL));
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                                  self->computer_start_row);
+    }
+
+    if (*use_row_value(self) == '\0' &&
+        json_object_has_member(agent, "container_memory")) {
+        GtkWidget *note;
+
+        self->container_pids_row = remembering_entry_row(
+            "Process limit",
+            clawt_json_string(agent, "container_pids_limit", ""),
+            "e.g. 2048 -- empty for podman's default, -1 for no limit");
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                                  self->container_pids_row);
+
+        self->container_memory_row = remembering_entry_row(
+            "Memory",
+            clawt_json_string(agent, "container_memory", ""),
+            "e.g. 512m or 4g -- empty for no limit");
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                                  self->container_memory_row);
+
+        self->container_swap_row = remembering_entry_row(
+            "Memory + swap",
+            clawt_json_string(agent, "container_memory_swap", ""),
+            "memory and swap together, e.g. 8g; equal to Memory for no "
+            "swap, -1 for unlimited swap");
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                                  self->container_swap_row);
+
+        /*
+         * Said in a row, not only in the tooltips: an entry row has no
+         * subtitle, and "will this rebuild my machine?" is the question
+         * somebody has before touching a limit at all.
+         */
+        note = info_row("Limits",
+            "Process limit e.g. 2048 (empty: podman's default, -1: none). "
+            "Memory e.g. 512m or 4g (empty: none). Memory + swap is the "
+            "two together, e.g. 8g -- equal to Memory for no swap, -1 for "
+            "unlimited. A change reaches a running machine in place with "
+            "podman update; nothing is rebuilt.");
+        adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(note), 0);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), note);
+    }
+
+    if (*use_row_value(self) == '\0' &&
+        json_object_has_member(agent, "ssh_wake_command")) {
+        GtkWidget *note;
+
+        self->ssh_wake_row = remembering_entry_row(
+            "Wake command",
+            clawt_json_string(agent, "ssh_wake_command", ""),
+            "e.g. wakeonlan aa:bb:cc:dd:ee:ff -- empty for none");
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                                  self->ssh_wake_row);
+
+        note = info_row("Waking the machine",
+            "Run when the machine does not answer, to wake it -- e.g. "
+            "wakeonlan aa:bb:cc:dd:ee:ff. A program and its arguments, not "
+            "a shell line; it gets up to 2 minutes and runs once however "
+            "many commands are waiting.");
+        adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(note), 0);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), note);
     }
 
     self->restart_row = combo_row("Restart", restarts,

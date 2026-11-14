@@ -1069,6 +1069,27 @@ typedef enum {
     CLAWT_CREDENTIAL_PLACEMENT_HEADER
 } ClawtCredentialPlacement;
 
+/**
+ * ClawtToolDirectoryMode:
+ * @CLAWT_TOOL_DIRECTORY_AUTO: a directory when the server is big and the
+ *   agent's CLI does not search tools by itself
+ * @CLAWT_TOOL_DIRECTORY_ALWAYS: a directory whatever the size and the CLI
+ * @CLAWT_TOOL_DIRECTORY_NEVER: every tool listed, however many there are
+ *
+ * Whether a connector's tools reach an agent one by one or as three
+ * tools that search, describe and call the rest.
+ *
+ * %CLAWT_TOOL_DIRECTORY_AUTO is zero on purpose: an integration that
+ * says nothing gets the behaviour the thresholds describe, and an
+ * unknown spelling is reported and falls back to it rather than to
+ * whatever member happened to be zero.
+ */
+typedef enum {
+    CLAWT_TOOL_DIRECTORY_AUTO = 0,
+    CLAWT_TOOL_DIRECTORY_ALWAYS,
+    CLAWT_TOOL_DIRECTORY_NEVER
+} ClawtToolDirectoryMode;
+
 /* GType registration */
 GType clawt_agent_state_get_type(void) G_GNUC_CONST;
 GType clawt_agent_caps_get_type(void) G_GNUC_CONST;
@@ -1089,6 +1110,7 @@ GType clawt_input_kind_get_type(void) G_GNUC_CONST;
 GType clawt_mount_type_get_type(void) G_GNUC_CONST;
 GType clawt_mount_mode_get_type(void) G_GNUC_CONST;
 GType clawt_relabel_get_type(void) G_GNUC_CONST;
+GType clawt_computer_start_get_type(void) G_GNUC_CONST;
 GType clawt_mailbox_state_get_type(void) G_GNUC_CONST;
 GType clawt_priority_get_type(void) G_GNUC_CONST;
 GType clawt_overflow_policy_get_type(void) G_GNUC_CONST;
@@ -1106,6 +1128,7 @@ GType clawt_run_state_get_type(void) G_GNUC_CONST;
 GType clawt_guest_flavour_get_type(void) G_GNUC_CONST;
 GType clawt_connector_auth_get_type(void) G_GNUC_CONST;
 GType clawt_credential_placement_get_type(void) G_GNUC_CONST;
+GType clawt_tool_directory_mode_get_type(void) G_GNUC_CONST;
 
 #define CLAWT_TYPE_AGENT_STATE      (clawt_agent_state_get_type())
 #define CLAWT_TYPE_AGENT_CAPS       (clawt_agent_caps_get_type())
@@ -1126,6 +1149,7 @@ GType clawt_credential_placement_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_MOUNT_TYPE       (clawt_mount_type_get_type())
 #define CLAWT_TYPE_MOUNT_MODE       (clawt_mount_mode_get_type())
 #define CLAWT_TYPE_RELABEL          (clawt_relabel_get_type())
+#define CLAWT_TYPE_COMPUTER_START   (clawt_computer_start_get_type())
 #define CLAWT_TYPE_MAILBOX_STATE    (clawt_mailbox_state_get_type())
 #define CLAWT_TYPE_PRIORITY         (clawt_priority_get_type())
 #define CLAWT_TYPE_OVERFLOW_POLICY  (clawt_overflow_policy_get_type())
@@ -1144,6 +1168,8 @@ GType clawt_credential_placement_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_CONNECTOR_AUTH    (clawt_connector_auth_get_type())
 #define CLAWT_TYPE_CREDENTIAL_PLACEMENT \
     (clawt_credential_placement_get_type())
+#define CLAWT_TYPE_TOOL_DIRECTORY_MODE \
+    (clawt_tool_directory_mode_get_type())
 
 /**
  * clawt_computer_type_count:
@@ -1257,6 +1283,71 @@ gboolean clawt_computer_type_takes_mounts(ClawtComputerType type);
  * Returns: %TRUE if there is something to start, stop and restart
  */
 gboolean clawt_computer_type_has_machine(ClawtComputerType type);
+
+/**
+ * ClawtComputerStart:
+ * @CLAWT_COMPUTER_START_ON_AGENT_START: the machine comes up with the
+ *   agent, before its first turn
+ * @CLAWT_COMPUTER_START_ON_FIRST_USE: the machine comes up the first time
+ *   the agent (or anybody) runs something in it
+ *
+ * When an agent's computer is started.
+ *
+ * The agent's own tools run on the host, so an agent whose turns never
+ * reach clawtilla_computer_exec never needed the machine -- and a VM
+ * booted for it spends a minute and gigabytes of memory on nothing.
+ */
+typedef enum {
+    CLAWT_COMPUTER_START_ON_AGENT_START = 0,
+    CLAWT_COMPUTER_START_ON_FIRST_USE
+} ClawtComputerStart;
+
+/**
+ * clawt_computer_start_count:
+ *
+ * Returns: how many start modes there are
+ */
+guint clawt_computer_start_count(void);
+
+/**
+ * clawt_computer_start_nth:
+ * @n: an index below clawt_computer_start_count()
+ *
+ * Returns: the mode at @n, the default first
+ */
+ClawtComputerStart clawt_computer_start_nth(guint n);
+
+/**
+ * clawt_computer_start_nth_nick:
+ * @n: an index below clawt_computer_start_count()
+ *
+ * Returns: (transfer none): the spelling used in clawtilla.yaml
+ */
+const gchar *clawt_computer_start_nth_nick(guint n);
+
+/**
+ * clawt_computer_start_nth_label:
+ * @n: an index below clawt_computer_start_count()
+ *
+ * Returns: (transfer none): the wording for a person
+ */
+const gchar *clawt_computer_start_nth_label(guint n);
+
+/**
+ * clawt_computer_type_starts_lazily:
+ * @type: a #ClawtComputerType
+ *
+ * Whether `computer.start: on_first_use` means anything for @type.
+ *
+ * %TRUE where starting costs something worth deferring: the three types
+ * with a machine of their own, and `ssh`, whose start is a round trip
+ * (and, with a wake command, possibly waking the machine). %FALSE for
+ * `none`, which has nothing to start, and `host`, whose start is a local
+ * check that should fail when the agent starts rather than a turn later.
+ *
+ * Returns: %TRUE if the start can wait for first use
+ */
+gboolean clawt_computer_type_starts_lazily(ClawtComputerType type);
 
 /**
  * clawt_computer_type_shares_host_paths:

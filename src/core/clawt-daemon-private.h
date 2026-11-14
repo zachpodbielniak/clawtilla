@@ -295,6 +295,16 @@ struct _ClawtDaemon {
     ClawtRoutineRunner *routines;
 
 	/*
+	 * Broken runs, filed and reported to whoever leads the team
+	 * (orchestration.incidents).  Built once the router exists, and
+	 * cleared before it.  agent_last_state remembers each agent's
+	 * previous state, which is what tells a crash (running -> error)
+	 * from a start that never got that far.
+	 */
+	ClawtIncidentDesk *incidents;
+	GHashTable        *agent_last_state;
+
+	/*
 	 * daemon-routine.c: routine runs waiting to hear whether their
 	 * agent's computer came up, keyed agent -> (routine -> gint64 run
 	 * time in microseconds); the agents whose computer last refused to
@@ -372,6 +382,14 @@ struct _ClawtDaemon {
      * pay nothing for it.
      */
     ClawtSkillLibrary *skills;
+
+    /*
+     * Skills agents have proposed, under <state_dir>/skill-proposals.
+     * Kept whether or not skills are enabled, so turning them off does
+     * not lose a draft somebody has not reviewed yet; the tool is simply
+     * not offered while there is no library.
+     */
+    ClawtSkillProposals *skill_proposals;
 
     /*
      * Recordings, and the drafts written from them.
@@ -662,6 +680,26 @@ clawt_daemon_health_run_start(HealthRun *run);
 
 void
 clawt_daemon_lifecycle_job_free(LifecycleJob *job);
+
+/*
+ * Whether @key is one of computer.container.pids_limit, memory or
+ * memory_swap -- the settings a running machine takes in place.
+ */
+gboolean
+clawt_daemon_is_limit_key(
+	const gchar *key
+);
+
+/*
+ * Gives @agent_id's running container or distrobox the limits its config
+ * now names, with `podman update`, on a worker thread. Does nothing for a
+ * machine that is not running: its next start applies them.
+ */
+void
+clawt_daemon_apply_limits_in_place(
+	ClawtDaemon *self,
+	const gchar *agent_id
+);
 
 ClawtMailbox *
 clawt_daemon_mailbox_for(ClawtDaemon *self, JsonObject *payload,
@@ -1341,6 +1379,67 @@ clawt_daemon_handle_skill(
     JsonNode     *request,
     JsonObject   *payload,
     gboolean     *handled
+);
+
+/* daemon-skill-proposal.c */
+void
+clawt_daemon_skill_proposals_open(
+	ClawtDaemon *self
+);
+
+ClawtSkillProposal *
+clawt_daemon_skill_proposal_settle(
+	ClawtDaemon  *self,
+	const gchar  *id,
+	const gchar  *action,
+	const gchar  *note,
+	const gchar  *description,
+	const gchar  *body,
+	gboolean      answer_decision,
+	GError      **error
+);
+
+gboolean
+clawt_daemon_skill_proposal_check_answer(
+	ClawtDaemon  *self,
+	const gchar  *id,
+	const gchar  *answer,
+	GError      **error
+);
+
+ClawtSkillProposal *
+clawt_daemon_skill_proposal_answer(
+	ClawtDaemon  *self,
+	const gchar  *id,
+	const gchar  *answer,
+	GError      **error
+);
+
+void
+clawt_daemon_skill_proposal_withdraw(
+	ClawtDaemon   *self,
+	ClawtDecision *decision
+);
+
+gchar *
+clawt_daemon_skill_propose_for_tools(
+	const gchar  *agent_id,
+	const gchar  *name,
+	const gchar  *description,
+	const gchar  *body,
+	gboolean      is_update,
+	const gchar  *reason,
+	gpointer      user_data,
+	GError      **error
+);
+
+JsonNode *
+clawt_daemon_handle_skill_proposal(
+	ClawtDaemon  *self,
+	const gchar  *kind,
+	JsonNode     *request,
+	JsonObject   *payload,
+	gboolean     *handled
 );
 
 JsonNode *

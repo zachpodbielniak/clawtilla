@@ -641,7 +641,7 @@ static const ClawtSchemaEntry schema[] = {
   "machine, the LAN (RFC 1918), link-local, CGNAT and tailnets\n"
   "(100.64.0.0/10), IPv6 unique-local, multicast or a cloud metadata\n"
   "service. It judges the address, after resolution, so a public name\n"
-  "pointed at 127.0.0.1 is refused too.", "0.17.0" },
+  "pointed at 127.0.0.1 is refused too.", "0.18.0" },
 
 { "egress.allow", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_COMMENTED,
   NULL, NULL,
@@ -654,7 +654,7 @@ static const ClawtSchemaEntry schema[] = {
   "opens loopback; loopback needs an address. Cloud metadata, multicast,\n"
   "the unspecified address and reserved space cannot be opened, and an\n"
   "entry naming one is refused. One bad entry refuses the whole list, at\n"
-  "load and where it is added.", "0.17.0" },
+  "load and where it is added.", "0.18.0" },
 
 /* ── plugins ─────────────────────────────────────────────────────── */
 { "plugins", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
@@ -774,7 +774,7 @@ static const ClawtSchemaEntry schema[] = {
   "A provider ai-glib reaches over HTTP, with its key configured the way\n"
   "ai_assist's is. A command-line provider would spend the 8 seconds\n"
   "starting. A message sent with reply: none never wakes its sender,\n"
-  "with or without this.", "0.17.0" },
+  "with or without this.", "0.18.0" },
 
 { "orchestration.mailbox", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Defaults for every agent's mailbox.\n"
@@ -920,6 +920,35 @@ static const ClawtSchemaEntry schema[] = {
   "pending waits so it can fold a new one into an old one.\n"
   "\n"
   "Override with max_waits on an agent. 0 removes the limit.", "0.15.0" },
+
+{ "orchestration.incidents", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Reports of runs that broke, sent to whoever leads the team.\n"
+  "\n"
+  "A delegated task that failed or stalled, an agent that would not start\n"
+  "with work waiting for it, and a routine run that did not happen each\n"
+  "open an incident: one per run (the same task failing again updates it),\n"
+  "filed in a room per team called \"Problems to look at\", and delivered\n"
+  "as a report the recipient can act on with clawtilla_task_retry. A\n"
+  "recipient that is mid-turn has its report held until the turn ends.\n"
+  "See docs/orchestration.org, \"Incidents\".", "0.18.0" },
+
+{ "orchestration.incidents.enabled", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "true", NULL,
+  "Whether broken runs open incidents at all.\n"
+  "\n"
+  "Off, nothing is filed and nobody is told; tasks still fail and stall\n"
+  "exactly as before, and their delegators still get the settle notice.\n"
+  "Retrying a failed task works either way.", "0.18.0" },
+
+{ "orchestration.incidents.to", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "lead", clawt_incident_recipient_get_type,
+  "Who an incident report goes to: lead, chief or none.\n"
+  "\n"
+  "lead is the failing agent's team lead, or the chief of staff when the\n"
+  "team has none (or two). chief is always the chief of staff. none spends\n"
+  "nobody's turn: the report is recorded in the room for you to read.\n"
+  "Never the agent whose run broke, and never the agent that delegated\n"
+  "the task -- it already has the settle notice.", "0.18.0" },
 
 { "memories", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "What an agent remembers between conversations.\n"
@@ -1092,6 +1121,18 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "The earliest steps are the ones kept, because the first part of a\nprocedure is a usable prefix of it while a slice out of the middle\nis not. Pointer motion is never counted: a drag is hundreds of\nevents and would spend the whole budget on the mouse travelling,\nso every click and scroll carries the position it happened at\ninstead.",
   "0.2.0" },
+
+{ "skills.max_proposals_per_day", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_COMMENTED,
+  "3", NULL,
+  "How many skills one agent may propose in any 24 hours.\n"
+  "\n"
+  "clawtilla_skill_propose lets an agent write down a technique it\n"
+  "worked out -- a new skill, or a change to one that exists -- as a\n"
+  "draft that reaches no prompt, with a decision in your inbox to\n"
+  "approve, edit or reject it. Every proposal spends your attention, so\n"
+  "this bounds how often one agent can ask for it; a rejected proposal\n"
+  "still counts. 0 turns proposing off, and the tool is not offered.",
+  "0.18.0" },
 
 { "rooms", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Standing rooms, created at startup if they do not exist.\n"
@@ -1651,6 +1692,24 @@ static const ClawtSchemaEntry schema[] = {
   "around it and has to work out from an error that it never had it.",
   "0.2.0" },
 
+{ "integrations.directory", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "auto", clawt_tool_directory_mode_get_type,
+  "connector: whether its tools are listed one by one or searched.\n"
+  "\n"
+  "A server with hundreds of tools puts every description into every\n"
+  "model call. As a directory it is three tools instead --\n"
+  "<name>_search_tools, <name>_describe_tool and <name>_call_tool -- and\n"
+  "the agent looks up what it needs. The search, the description and the\n"
+  "call all work from the tools this agent may use, so narrowing `tools:`\n"
+  "narrows what can be found as well as what can be called.\n"
+  "\n"
+  "`auto` makes a directory of a server past\n"
+  "connectors.directory_min_tools or connectors.directory_min_chars, for\n"
+  "an agent whose CLI does not search tools itself; Claude Code does, so\n"
+  "its agents get every tool as before. `always` makes one whatever the\n"
+  "size or the CLI, and `never` lists every tool however many there\n"
+  "are. See docs/connectors.org, \"Servers with many tools\".", "0.18.0" },
+
 
 /* ── connectors ──────────────────────────────────────────────────── */
 { "integrations.confirm_writes", CLAWT_SCHEMA_BOOLEAN,
@@ -1771,6 +1830,27 @@ static const ClawtSchemaEntry schema[] = {
   "daemon last started -- a restart must not reset this clock, or a\n"
   "fleet that bounces every hour would refresh every hour regardless of\n"
   "what this key says.", "0.2.0" },
+
+{ "connectors.directory_min_tools", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "40", NULL,
+  "More tools than this makes a connector's server a directory.\n"
+  "\n"
+  "Counted after the connector's `tools:` narrowing, because that is the\n"
+  "list the agent would otherwise read. Forty is where a tool list starts\n"
+  "to cost more than it helps -- and API-model engines refuse more than\n"
+  "128 tools a turn across every server they have. Only read when a\n"
+  "connector's `directory` is `auto`.", "0.18.0" },
+
+{ "connectors.directory_min_chars", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "100000", NULL,
+  "More characters of tool definitions than this makes a directory too.\n"
+  "\n"
+  "The names, descriptions and input schemas together, which is what the\n"
+  "model actually reads on every call. A server with thirty tools can\n"
+  "still be a hundred thousand characters when each one carries a page of\n"
+  "documentation; about where Claude Code starts searching its own tools\n"
+  "rather than listing them. Only read when a connector's `directory` is\n"
+  "`auto`.", "0.18.0" },
 
 /* ── grok ────────────────────────────────────────────────────────── */
 { "grok", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
@@ -2565,7 +2645,7 @@ static const ClawtSchemaEntry schema[] = {
   "Anything but open needs runtime.confine: bwrap -- outside the sandbox\n"
   "a process can ignore a proxy -- and without it the agent is disabled\n"
   "with that reason, never run on an open network instead. Takes effect\n"
-  "at the agent's next start.", "0.17.0" },
+  "at the agent's next start.", "0.18.0" },
 
 { "agents.runtime.autostart", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
@@ -2656,6 +2736,31 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "Desktop control is not a type -- it is the desktop block below, and\n"
   "works alongside any of these.", "0.1.0" },
+
+{ "agents.computer.start", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "on_agent_start", clawt_computer_start_get_type,
+  "When the machine is started: with the agent, or the first time\n"
+  "something runs in it.\n"
+  "\n"
+  "on_agent_start brings the computer up before the agent's first turn,\n"
+  "so a broken image or a dead libvirtd stops the agent at once, with the\n"
+  "reason, instead of a turn later. That is the default, and what every\n"
+  "agent did before this key existed.\n"
+  "\n"
+  "on_first_use leaves it down until the first clawtilla_computer_exec,\n"
+  "`computer exec`, wait condition or desktop call. The agent's own bash,\n"
+  "read and write run on the host either way, so an agent that mostly\n"
+  "talks, plans or delegates never pays for a VM it does not touch.\n"
+  "Callers that arrive while it is coming up share the one start, and\n"
+  "the time it takes is not counted against the command's timeout.\n"
+  "\n"
+  "Applies to container, distrobox, vm and ssh computers; a host computer\n"
+  "is a local check and always starts with the agent. A computer stopped\n"
+  "by hand under a running agent is started again by its next use.\n"
+  "\n"
+  "An agent with a VM desktop is the exception in practice: its MCP\n"
+  "client asks for the desktop when the agent starts, and that request\n"
+  "is a use.", "0.17.0" },
 
 { "agents.computer.exchange", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "true", NULL,
@@ -2909,6 +3014,44 @@ static const ClawtSchemaEntry schema[] = {
   "gone rather than offline, which is not what the word stop suggests.",
   "0.1.0" },
 
+{ "agents.computer.container.pids_limit", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_NONE, "0", NULL,
+  "Most processes and threads the machine may hold at once.\n"
+  "\n"
+  "What stops a fork bomb, or a build with -j0, taking the host down with\n"
+  "it. 0 leaves podman's own default (2048 on Fedora, from\n"
+  "containers.conf); -1 removes the limit. Anything else is the limit.\n"
+  "\n"
+  "Read by the distrobox backend too, which is a podman container\n"
+  "underneath: computer.container.* limits reach either. Passed to podman\n"
+  "when the machine is created; a changed value is applied to the\n"
+  "existing one with `podman update` at the next start, without a\n"
+  "rebuild and without losing what the agent installed.", "0.17.0" },
+
+{ "agents.computer.container.memory", CLAWT_SCHEMA_STRING,
+  CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Most memory the machine may use, e.g. 512m or 4g.\n"
+  "\n"
+  "A whole number with an optional unit -- b, k, m or g, in powers of\n"
+  "1024 -- and at least 6m, which is podman's floor. Unset means no limit\n"
+  "beyond the host's. Past it the kernel's OOM killer picks a process\n"
+  "inside the machine, which is the point: the agent's container dies\n"
+  "rather than your desktop.\n"
+  "\n"
+  "Applies to container and distrobox computers, at creation and then\n"
+  "with `podman update` whenever it changes.", "0.17.0" },
+
+{ "agents.computer.container.memory_swap", CLAWT_SCHEMA_STRING,
+  CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Memory and swap together, e.g. 8g; -1 for unlimited swap.\n"
+  "\n"
+  "podman's own meaning, and easy to misread: this is the total, not the\n"
+  "swap alone, so memory: 4g with memory_swap: 6g allows 2g of swap. Equal\n"
+  "to memory means no swap at all. Unset lets podman allow as much swap\n"
+  "again as memory. It needs memory to be set and must not be smaller\n"
+  "than it; both are refused when they arrive rather than when podman\n"
+  "reads them.", "0.17.0" },
+
 /* ── agents.computer.ssh ─────────────────────────────────────────── */
 { "agents.computer.ssh", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
@@ -3020,6 +3163,30 @@ static const ClawtSchemaEntry schema[] = {
   "means the master is never created and every command silently pays a\n"
   "fresh handshake.",
   "0.2.0" },
+
+{ "agents.computer.ssh.wake_command", CLAWT_SCHEMA_STRING_LIST,
+  CLAWT_SCHEMA_FLAG_ARGV, NULL, NULL,
+  "A program to run when the machine does not answer, to wake it.\n"
+  "\n"
+  "For a machine that sleeps: a homelab box that suspends when idle, a\n"
+  "cloud server that is paused. Wake-on-LAN is the usual answer --\n"
+  "[wakeonlan, aa:bb:cc:dd:ee:ff] -- or a provider's own resume command.\n"
+  "It should return once the machine is on its way up; clawtilla then\n"
+  "connects as usual, and ssh's connect_timeout covers the rest of the\n"
+  "boot.\n"
+  "\n"
+  "A program and its arguments, as a list. It is never run through a\n"
+  "shell, so a pipe or a redirect would be text; written as one line in\n"
+  "a client it is split into words and refused if it uses one. Nothing\n"
+  "is substituted into it.\n"
+  "\n"
+  "Run only when a connection attempt finds nothing answering, never for\n"
+  "a refused key or login. Commands that arrive while it runs wait for\n"
+  "that one run rather than starting their own, and each is told how\n"
+  "long it waited. It gets at most 120 seconds, after which it is killed\n"
+  "along with everything it started, and the time is not taken out of\n"
+  "the command's own timeout. A wake that fails is reported with the\n"
+  "connection failure, saying which.", "0.17.0" },
 
 /* ── agents.computer.distrobox ───────────────────────────────────── */
 { "agents.computer.distrobox", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE,

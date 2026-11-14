@@ -1391,6 +1391,79 @@ clawt_command_shell_syntax_refusal(const gchar *command)
         "bash -c \"<the whole command line>\"", found);
 }
 
+GStrv
+clawt_command_line_split(const gchar *line, GError **error)
+{
+    g_autofree gchar *refusal = NULL;
+    g_autoptr(GError) local = NULL;
+    gchar **argv = NULL;
+    const gchar *p;
+
+    /* Blank is "no command", which a text field has no other way to say. */
+    for (p = line; p != NULL && *p != '\0' && g_ascii_isspace(*p); p++)
+        ;
+
+    if (p == NULL || *p == '\0')
+        return g_new0(gchar *, 1);
+
+    /*
+     * Checked on the raw text, before the quotes are gone: after
+     * lexing, `x 'a|b'` and `x a | b` are the same words, and only the
+     * quoting says whether the pipe was meant as a pipe.
+     */
+    refusal = clawt_command_shell_syntax_refusal(line);
+
+    if (refusal != NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            refusal);
+        return NULL;
+    }
+
+    if (!g_shell_parse_argv(line, NULL, &argv, &local)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "that command line could not be split into words: %s",
+                    local->message);
+        return NULL;
+    }
+
+    return argv;
+}
+
+gchar *
+clawt_command_line_join(const gchar * const *argv)
+{
+    g_autoptr(GString) out = g_string_new(NULL);
+    gsize i;
+
+    for (i = 0; argv != NULL && argv[i] != NULL; i++) {
+        const gchar *word = argv[i];
+        const gchar *p;
+        gboolean plain = (*word != '\0');
+
+        /*
+         * Quoted only when it has to be, so a MAC address or a path reads
+         * as itself; anything outside this set could change meaning when
+         * the line is split again.
+         */
+        for (p = word; *p != '\0' && plain; p++)
+            if (!g_ascii_isalnum(*p) && strchr("-_./:=@,+%", *p) == NULL)
+                plain = FALSE;
+
+        if (i > 0)
+            g_string_append_c(out, ' ');
+
+        if (plain) {
+            g_string_append(out, word);
+        } else {
+            g_autofree gchar *quoted = g_shell_quote(word);
+
+            g_string_append(out, quoted);
+        }
+    }
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
 gboolean
 clawt_log_level_permits(ClawtLogLevel  ceiling,
                         GLogLevelFlags level)

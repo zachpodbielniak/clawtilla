@@ -36,29 +36,14 @@
 
 typedef struct {
     GMainLoop      *loop;
-    GStrv           permitted;
 
     /*
-     * Whether to filter at all, which is not the same question as
-     * whether @permitted is empty.
-     *
-     * A NULL @permitted means "no tool is allowed", and that is the
-     * right fail-closed default for a grant clawtilla is enforcing --
-     * an observe-only desktop must not widen itself because a list went
-     * missing.  But a connector with no list configured means the
-     * opposite: every tool the server offers.  Reusing NULL for both
-     * would hand that agent an empty tool list and look exactly like a
-     * connector that failed to start.
+     * Every decision about a message: the permitted list, whether it
+     * applies at all, the per-call gate and the directory.  Kept as one
+     * struct because the HTTP bridge makes the same decisions through
+     * the same functions -- see ClawtMcpRelayPolicy.
      */
-    gboolean        filter;
-    const gchar    *hint;
-
-    /*
-     * Asked once per permitted call, for the answer that can change
-     * while the relay runs: whether a person has taken the screen.
-     */
-    ClawtMcpRelayGate gate;
-    gpointer          gate_data;
+    const ClawtMcpRelayPolicy *policy;
 
     GDataInputStream  *from_client;
     GDataInputStream  *from_guest;
@@ -408,6 +393,125 @@ clawt_mcp_relay_filter_inbound(const gchar *line, GStrv permitted)
     return render(object);
 }
 
+void
+clawt_mcp_relay_policy_outbound(const ClawtMcpRelayPolicy  *policy,
+                                const gchar                *line,
+                                gchar                     **to_server,
+                                gchar                     **to_client)
+{
+    g_autofree gchar *rewritten = NULL;
+    g_autofree gchar *tool = NULL;
+    g_autofree gchar *refusal = NULL;
+    const gchar *effective = line;
+
+    *to_server = NULL;
+    *to_client = NULL;
+
+    g_return_if_fail(policy != NULL);
+
+    /*
+     * A batch is refused whenever anything here would look inside it,
+     * not only when the permitted list applies.  The gate and the
+     * directory read one call per line; a batch would carry its calls
+     * past both, which for the gate is an approval nobody was asked for.
+     */
+    if (!policy->filter &&
+        (policy->gate != NULL || policy->directory != NULL)) {
+        g_autoptr(JsonObject) object = NULL;
+        gboolean batch = FALSE;
+
+        parse_object(line, &object, &batch);
+
+        if (batch) {
+            *to_client = build_batch_refusal();
+            return;
+        }
+    }
+
+    /*
+     * The directory first, so everything after it sees the tool that
+     * would actually run.  A search or a describe is answered here and
+     * goes no further -- it runs nothing on the server.
+     */
+    if (policy->directory != NULL &&
+        clawt_mcp_directory_rewrite_outbound(policy->directory, line,
+                                             &rewritten, to_client)) {
+        if (rewritten == NULL)
+            return;
+
+        effective = rewritten;
+    }
+
+    /*
+     * The permitted list, again, on the inner call.  The directory was
+     * built from the filtered list and only calls what it holds, so this
+     * refuses nothing it would not -- and that is the point: the wall
+     * and the door are checked from one list, not trusted to agree.
+     */
+    if (policy->filter &&
+        !clawt_mcp_relay_filter_outbound(effective, policy->permitted,
+                                         policy->hint, &refusal)) {
+        *to_client = g_steal_pointer(&refusal);
+        return;
+    }
+
+    /*
+     * The permitted list said yes; the gate gets the question that
+     * could not be answered when the relay started.
+     *
+     * Only for a real tools/call: everything else -- the handshake,
+     * tools/list, a notification -- goes straight through, so a gate
+     * that has to reach the daemon costs nothing on the messages that
+     * make up most of the traffic.
+     */
+    if (policy->gate != NULL)
+        tool = clawt_mcp_relay_call_name(effective);
+
+    if (tool != NULL) {
+        g_autofree gchar *denied = NULL;
+
+        if (!policy->gate(tool, &denied, policy->gate_data)) {
+            *to_client = clawt_mcp_relay_build_refusal(
+                effective,
+                (denied != NULL) ? denied
+                                 : "clawtilla is not allowing that right "
+                                   "now.");
+            return;
+        }
+    }
+
+    *to_server = g_strdup(effective);
+}
+
+void
+clawt_mcp_relay_policy_inbound(const ClawtMcpRelayPolicy  *policy,
+                               const gchar                *line,
+                               gchar                     **to_client,
+                               gchar                     **to_server)
+{
+    g_autofree gchar *filtered = NULL;
+
+    *to_client = NULL;
+    *to_server = NULL;
+
+    g_return_if_fail(policy != NULL);
+
+    filtered = policy->filter
+        ? clawt_mcp_relay_filter_inbound(line, policy->permitted)
+        : g_strdup(line);
+
+    /*
+     * After the filter, never before: the directory is built from what
+     * reaches it, and what reaches it is what this agent may use.
+     */
+    if (policy->directory != NULL &&
+        clawt_mcp_directory_rewrite_inbound(policy->directory, filtered,
+                                            to_client, to_server))
+        return;
+
+    *to_client = g_steal_pointer(&filtered);
+}
+
 /*
  * Writes one framed message.
  *
@@ -469,64 +573,27 @@ on_line(GObject *source, GAsyncResult *result, gpointer user_data)
         return;
     }
 
-    if (stream == relay->from_client) {
-        g_autofree gchar *refusal = NULL;
+    {
+        g_autofree gchar *to_client = NULL;
+        g_autofree gchar *to_server = NULL;
 
-        if (!relay->filter ||
-            clawt_mcp_relay_filter_outbound(line, relay->permitted,
-                                            relay->hint, &refusal)) {
-            /*
-             * The permitted list said yes; the gate gets the question
-             * that could not be answered when the relay started.
-             *
-             * Only for a real tools/call: everything else -- the
-             * handshake, tools/list, a notification -- goes straight
-             * through, so a gate that has to reach the daemon costs
-             * nothing on the messages that make up most of the traffic.
-             */
-            g_autofree gchar *tool =
-                (relay->gate != NULL) ? clawt_mcp_relay_call_name(line)
-                                      : NULL;
-            g_autofree gchar *denied = NULL;
+        if (stream == relay->from_client)
+            clawt_mcp_relay_policy_outbound(relay->policy, line, &to_server,
+                                            &to_client);
+        else
+            clawt_mcp_relay_policy_inbound(relay->policy, line, &to_client,
+                                           &to_server);
 
-            if (tool != NULL &&
-                !relay->gate(tool, &denied, relay->gate_data)) {
-                g_autofree gchar *reply = clawt_mcp_relay_build_refusal(
-                    line,
-                    (denied != NULL) ? denied
-                                     : "clawtilla is not allowing that "
-                                       "right now.");
-
-                if (reply != NULL && !write_line(relay->to_client, reply)) {
-                    direction_closed(relay);
-                    return;
-                }
-
-                relay_read_next(relay, stream);
-                return;
-            }
-
-            if (!write_line(relay->to_guest, line)) {
-                direction_closed(relay);
-                return;
-            }
-        } else if (refusal != NULL) {
-            /*
-             * Answered here rather than forwarded: the guest would run
-             * it, and the point is that it must not.
-             */
-            if (!write_line(relay->to_client, refusal)) {
-                direction_closed(relay);
-                return;
-            }
+        /*
+         * Answered here rather than forwarded when it is a refusal: the
+         * guest would run it, and the point is that it must not.
+         */
+        if (to_client != NULL && !write_line(relay->to_client, to_client)) {
+            direction_closed(relay);
+            return;
         }
-    } else {
-        g_autofree gchar *filtered =
-            relay->filter
-            ? clawt_mcp_relay_filter_inbound(line, relay->permitted)
-            : g_strdup(line);
 
-        if (!write_line(relay->to_client, filtered)) {
+        if (to_server != NULL && !write_line(relay->to_guest, to_server)) {
             direction_closed(relay);
             return;
         }
@@ -542,9 +609,10 @@ relay_read_next(Relay *relay, GDataInputStream *source)
                                         on_line, relay);
 }
 
-static gint
-relay_run(GStrv argv, GStrv envp, GStrv permitted, gboolean filter,
-          const gchar *hint, ClawtMcpRelayGate gate, gpointer gate_data)
+gint
+clawt_mcp_relay_run_policy(GStrv                      argv,
+                           GStrv                      envp,
+                           const ClawtMcpRelayPolicy *policy)
 {
     Relay relay = { 0 };
     g_autoptr(GSubprocessLauncher) launcher = NULL;
@@ -557,6 +625,7 @@ relay_run(GStrv argv, GStrv envp, GStrv permitted, gboolean filter,
     g_autoptr(GError) error = NULL;
 
     g_return_val_if_fail(argv != NULL && argv[0] != NULL, EXIT_FAILURE);
+    g_return_val_if_fail(policy != NULL, EXIT_FAILURE);
 
     /*
      * The child's stderr is inherited rather than piped.  It carries ssh's
@@ -614,11 +683,7 @@ relay_run(GStrv argv, GStrv envp, GStrv permitted, gboolean filter,
     loop = g_main_loop_new(NULL, FALSE);
 
     relay.loop = loop;
-    relay.permitted = permitted;
-    relay.filter = filter;
-    relay.hint = hint;
-    relay.gate = gate;
-    relay.gate_data = gate_data;
+    relay.policy = policy;
     relay.from_client = from_client;
     relay.from_guest = from_guest;
     relay.to_client = stdout_stream;
@@ -641,6 +706,21 @@ relay_run(GStrv argv, GStrv envp, GStrv permitted, gboolean filter,
     g_subprocess_wait(child, NULL, NULL);
 
     return EXIT_SUCCESS;
+}
+
+static gint
+relay_run(GStrv argv, GStrv envp, GStrv permitted, gboolean filter,
+          const gchar *hint, ClawtMcpRelayGate gate, gpointer gate_data)
+{
+    ClawtMcpRelayPolicy policy = { 0 };
+
+    policy.permitted = permitted;
+    policy.filter = filter;
+    policy.hint = hint;
+    policy.gate = gate;
+    policy.gate_data = gate_data;
+
+    return clawt_mcp_relay_run_policy(argv, envp, &policy);
 }
 
 gint

@@ -15,6 +15,176 @@
 #include "core/clawt-daemon.h"
 #include "core/clawt-daemon-private.h"
 
+/*
+ * The answer to computer.desktop: how to reach the agent's VM desktop,
+ * and which of its tools the agent may use.
+ *
+ * Its own function so it can be given twice over -- straight away, and
+ * from on_desktop_first_use() once a VM that starts on first use is up.
+ */
+static JsonNode *
+computer_desktop_reply(ClawtDaemon *self, JsonNode *request,
+                       const gchar *agent_id)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    ClawtAgent *agent = (agent_id != NULL)
+                        ? clawt_agent_manager_get(self->agents, agent_id)
+                        : NULL;
+    ClawtComputer *computer = (agent != NULL)
+                              ? clawt_agent_get_computer(agent) : NULL;
+    ClawtAgentConfig *agent_config = (agent != NULL)
+                                     ? clawt_agent_get_config(agent)
+                                     : NULL;
+    g_autoptr(ClawtDesktop) built = NULL;
+    ClawtDesktop *desktop = NULL;
+    g_auto(GStrv) argv = NULL;
+    g_auto(GStrv) tools = NULL;
+    gsize i;
+
+    if (agent == NULL)
+        return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                   "there is no such agent");
+
+    /*
+     * The attached desktop when there is one, and otherwise one built
+     * from the config.
+     *
+     * An agent only gets a ClawtDesktop when it is started, so a
+     * stopped agent with the grant plainly set was told it "has no
+     * desktop; set computer.desktop.enabled" -- naming the key that
+     * was already true. The policy is a pure function of the config,
+     * so it can be answered without the agent running.
+     */
+    desktop = clawt_agent_get_desktop(agent);
+
+    if (desktop == NULL) {
+        built = clawt_computer_factory_create_desktop(agent_config);
+        desktop = built;
+    }
+
+    if (desktop == NULL)
+        return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                   "that agent has no desktop; set "
+                                   "computer.desktop.enabled");
+
+    if (clawt_agent_config_get_enum(agent_config, "computer.type") !=
+        CLAWT_COMPUTER_VM)
+        return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
+                                   "that agent's desktop is not in a "
+                                   "VM, so there is nothing to relay "
+                                   "to");
+
+    /*
+     * Configured for a VM but without one built means the agent is
+     * not running, which is a different thing from being misconfigured
+     * and deserves saying so.
+     */
+    if (computer == NULL ||
+        clawt_computer_get_computer_type(computer) != CLAWT_COMPUTER_VM)
+        return clawt_ipc_error_new(request, CLAWT_ERROR_AGENT_STATE,
+                                   "that agent is not running, so its "
+                                   "VM has no address yet. Start the "
+                                   "agent first.");
+
+    /*
+     * Built here rather than written into the agent's .mcp.json,
+     * because the port that reaches the guest is chosen when the VM
+     * is provisioned -- which is after the workspace files are
+     * written, and again after anybody edits the config. A command
+     * line captured at render time would name a port nothing is
+     * listening on.
+     */
+    argv = clawt_vm_computer_build_desktop_argv(CLAWT_VM_COMPUTER(computer));
+
+    if (argv == NULL)
+        return clawt_ipc_error_new(
+            request, CLAWT_ERROR_COMPUTER_EXEC,
+            "nothing reaches that agent's VM yet: it may not be "
+            "running, or no port is forwarded to it. Start the agent "
+            "and try again.");
+
+    tools = clawt_desktop_get_tool_names(desktop);
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "backend");
+    json_builder_add_string_value(
+        builder, clawt_enum_to_nick(CLAWT_TYPE_DESKTOP_BACKEND,
+                                    clawt_desktop_resolve_backend(desktop,
+                                                                  NULL)));
+
+    json_builder_set_member_name(builder, "argv");
+    json_builder_begin_array(builder);
+    for (i = 0; argv[i] != NULL; i++)
+        json_builder_add_string_value(builder, argv[i]);
+    json_builder_end_array(builder);
+
+    /*
+     * The permitted tools travel with the command, so the relay does
+     * not need its own copy of the policy -- and so an agent whose
+     * allow_input was turned off stops being able to click the moment
+     * the daemon is reloaded, rather than whenever its MCP client is
+     * next restarted.
+     */
+    json_builder_set_member_name(builder, "tools");
+    json_builder_begin_array(builder);
+    for (i = 0; tools != NULL && tools[i] != NULL; i++)
+        json_builder_add_string_value(builder, tools[i]);
+    json_builder_end_array(builder);
+    json_builder_end_object(builder);
+
+    return clawt_ipc_response_new(request, json_builder_get_root(builder));
+}
+
+/*
+ * A desktop request that had to start the VM first.
+ *
+ * The computer is held for the length of the start, as the lifecycle
+ * verbs hold it, so an agent removed in the meantime does not leave the
+ * worker with a computer nobody owns.
+ */
+typedef struct {
+    ClawtDaemon       *daemon;
+    ClawtIpcPending   *pending;
+    ClawtComputer     *computer;
+    gchar             *agent_id;
+} DesktopJob;
+
+static void
+desktop_job_free(DesktopJob *job)
+{
+    g_clear_object(&job->daemon);
+    g_clear_object(&job->computer);
+    g_free(job->agent_id);
+    g_free(job);
+}
+
+static void
+on_desktop_first_use(GObject *source, GAsyncResult *result,
+                     gpointer user_data)
+{
+    DesktopJob *job = user_data;
+    JsonNode *request = clawt_ipc_pending_get_request(job->pending);
+    g_autoptr(GError) error = NULL;
+    JsonNode *reply;
+
+    if (!clawt_computer_lifecycle_finish(CLAWT_COMPUTER(source), result,
+                                         &error)) {
+        g_autofree gchar *detail = g_strdup_printf(
+            "%s's VM starts on first use, and it did not start for its "
+            "desktop: %s", job->agent_id, error->message);
+
+        reply = clawt_ipc_error_new(request, error->code, detail);
+    } else {
+        reply = computer_desktop_reply(job->daemon, request, job->agent_id);
+    }
+
+    /* The machine moved, whichever way it went: every client redraws it. */
+    clawt_event_bus_emit(job->daemon->bus, "agent.changed", job->agent_id);
+    clawt_ipc_pending_respond(job->pending, reply);
+    job->pending = NULL;
+    desktop_job_free(job);
+}
+
 JsonNode *
 clawt_daemon_handle_computer(
     ClawtDaemon  *self,
@@ -506,107 +676,42 @@ clawt_daemon_handle_computer(
                             : NULL;
         ClawtComputer *computer = (agent != NULL)
                                   ? clawt_agent_get_computer(agent) : NULL;
-        ClawtAgentConfig *agent_config = (agent != NULL)
-                                         ? clawt_agent_get_config(agent)
-                                         : NULL;
-        g_autoptr(ClawtDesktop) built = NULL;
-        ClawtDesktop *desktop = NULL;
-        g_auto(GStrv) argv = NULL;
-        g_auto(GStrv) tools = NULL;
-        gsize i;
-
-        if (agent == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "there is no such agent");
 
         /*
-         * The attached desktop when there is one, and otherwise one built
-         * from the config.
-         *
-         * An agent only gets a ClawtDesktop when it is started, so a
-         * stopped agent with the grant plainly set was told it "has no
-         * desktop; set computer.desktop.enabled" -- naming the key that
-         * was already true. The policy is a pure function of the config,
-         * so it can be answered without the agent running.
+         * A VM waiting for its first use is started by this request: the
+         * relay asking for the desktop is the agent reaching for it. The
+         * answer is deferred while it boots, because a boot is minutes
+         * and an IPC handler must not wait on it.
          */
-        desktop = clawt_agent_get_desktop(agent);
+        if (computer != NULL &&
+            clawt_computer_get_computer_type(computer) == CLAWT_COMPUTER_VM &&
+            clawt_computer_get_start_on_first_use(computer) &&
+            clawt_computer_get_state(computer) !=
+                CLAWT_COMPUTER_STATE_RUNNING &&
+            clawt_agent_get_desktop(agent) != NULL) {
+            DesktopJob *job = g_new0(DesktopJob, 1);
 
-        if (desktop == NULL) {
-            built = clawt_computer_factory_create_desktop(agent_config);
-            desktop = built;
+            job->pending = clawt_ipc_server_defer(self->ipc_server, request);
+
+            if (job->pending == NULL) {
+                desktop_job_free(job);
+                return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                           "this request cannot be answered "
+                                           "later");
+            }
+
+            job->daemon = g_object_ref(self);
+            job->computer = g_object_ref(computer);
+            job->agent_id = g_strdup(agent_id);
+
+            clawt_computer_lifecycle_async(
+                computer, CLAWT_COMPUTER_LIFECYCLE_FIRST_USE,
+                self->main_context, NULL, on_desktop_first_use, job);
+
+            return NULL;
         }
 
-        if (desktop == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "that agent has no desktop; set "
-                                       "computer.desktop.enabled");
-
-        if (clawt_agent_config_get_enum(agent_config, "computer.type") !=
-            CLAWT_COMPUTER_VM)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
-                                       "that agent's desktop is not in a "
-                                       "VM, so there is nothing to relay "
-                                       "to");
-
-        /*
-         * Configured for a VM but without one built means the agent is
-         * not running, which is a different thing from being misconfigured
-         * and deserves saying so.
-         */
-        if (computer == NULL ||
-            clawt_computer_get_computer_type(computer) != CLAWT_COMPUTER_VM)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_AGENT_STATE,
-                                       "that agent is not running, so its "
-                                       "VM has no address yet. Start the "
-                                       "agent first.");
-
-        /*
-         * Built here rather than written into the agent's .mcp.json,
-         * because the port that reaches the guest is chosen when the VM
-         * is provisioned -- which is after the workspace files are
-         * written, and again after anybody edits the config. A command
-         * line captured at render time would name a port nothing is
-         * listening on.
-         */
-        argv = clawt_vm_computer_build_desktop_argv(CLAWT_VM_COMPUTER(computer));
-
-        if (argv == NULL)
-            return clawt_ipc_error_new(
-                request, CLAWT_ERROR_COMPUTER_EXEC,
-                "nothing reaches that agent's VM yet: it may not be "
-                "running, or no port is forwarded to it. Start the agent "
-                "and try again.");
-
-        tools = clawt_desktop_get_tool_names(desktop);
-
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, "backend");
-        json_builder_add_string_value(
-            builder, clawt_enum_to_nick(CLAWT_TYPE_DESKTOP_BACKEND,
-                                        clawt_desktop_resolve_backend(desktop,
-                                                                      NULL)));
-
-        json_builder_set_member_name(builder, "argv");
-        json_builder_begin_array(builder);
-        for (i = 0; argv[i] != NULL; i++)
-            json_builder_add_string_value(builder, argv[i]);
-        json_builder_end_array(builder);
-
-        /*
-         * The permitted tools travel with the command, so the relay does
-         * not need its own copy of the policy -- and so an agent whose
-         * allow_input was turned off stops being able to click the moment
-         * the daemon is reloaded, rather than whenever its MCP client is
-         * next restarted.
-         */
-        json_builder_set_member_name(builder, "tools");
-        json_builder_begin_array(builder);
-        for (i = 0; tools != NULL && tools[i] != NULL; i++)
-            json_builder_add_string_value(builder, tools[i]);
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+        return computer_desktop_reply(self, request, agent_id);
     }
 
     if (g_strcmp0(kind, "computer.copy") == 0) {

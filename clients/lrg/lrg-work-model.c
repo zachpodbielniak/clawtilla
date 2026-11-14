@@ -1391,6 +1391,120 @@ clawt_lrg_decision_answer(const gchar *option, const gchar *typed)
     return NULL;
 }
 
+/* ── Skill proposals ──────────────────────────────────────────────── */
+
+gchar *
+clawt_lrg_proposal_title(JsonObject *decision)
+{
+    const gchar *question = clawt_ipc_payload_string(decision, "question");
+    const gchar *end;
+
+    if (question == NULL)
+        return g_strdup("");
+
+    end = strchr(question, '\n');
+
+    return (end != NULL) ? g_strndup(question, (gsize)(end - question))
+                         : g_strdup(question);
+}
+
+JsonArray *
+clawt_lrg_proposal_items(JsonNode *reply)
+{
+    JsonObject *root = clawt_ipc_reply_object(reply);
+
+    if (root == NULL || !json_object_has_member(root, "proposals") ||
+        !JSON_NODE_HOLDS_ARRAY(json_object_get_member(root, "proposals")))
+        return NULL;
+
+    return json_object_get_array_member(root, "proposals");
+}
+
+JsonObject *
+clawt_lrg_proposal_find(JsonNode *reply, const gchar *id)
+{
+    JsonArray *items;
+    guint i;
+
+    if (!clawt_skill_proposal_id_is_valid(id))
+        return NULL;
+
+    items = clawt_lrg_proposal_items(reply);
+
+    for (i = 0; items != NULL && i < json_array_get_length(items); i++) {
+        JsonObject *proposal = json_array_get_object_element(items, i);
+
+        if (proposal != NULL &&
+            g_strcmp0(clawt_ipc_payload_string(proposal, "id"), id) == 0)
+            return proposal;
+    }
+
+    return NULL;
+}
+
+const gchar *
+clawt_lrg_proposal_shown(JsonObject *proposal)
+{
+    const gchar *diff = clawt_ipc_payload_string(proposal, "diff");
+    const gchar *text = clawt_ipc_payload_string(proposal, "text");
+
+    if (g_strcmp0(clawt_ipc_payload_string(proposal, "kind"), "update") == 0 &&
+        !blank(diff))
+        return diff;
+
+    return (text != NULL) ? text : "";
+}
+
+gchar *
+clawt_lrg_proposal_summary(JsonObject *proposal, gint64 now_us)
+{
+    const gchar *agent = clawt_ipc_payload_string(proposal, "agent");
+    gint64 created = clawt_ipc_payload_int(proposal, "created_at", 0);
+    gboolean update = g_strcmp0(clawt_ipc_payload_string(proposal, "kind"),
+                                "update") == 0;
+    const gchar *what = update ? "proposes a change to this skill"
+                               : "proposes a new skill";
+    g_autofree gchar *ago = NULL;
+
+    if (created <= 0)
+        return g_strdup_printf("%s %s", (agent != NULL) ? agent : "?", what);
+
+    ago = clawt_time_ago_label(created, now_us);
+    return g_strdup_printf("%s %s \302\267 %s",
+                           (agent != NULL) ? agent : "?", what, ago);
+}
+
+JsonNode *
+clawt_lrg_proposal_resolve_payload(const gchar  *id,
+                                   const gchar  *action,
+                                   const gchar  *note,
+                                   const gchar  *description,
+                                   const gchar  *body,
+                                   gchar       **refusal)
+{
+    gboolean edit = g_strcmp0(action, "edit") == 0;
+
+    if (!clawt_skill_proposal_id_is_valid(id)) {
+        if (refusal != NULL)
+            *refusal = g_strdup("That is not a skill proposal");
+        return NULL;
+    }
+
+    if (edit && (blank(description) || blank(body))) {
+        if (refusal != NULL)
+            *refusal = g_strdup("An edited skill needs a description and a "
+                                "body");
+        return NULL;
+    }
+
+    return clawt_ipc_payload_new("proposal", id,
+                                 "action", action,
+                                 "note", blank(note) ? NULL : note,
+                                 "description", edit ? description : NULL,
+                                 "body", edit ? body : NULL,
+                                 NULL);
+}
+
 /* ── Go to… ───────────────────────────────────────────────────────── */
 
 static void
@@ -1471,7 +1585,7 @@ clawt_lrg_nav_targets(JsonNode *agents, JsonNode *rooms,
         const gchar *team = clawt_ipc_payload_string(room, "team");
         g_autofree gchar *detail = NULL;
 
-        if (id == NULL || !clawt_ipc_payload_boolean(room, "declared", FALSE))
+        if (id == NULL || !clawt_room_is_listed(id))
             continue;
 
         detail = g_strdup_printf("Room \302\267 %s \302\267 %s", id,

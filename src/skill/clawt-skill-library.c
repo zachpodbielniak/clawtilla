@@ -816,6 +816,93 @@ clawt_skill_library_create_taught(ClawtSkillLibrary  *self,
                           CLAWT_SKILL_SOURCE_TAUGHT, origin, error);
 }
 
+ClawtSkill *
+clawt_skill_library_replace(ClawtSkillLibrary  *self,
+                            const gchar        *name,
+                            const gchar        *description,
+                            const gchar        *body,
+                            GError            **error)
+{
+    g_autofree gchar *directory = NULL;
+    g_autofree gchar *rendered = NULL;
+    g_autofree gchar *digest = NULL;
+    g_autoptr(ClawtSkill) parsed = NULL;
+    g_autoptr(ClawtSkill) updated = NULL;
+    ClawtSkill *current;
+
+    g_return_val_if_fail(CLAWT_IS_SKILL_LIBRARY(self), NULL);
+
+    if (self->directory == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                            "no skills directory is configured");
+        return NULL;
+    }
+
+    directory = clawt_skill_directory_for(self->directory, name);
+
+    if (directory == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "'%s' is not a skill name", name != NULL ? name : "");
+        return NULL;
+    }
+
+    current = clawt_skill_library_lookup(self, name);
+
+    if (current == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "no skill called '%s'", name);
+        return NULL;
+    }
+
+    /*
+     * Only a skill that lives in the library's own directory.  One read
+     * from an extra root is somebody else's file, and a bundled one is
+     * rewritten by the next clawtilla that ships a newer copy -- so a
+     * write to either would be refused by the person or silently undone.
+     */
+    if (g_strcmp0(clawt_skill_get_directory(current), directory) != 0) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED,
+                    "'%s' is read from %s, which is not the library's own "
+                    "directory; clawtilla does not rewrite it",
+                    name, clawt_skill_get_directory(current) != NULL
+                              ? clawt_skill_get_directory(current) : "elsewhere");
+        return NULL;
+    }
+
+    if (description == NULL || *description == '\0') {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "a skill needs a description; it is the only part an "
+                    "agent sees before opening it");
+        return NULL;
+    }
+
+    updated = clawt_skill_copy(current);
+    clawt_skill_set_description(updated, description);
+    clawt_skill_set_body(updated, body != NULL ? body : "");
+
+    /*
+     * The parse a read would make, before the write rather than after
+     * it: a replacement that will not load is refused while the old
+     * file is still there.
+     */
+    rendered = clawt_skill_render(updated);
+    parsed = clawt_skill_parse(rendered, -1, name, error);
+
+    if (parsed == NULL)
+        return NULL;
+
+    digest = clawt_skill_digest(rendered);
+    clawt_skill_set_digest(updated, digest);
+
+    if (!library_write(self, updated, directory, error))
+        return NULL;
+
+    clawt_skill_library_scan(self);
+    g_signal_emit(self, signals[SIGNAL_CHANGED], 0);
+
+    return clawt_skill_library_lookup(self, name);
+}
+
 /*
  * What a sibling file's presence means, in one place.
  *

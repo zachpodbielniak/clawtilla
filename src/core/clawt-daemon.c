@@ -1144,6 +1144,74 @@ routine_model(ClawtDaemon *self, const gchar *routine_id)
 }
 
 /*
+ * A routine run that never became a task, filed as an incident.
+ *
+ * Only the refusals before a task exists come here.  A run whose
+ * delivery fails has a task by then, and failing it reaches the desk
+ * through ::task-changed with the routine attached -- the same incident,
+ * found by the routine's key, rather than a second one.
+ */
+static void
+report_routine_refusal(
+	ClawtDaemon  *self,
+	const gchar  *routine_id,
+	const gchar  *agent_id,
+	GError      **error
+){
+	if (self->incidents == NULL)
+		return;
+
+	clawt_incident_desk_raise(self->incidents, CLAWT_INCIDENT_ROUTINE_FAILED,
+	                          agent_id, NULL, routine_id,
+	                          (error != NULL && *error != NULL)
+	                              ? (*error)->message : "it did not start");
+}
+
+/*
+ * Which routine a task is a run of -- the task itself, not its
+ * ancestors.  task_source() walks up the chain because a routine pays
+ * for what its run delegates; an incident about a delegated child is
+ * about that child, and retrying it must not run the whole routine.
+ */
+static const gchar *
+incident_routine_of(
+	const gchar *task_id,
+	gpointer     user_data
+){
+	ClawtDaemon *self = user_data;
+	ClawtUsageOrigin *source;
+
+	if (self->task_sources == NULL || task_id == NULL)
+		return NULL;
+
+	source = g_hash_table_lookup(self->task_sources, task_id);
+
+	if (source == NULL || source->kind != CLAWT_USAGE_ORIGIN_ROUTINE)
+		return NULL;
+
+	return source->id;
+}
+
+/* Runs a routine again for a retry, through the runner's own run-now. */
+static gchar *
+incident_rerun(
+	const gchar  *routine_id,
+	gpointer      user_data,
+	GError      **error
+){
+	ClawtDaemon *self = user_data;
+
+	if (self->routines == NULL) {
+		g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+		                    "routines are not running in this daemon");
+		return NULL;
+	}
+
+	return g_strdup(clawt_routine_runner_run_now(self->routines, routine_id,
+	                                             error));
+}
+
+/*
  * Starting one scheduled run.
  *
  * A routine is a delegated task rather than a message: it appears in the
@@ -1181,6 +1249,7 @@ run_routine(const gchar *routine_id, const gchar *agent_id,
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
                     "routine '%s' names '%s', which is not an agent",
                     routine_id, agent_id);
+        report_routine_refusal(self, routine_id, agent_id, error);
         return NULL;
     }
 
@@ -1214,6 +1283,7 @@ run_routine(const gchar *routine_id, const gchar *agent_id,
                         "routine '%s' is read-only, and '%s' runs a CLI whose own tools "
                         "clawtilla cannot refuse (only claude-code and claude-tmux take "
                         "the hook); it was not run", routine_id, agent_id);
+            report_routine_refusal(self, routine_id, agent_id, error);
             return NULL;
         }
     }
@@ -1234,6 +1304,7 @@ run_routine(const gchar *routine_id, const gchar *agent_id,
             g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
                         "routine '%s' is read-only and its room could not be made, so "
                         "it was not run", routine_id);
+            report_routine_refusal(self, routine_id, agent_id, error);
             return NULL;
         }
     }
@@ -1241,8 +1312,10 @@ run_routine(const gchar *routine_id, const gchar *agent_id,
     task = clawt_task_manager_create(self->tasks, sender, agent_id, prompt,
                                      NULL, error);
 
-    if (task == NULL)
+    if (task == NULL) {
+        report_routine_refusal(self, routine_id, agent_id, error);
         return NULL;
+    }
 
     /*
      * Started before it is delivered.  An agent that answers instantly
@@ -1285,6 +1358,70 @@ run_routine(const gchar *routine_id, const gchar *agent_id,
 /* ── What is worth interrupting somebody for ─────────────────────── */
 
 /*
+ * An agent that was working and is now in error: its process died.
+ *
+ * Its running tasks are failed, with the reason, because the work they
+ * describe died with it -- deliveries are acknowledged at the socket and
+ * libreclaw's queue is in memory, so nothing will come back to finish
+ * them, and a task left `running` behind a dead process is one a
+ * delegator waits on for ever.  Pending ones are left: they are still in
+ * the mailbox and run when the agent does.  Failing them is what files
+ * the incident, with the agent's last log lines, which is the moment
+ * those are worth having.
+ *
+ * Only from running or degraded.  An agent whose start failed goes from
+ * starting to error, and that is clawt_incident_desk_note_unstartable()'s,
+ * with the work still queued.
+ */
+static void
+note_agent_crash(
+	ClawtDaemon *self,
+	const gchar *agent_id,
+	gint         state,
+	const gchar *detail
+){
+	gpointer stored = NULL;
+	gint previous = -1;
+	g_autoptr(GPtrArray) running = NULL;
+	g_autofree gchar *reason = NULL;
+	guint i;
+
+	if (agent_id == NULL)
+		return;
+
+	if (self->agent_last_state == NULL)
+		self->agent_last_state = g_hash_table_new_full(g_str_hash,
+		                                               g_str_equal, g_free,
+		                                               NULL);
+
+	if (g_hash_table_lookup_extended(self->agent_last_state, agent_id, NULL,
+	                                 &stored))
+		previous = GPOINTER_TO_INT(stored);
+
+	g_hash_table_replace(self->agent_last_state, g_strdup(agent_id),
+	                     GINT_TO_POINTER(state));
+
+	if (state != CLAWT_AGENT_STATE_ERROR ||
+	    (previous != CLAWT_AGENT_STATE_RUNNING &&
+	     previous != CLAWT_AGENT_STATE_DEGRADED) ||
+	    self->tasks == NULL)
+		return;
+
+	running = clawt_task_manager_list(self->tasks, agent_id, FALSE);
+	reason = g_strdup_printf("%s stopped with an error in the middle of the "
+	                         "run: %s", agent_id,
+	                         detail != NULL ? detail : "no reason was given");
+
+	for (i = 0; running != NULL && i < running->len; i++) {
+		ClawtTask *task = g_ptr_array_index(running, i);
+
+		if (clawt_task_get_state(task) == CLAWT_TASK_RUNNING)
+			clawt_task_manager_fail(self->tasks, clawt_task_get_id(task),
+			                        reason);
+	}
+}
+
+/*
  * An agent's state changed.
  *
  * Published for every state, because a client that has to poll to find
@@ -1315,6 +1452,8 @@ on_agent_state_changed(ClawtAgentManager *manager,
         clawt_event_set_detail(event, "detail", detail);
 
     clawt_event_bus_publish(self->bus, event);
+
+    note_agent_crash(self, agent_id, state, detail);
 
     if (state != CLAWT_AGENT_STATE_ERROR &&
         state != CLAWT_AGENT_STATE_DEGRADED)
@@ -4101,6 +4240,22 @@ start_agent_prepare(ClawtDaemon    *self,
      */
     if (*pending == NULL) {
         ClawtComputer *existing = clawt_agent_get_computer(agent);
+        g_autoptr(GError) refresh_error = NULL;
+
+        /*
+         * And what it can take without a rebuild is retaken from the
+         * config: a kept computer would otherwise start with the limits,
+         * the start mode and the wake command it was built with, and a
+         * changed memory limit would wait for a rebuild that applying it
+         * with `podman update` exists to avoid.
+         */
+        if (existing != NULL &&
+            !clawt_computer_factory_refresh(config, existing,
+                                            &refresh_error)) {
+            clawt_agent_set_error(agent, refresh_error->message);
+            g_propagate_error(error, g_steal_pointer(&refresh_error));
+            return FALSE;
+        }
 
         if (existing != NULL)
             *pending = g_object_ref(existing);
@@ -4119,6 +4274,9 @@ start_agent_prepare(ClawtDaemon    *self,
  * a refusal means" is how one of them ends up reporting a fleet-level
  * failure for a container whose image was not pulled.
  */
+static gboolean start_agent_launch(ClawtDaemon *self, const gchar *agent_id,
+                                   const gchar *config_path, GError **error);
+
 static gboolean
 start_agent_computer_failed(ClawtDaemon *self, const gchar *agent_id,
                             GError *started_error, GError **error)
@@ -4142,7 +4300,38 @@ start_agent_computer_failed(ClawtDaemon *self, const gchar *agent_id,
      */
     clawt_daemon_routine_starts_settle(self, agent_id, started_error->message);
 
+    /*
+     * And the work waiting for it, as incidents for whoever leads its
+     * team: the computer refusing is the moment a run became
+     * unstartable, and the only one that knows why.
+     */
+    if (self->incidents != NULL)
+        clawt_incident_desk_note_unstartable(self->incidents, agent_id,
+                                             started_error->message);
+
     g_propagate_error(error, started_error);
+
+    return FALSE;
+}
+
+/*
+ * A launch that failed after the computer came up is unstartable too.
+ * Both start paths come through here, so neither can forget.
+ */
+static gboolean
+start_agent_launch_reporting(ClawtDaemon *self, const gchar *agent_id,
+                             const gchar *config_path, GError **error)
+{
+    g_autoptr(GError) local = NULL;
+
+    if (start_agent_launch(self, agent_id, config_path, &local))
+        return TRUE;
+
+    if (self->incidents != NULL)
+        clawt_incident_desk_note_unstartable(self->incidents, agent_id,
+                                             local->message);
+
+    g_propagate_error(error, g_steal_pointer(&local));
 
     return FALSE;
 }
@@ -4430,7 +4619,11 @@ clawt_daemon_start_agent(ClawtDaemon *self, const gchar *agent_id,
      * must not hold the loop, and that goes through the async form
      * below.
      */
-    if (pending != NULL) {
+    /*
+     * A computer that starts on first use is left down: the first command
+     * that needs it brings it up, through clawt_computer_exec().
+     */
+    if (pending != NULL && !clawt_computer_get_start_on_first_use(pending)) {
         g_autoptr(GError) local = NULL;
 
         if (!clawt_computer_start(pending, &local))
@@ -4439,7 +4632,7 @@ clawt_daemon_start_agent(ClawtDaemon *self, const gchar *agent_id,
                                                error);
     }
 
-    return start_agent_launch(self, agent_id, config_path, error);
+    return start_agent_launch_reporting(self, agent_id, config_path, error);
 }
 
 typedef struct {
@@ -4514,8 +4707,8 @@ on_agent_computer_started(GObject *source, GAsyncResult *result,
     } else if (job->prepared) {
         g_autoptr(GError) launch_error = NULL;
 
-        if (!start_agent_launch(self, job->agent_id, job->config_path,
-                                &launch_error))
+        if (!start_agent_launch_reporting(self, job->agent_id,
+                                          job->config_path, &launch_error))
             g_warning("agent %s did not start: %s", job->agent_id,
                       launch_error->message);
     }
@@ -4585,7 +4778,15 @@ daemon_start_agent_async(ClawtDaemon *self, const gchar *agent_id,
 
     job->prepared = TRUE;
     job->config_path = g_steal_pointer(&config_path);
-    job->computer = (pending != NULL) ? g_object_ref(pending) : NULL;
+
+    /*
+     * Nothing to wait on for a computer that starts on first use, the
+     * same as for an agent with none -- the synchronous start skips it
+     * for the same reason.
+     */
+    job->computer = (pending != NULL &&
+                     !clawt_computer_get_start_on_first_use(pending))
+                    ? g_object_ref(pending) : NULL;
 
     /*
      * Nothing to wait on, so nothing to put on a thread.  The completion
@@ -4766,7 +4967,19 @@ clawt_daemon_stop_agent(ClawtDaemon *self, const gchar *agent_id,
      * assignee is gone would sit in the list looking like work in
      * progress for ever.
      */
+    /*
+     * Quietly, as far as incidents go: somebody stopped this agent, and
+     * a report telling its lead the work stopped is telling them about
+     * that person's own decision.  The delegators are still told, by
+     * the settle notice, because they are waiting on the work.
+     */
+    if (self->incidents != NULL)
+        clawt_incident_desk_quiet_begin(self->incidents);
+
     clawt_task_manager_orphan_agent_tasks(self->tasks, agent_id);
+
+    if (self->incidents != NULL)
+        clawt_incident_desk_quiet_end(self->incidents);
 
     return TRUE;
 }
@@ -4907,6 +5120,10 @@ release_components(ClawtDaemon *self)
 
     g_clear_object(&self->mcp_tools);
 
+    /* After the tools, which hold it, and before the router it sends through. */
+    g_clear_object(&self->incidents);
+    g_clear_pointer(&self->agent_last_state, g_hash_table_unref);
+
     /*
      * After the tools, which hold a pointer to it -- the order
      * clawt_daemon_reload_skills() protects on every other path.
@@ -4929,6 +5146,7 @@ release_components(ClawtDaemon *self)
     g_clear_object(&self->vm_images);
     g_clear_object(&self->exchange);
     g_clear_object(&self->decisions);
+    g_clear_object(&self->skill_proposals);
     g_clear_object(&self->operator_profile);
 	g_clear_object(&self->ack_provider);
 	g_clear_object(&self->ack_provider_override);
@@ -5116,6 +5334,14 @@ clawt_daemon_sweep(ClawtDaemon *self)
 
     clawt_mailbox_router_sweep(self->router);
     clawt_event_log_sweep(self->log);
+
+    /*
+     * And any incident report the router refused last time -- a daily
+     * cap that has since rolled over, a guard that has cooled.  A busy
+     * recipient's reports go at its turn's end, not here.
+     */
+    if (self->incidents != NULL)
+        clawt_incident_desk_flush(self->incidents, NULL);
     sweep_connector_registry(self);
 
     /*
@@ -6362,6 +6588,9 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
             g_warning("decisions: %s", decision_error->message);
     }
 
+    /* Beside the inbox the proposals' decisions are filed in. */
+    clawt_daemon_skill_proposals_open(self);
+
     {
         g_autofree gchar *transcript_db =
             g_build_filename(self->state_dir, "transcripts.db", NULL);
@@ -6599,6 +6828,20 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
                                      self, NULL);
 
     /*
+     * After the router and before anything can fail a task: the desk
+     * listens to the task manager from the moment it exists, and a
+     * failure before that is one nobody hears about.
+     */
+    self->incidents = clawt_incident_desk_new(self->config, self->agents,
+                                              self->rooms, self->router,
+                                              self->tasks);
+    clawt_incident_desk_set_event_bus(self->incidents, self->bus);
+    clawt_incident_desk_set_routine_hooks(self->incidents,
+                                          incident_routine_of,
+                                          incident_rerun, self);
+    clawt_mcp_tools_set_incident_desk(self->mcp_tools, self->incidents);
+
+    /*
      * After the tools exist, because reload_skills() hands them the
      * library it just built.  Doing it earlier and setting the pointer
      * again here would be the same rule at two call sites, which is how
@@ -6657,6 +6900,9 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     clawt_mcp_tools_set_answer_decision_func(self->mcp_tools,
                                              answer_decision_for_tools,
                                              self, NULL);
+    clawt_mcp_tools_set_skill_propose_func(self->mcp_tools,
+                                           clawt_daemon_skill_propose_for_tools,
+                                           self, NULL);
     clawt_mcp_tools_set_image_store(self->mcp_tools, self->vm_images);
 
     /*
@@ -7198,6 +7444,9 @@ clawt_daemon_reload_internal(ClawtDaemon *self, GPtrArray *refusals,
     if (self->routines != NULL)
         clawt_routine_runner_set_config(self->routines, self->config);
 
+    if (self->incidents != NULL)
+        clawt_incident_desk_set_config(self->incidents, self->config);
+
     /*
      * Rebuilt rather than rescanned, because `skills.dir` and
      * `skills.enabled` are both in the file that just changed.  Keeping
@@ -7450,8 +7699,15 @@ clawt_daemon_add_agent_settings(JsonBuilder *builder, ClawtAgent *agent)
         case CLAWT_SCHEMA_STRING_LIST: {
             g_auto(GStrv) values =
                 clawt_agent_config_get_string_list(config, key);
+            /*
+             * A command's argv is shown as the line that splits back into
+             * it: joined with commas it would be saved back split on
+             * spaces, and an argument holding a space would come apart.
+             */
             g_autofree gchar *joined =
-                (values != NULL) ? g_strjoinv(", ", values) : NULL;
+                (entry->flags & CLAWT_SCHEMA_FLAG_ARGV)
+                ? clawt_command_line_join((const gchar * const *)values)
+                : (values != NULL) ? g_strjoinv(", ", values) : NULL;
 
             json_builder_add_string_value(builder,
                                           joined != NULL ? joined : "");
@@ -7921,6 +8177,63 @@ clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
                                    clawt_daemon_computer_stop_removes(config));
 
     /*
+     * When the machine starts, for each type where that is a choice; left
+     * out where it is not, so no client offers a setting nothing reads.
+     */
+    if (clawt_computer_type_starts_lazily(
+            (ClawtComputerType)clawt_agent_config_get_enum(config,
+                                                           "computer.type"))) {
+        json_builder_set_member_name(builder, "computer_start");
+        json_builder_add_string_value(
+            builder, clawt_enum_to_nick(
+                         CLAWT_TYPE_COMPUTER_START,
+                         clawt_agent_config_get_enum(config,
+                                                     "computer.start")));
+    }
+
+    /*
+     * The podman limits, for both kinds of podman machine. Strings, and
+     * empty for unset, so a client's text field shows exactly what will
+     * be saved back; the process limit's 0 is shown as empty for the same
+     * reason -- it means "podman's default", not a limit of nothing.
+     */
+    if (clawt_agent_config_get_enum(config, "computer.type") ==
+            CLAWT_COMPUTER_CONTAINER ||
+        clawt_agent_config_get_enum(config, "computer.type") ==
+            CLAWT_COMPUTER_DISTROBOX) {
+        gint64 pids = clawt_agent_config_get_int(
+            config, "computer.container.pids_limit");
+        g_autofree gchar *pids_text = (pids != 0)
+            ? g_strdup_printf("%" G_GINT64_FORMAT, pids) : g_strdup("");
+        const gchar *memory = clawt_agent_config_get_string(
+            config, "computer.container.memory");
+        const gchar *swap = clawt_agent_config_get_string(
+            config, "computer.container.memory_swap");
+
+        json_builder_set_member_name(builder, "container_pids_limit");
+        json_builder_add_string_value(builder, pids_text);
+        json_builder_set_member_name(builder, "container_memory");
+        json_builder_add_string_value(builder, memory != NULL ? memory : "");
+        json_builder_set_member_name(builder, "container_memory_swap");
+        json_builder_add_string_value(builder, swap != NULL ? swap : "");
+    }
+
+    /*
+     * The wake command as one line, in the spelling that splits back into
+     * the same argv, so a field that is opened and saved changes nothing.
+     */
+    if (clawt_agent_config_get_enum(config, "computer.type") ==
+        CLAWT_COMPUTER_SSH) {
+        g_auto(GStrv) wake = clawt_agent_config_get_string_list(
+            config, "computer.ssh.wake_command");
+        g_autofree gchar *line =
+            clawt_command_line_join((const gchar * const *)wake);
+
+        json_builder_set_member_name(builder, "ssh_wake_command");
+        json_builder_add_string_value(builder, line);
+    }
+
+    /*
      * Reported for a container agent so a client can show what it will
      * run in, including the default it inherited.  Left out otherwise:
      * no other backend reads it, and reporting a key the agent does not
@@ -8285,6 +8598,19 @@ clawt_daemon_add_task_object(JsonBuilder *builder, ClawtTask *task)
 
     json_builder_set_member_name(builder, "depth");
     json_builder_add_int_value(builder, clawt_task_get_depth(task));
+
+    /*
+     * Who sent it round again, when somebody did -- the question a
+     * person asks of a task that failed an hour ago and is running now.
+     * Only when it has been, like `result_inferred`.
+     */
+    if (clawt_task_get_retries(task) > 0) {
+        json_builder_set_member_name(builder, "retries");
+        json_builder_add_int_value(builder, clawt_task_get_retries(task));
+        json_builder_set_member_name(builder, "retried_by");
+        json_builder_add_string_value(builder,
+                                      clawt_task_get_retried_by(task));
+    }
 
     json_builder_end_object(builder);
 }
@@ -9286,6 +9612,14 @@ clawt_daemon_on_ipc_exec_finished(GObject *source, GAsyncResult *result,
     json_builder_add_string_value(builder, clawt_exec_result_get_stdout(exec));
     json_builder_set_member_name(builder, "stderr");
     json_builder_add_string_value(builder, clawt_exec_result_get_stderr(exec));
+
+    /*
+     * How long this command waited for its machine to be woken, which is
+     * not part of its timeout; 0 when it did not.
+     */
+    json_builder_set_member_name(builder, "wake_ms");
+    json_builder_add_int_value(builder,
+                               clawt_exec_result_get_wake_usec(exec) / 1000);
     json_builder_end_object(builder);
 
     clawt_ipc_pending_respond(
@@ -9313,6 +9647,8 @@ lifecycle_name(ClawtComputerLifecycle op)
         return "start";
     case CLAWT_COMPUTER_LIFECYCLE_STOP:
         return "stop";
+    case CLAWT_COMPUTER_LIFECYCLE_FIRST_USE:
+        return "first-use start";
     case CLAWT_COMPUTER_LIFECYCLE_RESTART:
     default:
         return "restart";
@@ -9428,6 +9764,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_grok,
     clawt_daemon_handle_config,
     clawt_daemon_handle_skill,
+    clawt_daemon_handle_skill_proposal,
     clawt_daemon_handle_teach,
     clawt_daemon_handle_activity,
     clawt_daemon_handle_browser,

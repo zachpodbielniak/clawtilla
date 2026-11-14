@@ -160,7 +160,7 @@ test_consult_survives_a_restart_and_migrates(void)
 		g_autoptr(GError) error = NULL;
 		sqlite3 *db = NULL;
 
-		/* The schema as of 0.17.0: everything but consult. */
+		/* The schema as of 0.18.0: everything but consult. */
 		g_assert_cmpint(sqlite3_open(old_path, &db), ==, SQLITE_OK);
 		g_assert_cmpint(sqlite3_exec(db,
 			"CREATE TABLE items ("

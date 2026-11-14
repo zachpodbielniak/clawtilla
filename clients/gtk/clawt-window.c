@@ -1680,7 +1680,12 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
         return;
     }
 
-    if (g_str_has_prefix(kind, "task."))
+    /*
+     * An incident is drawn on the Tasks page, and filing one changes no
+     * task -- so without its own prefix here a report reached the lead
+     * and the operator's page went on saying nothing had broken.
+     */
+    if (g_str_has_prefix(kind, "task.") || g_str_has_prefix(kind, "incident."))
         clawt_gtk_refresh_tasks(self);
 
     /*
@@ -5118,6 +5123,8 @@ on_settings_closed(AdwDialog *dialog, gpointer user_data)
     self->settings_spending_unpriced = NULL;
     self->settings_ack_model = NULL;
     self->settings_connectors = NULL;
+    self->settings_directory_min_tools = NULL;
+    self->settings_directory_min_chars = NULL;
     self->settings_devices = NULL;
     self->settings_devices_pair = NULL;
     self->settings_catalog_row = NULL;

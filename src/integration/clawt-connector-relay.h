@@ -38,6 +38,7 @@
 
 #include "integration/clawt-connector.h"
 #include "integration/clawt-integration.h"
+#include "mcp/clawt-mcp-relay.h"
 
 G_BEGIN_DECLS
 
@@ -152,14 +153,52 @@ gint clawt_connector_relay_run(ClawtConnectorPlan *plan);
  *   action rules, from the CLI
  * @gate_data: data for @gate
  *
- * As clawt_connector_relay_run(), asking @gate about every call. A
- * connector reached by URL is filtered inline and is not gated: its calls
- * are checked against the tool list only.
+ * As clawt_connector_relay_run(), asking @gate about every call, over
+ * stdio and over HTTP alike.
  *
  * Returns: the exit status for the process
  */
 gint clawt_connector_relay_run_gated(ClawtConnectorPlan *plan,
                                      ClawtMcpRelayGate   gate,
                                      gpointer            gate_data);
+
+/**
+ * clawt_connector_relay_run_full: (skip)
+ * @plan: what to run
+ * @gate: (scope call) (nullable): asked once per tool call, naming the
+ *   tool that would run -- never the directory in front of it
+ * @gate_data: data for @gate
+ * @directory: (nullable): counts the server's tools, and presents a big
+ *   one as three tools that search, describe and call the rest
+ *
+ * As clawt_connector_relay_run_gated(), with the directory in the path.
+ *
+ * Returns: the exit status for the process
+ */
+gint clawt_connector_relay_run_full(ClawtConnectorPlan *plan,
+                                    ClawtMcpRelayGate   gate,
+                                    gpointer            gate_data,
+                                    ClawtMcpDirectory  *directory);
+
+/**
+ * clawt_connector_directory_new:
+ * @config: the fleet's configuration
+ * @binding: the connector, as this agent has it
+ * @agent_id: (nullable): the agent the relay serves
+ *
+ * The directory for one connector relay, from the connector's
+ * `directory`, the fleet's `connectors.directory_min_tools` and
+ * `connectors.directory_min_chars`, and whether the agent's CLI searches
+ * tools by itself (clawt_mcp_directory_cli_searches_tools()).
+ *
+ * Always returns one, even for `never`: a directory that may not present
+ * itself still counts what goes past, which is how the Connectors page
+ * learns a server's size.
+ *
+ * Returns: (transfer full): the directory
+ */
+ClawtMcpDirectory *clawt_connector_directory_new(ClawtConfig             *config,
+                                                 ClawtIntegrationBinding *binding,
+                                                 const gchar             *agent_id);
 
 G_END_DECLS

@@ -105,7 +105,7 @@ The same seven the GTK client's view switcher has, in the same order.
 | Mailbox  | what is waiting, what died, purge and requeue              |
 | Computer | exec console, mounts, the exchange, rebuild                |
 | Routines | scheduled work, running one now, turning one back on       |
-| Tasks    | delegated work, the budget, cancelling                     |
+| Tasks    | Problems to look at (settings, open incidents, Retry), delegated work, the budget, cancelling, retrying |
 | Flow     | what the agents are saying to each other                   |
 | Activity | every running turn, to stop or steer ([[file:clients.org::#activity-tab][the Activity tab]]) |
 | Fleet    | cost per agent, the last fourteen days, idle agents to stop ([[file:clients.org::#fleet-tab][the Fleet tab]]) |
@@ -129,6 +129,20 @@ and devices.
 *** Consultations, a task's own room, and who a decision went to
 
 =message_element()= reads =consult= off each message and draws =clawt_message_consult_label()= as an info badge in the header line, with =clawt_message_consult_tooltip()= as its =title=.  The Tasks page draws =clawt_task_consult_label()= on a consulted task, and for one delegated with ~thread: new~ a line with =clawt_task_thread_summary()= and an *Open room* link to =/r/<thread_room>=.  A decision row carries =clawt_decision_routed_label()= when it has a =routed_to=.  See [[file:clients.org::#delegation-marks][the marks]].
+
+*** Connectors
+
+Each connector's card has a /Tools/ row --
+=clawt_mcp_directory_status_label()='s sentence: how many tools its server
+has and whether agents get it as a directory -- and a *Present as a
+directory* select (Auto, Always, Never, walked from
+=clawt_tool_directory_mode_count()=) that posts to
+=/settings/connectors/:connector/directory= and saves through
+~integration.update~.  A *Servers with many tools* card holds the two
+thresholds and posts to =/settings/connectors/directory-thresholds=,
+which sends ~connector.settings~; a field left empty keeps its value and
+one that is not a whole number is refused before anything is sent.  See
+"Servers with many tools" in [[file:connectors.org][connectors.org]].
 
 *** The integration editor
 
@@ -208,7 +222,8 @@ answers with the page it did it on.
 | =/settings=, =/settings/:page= | the seven settings pages               |
 | =/settings/<page>/...=        | their actions: add, save, remove, health, test, authorize, revoke |
 | =/new=, =/import=, =/design=  | making an agent                         |
-| =/alerts=, =/decisions=, =/routines/...=, =/tasks/:task/cancel= | the standing surfaces |
+| =/alerts=, =/decisions=, =/routines/...=, =/tasks/:task/cancel=, =/tasks/:task/retry=, =/incidents/:incident/retry=, =/incidents/configure= | the standing surfaces |
+| =/decisions/proposal=         | Approve, Reject or Edit a skill an agent proposed (~skill.proposal_resolve~); a refusal is shown as an error page, not swallowed by the redirect, since the proposal is still waiting |
 | =/activity/:agent/stop=, =/activity/:agent/steer=, =/f/activity= | the Activity page's actions and its polled panel |
 | =/fleet-usage/:agent/stop=, =/fleet-usage/stop-idle=, =/f/fleet-usage= | the Fleet page's actions and its polled panel (=?period== picks the window) |
 | =/a/:id/browser/open=, =/a/:id/browser/click=, =/a/:id/browser/stop=, =/a/:id/browser/frame=, =/f/a/:id/browser= | the Computer page's Browser view: its actions, its picture and its polled panel |

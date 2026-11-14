@@ -665,6 +665,124 @@ it, and has to work out from an error that it never had it.
 Leaving ~tools~ unset means every tool the server offers.  An empty list
 is treated the same, rather than as a lockout nobody asked for.
 
+** Servers with many tools
+
+Every tool a server lists is read by the model on every call: its name,
+its description and its input schema.  For a server with a dozen tools
+that is the point of listing them.  For one with four hundred it is tens
+of thousands of tokens spent before the agent has read a word of what it
+was asked, on tools it will mostly never use -- and an API-model engine
+refuses more than 128 tools a turn outright.
+
+So the relay can present a big server as a *directory*: three tools that
+stand in for all the others.
+
+| Tool                        | What it does                                                        |
+|-----------------------------+---------------------------------------------------------------------|
+| ~<name>_search_tools~       | a few words in, the best matches out, each with a one-line description and its input fields; an empty query answers with what the server covers, area by area |
+| ~<name>_describe_tool~      | one tool's exact description and input schema                       |
+| ~<name>_call_tool~          | runs one tool by name, with its arguments                           |
+
+~<name>~ is the connector's name, so a connector called ~forge~ offers
+~forge_search_tools~, ~forge_describe_tool~ and ~forge_call_tool~.  The
+search ranks with BM25 over each tool's name (counted double), its
+description and the words in its schema, plus the tool's /area/ -- the
+part of its name before the first underscore, so ~issues_create~ is in
+~issues~.  A query that is a tool's exact name always finds that tool
+first.
+
+*** When a server is a directory
+
+Each connector has a ~directory~ setting:
+
+| Value    | Meaning                                                                    |
+|----------+----------------------------------------------------------------------------|
+| ~auto~   | a directory when the server is big *and* the agent's CLI does not search tools itself (the default) |
+| ~always~ | a directory whatever its size and whatever the CLI                         |
+| ~never~  | every tool listed, however many there are                                  |
+
+"Big" is more than ~connectors.directory_min_tools~ tools (default 40)
+or more than ~connectors.directory_min_chars~ characters of tool
+definitions (default 100,000) -- names, descriptions and schemas
+together, which is what the model actually reads.  Both are counted
+/after/ the connector's ~tools:~ narrowing, because that is the list the
+agent would otherwise get.
+
+#+begin_src bash
+clawtilla integration set forge directory=always
+#+end_src
+
+*** Which CLIs search tools themselves
+
+Claude Code does: past about a tenth of its context in MCP tools it
+defers them and looks them up as it needs them.  Wrapping its servers in
+a second search would make it search a search, so under ~auto~ its
+agents get every tool as before.  ~claude-tmux~ runs the same binary and
+is answered the same way.  Every other CLI -- opencode, grok-build,
+antigravity, cursor -- reads the whole list on every call, and gets the
+directory.
+
+Whether a CLI searches is a fact about the CLI, and belongs to ai-glib as
+a class datum beside ~AiCliClientClass.config_dir_env~.  ai-glib has no
+such datum yet, so clawtilla answers it in one place,
+~clawt_mcp_directory_cli_searches_tools()~, until it does; the roadmap
+carries the move upstream.
+
+*** The search finds only what the agent may use
+
+The directory is built from the tool list *after* the permitted-list
+filter, and a call through it is checked against that same list again on
+the way out.  The predicate and the builder answer from one list, so a
+tool this agent may not use cannot be found by the search, is not
+described, and cannot be run through ~<name>_call_tool~ -- the directory
+answers "No tool named ... here" for it, in exactly the words it uses
+for a tool that does not exist, so the search cannot be used to learn
+what was withheld.
+
+*** Approvals name the tool that runs
+
+A call through the directory becomes an ordinary ~tools/call~ naming the
+inner tool /before/ anything checks it.  The permitted list, an action
+rule (~policy.check~) and an approval card therefore all see
+~pulls_merge~, never ~forge_call_tool~.  A search or a describe runs
+nothing on the server and asks nobody.
+
+The same decision is made for a connector reached over HTTP.  Until this
+release the HTTP bridge applied the permitted list and skipped the
+action-rule gate entirely; both transports now go through one function,
+~clawt_mcp_relay_policy_outbound()~.  A JSON-RPC batch is refused
+whenever a gate or a directory is in the path, since either reads one
+call per line and a batch would carry its calls past both.
+
+*** Big tool lists arrive in pages
+
+An MCP server may answer ~tools/list~ a page at a time.  When the relay
+might present a directory it follows ~nextCursor~ itself and answers the
+client once, with either the three directory tools or the whole list as
+a single page.  It stops after 64 pages and says so on stderr.  When it
+may not present one (~never~, or Claude Code under ~auto~) every page
+passes through untouched and is only counted.
+
+*** How big a server is, and where that shows
+
+clawtilla never starts a connector's server itself -- the relay does, on
+an agent's behalf, with the credential.  So the relay reports what it
+saw to the daemon (~connector.tools_seen~) whenever a full tool list
+arrives, and the daemon keeps the last report per connector in
+=<state_dir>/connector-tools.yaml=.  That is what the Connectors page in
+every client and =clawtilla connector list= show: the tool count, the
+characters of definitions, and whether agents get the server as a
+directory.  A connector no agent has used yet says its size is unknown,
+never zero.
+
+The agent's =TOOLS.org= describes a directory server as one: "search
+it", with the three tool names and the area overview from that report.
+It does not enumerate the tools, even a narrowed ~tools:~ list, since
+listing four hundred names there would put back into every prompt the
+text the directory exists to keep out.  Under ~auto~ a server no relay
+has counted yet is described as a list; the agent's next start, after a
+relay has seen it, says the right thing.
+
 ** Renewal
 
 An access token often lasts an hour.  The daemon renews any that is
@@ -785,6 +903,9 @@ that matter here:
 | ~integrations.token_file~              | where the credential went; set for you    |
 | ~integrations.credential_name~         | the variable or header it goes in         |
 | ~integrations.tools~                   | narrow the agent to these                 |
+| ~integrations.directory~               | ~auto~, ~always~ or ~never~ present it as a directory |
+| ~connectors.directory_min_tools~       | more tools than this is big               |
+| ~connectors.directory_min_chars~       | more characters of tool definitions than this is big |
 
 ** Troubleshooting
 
@@ -822,6 +943,19 @@ The integration's ~tools:~ names something the pack's own ~known_tools~
 does not.  Almost always a typo; fix the integration.  A pack that
 declares no ~known_tools~ at all -- the ordinary case -- never warns
 about this, since there is nothing here to check against.
+
+*** The agent sees three tools instead of the server's
+
+The connector is presented as a directory: its server is past one of the
+thresholds and the agent's CLI does not search tools itself, or its
+~directory~ is ~always~.  Search it with ~<name>_search_tools~, or set
+~directory: never~ on the connector to list every tool again.  See
+"Servers with many tools".
+
+*** "No tool named ... here" from a directory
+
+Either the tool does not exist or the connector's ~tools:~ does not
+include it.  The directory says the same for both on purpose.
 
 *** "connectors.registry_enabled is off"
 

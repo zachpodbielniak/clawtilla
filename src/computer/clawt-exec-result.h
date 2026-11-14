@@ -81,6 +81,27 @@ gboolean clawt_exec_result_get_truncated(ClawtExecResult *self);
 void clawt_exec_result_set_truncated(ClawtExecResult *self,
                                      gboolean         truncated);
 
+/**
+ * clawt_exec_result_get_wake_usec:
+ * @self: a #ClawtExecResult
+ *
+ * How long this command waited for its machine to be woken before it
+ * ran, in microseconds; 0 when it did not wait. Only this command's
+ * share: one that joined a wake already under way waited for the rest of
+ * it, not all of it. Never part of the command's own timeout.
+ *
+ * Returns: the wait, in microseconds
+ */
+gint64 clawt_exec_result_get_wake_usec(ClawtExecResult *self);
+
+/**
+ * clawt_exec_result_set_wake_usec:
+ * @self: a #ClawtExecResult
+ * @wake_usec: how long the command waited on a wake
+ */
+void clawt_exec_result_set_wake_usec(ClawtExecResult *self,
+                                     gint64           wake_usec);
+
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtExecResult, clawt_exec_result_free)
 
 G_END_DECLS

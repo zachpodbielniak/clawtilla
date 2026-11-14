@@ -562,6 +562,28 @@ In the run state, ~<state_dir>/routines.yaml~, beside the last-run time and neve
 
 =routines.max_start_failures= is per routine, like every other routine key, and defaults to 3.  0 never turns the routine off.  A negative value is read as the default rather than as 0: zero is a real setting, and a typo must not quietly switch the guard off.  Every client's routine editor has it as *Turn off after failed starts*, with the same one-line explanation under it (~clawt_routine_start_failures_hint()~).
 
+** When a run breaks, the team's lead hears
+:PROPERTIES:
+:CUSTOM_ID: incidents
+:END:
+
+A routine runs while nobody is watching, so a run that breaks is the one nobody would otherwise find. Each one opens an *incident* (see docs/orchestration.org, "Incidents: broken runs reach the lead"), reported to the lead of the routine's agent's team -- or the chief of staff -- in that team's *Problems to look at* room:
+
+| What happened                                                   | Incident kind      |
+|-----------------------------------------------------------------+--------------------|
+| The run was refused before it became a task: its agent is gone, it is read-only on a CLI that cannot be gated, its room could not be made | ~routine-failed~ |
+| The run's task failed -- its delivery was refused, or the agent crashed mid-run | ~failed~ |
+| The run's task was stopped by the turn watchdog or a room budget | ~stalled~         |
+| The agent's computer would not start with the run waiting for it | ~unstartable~     |
+
+*One incident per routine, not per run.* A routine makes a new task every run, so its incidents are keyed on the routine: an hourly routine failing all afternoon is one open incident whose count goes up, reported once -- and reported again only after somebody retried it and the retry failed too. A run that completes resolves it.
+
+*Retrying a routine runs it again.* ~clawtilla_task_retry~ (for a lead), *Retry* on the incident in any client, or ~clawtilla task retry <incident-id>~ go through the same path as *Run now*, so the run reads the routine as it is now, in its own room, on its own model. It is refused while the last run is still going.
+
+The unstartable case and [[#max-start-failures][When the computer will not start]] are two answers to the same event, and both happen: the incident tells the lead now, with the computer's error, and the start-failure count turns the routine off after =routines.max_start_failures= of them in a row. Retrying an unstartable run is refused -- the run is still queued and runs when the agent starts -- so the remedy the report names is fixing the computer.
+
+The whole mechanism is =orchestration.incidents.enabled= and =orchestration.incidents.to=, fleet-wide.
+
 ** Trying one before trusting it
 
 #+begin_src bash

@@ -270,7 +270,14 @@ clawt_room_is_declared(const gchar *room_id)
      */
     return !g_str_has_prefix(room_id, "dm:") &&
            !g_str_has_prefix(room_id, "routine:") &&
-           !g_str_has_prefix(room_id, "trigger:");
+           !g_str_has_prefix(room_id, "trigger:") &&
+           !g_str_has_prefix(room_id, CLAWT_INCIDENT_ROOM_PREFIX);
+}
+
+gboolean
+clawt_room_is_listed(const gchar *room_id)
+{
+    return clawt_room_is_declared(room_id) || clawt_incident_room_is(room_id);
 }
 
 gchar *

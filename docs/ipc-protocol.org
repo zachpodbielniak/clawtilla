@@ -237,7 +237,7 @@ deadline.  An open decision is withdrawn on the way out exactly as a
 dismissal would be: a turn it held is released, and a policy call
 waiting on it is refused with "The operator deleted the request".
 
-Two more members, present only when set (since 0.18.0): ~routed_to~,
+Two more members, present only when set (since 0.19.0): ~routed_to~,
 the agent a decision raised inside delegated work was put to before the
 operator (the delegator), and ~answered_by~, the agent that answered it
 when an agent did.  A client draws ~clawt_decision_routed_label()~ from
@@ -717,6 +717,8 @@ the key is omitted rather than guessed at.
 ~room.list~, ~room.create~, ~room.set~, ~room.add~, ~room.remove~,
 ~room.history~, ~room.steps~.
 
+Each room in ~room.list~ carries ~declared~ (somebody made it) and, since incidents, ~incidents~ (a JSON boolean: it is a team's *Problems to look at* room, ~incidents:<team>~ or ~incidents:+fleet~).  Which rooms get a sidebar row is =clawt_room_is_listed()=, the same in every client: the declared ones and the incidents ones.
+
 ~room.create~ takes ~room~, an optional ~name~, comma-separated
 ~members~ and an optional ~require_mention~.  It writes a ~rooms:~ entry
 *and* makes the room, because writing the config is not creating the
@@ -809,10 +811,22 @@ A client offers the choices by walking ~clawt_ack_check_model_count()~
 
 *** task.*
 
-~task.list~, ~task.show~, ~task.cancel~.
+~task.list~, ~task.show~, ~task.cancel~, ~task.retry~.
+
+A task object carries ~retries~ and ~retried_by~ once it has been retried, and not before.
+
+~task.retry~ takes ~task~ (a task id) *or* ~incident~ (an incident id), and an optional ~reason~ the assignee sees with the work.  It is the operator's Retry: a ~failed~ or ~stalled~ task is re-queued for its assignee with its original work and ~retried_by: "user"~; a routine's run is run again.  It answers ~task~ (the task now carrying the work -- the same id for a re-queue, the new run's for a routine) and ~rerun~ (a JSON boolean, true for a routine).  Any other task state is =INVALID_ARGUMENT= with the reason, as is an incident whose agent could not start (its work is still queued); an unknown id is =NOT_FOUND=.  See docs/orchestration.org, "Incidents: broken runs reach the lead".
+
+*** incident.*
+
+~incident.list~ answers ~enabled~ (a JSON boolean, =orchestration.incidents.enabled=), ~to~ (=orchestration.incidents.to=, a nickname a client offers by walking =clawt_incident_recipient_count()= / =clawt_incident_recipient_nth()=) and ~incidents~, newest first: the open ones, or every one the daemon still holds with ~all: true~.  Each has ~id~, ~kind~ (~failed~, ~stalled~, ~unstartable~ or ~routine-failed~) and ~kind_label~ (=clawt_incident_kind_label()=), ~agent~, ~team~, ~room~ (its incidents room), ~run_room~, ~task~, ~routine~, ~reason~, ~log_lines~ (an array), ~recipient~ (absent when nobody was given it), ~note~ (why not), ~retried_by~, ~occurrences~, ~retries~, ~opened_at~, ~updated_at~ and ~delivered_at~ (microseconds; 0 for never), and three JSON booleans: ~queued~ (waiting for its recipient's turn to end, or for the router), ~resolved~, and ~retryable~ -- whether ~task.retry~ would be accepted now, decided by the daemon so no client guesses from state names.
+
+~incident.configure~ takes ~enabled~ (a JSON boolean) and ~to~ (~lead~, ~chief~ or ~none~; anything else is =INVALID_ARGUMENT= rather than saved and read back as the default), writes them to ~clawtilla.yaml~, publishes ~incident.configured~, and answers both as they now stand.
+
+Events: ~incident.opened~ and ~incident.updated~ (a repeat, a delivery, a retry) and ~incident.resolved~, each with the incident id as subject and details ~agent~ (the agent whose run broke, which is what a pod's scope is matched against), ~kind~, ~room~, ~occurrences~, and ~team~, ~task~, ~routine~ and ~recipient~ when there is one.  All three are routine-tier: the report is in the room, and a badge would be the same news twice.
 
 Each task object carries, besides its id, parties, state and prompt,
-two members present only when set (since 0.18.0):
+two members present only when set (since 0.19.0):
 
 - ~thread_room~ --- the room the work runs in when it was delegated with
   ~thread: new~ (~task:<id>~, a libreclaw session of its own).  A client
@@ -860,7 +874,13 @@ Since 0.9.0. Every verb but ~browser.list~ takes ~agent~ and acts on the session
 *** computer.*
 
 ~computer.exec~ (~agent~, ~command~, ~cwd~, ~timeout~ -- 120 seconds by
-default) → ~exit~, ~stdout~, ~stderr~.  ~computer.status~ (~agent~) →
+default) → ~exit~, ~stdout~, ~stderr~, and ~wake_ms~: how long this
+command waited for an ~ssh~ machine's [[file:computers.org::#ssh-wake][wake
+command]] before it ran, outside its timeout (0 when it did not).  A
+computer with ~computer.start: on_first_use~ is started by the command,
+once for every command that arrives while it starts.
+~computer.desktop~ (~agent~) defers the same way while a VM that starts on
+first use boots.  ~computer.status~ (~agent~) →
 ~state~ and ~description~.  ~computer.copy~ (~src~, ~dst~, one side being
 ~<agent>:<path>~).  ~exchange.list~ (~agent~) → ~entries~.
 
@@ -1070,8 +1090,18 @@ connect, with the auth kind each uses); ~connector.list~ (the ones you
 have, with whether each is live, when it expires and whether it can renew
 itself -- never the credential); ~connector.begin~ and ~connector.await~;
 ~connector.key~; ~connector.refresh~; ~connector.revoke~;
-~connector.registry_refresh~.  Adding and removing a connector go through
-~integration.add~ and ~integration.remove~ like any other integration.
+~connector.registry_refresh~; ~connector.settings~;
+~connector.tools_seen~.  Adding and removing a connector go through
+~integration.add~ and ~integration.remove~ like any other integration,
+and its ~directory~ is set with ~integration.update~.
+
+~connector.list~ also carries, per connector, ~directory~ (~auto~,
+~always~ or ~never~), ~tool_count~ (-1 when no relay has reported it),
+~tool_chars~, ~tool_areas~ and ~presented_as_directory~ -- whether an
+agent whose CLI does not search tools itself gets it as a directory --
+and, beside the array, the fleet's ~directory_min_tools~ and
+~directory_min_chars~.  See docs/connectors.org, "Servers with many
+tools".
 
 A secret is written by naming its *reference*: ~secret_key~,
 ~secret_backend~ (~file~, ~env~ or ~command~) and ~secret_locator~.  A
@@ -1302,6 +1332,44 @@ moment it is unescaped.
 
 ~skill.changed~ is published as an event.
 
+*** Skill proposals
+
+What agents proposed with ~clawtilla_skill_propose~.  Each proposal
+raises a decision whose id *is* the proposal's id (=skill-proposal-= and
+a UUID); a client recognises one with
+~clawt_skill_proposal_id_is_valid()~ rather than its own copy of the
+rule.
+
+~skill.proposals~ takes an optional ~pending~ (a JSON boolean, default
+true; false includes the ones settled in the last week) and returns
+~proposals~, oldest first, each with ~id~, ~decision~ (the same id),
+~agent~, ~name~, ~kind~ (~create~ or ~update~), ~state~ (~pending~,
+~approved~, ~edited~ or ~rejected~), ~reason~, ~description~, ~body~,
+~text~ (the whole proposed ~SKILL.md~), ~diff~ (an update's unified diff
+against the skill as it is *now*, else null), ~created_at~ and
+~settled_at~ (microseconds), ~stale~ (a JSON boolean: the file changed
+since the proposal, so approving is refused) and ~warnings~ (the scan's).
+Beside them, ~max_per_day~ and ~skills_enabled~ say why a list is empty.
+
+Every member an agent wrote -- ~reason~, ~description~, ~body~, ~text~,
+~diff~ -- has been through ~clawt_preamble_escape()~, so render it as
+text.  The raw text never crosses: the edit form is prefilled with the
+escaped form, so a forged ~[clawtilla]~ line cannot be saved back in
+without the person seeing it rewritten.
+
+~skill.proposal_resolve~ takes ~proposal~, ~action~ (~approve~, ~reject~
+or ~edit~), an optional ~note~ that is passed to the agent, and for
+~edit~ the new ~description~ and ~body~.  It answers the decision too
+(with ~approved~, ~edited~ or ~rejected~), publishes ~decision.settled~
+and ~skill.changed~, tells the agent, and returns ~proposal~.  Approve is
+refused -- and the proposal stays pending -- when the bytes on disk are
+not the ones that were reviewed.
+
+~decision.answer~ on a proposal's decision carries it out the same way:
+~approve~ approves, ~edit~ is refused (it needs text), and anything else
+is a rejection with the answer passed on as the note.  ~decision.dismiss~
+and ~decision.delete~ on an open one reject the draft.
+
 *** teach.*
 
 Recording a task, and turning the recording into a skill.
@@ -1371,6 +1439,25 @@ Takes a token and stores it 0600 under ~secrets.dir~.  The reply names
 the *file*, never the value: handing the credential back to the client
 that sent it would put a live secret into every client's memory.  Same
 rule as ~integration.matrix_login~.
+
+*** connector.settings
+
+The two thresholds that make a connector's server a directory.  Takes
+~directory_min_tools~ and ~directory_min_chars~, each optional; a member
+that is absent is left alone.  Both are checked before either is
+written, and a negative one is refused with
+~CLAWT_ERROR_INVALID_ARGUMENT~.  Replies with both current values, so an
+empty request reads them.
+
+*** connector.tools_seen
+
+Sent by a connector relay (=clawtilla connector relay=) when a whole tool
+list has arrived: ~name~, ~agent~, ~tools~, ~chars~, ~areas~ and
+~directory~.  The daemon keeps the last report per connector in
+=<state_dir>/connector-tools.yaml=; it is what ~connector.list~'s
+~tool_count~ and the agent's =TOOLS.org= are made from.  Refused with
+~CLAWT_ERROR_NOT_FOUND~ for a name that is not a connector, so a relay
+for one since removed does not bring its row back.  No client sends it.
 
 *** connector.registry_refresh
 
@@ -1724,7 +1811,7 @@ reader serves either source:
 - ~merged: N~ --- clawtilla's note that N results were delivered to an
   agent as one turn.  The body is sectioned; read it with
   ~clawt_merge_split()~ and draw the sections.
-- ~consult: 1|2~ --- part of a consultation (since 0.18.0): ~1~ is the
+- ~consult: 1|2~ --- part of a consultation (since 0.19.0): ~1~ is the
   question or the consulted task's assignment, ~2~ the answer the
   consulted turn wrote.  Draw ~clawt_message_consult_label()~, which
   returns nothing for a value it does not know.

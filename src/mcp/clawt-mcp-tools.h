@@ -32,6 +32,7 @@
 #include "core/clawt-event-bus.h"
 #include "memory/clawt-transcript-index.h"
 #include "task/clawt-handoff-store.h"
+#include "task/clawt-incident.h"
 #include "task/clawt-task-manager.h"
 #include "browser/clawt-browser.h"
 
@@ -165,7 +166,7 @@ typedef enum {
  * one -- a `reply: none` that invites an answer, or a consultation
  * whose turn may act, is the opposite of what the caller asked for.
  *
- * @flags was a #gboolean named `one_way` before 0.18.0;
+ * @flags was a #gboolean named `one_way` before 0.19.0;
  * %CLAWT_MCP_DELIVER_ONE_WAY is 1, so a callback written against that
  * reads the same bit.
  *
@@ -323,6 +324,49 @@ void clawt_mcp_tools_set_ask_decision_func(ClawtMcpTools           *self,
                                            ClawtMcpAskDecisionFunc  func,
                                            gpointer                 user_data,
                                            GDestroyNotify           destroy);
+
+/**
+ * ClawtMcpSkillProposeFunc:
+ * @agent_id: who is proposing
+ * @name: the skill's name; for an update, the skill that exists
+ * @description: when an agent should reach for it
+ * @body: the markdown
+ * @is_update: %TRUE to change an existing skill, %FALSE for a new one
+ * @reason: (nullable): why, in the agent's words
+ * @user_data: as supplied
+ * @error: return location for a #GError
+ *
+ * Writes a skill proposal's draft and raises the decision for it.
+ *
+ * A hook because the library of skills, the proposal store and the
+ * decision inbox all belong to the daemon.  Unset -- a library embedded
+ * without a daemon -- the tool is not offered.
+ *
+ * Returns: (transfer full) (nullable): what to tell the agent, or %NULL
+ *   with @error set
+ */
+typedef gchar *(*ClawtMcpSkillProposeFunc)(const gchar  *agent_id,
+                                           const gchar  *name,
+                                           const gchar  *description,
+                                           const gchar  *body,
+                                           gboolean      is_update,
+                                           const gchar  *reason,
+                                           gpointer      user_data,
+                                           GError      **error);
+
+/**
+ * clawt_mcp_tools_set_skill_propose_func:
+ * @self: a #ClawtMcpTools
+ * @func: (nullable) (scope notified): the hook
+ * @user_data: passed to @func
+ * @destroy: frees @user_data
+ *
+ * Unset, `clawtilla_skill_propose` is not offered.
+ */
+void clawt_mcp_tools_set_skill_propose_func(ClawtMcpTools            *self,
+                                            ClawtMcpSkillProposeFunc  func,
+                                            gpointer                  user_data,
+                                            GDestroyNotify            destroy);
 
 /**
  * ClawtMcpHandoffFunc:
@@ -841,6 +885,17 @@ void clawt_mcp_tools_set_observer(ClawtMcpTools            *self,
                                   ClawtMcpToolObserverFunc  func,
                                   gpointer                  user_data,
                                   GDestroyNotify            notify);
+
+/**
+ * clawt_mcp_tools_set_incident_desk:
+ * @self: a #ClawtMcpTools
+ * @desk: (nullable): where broken runs are filed and retried
+ *
+ * Unset, `clawtilla_task_retry` is not offered.  Borrowed: whoever owns
+ * @desk keeps it alive for as long as the tools are in use.
+ */
+void clawt_mcp_tools_set_incident_desk(ClawtMcpTools     *self,
+                                       ClawtIncidentDesk *desk);
 
 /**
  * clawt_mcp_tools_set_room_manager:

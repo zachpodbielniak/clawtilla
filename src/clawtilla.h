@@ -54,6 +54,8 @@
 #include "computer/clawt-pod-bridge.h"
 #include "computer/clawt-container-computer.h"
 #include "computer/clawt-distrobox-computer.h"
+#include "computer/clawt-container-limits.h"
+#include "computer/clawt-wake.h"
 #include "computer/clawt-ssh-computer.h"
 #include "computer/clawt-cloud-init.h"
 #include "computer/clawt-vm-image.h"
@@ -92,6 +94,7 @@
 #include "task/clawt-handoff.h"
 #include "task/clawt-handoff-store.h"
 #include "task/clawt-routine-runner.h"
+#include "task/clawt-incident.h"
 
 #include "trigger/clawt-trigger-event.h"
 #include "trigger/clawt-trigger-provider.h"
@@ -110,6 +113,7 @@
 #include "plugin/clawt-plugin-manager.h"
 #include "plugin/clawt-pod-module.h"
 #include "plugin/clawt-automation.h"
+#include "mcp/clawt-mcp-directory.h"
 #include "mcp/clawt-mcp-relay.h"
 #include "mcp/clawt-mcp-socket.h"
 #include "mcp/clawt-mcp-tools.h"
@@ -148,6 +152,7 @@
 #include "skill/clawt-skill-bundled.h"
 #include "policy/clawt-policy.h"
 #include "skill/clawt-skill-commands.h"
+#include "skill/clawt-skill-proposal.h"
 #include "teach/clawt-skill-synthesizer.h"
 
 #include "link/clawt-link.h"

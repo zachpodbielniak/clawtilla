@@ -78,8 +78,139 @@ decision_action(const gchar *verb, const gchar *id)
     return g_strdup_printf("/decisions/%s?decision=%s", verb, escaped);
 }
 
+/* ── Skill proposals ─────────────────────────────────────────────── */
+
+/* Agent-written text in a box that keeps its lines; set as text, never HTML. */
 static HtmxElement *
-decision_row(ClawtWebApp *app, JsonObject *decision, gint64 now)
+proposal_pre(const gchar *text)
+{
+    HtmxElement *pre = HTMX_ELEMENT(htmx_pre_new());
+
+    htmx_node_set_text_content(HTMX_NODE(pre), text != NULL ? text : "");
+    htmx_element_add_class(pre, "proposal-text");
+
+    return pre;
+}
+
+/*
+ * A skill proposal's card body: what the agent proposes, and the three
+ * answers.
+ *
+ * The question's first line only, as the heading -- the agent's id and a
+ * validated name, nothing it chose freely -- and the full text or the
+ * diff under it in a box of its own, because the question's fenced copy
+ * is written for a terminal and reads as noise in a page.  Approve and
+ * Reject share a form so the note goes with either; Edit is a form of its
+ * own inside a disclosure, prefilled with the escaped text the daemon
+ * sent, so a forged notice line cannot be saved back in unseen.
+ */
+static void
+web_proposal_review(HtmxDiv *row, JsonObject *decision, JsonObject *proposal)
+{
+    const gchar *id = clawt_web_member(decision, "id", "");
+    const gchar *question = clawt_web_member(decision, "question", "");
+    const gchar *kind = clawt_web_member(proposal, "kind", "create");
+    const gchar *reason = clawt_web_member(proposal, "reason", NULL);
+    JsonArray *warnings = clawt_web_member_array(proposal, "warnings");
+    const gchar *end = strchr(question, '\n');
+    g_autofree gchar *headline = (end != NULL)
+        ? g_strndup(question, (gsize)(end - question)) : g_strdup(question);
+    guint i;
+
+    clawt_web_add(row, clawt_web_text(headline, "decision-question"));
+    clawt_web_add(row, clawt_web_text(
+        "Nothing reaches a prompt until you answer.", "small muted"));
+
+    if (reason != NULL && *reason != '\0') {
+        g_autofree gchar *why = g_strdup_printf("Why: %s", reason);
+
+        clawt_web_add(row, clawt_web_text(why, "small"));
+    }
+
+    for (i = 0; warnings != NULL && i < json_array_get_length(warnings); i++)
+        clawt_web_add(row, clawt_web_notice(
+            json_array_get_string_element(warnings, i), ""));
+
+    if (clawt_web_member_bool(proposal, "stale", FALSE))
+        clawt_web_add(row, clawt_web_notice(
+            "The file changed since this was proposed, so Approve is "
+            "refused. Edit shows what is there now; or reject it.", "bad"));
+
+    htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(proposal_pre(
+        g_strcmp0(kind, "update") == 0
+            ? clawt_web_member(proposal, "diff", "")
+            : clawt_web_member(proposal, "text", ""))));
+
+    {
+        g_autoptr(HtmxForm) form = clawt_web_form("/decisions/proposal");
+        g_autoptr(HtmxDiv) actions = htmx_div_new();
+        g_autoptr(HtmxButton) approve = clawt_web_button("Approve", "primary");
+        g_autoptr(HtmxButton) reject = clawt_web_button("Reject", "danger");
+        g_autofree gchar *dismiss = decision_action("dismiss", id);
+        g_autoptr(HtmxButton) drop = clawt_web_post_button(
+            "Does not need me", dismiss, "default", NULL);
+
+        clawt_web_add(form, clawt_web_hidden("proposal", id));
+        clawt_web_add(form, clawt_web_field(
+            "Why (optional, sent to the agent)", "note", NULL, NULL));
+
+        htmx_element_set_attribute(HTMX_ELEMENT(approve), "type", "submit");
+        htmx_element_set_attribute(HTMX_ELEMENT(approve), "name", "action");
+        htmx_element_set_attribute(HTMX_ELEMENT(approve), "value", "approve");
+        htmx_element_set_attribute(HTMX_ELEMENT(reject), "type", "submit");
+        htmx_element_set_attribute(HTMX_ELEMENT(reject), "name", "action");
+        htmx_element_set_attribute(HTMX_ELEMENT(reject), "value", "reject");
+
+        htmx_element_add_class(HTMX_ELEMENT(actions), "btn-row");
+        htmx_node_add_child(HTMX_NODE(actions), HTMX_NODE(approve));
+        htmx_node_add_child(HTMX_NODE(actions), HTMX_NODE(reject));
+        htmx_node_add_child(HTMX_NODE(actions), HTMX_NODE(drop));
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(actions));
+        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(form));
+    }
+
+    {
+        g_autoptr(HtmxElement) details = HTMX_ELEMENT(htmx_details_new());
+        g_autoptr(HtmxElement) summary = HTMX_ELEMENT(htmx_summary_new());
+        g_autoptr(HtmxForm) form = clawt_web_form("/decisions/proposal");
+
+        htmx_node_set_text_content(HTMX_NODE(summary), "Edit");
+        clawt_web_add(form, clawt_web_hidden("proposal", id));
+        clawt_web_add(form, clawt_web_hidden("action", "edit"));
+        clawt_web_add(form, clawt_web_field(
+            "Description", "description",
+            clawt_web_member(proposal, "description", ""), NULL));
+        clawt_web_add(form, clawt_web_textarea_field(
+            "Body", "body", clawt_web_member(proposal, "body", ""), 14));
+        clawt_web_add(form, clawt_web_button("Save and approve", "primary"));
+
+        htmx_node_add_child(HTMX_NODE(details), HTMX_NODE(summary));
+        htmx_node_add_child(HTMX_NODE(details), HTMX_NODE(form));
+        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(details));
+    }
+}
+
+/* The pending proposal @id names, out of one `skill.proposals` reply. */
+static JsonObject *
+proposal_for(JsonNode *proposals, const gchar *id)
+{
+    JsonArray *items = clawt_web_member_array(clawt_web_root(proposals),
+                                              "proposals");
+    guint i;
+
+    for (i = 0; items != NULL && i < json_array_get_length(items); i++) {
+        JsonObject *proposal = json_array_get_object_element(items, i);
+
+        if (g_strcmp0(clawt_web_member(proposal, "id", NULL), id) == 0)
+            return proposal;
+    }
+
+    return NULL;
+}
+
+static HtmxElement *
+decision_row(ClawtWebApp *app, JsonObject *decision, gint64 now,
+             JsonObject *proposal)
 {
     g_autoptr(HtmxDiv) row = htmx_div_new();
     g_autoptr(HtmxDiv) head = htmx_div_new();
@@ -150,101 +281,107 @@ decision_row(ClawtWebApp *app, JsonObject *decision, gint64 now)
 
     htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(head));
 
-    clawt_web_add(row, clawt_web_text(question, "decision-question"));
-
-    /*
-     * The default, always, and phrased as what *is happening* rather
-     * than what would happen.  An operator who reads "it will do X if
-     * you do not answer" waits; one who reads "it is doing X" answers
-     * or moves on, which is the behaviour this whole feature is for.
-     */
-    if (fallback != NULL && *fallback != '\0') {
-        g_autofree gchar *line = (reason != NULL && *reason != '\0')
-            ? g_strdup_printf("Going ahead with: %s \xe2\x80\x94 %s",
-                              fallback, reason)
-            : g_strdup_printf("Going ahead with: %s", fallback);
-
-        clawt_web_add(row, clawt_web_text(line, "small muted"));
-    }
-
-    if (answer != NULL && *answer != '\0') {
-        g_autofree gchar *line = g_strdup_printf("You said: %s", answer);
-
-        clawt_web_add(row, clawt_web_text(line, "small"));
-    }
-
-    if (deadline != NULL && state == 0)
-        clawt_web_add(row, clawt_web_text(deadline, "small muted"));
-
-    /*
-     * A free-text answer beside the offered options, because an
-     * operator whose answer is "neither, do X" is giving the most
-     * valuable answer there is -- and a form that could not carry it
-     * would push them back into the conversation this exists to keep
-     * them out of.
-     */
-    /*
-     * A settled row carries no form.  Answering twice is refused by the
-     * daemon -- the first answer has already reached the agent -- so
-     * offering the control would be offering a refusal.
-     */
-    if (state == 0) {
-        g_autoptr(HtmxForm) form = clawt_web_form("/decisions/answer");
-        g_autoptr(HtmxDiv) buttons = htmx_div_new();
-        JsonArray *options = clawt_web_member_array(decision, "options");
-        guint i;
-
-        clawt_web_add(form, clawt_web_hidden("decision", id));
+    /* A skill proposal draws its own body; only Delete is shared. */
+    if (proposal != NULL && state == 0) {
+        web_proposal_review(row, decision, proposal);
+    } else {
+        clawt_web_add(row, clawt_web_text(question, "decision-question"));
 
         /*
-         * One option per line, not a row of buttons.
-         *
-         * An option is a sentence -- "Re-provision clawt-oryx from a
-         * proper Fedora cloud image, so the exchange mounts and the
-         * default-user config land too" is a real one -- and a wrapping
-         * button row centres each of them, which gives the eye no left
-         * edge to come back to on the second line.  The GTK client
-         * stacks them for the same reason.
+         * The default, always, and phrased as what *is happening* rather
+         * than what would happen.  An operator who reads "it will do X if
+         * you do not answer" waits; one who reads "it is doing X" answers
+         * or moves on, which is the behaviour this whole feature is for.
          */
-        htmx_element_add_class(HTMX_ELEMENT(buttons), "decision-options");
+        if (fallback != NULL && *fallback != '\0') {
+            g_autofree gchar *line = (reason != NULL && *reason != '\0')
+                ? g_strdup_printf("Going ahead with: %s \xe2\x80\x94 %s",
+                                  fallback, reason)
+                : g_strdup_printf("Going ahead with: %s", fallback);
 
-        for (i = 0; options != NULL && i < json_array_get_length(options);
-             i++) {
-            const gchar *option = json_array_get_string_element(options, i);
-            g_autoptr(HtmxButton) pick = NULL;
-
-            if (option == NULL || *option == '\0')
-                continue;
-
-            pick = clawt_web_button(option, "default");
-            htmx_element_set_attribute(HTMX_ELEMENT(pick), "type", "submit");
-            htmx_element_set_attribute(HTMX_ELEMENT(pick), "name", "answer");
-            htmx_element_set_attribute(HTMX_ELEMENT(pick), "value", option);
-            htmx_node_add_child(HTMX_NODE(buttons), HTMX_NODE(pick));
+            clawt_web_add(row, clawt_web_text(line, "small muted"));
         }
 
-        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(buttons));
+        if (answer != NULL && *answer != '\0') {
+            g_autofree gchar *line = g_strdup_printf("You said: %s", answer);
 
-        clawt_web_add(form, clawt_web_field(
-            "Or say something else", "answer", NULL,
-            "\"neither, do X\" is a perfectly good answer"));
-
-        {
-            g_autoptr(HtmxDiv) actions = htmx_div_new();
-            g_autoptr(HtmxButton) send = clawt_web_button("Answer",
-                                                          "primary");
-            g_autofree gchar *dismiss = decision_action("dismiss", id);
-            g_autoptr(HtmxButton) drop = clawt_web_post_button(
-                "Does not need me", dismiss, "default", NULL);
-
-            htmx_element_add_class(HTMX_ELEMENT(actions), "btn-row");
-            htmx_element_set_attribute(HTMX_ELEMENT(send), "type", "submit");
-            htmx_node_add_child(HTMX_NODE(actions), HTMX_NODE(send));
-            htmx_node_add_child(HTMX_NODE(actions), HTMX_NODE(drop));
-            htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(actions));
+            clawt_web_add(row, clawt_web_text(line, "small"));
         }
 
-        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(form));
+        if (deadline != NULL && state == 0)
+            clawt_web_add(row, clawt_web_text(deadline, "small muted"));
+
+        /*
+         * A free-text answer beside the offered options, because an
+         * operator whose answer is "neither, do X" is giving the most
+         * valuable answer there is -- and a form that could not carry it
+         * would push them back into the conversation this exists to keep
+         * them out of.
+         */
+        /*
+         * A settled row carries no form.  Answering twice is refused by the
+         * daemon -- the first answer has already reached the agent -- so
+         * offering the control would be offering a refusal.
+         */
+        if (state == 0) {
+            g_autoptr(HtmxForm) form = clawt_web_form("/decisions/answer");
+            g_autoptr(HtmxDiv) buttons = htmx_div_new();
+            JsonArray *options = clawt_web_member_array(decision, "options");
+            guint i;
+
+            clawt_web_add(form, clawt_web_hidden("decision", id));
+
+            /*
+             * One option per line, not a row of buttons.
+             *
+             * An option is a sentence -- "Re-provision clawt-oryx from a
+             * proper Fedora cloud image, so the exchange mounts and the
+             * default-user config land too" is a real one -- and a wrapping
+             * button row centres each of them, which gives the eye no left
+             * edge to come back to on the second line.  The GTK client
+             * stacks them for the same reason.
+             */
+            htmx_element_add_class(HTMX_ELEMENT(buttons), "decision-options");
+
+            for (i = 0; options != NULL && i < json_array_get_length(options);
+                 i++) {
+                const gchar *option = json_array_get_string_element(options, i);
+                g_autoptr(HtmxButton) pick = NULL;
+
+                if (option == NULL || *option == '\0')
+                    continue;
+
+                pick = clawt_web_button(option, "default");
+                htmx_element_set_attribute(HTMX_ELEMENT(pick), "type", "submit");
+                htmx_element_set_attribute(HTMX_ELEMENT(pick), "name", "answer");
+                htmx_element_set_attribute(HTMX_ELEMENT(pick), "value", option);
+                htmx_node_add_child(HTMX_NODE(buttons), HTMX_NODE(pick));
+            }
+
+            htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(buttons));
+
+            clawt_web_add(form, clawt_web_field(
+                "Or say something else", "answer", NULL,
+                "\"neither, do X\" is a perfectly good answer"));
+
+            {
+                g_autoptr(HtmxDiv) actions = htmx_div_new();
+                g_autoptr(HtmxButton) send = clawt_web_button("Answer",
+                                                              "primary");
+                g_autofree gchar *dismiss = decision_action("dismiss", id);
+                g_autoptr(HtmxButton) drop = clawt_web_post_button(
+                    "Does not need me", dismiss, "default", NULL);
+
+                htmx_element_add_class(HTMX_ELEMENT(actions), "btn-row");
+                htmx_element_set_attribute(HTMX_ELEMENT(send), "type", "submit");
+                htmx_node_add_child(HTMX_NODE(actions), HTMX_NODE(send));
+                htmx_node_add_child(HTMX_NODE(actions), HTMX_NODE(drop));
+                htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(actions));
+            }
+
+            htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(form));
+        }
+
     }
 
     /*
@@ -278,6 +415,7 @@ decisions_body(ClawtWebApp *app, gboolean all)
 {
     g_autoptr(HtmxDiv) view = htmx_div_new();
     g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(JsonNode) proposals = NULL;
     gint64 now = g_get_real_time() / G_USEC_PER_SEC;
     JsonObject *payload;
     JsonArray *items;
@@ -340,10 +478,28 @@ decisions_body(ClawtWebApp *app, gboolean all)
         return HTMX_ELEMENT(g_steal_pointer(&view));
     }
 
+    /*
+     * The proposals, asked for once and only when the inbox holds one --
+     * the library's own rule says which decisions are proposals.
+     */
     for (i = 0; i < json_array_get_length(items); i++) {
         JsonObject *decision = json_array_get_object_element(items, i);
 
-        clawt_web_add(view, decision_row(app, decision, now));
+        if (clawt_skill_proposal_id_is_valid(
+                clawt_web_member(decision, "id", NULL))) {
+            proposals = clawt_web_app_call(app, "skill.proposals", NULL);
+            break;
+        }
+    }
+
+    for (i = 0; i < json_array_get_length(items); i++) {
+        JsonObject *decision = json_array_get_object_element(items, i);
+        const gchar *id = clawt_web_member(decision, "id", NULL);
+        JsonObject *proposal = (proposals != NULL &&
+                                clawt_skill_proposal_id_is_valid(id))
+                               ? proposal_for(proposals, id) : NULL;
+
+        clawt_web_add(view, decision_row(app, decision, now, proposal));
     }
 
     return HTMX_ELEMENT(g_steal_pointer(&view));
@@ -461,6 +617,54 @@ on_dismiss(HtmxRequest *request, GHashTable *params, gpointer user_data)
     return clawt_web_redirect(request, "/decisions");
 }
 
+/*
+ * Approve, Reject or Edit a skill proposal.  A refusal -- a draft that
+ * changed since it was proposed, text the library will not load -- is
+ * shown, not swallowed: the proposal is still waiting, and somebody who
+ * pressed Approve and saw the page reload would believe it had worked.
+ */
+static HtmxResponse *
+on_proposal(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    const gchar *id = clawt_web_form_value(request, "proposal");
+    const gchar *action = clawt_web_form_value(request, "action");
+    const gchar *note = clawt_web_form_value(request, "note");
+    g_autoptr(JsonNode) reply = NULL;
+    ClawtWebPayload *payload;
+
+    (void)params;
+
+    if (id == NULL || action == NULL)
+        return clawt_web_redirect(request, "/decisions");
+
+    payload = clawt_web_payload_new();
+    clawt_web_payload_set(payload, "proposal", id);
+    clawt_web_payload_set(payload, "action", action);
+
+    if (note != NULL && *note != '\0')
+        clawt_web_payload_set(payload, "note", note);
+
+    if (g_strcmp0(action, "edit") == 0) {
+        clawt_web_payload_set(payload, "description",
+                              clawt_web_form_value(request, "description"));
+        clawt_web_payload_set(payload, "body",
+                              clawt_web_form_value(request, "body"));
+    }
+
+    reply = clawt_web_app_call(app, "skill.proposal_resolve",
+                               clawt_web_payload_take(payload));
+
+    if (reply == NULL) {
+        g_autofree gchar *message = g_strdup(clawt_web_app_last_error(app));
+
+        return clawt_web_error_page(app, request, NULL, CLAWT_PAGE_DECISIONS,
+                                    message);
+    }
+
+    return clawt_web_redirect(request, "/decisions");
+}
+
 void
 clawt_web_register_decisions(HtmxRouter *router, ClawtWebApp *app)
 {
@@ -468,4 +672,5 @@ clawt_web_register_decisions(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_post(router, "/decisions/answer", on_answer, app);
     htmx_router_post(router, "/decisions/dismiss", on_dismiss, app);
     htmx_router_post(router, "/decisions/delete", on_delete, app);
+    htmx_router_post(router, "/decisions/proposal", on_proposal, app);
 }

@@ -2013,6 +2013,92 @@ static const gchar TOOL_LIST_END[] =
 
 
 /*
+ * The paragraph for a connector this agent reaches as a directory, from
+ * the same rule the relay applies (clawt_mcp_directory_decide()) and the
+ * size a relay last reported.  Returns FALSE, having written nothing,
+ * when the agent gets the tools listed whole.
+ *
+ * In `auto` an unknown size is not a directory: nothing has been seen
+ * yet, and saying "search it" about a server that will arrive as a list
+ * would send the agent looking for tools it does not have.  The next
+ * start, after a relay has counted, says the right thing.
+ */
+static gboolean
+describe_connector_directory(GString                 *out,
+                             ClawtIntegrationBinding *binding,
+                             ClawtAgentConfig        *agent)
+{
+    ClawtConfig *fleet = (agent != NULL)
+        ? clawt_agent_config_get_config(agent) : NULL;
+    g_autofree gchar *state_dir = NULL;
+    g_autofree gchar *path = NULL;
+    g_autoptr(ClawtToolCensus) census = NULL;
+    g_autoptr(ClawtMcpDirectory) directory = NULL;
+    ClawtToolDirectoryMode mode = CLAWT_TOOL_DIRECTORY_AUTO;
+    const gchar *name = clawt_integration_binding_get_name(binding);
+    gboolean searches;
+
+    if (fleet == NULL)
+        return FALSE;
+
+    (void)clawt_tool_directory_mode_from_nick(
+        clawt_integration_binding_get_string(binding, "directory"), &mode);
+
+    state_dir = clawt_config_get_path_value(fleet, "daemon.state_dir");
+
+    if (state_dir != NULL) {
+        path = clawt_tool_census_path(state_dir);
+        census = clawt_tool_census_load(path, name);
+    }
+
+    searches = clawt_mcp_directory_cli_searches_tools(
+        clawt_agent_config_get_string(agent, "model.provider"));
+
+    if (!clawt_mcp_directory_decide(
+            mode, searches,
+            census != NULL ? (guint64)census->tools : 0,
+            census != NULL ? (guint64)census->chars : 0,
+            (guint64)MAX(clawt_config_get_int(
+                fleet, "connectors.directory_min_tools"), 0),
+            (guint64)MAX(clawt_config_get_int(
+                fleet, "connectors.directory_min_chars"), 0)))
+        return FALSE;
+
+    /* Built only for its names, so they are spelled as the relay spells them. */
+    directory = clawt_mcp_directory_new(name, mode, searches, 0, 0);
+
+    if (census != NULL)
+        g_string_append_printf(out,
+            "This server has %" G_GINT64_FORMAT " tools you may use -- too\n"
+            "many to list -- so they reach you as a directory. *Search it*\n"
+            "rather than looking for a tool by name:\n\n",
+            census->tools);
+    else
+        g_string_append(out,
+            "This server's tools reach you as a directory. *Search it*\n"
+            "rather than looking for a tool by name:\n\n");
+
+    g_string_append_printf(out,
+        "- ~%s~ with a few words saying what you want to do; an empty\n"
+        "  query answers with what the server covers, area by area.\n"
+        "- ~%s~ for one tool's exact input schema.\n"
+        "- ~%s~ with the tool's name and its arguments, to run it.\n\n",
+        clawt_mcp_directory_get_search_name(directory),
+        clawt_mcp_directory_get_describe_name(directory),
+        clawt_mcp_directory_get_call_name(directory));
+
+    if (census != NULL && census->areas != NULL && *census->areas != '\0')
+        g_string_append_printf(out, "What it covers (tools in each): %s.\n\n",
+                               census->areas);
+
+    g_string_append(out,
+        "The search finds only tools you are allowed to use, so a tool\n"
+        "it does not find is one you do not have.\n\n");
+
+    return TRUE;
+}
+
+/*
  * What an agent is told about one integration.
  *
  * Written from the agent's side rather than the operator's: not "this
@@ -2116,6 +2202,14 @@ describe_integration(GString *out, ClawtIntegrationBinding *binding,
                 "refused is refused by the service rather than by\n"
                 "clawtilla, so it is worth reading before assuming a\n"
                 "failure was yours.\n\n", scopes);
+
+        /*
+         * A directory is described as one, never enumerated: listing
+         * four hundred tools here would put back into every prompt the
+         * very text the directory exists to keep out of it.
+         */
+        if (describe_connector_directory(out, binding, agent))
+            return;
 
         if (tools != NULL && tools[0] != NULL) {
             guint i;
