@@ -9440,11 +9440,39 @@ clawt_daemon_apply_integration_fields(ClawtIntegrationConfig  *instance,
              */
             break;
 
-        case CLAWT_SCHEMA_INT:
-            clawt_integration_config_set_int(
-                instance, agent_id, leaf,
-                clawt_ipc_payload_int(payload, leaf, 0));
+        case CLAWT_SCHEMA_INT: {
+            JsonNode *node = json_object_get_member(payload, leaf);
+            gint64 value = 0;
+
+            /*
+             * A number, or a string that is one -- clients build payloads
+             * from string pairs.  Anything else is refused rather than
+             * read as 0: for max_result_bytes, 0 is a real setting (no
+             * budget), so a typo would have switched the budget off.
+             */
+            if (JSON_NODE_HOLDS_VALUE(node) &&
+                json_node_get_value_type(node) == G_TYPE_INT64) {
+                value = json_node_get_int(node);
+            } else if (!JSON_NODE_HOLDS_VALUE(node) ||
+                       json_node_get_value_type(node) != G_TYPE_STRING ||
+                       !g_ascii_string_to_signed(json_node_get_string(node),
+                                                 10, G_MININT64, G_MAXINT64,
+                                                 &value, NULL)) {
+                g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "%s must be a whole number", leaf);
+                return FALSE;
+            }
+
+            if (g_strcmp0(leaf, "max_result_bytes") == 0 && value < -1) {
+                g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "max_result_bytes is a number of bytes, 0 for no "
+                            "budget, or -1 for the fleet's");
+                return FALSE;
+            }
+
+            clawt_integration_config_set_int(instance, agent_id, leaf, value);
             break;
+        }
 
         case CLAWT_SCHEMA_BOOLEAN:
             clawt_integration_config_set_boolean(

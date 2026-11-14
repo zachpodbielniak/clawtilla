@@ -649,6 +649,79 @@ HtmxResponse *clawt_web_manifest_response(void);
 HtmxElement *clawt_web_decision_inline(JsonObject  *decision,
                                        const gchar *notice);
 
+/**
+ * clawt_web_step_element:
+ * @step: one step of a turn that is not part of a tool run
+ *
+ * A step drawn on its own: its sentence in its tone, a trimmed-result
+ * notice (clawt_mcp_result_is_notice()) marked as one, and a step that
+ * shows an MCP app as the app's card -- closed, with an Open button, so
+ * the page fetches nothing until somebody asks.
+ *
+ * Returns: (transfer full): the element
+ */
+HtmxElement *clawt_web_step_element(ClawtTurnStep *step);
+
+/**
+ * clawt_web_app_card:
+ * @agent_id: the agent whose conversation it is in
+ * @app_id: the app
+ * @text: (nullable): what the step says about it
+ *
+ * An MCP app in the transcript, closed.  Opening it fetches the frame
+ * fragment into the card; the card keeps its id and `hx-preserve`, so a
+ * transcript swap does not close an app somebody is using.
+ *
+ * Returns: (transfer full): the card
+ */
+HtmxElement *clawt_web_app_card(const gchar *agent_id,
+                                const gchar *app_id,
+                                const gchar *text);
+
+/**
+ * clawt_web_app_frame:
+ * @app: a `connector.app_get` reply
+ *
+ * An opened MCP app: an iframe with `sandbox` exactly
+ * %CLAWT_MCP_APP_IFRAME_SANDBOX and the daemon's `document` as its
+ * `srcdoc`, the tool's input and result for the page's host bridge, the
+ * origins its policy left out -- or, for a view that could not be kept,
+ * the reason and no frame at all.
+ *
+ * Returns: (transfer full): the element
+ */
+HtmxElement *clawt_web_app_frame(JsonObject *app);
+
+/**
+ * clawt_web_budget_form:
+ * @escaped: the connector's name, URI-escaped
+ * @own: its own `max_result_bytes`, -1 when it sets none
+ * @effective: (nullable): what that comes to, as libclawt labels it
+ *
+ * Returns: (transfer full): the connector's result-budget form
+ */
+HtmxElement *clawt_web_budget_form(const gchar *escaped,
+                                   gint64       own,
+                                   const gchar *effective);
+
+/**
+ * clawt_web_apps_form:
+ * @escaped: the connector's name, URI-escaped
+ * @on: whether it shows its apps in chat
+ *
+ * Returns: (transfer full): the "Show its apps in chat" form
+ */
+HtmxElement *clawt_web_apps_form(const gchar *escaped,
+                                 gboolean     on);
+
+/**
+ * clawt_web_fleet_budget:
+ * @value: `connectors.max_result_bytes`
+ *
+ * Returns: (transfer full): the fleet's result-budget form
+ */
+HtmxElement *clawt_web_fleet_budget(gint64 value);
+
 /* Append an escaped destination if it matches; return 1 when appended. */
 guint clawt_web_navigation_result(HtmxElement *list, const gchar *query,
                                   const gchar *name, const gchar *detail,

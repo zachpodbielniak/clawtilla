@@ -360,6 +360,7 @@ struct _ClawtWindow {
      */
     GtkWidget         *settings_directory_min_tools;
     GtkWidget         *settings_directory_min_chars;
+    GtkWidget         *settings_max_result_bytes;
     gboolean           settings_directory_syncing;
     GtkWidget         *settings_devices;
     GtkWidget         *settings_devices_pair;

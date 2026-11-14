@@ -92,6 +92,10 @@ clawt_daemon_note_step(ClawtDaemon *self, ClawtTurnStep *step)
             clawt_turn_step_get_tool_name(step), detail,
             clawt_turn_step_get_failed(step));
 
+        clawt_turn_step_set_app(kept, clawt_turn_step_get_app_id(step),
+                                clawt_turn_step_get_app_url(step),
+                                clawt_turn_step_get_app_title(step));
+
         history = g_hash_table_lookup(self->room_steps, room_id);
 
         if (history == NULL) {
@@ -187,6 +191,18 @@ clawt_daemon_note_step(ClawtDaemon *self, ClawtTurnStep *step)
     clawt_event_set_detail_int(event, CLAWT_STEP_MEMBER_TS,
                                clawt_turn_step_get_timestamp(step));
 
+    if (clawt_turn_step_get_app_id(step) != NULL)
+        clawt_event_set_detail(event, CLAWT_STEP_MEMBER_APP,
+                               clawt_turn_step_get_app_id(step));
+
+    if (clawt_turn_step_get_app_url(step) != NULL)
+        clawt_event_set_detail(event, CLAWT_STEP_MEMBER_APP_URL,
+                               clawt_turn_step_get_app_url(step));
+
+    if (clawt_turn_step_get_app_title(step) != NULL)
+        clawt_event_set_detail(event, CLAWT_STEP_MEMBER_APP_TITLE,
+                               clawt_turn_step_get_app_title(step));
+
     clawt_event_bus_publish(self->bus, event);
     clawt_event_free(event);
 }
@@ -263,6 +279,24 @@ clawt_daemon_add_step_object(JsonBuilder *builder, ClawtTurnStep *step)
     json_builder_set_member_name(builder, CLAWT_STEP_MEMBER_TS);
     json_builder_add_int_value(builder,
                                clawt_turn_step_get_timestamp(step));
+
+    if (clawt_turn_step_get_app_id(step) != NULL) {
+        json_builder_set_member_name(builder, CLAWT_STEP_MEMBER_APP);
+        json_builder_add_string_value(builder,
+                                      clawt_turn_step_get_app_id(step));
+    }
+
+    if (clawt_turn_step_get_app_url(step) != NULL) {
+        json_builder_set_member_name(builder, CLAWT_STEP_MEMBER_APP_URL);
+        json_builder_add_string_value(builder,
+                                      clawt_turn_step_get_app_url(step));
+    }
+
+    if (clawt_turn_step_get_app_title(step) != NULL) {
+        json_builder_set_member_name(builder, CLAWT_STEP_MEMBER_APP_TITLE);
+        json_builder_add_string_value(builder,
+                                      clawt_turn_step_get_app_title(step));
+    }
 
     json_builder_set_member_name(builder, "agent");
     json_builder_add_string_value(builder,

@@ -1118,6 +1118,12 @@ connectors_content(ClawtWebApp *app)
             clawt_web_add(body, directory_form(escaped, directory));
         }
 
+        clawt_web_add(body, clawt_web_budget_form(
+            escaped, clawt_web_member_int(connector, "max_result_bytes", -1),
+            clawt_web_member(connector, "max_result_label", NULL)));
+        clawt_web_add(body, clawt_web_apps_form(
+            escaped, clawt_web_member_bool(connector, "show_apps", FALSE)));
+
         htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
 
         {
@@ -1182,6 +1188,21 @@ connectors_content(ClawtWebApp *app)
         }
 
         htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
+        htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
+    }
+
+    {
+        g_autoptr(HtmxDiv) card = clawt_web_card(
+            "Results bigger than the budget",
+            "A connector tool result past this many bytes is trimmed before "
+            "the agent reads it, with a note at both ends, and kept whole "
+            "for a day so the agent can query the rest. A connector can set "
+            "its own.");
+        HtmxElement *body = clawt_web_card_body(card);
+
+        clawt_web_add(body, clawt_web_fleet_budget(clawt_web_member_int(
+            clawt_web_root(reply), "max_result_bytes",
+            clawt_mcp_result_default_budget())));
         htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
     }
 
@@ -3355,7 +3376,7 @@ on_connector_directory_thresholds(HtmxRequest *request, GHashTable *params,
     g_autoptr(JsonNode) reply = NULL;
     g_autoptr(HtmxElement) content = NULL;
     const gchar *keys[] = { "directory_min_tools", "directory_min_chars",
-                            NULL };
+                            "max_result_bytes", NULL };
     gsize k;
 
     (void)params;
@@ -3392,6 +3413,86 @@ on_connector_directory_thresholds(HtmxRequest *request, GHashTable *params,
 
     return settings_response(app, request, "connectors", content, "Saved.",
                              FALSE);
+}
+
+/*
+ * A connector's own result budget.  Sent as a JSON integer: a field that
+ * is not a whole number is refused here rather than sent, because the
+ * daemon would refuse it too and 0 is a real setting (no budget).
+ */
+static HtmxResponse *
+on_connector_budget(HtmxRequest *request, GHashTable *params,
+                    gpointer user_data)
+{
+    g_autofree gchar *failure = NULL;
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *name = clawt_web_param(params, "connector");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(HtmxElement) content = NULL;
+    const gchar *text = clawt_web_form_value(request, "max_result_bytes");
+    gint64 value = -1;
+
+    if (text != NULL && *text != '\0' &&
+        !g_ascii_string_to_signed(text, 10, -1, G_MAXINT64, &value, NULL)) {
+        content = connectors_content(app);
+        return settings_response(app, request, "connectors", content,
+                                 "The budget is a number of bytes, 0 for "
+                                 "none, or -1 for the fleet's.", TRUE);
+    }
+
+    clawt_web_payload_set(payload, "name", name);
+    clawt_web_payload_set_int(payload, "max_result_bytes", value);
+
+    reply = clawt_web_app_call(app, "integration.update",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        failure = g_strdup(clawt_web_app_last_error(app));
+
+    content = connectors_content(app);
+
+    if (failure != NULL)
+        return settings_response(app, request, "connectors", content,
+                                 failure, TRUE);
+
+    return settings_response(app, request, "connectors", content,
+                             "Saved. It applies the next time an agent's "
+                             "session starts.", FALSE);
+}
+
+/* "Show its apps in chat": an unticked box is not sent, so absent is off. */
+static HtmxResponse *
+on_connector_apps(HtmxRequest *request, GHashTable *params,
+                  gpointer user_data)
+{
+    g_autofree gchar *failure = NULL;
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *name = clawt_web_param(params, "connector");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(HtmxElement) content = NULL;
+
+    clawt_web_payload_set(payload, "name", name);
+    clawt_web_payload_set_bool(
+        payload, "show_apps",
+        clawt_web_form_value(request, "show_apps") != NULL);
+
+    reply = clawt_web_app_call(app, "integration.update",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        failure = g_strdup(clawt_web_app_last_error(app));
+
+    content = connectors_content(app);
+
+    if (failure != NULL)
+        return settings_response(app, request, "connectors", content,
+                                 failure, TRUE);
+
+    return settings_response(app, request, "connectors", content,
+                             "Saved. It applies the next time an agent's "
+                             "session starts.", FALSE);
 }
 
 static HtmxResponse *
@@ -3989,6 +4090,10 @@ clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app)
                      on_connector_directory_thresholds, app);
     htmx_router_post(router, "/settings/connectors/:connector/directory",
                      on_connector_directory, app);
+    htmx_router_post(router, "/settings/connectors/:connector/budget",
+                     on_connector_budget, app);
+    htmx_router_post(router, "/settings/connectors/:connector/apps",
+                     on_connector_apps, app);
     htmx_router_get(router, "/settings/connectors/:connector/authorize",
                     on_connector_authorize, app);
     htmx_router_post(router, "/settings/connectors/:connector/await",

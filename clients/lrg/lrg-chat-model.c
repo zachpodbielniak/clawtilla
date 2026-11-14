@@ -1388,6 +1388,53 @@ clawt_lrg_step_line(ClawtTurnStep *step)
     return g_steal_pointer(&text);
 }
 
+const gchar *
+clawt_lrg_step_tone(ClawtTurnStep *step)
+{
+    g_return_val_if_fail(step != NULL, NULL);
+
+    if (g_strcmp0(clawt_turn_step_tone(step), "bad") == 0)
+        return "bad";
+
+    /* Only the trim notice: other status chatter stays muted. */
+    if (clawt_turn_step_get_kind(step) == CLAWT_STEP_STATUS &&
+        clawt_mcp_result_is_notice(clawt_turn_step_get_text(step)))
+        return "warn";
+
+    return NULL;
+}
+
+gboolean
+clawt_lrg_step_app_link(ClawtTurnStep  *step,
+                        gchar         **out_label,
+                        gchar         **out_url)
+{
+    const gchar *url;
+    const gchar *title;
+
+    g_return_val_if_fail(step != NULL, FALSE);
+
+    url = clawt_turn_step_get_app_url(step);
+
+    if (clawt_turn_step_get_app_id(step) == NULL || url == NULL ||
+        *url == '\0')
+        return FALSE;
+
+    /* The app's own title, carried on the step; the tool when it has none. */
+    title = clawt_turn_step_get_app_title(step);
+
+    if (title == NULL)
+        title = clawt_turn_step_get_tool_name(step);
+
+    if (out_label != NULL)
+        *out_label = clawt_mcp_app_link_label(title);
+
+    if (out_url != NULL)
+        *out_url = g_strdup(url);
+
+    return TRUE;
+}
+
 guint
 clawt_lrg_steps_before(GPtrArray *steps, guint from, gint64 message_ts)
 {

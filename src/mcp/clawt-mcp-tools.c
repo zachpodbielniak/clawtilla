@@ -47,6 +47,7 @@ typedef enum {
     NEEDS_RETRY,
     NEEDS_REBUILD,
     NEEDS_SKILL_PROPOSAL,
+    NEEDS_CONNECTOR,
     NEEDS_NEVER
 } ToolRequirement;
 
@@ -442,6 +443,26 @@ static const ClawtParamInfo memory_list_params[] = {
 
 static const ClawtParamInfo memory_id_params[] = {
     { "id", "string", "Which memory.", TRUE }
+};
+
+static const ClawtParamInfo mcp_result_query_params[] = {
+    { "result_id", "string",
+      "The held result, as the [clawtilla] note at the start of a trimmed "
+      "result names it (\"r\" and sixteen hex digits).", TRUE },
+    { "path", "string",
+      "Where in it, jq-like: .content[0].text, .structuredContent.items, "
+      ".items[20:40], [\"odd key\"]. A string that is JSON is gone into, "
+      "so .content[0].text.items works. Leave it out for the whole "
+      "result.", FALSE },
+    { "search", "string",
+      "Text to find there, ignoring case: each match with what is around "
+      "it, or the array items that contain it.", FALSE },
+    { "offset", "integer",
+      "Where to start: a byte of a string, an item of an array. The note "
+      "on a trimmed result says where it stopped.", FALSE },
+    { "limit", "integer",
+      "How much: bytes of a string, items of an array. The answer stays "
+      "within the result's budget whatever you ask.", FALSE }
 };
 
 static const ClawtParamInfo recall_params[] = {
@@ -1043,6 +1064,15 @@ static const ToolDefinition tools[] = {
          "want to see every time, not for anything you merely think is "
          "important.",
          NEEDS_MEMORY, memory_pin_params, CLAWT_ACTION_WRITE),
+
+    TOOL("clawtilla_mcp_result_query",
+         "Read part of a connector tool result that was too big to show "
+         "you whole. A trimmed result starts with a [clawtilla] note naming "
+         "the held result and where the cut was; ask for the part you need "
+         "-- a path, a search, an offset -- instead of calling the tool "
+         "again. Only results your own tools returned can be read, for a "
+         "day after.",
+         NEEDS_CONNECTOR, mcp_result_query_params, CLAWT_ACTION_READ),
 
     TOOL("clawtilla_recall",
          "Search what was actually said in the conversations you were "
@@ -2785,6 +2815,34 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
                 clawt_agent_config_get_config(clawt_agent_get_config(agent)),
                 "skills.max_proposals_per_day") <= 0)
             return FALSE;
+        break;
+
+    case NEEDS_CONNECTOR:
+        /*
+         * Only an agent holding a connector can have a held result, so
+         * only one is shown the tool that reads them.
+         */
+        {
+            ClawtAgentConfig *mine = clawt_agent_get_config(agent);
+            g_autoptr(GPtrArray) bindings = clawt_integration_resolve_for_agent(
+                clawt_agent_config_get_config(mine), mine);
+            guint b;
+            gboolean any = FALSE;
+
+            for (b = 0; bindings != NULL && b < bindings->len; b++) {
+                ClawtIntegrationBinding *binding =
+                    g_ptr_array_index(bindings, b);
+
+                if (g_strcmp0(clawt_integration_binding_get_info(binding)->id,
+                              "connector") == 0) {
+                    any = TRUE;
+                    break;
+                }
+            }
+
+            if (!any)
+                return FALSE;
+        }
         break;
 
     case NEEDS_NEVER:
@@ -6436,6 +6494,36 @@ tool_skill_list(ClawtMcpTools *self, const gchar *agent_id)
     return g_string_free(g_steal_pointer(&out), FALSE);
 }
 
+/*
+ * A held result, looked up in the calling agent's own directory and
+ * nowhere else.  That lookup is the whole permission: there is no id an
+ * agent can pass that reaches another agent's results, and the answer
+ * for one that is not there is the answer for one that never existed.
+ */
+static gchar *
+tool_mcp_result_query(ClawtMcpTools *self, const gchar *agent_id,
+                      JsonObject *arguments, gboolean *is_error)
+{
+    ClawtConfig *config = (self->agents != NULL)
+        ? clawt_agent_manager_get_config(self->agents) : NULL;
+    g_autofree gchar *dir = NULL;
+
+    if (config == NULL || agent_id == NULL) {
+        *is_error = TRUE;
+        return g_strdup("There are no held results here.");
+    }
+
+    dir = clawt_mcp_result_spill_dir(config, agent_id);
+
+    return clawt_mcp_result_query(dir,
+                                  argument_string(arguments, "result_id"),
+                                  argument_string(arguments, "path"),
+                                  argument_string(arguments, "search"),
+                                  argument_int(arguments, "offset", 0),
+                                  argument_int(arguments, "limit", 0),
+                                  is_error);
+}
+
 static gchar *
 tool_skill_read(ClawtMcpTools *self, const gchar *agent_id,
                 JsonObject *arguments, gboolean *is_error)
@@ -9776,6 +9864,8 @@ tools_call(ClawtMcpTools *self,
         text = tool_memory_get(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_memory_forget") == 0)
         text = tool_memory_forget(self, agent_id, arguments, &is_error);
+    else if (g_strcmp0(tool_name, CLAWT_MCP_RESULT_QUERY_TOOL) == 0)
+        text = tool_mcp_result_query(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_recall") == 0)
         text = tool_recall(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_memory_pin") == 0)

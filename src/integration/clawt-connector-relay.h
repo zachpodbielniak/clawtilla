@@ -63,6 +63,10 @@ G_BEGIN_DECLS
  * @unauthorized: (nullable): told when a remote server answers 401, so
  *   the daemon can offer a sign-in
  * @unauthorized_data: data for @unauthorized
+ * @results: (nullable): the result budget, owned by the plan; filled by
+ *   the caller, which knows the agent and its state directory
+ * @apps: (nullable): MCP apps, owned by the plan; set only when the
+ *   connector shows its apps in chat
  * @gateway: (nullable): the integration broker answering for this
  *   connector -- "AnythingMCP", "Jentic One" -- so a refusal it sends is
  *   named as its, never as clawtilla's
@@ -125,6 +129,8 @@ typedef struct {
     ClawtConnectorUnauthorized unauthorized;
     gpointer                   unauthorized_data;
 
+    ClawtMcpResults           *results;
+    ClawtMcpApps              *apps;
     gchar   *gateway;
 } ClawtConnectorPlan;
 

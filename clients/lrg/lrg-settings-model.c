@@ -910,6 +910,67 @@ clawt_lrg_settings_connector_subtitle(JsonObject *entry)
 }
 
 gchar *
+clawt_lrg_settings_connector_budget_text(JsonObject *entry)
+{
+    gint64 own = json_object_get_int_member_with_default(
+        entry, "max_result_bytes", -1);
+
+    if (own < 0)
+        return g_strdup("");
+
+    return g_strdup_printf("%" G_GINT64_FORMAT, own);
+}
+
+gchar *
+clawt_lrg_settings_connector_budget_hint(JsonObject *entry)
+{
+    gint64 own = json_object_get_int_member_with_default(
+        entry, "max_result_bytes", -1);
+    const gchar *label = nonempty(entry, "max_result_label");
+
+    return g_strdup_printf(
+        "The most of one tool result the agent is shown, in bytes; the "
+        "rest is kept for it to query. Empty for the fleet's, 0 for no "
+        "budget. Now: %s%s.", label != NULL ? label : "?",
+        own < 0 ? " (the fleet's)" : "");
+}
+
+gint64
+clawt_lrg_settings_connector_effective_budget(JsonObject *entry)
+{
+    return json_object_get_int_member_with_default(
+        entry, "effective_max_result_bytes", 0);
+}
+
+gboolean
+clawt_lrg_settings_connector_show_apps(JsonObject *entry)
+{
+    return clawt_ipc_payload_boolean(entry, "show_apps", FALSE);
+}
+
+gboolean
+clawt_lrg_settings_budget_value(const gchar *text,
+                                gboolean     allow_fleet,
+                                gint64      *out_value)
+{
+    g_autofree gchar *trimmed = g_strstrip(g_strdup(text != NULL ? text
+                                                                 : ""));
+
+    *out_value = 0;
+
+    if (*trimmed == '\0') {
+        if (!allow_fleet)
+            return FALSE;
+
+        *out_value = -1;
+        return TRUE;
+    }
+
+    return g_ascii_string_to_signed(trimmed, 10, 0, G_MAXINT64, out_value,
+                                    NULL);
+}
+
+gchar *
 clawt_lrg_settings_catalog_label(JsonObject *entry)
 {
     const gchar *id = clawt_ipc_payload_string(entry, "id");

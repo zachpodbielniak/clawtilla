@@ -2410,6 +2410,229 @@ test_the_exchange_lists_requests_and_answers(void)
 	g_assert_nonnull(strstr(page_html, "href=\"/a/lead/chat?with=chief\""));
 }
 
+
+/* ── Connector budget and MCP apps ───────────────────────────────── */
+
+/* An attribute's value, as a browser would decode it. */
+static gchar *
+attribute_value(const gchar *html, const gchar *name)
+{
+    g_autofree gchar *needle = g_strdup_printf(" %s=\"", name);
+    const gchar *start = strstr(html, needle);
+    const gchar *end;
+    g_autoptr(GString) out = g_string_new(NULL);
+    const gchar *p;
+
+    if (start == NULL)
+        return NULL;
+
+    start += strlen(needle);
+    end = strchr(start, '"');
+    g_assert_nonnull(end);
+
+    for (p = start; p < end; p++) {
+        if (g_str_has_prefix(p, "&quot;")) { g_string_append_c(out, '"'); p += 5; }
+        else if (g_str_has_prefix(p, "&lt;")) { g_string_append_c(out, '<'); p += 3; }
+        else if (g_str_has_prefix(p, "&gt;")) { g_string_append_c(out, '>'); p += 3; }
+        else if (g_str_has_prefix(p, "&#39;")) { g_string_append_c(out, '\''); p += 4; }
+        else if (g_str_has_prefix(p, "&#x27;")) { g_string_append_c(out, '\''); p += 5; }
+        else if (g_str_has_prefix(p, "&amp;")) { g_string_append_c(out, '&'); p += 4; }
+        else g_string_append_c(out, *p);
+    }
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+/* A connector.app_get reply, as the daemon builds it. */
+static JsonObject *
+app_reply(gboolean with_view)
+{
+    JsonObject *app = json_object_new();
+    JsonObject *input = json_object_new();
+    JsonObject *result = json_object_new();
+    JsonArray *refused = json_array_new();
+
+    json_object_set_string_member(app, "id", "a0123456789abcdef");
+    json_object_set_string_member(app, "agent", "oryx");
+    json_object_set_string_member(app, "connector", "draw");
+    json_object_set_string_member(app, "tool", "create_view");
+    json_object_set_string_member(app, "title", "Diagram");
+    json_object_set_string_member(app, "sandbox",
+                                  CLAWT_MCP_APP_IFRAME_SANDBOX);
+
+    if (with_view) {
+        g_autofree gchar *csp = clawt_mcp_app_build_csp(NULL, FALSE, NULL);
+        g_autofree gchar *document = clawt_mcp_app_build_document(
+            "<!doctype html><p>\"hi\" & <b>bye</b></p></script>", csp);
+
+        json_object_set_string_member(app, "document", document);
+        json_object_set_string_member(app, "csp", csp);
+    } else {
+        json_object_set_string_member(app, "blocked",
+                                      "its view is bigger than clawtilla "
+                                      "shows");
+    }
+
+    json_object_set_string_member(input, "q", "</script><b>x</b>");
+    json_object_set_object_member(app, "input", input);
+    json_object_set_boolean_member(result, "isError", FALSE);
+    json_object_set_object_member(app, "result", result);
+    json_array_add_string_element(refused, "http://evil.example");
+    json_object_set_array_member(app, "refused", refused);
+
+    return app;
+}
+
+/*
+ * The frame is the isolation: exactly allow-scripts, so an opaque
+ * origin with no reach into this page, and the policy before a byte of
+ * the server's.
+ */
+static void
+test_an_opened_app_is_sandboxed(void)
+{
+    g_autoptr(JsonObject) app = app_reply(TRUE);
+    g_autoptr(HtmxElement) frame = clawt_web_app_frame(app);
+    g_autofree gchar *html = htmx_element_render(frame);
+    g_autofree gchar *sandbox = attribute_value(html, "sandbox");
+    g_autofree gchar *srcdoc = attribute_value(html, "srcdoc");
+
+    g_assert_nonnull(strstr(html, "<iframe"));
+    g_assert_cmpstr(sandbox, ==, "allow-scripts");
+    g_assert_null(strstr(html, "allow-same-origin"));
+    g_assert_null(strstr(html, " allow=\""));
+    g_assert_nonnull(strstr(html, "referrerpolicy=\"no-referrer\""));
+    g_assert_nonnull(srcdoc);
+    g_assert_true(g_str_has_prefix(
+        srcdoc, "<!DOCTYPE html><meta http-equiv=\"Content-Security-Policy\""));
+    g_assert_nonnull(strstr(srcdoc, "default-src 'none'"));
+    g_assert_nonnull(strstr(srcdoc, "form-action 'none'"));
+    g_assert_nonnull(strstr(srcdoc, "<p>\"hi\" & <b>bye</b></p>"));
+
+    /*
+     * The view's content and the tool's input stay inside their
+     * attributes: no quote of theirs reaches the page unescaped, which
+     * is the only character that could end the attribute early.
+     */
+    g_assert_null(strstr(html, "\"hi\""));
+    g_assert_null(strstr(html, "\"q\""));
+    g_assert_nonnull(strstr(html, "data-app-input="));
+    g_assert_nonnull(strstr(html, "http://evil.example"));
+}
+
+static void
+test_a_blocked_app_says_why_and_draws_no_frame(void)
+{
+    g_autoptr(JsonObject) app = app_reply(FALSE);
+    g_autoptr(HtmxElement) frame = clawt_web_app_frame(app);
+    g_autofree gchar *html = htmx_element_render(frame);
+
+    g_assert_null(strstr(html, "<iframe"));
+    g_assert_null(strstr(html, "srcdoc"));
+    g_assert_nonnull(strstr(html, "its view is bigger than clawtilla shows"));
+    g_assert_nonnull(strstr(html, "app-blocked"));
+}
+
+/* In the transcript an app is a button: nothing is fetched at load. */
+static void
+test_an_app_in_the_transcript_is_closed_until_opened(void)
+{
+    g_autoptr(ClawtTurnStep) step = clawt_turn_step_new(
+        CLAWT_STEP_STATUS, "oryx", "dm:oryx:op", "App: Diagram from draw",
+        "create_view", NULL, FALSE);
+    g_autoptr(HtmxElement) element = NULL;
+    g_autofree gchar *html = NULL;
+
+    clawt_turn_step_set_app(step, "a0123456789abcdef",
+                            "http://127.0.0.1:8790/a/oryx/app/"
+                            "a0123456789abcdef", "Flowchart");
+    element = clawt_web_step_element(step);
+    html = htmx_element_render(element);
+
+    g_assert_nonnull(strstr(html, "class=\"turn-step app-card\""));
+    g_assert_nonnull(strstr(html,
+        "hx-get=\"/a/oryx/app/a0123456789abcdef/frame\""));
+    g_assert_nonnull(strstr(html, "hx-preserve=\"true\""));
+    g_assert_nonnull(strstr(html, "App: Diagram from draw"));
+    g_assert_null(strstr(html, "<iframe"));
+    g_assert_null(strstr(html, "srcdoc"));
+}
+
+/* An id that is not an app id never becomes part of a URL. */
+static void
+test_a_bad_app_id_is_not_a_link(void)
+{
+    g_autoptr(HtmxElement) card = clawt_web_app_card(
+        "oryx", "../../settings", "App");
+    g_autofree gchar *html = htmx_element_render(card);
+
+    g_assert_null(strstr(html, "hx-get"));
+    g_assert_null(strstr(html, "settings"));
+}
+
+static void
+test_a_trimmed_result_is_a_warning(void)
+{
+    g_autofree gchar *notice = clawt_mcp_result_notice(
+        "github", "list_issues", 2000000, 65536, "r0123456789abcdef");
+    g_autoptr(ClawtTurnStep) step = clawt_turn_step_new(
+        CLAWT_STEP_STATUS, "oryx", "dm:oryx:op", notice, NULL, NULL, FALSE);
+    g_autoptr(ClawtTurnStep) plain = clawt_turn_step_new(
+        CLAWT_STEP_STATUS, "oryx", "dm:oryx:op", "Reconnecting", NULL, NULL,
+        FALSE);
+    g_autoptr(HtmxElement) one = clawt_web_step_element(step);
+    g_autoptr(HtmxElement) two = clawt_web_step_element(plain);
+    g_autofree gchar *html = htmx_element_render(one);
+    g_autofree gchar *other = htmx_element_render(two);
+
+    g_assert_nonnull(strstr(html,
+                            "class=\"turn-step warn trimmed-notice\""));
+    g_assert_nonnull(strstr(html, "list_issues"));
+    g_assert_null(strstr(other, "trimmed-notice"));
+}
+
+static void
+test_the_connector_forms_show_their_values(void)
+{
+    g_autoptr(HtmxElement) budget = clawt_web_budget_form("gh", 4096,
+                                                          "4 KB");
+    g_autoptr(HtmxElement) apps_on = clawt_web_apps_form("gh", TRUE);
+    g_autoptr(HtmxElement) apps_off = clawt_web_apps_form("gh", FALSE);
+    g_autoptr(HtmxElement) fleet = clawt_web_fleet_budget(65536);
+    g_autofree gchar *budget_html = htmx_element_render(budget);
+    g_autofree gchar *on_html = htmx_element_render(apps_on);
+    g_autofree gchar *off_html = htmx_element_render(apps_off);
+    g_autofree gchar *fleet_html = htmx_element_render(fleet);
+
+    g_assert_nonnull(strstr(budget_html,
+                            "action=\"/settings/connectors/gh/budget\""));
+    g_assert_nonnull(strstr(budget_html, "name=\"max_result_bytes\""));
+    g_assert_nonnull(strstr(budget_html, "value=\"4096\""));
+    g_assert_nonnull(strstr(budget_html, "4 KB"));
+    g_assert_nonnull(strstr(on_html,
+                            "action=\"/settings/connectors/gh/apps\""));
+    g_assert_nonnull(strstr(on_html, "Show its apps in chat"));
+    g_assert_nonnull(strstr(on_html, "checked"));
+    g_assert_null(strstr(off_html, "checked"));
+    g_assert_nonnull(strstr(fleet_html, "value=\"65536\""));
+}
+
+/* Every page carries the host bridge, and it trusts only an app frame. */
+static void
+test_the_app_host_bridge_checks_the_source(void)
+{
+    g_autoptr(HtmxBuilder) builder = htmx_builder_new();
+    g_autofree gchar *html = NULL;
+
+    open_document(builder, NULL, NULL);
+    close_document(builder);
+    html = htmx_builder_render(builder);
+
+    g_assert_nonnull(strstr(html, "f[i].contentWindow===src"));
+    g_assert_nonnull(strstr(html, "ui/notifications/tool-result"));
+    g_assert_nonnull(strstr(html, "not supported by clawtilla"));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -2558,6 +2781,20 @@ main(int argc, char *argv[])
                     test_a_folded_request_renders_closed_and_escaped);
     g_test_add_func("/web-render/exchange",
                     test_the_exchange_lists_requests_and_answers);
+    g_test_add_func("/web-render/app-sandboxed",
+                    test_an_opened_app_is_sandboxed);
+    g_test_add_func("/web-render/app-blocked",
+                    test_a_blocked_app_says_why_and_draws_no_frame);
+    g_test_add_func("/web-render/app-closed-until-opened",
+                    test_an_app_in_the_transcript_is_closed_until_opened);
+    g_test_add_func("/web-render/app-bad-id",
+                    test_a_bad_app_id_is_not_a_link);
+    g_test_add_func("/web-render/trimmed-notice",
+                    test_a_trimmed_result_is_a_warning);
+    g_test_add_func("/web-render/connector-budget-and-apps-forms",
+                    test_the_connector_forms_show_their_values);
+    g_test_add_func("/web-render/app-host-bridge",
+                    test_the_app_host_bridge_checks_the_source);
 
     return g_test_run();
 }

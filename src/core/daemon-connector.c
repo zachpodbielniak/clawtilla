@@ -450,6 +450,10 @@ begin_discovered(ClawtDaemon              *self,
 static void
 add_directory_thresholds(ClawtDaemon *self, JsonBuilder *builder)
 {
+    json_builder_set_member_name(builder, "max_result_bytes");
+    json_builder_add_int_value(
+        builder, clawt_config_get_int(self->config,
+                                      "connectors.max_result_bytes"));
     json_builder_set_member_name(builder, "directory_min_tools");
     json_builder_add_int_value(
         builder, clawt_config_get_int(self->config,
@@ -458,6 +462,62 @@ add_directory_thresholds(ClawtDaemon *self, JsonBuilder *builder)
     json_builder_add_int_value(
         builder, clawt_config_get_int(self->config,
                                       "connectors.directory_min_chars"));
+}
+
+/*
+ * The result budget and the apps switch, per connector: the connector's
+ * own value (-1 when it sets none), what that resolves to with the
+ * fleet's, and whether its apps are shown in chat.
+ */
+static void
+add_budget_members(ClawtDaemon            *self,
+                   JsonBuilder            *builder,
+                   ClawtIntegrationConfig *instance)
+{
+    gint64 own = clawt_integration_config_get_int(instance, NULL,
+                                                  "max_result_bytes");
+    gint64 effective = clawt_mcp_result_budget_resolve(
+        own, clawt_config_get_int(self->config, "connectors.max_result_bytes"));
+    g_autofree gchar *label = clawt_mcp_result_budget_label(effective);
+
+    json_builder_set_member_name(builder, "max_result_bytes");
+    json_builder_add_int_value(builder, own);
+    json_builder_set_member_name(builder, "effective_max_result_bytes");
+    json_builder_add_int_value(builder, effective);
+    clawt_daemon_add_string_member(builder, "max_result_label", label);
+    json_builder_set_member_name(builder, "show_apps");
+    json_builder_add_boolean_value(
+        builder, clawt_integration_config_get_boolean(instance, NULL,
+                                                      "show_apps"));
+}
+
+/*
+ * The connector an agent holds by @name, or NULL -- so a relay's report
+ * about a connector the agent was never given is not believed.
+ */
+static ClawtIntegrationBinding *
+agent_connector(ClawtDaemon *self, const gchar *agent_id, const gchar *name)
+{
+    ClawtAgentConfig *agent = (agent_id != NULL)
+        ? clawt_config_get_agent(self->config, agent_id) : NULL;
+    g_autoptr(GPtrArray) bindings = NULL;
+    guint i;
+
+    if (agent == NULL || name == NULL)
+        return NULL;
+
+    bindings = clawt_integration_resolve_for_agent(self->config, agent);
+
+    for (i = 0; bindings != NULL && i < bindings->len; i++) {
+        ClawtIntegrationBinding *binding = g_ptr_array_index(bindings, i);
+
+        if (g_strcmp0(clawt_integration_binding_get_name(binding), name) == 0 &&
+            g_strcmp0(clawt_integration_binding_get_info(binding)->id,
+                      "connector") == 0)
+            return clawt_integration_binding_ref(binding);
+    }
+
+    return NULL;
 }
 
 /*
@@ -709,6 +769,7 @@ clawt_daemon_handle_connector(
                                                    metadata->issuer);
             }
             add_directory_members(self, builder, instance);
+            add_budget_members(self, builder, instance);
 
             json_builder_end_object(builder);
         }
@@ -1172,7 +1233,8 @@ clawt_daemon_handle_connector(
 
     if (g_strcmp0(kind, "connector.settings") == 0) {
         const gchar *keys[] = { "directory_min_tools",
-                                "directory_min_chars", NULL };
+                                "directory_min_chars", "max_result_bytes",
+                                NULL };
         gboolean changed = FALSE;
         gsize k;
 
@@ -1185,8 +1247,8 @@ clawt_daemon_handle_connector(
                 clawt_ipc_payload_int(payload, keys[k], 0) < 0)
                 return clawt_ipc_error_new(request,
                                            CLAWT_ERROR_INVALID_ARGUMENT,
-                                           "a threshold cannot be below "
-                                           "zero");
+                                           "a threshold or a budget cannot "
+                                           "be below zero");
         }
 
         for (k = 0; keys[k] != NULL; k++) {
@@ -1242,6 +1304,221 @@ clawt_daemon_handle_connector(
                                        error->message);
 
         return clawt_ipc_response_new(request, NULL);
+    }
+
+    if (g_strcmp0(kind, "connector.result_trimmed") == 0) {
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        const gchar *room_id = clawt_ipc_payload_string(payload, "room");
+        const gchar *name = clawt_ipc_payload_string(payload, "name");
+        g_autoptr(ClawtIntegrationBinding) binding =
+            agent_connector(self, agent_id, name);
+        g_autoptr(ClawtTurnStep) step = NULL;
+        g_autofree gchar *notice = NULL;
+
+        if (binding == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "that agent holds no such connector");
+
+        /*
+         * Where the turn's tool calls are, so somebody reading the
+         * conversation knows the agent saw part of a result.  A relay
+         * with no room to name -- one started by hand -- has nowhere to
+         * put it, and the agent was told in the result either way.
+         */
+        if (room_id == NULL || *room_id == '\0')
+            return clawt_ipc_response_new(request, NULL);
+
+        notice = clawt_mcp_result_notice(
+            name, clawt_ipc_payload_string(payload, "tool"),
+            (gsize)MAX(clawt_ipc_payload_int(payload, "original_bytes", 0), 0),
+            (gsize)MAX(clawt_ipc_payload_int(payload, "kept_bytes", 0), 0),
+            clawt_mcp_result_id_is_valid(
+                clawt_ipc_payload_string(payload, "result_id"))
+                ? clawt_ipc_payload_string(payload, "result_id") : NULL);
+        step = clawt_turn_step_new(CLAWT_STEP_STATUS, agent_id, room_id,
+                                   notice, NULL, NULL, FALSE);
+        clawt_daemon_note_step(self, step);
+
+        return clawt_ipc_response_new(request, NULL);
+    }
+
+    if (g_strcmp0(kind, "connector.app") == 0) {
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        const gchar *room_id = clawt_ipc_payload_string(payload, "room");
+        JsonObject *app = (json_object_has_member(payload, "app") &&
+                           JSON_NODE_HOLDS_OBJECT(
+                               json_object_get_member(payload, "app")))
+            ? json_object_get_object_member(payload, "app") : NULL;
+        const gchar *name = (app != NULL)
+            ? json_object_get_string_member_with_default(app, "connector",
+                                                         NULL)
+            : NULL;
+        g_autoptr(ClawtIntegrationBinding) binding =
+            agent_connector(self, agent_id, name);
+        g_autoptr(JsonObject) record = NULL;
+        g_autoptr(ClawtTurnStep) step = NULL;
+        g_autofree gchar *id = NULL;
+        g_autofree gchar *dir = NULL;
+        g_autofree gchar *url = NULL;
+        g_autofree gchar *text = NULL;
+        const gchar *title;
+
+        if (app == NULL || binding == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "that agent holds no such connector");
+
+        /*
+         * Asked again here, not taken from the relay: the switch is the
+         * person's, and a relay started before it was turned off must
+         * not put an app in the conversation after.
+         */
+        if (!clawt_integration_binding_get_boolean(binding, "show_apps"))
+            return clawt_ipc_error_new(request, CLAWT_ERROR_PERMISSION_DENIED,
+                                       "this connector does not show its "
+                                       "apps in chat");
+
+        id = clawt_mcp_app_new_id();
+
+        if (id == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                       "could not make an id for the app");
+
+        record = json_object_ref(app);
+        json_object_set_string_member(record, "id", id);
+        json_object_set_string_member(record, "agent", agent_id);
+
+        if (room_id != NULL)
+            json_object_set_string_member(record, "room", room_id);
+
+        json_object_set_int_member(record, "created_at",
+                                   g_get_real_time() / G_USEC_PER_SEC);
+
+        dir = clawt_mcp_app_store_dir(self->config, agent_id);
+
+        if (!clawt_mcp_app_save(dir, id, record, &error))
+            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                       error->message);
+
+        if (room_id != NULL && *room_id != '\0') {
+            title = json_object_get_string_member_with_default(record, "title",
+                                                               NULL);
+
+            if (title == NULL)
+                title = json_object_get_string_member_with_default(record,
+                                                                   "tool",
+                                                                   "an app");
+
+            text = g_strdup_printf("App: %s from %s", title, name);
+            url = clawt_mcp_app_web_url(
+                clawt_config_get_string(self->config,
+                                        "connectors.apps_web_url"),
+                agent_id, id);
+            step = clawt_turn_step_new(
+                CLAWT_STEP_STATUS, agent_id, room_id, text,
+                json_object_get_string_member_with_default(record, "tool",
+                                                           NULL),
+                NULL, FALSE);
+            clawt_turn_step_set_app(step, id, url, title);
+            clawt_daemon_note_step(self, step);
+        }
+
+        json_builder_begin_object(builder);
+        clawt_daemon_add_string_member(builder, "id", id);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "connector.app_get") == 0) {
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        const gchar *app_id = clawt_ipc_payload_string(payload, "app");
+        g_autofree gchar *dir = NULL;
+        g_autofree gchar *document = NULL;
+        g_autofree gchar *url = NULL;
+        g_autoptr(JsonObject) record = NULL;
+        const gchar *html;
+        const gchar *csp;
+        const gchar *members[] = { "connector", "tool", "title",
+                                   "resource_uri", "room", "blocked", NULL };
+        guint m;
+
+        if (agent_id == NULL ||
+            clawt_config_get_agent(self->config, agent_id) == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "no such agent");
+
+        /* An app is looked up under its own agent and nowhere else. */
+        dir = clawt_mcp_app_store_dir(self->config, agent_id);
+        record = clawt_mcp_app_load(dir, app_id, &error);
+
+        if (record == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       error->message);
+
+        html = json_object_get_string_member_with_default(record, "html",
+                                                          NULL);
+        csp = json_object_get_string_member_with_default(record, "csp", NULL);
+
+        /*
+         * The document is built here from the kept view and the kept
+         * policy, so a client sets it verbatim and no client builds a
+         * policy of its own.  A record with no policy gets the strictest
+         * one rather than none.
+         */
+        if (html != NULL) {
+            g_autofree gchar *strict = (csp == NULL)
+                ? clawt_mcp_app_build_csp(NULL, FALSE, NULL) : NULL;
+
+            document = clawt_mcp_app_build_document(
+                html, csp != NULL ? csp : strict);
+        }
+
+        url = clawt_mcp_app_web_url(
+            clawt_config_get_string(self->config, "connectors.apps_web_url"),
+            agent_id, app_id);
+
+        json_builder_begin_object(builder);
+        clawt_daemon_add_string_member(builder, "id", app_id);
+        clawt_daemon_add_string_member(builder, "agent", agent_id);
+
+        for (m = 0; members[m] != NULL; m++)
+            clawt_daemon_add_string_member(
+                builder, members[m],
+                json_object_get_string_member_with_default(record, members[m],
+                                                           NULL));
+
+        clawt_daemon_add_string_member(builder, "document", document);
+        clawt_daemon_add_string_member(builder, "csp", csp);
+        clawt_daemon_add_string_member(builder, "sandbox",
+                                       CLAWT_MCP_APP_IFRAME_SANDBOX);
+        clawt_daemon_add_string_member(builder, "url", url);
+        json_builder_set_member_name(builder, "created_at");
+        json_builder_add_int_value(
+            builder, json_object_get_int_member_with_default(record,
+                                                             "created_at",
+                                                             0));
+
+        if (json_object_has_member(record, "refused")) {
+            json_builder_set_member_name(builder, "refused");
+            json_builder_add_value(builder, json_node_copy(
+                json_object_get_member(record, "refused")));
+        }
+
+        if (json_object_has_member(record, "input")) {
+            json_builder_set_member_name(builder, "input");
+            json_builder_add_value(builder, json_node_copy(
+                json_object_get_member(record, "input")));
+        }
+
+        if (json_object_has_member(record, "result")) {
+            json_builder_set_member_name(builder, "result");
+            json_builder_add_value(builder, json_node_copy(
+                json_object_get_member(record, "result")));
+        }
+
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
 
     if (g_strcmp0(kind, "connector.registry_refresh") == 0) {
