@@ -228,6 +228,19 @@ declare -A AFFORDANCES=(
     ["merged deliveries as sections"]="clawt_merge_split|clawt_merge_split|clawt_merge_split"
     ["ack-check model choices"]="clawt_ack_check_model_nth_value|clawt_ack_check_model_nth_value|clawt_ack_check_model_nth_value"
     #
+    # Rounds in a group room and the budget per task tree: a divider
+    # where each round starts and the note under a withheld mention,
+    # both worded by libclawt; the two settings on the Orchestration
+    # page (the budget through orchestration.set, each room's cap
+    # through room.set, neither a frame of its own); and the alert that
+    # names an exhausted tree.
+    #
+    ["round dividers"]="clawt_round_label|clawt_round_label|clawt_round_label"
+    ["withheld mentions say why"]="clawt_round_skip_note|clawt_round_skip_note|clawt_round_skip_note"
+    ["tree budget setting"]="\"tree_message_budget\"|\"tree_message_budget\"|\"tree_message_budget\""
+    ["thread cap per room"]="\"max_chain\"|\"max_chain\"|\"max_chain\""
+    ["tree budget alert names the tree"]="clawt_loop_guard_tree_alert_text|clawt_loop_guard_tree_alert_text|clawt_loop_guard_tree_alert_text"
+    #
     # The Grok page: the bots and who may reach them, handing one a job on
     # an agent's behalf, the jobs in libclawt's tones, the routine prompt
     # and the MCP key -- and the badge, counted by the daemon in all three.

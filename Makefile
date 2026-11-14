@@ -169,6 +169,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/chat/clawt-attachment.h \
 	$(SRCDIR)/chat/clawt-preamble.h \
 	$(SRCDIR)/chat/clawt-merge.h \
+	$(SRCDIR)/chat/clawt-round.h \
 	$(SRCDIR)/chat/clawt-markdown.h \
 	$(SRCDIR)/chat/clawt-export.h \
 	$(SRCDIR)/chat/clawt-loop-guard.h \
@@ -267,6 +268,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-skill.c \
 	$(SRCDIR)/core/daemon-step.c \
 	$(SRCDIR)/core/daemon-ack.c \
+	$(SRCDIR)/core/daemon-tree.c \
 	$(SRCDIR)/core/clawt-event-bus.c \
 	$(SRCDIR)/core/clawt-event-log.c \
 	$(SRCDIR)/integration/clawt-connector.c \
@@ -351,6 +353,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/chat/clawt-attachment.c \
 	$(SRCDIR)/chat/clawt-preamble.c \
 	$(SRCDIR)/chat/clawt-merge.c \
+	$(SRCDIR)/chat/clawt-round.c \
 	$(SRCDIR)/chat/clawt-markdown.c \
 	$(SRCDIR)/chat/clawt-export.c \
 	$(SRCDIR)/chat/clawt-loop-guard.c \

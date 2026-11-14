@@ -2955,6 +2955,25 @@ clawt_config_get_rooms(ClawtConfig *self)
         }
 
         {
+            YamlNode *node = node_at_path(entry, "max_chain", FALSE);
+            const gchar *fallback = schema_default_for("rooms.max_chain");
+            gint64 chain;
+
+            /*
+             * The schema default when the room says nothing, as
+             * catchup_messages below resolves: 0 here means "no cap",
+             * which is the opposite of what a room that declared
+             * nothing should get.  A negative number is read as 0
+             * rather than wrapped to four billion.
+             */
+            chain = (node != NULL)
+                ? yaml_node_get_int(node)
+                : g_ascii_strtoll(fallback != NULL ? fallback : "0",
+                                  NULL, 10);
+            spec->max_chain = (guint)MAX(chain, 0);
+        }
+
+        {
             YamlNode *node = node_at_path(entry, "order", FALSE);
 
             spec->order = (node != NULL) ? (gint)yaml_node_get_int(node) : 0;

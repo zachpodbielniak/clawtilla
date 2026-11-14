@@ -680,18 +680,26 @@ larger than those numbers suggest.  See [[file:spending.org][Spending]].
 :CUSTOM_ID: orchestration-settings
 :END:
 
-The Orchestration settings page (GTK, web at =/settings/orchestration=, libregnum) has one control today: *Acknowledgement check*, which sets =orchestration.ack_check_model=.  The choices are walked from =clawt_ack_check_model_count()= / =_nth_value()= / =_nth_label()= -- *Off* first, then every model of every provider ai-glib reaches over HTTP -- so the three clients offer the same list and none keeps a copy.  A model written into ~clawtilla.yaml~ by hand that the catalogue does not list stays selectable as itself rather than showing as Off, so saving the page untouched cannot turn the check off.  The page reads ~orchestration.get~ and saves with ~orchestration.set~.
+The Orchestration settings page (GTK, web at =/settings/orchestration=, libregnum) has three groups.  The first is *Acknowledgement check*, which sets =orchestration.ack_check_model=.  The choices are walked from =clawt_ack_check_model_count()= / =_nth_value()= / =_nth_label()= -- *Off* first, then every model of every provider ai-glib reaches over HTTP -- so the three clients offer the same list and none keeps a copy.  A model written into ~clawtilla.yaml~ by hand that the catalogue does not list stays selectable as itself rather than showing as Off, so saving the page untouched cannot turn the check off.  The page reads ~orchestration.get~ and saves with ~orchestration.set~.
 
 What it does, in the words the page uses: when one agent answers another with only an acknowledgement, waking the agent that asked costs it a whole turn.  With a model chosen, a short answer from a turn that did nothing else is put to that model first; only a plain ACK skips the wake, and anything else, a failure, or no verdict within 8 seconds wakes the sender as before.  Off by default.  See [[file:orchestration.org][orchestration.org]] for the rules.
+
+*Message budget per task tree* sets =orchestration.tree_message_budget=: one number, *Requests between settlements*, with an apply button (GTK an =AdwEntryRow=, the web client a form posting to =/settings/orchestration=, libregnum an entry and *Save*).  The page says what it does in a fleet's terms -- a tree is a delegated task and everything handed on from it; the hop limit stops a chain going too deep and this stops one going too wide; one call is one request however many it reaches; it starts again whenever a task in the tree finishes; at the limit the tree's agents can still answer and finish their own work but are not offered the tools to message each other, and one alert names the tree; answers are never counted; 0 is off.  A value that is not a whole number from 0 to 10000 is refused on the page, naming the field, rather than sent.  It is saved with ~orchestration.set~ as an integer and reaches the daemon's loop guard at once.
+
+*Rounds in group rooms* lists every group room with an entry in ~rooms:~ (from ~orchestration.get~'s ~rooms~), one *Replies per thread* field each, showing the round the room is in, and saves =rooms.max_chain= with ~room.set~ (an integer, 0 to 100).  The group's description is the rule: a round starts at each message from you, a routine or a trigger; within one thread a member answers once; naming somebody who already has is kept in the room, marked as not delivered, with the reason; the hop count starts again each round.  A fleet with no group room sees "No group rooms yet".  See [[file:orchestration.org][orchestration.org]], "Rounds: once per thread, counted per round" and "tree_message_budget".
+
+The tree budget's alert, ~task.tree_budget~, is a notice in each client's alerts surface, worded by =clawt_loop_guard_tree_alert_text()= from the event's ~tree~, ~count~ and ~limit~ so the root task's brief, id and assignee are in the line; GTK also raises it as a toast, since the tree's agents have just gone quiet in front of whoever is watching them.
 
 *** Answers that woke nobody, and results delivered together
 :PROPERTIES:
 :CUSTOM_ID: ack-and-merge-marks
 :END:
 
-Two marks in the transcript, drawn the same way in all three clients from fields ~room.history~ and the ~message~ event both carry:
+Four marks in the transcript, drawn the same way in all three clients from fields ~room.history~ and the ~message~ event both carry:
 
 - *acknowledged (no wake)* -- =clawt_message_ack_label()= -- beside an answer the acknowledgement check recorded instead of delivering (=acknowledged=).  It is on every such message, not on a run header, because it is a fact about that one message: unmarked, an answer the asker never took a turn on reads as having been ignored.  GTK and the web client carry =clawt_message_ack_tooltip()= as the tooltip; libregnum has no tooltips, so the label is the whole of it.
+- *Round N* -- =clawt_round_label()= -- a divider, drawn like the day's, where a new round of a group room begins (=round=).  A round starts at each message from a person, a routine or a trigger, so a standup reads as the rounds it was rather than one scroll.  A new round starts a new run, so its first speaker is named again.
+- *Not delivered to @name -- why* -- =clawt_round_skip_note()= -- a dim line under a message whose =@mention= was kept and not delivered (=skipped=, =skip_reason=): the member had already answered in that thread of replies, or the thread had reached =rooms.max_chain=.  It is the whole answer to "why did that member never reply", so it is a sentence rather than a chip.  GTK and the web client carry =clawt_round_skip_tooltip()= as the tooltip.
 - *Delivered as one turn* -- clawtilla's note when several results waiting in one room were handed to an agent as a single turn (=merged=, the number of parts).  Its body is split with =clawt_merge_split()= and drawn as its sections: the opening line, then one block per result with its label ("'oryx' answering you", "clawtilla: task t-12") as a small heading and the result's first line beneath.  The results themselves are already in the room above it; the note says they cost one wake, not N.
 
 *** Reordering the fleet
@@ -790,7 +798,7 @@ what belongs to the application rather than to any one agent:
 | Cloud images | VM disk images on this machine, and fetching more |
 | Teams | how the fleet is divided, and what each team handles |
 | Spending | what the fleet has cost, by agent, model, origin or day; unpriced turns; Export CSV |
-| Orchestration | the acknowledgement check: which model, or Off, decides whether an answer only acknowledges |
+| Orchestration | the acknowledgement check: which model, or Off, decides whether an answer only acknowledges; the message budget per task tree; how many replies one thread of a round may run to in each group room |
 | Integrations | Matrix, mail, MCP servers and notifiers, and who gets each |
 | Connectors | connected accounts, and the credential for each |
 | Appearance | colour scheme and fonts |

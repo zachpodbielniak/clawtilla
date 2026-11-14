@@ -334,6 +334,15 @@ struct _ClawtWindow {
     /* the acknowledgement-check model row, and whether a refresh is writing it */
     GtkWidget         *settings_ack_model;
     gboolean           settings_ack_loading;
+
+    /*
+     * The tree budget's entry, and the group the per-room thread caps
+     * are drawn into -- rebuilt on every refresh, so the rows it holds
+     * are tracked to be removed again.
+     */
+    GtkWidget         *settings_tree_budget;
+    GtkWidget         *settings_rounds_group;
+    GPtrArray         *settings_rounds_rows;
     GtkWidget         *settings_connectors;
     GtkWidget         *settings_devices;
     GtkWidget         *settings_devices_pair;
@@ -763,6 +772,13 @@ struct _ClawtWindow {
     gchar             *run_day;
 
     /*
+     * The round of a group room the transcript last drew, so a divider
+     * marks where each new one starts.  0 outside a round; reset with
+     * the transcript.
+     */
+    guint              run_round;
+
+    /*
      * The Flow view's own run state.  It draws through the same row
      * builder as the chat -- two builders for one kind of content is how
      * the two drifted into different renderings of the same messages --
@@ -1068,6 +1084,11 @@ clawt_gtk_append_message_marked(ClawtWindow *self, const gchar *sender,
                                 const gchar *body, gboolean from_user,
                                 gint64 ts, gboolean acknowledged,
                                 gint64 merged);
+
+void
+clawt_gtk_append_round_marks(ClawtWindow *self, gint64 round,
+                             const gchar *skipped, const gchar *skip_reason,
+                             gboolean before);
 
 void
 clawt_gtk_attachment_free(Attachment *attachment);

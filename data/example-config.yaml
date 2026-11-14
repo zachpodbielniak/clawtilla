@@ -684,6 +684,27 @@ orchestration:
   # with or without this.
   ack_check_model: ""
 
+  # How many requests one task tree may send between settlements.
+  # 0 disables the budget.
+  #
+  # A tree is a root task and everything delegated from it. max_hops
+  # bounds how deep a chain goes and says nothing about how wide: a chief
+  # that hands work to ten agents, each of which asks two more, is three
+  # hops deep and can still talk all night. This counts the deliberate
+  # messages sent from inside one tree -- clawtilla_message_agent,
+  # clawtilla_ask_agent, clawtilla_delegate, clawtilla_handoff,
+  # clawtilla_post_room and an @mention in a room -- one per call, however
+  # many teammates the call reaches.
+  #
+  # Answers are not counted and never refused, and neither is the
+  # follow-up turn a delegator is owed when its work settles. The count
+  # starts again whenever any task in the tree settles, because a
+  # settlement is progress and chatter is not.
+  #
+  # At the limit the messaging tools are withheld from that tree's turns,
+  # exactly as max_hops withholds them, and one alert names the tree.
+  tree_message_budget: 60
+
   # Defaults for every agent's mailbox.
   #
   # Each agent has a durable queue, so a message to a stopped agent waits
@@ -1032,7 +1053,26 @@ rooms:
     # It reaches the hop count and nothing else. The rate limit, the task
     # budget and the cycle detector are untouched, so a loop that costs
     # money still has three limits on it.
+    #
+    # In a group room this is the backstop rather than the limit that
+    # fires: rooms.max_chain ends a thread of replies first, and the depth
+    # starts again at each round.
     max_hops: null
+
+    # How many replies one thread may run to in a round of a group room.
+    # 0 removes the cap; the once-per-thread rule below still applies.
+    #
+    # A round starts at a message from you, a routine or a trigger. Each
+    # member that answers it starts a thread, and an @mention in a reply
+    # carries the thread on. Within one thread a member answers once: a
+    # mention of a member already in that thread is recorded in the room
+    # and not delivered, with the reason shown beside it. A member that
+    # spoke in another thread of the same round still answers.
+    #
+    # Without this the hop count built up across a room's history, so an
+    # ordinary standup reached max_hops by itself. The depth now starts
+    # again at every round, and max_hops stays as the backstop.
+    max_chain: 3
 
     # How long one member may hold a room's turn before it is yielded.
     # 0, the default, turns it off.

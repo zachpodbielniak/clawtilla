@@ -381,6 +381,22 @@ record_in_room(ClawtMailboxRouter *self, ClawtRoom *room,
 			clawt_event_set_detail_int(event, "merged",
 				(gint64)clawt_message_get_merged(message));
 
+		/*
+		 * A group room's round, and the mentions it withheld with the
+		 * reason -- what a client draws as "Round 4" and as the note
+		 * under a message whose @name reached nobody.
+		 */
+		if (clawt_message_get_round(message) > 0)
+			clawt_event_set_detail_int(event, "round",
+				(gint64)clawt_message_get_round(message));
+
+		if (clawt_message_get_skipped(message) != NULL) {
+			clawt_event_set_detail(event, "skipped",
+				clawt_message_get_skipped(message));
+			clawt_event_set_detail(event, "skip_reason",
+				clawt_message_get_skip_reason(message));
+		}
+
         clawt_event_bus_publish(self->bus, event);
     }
 }
@@ -559,6 +575,64 @@ room_catchup(ClawtRoom    *room,
 }
 
 /*
+ * The round rule, told to the member it applies to.
+ *
+ * A rule an agent cannot see is a rule it will violate: without this a
+ * member names a colleague who has already answered, hears nothing back
+ * and names them again.  It says which round this is, who has already
+ * answered in the thread being delivered, and how long a thread may
+ * run, so a member can tell "nobody answered" from "that name was not
+ * going to reach anybody".
+ *
+ * Returns: (transfer full) (nullable): the paragraph, or %NULL outside
+ *   a round
+ */
+static gchar *
+thread_note(ClawtMailboxItem *item, ClawtRoom *room)
+{
+	const gchar *chain = clawt_mailbox_item_get_chain(item);
+	guint round = clawt_mailbox_item_get_round(item);
+	guint cap = (room != NULL) ? clawt_room_get_max_chain(room) : 0;
+	guint length = clawt_round_chain_length(chain);
+	g_autoptr(GString) out = NULL;
+
+	if (round == 0)
+		return NULL;
+
+	out = g_string_new(NULL);
+	g_string_append_printf(out,
+		"\nThis is round %u of the room; a round starts at each message "
+		"from your operator, a routine or a trigger. Within one thread of "
+		"replies each member answers once", round);
+
+	if (cap > 0)
+		g_string_append_printf(out,
+			", and a thread stops after %u repl%s", cap,
+			cap == 1 ? "y" : "ies");
+
+	g_string_append(out, ": naming a member who has already answered in "
+	                     "this thread is recorded in the room and does not "
+	                     "reach them.");
+
+	if (length > 0) {
+		g_autofree gchar *names = g_strdup(chain);
+
+		g_strdelimit(names, ",", ' ');
+		g_string_append_printf(out, " Already answered in this thread: %s",
+		                       names);
+
+		if (cap > 0)
+			g_string_append_printf(out, " (%u of %u).", length, cap);
+		else
+			g_string_append_c(out, '.');
+	}
+
+	g_string_append_c(out, '\n');
+
+	return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+/*
  * How many members a delivery preamble names, and how much of each.
  *
  * These fields are operator-editable and, through an imported team,
@@ -644,6 +718,124 @@ room_roster(ClawtMailboxRouter *self,
     return g_string_free(g_steal_pointer(&out), FALSE);
 }
 
+/*
+ * Which round and thread of @room a message belongs to, written onto it.
+ *
+ * Three senders, three answers:
+ *
+ *  - a person, a routine or a trigger starts the next round.  Its
+ *    depth is set to 0 here, whatever the sender's own state said:
+ *    that is "the room's depth resets at each round", and it is what
+ *    keeps an ordinary standup from inheriting every hop the room ever
+ *    took and reaching max_hops by itself -- 111 refusals in one
+ *    session, every one of them a room;
+ *  - an agent continues the thread its turn in this room was answering
+ *    -- the delivery is the daemon's own record, never a claim the
+ *    model made -- with itself added.  A turn that came from anywhere
+ *    else starts a thread of its own in the room's current round;
+ *  - the daemon's notices belong to no thread.  They are addressed to
+ *    one member and are never a mention of anybody.
+ *
+ * Only in a group room.  A pair already ends an exchange with the
+ * invite rule, and a thread of two members is that rule again.
+ *
+ * Returns: %TRUE when @message is part of a thread its recipients must
+ *   be checked against; @opens says it starts a round instead
+ */
+static gboolean
+assign_round(ClawtMailboxRouter *self, ClawtRoom *room,
+             ClawtMessage *message, gboolean *opens)
+{
+	const gchar *sender = clawt_message_get_sender_id(message);
+	const gchar *room_id = clawt_room_get_id(room);
+	ClawtAgent *agent;
+	ClawtMailboxItem *input;
+	g_autofree gchar *chain = NULL;
+	guint round;
+
+	*opens = FALSE;
+
+	if (!clawt_room_is_group(room) || clawt_message_is_from_system(message))
+		return FALSE;
+
+	agent = clawt_agent_manager_get(self->agents, sender);
+
+	/*
+	 * Numbered here and started by the caller once the message is
+	 * certain to be recorded, so a refused message does not use up a
+	 * round the transcript never shows.
+	 */
+	if (agent == NULL) {
+		clawt_message_set_round(message, clawt_room_get_round(room) + 1);
+		clawt_message_set_chain(message, NULL);
+		clawt_message_set_depth(message, 0);
+		*opens = TRUE;
+		return FALSE;
+	}
+
+	/* Agents talking before anybody opened a round: max_hops alone. */
+	if (clawt_room_get_round(room) == 0)
+		return FALSE;
+
+	input = clawt_agent_get_turn_input_in(agent, room_id);
+
+	if (input != NULL &&
+		g_strcmp0(clawt_mailbox_item_get_room(input), room_id) == 0 &&
+		clawt_mailbox_item_get_round(input) > 0) {
+		round = clawt_mailbox_item_get_round(input);
+		chain = clawt_round_chain_extend(clawt_mailbox_item_get_chain(input),
+		                                 sender);
+
+		/*
+		 * Within a round the depth is the thread's length, and no more:
+		 * a turn whose depth was folded in from somewhere deeper -- a
+		 * merge, another room's running turn -- must not carry it into
+		 * this room's round.  Only lowered, and only on a thread this
+		 * room started, so a delegation chain that passes through a
+		 * room keeps every hop it had.
+		 */
+		clawt_message_set_depth(message,
+			MIN(clawt_message_get_depth(message),
+			    (gint)clawt_round_chain_length(chain)));
+	} else {
+		round = clawt_room_get_round(room);
+		chain = g_strdup(sender);
+	}
+
+	clawt_message_set_round(message, round);
+	clawt_message_set_chain(message, chain);
+
+	return TRUE;
+}
+
+/*
+ * The reason a withheld mention is shown with, in words a person reads
+ * under the message.  Both halves when both happened.
+ */
+static gchar *
+skip_reason(guint in_chain, guint at_cap, guint chain_length, guint cap,
+            guint round)
+{
+	g_autoptr(GString) out = g_string_new(NULL);
+
+	if (in_chain > 0)
+		g_string_append_printf(out,
+			"%s already answered in this thread of replies (round %u)",
+			in_chain == 1 ? "they have" : "each of them has", round);
+
+	if (at_cap > 0) {
+		if (out->len > 0)
+			g_string_append(out, "; ");
+
+		g_string_append_printf(out,
+			"this thread already has %u repl%s, which is as long as "
+			"rooms.max_chain (%u) lets one thread of a round run",
+			chain_length, chain_length == 1 ? "y" : "ies", cap);
+	}
+
+	return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
 gint
 clawt_mailbox_router_send(ClawtMailboxRouter  *self,
                           ClawtMessage        *message,
@@ -651,8 +843,16 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
 {
     GPtrArray *members;  /* unowned: the room keeps its member list */
     g_autoptr(GPtrArray) recipients = NULL;  /* unowned ClawtAgent* */
+    g_autoptr(GPtrArray) withheld = g_ptr_array_new_with_free_func(g_free);
     ClawtRoom *room;
     const gchar *sender;
+    const gchar *chain;
+    gboolean threaded;
+    gboolean opens = FALSE;
+    guint chain_length;
+    guint cap;
+    guint in_chain = 0;
+    guint at_cap = 0;
     guint queued = 0;
     guint i;
 
@@ -668,6 +868,10 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
 
     members = clawt_room_get_members(room);
     recipients = g_ptr_array_new();
+    threaded = assign_round(self, room, message, &opens);
+    chain = clawt_message_get_chain(message);
+    chain_length = clawt_round_chain_length(chain);
+    cap = clawt_room_get_max_chain(room);
 
     /*
      * Who this actually reaches, worked out before anything is spent on
@@ -700,7 +904,39 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
                                        clawt_agent_get_name(agent)))
             continue;
 
+        /*
+         * Once per thread, and a thread only so long.  Decided here, with
+         * the recipients, so a withheld mention is neither charged
+         * against the rate limit nor delivered -- and recorded, because
+         * a member named in the room and never answering reads as being
+         * ignored unless the room says why.
+         */
+        if (threaded && clawt_round_chain_has(chain, member)) {
+            g_ptr_array_add(withheld, g_strdup(member));
+            in_chain++;
+            continue;
+        }
+
+        if (threaded && cap > 0 && chain_length >= cap) {
+            g_ptr_array_add(withheld, g_strdup(member));
+            at_cap++;
+            continue;
+        }
+
         g_ptr_array_add(recipients, agent);
+    }
+
+    if (withheld->len > 0) {
+        g_autofree gchar *reason = skip_reason(in_chain, at_cap,
+            chain_length, cap, clawt_message_get_round(message));
+        g_autofree gchar *list = NULL;
+
+        g_ptr_array_add(withheld, NULL);
+        list = g_strjoinv(",", (gchar **)withheld->pdata);
+        clawt_message_set_skipped(message, list, reason);
+
+        g_info("router: %s's message in %s was not delivered to %s: %s",
+               sender, clawt_room_get_id(room), list, reason);
     }
 
 	/* Refuse the complete recipient set before recording or queueing any part. */
@@ -777,6 +1013,10 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
         }
     }
 
+    /* Past every refusal, so the round the message names is now real. */
+    if (opens)
+        clawt_room_begin_round(room);
+
     /*
      * Recorded whoever it reaches.  A remark in a room that named
      * nobody is still what was said there, and the transcript is what a
@@ -830,6 +1070,16 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
 			clawt_message_get_request_room(message),
 			clawt_message_get_request_origin(message),
 			clawt_message_get_request_task(message));
+
+		/*
+		 * The round and thread travel with the item, so the answer the
+		 * recipient writes -- on the link or through a tool, now or
+		 * after a restart -- continues this thread rather than starting
+		 * one of its own.
+		 */
+		clawt_mailbox_item_set_round_chain(item,
+			clawt_message_get_round(message),
+			clawt_message_get_chain(message));
 
         item_id = clawt_mailbox_post(mailbox, item, &local);
 
@@ -1147,6 +1397,7 @@ compose_single(ClawtMailboxRouter  *self,
             item_room, agent_id, from,
             clawt_mailbox_item_get_body(item),
             clawt_room_get_catchup_messages(item_room));
+        g_autofree gchar *thread = thread_note(item, item_room);
 
         body = g_strdup_printf(
             "[clawtilla] The following was posted in room '%s', a "
@@ -1167,7 +1418,7 @@ compose_single(ClawtMailboxRouter  *self,
             "\n@all reaches every member and belongs to your "
             "operator; if you write it, it reaches nobody. Name "
             "members individually instead.\n"
-            "%s\n%s",
+            "%s%s\n%s",
             clawt_mailbox_item_get_room(item),
             roster != NULL ? roster
                            : "  nobody else is in it yet\n",
@@ -1179,6 +1430,7 @@ compose_single(ClawtMailboxRouter  *self,
                 : "What you write at the end of this turn is posted "
                   "to this room. Everyone in it can read it, in their "
                   "own time, and it costs nobody anything.",
+            thread != NULL ? thread : "",
             catchup != NULL ? catchup : "",
             text);
     } else if (peer && one_way)
@@ -1822,6 +2074,37 @@ deliver_merged(ClawtMailboxRouter *self, ClawtAgent *agent, ClawtLink *link,
 	clawt_mailbox_item_set_depth(delivered, depth);
 	clawt_mailbox_item_set_invites_reply(delivered, any_replies);
 	clawt_mailbox_item_set_composed(delivered, TRUE);
+
+	/*
+	 * And the thread, folded the way the depth is: the latest round,
+	 * and every member that answered in any part of it.  A union errs
+	 * towards withholding a mention, which costs one @name; the other
+	 * way round would let a merged turn reach somebody a part's thread
+	 * had already heard from.
+	 */
+	{
+		g_autofree gchar *chain = NULL;
+		guint round = 0;
+
+		for (i = 0; i < parts->len; i++)
+			round = MAX(round, clawt_mailbox_item_get_round(
+				g_ptr_array_index(parts, i)));
+
+		for (i = 0; round > 0 && i < parts->len; i++) {
+			ClawtMailboxItem *item = g_ptr_array_index(parts, i);
+			gchar *grown;
+
+			if (clawt_mailbox_item_get_round(item) != round)
+				continue;
+
+			grown = clawt_round_chain_union(chain,
+				clawt_mailbox_item_get_chain(item));
+			g_free(chain);
+			chain = grown;
+		}
+
+		clawt_mailbox_item_set_round_chain(delivered, round, chain);
+	}
 
 	clawt_agent_deliver_merged(agent, delivered, parts, replies, peers);
 	clawt_agent_set_activity(agent, TRUE, from);

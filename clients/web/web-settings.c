@@ -2581,7 +2581,165 @@ orchestration_content(ClawtWebApp *app)
 
     clawt_web_add(box, g_steal_pointer(&card));
 
+    /*
+     * The tree budget: one number, said in what it does to a fleet, with
+     * the two exemptions that make it safe -- answers, and a delegator's
+     * owed follow-up.
+     */
+    {
+        g_autoptr(HtmxDiv) tree = clawt_web_card(
+            "Message budget per task tree", NULL);
+        HtmxElement *tree_body = clawt_web_card_body(tree);
+        g_autoptr(HtmxForm) form = clawt_web_form("/settings/orchestration");
+        g_autoptr(HtmxButton) button = clawt_web_button("Save", "primary");
+        g_autofree gchar *budget = g_strdup_printf("%" G_GINT64_FORMAT,
+            clawt_web_member_int(clawt_web_root(reply),
+                                 "tree_message_budget", 0));
+
+        clawt_web_add(tree_body, clawt_web_row(
+            "What it does",
+            "A task tree is a delegated task and everything handed on from "
+            "it. The hop limit stops a chain going too deep; this stops one "
+            "going too wide. It counts the messages agents in one tree send "
+            "each other -- one per call, however many teammates it reaches "
+            "-- and starts again whenever any task in the tree finishes. At "
+            "the limit those agents can still answer and finish their own "
+            "work, but are not offered the tools to message each other, and "
+            "you get one alert naming the tree. Answers are never counted. "
+            "0 turns it off."));
+        clawt_web_add(form, clawt_web_field(
+            "Requests between settlements", "tree_message_budget", budget,
+            "60"));
+        htmx_element_set_attribute(HTMX_ELEMENT(button), "type", "submit");
+        clawt_web_add(form, g_steal_pointer(&button));
+        clawt_web_add(tree_body, g_steal_pointer(&form));
+        clawt_web_add(box, g_steal_pointer(&tree));
+    }
+
+    /* Rounds, one form per group room. */
+    {
+        g_autoptr(HtmxDiv) rounds = clawt_web_card("Rounds in group rooms",
+                                                   NULL);
+        HtmxElement *rounds_body = clawt_web_card_body(rounds);
+        JsonArray *rooms = clawt_web_member_array(clawt_web_root(reply),
+                                                  "rooms");
+
+        clawt_web_add(rounds_body, clawt_web_row(
+            "What it does",
+            "A round starts at each message from you, a routine or a "
+            "trigger. Every member that answers starts a thread, and an "
+            "@mention in a reply carries it on. Within one thread a member "
+            "answers once -- naming somebody who already has is kept in the "
+            "room, marked as not delivered, with the reason -- and a thread "
+            "stops after this many replies. The hop count starts again each "
+            "round, so a standup no longer reaches the hop limit by itself. "
+            "0 removes the cap."));
+
+        if (rooms == NULL || json_array_get_length(rooms) == 0)
+            clawt_web_add(rounds_body, clawt_web_empty(
+                "No group rooms yet",
+                "A room with three or more members appears here."));
+
+        for (i = 0; rooms != NULL && i < json_array_get_length(rooms); i++) {
+            JsonObject *room = json_array_get_object_element(rooms, i);
+            const gchar *id = clawt_web_member(room, "id", "");
+            const gchar *name = clawt_web_member(room, "name", id);
+            gint64 round = clawt_web_member_int(room, "round", 0);
+            g_autoptr(HtmxForm) form = clawt_web_form(
+                "/settings/orchestration/room");
+            g_autoptr(HtmxButton) button = clawt_web_button("Save",
+                                                            "primary");
+            g_autofree gchar *chain = g_strdup_printf("%" G_GINT64_FORMAT,
+                clawt_web_member_int(room, "max_chain", 0));
+            g_autofree gchar *label = (round > 0)
+                ? g_strdup_printf("%s \xe2\x80\x94 replies per thread "
+                                  "(round %" G_GINT64_FORMAT " now)",
+                                  name, round)
+                : g_strdup_printf("%s \xe2\x80\x94 replies per thread",
+                                  name);
+
+            clawt_web_add(form, clawt_web_hidden("room", id));
+            clawt_web_add(form, clawt_web_field(label, "max_chain", chain,
+                                                "3"));
+            htmx_element_set_attribute(HTMX_ELEMENT(button), "type",
+                                       "submit");
+            clawt_web_add(form, g_steal_pointer(&button));
+            clawt_web_add(rounds_body, g_steal_pointer(&form));
+        }
+
+        clawt_web_add(box, g_steal_pointer(&rounds));
+    }
+
     return HTMX_ELEMENT(g_steal_pointer(&box));
+}
+
+/*
+ * A whole number from a form field, or -1 when it is not one -- refused
+ * here, naming the field, rather than sent for the daemon to refuse.
+ */
+static gint64
+form_number(HtmxRequest *request, const gchar *name)
+{
+    const gchar *text = clawt_web_form_value(request, name);
+    g_autofree gchar *trimmed = NULL;
+    gint64 value = 0;
+
+    if (text == NULL)
+        return -1;
+
+    trimmed = g_strstrip(g_strdup(text));
+
+    if (*trimmed == '\0' ||
+        !g_ascii_string_to_signed(trimmed, 10, 0, G_MAXINT32, &value, NULL))
+        return -1;
+
+    return value;
+}
+
+static HtmxResponse *
+on_orchestration_room_save(HtmxRequest *request, GHashTable *params,
+                           gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    const gchar *room = clawt_web_form_value(request, "room");
+    gint64 chain = form_number(request, "max_chain");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(HtmxElement) content = NULL;
+    g_autofree gchar *failure = NULL;
+    g_autofree gchar *said = NULL;
+
+    (void)params;
+
+    if (room == NULL || chain < 0 || chain > 100) {
+        content = orchestration_content(app);
+        return settings_response(app, request, "orchestration", content,
+                                 "Replies per thread is a whole number from "
+                                 "0 (no cap) to 100.", TRUE);
+    }
+
+    clawt_web_payload_set(payload, "room", room);
+    clawt_web_payload_set_int(payload, "max_chain", chain);
+    reply = clawt_web_app_call(app, "room.set",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        failure = g_strdup(clawt_web_app_last_error(app));
+
+    content = orchestration_content(app);
+
+    if (failure != NULL)
+        return settings_response(app, request, "orchestration", content,
+                                 failure, TRUE);
+
+    said = (chain == 0)
+        ? g_strdup_printf("Threads in %s are no longer capped; each member "
+                          "still answers once per thread.", room)
+        : g_strdup_printf("A thread in %s now stops after %" G_GINT64_FORMAT
+                          " repl%s.", room, chain, chain == 1 ? "y" : "ies");
+
+    return settings_response(app, request, "orchestration", content, said,
+                             FALSE);
 }
 
 static HtmxResponse *
@@ -2596,6 +2754,43 @@ on_orchestration_save(HtmxRequest *request, GHashTable *params,
     g_autofree gchar *failure = NULL;
 
     (void)params;
+
+    /*
+     * Two forms post here: the model's and the tree budget's.  Each
+     * sends only its own field, and the daemon takes either alone.
+     */
+    if (clawt_web_form_value(request, "tree_message_budget") != NULL) {
+        gint64 budget = form_number(request, "tree_message_budget");
+        g_autofree gchar *said = NULL;
+
+        if (budget < 0 || budget > 10000) {
+            content = orchestration_content(app);
+            return settings_response(app, request, "orchestration", content,
+                                     "The tree budget is a whole number "
+                                     "from 0 (no budget) to 10000.", TRUE);
+        }
+
+        clawt_web_payload_set_int(payload, "tree_message_budget", budget);
+        reply = clawt_web_app_call(app, "orchestration.set",
+            clawt_web_payload_take(g_steal_pointer(&payload)));
+
+        if (reply == NULL)
+            failure = g_strdup(clawt_web_app_last_error(app));
+
+        content = orchestration_content(app);
+
+        if (failure != NULL)
+            return settings_response(app, request, "orchestration", content,
+                                     failure, TRUE);
+
+        said = (budget == 0)
+            ? g_strdup("Task trees have no message budget now.")
+            : g_strdup_printf("Each task tree may send %" G_GINT64_FORMAT
+                              " requests between settlements.", budget);
+
+        return settings_response(app, request, "orchestration", content,
+                                 said, FALSE);
+    }
 
     clawt_web_payload_set(payload, "ack_check_model",
                           value != NULL ? value : "");
@@ -3330,6 +3525,8 @@ clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_post(router, "/settings/fleet/pause", on_fleet_hold, app);
     htmx_router_post(router, "/settings/orchestration", on_orchestration_save,
                      app);
+    htmx_router_post(router, "/settings/orchestration/room",
+                     on_orchestration_room_save, app);
     htmx_router_post(router, "/settings/fleet/resume", on_fleet_hold, app);
 
     htmx_router_post(router, "/settings/images/download", on_image_download,

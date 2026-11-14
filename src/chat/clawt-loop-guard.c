@@ -133,8 +133,20 @@ stall_free(gpointer data)
     g_free(stall);
 }
 
+/*
+ * One task tree's requests since anything in it last settled, and
+ * whether its alert has gone out.  Keyed by root task id, because the
+ * budget is per tree: one counter for the whole fleet would have the
+ * busiest tree spending every other tree's allowance.
+ */
+typedef struct {
+    guint    count;
+    gboolean alerted;
+} TreeCount;
+
 enum {
     SIGNAL_STALLED,
+    SIGNAL_TREE_EXHAUSTED,
     N_SIGNALS
 };
 
@@ -153,10 +165,16 @@ struct _ClawtLoopGuard {
     GHashTable *recent;        /* room_id -> GQueue of CycleEntry, oldest first */
     GHashTable *task_spend;    /* task_id -> gdouble* */
     GHashTable *stalls;        /* room_id -> Stall* */
+    GHashTable *trees;         /* root task id -> TreeCount* */
+    guint       tree_budget;
 
     ClawtLoopGuardPeerFunc peer_func;
     gpointer               peer_data;
     GDestroyNotify         peer_notify;
+
+    ClawtLoopGuardTreeFunc tree_func;
+    gpointer               tree_data;
+    GDestroyNotify         tree_notify;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtLoopGuard, clawt_loop_guard, G_TYPE_OBJECT)
@@ -648,6 +666,221 @@ check_budget(ClawtLoopGuard *self, ClawtMessage *message, GError **error)
     return FALSE;
 }
 
+/* ── The tree budget ───────────────────────────────────────────── */
+
+void
+clawt_loop_guard_set_tree_func(
+	ClawtLoopGuard         *self,
+	ClawtLoopGuardTreeFunc  func,
+	gpointer                user_data,
+	GDestroyNotify          notify
+){
+	g_return_if_fail(CLAWT_IS_LOOP_GUARD(self));
+
+	if (self->tree_notify != NULL && self->tree_data != NULL)
+		self->tree_notify(self->tree_data);
+
+	self->tree_func = func;
+	self->tree_data = user_data;
+	self->tree_notify = notify;
+}
+
+void
+clawt_loop_guard_set_tree_budget(
+	ClawtLoopGuard *self,
+	guint           budget
+){
+	g_return_if_fail(CLAWT_IS_LOOP_GUARD(self));
+
+	self->tree_budget = budget;
+}
+
+guint
+clawt_loop_guard_get_tree_budget(
+	ClawtLoopGuard *self
+){
+	g_return_val_if_fail(CLAWT_IS_LOOP_GUARD(self), 0);
+
+	return self->tree_budget;
+}
+
+gchar *
+clawt_loop_guard_resolve_tree(
+	ClawtLoopGuard *self,
+	const gchar    *sender_id,
+	const gchar    *room_id,
+	const gchar    *task_id
+){
+	g_return_val_if_fail(CLAWT_IS_LOOP_GUARD(self), NULL);
+
+	if (self->tree_func == NULL)
+		return NULL;
+
+	return self->tree_func(sender_id, room_id, task_id, self->tree_data);
+}
+
+guint
+clawt_loop_guard_get_tree_count(
+	ClawtLoopGuard *self,
+	const gchar    *root_id
+){
+	TreeCount *tree;
+
+	g_return_val_if_fail(CLAWT_IS_LOOP_GUARD(self), 0);
+
+	if (root_id == NULL)
+		return 0;
+
+	tree = g_hash_table_lookup(self->trees, root_id);
+
+	return (tree != NULL) ? tree->count : 0;
+}
+
+gboolean
+clawt_loop_guard_tree_exhausted(
+	ClawtLoopGuard *self,
+	const gchar    *root_id
+){
+	g_return_val_if_fail(CLAWT_IS_LOOP_GUARD(self), FALSE);
+
+	if (self->tree_budget == 0 || root_id == NULL)
+		return FALSE;
+
+	return clawt_loop_guard_get_tree_count(self, root_id) >=
+	       self->tree_budget;
+}
+
+void
+clawt_loop_guard_renew_tree(
+	ClawtLoopGuard *self,
+	const gchar    *root_id
+){
+	g_return_if_fail(CLAWT_IS_LOOP_GUARD(self));
+
+	/*
+	 * Removed rather than zeroed, so a fleet that runs for months does
+	 * not keep an entry for every tree it ever had: a tree whose work
+	 * all settled has nothing left to count.
+	 */
+	if (root_id != NULL)
+		g_hash_table_remove(self->trees, root_id);
+}
+
+gchar *
+clawt_loop_guard_tree_alert_text(
+	const gchar *tree,
+	guint        count,
+	guint        limit
+){
+	return g_strdup_printf(
+		"The task tree %s has sent %u request%s since anything in it last "
+		"settled, which is its budget of %u "
+		"(orchestration.tree_message_budget). Its agents can still answer "
+		"and finish their own work, but cannot message each other again "
+		"until a task in the tree settles.",
+		(tree != NULL && *tree != '\0') ? tree : "(unnamed)",
+		count, count == 1 ? "" : "s", limit);
+}
+
+/*
+ * Whether @message is a *request*: something an agent chose to send
+ * that asks for another agent's time.  An answer is not -- it closes an
+ * exchange somebody else opened, and refusing it would strand the
+ * delegator waiting on work that is finished -- and neither is anything
+ * a person, a routine, a trigger or the daemon sent: the follow-up turn
+ * a delegator is owed when its work settles starts with the daemon's
+ * own notice, so it is never counted and never refused.
+ */
+static gboolean
+is_request(ClawtLoopGuard *self, ClawtMessage *message)
+{
+	if (!sender_is_peer(self, message))
+		return FALSE;
+
+	return clawt_message_get_invites_reply(message) ||
+	       clawt_message_get_one_way(message);
+}
+
+/* The tree @message would be counted against, or %NULL. */
+static gchar *
+message_tree(ClawtLoopGuard *self, ClawtMessage *message)
+{
+	const gchar *task_id = clawt_message_get_task_id(message);
+
+	if (self->tree_budget == 0 || !is_request(self, message))
+		return NULL;
+
+	/*
+	 * The task the message names, then the one the question was asked
+	 * from, then -- in the resolver -- whatever the sender's turn in
+	 * this room is working on.  A delegation names the child it
+	 * created, whose root is the delegator's root, so a fan-out is
+	 * counted against the tree it fans out of.
+	 */
+	if (task_id == NULL)
+		task_id = clawt_message_get_request_task(message);
+
+	return clawt_loop_guard_resolve_tree(self,
+		clawt_message_get_sender_id(message),
+		clawt_message_get_room_id(message), task_id);
+}
+
+static gboolean
+check_tree(ClawtLoopGuard *self, const gchar *root, GError **error)
+{
+	guint count;
+
+	if (root == NULL || !clawt_loop_guard_tree_exhausted(self, root))
+		return TRUE;
+
+	count = clawt_loop_guard_get_tree_count(self, root);
+
+	/*
+	 * What to do instead, not only no: a refusal that only says no is
+	 * retried in a different shape.  The way out is the thing the budget
+	 * wants -- finish something, so the tree settles and renews.
+	 */
+	g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT,
+	            "the task tree this belongs to (%s) has sent %u requests "
+	            "since anything in it last settled, which is its budget. "
+	            "Do what you can with what you have, and report it or "
+	            "complete your task -- the budget renews as soon as any "
+	            "task in the tree settles.", root, count);
+
+	return FALSE;
+}
+
+/* Counts one request against @root, and raises the alert at the limit. */
+static void
+count_tree(ClawtLoopGuard *self, const gchar *root)
+{
+	TreeCount *tree;
+
+	if (root == NULL)
+		return;
+
+	tree = g_hash_table_lookup(self->trees, root);
+
+	if (tree == NULL) {
+		tree = g_new0(TreeCount, 1);
+		g_hash_table_insert(self->trees, g_strdup(root), tree);
+	}
+
+	tree->count++;
+
+	/*
+	 * Once per exhaustion, at the moment the tools go away rather than
+	 * at the first refusal: by then the tree has already stopped
+	 * talking, and a person told only when an agent tried anyway would
+	 * hear nothing about a tree that went quiet obediently.
+	 */
+	if (tree->count >= self->tree_budget && !tree->alerted) {
+		tree->alerted = TRUE;
+		g_signal_emit(self, signals[SIGNAL_TREE_EXHAUSTED], 0, root,
+		              tree->count, self->tree_budget);
+	}
+}
+
 gboolean
 clawt_loop_guard_check(ClawtLoopGuard  *self,
                        ClawtMessage    *message,
@@ -663,6 +896,8 @@ clawt_loop_guard_check_in_room(ClawtLoopGuard  *self,
                                gboolean         reaches_anybody,
                                GError         **error)
 {
+    g_autofree gchar *root = NULL;
+
     g_return_val_if_fail(CLAWT_IS_LOOP_GUARD(self), FALSE);
     g_return_val_if_fail(message != NULL, FALSE);
 
@@ -724,6 +959,17 @@ clawt_loop_guard_check_in_room(ClawtLoopGuard  *self,
         return TRUE;
 
     /*
+     * The tree budget is about cost too -- a request is a turn somebody
+     * else takes -- so it sits behind the same gate, and before the two
+     * that record.  Resolved once: the check and the count must be
+     * about the same tree.
+     */
+    root = message_tree(self, message);
+
+    if (!check_tree(self, root, error))
+        return FALSE;
+
+    /*
      * Rate before cycle, because the cycle check records as a side
      * effect.  A message refused on rate used to have its fingerprint
      * written into the cycle window anyway, so re-sending that same text
@@ -735,6 +981,14 @@ clawt_loop_guard_check_in_room(ClawtLoopGuard  *self,
 
     if (!check_cycle(self, message, error))
         return FALSE;
+
+    /*
+     * Counted last, once the message is certain to go: a request refused
+     * on rate or cycle has not cost anybody a turn.  One call is one
+     * message here however many members it reaches, which is what makes
+     * a post to a room of five one request rather than five.
+     */
+    count_tree(self, root);
 
     return TRUE;
 }
@@ -794,6 +1048,7 @@ clawt_loop_guard_reset(ClawtLoopGuard *self)
     g_hash_table_remove_all(self->recent);
     g_hash_table_remove_all(self->task_spend);
     g_hash_table_remove_all(self->stalls);
+    g_hash_table_remove_all(self->trees);
 }
 
 static void
@@ -804,6 +1059,10 @@ clawt_loop_guard_finalize(GObject *object)
     if (self->peer_notify != NULL && self->peer_data != NULL)
         self->peer_notify(self->peer_data);
 
+    if (self->tree_notify != NULL && self->tree_data != NULL)
+        self->tree_notify(self->tree_data);
+
+    g_clear_pointer(&self->trees, g_hash_table_unref);
     g_clear_pointer(&self->rates, g_hash_table_unref);
     g_clear_pointer(&self->recent, g_hash_table_unref);
     g_clear_pointer(&self->task_spend, g_hash_table_unref);
@@ -832,6 +1091,23 @@ clawt_loop_guard_class_init(ClawtLoopGuardClass *klass)
         g_signal_new("stalled", CLAWT_TYPE_LOOP_GUARD, G_SIGNAL_RUN_LAST,
                      0, NULL, NULL, NULL, G_TYPE_NONE, 3,
                      G_TYPE_STRING, G_TYPE_UINT, G_TYPE_STRING);
+
+    /**
+     * ClawtLoopGuard::tree-exhausted:
+     * @self: the guard
+     * @root_id: the root task of the tree
+     * @count: how many requests it has sent
+     * @limit: the budget it reached
+     *
+     * Emitted once when a task tree reaches
+     * `orchestration.tree_message_budget`, and not again until
+     * clawt_loop_guard_renew_tree().  The daemon turns it into the
+     * `task.tree_budget` alert, naming the tree.
+     */
+    signals[SIGNAL_TREE_EXHAUSTED] =
+        g_signal_new("tree-exhausted", CLAWT_TYPE_LOOP_GUARD,
+                     G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL, G_TYPE_NONE, 3,
+                     G_TYPE_STRING, G_TYPE_UINT, G_TYPE_UINT);
 }
 
 static void
@@ -851,4 +1127,6 @@ clawt_loop_guard_init(ClawtLoopGuard *self)
                                              g_free, g_free);
     self->stalls = g_hash_table_new_full(g_str_hash, g_str_equal,
                                          g_free, stall_free);
+    self->trees = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                        g_free, g_free);
 }

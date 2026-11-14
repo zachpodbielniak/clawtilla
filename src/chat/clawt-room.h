@@ -288,7 +288,53 @@ guint clawt_room_get_message_count(ClawtRoom *self);
  */
 guint clawt_room_get_max_hops(ClawtRoom *self);
 
+/**
+ * clawt_room_set_max_hops:
+ * @self: a #ClawtRoom
+ * @max_hops: the room's hop limit, or 0 to use the global one
+ */
 void clawt_room_set_max_hops(ClawtRoom *self, guint max_hops);
+
+/**
+ * clawt_room_get_max_chain:
+ * @self: a #ClawtRoom
+ *
+ * How many replies one thread of a round may run to in this room
+ * (`rooms.max_chain`).  A message whose thread already has this many is
+ * recorded and not delivered to anybody it names.
+ *
+ * Returns: the cap, or 0 for none
+ */
+guint clawt_room_get_max_chain(ClawtRoom *self);
+
+/**
+ * clawt_room_set_max_chain:
+ * @self: a #ClawtRoom
+ * @max_chain: the cap, or 0 for none
+ */
+void clawt_room_set_max_chain(ClawtRoom *self, guint max_chain);
+
+/**
+ * clawt_room_get_round:
+ * @self: a #ClawtRoom
+ *
+ * Which round this room is in: how many times a person, a routine or a
+ * trigger has spoken in it, counted from its transcript.
+ *
+ * Returns: the round, or 0 before the first
+ */
+guint clawt_room_get_round(ClawtRoom *self);
+
+/**
+ * clawt_room_begin_round:
+ * @self: a #ClawtRoom
+ *
+ * Starts the next round.  Called by the router for a message from a
+ * person, a routine or a trigger into a group room, and by nothing else.
+ *
+ * Returns: the new round's number
+ */
+guint clawt_room_begin_round(ClawtRoom *self);
 
 /**
  * clawt_room_get_turn_timeout:

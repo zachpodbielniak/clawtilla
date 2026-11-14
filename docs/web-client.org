@@ -122,6 +122,10 @@ and devices.
 
 =/settings/orchestration= is a form with one select, *Model*, built by =clawt_web_select_field()= from =clawt_ack_check_model_count()= / =_nth_value()= / =_nth_label()= with ~orchestration.get~'s =ack_check_model= selected; a value the list lacks is kept as an option, so saving untouched cannot turn the check off.  *Save* posts to the same path, which sends ~orchestration.set~ and redraws the page with the outcome.  See [[file:clients.org::#orchestration-settings][Orchestration]].
 
+Below it, *Message budget per task tree* is a second form posting =tree_message_budget= to the same path (which then sends ~orchestration.set~ with that integer alone), and *Rounds in group rooms* has one form per group room posting =room= and =max_chain= to =/settings/orchestration/room=, which sends ~room.set~.  Each field is checked to be a whole number in range before anything is sent, and the page redraws with the outcome.
+
+The transcript draws a *Round N* divider (=.round-divider=) where a group room's round changes, and a =.skip-note= under a message whose mention was kept and not delivered, with =clawt_round_skip_note()='s sentence as text content and =clawt_round_skip_tooltip()= as its title.
+
 *** Acknowledged answers and merged deliveries in the chat
 
 =message_element()= reads =acknowledged= and =merged= off each ~room.history~ message.  An acknowledged answer gets a neutral badge, =clawt_message_ack_label()= with =clawt_message_ack_tooltip()= as its =title=, in the message's header line -- which is drawn for that message even mid-run, as the task and hop badges are.  A merged note's body is split by =clawt_merge_split()=: the preface is the message body and each section is a =.merge-section= block with a =.merge-section-label= heading.  The live ~message~ event only marks unread here; the transcript re-reads history, so both marks come from one path.

@@ -1481,6 +1481,19 @@ gboolean clawt_daemon_ack_consider(ClawtDaemon  *self,
 /* A test's fake model; wins over orchestration.ack_check_model. */
 void clawt_daemon_ack_set_provider(ClawtDaemon *self, AiProvider *provider);
 
+/*
+ * The message budget per task tree (daemon-tree.c).
+ *
+ * Setup gives the loop guard its tree resolver and turns the guard's
+ * `tree-exhausted` signal into the `task.tree_budget` alert; settled
+ * renews the tree a finished task belongs to, and is called before the
+ * settle notice is sent.  The label is what the alert calls a tree.
+ */
+void   clawt_daemon_tree_setup(ClawtDaemon *self);
+void   clawt_daemon_tree_teardown(ClawtDaemon *self);
+void   clawt_daemon_tree_settled(ClawtDaemon *self, ClawtTask *task);
+gchar *clawt_daemon_tree_label(ClawtDaemon *self, const gchar *root_id);
+
 /* orchestration.get / orchestration.set */
 JsonNode *
 clawt_daemon_handle_orchestration(

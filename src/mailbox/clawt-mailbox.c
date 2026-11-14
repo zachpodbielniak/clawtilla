@@ -75,6 +75,8 @@ static const gchar *SCHEMA_SQL =
     "  invites_reply INTEGER NOT NULL DEFAULT 1,"
 	"  composed INTEGER NOT NULL DEFAULT 0,"
 	"  one_way INTEGER NOT NULL DEFAULT 0,"
+	"  room_round INTEGER NOT NULL DEFAULT 0,"
+	"  chain TEXT,"
     "  created_at INTEGER NOT NULL,"
     "  not_before INTEGER NOT NULL DEFAULT 0,"
     "  expires_at INTEGER NOT NULL DEFAULT 0,"
@@ -222,6 +224,28 @@ apply_schema(sqlite3 *db, GError **error)
 		return FALSE;
 	}
 
+	/*
+	 * Since 0.18.0: a group room's round and thread of replies.  Absent
+	 * means every queued item opens a fresh thread, which lets a mention
+	 * through that a fresh mailbox would hold back -- once, with
+	 * max_hops still behind it.
+	 */
+	if (!has_column(db, "items", "room_round") &&
+		sqlite3_exec(db,
+			"ALTER TABLE items ADD COLUMN room_round"
+			" INTEGER NOT NULL DEFAULT 0",
+			NULL, NULL, NULL) != SQLITE_OK) {
+		set_sqlite_error(error, db, "adding room_round to the mailbox");
+		return FALSE;
+	}
+
+	if (!has_column(db, "items", "chain") &&
+		sqlite3_exec(db, "ALTER TABLE items ADD COLUMN chain TEXT",
+			NULL, NULL, NULL) != SQLITE_OK) {
+		set_sqlite_error(error, db, "adding chain to the mailbox");
+		return FALSE;
+	}
+
 	/* Existing mailboxes must retain their queued work when upgraded. */
 	for (i = 0; i < G_N_ELEMENTS(context_columns); i++) {
 		g_autofree gchar *sql = NULL;
@@ -280,6 +304,8 @@ item_from_row(sqlite3_stmt *stmt)
     clawt_mailbox_item_set_model(item, column_text(stmt, 21));
 	clawt_mailbox_item_set_composed(item, sqlite3_column_int(stmt, 22) != 0);
 	clawt_mailbox_item_set_one_way(item, sqlite3_column_int(stmt, 23) != 0);
+	clawt_mailbox_item_set_round_chain(item,
+		(guint)MAX(sqlite3_column_int(stmt, 24), 0), column_text(stmt, 25));
 
     return item;
 }
@@ -288,7 +314,8 @@ item_from_row(sqlite3_stmt *stmt)
     "id, sender, recipient, body, room, task_id, reply_to, subject, " \
     "idempotency_key, last_error, priority, state, depth, attempts, " \
     "created_at, not_before, expires_at, invites_reply, " \
-	"request_room, request_origin, request_task, model, composed, one_way"
+	"request_room, request_origin, request_task, model, composed, one_way, " \
+	"room_round, chain"
 
 /* ── Depth ───────────────────────────────────────────────────────── */
 
@@ -620,8 +647,8 @@ clawt_mailbox_post(ClawtMailbox *self, ClawtMailboxItem *item, GError **error)
             " reply_to, subject, idempotency_key, priority, state, depth,"
             " attempts, created_at, not_before, expires_at, invites_reply,"
 			" request_room, request_origin, request_task, model, composed,"
-			" one_way)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+			" one_way, room_round, chain)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             -1, &stmt, NULL) != SQLITE_OK) {
         set_sqlite_error(error, self->db, "queueing a message");
         return NULL;
@@ -663,6 +690,9 @@ clawt_mailbox_post(ClawtMailbox *self, ClawtMailboxItem *item, GError **error)
                       SQLITE_TRANSIENT);
 	sqlite3_bind_int(stmt, 22, clawt_mailbox_item_get_composed(item) ? 1 : 0);
 	sqlite3_bind_int(stmt, 23, clawt_mailbox_item_get_one_way(item) ? 1 : 0);
+	sqlite3_bind_int(stmt, 24, (gint)clawt_mailbox_item_get_round(item));
+	sqlite3_bind_text(stmt, 25, clawt_mailbox_item_get_chain(item), -1,
+		SQLITE_TRANSIENT);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);

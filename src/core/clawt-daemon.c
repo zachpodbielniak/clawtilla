@@ -1734,8 +1734,15 @@ on_task_changed(ClawtTaskManager *manager,
      * by waiting -- and a settle is one-shot, so this cannot repeat:
      * every terminal setter refuses a task that is already finished.
      */
-    if (task != NULL && clawt_task_is_finished(task))
+    /*
+     * The tree renews first: see clawt_daemon_tree_settled() for why the
+     * order is what keeps a delegator's owed follow-up from being
+     * refused.
+     */
+    if (task != NULL && clawt_task_is_finished(task)) {
+        clawt_daemon_tree_settled(self, task);
         send_settle_notice(self, task, state);
+    }
 
     if (state != CLAWT_TASK_COMPLETED)
         return;
@@ -4642,6 +4649,7 @@ release_components(ClawtDaemon *self)
      * dropped it -- never reaches clawt_daemon_stop().
      */
     clawt_daemon_turn_teardown(self);
+    clawt_daemon_tree_teardown(self);
     clawt_daemon_handoff_teardown(self);
     clawt_daemon_wait_teardown(self);
     clawt_daemon_search_teardown(self);
@@ -5700,6 +5708,12 @@ configure_limits(ClawtDaemon *self)
         self->guard,
         clawt_config_get_double(self->config, "orchestration.task_budget_usd"));
 
+    clawt_loop_guard_set_tree_budget(
+        self->guard,
+        (guint)MAX(clawt_config_get_int(self->config,
+                                        "orchestration.tree_message_budget"),
+                   0));
+
     clawt_task_manager_set_max_depth(
         self->tasks,
         (guint)clawt_config_get_int(self->config, "orchestration.max_hops"));
@@ -6644,6 +6658,7 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      * and nothing takes it down again.
      */
     clawt_daemon_turn_setup(self);
+    clawt_daemon_tree_setup(self);
 
     /*
      * After the turn machinery, because the handoff queue drains from
@@ -6813,6 +6828,7 @@ clawt_daemon_stop(ClawtDaemon *self)
      * manager it would look an agent up in.
      */
     clawt_daemon_turn_teardown(self);
+    clawt_daemon_tree_teardown(self);
     clawt_daemon_handoff_teardown(self);
     clawt_daemon_wait_teardown(self);
     clawt_daemon_search_teardown(self);
