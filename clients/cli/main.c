@@ -6090,7 +6090,7 @@ connector_relay(const gchar *name, const gchar *agent_id)
     ClawtIntegrationConfig *instance;
     const ClawtIntegrationInfo *info;
     const ClawtConnectorInfo *connector;
-    const gchar *token_file;
+    g_autofree gchar *token_file = NULL;
 
     if (name == NULL) {
         g_printerr("clawtilla: connector relay needs a name\n");
@@ -6153,7 +6153,24 @@ connector_relay(const gchar *name, const gchar *agent_id)
     }
 
     binding = clawt_integration_binding_for_instance(instance, info, NULL);
-    token_file = clawt_integration_binding_get_string(binding, "token_file");
+
+    /*
+     * Where the daemon keeps it now, which may be newer than this
+     * config: a confined relay reads the clawtilla.yaml its box started
+     * with, and its connector's directory is what is bound in.
+     */
+    {
+        g_autofree gchar *secrets_dir =
+            clawt_config_get_path_value(config, "secrets.dir");
+
+        if (secrets_dir != NULL)
+            token_file = clawt_connector_find_token_file(
+                secrets_dir, name,
+                clawt_integration_binding_get_string(binding, "token_file"));
+        else
+            token_file = g_strdup(clawt_integration_binding_get_string(
+                binding, "token_file"));
+    }
 
     /*
      * No credential yet is still a relay for a server reached by URL:

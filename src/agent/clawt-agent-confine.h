@@ -91,6 +91,46 @@ gboolean clawt_agent_confine_check(ClawtAgentConfig  *config,
 GStrv clawt_agent_confine_default_login_paths(const gchar *provider);
 
 /**
+ * clawt_agent_confine_connector_paths:
+ * @config: an agent's configuration
+ *
+ * What a confined agent's box binds read-only so the connector relays
+ * its CLI starts can read their credentials: for every connector the
+ * agent is granted (clawt_integration_resolve_for_agent(), the same
+ * resolution that writes its .mcp.json), that connector's own directory
+ * under `secrets.dir/connectors/`, and its `token_file` when that names
+ * a file somewhere else.
+ *
+ * And `connectors.dir`, the catalogue overlay the relay looks its
+ * provider up in, when the agent holds any connector at all.
+ *
+ * Never secrets.dir itself, never `connector-auth/`, never a connector
+ * scoped to another agent.  Paths are listed whether or not they exist
+ * yet; the builder leaves out a missing one, and
+ * clawt_agent_confine_prepare_connector_secrets() makes the directories
+ * first so a connector connected while the agent runs is still seen.
+ *
+ * Returns: (transfer full) (array zero-terminated=1): the paths, possibly
+ *   none
+ */
+GStrv clawt_agent_confine_connector_paths(ClawtAgentConfig *config);
+
+/**
+ * clawt_agent_confine_prepare_connector_secrets:
+ * @config: an agent's configuration
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Creates, mode 0700, each connector directory
+ * clawt_agent_confine_connector_paths() names, so the box can bind it
+ * before anything has been stored there.  Called by the daemon before it
+ * builds the box.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean clawt_agent_confine_prepare_connector_secrets(ClawtAgentConfig  *config,
+                                                       GError           **error);
+
+/**
  * clawt_agent_confine_build:
  * @config: an agent's configuration
  * @state_dir: the agent's state directory, `<state_dir>/agents/<id>`
@@ -111,8 +151,9 @@ GStrv clawt_agent_confine_default_login_paths(const gchar *provider);
  * session store, the usage database and the link token are there), the
  * computer's mounts in their declared modes, the CLI's login directory
  * (writable), the AI CLI and every program the workspace's .mcp.json
- * names (read-only), the daemon's sockets, and `runtime.confine_paths`
- * (read-only).  $HOME is an empty tmpfs those come back on top of; /tmp is
+ * names (read-only), each granted connector's credential
+ * (clawt_agent_confine_connector_paths(), read-only), the daemon's
+ * sockets, and `runtime.confine_paths` (read-only).  $HOME is an empty tmpfs those come back on top of; /tmp is
  * private.  The network follows `runtime.network`: shared when open, a
  * namespace of its own with only loopback in it otherwise.
  * On a host computer, `computer.host.deny_paths` are denied here as well.

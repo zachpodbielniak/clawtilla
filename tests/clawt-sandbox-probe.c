@@ -175,6 +175,55 @@ check_unreadable(
 }
 
 /*
+ * The door beside the wall: the credential of a connector the agent is
+ * granted has to be readable -- its relay runs in here and reads it --
+ * and must not be writable, since only the daemon renews it.  Reported
+ * as a leak either way, so the run fails: a box that hides the granted
+ * credential breaks every credentialed connector the agent has, which is
+ * the failure this check was written after.
+ */
+static void
+check_connector_door(
+	GPtrArray *results,
+	GKeyFile  *spec
+){
+	g_autofree gchar *path = NULL;
+	gchar *why;
+	gint fd;
+
+	why = NULL;
+	path = spec_string(spec, "connector_secret_granted");
+
+	if (path == NULL) {
+		add_result(results, "connector_secret_granted", PROBE_SKIPPED,
+		           g_strdup("the spec names no granted connector"));
+		return;
+	}
+
+	if (!reads_something(path, &why)) {
+		add_result(results, "connector_secret_granted", PROBE_LEAKED,
+		           g_strdup_printf("%s -- the agent's own connector cannot "
+		                           "read its credential", why));
+		g_free(why);
+		return;
+	}
+
+	g_free(why);
+	fd = open(path, O_WRONLY | O_CLOEXEC | O_NOCTTY | O_NONBLOCK);
+
+	if (fd >= 0) {
+		close(fd);
+		add_result(results, "connector_secret_granted", PROBE_LEAKED,
+		           g_strdup_printf("%s: opened for writing", path));
+		return;
+	}
+
+	add_result(results, "connector_secret_granted", PROBE_HELD,
+	           g_strdup_printf("%s: readable, and not writable (%s)", path,
+	                           g_strerror(errno)));
+}
+
+/*
  * The control: the agent's own workspace has to be writable, or every
  * other check is passing because the box is broken rather than because
  * it is tight.
@@ -1003,6 +1052,16 @@ main(
 	check_unreadable(results, spec, "home_documents", "home_documents");
 	check_unreadable(results, spec, "host_tmp", "host_tmp");
 	check_denied(results, spec);
+
+	/*
+	 * secrets.dir: only the granted connector's credential is in here.
+	 * Another agent's connector and a loose secret beside it are not.
+	 */
+	check_connector_door(results, spec);
+	check_unreadable(results, spec, "connector_secret_other",
+	                 "connector_secret_other");
+	check_unreadable(results, spec, "connector_secret_loose",
+	                 "connector_secret_loose");
 
 	/* Writes the box must refuse. */
 	check_ro_bind(results, spec);

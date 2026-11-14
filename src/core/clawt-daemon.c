@@ -4618,6 +4618,17 @@ start_agent_launch(ClawtDaemon *self, const gchar *agent_id,
             sockets[1] = ipc_socket;
             sockets[2] = NULL;
 
+            /*
+             * Its connectors' directories first, so the box binds them
+             * even before anything is stored there.
+             */
+            if (!clawt_agent_confine_prepare_connector_secrets(config,
+                                                               &why)) {
+                clawt_agent_set_error(agent, why->message);
+                g_propagate_error(error, g_steal_pointer(&why));
+                return FALSE;
+            }
+
             sandbox = clawt_agent_confine_build(
                 config, state_dir,
                 computer != NULL ? clawt_computer_get_mounts(computer)
@@ -5777,6 +5788,9 @@ clawt_daemon_store_connector_token(ClawtDaemon      *self,
     g_autofree gchar *secrets_dir =
         clawt_config_get_path_value(self->config, "secrets.dir");
     g_autofree gchar *path = clawt_connector_token_path(secrets_dir, name);
+    g_autofree gchar *dir = clawt_connector_token_dir(secrets_dir, name);
+    g_autofree gchar *legacy =
+        clawt_connector_legacy_token_path(secrets_dir, name);
     ClawtIntegrationConfig *instance =
         clawt_config_get_integration(self->config, name);
 
@@ -5786,11 +5800,19 @@ clawt_daemon_store_connector_token(ClawtDaemon      *self,
         return FALSE;
     }
 
-    if (!clawt_ensure_dir(secrets_dir, 0700, error))
+    if (!clawt_ensure_dir(secrets_dir, 0700, error) ||
+        !clawt_ensure_dir(dir, 0700, error))
         return FALSE;
 
     if (!clawt_oauth_token_save(token, path, error))
         return FALSE;
+
+    /*
+     * A copy in the old flat layout is now a stale credential nobody
+     * reads: removed rather than left for a later search to find.
+     */
+    if (g_file_test(legacy, G_FILE_TEST_EXISTS))
+        g_unlink(legacy);
 
     clawt_integration_config_set_string(instance, NULL, "token_file", path);
 
@@ -5891,6 +5913,22 @@ clawt_daemon_forget_connector_token(ClawtDaemon *self, const gchar *name,
 
     if (token_file != NULL)
         g_unlink(token_file);
+
+    /*
+     * And the daemon's own file, which a confined relay prefers over the
+     * configuration its box started with.  The directory stays: it is
+     * bound into every running box that holds this connector, and one
+     * made again by a later connect would be a different directory from
+     * the one those boxes see.
+     */
+    {
+        g_autofree gchar *secrets_dir =
+            clawt_config_get_path_value(self->config, "secrets.dir");
+        g_autofree gchar *own = clawt_connector_token_path(secrets_dir, name);
+
+        if (g_strcmp0(own, token_file) != 0)
+            g_unlink(own);
+    }
 
     clawt_integration_config_set_string(instance, NULL, "token_file", NULL);
 
@@ -6134,10 +6172,16 @@ clawt_daemon_on_connector_refreshed(GObject *source, GAsyncResult *result,
     if (token->refresh_token == NULL || *token->refresh_token == '\0') {
         g_autofree gchar *secrets_dir =
             clawt_config_get_path_value(job->daemon->config, "secrets.dir");
-        g_autofree gchar *path =
-            clawt_connector_token_path(secrets_dir, job->name);
+        ClawtIntegrationConfig *instance =
+            clawt_config_get_integration(job->daemon->config, job->name);
+        g_autofree gchar *path = clawt_connector_find_token_file(
+            secrets_dir, job->name,
+            instance != NULL
+                ? clawt_integration_config_get_string(instance, NULL,
+                                                      "token_file")
+                : NULL);
         g_autoptr(ClawtOauthToken) previous =
-            clawt_oauth_token_load(path, NULL);
+            (path != NULL) ? clawt_oauth_token_load(path, NULL) : NULL;
 
         if (previous != NULL && previous->refresh_token != NULL)
             token->refresh_token = g_strdup(previous->refresh_token);
@@ -7414,6 +7458,13 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      */
     self->connector_refresh = clawt_timeout_add_seconds(
         60, on_connector_refresh_tick, self);
+
+    /*
+     * Before the autostart idle runs: a confined agent's box binds each
+     * connector's own directory, so a credential still in the flat
+     * layout would be bound as a file and frozen at the box's start.
+     */
+    clawt_daemon_connector_migrate_tokens(self);
 
     self->running = TRUE;
 

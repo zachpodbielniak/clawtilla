@@ -281,10 +281,156 @@ test_a_token_path_stays_in_the_secrets_directory(void)
     g_autofree gchar *ordinary = clawt_connector_token_path("/s", "work");
     g_autofree gchar *awkward =
         clawt_connector_token_path("/s", "../../etc/shadow");
+    g_autofree gchar *legacy = clawt_connector_legacy_token_path("/s",
+                                                                 "work");
+    g_autofree gchar *legacy_awkward =
+        clawt_connector_legacy_token_path("/s", "../../etc/shadow");
 
-    g_assert_cmpstr(ordinary, ==, "/s/connector-work.json");
+    g_assert_cmpstr(ordinary, ==, "/s/connectors/work/token.json");
     g_assert_null(strstr(awkward, "/etc/"));
-    g_assert_true(g_str_has_prefix(awkward, "/s/"));
+    g_assert_true(g_str_has_prefix(awkward, "/s/connectors/"));
+
+    g_assert_cmpstr(legacy, ==, "/s/connector-work.json");
+    g_assert_null(strstr(legacy_awkward, "/etc/"));
+    g_assert_true(g_str_has_prefix(legacy_awkward, "/s/"));
+}
+
+/*
+ * The directory a confined box binds.  A name that would make it the
+ * whole of secrets.dir (`..`), all of connectors/ (`` or `.`), or a
+ * directory outside it, is folded into a name of its own -- because
+ * that directory bound into one agent's box would hand it every
+ * connector's credential.
+ */
+static void
+test_a_token_dir_is_one_connector_and_nothing_more(void)
+{
+    static const gchar *const names[] = {
+        "..", ".", "", "../x", "a/b", ".hidden", " spaced", NULL
+    };
+    g_autofree gchar *plain = clawt_connector_token_dir("/s", "work");
+    guint i;
+
+    g_assert_cmpstr(plain, ==, "/s/connectors/work");
+
+    for (i = 0; names[i] != NULL; i++) {
+        g_autofree gchar *dir = clawt_connector_token_dir("/s", names[i]);
+        g_autofree gchar *base = g_path_get_basename(dir);
+        g_autofree gchar *parent = g_path_get_dirname(dir);
+
+        g_test_message("'%s' -> %s", names[i], dir);
+        g_assert_cmpstr(parent, ==, "/s/connectors");
+        g_assert_cmpstr(base, !=, ".");
+        g_assert_cmpstr(base, !=, "..");
+        g_assert_true(*base != '\0' && base[0] != '.');
+        g_assert_null(strchr(base, '/'));
+    }
+}
+
+/*
+ * Which file holds the credential now.  A path somebody chose wins; the
+ * daemon's own wins over the old flat layout and over a config that
+ * names nothing yet, because a confined relay reads the config its box
+ * started with and the credential may have moved or arrived since.
+ */
+static void
+test_the_current_token_file_is_found(void)
+{
+    g_autofree gchar *made = g_dir_make_tmp("clawt-token-file-XXXXXX", NULL);
+    g_autofree gchar *dir = clawt_canonicalize_missing(made);
+    g_autofree gchar *current = clawt_connector_token_path(dir, "work");
+    g_autofree gchar *legacy = clawt_connector_legacy_token_path(dir, "work");
+    g_autofree gchar *chosen = g_build_filename(dir, "chosen.json", NULL);
+    g_autofree gchar *found = NULL;
+    g_autofree gchar *current_dir = clawt_connector_token_dir(dir, "work");
+
+    /* Nothing moved yet: the config is the answer, or nothing is. */
+    found = clawt_connector_find_token_file(dir, "work", legacy);
+    g_assert_cmpstr(found, ==, legacy);
+    g_clear_pointer(&found, g_free);
+    found = clawt_connector_find_token_file(dir, "work", NULL);
+    g_assert_null(found);
+
+    /* Moved, or connected since the config was read. */
+    g_assert_cmpint(g_mkdir_with_parents(current_dir, 0700), ==, 0);
+    g_assert_true(g_file_set_contents(current, "{}", -1, NULL));
+    found = clawt_connector_find_token_file(dir, "work", legacy);
+    g_assert_cmpstr(found, ==, current);
+    g_clear_pointer(&found, g_free);
+    found = clawt_connector_find_token_file(dir, "work", NULL);
+    g_assert_cmpstr(found, ==, current);
+    g_clear_pointer(&found, g_free);
+    found = clawt_connector_find_token_file(dir, "work", current);
+    g_assert_cmpstr(found, ==, current);
+    g_clear_pointer(&found, g_free);
+
+    /* A path somebody chose is used as written, even with ours there. */
+    found = clawt_connector_find_token_file(dir, "work", chosen);
+    g_assert_cmpstr(found, ==, chosen);
+    g_clear_pointer(&found, g_free);
+
+    clawt_test_remove_tree(dir);
+}
+
+/* ── What the relay says back ────────────────────────────────────── */
+
+/*
+ * forward_one()'s empty-reply bug, without a socket: the copy read the
+ * length before the call that sets it, so every successful reply from a
+ * remote connector became "" and was dropped.  The whole body must come
+ * back.
+ */
+static void
+test_a_reply_body_is_copied_whole(void)
+{
+    static const gchar reply[] =
+        "{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{}}";
+    g_autoptr(GBytes) body = g_bytes_new_static(reply, sizeof(reply) - 1);
+    g_autoptr(GBytes) empty = g_bytes_new_static("", 0);
+    g_autofree gchar *text = clawt_connector_relay_body_text(body);
+    g_autofree gchar *nothing = clawt_connector_relay_body_text(empty);
+    g_autofree gchar *null_body = clawt_connector_relay_body_text(NULL);
+
+    g_assert_cmpstr(text, ==, reply);
+    g_assert_cmpuint(strlen(text), ==, sizeof(reply) - 1);
+    g_assert_cmpstr(nothing, ==, "");
+    g_assert_cmpstr(null_body, ==, "");
+}
+
+/*
+ * A request the server never answered is answered by the relay, in the
+ * shape the client reads: a failed tool result for a call, a JSON-RPC
+ * error otherwise, the request's own id either way -- and nothing for a
+ * notification.
+ */
+static void
+test_an_unreachable_server_still_answers_the_request(void)
+{
+    g_autofree gchar *call = clawt_connector_relay_failure_reply(
+        "{\"jsonrpc\":\"2.0\",\"id\":\"c-1\",\"method\":\"tools/call\","
+        "\"params\":{\"name\":\"ping\"}}", "refused by the gate");
+    g_autofree gchar *list = clawt_connector_relay_failure_reply(
+        "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/list\"}",
+        "unreachable");
+    g_autofree gchar *note = clawt_connector_relay_failure_reply(
+        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}",
+        "unreachable");
+    g_autofree gchar *junk = clawt_connector_relay_failure_reply(
+        "not json", "unreachable");
+
+    g_assert_nonnull(call);
+    g_assert_nonnull(strstr(call, "\"id\":\"c-1\""));
+    g_assert_nonnull(strstr(call, "\"isError\":true"));
+    g_assert_nonnull(strstr(call, "refused by the gate"));
+    g_assert_null(strstr(call, "\"error\""));
+
+    g_assert_nonnull(list);
+    g_assert_nonnull(strstr(list, "\"id\":4"));
+    g_assert_nonnull(strstr(list, "\"error\""));
+    g_assert_nonnull(strstr(list, "unreachable"));
+
+    g_assert_null(note);
+    g_assert_null(junk);
 }
 
 /* ── What reaches the tool server ────────────────────────────────── */
@@ -1198,6 +1344,14 @@ main(int argc, char *argv[])
                     test_a_hosted_service_joins_its_endpoints);
     g_test_add_func("/connector/token-path",
                     test_a_token_path_stays_in_the_secrets_directory);
+    g_test_add_func("/connector/token-dir",
+                    test_a_token_dir_is_one_connector_and_nothing_more);
+    g_test_add_func("/connector/token-file-found",
+                    test_the_current_token_file_is_found);
+    g_test_add_func("/connector/relay-body-whole",
+                    test_a_reply_body_is_copied_whole);
+    g_test_add_func("/connector/relay-failure-reply",
+                    test_an_unreachable_server_still_answers_the_request);
 
     g_test_add_func("/connector/credential-not-in-argv",
                     test_the_credential_goes_in_the_environment_not_the_argv);
