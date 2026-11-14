@@ -1085,6 +1085,8 @@ run_routine(const gchar *routine_id, const gchar *agent_id,
     const gchar *sender = "user";
     const gchar *target = agent_id;
     gboolean read_only = FALSE;
+    /* Taken first, so an edit saved while this runs is after it. */
+    gint64 run_at_us = g_get_real_time();
 
     if (clawt_agent_manager_get(self->agents, agent_id) == NULL) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
@@ -1176,6 +1178,13 @@ run_routine(const gchar *routine_id, const gchar *agent_id,
     }
 
     clawt_event_bus_emit(self->bus, "routine.ran", routine_id);
+
+    /*
+     * Delivered is not started: an agent whose computer will not come
+     * up holds the run in its mailbox for good.  Watched until its
+     * computer answers one way or the other (routines.max_start_failures).
+     */
+    clawt_daemon_routine_start_watch(self, routine_id, agent_id, run_at_us);
 
     return clawt_task_get_id(task);
 }
@@ -3638,6 +3647,13 @@ start_agent_computer_failed(ClawtDaemon *self, const gchar *agent_id,
     if (agent != NULL)
         clawt_agent_set_error(agent, started_error->message);
 
+    /*
+     * Every start path ends here or in start_agent_launch(), so this is
+     * where a routine run waiting on this agent learns its computer did
+     * not start -- whoever began the start.
+     */
+    clawt_daemon_routine_starts_settle(self, agent_id, started_error->message);
+
     g_propagate_error(error, started_error);
 
     return FALSE;
@@ -3664,6 +3680,14 @@ start_agent_launch(ClawtDaemon *self, const gchar *agent_id,
     }
 
     config = clawt_agent_get_config(agent);
+
+    /*
+     * The computer is up -- this is only reached after it started, or
+     * for an agent with none to start -- so a routine run waiting on it
+     * counts as one whose computer started, whatever the launch below
+     * then makes of it.  The other half is start_agent_computer_failed().
+     */
+    clawt_daemon_routine_starts_settle(self, agent_id, NULL);
 
     if (clawt_agent_get_runtime(agent) == NULL) {
         ClawtRuntimeType type = (ClawtRuntimeType)
@@ -3980,6 +4004,11 @@ daemon_start_agent_async(ClawtDaemon *self, const gchar *agent_id,
     if (!start_agent_prepare(self, agent_id, &config_path, &pending,
                              &error)) {
         g_warning("agent %s did not start: %s", agent_id, error->message);
+        /*
+         * Not a computer failure, so nothing to count -- but a routine
+         * that asked for this start must be free to ask again.
+         */
+        clawt_daemon_routine_wake_done(self, agent_id);
         g_task_return_boolean(task, TRUE);
         return;
     }
@@ -4001,6 +4030,22 @@ daemon_start_agent_async(ClawtDaemon *self, const gchar *agent_id,
     }
 
     g_task_run_in_thread(task, start_agent_worker);
+}
+
+/*
+ * daemon_start_agent_async() for the rest of the daemon, with nobody
+ * waiting on it: the routine guard restarting an agent whose computer
+ * refused, from inside the scheduler's tick.
+ */
+void
+clawt_daemon_start_agent_background(
+	ClawtDaemon *self,
+	const gchar *agent_id
+){
+	g_return_if_fail(CLAWT_IS_DAEMON(self));
+	g_return_if_fail(agent_id != NULL);
+
+	daemon_start_agent_async(self, agent_id, NULL);
 }
 
 gboolean
@@ -4273,6 +4318,7 @@ release_components(ClawtDaemon *self)
     clawt_daemon_policy_teardown(self);
     clawt_daemon_idle_teardown(self);
     clawt_daemon_browser_teardown(self);
+    clawt_daemon_routine_starts_teardown(self);
     g_clear_pointer(&self->shared_computers, g_hash_table_unref);
     g_clear_pointer(&self->drive_leases, g_hash_table_unref);
 

@@ -73,7 +73,8 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 - *Rules that apply:* "A turn ending is not the work finishing". The incident itself must not invite a reply loop (=invites_reply= semantics).
 - *Version:* minor.
 
-** TODO Turn a routine off after N runs whose computer did not start                                :routines:
+** DONE Turn a routine off after N runs whose computer did not start v0.13.0   :routines:
+- *Done:* =routines.max_start_failures= (default 3, 0 = never), counted in =<state_dir>/routines.yaml= and reset by a start or an edit; at the limit the routine is turned off (=enabled: false=) and =routine.turned_off= raises an alert. GTK, web and lrg show the limit, the reason and a one-click *Turn back on*. Design in =docs/routines.org=, "When the computer will not start".
 - *Today:* no such guard in =docs/routines.org=. A dead VM fails a cron routine on every tick.
 - *Prior art:* =a78e8b3cd=. Off after three runs in a row on a computer that didn't start. =741d7746a= doesn't count a run that started before the routine was last changed.
 - *Proposal:* schema key =routines.max_start_failures= (default 3, 0 = never). Count in run state beside the config, never in it. Raise an alert naming the routine and the computer error. Reset the count on any successful start or on an edit to the routine.

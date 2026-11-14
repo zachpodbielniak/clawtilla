@@ -89,6 +89,44 @@ add_routine_form(HtmxElement *parent, JsonObject *existing)
             continue;
         }
 
+        /*
+         * A number reads as a number.  clawt_web_member() answers only
+         * strings, so an INT field drew empty -- and saving the form
+         * sent that emptiness back as 0, which for
+         * `max_start_failures` is "never turn it off".  A new routine
+         * shows the schema default for the same reason.
+         */
+        if (entry->type == CLAWT_SCHEMA_INT) {
+            g_autofree gchar *number = (existing != NULL)
+                ? g_strdup_printf("%" G_GINT64_FORMAT,
+                                  clawt_web_member_int(
+                                      existing, leaf,
+                                      g_ascii_strtoll(
+                                          entry->default_value != NULL
+                                              ? entry->default_value : "0",
+                                          NULL, 10)))
+                : g_strdup(entry->default_value != NULL
+                               ? entry->default_value : "0");
+
+            /*
+             * The start-failure limit gets words rather than its key,
+             * and libclawt's one-line explanation under it: it is the
+             * one setting here somebody meets because something went
+             * wrong, and `max_start_failures` explains nothing.
+             */
+            if (g_strcmp0(leaf, "max_start_failures") == 0) {
+                clawt_web_add(form, clawt_web_field(
+                    "Turn off after failed starts", leaf, number, NULL));
+                clawt_web_add(form, clawt_web_text(
+                    clawt_routine_start_failures_hint(), "small muted"));
+                continue;
+            }
+
+            clawt_web_add(form, clawt_web_field(leaf, leaf, number,
+                                                entry->doc));
+            continue;
+        }
+
         clawt_web_add(form, clawt_web_field(leaf, leaf, value, entry->doc));
     }
 
@@ -159,6 +197,25 @@ clawt_web_routines_body(ClawtWebApp *app, const gchar *agent_id)
         if (clawt_web_member(routine, "problem", NULL) != NULL)
             clawt_web_add(pad, clawt_web_notice(
                 clawt_web_member(routine, "problem", ""), "bad"));
+
+        /*
+         * Turned off because its computer would not start: why, in
+         * libclawt's words, and the one click that turns it back on.
+         */
+        if (json_object_has_member(routine, "turned_off_after")) {
+            g_autofree gchar *note = clawt_routine_turned_off_note(
+                (guint)clawt_web_member_int(routine, "turned_off_after", 0),
+                clawt_web_member(routine, "turned_off_error", NULL));
+            g_autofree gchar *escaped = g_uri_escape_string(
+                clawt_web_member(routine, "id", ""), NULL, FALSE);
+            g_autofree gchar *enable = g_strdup_printf(
+                "/routines/%s/enable", escaped);
+            g_autoptr(HtmxDiv) notice = clawt_web_notice(note, "bad");
+
+            clawt_web_add(notice, clawt_web_post_button(
+                "Turn back on", enable, "primary", NULL));
+            clawt_web_add(pad, g_steal_pointer(&notice));
+        }
 
         add_routine_form(HTMX_ELEMENT(pad), routine);
     }
@@ -531,7 +588,7 @@ clawt_web_flow_body(ClawtWebApp *app, const gchar *agent_id)
  * Builds a routine payload from the form, from the schema.
  */
 static JsonNode *
-routine_payload(HtmxRequest *request, const gchar *id)
+routine_payload(HtmxRequest *request, const gchar *id, GError **error)
 {
     g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
     const ClawtSchemaEntry *schema;
@@ -567,9 +624,27 @@ routine_payload(HtmxRequest *request, const gchar *id)
         if (value == NULL)
             continue;
 
+        /* An empty number is no answer, not zero. */
+        if (entry->type == CLAWT_SCHEMA_INT && *value == '\0')
+            continue;
+
         if (entry->type == CLAWT_SCHEMA_INT) {
-            clawt_web_payload_set_int(payload, leaf,
-                                      g_ascii_strtoll(value, NULL, 10));
+            gchar *end = NULL;
+            gint64 number = g_ascii_strtoll(value, &end, 10);
+
+            /*
+             * Refused rather than read as 0: strtoll() makes 0 of
+             * anything it cannot read, and for max_start_failures 0 is
+             * "never turn it off" -- a typo would switch the guard off
+             * and the page would say "Saved."
+             */
+            if (end == NULL || *end != '\0' || number < 0) {
+                g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "%s is a whole number, 0 or more.", leaf);
+                return NULL;
+            }
+
+            clawt_web_payload_set_int(payload, leaf, number);
             continue;
         }
 
@@ -599,14 +674,20 @@ on_routine_add(HtmxRequest *request, GHashTable *params, gpointer user_data)
     ClawtWebApp *app = user_data;
     const gchar *id = clawt_web_form_value(request, "id");
     g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GError) error = NULL;
+    JsonNode *body;
 
     (void)params;
 
     if (id == NULL || *id == '\0')
         return routines_page(app, request, "A routine needs an id.", TRUE);
 
-    reply = clawt_web_app_call(app, "routine.add",
-                               routine_payload(request, id));
+    body = routine_payload(request, id, &error);
+
+    if (body == NULL)
+        return routines_page(app, request, error->message, TRUE);
+
+    reply = clawt_web_app_call(app, "routine.add", body);
 
     if (reply == NULL)
         return routines_page(app, request, clawt_web_app_last_error(app),
@@ -621,9 +702,15 @@ on_routine_save(HtmxRequest *request, GHashTable *params, gpointer user_data)
     ClawtWebApp *app = user_data;
     g_autofree gchar *id = clawt_web_param(params, "routine");
     g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GError) error = NULL;
+    JsonNode *body;
 
-    reply = clawt_web_app_call(app, "routine.update",
-                               routine_payload(request, id));
+    body = routine_payload(request, id, &error);
+
+    if (body == NULL)
+        return routines_page(app, request, error->message, TRUE);
+
+    reply = clawt_web_app_call(app, "routine.update", body);
 
     if (reply == NULL)
         return routines_page(app, request, clawt_web_app_last_error(app),
@@ -656,6 +743,34 @@ on_routine_action(HtmxRequest *request, GHashTable *params, gpointer user_data)
                              clawt_web_app_last_error(action->app), TRUE);
 
     return routines_page(action->app, request, action->done, FALSE);
+}
+
+/*
+ * One click to turn a routine back on: `enabled: true` through
+ * routine.update, which the daemon treats as the edit it is -- the
+ * count of failed starts and the note go with it.
+ */
+static HtmxResponse *
+on_routine_enable(
+	HtmxRequest *request,
+	GHashTable  *params,
+	gpointer     user_data
+){
+	ClawtWebApp *app = user_data;
+	g_autofree gchar *id = clawt_web_param(params, "routine");
+	g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+	g_autoptr(JsonNode) reply = NULL;
+
+	clawt_web_payload_set(payload, "id", id);
+	clawt_web_payload_set_bool(payload, "enabled", TRUE);
+
+	reply = clawt_web_app_call(app, "routine.update",
+	                           clawt_web_payload_take(g_steal_pointer(&payload)));
+
+	if (reply == NULL)
+		return routines_page(app, request, clawt_web_app_last_error(app), TRUE);
+
+	return routines_page(app, request, "Turned back on.", FALSE);
 }
 
 static HtmxResponse *
@@ -698,6 +813,8 @@ clawt_web_register_work(HtmxRouter *router, ClawtWebApp *app)
 {
     htmx_router_post(router, "/routines/add", on_routine_add, app);
     htmx_router_post(router, "/routines/:routine/save", on_routine_save, app);
+    htmx_router_post(router, "/routines/:routine/enable", on_routine_enable,
+                     app);
     htmx_router_post(router, "/routines/:routine/run", on_routine_action,
                      routine_action_new(app, "routine.run", "Run."));
     htmx_router_post(router, "/routines/:routine/remove", on_routine_action,
