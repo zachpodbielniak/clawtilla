@@ -1056,7 +1056,34 @@ connectors:
   # Bound on 127.0.0.1 only. A redirect carries an authorization code in
   # a URL, and a listener on every interface offers that code to whoever
   # on the network reaches the port first.
+  #
+  # A client clawtilla registers for itself by dynamic client registration
+  # is registered with this redirect, so changing the port means signing
+  # in again.
   redirect_port: 8765
+
+  # Whether a remote connector finds out for itself how to sign in.
+  #
+  # A connector reached by URL whose catalogue entry names no endpoints
+  # asks the server: its RFC 9728 protected-resource document names an
+  # authorization server, whose RFC 8414 metadata names the endpoints,
+  # and RFC 7591 dynamic client registration supplies a client id when
+  # the connector has none. Endpoints a catalogue entry names by hand
+  # always win, and so does a configured `client_id`.
+  #
+  # Only when somebody asks for a sign-in -- never at daemon start. No
+  # request in it follows a redirect, and nothing it finds may be plain
+  # http unless the server itself is on loopback. Off, such a connector
+  # takes a pasted token only.
+  discovery: true
+
+  # What clawtilla calls itself when it registers with a server.
+  #
+  # Sent as `client_name` in a dynamic client registration, so it is what
+  # the server's consent screen shows the person approving it -- worth
+  # setting to something that says which machine is asking when several
+  # fleets sign in to one service.
+  client_name: "clawtilla"
 
   # # Whether the open MCP registry is imported into the catalogue.
   # #

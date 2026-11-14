@@ -98,7 +98,7 @@ licence, send nothing, and exit 0.
 | ~model~ | every provider and model, and which can run an agent |
 | ~image~ | container images clawtilla suggests, and your own |
 | ~image vm list/catalog/get/rm/cancel~ | disk images for VM agents |
-| ~connector catalog/list/add/connect/key/refresh/revoke/rm~ | accounts clawtilla holds the credential for |
+| ~connector catalog/list/add/connect/discover/key/refresh/revoke/rm~ | accounts clawtilla holds the credential for; ~add --url~ alone is any remote MCP server |
 | ~plugin list~ | |
 | ~integration types/list/show~ | what kinds exist, and what is configured |
 | ~integration add/set/scope/rm~ | one bot, some bots or all of them |
@@ -870,6 +870,21 @@ Clicking a connector offers /Authorize again/, /Paste a token/, /Renew
 now/, /Revoke/ and /Remove/.  Authorizing shows the user code as the
 dialog's heading at full size -- it is about to be read off this screen
 and typed into a phone -- and waits there while you do it.
+
+A remote MCP server needs only its *Server URL* (the service list opens
+on "Remote MCP server"; the name comes from the URL's host if left
+empty).  Adding one asks the server how to sign in (~connector.discover~)
+and goes straight into the sign-in when it publishes one.  A connector
+whose discovery found an authorization server, or whose server refused
+the agent's last call with a 401, says so on its row -- "needs a
+sign-in", or "Sign in at <host>" -- and its dialog starts with a *Sign in
+at <host>* button; the browser dialog names the same host above the link,
+because that is what the address bar is checked against.
+
+Each row's subtitle is ~provider -- account~, which is what tells two
+accounts on one service apart.  The *Account label* field says it is
+required for a second account; the daemon refuses one without it, or with
+a label another account on that service already uses.
 
 The list shows three states rather than two.  A credential that has
 expired *and can renew itself* reads as connected, because it is: the

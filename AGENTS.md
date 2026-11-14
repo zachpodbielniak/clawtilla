@@ -1639,6 +1639,17 @@ versions apart.
   and the gate look at it, and is built from the list *after* the filter --
   so the wall and the door answer from one list, and an approval names the
   tool that runs.
+- **A URL in a server's OAuth metadata is that server's input, not ours.**
+  MCP sign-in discovery (`clawt-mcp-auth.c`) refuses redirects on every leg,
+  plain http except loopback-from-loopback, and a document about another
+  resource or issuer -- a public server's 401 naming `http://127.0.0.1:...`
+  would otherwise aim the daemon at this machine. Hand-configured endpoints
+  and `client_id` always win over what a server publishes.
+- **Two accounts on one service share tool names.** Each connector is its
+  own relay, so the CLI keeps the servers apart, but the model, action rules
+  and decision cards see `create_issue` twice. The relay prefixes each
+  account's tools with its label and refuses the bare name; never route a
+  colliding name to whichever registered first.
 
 ## GTK4 and libadwaita
 

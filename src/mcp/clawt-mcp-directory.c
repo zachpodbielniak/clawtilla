@@ -696,6 +696,15 @@ struct _ClawtMcpDirectory {
 	gchar                  *describe_name;
 	gchar                  *call_name;
 
+	/*
+	 * The account label, when the agent holds several accounts on this
+	 * service.  The three tools carry it instead of the connector's name,
+	 * and every inner tool name the directory shows carries it too -- so
+	 * a name read in a search is the name the agent would see listed
+	 * flat on the other account.  Lookups take either spelling.
+	 */
+	gchar                  *account;
+
 	ClawtToolDirectoryMode  mode;
 	gboolean                cli_searches_tools;
 	guint64                 min_tools;
@@ -737,6 +746,7 @@ clawt_mcp_directory_finalize(GObject *object)
 	g_free(self->search_name);
 	g_free(self->describe_name);
 	g_free(self->call_name);
+	g_free(self->account);
 	g_ptr_array_unref(self->entries);
 	g_hash_table_unref(self->by_name);
 	g_clear_pointer(&self->collecting, json_array_unref);
@@ -802,6 +812,42 @@ tool_prefix(const gchar *server)
 	return g_string_free(out, FALSE);
 }
 
+/* An inner tool's name as the agent sees it: with the account, if any. */
+static gchar *
+display_name(
+	ClawtMcpDirectory *self,
+	const gchar       *name
+){
+	if (self->account == NULL)
+		return g_strdup(name);
+
+	return g_strdup_printf("%s_%s", self->account, name);
+}
+
+/*
+ * The server's own name for a tool the agent named either way.  The
+ * account is already chosen by which directory was called, so the bare
+ * name is unambiguous here and is accepted too.
+ */
+static const gchar *
+resolve_name(
+	ClawtMcpDirectory *self,
+	const gchar       *name
+){
+	gsize length;
+
+	if (name == NULL || self->account == NULL)
+		return name;
+
+	length = strlen(self->account);
+
+	if (strncmp(name, self->account, length) == 0 && name[length] == '_' &&
+	    g_hash_table_contains(self->by_name, name + length + 1))
+		return name + length + 1;
+
+	return name;
+}
+
 ClawtMcpDirectory *
 clawt_mcp_directory_new(
 	const gchar            *server,
@@ -823,6 +869,31 @@ clawt_mcp_directory_new(
 	self->min_chars = min_chars;
 
 	return self;
+}
+
+void
+clawt_mcp_directory_set_account(
+	ClawtMcpDirectory *self,
+	const gchar       *account
+){
+	g_autofree gchar *prefix = NULL;
+
+	g_return_if_fail(CLAWT_IS_MCP_DIRECTORY(self));
+
+	g_clear_pointer(&self->account, g_free);
+
+	if (account == NULL || *account == '\0')
+		return;
+
+	self->account = g_strdup(account);
+	prefix = tool_prefix(account);
+
+	g_free(self->search_name);
+	g_free(self->describe_name);
+	g_free(self->call_name);
+	self->search_name = g_strdup_printf("%s_search_tools", prefix);
+	self->describe_name = g_strdup_printf("%s_describe_tool", prefix);
+	self->call_name = g_strdup_printf("%s_call_tool", prefix);
 }
 
 const gchar *
@@ -954,6 +1025,8 @@ clawt_mcp_directory_has_tool(
 	const gchar       *name
 ){
 	g_return_val_if_fail(CLAWT_IS_MCP_DIRECTORY(self), FALSE);
+
+	name = resolve_name(self, name);
 
 	return name != NULL && g_hash_table_contains(self->by_name, name);
 }
@@ -1498,7 +1571,12 @@ search_overview(ClawtMcpDirectory *self)
 			if (strcmp(e->area, area->area) != 0)
 				continue;
 
-			json_builder_add_string_value(b, e->name);
+			{
+				g_autofree gchar *shown = display_name(self,
+								       e->name);
+
+				json_builder_add_string_value(b, shown);
+			}
 			named++;
 		}
 
@@ -1569,7 +1647,11 @@ clawt_mcp_directory_search(
 
 		json_builder_begin_object(b);
 		json_builder_set_member_name(b, "name");
-		json_builder_add_string_value(b, e->name);
+		{
+			g_autofree gchar *shown = display_name(self, e->name);
+
+			json_builder_add_string_value(b, shown);
+		}
 		json_builder_set_member_name(b, "description");
 		json_builder_add_string_value(b, line);
 		json_builder_set_member_name(b, "input");
@@ -1639,6 +1721,7 @@ clawt_mcp_directory_describe(
 
 	g_return_val_if_fail(CLAWT_IS_MCP_DIRECTORY(self), NULL);
 
+	name = resolve_name(self, name);
 	entry = (name != NULL) ? g_hash_table_lookup(self->by_name, name)
 			       : NULL;
 
@@ -1652,6 +1735,12 @@ clawt_mcp_directory_describe(
 			json_object_set_member(definition, keys[k],
 					       json_node_copy(json_object_get_member(
 						       entry->tool, keys[k])));
+	}
+
+	if (self->account != NULL) {
+		g_autofree gchar *shown = display_name(self, entry->name);
+
+		json_object_set_string_member(definition, "name", shown);
 	}
 
 	if (!json_object_has_member(definition, "inputSchema")) {
@@ -1678,7 +1767,11 @@ clawt_mcp_directory_describe(
 				entry->tool, "description", ""), 4000);
 		g_autofree gchar *signature = input_signature(entry->tool);
 
-		json_object_set_string_member(outline, "name", entry->name);
+		{
+			g_autofree gchar *shown = display_name(self, entry->name);
+
+			json_object_set_string_member(outline, "name", shown);
+		}
 		json_object_set_string_member(outline, "description", description);
 		json_object_set_string_member(outline, "input", signature);
 		json_object_set_string_member(
@@ -2071,6 +2164,9 @@ clawt_mcp_directory_rewrite_outbound(
 			*reply = build_result(message, help, TRUE);
 			return TRUE;
 		}
+
+		/* The server's own name goes to the server. */
+		name = resolve_name(self, name);
 
 		rewritten = json_object_new();
 		new_params = json_object_new();

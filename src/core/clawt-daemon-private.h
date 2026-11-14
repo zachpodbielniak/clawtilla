@@ -161,6 +161,14 @@ struct _ClawtDaemon {
      */
     GPtrArray  *connector_catalog;
     GHashTable *connector_flows;   /* flow id -> ConnectorFlow */
+
+    /*
+     * Connectors whose remote server answered 401, keyed by name, valued
+     * by the `resource_metadata` hint the 401 carried (or "").  Kept in
+     * memory: it is what makes a client offer a sign-in, and a daemon
+     * that restarted learns it again on the next refused call.
+     */
+    GHashTable *connector_sign_in_wanted;
     GSource    *connector_refresh;
     gboolean    registry_refreshing; /* an import is already in flight */
 
@@ -462,6 +470,8 @@ typedef struct {
     gchar           *client_secret;
     gchar           *verifier;
     gchar           *redirect_uri;
+    gchar           *resource;     /* RFC 8707; NULL for a configured flow */
+    gboolean         basic_auth;   /* client_secret_basic at the token endpoint */
     ClawtIpcPending *waiter;
     gboolean         settled;
     gboolean         ok;
@@ -639,6 +649,24 @@ clawt_daemon_connector_binding(ClawtDaemon               *self,
 gchar *
 clawt_daemon_connector_client_secret(ClawtDaemon *self,
                                      ClawtIntegrationBinding *binding);
+
+gchar *
+clawt_daemon_connector_remote_url(ClawtIntegrationBinding  *binding,
+                                  const ClawtConnectorInfo *connector);
+
+gchar *
+clawt_daemon_connector_auth_path(ClawtDaemon *self, const gchar *name);
+
+gboolean
+clawt_daemon_connector_endpoints(ClawtDaemon               *self,
+                                 ClawtIntegrationBinding   *binding,
+                                 const ClawtConnectorInfo  *connector,
+                                 gchar                    **out_token_url,
+                                 gchar                    **out_client_id,
+                                 gchar                    **out_client_secret,
+                                 gchar                    **out_resource,
+                                 gchar                    **out_revoke_url,
+                                 gboolean                  *out_basic);
 
 GPtrArray *
 clawt_daemon_catalog(ClawtDaemon *self);

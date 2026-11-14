@@ -98,6 +98,8 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/integration/clawt-grok.h \
 	$(SRCDIR)/integration/clawt-grok-store.h \
 	$(SRCDIR)/integration/clawt-oauth.h \
+	$(SRCDIR)/integration/clawt-mcp-auth.h \
+	$(SRCDIR)/integration/clawt-connector-accounts.h \
 	$(SRCDIR)/integration/clawt-matrix.h \
 	$(SRCDIR)/integration/clawt-notify.h \
 	$(SRCDIR)/config/clawt-config.h \
@@ -285,6 +287,8 @@ LIB_SOURCES = \
 	$(SRCDIR)/integration/clawt-grok.c \
 	$(SRCDIR)/integration/clawt-grok-store.c \
 	$(SRCDIR)/integration/clawt-oauth.c \
+	$(SRCDIR)/integration/clawt-mcp-auth.c \
+	$(SRCDIR)/integration/clawt-connector-accounts.c \
 	$(SRCDIR)/integration/clawt-matrix.c \
 	$(SRCDIR)/integration/clawt-notify.c \
 	$(SRCDIR)/config/clawt-config.c \

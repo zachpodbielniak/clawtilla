@@ -735,6 +735,177 @@ test_status_label(void)
 	g_assert_nonnull(strstr(never, "every tool listed"));
 }
 
+/* ── Two accounts, one of them a big server ──────────────────────── */
+
+/*
+ * An agent holding two accounts on one forge, with the work account
+ * presented as a directory and the personal one listed flat.  Both go
+ * through the one relay policy, and the agent must read one spelling of
+ * each tool whichever way its account is presented: `work_issues_create`
+ * in a search on one, `personal_issues_create` in the list of the other.
+ * And it must still reach the work account's tools through its
+ * directory -- searched, described and called by the prefixed name, with
+ * the server sent its own.
+ */
+static void
+test_two_accounts_and_a_directory(void)
+{
+	g_autoptr(ClawtMcpDirectory) directory = clawt_mcp_directory_new(
+		"gh-work", CLAWT_TOOL_DIRECTORY_ALWAYS, FALSE, 40, 100000);
+	g_autoptr(ClawtMcpDirectory) flat = clawt_mcp_directory_new(
+		"gh-home", CLAWT_TOOL_DIRECTORY_NEVER, FALSE, 40, 100000);
+	g_autoptr(JsonArray) work_tools = forge_tools();
+	g_autoptr(JsonArray) home_tools = forge_tools();
+	gchar *siblings[] = { (gchar *)"work", (gchar *)"personal", NULL };
+	ClawtMcpRelayPolicy work = { 0 };
+	ClawtMcpRelayPolicy home = { 0 };
+	g_autofree gchar *work_list = NULL;
+	g_autofree gchar *work_names = NULL;
+	g_autofree gchar *home_list = NULL;
+	g_autofree gchar *home_names = NULL;
+
+	clawt_mcp_directory_set_account(directory, "work");
+	clawt_mcp_directory_set_account(flat, "personal");
+
+	work.directory = directory;
+	work.accounts = TRUE;
+	work.account_prefix = "work";
+	work.account_siblings = siblings;
+
+	home.directory = flat;
+	home.accounts = TRUE;
+	home.account_prefix = "personal";
+	home.account_siblings = siblings;
+
+	/* The directory's three are named for the account, and only once. */
+	work_list = list_through(&work, work_tools);
+	work_names = listed_names(work_list);
+	g_assert_cmpstr(work_names, ==, "work_search_tools,work_describe_tool,"
+			"work_call_tool");
+
+	home_list = list_through(&home, home_tools);
+	home_names = listed_names(home_list);
+	g_assert_true(g_str_has_prefix(home_names, "personal_issues_create,"));
+	g_assert_null(strstr(home_names, "work_"));
+
+	/* A search shows the name the flat list would have used. */
+	{
+		g_autofree gchar *line = call_line(2, "work_search_tools",
+						   "{\"query\":\"create an "
+						   "issue\"}");
+		g_autofree gchar *to_server = NULL;
+		g_autofree gchar *to_client = NULL;
+		g_autofree gchar *text = NULL;
+
+		clawt_mcp_relay_policy_outbound(&work, line, &to_server,
+						&to_client);
+		g_assert_null(to_server);
+		text = result_text(to_client, NULL);
+		g_assert_nonnull(strstr(text, "work_issues_create"));
+		g_assert_nonnull(strstr(text, "work_call_tool"));
+	}
+
+	/* A describe takes the prefixed name and gives it back. */
+	{
+		g_autofree gchar *line = call_line(3, "work_describe_tool",
+						   "{\"name\":"
+						   "\"work_issues_create\"}");
+		g_autofree gchar *to_server = NULL;
+		g_autofree gchar *to_client = NULL;
+		g_autofree gchar *text = NULL;
+		gboolean is_error = TRUE;
+
+		clawt_mcp_relay_policy_outbound(&work, line, &to_server,
+						&to_client);
+		text = result_text(to_client, &is_error);
+		g_assert_false(is_error);
+		g_assert_nonnull(strstr(text, "\"work_issues_create\""));
+	}
+
+	/* The call reaches the work account's server, by its own name. */
+	{
+		g_autofree gchar *line = call_line(4, "work_call_tool",
+						   "{\"name\":"
+						   "\"work_issues_create\","
+						   "\"arguments\":{\"title\":"
+						   "\"x\"}}");
+		g_autofree gchar *to_server = NULL;
+		g_autofree gchar *to_client = NULL;
+
+		clawt_mcp_relay_policy_outbound(&work, line, &to_server,
+						&to_client);
+		g_assert_null(to_client);
+		g_assert_nonnull(to_server);
+		g_assert_nonnull(strstr(to_server, "\"name\":\"issues_create\""));
+		g_assert_nonnull(strstr(to_server, "\"title\":\"x\""));
+	}
+
+	/* The bare inner name is unambiguous inside the account's directory. */
+	{
+		g_autofree gchar *line = call_line(5, "work_call_tool",
+						   "{\"name\":\"issues_list\","
+						   "\"arguments\":{}}");
+		g_autofree gchar *to_server = NULL;
+		g_autofree gchar *to_client = NULL;
+
+		clawt_mcp_relay_policy_outbound(&work, line, &to_server,
+						&to_client);
+		g_assert_nonnull(to_server);
+		g_assert_nonnull(strstr(to_server, "\"name\":\"issues_list\""));
+	}
+
+	/* The other account's name is not this directory's. */
+	{
+		g_autofree gchar *line = call_line(6, "work_call_tool",
+						   "{\"name\":"
+						   "\"personal_issues_create\","
+						   "\"arguments\":{}}");
+		g_autofree gchar *to_server = NULL;
+		g_autofree gchar *to_client = NULL;
+		gboolean is_error = FALSE;
+		g_autofree gchar *text = NULL;
+
+		clawt_mcp_relay_policy_outbound(&work, line, &to_server,
+						&to_client);
+		g_assert_null(to_server);
+		text = result_text(to_client, &is_error);
+		g_assert_true(is_error);
+	}
+
+	/* Neither account answers to a name without its prefix. */
+	{
+		g_autofree gchar *bare_dir = call_line(7, "call_tool", "{}");
+		g_autofree gchar *bare_tool = call_line(8, "issues_create",
+							"{\"title\":\"x\"}");
+		g_autofree gchar *to_server = NULL;
+		g_autofree gchar *to_client = NULL;
+
+		clawt_mcp_relay_policy_outbound(&work, bare_dir, &to_server,
+						&to_client);
+		g_assert_null(to_server);
+		g_assert_nonnull(strstr(to_client, "several accounts"));
+		g_clear_pointer(&to_client, g_free);
+
+		clawt_mcp_relay_policy_outbound(&home, bare_tool, &to_server,
+						&to_client);
+		g_assert_null(to_server);
+		g_assert_nonnull(strstr(to_client, "personal_issues_create"));
+	}
+
+	/* And the flat account's prefixed call reaches its server. */
+	{
+		g_autofree gchar *line = call_line(9, "personal_issues_create",
+						   "{\"title\":\"y\"}");
+		g_autofree gchar *to_server = NULL;
+		g_autofree gchar *to_client = NULL;
+
+		clawt_mcp_relay_policy_outbound(&home, line, &to_server,
+						&to_client);
+		g_assert_null(to_client);
+		g_assert_nonnull(strstr(to_server, "\"name\":\"issues_create\""));
+	}
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -752,6 +923,8 @@ main(int argc, char *argv[])
 	g_test_add_func("/mcp-directory/census-round-trip",
 			test_census_round_trip);
 	g_test_add_func("/mcp-directory/status-label", test_status_label);
+	g_test_add_func("/mcp-directory/two-accounts-and-a-directory",
+			test_two_accounts_and_a_directory);
 
 	return g_test_run();
 }

@@ -221,6 +221,13 @@ gchar *clawt_mcp_relay_filter_inbound(const gchar *line,
  * @gate: (nullable): asked once per tool call that is otherwise allowed
  * @gate_data: data for @gate
  * @directory: (nullable): presents a big server as three tools
+ * @accounts: whether this server is one of several accounts the agent
+ *   holds on one service, so its tools carry the account's prefix
+ * @account_prefix: (nullable): that prefix, or %NULL when @accounts is
+ *   set and two accounts' labels collide -- every call is then refused
+ * @account_siblings: (array zero-terminated=1) (nullable): every prefix
+ *   on the service, for a refusal to name
+ * @account_conflict: (nullable): why the labels collide
  *
  * Everything the relay decides about a message, in one place, so the
  * stdio relay and the HTTP bridge decide it the same way.
@@ -237,6 +244,10 @@ typedef struct {
     ClawtMcpRelayGate  gate;
     gpointer           gate_data;
     ClawtMcpDirectory *directory;
+    gboolean           accounts;
+    const gchar       *account_prefix;
+    GStrv              account_siblings;
+    const gchar       *account_conflict;
 } ClawtMcpRelayPolicy;
 
 /**
@@ -249,7 +260,9 @@ typedef struct {
  *
  * Decides what becomes of a message on its way to the server.
  *
- * In order: the directory answers its own search and describe and turns
+ * In order: the account prefix comes off (several accounts on one
+ * service; the directory's own three tools already carry it); the
+ * directory answers its own search and describe and turns
  * its call into a call of the inner tool; the permitted list is checked
  * against *that*, and so is the gate.  An action rule, an approval card
  * or a refusal therefore always names the tool that would run, never the

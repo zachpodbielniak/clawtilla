@@ -15,6 +15,432 @@
 #include "core/clawt-daemon.h"
 #include "core/clawt-daemon-private.h"
 
+
+/* ── Signing in where the server says ────────────────────────────── */
+
+/*
+ * Starts the authorization-code flow against endpoints already known --
+ * from the catalogue, or from discovery -- and builds the reply that
+ * hands the person the URL.
+ *
+ * @flow is already in the table; on failure the caller takes it out.
+ */
+static JsonNode *
+start_pkce(ClawtDaemon   *self,
+           ConnectorFlow *flow,
+           const gchar   *auth_url,
+           const gchar   *scopes,
+           const gchar   *auth_server,
+           GError       **error)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autofree gchar *state = clawt_oauth_pkce_verifier();
+    g_autofree gchar *challenge = NULL;
+    g_autofree gchar *url = NULL;
+    gint64 port = clawt_config_get_int(self->config,
+                                       "connectors.redirect_port");
+
+    flow->verifier = clawt_oauth_pkce_verifier();
+
+    if (flow->verifier == NULL || state == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                            "this machine has no usable randomness, and a "
+                            "guessable verifier is no protection at all");
+        return NULL;
+    }
+
+    if (flow->redirect_uri == NULL)
+        flow->redirect_uri =
+            g_strdup_printf("http://127.0.0.1:%d/callback", (gint)port);
+
+    challenge = clawt_oauth_pkce_challenge(flow->verifier);
+    url = clawt_oauth_authorize_url(auth_url, flow->client_id,
+                                    flow->redirect_uri, scopes, state,
+                                    challenge, flow->resource);
+
+    /*
+     * The listener goes up before the URL is handed out.  A person who
+     * is quick would otherwise be redirected to a port nothing is
+     * listening on, and the browser would show a connection refused for
+     * an authorization that in fact succeeded.
+     */
+    clawt_oauth_await_redirect_async(
+        (guint)port, state, 600, NULL,
+        clawt_daemon_on_connector_redirected, flow);
+
+    json_builder_begin_object(builder);
+    clawt_daemon_add_string_member(builder, "flow", flow->id);
+    clawt_daemon_add_string_member(builder, "method", "pkce");
+    clawt_daemon_add_string_member(builder, "authorize_url", url);
+
+    /*
+     * Named so the person can see where they are about to sign in
+     * before they do it -- a discovered server is the remote server's
+     * claim, and the host in the address bar is the check on it.
+     */
+    if (auth_server != NULL)
+        clawt_daemon_add_string_member(builder, "auth_server", auth_server);
+
+    json_builder_end_object(builder);
+
+    return json_builder_get_root(builder);
+}
+
+/*
+ * One sign-in that has to learn where to sign in first: discovery, then
+ * registration when nobody configured a client id, then the flow.  Every
+ * step is on the network, so the request is deferred and each step is a
+ * callback; nothing here waits on the daemon's loop.
+ *
+ * `connector.discover` runs the first step alone and answers with what it
+ * found.
+ */
+typedef struct {
+    ClawtDaemon          *daemon;
+    ClawtIpcPending      *pending;
+    gchar                *name;
+    gchar                *mcp_url;
+    gchar                *scopes;
+    gchar                *client_id;
+    gchar                *client_secret;
+    ClawtMcpAuthMetadata *metadata;
+    ClawtMcpAuthClient   *registered;
+    gboolean              discover_only;
+} SignIn;
+
+static void
+sign_in_free(SignIn *sign_in)
+{
+    g_free(sign_in->name);
+    g_free(sign_in->mcp_url);
+    g_free(sign_in->scopes);
+    g_free(sign_in->client_id);
+
+    if (sign_in->client_secret != NULL)
+        memset(sign_in->client_secret, 0, strlen(sign_in->client_secret));
+
+    g_free(sign_in->client_secret);
+    clawt_mcp_auth_metadata_free(sign_in->metadata);
+    clawt_mcp_auth_client_free(sign_in->registered);
+    g_free(sign_in);
+}
+
+static void
+sign_in_fail(SignIn *sign_in, gint code, const gchar *message)
+{
+    clawt_ipc_pending_respond(
+        sign_in->pending,
+        clawt_ipc_error_new(clawt_ipc_pending_get_request(sign_in->pending),
+                            code, message));
+    sign_in_free(sign_in);
+}
+
+static void sign_in_continue(SignIn *sign_in);
+
+/*
+ * What `connector.discover` answers.  Finding no authorization server is
+ * an answer, not a failure: most MCP servers take a key, and a client
+ * that asked after adding one should be told "no sign-in here" without a
+ * red toast for something that is not wrong.
+ */
+static void
+discover_answer(SignIn *sign_in, const gchar *reason)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    ClawtMcpAuthMetadata *m = sign_in->metadata;
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "sign_in");
+    json_builder_add_boolean_value(builder, m != NULL);
+
+    if (m != NULL) {
+        clawt_daemon_add_string_member(builder, "auth_server", m->issuer);
+        clawt_daemon_add_string_member(builder, "source", m->source);
+        json_builder_set_member_name(builder, "registration");
+        json_builder_add_boolean_value(builder,
+                                       m->registration_endpoint != NULL);
+    }
+
+    if (reason != NULL)
+        clawt_daemon_add_string_member(builder, "reason", reason);
+
+    json_builder_end_object(builder);
+
+    clawt_ipc_pending_respond(
+        sign_in->pending,
+        clawt_ipc_response_new(clawt_ipc_pending_get_request(sign_in->pending),
+                               json_builder_get_root(builder)));
+
+    if (m != NULL)
+        clawt_event_bus_emit(sign_in->daemon->bus, "integration.changed",
+                             sign_in->name);
+
+    sign_in_free(sign_in);
+}
+
+static gboolean
+sign_in_save(SignIn *sign_in, GError **error)
+{
+    g_autofree gchar *path =
+        clawt_daemon_connector_auth_path(sign_in->daemon, sign_in->name);
+
+    return clawt_mcp_auth_save(path, sign_in->metadata, sign_in->registered,
+                               error);
+}
+
+static void
+on_sign_in_discovered(GObject *source, GAsyncResult *result,
+                      gpointer user_data)
+{
+    SignIn *sign_in = user_data;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GError) save_error = NULL;
+    ClawtMcpAuthMetadata *found;
+
+    found = clawt_mcp_auth_discover_finish(result, &error);
+
+    if (found == NULL) {
+        if (sign_in->discover_only) {
+            discover_answer(sign_in, error->message);
+            return;
+        }
+
+        sign_in_fail(sign_in, CLAWT_ERROR_AUTH, error->message);
+        return;
+    }
+
+    /*
+     * A client registered with one authorization server is a stranger to
+     * any other, so a server that moved takes its registration with it.
+     */
+    if (sign_in->metadata != NULL &&
+        g_strcmp0(sign_in->metadata->issuer, found->issuer) != 0)
+        g_clear_pointer(&sign_in->registered, clawt_mcp_auth_client_free);
+
+    clawt_mcp_auth_metadata_free(sign_in->metadata);
+    sign_in->metadata = found;
+
+    if (!sign_in_save(sign_in, &save_error))
+        g_warning("connector '%s': could not keep what discovery found: %s",
+                  sign_in->name, save_error->message);
+
+    if (sign_in->discover_only) {
+        discover_answer(sign_in, NULL);
+        return;
+    }
+
+    sign_in_continue(sign_in);
+}
+
+static void
+on_sign_in_registered(GObject *source, GAsyncResult *result,
+                      gpointer user_data)
+{
+    SignIn *sign_in = user_data;
+    g_autoptr(GError) error = NULL;
+    ClawtMcpAuthClient *client;
+
+    client = clawt_mcp_auth_register_finish(result, &error);
+
+    if (client == NULL) {
+        sign_in_fail(sign_in, CLAWT_ERROR_AUTH, error->message);
+        return;
+    }
+
+    clawt_mcp_auth_client_free(sign_in->registered);
+    sign_in->registered = client;
+
+    /*
+     * Kept before it is used.  A registration is not free to repeat --
+     * some servers rate-limit it, and every one leaves a client behind
+     * on the server -- so losing it to a flow that is then abandoned
+     * would register again next time.
+     */
+    if (!sign_in_save(sign_in, &error)) {
+        sign_in_fail(sign_in, CLAWT_ERROR_FAILED, error->message);
+        return;
+    }
+
+    sign_in_continue(sign_in);
+}
+
+static void
+sign_in_continue(SignIn *sign_in)
+{
+    ClawtDaemon *self = sign_in->daemon;
+    const gchar *client_id = sign_in->client_id;
+    ClawtMcpAuthPlan plan;
+
+    if (client_id == NULL && sign_in->registered != NULL)
+        client_id = sign_in->registered->client_id;
+
+    plan = clawt_mcp_auth_plan(TRUE, FALSE, TRUE, sign_in->metadata,
+                               client_id);
+
+    /* No default: a step added to the plan must be decided here. */
+    switch (plan) {
+    case CLAWT_MCP_AUTH_PLAN_NONE:
+    case CLAWT_MCP_AUTH_PLAN_CONFIGURED:
+        sign_in_fail(sign_in, CLAWT_ERROR_CONFIG_INVALID,
+                     "this connector has no authorization endpoints");
+        return;
+
+    case CLAWT_MCP_AUTH_PLAN_DISCOVER:
+        {
+            const gchar *hint = g_hash_table_lookup(
+                self->connector_sign_in_wanted, sign_in->name);
+
+            clawt_mcp_auth_discover_async(
+                sign_in->mcp_url,
+                (hint != NULL && *hint != '\0') ? hint : NULL, NULL,
+                on_sign_in_discovered, sign_in);
+        }
+        return;
+
+    case CLAWT_MCP_AUTH_PLAN_REGISTER:
+        {
+            g_autofree gchar *redirect = g_strdup_printf(
+                "http://127.0.0.1:%d/callback",
+                (gint)clawt_config_get_int(self->config,
+                                           "connectors.redirect_port"));
+
+            clawt_mcp_auth_register_async(
+                sign_in->metadata, redirect,
+                clawt_config_get_string(self->config,
+                                        "connectors.client_name"),
+                NULL, on_sign_in_registered, sign_in);
+        }
+        return;
+
+    case CLAWT_MCP_AUTH_PLAN_NO_CLIENT:
+        {
+            g_autofree gchar *message = g_strdup_printf(
+                "%s offers no dynamic client registration, so clawtilla "
+                "cannot register itself there; register a client with it "
+                "and set client_id on the connector",
+                sign_in->metadata->issuer);
+
+            sign_in_fail(sign_in, CLAWT_ERROR_CONFIG_INVALID, message);
+        }
+        return;
+
+    case CLAWT_MCP_AUTH_PLAN_SIGN_IN:
+        break;
+    }
+
+    {
+        ConnectorFlow *flow = g_new0(ConnectorFlow, 1);
+        g_autoptr(GError) error = NULL;
+        JsonNode *payload;
+
+        flow->daemon = self;
+        flow->id = g_uuid_string_random();
+        flow->name = g_strdup(sign_in->name);
+        flow->token_url = g_strdup(sign_in->metadata->token_endpoint);
+        flow->client_id = g_strdup(client_id);
+        flow->client_secret = g_strdup(
+            sign_in->client_id != NULL ? sign_in->client_secret
+            : sign_in->registered != NULL ? sign_in->registered->client_secret
+                                          : NULL);
+        flow->resource = g_strdup(sign_in->metadata->resource);
+        flow->basic_auth = flow->client_secret != NULL &&
+                           clawt_mcp_auth_uses_basic(
+                               sign_in->metadata,
+                               sign_in->client_id != NULL
+                               ? NULL : sign_in->registered);
+
+        g_hash_table_insert(self->connector_flows, g_strdup(flow->id), flow);
+
+        payload = start_pkce(self, flow,
+                             sign_in->metadata->authorization_endpoint,
+                             sign_in->scopes != NULL ? sign_in->scopes
+                                                     : sign_in->metadata->scopes,
+                             sign_in->metadata->issuer, &error);
+
+        if (payload == NULL) {
+            g_hash_table_remove(self->connector_flows, flow->id);
+            sign_in_fail(sign_in, error->code, error->message);
+            return;
+        }
+
+        clawt_ipc_pending_respond(
+            sign_in->pending,
+            clawt_ipc_response_new(
+                clawt_ipc_pending_get_request(sign_in->pending), payload));
+        sign_in_free(sign_in);
+    }
+}
+
+/*
+ * Builds the sign-in for a connector discovery applies to, or says why
+ * not.  The request is deferred onto it; the caller returns NULL.
+ */
+static JsonNode *
+begin_discovered(ClawtDaemon              *self,
+                 JsonNode                 *request,
+                 const gchar              *name,
+                 ClawtIntegrationBinding  *binding,
+                 const gchar              *mcp_url,
+                 gboolean                  discover_only)
+{
+    SignIn *sign_in;
+    g_autofree gchar *path = NULL;
+    g_autoptr(GError) error = NULL;
+
+    if (!clawt_config_get_boolean(self->config, "connectors.discovery"))
+        return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
+                                   "connectors.discovery is off, and this "
+                                   "connector names no authorization "
+                                   "endpoints of its own");
+
+    sign_in = g_new0(SignIn, 1);
+    sign_in->daemon = self;
+    sign_in->name = g_strdup(name);
+    sign_in->mcp_url = g_strdup(mcp_url);
+    sign_in->discover_only = discover_only;
+    sign_in->scopes =
+        g_strdup(clawt_integration_binding_get_string(binding, "scopes"));
+    sign_in->client_id =
+        g_strdup(clawt_integration_binding_get_string(binding, "client_id"));
+
+    if (sign_in->client_id != NULL)
+        sign_in->client_secret =
+            clawt_daemon_connector_client_secret(self, binding);
+
+    path = clawt_daemon_connector_auth_path(self, name);
+
+    if (!clawt_mcp_auth_load(path, &sign_in->metadata, &sign_in->registered,
+                             &error))
+        g_warning("connector '%s': %s; discovering again", name,
+                  error->message);
+
+    sign_in->pending = clawt_ipc_server_defer(self->ipc_server, request);
+
+    if (sign_in->pending == NULL) {
+        sign_in_free(sign_in);
+        return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                   "this request cannot be answered later");
+    }
+
+    /*
+     * Asked to look again: what was found before is not the answer, but
+     * it stays on the struct until the new answer replaces it, so a
+     * server that moved can be noticed and its registration dropped.
+     */
+    if (discover_only) {
+        const gchar *hint = g_hash_table_lookup(self->connector_sign_in_wanted,
+                                                name);
+
+        clawt_mcp_auth_discover_async(
+            mcp_url, (hint != NULL && *hint != '\0') ? hint : NULL, NULL,
+            on_sign_in_discovered, sign_in);
+        return NULL;
+    }
+
+    sign_in_continue(sign_in);
+    return NULL;
+}
+
 /*
  * The two thresholds, as members of whatever object is open.  Read
  * through the config getters, so the schema's defaults are what an
@@ -211,6 +637,60 @@ clawt_daemon_handle_connector(
                 clawt_daemon_add_string_member(builder, "granted_scopes",
                                                token->scopes);
 
+            /*
+             * Whether to offer a sign-in, and where it would happen.
+             *
+             * Offered when discovery found an authorization server or
+             * the server itself answered 401 -- "discovery says so" --
+             * and never merely because a connector exists: a key-based
+             * one has nothing to sign in to, and a button that leads to
+             * an error teaches somebody the button is broken.
+             */
+            {
+                const ClawtConnectorInfo *connector = NULL;
+                g_autoptr(ClawtIntegrationBinding) binding =
+                    clawt_daemon_connector_binding(
+                        self, clawt_integration_config_get_name(instance),
+                        &connector, NULL);
+                g_autofree gchar *remote = NULL;
+                g_autofree gchar *path = NULL;
+                g_autoptr(ClawtMcpAuthMetadata) metadata = NULL;
+                gboolean wanted = g_hash_table_contains(
+                    self->connector_sign_in_wanted,
+                    clawt_integration_config_get_name(instance));
+                gboolean offered = FALSE;
+
+                if (binding != NULL) {
+                    ClawtMcpAuthPlan plan;
+
+                    remote = clawt_daemon_connector_remote_url(binding,
+                                                               connector);
+                    path = clawt_daemon_connector_auth_path(
+                        self, clawt_integration_config_get_name(instance));
+                    clawt_mcp_auth_load(path, &metadata, NULL, NULL);
+
+                    plan = clawt_mcp_auth_plan(
+                        connector->auth == CLAWT_CONNECTOR_AUTH_DEVICE ||
+                        connector->auth == CLAWT_CONNECTOR_AUTH_PKCE,
+                        connector->auth_url != NULL &&
+                        connector->token_url != NULL,
+                        remote != NULL, metadata, NULL);
+
+                    offered = plan != CLAWT_MCP_AUTH_PLAN_NONE &&
+                              (metadata != NULL || wanted);
+                }
+
+                json_builder_set_member_name(builder, "remote");
+                json_builder_add_boolean_value(builder, remote != NULL);
+                json_builder_set_member_name(builder, "sign_in");
+                json_builder_add_boolean_value(builder, offered);
+                json_builder_set_member_name(builder, "needs_sign_in");
+                json_builder_add_boolean_value(builder, wanted);
+
+                if (metadata != NULL && metadata->issuer != NULL)
+                    clawt_daemon_add_string_member(builder, "auth_server",
+                                                   metadata->issuer);
+            }
             add_directory_members(self, builder, instance);
 
             json_builder_end_object(builder);
@@ -248,6 +728,21 @@ clawt_daemon_handle_connector(
                                        "this connector takes a key rather "
                                        "than an authorization; use "
                                        "`clawtilla connector key`");
+
+        /*
+         * A catalogue entry that names its endpoints is a decision
+         * somebody made, and wins.  One that names none, for a server
+         * reached by URL, is asked of the server: RFC 9728, RFC 8414 and
+         * -- with no client id configured -- RFC 7591.
+         */
+        if (connector->auth_url == NULL || connector->token_url == NULL) {
+            g_autofree gchar *remote =
+                clawt_daemon_connector_remote_url(binding, connector);
+
+            if (remote != NULL)
+                return begin_discovered(self, request, name, binding, remote,
+                                        FALSE);
+        }
 
         client_id = clawt_integration_binding_get_string(binding, "client_id");
 
@@ -318,52 +813,101 @@ clawt_daemon_handle_connector(
 
         /* The authorization-code flow, for providers with no device grant. */
         {
-            g_autofree gchar *state = clawt_oauth_pkce_verifier();
-            g_autofree gchar *challenge = NULL;
-            g_autofree gchar *url = NULL;
-            gint64 port = clawt_config_get_int(self->config,
-                                               "connectors.redirect_port");
+            JsonNode *started = start_pkce(self, flow, auth_url, scopes, NULL,
+                                           &error);
 
-            flow->verifier = clawt_oauth_pkce_verifier();
-
-            if (flow->verifier == NULL || state == NULL) {
+            if (started == NULL) {
                 g_hash_table_remove(self->connector_flows, flow->id);
 
-                return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
-                                           "this machine has no usable "
-                                           "randomness, and a guessable "
-                                           "verifier is no protection at "
-                                           "all");
+                return clawt_ipc_error_new(request, error->code,
+                                           error->message);
             }
 
-            flow->redirect_uri =
-                g_strdup_printf("http://127.0.0.1:%d/callback", (gint)port);
+            return clawt_ipc_response_new(request, started);
+        }
+    }
 
-            challenge = clawt_oauth_pkce_challenge(flow->verifier);
-            url = clawt_oauth_authorize_url(auth_url, client_id,
-                                            flow->redirect_uri, scopes, state,
-                                            challenge);
+    if (g_strcmp0(kind, "connector.discover") == 0) {
+        const gchar *name = clawt_ipc_payload_string(payload, "name");
+        const ClawtConnectorInfo *connector = NULL;
+        g_autoptr(ClawtIntegrationBinding) binding = NULL;
+        g_autofree gchar *remote = NULL;
 
-            /*
-             * The listener goes up before the URL is handed out.  A
-             * person who is quick would otherwise be redirected to a
-             * port nothing is listening on, and the browser would show
-             * a connection refused for an authorization that in fact
-             * succeeded.
-             */
-            clawt_oauth_await_redirect_async(
-                (guint)port, state, 600, NULL,
-                clawt_daemon_on_connector_redirected, flow);
+        binding = clawt_daemon_connector_binding(self, name, &connector,
+                                                 &error);
 
+        if (binding == NULL)
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        remote = clawt_daemon_connector_remote_url(binding, connector);
+
+        /*
+         * Answered, not refused: a connector with no URL, or one whose
+         * catalogue entry names its endpoints, simply has nothing to
+         * discover, and saying so is the whole answer.
+         */
+        if (remote == NULL ||
+            (connector->auth_url != NULL && connector->token_url != NULL) ||
+            connector->auth == CLAWT_CONNECTOR_AUTH_API_KEY ||
+            connector->auth == CLAWT_CONNECTOR_AUTH_NONE) {
             json_builder_begin_object(builder);
-            clawt_daemon_add_string_member(builder, "flow", flow->id);
-            clawt_daemon_add_string_member(builder, "method", "pkce");
-            clawt_daemon_add_string_member(builder, "authorize_url", url);
+            json_builder_set_member_name(builder, "sign_in");
+            json_builder_add_boolean_value(builder, FALSE);
+            clawt_daemon_add_string_member(
+                builder, "reason",
+                remote == NULL
+                ? "this connector's server is not reached by URL"
+                : "this connector says how it signs in; nothing to discover");
             json_builder_end_object(builder);
 
             return clawt_ipc_response_new(request,
                                           json_builder_get_root(builder));
         }
+
+        return begin_discovered(self, request, name, binding, remote, TRUE);
+    }
+
+    /*
+     * A relay's report that its server answered 401.
+     *
+     * Recorded rather than acted on: the daemon goes to the network only
+     * when somebody asks it to sign in, and the 401's own
+     * `resource_metadata` is kept for when they do.  Answered at once --
+     * the relay is in the middle of a tool call.
+     */
+    if (g_strcmp0(kind, "connector.unauthorized") == 0) {
+        const gchar *name = clawt_ipc_payload_string(payload, "name");
+        const gchar *challenge = clawt_ipc_payload_string(payload,
+                                                          "challenge");
+        ClawtIntegrationConfig *instance = (name != NULL)
+            ? clawt_config_get_integration(self->config, name) : NULL;
+        g_autofree gchar *hint = NULL;
+        gboolean fresh;
+
+        if (instance == NULL ||
+            g_strcmp0(clawt_integration_config_get_type_id(instance),
+                      "connector") != 0)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "there is no connector called that");
+
+        hint = clawt_mcp_auth_parse_challenge(challenge);
+        fresh = !g_hash_table_contains(self->connector_sign_in_wanted, name);
+
+        g_hash_table_replace(self->connector_sign_in_wanted, g_strdup(name),
+                             hint != NULL ? g_steal_pointer(&hint)
+                                          : g_strdup(""));
+
+        /* Once per episode, not once per refused call. */
+        if (fresh) {
+            g_message("connector '%s': its server refused a request (401); "
+                      "it needs a sign-in", name);
+            clawt_event_bus_emit(self->bus, "integration.changed", name);
+        }
+
+        json_builder_begin_object(builder);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
 
     if (g_strcmp0(kind, "connector.await") == 0) {
@@ -472,8 +1016,12 @@ clawt_daemon_handle_connector(
         g_autoptr(ClawtIntegrationBinding) binding = NULL;
         g_autoptr(ClawtOauthToken) token = NULL;
         g_autofree gchar *token_url = NULL;
+        g_autofree gchar *client_id = NULL;
+        g_autofree gchar *secret = NULL;
+        g_autofree gchar *resource = NULL;
+        g_autofree gchar *revoke_url = NULL;
+        gboolean basic = FALSE;
         const gchar *token_file;
-        const gchar *client_id;
         RefreshJob *job;
 
         binding = clawt_daemon_connector_binding(self, name, &connector,
@@ -496,10 +1044,9 @@ clawt_daemon_handle_connector(
                                        "the provider issued nothing to renew "
                                        "with; connect again instead");
 
-        client_id = clawt_integration_binding_get_string(binding, "client_id");
-        token_url = clawt_connector_resolve_url(
-            connector, connector->token_url,
-            clawt_integration_binding_get_string(binding, "instance"));
+        clawt_daemon_connector_endpoints(self, binding, connector,
+                                         &token_url, &client_id, &secret,
+                                         &resource, &revoke_url, &basic);
 
         if (client_id == NULL || token_url == NULL)
             return clawt_ipc_error_new(request, CLAWT_ERROR_CONFIG_INVALID,
@@ -518,14 +1065,9 @@ clawt_daemon_handle_connector(
                                        "later");
         }
 
-        {
-            g_autofree gchar *secret =
-                clawt_daemon_connector_client_secret(self, binding);
-
-            clawt_oauth_refresh_async(
-                token_url, client_id, secret, token->refresh_token, NULL,
-                clawt_daemon_on_connector_refreshed, job);
-        }
+        clawt_oauth_refresh_async(
+            token_url, client_id, secret, token->refresh_token, resource,
+            basic, NULL, clawt_daemon_on_connector_refreshed, job);
 
         return NULL;
     }
@@ -536,6 +1078,11 @@ clawt_daemon_handle_connector(
         g_autoptr(ClawtIntegrationBinding) binding = NULL;
         g_autoptr(ClawtOauthToken) token = NULL;
         g_autofree gchar *revoke_url = NULL;
+        g_autofree gchar *token_url = NULL;
+        g_autofree gchar *client_id = NULL;
+        g_autofree gchar *secret = NULL;
+        g_autofree gchar *resource = NULL;
+        gboolean basic = FALSE;
         const gchar *token_file;
 
         binding = clawt_daemon_connector_binding(self, name, &connector,
@@ -549,9 +1096,9 @@ clawt_daemon_handle_connector(
         token = (token_file != NULL) ? clawt_oauth_token_load(token_file, NULL)
                                      : NULL;
 
-        revoke_url = clawt_connector_resolve_url(
-            connector, connector->revoke_url,
-            clawt_integration_binding_get_string(binding, "instance"));
+        clawt_daemon_connector_endpoints(self, binding, connector,
+                                         &token_url, &client_id, &secret,
+                                         &resource, &revoke_url, &basic);
 
         /*
          * The local copy goes whatever the provider says.  Somebody who
@@ -573,9 +1120,7 @@ clawt_daemon_handle_connector(
                 job->name = g_strdup(name);
 
                 clawt_oauth_revoke_async(
-                    revoke_url, clawt_integration_binding_get_string(
-                                    binding, "client_id"),
-                    NULL, token->access_token, NULL,
+                    revoke_url, client_id, NULL, token->access_token, NULL,
                     clawt_daemon_on_connector_revoked, job);
 
                 return NULL;

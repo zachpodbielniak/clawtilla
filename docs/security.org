@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-29 Sat]
+#+updated: [2026-11-14 Sat]
 #+version: 0.2.0
 
 * Security
@@ -411,6 +411,7 @@ The error names only the *origin* of each end, never a path or a query: an ntfy 
 | Matrix login, joined rooms, room state (=clawt-matrix.c=)   | password, access token         | refused   |
 | OAuth device flow, code exchange, refresh, revoke (=clawt-oauth.c=) | client secret, device code, refresh and access tokens | refused |
 | remote MCP connector relay (=clawt-connector-relay.c=)      | the connector's header         | refused   |
+| MCP sign-in discovery and dynamic client registration (=clawt-mcp-auth.c=) | nothing, then a client secret in the reply | refused |
 | Grok routine push and dispatch (=daemon-grok.c=)            | routine key                    | refused   |
 | VENTURE bridge and replay (=daemon-venture.c=)              | bearer token                   | refused   |
 | update check (=clawt-update.c=)                             | nothing                        | followed  |
@@ -497,6 +498,27 @@ holding a working credential until the network comes back.
   into ~scopes:~ would mean the next authorization asks for less and the
   one after that less again -- a permission eroding every time it is
   renewed.
+
+*** Signing in where the server says
+
+A remote connector whose catalogue entry names no endpoints learns them from the server: the RFC 9728 protected-resource document names an authorization server, RFC 8414 metadata names its endpoints, and RFC 7591 dynamic client registration supplies a client id when none is configured (=src/integration/clawt-mcp-auth.c=, [[file:connectors.org::*Signing in where the server says][connectors.org]]).  Every URL in that chain is the remote server's input, so the chain is held to rules a hand-written catalogue entry is not:
+
+- *No leg follows a redirect*, the metadata GETs included.  They carry no credential, but they decide where one goes next: a registration reply carries a client secret and a token endpoint is where a sign-in code is spent.  A server that moved says so in its own metadata, not in a 3xx.  ~clawt_mcp_auth_document_message_new()~ builds every one, and =tests/test-mcp-auth.c= checks its ~SOUP_MESSAGE_NO_REDIRECT~ as data.
+- *HTTPS only, except loopback from loopback.*  A URL a document names may be plain HTTP only when it is on loopback *and* the MCP server the operator configured is too -- a test server on this machine naming a sign-in server on another local port.  A public server's ~resource_metadata~ pointing at =http://127.0.0.1:...= would otherwise make the daemon a client of this machine's own unauthenticated services, so it is refused, as is any URL with a user name in it.  Optional endpoints that fail the rule (registration, revocation) are dropped rather than trusted.
+- *Documents about somebody else are refused.*  A protected-resource document whose ~resource~ is another server, and authorization-server metadata whose ~issuer~ is not the one it was fetched for (the mix-up attack), are both refused; so is a server that does not offer PKCE with S256.
+- *What is read is bounded*, at 64 KiB per document, while reading: the cap is on the bytes taken off the stream, not on a buffer already filled.
+- *Every token is bound to its server* with the RFC 8707 ~resource~ parameter, on the authorization request, the exchange and every renewal.  One authorization server may front several MCP servers, and a token with no audience is one any of them would accept from another.
+- *A registered client is kept like a credential*: its id and secret go in =secrets.dir=/connector-auth/<name>.json at 0600, beside the token file and never over IPC.  A client registered with one issuer is dropped if discovery later finds another.
+
+Discovery runs only when somebody asks for a sign-in (~connector.begin~, ~connector.discover~) -- never at daemon start and never inside a handler, which defers.  A relay that hears a 401 tells the daemon with ~connector.unauthorized~, which records that a sign-in is wanted and the 401's own hint, and goes to the network for nothing.
+
+*** A 401 is not passed through
+
+A remote tool server's 401 is answered by the relay rather than forwarded.  Forwarded, it starts the agent CLI's own sign-in, which cannot work -- the relay holds the credential and the CLI's own ~Authorization~ never reaches the server -- and the CLI reports only that the server failed.  A refused ~tools/call~ becomes a tool result with ~isError~ naming the connector and the sign-in that fixes it (~clawtilla connector connect <name>~, or Sign in on its row); any other refused request becomes a JSON-RPC error with the same sentence.  The text never carries the server's own body, which the agent would read as instructions.
+
+*** Several accounts on one service
+
+Two accounts on one service granted to one agent advertise identical tool names.  The relay renames each account's tools with its label and refuses the bare name, and two labels that fold to the same prefix make every call on both refused -- see [[file:connectors.org::*Several accounts on one service][connectors.org]].  This is a guard against an agent acting as the wrong account by accident, the same class of failure as the rest of this section; it does not stop an agent that decides to use the account it was told not to.
 
 *** A format string from a config file never reaches printf
 

@@ -777,6 +777,54 @@ test_connector_labels(void)
                                    "Forgotten here"));
 }
 
+/*
+ * A remote server's row says where it signs in until somebody has, and
+ * says it refused the agent when it has -- the two reasons a row grows a
+ * sign-in.
+ */
+static void
+test_connector_sign_in_on_the_row(void)
+{
+    g_autoptr(JsonNode) offered = parse(
+        "{\"provider\": \"remote\", \"account\": \"work\", "
+        "\"sign_in\": true, \"connected\": false, "
+        "\"auth_server\": \"https://auth.example/tenant\"}");
+    g_autoptr(JsonNode) refused = parse(
+        "{\"provider\": \"remote\", \"needs_sign_in\": true, "
+        "\"connected\": true}");
+    g_autoptr(JsonNode) done = parse(
+        "{\"provider\": \"remote\", \"sign_in\": true, \"connected\": true, "
+        "\"auth_server\": \"https://auth.example\"}");
+    g_autofree gchar *a =
+        clawt_lrg_settings_connector_subtitle(json_node_get_object(offered));
+    g_autofree gchar *b =
+        clawt_lrg_settings_connector_subtitle(json_node_get_object(refused));
+    g_autofree gchar *c =
+        clawt_lrg_settings_connector_subtitle(json_node_get_object(done));
+
+    g_assert_cmpstr(a, ==, "remote -- work -- Sign in at auth.example");
+    g_assert_cmpstr(b, ==, "remote -- needs a sign-in");
+    g_assert_cmpstr(c, ==, "remote");
+}
+
+/* A URL alone is enough; the name comes from its host. */
+static void
+test_connector_payload_by_url(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) payload = NULL;
+    g_autofree gchar *json = NULL;
+
+    payload = clawt_lrg_settings_connector_payload(
+        "", "remote", "all", NULL, NULL, NULL, "https://mcp.notion.com/mcp",
+        NULL, &error);
+    g_assert_no_error(error);
+    json = to_json(payload);
+    g_assert_cmpstr(json, ==, "{\"name\":\"notion\",\"type\":\"connector\","
+                              "\"provider\":\"remote\",\"scope\":\"all\","
+                              "\"url\":\"https://mcp.notion.com/mcp\"}");
+}
+
 static void
 test_connector_payload(void)
 {
@@ -785,12 +833,12 @@ test_connector_payload(void)
     g_autofree gchar *json = NULL;
 
     g_assert_null(clawt_lrg_settings_connector_payload(
-        "", "github", "all", NULL, NULL, NULL, NULL, &error));
+        "", "github", "all", NULL, NULL, NULL, NULL, NULL, &error));
     g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT);
     g_clear_error(&error);
 
     payload = clawt_lrg_settings_connector_payload(
-        "gh", "github", NULL, "work", "", NULL, "kudu, oryx", &error);
+        "gh", "github", NULL, "work", "", NULL, NULL, "kudu, oryx", &error);
     g_assert_no_error(error);
     json = to_json(payload);
     g_assert_cmpstr(json, ==, "{\"name\":\"gh\",\"type\":\"connector\","
@@ -1235,6 +1283,10 @@ main(gint argc, gchar **argv)
     g_test_add_func("/lrg-settings/connectors/labels", test_connector_labels);
     g_test_add_func("/lrg-settings/connectors/payload",
                     test_connector_payload);
+    g_test_add_func("/lrg-settings/connectors/sign-in-on-the-row",
+                    test_connector_sign_in_on_the_row);
+    g_test_add_func("/lrg-settings/connectors/payload-by-url",
+                    test_connector_payload_by_url);
     g_test_add_func("/lrg-settings/connections/reach", test_reach);
     g_test_add_func("/lrg-settings/connections/reach-mismatch",
                     test_reach_mismatch);
