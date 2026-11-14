@@ -624,7 +624,7 @@ test_daemon_restart_reruns_once_and_notices_the_rest(void)
 	g_assert_cmpuint(clawt_mailbox_depth(mailbox), ==, 1);
 
 	/* The agent comes back and is handed the peer's message, as a rerun. */
-	read_all(&fixture);
+	g_free(read_all(&fixture));
 	give_link(&fixture, "beta");
 	clawt_mailbox_router_drain(fixture.daemon->router, "beta");
 	handed = read_all(&fixture);
