@@ -222,6 +222,30 @@ void clawt_mailbox_item_set_one_way(ClawtMailboxItem *self,
                                     gboolean          one_way);
 
 /**
+ * clawt_mailbox_item_get_replays:
+ * @self: a #ClawtMailboxItem
+ *
+ * How many times this item has been handed back after a restart cut the
+ * turn it started.  Zero for an ordinary delivery; one for the single
+ * rerun clawt_mailbox_turn_recover() allows, after which a turn cut
+ * again is reported as interrupted instead of being handed over a third
+ * time.  Stored, because the rerun is decided across restarts.
+ *
+ * Returns: the replay count
+ */
+guint clawt_mailbox_item_get_replays(ClawtMailboxItem *self);
+
+/**
+ * clawt_mailbox_item_set_replays:
+ * @self: a #ClawtMailboxItem
+ * @replays: the replay count
+ *
+ * See clawt_mailbox_item_get_replays().
+ */
+void clawt_mailbox_item_set_replays(ClawtMailboxItem *self,
+                                    guint             replays);
+
+/**
  * clawt_mailbox_item_dup_delivered_body:
  * @self: a #ClawtMailboxItem
  *

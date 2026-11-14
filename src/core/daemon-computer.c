@@ -15,6 +15,154 @@
 #include "core/clawt-daemon.h"
 #include "core/clawt-daemon-private.h"
 
+/*
+ * Destroys an agent's machine and provisions a fresh one from the config.
+ *
+ * The operator's `computer.rebuild`, and the only way a machine is
+ * rebuilt: an approved clawtilla_request_rebuild comes through here too
+ * (daemon-rebuild.c), so the refusals below -- a running agent, a
+ * shared machine somebody else is using -- hold for both and cannot
+ * drift apart.
+ */
+gboolean
+clawt_daemon_computer_rebuild(ClawtDaemon  *self,
+                              const gchar  *agent_id,
+                              gchar       **out_note,
+                              GError      **error)
+{
+    ClawtAgent *agent = (agent_id != NULL)
+                        ? clawt_agent_manager_get(self->agents, agent_id)
+                        : NULL;
+    ClawtAgentConfig *agent_config = (agent_id != NULL)
+        ? clawt_config_get_agent(self->config, agent_id) : NULL;
+    g_autoptr(ClawtComputer) built = NULL;
+    g_autoptr(GError) teardown_error = NULL;
+    g_autofree gchar *removed = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_DAEMON(self), FALSE);
+
+    if (agent_config == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                            "no such agent");
+        return FALSE;
+    }
+
+    /*
+     * Refused while it runs, rather than done carefully.  Rebuilding
+     * is destroying the machine the agent is working on; there is no
+     * version of that which is safe to do underneath it.
+     */
+    if (agent != NULL &&
+        clawt_agent_get_state(agent) != CLAWT_AGENT_STATE_STOPPED) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_AGENT_STATE,
+                            "stop the agent first: rebuilding "
+                            "destroys the computer it is using");
+        return FALSE;
+    }
+
+    if ((ClawtComputerType)clawt_agent_config_get_enum(
+            agent_config, "computer.type") == CLAWT_COMPUTER_NONE) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                            "this agent has no computer to rebuild");
+        return FALSE;
+    }
+
+    /* A shared machine is rebuilt only when every agent on it is stopped. */
+    {
+        g_autofree gchar *busy = clawt_daemon_shared_busy_refusal(
+            self, agent_id, "rebuild the machine");
+
+        if (busy != NULL) {
+            g_set_error_literal(error, CLAWT_ERROR,
+                                CLAWT_ERROR_AGENT_STATE, busy);
+            return FALSE;
+        }
+    }
+
+    /*
+     * Built from the config rather than taken from the agent, so
+     * the teardown and provisioning run against what the config
+     * says now rather than what an earlier start remembered.
+     */
+    {
+        g_autoptr(GPtrArray) defaults =
+            clawt_config_get_default_mounts(self->config);
+
+        /* A shared machine is rebuilt as itself, and the pool forgets it. */
+        if (clawt_daemon_shared_computer_id(self, agent_id) != NULL) {
+            const gchar *use = clawt_daemon_shared_computer_id(self, agent_id);
+            g_autoptr(GPtrArray) ids = clawt_daemon_shared_users(self, use, FALSE, NULL);
+            g_autoptr(GPtrArray) users = g_ptr_array_new();
+            guint u;
+
+            for (u = 0; u < ids->len; u++)
+                g_ptr_array_add(users, clawt_config_get_agent(self->config,
+                                                              g_ptr_array_index(ids, u)));
+            if (users->len == 0)
+                g_ptr_array_add(users, agent_config);
+            built = clawt_computer_factory_create_shared(use, users, defaults,
+                                                         self->pod_bridge, error);
+            clawt_daemon_shared_computer_forget(self, use);
+
+            /* Every agent on it lets go, so each next start takes the new one. */
+            for (u = 0; u < ids->len; u++) {
+                ClawtAgent *user = clawt_agent_manager_get(self->agents,
+                                                           g_ptr_array_index(ids, u));
+
+                if (user != NULL)
+                    clawt_agent_set_computer(user, NULL);
+            }
+        } else {
+            built = clawt_computer_factory_create(agent_config, defaults,
+                                                  self->pod_bridge, error);
+        }
+    }
+
+    if (built == NULL)
+        return FALSE;
+
+    /*
+     * A teardown that fails is reported and not fatal.  The common
+     * reason to reach for this is that the guest is already gone --
+     * deleted by hand in virt-manager -- and refusing to rebuild
+     * because there was nothing to tear down would be absurd.
+     */
+    if (!clawt_computer_teardown(built, &teardown_error)) {
+        removed = g_strdup(teardown_error->message);
+        g_message("agent %s: nothing to tear down before rebuilding "
+                  "(%s)", agent_id, removed);
+    }
+
+    /*
+     * The agent's own record of the machine goes with the machine.
+     *
+     * This handler was written on the belief that a stopped agent
+     * holds no computer object, and that was false: stopping keeps
+     * the object so `computer status` can still answer, and the
+     * next start reuses whatever the agent holds.  So the rebuild
+     * recorded a fresh SSH port through its own object and the
+     * reused one dialled the old port for as long as the daemon
+     * lived -- with the ssh-port file, the passt command line and
+     * the domain XML all agreeing on the new one.  Dropped as soon
+     * as the teardown has run, whatever provisioning goes on to
+     * decide: either way the machine that object described is gone,
+     * and the next start builds one from the config the way a first
+     * start does.
+     */
+    if (agent != NULL)
+        clawt_agent_set_computer(agent, NULL);
+
+    if (!clawt_computer_provision(built, error))
+        return FALSE;
+
+    clawt_event_bus_emit(self->bus, "agent.changed", agent_id);
+
+    if (out_note != NULL)
+        *out_note = g_steal_pointer(&removed);
+
+    return TRUE;
+}
+
 JsonNode *
 clawt_daemon_handle_computer(
     ClawtDaemon  *self,
@@ -289,122 +437,10 @@ clawt_daemon_handle_computer(
 
     if (g_strcmp0(kind, "computer.rebuild") == 0) {
         const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
-        ClawtAgent *agent = (agent_id != NULL)
-                            ? clawt_agent_manager_get(self->agents, agent_id)
-                            : NULL;
-        ClawtAgentConfig *agent_config = (agent_id != NULL)
-            ? clawt_config_get_agent(self->config, agent_id) : NULL;
-        g_autoptr(ClawtComputer) built = NULL;
-        g_autoptr(GError) teardown_error = NULL;
         g_autofree gchar *removed = NULL;
 
-        if (agent_config == NULL)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
-                                       "no such agent");
-
-        /*
-         * Refused while it runs, rather than done carefully.  Rebuilding
-         * is destroying the machine the agent is working on; there is no
-         * version of that which is safe to do underneath it.
-         */
-        if (agent != NULL &&
-            clawt_agent_get_state(agent) != CLAWT_AGENT_STATE_STOPPED)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_AGENT_STATE,
-                                       "stop the agent first: rebuilding "
-                                       "destroys the computer it is using");
-
-        if ((ClawtComputerType)clawt_agent_config_get_enum(
-                agent_config, "computer.type") == CLAWT_COMPUTER_NONE)
-            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
-                                       "this agent has no computer to "
-                                       "rebuild");
-
-        /* A shared machine is rebuilt only when every agent on it is stopped. */
-        {
-            g_autofree gchar *busy = clawt_daemon_shared_busy_refusal(
-                self, agent_id, "rebuild the machine");
-
-            if (busy != NULL)
-                return clawt_ipc_error_new(request, CLAWT_ERROR_AGENT_STATE, busy);
-        }
-
-        /*
-         * Built from the config rather than taken from the agent, so
-         * the teardown and provisioning run against what the config
-         * says now rather than what an earlier start remembered.
-         */
-        {
-            g_autoptr(GPtrArray) defaults =
-                clawt_config_get_default_mounts(self->config);
-
-            /* A shared machine is rebuilt as itself, and the pool forgets it. */
-            if (clawt_daemon_shared_computer_id(self, agent_id) != NULL) {
-                const gchar *use = clawt_daemon_shared_computer_id(self, agent_id);
-                g_autoptr(GPtrArray) ids = clawt_daemon_shared_users(self, use, FALSE, NULL);
-                g_autoptr(GPtrArray) users = g_ptr_array_new();
-                guint u;
-
-                for (u = 0; u < ids->len; u++)
-                    g_ptr_array_add(users, clawt_config_get_agent(self->config,
-                                                                  g_ptr_array_index(ids, u)));
-                if (users->len == 0)
-                    g_ptr_array_add(users, agent_config);
-                built = clawt_computer_factory_create_shared(use, users, defaults,
-                                                             self->pod_bridge, &error);
-                clawt_daemon_shared_computer_forget(self, use);
-
-                /* Every agent on it lets go, so each next start takes the new one. */
-                for (u = 0; u < ids->len; u++) {
-                    ClawtAgent *user = clawt_agent_manager_get(self->agents,
-                                                               g_ptr_array_index(ids, u));
-
-                    if (user != NULL)
-                        clawt_agent_set_computer(user, NULL);
-                }
-            } else {
-                built = clawt_computer_factory_create(agent_config, defaults,
-                                                      self->pod_bridge, &error);
-            }
-        }
-
-        if (built == NULL)
+        if (!clawt_daemon_computer_rebuild(self, agent_id, &removed, &error))
             return clawt_ipc_error_new(request, error->code, error->message);
-
-        /*
-         * A teardown that fails is reported and not fatal.  The common
-         * reason to reach for this is that the guest is already gone --
-         * deleted by hand in virt-manager -- and refusing to rebuild
-         * because there was nothing to tear down would be absurd.
-         */
-        if (!clawt_computer_teardown(built, &teardown_error)) {
-            removed = g_strdup(teardown_error->message);
-            g_message("agent %s: nothing to tear down before rebuilding "
-                      "(%s)", agent_id, removed);
-        }
-
-        /*
-         * The agent's own record of the machine goes with the machine.
-         *
-         * This handler was written on the belief that a stopped agent
-         * holds no computer object, and that was false: stopping keeps
-         * the object so `computer status` can still answer, and the
-         * next start reuses whatever the agent holds.  So the rebuild
-         * recorded a fresh SSH port through its own object and the
-         * reused one dialled the old port for as long as the daemon
-         * lived -- with the ssh-port file, the passt command line and
-         * the domain XML all agreeing on the new one.  Dropped as soon
-         * as the teardown has run, whatever provisioning goes on to
-         * decide: either way the machine that object described is gone,
-         * and the next start builds one from the config the way a first
-         * start does.
-         */
-        if (agent != NULL)
-            clawt_agent_set_computer(agent, NULL);
-
-        if (!clawt_computer_provision(built, &error))
-            return clawt_ipc_error_new(request, error->code, error->message);
-
-        clawt_event_bus_emit(self->bus, "agent.changed", agent_id);
 
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "rebuilt");

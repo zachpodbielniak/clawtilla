@@ -831,6 +831,63 @@ refused only for ~type: none~ -- and, for every backend, while the agent
 is running.  For a distrobox it is the only way to change the image, the
 packages or ~share_home~, which are fixed when the box is created.
 
+*** An agent asking for a rebuild
+
+An agent whose machine is past repair -- a package database it broke, a
+guest that stopped answering -- cannot run ~computer.rebuild~: that is
+the operator's, and refused while the agent runs.  It can *ask*, with
+~clawtilla_request_rebuild~, shaped like ~clawtilla_request_hands~: the
+call files a decision and returns.  It never rebuilds anything and is
+never a handover.
+
+| Asked by | Offered when | Files |
+|----------+--------------+-------|
+| the agent, with a ~reason~ | its ~computer.type~ has a machine (~clawt_computer_type_has_machine()~: ~container~, ~vm~, ~distrobox~) and the daemon keeps a decision inbox | a decision with id ~rebuild-<uuid>~, options ~approve~ / ~decline~ |
+
+The decision says three things before anybody presses a button:
+
+- *why*, in the agent's words -- escaped with ~clawt_preamble_escape()~
+  and fenced with a fence the reason cannot close
+  (~clawt_incident_fence()~), so a reason ending in a forged
+  ~[clawtilla]~ line does not read as the daemon;
+- *what a rebuild destroys*, per backend, naming the keep flag that made
+  it worth keeping: a ~container~ with ~computer.container.keep~ on (kept
+  across every stop, may hold the only copy of work), one with it off
+  (a stop already removes it), a ~vm~'s disk, a ~distrobox~ and its
+  packages (the shared home directory is not touched), and the other
+  agents on a shared machine.  Mounted host folders are never touched.
+  ~decision.list~ carries it as ~loses~ beside ~kind: "rebuild"~;
+- what each answer does.
+
+*There is no automatic replacement.*  The default is ~decline~ and no
+deadline is set, so nothing settles the request but a person: a machine
+kept on purpose holds state only a person can decide is worth less than
+a working one.  One open request per agent; asking again answers with
+the id of the one already waiting.  The tool's class is ~read~, like
+~clawtilla_request_hands~, because it is how an agent escalates and a
+rule blocking it would block the way out.
+
+*Approve* runs, in an idle so the answer reaches the client first:
+
+1. the agent's turns end -- recorded as interrupted and never rerun
+   ([[file:mailboxes.org][mailboxes.org]], "A turn a restart cut short")
+   -- and a running agent is stopped with its machine;
+2. ~clawt_daemon_computer_rebuild()~ -- the same function
+   ~computer.rebuild~ calls, with the same refusals (a shared machine
+   with another user running is refused);
+3. the agent is told, in a notice queued in its mailbox, what went and
+   that anything it installed must be set up again (or that the rebuild
+   failed, and not to ask again straight away); then a running agent is
+   started again, so the notice is the first thing it is handed.
+
+Only the exact word ~approve~ rebuilds.  ~decline~, anything typed
+instead ("not now"), a dismissal or a deletion leave the machine alone
+and tell the agent so -- the operator's own words are quoted, escaped.
+An approval the daemon stops before running is reported to the agent as
+not done.  The clients draw the request as a decision with a *rebuild*
+badge, the loss as a warning, a destructive Approve and a Decline, and
+no free-text box -- see [[file:clients.org][clients.org]].
+
 *** A guest somebody deleted
 
 Deleting a VM in virt-manager, or a qcow2 with ~rm~, tells clawtilla

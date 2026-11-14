@@ -89,7 +89,28 @@ static const gchar *SCHEMA_SQL =
      * treats NULLs as distinct but an empty string as equal.
      */
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_idempotency"
-    "  ON items(idempotency_key) WHERE idempotency_key IS NOT NULL;";
+    "  ON items(idempotency_key) WHERE idempotency_key IS NOT NULL;"
+	/*
+	 * The turn records: one row per delivery the agent was handed and
+	 * has not finished, and the items it carried.  In this file rather
+	 * than in memory because the question they answer -- "was this turn
+	 * cut, and had it already acted outward?" -- is asked by the *next*
+	 * daemon as often as by this one.  See clawt_mailbox_turn_open().
+	 */
+	"CREATE TABLE IF NOT EXISTS turns ("
+	"  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+	"  room TEXT,"
+	"  replays INTEGER NOT NULL DEFAULT 0,"
+	"  outward TEXT,"
+	"  opened_at INTEGER NOT NULL"
+	");"
+	"CREATE TABLE IF NOT EXISTS turn_items ("
+	"  turn INTEGER NOT NULL,"
+	"  item TEXT NOT NULL,"
+	"  position INTEGER NOT NULL"
+	");"
+	"CREATE INDEX IF NOT EXISTS idx_turn_items ON turn_items(turn);"
+	"CREATE INDEX IF NOT EXISTS idx_turn_item_ids ON turn_items(item);";
 
 static gint64
 now_seconds(void)
@@ -222,6 +243,20 @@ apply_schema(sqlite3 *db, GError **error)
 		return FALSE;
 	}
 
+	/*
+	 * Since the restart replay: how many times an item was handed back
+	 * after a restart cut its turn.  Absent means never, which is what
+	 * every item queued before it was.
+	 */
+	if (!has_column(db, "items", "replays") &&
+		sqlite3_exec(db,
+			"ALTER TABLE items ADD COLUMN replays"
+			" INTEGER NOT NULL DEFAULT 0",
+			NULL, NULL, NULL) != SQLITE_OK) {
+		set_sqlite_error(error, db, "adding replays to the mailbox");
+		return FALSE;
+	}
+
 	/* Existing mailboxes must retain their queued work when upgraded. */
 	for (i = 0; i < G_N_ELEMENTS(context_columns); i++) {
 		g_autofree gchar *sql = NULL;
@@ -280,6 +315,8 @@ item_from_row(sqlite3_stmt *stmt)
     clawt_mailbox_item_set_model(item, column_text(stmt, 21));
 	clawt_mailbox_item_set_composed(item, sqlite3_column_int(stmt, 22) != 0);
 	clawt_mailbox_item_set_one_way(item, sqlite3_column_int(stmt, 23) != 0);
+	clawt_mailbox_item_set_replays(item,
+		(guint)MAX(sqlite3_column_int(stmt, 24), 0));
 
     return item;
 }
@@ -288,7 +325,8 @@ item_from_row(sqlite3_stmt *stmt)
     "id, sender, recipient, body, room, task_id, reply_to, subject, " \
     "idempotency_key, last_error, priority, state, depth, attempts, " \
     "created_at, not_before, expires_at, invites_reply, " \
-	"request_room, request_origin, request_task, model, composed, one_way"
+	"request_room, request_origin, request_task, model, composed, one_way, " \
+	"replays"
 
 /* ── Depth ───────────────────────────────────────────────────────── */
 
@@ -1152,7 +1190,14 @@ clawt_mailbox_purge_expired(ClawtMailbox *self)
         gint64 cutoff = now_seconds() - (gint64)ACKED_RETENTION_SECONDS;
 
         if (sqlite3_prepare_v2(self->db,
-                "DELETE FROM items WHERE state = ? AND created_at <= ?",
+                "DELETE FROM items WHERE state = ? AND created_at <= ?"
+                /*
+                 * Never an item an open turn record names: recovery
+                 * hands it back by flipping this row, and a row reaped
+                 * underneath it would turn a cut turn the agent could
+                 * have rerun into an "interrupted" notice.
+                 */
+                " AND id NOT IN (SELECT item FROM turn_items)",
                 -1, &acked, NULL) == SQLITE_OK) {
             sqlite3_bind_int(acked, 1, CLAWT_MAILBOX_ACKED);
             sqlite3_bind_int64(acked, 2, cutoff);
@@ -1202,6 +1247,490 @@ clawt_mailbox_reclaim_expired_leases(ClawtMailbox *self)
                self->agent_id, reclaimed);
 
     return reclaimed;
+}
+
+/* ── Turn records ────────────────────────────────────────────────── */
+
+/*
+ * A delivery is acknowledged at the socket, so after the ack the queue
+ * no longer knows about it -- and libreclaw's queue is in memory, so a
+ * process that dies mid-turn takes the turn with it.  These rows are
+ * what survives: one per delivery the agent was handed and has not
+ * finished, naming the items it carried and whether the turn has acted
+ * outward yet.  The next start reads them back and decides, per turn,
+ * between one rerun and an "interrupted" notice.
+ */
+
+void
+clawt_turn_record_free(
+	ClawtTurnRecord *record
+){
+	if (record == NULL)
+		return;
+
+	g_free(record->room);
+	g_strfreev(record->items);
+	g_free(record->outward);
+	g_free(record->reason);
+	g_free(record->from);
+	g_free(record->body);
+	g_free(record);
+}
+
+/* Runs one statement with no result, for BEGIN / COMMIT / ROLLBACK. */
+static gboolean
+exec_simple(
+	ClawtMailbox  *self,
+	const gchar   *sql,
+	GError       **error
+){
+	if (sqlite3_exec(self->db, sql, NULL, NULL, NULL) == SQLITE_OK)
+		return TRUE;
+
+	set_sqlite_error(error, self->db, sql);
+	return FALSE;
+}
+
+gint64
+clawt_mailbox_turn_open(
+	ClawtMailbox        *self,
+	const gchar         *room_id,
+	const gchar * const *item_ids,
+	guint                replays,
+	GError             **error
+){
+	sqlite3_stmt *stmt = NULL;
+	gint64 turn;
+	guint i;
+
+	g_return_val_if_fail(CLAWT_IS_MAILBOX(self), 0);
+	g_return_val_if_fail(item_ids != NULL && item_ids[0] != NULL, 0);
+
+	/*
+	 * One transaction, so a record is never on disk without the items
+	 * it names: recovery would read a turn with nothing to hand back as
+	 * a turn whose message was purged, and report a loss that is not
+	 * one.
+	 */
+	if (!exec_simple(self, "BEGIN IMMEDIATE", error))
+		return 0;
+
+	if (sqlite3_prepare_v2(self->db,
+			"INSERT INTO turns (room, replays, opened_at) VALUES (?, ?, ?)",
+			-1, &stmt, NULL) != SQLITE_OK) {
+		set_sqlite_error(error, self->db, "recording a turn");
+		exec_simple(self, "ROLLBACK", NULL);
+		return 0;
+	}
+
+	sqlite3_bind_text(stmt, 1, room_id, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int(stmt, 2, (gint)replays);
+	sqlite3_bind_int64(stmt, 3, g_get_real_time());
+
+	if (!step_write(self, stmt, "recording a turn", error)) {
+		exec_simple(self, "ROLLBACK", NULL);
+		return 0;
+	}
+
+	turn = (gint64)sqlite3_last_insert_rowid(self->db);
+
+	for (i = 0; item_ids[i] != NULL; i++) {
+		if (sqlite3_prepare_v2(self->db,
+				"INSERT INTO turn_items (turn, item, position)"
+				" VALUES (?, ?, ?)",
+				-1, &stmt, NULL) != SQLITE_OK) {
+			set_sqlite_error(error, self->db, "recording a turn's items");
+			exec_simple(self, "ROLLBACK", NULL);
+			return 0;
+		}
+
+		sqlite3_bind_int64(stmt, 1, turn);
+		sqlite3_bind_text(stmt, 2, item_ids[i], -1, SQLITE_TRANSIENT);
+		sqlite3_bind_int(stmt, 3, (gint)i);
+
+		if (!step_write(self, stmt, "recording a turn's items", error)) {
+			exec_simple(self, "ROLLBACK", NULL);
+			return 0;
+		}
+	}
+
+	if (!exec_simple(self, "COMMIT", error)) {
+		exec_simple(self, "ROLLBACK", NULL);
+		return 0;
+	}
+
+	return turn;
+}
+
+gboolean
+clawt_mailbox_turn_mark_outward(
+	ClawtMailbox  *self,
+	gint64         turn,
+	const gchar   *what,
+	GError       **error
+){
+	sqlite3_stmt *stmt = NULL;
+	g_autofree gchar *current = NULL;
+	g_autofree gchar *updated = NULL;
+	gboolean found = FALSE;
+
+	g_return_val_if_fail(CLAWT_IS_MAILBOX(self), FALSE);
+	g_return_val_if_fail(what != NULL && *what != '\0', FALSE);
+
+	if (sqlite3_prepare_v2(self->db,
+			"SELECT outward FROM turns WHERE id = ?",
+			-1, &stmt, NULL) != SQLITE_OK) {
+		set_sqlite_error(error, self->db, "reading a turn record");
+		return FALSE;
+	}
+
+	sqlite3_bind_int64(stmt, 1, turn);
+
+	if (sqlite3_step(stmt) == SQLITE_ROW) {
+		found = TRUE;
+		current = g_strdup(column_text(stmt, 0));
+	}
+
+	sqlite3_finalize(stmt);
+
+	if (!found) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+			"no open turn record %" G_GINT64_FORMAT, turn);
+		return FALSE;
+	}
+
+	/*
+	 * What it did, each kind once: the notice lists it, and "sent a
+	 * message to the operator" forty times over says nothing the first
+	 * one did not.
+	 */
+	if (current != NULL && *current != '\0') {
+		g_auto(GStrv) done = g_strsplit(current, ", ", -1);
+
+		if (g_strv_contains((const gchar * const *)done, what))
+			return TRUE;
+		updated = g_strconcat(current, ", ", what, NULL);
+	} else {
+		updated = g_strdup(what);
+	}
+
+	if (sqlite3_prepare_v2(self->db,
+			"UPDATE turns SET outward = ? WHERE id = ?",
+			-1, &stmt, NULL) != SQLITE_OK) {
+		set_sqlite_error(error, self->db, "marking a turn outward");
+		return FALSE;
+	}
+
+	sqlite3_bind_text(stmt, 1, updated, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int64(stmt, 2, turn);
+
+	return step_write(self, stmt, "marking a turn outward", error);
+}
+
+/* Deletes one record and its item list. */
+static gboolean
+delete_turn(
+	ClawtMailbox  *self,
+	gint64         turn,
+	GError       **error
+){
+	static const gchar *statements[] = {
+		"DELETE FROM turn_items WHERE turn = ?",
+		"DELETE FROM turns WHERE id = ?"
+	};
+	guint i;
+
+	for (i = 0; i < G_N_ELEMENTS(statements); i++) {
+		sqlite3_stmt *stmt = NULL;
+
+		if (sqlite3_prepare_v2(self->db, statements[i], -1, &stmt,
+				NULL) != SQLITE_OK) {
+			set_sqlite_error(error, self->db, "closing a turn record");
+			return FALSE;
+		}
+
+		sqlite3_bind_int64(stmt, 1, turn);
+
+		if (!step_write(self, stmt, "closing a turn record", error))
+			return FALSE;
+	}
+
+	return TRUE;
+}
+
+gboolean
+clawt_mailbox_turn_close(
+	ClawtMailbox  *self,
+	gint64         turn,
+	GError       **error
+){
+	g_return_val_if_fail(CLAWT_IS_MAILBOX(self), FALSE);
+
+	if (!exec_simple(self, "BEGIN IMMEDIATE", error))
+		return FALSE;
+
+	if (!delete_turn(self, turn, error)) {
+		exec_simple(self, "ROLLBACK", NULL);
+		return FALSE;
+	}
+
+	if (!exec_simple(self, "COMMIT", error)) {
+		exec_simple(self, "ROLLBACK", NULL);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/* The items one record names, in the order they were delivered. */
+static gchar **
+turn_items(
+	ClawtMailbox *self,
+	gint64        turn
+){
+	sqlite3_stmt *stmt = NULL;
+	GPtrArray *ids = g_ptr_array_new();
+
+	if (sqlite3_prepare_v2(self->db,
+			"SELECT item FROM turn_items WHERE turn = ? ORDER BY position",
+			-1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, turn);
+
+		while (sqlite3_step(stmt) == SQLITE_ROW)
+			g_ptr_array_add(ids, g_strdup(column_text(stmt, 0)));
+
+		sqlite3_finalize(stmt);
+	}
+
+	g_ptr_array_add(ids, NULL);
+	return (gchar **)g_ptr_array_free(ids, FALSE);
+}
+
+GPtrArray *
+clawt_mailbox_turn_list_open(
+	ClawtMailbox *self
+){
+	sqlite3_stmt *stmt = NULL;
+	GPtrArray *out;
+
+	g_return_val_if_fail(CLAWT_IS_MAILBOX(self), NULL);
+
+	out = g_ptr_array_new_with_free_func(
+		(GDestroyNotify)clawt_turn_record_free);
+
+	if (sqlite3_prepare_v2(self->db,
+			"SELECT id, room, replays, outward, opened_at FROM turns"
+			" ORDER BY id",
+			-1, &stmt, NULL) != SQLITE_OK)
+		return out;
+
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		ClawtTurnRecord *record = g_new0(ClawtTurnRecord, 1);
+
+		record->id = sqlite3_column_int64(stmt, 0);
+		record->room = g_strdup(column_text(stmt, 1));
+		record->replays = (guint)MAX(sqlite3_column_int(stmt, 2), 0);
+		record->outward = g_strdup(column_text(stmt, 3));
+		record->opened_at = sqlite3_column_int64(stmt, 4);
+		g_ptr_array_add(out, record);
+	}
+
+	sqlite3_finalize(stmt);
+
+	{
+		guint i;
+
+		for (i = 0; i < out->len; i++) {
+			ClawtTurnRecord *record = g_ptr_array_index(out, i);
+			g_autoptr(ClawtMailboxItem) first = NULL;
+
+			record->items = turn_items(self, record->id);
+			first = record->items[0] != NULL
+				? clawt_mailbox_get(self, record->items[0]) : NULL;
+
+			if (first != NULL) {
+				record->from = g_strdup(clawt_mailbox_item_get_from(first));
+				record->body = g_strdup(clawt_mailbox_item_get_body(first));
+			}
+		}
+	}
+
+	return out;
+}
+
+/*
+ * Whether every item a cut turn carried can be handed back: still in
+ * the queue, acknowledged (which is what a delivery leaves it), and not
+ * past its own expiry.  Asked of the whole set before any is touched,
+ * so a merged turn is handed back whole or not at all.
+ */
+static gboolean
+items_can_return(
+	ClawtMailbox  *self,
+	gchar        **items,
+	const gchar  **why
+){
+	gint64 now = now_seconds();
+	guint i;
+
+	if (items == NULL || items[0] == NULL) {
+		*why = "the message it was answering is no longer in the queue";
+		return FALSE;
+	}
+
+	for (i = 0; items[i] != NULL; i++) {
+		g_autoptr(ClawtMailboxItem) item = clawt_mailbox_get(self, items[i]);
+
+		if (item == NULL) {
+			*why = "the message it was answering is no longer in the queue";
+			return FALSE;
+		}
+
+		if (clawt_mailbox_item_get_state(item) != CLAWT_MAILBOX_ACKED) {
+			*why = "the message it was answering is already back in the queue";
+			return FALSE;
+		}
+
+		if (clawt_mailbox_item_get_expires_at(item) > 0 &&
+			clawt_mailbox_item_get_expires_at(item) <= now) {
+			*why = "the message it was answering has expired";
+			return FALSE;
+		}
+	}
+
+	return TRUE;
+}
+
+/* Puts one acknowledged item back in the queue, counted as a replay. */
+static gboolean
+return_item(
+	ClawtMailbox  *self,
+	const gchar   *id,
+	GError       **error
+){
+	sqlite3_stmt *stmt = NULL;
+
+	if (sqlite3_prepare_v2(self->db,
+			"UPDATE items SET state = ?, replays = replays + 1,"
+			" not_before = 0, lease_expires_at = 0 WHERE id = ? AND state = ?",
+			-1, &stmt, NULL) != SQLITE_OK) {
+		set_sqlite_error(error, self->db, "handing a cut turn back");
+		return FALSE;
+	}
+
+	sqlite3_bind_int(stmt, 1, CLAWT_MAILBOX_PENDING);
+	sqlite3_bind_text(stmt, 2, id, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int(stmt, 3, CLAWT_MAILBOX_ACKED);
+
+	return step_write(self, stmt, "handing a cut turn back", error);
+}
+
+GPtrArray *
+clawt_mailbox_turn_recover(
+	ClawtMailbox       *self,
+	gboolean            replay,
+	const gchar        *reason,
+	ClawtTurnVetoFunc   veto,
+	gpointer            veto_data,
+	GError            **error
+){
+	g_autoptr(GPtrArray) open = NULL;
+	guint i;
+	gboolean any_returned = FALSE;
+
+	g_return_val_if_fail(CLAWT_IS_MAILBOX(self), NULL);
+
+	open = clawt_mailbox_turn_list_open(self);
+
+	if (open->len == 0)
+		return g_steal_pointer(&open);
+
+	/*
+	 * One transaction for the lot.  Handing an item back and deleting
+	 * the record that allowed it are one decision: a daemon killed
+	 * between the two would find the record again on its next start,
+	 * still saying "not yet rerun", and hand the same message over a
+	 * second time.
+	 */
+	if (!exec_simple(self, "BEGIN IMMEDIATE", error))
+		return NULL;
+
+	for (i = 0; i < open->len; i++) {
+		ClawtTurnRecord *record = g_ptr_array_index(open, i);
+		const gchar *why = NULL;
+		guint j;
+
+		/*
+		 * The rule, in the order it is checked:
+		 *
+		 *   - a stop somebody asked for is not a crash, and the turn
+		 *     it cut is not resumed behind their back;
+		 *   - a turn that already acted outward is never rerun, since
+		 *     a rerun would send, post or run it a second time;
+		 *   - a turn that was itself a rerun is not rerun again, so a
+		 *     message that kills the agent cannot loop;
+		 *   - and the items have to still be there to hand back.
+		 */
+		if (!replay)
+			why = reason != NULL ? reason : "it was stopped";
+		else if (record->outward != NULL && *record->outward != '\0')
+			why = "it had already acted outside the fleet";
+		else if (record->replays > 0)
+			why = "it was already handed back once after a restart";
+		else
+			items_can_return(self, record->items, &why);
+
+		/* And the caller's own reasons, which the queue cannot see. */
+		if (why == NULL && veto != NULL)
+			why = veto(self, record, veto_data);
+
+		if (why == NULL) {
+			for (j = 0; record->items[j] != NULL; j++)
+				if (!return_item(self, record->items[j], error)) {
+					exec_simple(self, "ROLLBACK", NULL);
+					return NULL;
+				}
+			record->redelivered = TRUE;
+			any_returned = TRUE;
+		} else {
+			record->reason = g_strdup(why);
+		}
+
+		if (!delete_turn(self, record->id, error)) {
+			exec_simple(self, "ROLLBACK", NULL);
+			return NULL;
+		}
+	}
+
+	if (!exec_simple(self, "COMMIT", error)) {
+		exec_simple(self, "ROLLBACK", NULL);
+		return NULL;
+	}
+
+	if (any_returned)
+		emit_depth_changed(self);
+
+	return g_steal_pointer(&open);
+}
+
+guint
+clawt_mailbox_turn_count_open(
+	ClawtMailbox *self
+){
+	sqlite3_stmt *stmt = NULL;
+	guint count = 0;
+
+	g_return_val_if_fail(CLAWT_IS_MAILBOX(self), 0);
+
+	if (sqlite3_prepare_v2(self->db, "SELECT COUNT(*) FROM turns", -1,
+			&stmt, NULL) != SQLITE_OK)
+		return 0;
+
+	if (sqlite3_step(stmt) == SQLITE_ROW)
+		count = (guint)sqlite3_column_int(stmt, 0);
+
+	sqlite3_finalize(stmt);
+	return count;
 }
 
 const gchar *

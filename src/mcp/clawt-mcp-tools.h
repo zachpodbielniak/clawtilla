@@ -267,6 +267,39 @@ void clawt_mcp_tools_set_ask_decision_func(ClawtMcpTools           *self,
                                            GDestroyNotify           destroy);
 
 /**
+ * ClawtMcpRequestRebuildFunc:
+ * @agent_id: who is asking
+ * @reason: why, in the agent's own words
+ * @user_data: as supplied
+ * @error: return location for a #GError
+ *
+ * Files an agent's request to have its computer rebuilt, as a decision
+ * for its operator.  A hook because the tools belong to the library and
+ * the daemon owns the inbox, the computer and the rebuild; it files and
+ * returns, and never rebuilds anything itself.
+ *
+ * Returns: (transfer full) (nullable): what to tell the agent
+ */
+typedef gchar *(*ClawtMcpRequestRebuildFunc)(const gchar  *agent_id,
+                                             const gchar  *reason,
+                                             gpointer      user_data,
+                                             GError      **error);
+
+/**
+ * clawt_mcp_tools_set_request_rebuild_func:
+ * @self: a #ClawtMcpTools
+ * @func: (nullable) (scope notified): the hook
+ * @user_data: passed to @func
+ * @destroy: frees @user_data
+ *
+ * Unset, `clawtilla_request_rebuild` is not offered.
+ */
+void clawt_mcp_tools_set_request_rebuild_func(ClawtMcpTools              *self,
+                                              ClawtMcpRequestRebuildFunc  func,
+                                              gpointer                    user_data,
+                                              GDestroyNotify              destroy);
+
+/**
  * ClawtMcpHandoffFunc:
  * @from_agent: who is giving the task up
  * @task_id: the task whose ownership is moving
@@ -513,6 +546,41 @@ void clawt_mcp_tools_set_policy_func(ClawtMcpTools      *self,
                                      ClawtMcpPolicyFunc  func,
                                      gpointer            user_data,
                                      GDestroyNotify      destroy);
+
+/**
+ * clawt_mcp_tools_outward_label:
+ * @tool: a tool name, clawtilla's or a plugin's
+ * @computer: the calling agent's computer type
+ *
+ * Whether a successful call to @tool reaches outside the fleet, which is
+ * what decides whether a restart may rerun the turn that made it.
+ *
+ * Outward: `clawtilla_message_user` (a person, and the notifier),
+ * `clawtilla_computer_exec` on anything but a container or a VM, and
+ * every tool whose class is external, desktop input or exec -- a third
+ * party's tool, a click or keystroke, a script in a page.  Inward:
+ * messages to peers, tasks, rooms, routines, memories and every read.
+ *
+ * Returns: (transfer full) (nullable): a short label for the turn's
+ *   record, or %NULL for an inward call
+ */
+gchar *clawt_mcp_tools_outward_label(const gchar       *tool,
+                                     ClawtComputerType  computer);
+
+/**
+ * clawt_mcp_tools_relay_outward_label:
+ * @tool: the tool as the agent's CLI named it
+ * @action: the class the relay or the native table gave it
+ *
+ * As clawt_mcp_tools_outward_label(), for a call a relay or the policy
+ * hook let through: a connector's tool is outward unless its name opens
+ * with a reading verb (`get_`, `list_`, `search_` ...), desktop input is
+ * outward, and the CLI's own tools are not judged at all.
+ *
+ * Returns: (transfer full) (nullable): a label, or %NULL
+ */
+gchar *clawt_mcp_tools_relay_outward_label(const gchar      *tool,
+                                           ClawtActionClass  action);
 
 /**
  * clawt_mcp_tools_action_class:

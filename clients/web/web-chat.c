@@ -221,6 +221,8 @@ message_element(JsonObject *message, const gchar *agent_id,
     gboolean acknowledged =
         clawt_web_member_int(message, "acknowledged", 0) != 0;
     gint64 merged = clawt_web_member_int(message, "merged", 0);
+    gboolean interrupted =
+        clawt_web_member_int(message, "interrupted", 0) != 0;
     gboolean from_user = (g_strcmp0(sender, "user") == 0);
     g_autoptr(HtmxElement) row = HTMX_ELEMENT(htmx_article_new());
     g_autoptr(HtmxDiv) who = htmx_div_new();
@@ -370,10 +372,26 @@ message_element(JsonObject *message, const gchar *agent_id,
         clawt_web_add(who, g_steal_pointer(&ack));
     }
 
-    if (run_start || task != NULL || depth > 1 || acknowledged)
+    /*
+     * The daemon's notice that a turn was cut short and will not be
+     * resumed: a warning badge, and the body in a box of its own so it
+     * reads as a statement about the conversation, not one more line.
+     */
+    if (interrupted) {
+        g_autoptr(HtmxSpan) cut = clawt_web_badge(
+            clawt_message_interrupted_label(), "warn");
+
+        htmx_element_set_attribute(HTMX_ELEMENT(cut), "title",
+                                   clawt_message_interrupted_tooltip());
+        clawt_web_add(who, g_steal_pointer(&cut));
+    }
+
+    if (run_start || task != NULL || depth > 1 || acknowledged || interrupted)
         htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(who));
 
     htmx_element_add_class(HTMX_ELEMENT(text), "msg-body");
+    if (interrupted)
+        htmx_element_add_class(HTMX_ELEMENT(text), "msg-interrupted");
 
     /*
      * Files an agent sent arrive as a `clawt:<id>` block at the end of

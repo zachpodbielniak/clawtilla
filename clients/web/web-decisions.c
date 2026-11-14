@@ -95,6 +95,14 @@ decision_row(ClawtWebApp *app, JsonObject *decision, gint64 now)
                                               FALSE);
     const gchar *answer = clawt_web_member(decision, "answer", NULL);
     gint64 state = clawt_web_member_int(decision, "state", 0);
+    /*
+     * A rebuild request: a yes or no about destroying a machine, with
+     * what goes said apart from the question and no free-text answer --
+     * only "approve" rebuilds, and anything typed would read as a yes.
+     */
+    gboolean is_rebuild = g_strcmp0(clawt_web_member(decision, "kind", NULL),
+                                    "rebuild") == 0;
+    const gchar *loses = clawt_web_member(decision, "loses", NULL);
     g_autofree gchar *deadline = deadline_text(until, now);
 
     (void)app;
@@ -120,6 +128,9 @@ decision_row(ClawtWebApp *app, JsonObject *decision, gint64 now)
     if (settled)
         clawt_web_add(head, clawt_web_badge("already decided", "bad"));
 
+    if (is_rebuild)
+        clawt_web_add(head, clawt_web_badge("rebuild", "bad"));
+
     /*
      * What became of it, in the settled view.  Answered and dismissed
      * are different things -- both mean the work went a particular way,
@@ -136,6 +147,13 @@ decision_row(ClawtWebApp *app, JsonObject *decision, gint64 now)
     htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(head));
 
     clawt_web_add(row, clawt_web_text(question, "decision-question"));
+
+    if (is_rebuild && loses != NULL && state == 0) {
+        g_autofree gchar *line = g_strdup_printf("What a rebuild destroys: %s",
+                                                 loses);
+
+        clawt_web_add(row, clawt_web_text(line, "decision-loses"));
+    }
 
     /*
      * The default, always, and phrased as what *is happening* rather
@@ -201,7 +219,9 @@ decision_row(ClawtWebApp *app, JsonObject *decision, gint64 now)
             if (option == NULL || *option == '\0')
                 continue;
 
-            pick = clawt_web_button(option, "default");
+            pick = clawt_web_button(option,
+                                    is_rebuild && g_strcmp0(option, "approve") == 0
+                                        ? "danger" : "default");
             htmx_element_set_attribute(HTMX_ELEMENT(pick), "type", "submit");
             htmx_element_set_attribute(HTMX_ELEMENT(pick), "name", "answer");
             htmx_element_set_attribute(HTMX_ELEMENT(pick), "value", option);
@@ -210,9 +230,10 @@ decision_row(ClawtWebApp *app, JsonObject *decision, gint64 now)
 
         htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(buttons));
 
-        clawt_web_add(form, clawt_web_field(
-            "Or say something else", "answer", NULL,
-            "\"neither, do X\" is a perfectly good answer"));
+        if (!is_rebuild)
+            clawt_web_add(form, clawt_web_field(
+                "Or say something else", "answer", NULL,
+                "\"neither, do X\" is a perfectly good answer"));
 
         {
             g_autoptr(HtmxDiv) actions = htmx_div_new();
@@ -224,7 +245,8 @@ decision_row(ClawtWebApp *app, JsonObject *decision, gint64 now)
 
             htmx_element_add_class(HTMX_ELEMENT(actions), "btn-row");
             htmx_element_set_attribute(HTMX_ELEMENT(send), "type", "submit");
-            htmx_node_add_child(HTMX_NODE(actions), HTMX_NODE(send));
+            if (!is_rebuild)
+                htmx_node_add_child(HTMX_NODE(actions), HTMX_NODE(send));
             htmx_node_add_child(HTMX_NODE(actions), HTMX_NODE(drop));
             htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(actions));
         }

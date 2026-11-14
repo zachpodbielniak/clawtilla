@@ -268,6 +268,8 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-skill.c \
 	$(SRCDIR)/core/daemon-step.c \
 	$(SRCDIR)/core/daemon-ack.c \
+	$(SRCDIR)/core/daemon-replay.c \
+	$(SRCDIR)/core/daemon-rebuild.c \
 	$(SRCDIR)/core/clawt-event-bus.c \
 	$(SRCDIR)/core/clawt-event-log.c \
 	$(SRCDIR)/integration/clawt-connector.c \

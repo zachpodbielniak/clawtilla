@@ -514,6 +514,12 @@ append_to_transcript(ClawtRoom     *self,
 			(gint64)clawt_message_get_merged(message));
 	}
 
+	/* And the notice that a turn was cut short, for the same reason. */
+	if (clawt_message_get_interrupted(message)) {
+		json_builder_set_member_name(builder, "interrupted");
+		json_builder_add_boolean_value(builder, TRUE);
+	}
+
     json_builder_end_object(builder);
 
     root = json_builder_get_root(builder);

@@ -448,6 +448,7 @@ Source: =clients/lrg/lrg-chat.c=; decisions in =clients/lrg/lrg-chat-model.c=. M
 - *Spacing*: a new run is further apart than a new message, and a new message further than a paragraph (=clawt_appearance_get_run_spacing()=, the message gap derived from it as in GTK). Day dividers ("Today", "Yesterday", "Wednesday 25 August", from =clawt_chat_day_label()=) sit between rules.
 - *Chips*: a task chip ("task 1a2b3c4d") opens the Tasks page; a hop count from the second hop on warns of a loop.
 - *Acknowledged answers*: a neutral badge reading =clawt_message_ack_label()= under an answer the acknowledgement check recorded without waking its asker (=acknowledged= on the history message or the ~message~ event).  On every such message, not only a run's first.
+- *Interrupted turns*: the daemon's notice that a turn was cut short and will not be resumed (=interrupted=) gets a warn badge reading =clawt_message_interrupted_label()= with =clawt_message_interrupted_tooltip()= written under it as a caption, since there is no tooltip to hold it.  See [[file:clients.org][clients.org]].
 - *Merged deliveries*: clawtilla's note of results handed over as one turn (=merged=) is drawn as =clawt_merge_split()='s sections -- the preface, then a card per result with its label as a heading.  See [[file:clients.org::#ack-and-merge-marks][the marks]].
 - *Bodies*: markdown through =clawt_lrg_markdown()= (links open http, https and file only).
 - *Attachment previews*: every file named in a message's attachment block (=clawt_lrg_attachment_refs()=). A picture is a thumbnail decoded at drawing size (460×320 at most), click for full size; anything else is a chip with name and size, click to open with the desktop's handler. An agent's file (=clawt:<id>=) is fetched once with ~attachment.get~ and cached under =$XDG_CACHE_HOME/clawtilla/attachments=. Right-click: Open, Save a copy…, Copy path, Delete permanently (~attachment.remove~, confirmed).
@@ -748,6 +749,8 @@ The Work section's inbox of questions agents are waiting on. Its tab carries the
 Each decision is a card: who asked and how long ago (=created_at= is seconds, converted), the urgency badges ("closing soon" warn, "already decided" bad) with a sentence saying what each means, the whole question as a wrapping paragraph, "Going ahead with: <default> — <reason>", each option as a wrapping sentence with its own Choose button, an answer box with Answer on the same line, and "Does not need me" beside Delete. A typed answer wins over a clicked option. Enter in the answer box answers.
 
 A policy ask is a decision like any other on the wire; the daemon writes the action and the matched action rule into the question, which is why the question is drawn whole rather than as a one-line title.
+
+A rebuild request (=kind: "rebuild"=, from ~clawtilla_request_rebuild~) carries a bad *rebuild* badge, a *will be lost* warn badge over the =loses= sentence, a danger-styled Choose beside *approve*, and no typed answer: only ~approve~ rebuilds.
 
 | Control | Frame |
 |---|---|

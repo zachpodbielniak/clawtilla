@@ -272,6 +272,16 @@ clawt_daemon_handle_agent(
     if (g_strcmp0(kind, "agent.stop") == 0) {
         const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
 
+        /*
+         * A stop somebody asked for is not a crash: the turn it cuts
+         * ends as interrupted and is never rerun behind their back.
+         * Before the stop, since the stop's own state change is what
+         * would otherwise read the records as a restart's.  A restart
+         * (agent.restart) is the other kind and reruns as usual.
+         */
+        clawt_daemon_turns_abandon(self, agent_id,
+                                   "its operator stopped it");
+
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "stopped");
         json_builder_add_boolean_value(

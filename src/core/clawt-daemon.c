@@ -1455,6 +1455,16 @@ on_agent_state_changed(ClawtAgentManager *manager,
 
     note_agent_crash(self, agent_id, state, detail);
 
+    /*
+     * The process is gone, and so is every turn it was running: settle
+     * them now, while the room is still on the screen of whoever asked.
+     * STOPPED and ERROR are the two states a process ending leaves --
+     * the restart policy's respawn included, which passes through ERROR
+     * first -- so a rerun is queued before the new process links.
+     */
+    if (state == CLAWT_AGENT_STATE_STOPPED || state == CLAWT_AGENT_STATE_ERROR)
+        clawt_daemon_turns_recover(self, agent_id);
+
     if (state != CLAWT_AGENT_STATE_ERROR &&
         state != CLAWT_AGENT_STATE_DEGRADED)
         return;
@@ -4831,6 +4841,7 @@ release_components(ClawtDaemon *self)
     clawt_daemon_wait_teardown(self);
     clawt_daemon_search_teardown(self);
     clawt_daemon_policy_teardown(self);
+    clawt_daemon_rebuild_teardown(self);
     clawt_daemon_idle_teardown(self);
     clawt_daemon_browser_teardown(self);
     clawt_daemon_routine_starts_teardown(self);
@@ -6877,6 +6888,7 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      */
     clawt_daemon_grok_start(self);
     clawt_daemon_policy_setup(self);
+    clawt_daemon_rebuild_setup(self);
     clawt_daemon_idle_setup(self);
     clawt_daemon_browser_setup(self);
 
@@ -6952,6 +6964,13 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      * that had been noticed rather than to the function, so the second
      * blocking thing in the same function was never looked at.
      */
+    /*
+     * Turns the last daemon left cut short, settled before any agent is
+     * started: a rerun is queued ahead of anything new, and an
+     * interrupted notice is in its room before anybody opens it.
+     */
+    clawt_daemon_turns_recover_all(self);
+
     autostart_schedule(self);
 
     /*
@@ -7602,6 +7621,29 @@ clawt_daemon_add_decision_object(JsonBuilder   *builder,
     json_builder_set_member_name(builder, "settled_by_default");
     json_builder_add_boolean_value(
         builder, clawt_decision_default_has_taken_effect(decision, now));
+
+    /*
+     * What kind of question it is, for the one kind a client draws on
+     * its own: a rebuild request, with what it destroys in a member of
+     * its own so it can be shown as a warning rather than lost in the
+     * question's last paragraph.  Read back from the question, which
+     * is where the loss was written when it was asked.
+     */
+    if (g_str_has_prefix(clawt_decision_get_id(decision),
+                         CLAWT_REBUILD_DECISION_PREFIX)) {
+        const gchar *question = clawt_decision_get_question(decision);
+        const gchar *loss = question != NULL
+            ? g_strrstr(question, CLAWT_REBUILD_LOSS_MARKER) : NULL;
+
+        json_builder_set_member_name(builder, "kind");
+        json_builder_add_string_value(builder, "rebuild");
+
+        if (loss != NULL) {
+            json_builder_set_member_name(builder, "loses");
+            json_builder_add_string_value(
+                builder, loss + strlen(CLAWT_REBUILD_LOSS_MARKER));
+        }
+    }
 
     json_builder_end_object(builder);
 }

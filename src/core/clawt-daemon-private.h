@@ -47,6 +47,16 @@ G_BEGIN_DECLS
  * reply is carried in, and the helpers that build a reply.
  */
 
+/*
+ * Runs one approved rebuild: destroys @agent_id's machine and builds a
+ * fresh one.  The default is clawt_daemon_computer_rebuild().
+ */
+typedef gboolean (*ClawtDaemonRebuildFunc)(ClawtDaemon  *daemon,
+                                           const gchar  *agent_id,
+                                           gchar       **out_note,
+                                           gpointer      user_data,
+                                           GError      **error);
+
 struct _ClawtDaemon {
     GObject parent_instance;
 
@@ -275,6 +285,17 @@ struct _ClawtDaemon {
     GHashTable        *shared_computers;
     /* Who is driving each shared machine's one screen: id -> DriveLease. */
     GHashTable        *drive_leases;
+
+    /*
+     * daemon-rebuild.c: what runs an approved rebuild.  NULL is the
+     * operator's path, clawt_daemon_computer_rebuild(); a test puts a
+     * recorder here, since a hermetic suite has no machine to destroy.
+     */
+    ClawtDaemonRebuildFunc rebuild_func;
+    gpointer               rebuild_func_data;
+    /* Approvals waiting for their idle, so a stop cancels none twice. */
+    GPtrArray             *rebuild_pending;
+    GSource               *rebuild_idle;
 
     /* Calls waiting on an `ask`, keyed by decision id (daemon-policy.c). */
     GHashTable        *policy_waits;
@@ -1575,6 +1596,57 @@ void     clawt_daemon_idle_tick(ClawtDaemon *self);
 /* Whether the daemon stopped @agent_id for being idle and will wake it. */
 gboolean clawt_daemon_idle_is_asleep(ClawtDaemon *self, const gchar *agent_id);
 void clawt_daemon_policy_abandon(ClawtDaemon *self, const gchar *agent_id);
+
+/* -- Turns a restart cut short (src/core/daemon-replay.c) -------- */
+
+/*
+ * Settles every open turn record of @agent_id after its process has
+ * gone: a turn nothing outward is known of, that was not itself a rerun,
+ * is handed back once; every other one ends with an interrupted notice
+ * in its room.  Returns how many were handed back.
+ */
+guint clawt_daemon_turns_recover(ClawtDaemon *self, const gchar *agent_id);
+/* Every agent's, at start, before anything is delivered. */
+void  clawt_daemon_turns_recover_all(ClawtDaemon *self);
+/*
+ * Ends every open turn of @agent_id as interrupted, saying @why, with no
+ * rerun -- for a stop somebody asked for.  Call before the stop.
+ */
+void  clawt_daemon_turns_abandon(ClawtDaemon *self, const gchar *agent_id,
+                                 const gchar *why);
+
+/* -- An agent asking for a rebuild (src/core/daemon-rebuild.c) --- */
+
+/* The id prefix every rebuild request's decision carries. */
+#define CLAWT_REBUILD_DECISION_PREFIX "rebuild-"
+/* Where a rebuild request's question says what a rebuild destroys. */
+#define CLAWT_REBUILD_LOSS_MARKER "\n\nWhat a rebuild destroys: "
+
+/* The operator's rebuild, shared by computer.rebuild and an approval. */
+gboolean clawt_daemon_computer_rebuild(ClawtDaemon  *self,
+                                       const gchar  *agent_id,
+                                       gchar       **out_note,
+                                       GError      **error);
+/* Wires clawtilla_request_rebuild to the decision inbox. */
+void     clawt_daemon_rebuild_setup(ClawtDaemon *self);
+void     clawt_daemon_rebuild_teardown(ClawtDaemon *self);
+/* What a rebuild of @agent_id's machine destroys, in a sentence. */
+gchar   *clawt_daemon_rebuild_loss(ClawtDaemon *self, const gchar *agent_id);
+/* Files the decision; what the tool answers, or NULL with @error set. */
+gchar   *clawt_daemon_rebuild_request(ClawtDaemon  *self,
+                                      const gchar  *agent_id,
+                                      const gchar  *reason,
+                                      GError      **error);
+/*
+ * Settles a rebuild request whose decision ended -- @how is "answered",
+ * "dismissed" or "deleted".  Returns %FALSE for any other decision, so
+ * the caller answers it as it always did.
+ */
+gboolean clawt_daemon_rebuild_settle(ClawtDaemon   *self,
+                                     ClawtDecision *decision,
+                                     const gchar   *how);
+/* Runs any approval waiting for its idle now, for tests. */
+void     clawt_daemon_rebuild_flush(ClawtDaemon *self);
 void clawt_daemon_policy_request(ClawtDaemon          *self,
                                  const gchar          *agent_id,
                                  const gchar          *tool,

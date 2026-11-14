@@ -131,13 +131,15 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 - *Lesson to copy:* the contract deleted two delegation systems, six wake paths and a dozen clocks. Keep tasks and mailbox items one lineage.
 - *Version:* minor.
 
-** TODO Restart replay that will not repeat an outward action                                       :mailboxes:
+** DONE Restart replay that will not repeat an outward action                                       :mailboxes:
+- *Done:* (version assigned at merge). Each delivery opens a turn record in the agent's =mailbox.db= (=turns=, =turn_items=), closed on the room's falling typing edge or when the daemon ends the turn. Outward calls mark it when they succeed (=clawt_mcp_tools_outward_label()= from each tool's action class; connector and desktop relays at =policy.check=; peer messages are inward, the CLI's own Bash is not judged). When a process ends, and at daemon start, =clawt_daemon_turns_recover()= hands an unmarked turn back once (items to =pending= with =replays= raised, a rerun line in the preamble) and ends every other one -- marked, already a rerun, items gone, task already failed -- with an =interrupted= notice in the room, in one transaction. =agent.stop= ends turns as interrupted with no rerun. All three clients draw the notice apart. Design in =docs/mailboxes.org=, "A turn a restart cut short".
 - *Today:* mailbox leases (=docs/mailboxes.org=) and pause/hold. Nothing records whether an interrupted turn already acted outward, so a redelivery can repeat a send.
 - *Prior art:* runtime-contract §5. A turn cut by a restart is rerun once, unless the host saw it act outward (sent, posted, pushed, paid). Then it ends as interrupted.
 - *Proposal:* mark the turn record when an outward tool succeeds (message_user, connector writes, computer_exec on a non-sandboxed machine, notifier sends). On recovery, an outward-marked turn becomes an interrupted notice in the room, not a redelivery.
 - *Version:* micro.
 
-** TODO Agent asks for a rebuild of its stuck computer                                              :computers:
+** DONE Agent asks for a rebuild of its stuck computer                                              :computers:
+- *Done:* (version assigned at merge). =clawtilla_request_rebuild= (class read, offered to container, vm and distrobox agents) files a =rebuild-= decision quoting the reason escaped and fenced and saying what a rebuild destroys per backend and keep flag (=loses=, =kind: "rebuild"= on =decision.list=); default decline, no deadline, one open per agent. Approve, in an idle: turns ended as interrupted and the agent stopped, =clawt_daemon_computer_rebuild()= (the operator's path, refactored out of =computer.rebuild=), then the agent told and restarted. Anything else tells the agent nothing was done. GTK, web and lrg draw it with a rebuild badge, the loss as a warning and no free-text answer. Design in =docs/computers.org=, "An agent asking for a rebuild".
 - *Today:* =clawtilla computer rebuild= is operator-only and refused while the agent runs.
 - *Prior art:* =0b39d3969= (a bot asks the person to reset), =b06c25396= (automatic reset when safe), =ee89b889c= (replace a computer that is dead or stops answering).
 - *Proposal:* =clawtilla_request_rebuild=, shaped like =clawtilla_request_hands=: it raises a decision and is never a handover. Approval runs the rebuild after stopping the agent's turn. No automatic replacement while =computer.container.keep= or a VM disk holds state.

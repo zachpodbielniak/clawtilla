@@ -126,6 +126,10 @@ and devices.
 
 =message_element()= reads =acknowledged= and =merged= off each ~room.history~ message.  An acknowledged answer gets a neutral badge, =clawt_message_ack_label()= with =clawt_message_ack_tooltip()= as its =title=, in the message's header line -- which is drawn for that message even mid-run, as the task and hop badges are.  A merged note's body is split by =clawt_merge_split()=: the preface is the message body and each section is a =.merge-section= block with a =.merge-section-label= heading.  The live ~message~ event only marks unread here; the transcript re-reads history, so both marks come from one path.
 
+*** Interrupted turns and rebuild requests
+
+=message_element()= also reads =interrupted=: the daemon's notice that a turn was cut short and will not be resumed gets a =warn= badge, =clawt_message_interrupted_label()= with =clawt_message_interrupted_tooltip()= as its =title=, and its body is boxed with =.msg-interrupted=.  On =/decisions= a rebuild request (=kind: "rebuild"=) has a =bad= *rebuild* badge, its =loses= sentence in a =.decision-loses= box, a =danger= *approve* button, and no free-text field or Answer button -- only ~approve~ rebuilds.  See [[file:clients.org][clients.org]].
+
 *** The integration editor
 
 Drawn from ~clawt_integration_fields()~, the same table the GTK client
