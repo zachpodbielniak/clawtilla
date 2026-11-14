@@ -169,6 +169,513 @@ clawt_gtk_computer_type_from_nick(const gchar *nick)
     return (ClawtComputerType)value;
 }
 
+/* ── Fallbacks ───────────────────────────────────────────────────── */
+
+/*
+ * One entry of `model.fallbacks` as the editor draws it: the provider
+ * and model rows every other model picker in this client uses, and an
+ * account combo whose ids are kept beside it because its labels say
+ * more than the id.
+ */
+typedef struct {
+    ClawtWindow  *window;
+    ModelChooser  models;
+    GtkWidget    *account_row;
+    GPtrArray    *account_ids;      /* gchar*, "" for the CLI's own login */
+} FallbackEntry;
+
+static void
+fallback_entry_free(gpointer data)
+{
+    FallbackEntry *entry = data;
+
+    g_clear_pointer(&entry->models.catalog, json_node_unref);
+    g_clear_pointer(&entry->account_ids, g_ptr_array_unref);
+    g_free(entry);
+}
+
+/*
+ * A widget pointer that goes NULL when the widget does.  The inspector
+ * is cleared from more places than it is built (a room selection, a
+ * removal), and a plain pointer kept across that is one a later event
+ * writes through.
+ */
+static void
+set_weak(GtkWidget **slot, GtkWidget *widget)
+{
+    if (*slot != NULL)
+        g_object_remove_weak_pointer(G_OBJECT(*slot), (gpointer *)slot);
+
+    *slot = widget;
+
+    if (widget != NULL)
+        g_object_add_weak_pointer(G_OBJECT(widget), (gpointer *)slot);
+}
+
+/* The editor's own state, before it is drawn again. */
+static void
+fallback_editor_reset(ClawtWindow *self)
+{
+    g_clear_pointer(&self->fallback_entries, g_ptr_array_unref);
+    g_clear_pointer(&self->fallback_rows, g_ptr_array_unref);
+    g_clear_pointer(&self->fallback_catalog, json_node_unref);
+    g_clear_pointer(&self->fallback_accounts, json_node_unref);
+    g_clear_pointer(&self->fallbacks_saved, g_free);
+    set_weak(&self->fallbacks_row, NULL);
+}
+
+void
+clawt_gtk_fallback_editor_clear(ClawtWindow *self)
+{
+    fallback_editor_reset(self);
+    set_weak(&self->failover_row, NULL);
+}
+
+/*
+ * The logins an entry for @provider can name, and @want whatever it is.
+ *
+ * Asked of clawt_model_fallback_account_fits() per entry, because
+ * account.list's own "usable" is about the agent's provider and an entry
+ * may run another CLI.  The current account stays even when it does not
+ * fit -- a combo that cannot show the value replaces it on the next save
+ * without anybody choosing to, and the daemon's refusal is the better
+ * place to learn it is wrong.
+ */
+static void
+fallback_fill_accounts(FallbackEntry *entry, const gchar *provider,
+                       const gchar *want)
+{
+    ClawtWindow *self = entry->window;
+    g_autoptr(GtkStringList) labels = gtk_string_list_new(NULL);
+    JsonObject *root = (self->fallback_accounts != NULL)
+                       ? clawt_payload_of(self->fallback_accounts) : NULL;
+    JsonArray *accounts = NULL;
+    guint selected = 0;
+    guint i;
+
+    if (root != NULL && json_object_has_member(root, "accounts") &&
+        JSON_NODE_HOLDS_ARRAY(json_object_get_member(root, "accounts")))
+        accounts = json_object_get_array_member(root, "accounts");
+
+    g_ptr_array_set_size(entry->account_ids, 0);
+    g_ptr_array_add(entry->account_ids, g_strdup(""));
+    gtk_string_list_append(labels, "The CLI's own login");
+
+    for (i = 0; accounts != NULL && i < json_array_get_length(accounts); i++) {
+        JsonObject *account = json_array_get_object_element(accounts, i);
+        const gchar *id = clawt_json_string(account, "id", NULL);
+        const gchar *description = clawt_json_string(account, "description",
+                                                     NULL);
+        gboolean fits = clawt_model_fallback_account_fits(
+            clawt_json_string(account, "provider", NULL), provider);
+        g_autofree gchar *label = NULL;
+
+        if (id == NULL || (!fits && g_strcmp0(id, want) != 0))
+            continue;
+
+        label = g_strdup_printf("%s%s%s%s", id,
+                                description != NULL ? " -- " : "",
+                                description != NULL ? description : "",
+                                fits ? "" : " (a login for another CLI)");
+
+        if (g_strcmp0(id, want) == 0)
+            selected = entry->account_ids->len;
+
+        g_ptr_array_add(entry->account_ids, g_strdup(id));
+        gtk_string_list_append(labels, label);
+    }
+
+    /* Named but not declared at all: still shown, still the value. */
+    if (want != NULL && *want != '\0' && selected == 0) {
+        g_autofree gchar *label = g_strdup_printf("%s (not declared)", want);
+
+        selected = entry->account_ids->len;
+        g_ptr_array_add(entry->account_ids, g_strdup(want));
+        gtk_string_list_append(labels, label);
+    }
+
+    adw_combo_row_set_model(ADW_COMBO_ROW(entry->account_row),
+                            G_LIST_MODEL(labels));
+    adw_combo_row_set_selected(ADW_COMBO_ROW(entry->account_row), selected);
+}
+
+static const gchar *
+fallback_account_id(FallbackEntry *entry)
+{
+    guint chosen = adw_combo_row_get_selected(ADW_COMBO_ROW(entry->account_row));
+
+    if (chosen >= entry->account_ids->len)
+        return "";
+
+    return g_ptr_array_index(entry->account_ids, chosen);
+}
+
+/*
+ * A login belongs to one CLI, so the list follows the provider.  The
+ * chosen one is kept when it is a login for the new provider too.
+ */
+static void
+on_fallback_provider_changed(GObject *object, GParamSpec *pspec,
+                             gpointer user_data)
+{
+    FallbackEntry *entry = user_data;
+    g_autofree gchar *was = g_strdup(fallback_account_id(entry));
+    const gchar *provider = clawt_gtk_chooser_provider_id(&entry->models);
+    const gchar *keep = NULL;
+    JsonObject *root;
+    JsonArray *accounts = NULL;
+    guint i;
+
+    (void)object;
+    (void)pspec;
+
+    root = (entry->window->fallback_accounts != NULL)
+           ? clawt_payload_of(entry->window->fallback_accounts) : NULL;
+    if (root != NULL && json_object_has_member(root, "accounts") &&
+        JSON_NODE_HOLDS_ARRAY(json_object_get_member(root, "accounts")))
+        accounts = json_object_get_array_member(root, "accounts");
+
+    for (i = 0; accounts != NULL && i < json_array_get_length(accounts); i++) {
+        JsonObject *account = json_array_get_object_element(accounts, i);
+
+        if (g_strcmp0(clawt_json_string(account, "id", NULL), was) == 0 &&
+            clawt_model_fallback_account_fits(
+                clawt_json_string(account, "provider", NULL), provider))
+            keep = was;
+    }
+
+    fallback_fill_accounts(entry, provider, keep);
+}
+
+/*
+ * What the editor holds, in order.  An entry whose model was left blank
+ * is kept with an empty model so that adding or moving a row does not
+ * lose it; saving is what refuses it.
+ *
+ * Returns: (transfer full) (element-type ClawtModelFallback): the entries
+ */
+static GPtrArray *
+fallback_editor_read(ClawtWindow *self)
+{
+    GPtrArray *list = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)clawt_model_fallback_free);
+    guint i;
+
+    for (i = 0; self->fallback_entries != NULL &&
+                i < self->fallback_entries->len; i++) {
+        FallbackEntry *entry = g_ptr_array_index(self->fallback_entries, i);
+        g_autofree gchar *model = clawt_gtk_chooser_model(&entry->models);
+        const gchar *provider = clawt_gtk_chooser_provider_id(&entry->models);
+
+        g_ptr_array_add(list, clawt_model_fallback_new(
+            provider != NULL ? provider : "", model != NULL ? model : "",
+            fallback_account_id(entry)));
+    }
+
+    return list;
+}
+
+static void fallback_editor_draw(ClawtWindow *self, GPtrArray *list);
+
+/*
+ * Add, remove and move all edit the list as read back from the rows and
+ * draw it again, so an unsaved choice in one entry survives moving
+ * another.  Nothing is sent until "Save changes".
+ */
+static void
+on_fallback_edit(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *op = g_object_get_data(G_OBJECT(button), "fallback-op");
+    guint index = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button),
+                                                     "fallback-index"));
+    g_autoptr(GPtrArray) list = fallback_editor_read(self);
+
+    if (g_strcmp0(op, "add") == 0) {
+        /*
+         * Starting from the agent's own provider is a guess, and the
+         * cheapest one to correct: the commonest fallback is a smaller
+         * model on the same CLI, or the same model on another login.
+         */
+        const gchar *provider =
+            clawt_gtk_chooser_provider_id(&self->inspector_models);
+
+        g_ptr_array_add(list, clawt_model_fallback_new(
+            provider != NULL ? provider : "", "", NULL));
+    } else if (g_strcmp0(op, "remove") == 0 && index < list->len) {
+        g_ptr_array_remove_index(list, index);
+    } else if (g_strcmp0(op, "up") == 0 && index > 0 && index < list->len) {
+        gpointer moved = list->pdata[index];
+
+        list->pdata[index] = list->pdata[index - 1];
+        list->pdata[index - 1] = moved;
+    } else if (g_strcmp0(op, "down") == 0 && index + 1 < list->len) {
+        gpointer moved = list->pdata[index];
+
+        list->pdata[index] = list->pdata[index + 1];
+        list->pdata[index + 1] = moved;
+    } else {
+        return;
+    }
+
+    fallback_editor_draw(self, list);
+
+    if (self->fallbacks_row != NULL)
+        adw_expander_row_set_expanded(ADW_EXPANDER_ROW(self->fallbacks_row),
+                                      TRUE);
+}
+
+static GtkWidget *
+fallback_button(ClawtWindow *self, const gchar *icon, const gchar *tooltip,
+                const gchar *op, guint index, gboolean sensitive)
+{
+    GtkWidget *button = gtk_button_new_from_icon_name(icon);
+
+    gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
+    gtk_widget_add_css_class(button, "flat");
+    gtk_widget_set_tooltip_text(button, tooltip);
+    gtk_widget_set_sensitive(button, sensitive);
+    g_object_set_data(G_OBJECT(button), "fallback-op", (gpointer)op);
+    g_object_set_data(G_OBJECT(button), "fallback-index",
+                      GUINT_TO_POINTER(index));
+    g_signal_connect(button, "clicked", G_CALLBACK(on_fallback_edit), self);
+
+    return button;
+}
+
+static void
+fallback_add_row(ClawtWindow *self, GtkWidget *row)
+{
+    adw_expander_row_add_row(ADW_EXPANDER_ROW(self->fallbacks_row), row);
+    g_ptr_array_add(self->fallback_rows, row);
+}
+
+/*
+ * The entries, drawn into the expander from @list.  The rows of the
+ * previous drawing are taken out first: an expander, like a preferences
+ * group, cannot enumerate what it was given.
+ */
+static void
+fallback_editor_draw(ClawtWindow *self, GPtrArray *list)
+{
+    guint i;
+
+    if (self->fallbacks_row == NULL)
+        return;
+
+    for (i = 0; i < self->fallback_rows->len; i++)
+        adw_expander_row_remove(ADW_EXPANDER_ROW(self->fallbacks_row),
+                                g_ptr_array_index(self->fallback_rows, i));
+
+    g_ptr_array_set_size(self->fallback_rows, 0);
+    g_ptr_array_set_size(self->fallback_entries, 0);
+
+    if (list->len == 0) {
+        GtkWidget *none = adw_action_row_new();
+
+        clawt_gtk_set_row_text(none, "No fallbacks",
+                               "At a limit the agent waits for the reset. "
+                               "Add one with the + button.");
+        fallback_add_row(self, none);
+    }
+
+    for (i = 0; i < list->len; i++) {
+        ClawtModelFallback *value = g_ptr_array_index(list, i);
+        FallbackEntry *entry = g_new0(FallbackEntry, 1);
+        GtkWidget *header = adw_action_row_new();
+        g_autofree gchar *title = g_strdup_printf("Fallback %u", i + 1);
+        g_autofree gchar *label = (*value->provider != '\0')
+                                  ? clawt_model_fallback_label(value) : NULL;
+
+        entry->window = self;
+        entry->account_ids = g_ptr_array_new_with_free_func(g_free);
+        g_ptr_array_add(self->fallback_entries, entry);
+
+        /*
+         * A heading row per entry carrying its own order buttons, so
+         * which entry a button moves is never a question of which row
+         * happens to be focused.
+         */
+        clawt_gtk_set_row_text(header, title,
+                               i == 0 ? "Tried first" : "Tried if the one above "
+                                        "is out too");
+        if (label != NULL)
+            adw_action_row_set_subtitle(ADW_ACTION_ROW(header), label);
+        gtk_widget_add_css_class(header, "clawt-fallback-entry");
+        adw_action_row_add_suffix(ADW_ACTION_ROW(header), fallback_button(
+            self, "go-up-symbolic", "Try this one earlier", "up", i, i > 0));
+        adw_action_row_add_suffix(ADW_ACTION_ROW(header), fallback_button(
+            self, "go-down-symbolic", "Try this one later", "down", i,
+            i + 1 < list->len));
+        adw_action_row_add_suffix(ADW_ACTION_ROW(header), fallback_button(
+            self, "user-trash-symbolic", "Remove this fallback", "remove", i,
+            TRUE));
+        fallback_add_row(self, header);
+
+        clawt_gtk_model_chooser_build_from(
+            &entry->models, self, self->fallbacks_row, self->fallback_catalog,
+            *value->provider != '\0' ? value->provider : NULL,
+            (value->model != NULL && *value->model != '\0') ? value->model
+                                                             : NULL);
+        g_ptr_array_add(self->fallback_rows, entry->models.provider_row);
+        g_ptr_array_add(self->fallback_rows, entry->models.model_row);
+        g_ptr_array_add(self->fallback_rows, entry->models.model_entry);
+
+        entry->account_row = adw_combo_row_new();
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(entry->account_row),
+                                      "Account");
+        fallback_fill_accounts(entry,
+                               clawt_gtk_chooser_provider_id(&entry->models),
+                               value->account);
+        fallback_add_row(self, entry->account_row);
+
+        g_signal_connect(entry->models.provider_row, "notify::selected",
+                         G_CALLBACK(on_fallback_provider_changed), entry);
+    }
+}
+
+/*
+ * The editor, under the agent's own model and account.
+ *
+ * Shown shut when the list could not be read rather than empty: an empty
+ * editor would save the empty list over the one in clawtilla.yaml.
+ */
+static void
+build_fallbacks(ClawtWindow *self, GtkWidget *group, JsonObject *settings)
+{
+    GtkWidget *expander = adw_expander_row_new();
+    GtkWidget *add;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GPtrArray) list = NULL;
+    const gchar *spelled = (settings != NULL)
+        ? clawt_json_string(settings, "model.fallbacks", "") : "";
+
+    fallback_editor_reset(self);
+
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(expander), "Fallbacks");
+    adw_expander_row_set_subtitle(
+        ADW_EXPANDER_ROW(expander),
+        "Where its conversations continue, in this order, when its own "
+        "backend hits a usage limit, a rate limit, a sign-out or an outage. "
+        "It comes back at the reset. A different CLI or login starts a fresh "
+        "conversation; another sign-in to the same subscription is refused.");
+    adw_expander_row_set_subtitle_lines(ADW_EXPANDER_ROW(expander), 0);
+    gtk_widget_add_css_class(expander, "clawt-fallbacks");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), expander);
+    set_weak(&self->fallbacks_row, expander);
+
+    list = clawt_model_fallback_parse_list(spelled, &error);
+
+    if (list == NULL) {
+        GtkWidget *row = adw_action_row_new();
+        g_autofree gchar *why = g_strdup_printf(
+            "%s. Fix it in clawtilla.yaml or with `clawtilla agent set`; "
+            "this editor will not save over a list it cannot show.",
+            error->message);
+
+        clawt_gtk_set_row_text(row, "Cannot read the list", why);
+        adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(row), 0);
+        gtk_widget_add_css_class(row, "error");
+        adw_expander_row_add_row(ADW_EXPANDER_ROW(expander), row);
+        adw_expander_row_set_expanded(ADW_EXPANDER_ROW(expander), TRUE);
+        return;
+    }
+
+    self->fallbacks_saved = clawt_model_fallback_list_to_string(list);
+    self->fallback_entries = g_ptr_array_new_with_free_func(fallback_entry_free);
+    self->fallback_rows = g_ptr_array_new();
+
+    /*
+     * Once for the whole editor.  Without a refresh: the inspector's own
+     * chooser asked for one a moment ago.
+     */
+    self->fallback_catalog = clawt_window_request(self, "model.list", NULL);
+    self->fallback_accounts = clawt_window_request(self, "account.list", NULL);
+
+    add = fallback_button(self, "list-add-symbolic", "Add a fallback", "add",
+                          0, TRUE);
+    adw_expander_row_add_suffix(ADW_EXPANDER_ROW(expander), add);
+
+    fallback_editor_draw(self, list);
+    adw_expander_row_set_expanded(ADW_EXPANDER_ROW(expander), list->len > 0);
+}
+
+/*
+ * The list as the editor would save it, or NULL with @error set when an
+ * entry is missing its provider or its model.  Spelled by the library,
+ * never here, so it is the text agent.set reads.
+ */
+static gchar *
+fallback_editor_spell(ClawtWindow *self, GError **error)
+{
+    g_autoptr(GPtrArray) list = fallback_editor_read(self);
+    guint i;
+
+    for (i = 0; i < list->len; i++) {
+        ClawtModelFallback *entry = g_ptr_array_index(list, i);
+
+        if (*entry->provider == '\0' || entry->model == NULL ||
+            *entry->model == '\0') {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                        "Fallback %u needs a model: pick one or type its "
+                        "name under \"Something else\"", i + 1);
+            return NULL;
+        }
+    }
+
+    return clawt_model_fallback_list_to_string(list);
+}
+
+/* ── On fallback ─────────────────────────────────────────────────── */
+
+static JsonObject *
+failover_of(JsonObject *agent)
+{
+    if (agent == NULL || !json_object_has_member(agent, "failover") ||
+        !JSON_NODE_HOLDS_OBJECT(json_object_get_member(agent, "failover")))
+        return NULL;
+
+    return json_object_get_object_member(agent, "failover");
+}
+
+GtkWidget *
+clawt_gtk_failover_badge(JsonObject *agent)
+{
+    JsonObject *failover = failover_of(agent);
+    g_autofree gchar *text = clawt_failover_badge(failover);
+    GtkWidget *badge;
+
+    if (text == NULL)
+        return NULL;
+
+    badge = clawt_gtk_badge(text, "warning",
+                            clawt_json_string(agent, "failover_message", NULL));
+
+    /* The tooltip has the whole sentence; the row has a name to keep. */
+    gtk_label_set_ellipsize(GTK_LABEL(badge), PANGO_ELLIPSIZE_END);
+    gtk_label_set_max_width_chars(GTK_LABEL(badge), 18);
+
+    return badge;
+}
+
+void
+clawt_gtk_inspector_sync_failover(ClawtWindow *self, JsonObject *agent)
+{
+    JsonObject *failover = failover_of(agent);
+    g_autofree gchar *text = clawt_failover_badge(failover);
+
+    if (self->failover_row == NULL)
+        return;
+
+    gtk_widget_set_visible(self->failover_row, text != NULL);
+
+    if (text == NULL)
+        return;
+
+    clawt_gtk_set_row_text(self->failover_row, text,
+                           clawt_json_string(agent, "failover_message", ""));
+}
+
 static void
 on_save_agent(GtkButton *button, gpointer user_data)
 {
@@ -178,6 +685,11 @@ on_save_agent(GtkButton *button, gpointer user_data)
     self->settings_need_restart = FALSE;
 
     g_autofree gchar *model = NULL;
+    g_autofree gchar *fallbacks = NULL;
+    gboolean fallbacks_change = FALSE;
+    gboolean backend_changes;
+    const gchar *account = NULL;
+    const gchar *provider;
     static const gchar *const efforts[] = { "low", "medium", "high",
                                             "xhigh", "max" };
     static const gchar *const restarts[] = { "never", "on-failure",
@@ -188,6 +700,23 @@ on_save_agent(GtkButton *button, gpointer user_data)
 
     if (self->selected_agent == NULL)
         return;
+
+    /*
+     * Spelled first: a fallback with no model stops the save before
+     * anything is sent, rather than halfway through it.
+     */
+    if (self->fallbacks_row != NULL && self->fallbacks_saved != NULL) {
+        g_autoptr(GError) why = NULL;
+
+        fallbacks = fallback_editor_spell(self, &why);
+
+        if (fallbacks == NULL) {
+            clawt_window_toast(self, why->message);
+            return;
+        }
+
+        fallbacks_change = g_strcmp0(fallbacks, self->fallbacks_saved) != 0;
+    }
 
     ok &= apply_schema_rows(self);
     ok &= clawt_gtk_apply_setting(self, "name",
@@ -206,23 +735,42 @@ on_save_agent(GtkButton *button, gpointer user_data)
     /*
      * The account is cleared before the provider changes and set after:
      * the daemon checks the pair, and setting a codex provider while the
-     * agent still names a Claude login is refused.
+     * agent still names a Claude login is refused.  Only when it changes:
+     * with a fallback list, the agent's own CLI on its default login can
+     * be a rotation the daemon refuses, so clearing an account nobody
+     * touched would fail a save about something else.
      */
-    if (self->account_row != NULL && self->account_ids != NULL)
-        ok &= clawt_gtk_apply_setting(self, "model.account", "");
-
-    if (clawt_gtk_chooser_provider_id(&self->inspector_models) != NULL)
-        ok &= clawt_gtk_apply_setting(self, "model.provider",
-                                      clawt_gtk_chooser_provider_id(&self->inspector_models));
-
     if (self->account_row != NULL && self->account_ids != NULL) {
         guint chosen = adw_combo_row_get_selected(ADW_COMBO_ROW(self->account_row));
 
-        if (chosen < self->account_ids->len &&
-            *(const gchar *)g_ptr_array_index(self->account_ids, chosen) != '\0')
-            ok &= clawt_gtk_apply_setting(self, "model.account",
-                                          g_ptr_array_index(self->account_ids, chosen));
+        if (chosen < self->account_ids->len)
+            account = g_ptr_array_index(self->account_ids, chosen);
     }
+
+    provider = clawt_gtk_chooser_provider_id(&self->inspector_models);
+    backend_changes = (account != NULL &&
+                       g_strcmp0(account, self->inspector_account) != 0) ||
+                      (provider != NULL &&
+                       g_strcmp0(provider, self->inspector_provider) != 0);
+
+    /*
+     * The fallback list is checked against the backend it is the
+     * fallback of, so it comes off before that backend changes and goes
+     * back on after -- the account's own rule, one level up.
+     */
+    if (fallbacks_change && backend_changes && *self->fallbacks_saved != '\0')
+        ok &= clawt_gtk_apply_setting(self, "model.fallbacks", "");
+
+    if (account != NULL && g_strcmp0(account, self->inspector_account) != 0 &&
+        self->inspector_account != NULL && *self->inspector_account != '\0')
+        ok &= clawt_gtk_apply_setting(self, "model.account", "");
+
+    if (provider != NULL)
+        ok &= clawt_gtk_apply_setting(self, "model.provider", provider);
+
+    if (account != NULL && *account != '\0' &&
+        g_strcmp0(account, self->inspector_account) != 0)
+        ok &= clawt_gtk_apply_setting(self, "model.account", account);
 
     model = clawt_gtk_chooser_model(&self->inspector_models);
 
@@ -232,6 +780,10 @@ on_save_agent(GtkButton *button, gpointer user_data)
     ok &= clawt_gtk_apply_setting(self, "model.effort",
                                   efforts[MIN(adw_combo_row_get_selected(
                                         ADW_COMBO_ROW(self->effort_row)), 4)]);
+
+    /* After the model it falls back from, for the reason given above. */
+    if (fallbacks_change)
+        ok &= clawt_gtk_apply_setting(self, "model.fallbacks", fallbacks);
 
     /*
      * The shared machine first, and nothing else under computer.* when
@@ -376,6 +928,26 @@ on_save_agent(GtkButton *button, gpointer user_data)
 
     if (!ok)
         return;
+
+    /*
+     * What the page now stands for, since a save does not redraw it: a
+     * second save compares against these, and must not clear a list or
+     * an account it already wrote.
+     */
+    if (fallbacks_change) {
+        g_free(self->fallbacks_saved);
+        self->fallbacks_saved = g_steal_pointer(&fallbacks);
+    }
+
+    if (account != NULL) {
+        g_free(self->inspector_account);
+        self->inspector_account = g_strdup(account);
+    }
+
+    if (provider != NULL) {
+        g_free(self->inspector_provider);
+        self->inspector_provider = g_strdup(provider);
+    }
 
     /*
      * Said plainly, because most of these only take effect on the next
@@ -2258,6 +2830,23 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
                               info_row("State", state));
 
+    /*
+     * Always built and hidden while the agent is on its own backend, so
+     * the sidebar's refresh can show it in place when agent.failover
+     * arrives -- rebuilding the page would throw away an edit somebody
+     * was in the middle of.
+     */
+    {
+        GtkWidget *row = adw_action_row_new();
+
+        adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(row), 0);
+        gtk_widget_add_css_class(row, "warning");
+        gtk_widget_add_css_class(row, "clawt-failover");
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), row);
+        set_weak(&self->failover_row, row);
+        clawt_gtk_inspector_sync_failover(self, agent);
+    }
+
     if (clawt_json_string(agent, "detail", NULL) != NULL)
         adw_preferences_group_add(
             ADW_PREFERENCES_GROUP(group),
@@ -2388,6 +2977,22 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
                                 "model.account", NULL)
             : NULL);
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), self->account_row);
+
+    g_free(self->inspector_provider);
+    self->inspector_provider = g_strdup(clawt_json_string(agent, "provider",
+                                                          NULL));
+    g_free(self->inspector_account);
+    self->inspector_account = g_strdup(
+        (payload != NULL && json_object_has_member(payload, "settings"))
+            ? clawt_json_string(json_object_get_object_member(payload, "settings"),
+                                "model.account", "")
+            : "");
+
+    build_fallbacks(self,
+                    group,
+                    (payload != NULL && json_object_has_member(payload, "settings"))
+                        ? json_object_get_object_member(payload, "settings")
+                        : NULL);
 
     {
         const gchar *use = (payload != NULL && json_object_has_member(payload, "settings"))

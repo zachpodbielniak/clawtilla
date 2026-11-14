@@ -37,19 +37,21 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 - *Lesson to copy:* =a9855bb06=. Refuse multiply-linked files on read-only binds, or a hardlink escapes =--ro-bind=. Check =deny_paths= (=/dev/null= over a file) for the same.
 - *Version:* minor (new config key, changes what a running agent can see).
 
-** TODO Sandbox self-check with mutations                                                         :security:test:
+** DONE Sandbox self-check with mutations                                                         :security:test:
+- *Done:* v0.15.0. =tests/clawt-sandbox-probe.c= runs inside both real bwrap boxes and tries 17 escapes; =tests/test-sandbox-probe.c= (behind =CLAWT_TEST_INTEGRATION=1=) expects all to hold, then takes out one protection at a time through =clawt_sandbox_test_set_mutations()= and requires each to fail exactly the checks its table row names. It found one real hole, now closed: a box that keeps the host's network (every agent-CLI box, and an exec box with =allow_network=) reached the host's abstract unix sockets, including an X server that trusts the local user. =clawt_sandbox_enter()= applies a Landlock scope in the child. See =docs/security.org=, "The sandbox self-check". No =clawtilla sandbox check= command: the probe is a test binary, not something installed (see that section for why).
 - *Today:* nothing probes =clawt-sandbox.c= from inside a real box.
 - *Prior art:* =server/bot-box/self-check.ts= and =box-probe.ts=. A hostile probe runs at boot (29 checks). With =--mutate=bind-data,share-net,...=, removing one protection must fail exactly the checks that guard it.
 - *Proposal:* add =tests/test-sandbox-probe.c= behind =CLAWT_TEST_INTEGRATION=1= (it needs bwrap). It is a probe binary run inside the box that tries the escapes: read the state dir, reach loopback or the LAN, read another agent's workspace, see host pids, write through a ro bind. Then a mutation table, one entry per builder flag. This is "a parity check that has never been shown to fail" applied to the sandbox.
 - *Lesson to copy:* =844139d5e= again. Their loopback check could not fail because the harness bridge sat on the fixture's own port, and the probe counted its own spec as a leaked secret. State what the probe holds constant.
-- *Version:* none (test only).
+- *Version:* patch (the probe is test only; the Landlock scope changes what a running box can reach).
 
-** TODO Make =model.fallbacks= do something: limit failover                                          :runtime:
+** DONE Make =model.fallbacks= do something: limit failover v0.16.0                :runtime:
 - *Today:* =docs/agents.org:272=. =model.fallbacks= and =model.routing_profile= are "rendered nowhere", so an agent whose primary is unavailable fails.
 - *Prior art:* =server/limit-failover.ts= and =limit-resets.ts=. On a usage limit or a sign-out, the conversation continues on a backup engine and returns once the limit resets. It refuses to fail over to another sign-in on the *same subscription*, because rotating accounts breaks provider terms. A pay-per-use key on the same engine is allowed.
 - *Proposal:* decide where the switch lives. libreclaw sees the provider error, so the mechanism belongs upstream: tag libreclaw, pin it, then render =ai.fallbacks= into the agent's config. clawtilla's part is rendering, the account check (=clawt_account_check()= already knows which accounts are which), and an event and alert when an agent is running on a fallback.
 - *Open question:* does the fallback list carry a provider per entry? A fallback across CLIs (claude-code to codex) loses the session; say so in the event.
 - *Version:* minor (config semantics change; libreclaw pin bump).
+- *Shipped:* libreclaw's =LcFailover= (=ai.fallbacks=, the =agent.failover= frame, per-login session ids) does the switch and the return; clawtilla renders =model.fallbacks= as a list of {provider, model, account}, refuses another sign-in to the same subscription at load and in =agent set= (=clawt_config_check_fallbacks()=, asking libreclaw's own rule), adds =accounts.pay_per_use=, and turns the frame into agent state, an =agent.failover= event and alert, and an "On fallback" badge in every client. The fallback list does carry a provider per entry; a cross-CLI move says the context was lost. =model.routing_profile= is documented as reserved rather than wired: an agent has one backend, so there is nothing for a profile to choose between. Design in =docs/agents.org= under Limit failover.
 
 ** TODO Egress gate and provider-key broker                                                        :security:network:
 - *Today:* =allow_network= in =clawt-sandbox.c= is =--unshare-net= or nothing. A networked agent reaches the whole tailnet and LAN. Provider API keys appear to reach the agent's environment (*unverified*: inferred from the =api_key: {env: ANTHROPIC_API_KEY}= example in =docs/security.org=).
@@ -61,7 +63,7 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 * P1 -- removing silent cost and silent failure
 
 ** DONE Waits: a condition checked by code, not by the model                                       :orchestration:tools:
-- *Done (version assigned at merge):* =clawtilla_wait_until= / =_wait_list= / =_wait_cancel= with url, file, task, computer and command probes (=src/wait/=, =src/core/daemon-wait.c=); the address policy is =clawt_net_address_is_public()= in =src/clawt-net.c=, ready for the egress gate. Per-wait records under =<state_dir>/waits=, =orchestration.max_waits_per_agent=, =wait.list= / =wait.cancel= and a "Waiting for" list in all three clients. See =docs/orchestration.org=, "Waits".
+- *Done v0.15.0:* =clawtilla_wait_until= / =_wait_list= / =_wait_cancel= with url, file, task, computer and command probes (=src/wait/=, =src/core/daemon-wait.c=); the address policy is =clawt_net_address_is_public()= in =src/clawt-net.c=, ready for the egress gate. Per-wait records under =<state_dir>/waits=, =orchestration.max_waits_per_agent=, =wait.list= / =wait.cancel= and a "Waiting for" list in all three clients. See =docs/orchestration.org=, "Waits".
 - *Was:* no wait tool in =src/mcp/clawt-mcp-tools.c=. "Tell me when X" is a cron routine that wakes the model on every tick.
 - *Prior art:* =server/waits.ts=, =wait-probes.ts=, =docs/superpowers/specs/2026-10-27-waits-design.md=. Three tools: =wait_until=, =list_waits=, =cancel_wait=. Waits expire (24 h default, 7 days max). URL probes run at most once a minute with backoff, and private addresses are refused.
 - *Proposal:* tools =clawtilla_wait_until= / =_wait_list= / =_wait_cancel=. Probe kinds: URL status/body match (through the egress gate's address rules), file exists/changed in the workspace, task settled, computer reachable, command exit status on the computer (=clawt_computer_exec_async()=). A satisfied wait is a mailbox delivery into the room it was set from. Waits persist under =<state_dir>= and survive a daemon restart.
@@ -83,14 +85,14 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 - *Proposal:* schema key =routines.max_start_failures= (default 3, 0 = never). Count in run state beside the config, never in it. Raise an alert naming the routine and the computer error. Reset the count on any successful start or on an edit to the routine.
 - *Version:* micro if no key is added, minor with the key.
 
-** DONE Webhook payload field filter (version assigned at merge)                                    :triggers:
+** DONE Webhook payload field filter v0.15.0                                    :triggers:
 - *Today:* =triggers.events=, =repo=, =branch= and =ignore_actors= exist, but there is no generic field match. The generic provider spends a turn deciding "not for me".
 - *Prior art:* =46859b327= and =server/webhook-payload-filter.test.ts=. Up to 10 dotted paths, each with text it must contain, case-insensitive. A miss is recorded as ignored and starts no run. =741176869=: null clears the filter.
 - *Proposal:* =triggers.match= as a list of =path: value= pairs in the schema. Evaluate with json-glib path lookup before enqueue. Record the ignore in the trigger's delivery log so "why didn't it fire" is answerable.
 - *Version:* minor (config key).
 - *Landed:* =triggers.match=, up to ten ={path, value}= pairs, all must match, containment after Unicode case folding; a number indexes an array and a name on an array looks in every element. A miss is =ignored= naming the pair and what the field held; an unreadable filter refuses every delivery (503, =failed=) rather than being dropped. ~trigger.match_test~ and ~clawtilla trigger check~ try a filter against the newest stored body before it is saved and list its fields. See =docs/triggers.org=.
 
-** DONE Webhook posts into a room with no AI run, and a per-trigger pending cap (version assigned at merge) :triggers:
+** DONE Webhook posts into a room with no AI run, and a per-trigger pending cap v0.15.0 :triggers:
 - *Today:* =triggers.room= exists, but every delivery runs the agent. There is no per-trigger limit key.
 - *Prior art:* =813814524= (post with no run). =7f0c0cd0e= (a 1-50 cap that used to be a hard-coded 3 and silently dropped fan-out events; an out-of-range hand edit reads as the default).
 - *Proposal:* =triggers.mode: run | post= and =triggers.max_pending=. A =post= delivery lands in the room as a system message with the rendered payload and spends nothing.
@@ -98,7 +100,7 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 - *Landed:* =triggers.mode= (=run= default, =post= recorded into =triggers.room= through =clawt_mailbox_router_note()=, so nothing runs; refused without a room) and =triggers.max_pending= (1-50, default 4, replacing the constant =CLAWT_TRIGGER_MAX_UNFINISHED=; an out-of-range hand edit reads as the default with a load warning). A delivery past the cap is 429 and a =dropped= receipt that does not take the delivery id. New outcomes =dropped= and =posted=, new event ~trigger.posted~. See =docs/triggers.org=.
 
 ** DONE Usage ledger: by model, by origin, exportable                                               :spending:
-- *Done:* (version assigned at merge). Each new =token_usage= row is tagged by the drain that charges task budgets, from the turn state of the room libreclaw recorded it in (=clawt_agent_describe_turn_in()=, no fold), into =<state_dir>/sessions/clawtilla-ledger.db= (=src/usage/clawt-usage-ledger.c=). Origin is =clawt_usage_origin_classify()=: a routine or trigger run wins over the agent that delivered its delegated work, found up the task's parents. =usage.ledger= groups by agent, model, origin or day; =clawtilla cost --by ... [--csv]=; a Group by selector, the unpriced count and Export CSV on all three clients' Spending pages. Unpriced (negative, or zero against tokens) is counted and never summed. Design in =docs/spending.org=, "The ledger".
+- *Done:* v0.15.0. Each new =token_usage= row is tagged by the drain that charges task budgets, from the turn state of the room libreclaw recorded it in (=clawt_agent_describe_turn_in()=, no fold), into =<state_dir>/sessions/clawtilla-ledger.db= (=src/usage/clawt-usage-ledger.c=). Origin is =clawt_usage_origin_classify()=: a routine or trigger run wins over the agent that delivered its delegated work, found up the task's parents. =usage.ledger= groups by agent, model, origin or day; =clawtilla cost --by ... [--csv]=; a Group by selector, the unpriced count and Export CSV on all three clients' Spending pages. Unpriced (negative, or zero against tokens) is counted and never summed. Design in =docs/spending.org=, "The ledger".
 - *Left:* libreclaw records the model name in =token_usage.provider=, so the provider comes from the agent's =model.provider= at tag time; a routine run in flight across a daemon restart is tagged =task:<id>=, since which run made a task is held in memory.
 - *Today:* =clawtilla cost --today/--days/--agent= and the Spending pages group by agent only (=docs/spending.org=). "Which routine costs me most" has no answer.
 - *Prior art:* =093a246b8= and =server/usage-ledger.ts=. One row per turn, grouped by bot/model/person/day/engine, CSV export that neutralises formulas. Unpriced turns are counted, not hidden.
@@ -106,7 +108,7 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 - *Version:* minor (CLI output change).
 
 ** DONE Per-device client tokens, pairing and revoke                                                :security:clients:
-- *Done:* (version assigned at merge). ~clawtilla device pair/list/revoke~ and ~remote pair~; ~device.pair~, ~device.pair_cancel~, ~device.redeem~ (the one frame allowed before ~control.hello~), ~device.list~, ~device.revoke~; ~daemon.device_idle_days~ (90, 0 = never). Tokens hashed (SHA-256) in ~<state_dir>/devices.yaml~, compared in constant time; codes single use, five minutes, five guesses, ten failures a minute daemon-wide. Revoke and expiry close live connections. *Pair with a code* on every client's Connections screen and a Devices settings page in GTK, web and lrg. ~ClawtDeviceStore~ in libclawt; ~tests/test-devices.c~. See [[file:docs/security.org::*Paired devices][security.org]].
+- *Done:* v0.15.0. ~clawtilla device pair/list/revoke~ and ~remote pair~; ~device.pair~, ~device.pair_cancel~, ~device.redeem~ (the one frame allowed before ~control.hello~), ~device.list~, ~device.revoke~; ~daemon.device_idle_days~ (90, 0 = never). Tokens hashed (SHA-256) in ~<state_dir>/devices.yaml~, compared in constant time; codes single use, five minutes, five guesses, ten failures a minute daemon-wide. Revoke and expiry close live connections. *Pair with a code* on every client's Connections screen and a Devices settings page in GTK, web and lrg. ~ClawtDeviceStore~ in libclawt; ~tests/test-devices.c~. See [[file:docs/security.org::*Paired devices][security.org]].
 - *Today:* one daemon bearer token, copied by hand (=docs/clients.org:172=, =clawtilla daemon token=). A lost laptop or phone means rotating it for every client, and the daemon binds the tailnet by default.
 - *Prior art:* =docs/desktop-companion.md=, =docs/phone-relay-server.md=. Six-digit code pairing, a token per device, =devices= / =devices revoke ID=. =bff8d87c0= revokes a session after its idle window.
 - *Proposal:* =clawtilla device pair= prints a short-lived code. A client exchanges it for its own token (stored 0600 in =connections.yaml=). Add =device list/revoke=, an idle expiry key, and keep the existing token as the owner credential. Tokens come from =/dev/urandom= and are compared in constant time.
@@ -466,6 +468,32 @@ When somebody turns the broker on, clawtilla starts a local AnythingMCP for them
 
 ** TODO Escape the marker in the remaining quoted text                                        :security:orchestration:
 - *Found by:* the v0.12.0 preamble work. Not yet escaped: general MCP tool output that quotes other agents (recall, room history), roster names in room preambles, and system notes beyond the ones listed in =docs/orchestration.org=. A mid-line marker ("Latest from oryx: [clawtilla] ...") is also left alone by design; decide whether quoted summaries need it.
+
+* Follow-ups found while implementing
+
+** TODO Upstream: podomation container event thread leaks its GError                         :upstream:
+- =modules/container/pod-container-module.c=, =container_stream_thread_func()= (podomation 643fe83, lines ~1425-1429): =if (!self->streaming) break;= leaves =error= set. Fix: =g_clear_error(&error);= before the =break=. v0.15.0 worked around it in =tests/test-computer.c=.
+
+** TODO Upstream: ai-glib classifies every CLI's usage limit                                   :upstream:ai-glib:
+- Only claude-code maps its limit to =AI_ERROR_SESSION_LIMIT= with the reset notice. codex, grok, opencode, cursor and antigravity report =AI_ERROR_CLI_EXECUTION=, so libreclaw's failover classifies them from text. Map their limit, rate-limit and sign-out output to =SESSION_LIMIT=, =RATE_LIMITED= and =INVALID_API_KEY=.
+
+** TODO Upstream: libreclaw records the model in =token_usage.provider=                       :upstream:libreclaw:spending:
+- The usage ledger takes the provider from the agent's =model.provider= at tag time instead.
+
+** TODO Usage ledger: keep a task's run across a restart                                        :spending:
+- The task -> routine/trigger run map is in memory, so a run spanning a restart is tagged =task:<id>=. Persist it with the task.
+
+** TODO Waits: should URL waits need web or egress permission?                                  :security:orchestration:
+- A URL wait lets an agent with no network of its own have the daemon fetch addresses it chooses (public ones only). Gate it on the same permission the egress gate uses.
+
+** TODO Devices: may a paired device revoke other devices?                                       :security:clients:
+- Today any authenticated device can revoke others (it only removes access); only the owner pairs. Decide whether revoke is owner-only.
+
+** TODO Fallback polish in the clients                                                          :clients:
+- The GTK Fleet page shows no "on fallback" badge (=usage.summary= lacks =failover=). In GTK and lrg, a save that changes provider and then has its fallback list refused leaves the list cleared until saved again.
+
+** TODO =tools/clawt-web-smoke.sh=: four checks fail on master                                  :test:
+- The same 4 of 48 fail on an untouched build; found during the fallbacks work.
 
 * Design decisions to make, not gaps
 

@@ -115,6 +115,55 @@ ClawtLrgAgentChoices *clawt_lrg_agent_model_choices(JsonNode    *catalog,
 const gchar     *clawt_lrg_agent_provider_note(JsonNode    *catalog,
                                                const gchar *provider);
 
+/* ── The fallback list ────────────────────────────────────────────── */
+
+/**
+ * clawt_lrg_agent_fallback_account_choices:
+ * @reply: (nullable): an account.list reply
+ * @provider: (nullable): the CLI the entry runs
+ * @current: (nullable): the account the entry names
+ *
+ * The logins one `model.fallbacks` entry can name: the CLI's own, the
+ * accounts clawt_model_fallback_account_fits() says are for @provider,
+ * and @current whatever it is.
+ *
+ * Returns: (transfer full): the choices
+ */
+ClawtLrgAgentChoices *clawt_lrg_agent_fallback_account_choices(
+                          JsonNode    *reply,
+                          const gchar *provider,
+                          const gchar *current);
+
+/**
+ * clawt_lrg_agent_fallback_edit:
+ * @list: (element-type ClawtModelFallback): the entries, edited in place
+ * @op: "add", "remove", "up" or "down"
+ * @index: the entry @op is about (ignored by "add")
+ * @provider: (nullable): where a new entry starts
+ *
+ * One of the editor's buttons.  A new entry has no model yet, which
+ * clawt_lrg_agent_fallback_spell() refuses until somebody picks one.
+ *
+ * Returns: %TRUE when @list changed
+ */
+gboolean clawt_lrg_agent_fallback_edit(GPtrArray   *list,
+                                       const gchar *op,
+                                       guint        index,
+                                       const gchar *provider);
+
+/**
+ * clawt_lrg_agent_fallback_spell:
+ * @list: (nullable) (element-type ClawtModelFallback): the entries
+ * @error: where to say which entry is incomplete
+ *
+ * The list in the library's one spelling, or %NULL when an entry lacks
+ * its provider or its model -- refused rather than dropped, since a
+ * shorter list than the one on screen would be saved without a word.
+ *
+ * Returns: (transfer full) (nullable): the text for agent.set
+ */
+gchar *clawt_lrg_agent_fallback_spell(GPtrArray *list, GError **error);
+
 /* ── The settings form ────────────────────────────────────────────── */
 
 /**
@@ -245,6 +294,9 @@ void             clawt_lrg_agent_setting_free(gpointer setting);
  * and the account cleared first when it changes from one login to
  * another, because the daemon checks the provider/account pair and a
  * new provider set while the old login is still named is refused.
+ * `model.fallbacks` goes last, and comes off first when the provider or
+ * the account changes in the same save, for the same reason one level
+ * up: the daemon checks the list against the backend it falls back from.
  *
  * Returns: (transfer full) (element-type ClawtLrgAgentSetting): the plan
  */

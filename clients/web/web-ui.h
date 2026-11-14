@@ -147,6 +147,18 @@ HtmxElement *clawt_web_card_body(HtmxDiv *card);
 HtmxSpan *clawt_web_badge(const gchar *text, const gchar *tone);
 
 /**
+ * clawt_web_failover_badge:
+ * @agent: (nullable): an agent as agent.list or agent.show reports it
+ *
+ * "On fallback: codex-cli gpt-5.5" while the agent runs on one of its
+ * model.fallbacks, titled with the sentence saying why and until when.
+ *
+ * Returns: (transfer full) (nullable): the badge, or %NULL while the
+ *   agent is on its own backend
+ */
+HtmxSpan *clawt_web_failover_badge(JsonObject *agent);
+
+/**
  * clawt_web_state_tone:
  * @state: an agent state nickname
  *
@@ -312,6 +324,31 @@ HtmxDiv *clawt_web_select_field(const gchar        *label,
                                 const gchar *const *values,
                                 const gchar *const *labels,
                                 const gchar        *current);
+
+/**
+ * clawt_web_fallback_card:
+ * @agent_id: (nullable): whose list it is
+ * @spelled: (nullable): `model.fallbacks` as agent.show reports it
+ * @own_provider: (nullable): the agent's own provider, where a new entry
+ *   starts
+ * @catalog: (nullable): a model.list reply
+ * @accounts: (nullable): an account.list reply
+ *
+ * The ordered fallback editor: a row per entry with its provider, its
+ * model (a text field suggesting the catalogue's) and its account, and
+ * buttons to move or remove it, then a row to add one.  It posts to
+ * `/a/:id/fallbacks` with `op` naming the edit; every button saves.
+ *
+ * A list that cannot be parsed is shown as the reason instead of a form,
+ * so the page never saves over a list it could not show.
+ *
+ * Returns: (transfer full): the card
+ */
+HtmxDiv *clawt_web_fallback_card(const gchar *agent_id,
+                                 const gchar *spelled,
+                                 const gchar *own_provider,
+                                 JsonObject  *catalog,
+                                 JsonObject  *accounts);
 
 /**
  * clawt_web_hidden:

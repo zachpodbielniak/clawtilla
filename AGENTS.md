@@ -667,6 +667,17 @@ critical fired.
   state arms on exactly that edge. Any new per-turn side effect in lc-app
   hangs off that signal; `CLAWTILLA_ROOM_ID` and the typing indicator both
   made this mistake at enqueue before being moved.
+- **Limit failover is libreclaw's, and so is the rotation rule.** libreclaw
+  sees the provider's refusal, so `LcFailover` (`ai.fallbacks`) does the
+  switch and the return; clawtilla renders `model.fallbacks` and refuses a
+  bad list early. "Another sign-in to the same subscription" is asked of
+  `lc_failover_add_fallback()` from `clawt_config_check_fallbacks()` rather
+  than restated -- two copies of a refusal is how a list clawtilla accepts
+  becomes one libreclaw silently shortens. The agent reports the state as
+  an `agent.failover` link frame and repeats it after every hello while it
+  is away, so the daemon clears it with the link, never on a timer. A
+  session id is kept per login (CLI type plus config dir): a cross-CLI
+  fallback starts fresh and the primary resumes its own conversation.
 - Cost comes from the provider (`ai_response_set_cost_micros()`), not the rate
   card: a CLI bills cache reads and writes, which never appear in
   `input_tokens`. `-1` means unknown, never free.
@@ -1119,6 +1130,14 @@ Other VM facts:
 - **A bind protects a path, not an inode.** `clawt_sandbox_check_links()`
   refuses a read-only file bind or a denied file with a second hard link
   before anything is spawned; call it wherever `wrap_argv()` is.
+- **A shared network namespace shares the abstract socket namespace.**
+  A networked box reached every `@`-socket on the host -- an X server
+  trusting the local user among them. `clawt_sandbox_enter()` (Landlock
+  scope) must run in the child setup of whatever spawns `wrap_argv()`'s
+  output, after `wrap_argv()`.
+- **A protection with no failing check is not tested.** Adding one to
+  `clawt_sandbox_wrap_argv()` means a `ClawtSandboxMutation` flag, a
+  probe check, and a row in `tests/test-sandbox-probe.c`'s table.
 
 ## Daemon, IPC and Clients
 

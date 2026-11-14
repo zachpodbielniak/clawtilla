@@ -26,6 +26,7 @@ enum {
     SIGNAL_MESSAGE,
     SIGNAL_TYPING,
     SIGNAL_STEP,
+    SIGNAL_FAILOVER,
     SIGNAL_CLOSED,
     N_SIGNALS
 };
@@ -280,6 +281,23 @@ handle_step(ClawtLink *self, JsonObject *payload)
     g_signal_emit(self, signals[SIGNAL_STEP], 0, step);
 }
 
+/*
+ * The agent moved to a fallback backend, or came back to its own.
+ *
+ * Telemetry like a step -- there is no path from here to the router --
+ * and passed on whole: the payload is libreclaw's to define
+ * (lc_failover_to_json()), and a member this build has never heard of
+ * is still worth keeping for a client that has.
+ */
+static void
+handle_failover(ClawtLink *self, JsonObject *payload)
+{
+    if (payload == NULL || self->agent_id == NULL)
+        return;
+
+    g_signal_emit(self, signals[SIGNAL_FAILOVER], 0, payload);
+}
+
 static void
 handle_mcp_request(ClawtLink *self, const LcBridgeFrame *frame)
 {
@@ -348,6 +366,10 @@ handle_frame(ClawtLink *self, const LcBridgeFrame *frame)
 
     case LC_BRIDGE_FRAME_CHAT_STEP:
         handle_step(self, frame->payload);
+        break;
+
+    case LC_BRIDGE_FRAME_AGENT_FAILOVER:
+        handle_failover(self, frame->payload);
         break;
 
     case LC_BRIDGE_FRAME_MCP_REQUEST:
@@ -781,6 +803,18 @@ clawt_link_class_init(ClawtLinkClass *klass)
         g_signal_new("step", CLAWT_TYPE_LINK, G_SIGNAL_RUN_LAST, 0,
                      NULL, NULL, NULL, G_TYPE_NONE, 1,
                      CLAWT_TYPE_TURN_STEP);
+
+    /**
+     * ClawtLink::failover:
+     * @self: the link
+     * @payload: (type Json.Object): the `agent.failover` payload
+     *
+     * The agent moved to a fallback backend because its own refused, or
+     * came back to its own.  Telemetry, never a message.
+     */
+    signals[SIGNAL_FAILOVER] =
+        g_signal_new("failover", CLAWT_TYPE_LINK, G_SIGNAL_RUN_LAST, 0,
+                     NULL, NULL, NULL, G_TYPE_NONE, 1, JSON_TYPE_OBJECT);
 
     signals[SIGNAL_CLOSED] =
         g_signal_new("closed", CLAWT_TYPE_LINK, G_SIGNAL_RUN_LAST, 0,

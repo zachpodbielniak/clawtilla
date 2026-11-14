@@ -266,6 +266,32 @@ agent_at(JsonNode *agents, guint index)
         index);
 }
 
+/*
+ * An agent on one of its fallbacks carries the library's badge and the
+ * daemon's sentence; one on its own backend carries neither.
+ */
+static void
+test_agent_row_on_fallback(void)
+{
+    g_autoptr(JsonNode) away = parse(
+        "{\"id\":\"scout\",\"state\":\"running\","
+        "\"failover\":{\"state\":\"fallback\","
+        "\"active\":{\"provider\":\"codex-cli\",\"model\":\"gpt-5.5\"}},"
+        "\"failover_message\":\"scout is running on fallback\"}");
+    g_autoptr(JsonNode) home = parse("{\"id\":\"scout\",\"state\":\"running\"}");
+    g_autoptr(GHashTable) unread = new_unread();
+    g_autoptr(GHashTable) typing = new_typing();
+    g_autoptr(ClawtLrgAgentRow) on = clawt_lrg_agent_row_new(
+        json_node_get_object(away), unread, typing, TRUE);
+    g_autoptr(ClawtLrgAgentRow) off = clawt_lrg_agent_row_new(
+        json_node_get_object(home), unread, typing, TRUE);
+
+    g_assert_cmpstr(on->fallback, ==, "On fallback: codex-cli gpt-5.5");
+    g_assert_cmpstr(on->fallback_message, ==, "scout is running on fallback");
+    g_assert_null(off->fallback);
+    g_assert_null(off->fallback_message);
+}
+
 static void
 test_agent_row(void)
 {
@@ -955,6 +981,8 @@ main(gint argc, gchar **argv)
     g_test_add_func("/lrg/chat/typing/forget", test_typing_forget);
     g_test_add_func("/lrg/chat/typing/activity", test_typing_activity);
     g_test_add_func("/lrg/chat/sidebar/agent-row", test_agent_row);
+    g_test_add_func("/lrg/chat/sidebar/agent-row-on-fallback",
+                    test_agent_row_on_fallback);
     g_test_add_func("/lrg/chat/sidebar/verbs", test_agent_verbs);
     g_test_add_func("/lrg/chat/sidebar/order", test_sidebar_order);
     g_test_add_func("/lrg/chat/sidebar/collapsed", test_sidebar_collapsed);

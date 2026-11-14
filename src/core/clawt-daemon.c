@@ -365,6 +365,84 @@ on_link_contested(ClawtLinkServer *server, const gchar *agent_id,
     clawt_event_bus_publish(self->bus, event);
 }
 
+/*
+ * The agent moved to a fallback backend, or came back to its own.
+ *
+ * Recorded on the agent so status shows it for as long as it holds, and
+ * published as `agent.failover` -- a notice while the agent is away,
+ * because it arrives on its own and changes what the agent costs and how
+ * well it answers, and routine when it comes back.  The sentence is
+ * built here, once, by the library, so the alert, the log and both
+ * clients say the same thing.
+ */
+static void
+on_link_failover(ClawtLinkServer *server, const gchar *agent_id,
+                 JsonObject *payload, gpointer user_data)
+{
+    ClawtDaemon *self = user_data;
+    g_autoptr(ClawtEvent) event = NULL;
+    g_autofree gchar *line = NULL;
+    ClawtAgent *agent;
+    JsonObject *backend;
+    const gchar *name = NULL;
+
+    (void)server;
+
+    agent = clawt_agent_manager_get(self->agents, agent_id);
+    if (agent == NULL || payload == NULL)
+        return;
+
+    if (clawt_agent_get_config(agent) != NULL)
+        name = clawt_agent_config_get_string(clawt_agent_get_config(agent),
+                                             "name");
+
+    clawt_agent_set_failover(agent, payload);
+    line = clawt_failover_describe(name != NULL ? name : agent_id, payload);
+
+    g_message("agent %s: %s", agent_id, line);
+
+    event = clawt_event_new("agent.failover", agent_id);
+    clawt_event_set_detail(event, "state",
+        json_object_get_string_member_with_default(payload, "state", ""));
+    clawt_event_set_detail(event, "reason",
+        json_object_get_string_member_with_default(payload, "reason", ""));
+
+    backend = json_object_has_member(payload, "active")
+        ? json_object_get_object_member(payload, "active") : NULL;
+    if (backend != NULL) {
+        clawt_event_set_detail(event, "provider",
+            json_object_get_string_member_with_default(backend, "provider",
+                                                       NULL));
+        clawt_event_set_detail(event, "model",
+            json_object_get_string_member_with_default(backend, "model",
+                                                       NULL));
+    }
+
+    backend = json_object_has_member(payload, "primary")
+        ? json_object_get_object_member(payload, "primary") : NULL;
+    if (backend != NULL) {
+        clawt_event_set_detail(event, "primary_provider",
+            json_object_get_string_member_with_default(backend, "provider",
+                                                       NULL));
+        clawt_event_set_detail(event, "primary_model",
+            json_object_get_string_member_with_default(backend, "model",
+                                                       NULL));
+    }
+
+    clawt_event_set_detail_int(event, "reset_at",
+        json_object_get_int_member_with_default(payload, "reset_at", 0));
+    clawt_event_set_detail_int(event, "retry_at",
+        json_object_get_int_member_with_default(payload, "retry_at", 0));
+    clawt_event_set_detail(event, "context_lost",
+        json_object_get_boolean_member_with_default(payload, "context_lost",
+                                                    FALSE)
+            ? "true" : "false");
+    clawt_event_set_detail(event, "message", line);
+
+    clawt_event_bus_publish(self->bus, event);
+    clawt_event_bus_emit(self->bus, "agent.changed", agent_id);
+}
+
 static void
 on_link_removed(ClawtLinkServer *server, const gchar *agent_id,
                 gpointer user_data)
@@ -378,6 +456,14 @@ on_link_removed(ClawtLinkServer *server, const gchar *agent_id,
 
     if (agent != NULL)
         clawt_agent_set_link(agent, NULL);
+
+    /*
+     * Which backend a process is on dies with the process.  An agent
+     * that only lost its link repeats the state after it reconnects; a
+     * restarted one starts on its primary and says so by saying nothing.
+     */
+    if (agent != NULL)
+        clawt_agent_set_failover(agent, NULL);
 
     clawt_event_bus_emit(self->bus, "agent.disconnected", agent_id);
 }
@@ -6562,6 +6648,8 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
                      G_CALLBACK(on_link_message), self);
     g_signal_connect(self->link_server, "step",
                      G_CALLBACK(on_link_step), self);
+    g_signal_connect(self->link_server, "failover",
+                     G_CALLBACK(on_link_failover), self);
     g_signal_connect(self->link_server, "typing",
                      G_CALLBACK(on_link_typing), self);
     g_signal_connect(self->link_server, "link-contested",
@@ -7297,6 +7385,20 @@ clawt_daemon_add_agent_settings(JsonBuilder *builder, ClawtAgent *agent)
         }
     }
 
+    /*
+     * The fallback list, in the spelling agent.set takes back.  A list
+     * of mappings has no agent-relative name, so the walk above skips
+     * it; without this a client's editor would open empty and saving
+     * the page would write the empty list over the real one.
+     */
+    {
+        g_autoptr(GPtrArray) fallbacks = clawt_agent_config_get_fallbacks(config);
+        g_autofree gchar *spelled = clawt_model_fallback_list_to_string(fallbacks);
+
+        json_builder_set_member_name(builder, "model.fallbacks");
+        json_builder_add_string_value(builder, spelled);
+    }
+
     json_builder_end_object(builder);
 }
 
@@ -7841,6 +7943,29 @@ clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
      */
     json_builder_set_member_name(builder, "busy");
     json_builder_add_boolean_value(builder, clawt_agent_get_busy(agent));
+
+    /*
+     * Which backend it is really running on, only while that is not its
+     * own.  As libreclaw reported it plus `since`, and the sentence the
+     * alert carried, so a client can badge it and say why without a
+     * second copy of the wording.
+     */
+    if (clawt_agent_get_failover(agent) != NULL) {
+        JsonObject *failover = clawt_agent_get_failover(agent);
+        g_autofree gchar *line = clawt_failover_describe(
+            clawt_agent_config_get_string(config, "name") != NULL
+                ? clawt_agent_config_get_string(config, "name")
+                : clawt_agent_get_id(agent),
+            failover);
+        JsonNode *node = json_node_new(JSON_NODE_OBJECT);
+
+        json_node_set_object(node, failover);
+        json_builder_set_member_name(builder, "failover");
+        json_builder_add_value(builder, node);
+
+        json_builder_set_member_name(builder, "failover_message");
+        json_builder_add_string_value(builder, line);
+    }
 
     if (clawt_agent_get_activity_peer(agent) != NULL) {
         json_builder_set_member_name(builder, "peer");
