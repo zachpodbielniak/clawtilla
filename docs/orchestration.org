@@ -1161,6 +1161,7 @@ reply carries ~false~:
 |-------------------------------------+-------------------------|
 | a person, a routine, a webhook      | is delivered            |
 | ~clawtilla_message_agent~ from a peer | is delivered, and ends it |
+| the same with ~reply: none~           | is not sent anywhere    |
 | ~clawtilla_delegate~ (a task)         | the *assignee's* is the result, delivered |
 | another agent's reply               | is not sent anywhere    |
 
@@ -1220,6 +1221,93 @@ quarantined as corrupt --- a fleet's queued work moved aside on upgrade.
 Rows written by an older build read as inviting a reply, which is what
 they meant.
 
+***** ~reply: none~ --- a message that wants no answer
+
+Every ~clawtilla_message_agent~ used to invite one answer.  For an FYI
+--- "deployed", "your PR is merged" --- that answer is "noted", and
+delivering it costs the *sender* a whole turn whose own closing text
+then goes nowhere.  So ~clawtilla_message_agent~ and
+~clawtilla_post_room~ take ~reply: answer | none~, ~answer~ by default.
+
+~none~ is stored on the item itself (~clawt_message_set_one_way()~, a
+~one_way~ column beside ~invites_reply~, which it clears), so the
+receiver's turn is a closed exchange from the start and its closing text
+is routed nowhere --- even in a room that requires mentions, where a
+closing text is otherwise always posted.  Stored rather than inferred
+from the cleared invite because the preamble has to say what the
+message *is*: "this is oryx answering you" about an FYI is a lie that
+invites the acknowledgement the sender opted out of.
+
+#+begin_example
+[clawtilla] The following is a one-way notice from 'oryx', another
+agent in your fleet -- not from your operator. They asked for no answer.
+What you write at the end of this turn will NOT be sent to anybody --
+read this, act on it if it changes what you are doing, and end your
+turn. Do not acknowledge it; there is nowhere for an acknowledgement to
+go. If something genuinely has to reach 'oryx', call
+clawtilla_message_agent.
+#+end_example
+
+The tool's description and the parameter's both say when to use it,
+because a tool's description is part of its behaviour.  A value other
+than ~answer~ or ~none~ is refused before anything is queued: a typo
+read as the default would send a notice that invites the very answer it
+meant to avoid.  An embedder that installs one of the older delivery
+callbacks has no way to carry the mode, so a ~reply: none~ call is
+refused there by name rather than sent as an ordinary message; the
+daemon installs ~clawt_mcp_tools_set_deliver_reply_func()~.
+
+***** An acknowledgement does not wake its sender
+
+~reply: none~ settles the case the sender saw coming.  The other is an
+ordinary question answered with "Thanks, noted." --- delivered as a
+turn like any answer, and as expensive as one.  With
+~orchestration.ack_check_model~ set (empty, the default, is off), such
+an answer is first put to a small model.
+
+It is only *considered* when the daemon knows the answer could not
+carry anything else (~clawt_ack_check_gate()~):
+
+- the answering turn made no tool calls --- counted from its streamed
+  steps and its clawtilla tool calls, so it ran no commands, changed no
+  files and sent nothing outward;
+- its steps were streamed at all (~runtime.stream_steps~).  No evidence
+  is not zero tool calls: an agent whose steps the daemon cannot see is
+  never considered;
+- it is at most 600 characters;
+- it answers a deliberate message from a peer, in the room the answer
+  goes to, that set no completion condition --- a task's delivery is
+  settled by the task's own rules and never second-guessed;
+- the room does not require mentions (there a closing text costs nobody
+  a turn unless it names somebody, which is deliberate), and it is not
+  the operator's room.
+
+The model is asked one question, ACK or NEEDS, with both texts fenced as
+data in fences longer than any backtick run inside them, through ai-glib
+and asynchronously --- no IPC handler and no link handler waits on it.
+It has 8 seconds.  The verdict is three-valued, because "it said no" and
+"it did not say" are different facts: ~ACK~ (the one that skips a wake),
+~NEEDS~, and *unsaid* --- a failure, a timeout, or any reply that is not
+the bare word.  Only ~ACK~ skips.  Everything else routes the answer
+exactly as it would have gone, and the log names which of the two
+non-ACKs it was.
+
+An ACK is never dropped.  The answer is recorded in the room, marked
+~acknowledged~ (kept in the transcript, sent on ~room.history~ and the
+~message~ event; every client draws "acknowledged (no wake)" beside it),
+and a line is folded into the sender's *next* delivery:
+
+#+begin_example
+[clawtilla] Since your last turn, without waking you:
+  - while you were away, 'oryx' acknowledged your message in room
+    'dm:chief:oryx' and needed nothing further: "Thanks, noted."
+#+end_example
+
+The notes are held in memory by the router until a delivery to that
+agent reaches its socket; the answers themselves are in their rooms for
+good.  A message sent with ~reply: none~ never wakes its sender either
+way --- that is the deterministic half, and needs no model.
+
 *** Reaching the operator is not the same as replying
 
 An agent's reply goes back into the room the message came from. So an
@@ -1247,7 +1335,7 @@ Each direct question now carries a snapshot of the calling conversation, its req
 
 Incoming peer requests, uncorrelated replies, and rows queued by an older build retain the conservative peer-origin rule. A daemon cannot reconstruct the caller of an old question by guessing. New mailbox columns migrate without discarding queued items, and the context survives a restart while either the question or its answer is queued. If a harness omits its room while several turns are active, no return context is guessed. An unambiguous last turn supplies the fallback for older harnesses.
 
-For embedders, ~clawt_mcp_tools_set_deliver_turn_func()~ installs the delivery callback that receives the caller's room; ~clawt_mcp_tools_set_deliver_func()~ remains source-compatible. ~clawt_message_set_request_context()~ and ~clawt_mailbox_item_set_request_context()~ carry the snapshot, and ~clawt_agent_deliver_item()~ preserves it with each turn. ~clawt_agent_get_turn_input_in()~ identifies the exact delivered question when its answer arrives after the typing indicator falls.
+For embedders, ~clawt_mcp_tools_set_deliver_reply_func()~ installs the delivery callback that receives the caller's room and the reply mode; ~clawt_mcp_tools_set_deliver_turn_func()~ and ~clawt_mcp_tools_set_deliver_func()~ remain source-compatible, and refuse only ~reply: none~. ~clawt_message_set_request_context()~ and ~clawt_mailbox_item_set_request_context()~ carry the snapshot, and ~clawt_agent_deliver_item()~ preserves it with each turn. ~clawt_agent_get_turn_input_in()~ identifies the exact delivered question when its answer arrives after the typing indicator falls.
 
 Refused rather than redirected on purpose.  A redirect would deliver a
 message written for the operator to somebody else --- addressed to the
@@ -1329,6 +1417,57 @@ behind a question could not close the turn the question opened.  With
 one turn per message the question gets its own turn and its own answer,
 and the accumulation only made the acknowledgement's turn reply to an
 acknowledgement.
+
+***** One wake for many results
+
+A chief whose five workers report while it is busy used to take five
+turns, each rereading its whole context to learn one more thing.  So
+when a drain finds several items for one agent *in one room* that are
+results --- an answer from a peer, or the daemon's notice that a task
+settled --- the router hands them over as one item with a sectioned
+body (~clawt_merge_append_section()~), up to sixteen at a time:
+
+#+begin_example
+[clawtilla] 3 results for you arrived in room 'dm:chief:user' while you
+were busy. They are handed to you together, as one turn, ...
+
+── 1 of 3 · clawtilla: task t-41 ──
+[clawtilla] Task t-41 is finished. ...
+
+── 2 of 3 · clawtilla: task t-42 ──
+...
+#+end_example
+
+What is merged, and what never is:
+
+- a person's message never is, and a run of results ends at one: the
+  person's message keeps its own turn and its place in the order;
+- a question (an item that invites an answer) and a one-way notice are
+  not results;
+- a room that requires mentions builds each member's preamble from the
+  room's catch-up, which a merge would repeat per part, so its items are
+  delivered one at a time;
+- an item carrying a per-turn model asked for that one turn.
+
+The merge is contiguous in the room's own order and skips other rooms'
+items rather than stopping at them, since those are other turns.  A
+section heading inside a part is defused (~clawt_merge_escape()~), so a
+peer's text cannot split itself into two results.
+
+The per-message record --- depth, origin, whether the closing text is
+sent, task --- is folded in exactly one place,
+~clawt_agent_deliver_merged()~, and in the safe direction on every
+field: the deepest depth, so ~max_hops~ is not bought back by merging;
+the closing text sent if *any* part's would be; a task only when every
+part names the same one; and any peer's origin, so
+~clawtilla_message_user~'s guard holds when one part was a peer's.  The
+test drives two agents and two rooms each, because a test with one key
+cannot see a shared-scalar bug.
+
+The room records the merge as one note from clawtilla, sectioned the
+same way with each part's first line and carrying ~merged: N~, so a
+person reading the room sees that these results woke the agent once ---
+and every client draws it as sections (~clawt_merge_split()~).
 
 *** Sending a file
 

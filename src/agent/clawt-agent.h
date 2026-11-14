@@ -415,6 +415,53 @@ void clawt_agent_deliver_item(ClawtAgent *self, ClawtMailboxItem *item,
 	gboolean replies);
 
 /**
+ * clawt_agent_deliver_merged:
+ * @self: a #ClawtAgent
+ * @delivered: (transfer none): the one item the agent is handed, whose
+ *   body holds every part
+ * @items: (element-type ClawtMailboxItem) (transfer none): the parts, in
+ *   the order they were queued
+ * @replies: (array): per part, whether its turn's closing text could
+ *   have been delivered (the router's own rule, applied to each)
+ * @peers: (array): per part, whether it came from another agent
+ *
+ * Queues one turn for several deliveries the router merged into one,
+ * folding their turn state in the safe direction: the deepest depth,
+ * replies %TRUE if any part's is, a task only when every part agrees,
+ * and any peer's origin.  The arrays are as long as @items.
+ */
+void clawt_agent_deliver_merged(ClawtAgent       *self,
+                                ClawtMailboxItem *delivered,
+                                GPtrArray        *items,
+                                const gboolean   *replies,
+                                const gboolean   *peers);
+
+/**
+ * clawt_agent_note_turn_tool:
+ * @self: a #ClawtAgent
+ * @room_id: (nullable): the turn's room, or %NULL for a call that names
+ *   none, which counts against every running turn
+ *
+ * Counts a tool call against the turn in @room_id: a streamed tool
+ * step, or a clawtilla tool call.  Read back by
+ * clawt_agent_get_turn_tool_calls_in() when the turn's answer arrives,
+ * to decide whether the answer could be a bare acknowledgement.
+ */
+void clawt_agent_note_turn_tool(ClawtAgent *self, const gchar *room_id);
+
+/**
+ * clawt_agent_get_turn_tool_calls_in:
+ * @self: a #ClawtAgent
+ * @room_id: (nullable): the turn's room
+ *
+ * Returns: how many tool calls the turn in @room_id made, or %G_MAXUINT
+ *   when no turn is on record there -- unknown, which must not read as
+ *   none
+ */
+guint clawt_agent_get_turn_tool_calls_in(ClawtAgent  *self,
+                                         const gchar *room_id);
+
+/**
  * clawt_agent_describe_turn_in:
  * @self: a #ClawtAgent
  * @room_id: (nullable): the room libreclaw recorded the turn in

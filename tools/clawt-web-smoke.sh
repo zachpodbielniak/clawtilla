@@ -179,6 +179,7 @@ main () {
     expect_get '/settings/spending'     'Fleet'            'spending'
     expect_get '/settings/spending?period=0&by=origin' 'Export CSV' 'spending by origin'
     expect_header '/settings/spending/export?by=model' 'text/csv' 'the spending CSV'
+    expect_get '/settings/orchestration' 'Acknowledgement check' 'orchestration'
     expect_get '/settings/integrations' 'Add one'          'integrations'
     expect_get '/settings/connectors'   'Add a connector'  'connectors'
     expect_get '/settings/appearance'   'Interface font'   'appearance, with fonts'

@@ -490,6 +490,23 @@ append_to_transcript(ClawtRoom     *self,
                                       clawt_message_get_parent_id(message));
     }
 
+	/*
+	 * Only when set: an answer recorded without waking its addressee,
+	 * and the router's note of a merged delivery.  Both are what a
+	 * client draws differently, and both must survive a restart or the
+	 * room would forget why an answer went unanswered.
+	 */
+	if (clawt_message_get_acknowledged(message)) {
+		json_builder_set_member_name(builder, "acknowledged");
+		json_builder_add_boolean_value(builder, TRUE);
+	}
+
+	if (clawt_message_get_merged(message) > 0) {
+		json_builder_set_member_name(builder, "merged");
+		json_builder_add_int_value(builder,
+			(gint64)clawt_message_get_merged(message));
+	}
+
     json_builder_end_object(builder);
 
     root = json_builder_get_root(builder);

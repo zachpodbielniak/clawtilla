@@ -671,6 +671,25 @@ estimate.  The token counts beside it cover new input and output only:
 cached context is billed but is not reported as tokens, so the cost is
 larger than those numbers suggest.  See [[file:spending.org][Spending]].
 
+*** Orchestration
+:PROPERTIES:
+:CUSTOM_ID: orchestration-settings
+:END:
+
+The Orchestration settings page (GTK, web at =/settings/orchestration=, libregnum) has one control today: *Acknowledgement check*, which sets =orchestration.ack_check_model=.  The choices are walked from =clawt_ack_check_model_count()= / =_nth_value()= / =_nth_label()= -- *Off* first, then every model of every provider ai-glib reaches over HTTP -- so the three clients offer the same list and none keeps a copy.  A model written into ~clawtilla.yaml~ by hand that the catalogue does not list stays selectable as itself rather than showing as Off, so saving the page untouched cannot turn the check off.  The page reads ~orchestration.get~ and saves with ~orchestration.set~.
+
+What it does, in the words the page uses: when one agent answers another with only an acknowledgement, waking the agent that asked costs it a whole turn.  With a model chosen, a short answer from a turn that did nothing else is put to that model first; only a plain ACK skips the wake, and anything else, a failure, or no verdict within 8 seconds wakes the sender as before.  Off by default.  See [[file:orchestration.org][orchestration.org]] for the rules.
+
+*** Answers that woke nobody, and results delivered together
+:PROPERTIES:
+:CUSTOM_ID: ack-and-merge-marks
+:END:
+
+Two marks in the transcript, drawn the same way in all three clients from fields ~room.history~ and the ~message~ event both carry:
+
+- *acknowledged (no wake)* -- =clawt_message_ack_label()= -- beside an answer the acknowledgement check recorded instead of delivering (=acknowledged=).  It is on every such message, not on a run header, because it is a fact about that one message: unmarked, an answer the asker never took a turn on reads as having been ignored.  GTK and the web client carry =clawt_message_ack_tooltip()= as the tooltip; libregnum has no tooltips, so the label is the whole of it.
+- *Delivered as one turn* -- clawtilla's note when several results waiting in one room were handed to an agent as a single turn (=merged=, the number of parts).  Its body is split with =clawt_merge_split()= and drawn as its sections: the opening line, then one block per result with its label ("'oryx' answering you", "clawtilla: task t-12") as a small heading and the result's first line beneath.  The results themselves are already in the room above it; the note says they cost one wake, not N.
+
 *** Reordering the fleet
 
 Drag a row in the sidebar to move it -- a chief-of-staff to the top, the
@@ -767,6 +786,7 @@ what belongs to the application rather than to any one agent:
 | Cloud images | VM disk images on this machine, and fetching more |
 | Teams | how the fleet is divided, and what each team handles |
 | Spending | what the fleet has cost, by agent, model, origin or day; unpriced turns; Export CSV |
+| Orchestration | the acknowledgement check: which model, or Off, decides whether an answer only acknowledges |
 | Integrations | Matrix, mail, MCP servers and notifiers, and who gets each |
 | Connectors | connected accounts, and the credential for each |
 | Appearance | colour scheme and fonts |

@@ -36,6 +36,9 @@ static const SettingsPage settings_pages[] = {
       "Directories every agent's computer gets." },
     { "spending",     "Spending",
       "What the fleet has cost, per agent." },
+    { "orchestration", "Orchestration",
+      "How agents talk to each other: whether an answer that only "
+      "acknowledges wakes the agent that asked." },
     { "integrations", "Integrations",
       "Matrix, email, webhooks and notifications." },
     { "connectors",   "Connectors",
@@ -2457,6 +2460,97 @@ on_fleet_hold(HtmxRequest *request, GHashTable *params, gpointer user_data)
     return settings_response(app, request, "fleet", content, failure, TRUE);
 }
 
+/*
+ * The acknowledgement check, chosen from libclawt's walk of the model
+ * catalogue -- "Off" first -- so this list is the GTK and libregnum
+ * pages' list.  A model written into the file by hand is kept as an
+ * option by clawt_web_select_field(), so saving this form untouched
+ * cannot quietly turn it off.
+ */
+static HtmxElement *
+orchestration_content(ClawtWebApp *app)
+{
+    g_autoptr(HtmxDiv) box = htmx_div_new();
+    g_autoptr(JsonNode) reply = clawt_web_app_call(app, "orchestration.get",
+                                                   NULL);
+    const gchar *current = clawt_web_member(clawt_web_root(reply),
+                                            "ack_check_model", "");
+    g_autoptr(HtmxDiv) card = clawt_web_card("Acknowledgement check", NULL);
+    HtmxElement *body = clawt_web_card_body(card);
+    g_autoptr(GPtrArray) values = g_ptr_array_new();
+    g_autoptr(GPtrArray) labels = g_ptr_array_new();
+    guint i;
+
+    clawt_web_add(body, clawt_web_row(
+        "What it does",
+        "When one agent answers another with only an acknowledgement -- "
+        "\"thanks, noted\" -- waking the agent that asked costs it a whole "
+        "turn. With a model chosen here, a short answer from a turn that did "
+        "nothing else is put to that model first. Only a plain ACK skips the "
+        "wake; anything else, a failure, or no verdict within 8 seconds wakes "
+        "the sender as before. A skipped answer stays in the room marked "
+        "\"acknowledged (no wake)\", and the sender is told about it on its "
+        "next turn. Off by default."));
+
+    for (i = 0; i < clawt_ack_check_model_count(); i++) {
+        g_ptr_array_add(values, (gpointer)clawt_ack_check_model_nth_value(i));
+        g_ptr_array_add(labels, (gpointer)clawt_ack_check_model_nth_label(i));
+    }
+    g_ptr_array_add(values, NULL);
+    g_ptr_array_add(labels, NULL);
+
+    {
+        g_autoptr(HtmxForm) form = clawt_web_form("/settings/orchestration");
+        g_autoptr(HtmxButton) button = clawt_web_button("Save", "primary");
+
+        clawt_web_add(form, clawt_web_select_field(
+            "Model", "ack_check_model",
+            (const gchar *const *)values->pdata,
+            (const gchar *const *)labels->pdata,
+            current));
+        htmx_element_set_attribute(HTMX_ELEMENT(button), "type", "submit");
+        clawt_web_add(form, g_steal_pointer(&button));
+        clawt_web_add(body, g_steal_pointer(&form));
+    }
+
+    clawt_web_add(box, g_steal_pointer(&card));
+
+    return HTMX_ELEMENT(g_steal_pointer(&box));
+}
+
+static HtmxResponse *
+on_orchestration_save(HtmxRequest *request, GHashTable *params,
+                      gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    const gchar *value = clawt_web_form_value(request, "ack_check_model");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(HtmxElement) content = NULL;
+    g_autofree gchar *failure = NULL;
+
+    (void)params;
+
+    clawt_web_payload_set(payload, "ack_check_model",
+                          value != NULL ? value : "");
+    reply = clawt_web_app_call(app, "orchestration.set",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        failure = g_strdup(clawt_web_app_last_error(app));
+
+    content = orchestration_content(app);
+
+    if (failure != NULL)
+        return settings_response(app, request, "orchestration", content,
+                                 failure, TRUE);
+
+    return settings_response(app, request, "orchestration", content,
+                             (value == NULL || *value == '\0')
+                                 ? "Acknowledgement check off."
+                                 : "Acknowledgement check saved.", FALSE);
+}
+
 static HtmxResponse *
 on_settings_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
@@ -2474,6 +2568,8 @@ on_settings_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
         content = folders_content(app);
     else if (g_strcmp0(slug, "spending") == 0)
         content = spending_content(app, request);
+    else if (g_strcmp0(slug, "orchestration") == 0)
+        content = orchestration_content(app);
     else if (g_strcmp0(slug, "integrations") == 0)
         content = integrations_content(app);
     else if (g_strcmp0(slug, "connectors") == 0)
@@ -3124,6 +3220,8 @@ clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app)
                     app);
 
     htmx_router_post(router, "/settings/fleet/pause", on_fleet_hold, app);
+    htmx_router_post(router, "/settings/orchestration", on_orchestration_save,
+                     app);
     htmx_router_post(router, "/settings/fleet/resume", on_fleet_hold, app);
 
     htmx_router_post(router, "/settings/images/download", on_image_download,

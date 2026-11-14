@@ -687,6 +687,13 @@ clawt_web_stylesheet(void)
      */
     ".msg-body{word-wrap:break-word;overflow-wrap:anywhere;"
       "margin-left:var(--chat-gutter)}"
+    /* a merged delivery's note: one block per result, under the gutter */
+    ".merge-sections{margin:6px 0 0 var(--chat-gutter);display:flex;"
+      "flex-direction:column;gap:6px}"
+    ".merge-section{border:1px solid var(--line);border-radius:8px;"
+      "padding:6px 10px;background:var(--surface-2);"
+      "overflow-wrap:anywhere}"
+    ".merge-section-label{font-size:.85em;font-weight:600;margin-bottom:2px}"
     ".msg-body code{font-family:var(--mono);font-size:var(--mono-size);"
       "background:var(--surface-2);padding:1px 5px;border-radius:4px}"
     ".msg-body pre{font-family:var(--mono);font-size:var(--mono-size);"

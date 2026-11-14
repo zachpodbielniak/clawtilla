@@ -1252,6 +1252,19 @@ versions apart.
 - **A drain hands over everything queued at once**, so a per-turn decision
   taken from the last item is taken from the wrong one. Accumulate: a
   question followed by an acknowledgement must still be answerable.
+- **The one deliberate exception to one-delivery-one-turn is the merge.**
+  Results (peer answers, settle notices) waiting in one room are handed
+  over as one sectioned item, and `clawt_agent_deliver_merged()` is the
+  only place several deliveries' turn state is folded into one entry --
+  deepest depth, replies TRUE if any, task only when all agree, any peer
+  origin. A person's message, a question, a one-way notice, a mention
+  room and a per-turn model are never merged. Anything new that decides
+  per delivery must decide per *part* there too.
+- **"It said ACK" is not "it did not say".** The acknowledgement check
+  (`orchestration.ack_check_model`) skips a wake only on a bare ACK; a
+  timeout, a failure and a garbled reply are a third verdict, logged as
+  such, and route the answer like NEEDS. An unstreamed turn is no
+  evidence, not zero tool calls.
 - **A turn is not one message.** The hop depth is dropped at the start of a
   turn no delivery preceded, not after a reply -- a chief that answers its
   operator *and* delegates in one turn sent the second message at depth 1, and

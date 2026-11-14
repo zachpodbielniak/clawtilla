@@ -1924,11 +1924,83 @@ append_message_chips(ClawtWindow *self, GtkWidget *into, const gchar *task,
     }
 }
 
+/*
+ * A merged delivery's note, drawn as what it is: one block per result,
+ * its label as a small heading and the result's first line beneath.
+ * The sections come from clawt_merge_split(), the reader of the one
+ * format the router writes, so this and the other two clients cannot
+ * split the same note differently.
+ */
+static GtkWidget *
+merge_sections_new(gchar **labels, gchar **texts, gboolean from_user)
+{
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    guint i;
+
+    gtk_widget_add_css_class(box, "clawt-merge-sections");
+    gtk_widget_set_margin_top(box, 6);
+    if (!from_user)
+        gtk_widget_set_margin_start(box, CHAT_GUTTER);
+
+    for (i = 0; labels != NULL && labels[i] != NULL; i++) {
+        GtkWidget *section = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+        GtkWidget *heading = gtk_label_new(labels[i]);
+        GtkWidget *text = gtk_label_new(NULL);
+
+        gtk_widget_add_css_class(heading, "caption-heading");
+        gtk_label_set_xalign(GTK_LABEL(heading), 0.0f);
+        gtk_label_set_wrap(GTK_LABEL(heading), TRUE);
+
+        clawt_gtk_set_label_markdown(GTK_LABEL(text),
+                                     texts != NULL && texts[i] != NULL
+                                         ? texts[i] : "");
+        gtk_label_set_wrap(GTK_LABEL(text), TRUE);
+        gtk_label_set_selectable(GTK_LABEL(text), TRUE);
+        gtk_label_set_xalign(GTK_LABEL(text), 0.0f);
+        gtk_widget_add_css_class(text, "body");
+
+        gtk_box_append(GTK_BOX(section), heading);
+        gtk_box_append(GTK_BOX(section), text);
+        gtk_widget_add_css_class(section, "card");
+        gtk_widget_set_margin_bottom(section, 2);
+        gtk_box_append(GTK_BOX(box), section);
+    }
+
+    return box;
+}
+
+/*
+ * The mark on an answer that was recorded without waking the agent it
+ * answers.  On every such message rather than on a run header, because
+ * it is a fact about that one message: unmarked, an answer the asker
+ * never took a turn on reads as having been ignored.
+ */
+static GtkWidget *
+ack_chip_new(gboolean from_user)
+{
+    GtkWidget *chip = gtk_label_new(clawt_message_ack_label());
+
+    gtk_widget_add_css_class(chip, "caption");
+    gtk_widget_add_css_class(chip, "dim-label");
+    gtk_widget_set_tooltip_text(chip, clawt_message_ack_tooltip());
+    gtk_widget_set_halign(chip, from_user ? GTK_ALIGN_END : GTK_ALIGN_START);
+    gtk_widget_set_margin_top(chip, 2);
+    if (!from_user)
+        gtk_widget_set_margin_start(chip, CHAT_GUTTER);
+
+    return chip;
+}
+
 void
 clawt_gtk_append_message_to(ClawtWindow *self, const TranscriptView *view,
                             const gchar *sender, const gchar *body, gboolean from_user,
-                            gint64 ts, const gchar *task, gint64 depth)
+                            gint64 ts, const gchar *task, gint64 depth,
+                            gboolean acknowledged, gint64 merged)
 {
+    g_autofree gchar *merge_preface = NULL;
+    g_auto(GStrv) merge_labels = NULL;
+    g_auto(GStrv) merge_texts = NULL;
+    guint n_sections = 0;
     static const MenuEntry message_menu[] = {
         { "Copy",             "copy-markdown" },
         { "Copy as text",     "copy-text" },
@@ -1973,7 +2045,13 @@ clawt_gtk_append_message_to(ClawtWindow *self, const TranscriptView *view,
      * screen rather than a message that repaints the interface around
      * it.
      */
-    clawt_gtk_set_label_markdown(GTK_LABEL(text), body);
+    if (merged > 0)
+        n_sections = clawt_merge_split(body, &merge_preface, &merge_labels,
+                                       &merge_texts);
+
+    clawt_gtk_set_label_markdown(GTK_LABEL(text),
+                                 n_sections == 0 ? body
+                                 : merge_preface != NULL ? merge_preface : "");
     gtk_label_set_wrap(GTK_LABEL(text), TRUE);
     gtk_label_set_selectable(GTK_LABEL(text), TRUE);
     gtk_label_set_xalign(GTK_LABEL(text), 0.0f);
@@ -2232,6 +2310,13 @@ clawt_gtk_append_message_to(ClawtWindow *self, const TranscriptView *view,
         gtk_box_append(GTK_BOX(row), line);
     }
 
+    if (n_sections > 0)
+        gtk_box_append(GTK_BOX(row),
+                       merge_sections_new(merge_labels, merge_texts, from_user));
+
+    if (acknowledged)
+        gtk_box_append(GTK_BOX(row), ack_chip_new(from_user));
+
     append_attachment_previews(self, row, body, from_user);
 
     /*
@@ -2294,7 +2379,29 @@ clawt_gtk_append_message(ClawtWindow *self, const gchar *sender, const gchar *bo
                             self->selected_has_avatar,
                             self->selected_color };
 
-    clawt_gtk_append_message_to(self, &view, sender, body, from_user, ts, NULL, 0);
+    clawt_gtk_append_message_to(self, &view, sender, body, from_user, ts, NULL, 0,
+                                FALSE, 0);
+}
+
+/*
+ * The chat transcript with a message's marks: acknowledged without a
+ * wake, or the note of a merged delivery.  Both the history and the
+ * live event path come through here, so a mark seen on reopening a
+ * conversation is the mark seen when it arrived.
+ */
+void
+clawt_gtk_append_message_marked(ClawtWindow *self, const gchar *sender,
+                                const gchar *body, gboolean from_user,
+                                gint64 ts, gboolean acknowledged,
+                                gint64 merged)
+{
+    TranscriptView view = { self->transcript, &self->run_sender,
+                            &self->run_day, self->selected_agent,
+                            self->selected_has_avatar,
+                            self->selected_color };
+
+    clawt_gtk_append_message_to(self, &view, sender, body, from_user, ts, NULL, 0,
+                                acknowledged, merged);
 }
 
 /*
@@ -4150,9 +4257,11 @@ clawt_gtk_load_history(ClawtWindow *self)
             if (id != NULL)
                 g_hash_table_add(self->shown, g_strdup(id));
 
-            clawt_gtk_append_message(self, sender,
+            clawt_gtk_append_message_marked(self, sender,
                                      clawt_json_string(message, "body", ""),
-                                     g_strcmp0(sender, "user") == 0, ts);
+                                     g_strcmp0(sender, "user") == 0, ts,
+                                     clawt_json_int(message, "acknowledged", 0) != 0,
+                                     clawt_json_int(message, "merged", 0));
         }
 
         /* And anything after the last message. */

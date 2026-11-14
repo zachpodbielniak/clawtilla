@@ -74,6 +74,7 @@ static const gchar *SCHEMA_SQL =
     "  attempts INTEGER NOT NULL DEFAULT 0,"
     "  invites_reply INTEGER NOT NULL DEFAULT 1,"
 	"  composed INTEGER NOT NULL DEFAULT 0,"
+	"  one_way INTEGER NOT NULL DEFAULT 0,"
     "  created_at INTEGER NOT NULL,"
     "  not_before INTEGER NOT NULL DEFAULT 0,"
     "  expires_at INTEGER NOT NULL DEFAULT 0,"
@@ -208,6 +209,19 @@ apply_schema(sqlite3 *db, GError **error)
 		return FALSE;
 	}
 
+	/*
+	 * Since 0.16.0: `reply: none`.  Absent means every queued item
+	 * wanted an answer, which is what each one meant when it was queued.
+	 */
+	if (!has_column(db, "items", "one_way") &&
+		sqlite3_exec(db,
+			"ALTER TABLE items ADD COLUMN one_way"
+			" INTEGER NOT NULL DEFAULT 0",
+			NULL, NULL, NULL) != SQLITE_OK) {
+		set_sqlite_error(error, db, "adding one_way to the mailbox");
+		return FALSE;
+	}
+
 	/* Existing mailboxes must retain their queued work when upgraded. */
 	for (i = 0; i < G_N_ELEMENTS(context_columns); i++) {
 		g_autofree gchar *sql = NULL;
@@ -265,6 +279,7 @@ item_from_row(sqlite3_stmt *stmt)
 		column_text(stmt, 19), column_text(stmt, 20));
     clawt_mailbox_item_set_model(item, column_text(stmt, 21));
 	clawt_mailbox_item_set_composed(item, sqlite3_column_int(stmt, 22) != 0);
+	clawt_mailbox_item_set_one_way(item, sqlite3_column_int(stmt, 23) != 0);
 
     return item;
 }
@@ -273,7 +288,7 @@ item_from_row(sqlite3_stmt *stmt)
     "id, sender, recipient, body, room, task_id, reply_to, subject, " \
     "idempotency_key, last_error, priority, state, depth, attempts, " \
     "created_at, not_before, expires_at, invites_reply, " \
-	"request_room, request_origin, request_task, model, composed"
+	"request_room, request_origin, request_task, model, composed, one_way"
 
 /* ── Depth ───────────────────────────────────────────────────────── */
 
@@ -604,8 +619,9 @@ clawt_mailbox_post(ClawtMailbox *self, ClawtMailboxItem *item, GError **error)
             "INSERT INTO items (id, sender, recipient, body, room, task_id,"
             " reply_to, subject, idempotency_key, priority, state, depth,"
             " attempts, created_at, not_before, expires_at, invites_reply,"
-			" request_room, request_origin, request_task, model, composed)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+			" request_room, request_origin, request_task, model, composed,"
+			" one_way)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             -1, &stmt, NULL) != SQLITE_OK) {
         set_sqlite_error(error, self->db, "queueing a message");
         return NULL;
@@ -646,6 +662,7 @@ clawt_mailbox_post(ClawtMailbox *self, ClawtMailboxItem *item, GError **error)
     sqlite3_bind_text(stmt, 21, clawt_mailbox_item_get_model(item), -1,
                       SQLITE_TRANSIENT);
 	sqlite3_bind_int(stmt, 22, clawt_mailbox_item_get_composed(item) ? 1 : 0);
+	sqlite3_bind_int(stmt, 23, clawt_mailbox_item_get_one_way(item) ? 1 : 0);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -664,51 +681,26 @@ clawt_mailbox_post(ClawtMailbox *self, ClawtMailboxItem *item, GError **error)
 
 /* ── Leasing ─────────────────────────────────────────────────────── */
 
-ClawtMailboxItem *
-clawt_mailbox_lease(ClawtMailbox *self, guint lease_seconds)
+/*
+ * Marks @item leased and hands it out, or frees it and returns NULL.
+ *
+ * Shared by the two ways of choosing an item, so "leased" means one
+ * thing however the item was picked.
+ */
+static ClawtMailboxItem *
+mark_leased(ClawtMailbox *self, ClawtMailboxItem *item, guint lease_seconds)
 {
     sqlite3_stmt *stmt = NULL;
-    ClawtMailboxItem *item = NULL;
-    gint64 now;
     gint64 deadline;
-
-    g_return_val_if_fail(CLAWT_IS_MAILBOX(self), NULL);
 
     if (lease_seconds == 0)
         lease_seconds = self->lease_seconds > 0 ? self->lease_seconds : 300;
 
-    now = now_seconds();
-    deadline = now + lease_seconds;
-
-    /*
-     * Highest priority band first, oldest first within it, and nothing
-     * whose not_before is still in the future.  not_before is how both
-     * "deliver this later" and the retry backoff are expressed, so there is
-     * one mechanism rather than two.
-     */
-    if (sqlite3_prepare_v2(self->db,
-            "SELECT " SELECT_COLUMNS " FROM items"
-            " WHERE state = ? AND (not_before = 0 OR not_before <= ?)"
-            "   AND (expires_at = 0 OR expires_at > ?)"
-            " ORDER BY priority DESC, created_at ASC LIMIT 1",
-            -1, &stmt, NULL) != SQLITE_OK)
-        return NULL;
-
-    sqlite3_bind_int(stmt, 1, CLAWT_MAILBOX_PENDING);
-    sqlite3_bind_int64(stmt, 2, now);
-    sqlite3_bind_int64(stmt, 3, now);
-
-    if (sqlite3_step(stmt) == SQLITE_ROW)
-        item = item_from_row(stmt);
-
-    sqlite3_finalize(stmt);
-
-    if (item == NULL)
-        return NULL;
+    deadline = now_seconds() + lease_seconds;
 
     if (sqlite3_prepare_v2(self->db,
             "UPDATE items SET state = ?, lease_expires_at = ?,"
-            " attempts = attempts + 1 WHERE id = ?",
+            " attempts = attempts + 1 WHERE id = ? AND state = ?",
             -1, &stmt, NULL) != SQLITE_OK) {
         clawt_mailbox_item_free(item);
         return NULL;
@@ -718,6 +710,7 @@ clawt_mailbox_lease(ClawtMailbox *self, guint lease_seconds)
     sqlite3_bind_int64(stmt, 2, deadline);
     sqlite3_bind_text(stmt, 3, clawt_mailbox_item_get_id(item), -1,
                       SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 4, CLAWT_MAILBOX_PENDING);
 
     /*
      * Nothing is handed out unless the lease is durably recorded.  The
@@ -740,6 +733,81 @@ clawt_mailbox_lease(ClawtMailbox *self, guint lease_seconds)
                   clawt_mailbox_item_get_id(item));
 
     return item;
+}
+
+/*
+ * The next deliverable item, or the deliverable item called @id.
+ *
+ * Highest priority band first, oldest first within it, and nothing
+ * whose not_before is still in the future.  not_before is how both
+ * "deliver this later" and the retry backoff are expressed, so there is
+ * one mechanism rather than two -- and a lease by id asks the same
+ * question, so an item in backoff cannot be taken early by naming it.
+ */
+static ClawtMailboxItem *
+select_deliverable(ClawtMailbox *self, const gchar *id)
+{
+    sqlite3_stmt *stmt = NULL;
+    ClawtMailboxItem *item = NULL;
+    gint64 now = now_seconds();
+
+    if (sqlite3_prepare_v2(self->db,
+            id == NULL
+            ? "SELECT " SELECT_COLUMNS " FROM items"
+              " WHERE state = ? AND (not_before = 0 OR not_before <= ?)"
+              "   AND (expires_at = 0 OR expires_at > ?)"
+              " ORDER BY priority DESC, created_at ASC LIMIT 1"
+            : "SELECT " SELECT_COLUMNS " FROM items"
+              " WHERE state = ? AND (not_before = 0 OR not_before <= ?)"
+              "   AND (expires_at = 0 OR expires_at > ?) AND id = ?",
+            -1, &stmt, NULL) != SQLITE_OK)
+        return NULL;
+
+    sqlite3_bind_int(stmt, 1, CLAWT_MAILBOX_PENDING);
+    sqlite3_bind_int64(stmt, 2, now);
+    sqlite3_bind_int64(stmt, 3, now);
+
+    if (id != NULL)
+        sqlite3_bind_text(stmt, 4, id, -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+        item = item_from_row(stmt);
+
+    sqlite3_finalize(stmt);
+
+    return item;
+}
+
+ClawtMailboxItem *
+clawt_mailbox_lease(ClawtMailbox *self, guint lease_seconds)
+{
+    ClawtMailboxItem *item;
+
+    g_return_val_if_fail(CLAWT_IS_MAILBOX(self), NULL);
+
+    item = select_deliverable(self, NULL);
+
+    if (item == NULL)
+        return NULL;
+
+    return mark_leased(self, item, lease_seconds);
+}
+
+ClawtMailboxItem *
+clawt_mailbox_lease_id(ClawtMailbox *self, const gchar *id,
+                       guint lease_seconds)
+{
+    ClawtMailboxItem *item;
+
+    g_return_val_if_fail(CLAWT_IS_MAILBOX(self), NULL);
+    g_return_val_if_fail(id != NULL, NULL);
+
+    item = select_deliverable(self, id);
+
+    if (item == NULL)
+        return NULL;
+
+    return mark_leased(self, item, lease_seconds);
 }
 
 static gboolean
