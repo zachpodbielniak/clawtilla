@@ -535,6 +535,37 @@ gchar *clawt_lrg_hop_text(gint64 depth);
 gchar *clawt_lrg_step_line(ClawtTurnStep *step);
 
 /**
+ * clawt_lrg_step_tone:
+ * @step: a step
+ *
+ * The colour a step's line is drawn in, or %NULL for the muted default:
+ * "bad" for a failed tool, "warn" for a trimmed-result notice
+ * (clawt_mcp_result_is_notice()) -- the agent saw part of a result, and
+ * somebody reading the conversation should notice.
+ *
+ * Returns: (transfer none) (nullable): the tone
+ */
+const gchar *clawt_lrg_step_tone(ClawtTurnStep *step);
+
+/**
+ * clawt_lrg_step_app_link:
+ * @step: a step
+ * @out_label: (out) (transfer full) (optional): the link's words, from
+ *   clawt_mcp_app_link_label()
+ * @out_url: (out) (transfer full) (optional): the web client's view of
+ *   the app
+ *
+ * Whether a step shows an MCP app, and if so how to link to it.  lrg has
+ * no HTML engine, so an app is a link out to the web client, which draws
+ * it -- the recorded parity choice.
+ *
+ * Returns: %TRUE when the step carries an app and a URL to open
+ */
+gboolean clawt_lrg_step_app_link(ClawtTurnStep  *step,
+                                 gchar         **out_label,
+                                 gchar         **out_url);
+
+/**
  * clawt_lrg_steps_before:
  * @steps: (element-type ClawtTurnStep): a room's steps, oldest first
  * @from: where the last stretch ended

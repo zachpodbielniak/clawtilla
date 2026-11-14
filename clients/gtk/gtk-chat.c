@@ -97,6 +97,96 @@ step_row_new(const gchar *text, const gchar *tone, gboolean monospace)
 }
 
 /*
+ * A trimmed-result notice: the agent saw part of a tool's result, which
+ * somebody reading the conversation needs to know before trusting what
+ * it concluded.  Drawn in the warning colour, not dimmed, because it is
+ * not backend chatter.
+ */
+static void
+mark_trim_notice(GtkWidget *label)
+{
+    gtk_widget_remove_css_class(label, "dim-label");
+    gtk_widget_add_css_class(label, "warning");
+}
+
+/*
+ * Asks the daemon for the app before opening it: an app is swept after
+ * thirty days while the step that names it can sit in a long-lived
+ * window, and opening the browser on a page that only says "not found"
+ * is a worse answer than the toast clawt_window_request() gives.  The
+ * reply's address is the daemon's current connectors.apps_web_url, so
+ * a corrected setting reaches a step drawn before it changed.
+ */
+static void
+on_app_link_clicked(GtkButton *button, gpointer user_data)
+{
+    const gchar *app_id = user_data;
+    const gchar *agent_id = g_object_get_data(G_OBJECT(button),
+                                              "clawt-app-agent");
+    GtkRoot *root = gtk_widget_get_root(GTK_WIDGET(button));
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GtkUriLauncher) launcher = NULL;
+    const gchar *url;
+
+    if (!CLAWT_IS_WINDOW(root) || agent_id == NULL)
+        return;
+
+    reply = clawt_window_request(CLAWT_WINDOW(root), "connector.app_get",
+                                 clawt_build_payload("agent", agent_id,
+                                                     "app", app_id, NULL));
+
+    if (reply == NULL || !JSON_NODE_HOLDS_OBJECT(reply))
+        return;
+
+    url = json_object_get_string_member_with_default(
+        json_node_get_object(reply), "url", NULL);
+
+    if (url == NULL)
+        return;
+
+    launcher = gtk_uri_launcher_new(url);
+    gtk_uri_launcher_launch(launcher, GTK_WINDOW(root), NULL, NULL, NULL);
+}
+
+/*
+ * The link out for an MCP app shown in the conversation.  This client
+ * has no HTML engine, so it does not draw the app: it opens the web
+ * client's sandboxed view of it, at the address the daemon worked out
+ * from connectors.apps_web_url.  That is the recorded parity choice --
+ * the web client renders, GTK and lrg link to it.
+ */
+static GtkWidget *
+app_link_button(ClawtTurnStep *step)
+{
+    const gchar *url = clawt_turn_step_get_app_url(step);
+    g_autofree gchar *label = clawt_mcp_app_link_label(
+        clawt_turn_step_get_app_title(step));
+    GtkWidget *button = gtk_button_new_with_label(label);
+
+    gtk_widget_add_css_class(button, "flat");
+    gtk_widget_add_css_class(button, "caption");
+    gtk_widget_set_halign(button, GTK_ALIGN_START);
+
+    if (url == NULL) {
+        gtk_widget_set_sensitive(button, FALSE);
+        gtk_widget_set_tooltip_text(button, "The daemon did not say where "
+                                            "the web client is");
+        return button;
+    }
+
+    gtk_widget_set_tooltip_text(button, url);
+    g_object_set_data_full(G_OBJECT(button), "clawt-app-agent",
+                           g_strdup(clawt_turn_step_get_agent_id(step)),
+                           g_free);
+    g_signal_connect_data(button, "clicked",
+                          G_CALLBACK(on_app_link_clicked),
+                          g_strdup(clawt_turn_step_get_app_id(step)),
+                          (GClosureNotify)(void (*)(void))g_free, 0);
+
+    return button;
+}
+
+/*
  * One collapsed run of tool calls, expandable to the commands in it.
  *
  * A turn makes tens of calls and a row each buries the prose between
@@ -208,7 +298,15 @@ steps_fill_box(GtkWidget *box, GPtrArray *steps, guint from, guint end)
                 row = step_row_new(text, clawt_turn_step_tone(step), FALSE);
             }
 
+            if (clawt_turn_step_get_kind(step) == CLAWT_STEP_STATUS &&
+                clawt_mcp_result_is_notice(clawt_turn_step_get_text(step)))
+                mark_trim_notice(row);
+
             gtk_box_append(GTK_BOX(box), row);
+
+            if (clawt_turn_step_get_app_id(step) != NULL)
+                gtk_box_append(GTK_BOX(box), app_link_button(step));
+
             i++;
         }
     }

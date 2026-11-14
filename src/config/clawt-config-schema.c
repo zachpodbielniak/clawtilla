@@ -1891,6 +1891,33 @@ static const ClawtSchemaEntry schema[] = {
   "size or the CLI, and `never` lists every tool however many there\n"
   "are. See docs/connectors.org, \"Servers with many tools\".", "0.18.0" },
 
+{ "integrations.max_result_bytes", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "-1", NULL,
+  "connector: the most of one tool result the agent is shown, in bytes.\n"
+  "\n"
+  "A result bigger than this is trimmed before the agent reads it -- the\n"
+  "text cut on a character boundary, a JSON array cut to the records that\n"
+  "fit, structuredContent trimmed the same way -- with a [clawtilla] note\n"
+  "at the start and the end saying what was cut. The whole result is kept\n"
+  "under the agent's state directory and the agent reads the rest with\n"
+  "clawtilla_mcp_result_query. -1 (the default) means the fleet's\n"
+  "connectors.max_result_bytes, 0 means no budget for this connector,\n"
+  "and anything below 1024 is read as 1024. See docs/connectors.org,\n"
+  "\"Results bigger than the budget\".", "0.27.0" },
+
+{ "integrations.show_apps", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "false", NULL,
+  "connector: show its apps in chat.\n"
+  "\n"
+  "An MCP server can ship an interactive view (an MCP App, a ui://\n"
+  "resource) for a tool. With this on, the relay tells the server it can\n"
+  "show them, reads the view when the tool is called, and the call\n"
+  "appears in the conversation as an app: the web client draws it in a\n"
+  "sandboxed frame when somebody opens it, and the GTK and lrg clients\n"
+  "offer it in the browser. Off by default, because the view is the\n"
+  "server's own code running in your browser. See docs/connectors.org,\n"
+  "\"Apps in chat\".", "0.27.0" },
+
 
 /* ── connectors ──────────────────────────────────────────────────── */
 { "integrations.confirm_writes", CLAWT_SCHEMA_BOOLEAN,
@@ -2061,6 +2088,27 @@ static const ClawtSchemaEntry schema[] = {
   "documentation; about where Claude Code starts searching its own tools\n"
   "rather than listing them. Only read when a connector's `directory` is\n"
   "`auto`.", "0.18.0" },
+
+{ "connectors.max_result_bytes", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "65536", NULL,
+  "The most of one connector tool result an agent is shown, in bytes.\n"
+  "\n"
+  "For every connector that does not set max_result_bytes itself. Past\n"
+  "it the result is trimmed, announced at both ends, and kept whole\n"
+  "under the agent's state directory for clawtilla_mcp_result_query, so\n"
+  "one listing of a big repository does not spend the whole context. 0\n"
+  "turns the budget off; anything below 1024 is read as 1024. Whatever\n"
+  "this says, the relay holds at most 64 MiB of one message in memory --\n"
+  "anything longer goes to disk as it arrives.", "0.27.0" },
+
+{ "connectors.apps_web_url", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  "http://127.0.0.1:8790", NULL,
+  "Where the web client is reached, for an MCP app's Open in browser.\n"
+  "\n"
+  "The GTK and lrg clients cannot draw an app's HTML, so they link to the\n"
+  "web client's view of it: <this>/a/<agent>/app/<app>. The address\n"
+  "clawtilla-web listens on by default; change it when the web client\n"
+  "runs elsewhere or on another port.", "0.27.0" },
 
 /* ── broker ──────────────────────────────────────────────────────── */
 { "broker", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,

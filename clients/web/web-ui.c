@@ -1967,6 +1967,54 @@ open_document(HtmxBuilder *builder, const gchar *title,
         "})();");
     htmx_builder_end(builder);
 
+    /*
+     * The host side of an MCP app's view (the MCP Apps extension, over
+     * postMessage).  A message counts only when it came from one of the
+     * app frames on this page -- its source is that frame's window, the
+     * one check an opaque origin leaves, since it cannot be named.  The
+     * view is answered `ui/initialize`, handed the tool's input and
+     * result once it says it is ready, and resized when it asks; every
+     * other request -- calling tools, opening links, sending messages --
+     * is refused, because nothing here lets a view act for anybody.
+     * On `window`, which exists in the head; `document.body` does not.
+     */
+    htmx_builder_begin(builder, "script");
+    htmx_builder_raw_html(builder,
+        "(function(){"
+        "function find(src){var f=document.querySelectorAll('iframe.app-view');"
+        "for(var i=0;i<f.length;i++){if(f[i].contentWindow===src){return f[i];}}"
+        "return null;}"
+        "function data(f,k){var h=f.closest('.app-frame');"
+        "try{return JSON.parse(h.getAttribute(k)||'null');}catch(x){return null;}}"
+        "function post(f,m){f.contentWindow.postMessage(m,'*');}"
+        "function theme(){var t=document.documentElement.getAttribute('data-theme');"
+        "if(t==='dark'||t==='light'){return t;}"
+        "return(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)')"
+        ".matches)?'dark':'light';}"
+        "window.addEventListener('message',function(e){"
+        "var f=find(e.source);if(!f){return;}"
+        "var m=e.data;if(!m||typeof m!=='object'||m.jsonrpc!=='2.0'){return;}"
+        "if(m.method==='ui/initialize'&&m.id!==undefined){"
+        "post(f,{jsonrpc:'2.0',id:m.id,result:{protocolVersion:'2026-01-26',"
+        "hostInfo:{name:'clawtilla'},hostCapabilities:{},"
+        "hostContext:{theme:theme()}}});return;}"
+        "if(m.method==='ui/notifications/initialized'){"
+        "post(f,{jsonrpc:'2.0',method:'ui/notifications/tool-input',"
+        "params:{arguments:data(f,'data-app-input')||{}}});"
+        "var r=data(f,'data-app-result');"
+        "if(r){post(f,{jsonrpc:'2.0',method:'ui/notifications/tool-result',"
+        "params:r});}return;}"
+        "if(m.method==='ui/notifications/size-changed'){"
+        "var h=m.params&&m.params.height;if(typeof h==='number'){"
+        "f.style.height=Math.max(120,Math.min(1600,Math.round(h)))+'px';}"
+        "return;}"
+        "if(m.id!==undefined&&typeof m.method==='string'){"
+        "post(f,{jsonrpc:'2.0',id:m.id,error:{code:-32601,"
+        "message:'not supported by clawtilla'}});}"
+        "});"
+        "})();");
+    htmx_builder_end(builder);
+
     htmx_builder_end(builder);  /* head */
 
     htmx_builder_begin(builder, "body");
@@ -2586,4 +2634,312 @@ clawt_web_decision_inline(JsonObject *object, const gchar *notice)
     }
 
     return HTMX_ELEMENT(g_steal_pointer(&card));
+}
+
+/* ── Connector budget and apps ───────────────────────────────────── */
+
+/* A Save button in a row of its own, as every small form here ends. */
+static void
+add_save_row(HtmxForm *form)
+{
+    g_autoptr(HtmxDiv) buttons = htmx_div_new();
+    g_autoptr(HtmxButton) save = clawt_web_button("Save", "default");
+
+    htmx_element_add_class(HTMX_ELEMENT(buttons), "btn-row");
+    htmx_element_set_attribute(HTMX_ELEMENT(save), "type", "submit");
+    htmx_node_add_child(HTMX_NODE(buttons), HTMX_NODE(save));
+    htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(buttons));
+}
+
+/*
+ * The connector's own result budget, -1 for the fleet's and 0 for none,
+ * with what that comes to beside it -- libclawt's label, so every client
+ * says "64 KB" the same way.
+ */
+HtmxElement *
+clawt_web_budget_form(const gchar *escaped, gint64 own,
+                      const gchar *effective)
+{
+    g_autofree gchar *action = g_strdup_printf(
+        "/settings/connectors/%s/budget", escaped);
+    g_autoptr(HtmxForm) form = clawt_web_form(action);
+    g_autofree gchar *value = g_strdup_printf("%" G_GINT64_FORMAT, own);
+    g_autofree gchar *line = g_strdup_printf(
+        "Now: %s. The most of one tool result the agent is shown, in "
+        "bytes; a bigger one is trimmed, announced at both ends and kept "
+        "whole for clawtilla_mcp_result_query. -1 uses the fleet's "
+        "budget, 0 means none.", effective != NULL ? effective : "?");
+
+    htmx_element_add_class(HTMX_ELEMENT(form), "budget-form");
+    clawt_web_add(form, clawt_web_field("Result budget (bytes)",
+                                        "max_result_bytes", value, "-1"));
+    clawt_web_add(form, clawt_web_text(line, "small muted"));
+    add_save_row(form);
+
+    return HTMX_ELEMENT(g_steal_pointer(&form));
+}
+
+/*
+ * "Show its apps in chat": an MCP server's own view for a tool, drawn in
+ * a sandboxed frame in the conversation when somebody opens it.
+ */
+HtmxElement *
+clawt_web_apps_form(const gchar *escaped, gboolean on)
+{
+    g_autofree gchar *action = g_strdup_printf(
+        "/settings/connectors/%s/apps", escaped);
+    g_autoptr(HtmxForm) form = clawt_web_form(action);
+
+    htmx_element_add_class(HTMX_ELEMENT(form), "apps-form");
+    clawt_web_add(form, clawt_web_switch_field(
+        "Show its apps in chat", "show_apps",
+        "When one of its tools ships an interactive view, the call appears "
+        "in the conversation as an app you can open. It runs in a sandboxed "
+        "frame with no access to this page; it is the server's own code, "
+        "which is why this is off until you turn it on.", on));
+    add_save_row(form);
+
+    return HTMX_ELEMENT(g_steal_pointer(&form));
+}
+
+/* The fleet's budget, for every connector that does not set its own. */
+HtmxElement *
+clawt_web_fleet_budget(gint64 value)
+{
+    g_autoptr(HtmxForm) form = clawt_web_form(
+        "/settings/connectors/directory-thresholds");
+    g_autofree gchar *text = g_strdup_printf("%" G_GINT64_FORMAT, value);
+    g_autofree gchar *fallback = g_strdup_printf(
+        "%" G_GINT64_FORMAT, clawt_mcp_result_default_budget());
+
+    htmx_element_add_class(HTMX_ELEMENT(form), "fleet-budget");
+    clawt_web_add(form, clawt_web_field(
+        "Result budget for every connector (bytes, 0 for none)",
+        "max_result_bytes", text, fallback));
+    add_save_row(form);
+
+    return HTMX_ELEMENT(g_steal_pointer(&form));
+}
+
+/* ── Steps, and MCP apps in the transcript ───────────────────────── */
+
+HtmxElement *
+clawt_web_app_card(const gchar *agent_id, const gchar *app_id,
+                   const gchar *text)
+{
+    g_autoptr(HtmxDiv) card = htmx_div_new();
+    g_autoptr(HtmxDiv) body = htmx_div_new();
+    g_autoptr(HtmxButton) open = clawt_web_button("Open app", "default");
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *frame = NULL;
+    g_autofree gchar *card_id = NULL;
+    g_autofree gchar *body_id = NULL;
+    g_autofree gchar *target = NULL;
+
+    htmx_element_add_class(HTMX_ELEMENT(card), "turn-step");
+    htmx_element_add_class(HTMX_ELEMENT(card), "app-card");
+    clawt_web_add(card, clawt_web_text(text != NULL ? text : "App",
+                                       "app-title"));
+
+    /* An id that is not one of ours is drawn as text, never as a URL. */
+    if (agent_id == NULL || !clawt_mcp_app_id_is_valid(app_id)) {
+        clawt_web_add(card, clawt_web_text("This app cannot be opened.",
+                                           "small muted"));
+        return HTMX_ELEMENT(g_steal_pointer(&card));
+    }
+
+    path = clawt_mcp_app_web_path(agent_id, app_id);
+    frame = g_strconcat(path, "/frame", NULL);
+    card_id = g_strconcat("app-", app_id, NULL);
+    body_id = g_strconcat("app-body-", app_id, NULL);
+    target = g_strconcat("#", body_id, NULL);
+
+    /*
+     * Kept across transcript swaps: htmx replaces the transcript whole on
+     * every fleet event, and an app somebody is using would close under
+     * them.  The id makes the card the same element in the next swap.
+     */
+    htmx_element_set_id(HTMX_ELEMENT(card), card_id);
+    htmx_element_set_attribute(HTMX_ELEMENT(card), "hx-preserve", "true");
+
+    htmx_element_add_class(HTMX_ELEMENT(body), "app-body");
+    htmx_element_set_id(HTMX_ELEMENT(body), body_id);
+
+    /*
+     * A button, not a frame: the page fetches nothing at load, and the
+     * view is fetched only when somebody asks for it.
+     */
+    htmx_element_add_class(HTMX_ELEMENT(open), "app-open");
+    htmx_element_set_attribute(HTMX_ELEMENT(open), "hx-get", frame);
+    htmx_element_set_attribute(HTMX_ELEMENT(open), "hx-target", target);
+    htmx_element_set_attribute(HTMX_ELEMENT(open), "hx-swap", "innerHTML");
+    htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(open));
+
+    {
+        g_autoptr(HtmxA) page = htmx_a_new_with_href(path);
+
+        htmx_element_add_class(HTMX_ELEMENT(page), "small");
+        htmx_node_set_text_content(HTMX_NODE(page), "Open on its own page");
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(page));
+    }
+
+    htmx_node_add_child(HTMX_NODE(card), HTMX_NODE(body));
+
+    return HTMX_ELEMENT(g_steal_pointer(&card));
+}
+
+static gchar *
+member_json(JsonObject *object, const gchar *name)
+{
+    if (object == NULL || !json_object_has_member(object, name))
+        return NULL;
+
+    return json_to_string(json_object_get_member(object, name), FALSE);
+}
+
+HtmxElement *
+clawt_web_app_frame(JsonObject *app)
+{
+    g_autoptr(HtmxDiv) box = htmx_div_new();
+    const gchar *document = NULL;
+    const gchar *title = NULL;
+    const gchar *tool = NULL;
+    const gchar *connector = NULL;
+    const gchar *blocked = NULL;
+    g_autofree gchar *source = NULL;
+
+    htmx_element_add_class(HTMX_ELEMENT(box), "app-frame");
+
+    if (app != NULL) {
+        document = json_object_get_string_member_with_default(app, "document",
+                                                              NULL);
+        title = json_object_get_string_member_with_default(app, "title", NULL);
+        tool = json_object_get_string_member_with_default(app, "tool", NULL);
+        connector = json_object_get_string_member_with_default(
+            app, "connector", NULL);
+        blocked = json_object_get_string_member_with_default(app, "blocked",
+                                                             NULL);
+    }
+
+    source = (connector != NULL && tool != NULL)
+        ? g_strdup_printf("From %s's %s.", connector, tool)
+        : g_strdup(tool != NULL ? tool : "");
+
+    if (document == NULL || *document == '\0') {
+        g_autofree gchar *why = g_strdup_printf(
+            "This app's view could not be shown: %s.",
+            blocked != NULL ? blocked : "it was not kept");
+
+        htmx_element_add_class(HTMX_ELEMENT(box), "app-blocked");
+        clawt_web_add(box, clawt_web_text(why, NULL));
+        clawt_web_add(box, clawt_web_text(source, "small muted"));
+
+        return HTMX_ELEMENT(g_steal_pointer(&box));
+    }
+
+    /*
+     * What the page's host bridge hands the view once it says it is
+     * ready.  In attributes, which the renderer escapes, rather than in a
+     * script element, whose content is raw text a `</script>` in a tool
+     * result would end.
+     */
+    {
+        g_autofree gchar *input = member_json(app, "input");
+        g_autofree gchar *result = member_json(app, "result");
+
+        if (input != NULL)
+            htmx_element_set_attribute(HTMX_ELEMENT(box), "data-app-input",
+                                       input);
+
+        if (result != NULL)
+            htmx_element_set_attribute(HTMX_ELEMENT(box), "data-app-result",
+                                       result);
+    }
+
+    {
+        g_autoptr(HtmxIframe) frame = htmx_iframe_new();
+
+        /*
+         * Exactly this sandbox and nothing more: scripts, and an opaque
+         * origin -- no allow-same-origin, so the view cannot reach this
+         * page, its cookies or the fleet it drives; no forms, popups or
+         * top navigation; and no `allow` attribute, so no device either.
+         * The document is the daemon's, its policy the first element.
+         */
+        htmx_element_add_class(HTMX_ELEMENT(frame), "app-view");
+        htmx_iframe_set_sandbox(frame, CLAWT_MCP_APP_IFRAME_SANDBOX);
+        htmx_iframe_set_srcdoc(frame, document);
+        htmx_element_set_attribute(HTMX_ELEMENT(frame), "referrerpolicy",
+                                   "no-referrer");
+        htmx_element_set_attribute(HTMX_ELEMENT(frame), "title",
+                                   title != NULL ? title
+                                   : (tool != NULL ? tool : "MCP app"));
+        htmx_element_set_attribute(HTMX_ELEMENT(frame), "loading", "lazy");
+        htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(frame));
+    }
+
+    if (app != NULL && json_object_has_member(app, "refused") &&
+        JSON_NODE_HOLDS_ARRAY(json_object_get_member(app, "refused"))) {
+        JsonArray *refused = json_object_get_array_member(app, "refused");
+        g_autoptr(GString) list = g_string_new(NULL);
+        guint i;
+
+        for (i = 0; i < json_array_get_length(refused); i++) {
+            JsonNode *node = json_array_get_element(refused, i);
+
+            if (!JSON_NODE_HOLDS_VALUE(node) ||
+                json_node_get_value_type(node) != G_TYPE_STRING)
+                continue;
+
+            if (list->len > 0)
+                g_string_append(list, ", ");
+
+            g_string_append(list, json_node_get_string(node));
+        }
+
+        if (list->len > 0) {
+            g_autofree gchar *note = g_strdup_printf(
+                "Not allowed to reach: %s.", list->str);
+
+            clawt_web_add(box, clawt_web_text(note, "small muted"));
+        }
+    }
+
+    {
+        g_autofree gchar *note = g_strdup_printf(
+            "%s It runs sandboxed, with no access to this page.", source);
+
+        clawt_web_add(box, clawt_web_text(note, "small muted"));
+    }
+
+    return HTMX_ELEMENT(g_steal_pointer(&box));
+}
+
+HtmxElement *
+clawt_web_step_element(ClawtTurnStep *step)
+{
+    g_autofree gchar *text = clawt_turn_step_summary(step);
+    g_autofree gchar *marked = NULL;
+    g_autofree gchar *css = NULL;
+
+    if (clawt_turn_step_get_app_id(step) != NULL)
+        return clawt_web_app_card(clawt_turn_step_get_agent_id(step),
+                                  clawt_turn_step_get_app_id(step),
+                                  clawt_turn_step_get_text(step));
+
+    if (clawt_turn_step_get_kind(step) == CLAWT_STEP_THINKING)
+        marked = g_strdup_printf("thinking: %s", text);
+
+    /*
+     * A trimmed result is a warning beside the tool calls, not backend
+     * chatter: the agent saw part of what the tool returned.
+     */
+    if (clawt_turn_step_get_kind(step) == CLAWT_STEP_STATUS &&
+        clawt_mcp_result_is_notice(clawt_turn_step_get_text(step)))
+        css = g_strdup_printf("turn-step %s trimmed-notice",
+                              clawt_turn_step_tone(step));
+    else
+        css = g_strdup_printf("turn-step %s", clawt_turn_step_tone(step));
+
+    return HTMX_ELEMENT(clawt_web_text(marked != NULL ? marked : text, css));
 }

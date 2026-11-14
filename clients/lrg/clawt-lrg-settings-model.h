@@ -482,6 +482,62 @@ const gchar *clawt_lrg_settings_connector_tone(ClawtConnectorState state);
 gchar *clawt_lrg_settings_connector_subtitle(JsonObject *entry);
 
 /**
+ * clawt_lrg_settings_connector_budget_text:
+ * @entry: one entry of `connector.list`'s `connectors`
+ *
+ * What the per-connector budget field holds: the connector's own
+ * `max_result_bytes`, or empty when it takes the fleet's (-1).
+ *
+ * Returns: (transfer full): the field's text
+ */
+gchar *clawt_lrg_settings_connector_budget_text(JsonObject *entry);
+
+/**
+ * clawt_lrg_settings_connector_budget_hint:
+ * @entry: one entry of `connector.list`'s `connectors`
+ *
+ * The explanation under the field, with what applies now -- the
+ * reply's `max_result_label`, and whether that is the fleet's.
+ *
+ * Returns: (transfer full): the hint
+ */
+gchar *clawt_lrg_settings_connector_budget_hint(JsonObject *entry);
+
+/**
+ * clawt_lrg_settings_connector_effective_budget:
+ * @entry: one entry of `connector.list`'s `connectors`
+ *
+ * Returns: `effective_max_result_bytes`, 0 for no budget
+ */
+gint64 clawt_lrg_settings_connector_effective_budget(JsonObject *entry);
+
+/**
+ * clawt_lrg_settings_connector_show_apps:
+ * @entry: one entry of `connector.list`'s `connectors`
+ *
+ * Read with the boolean reader, because the daemon sends a JSON boolean.
+ *
+ * Returns: whether the connector's apps are shown in chat
+ */
+gboolean clawt_lrg_settings_connector_show_apps(JsonObject *entry);
+
+/**
+ * clawt_lrg_settings_budget_value:
+ * @text: (nullable): what somebody typed
+ * @allow_fleet: whether empty means "the fleet's" (-1), as on a
+ *   connector; on the fleet's own field empty is refused
+ * @out_value: (out): the number of bytes
+ *
+ * Text that is not a whole number is refused here rather than sent and
+ * read as 0 -- which for a budget is "no budget".
+ *
+ * Returns: %TRUE when @text is a budget
+ */
+gboolean clawt_lrg_settings_budget_value(const gchar *text,
+                                         gboolean     allow_fleet,
+                                         gint64      *out_value);
+
+/**
  * clawt_lrg_settings_catalog_label:
  * @entry: one entry of `connector.catalog`'s `connectors`
  *

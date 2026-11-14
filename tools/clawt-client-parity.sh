@@ -313,6 +313,25 @@ declare -A AFFORDANCES=(
     ["connector tool count"]="clawt_mcp_directory_status_label|clawt_mcp_directory_status_label|clawt_mcp_directory_status_label"
     ["present as a directory"]="build_directory_choice|directory_form|directory_choice"
     #
+    # The result budget (docs/connectors.org, "Results bigger than the
+    # budget"): each connector's own field, the fleet's beside the
+    # directory thresholds, and the notice a trimmed result leaves in the
+    # transcript -- one library predicate, so all three recognise it the
+    # same way.
+    #
+    ["connector result budget"]="build_budget_field|clawt_web_budget_form|budget_field"
+    ["fleet result budget"]="settings_max_result_bytes|clawt_web_fleet_budget|fleet_budget_field"
+    ["trimmed result notice"]="clawt_mcp_result_is_notice|clawt_mcp_result_is_notice|clawt_mcp_result_is_notice"
+    #
+    # MCP apps in chat (docs/connectors.org, "Apps in chat").  Recorded as
+    # affordances, not an exception, by decision: the web client draws the
+    # app in its sandboxed frame; GTK and lrg have no HTML engine and link
+    # to the web client's view of the same app.  All three ask
+    # connector.app_get, which layer 1 compares.
+    #
+    ["show apps in chat"]="build_apps_switch|clawt_web_apps_form|apps_toggle"
+    ["MCP app in chat"]="app_link_button|clawt_web_app_frame|app_link"
+    #
     # A group room drawn beside the agents, and the two things you can
     # only do to one from a client.
     #

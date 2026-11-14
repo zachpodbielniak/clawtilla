@@ -956,6 +956,8 @@ with ~integration.update~ as soon as it changes.  Under the list,
 written through ~connector.settings~.  See "Servers with many tools" in
 [[file:connectors.org][connectors.org]].
 
+The dialog also has *Result budget* (=build_budget_field=), the connector's own ~max_result_bytes~ from -1 (the fleet's) through 0 (no budget) to 64 MiB, with what applies now -- =clawt_mcp_result_budget_label()= of ~connector.list~'s ~effective_max_result_bytes~ -- in its subtitle; and *Show its apps in chat* (=build_apps_switch=), which says that the view is the server's own code, run sandboxed in the browser, and that this client links to the web client rather than drawing it.  Both save through ~integration.update~ as soon as they change.  Under the list, *Big tool results* holds the fleet's ~connectors.max_result_bytes~, sent with the thresholds through ~connector.settings~.  See "Results bigger than the budget" and "Apps in chat" in [[file:connectors.org][connectors.org]].
+
 Above the accounts, an *Integration broker* group holds one row: the
 broker and its state in =clawt_broker_state_label()='s word -- "AnythingMCP
 — Starting" -- with what it is doing or why it failed and the dashboard
@@ -2024,6 +2026,12 @@ The card sits where it was asked: a room's decisions (~decision.list~ with ~room
 A double tap is refused twice over. The client stops it first -- GTK makes the options insensitive for the request's wait, the web form has ~hx-sync="this:drop"~ and disables its buttons, lrg draws "Answering…" in place of the buttons until the reply -- and the daemon refuses whatever still gets through, as it refuses a press on a card that was out of date: "Already settled: You answered "now" in the chat. Your press changed nothing; if you have changed your mind, say so in a message to chief." The refusal is shown (a toast in GTK and lrg, written into the card on the web) and the card is redrawn from the daemon's current record, so it stops offering buttons that would be refused again.
 
 A question with no options cannot be answered with a button; its card says so and points at Decisions, which has the free-text box. A decision nobody could place in a room -- a venture staging, or a policy ask while the agent was mid-turn in several rooms -- is drawn in the inbox only.
+
+**** Trimmed results and apps
+
+Where the turn's tool calls are drawn, a status step that passes ~clawt_mcp_result_is_notice()~ -- "Result trimmed: forge's issues_list returned 2,104,332 bytes ..." -- is drawn in the warning colour, not dimmed, because somebody reading the conversation needs to know the agent saw part of a result before trusting what it concluded.  It is the daemon's step, recorded when a relay trims a result (~connector.result_trimmed~).
+
+A step that carries an MCP app (~clawt_turn_step_get_app_id()~) gets a button under it (=app_link_button=): =clawt_mcp_app_link_label()= of the app's title -- "Open Draw a diagram in the browser".  GTK has no HTML engine, so it does not draw the app; pressing the button asks the daemon for it (~connector.app_get~), which says if it has been swept, and opens the address the reply gives -- the web client's page for that app, built from ~connectors.apps_web_url~.  That is the recorded parity decision: the web client renders, GTK and lrg link out, and =make parity= checks each as an affordance row.  See "Apps in chat" in [[file:connectors.org][connectors.org]].
 
 *** Markdown
 

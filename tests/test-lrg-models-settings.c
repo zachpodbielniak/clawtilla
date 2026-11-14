@@ -747,6 +747,59 @@ test_connector_state(void)
                         CLAWT_CONNECTOR_UNAUTHORISED), ==, "neutral");
 }
 
+/*
+ * The result budget and the apps switch, from a connector.list entry as
+ * the daemon builds it: show_apps is a JSON boolean and is read with the
+ * boolean reader, and a connector with no budget of its own shows an
+ * empty field and says the fleet's applies.
+ */
+static void
+test_connector_budget(void)
+{
+    g_autoptr(JsonNode) fleet = parse(
+        "{\"name\": \"gh\", \"max_result_bytes\": -1, "
+        "\"effective_max_result_bytes\": 65536, "
+        "\"max_result_label\": \"64 KB\", \"show_apps\": false}");
+    g_autoptr(JsonNode) own = parse(
+        "{\"name\": \"draw\", \"max_result_bytes\": 4096, "
+        "\"effective_max_result_bytes\": 4096, "
+        "\"max_result_label\": \"4 KB\", \"show_apps\": true}");
+    g_autofree gchar *fleet_text = clawt_lrg_settings_connector_budget_text(
+        json_node_get_object(fleet));
+    g_autofree gchar *own_text = clawt_lrg_settings_connector_budget_text(
+        json_node_get_object(own));
+    g_autofree gchar *fleet_hint = clawt_lrg_settings_connector_budget_hint(
+        json_node_get_object(fleet));
+    g_autofree gchar *own_hint = clawt_lrg_settings_connector_budget_hint(
+        json_node_get_object(own));
+    gint64 value = 7;
+
+    g_assert_cmpstr(fleet_text, ==, "");
+    g_assert_cmpstr(own_text, ==, "4096");
+    g_assert_nonnull(strstr(fleet_hint, "64 KB (the fleet's)"));
+    g_assert_nonnull(strstr(own_hint, "4 KB"));
+    g_assert_null(strstr(own_hint, "the fleet's)"));
+    g_assert_cmpint(clawt_lrg_settings_connector_effective_budget(
+                        json_node_get_object(fleet)), ==, 65536);
+    g_assert_false(clawt_lrg_settings_connector_show_apps(
+                       json_node_get_object(fleet)));
+    g_assert_true(clawt_lrg_settings_connector_show_apps(
+                      json_node_get_object(own)));
+
+    /* Empty is the fleet's on a connector and refused on the fleet. */
+    g_assert_true(clawt_lrg_settings_budget_value("", TRUE, &value));
+    g_assert_cmpint(value, ==, -1);
+    g_assert_false(clawt_lrg_settings_budget_value("", FALSE, &value));
+    g_assert_true(clawt_lrg_settings_budget_value(" 0 ", FALSE, &value));
+    g_assert_cmpint(value, ==, 0);
+    g_assert_true(clawt_lrg_settings_budget_value("8192", TRUE, &value));
+    g_assert_cmpint(value, ==, 8192);
+
+    /* Not a number is refused, never read as 0 -- which is "no budget". */
+    g_assert_false(clawt_lrg_settings_budget_value("64k", TRUE, &value));
+    g_assert_false(clawt_lrg_settings_budget_value("-5", TRUE, &value));
+}
+
 static void
 test_connector_labels(void)
 {
@@ -1281,6 +1334,7 @@ main(gint argc, gchar **argv)
     g_test_add_func("/lrg-settings/integrations/health", test_health_text);
     g_test_add_func("/lrg-settings/connectors/state", test_connector_state);
     g_test_add_func("/lrg-settings/connectors/labels", test_connector_labels);
+    g_test_add_func("/lrg-settings/connectors/budget", test_connector_budget);
     g_test_add_func("/lrg-settings/connectors/payload",
                     test_connector_payload);
     g_test_add_func("/lrg-settings/connectors/sign-in-on-the-row",

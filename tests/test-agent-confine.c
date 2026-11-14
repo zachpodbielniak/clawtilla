@@ -673,6 +673,54 @@ test_connector_secrets(void)
 }
 
 /*
+ * A confined agent's connector relays run inside its box, so the held
+ * results a relay spills and the apps the daemon keeps must be under a
+ * writable bind -- the agent's own state directory, built here as the
+ * daemon builds it.  Checked on the argv and on the predicate both: the
+ * wall and the door.
+ */
+static void
+test_held_results_are_writable(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_autoptr(GError) error = NULL;
+    g_auto(GStrv) wrapped = NULL;
+    g_autofree gchar *agent_state = NULL;
+    g_autofree gchar *spill = NULL;
+    g_autofree gchar *apps = NULL;
+    g_autofree gchar *prefix = NULL;
+    const gchar *argv[] = { "libreclaw", NULL };
+
+    fixture_setup(&fixture);
+    with_bwrap(&fixture);
+
+    config = load(&fixture, NULL, "    runtime:\n      confine: bwrap\n");
+    agent_state = clawt_config_agent_state_dir(config, "boxed");
+    g_assert_cmpint(g_mkdir_with_parents(agent_state, 0700), ==, 0);
+
+    spill = clawt_mcp_result_spill_dir(config, "boxed");
+    apps = clawt_mcp_app_store_dir(config, "boxed");
+    prefix = g_strconcat(agent_state, G_DIR_SEPARATOR_S, NULL);
+
+    g_assert_true(g_str_has_prefix(spill, prefix));
+    g_assert_true(g_str_has_prefix(apps, prefix));
+
+    sandbox = clawt_agent_confine_build(clawt_config_get_agent(config,
+                                                               "boxed"),
+                                        agent_state, NULL, NULL, NULL,
+                                        &error);
+    g_assert_no_error(error);
+    wrapped = clawt_sandbox_wrap_argv(sandbox, argv);
+
+    g_assert_cmpint(find_pair(wrapped, "--bind", agent_state), >=, 0);
+    g_assert_true(clawt_sandbox_path_is_allowed(sandbox, spill));
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * Without an account the CLI's own login is bound -- the directory and
  * the file beside it, for Claude Code.
  */
@@ -1215,6 +1263,8 @@ main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
 
+    g_test_add_func("/agent-confine/held-results-are-writable",
+                    test_held_results_are_writable);
     g_test_add_func("/agent-confine/off-by-default",
                     test_off_by_default_and_fleet_default);
     g_test_add_func("/agent-confine/embedded-refused",

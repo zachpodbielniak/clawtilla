@@ -145,6 +145,8 @@ clawt_connector_plan_free(ClawtConnectorPlan *self)
     g_free(self->url);
     g_free(self->header_name);
     g_free(self->header_value);
+    clawt_mcp_results_free(self->results);
+    clawt_mcp_apps_free(self->apps);
     g_free(self->gateway);
 
     g_free(self);
@@ -518,6 +520,9 @@ typedef struct {
      * into a stack overflow.
      */
     guint                      depth;
+
+    /* Messages read off responses so far, so a broken body is noticed. */
+    guint                      delivered;
 } HttpBridge;
 
 static void
@@ -578,57 +583,126 @@ deliver_one(HttpBridge *bridge, const gchar *data)
 }
 
 /*
+ * One message read off a response, whole or described.  A message too
+ * big to hold becomes the budget's reply, which then goes through the
+ * policy like any other.
+ */
+static void
+on_response_message(const gchar             *message,
+                    gsize                    length,
+                    const ClawtMcpOversized *oversized,
+                    gpointer                 user_data)
+{
+    HttpBridge *bridge = user_data;
+    g_autofree gchar *line = NULL;
+
+    (void)length;
+
+    if (message != NULL) {
+        if (*message != '\0') {
+            bridge->delivered++;
+            deliver_one(bridge, message);
+        }
+        return;
+    }
+
+    line = clawt_mcp_relay_oversized_line(bridge->policy, oversized);
+    bridge->delivered++;
+
+    if (line != NULL)
+        deliver_one(bridge, line);
+}
+
+/*
  * A streamable-HTTP server may answer either with one JSON object or
  * with an SSE stream carrying several.  Both are handled, because which
  * one arrives is the server's choice per request and not a property of
  * the server -- a client that understands only JSON works until the
  * first tool call that streams.
+ *
+ * Read a chunk at a time through a bounded reader.  The bridge used to
+ * read the whole body and look at it afterwards, so a server answering
+ * with a gigabyte had it held in memory before anything here could say
+ * it was too big -- a limit applied after the read.
  */
 static void
-deliver_response(HttpBridge *bridge, const gchar *content_type,
-                 const gchar *body)
+deliver_stream(HttpBridge *bridge, const gchar *line,
+               const gchar *content_type, const gchar *head,
+               gsize head_length, GInputStream *body)
 {
-    if (body == NULL || *body == '\0')
-        return;
+    g_autoptr(ClawtMcpReader) reader = NULL;
+    g_autofree gchar *chunk = g_malloc(RELAY_BUFFER_BYTES);
+    ClawtMcpFraming framing = CLAWT_MCP_FRAMING_WHOLE;
+    guint before = bridge->delivered;
+    gboolean failed = FALSE;
 
-    if (content_type != NULL && strstr(content_type, "text/event-stream")) {
-        g_auto(GStrv) lines = g_strsplit(body, "\n", -1);
-        gsize i;
+    if (content_type != NULL && strstr(content_type, "text/event-stream"))
+        framing = CLAWT_MCP_FRAMING_SSE;
 
-        for (i = 0; lines[i] != NULL; i++) {
-            const gchar *data;
+    reader = clawt_mcp_reader_new(
+        framing, CLAWT_MCP_RESULT_HOLD_MAX,
+        (bridge->policy->results != NULL)
+            ? clawt_mcp_results_get_spill_dir(bridge->policy->results)
+            : NULL,
+        on_response_message, bridge);
 
-            if (!g_str_has_prefix(lines[i], "data:"))
-                continue;
+    /* What was already read to judge the answer goes first. */
+    if (head != NULL && head_length > 0)
+        clawt_mcp_reader_feed(reader, head, head_length);
 
-            data = lines[i] + 5;
+    for (;;) {
+        g_autoptr(GError) error = NULL;
+        gssize got = g_input_stream_read(body, chunk, RELAY_BUFFER_BYTES,
+                                         NULL, &error);
 
-            while (*data == ' ')
-                data++;
-
-            if (*data == '\0')
-                continue;
-
-            deliver_one(bridge, data);
+        if (got < 0) {
+            g_printerr("clawtilla: reading the tool server's answer "
+                       "failed: %s\n", error->message);
+            failed = TRUE;
+            break;
         }
 
-        return;
+        if (got == 0)
+            break;
+
+        clawt_mcp_reader_feed(reader, chunk, (gsize)got);
     }
 
-    deliver_one(bridge, body);
+    clawt_mcp_reader_finish(reader);
+
+    /*
+     * Every request is answered.  A body that broke off before any
+     * message in it was whole leaves the client waiting on an id
+     * nothing will answer -- an agent sees a tool that hangs -- so it
+     * gets the same tool error a request that never arrived does.
+     */
+    if (failed && bridge->delivered == before) {
+        g_autofree gchar *said = g_strdup_printf(
+            "The connector '%s' tool server's answer broke off before it "
+            "was complete, so nothing it said can be trusted to have run "
+            "or not.",
+            bridge->plan->name != NULL ? bridge->plan->name : "?");
+        g_autofree gchar *reply =
+            clawt_connector_relay_failure_reply(line, said);
+
+        if (reply != NULL)
+            write_line(bridge->out, reply);
+    }
 }
 
 static void
 forward_one(HttpBridge *bridge, const gchar *line)
 {
     g_autoptr(SoupMessage) message = NULL;
-    g_autoptr(GBytes) response = NULL;
+    g_autoptr(GInputStream) response = NULL;
     g_autoptr(GBytes) request = NULL;
     g_autoptr(GError) error = NULL;
     g_autofree gchar *text = NULL;
+    g_autofree gchar *head = NULL;
     SoupMessageHeaders *headers;
     const gchar *content_type;
     const gchar *fresh_session;
+    gsize head_length = 0;
 
     message = clawt_http_message_new("POST", bridge->plan->url,
                                      CLAWT_HTTP_CARRIES_CREDENTIALS);
@@ -662,8 +736,15 @@ forward_one(HttpBridge *bridge, const gchar *line)
         soup_message_headers_replace(headers, "Mcp-Session-Id",
                                      bridge->session_id);
 
-    response = clawt_http_send_and_read(bridge->session, message, NULL,
-                                        &error);
+    /*
+     * The body as a stream, so it is bounded while it is read; the
+     * redirect refusal clawt_http_send_and_read() makes is made here
+     * too, on the headers, before a byte of the body is taken.
+     */
+    response = soup_session_send(bridge->session, message, NULL, &error);
+
+    if (response != NULL && !clawt_http_check_redirect(message, &error))
+        g_clear_object(&response);
 
     if (response == NULL) {
         /*
@@ -711,10 +792,21 @@ forward_one(HttpBridge *bridge, const gchar *line)
      */
     if (bridge->plan->gateway != NULL &&
         soup_message_get_status(message) >= 400) {
-        g_autofree gchar *body = g_strndup(g_bytes_get_data(response, NULL),
-                                           g_bytes_get_size(response));
-        g_autofree gchar *reason = clawt_broker_reason_from_body(body);
-        g_autofree gchar *reply = clawt_broker_refusal_reply(
+        g_autofree gchar *body = g_malloc0(RELAY_BUFFER_BYTES + 1);
+        g_autofree gchar *reason = NULL;
+        g_autofree gchar *reply = NULL;
+        gsize got = 0;
+
+        /*
+         * A refusal's reason is a sentence: read at most a buffer of it,
+         * the body is a stream now and a hostile gateway's "error" can be
+         * as long as it likes.
+         */
+        (void)g_input_stream_read_all(response, body, RELAY_BUFFER_BYTES,
+                                      &got, NULL, NULL);
+        body[got] = '\0';
+        reason = clawt_broker_reason_from_body(body);
+        reply = clawt_broker_refusal_reply(
             line, bridge->plan->gateway,
             bridge->plan->name != NULL ? bridge->plan->name : "?",
             soup_message_get_status(message), reason);
@@ -760,7 +852,23 @@ forward_one(HttpBridge *bridge, const gchar *line)
 
     content_type = soup_message_headers_get_content_type(
         soup_message_get_response_headers(message), NULL);
-    text = clawt_connector_relay_body_text(response);
+
+    /*
+     * A failure status is judged on its first buffer, read bounded: a
+     * JSON-RPC error is a sentence, and an HTML error page or a gate's
+     * refusal is answered without reading the rest of it.  A success is
+     * never read here -- it goes straight to the bounded reader.
+     */
+    if (soup_message_get_status(message) >= 400) {
+        gsize got = 0;
+
+        head = g_malloc0(RELAY_BUFFER_BYTES + 1);
+        (void)g_input_stream_read_all(response, head, RELAY_BUFFER_BYTES,
+                                      &got, NULL, NULL);
+        head[got] = '\0';
+        head_length = got;
+        text = g_strdup(head);
+    }
 
     /*
      * A refusal that is not the server's own JSON-RPC -- the egress
@@ -823,14 +931,11 @@ forward_one(HttpBridge *bridge, const gchar *line)
     }
 
     /*
-     * A notification has no id and gets 202 with nothing in it.  Writing
-     * an empty line for one would put a message on the wire the client
-     * never asked for.
+     * A notification has no id and gets 202 with nothing in it.  The
+     * reader delivers nothing for an empty body, so no empty line goes
+     * on the wire for a message the client never asked for.
      */
-    if (g_bytes_get_size(response) == 0)
-        return;
-
-    deliver_response(bridge, content_type, text);
+    deliver_stream(bridge, line, content_type, head, head_length, response);
 }
 
 static gint
@@ -961,6 +1066,10 @@ clawt_connector_relay_run_full(ClawtConnectorPlan *plan,
     policy.account_prefix = plan->account_prefix;
     policy.account_siblings = plan->account_siblings;
     policy.account_conflict = plan->account_conflict;
+
+    /* The budget and apps, which the caller set up for this agent. */
+    policy.results = plan->results;
+    policy.apps = plan->apps;
 
     if (plan->url != NULL)
         return run_http(plan, &policy);

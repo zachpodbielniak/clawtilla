@@ -4,7 +4,7 @@
 #+categories: software documentation
 #+created: [2026-08-23 Sat]
 #+updated: [2026-11-14 Sat]
-#+version: 0.5.0
+#+version: 0.6.0
 
 * Connectors
 
@@ -903,6 +903,116 @@ text the directory exists to keep out.  Under ~auto~ a server no relay
 has counted yet is described as a list; the agent's next start, after a
 relay has seen it, says the right thing.
 
+** Results bigger than the budget
+
+A connector's tool can answer with megabytes -- a repository listing, a log, a search across a whole tracker -- and whatever it answers is read by the model on every later call of the turn.  One careless listing spends the context the rest of the work needed.  So the relay holds each connector to a /result budget/: the most of one tool result the agent is shown, in bytes.
+
+| Key                                | Default  | What it does                                            |
+|------------------------------------+----------+---------------------------------------------------------|
+| =connectors.max_result_bytes=      | =65536=  | the budget for every connector that does not set one    |
+| =integrations.max_result_bytes=    | =-1=     | this connector's own; -1 is the fleet's, 0 is no budget |
+
+Anything below 1024 is read as 1024 -- below that the two notes would be most of what the agent reads.  ~clawt_mcp_result_budget_resolve()~ is the one resolver, used by the relay, the daemon's ~connector.list~ and every client.
+
+#+begin_src bash
+clawtilla integration set forge max_result_bytes=200000
+clawtilla integration set logs max_result_bytes=0      # no budget
+#+end_src
+
+*** What the agent reads
+
+A result past the budget is trimmed before the agent sees it, and the cut is announced at *both* ends, because a model reads a quiet note at the bottom of a long result as the end of the data:
+
+#+begin_example
+[clawtilla] TRIMMED: this result from forge's issues_list was 2,104,332 bytes, over the 65,536-byte budget, so only 65,412 bytes of it are shown (.content[0].text.items: 212 of 6,880 items). The rest was NOT shown -- do not assume you have seen everything. The whole result is held as r5f0c1e2d3a4b5c6d. Read the part you need with clawtilla_mcp_result_query -- {"result_id": "r5f0c1e2d3a4b5c6d", "path": ".content[0].text.items", "offset": 212} continues where this stops; "search" finds text in it -- rather than calling the tool again.
+
+{"items":[{"id":1, ...}, ... 212 records ...]}
+
+[clawtilla] END OF TRIMMED RESULT: 65,412 of 2,104,332 bytes shown. The rest is held as r5f0c1e2d3a4b5c6d; read it with clawtilla_mcp_result_query (see the note at the start).
+#+end_example
+
+How it is cut, in ~clawt_mcp_result_trim()~:
+
+- *Each text block gets a share*, water-filled: a short block keeps its whole size and the rest go to the long ones.
+- *A text that is JSON is cut structurally*: arrays to the records that fit, objects member by member.  What the agent reads still parses -- it is the same shape with fewer records -- and the note names each place it was cut and how many of how many it kept.
+- *Prose is cut on a boundary.*  ~clawt_mcp_result_safe_cut()~ never lands inside a UTF-8 sequence, inside a JSON ~\uXXXX~ escape, after a lone backslash, or between the two halves of an escaped surrogate pair -- half an emoji is an invalid string some providers refuse outright.  A run of backslashes is counted, so ~\\u~ is a backslash and a ~u~.
+- *~structuredContent~ is trimmed too*, structurally, so the provider is not handed a second full copy of what the text half was cut from.  The two halves share the budget: one that fits in half keeps its size and the other gets the rest.
+- *An image, an audio clip or a blob is never cut* -- half of one is garbage.  It stays when it fits and is otherwise replaced by a sentence saying where it is in the held result (~.content[2]~).
+- *The server's text is escaped* with ~clawt_preamble_escape_all()~ in a trimmed result and every query answer, so a ~[clawtilla]~ anywhere in it reads ~[not from clawtilla]~ and cannot pass for one of the two notes.
+
+The notes come on top of the budget: the budget is what the server's own content may cost.  A result within the budget is passed through byte for byte, notes and all absent.
+
+*** The whole result is held, and only its agent can read it
+
+Before the trimmed result goes out, the whole message is written to =<state_dir>/agents/<id>/mcp-results/<result_id>.json= -- the directory 0700, the file 0600 -- with a =.meta= beside it naming the connector, the tool, the size and the budget.  A result id is ~r~ and sixteen hex digits from the kernel.  Results are kept for a day and at most 64 per agent, oldest first; every spill sweeps, and the sweep touches only files whose names are held-result ids.
+
+~clawtilla_mcp_result_query~ reads it:
+
+| Argument    | What it does                                                                              |
+|-------------+-------------------------------------------------------------------------------------------|
+| ~result_id~ | which held result, from the note                                                          |
+| ~path~      | jq-like: ~.content[0].text~, ~.structuredContent.items[20:40]~, ~["odd key"]~, ~[-1]~; a string that is JSON is gone into, so ~.content[0].text.items~ works |
+| ~search~    | text to find, ignoring ASCII case: each match with what is around it, or the array items that contain it |
+| ~offset~    | where to start: a byte of a string, an item of an array                                    |
+| ~limit~     | how much: bytes of a string, items of an array                                             |
+
+The answer stays within the budget the result was held to, whatever is asked, and is announced at both ends when it is cut; the result's text in it is escaped.  The tool is offered only to an agent that holds a connector.
+
+The permission is where the lookup happens.  The daemon resolves the id inside the *calling* agent's own =mcp-results= and nowhere else, so there is no id one agent can pass that reaches another's results -- and an id that is not there, is malformed, or belongs to somebody else gets one answer, word for word, so asking cannot be used to learn what another agent's tools returned.  *Under confinement.*  A confined agent's connector relays run inside its bwrap box, so the relay spills there, not the daemon: =mcp-results/= is under =<state_dir>/agents/<id>/=, the agent's own state directory, which ~clawt_agent_confine_build()~ binds read-write at the same path (the rendered config, sessions and link token live there too).  Nothing extra is bound, nothing crosses IPC, and the daemon's query tool reads the same path on the host.  =tests/test-agent-confine.c= (~/agent-confine/held-results-are-writable~) checks both the ~--bind~ and the sandbox's own predicate, built as the daemon builds it.  The same holds for the apps the daemon keeps under =mcp-apps/=, which the box can write but the relay never needs to.  The agent can read its own held results from inside the box; they are what its own tools returned.
+
+*Through the egress gate.*  For a gated agent the HTTP bridge sends every request through ~CLAWTILLA_EGRESS_PROXY~ (see "A gated agent's connector says the egress gate refused it" below, and [[file:security.org][security.org]]); the bounded reader reads the gate's answer like any other, a relay's own ~resources/read~ for an app's view goes the same way, and every request is still answered -- a failure status that is not JSON-RPC is judged on its first 64 KiB and answered with a tool error, and a body that breaks off before a whole message arrived gets one too.
+
+*** A limit applied while reading
+
+The relay used to read a whole line before looking at it -- ~g_data_input_stream_read_line_async()~ grows its buffer until it finds a newline -- so the size of one message was the server's to choose, and the HTTP bridge read a whole response body the same way.  Both now read a chunk at a time through ~ClawtMcpReader~, which holds at most =CLAWT_MCP_RESULT_HOLD_MAX= (64 MiB) of one message in memory.  Past that, the rest is written straight to the held result as it arrives and never held; the message is never parsed, and the agent is shown the start of its raw JSON, cut safely, between the same two notes, with ~search~ and ~offset~ to read the rest (a path cannot be followed into something too big to parse).  The reader finds the message's top-level ~id~ as the bytes go past -- it may come after the result -- so the reply still answers the right call.
+
+That ceiling applies to every relay, whatever the budget says, including a guest desktop's and a connector with ~max_result_bytes: 0~.
+
+*** In the conversation
+
+Every client shows a trimmed result where the turn's tool calls are, as a warning-toned line: "Result trimmed: forge's issues_list returned 2,104,332 bytes; the agent was shown 65,412, and the whole result is held as r5f0c... for it to query."  The relay tells the daemon (~connector.result_trimmed~), which records it as a status step in the room the call was made from (~CLAWTILLA_ROOM_ID~); ~clawt_mcp_result_is_notice()~ is how each client recognises one.  A relay with no room to name -- one started by hand -- shows nothing there, and the agent was told in the result either way.
+
+Each connector's dialog has a *Result budget* field (-1 for the fleet's, 0 for none) with what applies now beside it; the Connectors page has the fleet's.
+
+** Apps in chat
+
+An MCP server can ship an interactive view for a tool -- an MCP App: a ~ui://~ resource of HTML, MIME type ~text/html;profile=mcp-app~, named in the tool's ~_meta.ui.resourceUri~ (the extension is ~io.modelcontextprotocol/ui~).  With *Show its apps in chat* on, a call of such a tool appears in the conversation as an app.
+
+#+begin_src bash
+clawtilla integration set draw show_apps=true
+#+end_src
+
+Off by default, because the view is the server's own code running in your browser.
+
+*** Where the view is read
+
+mcp-glib 1.0.1 knows nothing of MCP Apps, so this is done at the JSON level in the relay -- which is right anyway, because the relay is the only thing that holds the credential and the only time a connection to the server exists.  With the switch on:
+
+1. The relay's ~initialize~ advertises ~capabilities.extensions["io.modelcontextprotocol/ui"] = {mimeTypes: ["text/html;profile=mcp-app"]}~; the spec has a server leave ~_meta.ui~ out for a client that does not.
+2. It notes which tools in ~tools/list~ ship a view.  A tool whose ~_meta.ui.visibility~ leaves out ~"model"~ belongs to the view: it is taken out of the agent's list and a call to it is refused -- the wall and its door.
+3. When such a tool answers, the answer goes to the agent untouched and whole (before any budget cut), and the relay sends a ~resources/read~ of its own for the view.  Its answer is kept back from the agent's CLI.  A view read once is reused for the life of the relay.
+4. The relay hands the daemon the call -- tool, title, input, result, the view's HTML, the policy built for it and any origins refused -- with ~connector.app~.  The daemon asks the switch again (a relay started before it was turned off must not add an app after), keeps the record 0600 under =<state_dir>/agents/<id>/mcp-apps/= (thirty days, at most 200), and puts a status step in the room: "App: Draw a diagram from draw", carrying the app's id and its web address.
+
+A view bigger than 2 MiB, not UTF-8, or not sent at all is still a call in the conversation, with why it cannot be shown in place of the frame.
+
+*** How it is drawn
+
+The web client draws it; GTK and lrg link to the web client's view of it.  That is the parity decision, recorded in =make parity= as affordance rows rather than an exception: GTK and lrg have no HTML engine, and a frame that cannot be isolated is not worth drawing.
+
+- *Nothing is fetched until somebody opens it.*  The chat shows the app's card with an *Open app* button; pressing it fetches =/a/<agent>/app/<id>/frame= from the web client, which asks the daemon (~connector.app_get~) for the record.
+- *The frame has no same-origin access to the client.*  It is an ~<iframe sandbox="allow-scripts">~ -- no ~allow-same-origin~, no forms, no popups, no top navigation, no ~allow~ attribute -- so its origin is opaque, and ~referrerpolicy="no-referrer"~.
+- *Its document is built by the daemon* (~clawt_mcp_app_build_document()~): a doctype, then the Content-Security-Policy as a ~<meta>~ before one byte of the server's (its byte-order mark and doctype taken off), set verbatim as ~srcdoc~.
+- *The policy* (~clawt_mcp_app_build_csp()~) is the spec's construction with the host's filter: ~default-src 'none'~; inline script and style; fonts, images and media from ~data:~ (and ~blob:~); and only the origins the view's ~_meta.ui.csp.resourceDomains~ and ~connectDomains~ ask for that pass ~clawt_mcp_app_domain_ok()~ -- ~https://~ and a dotted host, a port or a leading ~*.~ at most, no path, query, quote, semicolon, comma or space, sixteen per list; ~http://localhost~ and ~http://127.0.0.1~ only for a server that is itself local.  ~'self'~ is never named.  Frames, objects, ~<base>~ and form posts are refused outright.
+- *A small host bridge* in the web client answers the view's ~ui/initialize~, hands it the tool's input and result (~ui/notifications/tool-input~, ~ui/notifications/tool-result~), follows ~ui/notifications/size-changed~, and refuses everything else -- a view cannot call tools, send messages or open links through clawtilla.  It answers only messages whose source is that frame.
+
+GTK and lrg draw the step with a link -- ~clawt_mcp_app_link_label()~, "Open Draw a diagram in the browser" -- to ~connectors.apps_web_url~ =/a/<agent>/app/<id>=, the web client's full-page view of the same app.  The daemon builds that address when it records the step, so no client has to know where the web client runs; set ~connectors.apps_web_url~ when it is not on =http://127.0.0.1:8790=.
+
+*** What is not done
+
+- *A view cannot call back.*  The bridge refuses ~tools/call~, ~ui/message~ and ~ui/open-link~; an app that needs to run its server's tools from the view shows what it was given and no more.
+- *No fallback for a server that refuses the extension.*  A server whose ~initialize~ rejects the unknown capability fails with the switch on; turn it off for that server.
+- *Steps live in memory*, like every step: the app's card leaves the conversation when the daemon restarts, though the app itself stays openable at its address until it is swept.
+
 ** An integration broker
 
 Connectors are one account each, and the open MCP registry lists servers somebody still has to run.  What neither gives is a stock of ready-made app integrations -- a CRM, a shop, an ERP, a ticket system -- that sign in with your own OAuth client.  With =broker.enabled= on, clawtilla runs a gateway that has them, in rootless podman, and owns its whole lifecycle: you never write a compose file, and the gateway is one more part of the fleet.
@@ -1254,6 +1364,10 @@ that matter here:
 | ~integrations.directory~               | ~auto~, ~always~ or ~never~ present it as a directory |
 | ~connectors.directory_min_tools~       | more tools than this is big               |
 | ~connectors.directory_min_chars~       | more characters of tool definitions than this is big |
+| ~integrations.max_result_bytes~        | the most of one result the agent is shown; -1 the fleet's, 0 none |
+| ~connectors.max_result_bytes~          | the fleet's result budget (65536)         |
+| ~integrations.show_apps~               | show the server's MCP apps in chat (off by default) |
+| ~connectors.apps_web_url~              | where GTK and lrg send *Open in browser* for an app |
 | ~broker.enabled~                       | run the integration broker (off by default) |
 | ~broker.type~                          | ~anythingmcp~ or ~jentic~                 |
 | ~broker.image~                         | the gateway's image, pinned; empty is this release's |
@@ -1354,6 +1468,22 @@ The agent called a tool by its bare name while holding more than one account on 
 *** "both ... accounts labelled"
 
 Two accounts on one service fold to the same label.  Give one of them a different ~account~.
+
+*** A result starts with "[clawtilla] TRIMMED"
+
+It was bigger than the connector's ~max_result_bytes~.  The agent reads the rest with ~clawtilla_mcp_result_query~; raise the budget, or set it to 0 for none, on the connector if that is the wrong trade for it.
+
+*** "There is no held result ... for you"
+
+Held results last a day, sixty-four per agent, and only the agent whose tool returned one can read it.
+
+*** An app's card says its view could not be shown
+
+The server sent no ~text/html~ view for the tool, sent one bigger than 2 MiB, or one that was not UTF-8.  The call's result is still in the conversation.
+
+*** "This tool belongs to an app's view, not to the agent"
+
+The server marks the tool for its view alone (~_meta.ui.visibility~ without ~"model"~), and *Show its apps in chat* is on.
 
 *** "is the integration broker's connector"
 

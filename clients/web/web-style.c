@@ -553,6 +553,24 @@ clawt_web_stylesheet(void)
     ".turn-step{overflow-wrap:anywhere}"
     ".turn-step.bad{color:var(--bad-fg)}"
     /*
+     * A trimmed result: the agent saw part of what a tool returned, so
+     * it reads as a warning beside the tool calls.
+     */
+    ".turn-step.trimmed-notice{color:var(--warn-fg);background:"
+    "var(--warn-bg);border-radius:6px;padding:.15rem .5rem}"
+    /*
+     * An MCP app: a card in the transcript, closed until opened; the
+     * frame has a border so its edge is the sandbox's edge, visibly.
+     */
+    ".app-card{border:1px solid var(--border);border-radius:8px;"
+    "padding:.4rem .6rem;color:var(--fg)}"
+    ".app-card .app-title{margin:0 0 .3rem;font-weight:600}"
+    ".app-body{display:flex;flex-direction:column;gap:.3rem;"
+    "align-items:flex-start}"
+    ".app-frame{display:flex;flex-direction:column;gap:.3rem;width:100%}"
+    ".app-view{width:100%;min-height:120px;height:360px;border:1px solid "
+    "var(--border);border-radius:6px;background:#fff}"
+    /*
      * A run of tool calls opens to the commands in it.  The marker is
      * the only affordance saying so, so it keeps the pointer cursor and
      * the summary stays on one line -- a wrapped summary makes the

@@ -807,6 +807,72 @@ test_steps_merge(void)
     g_assert_cmpuint(clawt_lrg_steps_before(NULL, 0, 400), ==, 0);
 }
 
+/*
+ * An MCP app in the conversation is a link out to the web client's view
+ * of it -- lrg has no HTML engine -- and the link comes from the step's
+ * own members, read off the wire the way room.steps sends them.
+ */
+static void
+test_step_app_link(void)
+{
+    g_autoptr(JsonNode) node = parse(
+        "{\"step_kind\":\"status\",\"room_id\":\"war\","
+        "\"text\":\"App: Flowchart from excalidraw\","
+        "\"tool\":\"create_view\",\"app_id\":\"a0123456789abcdef\","
+        "\"app_url\":\"http://127.0.0.1:8790/a/ann/app/a0123456789abcdef\","
+        "\"app_title\":\"Flowchart\",\"ts\":1000000}");
+    g_autoptr(JsonNode) plain_node = parse(
+        "{\"step_kind\":\"status\",\"room_id\":\"war\","
+        "\"text\":\"Compacting\",\"ts\":1000000}");
+    g_autoptr(ClawtTurnStep) step = clawt_turn_step_new_from_object(
+        json_node_get_object(node), "ann");
+    g_autoptr(ClawtTurnStep) plain = clawt_turn_step_new_from_object(
+        json_node_get_object(plain_node), "ann");
+    g_autofree gchar *label = NULL;
+    g_autofree gchar *url = NULL;
+    g_autofree gchar *expected = NULL;
+
+    g_assert_true(clawt_lrg_step_app_link(step, &label, &url));
+    expected = clawt_mcp_app_link_label("Flowchart");
+    g_assert_cmpstr(label, ==, expected);
+    g_assert_cmpstr(url, ==,
+                    "http://127.0.0.1:8790/a/ann/app/a0123456789abcdef");
+
+    /* A copy -- the live block keeps copies -- still links. */
+    {
+        g_autoptr(ClawtTurnStep) copy = clawt_turn_step_copy(step);
+
+        g_assert_true(clawt_lrg_step_app_link(copy, NULL, NULL));
+    }
+
+    g_assert_false(clawt_lrg_step_app_link(plain, NULL, NULL));
+}
+
+/*
+ * A trimmed-result notice is drawn as a warning; other status chatter
+ * and a successful call stay muted, and a failure stays bad.
+ */
+static void
+test_step_trim_notice(void)
+{
+    g_autofree gchar *notice = clawt_mcp_result_notice(
+        "github", "list_issues", 2000000, 65536, "r0123456789abcdef");
+    g_autoptr(ClawtTurnStep) trimmed = clawt_turn_step_new(
+        CLAWT_STEP_STATUS, "ann", "war", notice, NULL, NULL, FALSE);
+    g_autoptr(ClawtTurnStep) status = clawt_turn_step_new(
+        CLAWT_STEP_STATUS, "ann", "war", "Compacting", NULL, NULL, FALSE);
+    g_autoptr(ClawtTurnStep) call = clawt_turn_step_new(
+        CLAWT_STEP_TOOL, "ann", "war", NULL, "bash", "ls", FALSE);
+    g_autoptr(ClawtTurnStep) failed = clawt_turn_step_new(
+        CLAWT_STEP_TOOL, "ann", "war", NULL, "bash", "ls", TRUE);
+
+    g_assert_true(clawt_mcp_result_is_notice(notice));
+    g_assert_cmpstr(clawt_lrg_step_tone(trimmed), ==, "warn");
+    g_assert_null(clawt_lrg_step_tone(status));
+    g_assert_null(clawt_lrg_step_tone(call));
+    g_assert_cmpstr(clawt_lrg_step_tone(failed), ==, "bad");
+}
+
 static void
 test_attachment_refs(void)
 {
@@ -1177,6 +1243,8 @@ main(gint argc, gchar **argv)
     g_test_add_func("/lrg/chat/export-and-chips", test_export_and_chips);
     g_test_add_func("/lrg/chat/runs", test_runs);
     g_test_add_func("/lrg/chat/steps-merge", test_steps_merge);
+    g_test_add_func("/lrg/chat/steps/app-link", test_step_app_link);
+    g_test_add_func("/lrg/chat/steps/trim-notice", test_step_trim_notice);
     g_test_add_func("/lrg/chat/attachments/refs", test_attachment_refs);
     g_test_add_func("/lrg/chat/attachments/body", test_body_with_attachments);
     g_test_add_func("/lrg/chat/mentions", test_mentions);

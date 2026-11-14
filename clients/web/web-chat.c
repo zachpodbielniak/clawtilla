@@ -742,19 +742,9 @@ fill_steps(gpointer parent, GPtrArray *steps, guint from, guint end)
             continue;
         }
 
-        {
-            g_autofree gchar *text = clawt_turn_step_summary(step);
-            g_autofree gchar *marked = NULL;
-            g_autofree gchar *css = NULL;
-
-            if (clawt_turn_step_get_kind(step) == CLAWT_STEP_THINKING)
-                marked = g_strdup_printf("thinking: %s", text);
-
-            css = g_strdup_printf("turn-step %s", clawt_turn_step_tone(step));
-            clawt_web_add(parent, clawt_web_text(
-                marked != NULL ? marked : text, css));
-            i++;
-        }
+        /* Prose, a status, a trimmed-result notice or an app's card. */
+        clawt_web_add(parent, clawt_web_step_element(step));
+        i++;
     }
 }
 
@@ -2716,6 +2706,94 @@ on_exchange_page(HtmxRequest *request, GHashTable *params,
     return clawt_web_html_response(html);
 }
 
+/* What connector.app_get says about one app, or NULL with the error kept. */
+static JsonNode *
+fetch_app(ClawtWebApp *app, const gchar *agent_id, const gchar *app_id,
+          gchar **failure)
+{
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    JsonNode *reply;
+
+    clawt_web_payload_set(payload, "agent", agent_id);
+    clawt_web_payload_set(payload, "app", app_id);
+
+    reply = clawt_web_app_call(app, "connector.app_get",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    /* Copied at once: the next call frees the borrowed string. */
+    if (reply == NULL)
+        *failure = g_strdup(clawt_web_app_last_error(app));
+
+    return reply;
+}
+
+/*
+ * An opened app, into its card: fetched only now, when somebody pressed
+ * Open -- never at page load.
+ */
+static HtmxResponse *
+on_app_frame(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+    g_autofree gchar *app_id = clawt_web_param(params, "app");
+    g_autofree gchar *failure = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(HtmxElement) element = NULL;
+
+    (void)request;
+
+    reply = fetch_app(app, agent_id, app_id, &failure);
+
+    if (reply == NULL)
+        element = HTMX_ELEMENT(clawt_web_text(
+            failure != NULL ? failure : "That app could not be opened.",
+            "muted"));
+    else
+        element = clawt_web_app_frame(clawt_web_root(reply));
+
+    return clawt_web_fragment_response(element);
+}
+
+/*
+ * The same app on a page of its own: what GTK and lrg open, since they
+ * cannot draw HTML, and what a bookmark of it opens.
+ */
+static HtmxResponse *
+on_app_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+    g_autofree gchar *app_id = clawt_web_param(params, "app");
+    g_autofree gchar *failure = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(HtmxElement) main_el = HTMX_ELEMENT(htmx_main_new());
+    g_autofree gchar *html = NULL;
+    JsonObject *root;
+    const gchar *title;
+
+    reply = fetch_app(app, agent_id, app_id, &failure);
+
+    if (reply == NULL)
+        return clawt_web_error_page(app, request, agent_id, CLAWT_PAGE_CHAT,
+                                    failure != NULL
+                                        ? failure
+                                        : "That app could not be opened.");
+
+    root = clawt_web_root(reply);
+    title = json_object_get_string_member_with_default(root, "title", NULL);
+
+    htmx_element_add_class(main_el, "chat");
+    clawt_web_add(main_el, clawt_web_text(
+        title != NULL ? title
+            : json_object_get_string_member_with_default(root, "tool", "App"),
+        "app-title"));
+    clawt_web_add(main_el, clawt_web_app_frame(root));
+    html = clawt_web_page(app, agent_id, CLAWT_PAGE_CHAT, main_el, request);
+
+    return clawt_web_html_response(html);
+}
+
 /* The web app manifest; see clawt_web_manifest_json(). */
 static HtmxResponse *
 on_manifest(HtmxRequest *request, GHashTable *params, gpointer user_data)
@@ -2745,5 +2823,7 @@ clawt_web_register_chat(HtmxRouter *router, ClawtWebApp *app)
     /* before clawt_web_register_views(), whose /a/:id/:view takes all */
     htmx_router_get(router, "/a/:id/exchange", on_exchange_page, app);
     htmx_router_get(router, "/f/a/:id/exchange", on_exchange_fragment, app);
+    htmx_router_get(router, "/a/:id/app/:app/frame", on_app_frame, app);
+    htmx_router_get(router, "/a/:id/app/:app", on_app_page, app);
     htmx_router_get(router, CLAWT_WEB_MANIFEST_PATH, on_manifest, app);
 }
