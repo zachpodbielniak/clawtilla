@@ -4080,7 +4080,8 @@ cmd_browser(int argc, char *argv[])
     if (g_strcmp0(verb, "-h") == 0 || g_strcmp0(verb, "--help") == 0 ||
         g_strcmp0(verb, "help") == 0) {
         g_print("Usage: clawtilla browser [list | open AGENT URL | click AGENT X Y |\n"
-                "                          stop AGENT | screenshot AGENT FILE]\n"
+                "                          stop AGENT | screenshot AGENT FILE |\n"
+                "                          secrets AGENT]\n"
                 "\n"
                 "The web browsers agents drive (agents.browser.mode). A session\n"
                 "starts on the agent's first browser call; open starts it too.\n"
@@ -4090,7 +4091,8 @@ cmd_browser(int argc, char *argv[])
                 "  clawtilla browser open research example.org\n"
                 "  clawtilla browser screenshot research page.png\n"
                 "  clawtilla browser click research 40 20   # page pixels\n"
-                "  clawtilla browser stop research\n");
+                "  clawtilla browser stop research\n"
+                "  clawtilla browser secrets research       # vault entries it may fill\n");
         return EXIT_SUCCESS;
     }
 
@@ -4182,6 +4184,13 @@ cmd_browser(int argc, char *argv[])
         if (reply == NULL)
             return EXIT_FAILURE;
         encoded = member_or(json_node_get_object(reply), "png_base64", NULL);
+        if (encoded == NULL &&
+            json_object_get_boolean_member_with_default(json_node_get_object(reply),
+                                                        "secret_hold", FALSE)) {
+            g_printerr("A secret was filled on %s's page: no picture until it navigates "
+                       "away.\n", argv[3]);
+            return EXIT_FAILURE;
+        }
         if (encoded == NULL) {
             g_printerr("%s's browser is not running; nothing to take a picture of.\n",
                        argv[3]);
@@ -4193,6 +4202,34 @@ cmd_browser(int argc, char *argv[])
             return EXIT_FAILURE;
         }
         g_print("Wrote %s (%" G_GSIZE_FORMAT " bytes).\n", argv[4], length);
+        return EXIT_SUCCESS;
+    }
+
+    /* The vault entries an agent may have filled: names, never values. */
+    if (g_strcmp0(verb, "secrets") == 0 && argc > 3) {
+        JsonObject *root;
+        JsonArray *vault_entries;
+        guint i;
+
+        reply = call(client, "vault.list", clawt_ipc_payload_new("agent", argv[3], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        root = json_node_get_object(reply);
+        vault_entries = json_object_has_member(root, "entries")
+            ? json_object_get_array_member(root, "entries") : NULL;
+        if (vault_entries == NULL || json_array_get_length(vault_entries) == 0) {
+            g_print("No vault entries (vault: in clawtilla.yaml).\n");
+            return EXIT_SUCCESS;
+        }
+        for (i = 0; i < json_array_get_length(vault_entries); i++) {
+            JsonObject *entry = json_array_get_object_element(vault_entries, i);
+            g_autofree gchar *label = clawt_vault_entry_label(entry);
+
+            g_print("[%s] %s\n",
+                    json_object_get_boolean_member_with_default(entry, "granted", FALSE)
+                        ? "x" : " ", label);
+        }
+        g_print("Change with: clawtilla agent set %s browser.secrets NAME,NAME\n", argv[3]);
         return EXIT_SUCCESS;
     }
 

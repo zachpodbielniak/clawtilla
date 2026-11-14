@@ -542,6 +542,10 @@ struct _ClawtWindow {
     guint              browser_generation;
     gboolean           browser_in_flight;
     gboolean           browser_again;
+    /* The vault entries this agent may have filled: names, never values */
+    GtkBox            *browser_secrets;
+    JsonObject        *browser_vault;     /* the last vault.list reply, owned */
+    gboolean           browser_vault_filling;   /* drawing it: toggles are not the person */
     GtkListBox        *computer_mount_list;
     GtkListBox        *exchange_list;
 

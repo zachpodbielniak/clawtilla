@@ -395,6 +395,15 @@ credentials:
   created, and the agent started cleanly and never authenticated, which
   looks exactly like an agent nobody is talking to
 
+** Secrets an agent fills but never sees
+
+Since 0.25.0, and in detail in [[file:browser.org][browser.org]].  A =vault:= entry is a secret reference with a name and the ~sites~ it may be typed on; =agents.browser.secrets= grants an agent names.  The agent gets a one-use =secret-ref:= bound to it and to its conversation (=clawtilla_secret_ref=), and spends it on =clawtilla_browser_fill_secret=; the daemon resolves the value, makes a TOTP code from a seed when the entry is ~totp~, and has gsurf type it as key input.
+
+- *What crosses which boundary.*  The value goes from the secret reference to the daemon's worker thread to gsurf's same-user control socket, once.  It is never in a tool result, an error, an event (~browser.secret_filled~ carries the name, kind, host and session), a log line, an IPC reply (~vault.list~ carries names, kinds, descriptions and sites) or the reference table.  =tests/test-browser.c= asserts each of those negatively.
+- *Where it can be typed.*  Only on the entry's ~sites~ and their subdomains, checked against the page's address at the fill.  An unreadable address is a refusal.
+- *Reading it back.*  Screenshots and scripts are refused on a page a secret was typed into until the browser navigates away -- by gsurf and by the daemon, each failing closed.
+- *Not a boundary against the page.*  The site gets the secret; that is the point.  A malicious page, or a page the agent was steered to on an allowed host, can read its own field.  Choose ~sites~ narrowly.
+
 ** A credential never follows a redirect
 
 libsoup follows a 301, 302, 303, 307 or 308 by default, keeps every request header it was given -- ~Authorization~, ~X-Gotify-Key~, whatever a connector's ~header_name~ is -- and on a 307 or 308 sends the body again. So until this was closed, a server that answered with a redirect received nothing worse than any other reply, and the host it named received the bearer token, the OAuth client secret or the Matrix password. Turning that off is opt-in, per message (~SOUP_MESSAGE_NO_REDIRECT~).

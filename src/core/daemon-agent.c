@@ -1897,6 +1897,34 @@ clawt_daemon_handle_agent(
         }
 
         /*
+         * A secret grant names vault entries, checked where it arrives:
+         * an unknown name would be saved, echoed, and refused at every
+         * clawtilla_secret_ref -- the agent told it may have a secret
+         * the daemon can already prove does not exist.
+         */
+        if (g_strcmp0(key, "browser.secrets") == 0 && value != NULL) {
+            g_auto(GStrv) names = g_strsplit(value, ",", -1);
+            guint n;
+
+            for (n = 0; names[n] != NULL; n++) {
+                g_autoptr(ClawtVaultEntry) entry = NULL;
+
+                g_strstrip(names[n]);
+                if (*names[n] == '\0')
+                    continue;
+                entry = clawt_config_get_vault_entry(self->config, names[n]);
+                if (entry == NULL) {
+                    g_autofree gchar *message = g_strdup_printf(
+                        "there is no usable vault entry '%s'; declare it under "
+                        "vault: with a secret and its sites first", names[n]);
+
+                    return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                               message);
+                }
+            }
+        }
+
+        /*
          * Dispatch on what the schema says the key *is*, rather than
          * writing every value as a scalar.
          *

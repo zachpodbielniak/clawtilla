@@ -1763,7 +1763,7 @@ so.  ~make parity~ compares which enumerations each client walks.
 | Screen | what is on the agent's desktop, and the controls for taking it |
 | Mounts | the paths from this machine that appear inside the computer, host spelling first |
 | Exchange | the shared drop-box every computer gets |
-| Browser | the agent's web browser: the page it is on, a picture of it, an address to open, and Stop ([[file:browser.org][browser.org]]) |
+| Browser | the agent's web browser: the page it is on, a picture of it, an address to open, Stop, and which vault secrets it may have filled ([[file:browser.org][browser.org]]) |
 
 Shell is first because it is the one every computer has -- a container
 with no desktop still runs commands -- and it is where a link with no
@@ -1772,6 +1772,8 @@ which the daemon answers per agent from
 ~clawt_computer_type_has_screen()~.
 
 Browser is drawn only for an agent whose =agents.browser.mode= is not =none= (the agent row's ~browser~ member), and it is the one view an agent with a browser and no computer gets. It reads ~browser.frame~ every three seconds while it is showing -- one request in flight, and never one that starts a session: watching is not asking for a browser. The line above the picture is =clawt_browser_session_line()=, the same words in every client. A click on the picture is a click in the page (~browser.click~) in GTK and the web client, where the picture is drawn at its own size so the click's coordinates are the page's; the libregnum client takes "x,y" in an entry, as its Screen view does, because an =LrgImage= takes no pointer.
+
+Since 0.25.0 the view also lists the =vault:= entries by name (=clawt_vault_entry_label()=, from ~vault.list~ with the agent): a check button each in GTK, inside a "Secrets it may have filled" expander; an Allow / Revoke form each in the web client; a switch each in the libregnum client.  Changing one sends the whole list through ~agent.set~ ~browser.secrets~, built by =clawt_vault_grants_with()= so every client spells it the same.  No value is ever shown -- ~vault.list~ carries none.  When a secret has been filled the session line gains a second line from =clawt_browser_fill_line()=: the entry's name, the host and how long ago, and while the hold is on, that there is no picture until the page changes; the daemon sends none, so GTK and lrg clear the picture and the web client does not draw one.
 
 The web client puts the sub-view in the *path* (=/a/<id>/computer/screen=)
 rather than in a cookie, so a link to somebody's screen survives being

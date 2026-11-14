@@ -937,6 +937,14 @@ Since 0.9.0. Every verb but ~browser.list~ takes ~agent~ and acts on the session
 - ~browser.click~ (~x~, ~y~, in the page's CSS pixels) is a person's click. It does not take a shared session's driver lease, since a person at the Computer page outranks an agent.
 - ~browser.stop~ stops it. The profile and its logins stay; the open page does not.
 
+Since 0.25.0 every session object -- in ~browser.list~ and in each ~browser.*~ reply -- also carries ~secret_hold~ (a secret was filled on the page and it has not been seen to navigate away) and ~last_fill~ (~{name, host, at}~: the vault entry's name, the host it was typed on and unix seconds, or ~null~). Never a value. While ~secret_hold~ is true ~browser.frame~ answers without ~png_base64~ rather than with an error: the daemon takes no picture of a page a secret is on. Clients draw both through =clawt_browser_session_line()=, whose second line is =clawt_browser_fill_line()=.
+
+*** vault.list
+
+Since 0.25.0. The =vault:= entries, for a client choosing which ones an agent may have filled. Takes an optional ~agent~ (an unknown one is =NOT_FOUND=). Answers ~entries~, each ~{name, kind, description, sites}~ (~kind~ is ~password~ or ~totp~), and with ~agent~ also ~agent~, ~browser~ (whether its =agents.browser.mode= is not =none=) and a ~granted~ boolean per entry. Names only: neither the value nor the reference it is resolved through crosses the socket. An entry missing its secret or its sites is not listed, since it is never filled.
+
+A grant is changed with ~agent.set~ ~browser.secrets~, the whole list comma-separated (=clawt_vault_grants_with()= builds it from a ~vault.list~ reply); a name that is not a usable vault entry is refused there with =NOT_FOUND=.
+
 *** computer.*
 
 ~computer.exec~ (~agent~, ~command~, ~cwd~, ~timeout~ -- 120 seconds by
@@ -1762,6 +1770,7 @@ Every kind published, by subject:
 | a cloud image | ~image.progress~ (~done~, ~total~), ~image.finished~ (~path~ or ~error~) |
 | the daemon | ~device.paired~ (~device~, ~name~), ~device.revoked~ (~device~), ~device.expired~ (~device~) |
 | an agent | ~computer.exec~ |
+| an agent | ~browser.secret_filled~ (~name~, ~kind~, ~host~, ~session~: never the value) |
 | an agent | ~turn.timed_out~, ~turn.repeating~, ~message.steered~ |
 | an agent | ~egress.refused~ (the gate refused one of its connections; agent.show's ~egress~ has the detail) |
 | an agent | ~turn.step~ (~step_kind~, ~room_id~, ~text~, ~tool~, ~detail~, ~failed~) |

@@ -112,6 +112,36 @@ job_free(gpointer data)
     g_free(job);
 }
 
+/*
+ * Whether a secret may be on the page, and the last one filled -- by the
+ * entry's name and host, never by value.  The cached hold: this also
+ * runs on the daemon's context (browser.list), which must not wait on a
+ * page.
+ */
+static void
+add_fill(JsonBuilder *builder, ClawtBrowser *browser)
+{
+    g_autofree gchar *name = NULL;
+    g_autofree gchar *host = NULL;
+    gint64 at = 0;
+
+    json_builder_set_member_name(builder, "secret_hold");
+    json_builder_add_boolean_value(builder, clawt_browser_get_secret_hold(browser));
+    json_builder_set_member_name(builder, "last_fill");
+    if (clawt_browser_dup_last_fill(browser, &name, &host, &at)) {
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "name");
+        json_builder_add_string_value(builder, name);
+        json_builder_set_member_name(builder, "host");
+        json_builder_add_string_value(builder, host != NULL ? host : "");
+        json_builder_set_member_name(builder, "at");
+        json_builder_add_int_value(builder, at);
+        json_builder_end_object(builder);
+    } else {
+        json_builder_add_null_value(builder);
+    }
+}
+
 /* The page as a client draws it; called on the worker. */
 static void
 add_page(JsonBuilder *builder, ClawtBrowser *browser)
@@ -131,6 +161,7 @@ add_page(JsonBuilder *builder, ClawtBrowser *browser)
     json_builder_add_string_value(builder, title != NULL ? title : "");
     json_builder_set_member_name(builder, "driver");
     json_builder_add_string_value(builder, driver != NULL ? driver : "");
+    add_fill(builder, browser);
 }
 
 static void
@@ -183,8 +214,14 @@ job_thread(GTask *task, gpointer source, gpointer data, GCancellable *cancellabl
     }
 
     case JOB_FRAME:
-        /* A frame never starts a session: watching is not asking for one. */
-        if (clawt_browser_is_running(job->browser))
+        /*
+         * A frame never starts a session: watching is not asking for one.
+         * Nor is it taken while a secret is on the page -- gsurf would
+         * refuse it anyway -- and that is not an error: the reply says
+         * secret_hold, and the client draws that instead of a picture.
+         */
+        if (clawt_browser_is_running(job->browser) &&
+            !clawt_browser_secret_held(job->browser))
             png = clawt_browser_screenshot(job->browser, &job->error);
         break;
     }
@@ -270,7 +307,13 @@ on_bus_event(ClawtEventBus *bus, ClawtEvent *event, gpointer user_data)
     (void)bus;
 
     if (g_strcmp0(clawt_event_get_kind(event), "agent.stopped") != 0 ||
-        clawt_event_get_subject(event) == NULL || self->browsers == NULL)
+        clawt_event_get_subject(event) == NULL)
+        return;
+
+    /* A stopped agent has no turn left to spend a secret reference in. */
+    if (self->mcp_tools != NULL)
+        clawt_mcp_tools_forget_secret_refs(self->mcp_tools, clawt_event_get_subject(event));
+    if (self->browsers == NULL)
         return;
 
     key = g_strdup_printf("agent:%s", clawt_event_get_subject(event));
@@ -379,6 +422,72 @@ add_session(JsonBuilder *builder, ClawtDaemon *self, const gchar *key,
     json_builder_end_object(builder);
 }
 
+/*
+ * vault.list: the `vault:` entries by name, kind, description and sites,
+ * and -- with `agent` -- which of them that agent may ask for.  Never a
+ * value, and never the reference a value is resolved through: a client
+ * managing grants needs to know an entry exists, not where it lives.
+ */
+static JsonNode *
+vault_list(ClawtDaemon *self, JsonNode *request, JsonObject *payload)
+{
+    const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+    ClawtAgentConfig *config = NULL;
+    g_autoptr(GPtrArray) entries = clawt_config_get_vault(self->config);
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_auto(GStrv) granted = NULL;
+    guint i;
+
+    if (agent_id != NULL && *agent_id != '\0') {
+        config = clawt_config_get_agent(self->config, agent_id);
+        if (config == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND, "no such agent");
+        granted = clawt_agent_config_get_string_list(config, "browser.secrets");
+    }
+
+    json_builder_begin_object(builder);
+    if (config != NULL) {
+        json_builder_set_member_name(builder, "agent");
+        json_builder_add_string_value(builder, agent_id);
+        json_builder_set_member_name(builder, "browser");
+        json_builder_add_boolean_value(builder,
+                                       clawt_agent_config_get_enum(config, "browser.mode") !=
+                                           CLAWT_BROWSER_NONE);
+    }
+    json_builder_set_member_name(builder, "entries");
+    json_builder_begin_array(builder);
+    for (i = 0; i < entries->len; i++) {
+        ClawtVaultEntry *entry = g_ptr_array_index(entries, i);
+        guint j;
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "name");
+        json_builder_add_string_value(builder, entry->name);
+        json_builder_set_member_name(builder, "kind");
+        json_builder_add_string_value(builder,
+                                      entry->kind == CLAWT_VAULT_TOTP ? "totp" : "password");
+        json_builder_set_member_name(builder, "description");
+        json_builder_add_string_value(builder,
+                                      entry->description != NULL ? entry->description : "");
+        json_builder_set_member_name(builder, "sites");
+        json_builder_begin_array(builder);
+        for (j = 0; entry->sites != NULL && entry->sites[j] != NULL; j++)
+            json_builder_add_string_value(builder, entry->sites[j]);
+        json_builder_end_array(builder);
+        if (config != NULL) {
+            json_builder_set_member_name(builder, "granted");
+            json_builder_add_boolean_value(builder,
+                                           granted != NULL &&
+                                           g_strv_contains((const gchar * const *)granted,
+                                                           entry->name));
+        }
+        json_builder_end_object(builder);
+    }
+    json_builder_end_array(builder);
+    json_builder_end_object(builder);
+    return clawt_ipc_response_new(request, json_builder_get_root(builder));
+}
+
 JsonNode *
 clawt_daemon_handle_browser(ClawtDaemon *self, const gchar *kind, JsonNode *request,
                             JsonObject *payload, gboolean *handled)
@@ -434,6 +543,9 @@ clawt_daemon_handle_browser(ClawtDaemon *self, const gchar *kind, JsonNode *requ
         json_builder_end_object(builder);
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
+
+    if (g_strcmp0(kind, "vault.list") == 0)
+        return vault_list(self, request, payload);
 
     if (!g_str_has_prefix(kind, "browser.")) {
         *handled = FALSE;
