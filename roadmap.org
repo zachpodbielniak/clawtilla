@@ -5,6 +5,7 @@
 #+created: [2026-11-14 Sat]
 #+updated: [2026-11-14 Sat]
 #+version: 0.4.0
+#+TODO: TODO | DONE DEFERRED
 
 * About this file
 
@@ -233,16 +234,17 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 ** TODO Saved steps: replay a desktop task with no model
 - *Prior art:* =671cf72d1=.
 
-** TODO Android device as a computer type
+** DEFERRED Android device as a computer type
+- *Decided 2026-11-14:* deferred until Android app testing becomes a use case; not built.
 - *Prior art:* =phone-screen/= and =fcaf0b076= (adb over USB, watch and take over, behind a hold and claim gate).
 - *Note:* only if Android app testing becomes a use case.
 
-** DONE Installable web client (manifest only) (version assigned at merge)
+** DONE Installable web client (manifest only) v0.23.0
 - *Done:* =/manifest.webmanifest= (=clawt_web_manifest_json()=, ~application/manifest+json~): ~id~, ~start_url~ and ~scope~ =/=, =display: standalone=, root-relative URLs only, icons at 192 and 512 (the 512 also maskable) vendored in =data/web/icons/= from =data/logo.png= and served from =/static= (now installed by ~make install~ with the scripts). Every page links it with ~crossorigin="use-credentials"~ so it is fetched with cookies behind an authenticating proxy, plus an icon, an apple-touch-icon and theme-color. No service worker: a cached copy of a live fleet would be wrong offline, and a manifest alone is installable. Tested on the wire over loopback (content type, fields, each icon's real size). Design in =docs/web-client.org=, "Installable, with no service worker".
 - *Today:* the web client has a phone layout. No manifest.
 - *Rule:* the manifest and icons are vendored. Nothing is fetched at page load.
 
-** DONE Open-room links (version assigned at merge)
+** DONE Open-room links v0.23.0
 - *Done:* =clawtilla-gtk --open <room>= and =clawtilla-lrg --open <room>=; the web client's =/r/<room>= takes the same targets. A target is a listed room, an agent (or its ~dm_room~), or a direct room between two agents (the first's conversation with the second), with an optional =clawtilla:= / =clawtilla://=. The spelling is checked where it was typed (=clawt_open_target_normalize()=, exit 1 with the reason); existence against ~agent.list~ and ~room.list~ (=clawt_open_target_resolve()=): an unknown name is a toast in GTK and lrg and a 404 with the sentence in the web client, never an empty pane. GTK is single-instance and handles its command line: a second =--open= is forwarded to the running window and exits without a daemon connection of its own; a target that arrives before the daemon answers waits for the first connection. =contrib/emacs/clawtilla-link.el= defines =clawtilla:= org links (lexical binding, byte-compiles clean, ~clawtilla-link-command~, ~clawtilla-link-arguments~, ~clawtilla-link-web-url~). Design and install in =docs/clients.org=, "Open-room links".
 - *Prior art:* =docs/desktop-chat-links.md= (=openmausbot://thread/<id>?bot=, checked against the owning bot).
 - *Proposal:* =clawtilla-gtk --open <room>= and an org link type for cmacs.
@@ -305,7 +307,7 @@ OpenMausBot has none of the structural withholding or cycle stalling that I coul
 - *Proposal:* =clawtilla_ask_agent(..., consult: true)=. That turn is offered no delegation, messaging, connector-write or =computer_exec= tools, through the same gate =clawt_mcp_tools_describe_for_agent()= uses for =max_hops=. Its preamble says it is a consultation.
 - *Version:* minor.
 
-** DONE P3 Fold long agent-to-agent requests in the clients (version assigned at merge)        :clients:
+** DONE P3 Fold long agent-to-agent requests in the clients v0.23.0        :clients:
 - *Done:* =clawt_chat_should_fold()= (sender an agent other than the agent whose conversation is on screen, more than =CLAWT_CHAT_FOLD_LINES= (6) lines counted as read, a source line counting once per 100 characters); =clawt_chat_fold_preview()= for the one line; =clawt_chat_exchange()= keeps the peer's requests and the agent's written answers, in order, from the direct room's history (notices skipped without ending an answer, anybody else ending it). GTK, web and lrg draw the folded line with click-to-expand, "Show less" and "View exchange" (GTK dialog, web side panel or page, lrg dialog). Peer conversations only: a group room and the operator's chat fold nothing, and =/recall= hits are never folded. Four parity affordance rows. Fixed on the way: the web transcript's refresh dropped ~?with=~ and swapped the operator's chat in over a peer conversation. Design in =docs/clients.org=, "A long request is one line until you open it".
 - *Prior art:* =da87bd0b2=. A long request from another bot shows as one line in that bot's chat. Clicking it expands the request in place, with "Show less" and "View exchange". The exchange is a side panel listing the requests from that peer and this agent's written answers, in order, without the tool chatter. Short requests and search hits stay open.
 - *The problem:* a chief's delegation brief is often a page long. In the receiving agent's chat it lands as a wall of text, and a few of them bury the person's own lines. The exchange panel answers "what have these two said to each other" without scrolling through tool output or other rooms.
@@ -475,7 +477,8 @@ When somebody turns the broker on, clawtilla starts a local AnythingMCP for them
 - *Proposal:* check first. If an agent with two GitHub connectors gets two identically named tool sets, or one shadowing the other, the relay prefixes each set with its account label. A tool whose name collides across accounts is refused rather than routed to whichever was registered first. Test it with two accounts on one service, because "a test with one key cannot see a shared-scalar bug".
 - *Version:* micro.
 
-** TODO P3 Apprise as a notifier backend                                                            :integrations:
+** DONE P3 Apprise as a notifier backend v0.23.0                                :integrations:
+- *Done:* =backend: apprise= (=CLAWT_NOTIFY_BACKEND_APPRISE=) with a new secret key =integrations.apprise_url= (since 0.22.0; =command= optionally names the binary). At each notification the daemon writes the resolved URL(s) to a fresh 0600 mkstemp file, runs ~apprise --config FILE --title TITLE~ with the body on stdin, and deletes the file when apprise exits; a refusal carries apprise's stderr. =clawt_notify_apprise_argv()= / =_write_config()= are tested with the negative assertion (no URL in argv) and end to end through =tests/fixtures/fake-apprise=; the notifier resolves =apprise_url= rather than =token= for it. Clients offer it from the field table (Apprise URL as a secret reference) with a parity row; install-deps row =apprise= on Fedora, Debian and Arch (Fedora's =python3-apprise= is the library, =apprise= the CLI). =docs/integrations.org=.
 - *Today:* notifiers include ntfy (=docs/integrations.org=). Each new service is code.
 - *Proposal:* an =apprise= notifier type that hands the message to the =apprise= CLI (BSD-2-Clause, 100+ services from Matrix and email to Gotify and SMS through one URL scheme). The URL is a secret, because it often embeds a token: a 0600 file, passed by path or on stdin, never on argv (the =ClawtConnectorPlan= negative assertion applies). Quiet hours and the event filter work as for any notifier.
 - *Packages:* =apprise= on Fedora, Debian and Arch alike, as a runtime row in =tools/clawt-install-deps.sh= and =docs/getting-started.org=.
@@ -511,7 +514,10 @@ When somebody turns the broker on, clawtilla starts a local AnythingMCP for them
 - *libreclaw:* =src/channel/lc-matrix-channel.c= (9 sites), =src/bridge/lc-bridge-client.c:539=, =lc-whisper-stt.c:186=, =lc-http-tts.c:274=, =lc-elevenlabs-tts.c:223=, =clients/client/lc-client.c:226=, =clients/bridge-mcp/main.c:83=.
 - *podomation:* most service modules (forges, chat, homeassistant, kubernetes, ntfy, gotify, vault, proxmox, caldav, qbittorrent, unifi, telegram); =network/pod-network-module.c= follows by default and its multipart and oauth2_refresh paths are unguarded. Tokens in URLs (gitea/forgejo polls, gotify websocket, telegram) are a second problem.
 
-** TODO Escape the marker in the remaining quoted text                                        :security:orchestration:
+** DONE Escape the marker in the remaining quoted text v0.23.0            :security:orchestration:
+- *Done:* every MCP tool result is escaped in the two response builders in =clawt-mcp-tools.c= (recall, room history, memory, task listings, the agent listing, web and browser text, command output, plugin tools), group-room roster names in the router, and names, teams and descriptions in the TOOLS.org roster. The remaining daemon notes were checked: each already escaped what it quotes. =docs/orchestration.org=, "Nobody else's text can speak as clawtilla".
+- *Mid-line, decided:* a marker in the middle of somebody's own sentence is a mention and stays; text the daemon *quotes* after a label of its own ("Latest from oryx: ", "oryx: ", "@dana (") goes through the new =clawt_preamble_escape_all()=, which rewrites every occurrence. A quoted daemon note (recall, room history) is rewritten too: quoted, it is history, not a notice.
+- *Not covered:* tools served by a connector's own MCP server pass through the relay unescaped.
 - *Found by:* the v0.12.0 preamble work. Not yet escaped: general MCP tool output that quotes other agents (recall, room history), roster names in room preambles, and system notes beyond the ones listed in =docs/orchestration.org=. A mid-line marker ("Latest from oryx: [clawtilla] ...") is also left alone by design; decide whether quoted summaries need it.
 
 * Follow-ups found while implementing
@@ -525,28 +531,39 @@ When somebody turns the broker on, clawtilla starts a local AnythingMCP for them
 ** TODO Upstream: libreclaw records the model in =token_usage.provider=                       :upstream:libreclaw:spending:
 - The usage ledger takes the provider from the agent's =model.provider= at tag time instead.
 
-** TODO Usage ledger: keep a task's run across a restart                                        :spending:
+** DONE Usage ledger: keep a task's run across a restart v0.23.0            :spending:
+- *Done:* =ClawtTaskSources= (=src/usage/clawt-task-sources.c=) keeps the map in =<state_dir>/task-sources.tsv=, 0600, written on each note; a delegated child is recorded when its first turn is tagged, since the parent chain is lost with the in-memory task manager. Pruning keeps an unknown task's entry for a week. Tests: =tests/test-task-sources.c=, =/usage-ledger/daemon/keeps-a-run-across-a-restart= (a second daemon on the same state). =docs/spending.org=, "Origins".
 - The task -> routine/trigger run map is in memory, so a run spanning a restart is tagged =task:<id>=. Persist it with the task.
 
 ** DONE Waits: should URL waits need web or egress permission? v0.17.0       :security:orchestration:
 - *Done:* a URL wait is refused for an agent whose =runtime.network= is =gated= or =none= (=clawt_egress_url_wait_refusal()=, at =clawtilla_wait_until= and again at each check), since the daemon's fetch would go around the gate. Open agents are unchanged. =docs/orchestration.org=, "URL probes fetch as nobody, from nowhere private".
 - A URL wait lets an agent with no network of its own have the daemon fetch addresses it chooses (public ones only). Gate it on the same permission the egress gate uses.
 
-** TODO Devices: may a paired device revoke other devices?                                       :security:clients:
+** DONE Devices: may a paired device revoke other devices? v0.23.0           :security:clients:
+- *Decided and done:* no. ~device.revoke~ is the owner's, except that a paired device may revoke itself ("sign out this device"); another id is =PERMISSION_DENIED= before it is looked up. =clawt_device_row_action()= / =_label()= give every client the row's button: Revoke for the owner, *Sign out this device* on a device's own row, nothing on the others (GTK, web, lrg; a parity affordance row). CLI help, =docs/ipc-protocol.org=, =docs/clients.org=, =docs/security.org=, =docs/lrg-client.org=. Tests: =/devices/row-action=, =/devices/daemon/a-device-revokes-only-itself= (two devices).
 - Today any authenticated device can revoke others (it only removes access); only the owner pairs. Decide whether revoke is owner-only.
 
-** TODO Fallback polish in the clients                                                          :clients:
+** DONE Fallback polish in the clients v0.23.0                              :clients:
+- *Done:* =usage.summary= rows carry =failover= and =failover_message= from the same daemon function as =agent.list= (=clawt_daemon_add_failover_members()=), and the Fleet page badges an agent on a fallback in GTK, web and lrg (a parity row); GTK and lrg re-read it on =agent.failover=. A save that cleared the stored list and was then refused puts it back: the old list onto the new backend, then, if refused, the old provider/account/model with it (=clawt_model_fallback_restore_plan()=; GTK in =restore_fallbacks()=, lrg as two more phases of its save job, decided by =clawt_lrg_agent_plan_cleared_fallbacks()=). Tests: =/model-fallbacks/restore-plan=, =/lrg-agent/save/refused-save-keeps-the-list=, =/daemon/failover/shown-and-announced= (usage.summary).
 - The GTK Fleet page shows no "on fallback" badge (=usage.summary= lacks =failover=). In GTK and lrg, a save that changes provider and then has its fallback list refused leaves the list cleared until saved again.
 
-** TODO =tools/clawt-web-smoke.sh=: four checks fail on master                                  :test:
+** DONE =tools/clawt-web-smoke.sh=: four checks fail on master v0.23.0      :test:
+- *Done:* 51 of 51 pass against a throwaway daemon and web client. Five failed (51 checks now), for four causes:
+  - *a refused traversal rendered some other string* -- a product bug. =page_with_banner()= built the page body, whose daemon calls free =clawt_web_app_last_error()=, *before* =banner_around()= took its "early" copy, because an argument is evaluated before the call. Both callers now copy first.
+  - *folders add/remove*: the script shared =/tmp=, which root owns, and the daemon rightly refuses a mount podman cannot relabel; the script now shares a directory it makes and removes.
+  - *connections* and *an unknown command*: stale markers ("Add a daemon", "No such command"); now the form's action and "There is no /nonsense".
 - The same 4 of 48 fail on an untouched build; found during the fallbacks work.
 
 * Design decisions to make, not gaps
 
 ** Takeover: refuse or park
+*Decided 2026-11-14: keep refusing.* Refusing keeps the turn clock and the watchdog honest; parking is not built.
+
 clawtilla refuses an acting tool during a person's hold and tells the agent how to wait (=docs/computers.org=, "Taking the screen"). OpenMausBot parks the whole turn until hand-back (=652e43ce0=). Neither queues clicks. Parking removes the agent's chance to invent a polling loop. Refusing keeps the turn's clock and the watchdog honest. If parking is chosen, the turn watchdog must treat a parked turn as held, as it already does for waits on a person.
 
 ** App settings through a tool
+*Decided: not planned* unless a concrete need appears (see below).
+
 OpenMausBot's =app_settings= (=docs/superpowers/specs/2026-11-12-app-settings-tool-design.md=) lets bots change settings with Undo, and anything that could lock the person out is owner-only. clawtilla has =tools.manage_fleet=. A general config tool widens what a hijacked agent can change. Not planned unless a concrete need appears.
 
 * Not pursuing
@@ -560,6 +577,8 @@ OpenMausBot's =app_settings= (=docs/superpowers/specs/2026-11-12-app-settings-to
 * To be decided
 
 ** Activepieces
+*Status 2026-11-14: still undecided by choice.* Nothing built; the revisit conditions below stand.
+
 - *What it is:* workflow automation (an open Zapier) whose integrations ("pieces") are also MCP tools: 280+ over MCP and 760+ in total by their count. It is the most mature of the candidates, at about 25.5k stars and 62k commits. The community edition is MIT; =packages/ee/= is commercial. Postgres or SQLite, Docker.
 - *Why it was not chosen:* on a self-hosted install, Google, Slack and the like connect as "Activepieces" through *its* OAuth apps by default, and using your own client id per piece is "a paid feature" (=docs/admin-guide/guides/manage-oauth2=). For the apps people want most, self-hosting then does not keep the identity yours.
 - *What could change that:* if only its API-key pieces are wanted; if workflows (multi-step, scheduled, branching) rather than single tool calls become a need that clawtilla's routines and triggers do not cover; or if bringing your own OAuth client moves into the community edition.

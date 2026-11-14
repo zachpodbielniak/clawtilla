@@ -2171,7 +2171,7 @@ cannot bind the same one, and the second to start simply fails.
 *** =integrations.backend=
 
 - Type :: enum
-- Values :: desktop, ntfy, gotify, matrix, command
+- Values :: desktop, ntfy, gotify, matrix, command, apprise
 - Default :: =desktop=
 - Since :: 0.2.0
 
@@ -2182,6 +2182,9 @@ wrong answer when the daemon is on a workstation and you are not.
 `ntfy` and `gotify` reach a phone. `matrix` posts into a room, which
 on a bridged homeserver means it reaches you wherever you already
 read messages. `command` runs a program and hands it the text.
+`apprise` (since 0.22.0) hands it to the apprise CLI, which reaches a
+hundred-odd services -- Telegram, Signal, email, Pushover, Gotify, SMS
+-- through one URL scheme; the URL is `apprise_url`.
 
 *** =integrations.token=
 
@@ -2198,6 +2201,22 @@ Resolved once when the configuration loads rather than on every
 notification: a `command` reference to a locked password manager
 blocks until it times out, and doing that each time something needed
 saying would make the notifier the slowest thing in the daemon.
+
+*** =integrations.apprise_url=
+
+- Type :: secret reference
+- Default :: unset
+- Since :: 0.23.0
+
+notify: with `backend: apprise`, the Apprise URL -- or several, one per
+line -- as a secret reference: `{file: ~/.config/clawtilla/apprise.url}`.
+
+A secret because an Apprise URL nearly always carries a credential
+(`tgram://BOT_TOKEN/CHAT_ID`, `mailtos://user:password@host`). It
+reaches apprise in a 0600 file passed with `--config`, deleted when
+apprise exits, and never on its command line, which any user on the
+machine can read. `command` names the apprise binary when it is not on
+PATH.
 
 *** =integrations.room=
 
@@ -2278,6 +2297,9 @@ mcp: the program to run, spoken to over stdio.
 This is the general way to give the fleet anything with an MCP server:
 one entry here reaches every agent in scope, instead of the same block
 pasted into each agent's .mcp.json by hand.
+
+notify: with `backend: command`, the program to run; with
+`backend: apprise`, the apprise binary when it is not on PATH.
 
 *** =integrations.args=
 

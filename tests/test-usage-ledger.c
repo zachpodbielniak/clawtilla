@@ -954,6 +954,78 @@ test_daemon_tags_each_origin_from_turn_state(void)
 	daemon_teardown(&fixture);
 }
 
+/*
+ * A run that spans a restart is still its routine's bill.
+ *
+ * Tasks live in memory, so the next daemon knows neither the routine's
+ * task nor the child it handed on -- but a mailbox item carries a task
+ * id across the restart and the turn it starts is described by it.
+ * Before, the map from task to run was a hash table on the daemon, and
+ * both turns came back `task:<id>`.
+ */
+static void
+test_daemon_keeps_a_run_across_a_restart(void)
+{
+	DaemonFixture fixture = { 0 };
+	g_autoptr(JsonNode) ran = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *routine_task = NULL;
+	g_autofree gchar *child_id = NULL;
+	ClawtAgent *chief;
+	ClawtAgent *worker;
+	ClawtTask *child;
+	gchar *label;
+
+	daemon_setup(&fixture);
+
+	ran = daemon_request(&fixture, "routine.run", "{\"id\":\"morning\"}");
+	g_assert_false(clawt_ipc_frame_is_error(ran));
+	routine_task = g_strdup(clawt_ipc_payload_string(
+		clawt_ipc_frame_get_payload(ran), "task"));
+	g_assert_nonnull(routine_task);
+
+	/* The child's first turn is asked about before the restart. */
+	child = clawt_task_manager_create(fixture.daemon->tasks, "chief", "worker",
+					  "do the part", routine_task, NULL);
+	g_assert_nonnull(child);
+	child_id = g_strdup(clawt_task_get_id(child));
+	worker = clawt_agent_manager_get(fixture.daemon->agents, "worker");
+	clawt_agent_deliver_turn(worker, "dm:chief:worker", 1, TRUE, "chief",
+				 child_id);
+	clawt_agent_note_typing(worker, "dm:chief:worker", TRUE);
+	label = daemon_label(&fixture, "worker", "dm:chief:worker", "clawtilla");
+	g_assert_cmpstr(label, ==, "routine:morning");
+	g_free(label);
+
+	/* The restart: a new daemon on the same state, nothing carried over. */
+	clawt_daemon_stop(fixture.daemon);
+	g_clear_object(&fixture.daemon);
+	while (g_main_context_iteration(fixture.context, FALSE))
+		;
+	fixture.daemon = clawt_daemon_new(fixture.config_path, fixture.context);
+	g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+	g_assert_no_error(error);
+	g_assert_null(clawt_task_manager_get(fixture.daemon->tasks, routine_task));
+
+	chief = clawt_agent_manager_get(fixture.daemon->agents, "chief");
+	clawt_agent_deliver_turn(chief, "dm:chief:user", 0, TRUE, "user",
+				 routine_task);
+	clawt_agent_note_typing(chief, "dm:chief:user", TRUE);
+	label = daemon_label(&fixture, "chief", "dm:chief:user", "clawtilla");
+	g_assert_cmpstr(label, ==, "routine:morning");
+	g_free(label);
+
+	worker = clawt_agent_manager_get(fixture.daemon->agents, "worker");
+	clawt_agent_deliver_turn(worker, "dm:chief:worker", 1, TRUE, "chief",
+				 child_id);
+	clawt_agent_note_typing(worker, "dm:chief:worker", TRUE);
+	label = daemon_label(&fixture, "worker", "dm:chief:worker", "clawtilla");
+	g_assert_cmpstr(label, ==, "routine:morning");
+	g_free(label);
+
+	daemon_teardown(&fixture);
+}
+
 /* `usage.ledger` over the wire: grouped, filtered, and strict. */
 static void
 test_daemon_answers_usage_ledger(void)
@@ -1039,6 +1111,8 @@ main(
 	g_test_add_func("/usage-ledger/payload", test_ledger_payload);
 	g_test_add_func("/usage-ledger/daemon-origins",
 			test_daemon_tags_each_origin_from_turn_state);
+	g_test_add_func("/usage-ledger/daemon/keeps-a-run-across-a-restart",
+			test_daemon_keeps_a_run_across_a_restart);
 	g_test_add_func("/usage-ledger/daemon-ledger",
 			test_daemon_answers_usage_ledger);
 

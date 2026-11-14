@@ -364,6 +364,35 @@ clawt_device_seen_text(gint64 last_seen, gboolean connected, gint64 now)
                            age / 86400, (age / 86400 == 1) ? "" : "s");
 }
 
+ClawtDeviceRowAction
+clawt_device_row_action(gboolean owner, gboolean current)
+{
+    /*
+     * The owner first: it may revoke any device, and an owner
+     * connection is never a device row's `current`.
+     */
+    if (owner)
+        return CLAWT_DEVICE_ROW_ACTION_REVOKE;
+
+    return current ? CLAWT_DEVICE_ROW_ACTION_SIGN_OUT
+                   : CLAWT_DEVICE_ROW_ACTION_NONE;
+}
+
+const gchar *
+clawt_device_row_action_label(ClawtDeviceRowAction action)
+{
+    switch (action) {
+    case CLAWT_DEVICE_ROW_ACTION_NONE:
+        return NULL;
+    case CLAWT_DEVICE_ROW_ACTION_REVOKE:
+        return "Revoke";
+    case CLAWT_DEVICE_ROW_ACTION_SIGN_OUT:
+        return "Sign out this device";
+    }
+
+    return NULL;
+}
+
 /* ── Reading and writing the file ────────────────────────────────── */
 
 static const gchar *

@@ -115,6 +115,17 @@ agent_row(ClawtLrgApp *app, JsonObject *agent, gint64 total, gint64 now)
     if (state != NULL && g_strcmp0(state, "running") != 0)
         clawt_lrg_row_add_suffix(row, clawt_lrg_badge(state, "neutral"));
 
+    /* on a fallback: the cost is another backend's bill now */
+    if (agent != NULL && json_object_has_member(agent, "failover") &&
+        JSON_NODE_HOLDS_OBJECT(json_object_get_member(agent, "failover"))) {
+        g_autofree gchar *fleet_fallback = clawt_failover_badge(
+            json_object_get_object_member(agent, "failover"));
+
+        if (fleet_fallback != NULL)
+            clawt_lrg_row_add_suffix(row, clawt_lrg_badge(fleet_fallback,
+                                                          "warn"));
+    }
+
     clawt_lrg_row_add_suffix(row, clawt_lrg_label(cost_text, "heading"));
 
     if (clawt_usage_fleet_row_stoppable(agent) && id != NULL) {
@@ -310,6 +321,7 @@ event(ClawtLrgApp *app, ClawtEvent *event)
     if (g_strcmp0(kind, "message") == 0 ||
         g_strcmp0(kind, "agent.state") == 0 ||
         g_strcmp0(kind, "agent.idle_stopped") == 0 ||
+        g_strcmp0(kind, "agent.failover") == 0 ||
         g_strcmp0(kind, "spending.limit-reached") == 0)
         request_fleet(app);
 }

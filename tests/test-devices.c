@@ -898,6 +898,127 @@ test_daemon_pair_list_revoke(void)
     daemon_teardown(&fixture);
 }
 
+/* Pairs one device over the socket; the caller owns the client. */
+static ClawtClient *
+pair_client(DaemonFixture *fixture, const gchar *name)
+{
+    g_autoptr(JsonNode) paired = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *body = g_strdup_printf("{\"name\": \"%s\"}", name);
+    ClawtClient *client;
+
+    paired = owner_request(fixture, "device.pair", body);
+    g_assert_true(reply_ok(paired));
+
+    client = clawt_client_new(fixture->socket_path);
+    clawt_client_set_auto_reconnect(client, FALSE);
+    clawt_client_set_pairing_code(
+        client, json_object_get_string_member(payload_of(paired), "code"),
+        name);
+    g_assert_true(clawt_client_connect(client, &error));
+    g_assert_no_error(error);
+    g_assert_nonnull(clawt_client_get_device_id(client));
+
+    return client;
+}
+
+/*
+ * Revoking is the owner's, except that a device may revoke itself.
+ *
+ * Before, any paired device could revoke any other: a stolen phone could
+ * cut the owner's laptop off.  Two devices, because a rule about "the
+ * other one" cannot be seen with one.
+ */
+static void
+test_daemon_a_device_revokes_only_itself(void)
+{
+    DaemonFixture fixture = { 0 };
+    g_autoptr(ClawtClient) phone = NULL;
+    g_autoptr(ClawtClient) laptop = NULL;
+    g_autoptr(JsonNode) refused = NULL;
+    g_autoptr(JsonNode) listed = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *phone_id = NULL;
+    g_autofree gchar *laptop_id = NULL;
+    JsonArray *devices;
+
+    daemon_setup(&fixture, NULL);
+    g_main_context_push_thread_default(fixture.context);
+
+    phone = pair_client(&fixture, "phone");
+    laptop = pair_client(&fixture, "laptop");
+    phone_id = g_strdup(clawt_client_get_device_id(phone));
+    laptop_id = g_strdup(clawt_client_get_device_id(laptop));
+
+    /* The phone may not revoke the laptop, and is told why. */
+    refused = clawt_client_request(phone, "device.revoke",
+                                   clawt_ipc_payload_new("id", laptop_id,
+                                                         NULL), &error);
+    g_assert_null(refused);
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED);
+    g_assert_nonnull(strstr(error->message, "sign itself out"));
+    g_clear_error(&error);
+
+    /* Nor learn whether an id exists by asking about one. */
+    refused = clawt_client_request(phone, "device.revoke",
+                                   clawt_ipc_payload_new("id", "dnothere0",
+                                                         NULL), &error);
+    g_assert_null(refused);
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED);
+    g_clear_error(&error);
+
+    /* The phone signs itself out; the reply may not arrive, by design. */
+    {
+        g_autoptr(JsonNode) own = clawt_client_request(
+            phone, "device.revoke", clawt_ipc_payload_new("id", phone_id,
+                                                          NULL), &error);
+
+        g_clear_error(&error);
+    }
+
+    /* The laptop is still paired, and the phone is not. */
+    listed = owner_request(&fixture, "device.list", NULL);
+    g_assert_true(reply_ok(listed));
+    devices = json_object_get_array_member(payload_of(listed), "devices");
+    g_assert_cmpuint(json_array_get_length(devices), ==, 1);
+    g_assert_cmpstr(json_object_get_string_member(
+                        json_array_get_object_element(devices, 0), "id"),
+                    ==, laptop_id);
+
+    clawt_client_disconnect(phone);
+    clawt_client_disconnect(laptop);
+    g_clear_object(&phone);
+    g_clear_object(&laptop);
+
+    while (g_main_context_iteration(fixture.context, FALSE))
+        ;
+
+    g_main_context_pop_thread_default(fixture.context);
+    daemon_teardown(&fixture);
+}
+
+/* The button each client draws, from the one rule the daemon enforces. */
+static void
+test_row_action(void)
+{
+    g_assert_cmpint(clawt_device_row_action(TRUE, FALSE), ==,
+                    CLAWT_DEVICE_ROW_ACTION_REVOKE);
+    g_assert_cmpint(clawt_device_row_action(TRUE, TRUE), ==,
+                    CLAWT_DEVICE_ROW_ACTION_REVOKE);
+    g_assert_cmpint(clawt_device_row_action(FALSE, TRUE), ==,
+                    CLAWT_DEVICE_ROW_ACTION_SIGN_OUT);
+    g_assert_cmpint(clawt_device_row_action(FALSE, FALSE), ==,
+                    CLAWT_DEVICE_ROW_ACTION_NONE);
+
+    g_assert_cmpstr(clawt_device_row_action_label(
+                        CLAWT_DEVICE_ROW_ACTION_REVOKE), ==, "Revoke");
+    g_assert_cmpstr(clawt_device_row_action_label(
+                        CLAWT_DEVICE_ROW_ACTION_SIGN_OUT), ==,
+                    "Sign out this device");
+    g_assert_null(clawt_device_row_action_label(
+                      CLAWT_DEVICE_ROW_ACTION_NONE));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -932,6 +1053,9 @@ main(int argc, char *argv[])
                     test_connections_file_is_0600);
     g_test_add_func("/devices/pair-refuses-malformed-code",
                     test_pairing_refuses_a_malformed_code_before_dialling);
+    g_test_add_func("/devices/row-action", test_row_action);
+    g_test_add_func("/devices/daemon/a-device-revokes-only-itself",
+                    test_daemon_a_device_revokes_only_itself);
     g_test_add_func("/devices/daemon/pair-list-revoke",
                     test_daemon_pair_list_revoke);
 

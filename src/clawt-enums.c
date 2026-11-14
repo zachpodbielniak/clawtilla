@@ -1045,6 +1045,7 @@ clawt_notify_backend_get_type(void)
             { CLAWT_NOTIFY_BACKEND_GOTIFY, "CLAWT_NOTIFY_BACKEND_GOTIFY", "gotify" },
             { CLAWT_NOTIFY_BACKEND_MATRIX, "CLAWT_NOTIFY_BACKEND_MATRIX", "matrix" },
             { CLAWT_NOTIFY_BACKEND_COMMAND, "CLAWT_NOTIFY_BACKEND_COMMAND", "command" },
+            { CLAWT_NOTIFY_BACKEND_APPRISE, "CLAWT_NOTIFY_BACKEND_APPRISE", "apprise" },
             { 0, NULL, NULL }
         };
         GType g_define_type_id = g_enum_register_static("ClawtNotifyBackend", values);

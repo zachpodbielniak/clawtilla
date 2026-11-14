@@ -437,6 +437,7 @@ struct _ClawtWindow {
     /* model.account as the inspector was drawn, so a save clears it only on a change */
     gchar             *inspector_account;
     gchar             *inspector_provider;  /* model.provider, likewise */
+    gchar             *inspector_model;     /* model.model, for putting a backend back */
 
     /*
      * model.fallbacks: the expander holding the editor (weak), its

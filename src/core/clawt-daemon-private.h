@@ -86,7 +86,7 @@ struct _ClawtDaemon {
      * for a routine sharing the operator's room is "user", and the
      * usage ledger asks which routine a turn's work began at.
      */
-    GHashTable         *task_sources;
+    ClawtTaskSources   *task_sources;
     ClawtEventBus      *bus;
     ClawtEventLog      *log;
 
@@ -1870,6 +1870,17 @@ ClawtUsageOrigin *clawt_daemon_usage_origin(ClawtDaemon *self,
                                             const gchar *agent_id,
                                             const gchar *room,
                                             const gchar *channel);
+
+/*
+ * clawt_daemon_add_failover_members:
+ * @builder: a builder inside an agent's object
+ * @agent: the agent
+ *
+ * Adds `failover` and `failover_message` while @agent is on a fallback,
+ * and nothing otherwise.
+ */
+void clawt_daemon_add_failover_members(JsonBuilder *builder,
+                                       ClawtAgent  *agent);
 
 void clawt_daemon_note_task_source(ClawtDaemon          *self,
                                    const gchar          *task_id,

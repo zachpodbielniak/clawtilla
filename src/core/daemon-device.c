@@ -13,10 +13,13 @@
  *
  * Who may do what.  Issuing a code is the owner's alone -- a device that
  * could mint codes could pair a replacement for itself and outlive its
- * own revocation.  Listing and revoking are open to any authenticated
- * client: a listing carries no secret, and revoking can only take access
- * away, so the laptop that is still in your bag can cut off the phone
- * that is not.
+ * own revocation.  Listing is open to any authenticated client: it
+ * carries no secret.  Revoking is the owner's too, with one exception: a
+ * paired device may revoke itself ("sign out this device").  It used to
+ * be open to every device on the grounds that revoking only takes access
+ * away -- but taking it away from the *others* is exactly what a stolen
+ * phone would do to the owner's laptop, and the owner is the one who
+ * decides which device was the one that went missing.
  */
 
 #include "clawtilla.h"
@@ -276,7 +279,8 @@ handle_list(ClawtDaemon *self, JsonNode *request, const gchar *device)
 }
 
 static JsonNode *
-handle_revoke(ClawtDaemon *self, JsonNode *request, JsonObject *payload)
+handle_revoke(ClawtDaemon *self, JsonNode *request, JsonObject *payload,
+              const gchar *device)
 {
     g_autoptr(JsonBuilder) builder = json_builder_new();
     g_autoptr(GError) error = NULL;
@@ -287,6 +291,16 @@ handle_revoke(ClawtDaemon *self, JsonNode *request, JsonObject *payload)
         return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
                                    "which device? `device.revoke` needs "
                                    "an id from `device.list`");
+
+    /*
+     * The rule clawt_device_row_action() draws: the owner revokes any
+     * device, a paired device only itself.  Checked before the store is
+     * asked, so a refusal does not first say whether the id exists.
+     */
+    if (device != NULL && g_strcmp0(device, id) != 0)
+        return owner_only(request, device,
+                          "Revoking another device (a paired device may "
+                          "only sign itself out)");
 
     if (!clawt_device_store_revoke(self->devices, id, &error))
         return clawt_ipc_error_new(request, error->code, error->message);
@@ -360,5 +374,5 @@ clawt_daemon_handle_device(
     if (g_strcmp0(kind, "device.list") == 0)
         return handle_list(self, request, device);
 
-    return handle_revoke(self, request, payload);
+    return handle_revoke(self, request, payload, device);
 }

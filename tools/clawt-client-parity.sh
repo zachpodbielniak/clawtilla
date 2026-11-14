@@ -470,6 +470,9 @@ declare -A AFFORDANCES=(
     # full editors for them.
     #
     ["integration fields"]="clawt_integration_fields|clawt_integration_fields|clawt_integration_fields"
+    # A credential field is asked for as a reference and never shown
+    # back -- an apprise notifier's URL is one, and so is every token.
+    ["integration secret field as a reference"]="CLAWT_FIELD_SECRET|CLAWT_FIELD_SECRET|CLAWT_FIELD_SECRET"
     #
     # A skill's `/name` is dynamic, so layer 2 cannot see it.
     #
@@ -553,6 +556,9 @@ declare -A AFFORDANCES=(
     ["pair with a code"]="clawt_connection_new_paired|/settings/connections/pair|clawt_connection_pair(job->connection"
     ["pairing countdown"]="clawt_device_countdown_text|clawt_device_countdown_text|clawt_device_countdown_text"
     ["device last seen"]="clawt_device_seen_text|clawt_device_seen_text|clawt_device_seen_text"
+    # Revoke is the owner's; a paired device signs itself out.  Each
+    # client asks the library which button a row gets.
+    ["revoke or sign out per row"]="clawt_device_row_action|clawt_device_row_action|clawt_device_row_action"
     ["a code on screen learns it was used"]="\"device.paired\"|/settings/devices/pair-status|\"device.paired\""
     #
     # model.fallbacks: the ordered editor, the badge on an agent running
@@ -563,6 +569,8 @@ declare -A AFFORDANCES=(
     #
     ["fallback list editor"]="fallback_editor_draw|clawt_web_fallback_card|draw_fallbacks"
     ["on fallback badge"]="clawt_gtk_failover_badge|clawt_web_failover_badge|clawt_lrg_badge(agent->fallback"
+    # The same badge on the Fleet page, from usage.summary's `failover`.
+    ["on fallback badge on the Fleet page"]="fleet_fallback|fleet_fallback|fleet_fallback"
     ["alert in the event's words"]="clawt_event_get_detail(event, \"message\")|clawt_event_get_detail(event, \"message\")|clawt_event_get_detail(event, \"message\")"
     #
     # Connector sign-in and several accounts: a remote server added by its
