@@ -952,6 +952,18 @@ memories:
   # every turn has.
   nudge_turns: 0
 
+  # How many changes each memory database's journal keeps. 0 keeps every
+  # one.
+  #
+  # Every remember, forget, pin and unpin is written to a journal beside
+  # the memories it changed, with who made it, and the Memory review page
+  # in each client lists it with an Undo per row. The oldest rows go first
+  # once there are more than this, and a change whose row has gone can no
+  # longer be undone -- the page says so rather than offering a button
+  # that cannot work. One journal per database: an agent's own, each
+  # team's and the fleet's.
+  journal_keep: 1000
+
   # Whether the fleet keeps a profile of the person it works for.
   #
   # A fleet-scope memory a newly created agent inherits, so it starts

@@ -479,6 +479,7 @@ main(int argc, char *argv[])
     clawt_web_register_decisions(router, app);
     clawt_web_register_memory(router, app);
     clawt_web_register_creation(router, app);
+    clawt_web_register_review(router, app);
     clawt_web_register_extras(router, app);
 
     /*

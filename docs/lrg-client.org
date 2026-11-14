@@ -599,6 +599,10 @@ Every chooser is drawn first holding only the current value, then refilled when 
 
 Save changes sends only what changed, one ~agent.set~ at a time in the order =clawt_lrg_agent_save_plan()= gives: the account is cleared first when it moves from one login to another (the daemon checks the provider/account pair), and a computer key the newly chosen shared machine owns is never sent.  The fallback list, spelled by =clawt_lrg_agent_fallback_spell()= (which refuses an entry with no model before anything is sent), goes last; when the provider or the account changes in the same save, the old list is cleared first, because the daemon checks the list against the backend it falls back from. It stops at the first refusal (already toasted) and re-reads the page. The closing toast names the restart a change needs, and says so specifically when any reply carried =restart_required= (an AI CLI lists its tools once, at session start).
 
+*** Memory review
+
+A section below *Waiting for* (~memory.journal~): one row per journal entry with the action and excerpt, who and when, and the shared database for a team or fleet row; an undo button labelled by =clawt_memory_journal_undo_label()= (~memory.undo~) or the daemon's reason it cannot be undone.  Guarded and quiet like the waits, and refilled alone on ~memory.changed~ for the agent on screen.
+
 *** Waiting for
 
 From ~wait.list~ with the agent: a row per pending wait with the agent's label as its title and, under it, the condition, the schedule line from =clawt_wait_schedule_label()= and what the last check saw, with a *Cancel* button that sends ~wait.cancel~ (the daemon tells the agent).  Only this section re-reads on a ~wait.changed~ event for the agent shown, so a form being edited above it is never thrown away.

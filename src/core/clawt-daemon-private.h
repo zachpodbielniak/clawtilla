@@ -1596,6 +1596,12 @@ ClawtRoom *clawt_daemon_create_room(ClawtDaemon  *self,
 
 void clawt_daemon_turn_sweep_now(ClawtDaemon *self);
 
+/* memory.journal and memory.undo; see daemon-memory.c. */
+JsonNode *clawt_daemon_memory_journal(ClawtDaemon *self, JsonNode *request,
+                                      JsonObject *payload);
+JsonNode *clawt_daemon_memory_undo(ClawtDaemon *self, JsonNode *request,
+                                   JsonObject *payload);
+
 /*
  * For tests: where an agent's root process id comes from (NULL asks the
  * runtime), and the busy check's own watch, so a test can give it a fake

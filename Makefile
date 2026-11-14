@@ -123,6 +123,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/mailbox/clawt-mailbox-item.h \
 	$(SRCDIR)/memory/clawt-memory.h \
 	$(SRCDIR)/memory/clawt-memory-store.h \
+	$(SRCDIR)/memory/clawt-memory-journal.h \
 	$(SRCDIR)/memory/clawt-memory-scopes.h \
 	$(SRCDIR)/memory/clawt-transcript-index.h \
 	$(SRCDIR)/memory/clawt-summariser.h \
@@ -315,6 +316,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/ipc/clawt-device-store.c \
 	$(SRCDIR)/memory/clawt-memory.c \
 	$(SRCDIR)/memory/clawt-memory-store.c \
+	$(SRCDIR)/memory/clawt-memory-journal.c \
 	$(SRCDIR)/memory/clawt-memory-scopes.c \
 	$(SRCDIR)/memory/clawt-transcript-index.c \
 	$(SRCDIR)/memory/clawt-summariser.c \

@@ -682,6 +682,22 @@ This is ~memories.*~, the searchable per-agent sqlite store, and not
 ~agents.memory~, which is libreclaw's ~MEMORY.md~ size budget.  The two
 are unrelated and the plural is the whole distinction.
 
+~memory.journal~ (~agent~, optional ~limit~, default 50, at most 500) →
+~agent~, ~keep~ (~memories.journal_keep~) and ~entries~, newest first
+across the agent's own database and its own changes in its team's and the
+fleet's.  Each entry carries ~id~ (the row, unique within its database),
+~scope~, ~at~ (unix seconds), ~action~ (~add~, ~forget~, ~pin~, ~unpin~,
+~undo~), ~memory_id~, ~actor~, ~excerpt~, ~line~ (the sentence from
+=clawt_memory_journal_describe()=), ~undoes~ on an undo row, ~undone_at~,
+~undone_by~, ~undoable~ (a JSON boolean) and ~why_not~ when it is not.
+An agent with ~memories.enabled~ off is ~CLAWT_ERROR_NOT_SUPPORTED~.
+
+~memory.undo~ (~agent~, ~scope~ -- ~agent~ by default -- and ~id~) →
+~undone~.  Refused with the store's sentence for a row that cannot be
+undone, ~CLAWT_ERROR_NOT_FOUND~ for one older than the journal keeps, and
+~CLAWT_ERROR_PERMISSION_DENIED~ for a row in a shared database that this
+agent did not make.  Publishes ~memory.changed~.
+
 ~memory.recall~ (~query~, and optionally ~agent~, ~days~ and ~limit~) →
 ~hits~, ~full_text~ and ~indexed~.  This searches the *transcript*, not
 the memories: every message the fleet has routed, across every room and
@@ -1728,6 +1744,7 @@ Every kind published, by subject:
 | an agent | ~decision.asked~ (~decision~, ~room~), ~decision.settled~ (~decision~, ~how~: ~answered~, ~dismissed~, ~defaulted~ or ~deleted~, ~room~, ~answer~, ~via~), ~decision.deleted~ (~decision~, ~room~) |
 | a routine | ~routine.ran~, ~routine.changed~, ~routine.turned_off~ (~agent~, ~failures~, ~error~) |
 | an agent | ~wait.changed~ (~wait~, ~state~) |
+| an agent | ~memory.changed~ (a memory tool call or an undo changed what it remembers) |
 | a trigger | ~trigger.fired~, ~trigger.posted~, ~trigger.changed~, ~trigger.refused~, ~trigger.verified~ |
 | a Grok job | ~grok.job_updated~ (~bot~, ~agent~, ~state~) |
 | a Grok bot | ~grok.bots_changed~ |

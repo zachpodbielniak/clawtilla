@@ -487,6 +487,11 @@ struct _ClawtWindow {
      * takes the list with it.
      */
     GtkListBox        *inspector_waits;
+    /*
+     * The inspector's "Memory review" list (gtk-review.c), refilled on
+     * its own by `memory.changed`.  Weak, for the same reason.
+     */
+    GtkListBox        *inspector_memory_review;
     ImageChooser       inspector_disk;
     GtkWidget         *vm_cpus_row;
     GtkWidget         *vm_memory_row;
@@ -1439,6 +1444,17 @@ clawt_gtk_build_inspector_page(ClawtWindow *self);
  */
 void
 clawt_gtk_refresh_waits(ClawtWindow *self);
+
+/*
+ * The inspector's Memory review group (gtk-review.c): built into the
+ * inspector, and refilled for every `memory.changed` about the selected
+ * agent.
+ */
+void
+clawt_gtk_build_memory_review(ClawtWindow *self);
+
+void
+clawt_gtk_refresh_memory_review(ClawtWindow *self);
 
 ClawtComputerType
 clawt_gtk_computer_type_from_nick(const gchar *nick);

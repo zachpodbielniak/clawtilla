@@ -224,9 +224,10 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 - *Prior art:* =server/drivers/acp/= and =docs/custom-engines.md=. Any ACP-over-stdio CLI becomes an engine.
 - *Needs:* lands in ai-glib, then libreclaw's =lc_provider_type_normalize()=, then the =agent= column in clawtilla's catalog. =tests/test-model-catalog.c= keeps them pinned. It also removes the silent rewrite to claude-code for unknown types.
 
-** TODO Memory review with a journal and undo
-- *Prior art:* =docs/memory.md=, =memory-journal.ts=, =memory-dream.ts=.
-- *Today:* =clawtilla_memory_add/forget/pin= act immediately.
+** DONE Memory review with a journal and undo (version assigned at merge)
+- *Done:* every memory database keeps a ~memory_journal~ written by the store itself (=clawt_memory_store_add()=, =_forget_as()=, =_pin_as()=), so no caller can skip it; =clawt_memory_store_undo()= reverses one row (an add is archived, a forget restored, a pin flipped back) in one transaction, refusing an undone row, an undo row, an add that replaced an earlier version, a vanished memory, and a row with a later change still standing. ~memories.journal_keep~ (1000) bounds it. ~memory.journal~ / ~memory.undo~ (a shared database's row only from the agent that made it, checked in the daemon), ~memory.changed~ events; a *Memory review* group in the GTK inspector, the web agent page and the lrg Overview, with the undo labelled by =clawt_memory_journal_undo_label()=; =clawtilla memory journal|undo=. Design in =docs/agents.org=, "Memory review: a journal and undo". Tests: =tests/test-memory-journal.c=.
+- *Not done:* the periodic review ("dream", =memory-dream.ts=). It is a model call per pass nobody asked for, and a model rewriting memories is the kind of change the journal exists to make reviewable one at a time; documented in the same section.
+- *Was:* =clawtilla_memory_add/forget/pin= acted immediately with no record.
 
 ** TODO Sentinel over =events/*.ndjson=
 - *Prior art:* =server/sentinel/=. An out-of-process, read-only scanner that groups failing tool calls, queue waits and cost into issues.

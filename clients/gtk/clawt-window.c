@@ -1743,6 +1743,14 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
         clawt_gtk_refresh_waits(self);
 
     /*
+     * A memory remembered, forgotten, pinned or undone: the selected
+     * agent's review list redraws, and nothing above it.
+     */
+    if (g_strcmp0(kind, "memory.changed") == 0 &&
+        g_strcmp0(clawt_event_get_subject(event), self->selected_agent) == 0)
+        clawt_gtk_refresh_memory_review(self);
+
+    /*
      * One prefix match covers trigger.fired, .changed, .refused and
      * .verified -- and the last two are the ones somebody is waiting on
      * while they point a forge at a new endpoint.

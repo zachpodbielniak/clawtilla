@@ -2443,15 +2443,103 @@ cmd_memory(int argc, char *argv[])
     guint i;
 
     if (verb == NULL || target == NULL ||
-        (g_strcmp0(verb, "list") != 0 && g_strcmp0(verb, "search") != 0)) {
+        (g_strcmp0(verb, "list") != 0 && g_strcmp0(verb, "search") != 0 &&
+         g_strcmp0(verb, "journal") != 0 && g_strcmp0(verb, "undo") != 0)) {
         g_printerr("Usage: clawtilla memory list <agent> [--category C]\n");
         g_printerr("       clawtilla memory search <agent> <query>\n");
+        g_printerr("       clawtilla memory journal <agent>\n");
+        g_printerr("       clawtilla memory undo <agent> <change> "
+                   "[--scope agent|team|fleet]\n");
         return EXIT_FAILURE;
     }
 
     client = connect_to_daemon();
     if (client == NULL)
         return EXIT_FAILURE;
+
+    /*
+     * The review: every remember, forget and pin, and an undo per row.
+     * Undo is the one write this verb has, and it only ever takes back
+     * a change the agent made -- it never puts words in its mouth.
+     */
+    if (g_strcmp0(verb, "journal") == 0) {
+        JsonArray *rows;
+
+        reply = call(client, "memory.journal",
+                     build_payload("agent", target, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        rows = json_object_get_array_member(json_node_get_object(reply),
+                                               "entries");
+
+        if (rows == NULL || json_array_get_length(rows) == 0) {
+            g_print("No changes recorded.\n");
+            return EXIT_SUCCESS;
+        }
+
+        for (i = 0; i < json_array_get_length(rows); i++) {
+            JsonObject *entry = json_array_get_object_element(rows, i);
+            gboolean undoable = json_object_has_member(entry, "undoable") &&
+                json_object_get_boolean_member(entry, "undoable");
+
+            g_print("#%" G_GINT64_FORMAT "  [%s]  %s\n",
+                    json_object_get_int_member(entry, "id"),
+                    member_or(entry, "scope", "agent"),
+                    member_or(entry, "line", ""));
+
+            if (undoable)
+                g_print("    undo: clawtilla memory undo %s %" G_GINT64_FORMAT
+                        "%s%s  (%s)\n", target,
+                        json_object_get_int_member(entry, "id"),
+                        g_strcmp0(member_or(entry, "scope", "agent"),
+                                  "agent") != 0 ? " --scope " : "",
+                        g_strcmp0(member_or(entry, "scope", "agent"),
+                                  "agent") != 0
+                            ? member_or(entry, "scope", "") : "",
+                        clawt_memory_journal_undo_label(
+                            member_or(entry, "action", NULL)));
+            else if (member_or(entry, "why_not", NULL) != NULL &&
+                     g_strcmp0(member_or(entry, "action", ""), "undo") != 0)
+                g_print("    not undoable: %s\n",
+                        member_or(entry, "why_not", ""));
+        }
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "undo") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        const gchar *scope = "agent";
+        int arg;
+
+        if (argc < 5) {
+            g_printerr("Usage: clawtilla memory undo <agent> <change> "
+                       "[--scope agent|team|fleet]\n");
+            return EXIT_FAILURE;
+        }
+
+        for (arg = 5; arg + 1 < argc; arg++)
+            if (g_strcmp0(argv[arg], "--scope") == 0)
+                scope = argv[arg + 1];
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "agent");
+        json_builder_add_string_value(builder, target);
+        json_builder_set_member_name(builder, "scope");
+        json_builder_add_string_value(builder, scope);
+        json_builder_set_member_name(builder, "id");
+        json_builder_add_int_value(builder,
+                                   g_ascii_strtoll(argv[4], NULL, 10));
+        json_builder_end_object(builder);
+
+        reply = call(client, "memory.undo", json_builder_get_root(builder));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Undone.\n");
+        return EXIT_SUCCESS;
+    }
 
     if (g_strcmp0(verb, "search") == 0) {
         if (argc < 5) {

@@ -260,6 +260,28 @@ void clawt_web_register_decisions(HtmxRouter *router, ClawtWebApp *app);
  */
 void clawt_web_register_memory(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_creation(HtmxRouter *router, ClawtWebApp *app);
+
+/**
+ * clawt_web_register_review:
+ * @router: the router
+ * @app: the app
+ *
+ * The undo route of the agent page's Memory review (web-review.c).  Under
+ * `/a/:id/`, so registered before clawt_web_register_views().
+ */
+void clawt_web_register_review(HtmxRouter *router, ClawtWebApp *app);
+
+/**
+ * clawt_web_add_memory_review_card:
+ * @app: the app
+ * @parent: where the card goes
+ * @agent_id: whose journal
+ *
+ * The agent page's Memory review card: the journal of every memory
+ * change, with an Undo per row the daemon would accept.
+ */
+void clawt_web_add_memory_review_card(ClawtWebApp *app, HtmxElement *parent,
+                                      const gchar *agent_id);
 void clawt_web_register_extras(HtmxRouter *router, ClawtWebApp *app);
 
 /**

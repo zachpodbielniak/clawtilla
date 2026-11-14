@@ -95,6 +95,8 @@ licence, send nothing, and exit 0.
 | ~config reload~ | re-read the config file the daemon was started with |
 | ~folders list/add/rm~ | folders every agent with a computer gets |
 | ~memory list/search <agent>~ | what an agent has remembered; read-only |
+| ~memory journal <agent>~ | every remember, forget and pin, and whether each can be undone |
+| ~memory undo <agent> <change> [--scope S]~ | take one change back; never adds words of its own |
 | ~model~ | every provider and model, and which can run an agent |
 | ~image~ | container images clawtilla suggests, and your own |
 | ~image vm list/catalog/get/rm/cancel~ | disk images for VM agents |
@@ -625,6 +627,8 @@ Under it is a *Network* choice, ~runtime.network~ (see =docs/agents.org=, "Where
 The fleet allowlist, =egress.allow=, is on the *Shared folders* settings page under the folders: =clawt_egress_allowlist_label()= and =clawt_egress_allowlist_explanation()=, an entry row that adds one address, network or host name (~egress.allow.add~, checked by the daemon -- a metadata address comes back as a toast), and one row per entry with a remove button (~egress.allow.remove~). A list that does not parse is said under it from ~egress.allow.list~'s =problem=. The web client draws the same on its Shared folders page and in its agent page's Network card; the libregnum client in its Shared folders page and its inspector.
 
 *** What an agent is waiting for
+
+The agent inspector has a *Memory review* group below *Waiting for*: the journal of every memory the agent remembered, forgot or pinned (~memory.journal~), newest first, each row titled with what happened and the start of the memory ("Forgot: The deploy key lives in vault"), the sentence saying who and when, and which shared database it was in when it was not the agent's own.  A row the daemon would undo has a button saying what the undo does -- *Archive it*, *Bring it back*, *Unpin it*, *Pin it again* (=clawt_memory_journal_undo_label()=) -- which sends ~memory.undo~; a row it would not has the reason instead (a later change to the same memory has to be undone first, it replaced an earlier version, it is already undone).  The list alone refills on ~memory.changed~.  The web client's agent page draws it as a card with an undo form per row, and the libregnum client's Overview as a section.  See [[file:agents.org::*Memory review: a journal and undo][agents.org]].
 
 The agent inspector has a *Waiting for* group, above the integrations: one row per pending wait the agent set with ~clawtilla_wait_until~, titled with the agent's own words for it, with the condition, a schedule line from ~clawt_wait_schedule_label()~ (~checked 4m ago · next check in 1m · expires in 23h~), what the last check saw, and a *Cancel* button.  Cancelling sends ~wait.cancel~, and the daemon tells the agent, which would otherwise go on believing it was waiting.  The list -- and only the list, never the form above it -- refills on every ~wait.changed~ event.  An agent that looks idle and is in fact waiting on a deploy is not one somebody should nudge, which is why it is on the agent's own view.  The web client's agent page draws the same list as a card with a Cancel form per row, and the libregnum client's Overview as a section.  How many an agent may have is ~max_waits~, in the agent's settings with the other fleet settings it may override.  See [[file:orchestration.org::*Waits: a condition checked by code][orchestration.org]].
 

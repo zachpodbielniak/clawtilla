@@ -6672,6 +6672,22 @@ own_memory(ClawtMcpTools *self, const gchar *agent_id)
     return (agent != NULL) ? clawt_agent_get_memory(agent) : NULL;
 }
 
+/*
+ * A memory changed: a client showing that agent's Memory review redraws.
+ * The journal row was written by the store; this only says where to look.
+ */
+static void
+publish_memory_changed(ClawtMcpTools *self, const gchar *agent_id)
+{
+    g_autoptr(ClawtEvent) event = NULL;
+
+    if (self->bus == NULL)
+        return;
+
+    event = clawt_event_new("memory.changed", agent_id);
+    clawt_event_bus_publish(self->bus, event);
+}
+
 static gchar *
 tool_memory_add(ClawtMcpTools *self, const gchar *agent_id,
                 JsonObject *arguments, gboolean *is_error)
@@ -6745,6 +6761,8 @@ tool_memory_add(ClawtMcpTools *self, const gchar *agent_id,
         return g_strdup_printf("Could not remember that: %s",
                                error->message);
     }
+
+    publish_memory_changed(self, agent_id);
 
     return g_strdup_printf("Remembered as %s.", id);
 }
@@ -6851,10 +6869,12 @@ tool_memory_forget(ClawtMcpTools *self, const gchar *agent_id,
         return g_strdup("You have no memory store.");
     }
 
-    if (!clawt_memory_store_forget(store, id, &error)) {
+    if (!clawt_memory_store_forget_as(store, id, agent_id, &error)) {
         *is_error = TRUE;
         return g_strdup(error->message);
     }
+
+    publish_memory_changed(self, agent_id);
 
     return g_strdup_printf("Forgotten: %s is out of every listing and "
                            "search, and still on disk.", id);
@@ -6874,10 +6894,12 @@ tool_memory_pin(ClawtMcpTools *self, const gchar *agent_id,
         return g_strdup("You have no memory store.");
     }
 
-    if (!clawt_memory_store_pin(store, id, pinned, &error)) {
+    if (!clawt_memory_store_pin_as(store, id, pinned, agent_id, &error)) {
         *is_error = TRUE;
         return g_strdup(error->message);
     }
+
+    publish_memory_changed(self, agent_id);
 
     return g_strdup_printf("%s is now %s.", id,
                            pinned ? "pinned" : "unpinned");

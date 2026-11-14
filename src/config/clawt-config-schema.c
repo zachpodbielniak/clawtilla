@@ -1065,6 +1065,19 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "A prompt suffix reaches every turn, so this number is what the\nreminder asks the agent for rather than something clawtilla counts.\nCounting turns from the daemon would need a per-turn channel to the\nagent, and the only one there is is the delivery preamble -- which not\nevery turn has.", "0.2.0" },
 
+{ "memories.journal_keep", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "1000", NULL,
+  "How many changes each memory database's journal keeps. 0 keeps every\n"
+  "one.\n"
+  "\n"
+  "Every remember, forget, pin and unpin is written to a journal beside\n"
+  "the memories it changed, with who made it, and the Memory review page\n"
+  "in each client lists it with an Undo per row. The oldest rows go first\n"
+  "once there are more than this, and a change whose row has gone can no\n"
+  "longer be undone -- the page says so rather than offering a button\n"
+  "that cannot work. One journal per database: an agent's own, each\n"
+  "team's and the fleet's.", "0.24.0" },
+
 { "memories.operator_profile", CLAWT_SCHEMA_BOOLEAN,
   CLAWT_SCHEMA_FLAG_COMMENTED, "false", NULL,
   "Whether the fleet keeps a profile of the person it works for.\n"

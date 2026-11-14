@@ -19,6 +19,14 @@
 
 G_BEGIN_DECLS
 
+/**
+ * CLAWT_MEMORY_JOURNAL_KEEP_DEFAULT:
+ *
+ * How many journal rows a memory database keeps when nobody said, which
+ * is the schema default of `memories.journal_keep`.
+ */
+#define CLAWT_MEMORY_JOURNAL_KEEP_DEFAULT (1000)
+
 #define CLAWT_TYPE_MEMORY_STORE (clawt_memory_store_get_type())
 
 G_DECLARE_FINAL_TYPE(ClawtMemoryStore, clawt_memory_store, CLAWT,
@@ -147,6 +155,92 @@ gboolean clawt_memory_store_pin(ClawtMemoryStore  *self,
                                 const gchar       *id,
                                 gboolean           pinned,
                                 GError           **error);
+
+/**
+ * clawt_memory_store_forget_as:
+ * @self: a #ClawtMemoryStore
+ * @id: which one
+ * @actor: (nullable): who is forgetting it, for the journal
+ * @error: (out) (optional): return location for a #GError
+ *
+ * clawt_memory_store_forget(), saying who asked.  Journaled either way;
+ * this only fills in the name.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean clawt_memory_store_forget_as(ClawtMemoryStore  *self,
+                                      const gchar       *id,
+                                      const gchar       *actor,
+                                      GError           **error);
+
+/**
+ * clawt_memory_store_pin_as:
+ * @self: a #ClawtMemoryStore
+ * @id: which one
+ * @pinned: whether to pin it
+ * @actor: (nullable): who is pinning it, for the journal
+ * @error: (out) (optional): return location for a #GError
+ *
+ * clawt_memory_store_pin(), saying who asked.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean clawt_memory_store_pin_as(ClawtMemoryStore  *self,
+                                   const gchar       *id,
+                                   gboolean           pinned,
+                                   const gchar       *actor,
+                                   GError           **error);
+
+/**
+ * clawt_memory_store_set_journal_keep:
+ * @self: a #ClawtMemoryStore
+ * @keep: how many journal rows to keep, 0 for every one
+ *
+ * The bound on the journal (`memories.journal_keep`).  The oldest rows go
+ * first, on the next write.  An undo needs its row, so a change older
+ * than this can no longer be taken back -- which the review page says.
+ */
+void clawt_memory_store_set_journal_keep(ClawtMemoryStore *self,
+                                         guint             keep);
+
+/**
+ * clawt_memory_store_journal:
+ * @self: a #ClawtMemoryStore
+ * @actor: (nullable): only the changes this actor made
+ * @limit: how many at most, newest first; 0 for a sensible default
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The journal: every add, forget, pin and unpin, and every undo, each
+ * row saying whether it can be undone now and, if not, why.
+ *
+ * Returns: (transfer full) (element-type ClawtMemoryJournalEntry): the
+ *   rows, newest first
+ */
+GPtrArray *clawt_memory_store_journal(ClawtMemoryStore  *self,
+                                      const gchar       *actor,
+                                      guint              limit,
+                                      GError           **error);
+
+/**
+ * clawt_memory_store_undo:
+ * @self: a #ClawtMemoryStore
+ * @entry_id: the journal row to take back
+ * @actor: (nullable): who is taking it back
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Reverses one change: an add is archived, a forget is brought back, a
+ * pin or an unpin is flipped back.  Refused, with the reason, for a row
+ * already undone, an undo row, an add that replaced an earlier version,
+ * a memory no longer on disk, and a row with a later change to the same
+ * memory still standing.  The change and its journal row are one
+ * transaction.
+ *
+ * Returns: %TRUE when it was undone
+ */
+gboolean clawt_memory_store_undo(ClawtMemoryStore  *self,
+                                 gint64             entry_id,
+                                 const gchar       *actor,
+                                 GError           **error);
 
 /**
  * clawt_memory_store_count:

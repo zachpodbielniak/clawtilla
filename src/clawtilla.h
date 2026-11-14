@@ -178,6 +178,7 @@
 
 #include "mailbox/clawt-mailbox-item.h"
 #include "memory/clawt-memory.h"
+#include "memory/clawt-memory-journal.h"
 #include "memory/clawt-memory-store.h"
 #include "memory/clawt-memory-scopes.h"
 #include "memory/clawt-transcript-index.h"
