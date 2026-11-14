@@ -99,6 +99,7 @@ licence, send nothing, and exit 0.
 | ~image~ | container images clawtilla suggests, and your own |
 | ~image vm list/catalog/get/rm/cancel~ | disk images for VM agents |
 | ~connector catalog/list/add/connect/discover/key/refresh/revoke/rm~ | accounts clawtilla holds the credential for; ~add --url~ alone is any remote MCP server |
+| ~broker status/start/stop/restart/logs/key~ | the integration broker clawtilla runs in podman, and each gateway server's key |
 | ~plugin list~ | |
 | ~integration types/list/show~ | what kinds exist, and what is configured |
 | ~integration add/set/scope/rm~ | one bot, some bots or all of them |
@@ -346,6 +347,22 @@ and in the process table.
 names.  It speaks MCP on stdout and is not for people.
 
 See [[file:connectors.org][connectors.org]].
+
+*** The integration broker
+
+#+begin_src bash
+clawtilla broker status                            # state, dashboard, who reaches which server
+clawtilla agent set scout broker_server cmwgvs1dq000736li29o0luha
+clawtilla broker key scout                         # reads stdin with the echo off
+clawtilla broker key team:research
+clawtilla broker logs
+clawtilla broker restart
+#+end_src
+
+~start~, ~stop~ and ~restart~ answer at once, saying starting or
+stopping; ~status~ again says where it got to.  ~key~ prints where the key
+went, never the key.  See "An integration broker" in
+[[file:connectors.org][connectors.org]].
 
 *** Signing in to Matrix
 
@@ -933,6 +950,16 @@ with ~integration.update~ as soon as it changes.  Under the list,
 ~connectors.directory_min_tools~ and ~connectors.directory_min_chars~,
 written through ~connector.settings~.  See "Servers with many tools" in
 [[file:connectors.org][connectors.org]].
+
+Above the accounts, an *Integration broker* group holds one row: the
+broker and its state in =clawt_broker_state_label()='s word -- "AnythingMCP
+— Starting" -- with what it is doing or why it failed and the dashboard
+URL underneath, and four buttons made sensitive from each
+~broker.status~: open the dashboard (while it runs), Start, Stop and
+Restart.  The row redraws on ~broker.changed~ while Settings is open.  The
+broker's own connectors (~broker-agent-<id>~, ~broker-team-<id>~) are in
+the list below like any other; editing one is refused with the settings
+that change it.
 
 See [[file:connectors.org][connectors.org]].
 

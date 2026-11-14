@@ -5225,6 +5225,7 @@ release_components(ClawtDaemon *self)
     g_clear_object(&self->rooms);
     g_clear_object(&self->agents);
     clawt_daemon_egress_release(self);
+    clawt_daemon_broker_release(self);
     g_clear_object(&self->vm_images);
     g_clear_object(&self->exchange);
     g_clear_object(&self->decisions);
@@ -7417,6 +7418,14 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     self->running = TRUE;
 
     /*
+     * The integration broker, when it is on: in the background, so a pull
+     * of several hundred megabytes holds nothing up.  Here rather than
+     * earlier for the reason the timer above is -- a start refused at the
+     * socket must not leave containers behind.
+     */
+    clawt_daemon_broker_sync(self);
+
+    /*
      * The one caller with nobody to answer.  Every other site that
      * re-renders the fleet hands the refusals back in its reply; a start
      * has no reply, so it says so on the console -- once, naming every
@@ -7570,6 +7579,14 @@ clawt_daemon_stop(ClawtDaemon *self)
     /* After the fleet, whose exits are what revoke the broker's tokens. */
     clawt_daemon_egress_stop(self);
 
+    /*
+     * The integration broker, after the fleet that used it.  Blocking,
+     * like the agents' own computers above: there is no loop left to
+     * answer on, and a gateway left running would hold its ports against
+     * the next daemon.
+     */
+    clawt_daemon_broker_stop(self);
+
     if (self->rooms != NULL)
         clawt_room_manager_flush(self->rooms);
 
@@ -7721,6 +7738,9 @@ clawt_daemon_reload_internal(ClawtDaemon *self, GPtrArray *refusals,
 
     /* egress.allow is read per connection, so it applies at once. */
     clawt_daemon_egress_refresh_allowlist(self);
+
+    /* broker.enabled turned on or off starts or stops it, in the background. */
+    clawt_daemon_broker_sync(self);
 
     clawt_event_bus_emit(self->bus, "daemon.reloaded", NULL);
     g_signal_emit(self, signals[SIGNAL_RELOADED], 0);
@@ -10019,6 +10039,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_memory,
     clawt_daemon_handle_mount,
     clawt_daemon_handle_egress,
+    clawt_daemon_handle_broker,
     clawt_daemon_handle_image,
     clawt_daemon_handle_team,
     clawt_daemon_handle_room,

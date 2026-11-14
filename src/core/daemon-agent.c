@@ -1909,10 +1909,26 @@ clawt_daemon_handle_agent(
          * generated .org stubs, and every surface agreed the setting
          * had been saved.
          */
+        /*
+         * Refused here rather than saved and refused at the broker's next
+         * start, which would be a setting that looks taken and is not.
+         */
+        if (!clawt_broker_check_setting(self->config, agent_id, NULL, key,
+                                        value, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
         clawt_agent_config_set_from_string(config, key, value);
 
         if (!clawt_config_save(self->config, &error))
             return clawt_ipc_error_new(request, error->code, error->message);
+
+        /*
+         * The integration broker's connectors are derived from this
+         * agent's broker_server, its team and its sandbox: made again
+         * before the render below, or the agent's .mcp.json and
+         * connector.list would describe the value just replaced.
+         */
+        clawt_config_refresh_broker_connectors(self->config);
 
         /*
          * A limit changed under a running machine is applied to it now,

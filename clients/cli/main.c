@@ -6204,6 +6204,204 @@ connector_relay(const gchar *name, const gchar *agent_id)
         (gpointer)agent_id, directory);
 }
 
+static void
+print_broker_usage(gboolean asked_for)
+{
+    static const gchar *text =
+"Usage: clawtilla broker <command>\n"
+"\n"
+"The integration broker clawtilla runs in podman when broker.enabled is on:\n"
+"AnythingMCP (broker.type: anythingmcp) or Jentic One (jentic). Each agent\n"
+"or team names its gateway server in broker_server and reaches it as the\n"
+"connector broker-agent-<id> or broker-team-<id>.\n"
+"\n"
+"Commands:\n"
+"  status                  whether it runs, its dashboard, who reaches it\n"
+"  start                   start it (answers at once; status says starting)\n"
+"  stop                    stop it; its data under <state_dir>/broker stays\n"
+"  restart                 stop it, then start it\n"
+"  logs                    the last hundred lines of each container\n"
+"  key <agent|team:<id>>   store the key for that gateway server (stdin)\n"
+"\n"
+"Examples:\n"
+"  clawtilla config set broker.enabled true\n"
+"  clawtilla broker status\n"
+"\n"
+"  # In the dashboard: make an MCP server for scout, assign connectors to\n"
+"  # it, make a key on its page. Then:\n"
+"  clawtilla agent set scout broker_server cmwgug12p000535o2f9egw8iy\n"
+"  clawtilla broker key scout\n"
+"\n"
+"  # One server for a whole team:\n"
+"  clawtilla broker key team:research\n"
+"\n"
+"  clawtilla broker logs\n"
+"  clawtilla broker restart\n";
+
+    print_usage_text(text, asked_for);
+}
+
+/* The status reply, as lines a person reads. */
+static void
+print_broker_status(JsonObject *root)
+{
+    JsonArray *assignments;
+    JsonArray *warnings;
+    guint i;
+
+    g_print("%s: %s", member_or(root, "label", "broker"),
+            member_or(root, "state_label", "?"));
+
+    if (json_object_has_member(root, "detail"))
+        g_print(" -- %s", member_or(root, "detail", ""));
+
+    g_print("\n");
+
+    if (!json_object_get_boolean_member_with_default(root, "enabled",
+                                                     FALSE)) {
+        g_print("broker.enabled is off. `clawtilla config set "
+                "broker.enabled true` turns it on and starts it.\n");
+        return;
+    }
+
+    g_print("  image:     %s\n", member_or(root, "image", "?"));
+    g_print("  dashboard: %s\n", member_or(root, "dashboard_url", "?"));
+    g_print("  mcp:       %s\n", member_or(root, "mcp_url", "?"));
+
+    if (json_object_get_int_member_with_default(root, "restarts", 0) > 0)
+        g_print("  restarts:  %" G_GINT64_FORMAT "\n",
+                json_object_get_int_member_with_default(root, "restarts",
+                                                        0));
+
+    if (json_object_has_member(root, "refusal"))
+        g_print("  refused:   %s\n", member_or(root, "refusal", ""));
+
+    assignments = json_object_has_member(root, "assignments")
+                  ? json_object_get_array_member(root, "assignments") : NULL;
+
+    if (assignments == NULL || json_array_get_length(assignments) == 0) {
+        g_print("  No agent names a gateway server yet: set broker_server "
+                "on an agent or a team.\n");
+    } else {
+        g_print("  Gateway servers:\n");
+
+        for (i = 0; i < json_array_get_length(assignments); i++) {
+            JsonObject *one = json_array_get_object_element(assignments, i);
+            JsonArray *agents = json_object_get_array_member(one, "agents");
+            g_autoptr(GString) names = g_string_new(NULL);
+            guint a;
+
+            for (a = 0; agents != NULL && a < json_array_get_length(agents);
+                 a++) {
+                if (a > 0)
+                    g_string_append(names, ", ");
+                g_string_append(names,
+                                json_array_get_string_element(agents, a));
+            }
+
+            g_print("    %-20s server %s, connector %s, %s -- %s\n",
+                    member_or(one, "target", "?"),
+                    member_or(one, "server", "?"),
+                    member_or(one, "connector", "?"),
+                    json_object_get_boolean_member_with_default(
+                        one, "key_stored", FALSE)
+                    ? "key stored" : "no key yet (clawtilla broker key)",
+                    names->str);
+        }
+    }
+
+    warnings = json_object_has_member(root, "warnings")
+               ? json_object_get_array_member(root, "warnings") : NULL;
+
+    for (i = 0; warnings != NULL && i < json_array_get_length(warnings); i++)
+        g_print("  warning: %s\n", json_array_get_string_element(warnings, i));
+}
+
+static gint
+cmd_broker(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *verb = (argc > 2) ? argv[2] : "status";
+
+    if (g_strcmp0(verb, "help") == 0 || g_strcmp0(verb, "--help") == 0 ||
+        g_strcmp0(verb, "-h") == 0) {
+        print_broker_usage(TRUE);
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "status") != 0 && g_strcmp0(verb, "start") != 0 &&
+        g_strcmp0(verb, "stop") != 0 && g_strcmp0(verb, "restart") != 0 &&
+        g_strcmp0(verb, "logs") != 0 && g_strcmp0(verb, "key") != 0) {
+        g_printerr("clawtilla: unknown broker command '%s'\n", verb);
+        print_broker_usage(FALSE);
+        return EXIT_FAILURE;
+    }
+
+    client = connect_to_daemon();
+
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    if (g_strcmp0(verb, "key") == 0) {
+        const gchar *target = (argc > 3) ? argv[3] : NULL;
+        g_autofree gchar *key = NULL;
+
+        if (target == NULL) {
+            g_printerr("clawtilla: broker key needs an agent, or team:<id>\n");
+            return EXIT_FAILURE;
+        }
+
+        /*
+         * From stdin with the echo off, like connector key, and for the
+         * same reason: an argument is in the shell history and the
+         * process table.
+         */
+        key = read_secret("Key: ");
+
+        if (key == NULL || *key == '\0') {
+            g_printerr("clawtilla: no key was given\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "broker.key",
+                     build_payload("target", target, "key", key, NULL));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Stored in %s\n",
+                member_or(json_node_get_object(reply), "key_file", "?"));
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "logs") == 0) {
+        reply = call(client, "broker.logs", NULL);
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("%s", member_or(json_node_get_object(reply), "logs", ""));
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "start") == 0)
+        reply = call(client, "broker.start", NULL);
+    else if (g_strcmp0(verb, "stop") == 0)
+        reply = call(client, "broker.stop", NULL);
+    else if (g_strcmp0(verb, "restart") == 0)
+        reply = call(client, "broker.restart", NULL);
+    else
+        reply = call(client, "broker.status", NULL);
+
+    if (reply == NULL)
+        return EXIT_FAILURE;
+
+    print_broker_status(json_node_get_object(reply));
+
+    return EXIT_SUCCESS;
+}
+
 static gint
 cmd_connector(int argc, char *argv[])
 {
@@ -9937,6 +10135,8 @@ static const ClawtVerb verbs[] = {
       cmd_integration },
     { "connector", "<verb>", "Accounts agents get tools from",
       cmd_connector },
+    { "broker",  "<verb>",   "The integration broker clawtilla runs",
+      cmd_broker },
     { "routine", "<verb>",   "Standing work on a schedule",
       cmd_routine },
     { "trigger", "<verb>",   "Work started by a webhook",

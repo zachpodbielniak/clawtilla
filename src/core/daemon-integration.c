@@ -30,6 +30,20 @@ clawt_daemon_handle_integration(
     builder = json_builder_new();
     *handled = TRUE;
 
+    /*
+     * The integration broker's connectors are made from the config, not
+     * read from it: an edit here would be saved nowhere and undone by the
+     * next reload, so it is refused with the settings that do change them.
+     */
+    if (g_strcmp0(kind, "integration.update") == 0 ||
+        g_strcmp0(kind, "integration.remove") == 0) {
+        JsonNode *refused = clawt_daemon_broker_refuse_managed(
+            self, request, clawt_ipc_payload_string(payload, "name"));
+
+        if (refused != NULL)
+            return refused;
+    }
+
     if (g_strcmp0(kind, "integration.types") == 0) {
         const ClawtIntegrationInfo *info;
         gsize n_integrations = 0;
