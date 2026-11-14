@@ -85,6 +85,7 @@ ClawtLrgAgentChoices *clawt_lrg_agent_enum_choices(GType        type,
 ClawtLrgAgentChoices *clawt_lrg_agent_computer_type_choices(const gchar *current);
 ClawtLrgAgentChoices *clawt_lrg_agent_effort_choices(const gchar *current);
 ClawtLrgAgentChoices *clawt_lrg_agent_resolution_choices(const gchar *current);
+ClawtLrgAgentChoices *clawt_lrg_agent_computer_start_choices(const gchar *current);
 ClawtLrgAgentChoices *clawt_lrg_agent_mount_mode_choices(void);
 ClawtLrgAgentChoices *clawt_lrg_agent_relabel_choices(void);
 
@@ -135,6 +136,8 @@ const gchar     *clawt_lrg_agent_provider_note(JsonNode    *catalog,
  * @CLAWT_LRG_AGENT_FIELD_IMAGE: a combo from image.list, plus a typed reference
  * @CLAWT_LRG_AGENT_FIELD_DISK: a combo from image.vm_list, plus a typed path
  * @CLAWT_LRG_AGENT_FIELD_RESOLUTION: a combo of screen sizes
+ * @CLAWT_LRG_AGENT_FIELD_COMPUTER_START: a combo walked from the computer
+ *   start choices, with the library's labels
  *
  * Which control a setting is drawn with.
  */
@@ -154,7 +157,8 @@ typedef enum {
     CLAWT_LRG_AGENT_FIELD_COMPUTER_TYPE,
     CLAWT_LRG_AGENT_FIELD_IMAGE,
     CLAWT_LRG_AGENT_FIELD_DISK,
-    CLAWT_LRG_AGENT_FIELD_RESOLUTION
+    CLAWT_LRG_AGENT_FIELD_RESOLUTION,
+    CLAWT_LRG_AGENT_FIELD_COMPUTER_START
 } ClawtLrgAgentFieldKind;
 
 /**
@@ -215,6 +219,22 @@ gboolean          clawt_lrg_agent_key_skipped(const gchar            *key,
                                               const ClawtSchemaEntry *entry);
 gboolean          clawt_lrg_agent_key_belongs_to_shared(const gchar *key,
                                                         const gchar *use);
+
+/**
+ * clawt_lrg_agent_field_applies:
+ * @key: an agent-relative key
+ * @agent: (nullable): agent.show's `agent`
+ *
+ * Whether @key is read by this agent's computer.  The start choice, the
+ * podman limits and the wake command each apply to some computer types
+ * only, and the daemon reports the member behind each (`computer_start`,
+ * `container_*`, `ssh_wake_command`) only for those -- so the member's
+ * presence is the answer.  Every other key applies.
+ *
+ * Returns: %TRUE to draw (and so save) @key
+ */
+gboolean          clawt_lrg_agent_field_applies(const gchar *key,
+                                                JsonObject  *agent);
 ClawtLrgAgentFieldKind clawt_lrg_agent_field_kind(const gchar            *key,
                                              const ClawtSchemaEntry *entry);
 gchar            *clawt_lrg_agent_key_label(const gchar *key);

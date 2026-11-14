@@ -803,7 +803,13 @@ Since 0.9.0. Every verb but ~browser.list~ takes ~agent~ and acts on the session
 *** computer.*
 
 ~computer.exec~ (~agent~, ~command~, ~cwd~, ~timeout~ -- 120 seconds by
-default) → ~exit~, ~stdout~, ~stderr~.  ~computer.status~ (~agent~) →
+default) → ~exit~, ~stdout~, ~stderr~, and ~wake_ms~: how long this
+command waited for an ~ssh~ machine's [[file:computers.org::#ssh-wake][wake
+command]] before it ran, outside its timeout (0 when it did not).  A
+computer with ~computer.start: on_first_use~ is started by the command,
+once for every command that arrives while it starts.
+~computer.desktop~ (~agent~) defers the same way while a VM that starts on
+first use boots.  ~computer.status~ (~agent~) →
 ~state~ and ~description~.  ~computer.copy~ (~src~, ~dst~, one side being
 ~<agent>:<path>~).  ~exchange.list~ (~agent~) → ~entries~.
 

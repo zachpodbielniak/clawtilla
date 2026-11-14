@@ -35,6 +35,7 @@
 
 #include "computer/clawt-computer.h"
 #include "computer/clawt-sandbox.h"
+#include "computer/clawt-wake.h"
 
 G_BEGIN_DECLS
 
@@ -301,6 +302,44 @@ gchar *clawt_ssh_control_path(const gchar  *agent_id,
 GStrv clawt_ssh_computer_build_argv(ClawtSshComputer    *self,
                                     const gchar * const *argv,
                                     const gchar         *working_dir);
+
+/**
+ * clawt_ssh_computer_set_wake_command:
+ * @self: a #ClawtSshComputer
+ * @argv: (array zero-terminated=1) (nullable): computer.ssh.wake_command,
+ *   or %NULL or empty for none
+ *
+ * The program that wakes the machine when nothing answers. Run as an
+ * argv, never through a shell, once per wave of commands that found the
+ * machine asleep, for at most %CLAWT_WAKE_MAX_SECONDS. See #ClawtWaker.
+ */
+void clawt_ssh_computer_set_wake_command(ClawtSshComputer    *self,
+                                         const gchar * const *argv);
+
+/**
+ * clawt_ssh_computer_get_waker:
+ * @self: a #ClawtSshComputer
+ *
+ * Returns: (transfer none) (nullable): the waker, or %NULL when no wake
+ *   command is configured
+ */
+ClawtWaker *clawt_ssh_computer_get_waker(ClawtSshComputer *self);
+
+/**
+ * clawt_ssh_wake_wanted:
+ * @exit_status: what `ssh <alias> true` exited with
+ * @stderr_text: (nullable): what it wrote to stderr
+ *
+ * Whether a failed connection is the kind a wake command can fix.
+ *
+ * Only "nothing answered" is. A refused host key or login came from a
+ * machine that is plainly awake, and waking it again would spend up to
+ * two minutes before reporting the same refusal.
+ *
+ * Returns: %TRUE when the machine looks asleep or off
+ */
+gboolean clawt_ssh_wake_wanted(gint         exit_status,
+                               const gchar *stderr_text);
 
 /**
  * clawt_ssh_classify_probe:

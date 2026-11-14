@@ -199,6 +199,17 @@ declare -A AFFORDANCES=(
     #
     ["sidebar collapses"]="clawt_appearance_set_sidebar_collapsed|nav-toggle|clawt_lrg_window_toggle_sidebar"
     #
+    # Per-agent computer settings that apply to some computer types only.
+    # Each client draws the row from the agent member the daemon reports
+    # for exactly those types, so the member name is the marker: a client
+    # that stopped reading it would offer the setting everywhere or
+    # nowhere.  The limits are marked by the swap key, the one that has
+    # to be ordered against memory on a save.
+    #
+    ["computer start choice"]="\"computer_start\"|\"computer_start\"|\"computer_start\""
+    ["container limits"]="\"computer.container.memory_swap\"|\"computer.container.memory_swap\"|\"computer.container.memory_swap\""
+    ["ssh wake command"]="\"ssh_wake_command\"|\"ssh_wake_command\"|\"ssh_wake_command\""
+    #
     # The agent view's "Waiting for" list. The frames (wait.list,
     # wait.cancel) are layer 1's; this is the schedule line, which every
     # client must draw from the one library function rather than its own

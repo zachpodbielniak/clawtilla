@@ -639,6 +639,40 @@ gboolean clawt_process_has_exited(GPid pid);
 gchar *clawt_command_shell_syntax_refusal(const gchar *command);
 
 /**
+ * clawt_command_line_split:
+ * @line: (nullable): a program and its arguments, as somebody typed them
+ * @error: return location for a #GError
+ *
+ * Splits a command line into an argv for a program that will be run
+ * directly, never through a shell -- a configured command such as
+ * `computer.ssh.wake_command`, edited in a client's text field.
+ *
+ * Quotes group words as a shell would. A line that leans on a shell
+ * operator is refused with clawt_command_shell_syntax_refusal()'s
+ * sentence rather than split, because split it would run with the
+ * operator as a literal argument and appear to have worked.
+ *
+ * An empty or blank @line is an empty argv, not an error: it is how a
+ * text field says "no command".
+ *
+ * Returns: (transfer full) (array zero-terminated=1) (nullable): the
+ *   argv, or %NULL with @error set
+ */
+GStrv clawt_command_line_split(const gchar *line, GError **error);
+
+/**
+ * clawt_command_line_join:
+ * @argv: (array zero-terminated=1) (nullable): a program and its arguments
+ *
+ * The one line clawt_command_line_split() turns back into @argv: each
+ * word that needs it is quoted, the rest are left as typed, so what a
+ * client shows is what it would save.
+ *
+ * Returns: (transfer full): the line; empty for an empty or %NULL @argv
+ */
+gchar *clawt_command_line_join(const gchar * const *argv);
+
+/**
  * clawt_log_level_permits:
  * @ceiling: the configured %ClawtLogLevel
  * @level: the level a message was logged at

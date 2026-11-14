@@ -948,6 +948,29 @@ already means every word literally.
   provisions it and provisioning a container replaces it, which would turn a
   restart after any `agent set` into destroying whatever the agent installed.
 
+- **`computer.start: on_first_use` is enforced at one door.**
+  `clawt_computer_exec()` calls `clawt_computer_ensure_started()`, which
+  starts a lazy machine once per wave of concurrent first uses (a mutex,
+  a condition and a generation, not a flag); the async path starts it
+  through `clawt_computer_lifecycle_async()` with
+  `CLAWT_COMPUTER_LIFECYCLE_FIRST_USE` first. Agent start skips the start
+  only when the computer says so -- read
+  `clawt_computer_get_start_on_first_use()`, never the config, because
+  `clawt_computer_factory_refresh()` is what decides it for the type.
+- **What a kept computer can take in place is retaken at every start.**
+  `clawt_computer_factory_refresh()` rereads the start mode, the podman
+  limits and the ssh wake command into an existing computer, so a change
+  to any of them does not wait for a rebuild. Container limits go to
+  podman as `podman update` after an inspect, only for what differs:
+  podomation's create carries no limits, and distrobox takes each one as
+  a single `--additional-flags` word.
+- **A program the operator names runs in its own process group.**
+  `clawt_run_argv_bounded()` kills the *group* at the deadline and when
+  the program itself exits; killing only the child left a provider CLI it
+  started holding the pipes, and the wait with them. Its deadline is a
+  millisecond timeout -- `g_timeout_source_new_seconds()` fired most of a
+  second early.
+
 ### VMs -- what a guest needs before it is reachable
 
 Each of these on its own produces a VM that boots and admits nobody, which

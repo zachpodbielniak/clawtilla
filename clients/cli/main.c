@@ -4513,10 +4513,23 @@ cmd_computer(int argc, char *argv[])
         g_auto(GStrv) tools = NULL;
         JsonObject *result;
 
-        reply = call(client, "computer.desktop",
-                     build_payload("agent", agent_id, NULL));
-        if (reply == NULL)
-            return EXIT_FAILURE;
+        /*
+         * Fifteen minutes rather than the usual two: a VM that starts on
+         * first use is booted by this very request, and a first boot
+         * runs cloud-init and installs a desktop before it answers.
+         */
+        {
+            g_autoptr(GError) desktop_error = NULL;
+
+            reply = clawt_client_request_full(
+                client, "computer.desktop",
+                build_payload("agent", agent_id, NULL), 900, &desktop_error);
+
+            if (reply == NULL) {
+                g_printerr("clawtilla: %s\n", desktop_error->message);
+                return EXIT_FAILURE;
+            }
+        }
 
         result = json_node_get_object(reply);
         relay_argv = string_array_member(result, "argv");

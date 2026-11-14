@@ -15,6 +15,98 @@
 #include "core/clawt-daemon.h"
 #include "core/clawt-daemon-private.h"
 
+gboolean
+clawt_daemon_is_limit_key(
+	const gchar *key
+){
+	return g_strcmp0(key, "computer.container.pids_limit") == 0 ||
+	       g_strcmp0(key, "computer.container.memory") == 0 ||
+	       g_strcmp0(key, "computer.container.memory_swap") == 0;
+}
+
+/* The worker half: one podman inspect, and an update when it differs. */
+static void
+apply_limits_worker(
+	GTask        *task,
+	gpointer      source,
+	gpointer      data,
+	GCancellable *cancellable
+){
+	ClawtComputer *computer;
+	g_autoptr(GError) error = NULL;
+	gboolean ok;
+
+	(void)source;
+	(void)cancellable;
+
+	computer = CLAWT_COMPUTER(data);
+
+	ok = CLAWT_IS_CONTAINER_COMPUTER(computer)
+	     ? clawt_container_computer_apply_limits(
+	           CLAWT_CONTAINER_COMPUTER(computer), &error)
+	     : clawt_distrobox_computer_apply_limits(
+	           CLAWT_DISTROBOX_COMPUTER(computer), &error);
+
+	/*
+	 * Logged, not raised: the setting is saved either way and the next
+	 * start applies it again, failing loudly then if podman still says
+	 * no. Nobody is waiting on this answer.
+	 */
+	if (!ok)
+		g_warning("agent %s: the new limits did not reach its running "
+		          "machine (%s); the next start applies them again",
+		          clawt_computer_get_agent_id(computer), error->message);
+
+	g_task_return_boolean(task, ok);
+}
+
+void
+clawt_daemon_apply_limits_in_place(
+	ClawtDaemon *self,
+	const gchar *agent_id
+){
+	ClawtAgent *agent;
+	ClawtAgentConfig *config;
+	ClawtComputer *computer;
+	ClawtComputerType type;
+	g_autoptr(GTask) task = NULL;
+	g_autoptr(GError) error = NULL;
+
+	agent = clawt_agent_manager_get(self->agents, agent_id);
+	config = clawt_config_get_agent(self->config, agent_id);
+	computer = (agent != NULL) ? clawt_agent_get_computer(agent) : NULL;
+
+	if (computer == NULL || config == NULL ||
+	    clawt_computer_get_state(computer) != CLAWT_COMPUTER_STATE_RUNNING)
+		return;
+
+	type = clawt_computer_get_computer_type(computer);
+
+	if (type != CLAWT_COMPUTER_CONTAINER && type != CLAWT_COMPUTER_DISTROBOX)
+		return;
+
+	/* The object takes the new value first, so the start after agrees. */
+	if (!clawt_computer_factory_refresh(config, computer, &error)) {
+		g_warning("agent %s: %s", agent_id, error->message);
+		return;
+	}
+
+	/*
+	 * Created under the daemon's context, though nothing reads the
+	 * answer: a task must complete on a loop somebody runs.
+	 */
+	if (self->main_context != NULL)
+		g_main_context_push_thread_default(self->main_context);
+
+	task = g_task_new(NULL, NULL, NULL, NULL);
+
+	if (self->main_context != NULL)
+		g_main_context_pop_thread_default(self->main_context);
+
+	g_task_set_task_data(task, g_object_ref(computer), g_object_unref);
+	g_task_run_in_thread(task, apply_limits_worker);
+}
+
 /*
  * Puts the sidebar in the order @entries gives.
  *
@@ -1499,6 +1591,67 @@ clawt_daemon_handle_agent(
             }
         }
 
+        /*
+         * A command run as an argv is split where it arrives, by the
+         * function that will split it when it is stored -- so a line that
+         * leans on a shell is refused with the reason, rather than saved
+         * with its pipe as an argument.
+         */
+        {
+            const ClawtSchemaEntry *entry =
+                clawt_daemon_agent_setting_entry(key);
+
+            if (entry != NULL && (entry->flags & CLAWT_SCHEMA_FLAG_ARGV)) {
+                g_auto(GStrv) words = NULL;
+                g_autoptr(GError) why = NULL;
+
+                words = clawt_command_line_split(value, &why);
+
+                if (words == NULL) {
+                    g_autofree gchar *message =
+                        g_strdup_printf("%s: %s", key, why->message);
+
+                    return clawt_ipc_error_new(
+                        request, CLAWT_ERROR_INVALID_ARGUMENT, message);
+                }
+            }
+        }
+
+        /*
+         * Limits are checked as the set they will be, with this value in
+         * place: memory_swap is only meaningful against memory, and a pair
+         * podman refuses would otherwise be saved and found at the next
+         * start as a libpod error naming no key.
+         */
+        if (clawt_daemon_is_limit_key(key)) {
+            g_autoptr(ClawtContainerLimits) limits =
+                clawt_computer_factory_limits(config);
+            g_autoptr(GError) why = NULL;
+
+            if (g_strcmp0(key, "computer.container.pids_limit") == 0) {
+                gint64 pids = 0;
+
+                if (value != NULL && *value != '\0' &&
+                    !g_ascii_string_to_signed(value, 10, G_MININT64,
+                                              G_MAXINT64, &pids, NULL))
+                    return clawt_ipc_error_new(
+                        request, CLAWT_ERROR_INVALID_ARGUMENT,
+                        "computer.container.pids_limit takes a whole "
+                        "number: 0 for podman's default, -1 for no limit");
+
+                clawt_container_limits_set_pids_limit(limits, pids);
+            } else if (g_strcmp0(key, "computer.container.memory") == 0) {
+                clawt_container_limits_set_memory(limits, value);
+            } else {
+                clawt_container_limits_set_memory_swap(limits, value);
+            }
+
+            if (!clawt_container_limits_validate(limits, &why))
+                return clawt_ipc_error_new(request,
+                                           CLAWT_ERROR_INVALID_ARGUMENT,
+                                           why->message);
+        }
+
         /* Rules are checked where they arrive, by the parser that applies them. */
         if (g_strcmp0(key, "policy.rules") == 0 && value != NULL) {
             g_auto(GStrv) parts = g_strsplit(value, ",", -1);
@@ -1650,6 +1803,15 @@ clawt_daemon_handle_agent(
 
         if (!clawt_config_save(self->config, &error))
             return clawt_ipc_error_new(request, error->code, error->message);
+
+        /*
+         * A limit changed under a running machine is applied to it now,
+         * in place, rather than at its next start -- a memory limit is
+         * usually set because something is using too much of it right
+         * now. Off this thread, because it is a podman round trip.
+         */
+        if (clawt_daemon_is_limit_key(key))
+            clawt_daemon_apply_limits_in_place(self, agent_id);
 
         /*
          * ...and the agent's own files, which are derived from what was

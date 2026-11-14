@@ -22,6 +22,9 @@ struct _ClawtDistroboxComputer {
     gboolean        share_home;
     gboolean        init;
     gboolean        keep;
+
+    /* NULL for none; see clawt_distrobox_computer_set_limits(). */
+    ClawtContainerLimits *limits;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtDistroboxComputer, clawt_distrobox_computer,
@@ -173,6 +176,48 @@ clawt_distrobox_computer_set_keep(ClawtDistroboxComputer *self, gboolean keep)
     g_return_if_fail(CLAWT_IS_DISTROBOX_COMPUTER(self));
 
     self->keep = keep;
+}
+
+void
+clawt_distrobox_computer_set_limits(ClawtDistroboxComputer     *self,
+                                    const ClawtContainerLimits *limits)
+{
+    g_return_if_fail(CLAWT_IS_DISTROBOX_COMPUTER(self));
+
+    g_clear_pointer(&self->limits, clawt_container_limits_free);
+
+    if (!clawt_container_limits_is_empty(limits))
+        self->limits = clawt_container_limits_copy(limits);
+}
+
+gchar *
+clawt_distrobox_computer_build_flags(const gchar                *flags,
+                                     const ClawtContainerLimits *limits)
+{
+    g_autoptr(GString) out = g_string_new(NULL);
+    g_auto(GStrv) options = clawt_container_limits_create_args(limits);
+    gsize i;
+
+    if (flags != NULL && *flags != '\0')
+        g_string_append(out, flags);
+
+    /*
+     * Quoted, because the module splits the string again with
+     * g_shell_parse_argv -- the same reason the volumes are.
+     */
+    for (i = 0; options != NULL && options[i] != NULL; i++) {
+        g_autofree gchar *quoted = g_shell_quote(options[i]);
+
+        if (out->len > 0)
+            g_string_append_c(out, ' ');
+
+        g_string_append(out, quoted);
+    }
+
+    if (out->len == 0)
+        return NULL;
+
+    return g_string_free(g_steal_pointer(&out), FALSE);
 }
 
 gchar *
@@ -359,8 +404,13 @@ distrobox_provision(ClawtComputer *computer, GError **error)
         g_hash_table_insert(params, g_strdup("volumes"),
                             g_strdup(volumes));
 
-    if (self->flags != NULL)
-        g_hash_table_insert(params, g_strdup("flags"), g_strdup(self->flags));
+    {
+        gchar *flags = clawt_distrobox_computer_build_flags(self->flags,
+                                                            self->limits);
+
+        if (flags != NULL)
+            g_hash_table_insert(params, g_strdup("flags"), flags);
+    }
 
     if (self->init)
         g_hash_table_insert(params, g_strdup("init"), g_strdup("true"));
@@ -376,6 +426,29 @@ distrobox_provision(ClawtComputer *computer, GError **error)
     }
 
     clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_STOPPED, NULL);
+
+    return TRUE;
+}
+
+gboolean
+clawt_distrobox_computer_apply_limits(ClawtDistroboxComputer  *self,
+                                      GError                 **error)
+{
+    gboolean changed = FALSE;
+
+    g_return_val_if_fail(CLAWT_IS_DISTROBOX_COMPUTER(self), FALSE);
+
+    if (self->limits == NULL)
+        return TRUE;
+
+    /* The local podman: distrobox has no remote connection to name. */
+    if (!clawt_container_limits_apply(self->limits, NULL, self->name,
+                                      &changed, error))
+        return FALSE;
+
+    if (changed)
+        g_message("distrobox %s: limits applied with podman update",
+                  self->name);
 
     return TRUE;
 }
@@ -401,6 +474,20 @@ distrobox_start(ClawtComputer *computer, GError **error)
      */
     if (!distrobox_provision(computer, error))
         return FALSE;
+
+    /*
+     * A box made before its limits were set, or since changed, gets them
+     * in place: distrobox has no verb for this, but a box is a podman
+     * container of the same name, and `podman update` changes it without
+     * losing what the agent installed. A freshly made box already has
+     * them from creation, so this is one inspect and no update.
+     */
+    if (!clawt_distrobox_computer_apply_limits(self, error)) {
+        clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ERROR,
+                                 (error != NULL && *error != NULL)
+                                 ? (*error)->message : NULL);
+        return FALSE;
+    }
 
     clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_STARTING, NULL);
 
@@ -671,6 +758,7 @@ clawt_distrobox_computer_finalize(GObject *object)
     g_clear_pointer(&self->home, g_free);
     g_clear_pointer(&self->packages, g_free);
     g_clear_pointer(&self->flags, g_free);
+    g_clear_pointer(&self->limits, clawt_container_limits_free);
 
     G_OBJECT_CLASS(clawt_distrobox_computer_parent_class)->finalize(object);
 }

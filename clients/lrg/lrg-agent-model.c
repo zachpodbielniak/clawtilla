@@ -236,6 +236,32 @@ clawt_lrg_agent_computer_type_choices(const gchar *current)
 }
 
 ClawtLrgAgentChoices *
+clawt_lrg_agent_computer_start_choices(const gchar *current)
+{
+    ClawtLrgAgentChoices *choices = clawt_lrg_agent_choices_new();
+    guint n = clawt_computer_start_count();
+    guint i;
+
+    /*
+     * Walked from the library with its labels, like the computer types,
+     * so a choice added there is offered here in the same words the
+     * other two clients use.
+     */
+    for (i = 0; i < n; i++)
+        clawt_lrg_agent_choices_add(choices, clawt_computer_start_nth_nick(i),
+                                    clawt_computer_start_nth_label(i));
+
+    if (current == NULL || *current == '\0') {
+        clawt_lrg_agent_choices_add(choices, "", "(follows the fleet)");
+        choices->selected = g_strdup("");
+        return choices;
+    }
+
+    choices_keep_current(choices, current, " (not a known choice)");
+    return choices;
+}
+
+ClawtLrgAgentChoices *
 clawt_lrg_agent_effort_choices(const gchar *current)
 {
     /*
@@ -753,6 +779,28 @@ clawt_lrg_agent_key_belongs_to_shared(const gchar *key, const gchar *use)
            g_strcmp0(key, "computer.use") != 0;
 }
 
+gboolean
+clawt_lrg_agent_field_applies(const gchar *key, JsonObject *agent)
+{
+    const gchar *member = NULL;
+
+    if (g_strcmp0(key, "computer.start") == 0)
+        member = "computer_start";
+    else if (g_strcmp0(key, "computer.container.pids_limit") == 0)
+        member = "container_pids_limit";
+    else if (g_strcmp0(key, "computer.container.memory") == 0)
+        member = "container_memory";
+    else if (g_strcmp0(key, "computer.container.memory_swap") == 0)
+        member = "container_memory_swap";
+    else if (g_strcmp0(key, "computer.ssh.wake_command") == 0)
+        member = "ssh_wake_command";
+
+    if (member == NULL)
+        return TRUE;
+
+    return agent != NULL && json_object_has_member(agent, member);
+}
+
 ClawtLrgAgentFieldKind
 clawt_lrg_agent_field_kind(const gchar *key, const ClawtSchemaEntry *entry)
 {
@@ -782,6 +830,17 @@ clawt_lrg_agent_field_kind(const gchar *key, const ClawtSchemaEntry *entry)
         return CLAWT_LRG_AGENT_FIELD_DISK;
     if (g_strcmp0(key, "computer.vm.resolution") == 0)
         return CLAWT_LRG_AGENT_FIELD_RESOLUTION;
+    if (g_strcmp0(key, "computer.start") == 0)
+        return CLAWT_LRG_AGENT_FIELD_COMPUTER_START;
+
+    /*
+     * A command's argv is one line, not a comma list: the daemon reports
+     * and takes it as the line that splits back into it, so an argument
+     * holding a space survives the round trip.
+     */
+    if (entry->type == CLAWT_SCHEMA_STRING_LIST &&
+        (entry->flags & CLAWT_SCHEMA_FLAG_ARGV))
+        return CLAWT_LRG_AGENT_FIELD_ENTRY;
 
     /*
      * Everything else by what the schema says it is -- a value written
@@ -884,6 +943,52 @@ group_new(const gchar *prefix)
     return group;
 }
 
+/*
+ * The computer start choice, the podman limits and the wake command,
+ * named and explained as the GTK and web clients name them.  A key
+ * spelled as a label -- "container · memory swap" -- does not say that
+ * it is memory and swap together, which is the thing people get wrong.
+ */
+static gboolean
+friendly_field(const gchar *key, gchar **label, gchar **hint)
+{
+    static const struct {
+        const gchar *key;
+        const gchar *label;
+        const gchar *hint;
+    } names[] = {
+        { "computer.start", "Start the computer",
+          "On first use leaves the machine off until the agent first runs "
+          "a command in it; the agent's own tools run on the host either "
+          "way." },
+        { "computer.container.pids_limit", "Process limit",
+          "e.g. 2048 -- empty for podman's default, -1 for no limit." },
+        { "computer.container.memory", "Memory",
+          "e.g. 512m or 4g -- empty for no limit." },
+        { "computer.container.memory_swap", "Memory + swap",
+          "Memory and swap together, e.g. 8g; equal to Memory for no swap, "
+          "-1 for unlimited swap. A change to these limits reaches a running "
+          "machine in place with podman update; nothing is rebuilt." },
+        { "computer.ssh.wake_command", "Wake command",
+          "Run when the machine does not answer, to wake it -- e.g. "
+          "wakeonlan aa:bb:cc:dd:ee:ff. A program and its arguments, not a "
+          "shell line; it gets up to 2 minutes and runs once however many "
+          "commands are waiting." }
+    };
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS(names); i++) {
+        if (g_strcmp0(names[i].key, key) != 0)
+            continue;
+
+        *label = g_strdup(names[i].label);
+        *hint = g_strdup(names[i].hint);
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
 GPtrArray *
 clawt_lrg_agent_form(JsonObject *settings)
 {
@@ -944,6 +1049,8 @@ clawt_lrg_agent_form(JsonObject *settings)
         if (g_strcmp0(key, "runtime.confine") == 0) {
             field->label = g_strdup(clawt_agent_confine_label());
             field->hint = g_strdup(clawt_agent_confine_explanation());
+        } else if (friendly_field(key, &field->label, &field->hint)) {
+            /* named for what it does, with the sentence that says how */
         } else {
             field->label = clawt_lrg_agent_key_label(key);
             field->hint = first_line(entry->doc);
@@ -1013,6 +1120,53 @@ posted_value(GPtrArray *posted, const gchar *key, gboolean *found)
     return NULL;
 }
 
+/*
+ * Puts the swap total ahead of memory when memory first would be refused.
+ *
+ * The daemon checks each limit against the others as stored, one
+ * agent.set at a time, so the pair has to pass through a valid state:
+ * raising memory past the stored swap total is refused until the swap is
+ * raised, and clearing memory under a stored swap until the swap is
+ * cleared -- while lowering both, or setting both from nothing, needs
+ * memory first, which is schema order.  Asked of the library's
+ * validator, so the plan and the daemon cannot disagree.
+ */
+static void
+order_memory_pair(GPtrArray *plan, JsonObject *settings)
+{
+    const gchar *old_memory = string_or(settings, "computer.container.memory", "");
+    const gchar *old_swap = string_or(settings, "computer.container.memory_swap", "");
+    ClawtLrgAgentSetting *memory = NULL;
+    ClawtLrgAgentSetting *swap = NULL;
+    guint memory_at = 0;
+    guint swap_at = 0;
+    guint i;
+
+    for (i = 0; i < plan->len; i++) {
+        ClawtLrgAgentSetting *setting = g_ptr_array_index(plan, i);
+
+        if (g_strcmp0(setting->key, "computer.container.memory") == 0) {
+            memory = setting;
+            memory_at = i;
+        } else if (g_strcmp0(setting->key,
+                             "computer.container.memory_swap") == 0) {
+            swap = setting;
+            swap_at = i;
+        }
+    }
+
+    if (memory == NULL || swap == NULL || swap_at < memory_at)
+        return;
+
+    if (!clawt_container_limits_swap_first(old_memory, old_swap,
+                                           memory->value, swap->value))
+        return;
+
+    /* Swapped in place: the plan owns both, so only the slots move. */
+    plan->pdata[memory_at] = swap;
+    plan->pdata[swap_at] = memory;
+}
+
 GPtrArray *
 clawt_lrg_agent_save_plan(GPtrArray *posted, JsonObject *settings)
 {
@@ -1070,6 +1224,8 @@ clawt_lrg_agent_save_plan(GPtrArray *posted, JsonObject *settings)
         g_ptr_array_add(plan, clawt_lrg_agent_setting_new(setting->key,
                                                     setting->value));
     }
+
+    order_memory_pair(plan, settings);
 
     return plan;
 }

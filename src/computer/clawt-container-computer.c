@@ -26,6 +26,9 @@ struct _ClawtContainerComputer {
     gchar          *connection;
     gchar          *command;
     gboolean        keep;
+
+    /* NULL for none; see clawt_container_computer_set_limits(). */
+    ClawtContainerLimits *limits;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtContainerComputer, clawt_container_computer,
@@ -198,6 +201,34 @@ clawt_container_computer_set_keep(ClawtContainerComputer *self, gboolean keep)
     g_return_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self));
 
     self->keep = keep;
+}
+
+void
+clawt_container_computer_set_limits(ClawtContainerComputer     *self,
+                                    const ClawtContainerLimits *limits)
+{
+    g_return_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self));
+
+    g_clear_pointer(&self->limits, clawt_container_limits_free);
+
+    if (!clawt_container_limits_is_empty(limits))
+        self->limits = clawt_container_limits_copy(limits);
+}
+
+const ClawtContainerLimits *
+clawt_container_computer_get_limits(ClawtContainerComputer *self)
+{
+    g_return_val_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self), NULL);
+
+    return self->limits;
+}
+
+const gchar *
+clawt_container_computer_get_name(ClawtContainerComputer *self)
+{
+    g_return_val_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self), NULL);
+
+    return self->name;
 }
 
 gchar *
@@ -505,6 +536,29 @@ container_reconcile(ClawtComputer *computer, GError **error)
     return TRUE;
 }
 
+gboolean
+clawt_container_computer_apply_limits(ClawtContainerComputer  *self,
+                                      GError                 **error)
+{
+    gboolean changed = FALSE;
+
+    g_return_val_if_fail(CLAWT_IS_CONTAINER_COMPUTER(self), FALSE);
+
+    if (self->limits == NULL)
+        return TRUE;
+
+    if (!clawt_container_limits_apply(self->limits, self->connection,
+                                      container_target(self), &changed,
+                                      error))
+        return FALSE;
+
+    if (changed)
+        g_message("container %s: limits applied with podman update",
+                  self->name);
+
+    return TRUE;
+}
+
 static gboolean
 container_start(ClawtComputer *computer, GError **error)
 {
@@ -524,6 +578,24 @@ container_start(ClawtComputer *computer, GError **error)
     if (clawt_computer_get_state(computer) == CLAWT_COMPUTER_STATE_ABSENT &&
         !clawt_computer_provision(computer, error))
         return FALSE;
+
+    /*
+     * The limits, before the start rather than after it, so a new
+     * container never runs a moment without them -- and on every start,
+     * so a changed limit reaches a kept container in place. Asking podman
+     * what it has first means an unchanged limit costs one inspect and
+     * no update.
+     *
+     * A failure fails the start. Somebody set a memory limit so that an
+     * agent's build could not take the desktop down; starting it without
+     * one and saying nothing would be the quiet version of exactly that.
+     */
+    if (!clawt_container_computer_apply_limits(self, error)) {
+        clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ERROR,
+                                 (error != NULL && *error != NULL)
+                                 ? (*error)->message : NULL);
+        return FALSE;
+    }
 
     clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_STARTING, NULL);
 
@@ -812,6 +884,7 @@ clawt_container_computer_finalize(GObject *object)
     g_clear_pointer(&self->container_id, g_free);
     g_clear_pointer(&self->connection, g_free);
     g_clear_pointer(&self->command, g_free);
+    g_clear_pointer(&self->limits, clawt_container_limits_free);
 
     G_OBJECT_CLASS(clawt_container_computer_parent_class)->finalize(object);
 }

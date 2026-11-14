@@ -440,6 +440,17 @@ struct _ClawtWindow {
     GtkWidget         *vm_ssh_host_row;
     GtkWidget         *vm_desktop_row;
     GtkWidget         *vm_desktop_input_row;
+    /*
+     * When the machine starts, its podman limits and an ssh machine's
+     * wake command.  Each is NULL unless the daemon reported the member
+     * behind it, and each row carries what it was opened with as
+     * "clawt-shown" so a save writes only what was changed.
+     */
+    GtkWidget         *computer_start_row;
+    GtkWidget         *container_pids_row;
+    GtkWidget         *container_memory_row;
+    GtkWidget         *container_swap_row;
+    GtkWidget         *ssh_wake_row;
     GtkWidget         *mount_source_row;
     GtkWidget         *mount_target_row;
     GtkWidget         *mount_mode_row;

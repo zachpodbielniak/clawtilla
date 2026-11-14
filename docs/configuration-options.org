@@ -3581,6 +3581,36 @@ already gone stale by omitting distrobox.
 Desktop control is not a type -- it is the desktop block below, and
 works alongside any of these.
 
+*** =agents.computer.start=
+
+- Type :: enum
+- Values :: on_agent_start, on_first_use
+- Default :: =on_agent_start=
+- Since :: 0.17.0
+
+When the machine is started: with the agent, or the first time
+something runs in it.
+
+on_agent_start brings the computer up before the agent's first turn,
+so a broken image or a dead libvirtd stops the agent at once, with the
+reason, instead of a turn later. That is the default, and what every
+agent did before this key existed.
+
+on_first_use leaves it down until the first clawtilla_computer_exec,
+`computer exec`, wait condition or desktop call. The agent's own bash,
+read and write run on the host either way, so an agent that mostly
+talks, plans or delegates never pays for a VM it does not touch.
+Callers that arrive while it is coming up share the one start, and
+the time it takes is not counted against the command's timeout.
+
+Applies to container, distrobox, vm and ssh computers; a host computer
+is a local check and always starts with the agent. A computer stopped
+by hand under a running agent is started again by its next use.
+
+An agent with a VM desktop is the exception in practice: its MCP
+client asks for the desktop when the agent starts, and that request
+is a use.
+
 *** =agents.computer.exchange=
 
 - Type :: boolean
@@ -3939,6 +3969,56 @@ Turned off, `computer stop` and `computer restart` refuse without
 `--remove`, and both graphical clients ask first: the contents are
 gone rather than offline, which is not what the word stop suggests.
 
+*** =agents.computer.container.pids_limit=
+
+- Type :: integer
+- Default :: =0=
+- Since :: 0.17.0
+
+Most processes and threads the machine may hold at once.
+
+What stops a fork bomb, or a build with -j0, taking the host down with
+it. 0 leaves podman's own default (2048 on Fedora, from
+containers.conf); -1 removes the limit. Anything else is the limit.
+
+Read by the distrobox backend too, which is a podman container
+underneath: computer.container.* limits reach either. Passed to podman
+when the machine is created; a changed value is applied to the
+existing one with `podman update` at the next start, without a
+rebuild and without losing what the agent installed.
+
+*** =agents.computer.container.memory=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.17.0
+
+Most memory the machine may use, e.g. 512m or 4g.
+
+A whole number with an optional unit -- b, k, m or g, in powers of
+1024 -- and at least 6m, which is podman's floor. Unset means no limit
+beyond the host's. Past it the kernel's OOM killer picks a process
+inside the machine, which is the point: the agent's container dies
+rather than your desktop.
+
+Applies to container and distrobox computers, at creation and then
+with `podman update` whenever it changes.
+
+*** =agents.computer.container.memory_swap=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.17.0
+
+Memory and swap together, e.g. 8g; -1 for unlimited swap.
+
+podman's own meaning, and easy to misread: this is the total, not the
+swap alone, so memory: 4g with memory_swap: 6g allows 2g of swap. Equal
+to memory means no swap at all. Unset lets podman allow as much swap
+again as memory. It needs memory to be set and must not be smaller
+than it; both are refused when they arrive rather than when podman
+reads them.
+
 ** =agents.computer.ssh=
 
 A machine reached over ssh.
@@ -4066,6 +4146,34 @@ control socket path would exceed the 108 bytes the kernel allows in a
 unix address -- an over-long path does not fail at bind time, it just
 means the master is never created and every command silently pays a
 fresh handshake.
+
+*** =agents.computer.ssh.wake_command=
+
+- Type :: list of strings
+- Default :: unset
+- Since :: 0.17.0
+
+A program to run when the machine does not answer, to wake it.
+
+For a machine that sleeps: a homelab box that suspends when idle, a
+cloud server that is paused. Wake-on-LAN is the usual answer --
+[wakeonlan, aa:bb:cc:dd:ee:ff] -- or a provider's own resume command.
+It should return once the machine is on its way up; clawtilla then
+connects as usual, and ssh's connect_timeout covers the rest of the
+boot.
+
+A program and its arguments, as a list. It is never run through a
+shell, so a pipe or a redirect would be text; written as one line in
+a client it is split into words and refused if it uses one. Nothing
+is substituted into it.
+
+Run only when a connection attempt finds nothing answering, never for
+a refused key or login. Commands that arrive while it runs wait for
+that one run rather than starting their own, and each is told how
+long it waited. It gets at most 120 seconds, after which it is killed
+along with everything it started, and the time is not taken out of
+the command's own timeout. A wake that fails is reported with the
+connection failure, saying which.
 
 ** =agents.computer.distrobox=
 

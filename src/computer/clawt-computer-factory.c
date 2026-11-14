@@ -760,12 +760,100 @@ create_for(ClawtAgentConfig  *agent_config,
         return NULL;
     }
 
+    /*
+     * The settings an existing computer can also take later, through the
+     * same function, so building one and refreshing one cannot read them
+     * differently.
+     */
+    if (computer != NULL &&
+        !clawt_computer_factory_refresh(agent_config, computer, error)) {
+        g_object_unref(computer);
+        return NULL;
+    }
+
     if (computer != NULL && users != NULL)
         apply_shared_mounts(computer, agent_config, users, default_mounts);
     else if (computer != NULL)
         apply_mounts(computer, agent_config, default_mounts);
 
     return computer;
+}
+
+ClawtContainerLimits *
+clawt_computer_factory_limits(ClawtAgentConfig *agent_config)
+{
+    ClawtContainerLimits *limits;
+
+    g_return_val_if_fail(agent_config != NULL, NULL);
+
+    limits = clawt_container_limits_new();
+
+    clawt_container_limits_set_pids_limit(
+        limits, clawt_agent_config_get_int(agent_config,
+                                           "computer.container.pids_limit"));
+    clawt_container_limits_set_memory(
+        limits, clawt_agent_config_get_string(agent_config,
+                                              "computer.container.memory"));
+    clawt_container_limits_set_memory_swap(
+        limits, clawt_agent_config_get_string(agent_config,
+                                              "computer.container.memory_swap"));
+
+    return limits;
+}
+
+gboolean
+clawt_computer_factory_refresh(ClawtAgentConfig  *agent_config,
+                               ClawtComputer     *computer,
+                               GError           **error)
+{
+    ClawtComputerType type;
+
+    g_return_val_if_fail(agent_config != NULL, FALSE);
+    g_return_val_if_fail(CLAWT_IS_COMPUTER(computer), FALSE);
+
+    type = clawt_computer_get_computer_type(computer);
+
+    /*
+     * Only where deferring means something: a host computer's start is a
+     * local check, and failing it a turn later rather than at agent start
+     * would be strictly worse.
+     */
+    clawt_computer_set_start_on_first_use(
+        computer,
+        clawt_computer_type_starts_lazily(type) &&
+        clawt_agent_config_get_enum(agent_config, "computer.start") ==
+            CLAWT_COMPUTER_START_ON_FIRST_USE);
+
+    if (type == CLAWT_COMPUTER_CONTAINER || type == CLAWT_COMPUTER_DISTROBOX) {
+        g_autoptr(ClawtContainerLimits) limits =
+            clawt_computer_factory_limits(agent_config);
+
+        /*
+         * Refused here as well as where the value arrives: a hand-edited
+         * clawtilla.yaml reaches this without passing `agent set`, and a
+         * limit podman refuses would otherwise surface as a libpod error
+         * at the start, naming no key.
+         */
+        if (!clawt_container_limits_validate(limits, error))
+            return FALSE;
+
+        if (type == CLAWT_COMPUTER_CONTAINER)
+            clawt_container_computer_set_limits(
+                CLAWT_CONTAINER_COMPUTER(computer), limits);
+        else
+            clawt_distrobox_computer_set_limits(
+                CLAWT_DISTROBOX_COMPUTER(computer), limits);
+    }
+
+    if (type == CLAWT_COMPUTER_SSH) {
+        g_auto(GStrv) wake = clawt_agent_config_get_string_list(
+            agent_config, "computer.ssh.wake_command");
+
+        clawt_ssh_computer_set_wake_command(CLAWT_SSH_COMPUTER(computer),
+                                            (const gchar * const *)wake);
+    }
+
+    return TRUE;
 }
 
 ClawtDesktop *

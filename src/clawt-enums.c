@@ -250,6 +250,28 @@ clawt_computer_type_has_machine(ClawtComputerType type)
 }
 
 gboolean
+clawt_computer_type_starts_lazily(ClawtComputerType type)
+{
+    /*
+     * Every value named, so -Wswitch makes the next backend answer this.
+     * Wrong in the permissive direction would defer a start that should
+     * have failed loudly when the agent came up.
+     */
+    switch (type) {
+    case CLAWT_COMPUTER_CONTAINER:
+    case CLAWT_COMPUTER_DISTROBOX:
+    case CLAWT_COMPUTER_VM:
+    case CLAWT_COMPUTER_SSH:
+        return TRUE;
+    case CLAWT_COMPUTER_NONE:
+    case CLAWT_COMPUTER_HOST:
+        return FALSE;
+    }
+
+    return FALSE;
+}
+
+gboolean
 clawt_computer_type_shares_host_paths(ClawtComputerType type)
 {
     /*
@@ -678,6 +700,76 @@ clawt_relabel_nth_label(guint n)
     g_return_val_if_fail(n < G_N_ELEMENTS(relabels), "Leave labels alone");
 
     return relabels[n].label;
+}
+
+/* Register ClawtComputerStart as a GLib enum type */
+GType
+clawt_computer_start_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_COMPUTER_START_ON_AGENT_START,
+              "CLAWT_COMPUTER_START_ON_AGENT_START", "on_agent_start" },
+            { CLAWT_COMPUTER_START_ON_FIRST_USE,
+              "CLAWT_COMPUTER_START_ON_FIRST_USE", "on_first_use" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id =
+            g_enum_register_static("ClawtComputerStart", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
+/*
+ * The start modes, in the order a person is offered them: the default
+ * first, so a picker that opens on the first entry opens on what an
+ * agent that says nothing gets.
+ */
+static const struct {
+    ClawtComputerStart  start;
+    const gchar        *nick;
+    const gchar        *label;
+} computer_starts[] = {
+    { CLAWT_COMPUTER_START_ON_AGENT_START, "on_agent_start",
+      "When the agent starts" },
+    { CLAWT_COMPUTER_START_ON_FIRST_USE,   "on_first_use",
+      "On first use" }
+};
+
+guint
+clawt_computer_start_count(void)
+{
+    return G_N_ELEMENTS(computer_starts);
+}
+
+ClawtComputerStart
+clawt_computer_start_nth(guint n)
+{
+    g_return_val_if_fail(n < G_N_ELEMENTS(computer_starts),
+                         CLAWT_COMPUTER_START_ON_AGENT_START);
+
+    return computer_starts[n].start;
+}
+
+const gchar *
+clawt_computer_start_nth_nick(guint n)
+{
+    g_return_val_if_fail(n < G_N_ELEMENTS(computer_starts),
+                         "on_agent_start");
+
+    return computer_starts[n].nick;
+}
+
+const gchar *
+clawt_computer_start_nth_label(guint n)
+{
+    g_return_val_if_fail(n < G_N_ELEMENTS(computer_starts),
+                         "When the agent starts");
+
+    return computer_starts[n].label;
 }
 
 /* Register ClawtMailboxState as a GLib enum type */
