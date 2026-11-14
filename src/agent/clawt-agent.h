@@ -18,6 +18,7 @@
 #endif
 
 #include <glib-object.h>
+#include <json-glib/json-glib.h>
 
 #include "clawt-enums.h"
 #include "clawt-types.h"
@@ -136,6 +137,34 @@ void              clawt_agent_set_activity(ClawtAgent  *self,
  * Returns: %TRUE while a turn is in progress
  */
 gboolean          clawt_agent_get_busy(ClawtAgent *self);
+
+/**
+ * clawt_agent_set_failover:
+ * @self: a #ClawtAgent
+ * @failover: (nullable) (transfer none): what libreclaw reported in its
+ *   last `agent.failover` frame, or %NULL when nothing is known
+ *
+ * Records which backend the agent is running on.  The object is kept as
+ * reported (`state`, `primary`, `active`, `reason`, `reset_at`,
+ * `retry_at`, `context_lost`) with `since` added, in microseconds, the
+ * first time it says `fallback`.  A report that the agent is back on its
+ * primary clears it: there is nothing left to show.
+ *
+ * State about a process, so it is cleared with the process's link -- the
+ * agent repeats it after every reconnect while it is still on a
+ * fallback, and a restarted agent starts on its primary.
+ */
+void              clawt_agent_set_failover(ClawtAgent *self,
+                                           JsonObject *failover);
+
+/**
+ * clawt_agent_get_failover:
+ * @self: a #ClawtAgent
+ *
+ * Returns: (transfer none) (nullable): the agent's failover state while
+ *   it is on a fallback, %NULL while it is on its own backend
+ */
+JsonObject       *clawt_agent_get_failover(ClawtAgent *self);
 
 /**
  * clawt_agent_get_activity_peer:

@@ -497,6 +497,41 @@ agent_validate(ClawtAgentConfig *self)
         }
     }
 
+    /*
+     * The fallbacks, for the same reason as the account above and one
+     * more: an entry that is another sign-in to the agent's own
+     * subscription would be dropped by libreclaw with a line in a log
+     * nobody reads, and the agent would run with fewer backups than its
+     * config says -- or, had libreclaw not refused it, rotate accounts
+     * past a usage limit, which breaks the provider's terms.  Neither is
+     * a thing to discover at the limit.
+     */
+    if (self->config != NULL) {
+        g_autoptr(GPtrArray) fallbacks = clawt_agent_config_get_fallbacks(self);
+        g_autoptr(GError) fallback_error = NULL;
+        YamlNode *list = node_at_path(self->node, "model.fallbacks", FALSE);
+
+        /* Half an entry is refused here, not dropped by the getter. */
+        if (list != NULL &&
+            yaml_node_get_node_type(list) == YAML_NODE_SEQUENCE &&
+            yaml_sequence_get_length(yaml_node_get_sequence(list)) !=
+                fallbacks->len) {
+            agent_mark_shadow(self, "model.fallbacks: every entry needs a "
+                              "provider and a model");
+            return;
+        }
+
+        if (!clawt_config_check_fallbacks(
+                self->config,
+                clawt_agent_config_get_string(self, "model.provider"),
+                clawt_agent_config_get_string(self, "model.account"),
+                fallbacks, &fallback_error)) {
+            agent_mark_shadow(self, "model.fallbacks: %s",
+                              fallback_error->message);
+            return;
+        }
+    }
+
     {
         g_autofree gchar *mount_error = NULL;
         g_autoptr(GPtrArray) mounts = clawt_agent_config_get_mounts(self);
@@ -1635,6 +1670,25 @@ clawt_agent_config_set_from_string(ClawtAgentConfig *self,
     schema_key = g_strdup_printf("agents.%s", key);
     entry = clawt_config_schema_lookup(schema_key);
 
+    /*
+     * The one list of mappings that has a text spelling.  Written as a
+     * scalar, `model.fallbacks` would be saved and read back as no
+     * fallbacks at all -- the same accepted-and-ignored failure the
+     * string-list branch below exists to prevent.  A value that does not
+     * parse is refused rather than half-written; `agent.set` checks it
+     * first and says why.
+     */
+    if (entry != NULL && entry->type == CLAWT_SCHEMA_LIST_OF &&
+        g_strcmp0(key, "model.fallbacks") == 0) {
+        g_autoptr(GPtrArray) fallbacks =
+            clawt_model_fallback_parse_list(value, NULL);
+
+        if (fallbacks == NULL)
+            return FALSE;
+
+        return clawt_agent_config_set_fallbacks(self, fallbacks);
+    }
+
     if (entry == NULL || entry->type != CLAWT_SCHEMA_STRING_LIST)
         return clawt_agent_config_set_string(self, key, value);
 
@@ -1847,6 +1901,181 @@ mounts_from_node(YamlNode *root, const gchar *path)
 }
 
 GPtrArray *
+clawt_agent_config_get_fallbacks(ClawtAgentConfig *self)
+{
+    GPtrArray *out;
+    YamlNode *list;
+    YamlSequence *sequence;
+    guint length;
+    guint i;
+
+    g_return_val_if_fail(self != NULL, NULL);
+
+    out = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)clawt_model_fallback_free);
+
+    list = node_at_path(self->node, "model.fallbacks", FALSE);
+    if (list == NULL || yaml_node_get_node_type(list) != YAML_NODE_SEQUENCE)
+        return out;
+
+    sequence = yaml_node_get_sequence(list);
+    length = yaml_sequence_get_length(sequence);
+
+    for (i = 0; i < length; i++) {
+        YamlNode *element = yaml_sequence_get_element(sequence, i);
+        YamlMapping *mapping;
+        const gchar *provider;
+        const gchar *model;
+
+        if (element == NULL ||
+            yaml_node_get_node_type(element) != YAML_NODE_MAPPING)
+            continue;
+
+        mapping = yaml_node_get_mapping(element);
+        provider = member_string(mapping, "provider");
+        model = member_string(mapping, "model");
+
+        if (provider == NULL || *provider == '\0' ||
+            model == NULL || *model == '\0')
+            continue;
+
+        g_ptr_array_add(out, clawt_model_fallback_new(
+            provider, model, member_string(mapping, "account")));
+    }
+
+    return out;
+}
+
+gboolean
+clawt_agent_config_set_fallbacks(ClawtAgentConfig *self,
+                                 GPtrArray        *fallbacks)
+{
+    g_autoptr(YamlNode) node = NULL;
+    YamlNode *model;
+    guint i;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    /*
+     * No entries removes the key rather than writing `fallbacks: []`:
+     * the two read the same to every getter and differently to the
+     * person who opens the file next.
+     */
+    if (fallbacks == NULL || fallbacks->len == 0) {
+        model = node_at_path(self->node, "model", FALSE);
+
+        if (model != NULL &&
+            yaml_node_get_node_type(model) == YAML_NODE_MAPPING)
+            yaml_mapping_remove_member(yaml_node_get_mapping(model),
+                                       "fallbacks");
+        return TRUE;
+    }
+
+    /* NULL, not a fresh sequence: the constructor refs its argument. */
+    node = yaml_node_new_sequence(NULL);
+
+    for (i = 0; i < fallbacks->len; i++) {
+        const ClawtModelFallback *entry = g_ptr_array_index(fallbacks, i);
+        g_autoptr(YamlMapping) mapping = yaml_mapping_new();
+        g_autoptr(YamlNode) element = NULL;
+
+        if (entry == NULL || entry->provider == NULL || entry->model == NULL)
+            continue;
+
+        yaml_mapping_set_string_member(mapping, "provider", entry->provider);
+        yaml_mapping_set_string_member(mapping, "model", entry->model);
+        if (entry->account != NULL)
+            yaml_mapping_set_string_member(mapping, "account", entry->account);
+
+        element = yaml_node_new_mapping(mapping);
+        yaml_sequence_add_element(yaml_node_get_sequence(node), element);
+    }
+
+    return set_scalar(self->node, "model.fallbacks", node,
+                      "agents.model.fallbacks");
+}
+
+gboolean
+clawt_config_check_fallbacks(ClawtConfig  *self,
+                             const gchar  *provider,
+                             const gchar  *account_id,
+                             GPtrArray    *fallbacks,
+                             GError      **error)
+{
+    g_autoptr(LcFailoverEntry) primary = NULL;
+    g_autoptr(LcFailover) failover = NULL;
+    g_autoptr(ClawtAccountSpec) own = NULL;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);
+
+    if (fallbacks == NULL || fallbacks->len == 0)
+        return TRUE;
+
+    /*
+     * The agent's own login, as libreclaw will see it.  An account that
+     * cannot be found has its own refusal elsewhere (model.account); the
+     * default login stands in here so this check says something about
+     * the fallbacks rather than repeating that one.
+     */
+    own = clawt_config_get_account(self, account_id);
+    primary = lc_failover_entry_new(provider, NULL,
+                                    own != NULL ? own->config_dir : NULL,
+                                    own != NULL && own->pay_per_use);
+    failover = lc_failover_new(primary);
+
+    for (i = 0; i < fallbacks->len; i++) {
+        const ClawtModelFallback *entry = g_ptr_array_index(fallbacks, i);
+        g_autoptr(ClawtAccountSpec) account = NULL;
+        g_autoptr(LcFailoverEntry) candidate = NULL;
+        g_autoptr(GError) why = NULL;
+        g_autofree gchar *label = clawt_model_fallback_label(entry);
+
+        /*
+         * One the agent picker would offer: libreclaw rewrites anything
+         * else to claude-code, so an entry for `openai` would quietly be
+         * another Claude Code login -- exactly the rotation refused below,
+         * reached by a typo.
+         */
+        if (clawt_model_catalog_find_provider(entry->provider) == NULL ||
+            !clawt_model_catalog_find_provider(entry->provider)->agent) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                        "fallback %s: '%s' is not a provider an agent can "
+                        "run on", label, entry->provider);
+            return FALSE;
+        }
+
+        if (entry->account != NULL) {
+            account = clawt_config_get_account(self, entry->account);
+            if (account == NULL) {
+                g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                            "fallback %s: there is no account '%s' in "
+                            "accounts:", label, entry->account);
+                return FALSE;
+            }
+            if (!clawt_account_check(account, entry->provider, &why)) {
+                g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                            "fallback %s: %s", label, why->message);
+                return FALSE;
+            }
+        }
+
+        candidate = lc_failover_entry_new(
+            entry->provider, entry->model,
+            account != NULL ? account->config_dir : NULL,
+            account != NULL && account->pay_per_use);
+
+        if (!lc_failover_add_fallback(failover, candidate, &why)) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_INVALID,
+                        "fallback %s: %s", label, why->message);
+            return FALSE;
+        }
+    }
+
+    return TRUE;
+}
+
+GPtrArray *
 clawt_agent_config_get_mounts(ClawtAgentConfig *self)
 {
     g_return_val_if_fail(self != NULL, NULL);
@@ -2021,6 +2250,14 @@ clawt_config_get_accounts(ClawtConfig *self)
         spec->provider = g_strdup(member_string(mapping, "provider"));
         spec->config_dir = expand_home(member_string(mapping, "config_dir"));
         spec->description = g_strdup(member_string(mapping, "description"));
+        {
+            YamlNode *flag = yaml_mapping_get_member(mapping, "pay_per_use");
+
+            spec->pay_per_use =
+                flag != NULL &&
+                yaml_node_get_node_type(flag) == YAML_NODE_SCALAR &&
+                yaml_node_get_boolean(flag);
+        }
         g_ptr_array_add(out, spec);
     }
 
@@ -2060,7 +2297,7 @@ clawt_config_add_account(ClawtConfig  *self,
     YamlNode *accounts_node;
     g_autoptr(YamlNode) entry = NULL;
     g_autoptr(ClawtAccountSpec) existing = NULL;
-    ClawtAccountSpec candidate = { NULL, NULL, NULL, NULL };
+    ClawtAccountSpec candidate = { NULL, NULL, NULL, NULL, FALSE };
     YamlMapping *mapping;
 
     g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);

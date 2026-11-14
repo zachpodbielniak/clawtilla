@@ -771,14 +771,16 @@ cmd_agent(int argc, char *argv[])
              * finishing its last turn and will not start another.
              */
             const gchar *work = (hold != NULL) ? hold : activity;
+            gboolean on_fallback = json_object_has_member(agent, "failover");
 
-            g_print("%-20s %-10s %-18s %-6" G_GINT64_FORMAT " %-8s %s\n",
+            g_print("%-20s %-10s %-18s %-6" G_GINT64_FORMAT " %-8s %s%s\n",
                     member_or(agent, "id", "?"),
                     member_or(agent, "state", "?"),
                     work != NULL ? work : "-",
                     json_object_get_int_member(agent, "mailbox_depth"),
                     json_object_get_boolean_member(agent, "connected")
                         ? "up" : "-",
+                    on_fallback ? "[on fallback] " : "",
                     member_or(agent, "description", ""));
         }
 
@@ -808,6 +810,25 @@ cmd_agent(int argc, char *argv[])
                 json_object_has_member(agent, "detail") ? " - " : "",
                 member_or(agent, "detail", ""));
         g_print("model:       %s\n", member_or(agent, "model", "-"));
+
+        /*
+         * Where its conversations go when its own backend refuses, and --
+         * loudly, because it changes what the agent is answering with --
+         * whether it is on one of those right now.
+         */
+        {
+            JsonObject *root = json_node_get_object(reply);
+            JsonObject *settings = json_object_has_member(root, "settings")
+                ? json_object_get_object_member(root, "settings") : NULL;
+            const gchar *fallbacks = settings != NULL
+                ? member_or(settings, "model.fallbacks", "") : "";
+
+            if (*fallbacks != '\0')
+                g_print("fallbacks:   %s\n", fallbacks);
+            if (json_object_has_member(agent, "failover_message"))
+                g_print("failover:    %s\n",
+                        member_or(agent, "failover_message", ""));
+        }
 
         /* Only container agents have one, so only they report one. */
         if (json_object_has_member(agent, "image"))

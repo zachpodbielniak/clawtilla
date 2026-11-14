@@ -8678,6 +8678,198 @@ on_kind_event(ClawtEventBus *bus, ClawtEvent *event, gpointer data)
 }
 
 /*
+ * The agent says it is on a fallback: the daemon keeps that on the agent
+ * so status shows it, publishes agent.failover as a notice with the
+ * sentence the alert carries, and lets go of it when the agent says it is
+ * back -- and when its link goes, since the state is the process's.
+ */
+static void
+send_agent_frame(GSocketConnection *link, const gchar *frame)
+{
+    g_autoptr(GError) error = NULL;
+
+    g_assert_true(g_output_stream_write_all(
+        g_io_stream_get_output_stream(G_IO_STREAM(link)),
+        frame, strlen(frame), NULL, NULL, &error));
+    g_assert_no_error(error);
+}
+
+static void
+pump_until_seen(Fixture *fixture, KindCount *count, guint wanted)
+{
+    guint spun;
+
+    for (spun = 0; spun < 1000 && count->seen < wanted; spun++) {
+        g_main_context_iteration(fixture->context, FALSE);
+        g_usleep(1000);
+    }
+    g_assert_cmpuint(count->seen, ==, wanted);
+}
+
+static void
+test_an_agent_on_a_fallback_is_shown_and_announced(void)
+{
+    Fixture fixture = { 0 };
+    g_autofree gchar *fake = g_build_filename(CLAWT_TEST_FIXTURES,
+                                              "fake-libreclaw", NULL);
+    g_autofree gchar *extra = NULL;
+    g_autoptr(GSocketConnection) link = NULL;
+    g_autoptr(JsonNode) away = NULL;
+    g_autoptr(JsonNode) home = NULL;
+    KindCount failovers = { "agent.failover", 0, CLAWT_ALERT_ROUTINE };
+    JsonObject *agent_json;
+    JsonObject *failover;
+    ClawtAgent *agent;
+    guint spun;
+
+    if (!g_file_test(fake, G_FILE_TEST_IS_EXECUTABLE)) {
+        g_test_skip("the fake libreclaw fixture is not executable");
+        return;
+    }
+
+    extra = g_strdup_printf(
+        "  libreclaw_binary: \"%s\"\n"
+        "agents:\n"
+        "  - id: scout\n"
+        "    name: Scout\n"
+        "    enabled: true\n"
+        "    env:\n"
+        "      FAKE_LIBRECLAW_SLEEP: \"30\"\n"
+        "    computer:\n"
+        "      type: none\n", fake);
+
+    fixture_setup(&fixture, extra);
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+    g_signal_connect(clawt_daemon_get_event_bus(fixture.daemon), "event",
+                     G_CALLBACK(on_kind_event), &failovers);
+    link = run_one_agent(&fixture, "scout");
+    agent = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                    "scout");
+
+    send_agent_frame(link,
+        "{\"v\":1,\"kind\":\"agent.failover\",\"payload\":{"
+        "\"state\":\"fallback\","
+        "\"primary\":{\"provider\":\"claude-code\",\"model\":\"opus\"},"
+        "\"active\":{\"provider\":\"codex-cli\",\"model\":\"gpt-5.5\","
+        "\"index\":1},\"reason\":\"usage-limit\",\"reset_at\":0,"
+        "\"retry_at\":0,\"context_lost\":true}}\n");
+    pump_until_seen(&fixture, &failovers, 1);
+    g_assert_cmpint(failovers.tier, ==, CLAWT_ALERT_NOTICE);
+    g_assert_nonnull(clawt_agent_get_failover(agent));
+
+    away = request(&fixture, "agent.show", "{\"agent\":\"scout\"}");
+    agent_json = payload_of(away);
+    if (json_object_has_member(agent_json, "agent"))
+        agent_json = json_object_get_object_member(agent_json, "agent");
+    g_assert_true(json_object_has_member(agent_json, "failover"));
+    failover = json_object_get_object_member(agent_json, "failover");
+    g_assert_cmpstr(json_object_get_string_member(failover, "state"), ==,
+                    "fallback");
+    g_assert_cmpint(json_object_get_int_member(failover, "since"), >, 0);
+    g_assert_nonnull(strstr(
+        json_object_get_string_member(agent_json, "failover_message"),
+        "Scout is running on fallback codex-cli gpt-5.5 because "
+        "claude-code opus hit its usage limit"));
+
+    /* Back on its own backend: routine, and nothing left to show. */
+    send_agent_frame(link,
+        "{\"v\":1,\"kind\":\"agent.failover\",\"payload\":{"
+        "\"state\":\"primary\","
+        "\"primary\":{\"provider\":\"claude-code\",\"model\":\"opus\"},"
+        "\"active\":{\"provider\":\"claude-code\",\"model\":\"opus\","
+        "\"index\":0},\"reason\":\"none\"}}\n");
+    pump_until_seen(&fixture, &failovers, 2);
+    g_assert_cmpint(failovers.tier, ==, CLAWT_ALERT_ROUTINE);
+    g_assert_null(clawt_agent_get_failover(agent));
+
+    home = request(&fixture, "agent.show", "{\"agent\":\"scout\"}");
+    agent_json = payload_of(home);
+    if (json_object_has_member(agent_json, "agent"))
+        agent_json = json_object_get_object_member(agent_json, "agent");
+    g_assert_false(json_object_has_member(agent_json, "failover"));
+
+    /* Away again, then the link goes: the state goes with it. */
+    send_agent_frame(link,
+        "{\"v\":1,\"kind\":\"agent.failover\",\"payload\":{"
+        "\"state\":\"fallback\",\"reason\":\"rate-limit\"}}\n");
+    pump_until_seen(&fixture, &failovers, 3);
+    g_assert_nonnull(clawt_agent_get_failover(agent));
+
+    g_io_stream_close(G_IO_STREAM(link), NULL, NULL);
+    for (spun = 0; spun < 1000 && clawt_agent_get_failover(agent) != NULL;
+         spun++) {
+        g_main_context_iteration(fixture.context, FALSE);
+        g_usleep(1000);
+    }
+    g_assert_null(clawt_agent_get_failover(agent));
+
+    g_signal_handlers_disconnect_by_data(
+        clawt_daemon_get_event_bus(fixture.daemon), &failovers);
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A fallback list is checked where it arrives.  Another sign-in to the
+ * agent's own subscription is refused with the reason and nothing is
+ * written; a provider change that would make the current list such a
+ * rotation is refused too; a good list is saved and read back in the
+ * spelling the clients send.
+ */
+static void
+test_fallbacks_are_checked_where_they_arrive(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) rotated = NULL;
+    g_autoptr(JsonNode) accepted = NULL;
+    g_autoptr(JsonNode) shown = NULL;
+    g_autoptr(JsonNode) moved = NULL;
+    JsonObject *settings;
+
+    fixture_setup(&fixture,
+                  "accounts:\n"
+                  "  - id: other\n"
+                  "    provider: codex-cli\n"
+                  "    config_dir: /acct/codex-other\n"
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "    model:\n"
+                  "      provider: claude-code\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    rotated = request(&fixture, "agent.set",
+                      "{\"agent\":\"chief\",\"key\":\"model.fallbacks\","
+                      "\"value\":\"codex-cli:gpt-5.5, "
+                      "codex-cli:gpt-5.5@other\"}");
+    g_assert_true(clawt_ipc_frame_is_error(rotated));
+    g_assert_nonnull(strstr(json_object_get_string_member(
+                                json_node_get_object(rotated), "error"),
+                            "same codex-cli subscription"));
+
+    accepted = request(&fixture, "agent.set",
+                       "{\"agent\":\"chief\",\"key\":\"model.fallbacks\","
+                       "\"value\":\"codex-cli:gpt-5.5@other, "
+                       "claude-code:sonnet\"}");
+    g_assert_false(clawt_ipc_frame_is_error(accepted));
+
+    shown = request(&fixture, "agent.show", "{\"agent\":\"chief\"}");
+    settings = json_object_get_object_member(payload_of(shown), "settings");
+    g_assert_cmpstr(json_object_get_string_member(settings, "model.fallbacks"),
+                    ==, "codex-cli:gpt-5.5@other, claude-code:sonnet");
+
+    /* Moving the agent onto codex's default login would make @other a
+     * second codex sign-in in its own list. */
+    moved = request(&fixture, "agent.set",
+                    "{\"agent\":\"chief\",\"key\":\"model.provider\","
+                    "\"value\":\"codex-cli\"}");
+    g_assert_true(clawt_ipc_frame_is_error(moved));
+    g_assert_nonnull(strstr(json_object_get_string_member(
+                                json_node_get_object(moved), "error"),
+                            "change model.fallbacks first"));
+
+    fixture_teardown(&fixture);
+}
+
+/*
  * An agent idle longer than agents.runtime.idle_stop_hours is stopped,
  * and the next message queued for it starts it again: sleeping loses no
  * conversation.  The clock is moved by back-dating the start the daemon
@@ -10787,6 +10979,10 @@ main(int argc, char *argv[])
 
     g_test_add_func("/daemon/usage/fleet-page-summary",
                     test_usage_summary_for_the_fleet_page);
+    g_test_add_func("/daemon/failover/shown-and-announced",
+                    test_an_agent_on_a_fallback_is_shown_and_announced);
+    g_test_add_func("/daemon/failover/checked-where-they-arrive",
+                    test_fallbacks_are_checked_where_they_arrive);
     g_test_add_func("/daemon/idle/sleeps-and-wakes",
                     test_an_idle_agent_sleeps_and_a_message_wakes_it);
     g_test_add_func("/daemon/idle/a-reached-cap-is-a-notice",

@@ -346,6 +346,18 @@ clawt_alert_tier_for_event(ClawtEvent *event)
     if (g_strcmp0(kind, "agent.identity") == 0)
         return CLAWT_ALERT_NOTICE;
 
+    /*
+     * An agent on a fallback backend.  A notice: nothing is broken and
+     * the agent still answers, but it answers on another model -- maybe
+     * another CLI with none of the conversation -- and it arrived while
+     * nobody was watching.  The return is routine: it ends a condition
+     * somebody was already told about.
+     */
+    if (g_strcmp0(kind, "agent.failover") == 0)
+        return (g_strcmp0(clawt_event_get_detail(event, "state"),
+                          "fallback") == 0)
+                   ? CLAWT_ALERT_NOTICE : CLAWT_ALERT_ROUTINE;
+
     if (g_strcmp0(kind, "agent.state") == 0) {
         const gchar *state = clawt_event_get_detail(event, "state");
 
