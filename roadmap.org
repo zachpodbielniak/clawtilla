@@ -4,7 +4,7 @@
 #+categories: software planning
 #+created: [2026-11-14 Sat]
 #+updated: [2026-11-14 Sat]
-#+version: 0.2.0
+#+version: 0.3.0
 
 * About this file
 
@@ -324,6 +324,74 @@ Their contract is a tri-state, and the third state is the important one. =refuse
 - *Clients:* a steered message is drawn in the chat as steered, not as queued, in all three clients (=make parity=).
 - *Docs:* =docs/orchestration.org= and =docs/mailboxes.org= in the same change. Amend =AGENTS.md='s "It runs one turn per message" note to name the steered exception; the rest of it stays true.
 - *Version:* minor (IPC frame, config key, libreclaw pin).
+
+* Apps and tools at scale
+
+OpenMausBot's "500+ apps" are Composio (=docs/composio.md=): a Composio project key, with OAuth and tool execution on Composio's servers. Its SDKs are MIT, but the backend that holds the credentials is proprietary and self-hosting it needs an enterprise licence. That rules it out here. clawtilla already imports the open MCP registry (=connectors.registry_enabled=, =docs/connectors.org=, "The open MCP registry"), which lists far more than 500 servers. What it lacks is what makes that many tools *usable*: a context budget for them, and a self-hosted source of ready-made app integrations.
+
+** TODO P1 A tool directory for servers with too many tools                                         :mcp:spending:
+- *Today:* every tool of every connector an agent may use goes to the CLI, and every tool's description is in every model call. =src/mcp/clawt-mcp-relay.c= passes =tools/list= through filtered by permission, never shortened.
+- *Prior art:* =server/mcp-directory.ts= and =docs/custom-mcp-servers.md= ("Servers with hundreds of tools"). A server counts as big at more than 40 tools or about 100,000 characters of descriptions, which is roughly where Claude Code starts searching tools by itself. A big server appears as three tools: =search_tools= (which also says what the server covers, area by area), =describe_tool= (one tool's exact inputs) and =call_tool=. Per-bot tool selection still applies, and an approval card names the tool being run, never the search. One measured server had 425 tools. API-model engines stop at 128 tools a turn, so OpenMausBot also lists as many whole servers as fit and reaches the rest through one shared search.
+- *Proposal:* do it in the relay, per connector, for CLIs that do not search tools themselves. ai-glib's =AiCliClientClass= gets a class datum such as =searches_tools=, so the decision is asked of the provider and not kept in a table here. Thresholds are schema keys (=connectors.directory_min_tools=, =connectors.directory_min_chars=). The search runs over the already-permitted tool list, so a tool an agent may not use cannot be found either. That is the "a wall built without the door" rule: the predicate and the builder answer from one list. Policy asks and decisions name the inner tool.
+- *Also:* the TOOLS.org managed region must describe a directory server as "search it" rather than enumerating hundreds of tools, or the region becomes the context problem it was meant to describe.
+- *Version:* minor.
+
+** TODO P2 An app source: AnythingMCP as a connector pack                                           :connectors:
+The comparison, checked against each project's own README and docs on 2026-11-14:
+
+| | Activepieces | AnythingMCP | Jentic One |
+|---+---+---+---|
+| What it is | Workflow automation (an open Zapier) whose "pieces" are also MCP tools | An MCP gateway: REST, OpenAPI, SOAP, GraphQL, OData, SQL and IMAP/SMTP turned into MCP tools | A credential broker: agents call APIs through it and never hold a key |
+| Licence | MIT community edition; =packages/ee/= is commercial | AGPL-3.0; =ee/= is commercial and "not required to run the gateway" | Apache-2.0, nothing held back that the README names |
+| Catalogue | 280+ pieces as MCP (760+ pieces total, by their count) | 600-757 declarative adapters, 12,000+ tools (their figures disagree with each other) | the Jentic public API directory (OpenAPI specs plus Arazzo workflows); size not stated in the repo |
+| Connector format | npm packages in TypeScript | *one JSON file per adapter*, with response mapping that drops fields before the model sees them | OpenAPI documents |
+| Agents connect by | one MCP server per project | one MCP URL per server, exposing only the connectors assigned to it, narrowed per tool by role | the =jentic= CLI, a generated skill, an MCP server, or plain HTTP |
+| OAuth on a self-hosted install | uses *Activepieces'* OAuth apps by default; your own client id per piece is "a paid feature" (=docs/admin-guide/guides/manage-oauth2=) | OAuth2 PKCE and client credentials, Bearer, API key, Basic, HMAC, OAuth 1.0a, all in the community edition, with your own client | not described; storing and injecting keys is |
+| Limits | enterprise features unlisted on the README | community edition: 3 active users; SSO, SCIM, company memory and Code Mode writes are enterprise | public beta, 0.x, "schemas and CLI commands can change"; telemetry on by default, opt-out |
+| Runs on | Postgres or SQLite, Docker | Docker Compose with Caddy; *image is amd64 only* | Python, Postgres or SQLite, one Docker image, also systemd |
+| Maturity | ~25.5k stars, 62k commits | ~790 stars, 1.7k commits | ~220 stars, 1.4k commits |
+
+*Recommendation: AnythingMCP.*
+- *Licence:* it is AGPL-3.0, the licence clawtilla itself uses.
+- *OAuth:* the community edition runs OAuth with your own client and nobody else's identity. That is the dealbreaker for Activepieces. A self-hosted Activepieces connects your Google or Slack as "Activepieces" unless you pay, which defeats self-hosting for exactly the apps people want most.
+- *Adapter format:* an adapter is one JSON file, the same declarative idea as =connectors.d/=, so a service is added by a file and not a build.
+- *Context:* response mapping shrinks payloads before the model sees them (their example: 12 KB to 1 KB), which is the MCP result-budget item above, done at the source.
+- *Enterprise features:* the ones it holds back (memory, SSO, more than three users) are things clawtilla does itself or a single operator does not need.
+- *Against it:*
+  - A young project.
+  - Connector counts its own pages disagree about, and some adapters it marks as "not yet exercised" against live systems.
+  - The image is amd64 only, so on the Asahi machines it must be built from its Dockerfile. Check that before relying on it.
+  - It holds the SaaS credentials itself, a second credential store beside clawtilla's. Only the gateway's token is clawtilla's to hold.
+
+*Activepieces* is the most mature and has the biggest community. Use it only for its API-key pieces, or if workflows rather than tools are what is wanted. Its OAuth position rules it out as the general answer.
+
+*Jentic One* has the security model closest to clawtilla's own: the broker checks a rule, then injects the credential after the check, and records every call. But it is a beta whose catalogue is raw API operations rather than curated apps, and it says nothing yet about OAuth for SaaS. Watch it. Read its broker as prior art for the P0 egress gate and provider-key broker, which solve the same problem one layer down.
+
+*The work:*
+- *Connector pack:* =data/connectors.d/anythingmcp.yaml=, an =api-key= or =bearer= connector whose =server_url= is the gateway's MCP URL, with the gateway token held by clawtilla like any connector credential.
+- *Docs:* =docs/connectors.org= gains a section on running it with podman (a =Containerfile= or quadlet, never a docker command), on building the image for aarch64, and on scoping: one gateway MCP server per clawtilla agent or team, so the gateway's own per-server assignment *is* the agent's permission, and the two cannot disagree.
+- *Depends on:* the tool directory above, because one gateway server with dozens of adapters is exactly the many-tools case.
+- *Later, only if the gateway earns it:* clawtilla could read AnythingMCP's adapter JSON directly. The licences match, but that would mean implementing its REST mapping in C. Run the gateway first.
+- *Version:* none for the pack and docs. A minor bump if the connector catalogue grows a gateway type.
+
+** TODO P2 Several accounts on one service: make the agent choose                                   :connectors:
+- *Today:* =clawtilla connector add gh --provider github --account work= allows several accounts per service. Whether an agent granted two of them is made to say which one, or silently gets the first, is not verified.
+- *Prior art:* =docs/composio.md=. Every new account must carry a unique label. Explicit selection is required whenever more than one account could run a tool, and a new OAuth flow never silently becomes the default for an existing connection. "Disconnect" revokes only the account on that row.
+- *Proposal:* check first. If an agent with two GitHub connectors gets two identically named tool sets, or one shadowing the other, the relay prefixes each set with its account label. A tool whose name collides across accounts is refused rather than routed to whichever was registered first. Test it with two accounts on one service, because "a test with one key cannot see a shared-scalar bug".
+- *Version:* micro.
+
+** TODO P3 Apprise as a notifier backend                                                            :integrations:
+- *Today:* notifiers include ntfy (=docs/integrations.org=). Each new service is code.
+- *Proposal:* an =apprise= notifier type that hands the message to the =apprise= CLI (BSD-2-Clause, 100+ services from Matrix and email to Gotify and SMS through one URL scheme). The URL is a secret, because it often embeds a token: a 0600 file, passed by path or on stdin, never on argv (the =ClawtConnectorPlan= negative assertion applies). Quiet hours and the event filter work as for any notifier.
+- *Packages:* =apprise= on Fedora, Debian and Arch alike, as a runtime row in =tools/clawt-install-deps.sh= and =docs/getting-started.org=.
+- *Not from OpenMausBot:* this one is ours, raised while reading about Composio.
+- *Version:* minor (a notifier type is a config value).
+
+** TODO P3 MCP apps shown in chat                                                                    :clients:mcp:
+- *Prior art:* =server/chat-apps.ts=, =docs/superpowers/specs/2026-10-14-chat-apps-design.md=, =2026-11-01-mcp-in-chat-design.md=. An MCP server that ships an interactive UI resource gets it drawn in the conversation, switchable per server ("Show its apps in chat").
+- *For clawtilla:* the web client can host such a resource in a sandboxed iframe. GTK and lrg have no HTML engine, so parity means either a link out from both or no feature. That is why it is P3.
+- *Rules that apply:* the web client fetches nothing at page load, so a resource is fetched when somebody opens it. The iframe gets no same-origin access to the client.
+- *Version:* minor (all three clients, or a recorded parity exception).
 
 * Audits -- bug classes they hit that may be here
 
