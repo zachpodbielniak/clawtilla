@@ -922,7 +922,7 @@ How it is cut, in ~clawt_mcp_result_trim()~:
 - *Prose is cut on a boundary.*  ~clawt_mcp_result_safe_cut()~ never lands inside a UTF-8 sequence, inside a JSON ~\uXXXX~ escape, after a lone backslash, or between the two halves of an escaped surrogate pair -- half an emoji is an invalid string some providers refuse outright.  A run of backslashes is counted, so ~\\u~ is a backslash and a ~u~.
 - *~structuredContent~ is trimmed too*, structurally, so the provider is not handed a second full copy of what the text half was cut from.  The two halves share the budget: one that fits in half keeps its size and the other gets the rest.
 - *An image, an audio clip or a blob is never cut* -- half of one is garbage.  It stays when it fits and is otherwise replaced by a sentence saying where it is in the held result (~.content[2]~).
-- *The server's text is escaped* with ~clawt_preamble_escape()~ in a trimmed result, so a line in it that starts ~[clawtilla]~ reads ~[not from clawtilla]~ and cannot pass for one of the two notes.
+- *The server's text is escaped* with ~clawt_preamble_escape_all()~ in a trimmed result and every query answer, so a ~[clawtilla]~ anywhere in it reads ~[not from clawtilla]~ and cannot pass for one of the two notes.
 
 The notes come on top of the budget: the budget is what the server's own content may cost.  A result within the budget is passed through byte for byte, notes and all absent.
 

@@ -300,6 +300,7 @@ clawt_mcp_result_write_meta(
 	g_autoptr(JsonGenerator) generator = json_generator_new();
 	g_autofree gchar *path = meta_path(dir, id);
 	g_autofree gchar *text = NULL;
+	g_autoptr(JsonNode) root = NULL;
 
 	if (path == NULL) {
 		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
@@ -327,7 +328,8 @@ clawt_mcp_result_write_meta(
 	json_builder_add_int_value(builder, g_get_real_time() / G_USEC_PER_SEC);
 	json_builder_end_object(builder);
 
-	json_generator_set_root(generator, json_builder_get_root(builder));
+	root = json_builder_get_root(builder);
+	json_generator_set_root(generator, root);
 	text = json_generator_to_data(generator, NULL);
 
 	return clawt_write_file_atomic(path, text, -1, 0600, FALSE, error);
@@ -941,7 +943,7 @@ fit_block(Trim *trim, JsonNode *block, gsize share, guint index)
 			trim, json_object_get_string_member_with_default(object, "text",
 			                                                 ""),
 			share, text_path);
-		g_autofree gchar *escaped = clawt_preamble_escape(fitted);
+		g_autofree gchar *escaped = clawt_preamble_escape_all(fitted);
 
 		return text_block(escaped);
 	}
@@ -960,7 +962,7 @@ fit_block(Trim *trim, JsonNode *block, gsize share, guint index)
 				json_object_get_string_member_with_default(resource, "text",
 				                                           ""),
 				share, text_path);
-			g_autofree gchar *escaped = clawt_preamble_escape(fitted);
+			g_autofree gchar *escaped = clawt_preamble_escape_all(fitted);
 			JsonObject *outer = object_clone(object);
 			JsonObject *inner = object_clone(resource);
 			JsonNode *copy = json_node_new(JSON_NODE_OBJECT);
@@ -1263,7 +1265,7 @@ clawt_mcp_result_oversized_reply(
 		shown = valid;
 	}
 
-	escaped = clawt_preamble_escape(shown);
+	escaped = clawt_preamble_escape_all(shown);
 	kept_text = format_count(cut);
 
 	header = g_strdup_printf(
@@ -1681,7 +1683,7 @@ slice_text(const gchar *text, gsize length, gsize start, gsize end,
 static void
 append_quoted(GString *out, const gchar *text)
 {
-	g_autofree gchar *escaped = clawt_preamble_escape(text);
+	g_autofree gchar *escaped = clawt_preamble_escape_all(text);
 
 	g_string_append(out, escaped);
 }

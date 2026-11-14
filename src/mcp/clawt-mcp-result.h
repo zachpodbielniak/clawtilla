@@ -284,7 +284,7 @@ guint clawt_mcp_result_sweep(const gchar *dir,
  * cannot be cut -- an image, a blob -- is kept if it fits and otherwise
  * replaced by a sentence saying where it is in the held result.  A
  * `[clawtilla]` note goes first and last; the server's own text is
- * escaped with clawt_preamble_escape() so it cannot forge one.  The
+ * escaped with clawt_preamble_escape_all() so it cannot forge one.  The
  * notes come on top of @budget.
  *
  * Returns: (transfer full) (nullable): the trimmed result, or %NULL when

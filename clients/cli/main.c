@@ -6031,7 +6031,7 @@ connector_app_seen(JsonObject *report, gpointer user_data)
     g_autoptr(ClawtClient) client = NULL;
     g_autoptr(JsonNode) ignored = NULL;
     g_autoptr(JsonObject) payload = NULL;
-    g_autoptr(JsonNode) node = NULL;
+    JsonNode *node;
     g_autoptr(GError) error = NULL;
     const gchar *room = g_getenv("CLAWTILLA_ROOM_ID");
 
@@ -6046,6 +6046,7 @@ connector_app_seen(JsonObject *report, gpointer user_data)
 
     json_object_set_object_member(payload, "app", json_object_ref(report));
 
+    /* The request takes the node: transfer full. */
     node = json_node_new(JSON_NODE_OBJECT);
     json_node_set_object(node, payload);
 
