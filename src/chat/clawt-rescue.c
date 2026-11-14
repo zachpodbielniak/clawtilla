@@ -110,8 +110,8 @@ GPtrArray *
 clawt_rescue_watch_collect_due(
 	ClawtRescueWatch *self,
 	gint64            now_usec,
-	guint           (*seconds_for)(const gchar *agent_id, gpointer data),
-	gpointer          user_data
+	ClawtRescueAllowanceFunc  seconds_for,
+	gpointer                  user_data
 ){
 	GPtrArray *due;
 	GHashTableIter iter;

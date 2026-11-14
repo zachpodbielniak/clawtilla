@@ -277,7 +277,9 @@ test_a_replacing_add_is_not_undoable(
 
 	store_setup(&fixture);
 
+	g_free(first->id);
 	first->id = g_strdup("mem-fixed");
+	g_free(second->id);
 	second->id = g_strdup("mem-fixed");
 	a = clawt_memory_store_add(fixture.store, first, NULL);
 	b = clawt_memory_store_add(fixture.store, second, NULL);

@@ -100,11 +100,23 @@ clawt_rescue_watch_note_life(
 );
 
 /**
+ * ClawtRescueAllowanceFunc:
+ * @agent_id: whose turn
+ * @user_data: what was passed with the function
+ *
+ * How long @agent_id's turns may show nothing before they are offered.
+ *
+ * Returns: seconds; 0 means never
+ */
+typedef guint (*ClawtRescueAllowanceFunc)(const gchar *agent_id,
+                                          gpointer     user_data);
+
+/**
  * clawt_rescue_watch_collect_due:
  * @self: a #ClawtRescueWatch
  * @now_usec: monotonic microseconds
- * @seconds_for: (scope call): how long @agent_id's turns may be silent
- *   before they are offered; 0 means never
+ * @seconds_for: (scope call) (closure user_data): how long each agent's
+ *   turns may be silent before they are offered
  * @user_data: for @seconds_for
  *
  * The turns silent for their agent's whole allowance and not yet
@@ -117,8 +129,8 @@ GPtrArray *
 clawt_rescue_watch_collect_due(
 	ClawtRescueWatch *self,
 	gint64            now_usec,
-	guint           (*seconds_for)(const gchar *agent_id, gpointer data),
-	gpointer          user_data
+	ClawtRescueAllowanceFunc  seconds_for,
+	gpointer                  user_data
 );
 
 /**
