@@ -445,6 +445,28 @@ clawt_agent_confine_build(ClawtAgentConfig     *config,
     grant(sandbox, state_dir, TRUE);
 
     /*
+     * The agent's own key to the integration broker, read-only, and
+     * nothing else of <state_dir>/broker.  Its connector's relay runs in
+     * here, started by the agent's CLI, and reads the key itself; the
+     * gateway's database and the key that decrypts every SaaS credential
+     * stay outside, which is the isolation Jentic One's documentation
+     * asks for.  Answered by the same function that made the connector,
+     * so the box and the connector cannot disagree about the path.
+     */
+    {
+        ClawtConfig *fleet = clawt_agent_config_get_config(config);
+        g_autoptr(ClawtBrokerAssignment) assignment = NULL;
+
+        if (fleet != NULL)
+            assignment = clawt_broker_assignment_for_agent(
+                fleet, clawt_agent_config_get_id(config));
+
+        if (assignment != NULL &&
+            g_file_test(assignment->key_file, G_FILE_TEST_IS_REGULAR))
+            grant(sandbox, assignment->key_file, FALSE);
+    }
+
+    /*
      * The mounts the agent is told about, at their host spelling --
      * because its own tools run here and read the host path, which is
      * what clawt_computer_describe_mounts() tells it.  In the mode they

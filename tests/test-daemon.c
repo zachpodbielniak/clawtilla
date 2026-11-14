@@ -9493,6 +9493,33 @@ test_an_agent_on_a_fallback_is_shown_and_announced(void)
         "Scout is running on fallback codex-cli gpt-5.5 because "
         "claude-code opus hit its usage limit"));
 
+    /*
+     * And on the Fleet page's read, which is usage.summary rather than
+     * agent.list -- the badge had nothing to draw from there.
+     */
+    {
+        g_autoptr(JsonNode) usage = request(&fixture, "usage.summary", "{}");
+        JsonArray *rows = json_object_get_array_member(payload_of(usage),
+                                                       "agents");
+        JsonObject *row = NULL;
+        guint r;
+
+        for (r = 0; rows != NULL && r < json_array_get_length(rows); r++)
+            if (g_strcmp0(json_object_get_string_member(
+                              json_array_get_object_element(rows, r), "id"),
+                          "scout") == 0)
+                row = json_array_get_object_element(rows, r);
+
+        g_assert_nonnull(row);
+        g_assert_true(json_object_has_member(row, "failover"));
+        g_assert_cmpstr(json_object_get_string_member(
+                            json_object_get_object_member(row, "failover"),
+                            "state"), ==, "fallback");
+        g_assert_nonnull(strstr(
+            json_object_get_string_member(row, "failover_message"),
+            "Scout is running on fallback codex-cli gpt-5.5"));
+    }
+
     /* Back on its own backend: routine, and nothing left to show. */
     send_agent_frame(link,
         "{\"v\":1,\"kind\":\"agent.failover\",\"payload\":{"
@@ -9509,6 +9536,16 @@ test_an_agent_on_a_fallback_is_shown_and_announced(void)
     if (json_object_has_member(agent_json, "agent"))
         agent_json = json_object_get_object_member(agent_json, "agent");
     g_assert_false(json_object_has_member(agent_json, "failover"));
+    {
+        g_autoptr(JsonNode) usage = request(&fixture, "usage.summary", "{}");
+        JsonArray *rows = json_object_get_array_member(payload_of(usage),
+                                                       "agents");
+        guint r;
+
+        for (r = 0; rows != NULL && r < json_array_get_length(rows); r++)
+            g_assert_false(json_object_has_member(
+                json_array_get_object_element(rows, r), "failover"));
+    }
 
     /* Away again, then the link goes: the state goes with it. */
     send_agent_frame(link,

@@ -600,6 +600,143 @@ on_directory_threshold_changed(AdwSpinRow *row, GParamSpec *pspec,
     (void)row;
 }
 
+/* ── The integration broker ──────────────────────────────────────── */
+
+/*
+ * Start, stop and restart answer at once with the new status -- the work
+ * is the daemon's, in the background -- so the row redraws from the
+ * reply and again from each broker.changed as the broker moves.
+ */
+static void
+on_broker_action(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *kind = g_object_get_data(G_OBJECT(button), "broker-kind");
+    g_autoptr(JsonNode) reply = NULL;
+
+    if (kind == NULL)
+        return;
+
+    reply = clawt_window_request(self, kind, NULL);
+    clawt_gtk_refresh_settings_connectors(self);
+}
+
+static void
+on_broker_dashboard(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *url = g_object_get_data(G_OBJECT(button), "dashboard_url");
+    g_autoptr(GtkUriLauncher) launcher = NULL;
+
+    if (url == NULL)
+        return;
+
+    launcher = gtk_uri_launcher_new(url);
+    gtk_uri_launcher_launch(launcher, GTK_WINDOW(self), NULL, NULL, NULL);
+}
+
+static GtkWidget *
+broker_button(ClawtWindow *self, const gchar *icon, const gchar *tooltip,
+              const gchar *kind)
+{
+    GtkWidget *button = gtk_button_new_from_icon_name(icon);
+
+    gtk_widget_set_tooltip_text(button, tooltip);
+    gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
+    gtk_widget_add_css_class(button, "flat");
+
+    if (kind != NULL) {
+        g_object_set_data(G_OBJECT(button), "broker-kind", (gpointer)kind);
+        g_signal_connect(button, "clicked", G_CALLBACK(on_broker_action),
+                         self);
+    } else {
+        g_signal_connect(button, "clicked", G_CALLBACK(on_broker_dashboard),
+                         self);
+    }
+
+    return button;
+}
+
+/*
+ * The row: which broker and the library's word for its state, then what
+ * it is doing or why it failed, then where its dashboard is.  The buttons
+ * offered are the ones that can do something now.
+ */
+static void
+refresh_broker_row(ClawtWindow *self)
+{
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *title = NULL;
+    g_autofree gchar *subtitle = NULL;
+    JsonObject *status;
+    const gchar *nick;
+    const gchar *detail;
+    const gchar *url;
+    gint state = (gint)CLAWT_BROKER_STATE_DISABLED;
+    gboolean enabled;
+
+    if (self->settings_broker_row == NULL)
+        return;
+
+    reply = clawt_window_request(self, "broker.status", NULL);
+
+    if (reply == NULL || !JSON_NODE_HOLDS_OBJECT(reply))
+        return;
+
+    status = json_node_get_object(reply);
+    enabled = json_object_get_boolean_member_with_default(status, "enabled",
+                                                          FALSE);
+    nick = json_object_get_string_member_with_default(status, "state", NULL);
+    detail = json_object_get_string_member_with_default(status, "detail",
+                                                        NULL);
+    url = json_object_get_string_member_with_default(status, "dashboard_url",
+                                                     NULL);
+
+    if (nick != NULL)
+        clawt_enum_from_nick(CLAWT_TYPE_BROKER_STATE, nick, &state);
+
+    title = g_strdup_printf(
+        "%s — %s",
+        json_object_get_string_member_with_default(status, "label",
+                                                   "Integration broker"),
+        clawt_broker_state_label((ClawtBrokerState)state));
+
+    if (!enabled)
+        subtitle = g_strdup("Off. Set broker.enabled to run it; clawtilla "
+                            "then pulls its image and starts it with the "
+                            "daemon.");
+    else if (json_object_has_member(status, "refusal"))
+        subtitle = g_strdup(json_object_get_string_member(status,
+                                                          "refusal"));
+    else if (detail != NULL)
+        subtitle = g_strdup_printf("%s\nDashboard: %s", detail,
+                                   url != NULL ? url : "?");
+    else
+        subtitle = g_strdup_printf("Dashboard: %s", url != NULL ? url : "?");
+
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(self->settings_broker_row),
+                                  title);
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(self->settings_broker_row),
+                                subtitle);
+
+    g_object_set_data_full(G_OBJECT(self->settings_broker_dashboard),
+                           "dashboard_url", g_strdup(url), g_free);
+    gtk_widget_set_sensitive(self->settings_broker_dashboard,
+                             state == CLAWT_BROKER_STATE_RUNNING);
+    gtk_widget_set_sensitive(self->settings_broker_start,
+                             enabled &&
+                             (state == CLAWT_BROKER_STATE_STOPPED ||
+                              state == CLAWT_BROKER_STATE_ERROR));
+    gtk_widget_set_sensitive(self->settings_broker_stop,
+                             state == CLAWT_BROKER_STATE_STARTING ||
+                             state == CLAWT_BROKER_STATE_RUNNING ||
+                             state == CLAWT_BROKER_STATE_ERROR);
+    gtk_widget_set_sensitive(self->settings_broker_restart,
+                             enabled &&
+                             (state == CLAWT_BROKER_STATE_RUNNING ||
+                              state == CLAWT_BROKER_STATE_ERROR));
+}
+
 void
 clawt_gtk_refresh_settings_connectors(ClawtWindow *self)
 {
@@ -617,6 +754,7 @@ clawt_gtk_refresh_settings_connectors(ClawtWindow *self)
         guint i;
 
         clawt_gtk_clear_list(GTK_LIST_BOX(self->settings_connectors));
+        refresh_broker_row(self);
 
         reply = clawt_window_request(self, "connector.list", NULL);
 
@@ -1076,6 +1214,61 @@ clawt_gtk_build_connectors_page(ClawtWindow *self)
     adw_preferences_page_set_title(ADW_PREFERENCES_PAGE(page), "Connectors");
     adw_preferences_page_set_icon_name(ADW_PREFERENCES_PAGE(page),
                                        "changes-prevent-symbolic");
+
+    /*
+     * The integration broker first: when it runs, its connectors are in
+     * the list below, and this is where its dashboard is -- where SaaS
+     * sign-ins happen, with the person's own OAuth clients.
+     */
+    {
+        GtkWidget *broker = adw_preferences_group_new();
+        GtkWidget *list = gtk_list_box_new();
+        GtkWidget *row = adw_action_row_new();
+
+        adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(broker),
+                                        "Integration broker");
+        adw_preferences_group_set_description(
+            ADW_PREFERENCES_GROUP(broker),
+            "App integrations behind one gateway clawtilla runs in podman. "
+            "Its dashboard holds the SaaS sign-ins; each agent or team "
+            "names its gateway server in broker_server and reaches it as "
+            "a connector below.");
+
+        gtk_list_box_set_selection_mode(GTK_LIST_BOX(list),
+                                        GTK_SELECTION_NONE);
+        gtk_widget_add_css_class(list, "boxed-list");
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                      "Integration broker");
+        adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(row), 4);
+
+        self->settings_broker_dashboard =
+            broker_button(self, "web-browser-symbolic",
+                          "Open the broker's dashboard", NULL);
+        self->settings_broker_start =
+            broker_button(self, "media-playback-start-symbolic", "Start",
+                          "broker.start");
+        self->settings_broker_stop =
+            broker_button(self, "media-playback-stop-symbolic", "Stop",
+                          "broker.stop");
+        self->settings_broker_restart =
+            broker_button(self, "view-refresh-symbolic", "Restart",
+                          "broker.restart");
+
+        adw_action_row_add_suffix(ADW_ACTION_ROW(row),
+                                  self->settings_broker_dashboard);
+        adw_action_row_add_suffix(ADW_ACTION_ROW(row),
+                                  self->settings_broker_start);
+        adw_action_row_add_suffix(ADW_ACTION_ROW(row),
+                                  self->settings_broker_stop);
+        adw_action_row_add_suffix(ADW_ACTION_ROW(row),
+                                  self->settings_broker_restart);
+
+        self->settings_broker_row = row;
+        gtk_list_box_append(GTK_LIST_BOX(list), row);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(broker), list);
+        adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                                 ADW_PREFERENCES_GROUP(broker));
+    }
 
     adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group),
                                     "Connected accounts");

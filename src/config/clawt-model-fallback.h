@@ -142,6 +142,88 @@ gchar *clawt_model_fallback_list_to_string(GPtrArray *fallbacks);
 gboolean clawt_model_fallback_account_fits(const gchar *account_provider,
                                            const gchar *provider);
 
+/* ── Saving a list without losing one ────────────────────────────── */
+
+/**
+ * ClawtModelSetting:
+ * @key: an agent-relative key, as `agent.set` takes it
+ * @value: the value to write; an empty string clears
+ *
+ * One `agent.set` of a model key.
+ */
+typedef struct {
+    gchar *key;
+    gchar *value;
+} ClawtModelSetting;
+
+#define CLAWT_TYPE_MODEL_SETTING (clawt_model_setting_get_type())
+
+GType clawt_model_setting_get_type(void) G_GNUC_CONST;
+
+/**
+ * clawt_model_setting_new:
+ * @key: the key
+ * @value: (nullable): the value; %NULL is written as an empty string
+ *
+ * Returns: (transfer full): a new #ClawtModelSetting
+ */
+ClawtModelSetting *clawt_model_setting_new(const gchar *key,
+                                           const gchar *value);
+
+/**
+ * clawt_model_setting_copy:
+ * @self: a #ClawtModelSetting
+ *
+ * Returns: (transfer full): a deep copy
+ */
+ClawtModelSetting *clawt_model_setting_copy(const ClawtModelSetting *self);
+
+/**
+ * clawt_model_setting_free:
+ * @self: (nullable): a #ClawtModelSetting
+ */
+void clawt_model_setting_free(ClawtModelSetting *self);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtModelSetting, clawt_model_setting_free)
+
+/**
+ * clawt_model_fallback_restore_plan:
+ * @saved_list: (nullable): the `model.fallbacks` the agent had before the
+ *   save, as text
+ * @old_provider: (nullable): its `model.provider` before the save
+ * @old_account: (nullable): its `model.account` before the save
+ * @old_model: (nullable): its `model.model` before the save
+ * @undo_backend: %FALSE for the first attempt, %TRUE for the second
+ *
+ * What a client sends to put a fallback list back after a save that
+ * cleared it went wrong.
+ *
+ * A save that changes the provider or the account clears the stored list
+ * first, because the daemon checks a backend against the list it would
+ * fall back from -- and then writes the new list last.  When anything
+ * after the clear is refused, the agent was left with no list at all
+ * until somebody saved again.  So the client asks for two plans:
+ *
+ * - the first (@undo_backend %FALSE) writes @saved_list back onto
+ *   whatever backend the agent now has.  Usually enough: the old list
+ *   fits the new provider more often than not, and the backend change
+ *   somebody asked for stands.
+ * - if the first is refused, the second (@undo_backend %TRUE) puts the
+ *   backend back -- account cleared, the old provider, the old account,
+ *   the old model -- and then the list, which fitted that backend when
+ *   it was saved.
+ *
+ * Each plan runs in order and stops at its first refusal.
+ *
+ * Returns: (transfer full) (element-type ClawtModelSetting): the plan,
+ *   empty when @saved_list is empty and there is nothing to keep
+ */
+GPtrArray *clawt_model_fallback_restore_plan(const gchar *saved_list,
+                                             const gchar *old_provider,
+                                             const gchar *old_account,
+                                             const gchar *old_model,
+                                             gboolean     undo_backend);
+
 /**
  * clawt_failover_reason_phrase:
  * @reason: (nullable): the `reason` an agent reported: `usage-limit`,

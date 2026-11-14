@@ -483,6 +483,9 @@ declare -A AFFORDANCES=(
     # full editors for them.
     #
     ["integration fields"]="clawt_integration_fields|clawt_integration_fields|clawt_integration_fields"
+    # A credential field is asked for as a reference and never shown
+    # back -- an apprise notifier's URL is one, and so is every token.
+    ["integration secret field as a reference"]="CLAWT_FIELD_SECRET|CLAWT_FIELD_SECRET|CLAWT_FIELD_SECRET"
     #
     # A skill's `/name` is dynamic, so layer 2 cannot see it.
     #
@@ -566,6 +569,9 @@ declare -A AFFORDANCES=(
     ["pair with a code"]="clawt_connection_new_paired|/settings/connections/pair|clawt_connection_pair(job->connection"
     ["pairing countdown"]="clawt_device_countdown_text|clawt_device_countdown_text|clawt_device_countdown_text"
     ["device last seen"]="clawt_device_seen_text|clawt_device_seen_text|clawt_device_seen_text"
+    # Revoke is the owner's; a paired device signs itself out.  Each
+    # client asks the library which button a row gets.
+    ["revoke or sign out per row"]="clawt_device_row_action|clawt_device_row_action|clawt_device_row_action"
     ["a code on screen learns it was used"]="\"device.paired\"|/settings/devices/pair-status|\"device.paired\""
     #
     # model.fallbacks: the ordered editor, the badge on an agent running
@@ -576,6 +582,8 @@ declare -A AFFORDANCES=(
     #
     ["fallback list editor"]="fallback_editor_draw|clawt_web_fallback_card|draw_fallbacks"
     ["on fallback badge"]="clawt_gtk_failover_badge|clawt_web_failover_badge|clawt_lrg_badge(agent->fallback"
+    # The same badge on the Fleet page, from usage.summary's `failover`.
+    ["on fallback badge on the Fleet page"]="fleet_fallback|fleet_fallback|fleet_fallback"
     ["alert in the event's words"]="clawt_event_get_detail(event, \"message\")|clawt_event_get_detail(event, \"message\")|clawt_event_get_detail(event, \"message\")"
     #
     # Connector sign-in and several accounts: a remote server added by its
@@ -589,6 +597,15 @@ declare -A AFFORDANCES=(
     ["connector sign in at its server"]="clawt_connector_sign_in_label|clawt_connector_sign_in_label|clawt_connector_sign_in_label"
     ["account label on connector rows"]="clawt_connector_row_subtitle|clawt_connector_row_subtitle|clawt_connector_row_subtitle"
     ["account label asked for a second account"]="required for a second account|required for a second account|unique, for a second account"
+    #
+    # The integration broker's row on the Connectors page: its state in
+    # the library's word for it, the gateway's dashboard (where SaaS
+    # sign-ins happen), and start, stop and restart.  Layer 1 sees the
+    # four broker.* frames; it cannot see that a client draws the state
+    # or offers the dashboard, which send nothing of their own.
+    #
+    ["broker state on connectors"]="clawt_broker_state_label|clawt_broker_state_label|clawt_broker_state_label"
+    ["broker dashboard"]="\"dashboard_url\"|\"dashboard_url\"|\"dashboard_url\""
     #
     # Each team's "Problems to look at" room has a sidebar row.  It sends
     # no frame of its own -- it is room.list read with a different

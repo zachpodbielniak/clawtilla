@@ -525,6 +525,7 @@ static const gchar GIT_BLOCK[] =
     "*.sock\n"
     "daemon.lock\n"
     "events/\n"
+    "task-sources.tsv\n"
     "exchange/\n"
     "\n"
     "# Regenerated on every start from clawtilla.yaml.\n"
@@ -1197,12 +1198,12 @@ incident_routine_of(
 	gpointer     user_data
 ){
 	ClawtDaemon *self = user_data;
-	ClawtUsageOrigin *source;
+	const ClawtUsageOrigin *source;
 
 	if (self->task_sources == NULL || task_id == NULL)
 		return NULL;
 
-	source = g_hash_table_lookup(self->task_sources, task_id);
+	source = clawt_task_sources_lookup(self->task_sources, task_id);
 
 	if (source == NULL || source->kind != CLAWT_USAGE_ORIGIN_ROUTINE)
 		return NULL;
@@ -2175,8 +2176,60 @@ on_link_typing(ClawtLinkServer *server,
     clawt_event_free(event);
 }
 
+/*
+ * `failover` and `failover_message` on an agent's object, while it runs
+ * on one of its fallbacks.  One function for every reply that describes
+ * an agent -- agent.list and usage.summary -- because the Fleet page read
+ * the second and a copy of this block written for it would be the place
+ * the two drift.
+ */
+void
+clawt_daemon_add_failover_members(
+	JsonBuilder *builder,
+	ClawtAgent  *agent
+){
+	JsonObject *failover = clawt_agent_get_failover(agent);
+	ClawtAgentConfig *config;
+	g_autofree gchar *line = NULL;
+	JsonNode *node;
+
+	if (failover == NULL)
+		return;
+
+	config = clawt_agent_get_config(agent);
+	line = clawt_failover_describe(
+		(config != NULL && clawt_agent_config_get_string(config, "name") != NULL)
+			? clawt_agent_config_get_string(config, "name")
+			: clawt_agent_get_id(agent),
+		failover);
+
+	node = json_node_new(JSON_NODE_OBJECT);
+	json_node_set_object(node, failover);
+	json_builder_set_member_name(builder, "failover");
+	json_builder_add_value(builder, node);
+
+	json_builder_set_member_name(builder, "failover_message");
+	json_builder_add_string_value(builder, line);
+}
+
 /* When the task-source table is swept of tasks that have finished. */
 #define TASK_SOURCE_PRUNE_AT (1024)
+
+/* The #ClawtTaskSourcesLiveFunc the sweep asks: known, and not finished. */
+static gboolean
+task_source_is_live(
+	const gchar *task_id,
+	gboolean    *known,
+	gpointer     user_data
+){
+	ClawtDaemon *self = user_data;
+	ClawtTask *task = (self->tasks != NULL)
+		? clawt_task_manager_get(self->tasks, task_id) : NULL;
+
+	*known = (task != NULL);
+
+	return task != NULL && !clawt_task_is_finished(task);
+}
 
 void
 clawt_daemon_note_task_source(
@@ -2190,26 +2243,17 @@ clawt_daemon_note_task_source(
 
 	/*
 	 * A routine on a five-minute schedule adds an entry every five
-	 * minutes for as long as the daemon runs.  A finished or forgotten
-	 * task's turns have all been drained by the time a thousand more
-	 * runs have started, so those entries go.
+	 * minutes for as long as the daemon runs.  A finished task's turns
+	 * have all been drained by the time a thousand more runs have
+	 * started, so those entries go; one this daemon never knew -- from
+	 * before a restart -- stays for a week, because a turn about it can
+	 * still arrive from a mailbox that outlived the last daemon.
 	 */
-	if (g_hash_table_size(self->task_sources) >= TASK_SOURCE_PRUNE_AT) {
-		GHashTableIter iter;
-		gpointer key;
+	if (clawt_task_sources_get_count(self->task_sources) >= TASK_SOURCE_PRUNE_AT)
+		clawt_task_sources_prune(self->task_sources, task_source_is_live,
+					 self, g_get_real_time() / G_USEC_PER_SEC);
 
-		g_hash_table_iter_init(&iter, self->task_sources);
-		while (g_hash_table_iter_next(&iter, &key, NULL)) {
-			ClawtTask *task = (self->tasks != NULL)
-				? clawt_task_manager_get(self->tasks, key) : NULL;
-
-			if (task == NULL || clawt_task_is_finished(task))
-				g_hash_table_iter_remove(&iter);
-		}
-	}
-
-	g_hash_table_replace(self->task_sources, g_strdup(task_id),
-			     clawt_usage_origin_new(kind, id));
+	clawt_task_sources_note(self->task_sources, task_id, kind, id);
 }
 
 /* How far up a delegation chain to look for the run that began it. */
@@ -2222,8 +2266,13 @@ clawt_daemon_note_task_source(
  * routine's bill: the assignee's turns carry the child task, and only
  * its root was created by the run.  Bounded, since a parent link is
  * data and a cycle in it must not hang the reply path.
+ *
+ * A hit found through an ancestor is recorded against @task_id too.
+ * The parent chain lives in the task manager, which a restart empties,
+ * while the child's turns can outlive it in a mailbox: recorded now,
+ * the child is still charged to the run after the chain is gone.
  */
-static ClawtUsageOrigin *
+static const ClawtUsageOrigin *
 task_source(
 	ClawtDaemon *self,
 	const gchar *task_id
@@ -2231,14 +2280,22 @@ task_source(
 	const gchar *cursor = task_id;
 	guint depth;
 
+	if (self->task_sources == NULL)
+		return NULL;
+
 	for (depth = 0; cursor != NULL && depth < TASK_SOURCE_MAX_DEPTH; depth++) {
-		ClawtUsageOrigin *source = NULL;
+		const ClawtUsageOrigin *source;
 		ClawtTask *task;
 
-		if (self->task_sources != NULL)
-			source = g_hash_table_lookup(self->task_sources, cursor);
-		if (source != NULL)
+		source = clawt_task_sources_lookup(self->task_sources, cursor);
+		if (source != NULL) {
+			if (depth > 0 &&
+				clawt_task_sources_note(self->task_sources, task_id,
+							source->kind, source->id))
+				return clawt_task_sources_lookup(self->task_sources,
+								 task_id);
 			return source;
+		}
 
 		task = (self->tasks != NULL)
 			? clawt_task_manager_get(self->tasks, cursor) : NULL;
@@ -2265,7 +2322,7 @@ clawt_daemon_usage_origin(
 ){
 	ClawtAgent *agent = clawt_agent_manager_get(self->agents, agent_id);
 	ClawtAgentConfig *config = clawt_config_get_agent(self->config, agent_id);
-	ClawtUsageOrigin *source;
+	const ClawtUsageOrigin *source;
 	ClawtUsageOrigin *origin;
 	const gchar *sender = NULL;
 	const gchar *task_id = NULL;
@@ -5181,11 +5238,12 @@ release_components(ClawtDaemon *self)
     g_clear_object(&self->notifier);
     g_clear_object(&self->guard);
     g_clear_object(&self->usage);
-    g_clear_pointer(&self->task_sources, g_hash_table_unref);
+    g_clear_object(&self->task_sources);
     g_clear_object(&self->tasks);
     g_clear_object(&self->rooms);
     g_clear_object(&self->agents);
     clawt_daemon_egress_release(self);
+    clawt_daemon_broker_release(self);
     g_clear_object(&self->vm_images);
     g_clear_object(&self->exchange);
     g_clear_object(&self->decisions);
@@ -6890,8 +6948,16 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     self->tasks = clawt_task_manager_new();
     self->guard = clawt_loop_guard_new();
     self->usage = clawt_usage_new();
-    self->task_sources = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
-                                               (GDestroyNotify)clawt_usage_origin_free);
+    /*
+     * On disk, under the state directory the daemon holds the lock on:
+     * a run spanning a restart is still its routine's bill.
+     */
+    {
+        g_autofree gchar *sources_path =
+            g_build_filename(self->state_dir, "task-sources.tsv", NULL);
+
+        self->task_sources = clawt_task_sources_new(sources_path);
+    }
 	{
 		GPtrArray *loaded = clawt_agent_manager_list(self->agents);
 		guint index;
@@ -7373,6 +7439,14 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     self->running = TRUE;
 
     /*
+     * The integration broker, when it is on: in the background, so a pull
+     * of several hundred megabytes holds nothing up.  Here rather than
+     * earlier for the reason the timer above is -- a start refused at the
+     * socket must not leave containers behind.
+     */
+    clawt_daemon_broker_sync(self);
+
+    /*
      * The one caller with nobody to answer.  Every other site that
      * re-renders the fleet hands the refusals back in its reply; a start
      * has no reply, so it says so on the console -- once, naming every
@@ -7526,6 +7600,14 @@ clawt_daemon_stop(ClawtDaemon *self)
     /* After the fleet, whose exits are what revoke the broker's tokens. */
     clawt_daemon_egress_stop(self);
 
+    /*
+     * The integration broker, after the fleet that used it.  Blocking,
+     * like the agents' own computers above: there is no loop left to
+     * answer on, and a gateway left running would hold its ports against
+     * the next daemon.
+     */
+    clawt_daemon_broker_stop(self);
+
     if (self->rooms != NULL)
         clawt_room_manager_flush(self->rooms);
 
@@ -7677,6 +7759,9 @@ clawt_daemon_reload_internal(ClawtDaemon *self, GPtrArray *refusals,
 
     /* egress.allow is read per connection, so it applies at once. */
     clawt_daemon_egress_refresh_allowlist(self);
+
+    /* broker.enabled turned on or off starts or stops it, in the background. */
+    clawt_daemon_broker_sync(self);
 
     clawt_event_bus_emit(self->bus, "daemon.reloaded", NULL);
     g_signal_emit(self, signals[SIGNAL_RELOADED], 0);
@@ -8663,22 +8748,7 @@ clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
      * alert carried, so a client can badge it and say why without a
      * second copy of the wording.
      */
-    if (clawt_agent_get_failover(agent) != NULL) {
-        JsonObject *failover = clawt_agent_get_failover(agent);
-        g_autofree gchar *line = clawt_failover_describe(
-            clawt_agent_config_get_string(config, "name") != NULL
-                ? clawt_agent_config_get_string(config, "name")
-                : clawt_agent_get_id(agent),
-            failover);
-        JsonNode *node = json_node_new(JSON_NODE_OBJECT);
-
-        json_node_set_object(node, failover);
-        json_builder_set_member_name(builder, "failover");
-        json_builder_add_value(builder, node);
-
-        json_builder_set_member_name(builder, "failover_message");
-        json_builder_add_string_value(builder, line);
-    }
+    clawt_daemon_add_failover_members(builder, agent);
 
     if (clawt_agent_get_activity_peer(agent) != NULL) {
         json_builder_set_member_name(builder, "peer");
@@ -9997,6 +10067,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_memory,
     clawt_daemon_handle_mount,
     clawt_daemon_handle_egress,
+    clawt_daemon_handle_broker,
     clawt_daemon_handle_image,
     clawt_daemon_handle_team,
     clawt_daemon_handle_room,

@@ -27,12 +27,12 @@
 /* ── Choices ─────────────────────────────────────────────────────── */
 
 static const gchar *const notify_backends[] = {
-    "desktop", "ntfy", "gotify", "matrix", "command", NULL
+    "desktop", "ntfy", "gotify", "matrix", "command", "apprise", NULL
 };
 
 static const gchar *const notify_backend_labels[] = {
     "Desktop notification", "ntfy", "Gotify", "A Matrix room",
-    "Run a command", NULL
+    "Run a command", "Apprise (Telegram, Signal, email and 100 more)", NULL
 };
 
 static const gchar *const notify_priorities[] = {
@@ -290,6 +290,23 @@ static const ClawtIntegrationField fields[] = {
       "Run when there is something to say.",
       "/usr/bin/notify-send",
       CLAWT_FIELD_TEXT, NULL, NULL, "backend", "command", TRUE },
+
+    /*
+     * The whole URL is the credential here, so it is a secret reference
+     * like a token -- the daemon hands it to apprise in a 0600 file, and
+     * no client ever shows it back.
+     */
+    { "notify", "apprise_url", "Apprise URL",
+      "A reference -- env:NAME, file:PATH or command:... -- to the URL, "
+      "never the URL itself: it carries the service's token. A file may "
+      "hold several, one per line.",
+      "file:~/.config/clawtilla/apprise.url",
+      CLAWT_FIELD_SECRET, NULL, NULL, "backend", "apprise", TRUE },
+
+    { "notify", "command", "Apprise program",
+      "Only when apprise is not on the daemon's PATH.",
+      "/usr/bin/apprise",
+      CLAWT_FIELD_TEXT, NULL, NULL, "backend", "apprise", FALSE },
 
     { "notify", "args", "Arguments",
       "One per comma. {{title}} and {{body}} are replaced; with neither, "

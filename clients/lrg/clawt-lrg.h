@@ -371,6 +371,9 @@ const ClawtLrgSettingsPage *clawt_lrg_settings_connections_page(void);  /* lrg-s
 /* device.* events: the Devices list redraws, a code on screen learns it was used. */
 void clawt_lrg_settings_devices_event(ClawtLrgApp *app, ClawtEvent *event);
 
+/* broker.changed: the integration broker's row on Connectors redraws. */
+void clawt_lrg_settings_connectors_event(ClawtLrgApp *app, ClawtEvent *event);
+
 /* Dialogs reachable from the header menu and the sidebar (lrg-dialogs.c). */
 void clawt_lrg_new_agent_dialog(ClawtLrgApp *app);
 void clawt_lrg_import_agent_dialog(ClawtLrgApp *app);

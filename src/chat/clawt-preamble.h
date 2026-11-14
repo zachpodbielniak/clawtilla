@@ -69,6 +69,30 @@ G_BEGIN_DECLS
  */
 gchar *clawt_preamble_escape(const gchar *text);
 
+/**
+ * clawt_preamble_escape_all:
+ * @text: (nullable): text the daemon is quoting rather than saying --
+ *   a tool's output, a name or a summary it places after words of its
+ *   own on the same line
+ *
+ * Does what clawt_preamble_escape() does, and also rewrites a marker
+ * that appears in the middle of a line.
+ *
+ * clawt_preamble_escape() leaves a mid-line marker alone, because in a
+ * message somebody wrote it is a mention ("the [clawtilla] line said
+ * ..."), not a notice.  Quoted text is different: once the daemon puts
+ * a label in front of it -- "Latest from oryx: ", "@kudu (", a tool
+ * result's "oryx: " -- the quoted text's first line starts mid-line,
+ * and a forged marker there sits directly after the daemon's own words.
+ * Every occurrence is rewritten to %CLAWT_PREAMBLE_ESCAPED, matched
+ * with the same rules (case, zero-width characters, spaces inside the
+ * brackets), and the result is idempotent.
+ *
+ * Returns: (transfer full) (nullable): the escaped text, or %NULL when
+ *   @text is %NULL
+ */
+gchar *clawt_preamble_escape_all(const gchar *text);
+
 G_END_DECLS
 
 #endif /* CLAWT_PREAMBLE_H */

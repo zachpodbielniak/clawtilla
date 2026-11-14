@@ -1,0 +1,50 @@
+#!/bin/sh
+# fake-apprise - stands in for the apprise CLI in tests/test-notify.c
+#
+# Copyright (C) 2026
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# The test is about what clawtilla hands apprise and how -- the URL in a
+# 0600 file named by --config, the body on stdin, nothing secret on the
+# command line -- so this records exactly that and sends nothing.
+#
+#   CLAWT_FAKE_APPRISE_OUT   a path prefix; writes PREFIX.argv (one
+#                            argument per line), PREFIX.stdin,
+#                            PREFIX.config (the --config file's contents)
+#                            and PREFIX.mode (that file's octal mode)
+#   CLAWT_FAKE_APPRISE_EXIT  the exit status to end with (default 0)
+
+out="${CLAWT_FAKE_APPRISE_OUT:?CLAWT_FAKE_APPRISE_OUT is not set}"
+config=""
+
+: > "${out}.argv"
+for arg in "$@"
+do
+	printf '%s\n' "${arg}" >> "${out}.argv"
+done
+
+while [ $# -gt 0 ]
+do
+	if [ "$1" = "--config" ] && [ $# -gt 1 ]
+	then
+		config="$2"
+	fi
+	shift
+done
+
+cat > "${out}.stdin"
+
+if [ -n "${config}" ]
+then
+	cat "${config}" > "${out}.config"
+	stat -c '%a' "${config}" > "${out}.mode"
+fi
+
+status="${CLAWT_FAKE_APPRISE_EXIT:-0}"
+
+if [ "${status}" -ne 0 ]
+then
+	echo "Telegram notification failed: unauthorized" >&2
+fi
+
+exit "${status}"

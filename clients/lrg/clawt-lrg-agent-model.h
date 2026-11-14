@@ -323,6 +323,37 @@ void             clawt_lrg_agent_setting_free(gpointer setting);
 GPtrArray *clawt_lrg_agent_save_plan(GPtrArray  *posted,
                                      JsonObject *settings);
 
+/**
+ * clawt_lrg_agent_plan_cleared_fallbacks:
+ * @plan: (element-type ClawtLrgAgentSetting): a plan from
+ *   clawt_lrg_agent_save_plan()
+ * @accepted: how many of its steps, from the first, the daemon accepted
+ * @settings: (nullable): what agent.show reported before the save
+ *
+ * Whether the accepted part of @plan cleared a stored fallback list --
+ * the step clawt_lrg_agent_save_plan() puts first when the provider or
+ * account changes -- so that a refusal after it would leave the agent
+ * with no list at all.
+ *
+ * Returns: %TRUE when the list must be put back
+ */
+gboolean clawt_lrg_agent_plan_cleared_fallbacks(GPtrArray  *plan,
+                                                guint       accepted,
+                                                JsonObject *settings);
+
+/**
+ * clawt_lrg_agent_fallback_restore_plan:
+ * @settings: (nullable): what agent.show reported before the save
+ * @undo_backend: %FALSE for the first attempt, %TRUE for the second
+ *
+ * clawt_model_fallback_restore_plan() for this agent, as the
+ * #ClawtLrgAgentSetting steps the save runner sends.
+ *
+ * Returns: (transfer full) (element-type ClawtLrgAgentSetting): the plan
+ */
+GPtrArray *clawt_lrg_agent_fallback_restore_plan(JsonObject *settings,
+                                                 gboolean    undo_backend);
+
 /* "Saved." with the restart advice that applies. */
 gchar *clawt_lrg_agent_saved_text(guint changed, gboolean restart_required);
 

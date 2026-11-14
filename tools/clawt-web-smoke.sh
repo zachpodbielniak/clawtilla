@@ -183,7 +183,7 @@ main () {
     expect_get '/settings/integrations' 'Add one'          'integrations'
     expect_get '/settings/connectors'   'Add a connector'  'connectors'
     expect_get '/settings/appearance'   'Interface font'   'appearance, with fonts'
-    expect_get '/settings/connections'  'Add a daemon'     'connections'
+    expect_get '/settings/connections'  '/settings/connections/add' 'connections'
     echo
 
     echo "The rest of the surface:"
@@ -251,8 +251,8 @@ main () {
         --data-urlencode 'body=/edit SOUL.org'
     expect_post "/a/${AGENT}/send" 'Download instead' '/copy' \
         --data-urlencode 'body=/copy org'
-    expect_post "/a/${AGENT}/send" 'No such command' 'an unknown command' \
-        --data-urlencode 'body=/nonsense'
+    expect_post "/a/${AGENT}/send" 'There is no /nonsense' \
+        'an unknown command' --data-urlencode 'body=/nonsense'
     expect_post "/a/${AGENT}/mailbox/purge" 'Purged' 'purging expired items'
     #
     # Both halves of the shared-folder round trip.
@@ -262,12 +262,22 @@ main () {
     # match a route parameter. Nothing about the page looked wrong; only
     # posting to it found out.
     #
+    # The source is a directory this user owns, made for the run.  It
+    # was /tmp, which root owns -- and the daemon rightly refuses a mount
+    # podman would have to relabel and cannot (see "relabel" in
+    # docs/computers.org), so this check failed on every machine for a
+    # reason that was the product working.  Made here, so it assumes the
+    # web client's daemon shares this machine, as the defaults do.
+    #
+    local share
+    share="$(mktemp -d "${TMPDIR:-/tmp}/clawt-web-smoke.XXXXXX")"
     expect_post '/settings/folders/add' 'Shared with every agent' \
         'sharing a folder with the fleet' \
-        --data-urlencode 'source=/tmp' --data-urlencode 'target=/work/smoke' \
-        --data-urlencode 'mode=ro'
+        --data-urlencode "source=${share}" \
+        --data-urlencode 'target=/work/smoke' --data-urlencode 'mode=ro'
     expect_post '/settings/folders/remove' 'No longer shared' \
         'unsharing one' --data-urlencode 'target=/work/smoke'
+    rmdir "${share}"
     #
     # A value that differs every run. Saving only sends what changed, so
     # a fixed string passes once and then reports "nothing changed" -- a

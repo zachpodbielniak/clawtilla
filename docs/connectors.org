@@ -4,7 +4,7 @@
 #+categories: software documentation
 #+created: [2026-08-23 Sat]
 #+updated: [2026-11-14 Sat]
-#+version: 0.4.0
+#+version: 0.5.0
 
 * Connectors
 
@@ -888,6 +888,225 @@ text the directory exists to keep out.  Under ~auto~ a server no relay
 has counted yet is described as a list; the agent's next start, after a
 relay has seen it, says the right thing.
 
+** An integration broker
+
+Connectors are one account each, and the open MCP registry lists servers somebody still has to run.  What neither gives is a stock of ready-made app integrations -- a CRM, a shop, an ERP, a ticket system -- that sign in with your own OAuth client.  With =broker.enabled= on, clawtilla runs a gateway that has them, in rootless podman, and owns its whole lifecycle: you never write a compose file, and the gateway is one more part of the fleet.
+
+Two gateways, chosen with =broker.type=:
+
+| ~broker.type~   | What it is                                                                                     | Licence    |
+|-----------------+------------------------------------------------------------------------------------------------+------------|
+| ~anythingmcp~   | AnythingMCP: an MCP gateway whose JSON adapters turn REST, SOAP, GraphQL, OData and SQL into tools, OAuth2 with your own client | AGPL-3.0   |
+| ~jentic~        | Jentic One (public beta): a credential broker that checks a per-agent rule before it injects a stored key, and logs every call | Apache-2.0 |
+
+This is not the provider-key broker of ~runtime.network: gated~ (see [[file:security.org][security.org]]), which swaps a model provider's key on the way out of a sandbox.  The names are alike and the jobs are not.
+
+*** Turning it on
+
+#+begin_src yaml
+broker:
+  enabled: true
+  type: anythingmcp       # or jentic
+  port: 47400             # the MCP endpoint and API
+  dashboard_port: 47300   # AnythingMCP's dashboard; Jentic One serves both on port
+#+end_src
+
+#+begin_src bash
+clawtilla config reload
+clawtilla broker status
+#+end_src
+
+#+begin_example
+AnythingMCP: Starting -- starting clawt-broker-anythingmcp (pulling its image first if it is not here yet)
+  image:     docker.io/helpcodeai/anythingmcp:v0.54.0
+  dashboard: http://127.0.0.1:47300
+  mcp:       http://127.0.0.1:47400/mcp
+#+end_example
+
+The start never waits in anybody's way.  Daemon start, a reload that turns the key on, and ~broker.start~ all answer at once; the containers are pulled, made and started on worker threads through the same machinery agents' container computers use (=clawt-pod-bridge.c=, podomation's ~container~ module), and the state is /starting/ until the gateway answers its health check, then /running/.  On this machine the first AnythingMCP start took about twenty seconds with the images present.
+
+*** What runs
+
+Everything the gateway keeps is under =<state_dir>/broker/= (=~/.clawtilla/broker/= by default), so the containers themselves are disposable: every start makes them again from the config, which is how a changed image or port takes effect, and stopping leaves them and their data in place.
+
+| Container                       | Image (default)                                  | Publishes                                           | Binds                                                       |
+|---------------------------------+--------------------------------------------------+-----------------------------------------------------+-------------------------------------------------------------|
+| ~clawt-broker-anythingmcp-db~   | ~docker.io/library/postgres:17.12-alpine~        | nothing                                             | =broker/db= at the data volume, =broker/run= for its socket |
+| ~clawt-broker-anythingmcp~      | ~docker.io/helpcodeai/anythingmcp:v0.54.0~       | =broker.port= -> 4000, =broker.dashboard_port= -> 3000, on =broker.bind= | =broker/run=                                       |
+| ~clawt-broker-jentic~           | ~ghcr.io/jentic/jentic-one-app:0.44.0~           | =broker.port= -> 8000, on =broker.bind=             | =broker/data=                                               |
+
+Some of this differs from the upstream compose files, on purpose and from running them (see "Running it by hand" below):
+
+- *No Caddy.*  The compose file puts Caddy in front for TLS and a public name.  A gateway on loopback reached by a relay on the same machine needs neither.
+- *The database publishes no port and listens on no TCP socket.*  The two AnythingMCP containers share a unix socket in =broker/run=; the gateway's ~DATABASE_URL~ names it with ~?host=/clawt-run~.
+- *Jentic One is one container running two processes.*  Its control plane hands executions to its broker on its own =127.0.0.1:8100= and sends a bearer over plain http only to loopback; the compose file shares one network namespace between two containers for that, which podomation cannot express.  A small ~bash~ supervisor runs the migrations, then the broker and the control plane, and exits when either does, so the restart policy starts both again.
+
+=broker.image= and =broker.database_image= are refused without a tag or tagged ~latest~: an upgrade of the thing holding every SaaS credential should be an edit somebody made.  A digest is accepted.
+
+*** One gateway server per agent or team
+
+Each agent reaches exactly one gateway server: its own =agents.broker_server=, or else its team's =teams.broker_server=.  clawtilla makes one connector per server -- =broker-agent-<id>= or =broker-team-<id>=, provider ~anythingmcp~ or ~jentic~ -- scoped to exactly the agents that use it.  It is an ordinary connector from there: the relay starts it, the tool list, the tool directory and the action rules apply, and an agent's =.mcp.json= names ~clawtilla connector relay~ and carries no secret.  These connectors are made from the config rather than written into it, so editing one (~integration update~, ~connector key~) is refused with the setting that changes it.
+
+For AnythingMCP, the server's own connector assignment /is/ the agent's permission:
+
+1. Open the dashboard (the URL is on the Broker row, or in ~clawtilla broker status~) and register.  The first account is the admin, and registering asks you to accept AnythingMCP's terms -- clawtilla does not accept them for you.
+2. Sign in to the apps you want, with your own OAuth clients, and install their connectors.
+3. Make an MCP server for the agent (or the team) and assign it the connectors that agent may use.
+4. On that server's page, make an MCP API key.  A key made there works for that server only: any other server answers 403.
+5. Tell clawtilla:
+
+#+begin_src bash
+clawtilla agent set scout broker_server cmwgvs1dq000736li29o0luha   # the id in the server's MCP URL
+clawtilla broker key scout                                         # reads the key from stdin, echo off
+clawtilla team set research broker_server cmwgw...                 # a team's
+clawtilla broker key team:research
+#+end_src
+
+The relay dials =/mcp/<server id>= with the key as a bearer.  AnythingMCP's instance-wide ~MCP_BEARER_TOKEN~ is never set: it reaches every server of every workspace, which is the credential a per-agent server exists not to need.
+
+For Jentic One the identity is the key: register an agent in its web app, approve it, and store that agent's API key with ~clawtilla broker key~.  =broker_server= names the Jentic agent, for the record and for the assignment; the relay dials Jentic One's one =/mcp= endpoint.
+
+Two kinds of agent are not given the broker, each with a warning in the config's warnings and in ~broker status~:
+
+- an agent with ~runtime.network~ ~gated~ or ~none~: the gateway listens on this machine's loopback, and a gated sandbox has a loopback of its own with nothing on it;
+- for Jentic One, an agent without ~runtime.confine: bwrap~ -- see below.
+
+*** Jentic One: confined agents only, beta, no telemetry
+
+Jentic One's own threat model ([[https://github.com/jentic/jentic-one/blob/main/docs/security/same-host/README.md][same-host README]]) says that an agent running as the same OS user as the instance can read its credential database and the key that decrypts it, and go around the broker rather than through it.  So:
+
+- ~broker start~ (and the daemon's own start) refuses Jentic One while any agent that names a gateway server lacks ~runtime.confine: bwrap~, naming them, and such an agent is never given the connector;
+- a confined agent's box binds its own key file read-only and nothing else of =<state_dir>/broker/=: the relay that reads the key runs in there, and the instance's database and encryption key stay outside.
+
+It is a 0.x public beta whose schemas and CLI may change between releases; =broker.image= pins the one this release was run against.  Its quickstart turns anonymous telemetry on; clawtilla always sets its documented opt-out, ~JENTIC__TELEMETRY__ENABLED=false~, and turns off the GitHub release check and the OTLP exporters too (the latter retry a collector on localhost that is not there and fill the log).
+
+*** When the gateway says no
+
+A refusal names who refused.  clawtilla's own (a narrowed tool list, an action rule) say clawtilla; the gateway's are named as the gateway's, because the fix is somewhere else:
+
+#+begin_example
+AnythingMCP, the integration broker, refused this (HTTP 403): Access denied: this API key was created for a different MCP server. ..., so nothing ran. What this agent may use is set on its gateway server in AnythingMCP, not by clawtilla; ask the person if you need it.
+AnythingMCP answered: Tool nope not found
+AnythingMCP, the integration broker, refused the key clawtilla holds for this connector (HTTP 401), so nothing ran. ... store it with `clawtilla broker key scout`.
+AnythingMCP, the integration broker clawtilla runs, did not answer (Could not connect: Connection refused), so nothing ran. It may still be starting; `clawtilla broker status` says.
+#+end_example
+
+A tool call gets a failed tool result, which is what a model reads; anything else a JSON-RPC error.  The gateway's own reason is repeated only when it sent one in a readable shape -- a JSON-RPC error message, a ~detail~ or a ~message~ -- cut to one line, never the raw body.  ~clawt_broker_refusal_reply()~ and ~clawt_broker_annotate_reply()~ are the two pure functions; =tests/test-broker.c= walks them.
+
+*** A second credential store
+
+Say it plainly: the SaaS tokens the gateway holds live in /its/ encrypted store, not clawtilla's.  That is a second credential store beside =secrets.dir=, with a key of its own:
+
+| What                                   | Where                                                         | Mode |
+|----------------------------------------+---------------------------------------------------------------+------|
+| AnythingMCP's encryption key           | =<state_dir>/broker/encryption-key=                           | 0600 |
+| AnythingMCP's JWT secret, database password | =<state_dir>/broker/jwt-secret=, =database-password=     | 0600 |
+| AnythingMCP's database                 | =<state_dir>/broker/db/= (owned by PostgreSQL's uid in podman's namespace) | 0700 inside |
+| Jentic One's encryption key            | =<state_dir>/broker/jentic-encryption-key=                    | 0600 |
+| Jentic One's data                      | =<state_dir>/broker/data/=                                    |      |
+| each gateway server's key (clawtilla's) | =<state_dir>/broker/keys/agent-<id>.json=, =team-<id>.json=  | 0600 |
+
+The secrets are generated from =/dev/urandom= at the first start and never replaced: a new encryption key would make every stored SaaS credential unreadable.  Back up =<state_dir>/broker/= as a whole -- the key without the database is nothing, and the database without the key is ciphertext.  The secrets reach the containers as environment, which ~podman inspect~ shows to this user and nobody else; =broker/= is 0700, and the directories under it are wider only because the containers' own users are other uids in podman's namespace.
+
+Only the keys are clawtilla's to hold.  They are written 0600, never returned over IPC (~broker.key~ answers with the path; ~broker.status~ says whether each is stored, never what it is), and they never appear in =.mcp.json=, an environment or an argv.  For an unconfined host agent this is the same honest limit every connector has: it runs as the same user, and =<state_dir>= is right there.
+
+*** Lifecycle
+
+| Verb                      | IPC               | What it does |
+|---------------------------+-------------------+--------------|
+| ~clawtilla broker status~ | ~broker.status~   | on or off, which broker, its state, what it is doing, its dashboard and MCP URLs, every gateway server and whether its key is stored |
+| ~clawtilla broker start~  | ~broker.start~    | starts it in the background; refused while =broker.enabled= is off, or for Jentic One while an assigned agent is unconfined |
+| ~clawtilla broker stop~   | ~broker.stop~     | stops the containers; everything under =broker/= stays |
+| ~clawtilla broker restart~ | ~broker.restart~ | a stop, then a start |
+| ~clawtilla broker logs~   | ~broker.logs~     | each container's last hundred lines, credential-shaped text redacted |
+| ~clawtilla broker key <agent or team:id>~ | ~broker.key~ | stores a gateway server's key from stdin |
+
+A container that stops on its own is started again under =broker.restart= (~always~ by default; ~on-failure~ behaves the same, since podman's listing does not say how a container ended; ~never~ leaves it stopped and says so).  Five restarts within ten minutes stop the retries and leave the broker /failed/, naming the container and ~broker logs~.  The watch asks podman which containers run -- its listing, because the module's inspect never fills in a status -- and asks the gateway's =/health=; a gateway that runs and stops answering three times in a row is reported as failed until it answers again.  Daemon stop stops the broker with it.
+
+~broker logs~ has a known gap: podomation's ~logs~ action parses podman's reply as JSON, and podman sends the multiplexed log stream, so it returns no text.  The reply says so and names ~podman logs --tail 100 <container>~; the fix belongs in podomation (see the roadmap).
+
+Every client has a Broker row at the top of the Connectors page: the broker, its state in ~clawt_broker_state_label()~'s word, what it is doing or why it failed, the dashboard link, and Start, Stop and Restart where each can do something.  It redraws on ~broker.changed~.
+
+*** Running it by hand
+
+Done once, under rootless podman 5.8 on Fedora 44 (x86_64), before any of the above was written, as the person would.  Kept here because it is what the shapes above rest on.
+
+**** AnythingMCP
+
+#+begin_src bash
+D=~/broker-by-hand; mkdir -p $D/db $D/run; chmod 700 $D; chmod 755 $D/db; chmod 777 $D/run
+cd $D; (umask 077; openssl rand -hex 32 > jwt; openssl rand -hex 16 > enc; openssl rand -hex 24 > pg)
+
+podman run -d --name amcp-db \
+  -e POSTGRES_USER=amcp -e POSTGRES_PASSWORD=$(cat pg) -e POSTGRES_DB=anythingmcp \
+  -e PGDATA=/var/lib/postgresql/data/pgdata \
+  -v $D/db:/var/lib/postgresql/data:Z -v $D/run:/clawt-run:z \
+  docker.io/library/postgres:17.12-alpine \
+  postgres -c listen_addresses= -c unix_socket_directories=/var/run/postgresql,/clawt-run
+
+podman run -d --name amcp-app -p 127.0.0.1:47400:4000 -p 127.0.0.1:47300:3000 \
+  -v $D/run:/clawt-run:z \
+  -e NODE_ENV=production -e PORT=4000 \
+  -e DATABASE_URL="postgresql://amcp:$(cat pg)@localhost/anythingmcp?host=/clawt-run" \
+  -e JWT_SECRET=$(cat jwt) -e ENCRYPTION_KEY=$(cat enc) \
+  -e NEXT_PUBLIC_API_URL=http://127.0.0.1:47400 -e SERVER_URL=http://127.0.0.1:47400 \
+  -e CORS_ORIGIN=http://127.0.0.1:47300 -e FRONTEND_URL=http://127.0.0.1:47300 \
+  -e MCP_AUTH_MODE=both -e MCP_ALLOW_ANONYMOUS=false -e ALLOW_OPEN_REGISTRATION=false \
+  docker.io/helpcodeai/anythingmcp:v0.54.0 ./start.sh
+
+curl -s http://127.0.0.1:47400/health      # healthy after about 12 s
+#+end_src
+
+What it showed:
+
+- *The community edition needs PostgreSQL and nothing else.*  Redis is optional (caching and rate limits stay in memory without it), the code-runner is only for Code Mode, whose write mode is enterprise, File Search's worker and extractor are enterprise, and MOTIS is the Deutsche Bahn connector's.  None of them is started.
+- *~host.containers.internal~ does not reach this machine's loopback* under pasta: it is mapped to the machine's external address, so the first attempt -- PostgreSQL published on =127.0.0.1= and dialled from the gateway -- failed migrations with ~P1001: Can't reach database server~.  Publishing it wider would put the database on the LAN.  A shared unix socket works and publishes nothing.
+- *Bind the database's data /volume/, not PGDATA.*  The entrypoint chowns PGDATA to its own user, and the first layout bound it directly, so the bind source became a subuid's and this user could no longer relabel it at the next start (clawtilla refuses that mount up front, rightly).  Binding the parent at the image's volume path, with PGDATA one level down, keeps the source this user's -- and binding exactly the volume path keeps podman from making an anonymous volume there.  The directory must be 0755: the entrypoint re-runs itself as the postgres user, which has to pass through it.
+- *A container computer runs ~sleep infinity~ unless told otherwise*, because an agent's machine exists to be exec'd into; the gateway's command (~./start.sh~) is named explicitly or it comes up "running" and serves nothing.
+- *Registration needs ~acceptTerms~*, so the first account is the person's to make in the dashboard; clawtilla does not register one.
+- *A server is addressed by id, not slug*: =/mcp/<id>= works and =/mcp/<slug>= answers 404.  A key made with ~mcpServerId~ works as ~Authorization: Bearer~ (and as ~X-API-Key~) for that server and answers 403 for any other.
+- Replies are streamed (~text/event-stream~), and the relay reads both shapes.
+- Data survives the containers: both removed and made again, the gateway was healthy in six seconds with its account and servers intact.
+
+**** Jentic One
+
+#+begin_src bash
+D=~/jentic-by-hand; mkdir -p $D/data; chmod 700 $D; chmod 777 $D/data
+(umask 077; openssl rand -base64 32 > $D/key)
+
+podman run -d --name jentic -p 127.0.0.1:47800:8000 -v $D/data:/data:Z \
+  -e JENTIC__AUTH__CANONICAL_BASE_URL=http://127.0.0.1:47800 \
+  -e JENTIC__DATABASES__REGISTRY__BACKEND=sqlite -e JENTIC__DATABASES__REGISTRY__PATH=/data/registry.db \
+  -e JENTIC__DATABASES__CONTROL__BACKEND=sqlite -e JENTIC__DATABASES__CONTROL__PATH=/data/control.db \
+  -e JENTIC__DATABASES__ADMIN__BACKEND=sqlite -e JENTIC__DATABASES__ADMIN__PATH=/data/admin.db \
+  -e JENTIC__CREDENTIALS__ENCRYPTION__ENTRIES__0__ID=v1 \
+  -e JENTIC__CREDENTIALS__ENCRYPTION__ENTRIES__0__MATERIAL_ENV=JENTIC_ENCRYPTION_KEY \
+  -e JENTIC_ENCRYPTION_KEY=$(cat $D/key) \
+  -e JENTIC__TELEMETRY__ENABLED=false -e JENTIC__RELEASE_CHECK__ENABLED=false \
+  -e JENTIC__OBSERVABILITY__METRICS__EXPORTER=none -e JENTIC__OBSERVABILITY__TRACING__EXPORTER=none \
+  -e JENTIC__SERVER__MCP__ENABLED=true \
+  ghcr.io/jentic/jentic-one-app:0.44.0 bash -c \
+  'python -m jentic_one.migrations.run || exit 1; JENTIC__APPS=broker JENTIC__SERVER__PORT=8100 python -m jentic_one & python -m jentic_one & wait -n; exit 1'
+#+end_src
+
+What it showed: the image runs as uid 10001, so the data directory must be writable by another uid (0777 inside a 0700 parent); its default shell is ~dash~, which has no ~wait -n~, so the supervisor is ~bash~; both surfaces answer =/health= (~{"status":"ok"}~, and ~{"surface":"broker"}~ on 8100 inside); =/mcp= lists its tools to anybody and answers 401 to a tool call without an agent's key; and without the two exporter settings it logs a failed OTLP export every second.
+
+**** On aarch64 (the Asahi machines)
+
+AnythingMCP publishes amd64 only, and its own workflow says why: Prisma's WASM schema engine misparses ~onDelete: Cascade~ on linux/arm64.  Building it locally was tried rather than assumed:
+
+#+begin_src bash
+git clone https://github.com/HelpCode-ai/anythingmcp && cd anythingmcp
+git checkout v0.54.0
+podman build --platform linux/arm64 -t localhost/anythingmcp:v0.54.0-arm64 .
+#+end_src
+
+Run under qemu-user emulation on this x86_64 machine, the build got through ~npm ci~ and failed at ~RUN npx prisma generate~ with ~RuntimeError: panicked at psl/parser-database/src/types/index_fields.rs:184:22: explicit panic~ -- the upstream bug, reproduced.  So *as of v0.54.0 there is no working local arm64 build*; a native build on an Asahi machine runs the same arm64 Node and the same WASM engine and should be expected to fail the same way until Prisma is fixed.  The options until then:
+
+- run the published amd64 image under emulation -- ~qemu-user-static-x86~ registered with binfmt, then ~podman pull --platform linux/amd64 docker.io/helpcodeai/anythingmcp:v0.54.0~; =broker.image= then names it as usual.  Not tried here, and expect it to be slow;
+- use ~broker.type: jentic~, whose image is published for arm64 (~0.44.0~ has both);
+- or, once upstream ships a fix, the build above, with =broker.image: localhost/anythingmcp:<tag>-arm64=.
+
 ** Renewal
 
 An access token often lasts an hour.  The daemon renews any that is
@@ -1014,6 +1233,17 @@ that matter here:
 | ~integrations.directory~               | ~auto~, ~always~ or ~never~ present it as a directory |
 | ~connectors.directory_min_tools~       | more tools than this is big               |
 | ~connectors.directory_min_chars~       | more characters of tool definitions than this is big |
+| ~broker.enabled~                       | run the integration broker (off by default) |
+| ~broker.type~                          | ~anythingmcp~ or ~jentic~                 |
+| ~broker.image~                         | the gateway's image, pinned; empty is this release's |
+| ~broker.database_image~                | AnythingMCP's PostgreSQL, pinned          |
+| ~broker.bind~                          | where its ports are published (loopback) |
+| ~broker.port~                          | its MCP endpoint and API                  |
+| ~broker.dashboard_port~                | AnythingMCP's dashboard                   |
+| ~broker.connection~                    | a podman other than this user's rootless one |
+| ~broker.restart~                       | ~never~, ~on-failure~ or ~always~         |
+| ~agents.broker_server~                 | the agent's own gateway server            |
+| ~teams.broker_server~                  | the team's gateway server                 |
 
 ** Troubleshooting
 
@@ -1084,6 +1314,22 @@ The agent called a tool by its bare name while holding more than one account on 
 *** "both ... accounts labelled"
 
 Two accounts on one service fold to the same label.  Give one of them a different ~account~.
+
+*** "is the integration broker's connector"
+
+~broker-agent-*~ and ~broker-team-*~ are made from =broker.*= and =broker_server=, not read from the file.  Change those, and store the key with ~clawtilla broker key~.
+
+*** "AnythingMCP ... refused this (HTTP 403)"
+
+The key was made for another gateway server than the agent's =broker_server= names, or the server does not allow what was asked.  Make the key on the server's own page.
+
+*** "Jentic One is not started while an agent that uses it is unconfined"
+
+Set ~runtime.confine: bwrap~ on the agents it names, or take their =broker_server= away.  See "Jentic One: confined agents only".
+
+*** The broker says failed after five restarts
+
+A container keeps stopping.  ~clawtilla broker logs~ (or ~podman logs --tail 100 <container>~) says why; ~clawtilla broker start~ tries again once it is fixed.
 
 *** "connectors.registry_enabled is off"
 
