@@ -138,6 +138,7 @@
 #include "integration/clawt-oauth.h"
 #include "integration/clawt-mcp-auth.h"
 #include "integration/clawt-connector-accounts.h"
+#include "integration/clawt-broker.h"
 #include "integration/clawt-connector-relay.h"
 #include "integration/clawt-connector-registry.h"
 #include "integration/clawt-venture.h"

@@ -1462,6 +1462,16 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
     }
 
     /*
+     * The integration broker moved -- started, came up, failed, stopped:
+     * its row on the Connectors page redraws.
+     */
+    if (g_strcmp0(kind, "broker.changed") == 0) {
+        if (self->settings != NULL)
+            clawt_gtk_refresh_settings_connectors(self);
+        return;
+    }
+
+    /*
      * A device paired, revoked or expired: the Devices list redraws, and
      * a code being shown learns it was used.
      */
@@ -5145,6 +5155,11 @@ on_settings_closed(AdwDialog *dialog, gpointer user_data)
     self->settings_rounds_group = NULL;
     g_clear_pointer(&self->settings_rounds_rows, g_ptr_array_unref);
     self->settings_connectors = NULL;
+    self->settings_broker_row = NULL;
+    self->settings_broker_dashboard = NULL;
+    self->settings_broker_start = NULL;
+    self->settings_broker_stop = NULL;
+    self->settings_broker_restart = NULL;
     self->settings_directory_min_tools = NULL;
     self->settings_directory_min_chars = NULL;
     self->settings_devices = NULL;

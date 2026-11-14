@@ -520,6 +520,22 @@ clawt_daemon_handle_connector(
     builder = json_builder_new();
     *handled = TRUE;
 
+    /*
+     * The integration broker's connectors are made from the config, not
+     * read from it: an edit here would be saved nowhere and undone by the
+     * next reload, so it is refused with the settings that do change them.
+     */
+    if (g_strcmp0(kind, "connector.begin") == 0 ||
+        g_strcmp0(kind, "connector.discover") == 0 ||
+        g_strcmp0(kind, "connector.key") == 0 ||
+        g_strcmp0(kind, "connector.revoke") == 0) {
+        JsonNode *refused = clawt_daemon_broker_refuse_managed(
+            self, request, clawt_ipc_payload_string(payload, "name"));
+
+        if (refused != NULL)
+            return refused;
+    }
+
     if (g_strcmp0(kind, "connector.catalog") == 0) {
         GPtrArray *catalog = clawt_daemon_catalog(self);
         guint i;

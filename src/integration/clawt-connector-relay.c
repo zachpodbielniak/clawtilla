@@ -37,6 +37,16 @@
     "This connector was narrowed to a smaller set of tools, so the rest " \
     "are not yours to call. Ask whoever set it up if you need one of them."
 
+/*
+ * The same refusal in front of an integration broker, which has refusals
+ * of its own.  Said as clawtilla's so the two read differently: the fix
+ * for this one is in clawtilla's config, the gateway's in its dashboard.
+ */
+#define BROKER_REFUSAL_HINT \
+    "clawtilla withheld this, not the integration broker: this connector " \
+    "was narrowed to a smaller set of tools, so the rest are not yours to " \
+    "call. Ask whoever set it up if you need one of them."
+
 /* A tool result carrying a file or an image is routinely megabytes. */
 #define RELAY_BUFFER_BYTES (64 * 1024)
 
@@ -135,6 +145,7 @@ clawt_connector_plan_free(ClawtConnectorPlan *self)
     g_free(self->url);
     g_free(self->header_name);
     g_free(self->header_value);
+    g_free(self->gateway);
 
     g_free(self);
 }
@@ -156,6 +167,17 @@ clawt_connector_plan_new(const ClawtConnectorInfo *info,
     g_return_val_if_fail(binding != NULL, NULL);
 
     plan->name = g_strdup(clawt_integration_binding_get_name(binding));
+
+    /*
+     * A broker's catalogue entry means a gateway answers, not the
+     * service: its refusals are named as the gateway's.
+     */
+    {
+        ClawtBrokerType broker;
+
+        if (clawt_broker_type_for_provider(info->id, &broker))
+            plan->gateway = g_strdup(clawt_broker_type_label(broker));
+    }
 
     /*
      * The integration wins over the catalogue.  Somebody who wrote a
@@ -404,6 +426,21 @@ deliver_one(HttpBridge *bridge, const gchar *data)
     clawt_mcp_relay_policy_inbound(bridge->policy, data, &to_client,
                                    &to_server);
 
+    /*
+     * An error the gateway sent is named as the gateway's, so the agent
+     * and whoever reads its transcript can tell "AnythingMCP refused it"
+     * from a refusal clawtilla made on the way.
+     */
+    if (to_client != NULL && bridge->plan->gateway != NULL) {
+        gchar *named = clawt_broker_annotate_reply(to_client,
+                                                   bridge->plan->gateway);
+
+        if (named != NULL) {
+            g_free(to_client);
+            to_client = named;
+        }
+    }
+
     if (to_client != NULL)
         write_line(bridge->out, to_client);
 
@@ -466,6 +503,7 @@ forward_one(HttpBridge *bridge, const gchar *line)
     SoupMessageHeaders *headers;
     const gchar *content_type;
     const gchar *fresh_session;
+    gconstpointer data;
     gsize length = 0;
 
     message = clawt_http_message_new("POST", bridge->plan->url,
@@ -504,8 +542,47 @@ forward_one(HttpBridge *bridge, const gchar *line)
                                         &error);
 
     if (response == NULL) {
+        /*
+         * A gateway that is not answering gets a reply naming it.  Without
+         * one the client waits on a request id nothing will ever answer,
+         * which an agent sees as a tool that hangs.
+         */
+        if (bridge->plan->gateway != NULL) {
+            g_autofree gchar *reply = clawt_broker_refusal_reply(
+                line, bridge->plan->gateway,
+                bridge->plan->name != NULL ? bridge->plan->name : "?", 0,
+                error->message);
+
+            if (reply != NULL)
+                write_line(bridge->out, reply);
+        }
+
         g_printerr("clawtilla: the request to the tool server failed: %s\n",
                    error->message);
+        return;
+    }
+
+    /*
+     * Anything a gateway refuses, a 401 included: there is no sign-in to
+     * offer for a broker's connector, only a key to store, and the
+     * refusal says which `clawtilla broker key` stores it.
+     */
+    if (bridge->plan->gateway != NULL &&
+        soup_message_get_status(message) >= 400) {
+        g_autofree gchar *body = g_strndup(g_bytes_get_data(response, NULL),
+                                           g_bytes_get_size(response));
+        g_autofree gchar *reason = clawt_broker_reason_from_body(body);
+        g_autofree gchar *reply = clawt_broker_refusal_reply(
+            line, bridge->plan->gateway,
+            bridge->plan->name != NULL ? bridge->plan->name : "?",
+            soup_message_get_status(message), reason);
+
+        if (reply != NULL)
+            write_line(bridge->out, reply);
+
+        g_printerr("clawtilla: %s answered %u for connector '%s'\n",
+                   bridge->plan->gateway, soup_message_get_status(message),
+                   bridge->plan->name != NULL ? bridge->plan->name : "?");
         return;
     }
 
@@ -558,7 +635,17 @@ forward_one(HttpBridge *bridge, const gchar *line)
     content_type = soup_message_headers_get_content_type(
         soup_message_get_response_headers(message), NULL);
 
-    text = g_strndup(g_bytes_get_data(response, &length), length);
+    /*
+     * Two statements, not one call.  `g_strndup(g_bytes_get_data(response,
+     * &length), length)` leaves the order of its arguments to the
+     * compiler, and gcc on x86-64 read `length` first -- still 0 -- so
+     * every successful reply from every remote connector became an empty
+     * string and was dropped without a word, while refusals, which never
+     * came this way, worked.  Found by running a real gateway through the
+     * relay, not by reading.
+     */
+    data = g_bytes_get_data(response, &length);
+    text = g_strndup(data, length);
 
     deliver_response(bridge, content_type, text);
 }
@@ -655,7 +742,8 @@ clawt_connector_relay_run_full(ClawtConnectorPlan *plan,
      */
     policy.permitted = plan->permitted;
     policy.filter = (plan->permitted != NULL);
-    policy.hint = CONNECTOR_REFUSAL_HINT;
+    policy.hint = (plan->gateway != NULL) ? BROKER_REFUSAL_HINT
+                                          : CONNECTOR_REFUSAL_HINT;
     policy.gate = gate;
     policy.gate_data = gate_data;
     policy.directory = directory;

@@ -911,6 +911,99 @@ directory_form(const gchar *escaped, const gchar *current)
     return HTMX_ELEMENT(g_steal_pointer(&form));
 }
 
+/*
+ * The integration broker's card: which broker and the library's word for
+ * its state, what it is doing, its dashboard, and the lifecycle buttons
+ * that can do something now.  First on the page, because its connectors
+ * are in the list below it.
+ */
+static void
+add_broker_card(ClawtWebApp *app, HtmxDiv *box)
+{
+    g_autoptr(JsonNode) reply = clawt_web_app_call(app, "broker.status",
+                                                   NULL);
+    JsonObject *status = clawt_web_root(reply);
+    gboolean enabled = clawt_web_member_bool(status, "enabled", FALSE);
+    const gchar *nick = clawt_web_member(status, "state", NULL);
+    const gchar *detail = clawt_web_member(status, "detail", NULL);
+    const gchar *url = clawt_web_member(status, "dashboard_url", NULL);
+    const gchar *refusal = clawt_web_member(status, "refusal", NULL);
+    gint state = (gint)CLAWT_BROKER_STATE_DISABLED;
+    g_autofree gchar *title = NULL;
+    g_autoptr(HtmxDiv) card = NULL;
+    g_autoptr(HtmxDiv) buttons = htmx_div_new();
+    HtmxElement *body;
+
+    if (status == NULL)
+        return;
+
+    if (nick != NULL)
+        clawt_enum_from_nick(CLAWT_TYPE_BROKER_STATE, nick, &state);
+
+    title = g_strdup_printf("%s — %s",
+                            clawt_web_member(status, "label",
+                                             "Integration broker"),
+                            clawt_broker_state_label((ClawtBrokerState)state));
+    card = clawt_web_card(title, "Integration broker");
+    body = clawt_web_card_body(card);
+
+    if (!enabled) {
+        clawt_web_add(body, clawt_web_row(
+            "Off", "set broker.enabled to run it; clawtilla then pulls its "
+                   "image and starts it with the daemon"));
+    } else {
+        if (refusal != NULL)
+            clawt_web_add(body, clawt_web_row("Refused", refusal));
+
+        if (detail != NULL)
+            clawt_web_add(body, clawt_web_row("Now", detail));
+
+        clawt_web_add(body, clawt_web_row("Image",
+                                          clawt_web_member(status, "image",
+                                                           "?")));
+    }
+
+    /*
+     * The dashboard is where SaaS sign-ins happen, with the person's own
+     * OAuth clients; a new tab, because this page is the fleet.
+     */
+    if (url != NULL && state == CLAWT_BROKER_STATE_RUNNING) {
+        g_autoptr(HtmxDiv) line = htmx_div_new();
+        g_autoptr(HtmxA) link = htmx_a_new_with_href(url);
+
+        htmx_element_set_attribute(HTMX_ELEMENT(link), "target", "_blank");
+        htmx_element_set_attribute(HTMX_ELEMENT(link), "rel", "noopener");
+        htmx_node_set_text_content(HTMX_NODE(link), "Open the dashboard");
+        htmx_node_add_child(HTMX_NODE(line), HTMX_NODE(link));
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(line));
+    } else if (url != NULL && enabled) {
+        clawt_web_add(body, clawt_web_row("Dashboard", url));
+    }
+
+    htmx_element_add_class(HTMX_ELEMENT(buttons), "btn-row");
+
+    if (enabled && (state == CLAWT_BROKER_STATE_STOPPED ||
+                    state == CLAWT_BROKER_STATE_ERROR))
+        clawt_web_add(buttons, clawt_web_post_button(
+            "Start", "/settings/connectors/broker/start", "primary", NULL));
+
+    if (state == CLAWT_BROKER_STATE_STARTING ||
+        state == CLAWT_BROKER_STATE_RUNNING ||
+        state == CLAWT_BROKER_STATE_ERROR)
+        clawt_web_add(buttons, clawt_web_post_button(
+            "Stop", "/settings/connectors/broker/stop", "default",
+            "Stop the integration broker? Its data stays."));
+
+    if (enabled && (state == CLAWT_BROKER_STATE_RUNNING ||
+                    state == CLAWT_BROKER_STATE_ERROR))
+        clawt_web_add(buttons, clawt_web_post_button(
+            "Restart", "/settings/connectors/broker/restart", "default",
+            NULL));
+
+    htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(buttons));
+    htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
+}
+
 static HtmxElement *
 connectors_content(ClawtWebApp *app)
 {
@@ -928,6 +1021,8 @@ connectors_content(ClawtWebApp *app)
     gint64 min_chars = clawt_web_member_int(clawt_web_root(reply),
                                             "directory_min_chars", 100000);
     guint i;
+
+    add_broker_card(app, box);
 
     {
         g_autoptr(HtmxDiv) registry_row = htmx_div_new();
@@ -3858,6 +3953,25 @@ clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app)
                                          "integration", "name",
                                          "integrations", "Removed."));
 
+    /*
+     * Before every /settings/connectors/:connector route, so "broker" is
+     * never read as a connector's name.
+     */
+    htmx_router_post(router, "/settings/connectors/broker/start",
+                     on_settings_action,
+                     settings_action_new(app, "broker.start", "broker",
+                                         "name", "connectors",
+                                         "Starting."));
+    htmx_router_post(router, "/settings/connectors/broker/stop",
+                     on_settings_action,
+                     settings_action_new(app, "broker.stop", "broker",
+                                         "name", "connectors",
+                                         "Stopping."));
+    htmx_router_post(router, "/settings/connectors/broker/restart",
+                     on_settings_action,
+                     settings_action_new(app, "broker.restart", "broker",
+                                         "name", "connectors",
+                                         "Restarting."));
     htmx_router_post(router, "/settings/connectors/add", on_connector_add,
                      app);
     htmx_router_post(router, "/settings/connectors/registry-refresh",

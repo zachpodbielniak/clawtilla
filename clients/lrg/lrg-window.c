@@ -827,6 +827,9 @@ clawt_lrg_window_event(ClawtLrgApp *app, ClawtEvent *event)
     if (g_str_has_prefix(kind, "device."))
         clawt_lrg_settings_devices_event(app, event);
 
+    if (g_strcmp0(kind, "broker.changed") == 0)
+        clawt_lrg_settings_connectors_event(app, event);
+
     if (g_str_has_prefix(kind, "agent.") || g_str_has_prefix(kind, "team.") ||
         g_strcmp0(kind, "fleet.reordered") == 0) {
         if (g_strcmp0(kind, "agent.changed") == 0)

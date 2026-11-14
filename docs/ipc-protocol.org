@@ -1116,6 +1116,26 @@ authorization server, or the server answered 401), ~needs_sign_in~ (the
 server refused the agent's last call) and, once discovery has run,
 ~auth_server~ -- the issuer, to put on the button.
 
+The integration broker (docs/connectors.org, "An integration broker"):
+~broker.status~ answers ~enabled~, ~type~ and ~label~ (~anythingmcp~,
+"AnythingMCP"), ~state~ (a ~ClawtBrokerState~ nick) and ~state_label~
+(~clawt_broker_state_label()~), ~detail~ when it is doing something or
+failed, ~image~, ~dashboard_url~, ~mcp_url~, ~restarts~, ~refusal~ when
+Jentic One is refused for an unconfined agent, ~assignments~ (each with
+~target~, ~server~, ~connector~, ~agents~ and ~key_stored~ -- whether, never
+what) and ~warnings~.  ~broker.start~, ~broker.stop~ and ~broker.restart~
+answer at once with the same members, saying ~starting~ or ~stopping~:
+the work is on worker threads and ~broker.changed~ follows it.  A start
+is refused with ~CLAWT_ERROR_NOT_SUPPORTED~ while ~broker.enabled~ is off
+and ~CLAWT_ERROR_CONFINEMENT~ for Jentic One with an unconfined agent.
+~broker.logs~ is deferred and answers ~logs~.  ~broker.key~ takes
+~target~ (an agent id, or ~team:<id>~) and ~key~, writes it 0600 and
+answers ~key_file~ -- the path, never the key.  ~integration.update~,
+~integration.remove~, ~connector.begin~, ~connector.discover~,
+~connector.key~ and ~connector.revoke~ aimed at one of the broker's own
+connectors (~broker-agent-*~, ~broker-team-*~) are refused with
+~CLAWT_ERROR_INVALID_ARGUMENT~, naming the settings that change it.
+
 ~integration.add~ for a ~connector~ given a ~url~ and no ~provider~ is the
 built-in ~remote~ entry.  A second connector on a ~provider~ that already
 has one is refused (~CLAWT_ERROR_INVALID_ARGUMENT~) without an ~account~,
@@ -1678,6 +1698,7 @@ Every kind published, by subject:
 | a skill | ~skill.changed~ |
 | a recording | ~teach.changed~ |
 | an integration | ~integration.changed~ |
+| the broker's state (~stopped~, ~starting~, ~running~, ...), or ~key~ | ~broker.changed~ (the integration broker moved, or a key was stored) |
 | a cloud image | ~image.progress~ (~done~, ~total~), ~image.finished~ (~path~ or ~error~) |
 | the daemon | ~device.paired~ (~device~, ~name~), ~device.revoked~ (~device~), ~device.expired~ (~device~) |
 | an agent | ~computer.exec~ |

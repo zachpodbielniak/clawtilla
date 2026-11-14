@@ -542,6 +542,15 @@ declare -A AFFORDANCES=(
     ["account label on connector rows"]="clawt_connector_row_subtitle|clawt_connector_row_subtitle|clawt_connector_row_subtitle"
     ["account label asked for a second account"]="required for a second account|required for a second account|unique, for a second account"
     #
+    # The integration broker's row on the Connectors page: its state in
+    # the library's word for it, the gateway's dashboard (where SaaS
+    # sign-ins happen), and start, stop and restart.  Layer 1 sees the
+    # four broker.* frames; it cannot see that a client draws the state
+    # or offers the dashboard, which send nothing of their own.
+    #
+    ["broker state on connectors"]="clawt_broker_state_label|clawt_broker_state_label|clawt_broker_state_label"
+    ["broker dashboard"]="\"dashboard_url\"|\"dashboard_url\"|\"dashboard_url\""
+    #
     # Each team's "Problems to look at" room has a sidebar row.  It sends
     # no frame of its own -- it is room.list read with a different
     # filter -- so layer 1 cannot see a client that lists only declared
