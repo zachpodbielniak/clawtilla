@@ -476,7 +476,7 @@ Under ~runtime.confine: bwrap~ the relay is not on the host: the agent's CLI sta
 
 What the box binds now, read-only, one by one (~clawt_agent_confine_connector_paths()~, from the same ~clawt_integration_resolve_for_agent()~ that writes the agent's =.mcp.json=):
 
-- each granted connector's own directory, =secrets.dir/connectors/<name>/=, holding its =token.json=;
+- each granted connector's own directory, =secrets.dir/connectors/<name>/=, holding its ~token.json~;
 - a granted connector's ~token_file~ when it names a file somewhere else -- a key written by hand, an integration broker's key -- as that file;
 - ~connectors.dir~, the catalogue overlay, which is descriptions and no secrets.
 
@@ -484,7 +484,7 @@ Never =secrets.dir= itself, never =connector-auth/= (the OAuth registrations, wh
 
 *Why a directory each, not the file.*  A bind is of the inode the path named when the box started. The daemon writes a credential by writing a new file and renaming it into place, so a file bind went on showing the token the box started with: the first renewal after an agent started was invisible inside its box, every relay started after that sent an expired token, and a credential forgotten while the agent ran stayed readable there. A directory bind sees the rename. So each connector's credential has a directory of its own (=clawt_connector_token_dir()=), which the daemon creates, empty and 0700, before it builds the box -- a connector connected while the agent runs is seen by its next relay -- and never removes, because one made again would not be the directory the running boxes hold. The daemon moves a credential still in the old flat layout (=secrets.dir/connector-<name>.json=) into its directory when it starts, before any agent, and points ~token_file~ at it. A ~token_file~ somebody chose is never moved; a change to one reaches a confined agent at its next start.
 
-*Renewal stays in the daemon.*  The relay never writes a credential, so nothing is bound writable: it asks the daemon to renew over IPC (~connector.refresh~) before it reads, the daemon writes the new token into the connector's directory, and the relay reads it there. The reply carries no credential. A relay reads the =clawtilla.yaml= its box started with, which may name the old flat path or no ~token_file~ at all; ~clawt_connector_find_token_file()~ prefers the daemon's own file when it exists, so neither matters.
+*Renewal stays in the daemon.*  The relay never writes a credential, so nothing is bound writable: it asks the daemon to renew over IPC (~connector.refresh~) before it reads, the daemon writes the new token into the connector's directory, and the relay reads it there. The reply carries no credential. A relay reads the ~clawtilla.yaml~ its box started with, which may name the old flat path or no ~token_file~ at all; ~clawt_connector_find_token_file()~ prefers the daemon's own file when it exists, so neither matters.
 
 *What this does not change.*  The agent's own tools run in the same box as its relays, so a confined agent can read the credentials of the connectors it holds -- the same as an unconfined agent can, and the same as an integration broker's key, which is bound for the same reason. What the box adds is everything else: other agents' connectors, the OAuth registrations, the rest of =secrets.dir= and of the home directory. A credential the agent must not be able to read belongs to a container or VM agent, whose relay runs on the host.
 
@@ -552,6 +552,20 @@ Validating and then trusting printf anyway would leave the whole of
 printf standing behind a check that has to be perfect for ever.  As it
 is, the worst a wrong one can do is produce a credential the service
 rejects.
+
+** The integration broker
+
+With =broker.enabled= on, clawtilla runs AnythingMCP or Jentic One in rootless podman (=src/integration/clawt-broker.c=, [[file:connectors.org::*An integration broker][connectors.org]]).  What that changes, said plainly:
+
+- *A second credential store.*  The SaaS tokens the gateway holds are in its own encrypted store under =<state_dir>/broker/=, encrypted with a key that lives beside it (=encryption-key=, or =jentic-encryption-key=), 0600.  It is not =secrets.dir= and nothing in clawtilla reads it; backing up, rotating and revoking those tokens happen in the gateway's dashboard.
+- *Only the keys are clawtilla's.*  One per gateway server, at =<state_dir>/broker/keys/=, 0600, in the shape every connector token has; written by ~broker.key~, which answers with the path, and never returned over IPC -- ~broker.status~ reports ~key_stored~, a boolean.  No instance-wide gateway token exists: AnythingMCP's ~MCP_BEARER_TOKEN~, which reaches every server of every workspace, is never set, and each key made on a server's page is refused (403) by every other server.
+- *Loopback by default.*  The ports are published on =broker.bind=, 127.0.0.1 unless somebody widens it; the database publishes no port and listens on no TCP socket, reached by the gateway through a unix socket in =<state_dir>/broker/run=.  An agent with ~runtime.network~ ~gated~ or ~none~ is not given the broker at all, since its sandbox's loopback is not this one.
+- *Jentic One only for confined agents.*  Its own threat model says an agent running as the same OS user can read its credential database and encryption key.  It is refused while any agent naming a gateway server lacks ~runtime.confine: bwrap~, and a confined agent's box binds exactly its own key file read-only -- the relay that reads it runs in the box -- and nothing else of =<state_dir>/broker/=.  =tests/test-agent-confine.c= checks the box for the key and for the absence of everything beside it; the key reaches the box the way every connector credential does, through ~clawt_agent_confine_connector_paths()~ (the gateway connector's ~token_file~, bound as that one file; see *Connectors in a confined box*), and that connector, scoped to exactly the agents given the server, is made from ~clawt_broker_assignments()~. A key stored with ~broker.key~ while the agent runs reaches its box at the agent's next start.  Its telemetry, release check and OTLP exporters are always off.
+- *Secrets in the containers' environment.*  The database password, the JWT secret and the encryption key reach the containers as environment, so ~podman inspect~ shows them -- to this user, who can read =<state_dir>= anyway.  They are in no argv, no IPC reply, and no log line clawtilla writes; ~broker.logs~ runs what the containers print through ~clawt_redact_secrets()~, which is best effort.
+- *Images are pinned.*  An image with no tag or tagged ~latest~ is refused at start.
+- *A refusal names who refused.*  The gateway's refusals are prefixed with its name and its reason is repeated only in one bounded line from a recognised shape, never the raw body; clawtilla's own refusals say clawtilla.
+
+For an unconfined host agent this is the boundary every connector has: it keeps the credentials out of the agent's files, environment, argv and transcript, and does not stop an agent that goes looking under =<state_dir>=.
 
 ** Inbound triggers
 

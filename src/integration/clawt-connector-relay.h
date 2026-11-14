@@ -63,6 +63,9 @@ G_BEGIN_DECLS
  * @unauthorized: (nullable): told when a remote server answers 401, so
  *   the daemon can offer a sign-in
  * @unauthorized_data: data for @unauthorized
+ * @gateway: (nullable): the integration broker answering for this
+ *   connector -- "AnythingMCP", "Jentic One" -- so a refusal it sends is
+ *   named as its, never as clawtilla's
  *
  * Everything needed to reach one connector's tools, worked out before
  * anything is started.
@@ -121,6 +124,8 @@ typedef struct {
 
     ClawtConnectorUnauthorized unauthorized;
     gpointer                   unauthorized_data;
+
+    gchar   *gateway;
 } ClawtConnectorPlan;
 
 /**

@@ -1319,6 +1319,17 @@ static const ClawtSchemaEntry schema[] = {
   "of them is one skill, and the most specific place it was asked for is\n"
   "what gets reported.", "0.2.0" },
 
+{ "teams.broker_server", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "The broker's gateway server for this team's agents.\n"
+  "\n"
+  "For anythingmcp, the id of an MCP server made in its dashboard (the\n"
+  "last part of the server's MCP URL); its connectors are what the\n"
+  "team's agents may use. For jentic, the Jentic agent the team acts\n"
+  "as, whose API key `clawtilla broker key team:<id>` stores. An agent\n"
+  "with its own agents.broker_server uses that one instead. Unused\n"
+  "unless broker.enabled is on.", "0.24.0" },
+
 /* ── computers ───────────────────────────────────────────────────── */
 { "computers", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Machines several agents share.\n"
@@ -1953,6 +1964,105 @@ static const ClawtSchemaEntry schema[] = {
   "rather than listing them. Only read when a connector's `directory` is\n"
   "`auto`.", "0.18.0" },
 
+/* ── broker ──────────────────────────────────────────────────────── */
+{ "broker", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "An integration broker clawtilla runs for you, in podman.\n"
+  "\n"
+  "Ready-made app integrations -- hundreds of SaaS and business systems\n"
+  "-- behind one MCP gateway on this machine. clawtilla pulls the\n"
+  "pinned image, keeps the gateway's database, keys and token under\n"
+  "<daemon.state_dir>/broker/, starts it with the daemon and keeps it\n"
+  "running. Each agent or team names its own gateway server in\n"
+  "agents.broker_server or teams.broker_server and reaches it as a\n"
+  "connector, through the same relay as every other connector.\n"
+  "\n"
+  "Not the provider-key broker of runtime.network: gated, which is a\n"
+  "different thing with a similar name. See docs/connectors.org,\n"
+  "\"An integration broker\".", "0.24.0" },
+
+{ "broker.enabled", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "false", NULL,
+  "Run the broker.\n"
+  "\n"
+  "Off by default, because turning it on pulls an image of several\n"
+  "hundred megabytes and opens ports on this machine. Started in the\n"
+  "background when the daemon starts or this is turned on, never in the\n"
+  "way of either: broker.status says starting while the image pulls.", "0.24.0" },
+
+{ "broker.type", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "anythingmcp", clawt_broker_type_get_type,
+  "Which broker: anythingmcp or jentic.\n"
+  "\n"
+  "anythingmcp is an MCP gateway (AGPL-3.0) whose adapters turn REST,\n"
+  "SOAP, GraphQL and SQL services into tools, with OAuth through your\n"
+  "own client. jentic is Jentic One (Apache-2.0, a public beta whose\n"
+  "schemas may change), a credential broker that checks a per-agent\n"
+  "rule before it injects a stored key. Jentic One's own caveat is\n"
+  "that an agent running as the same OS user can read its state, so it\n"
+  "is refused unless every agent using it has runtime.confine: bwrap.\n"
+  "Its telemetry and release check are always switched off.", "0.24.0" },
+
+{ "broker.image", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_COMMENTED,
+  NULL, NULL,
+  "The gateway's image, pinned to a tag.\n"
+  "\n"
+  "Empty means the image this release was checked against:\n"
+  "docker.io/helpcodeai/anythingmcp:v0.54.0 for anythingmcp and\n"
+  "ghcr.io/jentic/jentic-one-app:0.44.0 for jentic. An image with no\n"
+  "tag, or tagged latest, is refused: an upgrade should be a change\n"
+  "somebody made. AnythingMCP publishes amd64 only, so an aarch64\n"
+  "machine names a locally built one here -- docs/connectors.org says\n"
+  "how.", "0.24.0" },
+
+{ "broker.database_image", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_COMMENTED,
+  NULL, NULL,
+  "The database image beside an AnythingMCP gateway, pinned to a tag.\n"
+  "\n"
+  "Empty means docker.io/library/postgres:17.12-alpine. The database\n"
+  "publishes no port: the two containers share a unix socket under\n"
+  "<daemon.state_dir>/broker/run. Jentic One keeps SQLite files and\n"
+  "runs no database container, so this is unused for jentic.", "0.24.0" },
+
+{ "broker.bind", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  "127.0.0.1", NULL,
+  "The address the gateway's ports are published on.\n"
+  "\n"
+  "Loopback by default: the relay that reaches it runs on this machine.\n"
+  "Anything wider puts the gateway's dashboard and MCP endpoint on that\n"
+  "network, and the dashboard's own sign-in is all that guards it.", "0.24.0" },
+
+{ "broker.port", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "47400", NULL,
+  "The host port of the gateway's MCP endpoint and API.\n"
+  "\n"
+  "For jentic this is also its dashboard, which shares the port.", "0.24.0" },
+
+{ "broker.dashboard_port", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "47300", NULL,
+  "The host port of AnythingMCP's dashboard.\n"
+  "\n"
+  "Where you register the first (admin) account, sign in to SaaS apps\n"
+  "with your own OAuth clients and make a gateway server for each agent\n"
+  "or team. Unused for jentic, whose dashboard is on broker.port.", "0.24.0" },
+
+{ "broker.connection", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_COMMENTED,
+  NULL, NULL,
+  "Which podman runs the broker, as computer.container.connection says.\n"
+  "\n"
+  "Empty is this user's rootless podman. A remote podman runs the\n"
+  "containers there while broker.bind and the relay still dial this\n"
+  "machine, so a remote one also needs a tunnel to its ports.", "0.24.0" },
+
+{ "broker.restart", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "always", clawt_restart_policy_get_type,
+  "What to do when a broker container stops without being asked to.\n"
+  "\n"
+  "never leaves it stopped and says so; on-failure and always both\n"
+  "start it again, since podman's listing does not say how a container\n"
+  "ended. Five restarts within ten minutes stop the retries, so a\n"
+  "gateway that cannot start is reported rather than restarted for\n"
+  "ever.", "0.24.0" },
+
 /* ── grok ────────────────────────────────────────────────────────── */
 { "grok", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Handing work to Grok bots, and hearing back.\n"
@@ -2430,6 +2540,19 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "Unset means no team: the agent still messages and is messaged, it is\n"
   "simply not grouped and no team lead may assign to it.", "0.1.0" },
+
+{ "agents.broker_server", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "This agent's own gateway server on the broker.\n"
+  "\n"
+  "For anythingmcp, the id of an MCP server made in its dashboard (the\n"
+  "last part of the server's MCP URL); the connectors assigned to that\n"
+  "server are this agent's permission, and clawtilla reaches it as the\n"
+  "connector broker-agent-<id>. For jentic, the Jentic agent this one\n"
+  "acts as, whose API key `clawtilla broker key <id>` stores. Unset\n"
+  "means the team's teams.broker_server, or no broker at all. An agent\n"
+  "with runtime.network gated or none cannot reach the gateway on\n"
+  "loopback and is not given it.", "0.24.0" },
 
 { "agents.team_role", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
   "member", clawt_team_role_get_type,

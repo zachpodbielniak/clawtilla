@@ -654,6 +654,16 @@ clawt_agent_confine_build(ClawtAgentConfig     *config,
      * so the predicate (clawt_sandbox_path_is_allowed()) and the argv
      * say the same thing about each path.
      */
+    /*
+     * The integration broker's key arrives here too, and only through
+     * here: the gateway connector the config loader makes for this agent
+     * (clawt_broker_connector_nodes()) is a connector scoped to it, whose
+     * token_file is <state_dir>/broker/keys/<target>.json -- bound as
+     * that one file, nothing else of <state_dir>/broker, which is the
+     * isolation Jentic One's documentation asks for.  One list, so the
+     * broker's key and every other connector's cannot be bound by rules
+     * that drift apart.
+     */
     {
         g_auto(GStrv) secrets = clawt_agent_confine_connector_paths(config);
 

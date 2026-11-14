@@ -453,6 +453,12 @@ struct _ClawtDaemon {
      */
     ClawtEgressGate   *egress_gate;
     ClawtEgressBroker *egress_broker;
+
+    /*
+     * The integration broker (daemon-broker.c): made when `broker.enabled`
+     * is first seen on, never otherwise.
+     */
+    ClawtBroker       *broker;
     guint    sweep_source_id;
     gboolean running;
 };
@@ -1211,6 +1217,29 @@ void clawt_daemon_egress_add_status(ClawtDaemon *self, JsonBuilder *builder,
 void clawt_daemon_egress_refresh_allowlist(ClawtDaemon *self);
 void clawt_daemon_egress_stop(ClawtDaemon *self);
 void clawt_daemon_egress_release(ClawtDaemon *self);
+
+JsonNode *
+clawt_daemon_handle_broker(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
+
+/*
+ * The integration broker (daemon-broker.c).  sync() starts or stops it to
+ * match `broker.enabled`, at daemon start and after every reload; stop()
+ * and release() are the daemon's own stop and dispose.
+ * refuse_managed() is the error for an edit aimed at one of the
+ * broker's connectors, or NULL when @name is not one.
+ */
+void clawt_daemon_broker_sync(ClawtDaemon *self);
+void clawt_daemon_broker_stop(ClawtDaemon *self);
+void clawt_daemon_broker_release(ClawtDaemon *self);
+JsonNode *clawt_daemon_broker_refuse_managed(ClawtDaemon *self,
+                                             JsonNode    *request,
+                                             const gchar *name);
 
 JsonNode *
 clawt_daemon_handle_mount(

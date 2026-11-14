@@ -694,6 +694,82 @@ test_default_login_paths(void)
     g_assert_cmpstr(codex[0], ==, codex_dir);
 }
 
+/*
+ * The integration broker: a confined agent's connector relay runs in its
+ * box and reads the agent's own gateway key, so the box binds exactly
+ * that file, read-only -- and nothing else of <state_dir>/broker, where
+ * the key that decrypts every stored SaaS credential lives.  The daemon's
+ * state directory is kept apart from the agent's here, or the agent's rw
+ * grant would cover the key and the test could not tell.
+ */
+static void
+test_broker_key_is_bound_alone(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *daemon_state = NULL;
+    g_autofree gchar *yaml = NULL;
+    g_autofree gchar *key = NULL;
+    g_autofree gchar *keys = NULL;
+    g_autofree gchar *broker = NULL;
+    g_autofree gchar *encryption = NULL;
+    g_auto(GStrv) wrapped = NULL;
+    const gchar *argv[] = { "/bin/true", NULL };
+    guint i;
+
+    fixture_setup(&fixture);
+    with_bwrap(&fixture);
+
+    daemon_state = g_build_filename(fixture.base, "daemon", NULL);
+    yaml = g_strdup_printf(
+        "daemon:\n"
+        "  state_dir: \"%s\"\n"
+        "broker:\n"
+        "  enabled: true\n"
+        "  type: jentic\n"
+        "agents:\n"
+        "  - id: boxed\n"
+        "    workspace: \"%s\"\n"
+        "    broker_server: boxed-in-jentic\n"
+        "    runtime:\n"
+        "      confine: bwrap\n",
+        daemon_state, fixture.workspace);
+    config = clawt_config_load_from_string(yaml, &error);
+    g_assert_no_error(error);
+
+    g_assert_true(clawt_broker_prepare_state(CLAWT_BROKER_JENTIC,
+                                             daemon_state, &error));
+    g_assert_no_error(error);
+
+    broker = clawt_broker_dir(daemon_state);
+    keys = g_build_filename(broker, "keys", NULL);
+    key = clawt_broker_key_path(daemon_state, "boxed");
+    encryption = g_build_filename(broker, "jentic-encryption-key", NULL);
+    g_assert_cmpint(g_mkdir_with_parents(keys, 0700), ==, 0);
+    g_assert_true(g_file_set_contents(key, "{\"access_token\":\"k\"}", -1,
+                                      NULL));
+
+    sandbox = clawt_agent_confine_build(clawt_config_get_agent(config,
+                                                               "boxed"),
+                                        fixture.state, NULL, NULL, NULL,
+                                        &error);
+    g_assert_no_error(error);
+    wrapped = clawt_sandbox_wrap_argv(sandbox, argv);
+
+    g_assert_cmpint(find_pair(wrapped, "--ro-bind", key), >=, 0);
+    g_assert_cmpint(find_pair(wrapped, "--bind", key), <, 0);
+
+    for (i = 0; wrapped[i] != NULL; i++) {
+        g_assert_cmpstr(wrapped[i], !=, broker);
+        g_assert_cmpstr(wrapped[i], !=, keys);
+        g_assert_cmpstr(wrapped[i], !=, encryption);
+    }
+
+    fixture_teardown(&fixture);
+}
+
 /* ── What the runtime spawns ─────────────────────────────────────── */
 
 static ClawtProcessRuntime *
@@ -1163,6 +1239,8 @@ main(int argc, char *argv[])
     g_test_add_func("/agent-confine/host-exec-hardlink",
                     test_host_exec_refuses_a_hardlinked_deny);
     g_test_add_func("/agent-confine/notice", test_notice);
+    g_test_add_func("/agent-confine/broker-key-alone",
+                    test_broker_key_is_bound_alone);
     g_test_add_func("/agent-confine/integration-real-box",
                     test_integration_real_box);
 
