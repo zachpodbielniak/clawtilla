@@ -757,6 +757,76 @@ test_decision_options_stack(void)
     g_assert_nonnull(strstr(inner_block, "white-space:normal"));
 }
 
+/* Renders one inline decision card from a JSON literal. */
+static gchar *
+inline_card_html(const gchar *json, const gchar *notice)
+{
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autoptr(HtmxElement) card = NULL;
+
+    g_assert_true(json_parser_load_from_data(parser, json, -1, NULL));
+    card = clawt_web_decision_inline(
+        json_node_get_object(json_parser_get_root(parser)), notice);
+
+    return htmx_element_render(card);
+}
+
+/*
+ * The inline view of an open decision: the question, its options as
+ * buttons posting `decision.answer` from the chat, and the default with
+ * its deadline -- every agent-written string escaped, and the form
+ * guarded against a double tap before the daemon has to refuse one.
+ */
+static void
+test_an_open_inline_decision_offers_its_options(void)
+{
+    g_autofree gchar *html = inline_card_html(
+        "{\"id\": \"d1\", \"agent\": \"chief\","
+        " \"question\": \"Ship <now>?\", \"options\": [\"yes\", \"<b>no</b>\"],"
+        " \"default\": \"no\", \"default_reason\": null,"
+        " \"reversible_until\": 0, \"created_at\": 1, \"state\": 0,"
+        " \"room\": \"talk-1\"}", NULL);
+
+    g_assert_nonnull(strstr(html, "class=\"decision-inline\""));
+    g_assert_nonnull(strstr(html, "/f/decision/answer"));
+    g_assert_nonnull(strstr(html, "value=\"chat\""));
+    g_assert_nonnull(strstr(html, "hx-sync=\"this:drop\""));
+    g_assert_nonnull(strstr(html, "hx-disabled-elt"));
+    g_assert_nonnull(strstr(html, "value=\"yes\""));
+    g_assert_nonnull(strstr(html, "If nobody answers"));
+    g_assert_nonnull(strstr(html, "chief asks"));
+
+    g_assert_nonnull(strstr(html, "Ship &lt;now&gt;?"));
+    /*
+     * As text it is escaped; inside the quoted `value` attribute a `<`
+     * is not markup, which is how the inbox's option buttons carry it.
+     */
+    g_assert_nonnull(strstr(html, ">&lt;b&gt;no&lt;/b&gt;"));
+    g_assert_null(strstr(html, "><b>"));
+}
+
+/*
+ * Settled -- here by the inbox -- the same card offers nothing to press
+ * and says how it ended and where; a refused press writes the refusal
+ * into it.
+ */
+static void
+test_a_settled_inline_decision_says_how(void)
+{
+    g_autofree gchar *html = inline_card_html(
+        "{\"id\": \"d1\", \"agent\": \"chief\", \"question\": \"Ship?\","
+        " \"options\": [\"yes\", \"no\"], \"default\": \"no\","
+        " \"answer\": \"yes\", \"state\": 1, \"settled_via\": \"inbox\","
+        " \"room\": \"talk-1\"}",
+        "Already settled: You answered yes in the inbox.");
+
+    g_assert_null(strstr(html, "<form"));
+    g_assert_null(strstr(html, "<button"));
+    g_assert_nonnull(strstr(html, "decision-inline-settled"));
+    g_assert_nonnull(strstr(html, "in the inbox"));
+    g_assert_nonnull(strstr(html, "Already settled"));
+}
+
 /*
  * Stop does not reflow the composer row when it arrives.
  *
@@ -2133,6 +2203,10 @@ main(int argc, char *argv[])
                     test_dark_is_reachable_by_preference_and_by_choice);
     g_test_add_func("/web/composer-stands-on-the-message-column",
                     test_the_composer_stands_on_the_message_column);
+    g_test_add_func("/web/inline-decision-offers-its-options",
+                    test_an_open_inline_decision_offers_its_options);
+    g_test_add_func("/web/inline-decision-settled-says-how",
+                    test_a_settled_inline_decision_says_how);
     g_test_add_func("/web/decision-options-stack",
                     test_decision_options_stack);
     g_test_add_func("/web/stop-does-not-move-send",

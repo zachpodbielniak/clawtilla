@@ -1731,3 +1731,114 @@ clawt_lrg_history_payload(const gchar *room_entry, const gchar *conversation,
     return clawt_ipc_payload_new("room", agent_id, "as", "user",
                                  "limit", limit, NULL);
 }
+
+/* ── Decisions inline ─────────────────────────────────────────────── */
+
+GPtrArray *
+clawt_lrg_inline_decisions(JsonNode *reply)
+{
+    GPtrArray *out = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)clawt_decision_free);
+    JsonArray *items = reply_array(reply, "decisions");
+    guint i;
+
+    for (i = 0; items != NULL && i < json_array_get_length(items); i++) {
+        ClawtDecision *decision = clawt_decision_new_from_object(
+            json_array_get_object_element(items, i));
+
+        if (decision != NULL)
+            g_ptr_array_add(out, decision);
+    }
+
+    return out;
+}
+
+guint
+clawt_lrg_decisions_before(GPtrArray *decisions, guint from,
+                           gint64 message_ts)
+{
+    guint at = from;
+
+    while (decisions != NULL && at < decisions->len &&
+           clawt_decision_precedes(g_ptr_array_index(decisions, at),
+                                   message_ts))
+        at++;
+
+    return at;
+}
+
+ClawtDecision *
+clawt_lrg_inline_decision_find(GPtrArray *held, const gchar *id)
+{
+    guint i;
+
+    for (i = 0; held != NULL && id != NULL && i < held->len; i++) {
+        ClawtDecision *decision = g_ptr_array_index(held, i);
+
+        if (g_strcmp0(clawt_decision_get_id(decision), id) == 0)
+            return decision;
+    }
+
+    return NULL;
+}
+
+ClawtLrgInlineAction
+clawt_lrg_inline_decision_event(GPtrArray *held, const gchar *room,
+                                ClawtEvent *event)
+{
+    const gchar *kind;
+    const gchar *id;
+    ClawtDecision *decision;
+
+    if (event == NULL || room == NULL ||
+        g_strcmp0(clawt_decision_event_room(event), room) != 0)
+        return CLAWT_LRG_INLINE_NONE;
+
+    kind = clawt_event_get_kind(event);
+    id = clawt_event_get_detail(event, "decision");
+    decision = clawt_lrg_inline_decision_find(held, id);
+
+    if (g_strcmp0(kind, "decision.settled") == 0)
+        return (decision != NULL && clawt_decision_apply_event(decision, event))
+            ? CLAWT_LRG_INLINE_REDRAW : CLAWT_LRG_INLINE_NONE;
+
+    if (g_strcmp0(kind, "decision.deleted") == 0) {
+        if (decision == NULL)
+            return CLAWT_LRG_INLINE_NONE;
+
+        g_ptr_array_remove(held, decision);
+        return CLAWT_LRG_INLINE_REMOVE;
+    }
+
+    /* asked: the event names it but does not carry it, so read the list */
+    if (g_strcmp0(kind, "decision.asked") == 0 && decision == NULL)
+        return CLAWT_LRG_INLINE_FETCH;
+
+    return CLAWT_LRG_INLINE_NONE;
+}
+
+gchar *
+clawt_lrg_inline_decision_footer(ClawtDecision *decision, GTimeZone *tz)
+{
+    if (decision == NULL)
+        return NULL;
+
+    if (clawt_decision_get_state(decision) == CLAWT_DECISION_OPEN)
+        return clawt_decision_default_text(decision, tz);
+
+    return clawt_decision_outcome_text(decision);
+}
+
+gboolean
+clawt_lrg_inline_decision_pressable(ClawtDecision *decision)
+{
+    const gchar * const *options;
+
+    if (decision == NULL ||
+        clawt_decision_get_state(decision) != CLAWT_DECISION_OPEN)
+        return FALSE;
+
+    options = clawt_decision_get_options(decision);
+
+    return options != NULL && options[0] != NULL;
+}

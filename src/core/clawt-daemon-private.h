@@ -1720,6 +1720,10 @@ gboolean clawt_daemon_policy_settle(ClawtDaemon   *self,
 void clawt_daemon_publish_decision_settled(ClawtDaemon   *self,
                                            ClawtDecision *decision,
                                            const gchar   *how);
+void clawt_daemon_publish_decision_asked(ClawtDaemon   *self,
+                                         ClawtDecision *decision);
+void clawt_daemon_decision_place(ClawtDaemon   *self,
+                                 ClawtDecision *decision);
 void clawt_daemon_search_teardown(ClawtDaemon *self);
 void clawt_daemon_handoff_teardown(ClawtDaemon *self);
 

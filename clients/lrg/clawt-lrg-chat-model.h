@@ -694,4 +694,101 @@ JsonNode *clawt_lrg_history_payload(const gchar *room_entry,
                                     const gchar *agent_id,
                                     const gchar *limit);
 
+/* ── Decisions inline ─────────────────────────────────────────────── */
+
+/**
+ * clawt_lrg_inline_decisions:
+ * @reply: (nullable): a `decision.list` reply asked with a `room`
+ *
+ * The decisions asked from the room on screen, oldest first, in any
+ * state -- what the transcript draws inline.
+ *
+ * Returns: (transfer full) (element-type ClawtDecision): the decisions,
+ *   empty for a failed or empty reply
+ */
+GPtrArray *clawt_lrg_inline_decisions(JsonNode *reply);
+
+/**
+ * clawt_lrg_decisions_before:
+ * @decisions: (nullable) (element-type ClawtDecision): oldest first
+ * @from: the first not yet drawn
+ * @message_ts: the next message's stamp, in seconds
+ *
+ * How far through @decisions to draw before that message, by
+ * clawt_decision_precedes() -- the same rule the GTK and web clients
+ * merge with, so a question sits in the same place in all three.
+ *
+ * Returns: the index of the first one that belongs after the message
+ */
+guint clawt_lrg_decisions_before(GPtrArray *decisions, guint from,
+                                 gint64 message_ts);
+
+/**
+ * ClawtLrgInlineAction:
+ * @CLAWT_LRG_INLINE_NONE: nothing on screen changes
+ * @CLAWT_LRG_INLINE_REDRAW: a held decision was settled: redraw its card
+ * @CLAWT_LRG_INLINE_FETCH: one was asked from this room: read its list
+ * @CLAWT_LRG_INLINE_REMOVE: one was deleted: take its card out
+ *
+ * What one `decision.*` event asks of the chat's inline view.
+ */
+typedef enum {
+    CLAWT_LRG_INLINE_NONE = 0,
+    CLAWT_LRG_INLINE_REDRAW,
+    CLAWT_LRG_INLINE_FETCH,
+    CLAWT_LRG_INLINE_REMOVE
+} ClawtLrgInlineAction;
+
+/**
+ * clawt_lrg_inline_decision_event:
+ * @held: (element-type ClawtDecision): the decisions drawn in @room
+ * @room: (nullable): the room on screen
+ * @event: (nullable): any event
+ *
+ * Folds a `decision.*` event into @held.  A settled one is applied in
+ * place, however it was settled -- here, in the inbox, elsewhere, or by
+ * the clock -- so the card says how it ended without asking again; a
+ * deleted one is dropped from @held.  Events about another room, or
+ * that change nothing (a replayed settle), answer NONE.
+ *
+ * Returns: what the chat should do
+ */
+ClawtLrgInlineAction clawt_lrg_inline_decision_event(GPtrArray   *held,
+                                                     const gchar *room,
+                                                     ClawtEvent  *event);
+
+/**
+ * clawt_lrg_inline_decision_find:
+ * @held: (element-type ClawtDecision): the decisions drawn
+ * @id: (nullable): a decision id
+ *
+ * Returns: (transfer none) (nullable): the held decision with @id
+ */
+ClawtDecision *clawt_lrg_inline_decision_find(GPtrArray   *held,
+                                              const gchar *id);
+
+/**
+ * clawt_lrg_inline_decision_footer:
+ * @decision: a decision
+ * @tz: (nullable): the zone deadlines are written in, %NULL for local
+ *
+ * The line under the question: the default and its deadline while it is
+ * open, how it ended and who ended it once it is not.
+ *
+ * Returns: (transfer full) (nullable): the line
+ */
+gchar *clawt_lrg_inline_decision_footer(ClawtDecision *decision,
+                                        GTimeZone     *tz);
+
+/**
+ * clawt_lrg_inline_decision_pressable:
+ * @decision: a decision
+ *
+ * Whether the card offers its options as buttons: only while it is
+ * open.  A settled card offering them would invite a refusal.
+ *
+ * Returns: %TRUE to draw the buttons
+ */
+gboolean clawt_lrg_inline_decision_pressable(ClawtDecision *decision);
+
 G_END_DECLS

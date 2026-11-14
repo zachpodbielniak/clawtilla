@@ -77,7 +77,9 @@ answer(LrgButton *button)
 
     clawt_lrg_request(decisions.app, "decision.answer",
                       clawt_ipc_payload_new("decision", id,
-                                            "answer", chosen, NULL),
+                                            "answer", chosen,
+                                            "via", CLAWT_DECISION_VIA_INBOX,
+                                            NULL),
                       CLAWT_LRG_REQUEST_NONE, on_settled, "Answered", NULL);
 }
 

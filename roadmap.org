@@ -186,8 +186,9 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 - *Proposal:* a fill command in the gsurf control protocol (a gsurf release first, then a version floor in =make GSURF=1=). The daemon resolves a secret ref and sends keystrokes. Screenshots and =browser_eval= are refused until navigation away.
 - *Version:* minor.
 
-** TODO Inline choices in chat                                                                      :clients:
-- *Today:* =clawtilla_ask_decision= goes to the decisions inbox. There are no inline choices in the chat.
+** DONE Inline choices in chat v0.21.0                                         :clients:
+- *Done:* a decision is drawn inline in the room it was asked from in GTK, web and lrg, as a second view of the inbox's record. ~decision.asked~ / ~.settled~ / ~.deleted~ carry the room; ~decision.list~ takes ~room~; ~decision.answer~ takes ~via~ (~chat~ / ~inbox~ / ~cli~). Settling either way redraws both; stale presses and double taps are refused with what happened. See =docs/clients.org= "Decisions inline".
+- *Was:* =clawtilla_ask_decision= goes to the decisions inbox. There are no inline choices in the chat.
 - *Prior art:* =765f87467=, =server/chat-widgets.ts=. =show_widget= / =update_widget=. A press is checked against the stored widget and arrives as the person's next message. Stale presses and double taps are refused.
 - *Proposal:* render a decision inline in its room in all three clients, as a second view of the same decision. Settling it either way settles both, which needs the publish-both-ends rule for =decision.asked=.
 - *Version:* minor (parity across GTK, web and lrg).
