@@ -860,7 +860,7 @@ pointed at 127.0.0.1 is refused too.
 
 - Type :: list of strings
 - Default :: unset
-- Since :: 0.18.0
+- Since :: 0.17.0
 
 Private addresses gated agents may reach anyway.
 
@@ -1015,7 +1015,7 @@ repeat is only caught if it lands inside the window.
 
 - Type :: string
 - Default :: ==
-- Since :: 0.18.0
+- Since :: 0.17.0
 
 A small model that decides whether an answer only acknowledges, as
 provider/model -- claude/claude-haiku-4-5-20251001, ollama/llama3.2.
@@ -1246,7 +1246,7 @@ See docs/orchestration.org, "Incidents".
 
 - Type :: boolean
 - Default :: =true=
-- Since :: 0.18.0
+- Since :: 0.17.0
 
 Whether broken runs open incidents at all.
 
@@ -1259,7 +1259,7 @@ Retrying a failed task works either way.
 - Type :: enum
 - Values :: lead, chief, none
 - Default :: =lead=
-- Since :: 0.18.0
+- Since :: 0.17.0
 
 Who an incident report goes to: lead, chief or none.
 
@@ -1519,7 +1519,7 @@ instead.
 
 - Type :: integer
 - Default :: =3=
-- Since :: 0.18.0
+- Since :: 0.19.0
 
 How many skills one agent may propose in any 24 hours.
 
@@ -3687,7 +3687,7 @@ so in its mode. Ignored unless runtime.confine is bwrap.
 - Type :: enum
 - Values :: open, gated, none
 - Default :: =open=
-- Since :: 0.18.0
+- Since :: 0.17.0
 
 Where this agent's own process may connect: open, gated or none.
 
@@ -3844,7 +3844,7 @@ works alongside any of these.
 - Type :: enum
 - Values :: on_agent_start, on_first_use
 - Default :: =on_agent_start=
-- Since :: 0.17.0
+- Since :: 0.19.0
 
 When the machine is started: with the agent, or the first time
 something runs in it.
@@ -4231,7 +4231,7 @@ gone rather than offline, which is not what the word stop suggests.
 
 - Type :: integer
 - Default :: =0=
-- Since :: 0.17.0
+- Since :: 0.19.0
 
 Most processes and threads the machine may hold at once.
 
@@ -4249,7 +4249,7 @@ rebuild and without losing what the agent installed.
 
 - Type :: string
 - Default :: unset
-- Since :: 0.17.0
+- Since :: 0.19.0
 
 Most memory the machine may use, e.g. 512m or 4g.
 
@@ -4266,7 +4266,7 @@ with `podman update` whenever it changes.
 
 - Type :: string
 - Default :: unset
-- Since :: 0.17.0
+- Since :: 0.19.0
 
 Memory and swap together, e.g. 8g; -1 for unlimited swap.
 
@@ -4409,7 +4409,7 @@ fresh handshake.
 
 - Type :: list of strings
 - Default :: unset
-- Since :: 0.17.0
+- Since :: 0.19.0
 
 A program to run when the machine does not answer, to wake it.
 

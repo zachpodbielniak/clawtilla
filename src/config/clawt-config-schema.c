@@ -641,7 +641,7 @@ static const ClawtSchemaEntry schema[] = {
   "machine, the LAN (RFC 1918), link-local, CGNAT and tailnets\n"
   "(100.64.0.0/10), IPv6 unique-local, multicast or a cloud metadata\n"
   "service. It judges the address, after resolution, so a public name\n"
-  "pointed at 127.0.0.1 is refused too.", "0.18.0" },
+  "pointed at 127.0.0.1 is refused too.", "0.17.0" },
 
 { "egress.allow", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_COMMENTED,
   NULL, NULL,
@@ -654,7 +654,7 @@ static const ClawtSchemaEntry schema[] = {
   "opens loopback; loopback needs an address. Cloud metadata, multicast,\n"
   "the unspecified address and reserved space cannot be opened, and an\n"
   "entry naming one is refused. One bad entry refuses the whole list, at\n"
-  "load and where it is added.", "0.18.0" },
+  "load and where it is added.", "0.17.0" },
 
 /* ── plugins ─────────────────────────────────────────────────────── */
 { "plugins", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
@@ -774,7 +774,7 @@ static const ClawtSchemaEntry schema[] = {
   "A provider ai-glib reaches over HTTP, with its key configured the way\n"
   "ai_assist's is. A command-line provider would spend the 8 seconds\n"
   "starting. A message sent with reply: none never wakes its sender,\n"
-  "with or without this.", "0.18.0" },
+  "with or without this.", "0.17.0" },
 
 { "orchestration.mailbox", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Defaults for every agent's mailbox.\n"
@@ -930,7 +930,7 @@ static const ClawtSchemaEntry schema[] = {
   "filed in a room per team called \"Problems to look at\", and delivered\n"
   "as a report the recipient can act on with clawtilla_task_retry. A\n"
   "recipient that is mid-turn has its report held until the turn ends.\n"
-  "See docs/orchestration.org, \"Incidents\".", "0.18.0" },
+  "See docs/orchestration.org, \"Incidents\".", "0.17.0" },
 
 { "orchestration.incidents.enabled", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "true", NULL,
@@ -938,7 +938,7 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "Off, nothing is filed and nobody is told; tasks still fail and stall\n"
   "exactly as before, and their delegators still get the settle notice.\n"
-  "Retrying a failed task works either way.", "0.18.0" },
+  "Retrying a failed task works either way.", "0.17.0" },
 
 { "orchestration.incidents.to", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
   "lead", clawt_incident_recipient_get_type,
@@ -948,7 +948,7 @@ static const ClawtSchemaEntry schema[] = {
   "team has none (or two). chief is always the chief of staff. none spends\n"
   "nobody's turn: the report is recorded in the room for you to read.\n"
   "Never the agent whose run broke, and never the agent that delegated\n"
-  "the task -- it already has the settle notice.", "0.18.0" },
+  "the task -- it already has the settle notice.", "0.17.0" },
 
 { "memories", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "What an agent remembers between conversations.\n"
@@ -1132,7 +1132,7 @@ static const ClawtSchemaEntry schema[] = {
   "approve, edit or reject it. Every proposal spends your attention, so\n"
   "this bounds how often one agent can ask for it; a rejected proposal\n"
   "still counts. 0 turns proposing off, and the tool is not offered.",
-  "0.18.0" },
+  "0.19.0" },
 
 { "rooms", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Standing rooms, created at startup if they do not exist.\n"
@@ -2645,7 +2645,7 @@ static const ClawtSchemaEntry schema[] = {
   "Anything but open needs runtime.confine: bwrap -- outside the sandbox\n"
   "a process can ignore a proxy -- and without it the agent is disabled\n"
   "with that reason, never run on an open network instead. Takes effect\n"
-  "at the agent's next start.", "0.18.0" },
+  "at the agent's next start.", "0.17.0" },
 
 { "agents.runtime.autostart", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
@@ -2760,7 +2760,7 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "An agent with a VM desktop is the exception in practice: its MCP\n"
   "client asks for the desktop when the agent starts, and that request\n"
-  "is a use.", "0.17.0" },
+  "is a use.", "0.19.0" },
 
 { "agents.computer.exchange", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "true", NULL,
@@ -3026,7 +3026,7 @@ static const ClawtSchemaEntry schema[] = {
   "underneath: computer.container.* limits reach either. Passed to podman\n"
   "when the machine is created; a changed value is applied to the\n"
   "existing one with `podman update` at the next start, without a\n"
-  "rebuild and without losing what the agent installed.", "0.17.0" },
+  "rebuild and without losing what the agent installed.", "0.19.0" },
 
 { "agents.computer.container.memory", CLAWT_SCHEMA_STRING,
   CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
@@ -3039,7 +3039,7 @@ static const ClawtSchemaEntry schema[] = {
   "rather than your desktop.\n"
   "\n"
   "Applies to container and distrobox computers, at creation and then\n"
-  "with `podman update` whenever it changes.", "0.17.0" },
+  "with `podman update` whenever it changes.", "0.19.0" },
 
 { "agents.computer.container.memory_swap", CLAWT_SCHEMA_STRING,
   CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
@@ -3050,7 +3050,7 @@ static const ClawtSchemaEntry schema[] = {
   "to memory means no swap at all. Unset lets podman allow as much swap\n"
   "again as memory. It needs memory to be set and must not be smaller\n"
   "than it; both are refused when they arrive rather than when podman\n"
-  "reads them.", "0.17.0" },
+  "reads them.", "0.19.0" },
 
 /* ── agents.computer.ssh ─────────────────────────────────────────── */
 { "agents.computer.ssh", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE,
@@ -3186,7 +3186,7 @@ static const ClawtSchemaEntry schema[] = {
   "long it waited. It gets at most 120 seconds, after which it is killed\n"
   "along with everything it started, and the time is not taken out of\n"
   "the command's own timeout. A wake that fails is reported with the\n"
-  "connection failure, saying which.", "0.17.0" },
+  "connection failure, saying which.", "0.19.0" },
 
 /* ── agents.computer.distrobox ───────────────────────────────────── */
 { "agents.computer.distrobox", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE,

@@ -143,7 +143,7 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 - *Proposal:* =clawtilla_request_rebuild=, shaped like =clawtilla_request_hands=: it raises a decision and is never a handover. Approval runs the rebuild after stopping the agent's turn. No automatic replacement while =computer.container.keep= or a VM disk holds state.
 - *Version:* minor.
 
-** DONE Wake before reaching a remote machine (version assigned at merge)                            :computers:
+** DONE Wake before reaching a remote machine v0.19.0                            :computers:
 - *Done:* ~computer.ssh.wake_command~ (argv list; one line from a client or ~agent set~ is split like a shell and refused if it uses a shell operator; shared machines take ~computers[].ssh.wake_command~). Run only when nothing answers (a live multiplexing master skips the probe; ~ssh <alias> true~ failing as unreachable, never a refused key or login), once per concurrent wave (~ClawtWaker~), capped at 120 s with the whole process group killed on timeout, before the command so its time is outside the command's timeout; each caller is charged only the time it waited (~clawt_exec_result_get_wake_usec()~, the tool reply's first line, ~wake_ms~ on ~computer.exec~). The error says the wake failed and how: exit status and stderr tail, the timeout, or a spawn failure. "Wake command" field for ssh agents in GTK, web and lrg. Design in =docs/computers.org=, "A machine that sleeps: the wake command".
 - *Left:* remote podman (~computer.container.connection: ssh://~) is not woken; the key is under ~computer.ssh~ because only that backend reads it.
 - *Today:* =ssh= computers and remote podman (=docs/computers.org=, "Remote podman works") fail when the host sleeps.
@@ -151,7 +151,7 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 - *Proposal:* =computer.ssh.wake_command= / =computers.<id>.wake_command= (argv, not a shell line), run once per concurrent wave. The homelab case is Wake-on-LAN.
 - *Version:* minor.
 
-** DONE Lazy computer start (version assigned at merge)                                              :computers:
+** DONE Lazy computer start v0.19.0                                              :computers:
 - *Finding:* agent start *did* boot the computer: both ~clawt_daemon_start_agent()~ and the fleet's async start called ~clawt_computer_start()~ before launching the agent, so a VM was booted at agent start.
 - *Done:* ~computer.start: on_agent_start | on_first_use~ (default ~on_agent_start~, unchanged behaviour). ~on_first_use~ skips the start at agent start for container, distrobox, vm and ssh (~clawt_computer_type_starts_lazily()~; host always starts with its agent). ~clawt_computer_exec()~ calls ~clawt_computer_ensure_started()~, so ~computer_exec~, ~computer exec~ and wait conditions all start it; the async path starts through ~clawt_computer_lifecycle_async()~ with the new ~CLAWT_COMPUTER_LIFECYCLE_FIRST_USE~; concurrent first uses share one start, and the boot is outside the command's timeout. ~computer.desktop~ (the VM desktop relay) defers and boots a lazy VM. Browser sessions run on the host and never needed the computer. "Start the computer: when the agent starts / on first use" in GTK, web and lrg. Design in =docs/computers.org=, "When the machine starts".
 - *Left:* a VM with a desktop gains little, since the MCP client asks for the desktop when the agent starts.
@@ -160,7 +160,7 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 - *Proposal:* verify first. If agent start boots the guest, add =computer.start: on_agent_start | on_first_use=, starting through =clawt_computer_lifecycle_async()= on the first =computer_exec= or desktop call.
 - *Version:* minor if a key is added.
 
-** DONE Container resource limits (version assigned at merge)                                       :computers:
+** DONE Container resource limits v0.19.0                                       :computers:
 - *Done:* ~computer.container.pids_limit~ (0 = podman's default, -1 = none), ~memory~ and ~memory_swap~ (podman sizes, whole numbers, b/k/m/g; 6m floor; swap needs memory and is not below it), validated where they arrive and when the computer is built. Read by the container and distrobox backends (~ClawtContainerLimits~). distrobox passes them at creation as one ~--additional-flags~ word each; the container backend (whose podomation create carries no limits) applies them with ~podman update~ before the first start; at every start ~podman container inspect~ is compared and ~podman update~ sends only what changed, in place; ~agent set~ under a running machine applies at once. Process limit, Memory and Memory + swap fields in GTK, web and lrg. Design in =docs/computers.org=, "Process and memory limits".
 - *Left:* clearing a key leaves the last value (podman cannot tell its default from a chosen value); a fixed capability set (=container-isolation.ts=) is not part of this.
 - *Today:* no pids or memory keys under =computer.container.*= in the schema.
@@ -191,7 +191,7 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 - *Proposal:* render a decision inline in its room in all three clients, as a second view of the same decision. Settling it either way settles both, which needs the publish-both-ends rule for =decision.asked=.
 - *Version:* minor (parity across GTK, web and lrg).
 
-** DONE Learned skills proposed from ordinary work (version assigned at merge)                         :skills:
+** DONE Learned skills proposed from ordinary work v0.19.0                         :skills:
 - *Done:* =clawtilla_skill_propose= (=src/skill/clawt-skill-proposal.c=, =src/core/daemon-skill-proposal.c=). A new skill goes through =clawt_skill_library_create_taught()= and lands disabled with origin =propose:<id>=; a change is staged under =<state_dir>/skill-proposals= and written only on approval (=clawt_skill_library_replace()=). A decision with the proposal's id carries the escaped, fenced text or a diff; approve / edit / reject from the card in GTK, web and lrg, =skill.proposal_resolve=, =decision.answer= or =clawtilla skill approve|reject=; dismissing rejects. Approval is refused when the draft or the live skill changed since it was proposed. =skills.max_proposals_per_day= (3; 0 withholds the tool). The Skills page lists pending proposals. Design in =docs/skills.org=, "Skills agents propose".
 - *Today:* =teach= records, drafts and commits a skill disabled for review (=docs/teach.org=). No path from an agent's ordinary turn.
 - *Prior art:* =6140532ea=, =server/skills.ts=. A bot proposes a create or update, and it lands behind an approval card.
