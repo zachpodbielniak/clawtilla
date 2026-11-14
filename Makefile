@@ -199,6 +199,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/interfaces/clawt-tool-provider.h \
 	$(SRCDIR)/interfaces/clawt-computer-provider.h \
 	$(SRCDIR)/interfaces/clawt-integration-provider.h \
+	$(SRCDIR)/mcp/clawt-mcp-directory.h \
 	$(SRCDIR)/mcp/clawt-mcp-relay.h \
 	$(SRCDIR)/mcp/clawt-mcp-socket.h \
 	$(SRCDIR)/mcp/clawt-mcp-tools.h \
@@ -384,6 +385,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/interfaces/clawt-tool-provider.c \
 	$(SRCDIR)/interfaces/clawt-computer-provider.c \
 	$(SRCDIR)/interfaces/clawt-integration-provider.c \
+	$(SRCDIR)/mcp/clawt-mcp-directory.c \
 	$(SRCDIR)/mcp/clawt-mcp-relay.c \
 	$(SRCDIR)/mcp/clawt-mcp-socket.c \
 	$(SRCDIR)/mcp/clawt-mcp-tools.c \

@@ -242,6 +242,16 @@ declare -A AFFORDANCES=(
     ["click in the browser"]="on_picture_pressed|/browser/click|on_browser_click"
     ["open a page in the browser"]="\"browser.open\"|/browser/open|\"browser.open\""
     #
+    # Servers with many tools, on the Connectors page: each connector's
+    # tool count and whether agents see it as a directory (libclawt's
+    # sentence in all three), and the per-connector Auto / Always / Never
+    # choice.  The choice walks clawt_tool_directory_mode_*, which layer 3
+    # already compares; this row is the control it lives in.  The
+    # thresholds are connector.settings, layer 1's.
+    #
+    ["connector tool count"]="clawt_mcp_directory_status_label|clawt_mcp_directory_status_label|clawt_mcp_directory_status_label"
+    ["present as a directory"]="build_directory_choice|directory_form|directory_choice"
+    #
     # A group room drawn beside the agents, and the two things you can
     # only do to one from a client.
     #

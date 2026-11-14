@@ -1076,6 +1076,25 @@ connectors:
   # # what this key says.
   # registry_refresh_hours: 24
 
+  # More tools than this makes a connector's server a directory.
+  #
+  # Counted after the connector's `tools:` narrowing, because that is the
+  # list the agent would otherwise read. Forty is where a tool list starts
+  # to cost more than it helps -- and API-model engines refuse more than
+  # 128 tools a turn across every server they have. Only read when a
+  # connector's `directory` is `auto`.
+  directory_min_tools: 40
+
+  # More characters of tool definitions than this makes a directory too.
+  #
+  # The names, descriptions and input schemas together, which is what the
+  # model actually reads on every call. A server with thirty tools can
+  # still be a hundred thousand characters when each one carries a page of
+  # documentation; about where Claude Code starts searching its own tools
+  # rather than listing them. Only read when a connector's `directory` is
+  # `auto`.
+  directory_min_chars: 100000
+
 # Handing work to Grok bots, and hearing back.
 #
 # Each bot is a `grokbot` integration named for it -- `chief`,

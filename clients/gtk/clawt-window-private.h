@@ -335,6 +335,14 @@ struct _ClawtWindow {
     GtkWidget         *settings_ack_model;
     gboolean           settings_ack_loading;
     GtkWidget         *settings_connectors;
+    /*
+     * The two directory thresholds on the Connectors page, and whether
+     * a refresh is the one writing them -- so filling the rows from the
+     * daemon's answer is not taken for somebody changing them.
+     */
+    GtkWidget         *settings_directory_min_tools;
+    GtkWidget         *settings_directory_min_chars;
+    gboolean           settings_directory_syncing;
     GtkWidget         *settings_devices;
     GtkWidget         *settings_devices_pair;
     GtkListBox        *routine_list;

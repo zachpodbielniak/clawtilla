@@ -126,6 +126,20 @@ and devices.
 
 =message_element()= reads =acknowledged= and =merged= off each ~room.history~ message.  An acknowledged answer gets a neutral badge, =clawt_message_ack_label()= with =clawt_message_ack_tooltip()= as its =title=, in the message's header line -- which is drawn for that message even mid-run, as the task and hop badges are.  A merged note's body is split by =clawt_merge_split()=: the preface is the message body and each section is a =.merge-section= block with a =.merge-section-label= heading.  The live ~message~ event only marks unread here; the transcript re-reads history, so both marks come from one path.
 
+*** Connectors
+
+Each connector's card has a /Tools/ row --
+=clawt_mcp_directory_status_label()='s sentence: how many tools its server
+has and whether agents get it as a directory -- and a *Present as a
+directory* select (Auto, Always, Never, walked from
+=clawt_tool_directory_mode_count()=) that posts to
+=/settings/connectors/:connector/directory= and saves through
+~integration.update~.  A *Servers with many tools* card holds the two
+thresholds and posts to =/settings/connectors/directory-thresholds=,
+which sends ~connector.settings~; a field left empty keeps its value and
+one that is not a whole number is refused before anything is sent.  See
+"Servers with many tools" in [[file:connectors.org][connectors.org]].
+
 *** The integration editor
 
 Drawn from ~clawt_integration_fields()~, the same table the GTK client

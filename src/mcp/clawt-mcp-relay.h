@@ -36,6 +36,8 @@
 
 #include <glib.h>
 
+#include "mcp/clawt-mcp-directory.h"
+
 G_BEGIN_DECLS
 
 /**
@@ -208,5 +210,87 @@ gboolean clawt_mcp_relay_filter_outbound(const gchar  *line,
  */
 gchar *clawt_mcp_relay_filter_inbound(const gchar *line,
                                           GStrv        permitted);
+
+/**
+ * ClawtMcpRelayPolicy: (skip)
+ * @permitted: (array zero-terminated=1) (nullable): the tools the agent
+ *   may use, when @filter is set; %NULL then permits none
+ * @filter: whether @permitted applies at all -- %FALSE for a connector
+ *   nobody narrowed, which offers every tool
+ * @hint: (nullable): one sentence on why, for a refusal from @permitted
+ * @gate: (nullable): asked once per tool call that is otherwise allowed
+ * @gate_data: data for @gate
+ * @directory: (nullable): presents a big server as three tools
+ *
+ * Everything the relay decides about a message, in one place, so the
+ * stdio relay and the HTTP bridge decide it the same way.
+ *
+ * The HTTP bridge used to filter by @permitted and skip @gate entirely,
+ * so an action rule on a connector reached over HTTP was never asked;
+ * two copies of "what happens to a tool call" had drifted.  There is one
+ * now, and both transports call it.
+ */
+typedef struct {
+    GStrv              permitted;
+    gboolean           filter;
+    const gchar       *hint;
+    ClawtMcpRelayGate  gate;
+    gpointer           gate_data;
+    ClawtMcpDirectory *directory;
+} ClawtMcpRelayPolicy;
+
+/**
+ * clawt_mcp_relay_policy_outbound: (skip)
+ * @policy: what to enforce
+ * @line: one JSON-RPC message from the agent's MCP client
+ * @to_server: (out) (transfer full) (nullable): what to send the server
+ * @to_client: (out) (transfer full) (nullable): what to answer the client
+ *   with instead
+ *
+ * Decides what becomes of a message on its way to the server.
+ *
+ * In order: the directory answers its own search and describe and turns
+ * its call into a call of the inner tool; the permitted list is checked
+ * against *that*, and so is the gate.  An action rule, an approval card
+ * or a refusal therefore always names the tool that would run, never the
+ * directory in front of it.  Both outs %NULL means the message is
+ * dropped -- a refused notification, which has nothing to answer into.
+ */
+void clawt_mcp_relay_policy_outbound(const ClawtMcpRelayPolicy  *policy,
+                                     const gchar                *line,
+                                     gchar                     **to_server,
+                                     gchar                     **to_client);
+
+/**
+ * clawt_mcp_relay_policy_inbound: (skip)
+ * @policy: what to enforce
+ * @line: one JSON-RPC message from the server
+ * @to_client: (out) (transfer full) (nullable): what to send the client
+ * @to_server: (out) (transfer full) (nullable): a request of the relay's
+ *   own for the server -- the next page of a tool list the directory is
+ *   gathering
+ *
+ * Decides what becomes of a message on its way to the client: the
+ * permitted list first, then the directory, so the directory is built
+ * from exactly the tools the list allows.
+ */
+void clawt_mcp_relay_policy_inbound(const ClawtMcpRelayPolicy  *policy,
+                                    const gchar                *line,
+                                    gchar                     **to_client,
+                                    gchar                     **to_server);
+
+/**
+ * clawt_mcp_relay_run_policy: (skip)
+ * @argv: (array zero-terminated=1): the server to run
+ * @envp: (array zero-terminated=1) (nullable): added to its environment
+ * @policy: what to enforce
+ *
+ * The relay, deciding every message through @policy.
+ *
+ * Returns: the exit status for the process
+ */
+gint clawt_mcp_relay_run_policy(GStrv                      argv,
+                                GStrv                      envp,
+                                const ClawtMcpRelayPolicy *policy);
 
 G_END_DECLS

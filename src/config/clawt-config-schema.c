@@ -641,7 +641,7 @@ static const ClawtSchemaEntry schema[] = {
   "machine, the LAN (RFC 1918), link-local, CGNAT and tailnets\n"
   "(100.64.0.0/10), IPv6 unique-local, multicast or a cloud metadata\n"
   "service. It judges the address, after resolution, so a public name\n"
-  "pointed at 127.0.0.1 is refused too.", "0.17.0" },
+  "pointed at 127.0.0.1 is refused too.", "0.18.0" },
 
 { "egress.allow", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_COMMENTED,
   NULL, NULL,
@@ -654,7 +654,7 @@ static const ClawtSchemaEntry schema[] = {
   "opens loopback; loopback needs an address. Cloud metadata, multicast,\n"
   "the unspecified address and reserved space cannot be opened, and an\n"
   "entry naming one is refused. One bad entry refuses the whole list, at\n"
-  "load and where it is added.", "0.17.0" },
+  "load and where it is added.", "0.18.0" },
 
 /* ── plugins ─────────────────────────────────────────────────────── */
 { "plugins", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
@@ -774,7 +774,7 @@ static const ClawtSchemaEntry schema[] = {
   "A provider ai-glib reaches over HTTP, with its key configured the way\n"
   "ai_assist's is. A command-line provider would spend the 8 seconds\n"
   "starting. A message sent with reply: none never wakes its sender,\n"
-  "with or without this.", "0.17.0" },
+  "with or without this.", "0.18.0" },
 
 { "orchestration.mailbox", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Defaults for every agent's mailbox.\n"
@@ -930,7 +930,7 @@ static const ClawtSchemaEntry schema[] = {
   "filed in a room per team called \"Problems to look at\", and delivered\n"
   "as a report the recipient can act on with clawtilla_task_retry. A\n"
   "recipient that is mid-turn has its report held until the turn ends.\n"
-  "See docs/orchestration.org, \"Incidents\".", "0.17.0" },
+  "See docs/orchestration.org, \"Incidents\".", "0.18.0" },
 
 { "orchestration.incidents.enabled", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "true", NULL,
@@ -938,7 +938,7 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "Off, nothing is filed and nobody is told; tasks still fail and stall\n"
   "exactly as before, and their delegators still get the settle notice.\n"
-  "Retrying a failed task works either way.", "0.17.0" },
+  "Retrying a failed task works either way.", "0.18.0" },
 
 { "orchestration.incidents.to", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
   "lead", clawt_incident_recipient_get_type,
@@ -948,7 +948,7 @@ static const ClawtSchemaEntry schema[] = {
   "team has none (or two). chief is always the chief of staff. none spends\n"
   "nobody's turn: the report is recorded in the room for you to read.\n"
   "Never the agent whose run broke, and never the agent that delegated\n"
-  "the task -- it already has the settle notice.", "0.17.0" },
+  "the task -- it already has the settle notice.", "0.18.0" },
 
 { "memories", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "What an agent remembers between conversations.\n"
@@ -1680,6 +1680,24 @@ static const ClawtSchemaEntry schema[] = {
   "around it and has to work out from an error that it never had it.",
   "0.2.0" },
 
+{ "integrations.directory", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "auto", clawt_tool_directory_mode_get_type,
+  "connector: whether its tools are listed one by one or searched.\n"
+  "\n"
+  "A server with hundreds of tools puts every description into every\n"
+  "model call. As a directory it is three tools instead --\n"
+  "<name>_search_tools, <name>_describe_tool and <name>_call_tool -- and\n"
+  "the agent looks up what it needs. The search, the description and the\n"
+  "call all work from the tools this agent may use, so narrowing `tools:`\n"
+  "narrows what can be found as well as what can be called.\n"
+  "\n"
+  "`auto` makes a directory of a server past\n"
+  "connectors.directory_min_tools or connectors.directory_min_chars, for\n"
+  "an agent whose CLI does not search tools itself; Claude Code does, so\n"
+  "its agents get every tool as before. `always` makes one whatever the\n"
+  "size or the CLI, and `never` lists every tool however many there\n"
+  "are. See docs/connectors.org, \"Servers with many tools\".", "0.18.0" },
+
 
 /* ── connectors ──────────────────────────────────────────────────── */
 { "integrations.confirm_writes", CLAWT_SCHEMA_BOOLEAN,
@@ -1800,6 +1818,27 @@ static const ClawtSchemaEntry schema[] = {
   "daemon last started -- a restart must not reset this clock, or a\n"
   "fleet that bounces every hour would refresh every hour regardless of\n"
   "what this key says.", "0.2.0" },
+
+{ "connectors.directory_min_tools", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "40", NULL,
+  "More tools than this makes a connector's server a directory.\n"
+  "\n"
+  "Counted after the connector's `tools:` narrowing, because that is the\n"
+  "list the agent would otherwise read. Forty is where a tool list starts\n"
+  "to cost more than it helps -- and API-model engines refuse more than\n"
+  "128 tools a turn across every server they have. Only read when a\n"
+  "connector's `directory` is `auto`.", "0.18.0" },
+
+{ "connectors.directory_min_chars", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "100000", NULL,
+  "More characters of tool definitions than this makes a directory too.\n"
+  "\n"
+  "The names, descriptions and input schemas together, which is what the\n"
+  "model actually reads on every call. A server with thirty tools can\n"
+  "still be a hundred thousand characters when each one carries a page of\n"
+  "documentation; about where Claude Code starts searching its own tools\n"
+  "rather than listing them. Only read when a connector's `directory` is\n"
+  "`auto`.", "0.18.0" },
 
 /* ── grok ────────────────────────────────────────────────────────── */
 { "grok", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
@@ -2594,7 +2633,7 @@ static const ClawtSchemaEntry schema[] = {
   "Anything but open needs runtime.confine: bwrap -- outside the sandbox\n"
   "a process can ignore a proxy -- and without it the agent is disabled\n"
   "with that reason, never run on an open network instead. Takes effect\n"
-  "at the agent's next start.", "0.17.0" },
+  "at the agent's next start.", "0.18.0" },
 
 { "agents.runtime.autostart", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
