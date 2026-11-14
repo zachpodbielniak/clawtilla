@@ -931,6 +931,7 @@ on_pushed(GObject *source, GAsyncResult *result, gpointer user_data)
     g_autoptr(GBytes) body = NULL;
     g_autoptr(GError) error = NULL;
     g_autofree gchar *reason = NULL;
+    g_autofree gchar *run_uuid = NULL;
 
     body = soup_session_send_and_read_finish(SOUP_SESSION(source), result,
                                              &error);
@@ -945,13 +946,24 @@ on_pushed(GObject *source, GAsyncResult *result, gpointer user_data)
          * the routine off, the hourly cap -- stays for the bot to pull,
          * which is the whole reason replies are kept at all.
          */
+        /*
+         * Said when it works too, with Grok's run id: an accepted push is
+         * where clawtilla's part ends and the bot's begins, and a reply
+         * that "never arrived" is otherwise only diagnosable from the
+         * absence of a warning.  The run id is what Grok's routine history
+         * lists.
+         */
         if (body != NULL &&
             clawt_grok_dispatch_reading(soup_message_get_status(push->message),
-                                        data, (gssize)length, NULL,
-                                        &reason) == CLAWT_GROK_JOB_ACCEPTED)
+                                        data, (gssize)length, &run_uuid,
+                                        &reason) == CLAWT_GROK_JOB_ACCEPTED) {
             clawt_grok_store_mark_reply_read(push->grok->store,
                                              push->reply_id);
-        else
+            g_message("grok: handed reply %" G_GINT64_FORMAT " to \"%s\" "
+                      "as Grok run %s; anything further is the bot's",
+                      push->reply_id, push->bot,
+                      run_uuid != NULL ? run_uuid : "(no run id)");
+        } else
             g_message("grok: a reply for \"%s\" was kept for it to read: %s",
                       push->bot,
                       reason != NULL ? reason
