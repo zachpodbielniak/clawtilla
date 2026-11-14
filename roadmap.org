@@ -514,7 +514,8 @@ When somebody turns the broker on, clawtilla starts a local AnythingMCP for them
 ** TODO Upstream: libreclaw records the model in =token_usage.provider=                       :upstream:libreclaw:spending:
 - The usage ledger takes the provider from the agent's =model.provider= at tag time instead.
 
-** TODO Usage ledger: keep a task's run across a restart                                        :spending:
+** DONE Usage ledger: keep a task's run across a restart (version assigned at merge)            :spending:
+- *Done:* =ClawtTaskSources= (=src/usage/clawt-task-sources.c=) keeps the map in =<state_dir>/task-sources.tsv=, 0600, written on each note; a delegated child is recorded when its first turn is tagged, since the parent chain is lost with the in-memory task manager. Pruning keeps an unknown task's entry for a week. Tests: =tests/test-task-sources.c=, =/usage-ledger/daemon/keeps-a-run-across-a-restart= (a second daemon on the same state). =docs/spending.org=, "Origins".
 - The task -> routine/trigger run map is in memory, so a run spanning a restart is tagged =task:<id>=. Persist it with the task.
 
 ** DONE Waits: should URL waits need web or egress permission? v0.17.0       :security:orchestration:

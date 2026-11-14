@@ -507,6 +507,7 @@ static const gchar GIT_BLOCK[] =
     "*.sock\n"
     "daemon.lock\n"
     "events/\n"
+    "task-sources.tsv\n"
     "exchange/\n"
     "\n"
     "# Regenerated on every start from clawtilla.yaml.\n"
@@ -1179,12 +1180,12 @@ incident_routine_of(
 	gpointer     user_data
 ){
 	ClawtDaemon *self = user_data;
-	ClawtUsageOrigin *source;
+	const ClawtUsageOrigin *source;
 
 	if (self->task_sources == NULL || task_id == NULL)
 		return NULL;
 
-	source = g_hash_table_lookup(self->task_sources, task_id);
+	source = clawt_task_sources_lookup(self->task_sources, task_id);
 
 	if (source == NULL || source->kind != CLAWT_USAGE_ORIGIN_ROUTINE)
 		return NULL;
@@ -2140,6 +2141,22 @@ on_link_typing(ClawtLinkServer *server,
 /* When the task-source table is swept of tasks that have finished. */
 #define TASK_SOURCE_PRUNE_AT (1024)
 
+/* The #ClawtTaskSourcesLiveFunc the sweep asks: known, and not finished. */
+static gboolean
+task_source_is_live(
+	const gchar *task_id,
+	gboolean    *known,
+	gpointer     user_data
+){
+	ClawtDaemon *self = user_data;
+	ClawtTask *task = (self->tasks != NULL)
+		? clawt_task_manager_get(self->tasks, task_id) : NULL;
+
+	*known = (task != NULL);
+
+	return task != NULL && !clawt_task_is_finished(task);
+}
+
 void
 clawt_daemon_note_task_source(
 	ClawtDaemon          *self,
@@ -2152,26 +2169,17 @@ clawt_daemon_note_task_source(
 
 	/*
 	 * A routine on a five-minute schedule adds an entry every five
-	 * minutes for as long as the daemon runs.  A finished or forgotten
-	 * task's turns have all been drained by the time a thousand more
-	 * runs have started, so those entries go.
+	 * minutes for as long as the daemon runs.  A finished task's turns
+	 * have all been drained by the time a thousand more runs have
+	 * started, so those entries go; one this daemon never knew -- from
+	 * before a restart -- stays for a week, because a turn about it can
+	 * still arrive from a mailbox that outlived the last daemon.
 	 */
-	if (g_hash_table_size(self->task_sources) >= TASK_SOURCE_PRUNE_AT) {
-		GHashTableIter iter;
-		gpointer key;
+	if (clawt_task_sources_get_count(self->task_sources) >= TASK_SOURCE_PRUNE_AT)
+		clawt_task_sources_prune(self->task_sources, task_source_is_live,
+					 self, g_get_real_time() / G_USEC_PER_SEC);
 
-		g_hash_table_iter_init(&iter, self->task_sources);
-		while (g_hash_table_iter_next(&iter, &key, NULL)) {
-			ClawtTask *task = (self->tasks != NULL)
-				? clawt_task_manager_get(self->tasks, key) : NULL;
-
-			if (task == NULL || clawt_task_is_finished(task))
-				g_hash_table_iter_remove(&iter);
-		}
-	}
-
-	g_hash_table_replace(self->task_sources, g_strdup(task_id),
-			     clawt_usage_origin_new(kind, id));
+	clawt_task_sources_note(self->task_sources, task_id, kind, id);
 }
 
 /* How far up a delegation chain to look for the run that began it. */
@@ -2184,8 +2192,13 @@ clawt_daemon_note_task_source(
  * routine's bill: the assignee's turns carry the child task, and only
  * its root was created by the run.  Bounded, since a parent link is
  * data and a cycle in it must not hang the reply path.
+ *
+ * A hit found through an ancestor is recorded against @task_id too.
+ * The parent chain lives in the task manager, which a restart empties,
+ * while the child's turns can outlive it in a mailbox: recorded now,
+ * the child is still charged to the run after the chain is gone.
  */
-static ClawtUsageOrigin *
+static const ClawtUsageOrigin *
 task_source(
 	ClawtDaemon *self,
 	const gchar *task_id
@@ -2193,14 +2206,22 @@ task_source(
 	const gchar *cursor = task_id;
 	guint depth;
 
+	if (self->task_sources == NULL)
+		return NULL;
+
 	for (depth = 0; cursor != NULL && depth < TASK_SOURCE_MAX_DEPTH; depth++) {
-		ClawtUsageOrigin *source = NULL;
+		const ClawtUsageOrigin *source;
 		ClawtTask *task;
 
-		if (self->task_sources != NULL)
-			source = g_hash_table_lookup(self->task_sources, cursor);
-		if (source != NULL)
+		source = clawt_task_sources_lookup(self->task_sources, cursor);
+		if (source != NULL) {
+			if (depth > 0 &&
+				clawt_task_sources_note(self->task_sources, task_id,
+							source->kind, source->id))
+				return clawt_task_sources_lookup(self->task_sources,
+								 task_id);
 			return source;
+		}
 
 		task = (self->tasks != NULL)
 			? clawt_task_manager_get(self->tasks, cursor) : NULL;
@@ -2227,7 +2248,7 @@ clawt_daemon_usage_origin(
 ){
 	ClawtAgent *agent = clawt_agent_manager_get(self->agents, agent_id);
 	ClawtAgentConfig *config = clawt_config_get_agent(self->config, agent_id);
-	ClawtUsageOrigin *source;
+	const ClawtUsageOrigin *source;
 	ClawtUsageOrigin *origin;
 	const gchar *sender = NULL;
 	const gchar *task_id = NULL;
@@ -4905,7 +4926,7 @@ release_components(ClawtDaemon *self)
     g_clear_object(&self->notifier);
     g_clear_object(&self->guard);
     g_clear_object(&self->usage);
-    g_clear_pointer(&self->task_sources, g_hash_table_unref);
+    g_clear_object(&self->task_sources);
     g_clear_object(&self->tasks);
     g_clear_object(&self->rooms);
     g_clear_object(&self->agents);
@@ -6614,8 +6635,16 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     self->tasks = clawt_task_manager_new();
     self->guard = clawt_loop_guard_new();
     self->usage = clawt_usage_new();
-    self->task_sources = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
-                                               (GDestroyNotify)clawt_usage_origin_free);
+    /*
+     * On disk, under the state directory the daemon holds the lock on:
+     * a run spanning a restart is still its routine's bill.
+     */
+    {
+        g_autofree gchar *sources_path =
+            g_build_filename(self->state_dir, "task-sources.tsv", NULL);
+
+        self->task_sources = clawt_task_sources_new(sources_path);
+    }
 	{
 		GPtrArray *loaded = clawt_agent_manager_list(self->agents);
 		guint index;

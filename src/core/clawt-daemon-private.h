@@ -76,7 +76,7 @@ struct _ClawtDaemon {
      * for a routine sharing the operator's room is "user", and the
      * usage ledger asks which routine a turn's work began at.
      */
-    GHashTable         *task_sources;
+    ClawtTaskSources   *task_sources;
     ClawtEventBus      *bus;
     ClawtEventLog      *log;
 
