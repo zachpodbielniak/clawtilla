@@ -16,6 +16,8 @@
 #include <clawtilla.h>
 
 #include <glib/gstdio.h>
+#include <string.h>
+#include <unistd.h>
 
 #include "clawt-test-util.h"
 
@@ -650,6 +652,329 @@ test_description_names_the_tool_it_applies_to(void)
     paths_teardown(&paths);
 }
 
+/* ── Hard links ──────────────────────────────────────────────────── */
+
+/* The index of the first "flag path" pair in @argv, or -1. */
+static gint
+find_pair(GStrv argv, const gchar *flag, const gchar *path)
+{
+    guint i;
+
+    for (i = 0; argv[i] != NULL; i++) {
+        if (g_strcmp0(argv[i], flag) == 0 && argv[i + 1] != NULL &&
+            g_strcmp0(argv[i + 1], path) == 0)
+            return (gint)i;
+    }
+
+    return -1;
+}
+
+/* A file with a second name, the way an agent would make one. */
+static gchar *
+linked_file(const gchar *dir, const gchar *name, const gchar *other_dir)
+{
+    g_autofree gchar *path = g_build_filename(dir, name, NULL);
+    g_autofree gchar *other = g_build_filename(other_dir, "second-name",
+                                               NULL);
+
+    g_assert_true(g_file_set_contents(path, "secret", -1, NULL));
+    g_assert_cmpint(link(path, other), ==, 0);
+
+    return clawt_canonicalize_missing(path);
+}
+
+/*
+ * A read-only bind of a file with another name under a writable bind is
+ * writable through that name, so the box would say "read-only" about a
+ * file the agent can change.  Refused, naming the file.
+ */
+static void
+test_hardlinked_ro_bind_is_refused(void)
+{
+    Paths paths = { 0 };
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *file = NULL;
+    g_autofree gchar *base = NULL;
+
+    paths_setup(&paths);
+    base = g_path_get_dirname(paths.root);
+
+    /* The second name is in the workspace, which is bound writable. */
+    file = linked_file(paths.outside, "settings.json", paths.root);
+
+    sandbox = clawt_sandbox_new(CLAWT_CONFINE_BWRAP, paths.root);
+    clawt_sandbox_add_mount_path(sandbox, file, FALSE);
+
+    g_assert_false(clawt_sandbox_check_links(sandbox, &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFINEMENT);
+    g_assert_nonnull(strstr(error->message, file));
+    g_assert_nonnull(strstr(error->message, "2 hard links"));
+
+    /* The same file bound writable promises nothing to break. */
+    {
+        g_autoptr(ClawtSandbox) writable =
+            clawt_sandbox_new(CLAWT_CONFINE_BWRAP, paths.root);
+
+        clawt_sandbox_add_mount_path(writable, file, TRUE);
+        g_assert_true(clawt_sandbox_check_links(writable, NULL));
+    }
+
+    /* And with one name it is fine. */
+    {
+        g_autoptr(ClawtSandbox) single =
+            clawt_sandbox_new(CLAWT_CONFINE_BWRAP, paths.root);
+        g_autofree gchar *other = g_build_filename(paths.root,
+                                                   "second-name", NULL);
+
+        g_assert_cmpint(g_unlink(other), ==, 0);
+        clawt_sandbox_add_mount_path(single, file, FALSE);
+        g_assert_true(clawt_sandbox_check_links(single, NULL));
+    }
+
+    clawt_test_remove_tree(base);
+    paths_teardown(&paths);
+}
+
+/*
+ * A denied file is covered with /dev/null at its own path; its other
+ * name is not covered at all.
+ */
+static void
+test_hardlinked_deny_is_refused(void)
+{
+    Paths paths = { 0 };
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *file = NULL;
+    g_autofree gchar *base = NULL;
+
+    paths_setup(&paths);
+    base = g_path_get_dirname(paths.root);
+
+    file = linked_file(paths.root, "id_ed25519", paths.outside);
+
+    sandbox = clawt_sandbox_new(CLAWT_CONFINE_BWRAP, paths.root);
+    clawt_sandbox_add_deny_path(sandbox, file);
+
+    g_assert_false(clawt_sandbox_check_links(sandbox, &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFINEMENT);
+    g_assert_nonnull(strstr(error->message, "/dev/null"));
+
+    /*
+     * The argument-scanning modes bind nothing, so there is nothing for
+     * a second name to get around: the check has no opinion there.
+     */
+    {
+        g_autoptr(ClawtSandbox) allowlist =
+            clawt_sandbox_new(CLAWT_CONFINE_ALLOWLIST, paths.root);
+
+        clawt_sandbox_add_deny_path(allowlist, file);
+        g_assert_true(clawt_sandbox_check_links(allowlist, NULL));
+    }
+
+    clawt_test_remove_tree(base);
+    paths_teardown(&paths);
+}
+
+/*
+ * A denied directory is covered with a tmpfs, which hides names and not
+ * inodes: a key inside it with a second name elsewhere is still there.
+ * The directory is walked for exactly that.
+ */
+static void
+test_hardlink_inside_denied_directory_is_refused(void)
+{
+    Paths paths = { 0 };
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *file = NULL;
+    g_autofree gchar *nested = NULL;
+    g_autofree gchar *base = NULL;
+
+    paths_setup(&paths);
+    base = g_path_get_dirname(paths.root);
+
+    nested = g_build_filename(paths.secret_dir, "deeper", NULL);
+    g_assert_cmpint(g_mkdir_with_parents(nested, 0700), ==, 0);
+    file = linked_file(nested, "token", paths.outside);
+
+    sandbox = clawt_sandbox_new(CLAWT_CONFINE_BWRAP, paths.root);
+    clawt_sandbox_add_deny_path(sandbox, paths.secret_dir);
+
+    g_assert_false(clawt_sandbox_check_links(sandbox, &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFINEMENT);
+    g_assert_nonnull(strstr(error->message, file));
+
+    clawt_test_remove_tree(base);
+    paths_teardown(&paths);
+}
+
+/* ── The environment a box owns ──────────────────────────────────── */
+
+static const gchar *
+env_value(GStrv env, const gchar *name)
+{
+    gsize length = strlen(name);
+    guint i;
+
+    for (i = 0; env[i] != NULL; i++) {
+        if (strncmp(env[i], name, length) == 0 && env[i][length] == '=')
+            return env[i] + length + 1;
+    }
+
+    return NULL;
+}
+
+static guint
+env_count(GStrv env, const gchar *name)
+{
+    gsize length = strlen(name);
+    guint count = 0;
+    guint i;
+
+    for (i = 0; env[i] != NULL; i++) {
+        if (strncmp(env[i], name, length) == 0 && env[i][length] == '=')
+            count++;
+    }
+
+    return count;
+}
+
+/*
+ * TMPDIR, HOME and XDG_* belong to the box.  An agent's env: naming a
+ * host directory the box binds writable used to put that directory back
+ * where the box's private /tmp should be.
+ */
+static void
+test_bwrap_owns_tmpdir_home_and_xdg(void)
+{
+    g_autoptr(ClawtSandbox) sandbox =
+        clawt_sandbox_new(CLAWT_CONFINE_BWRAP, "/tmp");
+    g_auto(GStrv) env = NULL;
+    const gchar *input[] = {
+        "TMPDIR=/srv/exchange", "HOME=/srv/exchange",
+        "XDG_CONFIG_HOME=/srv/exchange/config",
+        "XDG_RUNTIME_DIR=/srv/exchange/run", "XDG_SESSION_TYPE=x11",
+        "PATH=/usr/bin", "KEEP_ME=yes", NULL
+    };
+
+    env = clawt_sandbox_wrap_environment(sandbox, input);
+
+    g_assert_cmpstr(env_value(env, "TMPDIR"), ==, "/tmp");
+    g_assert_cmpstr(env_value(env, "HOME"), ==, g_get_home_dir());
+    g_assert_cmpstr(env_value(env, "XDG_CONFIG_HOME"), ==,
+                    g_get_user_config_dir());
+    g_assert_cmpstr(env_value(env, "XDG_RUNTIME_DIR"), ==,
+                    g_get_user_runtime_dir());
+
+    /* Once each: getenv() takes the first, so a duplicate is a lie. */
+    g_assert_cmpuint(env_count(env, "TMPDIR"), ==, 1);
+    g_assert_cmpuint(env_count(env, "HOME"), ==, 1);
+    g_assert_cmpuint(env_count(env, "XDG_CONFIG_HOME"), ==, 1);
+
+    /* Every XDG_* is the box's, including ones it does not set. */
+    g_assert_null(env_value(env, "XDG_SESSION_TYPE"));
+
+    /* Nothing the agent wrote about them survives anywhere. */
+    {
+        guint i;
+
+        for (i = 0; env[i] != NULL; i++)
+            g_assert_null(strstr(env[i], "/srv/exchange"));
+    }
+
+    /* Everything else passes through. */
+    g_assert_cmpstr(env_value(env, "PATH"), ==, "/usr/bin");
+    g_assert_cmpstr(env_value(env, "KEEP_ME"), ==, "yes");
+
+    g_assert_true(clawt_sandbox_environment_is_owned("XDG_DATA_DIRS"));
+    g_assert_false(clawt_sandbox_environment_is_owned("PATH"));
+}
+
+/* No sandbox, no opinion: the other modes pass the environment through. */
+static void
+test_other_modes_leave_the_environment(void)
+{
+    g_autoptr(ClawtSandbox) sandbox =
+        clawt_sandbox_new(CLAWT_CONFINE_WORKSPACE, "/tmp");
+    g_auto(GStrv) env = NULL;
+    const gchar *input[] = { "TMPDIR=/var/tmp/mine", "HOME=/h", NULL };
+
+    env = clawt_sandbox_wrap_environment(sandbox, input);
+
+    g_assert_cmpstr(env_value(env, "TMPDIR"), ==, "/var/tmp/mine");
+    g_assert_cmpstr(env_value(env, "HOME"), ==, "/h");
+    g_assert_null(env[2]);
+}
+
+/*
+ * A private home is a tmpfs, and it has to come before every bind --
+ * bwrap applies operations in order, so a tmpfs after the workspace bind
+ * would cover the workspace when the workspace is under $HOME.
+ */
+static void
+test_private_home_comes_before_the_binds(void)
+{
+    Paths paths = { 0 };
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_auto(GStrv) wrapped = NULL;
+    g_autofree gchar *home = NULL;
+    g_autofree gchar *root = NULL;
+    const gchar *argv[] = { "true", NULL };
+    gint home_at;
+    gint root_at;
+    gint runtime_at;
+
+    paths_setup(&paths);
+    root = clawt_canonicalize_missing(paths.root);
+    home = g_path_get_dirname(root);
+
+    sandbox = clawt_sandbox_new(CLAWT_CONFINE_BWRAP, paths.root);
+    clawt_sandbox_set_private_home(sandbox, home);
+
+    wrapped = clawt_sandbox_wrap_argv(sandbox, argv);
+
+    home_at = find_pair(wrapped, "--tmpfs", home);
+    root_at = find_pair(wrapped, "--bind", root);
+    runtime_at = find_pair(wrapped, "--dir", g_get_user_runtime_dir());
+
+    g_assert_cmpint(home_at, >=, 0);
+    g_assert_cmpint(root_at, >, home_at);
+    g_assert_cmpint(runtime_at, >, home_at);
+
+    /* And a box without one has no home at all, as it always had. */
+    {
+        g_autoptr(ClawtSandbox) plain =
+            clawt_sandbox_new(CLAWT_CONFINE_BWRAP, paths.root);
+        g_auto(GStrv) bare = clawt_sandbox_wrap_argv(plain, argv);
+
+        g_assert_cmpint(find_pair(bare, "--tmpfs", home), ==, -1);
+    }
+
+    paths_teardown(&paths);
+}
+
+/*
+ * The description stops saying the agent's own tools reach the host once
+ * they are in a box of their own.
+ */
+static void
+test_description_knows_the_agent_is_confined(void)
+{
+    g_autoptr(ClawtSandbox) sandbox =
+        clawt_sandbox_new(CLAWT_CONFINE_BWRAP, "/tmp");
+    g_autofree gchar *before = clawt_sandbox_describe(sandbox);
+    g_autofree gchar *after = NULL;
+
+    clawt_sandbox_set_agent_confined(sandbox, TRUE);
+    after = clawt_sandbox_describe(sandbox);
+
+    g_assert_nonnull(strstr(before, "run on the host outside it"));
+    g_assert_null(strstr(after, "run on the host outside it"));
+    g_assert_nonnull(strstr(after, "confined separately"));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -685,6 +1010,19 @@ main(int argc, char *argv[])
     g_test_add_func("/sandbox/description", test_description_states_the_limits);
     g_test_add_func("/sandbox/runtime-opens-not-seen",
                     test_argument_checking_cannot_see_runtime_opens);
+    g_test_add_func("/sandbox/hardlink-ro-bind",
+                    test_hardlinked_ro_bind_is_refused);
+    g_test_add_func("/sandbox/hardlink-deny",
+                    test_hardlinked_deny_is_refused);
+    g_test_add_func("/sandbox/hardlink-deny-dir",
+                    test_hardlink_inside_denied_directory_is_refused);
+    g_test_add_func("/sandbox/env-owned", test_bwrap_owns_tmpdir_home_and_xdg);
+    g_test_add_func("/sandbox/env-other-modes",
+                    test_other_modes_leave_the_environment);
+    g_test_add_func("/sandbox/private-home-order",
+                    test_private_home_comes_before_the_binds);
+    g_test_add_func("/sandbox/description-agent-confined",
+                    test_description_knows_the_agent_is_confined);
 
     return g_test_run();
 }

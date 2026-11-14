@@ -819,6 +819,15 @@ host_exec(ClawtComputer        *computer,
                                   (const gchar * const *)translated, error))
         return NULL;
 
+    /*
+     * And the binds checked for a second name before they are trusted:
+     * a read-only file or a denied one with another hard link is
+     * reachable around the mount, so the box would promise more than it
+     * holds.  Refused rather than run, with the file named.
+     */
+    if (!clawt_sandbox_check_links(self->sandbox, error))
+        return NULL;
+
     wrapped = clawt_sandbox_wrap_argv(self->sandbox,
                                       (const gchar * const *)translated);
 
@@ -836,8 +845,16 @@ host_exec(ClawtComputer        *computer,
     {
         g_auto(GStrv) environment =
             clawt_build_child_environment(self->environment);
+        /*
+         * Under bwrap the sandbox owns TMPDIR, HOME and XDG_*: an
+         * agent's env: replaces allowlisted names, and TMPDIR naming a
+         * directory the box binds writable put the host's files back
+         * where the box's private /tmp should have been.
+         */
+        g_auto(GStrv) boxed = clawt_sandbox_wrap_environment(
+            self->sandbox, (const gchar * const *)environment);
 
-        g_subprocess_launcher_set_environ(launcher, environment);
+        g_subprocess_launcher_set_environ(launcher, boxed);
     }
 
     /*

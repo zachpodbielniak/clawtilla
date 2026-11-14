@@ -320,6 +320,18 @@ declare -A AFFORDANCES=(
     #
     ["a held agent is drawn as held"]="clawt_hold_label|clawt_hold_label|clawt_hold_label"
     #
+    # Sandboxing an agent's own tools (runtime.confine).
+    #
+    # The key is in the schema, so a generated form shows it whether or
+    # not anybody declared it -- which is exactly why it is declared: the
+    # setting is only usable with the library's label and sentence on it,
+    # and with the warning that says the agent is a shadow because
+    # bubblewrap is missing.  Neither is a frame, an enumeration walk or a
+    # vocabulary, so layers 1 to 4 cannot see a client that dropped them.
+    #
+    ["sandbox an agent's own tools"]="clawt_agent_confine_label|clawt_agent_confine_label|clawt_agent_confine_label"
+    ["why a sandboxed agent cannot start"]="clawt_agent_confine_notice|clawt_agent_confine_notice|clawt_agent_confine_notice"
+    #
     # Integration forms drawn from the shared field table.
     #
     # Not a frame kind and not an enumeration -- both clients send

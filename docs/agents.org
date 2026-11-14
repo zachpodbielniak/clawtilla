@@ -837,6 +837,30 @@ delivers it either.  ~agent list~ carries a QUEUE column for exactly
 this: a stopped agent with a non-zero queue is stalled rather than
 idle.
 
+*** Sandboxing the agent's own tools
+
+#+begin_src yaml
+runtime:
+  type: process
+  confine: bwrap            # none (default) | bwrap; fleet-wide: defaults.confine
+  confine_paths:            # optional, read-only extras
+    - ~/.nvm/versions/node/v22.11.0
+#+end_src
+
+Off by default, so nothing about a running agent changes until somebody turns it on. With ~confine: bwrap~ the libreclaw child -- and with it the AI CLI, every command the CLI runs and its MCP servers -- starts inside bubblewrap. Its own Bash, Read and Write can then reach the workspace, its state directory, the computer's mounts in their declared modes, the CLI's login directory (writable, so OAuth tokens refresh), and read-only the programs it runs: the CLI, libreclaw and whatever ~.mcp.json~ names. ~$HOME~ and ~/tmp~ are private and empty apart from those; ~/usr~ and ~/etc~ are read-only; the network is untouched. =docs/security.org= has the full table and what it does not stop.
+
+Things worth knowing before turning it on:
+
+- *An agent's ~env:~ cannot set ~TMPDIR~, ~HOME~ or any ~XDG_*~ inside the box.* The box owns them -- otherwise ~TMPDIR~ pointed at a writable bind put host files where the private ~/tmp~ belongs. Anything else under ~env:~ arrives as before.
+- *A CLI the builder cannot follow needs naming.* It finds the CLI through ai-glib (the same lookup the CLI's client does), binds the file, its resolved target, an npm package's directory and a script's ~#!~ interpreter. A node under =~/.nvm= reached some other way, or a tool a skill shells out to from under =$HOME=, goes in ~confine_paths~. A path that does not exist is left out; one that is missing from the box reads to the agent as "not given", which the per-turn directive tells it.
+- *It takes effect at the next start*, and ~agent.set~ answers ~restart_required~ for a running agent. It is retaken on every start, like the restart policy.
+- *Only a process runtime can be confined.* ~embedded~ with ~bwrap~ is refused when set and disables the agent at load; an embedded agent that inherits bwrap from =defaults.confine= is disabled too, with a message naming that key, until it says ~confine: none~ itself.
+- *No bubblewrap means a shadow agent*, with the reason, at load and again at start. It is never run unconfined instead. All three clients show the reason beside the setting.
+- *A read-only bind of a file with a second hard link is refused*, and so is a denied file (or a file in a denied directory) with one, because the other name reaches it around the bind.
+- *Stopping is still clean.* bwrap forwards no signals, so SIGTERM goes to libreclaw inside the box; the ~pid~ an agent listing reports is libreclaw's, and an interrupt kills what is below libreclaw.
+
+In the clients the switch is under Runtime, labelled "Sandbox its own tools (bubblewrap)", with a sentence saying what it does and a warning when it cannot be given here.
+
 *** When the account runs out of session allowance
 
 Not a fault, and not a rate limit.  The CLI stops reaching the API at
@@ -893,8 +917,8 @@ run -- which is the case when clawtilla is embedded in something else.
 
 The trade is real and clawtilla does not pretend otherwise: an embedded
 agent cannot have its own environment or credentials, cannot be
-sandboxed away from the daemon, and cannot be interrupted, because there
-is no process to signal.  ~ClawtAgentCaps~ reports that, so no interface
+sandboxed away from the daemon (~runtime.confine: bwrap~ is refused for
+it), and cannot be interrupted, because there is no process to signal.  ~ClawtAgentCaps~ reports that, so no interface
 offers a control that would do nothing.
 
 **** Running several embedded agents in one process

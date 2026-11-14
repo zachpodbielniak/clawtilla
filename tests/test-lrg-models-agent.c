@@ -354,6 +354,19 @@ test_form_walks_the_schema(void)
     g_assert_cmpint(find_field(groups, "computer.vm.image", NULL)->kind, ==,
                     CLAWT_LRG_AGENT_FIELD_DISK);
 
+    /*
+     * The agent's own sandbox wears the library's label and sentence, the
+     * same words the GTK and web clients use, and is still the enum
+     * walked from its type.
+     */
+    field = find_field(groups, "runtime.confine", &group);
+    g_assert_nonnull(field);
+    g_assert_cmpstr(group->title, ==, "Runtime");
+    g_assert_cmpstr(field->label, ==, clawt_agent_confine_label());
+    g_assert_cmpstr(field->hint, ==, clawt_agent_confine_explanation());
+    g_assert_cmpint(field->kind, ==, CLAWT_LRG_AGENT_FIELD_ENUM);
+    g_assert_true(field->enum_type == CLAWT_TYPE_RUNTIME_CONFINE);
+
     /* unset is "" rather than absent */
     g_assert_cmpstr(find_field(groups, "description", NULL)->value, ==, "");
 

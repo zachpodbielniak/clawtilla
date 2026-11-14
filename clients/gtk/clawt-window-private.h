@@ -400,6 +400,8 @@ struct _ClawtWindow {
     GtkWidget         *computer_row;
     GtkWidget         *restart_row;
     GtkWidget         *autostart_row;
+    GtkWidget         *confine_row;   /* runtime.confine, as a switch */
+    gboolean           confine_shown; /* what it held when drawn */
     GtkWidget         *chief_row;
     GtkWidget         *manage_fleet_row;
     GtkWidget         *team_row;

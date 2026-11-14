@@ -12,6 +12,7 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 
 struct _ClawtSandbox {
     GObject parent_instance;
@@ -25,6 +26,18 @@ struct _ClawtSandbox {
     gboolean          allow_network;
     gboolean          allow_sudo;
     gboolean          remote;
+
+    /*
+     * Set only for a confined agent's own process: an empty tmpfs over
+     * this path, so the AI CLI has a $HOME to write dotfiles in that is
+     * not the operator's.  NULL leaves the home directory absent, which
+     * is what a clawtilla_computer_exec box has always had.
+     */
+    gchar            *private_home;
+    gboolean          agent_confined;
+
+    /* Symlinks to recreate inside: pairs of (link path, target). */
+    GPtrArray        *symlinks;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtSandbox, clawt_sandbox, G_TYPE_OBJECT)
@@ -179,6 +192,43 @@ clawt_sandbox_add_deny_path(ClawtSandbox *self, const gchar *path)
 }
 
 void
+clawt_sandbox_add_symlink(ClawtSandbox *self, const gchar *path)
+{
+    g_autofree gchar *target = NULL;
+    g_autofree gchar *parent = NULL;
+    g_autofree gchar *real_parent = NULL;
+    g_autofree gchar *name = NULL;
+    guint i;
+
+    g_return_if_fail(CLAWT_IS_SANDBOX(self));
+
+    if (path == NULL || !g_file_test(path, G_FILE_TEST_IS_SYMLINK))
+        return;
+
+    target = sandbox_normalize(self, path);
+
+    /*
+     * The link's directory canonicalised, its own name not: that is the
+     * spelling a PATH lookup inside the box will try.
+     */
+    parent = g_path_get_dirname(path);
+    real_parent = sandbox_normalize(self, parent);
+    name = g_path_get_basename(path);
+
+    for (i = 0; i < self->symlinks->len; i += 2) {
+        g_autofree gchar *candidate =
+            g_build_filename(real_parent, name, NULL);
+
+        if (g_strcmp0(g_ptr_array_index(self->symlinks, i), candidate) == 0)
+            return;
+    }
+
+    g_ptr_array_add(self->symlinks, g_build_filename(real_parent, name,
+                                                     NULL));
+    g_ptr_array_add(self->symlinks, g_steal_pointer(&target));
+}
+
+void
 clawt_sandbox_set_allow_network(ClawtSandbox *self, gboolean allow)
 {
     g_return_if_fail(CLAWT_IS_SANDBOX(self));
@@ -197,6 +247,272 @@ clawt_sandbox_get_mode(ClawtSandbox *self)
 {
     g_return_val_if_fail(CLAWT_IS_SANDBOX(self), CLAWT_CONFINE_WORKSPACE);
     return self->mode;
+}
+
+void
+clawt_sandbox_set_private_home(ClawtSandbox *self, const gchar *home)
+{
+    g_return_if_fail(CLAWT_IS_SANDBOX(self));
+
+    g_clear_pointer(&self->private_home, g_free);
+
+    /*
+     * Normalised like every other stored path, so the ordering checks in
+     * the builder compare like with like: a home reached through
+     * /home -> /var/home would otherwise never be "within" itself.
+     */
+    if (home != NULL && *home != '\0')
+        self->private_home = sandbox_normalize(self, home);
+}
+
+void
+clawt_sandbox_set_agent_confined(ClawtSandbox *self, gboolean confined)
+{
+    g_return_if_fail(CLAWT_IS_SANDBOX(self));
+
+    self->agent_confined = confined;
+}
+
+/*
+ * The most entries one denied directory is walked for.  A deny is a
+ * small thing -- ~/.ssh, a key file, a credentials directory -- and a
+ * walk that would take longer than this is a deny that names the wrong
+ * thing; it is refused rather than half-checked.
+ */
+#define LINK_WALK_LIMIT (20000)
+
+/*
+ * Whether @path is root's by construction: /usr and /etc are bound from
+ * the system, and fs.protected_hardlinks stops an unprivileged agent
+ * giving their files another name.  Skipping them is what keeps the
+ * check from refusing every sandbox on a distribution that hardlinks its
+ * own binaries.
+ */
+static gboolean
+link_check_exempt(const gchar *path)
+{
+    return clawt_path_is_within(path, "/usr") ||
+           clawt_path_is_within(path, "/etc");
+}
+
+static gboolean
+refuse_linked_file(const gchar *path, const gchar *why, GError **error)
+{
+    struct stat st;
+
+    if (link_check_exempt(path) || stat(path, &st) != 0 ||
+        !S_ISREG(st.st_mode) || st.st_nlink <= 1)
+        return TRUE;
+
+    g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFINEMENT,
+                "%s has %u hard links, so %s: another name for the same "
+                "file reaches it around the bind. Find them with `find / "
+                "-xdev -samefile %s` and remove the others, or copy the "
+                "file so it has one name",
+                path, (guint)st.st_nlink, why, path);
+
+    return FALSE;
+}
+
+/*
+ * Walks a denied directory for files with a second name.
+ *
+ * Covering the directory with a tmpfs removes its names from the box;
+ * an inode with another name somewhere the box does bind is still
+ * reachable through that one.  Symlinks are not followed: a symlink
+ * inside a denied directory names something by path, and paths are what
+ * the binds already decide.
+ */
+static gboolean
+refuse_linked_tree(const gchar *root, guint *budget, GError **error)
+{
+    g_autoptr(GDir) dir = NULL;
+    const gchar *name;
+
+    dir = g_dir_open(root, 0, NULL);
+
+    if (dir == NULL)
+        return TRUE;
+
+    while ((name = g_dir_read_name(dir)) != NULL) {
+        g_autofree gchar *child = g_build_filename(root, name, NULL);
+        struct stat st;
+
+        if (*budget == 0) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFINEMENT,
+                        "the denied directory %s holds more than %d "
+                        "entries, too many to check for hard links; deny "
+                        "something narrower", root, LINK_WALK_LIMIT);
+            return FALSE;
+        }
+
+        (*budget)--;
+
+        if (lstat(child, &st) != 0)
+            continue;
+
+        if (S_ISDIR(st.st_mode)) {
+            if (!refuse_linked_tree(child, budget, error))
+                return FALSE;
+            continue;
+        }
+
+        if (S_ISREG(st.st_mode) &&
+            !refuse_linked_file(child, "denying its directory does not "
+                                "hide it", error))
+            return FALSE;
+    }
+
+    return TRUE;
+}
+
+static gboolean bwrap_path_is_visible(ClawtSandbox *self, const gchar *path);
+
+gboolean
+clawt_sandbox_check_links(ClawtSandbox *self, GError **error)
+{
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_SANDBOX(self), FALSE);
+
+    if (self->mode != CLAWT_CONFINE_BWRAP)
+        return TRUE;
+
+    /*
+     * Read-only binds of a single file.  A directory bound read-only is
+     * not walked: it is a CLI's install or a mount somebody declared,
+     * often large, and the threat is a second name under a *writable*
+     * bind -- which for a directory means the operator bound one inside
+     * the other, a decision the mount list already shows.
+     */
+    for (i = 0; i < self->mount_paths->len; i++) {
+        const gchar *path = g_ptr_array_index(self->mount_paths, i);
+        gboolean writable = (i < self->mount_writable->len)
+            ? g_array_index(self->mount_writable, gboolean, i) : FALSE;
+
+        if (writable)
+            continue;
+
+        if (!refuse_linked_file(path, "binding it read-only does not "
+                                "stop it being written", error))
+            return FALSE;
+    }
+
+    /*
+     * Denials, the ones the builder emits an operation for.  A denial of
+     * something no bind brings in has nothing to leak through.
+     */
+    for (i = 0; i < self->deny_paths->len; i++) {
+        const gchar *path = g_ptr_array_index(self->deny_paths, i);
+        guint budget = LINK_WALK_LIMIT;
+
+        if (!bwrap_path_is_visible(self, path))
+            continue;
+
+        if (g_file_test(path, G_FILE_TEST_IS_DIR)) {
+            if (!refuse_linked_tree(path, &budget, error))
+                return FALSE;
+            continue;
+        }
+
+        if (!refuse_linked_file(path, "covering it with /dev/null does "
+                                "not hide it", error))
+            return FALSE;
+    }
+
+    return TRUE;
+}
+
+gboolean
+clawt_sandbox_environment_is_owned(const gchar *name)
+{
+    if (name == NULL)
+        return FALSE;
+
+    return g_strcmp0(name, "TMPDIR") == 0 ||
+           g_strcmp0(name, "HOME") == 0 ||
+           g_str_has_prefix(name, "XDG_");
+}
+
+/*
+ * The runtime directory a sandbox gives its occupant: the daemon's own
+ * spelling, so a socket path written into the agent's config means the
+ * same thing inside and out.  The directory itself is never bound in --
+ * it holds the daemon's sockets and every agent's -- so with a private
+ * home the builder makes an empty one there and binds back only the
+ * sockets this agent needs.
+ */
+static const gchar *
+sandbox_runtime_dir(void)
+{
+    return g_get_user_runtime_dir();
+}
+
+GStrv
+clawt_sandbox_wrap_environment(ClawtSandbox        *self,
+                               const gchar * const *environment)
+{
+    g_autoptr(GPtrArray) out = g_ptr_array_new_with_free_func(g_free);
+    const gchar *home;
+    gsize i;
+
+    g_return_val_if_fail(CLAWT_IS_SANDBOX(self), NULL);
+
+    for (i = 0; environment != NULL && environment[i] != NULL; i++) {
+        const gchar *entry = environment[i];
+        const gchar *equals = strchr(entry, '=');
+        g_autofree gchar *name = (equals != NULL)
+            ? g_strndup(entry, (gsize)(equals - entry)) : g_strdup(entry);
+
+        /*
+         * Dropped, not overridden later: getenv() returns the first
+         * match, so appending the sandbox's value after the agent's
+         * would leave the agent's in charge.  That ordering is exactly
+         * how an agent's env: used to beat the allowlist.
+         */
+        if (self->mode == CLAWT_CONFINE_BWRAP &&
+            clawt_sandbox_environment_is_owned(name))
+            continue;
+
+        g_ptr_array_add(out, g_strdup(entry));
+    }
+
+    if (self->mode == CLAWT_CONFINE_BWRAP) {
+        const gchar *runtime = sandbox_runtime_dir();
+
+        home = (self->private_home != NULL) ? self->private_home
+                                            : g_get_home_dir();
+
+        /*
+         * The box's own /tmp, a tmpfs nothing else can see.  An agent
+         * that could set this could aim every temporary file at a host
+         * directory the box binds writable -- the exchange, a mount --
+         * and have them outlive the box and reach other agents.
+         */
+        g_ptr_array_add(out, g_strdup("TMPDIR=/tmp"));
+        g_ptr_array_add(out, g_strdup_printf("HOME=%s", home));
+
+        /*
+         * The daemon's own base directories, never the agent's.  Under a
+         * private home they are inside the tmpfs and so empty and
+         * private; the CLI's login directory is bound back over its own
+         * spelling by whoever built the sandbox.
+         */
+        g_ptr_array_add(out, g_strdup_printf("XDG_CONFIG_HOME=%s",
+                                             g_get_user_config_dir()));
+        g_ptr_array_add(out, g_strdup_printf("XDG_DATA_HOME=%s",
+                                             g_get_user_data_dir()));
+        g_ptr_array_add(out, g_strdup_printf("XDG_CACHE_HOME=%s",
+                                             g_get_user_cache_dir()));
+        g_ptr_array_add(out, g_strdup_printf("XDG_STATE_HOME=%s",
+                                             g_get_user_state_dir()));
+        g_ptr_array_add(out, g_strdup_printf("XDG_RUNTIME_DIR=%s",
+                                             runtime));
+    }
+
+    g_ptr_array_add(out, NULL);
+
+    return (GStrv)g_ptr_array_free(g_steal_pointer(&out), FALSE);
 }
 
 gboolean
@@ -557,6 +873,50 @@ clawt_sandbox_wrap_argv(ClawtSandbox *self, const gchar * const *argv)
     g_ptr_array_add(out, g_strdup("--tmpfs"));
     g_ptr_array_add(out, g_strdup("/tmp"));
 
+    /*
+     * Name resolution, when the box has a network to resolve on.
+     *
+     * /etc is bound, but on a systemd-resolved host /etc/resolv.conf is
+     * a symlink into /run, which is not -- so a networked box could
+     * reach any address and look up none, and an AI CLI inside it
+     * reported its provider as unreachable.  Only the one file the link
+     * names is bound, read-only, and only when it is outside what is
+     * already there; `-try` because a host with no resolver at all is
+     * not a reason to refuse the box.
+     */
+    if (self->allow_network) {
+        g_autofree gchar *resolv = clawt_canonicalize_missing(
+            "/etc/resolv.conf");
+
+        if (resolv != NULL && !clawt_path_is_within(resolv, "/etc") &&
+            !clawt_path_is_within(resolv, "/usr") &&
+            g_file_test(resolv, G_FILE_TEST_IS_REGULAR)) {
+            g_ptr_array_add(out, g_strdup("--ro-bind-try"));
+            g_ptr_array_add(out, g_strdup(resolv));
+            g_ptr_array_add(out, g_strdup(resolv));
+        }
+    }
+
+    /*
+     * A private home, before any bind, because bwrap applies operations
+     * in order and a tmpfs mounted after a bind beneath it would cover
+     * the bind: the workspace and the CLI's login directory usually live
+     * under $HOME, and are brought back on top of this below.
+     *
+     * The runtime directory comes with it, empty and 0700, so the
+     * sockets bound back into it have somewhere to be and the CLI has a
+     * $XDG_RUNTIME_DIR it can write -- see
+     * clawt_sandbox_wrap_environment(), which points it there.
+     */
+    if (self->private_home != NULL) {
+        g_ptr_array_add(out, g_strdup("--tmpfs"));
+        g_ptr_array_add(out, g_strdup(self->private_home));
+        g_ptr_array_add(out, g_strdup("--perms"));
+        g_ptr_array_add(out, g_strdup("0700"));
+        g_ptr_array_add(out, g_strdup("--dir"));
+        g_ptr_array_add(out, g_strdup(sandbox_runtime_dir()));
+    }
+
     if (self->root != NULL) {
         g_ptr_array_add(out, g_strdup("--bind"));
         g_ptr_array_add(out, g_strdup(self->root));
@@ -599,6 +959,25 @@ clawt_sandbox_wrap_argv(ClawtSandbox *self, const gchar * const *argv)
         g_ptr_array_add(out, g_strdup(writable ? "--bind" : "--ro-bind"));
         g_ptr_array_add(out, g_strdup(path));
         g_ptr_array_add(out, g_strdup(path));
+    }
+
+    /*
+     * The names programs are called by, after the binds that hold their
+     * targets.  A link whose directory a bind already brought in is
+     * there with it, and bwrap refuses to make a symlink over a file
+     * that exists.
+     */
+    for (i = 0; i + 1 < self->symlinks->len; i += 2) {
+        const gchar *link = g_ptr_array_index(self->symlinks, i);
+        const gchar *target = g_ptr_array_index(self->symlinks, i + 1);
+        g_autofree gchar *parent = g_path_get_dirname(link);
+
+        if (bwrap_path_is_visible(self, parent))
+            continue;
+
+        g_ptr_array_add(out, g_strdup("--symlink"));
+        g_ptr_array_add(out, g_strdup(target));
+        g_ptr_array_add(out, g_strdup(link));
     }
 
     /*
@@ -759,16 +1138,26 @@ clawt_sandbox_describe(ClawtSandbox *self)
      * Every sentence above is about clawtilla_computer_exec, and it now
      * says so -- it used to open "You are running on the host inside a
      * bubblewrap sandbox", which is not true of the process reading it.
-     * The agent's libreclaw child is spawned unwrapped, so its own Bash,
-     * Read and Write reach the whole filesystem as the daemon's user
-     * whatever this mode says.  That is the architecture (an agent's own
-     * tools run on the host; only exec enters the computer), and the
-     * architecture being deliberate is exactly why the description had
-     * to stop implying otherwise: an agent told it is in a sandbox will
-     * believe a refusal it never got, and an operator reading the same
-     * words will believe deny_paths is protecting a key it is not.
+     * Unless runtime.confine says otherwise the agent's libreclaw child
+     * is spawned unwrapped, so its own Bash, Read and Write reach the
+     * whole filesystem as the daemon's user whatever this mode says.
+     * That is the architecture (an agent's own tools run on the host;
+     * only exec enters the computer), and the architecture being
+     * deliberate is exactly why the description had to stop implying
+     * otherwise: an agent told it is in a sandbox will believe a refusal
+     * it never got, and an operator reading the same words will believe
+     * deny_paths is protecting a key it is not.  When the agent *is*
+     * confined (clawt_sandbox_set_agent_confined()) the sentence says
+     * that instead, because the opposite would now be the lie.
      */
-    if (self->mode != CLAWT_CONFINE_NONE)
+    if (self->mode != CLAWT_CONFINE_NONE && self->agent_confined)
+        g_string_append(out,
+            " This applies to clawtilla_computer_exec. Your own Bash, "
+            "Read and Write tools are confined separately, in a "
+            "bubblewrap sandbox of their own that holds your workspace "
+            "and what your configuration grants; a path missing there "
+            "is missing on purpose.");
+    else if (self->mode != CLAWT_CONFINE_NONE)
         g_string_append(out,
             " This applies to clawtilla_computer_exec. Your own Bash, "
             "Read and Write tools run on the host outside it, so treat "
@@ -788,6 +1177,8 @@ clawt_sandbox_finalize(GObject *object)
     g_clear_pointer(&self->mount_paths, g_ptr_array_unref);
     g_clear_pointer(&self->mount_writable, g_array_unref);
     g_clear_pointer(&self->deny_paths, g_ptr_array_unref);
+    g_clear_pointer(&self->private_home, g_free);
+    g_clear_pointer(&self->symlinks, g_ptr_array_unref);
 
     G_OBJECT_CLASS(clawt_sandbox_parent_class)->finalize(object);
 }
@@ -805,6 +1196,7 @@ clawt_sandbox_init(ClawtSandbox *self)
     self->mount_paths = g_ptr_array_new_with_free_func(g_free);
     self->mount_writable = g_array_new(FALSE, FALSE, sizeof(gboolean));
     self->deny_paths = g_ptr_array_new_with_free_func(g_free);
+    self->symlinks = g_ptr_array_new_with_free_func(g_free);
     self->allow_network = TRUE;
     self->allow_sudo = FALSE;
 }

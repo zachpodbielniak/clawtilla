@@ -8511,6 +8511,149 @@ test_breaking_a_key_shadows_the_agent_again(void)
 }
 
 /*
+ * Confinement and an embedded runtime are refused together where they
+ * arrive, in either order.  Accepting the write and shadowing the agent
+ * at revalidation would answer "saved" for an agent that had just
+ * stopped being able to start.
+ */
+static void
+test_agent_set_refuses_confining_an_embedded_agent(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) confine = NULL;
+    g_autoptr(JsonNode) embed = NULL;
+    g_autoptr(JsonNode) shown = NULL;
+    g_autofree gchar *saved = g_strdup(g_getenv("PATH"));
+    g_autofree gchar *stubs = g_dir_make_tmp("clawt-bwrap-XXXXXX", NULL);
+    g_autofree gchar *stub = g_build_filename(stubs, "bwrap", NULL);
+
+    /*
+     * A stub bwrap first on PATH, so the confined agent is not a shadow on
+     * a machine without bubblewrap -- this test is about the refusal at
+     * agent.set, not about what is installed.
+     */
+    g_assert_true(g_file_set_contents(stub, "#!/bin/sh\nexit 0\n", -1,
+                                      NULL));
+    g_assert_cmpint(g_chmod(stub, 0755), ==, 0);
+    {
+        g_autofree gchar *path = g_strconcat(stubs, ":", saved, NULL);
+
+        g_setenv("PATH", path, TRUE);
+    }
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: inside\n"
+                  "    runtime:\n"
+                  "      type: embedded\n"
+                  "  - id: boxed\n"
+                  "    runtime:\n"
+                  "      confine: bwrap\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    confine = request(&fixture, "agent.set",
+                      "{\"agent\":\"inside\",\"key\":\"runtime.confine\","
+                      "\"value\":\"bwrap\"}");
+    g_assert_true(clawt_ipc_frame_is_error(confine));
+    g_assert_nonnull(strstr(json_object_get_string_member(json_node_get_object(confine), "error"),
+                            "embedded"));
+
+    embed = request(&fixture, "agent.set",
+                    "{\"agent\":\"boxed\",\"key\":\"runtime.type\","
+                    "\"value\":\"embedded\"}");
+    g_assert_true(clawt_ipc_frame_is_error(embed));
+    g_assert_nonnull(strstr(json_object_get_string_member(json_node_get_object(embed), "error"),
+                            "runtime.confine"));
+
+    /* Neither write landed. */
+    shown = request(&fixture, "agent.show", "{\"agent\":\"inside\"}");
+    g_assert_cmpstr(
+        json_object_get_string_member(
+            json_object_get_object_member(payload_of(shown), "agent"),
+            "confine"), ==, "none");
+
+    g_setenv("PATH", saved, TRUE);
+    fixture_teardown(&fixture);
+    clawt_test_remove_tree(stubs);
+}
+
+/*
+ * No bubblewrap: the agent that asked for it is a shadow with the reason,
+ * and its listing says bwrap is unavailable so a client can say why
+ * beside the setting.  PATH decides "installed", so this does not depend
+ * on the machine.
+ */
+static void
+test_confined_agent_without_bwrap_is_a_shadow(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) shown = NULL;
+    g_autoptr(JsonNode) plain = NULL;
+    g_autofree gchar *saved = g_strdup(g_getenv("PATH"));
+    g_autofree gchar *empty = NULL;
+    JsonObject *agent;
+
+    fixture_setup(&fixture, NULL);
+    empty = g_build_filename(fixture.dir, "empty-path", NULL);
+    g_assert_cmpint(g_mkdir(empty, 0700), ==, 0);
+    g_setenv("PATH", empty, TRUE);
+
+    /* The config is read again with PATH as it now is. */
+    g_clear_object(&fixture.daemon);
+    fixture_write_config(&fixture,
+                         "agents:\n"
+                         "  - id: boxed\n"
+                         "    runtime:\n"
+                         "      confine: bwrap\n"
+                         "  - id: open\n");
+    /*
+     * The shadow is announced with a warning, which is the point of it;
+     * swallowed here so the suite's fatal-warnings mode does not abort
+     * on the behaviour under test.
+     */
+    {
+        GLogLevelFlags was_fatal = g_log_set_always_fatal(G_LOG_FATAL_MASK);
+        guint handler = g_log_set_handler("Clawtilla",
+                                          G_LOG_LEVEL_WARNING |
+                                          G_LOG_FLAG_FATAL |
+                                          G_LOG_FLAG_RECURSION,
+                                          swallow_warnings, NULL);
+
+        fixture.daemon = clawt_daemon_new(fixture.config_path,
+                                          fixture.context);
+        g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+        g_log_remove_handler("Clawtilla", handler);
+        g_log_set_always_fatal(was_fatal);
+    }
+
+    shown = request(&fixture, "agent.show", "{\"agent\":\"boxed\"}");
+    agent = json_object_get_object_member(payload_of(shown), "agent");
+    g_assert_cmpstr(json_object_get_string_member(agent, "state"), ==,
+                    "shadow");
+    g_assert_nonnull(strstr(json_object_get_string_member(agent, "detail"),
+                            "bubblewrap"));
+    g_assert_cmpstr(json_object_get_string_member(agent, "confine"), ==,
+                    "bwrap");
+    g_assert_false(json_object_get_boolean_member(agent,
+                                                  "confine_available"));
+
+    /*
+     * An agent that did not ask is untouched, and reports bwrap as no
+     * obstacle -- there is nothing for a client to warn about.
+     */
+    plain = request(&fixture, "agent.show", "{\"agent\":\"open\"}");
+    agent = json_object_get_object_member(payload_of(plain), "agent");
+    g_assert_cmpstr(json_object_get_string_member(agent, "state"), !=,
+                    "shadow");
+    g_assert_true(json_object_get_boolean_member(agent,
+                                                 "confine_available"));
+
+    g_setenv("PATH", saved, TRUE);
+    fixture_teardown(&fixture);
+}
+
+/*
  * A value the enum has never heard of is refused, naming what is
  * allowed.
  *
@@ -11020,6 +11163,10 @@ main(int argc, char *argv[])
                     test_a_second_start_reaches_the_computer);
     g_test_add_func("/daemon/task-change-reaches-the-bus",
                     test_a_task_change_reaches_the_bus);
+    g_test_add_func("/daemon/agent-set-refuses-confining-embedded",
+                    test_agent_set_refuses_confining_an_embedded_agent);
+    g_test_add_func("/daemon/confined-agent-without-bwrap-is-a-shadow",
+                    test_confined_agent_without_bwrap_is_a_shadow);
     g_test_add_func("/daemon/agent-set-refuses-an-unknown-enum-value",
                     test_agent_set_refuses_a_value_the_enum_lacks);
     g_test_add_func("/daemon/agent-set-reports-a-role-needs-a-session",

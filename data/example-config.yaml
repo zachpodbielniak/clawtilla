@@ -428,6 +428,20 @@ defaults:
   # not reach whoever can open the chat.
   stream_steps: true
 
+  # Whether agents' own CLIs run inside a bubblewrap sandbox: none or
+  # bwrap.
+  #
+  # The fleet-wide answer for agents.runtime.confine, which an agent may
+  # override either way. Off by default, so turning it on is a decision
+  # rather than something an upgrade did to agents that were running.
+  #
+  # Set to bwrap, every process-runtime agent that says nothing itself is
+  # confined. An embedded agent cannot be -- it is the daemon -- and is
+  # disabled with that reason rather than run unconfined; give it
+  # runtime.confine: none of its own to keep it embedded.
+  # Values: none, bwrap
+  confine: "none"
+
   # Largest profile picture the daemon will read and serve.
   #
   # A picture crosses IPC as bytes rather than as a path, because a
@@ -2091,6 +2105,38 @@ agents:
       # the cost of sharing a fate with every other embedded agent.
       # Values: process, embedded
       type: "process"
+
+      # Run this agent's own CLI inside a bubblewrap sandbox: none or bwrap.
+      # Defaults to defaults.confine.
+      #
+      # computer.host.confine governs clawtilla_computer_exec and nothing
+      # else. The agent's own Bash, Read and Write belong to the AI CLI that
+      # libreclaw spawns, and without this they reach the whole filesystem as
+      # the daemon's user. bwrap wraps the libreclaw child -- and so the CLI,
+      # every command it runs and its MCP servers -- in one sandbox that
+      # binds the workspace and the agent's state directory read-write, the
+      # CLI's login directory read-write (it refreshes its OAuth tokens there),
+      # the agent's mounts as declared, the programs its .mcp.json names
+      # read-only, and the daemon's sockets. /usr and /etc are read-only, /tmp
+      # and $HOME are private and empty apart from those binds, and TMPDIR,
+      # HOME and XDG_* are set by the sandbox -- an agent's env: cannot point
+      # them somewhere else. The network is left alone.
+      #
+      # Only runtime.type: process can be confined; bwrap with embedded
+      # disables the agent. bubblewrap missing disables it too, with the
+      # reason, and it is never started unconfined instead. Takes effect at
+      # the agent's next start.
+      # Values: none, bwrap
+      confine: null
+
+      # More paths to bind read-only into a confined agent's sandbox.
+      #
+      # The sandbox finds libreclaw, the AI CLI and the programs in .mcp.json
+      # for itself. A CLI installed somewhere it cannot follow -- a node
+      # under ~/.nvm, a tool a skill shells out to -- is named here. Read-only
+      # on purpose: something the agent should write is a mount, which says
+      # so in its mode. Ignored unless runtime.confine is bwrap.
+      confine_paths: []
 
       # Start with the daemon. Defaults to defaults.autostart.
       autostart: null

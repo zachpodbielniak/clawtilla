@@ -189,6 +189,14 @@ build_sandbox(ClawtAgentConfig *agent_config)
         clawt_agent_config_get_boolean(agent_config,
                                        "computer.host.allow_sudo"));
 
+    /*
+     * Only so the description is true: with runtime.confine the agent's
+     * own tools are in a box of their own, and telling it they "run on
+     * the host outside it" would be the opposite of the case.
+     */
+    clawt_sandbox_set_agent_confined(sandbox,
+                                     clawt_agent_confine_wanted(agent_config));
+
     return sandbox;
 }
 

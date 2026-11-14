@@ -117,6 +117,27 @@ typedef enum {
 } ClawtRuntimeType;
 
 /**
+ * ClawtRuntimeConfine:
+ * @CLAWT_RUNTIME_CONFINE_NONE: the agent's libreclaw and its AI CLI run as
+ *   the daemon's user, with the whole filesystem in reach
+ * @CLAWT_RUNTIME_CONFINE_BWRAP: they run inside a bubblewrap sandbox that
+ *   binds only what the agent needs
+ *
+ * Whether the agent's own process -- libreclaw, the AI CLI it spawns and
+ * every tool that CLI runs -- is confined.
+ *
+ * Separate from #ClawtConfineMode, which is about clawtilla_computer_exec
+ * on a host computer.  The two answer different questions: that one is
+ * what a command the agent asks clawtilla to run may touch, this one is
+ * what the agent's own Bash, Read and Write may touch.  Only process
+ * runtimes can be confined; an embedded agent is the daemon.
+ */
+typedef enum {
+    CLAWT_RUNTIME_CONFINE_NONE = 0,
+    CLAWT_RUNTIME_CONFINE_BWRAP
+} ClawtRuntimeConfine;
+
+/**
  * ClawtTeamRole:
  * @CLAWT_TEAM_MEMBER: talks to anyone, assigns to nobody
  * @CLAWT_TEAM_LEAD: may hand work to the members of its own team
@@ -996,6 +1017,7 @@ typedef enum {
 GType clawt_agent_state_get_type(void) G_GNUC_CONST;
 GType clawt_agent_caps_get_type(void) G_GNUC_CONST;
 GType clawt_runtime_type_get_type(void) G_GNUC_CONST;
+GType clawt_runtime_confine_get_type(void) G_GNUC_CONST;
 GType clawt_team_role_get_type(void) G_GNUC_CONST;
 GType clawt_restart_policy_get_type(void) G_GNUC_CONST;
 GType clawt_computer_type_get_type(void) G_GNUC_CONST;
@@ -1030,6 +1052,7 @@ GType clawt_credential_placement_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_AGENT_STATE      (clawt_agent_state_get_type())
 #define CLAWT_TYPE_AGENT_CAPS       (clawt_agent_caps_get_type())
 #define CLAWT_TYPE_RUNTIME_TYPE     (clawt_runtime_type_get_type())
+#define CLAWT_TYPE_RUNTIME_CONFINE  (clawt_runtime_confine_get_type())
 #define CLAWT_TYPE_TEAM_ROLE        (clawt_team_role_get_type())
 #define CLAWT_TYPE_RESTART_POLICY   (clawt_restart_policy_get_type())
 #define CLAWT_TYPE_COMPUTER_TYPE    (clawt_computer_type_get_type())

@@ -27,7 +27,8 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 
 * P0 -- confinement and dead config
 
-** TODO Confine the agent's own CLI, not only =computer_exec=                                   :security:
+** DONE Confine the agent's own CLI, not only =computer_exec=                                   :security:
+- *Done:* (version assigned at merge). ~runtime.confine: bwrap~ per agent, =defaults.confine= fleet-wide, off by default; ~runtime.confine_paths~ for read-only extras. The box, the refusals and the client switch are in =docs/security.org= ("Confining the agent's own CLI") and =docs/agents.org= ("Sandboxing the agent's own tools").
 - *Today:* =docs/security.org:634= says "None of the four constrains the agent's own tools." The AI CLI is spawned unwrapped. Only =clawtilla_computer_exec= goes through =src/computer/clawt-sandbox.c=.
 - *Prior art:* =server/bot-box/= and =docs/bot-box.md=. One bwrap holds the engine CLI, every shell command it runs and its MCP servers. The data dir is replaced by an empty private folder with only the turn's workspace bound back. It adds a PID namespace, loopback-only netns, an environment allowlist, a seccomp deny list (=seccomp.ts=, 34 syscalls) and =hidepid= over /proc.
 - *Proposal:* wrap the libreclaw child launched by =ClawtAgentRuntime= (process runtime only) in the same bwrap builder =clawt-sandbox.c= already has. Bind the workspace, the agent's =.mcp.json= targets, the CLI's account directory, and the =clawtilla-mcp-server= socket path. An embedded runtime cannot be confined; refuse =confine: bwrap= with =runtime.type: embedded= at load.
@@ -437,10 +438,12 @@ When somebody turns the broker on, clawtilla starts a local AnythingMCP for them
 - *Prior art:* =8571d788d=, =4a1e70e9e=, =0d4e3c5cb=. Requests carrying keys now refuse redirects.
 - *Check:* every =SoupSession= in connectors, OAuth device flow, the Grok bridge and web research that sets =Authorization=. libsoup follows redirects by default (=SOUP_MESSAGE_NO_REDIRECT= is opt-in).
 
-** TODO Hardlink escape through read-only binds
+** DONE Hardlink escape through read-only binds
+- *Done:* (version assigned at merge). =clawt_sandbox_check_links()= refuses a read-only file bind or a denied file with ~st_nlink > 1~, and walks denied directories for the same, in both bwrap boxes. See =docs/security.org=, "Hard links through a bind".
 - *Check:* =clawt-sandbox.c= =--ro-bind= sources and =deny_paths=. A file with =st_nlink > 1= under a writable path can be reached by another name.
 
-** TODO =TMPDIR= and =XDG_*= from an agent's =env:= inside bwrap
+** DONE =TMPDIR= and =XDG_*= from an agent's =env:= inside bwrap
+- *Done:* (version assigned at merge). Real in the ~computer_exec~ bwrap box. =clawt_sandbox_wrap_environment()= now drops ~TMPDIR~, ~HOME~ and every ~XDG_*~ an agent set and supplies the box's own, for that box and the agent's own.
 - *Check:* since extras replace allowlisted names, an agent can point =TMPDIR= at a host path the box binds writable.
 
 * Design decisions to make, not gaps

@@ -434,6 +434,8 @@ without that the control would open showing the first entry and saving
 the page -- without touching that row -- would move the agent somewhere
 nobody chose.
 
+~runtime.confine~ keeps the enum's own select but not its spelling: it is labelled with =clawt_agent_confine_label()=, followed by =clawt_agent_confine_explanation()= and, when the daemon cannot sandbox the agent, the =clawt_agent_confine_notice()= warning (read off the agent's =confine=, =runtime_type= and =confine_available=) -- the same words the GTK and libregnum clients use, so a shadow caused by a missing bubblewrap is explained where somebody turned it on.
+
 Nine keys are the exception, and the page says nothing about them because
 it cannot: ~orchestration.mailbox.*~ and ~memories.*~ carry
 =CLAWT_SCHEMA_FLAG_PER_AGENT=, and their spelling inside an agent block

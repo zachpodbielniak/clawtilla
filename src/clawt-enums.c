@@ -102,6 +102,24 @@ clawt_runtime_type_get_type(void)
     return g_define_type_id__volatile;
 }
 
+/* Register ClawtRuntimeConfine as a GLib enum type */
+GType
+clawt_runtime_confine_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_RUNTIME_CONFINE_NONE, "CLAWT_RUNTIME_CONFINE_NONE", "none" },
+            { CLAWT_RUNTIME_CONFINE_BWRAP, "CLAWT_RUNTIME_CONFINE_BWRAP", "bwrap" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtRuntimeConfine", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
 /* Register ClawtTeamRole as a GLib enum type */
 GType
 clawt_team_role_get_type(void)

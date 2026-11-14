@@ -631,16 +631,40 @@ If ~bwrap~ is requested and missing, the agent starts in ~SHADOW~ with
 the reason.  It never silently downgrades -- a confinement that quietly
 becomes no confinement is worse than none, because you stop checking.
 
-*None of the four constrains the agent's own tools.*  They constrain
-~clawtilla_computer_exec~.  An agent's Bash, Read and Write are its CLI's
-and the CLI is spawned unwrapped, so they reach the whole filesystem as
-the user running the daemon whatever ~confine~ says.  That is the same
-rule as everywhere else -- only exec enters the computer -- but on a
-~host~ computer the two look like one thing, and the description handed
-to the agent used to open "You are running on the host inside a
-bubblewrap sandbox", which was a sentence about a process that was not in
-one.  It now names the tool.  To confine the agent process itself,
-confine the daemon.
+*None of the four constrains the agent's own tools.*  They constrain ~clawtilla_computer_exec~.  An agent's Bash, Read and Write are its CLI's, the CLI is a child of the agent's libreclaw, and by default that child is spawned unwrapped -- so those tools reach the whole filesystem as the user running the daemon whatever ~confine~ says. That is the same rule as everywhere else -- only exec enters the computer -- but on a ~host~ computer the two look like one thing, and the description handed to the agent used to open "You are running on the host inside a bubblewrap sandbox", which was a sentence about a process that was not in one. It now names the tool. The agent's own process is confined by a different setting: ~runtime.confine~, below.
+
+*** Confining the agent's own CLI
+
+~runtime.confine: bwrap~ (per agent, or fleet-wide as =defaults.confine=; off by default) starts the agent's libreclaw child inside bubblewrap. Everything that child spawns is in the same box: the AI CLI, every command the CLI runs for its Bash tool, and every MCP server its ~.mcp.json~ names. The box is built by the same ~ClawtSandbox~ the exec path uses, so a bind or a denial means one thing in both.
+
+What is in the box:
+
+| Path | How | Why |
+|------+-----+-----|
+| ~/usr~, ~/etc~ | read-only | the system |
+| ~/tmp~ | private tmpfs | scratch space nobody else sees |
+| ~$HOME~ | private tmpfs | the CLI writes dotfiles; the real home holds every other credential |
+| the workspace | writable, working directory | where the agent works |
+| ~<state_dir>/agents/<id>~ | writable | rendered config, sessions, usage database, link token |
+| the computer's mounts (sources) | in their declared mode | what the agent is told it can read |
+| the CLI's login directory | writable | OAuth tokens are refreshed in place |
+| the AI CLI, libreclaw, the ~.mcp.json~ programs | read-only | including a script's interpreter and an npm package's directory |
+| absolute paths in ~.mcp.json~ ~args~ | read-only | a token file, a config file |
+| the link socket and the IPC socket | each socket file | not the directory: it holds every agent's link |
+| ~runtime.confine_paths~ | read-only | anything the builder cannot find for itself |
+| ~/etc/resolv.conf~'s target | read-only | on systemd-resolved it is a symlink into ~/run~ |
+
+The login directory is the ~accounts:~ entry's ~config_dir~ when the agent has one, otherwise the CLI's default (=~/.claude= and =~/.claude.json=, =~/.codex=, =~/.grok=, opencode's XDG directories). A path that does not exist is left out rather than bound: bwrap refuses to start on a missing source. On a ~host~ computer, ~computer.host.deny_paths~ are denied in this box as well, so the sentence the agent is given about them is true of its own tools too.
+
+What it does not do: the network is left alone (the CLI has a provider to reach; limiting where it connects is an egress gate's job, and that is not built), and the PID namespace is new but ~/proc~ is the box's own. bwrap does not forward signals, so a stop sends SIGTERM to libreclaw inside the box rather than to bwrap -- killing bwrap would end libreclaw with SIGKILL through ~--die-with-parent~ and skip its clean shutdown -- and an interrupt walks the tree below libreclaw, not below bwrap.
+
+*The box owns ~TMPDIR~, ~HOME~ and every ~XDG_*~.*  An agent's ~env:~ replaces allowlisted names, so it could set ~TMPDIR~ to a host directory the box binds writable -- the exchange, a mount -- and every temporary file would land there, outlive the box and reach other agents. Inside a box (this one, and the ~confine: bwrap~ box ~clawtilla_computer_exec~ uses) those variables are dropped from whatever the agent set and replaced: ~TMPDIR=/tmp~, ~HOME~ the daemon's home, the XDG base directories the daemon's own, ~XDG_RUNTIME_DIR~ an empty 0700 directory at the daemon's spelling. An unconfined agent keeps what it set.
+
+*Never silently downgraded.*  ~runtime.confine: bwrap~ with ~runtime.type: embedded~ disables the agent at load, naming =defaults.confine= when that is where the request came from: an embedded agent is the daemon and has no process of its own to wrap. ~agent.set~ refuses the combination where it arrives, in either order. A missing ~bwrap~ is a ~SHADOW~ agent with the reason -- at load, and again at start in case bubblewrap was removed under a running daemon -- never an agent run unconfined. The clients show the same reason beside the setting.
+
+*** Hard links through a bind
+
+A bind protects a path, not an inode. A file bound read-only that has a second name under a writable bind is writable through that name; a denied file covered with ~/dev/null~ is readable through its other one; a denied directory covered with a tmpfs hides its names, not the files in it. So a ~bwrap~ box -- either kind -- refuses to start when a read-only *file* bind or a denied file has ~st_nlink > 1~, and walks a denied directory (to 20000 entries) for the same, naming the file and how to find its other names. Anything under ~/usr~ and ~/etc~ is exempt: those are root's, and ~fs.protected_hardlinks~ stops an agent naming them again. A read-only *directory* bind is not walked -- the CLI's install can be large -- so a second name for a file inside one is not caught; that would need the operator to have bound a writable directory inside a read-only one, which the mount list already shows.
 
 *** Privilege escalation
 
