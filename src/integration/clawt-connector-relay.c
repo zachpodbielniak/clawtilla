@@ -8,6 +8,7 @@
  */
 
 #include "clawtilla.h"
+#include "clawt-http.h"
 #include "integration/clawt-connector-relay.h"
 
 #include "mcp/clawt-mcp-relay.h"
@@ -416,7 +417,8 @@ forward_one(HttpBridge *bridge, const gchar *line)
     const gchar *fresh_session;
     gsize length = 0;
 
-    message = soup_message_new("POST", bridge->plan->url);
+    message = clawt_http_message_new("POST", bridge->plan->url,
+                                     CLAWT_HTTP_CARRIES_CREDENTIALS);
 
     if (message == NULL) {
         g_printerr("clawtilla: '%s' is not a URL that can be dialled\n",
@@ -445,11 +447,11 @@ forward_one(HttpBridge *bridge, const gchar *line)
         soup_message_headers_replace(headers, "Mcp-Session-Id",
                                      bridge->session_id);
 
-    response = soup_session_send_and_read(bridge->session, message, NULL,
-                                          &error);
+    response = clawt_http_send_and_read(bridge->session, message, NULL,
+                                        &error);
 
     if (response == NULL) {
-        g_printerr("clawtilla: the tool server did not answer: %s\n",
+        g_printerr("clawtilla: the request to the tool server failed: %s\n",
                    error->message);
         return;
     }

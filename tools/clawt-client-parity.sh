@@ -314,6 +314,17 @@ declare -A AFFORDANCES=(
     #
     ["a broken routine says why"]="will never run|routine, \"problem\"|will never run"
     #
+    # routines.max_start_failures: the limit in the editor with libclawt's
+    # explanation, a routine turned off for it saying why, the one click
+    # that turns it back on, and the alert.  The frame is routine.update
+    # in every client -- which each already sends for Save -- and the
+    # wording is a library call, so layers 1 to 4 see none of it.
+    #
+    ["routine start-failure limit"]="clawt_routine_start_failures_hint|clawt_routine_start_failures_hint|clawt_routine_start_failures_hint"
+    ["a routine turned off says why"]="clawt_routine_turned_off_note|clawt_routine_turned_off_note|clawt_routine_turned_off_note"
+    ["turn a routine back on"]="on_routine_turn_on|/routines/%s/enable|on_routine_turn_on"
+    ["routine turned-off alert"]="clawt_routine_turned_off_alert|clawt_routine_turned_off_alert|clawt_routine_turned_off_alert"
+    #
     # An update the daemon found.
     #
     # Both clients read it out of control.status and hand it to the same

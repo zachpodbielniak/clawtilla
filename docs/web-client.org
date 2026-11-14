@@ -104,7 +104,7 @@ The same seven the GTK client's view switcher has, in the same order.
 | Agent    | every setting, the workspace files, the memory store       |
 | Mailbox  | what is waiting, what died, purge and requeue              |
 | Computer | exec console, mounts, the exchange, rebuild                |
-| Routines | scheduled work, and running one now                        |
+| Routines | scheduled work, running one now, turning one back on       |
 | Tasks    | delegated work, the budget, cancelling                     |
 | Flow     | what the agents are saying to each other                   |
 | Activity | every running turn, to stop or steer ([[file:clients.org::#activity-tab][the Activity tab]]) |
