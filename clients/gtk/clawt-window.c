@@ -1746,6 +1746,10 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
      * A memory remembered, forgotten, pinned or undone: the selected
      * agent's review list redraws, and nothing above it.
      */
+    /* A scan ended: the report on disk is new, or the failure is. */
+    if (g_strcmp0(kind, "sentinel.finished") == 0)
+        clawt_gtk_refresh_issues(self);
+
     if (g_strcmp0(kind, "memory.changed") == 0 &&
         g_strcmp0(clawt_event_get_subject(event), self->selected_agent) == 0)
         clawt_gtk_refresh_memory_review(self);
@@ -5186,6 +5190,7 @@ on_page_shown(ClawtWindow *self)
     }
     if (clawt_gtk_current_page(self) == CLAWT_PAGE_ACTIVITY) {
         clawt_gtk_refresh_activity(self);
+        clawt_gtk_refresh_issues(self);
         return;
     }
     if (clawt_gtk_current_page(self) == CLAWT_PAGE_FLEET) {

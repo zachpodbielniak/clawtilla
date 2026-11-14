@@ -492,6 +492,12 @@ struct _ClawtWindow {
      * its own by `memory.changed`.  Weak, for the same reason.
      */
     GtkListBox        *inspector_memory_review;
+    /*
+     * The Activity page's Issues (gtk-issues.c): the sentinel's report,
+     * and the line above it saying how old it is.
+     */
+    GtkListBox        *issues_list;
+    GtkWidget         *issues_status;
     ImageChooser       inspector_disk;
     GtkWidget         *vm_cpus_row;
     GtkWidget         *vm_memory_row;
@@ -1455,6 +1461,16 @@ clawt_gtk_build_memory_review(ClawtWindow *self);
 
 void
 clawt_gtk_refresh_memory_review(ClawtWindow *self);
+
+/*
+ * The Activity page's Issues (gtk-issues.c): built under the running
+ * turns, read when the page is shown and on `sentinel.finished`.
+ */
+void
+clawt_gtk_build_issues(ClawtWindow *self, GtkBox *column);
+
+void
+clawt_gtk_refresh_issues(ClawtWindow *self);
 
 ClawtComputerType
 clawt_gtk_computer_type_from_nick(const gchar *nick);

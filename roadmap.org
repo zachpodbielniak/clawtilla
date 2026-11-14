@@ -229,8 +229,9 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 - *Not done:* the periodic review ("dream", =memory-dream.ts=). It is a model call per pass nobody asked for, and a model rewriting memories is the kind of change the journal exists to make reviewable one at a time; documented in the same section.
 - *Was:* =clawtilla_memory_add/forget/pin= acted immediately with no record.
 
-** TODO Sentinel over =events/*.ndjson=
-- *Prior art:* =server/sentinel/=. An out-of-process, read-only scanner that groups failing tool calls, queue waits and cost into issues.
+** DONE Sentinel over =events/*.ndjson= (version assigned at merge)
+- *Done:* =clawtilla sentinel= (offline CLI verb, =src/core/clawt-sentinel.c=) maps the day files read-only and groups failing tool calls (~turn.step~ failed, ~computer.exec~ non-zero), queue waits (~mailbox.queued~ → ~mailbox.delivered~, FIFO per agent, plus still-queued), spend (new ~turn.cost~ events from the daemon's per-turn drain, and ~spending.limit-reached~) and stalls into issues, written as YAML to =<state_dir>/sentinel.yaml=; a report path inside the log is refused. Keys ~sentinel.days~, ~.min_failures~, ~.queue_wait_seconds~, ~.daily_spend_micros~. ~sentinel.scan~ starts it as the daemon's child (never in the daemon's loop) and publishes ~sentinel.finished~; ~sentinel.report~ reads the file. An *Issues* section on the Activity page in GTK, web and lrg. Design in =docs/maintenance.org=, "The sentinel". Tests: =tests/test-sentinel.c= (each grouping at its line, the files' bytes and times unchanged, the YAML round trip, the daemon running the real CLI).
+- *Limits:* the queue pairing is FIFO per agent; cost exists only from ~turn.cost~ onwards; it reports and never acts.
 
 ** TODO Saved steps: replay a desktop task with no model
 - *Prior art:* =671cf72d1=.

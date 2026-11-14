@@ -1089,6 +1089,42 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "Two halves: `<state_dir>/OPERATOR.org`, which you write, and\nfleet-scope memories in the `operator` category, which agents record.\nBoth are written into a marked region of every agent's USER.org, so a\nchange reaches the whole fleet rather than only agents made afterwards.\nOff removes the region again.", "0.2.0" },
 
+/* ── sentinel ────────────────────────────────────────────────────── */
+{ "sentinel", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "What `clawtilla sentinel` looks for in the event log.\n"
+  "\n"
+  "The sentinel is a read-only scan of <state_dir>/events/*.ndjson that\n"
+  "groups failing tool calls, long queue waits, spending and stalled turns\n"
+  "into issues and writes them as YAML. It runs out of process: the\n"
+  "clients' Issues view asks the daemon to start `clawtilla sentinel`\n"
+  "and then shows what it wrote. It never writes to the event log.", "0.24.0" },
+
+{ "sentinel.days", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE, "7", NULL,
+  "How many days of the event log one scan reads, counting today. 0\n"
+  "reads every file there is, which daemon.event_log_days bounds.", "0.24.0" },
+
+{ "sentinel.min_failures", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "3", NULL,
+  "How many failures of one agent's tool make an issue. A tool that\n"
+  "failed once is a turn's ordinary business; one that failed this many\n"
+  "times in the window is a pattern somebody should look at.", "0.24.0" },
+
+{ "sentinel.queue_wait_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "600", NULL,
+  "How long a message may wait in an agent's queue, from being queued to\n"
+  "being delivered, before the wait is an issue. Messages still queued\n"
+  "past it when the scan ends are reported too.", "0.24.0" },
+
+{ "sentinel.daily_spend_micros", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "10000000", NULL,
+  "One agent's spend in one day, in micro-dollars, that makes an issue.\n"
+  "0 reports only the days a cap was reached.\n"
+  "\n"
+  "A line to report, not a limit: nothing is refused at it. The caps that\n"
+  "do refuse work are orchestration.daily_fleet_budget_micros and each\n"
+  "agent's own, and every time one is reached is an issue whatever this\n"
+  "says.", "0.24.0" },
+
 /* ── skills ──────────────────────────────────────────────────────── */
 { "skills", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Reusable procedure, shared across the fleet.\n"

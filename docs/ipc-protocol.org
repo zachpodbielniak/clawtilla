@@ -907,6 +907,24 @@ two members present only when set (since 0.22.0):
   was offered no tool that acts, so the result is an answer.  Draw
   ~clawt_task_consult_label()~.
 
+*** sentinel.*
+
+~sentinel.scan~ (no payload) → ~started~ and ~running~.  Starts
+=clawtilla sentinel= as the daemon's child and answers at once;
+~started~ is false when a scan was already running.  When the child
+exits the daemon publishes ~sentinel.finished~ (~ok~, and ~error~ with
+the child's last words when it failed).  The daemon never reads the
+event log for this.  ~CLAWT_ERROR_NOT_FOUND~ when the CLI cannot be
+found, naming where it looked.
+
+~sentinel.report~ (no payload) → ~path~, ~running~, ~error~ (the last
+scan's failure, or a report that could not be read) and ~report~: the
+YAML file as JSON, ~sentinel~ (~version~, ~scanned_at~, ~since~,
+~files~, ~events~, ~skipped~, ~truncated~) and ~issues~.  ~report~ is
+absent when nothing has been scanned yet, which is a different answer
+from a scan that found nothing (an empty ~issues~).  See
+[[file:maintenance.org::*The sentinel: what keeps going wrong][maintenance.org]].
+
 *** usage.*
 
 ~usage.summary~ (~since~, unix seconds, 0 for everything) → ~agents~, one
@@ -1744,6 +1762,8 @@ Every kind published, by subject:
 | an agent | ~decision.asked~ (~decision~, ~room~), ~decision.settled~ (~decision~, ~how~: ~answered~, ~dismissed~, ~defaulted~ or ~deleted~, ~room~, ~answer~, ~via~), ~decision.deleted~ (~decision~, ~room~) |
 | a routine | ~routine.ran~, ~routine.changed~, ~routine.turned_off~ (~agent~, ~failures~, ~error~) |
 | an agent | ~wait.changed~ (~wait~, ~state~) |
+| the daemon | ~sentinel.finished~ (~ok~, ~error~) |
+| an agent | ~turn.cost~ (~cost_micros~, ~task~): what a turn just cost, for the sentinel |
 | an agent | ~memory.changed~ (a memory tool call or an undo changed what it remembers) |
 | a trigger | ~trigger.fired~, ~trigger.posted~, ~trigger.changed~, ~trigger.refused~, ~trigger.verified~ |
 | a Grok job | ~grok.job_updated~ (~bot~, ~agent~, ~state~) |

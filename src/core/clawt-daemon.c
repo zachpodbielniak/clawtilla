@@ -2325,6 +2325,25 @@ charge_turn_to_task(ClawtDaemon *self, const gchar *agent_id,
     cost_micros = clawt_usage_drain_tagged(self->usage, agent_id, db_path,
                                            origin_for_turn, self);
 
+    /*
+     * Into the event log as well, so `clawtilla sentinel` can see what a
+     * day of turns cost without opening anybody's usage database -- the
+     * scanner reads the log and nothing else.  The drain is what makes
+     * this once per spend: it advances the watermark.
+     */
+    if (cost_micros > 0 && self->bus != NULL) {
+        g_autoptr(ClawtEvent) event = clawt_event_new("turn.cost", agent_id);
+        g_autofree gchar *cost = g_strdup_printf("%" G_GINT64_FORMAT,
+                                                 cost_micros);
+
+        clawt_event_set_detail(event, "cost_micros", cost);
+
+        if (task_id != NULL)
+            clawt_event_set_detail(event, "task", task_id);
+
+        clawt_event_bus_publish(self->bus, event);
+    }
+
     if (task_id == NULL || cost_micros <= 0)
         return;
 
@@ -5119,6 +5138,7 @@ release_components(ClawtDaemon *self)
      * dropped it -- never reaches clawt_daemon_stop().
      */
     clawt_daemon_turn_teardown(self);
+    clawt_daemon_sentinel_teardown(self);
     clawt_daemon_tree_teardown(self);
     clawt_daemon_handoff_teardown(self);
     clawt_daemon_wait_teardown(self);
@@ -7484,6 +7504,7 @@ clawt_daemon_stop(ClawtDaemon *self)
      * manager it would look an agent up in.
      */
     clawt_daemon_turn_teardown(self);
+    clawt_daemon_sentinel_teardown(self);
     clawt_daemon_tree_teardown(self);
     clawt_daemon_handoff_teardown(self);
     clawt_daemon_wait_teardown(self);
@@ -9967,6 +9988,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_misc,
     clawt_daemon_handle_agent,
     clawt_daemon_handle_memory,
+    clawt_daemon_handle_sentinel,
     clawt_daemon_handle_mount,
     clawt_daemon_handle_egress,
     clawt_daemon_handle_image,

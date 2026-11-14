@@ -9907,6 +9907,150 @@ cmd_device(int argc, char *argv[])
     }
 }
 
+/*
+ * The sentinel: a read-only scan of the event log for recurring trouble.
+ *
+ * Offline, like `backup`: it reads <state_dir>/events itself and never
+ * talks to the daemon, which is what lets the daemon run it as a child
+ * without a scan of a week of logs ever holding the daemon's loop.  The
+ * thresholds are the config's sentinel.* unless a flag says otherwise.
+ */
+static gint
+cmd_sentinel(int argc, char *argv[])
+{
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) report = NULL;
+    g_autofree gchar *state_dir = NULL;
+    g_autofree gchar *events = NULL;
+    g_autofree gchar *output = NULL;
+    ClawtSentinelOptions options;
+    int arg;
+
+    clawt_sentinel_options_init(&options);
+
+    for (arg = 2; arg < argc; arg++) {
+        const gchar *flag = argv[arg];
+        const gchar *value = (arg + 1 < argc) ? argv[arg + 1] : NULL;
+
+        if (g_strcmp0(flag, "-h") == 0 || g_strcmp0(flag, "--help") == 0) {
+            g_print("Usage: clawtilla sentinel [--events DIR] [--output FILE|-]\n"
+                    "                          [--days N] [--min-failures N]\n"
+                    "                          [--queue-wait SECONDS]\n"
+                    "                          [--daily-spend MICROS]\n"
+                    "\n"
+                    "Reads the event log (read-only) and groups failing tool\n"
+                    "calls, long queue waits, spending and stalled turns into\n"
+                    "issues, written as YAML. Defaults come from sentinel.* in\n"
+                    "the config; the report goes to <state_dir>/sentinel.yaml,\n"
+                    "which is what the clients' Issues view shows.\n"
+                    "\n"
+                    "Examples:\n"
+                    "  clawtilla sentinel\n"
+                    "  clawtilla sentinel --days 1 --output -\n"
+                    "  clawtilla sentinel --events ~/.clawtilla/events "
+                    "--min-failures 5\n");
+            return EXIT_SUCCESS;
+        }
+
+        if (value == NULL) {
+            g_printerr("clawtilla sentinel: %s needs a value\n", flag);
+            return EXIT_FAILURE;
+        }
+
+        if (g_strcmp0(flag, "--events") == 0)
+            events = g_strdup(value);
+        else if (g_strcmp0(flag, "--output") == 0)
+            output = g_strdup(value);
+        else if (g_strcmp0(flag, "--days") == 0)
+            options.days = (guint)g_ascii_strtoull(value, NULL, 10);
+        else if (g_strcmp0(flag, "--min-failures") == 0)
+            options.min_failures = (guint)g_ascii_strtoull(value, NULL, 10);
+        else if (g_strcmp0(flag, "--queue-wait") == 0)
+            options.queue_wait_seconds =
+                (guint)g_ascii_strtoull(value, NULL, 10);
+        else if (g_strcmp0(flag, "--daily-spend") == 0)
+            options.daily_spend_micros = g_ascii_strtoll(value, NULL, 10);
+        else {
+            g_printerr("clawtilla sentinel: unknown option %s\n", flag);
+            return EXIT_FAILURE;
+        }
+
+        arg++;
+    }
+
+    /*
+     * The config supplies the defaults and the state directory.  A flag
+     * given on the command line wins; a config that will not load is
+     * only fatal when nothing else said where the log is.
+     */
+    config = clawt_config_load(opt_config_path, &error);
+
+    if (config != NULL) {
+        state_dir = clawt_config_get_path_value(config, "daemon.state_dir");
+
+        if (!g_strv_contains((const gchar * const *)argv, "--days"))
+            options.days = (guint)MAX(clawt_config_get_int(config,
+                "sentinel.days"), 0);
+        if (!g_strv_contains((const gchar * const *)argv, "--min-failures"))
+            options.min_failures = (guint)MAX(clawt_config_get_int(config,
+                "sentinel.min_failures"), 0);
+        if (!g_strv_contains((const gchar * const *)argv, "--queue-wait"))
+            options.queue_wait_seconds = (guint)MAX(clawt_config_get_int(
+                config, "sentinel.queue_wait_seconds"), 0);
+        if (!g_strv_contains((const gchar * const *)argv, "--daily-spend"))
+            options.daily_spend_micros = MAX(clawt_config_get_int(config,
+                "sentinel.daily_spend_micros"), 0);
+    } else if (events == NULL) {
+        g_printerr("clawtilla sentinel: %s\n", error->message);
+        return EXIT_FAILURE;
+    }
+
+    if (events == NULL)
+        events = g_build_filename(state_dir, "events", NULL);
+
+    if (output == NULL)
+        output = (state_dir != NULL)
+            ? g_build_filename(state_dir, "sentinel.yaml", NULL)
+            : g_strdup("-");
+
+    report = clawt_sentinel_scan(events, &options, &error);
+
+    if (report == NULL) {
+        g_printerr("clawtilla sentinel: could not read %s: %s\n", events,
+                   error->message);
+        return EXIT_FAILURE;
+    }
+
+    if (g_strcmp0(output, "-") == 0) {
+        g_autofree gchar *text = clawt_sentinel_report_to_yaml(report,
+                                                                &error);
+
+        if (text == NULL) {
+            g_printerr("clawtilla sentinel: %s\n", error->message);
+            return EXIT_FAILURE;
+        }
+
+        g_print("%s", text);
+        return EXIT_SUCCESS;
+    }
+
+    if (!clawt_sentinel_write_report(report, output, events, &error)) {
+        g_printerr("clawtilla sentinel: %s\n", error->message);
+        return EXIT_FAILURE;
+    }
+
+    {
+        JsonObject *root = json_node_get_object(report);
+        JsonArray *issues = json_object_get_array_member(root, "issues");
+
+        g_print("%u issue%s written to %s\n", json_array_get_length(issues),
+                json_array_get_length(issues) == 1 ? "" : "s", output);
+    }
+
+    return EXIT_SUCCESS;
+}
+
 static gint
 cmd_cp(int argc, char *argv[])
 {
@@ -10001,6 +10145,8 @@ static const ClawtVerb verbs[] = {
       cmd_cost },
     { "memory",  "<verb>",   "What an agent has written down",
       cmd_memory },
+    { "sentinel", "[--output FILE|-]", "Scan the event log for recurring trouble (read-only)",
+      cmd_sentinel },
     { "computer", "<verb>",  "Run commands on an agent's computer",
       cmd_computer },
     { "activity", "",        "Every turn running across the fleet",

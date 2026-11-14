@@ -89,6 +89,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/integration/clawt-integration-field.h \
 	$(SRCDIR)/core/clawt-event-bus.h \
 	$(SRCDIR)/core/clawt-event-log.h \
+	$(SRCDIR)/core/clawt-sentinel.h \
 	$(SRCDIR)/integration/clawt-connector.h \
 	$(SRCDIR)/integration/clawt-connector-relay.h \
 	$(SRCDIR)/integration/clawt-connector-registry.h \
@@ -251,6 +252,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-misc.c \
 	$(SRCDIR)/core/daemon-agent.c \
 	$(SRCDIR)/core/daemon-memory.c \
+	$(SRCDIR)/core/daemon-sentinel.c \
 	$(SRCDIR)/core/daemon-mount.c \
 	$(SRCDIR)/core/daemon-egress.c \
 	$(SRCDIR)/core/daemon-image.c \
@@ -286,6 +288,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-tree.c \
 	$(SRCDIR)/core/clawt-event-bus.c \
 	$(SRCDIR)/core/clawt-event-log.c \
+	$(SRCDIR)/core/clawt-sentinel.c \
 	$(SRCDIR)/integration/clawt-connector.c \
 	$(SRCDIR)/integration/clawt-connector-relay.c \
 	$(SRCDIR)/integration/clawt-connector-registry.c \
@@ -1044,6 +1047,8 @@ $(OUTDIR)/tests/test-sandbox-probe: $(SANDBOX_PROBE)
 $(OUTDIR)/tests/test-backup: $(CLI_BIN_TARGET)
 # The offline validator test exercises argument parsing in the real CLI.
 $(OUTDIR)/tests/test-config-offline: $(CLI_BIN_TARGET)
+# The sentinel test runs the real CLI as the daemon's child.
+$(OUTDIR)/tests/test-sentinel: $(CLI_BIN_TARGET)
 
 .PHONY: test  ## Build and run the hermetic test suite
 test: $(TEST_BINARIES) test-plugins plugins

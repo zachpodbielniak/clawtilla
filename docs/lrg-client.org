@@ -841,13 +841,16 @@ Each card shows the agent's avatar with its live glow, "alpha in planning", the 
 
 The latest step is always visible; an =LrgExpander= ("Last 6 steps", remembered open per turn) holds every step the reply carries -- each with its tone (=clawt_turn_step_tone()=) and summary (=clawt_turn_step_summary()=) -- and an =LrgTimelineView= with one locked track where each step is a clip from when it began until the next did (the last until now), which shows where the time went in a way a list does not.
 
+*** Issues
+A section under the cards: the age of the last sentinel report (=clawt_sentinel_age_text()=, "Scanned 3m ago", with "scanning now…" while one runs), *Scan now* (~sentinel.scan~), and one row per issue from ~sentinel.report~ with a badge (=clawt_sentinel_kind_label()=, red for ~bad~, amber for ~warning~), the title, and when it last happened with the sample.  Read when the page is shown and on ~sentinel.finished~, never on the ten-second tick.  See [[file:maintenance.org::*The sentinel: what keeps going wrong][maintenance.org]].
+
 *** Actions
 - Stop agent (~agent.interrupt~): labelled agent-wide, because it ends every turn the agent is running; asks first with =clawt_activity_stop_prompt()=, then says whether anything was stopped.
 - Steer (~msg.send~, target the agent, as GTK and the web client send it): an entry and button on a card whose =steerable= is true. Enter sends. The reply's =steered= says whether the busy agent took it as a steer or had finished and took it as a new message. A card whose turn is in another room says why there is no field: steering reaches only the agent's conversation with you.
 - Refresh, in the toolbar.
 
 *** Frame kinds
-~activity.list~, ~agent.interrupt~, ~msg.send~.
+~activity.list~, ~agent.interrupt~, ~msg.send~, ~sentinel.scan~, ~sentinel.report~.
 
 
 ** Browser (on the Computer page)
@@ -1216,6 +1219,7 @@ A colour this client reads but the palette leaves out falls back to libadwaita's
 | ~lrg-work-model.c~, ~clawt-lrg-work-model.h~ | automation's and work's decisions | -- |
 | ~lrg-flow.c~ | the conversation graph and the agents' conversations | ~gtk-flow.c~ |
 | ~lrg-activity.c~ | every running turn, to stop or steer | ~gtk-activity.c~ |
+| ~lrg-issues.c~ | the Activity page's Issues: the sentinel's report and Scan now | ~gtk-issues.c~ |
 | ~lrg-skills.c~ | the skills library and teaching | ~gtk-skills.c~ |
 | ~lrg-recall.c~ | recall, an agent's memories, the operator profile | ~gtk-recall.c~ |
 | ~lrg-fleet-model.c~, ~clawt-lrg-fleet-model.h~ | flow's, activity's and the library's decisions | -- |

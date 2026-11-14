@@ -95,6 +95,7 @@ licence, send nothing, and exit 0.
 | ~config reload~ | re-read the config file the daemon was started with |
 | ~folders list/add/rm~ | folders every agent with a computer gets |
 | ~memory list/search <agent>~ | what an agent has remembered; read-only |
+| ~sentinel [--output FILE] [--days N]~ | read the event log (read-only) for recurring trouble, as YAML; offline |
 | ~memory journal <agent>~ | every remember, forget and pin, and whether each can be undone |
 | ~memory undo <agent> <change> [--scope S]~ | take one change back; never adds words of its own |
 | ~model~ | every provider and model, and which can run an agent |
@@ -2649,6 +2650,8 @@ Two actions, each labelled with what it actually does:
 
 - *Stop agent* is ~agent.interrupt~, which has no narrower form: it ends every turn the agent is running, not only the row it was pressed on. So it is labelled with the agent, and the confirmation says how many turns that is (~clawt_activity_stop_prompt()~, the same words in both clients).
 - *Steer* is ~msg.send~ to the agent. A busy agent holds it and folds it into the running turn at its next step, and the reply says ~steered~; if the turn ended in the meantime it arrives as an ordinary message, and the client says that instead. Steering reaches only the agent's conversation with you, so it is offered only on that row (~steerable~ in the listing). Every other row says so, and points at stopping it or messaging it there.
+
+Below the turns, *Issues*: what keeps going wrong rather than what is running.  *Scan now* asks the daemon to start ~clawtilla sentinel~ (~sentinel.scan~), which reads the event log without changing it; the list is the report it wrote (~sentinel.report~), redrawn on ~sentinel.finished~.  Each row is one issue with a badge for its kind (=clawt_sentinel_kind_label()=: Failing tool, Slow queue, Spending, Stalled turns), red when it is bad and amber when it is a warning, a title ("bash failed 7 times for alpha"), and when it last happened with the last detail seen.  The line above says how old the report is (=clawt_sentinel_age_text()=), so a week-old report is not read as the present.  Read when the page is shown and when a scan finishes, never on the page's ten-second tick.  See [[file:maintenance.org::*The sentinel: what keeps going wrong][maintenance.org]].
 
 ~clawtilla activity~ prints the same listing, with the last step of each turn.
 

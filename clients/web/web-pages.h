@@ -272,6 +272,26 @@ void clawt_web_register_creation(HtmxRouter *router, ClawtWebApp *app);
 void clawt_web_register_review(HtmxRouter *router, ClawtWebApp *app);
 
 /**
+ * clawt_web_register_issues:
+ * @router: the router
+ * @app: the app
+ *
+ * The Activity page's Scan now (web-issues.c), at `/issues/scan`.
+ */
+void clawt_web_register_issues(HtmxRouter *router, ClawtWebApp *app);
+
+/**
+ * clawt_web_add_issues_card:
+ * @app: the app
+ * @parent: where the card goes
+ * @agent_id: (nullable): the agent the page is about, to come back to
+ *
+ * The Activity page's Issues card: the sentinel's last report.
+ */
+void clawt_web_add_issues_card(ClawtWebApp *app, HtmxElement *parent,
+                               const gchar *agent_id);
+
+/**
  * clawt_web_add_memory_review_card:
  * @app: the app
  * @parent: where the card goes

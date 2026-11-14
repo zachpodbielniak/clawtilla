@@ -343,6 +343,9 @@ const ClawtLrgPage *clawt_lrg_tasks_page(void);      /* lrg-tasks.c */
 const ClawtLrgPage *clawt_lrg_decisions_page(void);  /* lrg-decisions.c */
 const ClawtLrgPage *clawt_lrg_flow_page(void);       /* lrg-flow.c */
 const ClawtLrgPage *clawt_lrg_activity_page(void);   /* lrg-activity.c */
+/* lrg-issues.c: the Activity page's Issues section (the sentinel's report). */
+void clawt_lrg_issues_build(ClawtLrgApp *app, LrgWidget *body);
+void clawt_lrg_issues_refresh(ClawtLrgApp *app);
 const ClawtLrgPage *clawt_lrg_fleet_page(void);      /* lrg-fleet-page.c */
 const ClawtLrgPage *clawt_lrg_grok_page(void);       /* lrg-grok.c */
 const ClawtLrgPage *clawt_lrg_skills_page(void);     /* lrg-skills.c */

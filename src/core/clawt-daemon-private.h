@@ -270,6 +270,15 @@ struct _ClawtDaemon {
      * turn for ever.  @turn_pid_func answers an agent's root pid; NULL
      * asks the runtime, and a test puts a fake process table behind it.
      */
+    /*
+     * The sentinel (daemon-sentinel.c): the running `clawtilla sentinel`
+     * child, if any, what the last one said when it failed, and -- for
+     * tests -- the command to run instead of the CLI found beside us.
+     */
+    GSubprocess      *sentinel_child;
+    gchar            *sentinel_error;
+    gchar            *sentinel_command;
+
     ClawtBusyWatch   *busy_watch;
     GHashTable       *turn_said;
     gint            (*turn_pid_func)(ClawtDaemon *self, const gchar *agent_id);
@@ -1188,6 +1197,24 @@ clawt_daemon_handle_memory(
     JsonObject   *payload,
     gboolean     *handled
 );
+
+JsonNode *
+clawt_daemon_handle_sentinel(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
+
+/*
+ * daemon-sentinel.c: the command a scan runs (NULL for the CLI resolved
+ * beside the daemon; a test names its own), and dropping a running scan
+ * when the daemon stops.
+ */
+void clawt_daemon_sentinel_set_command(ClawtDaemon *self,
+                                       const gchar *command);
+void clawt_daemon_sentinel_teardown(ClawtDaemon *self);
 
 JsonNode *
 clawt_daemon_handle_egress(

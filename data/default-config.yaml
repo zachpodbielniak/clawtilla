@@ -898,6 +898,38 @@ memories:
   # # Off removes the region again.
   # operator_profile: false
 
+# What `clawtilla sentinel` looks for in the event log.
+#
+# The sentinel is a read-only scan of <state_dir>/events/*.ndjson that
+# groups failing tool calls, long queue waits, spending and stalled turns
+# into issues and writes them as YAML. It runs out of process: the
+# clients' Issues view asks the daemon to start `clawtilla sentinel`
+# and then shows what it wrote. It never writes to the event log.
+sentinel:
+
+  # How many days of the event log one scan reads, counting today. 0
+  # reads every file there is, which daemon.event_log_days bounds.
+  days: 7
+
+  # How many failures of one agent's tool make an issue. A tool that
+  # failed once is a turn's ordinary business; one that failed this many
+  # times in the window is a pattern somebody should look at.
+  min_failures: 3
+
+  # How long a message may wait in an agent's queue, from being queued to
+  # being delivered, before the wait is an issue. Messages still queued
+  # past it when the scan ends are reported too.
+  queue_wait_seconds: 600
+
+  # One agent's spend in one day, in micro-dollars, that makes an issue.
+  # 0 reports only the days a cap was reached.
+  #
+  # A line to report, not a limit: nothing is refused at it. The caps that
+  # do refuse work are orchestration.daily_fleet_budget_micros and each
+  # agent's own, and every time one is reached is an issue whatever this
+  # says.
+  daily_spend_micros: 10000000
+
 # Reusable procedure, shared across the fleet.
 #
 # A skill is a directory holding a SKILL.md, in the layout every

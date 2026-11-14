@@ -132,6 +132,7 @@
 #include "core/clawt-event.h"
 #include "core/clawt-event-bus.h"
 #include "core/clawt-event-log.h"
+#include "core/clawt-sentinel.h"
 
 #include "config/clawt-config.h"
 #include "config/clawt-config-render.h"
