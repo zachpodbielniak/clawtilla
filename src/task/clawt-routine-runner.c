@@ -44,6 +44,31 @@ typedef struct {
      * delaying one.
      */
     GSource       *jitter;
+
+    /*
+     * Runs in a row whose computer did not start, and what turned the
+     * routine off when that reached `max_start_failures`.
+     *
+     * Here and not in clawtilla.yaml for the reason last_run is: it is
+     * state.  `off_after` is non-zero only while the routine is off for
+     * this reason, so the list can say why it is off and a client can
+     * offer to turn it back on.
+     */
+    guint          start_failures;
+    guint          off_after;
+    gchar         *off_error;
+
+    /*
+     * When the routine was last edited, and what it looked like then.
+     *
+     * The fingerprint is compared on every config load, so an edit made
+     * by hand in clawtilla.yaml counts as much as one made from a
+     * client -- a rule that only saw routine.update would miss the edit
+     * most likely to be the fix.  `edited_at_us` is what keeps a run
+     * that began under the old shape from counting against the new one.
+     */
+    gint64         edited_at_us;
+    gchar         *fingerprint;
 } RunRecord;
 
 /*
@@ -74,6 +99,8 @@ run_record_free(RunRecord *self)
 
     g_free(self->detail);
     g_free(self->task_id);
+    g_free(self->off_error);
+    g_free(self->fingerprint);
     g_free(self);
 }
 
@@ -195,6 +222,27 @@ load_state(ClawtRoutineRunner *self)
         if (node != NULL)
             record->task_id = g_strdup(yaml_node_get_string(node));
 
+        /* What the start-failure guard keeps; all absent in an old file. */
+        node = yaml_mapping_get_member(fields, "start_failures");
+        if (node != NULL)
+            record->start_failures = (guint)MAX(yaml_node_get_int(node), 0);
+
+        node = yaml_mapping_get_member(fields, "turned_off_after");
+        if (node != NULL)
+            record->off_after = (guint)MAX(yaml_node_get_int(node), 0);
+
+        node = yaml_mapping_get_member(fields, "turned_off_error");
+        if (node != NULL)
+            record->off_error = g_strdup(yaml_node_get_string(node));
+
+        node = yaml_mapping_get_member(fields, "edited_at");
+        if (node != NULL)
+            record->edited_at_us = yaml_node_get_int(node);
+
+        node = yaml_mapping_get_member(fields, "fingerprint");
+        if (node != NULL)
+            record->fingerprint = g_strdup(yaml_node_get_string(node));
+
         g_hash_table_insert(self->records, g_strdup(id), record);
     }
 
@@ -242,6 +290,42 @@ save_state(ClawtRoutineRunner *self)
             yaml_mapping_set_member(fields, "task", task);
         }
 
+        /* Only what is set, so a routine that never failed stays short. */
+        if (record->start_failures > 0) {
+            g_autoptr(YamlNode) failures =
+                yaml_node_new_int((gint64)record->start_failures);
+
+            yaml_mapping_set_member(fields, "start_failures", failures);
+        }
+
+        if (record->off_after > 0) {
+            g_autoptr(YamlNode) after =
+                yaml_node_new_int((gint64)record->off_after);
+
+            yaml_mapping_set_member(fields, "turned_off_after", after);
+        }
+
+        if (record->off_error != NULL) {
+            g_autoptr(YamlNode) off_error =
+                yaml_node_new_string(record->off_error);
+
+            yaml_mapping_set_member(fields, "turned_off_error", off_error);
+        }
+
+        if (record->edited_at_us > 0) {
+            g_autoptr(YamlNode) edited =
+                yaml_node_new_int(record->edited_at_us);
+
+            yaml_mapping_set_member(fields, "edited_at", edited);
+        }
+
+        if (record->fingerprint != NULL) {
+            g_autoptr(YamlNode) fingerprint =
+                yaml_node_new_string(record->fingerprint);
+
+            yaml_mapping_set_member(fields, "fingerprint", fingerprint);
+        }
+
         yaml_mapping_set_member(yaml_node_get_mapping(root), key, entry);
     }
 
@@ -274,6 +358,139 @@ record_for(ClawtRoutineRunner *self, const gchar *routine_id)
     g_hash_table_insert(self->records, g_strdup(routine_id), record);
 
     return record;
+}
+
+/* ── Edits ───────────────────────────────────────────────────────── */
+
+/*
+ * What a routine looks like, as one string.
+ *
+ * Walked from the schema rather than from a list here: a field added to
+ * the schema and left out of a list would be a field whose edit does not
+ * reset the count, which is the drift AGENTS.md has recorded three times
+ * for key tables.  Each leaf is read through its typed getter, so a
+ * value written as `"3"` and as `3` is the same routine.  `enabled` is
+ * included on purpose: turning a routine back on is an edit, and it is
+ * the one that has to clear a "turned off" note.
+ */
+static gchar *
+routine_fingerprint(
+	ClawtRoutine *routine
+){
+	g_autoptr(GChecksum) checksum = NULL;
+	const ClawtSchemaEntry *entries;
+	gsize n_entries = 0;
+	gsize i;
+
+	checksum = g_checksum_new(G_CHECKSUM_SHA256);
+	entries = clawt_config_schema_get(&n_entries);
+
+	for (i = 0; i < n_entries; i++) {
+		const gchar *leaf;
+		g_autofree gchar *line = NULL;
+
+		if (!g_str_has_prefix(entries[i].key, "routines."))
+			continue;
+
+		leaf = entries[i].key + strlen("routines.");
+
+		if (strchr(leaf, '.') != NULL)
+			continue;
+
+		switch (entries[i].type) {
+		case CLAWT_SCHEMA_SECTION:
+		case CLAWT_SCHEMA_MAPPING:
+		case CLAWT_SCHEMA_LIST_OF:
+			continue;
+
+		case CLAWT_SCHEMA_BOOLEAN:
+			line = g_strdup_printf("%s=%d\n", leaf,
+			                       (gint)clawt_routine_get_boolean(routine, leaf));
+			break;
+
+		case CLAWT_SCHEMA_INT:
+			line = g_strdup_printf("%s=%" G_GINT64_FORMAT "\n", leaf,
+			                       clawt_routine_get_int(routine, leaf));
+			break;
+
+		default: {
+			const gchar *value = clawt_routine_get_string(routine, leaf);
+
+			line = g_strdup_printf("%s=%s\n", leaf,
+			                       (value != NULL) ? value : "");
+			break;
+		}
+		}
+
+		g_checksum_update(checksum, (const guchar *)line, (gssize)strlen(line));
+	}
+
+	return g_strdup(g_checksum_get_string(checksum));
+}
+
+/*
+ * Notices every routine that changed since the runner last looked.
+ *
+ * An edit sets the count of failed starts back to zero and stamps when
+ * it happened, so a run that began before it cannot count afterwards.
+ * An edit that leaves the routine on also clears a "turned off" note --
+ * that is what turning it back on is.  One that leaves it off keeps the
+ * note, which is why the runner's own turning-off does not erase the
+ * reason it gave.
+ *
+ * A routine seen for the first time is remembered and not treated as
+ * edited: a state file from before this existed has no fingerprints,
+ * and the upgrade is not an edit.
+ */
+static void
+sync_edits(
+	ClawtRoutineRunner *self
+){
+	GPtrArray *routines;
+	gboolean changed = FALSE;
+	guint i;
+
+	if (self->config == NULL)
+		return;
+
+	routines = clawt_config_get_routines(self->config);
+
+	for (i = 0; routines != NULL && i < routines->len; i++) {
+		ClawtRoutine *routine = g_ptr_array_index(routines, i);
+		const gchar *id = clawt_routine_get_id(routine);
+		g_autofree gchar *fingerprint = NULL;
+		RunRecord *record;
+
+		if (id == NULL)
+			continue;
+
+		fingerprint = routine_fingerprint(routine);
+		record = record_for(self, id);
+
+		if (record->fingerprint == NULL) {
+			record->fingerprint = g_steal_pointer(&fingerprint);
+			changed = TRUE;
+			continue;
+		}
+
+		if (g_strcmp0(record->fingerprint, fingerprint) == 0)
+			continue;
+
+		g_free(record->fingerprint);
+		record->fingerprint = g_steal_pointer(&fingerprint);
+		record->edited_at_us = g_get_real_time();
+		record->start_failures = 0;
+
+		if (clawt_routine_get_boolean(routine, "enabled")) {
+			record->off_after = 0;
+			g_clear_pointer(&record->off_error, g_free);
+		}
+
+		changed = TRUE;
+	}
+
+	if (changed)
+		save_state(self);
 }
 
 /* ── Lifecycle ───────────────────────────────────────────────────── */
@@ -317,6 +534,9 @@ clawt_routine_runner_new(ClawtConfig *config, const gchar *state_path)
     self->state_path = g_strdup(state_path);
     load_state(self);
 
+    /* An edit made while the daemon was down is still an edit. */
+    sync_edits(self);
+
     return self;
 }
 
@@ -337,6 +557,12 @@ clawt_routine_runner_set_config(ClawtRoutineRunner *self, ClawtConfig *config)
     g_return_if_fail(CLAWT_IS_ROUTINE_RUNNER(self));
 
     g_set_object(&self->config, config);
+
+    /*
+     * Every save reloads, and so does a hand edit picked up by a
+     * reload: this is the one place both pass through.
+     */
+    sync_edits(self);
 }
 
 /* ── Deciding ────────────────────────────────────────────────────── */
@@ -922,4 +1148,169 @@ clawt_routine_runner_catch_up(ClawtRoutineRunner *self)
     }
 
     save_state(self);
+}
+
+/* ── Computers that did not start ────────────────────────────────── */
+
+guint
+clawt_routine_max_start_failures(
+	ClawtRoutine *routine
+){
+	const ClawtSchemaEntry *entry;
+	gint64 value;
+
+	g_return_val_if_fail(routine != NULL, 0);
+
+	value = clawt_routine_get_int(routine, "max_start_failures");
+
+	if (value >= 0)
+		return (guint)MIN(value, (gint64)G_MAXUINT);
+
+	/*
+	 * The default, not 0.  Zero is a real, documented setting -- never
+	 * turn it off -- so a typo of -3 would otherwise select a different
+	 * working behaviour that nothing could describe.
+	 */
+	entry = clawt_config_schema_lookup("routines.max_start_failures");
+
+	if (entry == NULL || entry->default_value == NULL)
+		return 0;
+
+	return (guint)g_ascii_strtoull(entry->default_value, NULL, 10);
+}
+
+gboolean
+clawt_routine_runner_note_start(
+	ClawtRoutineRunner *self,
+	const gchar        *routine_id,
+	gint64              run_at_us,
+	const gchar        *computer_error
+){
+	ClawtRoutine *routine;
+	RunRecord *record;
+	guint limit;
+
+	g_return_val_if_fail(CLAWT_IS_ROUTINE_RUNNER(self), FALSE);
+	g_return_val_if_fail(routine_id != NULL, FALSE);
+
+	/* Removed while its run waited: there is nothing to count against. */
+	routine = clawt_config_get_routine(self->config, routine_id);
+
+	if (routine == NULL)
+		return FALSE;
+
+	record = record_for(self, routine_id);
+
+	/*
+	 * A run from before the last edit says nothing about the routine as
+	 * it now is.  Both ways: a stale success must not hide a fresh
+	 * failure any more than a stale failure may count towards one.
+	 */
+	if (run_at_us < record->edited_at_us)
+		return FALSE;
+
+	if (computer_error == NULL) {
+		if (record->start_failures == 0)
+			return FALSE;
+
+		record->start_failures = 0;
+		save_state(self);
+		return FALSE;
+	}
+
+	/*
+	 * A disabled routine run by hand has nothing to turn off, and one
+	 * already turned off -- or waiting for the caller to do it -- must
+	 * not raise the alert a second time.
+	 */
+	if (!clawt_routine_get_boolean(routine, "enabled") || record->off_after > 0)
+		return FALSE;
+
+	record->start_failures++;
+	limit = clawt_routine_max_start_failures(routine);
+
+	if (limit == 0 || record->start_failures < limit) {
+		save_state(self);
+		return FALSE;
+	}
+
+	record->off_after = record->start_failures;
+	g_free(record->off_error);
+	record->off_error = g_strdup(computer_error);
+	save_state(self);
+
+	return TRUE;
+}
+
+guint
+clawt_routine_runner_get_start_failures(
+	ClawtRoutineRunner *self,
+	const gchar        *routine_id
+){
+	RunRecord *record;
+
+	g_return_val_if_fail(CLAWT_IS_ROUTINE_RUNNER(self), 0);
+
+	record = (routine_id != NULL)
+		? g_hash_table_lookup(self->records, routine_id) : NULL;
+
+	return (record != NULL) ? record->start_failures : 0;
+}
+
+gboolean
+clawt_routine_runner_get_turned_off(
+	ClawtRoutineRunner  *self,
+	const gchar         *routine_id,
+	guint               *out_failures,
+	const gchar        **out_error
+){
+	RunRecord *record;
+
+	g_return_val_if_fail(CLAWT_IS_ROUTINE_RUNNER(self), FALSE);
+
+	record = (routine_id != NULL)
+		? g_hash_table_lookup(self->records, routine_id) : NULL;
+
+	if (out_failures != NULL)
+		*out_failures = (record != NULL) ? record->off_after : 0;
+
+	if (out_error != NULL)
+		*out_error = (record != NULL) ? record->off_error : NULL;
+
+	return record != NULL && record->off_after > 0;
+}
+
+gchar *
+clawt_routine_turned_off_note(
+	guint        failures,
+	const gchar *error
+){
+	if (error == NULL || *error == '\0')
+		return g_strdup_printf("turned off after %u failed start%s", failures,
+		                       failures == 1 ? "" : "s");
+
+	return g_strdup_printf("turned off after %u failed start%s: %s", failures,
+	                       failures == 1 ? "" : "s", error);
+}
+
+gchar *
+clawt_routine_turned_off_alert(
+	const gchar *routine_id,
+	guint        failures,
+	const gchar *error
+){
+	return g_strdup_printf(
+		"Routine '%s' was turned off after %u run%s in a row whose computer "
+		"did not start: %s. Fix the computer, then turn the routine back on.",
+		(routine_id != NULL) ? routine_id : "?", failures,
+		failures == 1 ? "" : "s",
+		(error != NULL && *error != '\0') ? error : "no reason was given");
+}
+
+const gchar *
+clawt_routine_start_failures_hint(void)
+{
+    return "Turn this routine off after this many runs in a row whose "
+           "computer did not start, rather than failing on every run. "
+           "0 never turns it off.";
 }

@@ -1503,6 +1503,8 @@ weekday mornings.  A routine that did not fire because the machine was
 asleep is shown as *missed*, not failed: showing it as broken would train
 you to ignore the one that is.  See [[file:routines.org][routines.org]].
 
+A routine whose computer did not start =routines.max_start_failures= runs in a row (three by default) is turned off by the daemon, and its row says so in libclawt's words -- "turned off after 3 failed starts: <the computer's error>" (~clawt_routine_turned_off_note()~) -- with a *Turn back on* button beside it that sends ~routine.update~ with =enabled: true=.  The alerts panel gets the same news as an error (~routine.turned_off~, worded by ~clawt_routine_turned_off_alert()~).  The editor has the limit as *Turn off after failed starts*, with ~clawt_routine_start_failures_hint()~ under it; GTK, web and lrg draw all four the same way, and ~make parity~ declares them.  See [[file:routines.org::#max-start-failures][routines.org]].
+
 *** The Computer tab has five views
 
 Shell, Screen, Mounts, Exchange, Browser -- in that order, in both clients, walked

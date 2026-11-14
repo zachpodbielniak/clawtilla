@@ -1866,6 +1866,21 @@ static const ClawtSchemaEntry schema[] = {
   "need to be later still.",
   "0.2.0" },
 
+{ "routines.max_start_failures", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "3", NULL,
+  "Turn the routine off after this many runs in a row whose computer\n"
+  "did not start. 0 never turns it off.\n"
+  "\n"
+  "A dead VM or a missing image otherwise fails the routine on every\n"
+  "tick, and nobody hears about it. At the limit the routine is turned\n"
+  "off -- `enabled: false`, so it shows as off everywhere and is turned\n"
+  "back on the same way -- and an alert names the routine and the\n"
+  "computer's error. The count is run state, kept beside the config and\n"
+  "never in it. Any run whose computer starts sets it back to zero, and\n"
+  "so does editing the routine; a run that began before the edit is not\n"
+  "counted. A negative value reads as the default.",
+  "0.12.0" },
+
 { "routines.locked", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "false", NULL,
   "Keep the agent from changing or removing this routine.\n"

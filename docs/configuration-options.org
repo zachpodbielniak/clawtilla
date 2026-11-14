@@ -2623,6 +2623,24 @@ once, because somebody waiting at a terminal is not load to spread;
 so does a catch-up, because a run that was already missed does not
 need to be later still.
 
+*** =routines.max_start_failures=
+
+- Type :: integer
+- Default :: =3=
+- Since :: 0.12.0
+
+Turn the routine off after this many runs in a row whose computer
+did not start. 0 never turns it off.
+
+A dead VM or a missing image otherwise fails the routine on every
+tick, and nobody hears about it. At the limit the routine is turned
+off -- `enabled: false`, so it shows as off everywhere and is turned
+back on the same way -- and an alert names the routine and the
+computer's error. The count is run state, kept beside the config and
+never in it. Any run whose computer starts sets it back to zero, and
+so does editing the routine; a run that began before the edit is not
+counted. A negative value reads as the default.
+
 *** =routines.locked=
 
 - Type :: boolean

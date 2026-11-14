@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-23 Sat]
-#+updated: [2026-08-29 Sat]
-#+version: 0.2.2
+#+updated: [2026-11-14 Sat]
+#+version: 0.3.0
 
 * Routines
 
@@ -503,6 +503,65 @@ agents:
       schedule: false
 #+end_src
 
+** When the computer will not start
+:PROPERTIES:
+:CUSTOM_ID: max-start-failures
+:END:
+
+A routine's run is delivered to its agent's mailbox, and the agent works it when it is running.  An agent whose computer will not start -- a VM whose disk is gone, a container image that was never pulled, a podman that is not running -- is in =error=, and a run delivered to it waits in the mailbox for good.  Before this the routine reported every one of those runs as started, every tick, and nothing said otherwise.
+
+So a routine counts the runs in a row whose computer did not start, and at a limit it turns itself off and says why.
+
+#+begin_src yaml
+routines:
+  - id: nightly-backup-check
+    agent: vm-worker
+    schedule: daily
+    at: "02:00"
+    max_start_failures: 3     # the default; 0 never turns it off
+#+end_src
+
+*** What counts as a run whose computer did not start
+
+A run is watched from the moment it is delivered until its agent's computer answers one way or the other.
+
+- *The agent is running* (or degraded): its computer started.  The count goes back to zero at once.
+- *The agent is in =error= because its computer refused to start*: the run starts it again, in the background -- each run is another attempt, which is also how a computer somebody has fixed comes back on its own.  If the computer refuses again, that run counts as a failure; if it comes up, the count goes back to zero and the run is worked as usual.
+- *The agent was stopped*, or is starting, or is in =error= for some other reason: the run waits, as it always has, and whichever start comes next -- somebody pressing *Start*, an idle agent woken by the delivery, the daemon bringing the fleet up -- decides it.  Nothing is restarted that a person stopped.
+
+Several runs queued behind one start are one start: a routine is counted once per start attempt, however many of its runs were waiting, so an hourly routine on an agent that was down all afternoon is not turned off by the first refusal.
+
+The count is reset by:
+
+- *any run whose computer started*, and
+- *any edit to the routine* -- from a client, from ~clawtilla routine set~, by an agent through ~clawtilla_routine_update~, or by hand in ~clawtilla.yaml~.  The edit is noticed by comparing the routine's fields on every load, not by watching the edit frames, so the hand edit -- the one most likely to be the fix -- counts too.
+
+*A run that began before the routine was last edited does not count*, either way.  A computer that refuses five minutes after somebody pointed the routine at a different agent is the old agent's computer refusing, and a failure from the old shape must not count against the new one.
+
+A disabled routine run by hand (~clawtilla routine run~) is not counted: there is nothing to turn off.
+
+*** At the limit
+
+- *The routine is turned off*: =enabled: false=, written through the same save every client uses, so it is in ~clawtilla.yaml~, reloaded, announced as ~routine.changed~, and shows as off in every client.  It is not off by some private flag that would read as on in the editor while never running.
+- *An alert names the routine and the computer's error*, as an error in every client's alerts panel:
+
+  #+begin_example
+  Routine 'nightly-backup-check' was turned off after 3 runs in a row whose computer did not start: <the computer's error>. Fix the computer, then turn the routine back on.
+  #+end_example
+
+  It is published as ~routine.turned_off~ (subject the routine, with =agent=, =failures= and =error=), and a notify integration subscribed to =error= or =routine= is sent it too.
+- *The routine says why it is off*: "turned off after 3 failed starts: <error>" on its row in GTK, web and lrg, with *Turn back on* beside it, and under it in ~clawtilla routine list~.
+
+Turning it back on is one click, or ~clawtilla routine set <id> enabled=true~.  That is an edit like any other, so the count starts again from zero and the note goes.
+
+*** Where the count lives
+
+In the run state, ~<state_dir>/routines.yaml~, beside the last-run time and never in ~clawtilla.yaml~ (see [[#run-state][Run state]]).  ~routine.list~ carries it as =start_failures=, and while the routine is off for it, =turned_off_after= and =turned_off_error=.
+
+*** Setting it
+
+=routines.max_start_failures= is per routine, like every other routine key, and defaults to 3.  0 never turns the routine off.  A negative value is read as the default rather than as 0: zero is a real setting, and a typo must not quietly switch the guard off.  Every client's routine editor has it as *Turn off after failed starts*, with the same one-line explanation under it (~clawt_routine_start_failures_hint()~).
+
 ** Trying one before trusting it
 
 #+begin_src bash
@@ -515,6 +574,9 @@ point: a disabled routine you can still run by hand is how you find out
 whether the instructions are any good before putting them on a timer.
 
 ** Run state
+:PROPERTIES:
+:CUSTOM_ID: run-state
+:END:
 
 Run state lives in ~<state_dir>/routines.yaml~ -- the *state* directory,
 which is ~~/.clawtilla~ by default and is not where ~clawtilla.yaml~
@@ -526,7 +588,11 @@ It holds four things per routine, not just the timestamp: ~last_run~,
 the outcome (~ok~, ~failed~, ~missed~, ~never~), a detail string, and
 the id of the task that run created.  That is what fills the LAST column
 of ~routine list~, and it is rewritten on every start, every failure and
-every missed-run sweep -- written atomically at 0600, since a run's task
+every missed-run sweep.  Beside them it keeps what the start-failure
+guard needs (see [[#max-start-failures][When the computer will not
+start]]): the count, the error that turned the routine off, when the
+routine was last edited, and a fingerprint of its fields to notice the
+next edit by -- written atomically at 0600, since a run's task
 id is a handle onto somebody's work.
 
 A state file that cannot be parsed is a warning and an empty slate: it
@@ -564,12 +630,13 @@ reference for what a routine holds.
 
 ** Reacting to a routine
 
-Three events, and it is worth being precise about which says what:
+Four events, and it is worth being precise about which says what:
 
 | Event | When |
 |-------+------|
 | ~routine.ran~ | a run *started* -- the task was created and the prompt delivered |
 | ~routine.changed~ | the routine itself was added, edited or removed |
+| ~routine.turned_off~ | its computer did not start =max_start_failures= runs in a row, and it was turned off |
 | ~task.changed~ | the run's task moved, which is where its success or failure shows up |
 
 ~routine.ran~ is not a completion and not a failure.  Every failure path
@@ -580,6 +647,6 @@ state as ~failed~.  A routine that started and then went wrong is a
 ~task.changed~ to ~failed~.  Binding a pod to ~routine.ran~ expecting to
 hear about problems hears about successes.
 
-All three are bindable from a podomation pod as ~on_routine_ran~,
-~on_routine_changed~ and ~on_task_changed~ -- the DSL's lexer cannot
+All four are bindable from a podomation pod as ~on_routine_ran~,
+~on_routine_changed~, ~on_routine_turned_off~ and ~on_task_changed~ -- the DSL's lexer cannot
 parse a dot in an event name.  See [[file:automation.org][automation.org]].
