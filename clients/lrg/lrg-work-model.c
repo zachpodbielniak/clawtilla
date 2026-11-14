@@ -756,6 +756,114 @@ clawt_lrg_provider_choices(GStrv *ids, GStrv *labels)
     }
 }
 
+void
+clawt_lrg_trigger_mode_choices(GStrv *ids, GStrv *labels)
+{
+	guint n = clawt_trigger_mode_count();
+	guint i;
+
+	*ids = g_new0(gchar *, n + 1);
+	*labels = g_new0(gchar *, n + 1);
+
+	for (i = 0; i < n; i++) {
+		(*ids)[i] = g_strdup(clawt_trigger_mode_nth_nick(i));
+		(*labels)[i] = g_strdup(clawt_trigger_mode_nth_label(i));
+	}
+}
+
+gchar *
+clawt_lrg_trigger_mode_hints(void)
+{
+	GString *text = g_string_new(NULL);
+	guint i;
+
+	for (i = 0; i < clawt_trigger_mode_count(); i++) {
+		if (text->len > 0)
+			g_string_append_c(text, ' ');
+
+		g_string_append_printf(text, "%s: %s",
+		                       clawt_trigger_mode_nth_label(i),
+		                       clawt_trigger_mode_nth_hint(i));
+	}
+
+	return g_string_free(text, FALSE);
+}
+
+JsonNode *
+clawt_lrg_match_node(const gchar *const *paths, const gchar *const *values)
+{
+	g_autoptr(JsonBuilder) builder = json_builder_new();
+	guint i;
+
+	json_builder_begin_array(builder);
+
+	for (i = 0; paths != NULL && paths[i] != NULL; i++) {
+		const gchar *value = (values != NULL) ? values[i] : NULL;
+		g_autofree gchar *path = g_strstrip(g_strdup(paths[i]));
+
+		/* A row left wholly blank is no condition. */
+		if (*path == '\0' && blank(value))
+			continue;
+
+		json_builder_begin_object(builder);
+		add_string(builder, "path", path);
+		add_string(builder, "value", value);
+		json_builder_end_object(builder);
+	}
+
+	json_builder_end_array(builder);
+
+	return json_builder_get_root(builder);
+}
+
+gchar *
+clawt_lrg_match_report(JsonObject *reply)
+{
+	GString *text = g_string_new(NULL);
+	JsonArray *results = NULL;
+	guint i;
+
+	if (reply == NULL || clawt_ipc_payload_string(reply, "payload") == NULL) {
+		const gchar *note = (reply != NULL)
+			? clawt_ipc_payload_string(reply, "note") : NULL;
+
+		g_string_append(text, (note != NULL) ? note
+		                                     : "Nothing has arrived yet.");
+		return g_string_free(text, FALSE);
+	}
+
+	if (clawt_ipc_payload_boolean(reply, "matches", FALSE)) {
+		g_string_append(text, "The last delivery would have been let "
+		                      "through.");
+	} else {
+		const gchar *reason = clawt_ipc_payload_string(reply, "reason");
+
+		g_string_append_printf(text, "The last delivery would have been "
+		                       "ignored: %s",
+		                       (reason != NULL) ? reason : "no reason given");
+	}
+
+	if (json_object_has_member(reply, "results") &&
+	    JSON_NODE_HOLDS_ARRAY(json_object_get_member(reply, "results")))
+		results = json_object_get_array_member(reply, "results");
+
+	for (i = 0; results != NULL && i < json_array_get_length(results); i++) {
+		JsonObject *row = json_array_get_object_element(results, i);
+		const gchar *actual = clawt_ipc_payload_string(row, "actual");
+
+		g_string_append_printf(
+			text, "\n%s %s contains \"%s\"%s%s%s",
+			clawt_ipc_payload_boolean(row, "matched", FALSE) ? "yes" : "no ",
+			clawt_ipc_payload_string(row, "path"),
+			clawt_ipc_payload_string(row, "value"),
+			(actual != NULL) ? DASH "it is \"" : DASH "nothing is there",
+			(actual != NULL) ? actual : "",
+			(actual != NULL) ? "\"" : "");
+	}
+
+	return g_string_free(text, FALSE);
+}
+
 const gchar *
 clawt_lrg_trigger_state(JsonObject *trigger, const gchar **tone)
 {
@@ -947,6 +1055,37 @@ clawt_lrg_trigger_payload(const ClawtLrgTriggerForm *form, GError **error)
         return NULL;
     }
 
+    /*
+     * Refused here too, with the form still open: the daemon would refuse
+     * each, and a refusal that arrives after the dialog closed is the
+     * dearer one.
+     */
+    if (form->mode != NULL &&
+        !clawt_enum_from_nick(CLAWT_TYPE_TRIGGER_MODE, form->mode, &value)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "\"%s\" is not a mode this daemon understands.",
+                    form->mode);
+        return NULL;
+    }
+
+    if (form->mode != NULL && value == (gint)CLAWT_TRIGGER_MODE_POST &&
+        blank(form->room)) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "Just posting needs a room to post into.");
+        return NULL;
+    }
+
+    /* Zero is "not given", so a form that never had the field sends none. */
+    if (form->max_pending != 0 &&
+        (form->max_pending < CLAWT_TRIGGER_MAX_PENDING_MIN ||
+         form->max_pending > CLAWT_TRIGGER_MAX_PENDING_MAX)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "Runs at once must be %d to %d.",
+                    CLAWT_TRIGGER_MAX_PENDING_MIN,
+                    CLAWT_TRIGGER_MAX_PENDING_MAX);
+        return NULL;
+    }
+
     builder = json_builder_new();
     json_builder_begin_object(builder);
     add_string(builder, "id", form->id);
@@ -968,6 +1107,19 @@ clawt_lrg_trigger_payload(const ClawtLrgTriggerForm *form, GError **error)
 
     if (!form->creating)
         add_boolean(builder, "enabled", form->enabled);
+
+    if (form->mode != NULL)
+        add_string(builder, "mode", form->mode);
+
+    if (form->max_pending != 0) {
+        json_builder_set_member_name(builder, "max_pending");
+        json_builder_add_int_value(builder, form->max_pending);
+    }
+
+    if (form->match != NULL) {
+        json_builder_set_member_name(builder, "match");
+        json_builder_add_value(builder, json_node_copy(form->match));
+    }
 
     add_extras(builder, form->extras);
     json_builder_end_object(builder);

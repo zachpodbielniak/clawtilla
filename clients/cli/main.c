@@ -7750,6 +7750,7 @@ static void
 print_trigger_usage(gboolean asked_for)
 {
     g_autoptr(GString) providers = g_string_new(NULL);
+    g_autoptr(GString) modes = g_string_new(NULL);
     g_autofree gchar *text = NULL;
     guint p;
 
@@ -7765,6 +7766,16 @@ print_trigger_usage(gboolean asked_for)
         g_string_append(providers, clawt_trigger_provider_nth_nick(p));
     }
 
+    /* The modes too, from the same kind of table and for the same reason. */
+    for (p = 0; p < clawt_trigger_mode_count(); p++) {
+        if (modes->len > 0)
+            g_string_append(modes, ", ");
+
+        g_string_append_printf(modes, "%s (%s)",
+                               clawt_trigger_mode_nth_nick(p),
+                               clawt_trigger_mode_nth_label(p));
+    }
+
     text = g_strdup_printf(
         "Usage: clawtilla trigger <verb> [...]\n"
         "\n"
@@ -7776,10 +7787,13 @@ print_trigger_usage(gboolean asked_for)
         "  test <id> [--run]              show the prompt, or run it\n"
         "  replay <id> [receipt] [--run]  explain a stored event; explicitly replay once\n"
         "  capture <id>                   the first delivery, as it arrived\n"
+        "  check <id> [path=value ...]    try a match filter on the newest\n"
+        "                                 delivery, and list its fields\n"
         "  deliveries [id]                what has been sent, and what came\n"
         "                                 of it\n"
         "\n"
         "Providers: %s.\n"
+        "Modes: %s.\n"
         "\n"
         "A new trigger starts switched off and unverified: the first\n"
         "delivery that authenticates is captured for you to look at rather\n"
@@ -7798,6 +7812,17 @@ print_trigger_usage(gboolean asked_for)
         "  clawtilla trigger set ci-failed enabled=true\n"
         "  clawtilla trigger deliveries ci-failed\n"
         "\n"
+        "  # Only pull requests whose title says release, and only opened\n"
+        "  # ones; repeat match= for each pair (at most 10, all must match,\n"
+        "  # ignoring case), and match= on its own clears the filter.\n"
+        "  clawtilla trigger set review match=pull_request.title=release \\\n"
+        "      match=action=opened\n"
+        "\n"
+        "  # Post deploy notices into a room without running anybody, and\n"
+        "  # let one trigger have at most two runs unfinished.\n"
+        "  clawtilla trigger set deploys mode=post room=ops\n"
+        "  clawtilla trigger set ci-failed max_pending=2\n"
+        "\n"
         "  # VENTURE: create its webhook with this trigger's secret as the\n"
         "  # signing secret; ignore the agent's own writes; catch up on\n"
         "  # business events through the 'books' connector.\n"
@@ -7805,7 +7830,7 @@ print_trigger_usage(gboolean asked_for)
         "      events=invoice.paid ignore_actors=bookkeeper-bot \\\n"
         "      replay_connector=books organization_id=1 \\\n"
         "      instructions=\"{{kind}} {{number}} was paid. Reconcile it.\"\n",
-        providers->str);
+        providers->str, modes->str);
 
     print_usage_text(text, asked_for);
 }
@@ -7845,6 +7870,13 @@ print_trigger_results(JsonObject *root)
     JsonArray *results;
     guint i;
     gboolean failed = FALSE;
+
+    /* A post trigger ran nothing, and says where it wrote instead. */
+    if (json_object_has_member(root, "posted")) {
+        g_print("Posted into %s. No agent was run.\n",
+                member_or(root, "posted", "?"));
+        return EXIT_SUCCESS;
+    }
 
     if (!json_object_has_member(root, "results")) {
         g_print("Started as task %s.\n", member_or(root, "task", "?"));
@@ -7942,6 +7974,8 @@ cmd_trigger(int argc, char *argv[])
         g_autoptr(JsonBuilder) builder = json_builder_new();
         int first = adding ? 5 : 4;
         int a;
+        g_autoptr(GPtrArray) match_pairs = NULL;
+        gboolean match_given = FALSE;
 
         if (id == NULL || (adding && argc < 5)) {
             g_printerr("Usage: clawtilla trigger %s <id>%s [key=value ...]\n",
@@ -7989,6 +8023,24 @@ cmd_trigger(int argc, char *argv[])
                 return EXIT_FAILURE;
             }
 
+            /*
+             * `match` is a list of pairs, and a pair is `path=value`, so
+             * it is given once per pair rather than comma-joined -- a
+             * value may well hold a comma.  Gathered here and sent once,
+             * because a JSON object naming `match` twice keeps one.
+             */
+            if (entry->type == CLAWT_SCHEMA_LIST_OF) {
+                match_given = TRUE;
+
+                if (match_pairs == NULL)
+                    match_pairs = g_ptr_array_new_with_free_func(g_free);
+
+                if (*parts[1] != '\0')
+                    g_ptr_array_add(match_pairs, g_strdup(parts[1]));
+
+                continue;
+            }
+
             json_builder_set_member_name(builder, parts[0]);
 
             switch (entry->type) {
@@ -8011,6 +8063,24 @@ cmd_trigger(int argc, char *argv[])
                  */
                 json_builder_add_string_value(builder, parts[1]);
                 break;
+            }
+        }
+
+        if (match_given) {
+            guint m;
+
+            json_builder_set_member_name(builder, "match");
+
+            if (match_pairs->len == 0) {
+                json_builder_add_null_value(builder);
+            } else {
+                json_builder_begin_array(builder);
+
+                for (m = 0; m < match_pairs->len; m++)
+                    json_builder_add_string_value(
+                        builder, g_ptr_array_index(match_pairs, m));
+
+                json_builder_end_array(builder);
             }
         }
 
@@ -8129,8 +8199,14 @@ cmd_trigger(int argc, char *argv[])
             return print_trigger_results(root);
 
         g_print("%s\n", member_or(root, "report", member_or(root, "prompt", "")));
-        g_print("\nThat is what the agent would be asked. "
-                "`--run` sends it.\n");
+
+        if (g_strcmp0(member_or(root, "report", ""), "") != 0 &&
+            g_str_has_prefix(member_or(root, "report", ""), "Posts into:"))
+            g_print("\nThat is what would be posted; no agent runs. "
+                    "`--run` posts it.\n");
+        else
+            g_print("\nThat is what the agent would be asked. "
+                    "`--run` sends it.\n");
 
         return EXIT_SUCCESS;
     }
@@ -8177,6 +8253,82 @@ cmd_trigger(int argc, char *argv[])
             return print_trigger_results(root);
         else
             g_print("\nPreview only. Repeat with the receipt number and --run to execute once.\n");
+        return EXIT_SUCCESS;
+    }
+
+    /*
+     * A match filter against the newest body this trigger received --
+     * the saved one, or pairs given here to try before saving them.
+     */
+    if (g_strcmp0(verb, "check") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        JsonObject *root;
+        JsonArray *rows;
+        int a;
+
+        if (id == NULL) {
+            g_printerr("Usage: clawtilla trigger check <id> [path=value ...]\n");
+            return EXIT_FAILURE;
+        }
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "id");
+        json_builder_add_string_value(builder, id);
+
+        if (argc > 4) {
+            json_builder_set_member_name(builder, "match");
+            json_builder_begin_array(builder);
+
+            for (a = 4; a < argc; a++)
+                json_builder_add_string_value(builder, argv[a]);
+
+            json_builder_end_array(builder);
+        }
+
+        json_builder_end_object(builder);
+
+        reply = call(client, "trigger.match_test",
+                     json_builder_get_root(builder));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        root = json_node_get_object(reply);
+
+        if (!json_object_has_member(root, "payload")) {
+            g_print("%s\n", member_or(root, "note", "nothing to check against"));
+            return EXIT_SUCCESS;
+        }
+
+        rows = json_object_get_array_member(root, "results");
+
+        for (i = 0; i < json_array_get_length(rows); i++) {
+            JsonObject *row = json_array_get_object_element(rows, i);
+
+            g_print("%-5s %s contains '%s'%s%s\n",
+                    member_flag(row, "matched", FALSE) ? "ok" : "MISS",
+                    member_or(row, "path", "?"), member_or(row, "value", ""),
+                    member_flag(row, "found", FALSE) ? " -- it is " : " -- nothing there",
+                    member_flag(row, "found", FALSE) ? member_or(row, "actual", "") : "");
+        }
+
+        g_print("\n%s\n", member_flag(root, "matches", FALSE)
+                ? "The newest delivery would have been let through."
+                : member_or(root, "reason", "The newest delivery would have been ignored."));
+
+        rows = json_object_get_array_member(root, "paths");
+
+        if (json_array_get_length(rows) > 0) {
+            g_print("\nFields in it:\n");
+
+            for (i = 0; i < json_array_get_length(rows); i++) {
+                JsonObject *row = json_array_get_object_element(rows, i);
+
+                g_print("  %-40s %s\n", member_or(row, "path", "?"),
+                        member_or(row, "value", ""));
+            }
+        }
+
         return EXIT_SUCCESS;
     }
 

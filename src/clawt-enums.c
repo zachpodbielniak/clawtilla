@@ -1576,6 +1576,85 @@ clawt_trigger_provider_nth_label(guint n)
     return trigger_providers[n].label;
 }
 
+/* ── Trigger modes ───────────────────────────────────────────────── */
+
+/* Register ClawtTriggerMode as a GLib enum type */
+GType
+clawt_trigger_mode_get_type(void)
+{
+	static gsize type_id = 0;
+
+	if (g_once_init_enter(&type_id)) {
+		static const GEnumValue values[] = {
+			{ CLAWT_TRIGGER_MODE_RUN, "CLAWT_TRIGGER_MODE_RUN", "run" },
+			{ CLAWT_TRIGGER_MODE_POST, "CLAWT_TRIGGER_MODE_POST", "post" },
+			{ 0, NULL, NULL }
+		};
+		GType id = g_enum_register_static("ClawtTriggerMode", values);
+
+		g_once_init_leave(&type_id, id);
+	}
+
+	return (GType)type_id;
+}
+
+/*
+ * The wording every client puts beside the selector.  The hint names
+ * the cost in both directions, because "just post" is only the right
+ * answer when nobody needed the agent to do anything about it.
+ */
+static const struct {
+	ClawtTriggerMode  mode;
+	const gchar      *nick;
+	const gchar      *label;
+	const gchar      *hint;
+} trigger_modes[] = {
+	{ CLAWT_TRIGGER_MODE_RUN, "run", "Run the agent",
+	  "Each delivery starts a run with the instructions; it costs a turn." },
+	{ CLAWT_TRIGGER_MODE_POST, "post", "Just post to the room",
+	  "Each delivery is written into the room as a notice; nothing runs "
+	  "and it costs nothing." }
+};
+
+guint
+clawt_trigger_mode_count(void)
+{
+	return (guint)G_N_ELEMENTS(trigger_modes);
+}
+
+ClawtTriggerMode
+clawt_trigger_mode_nth(guint n)
+{
+	g_return_val_if_fail(n < G_N_ELEMENTS(trigger_modes),
+	                     CLAWT_TRIGGER_MODE_RUN);
+
+	return trigger_modes[n].mode;
+}
+
+const gchar *
+clawt_trigger_mode_nth_nick(guint n)
+{
+	g_return_val_if_fail(n < G_N_ELEMENTS(trigger_modes), "run");
+
+	return trigger_modes[n].nick;
+}
+
+const gchar *
+clawt_trigger_mode_nth_label(guint n)
+{
+	g_return_val_if_fail(n < G_N_ELEMENTS(trigger_modes), "Run the agent");
+
+	return trigger_modes[n].label;
+}
+
+const gchar *
+clawt_trigger_mode_nth_hint(guint n)
+{
+	g_return_val_if_fail(n < G_N_ELEMENTS(trigger_modes), "");
+
+	return trigger_modes[n].hint;
+}
+
 /* ── Grok jobs ───────────────────────────────────────────────────── */
 
 /* In enumeration order, so the n'th entry's state is n. */

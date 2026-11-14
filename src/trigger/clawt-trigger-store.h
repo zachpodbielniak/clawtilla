@@ -106,6 +106,25 @@ gboolean clawt_trigger_store_finish_replay(ClawtTriggerStore *self,
     const gchar *detail, GError **error);
 
 /**
+ * clawt_trigger_store_finish_post:
+ * @self: the store
+ * @trigger_id: owning trigger
+ * @key: a key reserved with clawt_trigger_store_claim_replay()
+ * @detail: (nullable): result explanation
+ * @error: (out) (optional): error location
+ *
+ * Records a reserved replay as posted rather than run: a `mode: post`
+ * trigger's replay writes into its room and starts no task, and leaving
+ * the reservation reading "failed" would report a success as the
+ * opposite.
+ *
+ * Returns: whether the result was saved
+ */
+gboolean clawt_trigger_store_finish_post(ClawtTriggerStore *self,
+    const gchar *trigger_id, const gchar *key, const gchar *detail,
+    GError **error);
+
+/**
  * ClawtDeliveryOutcome:
  * @CLAWT_DELIVERY_RAN: it started a run
  * @CLAWT_DELIVERY_DUPLICATE: the same delivery id had been seen before
@@ -113,6 +132,10 @@ gboolean clawt_trigger_store_finish_replay(ClawtTriggerStore *self,
  * @CLAWT_DELIVERY_CAPTURED: it was the handshake delivery, held to be shown
  * @CLAWT_DELIVERY_REFUSED: it did not authenticate, or was too large
  * @CLAWT_DELIVERY_FAILED: it should have run and could not
+ * @CLAWT_DELIVERY_DROPPED: the trigger already had `max_pending` runs
+ *   unfinished, so it was answered 429 and not taken
+ * @CLAWT_DELIVERY_POSTED: a `mode: post` trigger wrote it into its room,
+ *   and nothing ran
  *
  * What became of one delivery.
  *
@@ -126,7 +149,9 @@ typedef enum {
     CLAWT_DELIVERY_IGNORED,
     CLAWT_DELIVERY_CAPTURED,
     CLAWT_DELIVERY_REFUSED,
-    CLAWT_DELIVERY_FAILED
+    CLAWT_DELIVERY_FAILED,
+    CLAWT_DELIVERY_DROPPED,
+    CLAWT_DELIVERY_POSTED
 } ClawtDeliveryOutcome;
 
 GType clawt_delivery_outcome_get_type(void) G_GNUC_CONST;
@@ -283,6 +308,29 @@ void clawt_trigger_store_record(ClawtTriggerStore    *self,
                                 ClawtDeliveryOutcome  outcome,
                                 const gchar          *detail,
                                 const gchar          *task_id);
+
+/**
+ * clawt_trigger_store_record_unkeyed:
+ * @self: a #ClawtTriggerStore
+ * @trigger_id: which trigger
+ * @event: (nullable): the delivery
+ * @outcome: what became of it
+ * @detail: (nullable): a sentence for a person
+ *
+ * Writes a receipt that does *not* take the delivery's id.
+ *
+ * For an answer that asks the sender to come back: a delivery dropped
+ * because the trigger was at its cap, or refused because the trigger's
+ * own configuration cannot be acted on.  Keyed, the receipt would make
+ * the retry a duplicate, and the work the 429 or 503 promised could
+ * happen later would never happen at all.  The sender's id is put in
+ * the detail instead, so the receipt still names which delivery it was.
+ */
+void clawt_trigger_store_record_unkeyed(ClawtTriggerStore    *self,
+                                        const gchar          *trigger_id,
+                                        ClawtTriggerEvent    *event,
+                                        ClawtDeliveryOutcome  outcome,
+                                        const gchar          *detail);
 
 /**
  * clawt_trigger_store_list_deliveries:

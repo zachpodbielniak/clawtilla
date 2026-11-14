@@ -545,10 +545,20 @@ slot.  The other order feeds itself: a busy trigger turns a retry into
 a refusal, the sender retries harder, and the queue stays full because
 of the retries.
 
-Sixty deliveries per endpoint per minute, and four unfinished runs per
-trigger.  Without the second, one push that fires a five-minute run,
-repeated twenty times while the first is still going, is twenty
-concurrent agents on one machine.
+Sixty deliveries per endpoint per minute, and =triggers.max_pending=
+unfinished runs per trigger -- four unless set, never more than fifty.
+Without the second, one push that fires a five-minute run, repeated
+twenty times while the first is still going, is twenty concurrent agents
+on one machine.  A delivery past it is answered 429 and recorded as
+=dropped=, so a cap that is quietly full is visible in ~trigger
+deliveries~.
+
+=triggers.match= is checked before anything is queued, and a filter
+that cannot be read refuses every delivery rather than being skipped:
+an unreadable narrowing must never become "run on everything".  And a
+=mode: post= trigger writes the body into a room's history, fenced as
+untrusted like a run's prompt, without waking anybody -- which is also
+the shape to prefer for a sender you would not let start an agent.
 
 Receipts are kept seven days, and *that is also how long a retry stays
 idempotent*.  A delivery redelivered by hand after a prune runs again,

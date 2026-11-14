@@ -2684,7 +2684,8 @@ Primary agent to run when it fires.
 
 Additional recipients for the same delivery. The primary agent runs first;
 duplicates are removed in order. Every recipient has a separate durable
-task and outcome. A batch must fit the four unfinished-run slots in full.
+task and outcome. A batch must fit the trigger's max_pending slots in
+full.
 
 *** =triggers.room=
 
@@ -2693,6 +2694,39 @@ task and outcome. A batch must fit the four unfinished-run slots in full.
 - Since :: 0.2.0
 
 Where the run reports, if not the agent's own conversation.
+
+*** =triggers.mode=
+
+- Type :: enum
+- Values :: run, post
+- Default :: =run=
+- Since :: 0.12.0
+
+What a delivery that passed every filter turns into: run or post.
+
+run starts the agent with the expanded instructions, which costs a
+turn. post writes the instructions and the event into `room` as a
+system message and runs nothing -- for the deploy that finished or
+the monitor that fired, which somebody wants to see and no agent
+needs to act on. A post wakes nobody and costs nothing.
+
+post needs `room`: a trigger set to post with no room is refused at
+load, and refuses every delivery until one is named.
+
+*** =triggers.max_pending=
+
+- Type :: integer
+- Default :: =4=
+- Since :: 0.12.0
+
+How many runs this trigger may have unfinished at once, 1 to 50.
+
+A push that fires a five-minute run, twenty times while the first is
+still going, is twenty agents on one machine. A delivery past the cap
+is answered 429, so the sender retries it later, and recorded as
+dropped in the trigger's deliveries -- never silently. Every recipient
+of a fan-out takes a slot. A value outside 1 to 50 written by hand is
+read as the default, with a warning at load.
 
 *** =triggers.provider=
 
@@ -2781,6 +2815,43 @@ a VENTURE ticket it updates, a branch it pushes -- is called back by
 its own write, and the sender cannot tell: to it every write is an
 ordinary user's change. Name the account the agent's credential
 belongs to. Matched against {{actor}}, ignoring case.
+
+** =triggers.match=
+
+Fields the delivery's JSON body must contain, or it is ignored.
+
+  match:
+    - path: pull_request.title
+      value: release
+    - path: labels.name
+      value: deploy
+
+Up to 10 pairs, and all of them must match. The path is dotted; a
+number indexes an array (`commits.0.message`), and a name on an array
+looks in every element (`labels.name`). The value must be contained in
+what the path holds, ignoring case. Checked before anything is queued:
+a miss is recorded in the deliveries as ignored, naming the pair that
+failed, and starts no run. Empty, or null, means no filter.
+
+*** =triggers.match.path=
+
+- Type :: string
+- Default :: unset
+- Required :: yes
+- Since :: 0.12.0
+
+Where in the JSON body to look, dotted, such as `repository.name`.
+No spaces, no `=` and no empty part; a bad path is refused at load.
+
+*** =triggers.match.value=
+
+- Type :: string
+- Default :: unset
+- Required :: yes
+- Since :: 0.12.0
+
+Text the field must contain, ignoring case. An object or array is
+searched as its JSON text.
 
 *** =triggers.replay_connector=
 

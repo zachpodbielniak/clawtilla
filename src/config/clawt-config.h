@@ -1622,6 +1622,54 @@ ClawtSecretRef *clawt_trigger_get_secret(ClawtTrigger *self,
  */
 ClawtTriggerProvider clawt_trigger_get_provider(ClawtTrigger *self);
 
+/**
+ * clawt_trigger_get_mode:
+ * @self: a #ClawtTrigger
+ *
+ * What a delivery that passed every filter turns into.
+ *
+ * A value the enum does not have reads as the schema's default, `run`,
+ * and clawt_config_load() warns naming it -- never as 0 by accident,
+ * although here 0 is also `run`.
+ *
+ * Returns: the mode
+ */
+ClawtTriggerMode clawt_trigger_get_mode(ClawtTrigger *self);
+
+/**
+ * clawt_trigger_get_match:
+ * @self: a #ClawtTrigger
+ * @error: (out) (optional): why the filter as written cannot be used
+ *
+ * The `match:` filter, read and checked.
+ *
+ * Absent, `null` and `[]` all mean no filter and return an empty array.
+ * Anything else that is not a list of at most %CLAWT_TRIGGER_MATCH_MAX
+ * `{path, value}` mappings with a usable path and a non-empty value is
+ * an error rather than a shorter filter: dropping the pair somebody got
+ * wrong would make the filter *wider* than they wrote, and the callers
+ * that act on a delivery treat an error as "matches nothing".
+ *
+ * Returns: (transfer full) (element-type ClawtTriggerMatch) (nullable):
+ *   the pairs, or %NULL with @error set
+ */
+GPtrArray *clawt_trigger_get_match(ClawtTrigger *self, GError **error);
+
+/**
+ * clawt_trigger_set_match:
+ * @self: a #ClawtTrigger
+ * @matches: (nullable) (element-type ClawtTriggerMatch): the pairs, or
+ *   %NULL or empty to clear the filter
+ *
+ * Writes `match:` as a list of mappings.  Clearing removes the key
+ * rather than writing an empty list, so a file nobody filtered keeps
+ * not mentioning it.  The pairs are written as given; check them with
+ * clawt_trigger_match_check() first.
+ *
+ * Returns: %TRUE if it was written
+ */
+gboolean clawt_trigger_set_match(ClawtTrigger *self, GPtrArray *matches);
+
 gboolean clawt_trigger_set_string(ClawtTrigger *self, const gchar *key,
                                   const gchar *value);
 gboolean clawt_trigger_set_boolean(ClawtTrigger *self, const gchar *key,

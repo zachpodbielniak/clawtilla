@@ -195,6 +195,7 @@ answers with the page it did it on.
 | =/activity/:agent/stop=, =/activity/:agent/steer=, =/f/activity= | the Activity page's actions and its polled panel |
 | =/fleet-usage/:agent/stop=, =/fleet-usage/stop-idle=, =/f/fleet-usage= | the Fleet page's actions and its polled panel (=?period== picks the window) |
 | =/a/:id/browser/open=, =/a/:id/browser/click=, =/a/:id/browser/stop=, =/a/:id/browser/frame=, =/f/a/:id/browser= | the Computer page's Browser view: its actions, its picture and its polled panel |
+| =/triggers/...=, =/f/triggers/:trigger/match= | the Triggers page's actions, and the fragment a trigger's "Check against the last delivery" swaps in under its condition lines |
 | =/events=                     | the SSE stream                          |
 | =/static=                     | the vendored scripts                    |
 

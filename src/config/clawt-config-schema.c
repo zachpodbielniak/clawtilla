@@ -1905,11 +1905,36 @@ static const ClawtSchemaEntry schema[] = {
   NULL, NULL,
   "Additional recipients for the same delivery. The primary agent runs first;\n"
   "duplicates are removed in order. Every recipient has a separate durable\n"
-  "task and outcome. A batch must fit the four unfinished-run slots in full.", "0.2.0" },
+  "task and outcome. A batch must fit the trigger's max_pending slots in\n"
+  "full.", "0.2.0" },
 
 { "triggers.room", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Where the run reports, if not the agent's own conversation.",
   "0.2.0" },
+
+{ "triggers.mode", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "run", clawt_trigger_mode_get_type,
+  "What a delivery that passed every filter turns into: run or post.\n"
+  "\n"
+  "run starts the agent with the expanded instructions, which costs a\n"
+  "turn. post writes the instructions and the event into `room` as a\n"
+  "system message and runs nothing -- for the deploy that finished or\n"
+  "the monitor that fired, which somebody wants to see and no agent\n"
+  "needs to act on. A post wakes nobody and costs nothing.\n"
+  "\n"
+  "post needs `room`: a trigger set to post with no room is refused at\n"
+  "load, and refuses every delivery until one is named.", "0.12.0" },
+
+{ "triggers.max_pending", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "4", NULL,
+  "How many runs this trigger may have unfinished at once, 1 to 50.\n"
+  "\n"
+  "A push that fires a five-minute run, twenty times while the first is\n"
+  "still going, is twenty agents on one machine. A delivery past the cap\n"
+  "is answered 429, so the sender retries it later, and recorded as\n"
+  "dropped in the trigger's deliveries -- never silently. Every recipient\n"
+  "of a fan-out takes a slot. A value outside 1 to 50 written by hand is\n"
+  "read as the default, with a warning at load.", "0.12.0" },
 
 { "triggers.provider", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
   "generic", clawt_trigger_provider_get_type,
@@ -1969,6 +1994,34 @@ static const ClawtSchemaEntry schema[] = {
   "its own write, and the sender cannot tell: to it every write is an\n"
   "ordinary user's change. Name the account the agent's credential\n"
   "belongs to. Matched against {{actor}}, ignoring case.", "0.9.3" },
+
+{ "triggers.match", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Fields the delivery's JSON body must contain, or it is ignored.\n"
+  "\n"
+  "  match:\n"
+  "    - path: pull_request.title\n"
+  "      value: release\n"
+  "    - path: labels.name\n"
+  "      value: deploy\n"
+  "\n"
+  "Up to 10 pairs, and all of them must match. The path is dotted; a\n"
+  "number indexes an array (`commits.0.message`), and a name on an array\n"
+  "looks in every element (`labels.name`). The value must be contained in\n"
+  "what the path holds, ignoring case. Checked before anything is queued:\n"
+  "a miss is recorded in the deliveries as ignored, naming the pair that\n"
+  "failed, and starts no run. Empty, or null, means no filter.", "0.12.0" },
+
+{ "triggers.match.path", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED,
+  NULL, NULL,
+  "Where in the JSON body to look, dotted, such as `repository.name`.\n"
+  "No spaces, no `=` and no empty part; a bad path is refused at load.",
+  "0.12.0" },
+
+{ "triggers.match.value", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED,
+  NULL, NULL,
+  "Text the field must contain, ignoring case. An object or array is\n"
+  "searched as its JSON text.", "0.12.0" },
 
 { "triggers.replay_connector", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
