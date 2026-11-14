@@ -69,6 +69,13 @@ struct _ClawtDaemon {
     ClawtMailboxRouter *router;
     ClawtLoopGuard     *guard;
     ClawtUsage         *usage;
+    /*
+     * Task id -> the routine or trigger run that created it, as a
+     * ClawtUsageOrigin.  The task itself only knows its sender, which
+     * for a routine sharing the operator's room is "user", and the
+     * usage ledger asks which routine a turn's work began at.
+     */
+    GHashTable         *task_sources;
     ClawtEventBus      *bus;
     ClawtEventLog      *log;
 
@@ -1483,5 +1490,38 @@ gboolean clawt_daemon_turn_steer(ClawtDaemon *self,
                                  const gchar *from,
                                  const gchar *target,
                                  const gchar *body);
+
+/*
+ * clawt_daemon_note_task_source:
+ * @self: the daemon
+ * @task_id: a task a routine or trigger run just created
+ * @kind: %CLAWT_USAGE_ORIGIN_ROUTINE or %CLAWT_USAGE_ORIGIN_TRIGGER
+ * @id: the routine or trigger id
+ *
+ * Remembers which run a task began at, so the usage ledger can charge
+ * every turn of its tree to that run.
+ */
+/*
+ * clawt_daemon_usage_origin:
+ * @self: the daemon
+ * @agent_id: whose turn
+ * @room: (nullable): the room libreclaw recorded it in
+ * @channel: (nullable): the channel it recorded
+ *
+ * What started a turn, from that room's turn state and the run its
+ * task tree began at.  Called by the usage drain for every new turn.
+ *
+ * Returns: (transfer full): the origin, %CLAWT_USAGE_ORIGIN_UNKNOWN when
+ *   nothing described it
+ */
+ClawtUsageOrigin *clawt_daemon_usage_origin(ClawtDaemon *self,
+                                            const gchar *agent_id,
+                                            const gchar *room,
+                                            const gchar *channel);
+
+void clawt_daemon_note_task_source(ClawtDaemon          *self,
+                                   const gchar          *task_id,
+                                   ClawtUsageOriginKind  kind,
+                                   const gchar          *id);
 
 G_END_DECLS

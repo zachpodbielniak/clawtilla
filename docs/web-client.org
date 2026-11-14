@@ -113,6 +113,10 @@ The same seven the GTK client's view switcher has, in the same order.
 And the settings pages: fleet, VM images, teams, shared folders,
 spending, integrations, connectors, appearance and connections.
 
+*** Spending
+
+=/settings/spending?period=N&by=NICK= draws two rows of tabs -- the periods from =clawt_usage_period_count()= and the groupings from =clawt_usage_group_count()=, both by index into the library's tables, so there is no list of slugs here to drift -- then ~usage.ledger~'s groups as a table with Turns, Unpriced, In, Out and Cost columns and a Fleet footer.  An unpriced turn in the period adds a notice under the table saying how many and that they are not in the cost.  *Export CSV* is a plain =<a download>= to =/settings/spending/export= with the same query; that route asks the daemon again and answers =text/csv= with a =Content-Disposition= attachment, because the browser is not necessarily on the machine running =clawtilla-web=.  The document is =clawt_usage_ledger_csv()='s, the same bytes the CLI and the other clients write.
+
 *** The integration editor
 
 Drawn from ~clawt_integration_fields()~, the same table the GTK client

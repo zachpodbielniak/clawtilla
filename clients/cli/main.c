@@ -3391,6 +3391,104 @@ cmd_room(int argc, char *argv[])
 
 
 /*
+ * clawtilla cost --by / --csv -- the ledger, grouped.
+ *
+ * A separate frame from the per-agent summary because it answers a
+ * different question: not "which agent", but "which model, which
+ * routine, which day".  The CSV is the library's, so this file and the
+ * clients' Export buttons write the same document.
+ */
+static gint
+cost_ledger(
+	gint64       since,
+	const gchar *by,
+	const gchar *only_agent,
+	gboolean     csv
+){
+	g_autoptr(ClawtClient) client = NULL;
+	g_autoptr(JsonNode) reply = NULL;
+	JsonObject *root;
+	JsonObject *total;
+	JsonArray *groups;
+	guint i;
+
+	client = connect_to_daemon();
+	if (client == NULL)
+		return EXIT_FAILURE;
+
+	reply = call(client, "usage.ledger",
+		      clawt_usage_ledger_payload(since, by, only_agent));
+	if (reply == NULL)
+		return EXIT_FAILURE;
+
+	root = json_node_get_object(reply);
+
+	if (csv) {
+		g_autofree gchar *document = clawt_usage_ledger_csv(root);
+
+		fputs(document, stdout);
+		return EXIT_SUCCESS;
+	}
+
+	groups = json_object_get_array_member(root, "groups");
+	total = json_object_get_object_member(root, "total");
+
+	{
+		g_autofree gchar *heading = g_ascii_strup(
+			member_or(root, "by", "agent"), -1);
+
+		g_print("%-28s %8s %9s %12s %12s %12s\n", heading, "TURNS",
+			"UNPRICED", "IN", "OUT", "COST");
+	}
+
+	for (i = 0; groups != NULL && i < json_array_get_length(groups); i++) {
+		JsonObject *group = json_array_get_object_element(groups, i);
+		g_autofree gchar *cost = clawt_usage_ledger_cost_label(group);
+
+		g_print("%-28s %8" G_GINT64_FORMAT " %9" G_GINT64_FORMAT
+			" %12" G_GINT64_FORMAT " %12" G_GINT64_FORMAT " %12s\n",
+			member_or(group, "key", "?"),
+			json_object_get_int_member_with_default(group, "turns", 0),
+			json_object_get_int_member_with_default(group, "unpriced_turns", 0),
+			json_object_get_int_member_with_default(group, "input_tokens", 0),
+			json_object_get_int_member_with_default(group, "output_tokens", 0),
+			cost);
+	}
+
+	if (groups == NULL || json_array_get_length(groups) == 0) {
+		g_print("(nothing recorded)\n");
+		return EXIT_SUCCESS;
+	}
+
+	{
+		g_autofree gchar *cost = clawt_usage_ledger_cost_label(total);
+		g_autofree gchar *unpriced = clawt_usage_ledger_unpriced_line(root);
+
+		g_print("%-28s %8" G_GINT64_FORMAT " %9" G_GINT64_FORMAT
+			" %12" G_GINT64_FORMAT " %12" G_GINT64_FORMAT " %12s\n",
+			"total",
+			json_object_get_int_member_with_default(total, "turns", 0),
+			json_object_get_int_member_with_default(total, "unpriced_turns", 0),
+			json_object_get_int_member_with_default(total, "input_tokens", 0),
+			json_object_get_int_member_with_default(total, "output_tokens", 0),
+			cost);
+
+		/* said in words as well as in a column: it is the easy one to miss */
+		if (unpriced != NULL)
+			g_print("\n%s.\n", unpriced);
+	}
+
+	if (since > 0) {
+		g_autoptr(GDateTime) from = g_date_time_new_from_unix_local(since);
+		g_autofree gchar *stamp = g_date_time_format(from, "%Y-%m-%d %H:%M");
+
+		g_print("\nSince %s.\n", stamp);
+	}
+
+	return EXIT_SUCCESS;
+}
+
+/*
  * clawtilla cost -- what the fleet has spent.
  *
  * Every agent is a libreclaw process, and libreclaw has recorded a row
@@ -3413,7 +3511,9 @@ cmd_cost(int argc, char *argv[])
     gint64 since = 0;
     gint64 days = 0;
     const gchar *only_agent = NULL;
+    const gchar *group_by = NULL;
     gboolean by_day = FALSE;
+    gboolean csv = FALSE;
     gdouble budget;
     guint i;
     gint shown = 0;
@@ -3441,10 +3541,21 @@ cmd_cost(int argc, char *argv[])
             only_agent = argv[++i];
         } else if (g_strcmp0(argv[i], "--by-day") == 0) {
             by_day = TRUE;
+        } else if (g_strcmp0(argv[i], "--by") == 0 && i + 1 < (guint)argc) {
+            group_by = argv[++i];
+            if (clawt_usage_group_index(group_by) < 0) {
+                g_printerr("clawtilla cost: --by takes agent, model, origin "
+                           "or day, not '%s'\n", group_by);
+                return EXIT_FAILURE;
+            }
+        } else if (g_strcmp0(argv[i], "--csv") == 0) {
+            csv = TRUE;
         } else if (g_strcmp0(argv[i], "-h") == 0 ||
                    g_strcmp0(argv[i], "--help") == 0) {
             g_print("Usage: clawtilla cost [--today | --days N] "
                     "[--agent ID] [--by-day]\n"
+                    "       clawtilla cost --by agent|model|origin|day "
+                    "[--csv] [--today | --days N] [--agent ID]\n"
                     "\n"
                     "What the fleet has spent, per agent and in total, most\n"
                     "first, with how long since each agent's last turn and\n"
@@ -3452,17 +3563,38 @@ cmd_cost(int argc, char *argv[])
                     "--by-day adds the fleet's spend for each of the last\n"
                     "14 days (or --days N).\n"
                     "\n"
+                    "--by groups the ledger instead: by agent, by model, by\n"
+                    "origin (operator, agent:<id>, routine:<id>,\n"
+                    "trigger:<id>, task:<id>, channel:<name>, untagged) or\n"
+                    "by day.  UNPRICED counts turns with no recorded price;\n"
+                    "they are not in COST, because unknown is not free.\n"
+                    "--csv prints the same table as CSV (by agent unless\n"
+                    "--by says otherwise), ready for a spreadsheet.\n"
+                    "\n"
                     "Examples:\n"
                     "  clawtilla cost                # everything on record\n"
                     "  clawtilla cost --today        # since local midnight\n"
                     "  clawtilla cost --days 7       # the last week\n"
                     "  clawtilla cost --agent chief  # one agent\n"
-                    "  clawtilla cost --by-day       # and the last 14 days\n");
+                    "  clawtilla cost --by-day       # and the last 14 days\n"
+                    "  clawtilla cost --by origin    # which routine costs most\n"
+                    "  clawtilla cost --by model --days 30\n"
+                    "  clawtilla cost --by day --csv > spending.csv\n");
             return EXIT_SUCCESS;
         } else {
             g_printerr("clawtilla cost: unknown option '%s'\n", argv[i]);
             return EXIT_FAILURE;
         }
+    }
+
+    if (group_by != NULL || csv) {
+        if (by_day) {
+            g_printerr("clawtilla cost: --by-day is the summary's strip; "
+                       "use --by day with --by or --csv\n");
+            return EXIT_FAILURE;
+        }
+        return cost_ledger(since, group_by != NULL ? group_by : "agent",
+                           only_agent, csv);
     }
 
     client = connect_to_daemon();
@@ -8920,7 +9052,8 @@ static const ClawtVerb verbs[] = {
       cmd_decision },
     { "event",   "<verb>",   "The daemon's event history",
       cmd_event },
-    { "cost",    "[--days N] [--by-day]", "What the fleet has spent, per agent",
+    { "cost",    "[--days N] [--by GROUP] [--csv]",
+      "What the fleet has spent, per agent, model, origin or day",
       cmd_cost },
     { "memory",  "<verb>",   "What an agent has written down",
       cmd_memory },

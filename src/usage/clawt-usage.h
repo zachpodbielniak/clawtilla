@@ -415,6 +415,48 @@ gint64 clawt_usage_drain(ClawtUsage  *self,
                          const gchar *db_path);
 
 /**
+ * ClawtUsageOriginFunc:
+ * @agent_id: whose turn
+ * @room: (nullable): the room libreclaw recorded the turn in
+ * @channel: (nullable): the channel it recorded
+ * @user_data: data passed to clawt_usage_drain_tagged()
+ *
+ * Says what started one newly recorded turn, from the turn state of the
+ * agent that ran it.
+ *
+ * Returns: (transfer full) (nullable): the origin, or %NULL to leave
+ *   the turn untagged
+ */
+typedef ClawtUsageOrigin *(*ClawtUsageOriginFunc)(const gchar *agent_id,
+						  const gchar *room,
+						  const gchar *channel,
+						  gpointer     user_data);
+
+/**
+ * clawt_usage_drain_tagged: (skip)
+ * @self: a #ClawtUsage
+ * @agent_id: whose usage to read
+ * @db_path: that agent's libreclaw database
+ * @func: (nullable): what tags each new turn's origin
+ * @user_data: data for @func
+ *
+ * clawt_usage_drain(), and for each turn it hands over, @func's answer
+ * written to the ledger beside @db_path (clawt_usage_ledger_path()).
+ *
+ * The drain is the one place every new turn passes exactly once, while
+ * the agent's turn state still describes it -- so it is where a turn is
+ * tagged.  Turns before the watermark was primed are history clawtilla
+ * did not see begin, and are left untagged rather than guessed at.
+ *
+ * Returns: the cost in micro-dollars since the previous drain
+ */
+gint64 clawt_usage_drain_tagged(ClawtUsage           *self,
+				const gchar          *agent_id,
+				const gchar          *db_path,
+				ClawtUsageOriginFunc  func,
+				gpointer              user_data);
+
+/**
  * clawt_usage_forget:
  * @self: a #ClawtUsage
  * @agent_id: an agent id

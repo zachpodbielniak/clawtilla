@@ -978,6 +978,30 @@ clawt_agent_deliver_item(ClawtAgent *self, ClawtMailboxItem *item,
 	setup->input = clawt_mailbox_item_copy(item);
 }
 
+gboolean
+clawt_agent_describe_turn_in(
+	ClawtAgent   *self,
+	const gchar  *room_id,
+	const gchar **origin,
+	const gchar **task_id,
+	const gchar **model
+){
+	TurnSetup *setup;
+
+	g_return_val_if_fail(CLAWT_IS_AGENT(self), FALSE);
+
+	setup = turn_in(self, room_id);
+	if (origin != NULL)
+		*origin = (setup != NULL) ? setup->origin : NULL;
+	if (task_id != NULL)
+		*task_id = (setup != NULL) ? setup->task_id : NULL;
+	if (model != NULL)
+		*model = (setup != NULL && setup->input != NULL)
+			? clawt_mailbox_item_get_model(setup->input) : NULL;
+
+	return setup != NULL;
+}
+
 /* The original delivery remains available after typing falls. */
 ClawtMailboxItem *
 clawt_agent_get_turn_input_in(ClawtAgent *self, const gchar *room_id)

@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-24 Mon]
-#+updated: [2026-11-07 Sat]
-#+version: 0.2.0
+#+updated: [2026-11-14 Sat]
+#+version: 0.3.0
 
 * Spending
 
@@ -24,7 +24,7 @@ chief                       7           28         2834        $0.04  4d ago    
 fleet                      52          210        18130        $0.27
 #+end_example
 
-Agents are listed most expensive first. LAST TURN is the newest recorded turn, and IDLE is =clawt_usage_idle_label()= against =orchestration.idle_hours= -- the same words the Fleet page draws. ~--by-day~ adds the fleet's cost for each of the last 14 days (or ~--days N~) and the strip the Fleet page draws.
+Agents are listed most expensive first. LAST TURN is the newest recorded turn, and IDLE is =clawt_usage_idle_label()= against =orchestration.idle_hours= -- the same words the Fleet page draws. ~--by-day~ adds the fleet's cost for each of the last 14 days (or ~--days N~) and the strip the Fleet page draws. ~--by model~, ~--by origin~ and ~--by day~ group the same turns another way, ~--csv~ exports them, and turns with no recorded price get a column of their own -- see [[#ledger][the ledger]].
 
 ** Where the figure comes from
 
@@ -55,9 +55,10 @@ better.
 *And only if there is a price table.*  It is built from libreclaw's own
 config and may be absent, in which case a turn with no reported cost is
 written as =0= -- indistinguishable in =token_usage= from a turn that was
-genuinely free.  So a fleet reporting a suspiciously round zero against a
-real turn count is worth checking against the provider that produced it,
-rather than believed.
+genuinely free.  So clawtilla does not believe it: a turn that moved
+tokens and recorded =0= is counted as *unpriced*, beside a negative cost,
+and kept out of every sum -- see [[#ledger][the ledger]], where those
+turns have a column of their own.
 
 *** Why the token columns look too small
 
@@ -70,6 +71,81 @@ This is stated in the CLI output, in the GTK page and in the
 =clawtilla_fleet_cost= tool for the same reason: somebody reconciling
 these numbers against a provider invoice should not have to guess why
 they differ.
+
+** The ledger: by model, by origin, by day
+:PROPERTIES:
+:CUSTOM_ID: ledger
+:END:
+
+"Which routine costs me most" had no answer while the only grouping was the agent.  ~--by~ groups the same turns another way:
+
+#+begin_src bash
+clawtilla cost --by origin              # what started the work
+clawtilla cost --by model --days 30     # which model the month went on
+clawtilla cost --by day --today         # one row, today
+clawtilla cost --by agent --agent chief # one agent, grouped
+#+end_src
+
+#+begin_example
+ORIGIN                          TURNS  UNPRICED           IN          OUT         COST
+routine:morning-brief              31         0          124         9120        $1.84
+operator                           18         0           72         6011        $0.92
+agent:chief                         9         2           36         2210        $0.31
+untagged                           40         0          160        12008        $0.27
+total                              98         2          392        29349        $3.34
+
+2 turns have no recorded price and are not in the total -- unknown, not free.
+#+end_example
+
+The groupings are =clawt_usage_group_count()= / =_nth()=, the one table every client's *Group by* selector walks:
+
+| ~agent~  | the agent that ran the turn                                                    |
+| ~model~  | the model libreclaw recorded for it, or ~(unknown)~                            |
+| ~origin~ | what started the work -- below                                                 |
+| ~day~    | the local date, oldest first; every other grouping is most expensive first     |
+
+*** Origins
+
+Every turn is tagged when clawtilla first sees it, from the turn state of the agent that ran it, in the room libreclaw recorded it in -- only that room, never the fold across rooms the other turn getters fall back to, which would hand the turn whichever room's description was written last.  The rule is =clawt_usage_origin_classify()=:
+
+| ~routine:<id>~    | a routine's run, *or work it handed on*: a routine that delegates to three agents is one bill, found by walking the task's parents to the run |
+| ~trigger:<id>~    | the same for a trigger                                                                                                                         |
+| ~operator~        | you, from any client or the CLI                                                                                                                 |
+| ~agent:<id>~      | another agent in the fleet                                                                                                                      |
+| ~task:<id>~       | a task whose run the daemon no longer remembers -- a routine that was running across a daemon restart                                          |
+| ~channel:<name>~  | the agent's own Matrix, email or other channel, which clawtilla never routed                                                                   |
+| ~other:<sender>~  | a sender known by name only, such as a Grok bot                                                                                                 |
+| ~untagged~        | a turn recorded before the ledger existed, or before the daemon's baseline when it started, or one no turn state described                     |
+
+A routine wins over the agent that delivered its delegated work on purpose: the agent is still there under ~--by agent~, and "which routine" is the question origin exists to answer.  Which run created a task is held in the daemon's memory, so a run in flight across a daemon restart is charged to its ~task:<id>~ rather than its routine.
+
+*** Unpriced turns
+
+An *unpriced* turn is one whose recorded cost is not a price: negative (=-1= is unknown all the way through), or =0= against tokens -- which is what libreclaw writes for a turn whose provider reported no cost when it has no price table to estimate from (=clawt_usage_turn_is_priced()=).  They are counted in ~TURNS~ and in ~UNPRICED~, and added to no cost.  A group whose every turn is unpriced shows ~unpriced~ where a cost would be, not =$0.00=, and an empty cost cell in the CSV.  The same rule now keeps a negative cost out of the per-agent summary, where a =-1= used to subtract a micro-dollar.
+
+*** CSV
+
+~--csv~ prints the grouped table as CSV (by agent unless ~--by~ says otherwise), and every client's *Export CSV* writes the same document, from =clawt_usage_ledger_csv()=:
+
+#+begin_example
+origin,turns,unpriced_turns,input_tokens,output_tokens,cost_usd
+routine:morning-brief,31,0,124,9120,1.840000
+agent:chief,9,2,36,2210,0.310000
+#+end_example
+
+- Commas separate; lines end in CRLF, as RFC 4180 has it.
+- Cost is exact dollars with six places, written from the integer micro-dollars rather than through a float.
+- There is no total line, so a spreadsheet's own =SUM= is not doubled.
+- A cell is quoted when it holds a comma, a quote, a newline or an edge space, with its quotes doubled.
+- *Formulas are neutralised.*  A cell beginning with ~=~, ~+~, ~-~, ~@~, a tab or a carriage return gets a leading ~'~.  A model name, a routine id or a channel is text somebody else chose, and a spreadsheet evaluates a cell that opens like a formula -- =HYPERLINK= and =WEBSERVICE= can reach the network from a file that only looks like a report.
+
+*** Where the tags live
+
+=<state_dir>/agents/<id>/sessions/clawtilla-ledger.db=, table =turn_origin=, one row per =token_usage= row id: ~origin_kind~, ~origin_id~, ~sender~, ~task_id~, ~room~, ~provider~ (the agent's ~model.provider~ when it ran -- libreclaw's own ~provider~ column holds the model name) and ~model~ (what the delivery asked for, if anything).  The costs stay in libreclaw's table and are read through =lc_database_*=; only the tags are clawtilla's, joined on the row id when the ledger is read.
+
+Beside libreclaw's database, inside ~sessions/~, on purpose: =/reset= moves that directory aside and the new database numbers its rows from 1 again, so tags keyed on the old ids go with the rows they describe.  The table is created on the first tag and later columns are added one =ALTER TABLE= at a time, so an older file is brought up to date rather than refused.
+
+Tags are written by the same drain that charges a task's budget, once per new row, after the baseline set when the agent's watermark is primed.  A tag that cannot be written is a warning and the turn reads as untagged; it never stops the budget being charged.
 
 ** Windows
 
@@ -93,8 +169,7 @@ answer.
 
 ** In the clients
 
-The GTK client has a *Spending* page under Settings: one row per agent
-with its cost and turn count, a fleet total, and a period selector.
+All three graphical clients have a *Spending* page under Settings: a period selector, a *Group by* selector (Agent, Model, Origin, Day), one row per group with its cost, turns and unpriced turns, a fleet total, a sentence when any turn in the period has no price, and *Export CSV* -- a save dialog in GTK and libregnum, a download in the web client.  See [[#ledger][the ledger]].
 
 All three graphical clients have a *Fleet* page under Work, which adds what Spending does not: agents ranked by cost with their share, the last fourteen days, how long since each agent's last turn, and Stop for the ones sitting idle. See [[file:clients.org::#fleet-tab][the Fleet tab]].
 
@@ -156,7 +231,8 @@ itself.
 ** Where the data lives
 
 =<state_dir>/agents/<id>/sessions/libreclaw.db=, in the =token_usage=
-table.
+table -- and beside it =clawtilla-ledger.db=, which holds each turn's
+origin ([[#ledger][the ledger]]).
 
 Note the =sessions/= component.  Those are libreclaw's settings rather
 than clawtilla's: its SQLite backend builds that filename from

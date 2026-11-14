@@ -741,6 +741,10 @@ One unreadable database does not fail the summary -- a fleet report that
 refused because one agent's file was mid-write would say nothing about
 the other nine.
 
+~usage.ledger~ (new with the usage ledger; version assigned at merge) is the same turns grouped another way.  It takes ~since~ (unix seconds, 0 for everything), ~by~ (~agent~, ~model~, ~origin~ or ~day~; absent is ~agent~, anything else is refused with =INVALID_ARGUMENT= rather than answered under the wrong heading) and optionally ~agent~ (one agent; an unknown one is =NOT_FOUND=).  It answers ~by~, ~since~, ~now~, ~agent~ when one was asked for, ~groups~ -- each ~{key, turns, unpriced_turns, input_tokens, output_tokens, cost_micros}~ -- and a ~total~ of the same shape without ~key~.  Days are local dates (~YYYY-MM-DD~), oldest first; every other grouping is most expensive first.  An origin key is ~operator~, ~agent:<id>~, ~routine:<id>~, ~trigger:<id>~, ~task:<id>~, ~channel:<name>~, ~other:<sender>~ or ~untagged~ (=clawt_usage_origin_label()=).
+
+~unpriced_turns~ counts turns whose recorded cost is not a price -- negative, or zero against tokens (=clawt_usage_turn_is_priced()=) -- and ~cost_micros~ never includes them: unknown is not free, and a ~-1~ summed in would quietly refund a micro-dollar per turn.  A client builds the request with =clawt_usage_ledger_payload()= and draws the reply with =clawt_usage_ledger_cost_label()=, =clawt_usage_ledger_row_subtitle()=, =clawt_usage_ledger_unpriced_line()= and =clawt_usage_ledger_csv()=, so the words and the export are the same everywhere.  A new frame kind, so an older daemon answers it as an unknown kind; ~usage.summary~ is unchanged apart from no longer letting a negative cost reduce a total.
+
 *** browser.*
 
 Since 0.9.0. Every verb but ~browser.list~ takes ~agent~ and acts on the session that agent drives -- its own, or the shared one its =agents.browser.use= names -- and every verb but ~browser.list~ is deferred: a frame waits on a page and a start waits seconds for an X server.

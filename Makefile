@@ -123,6 +123,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/memory/clawt-transcript-index.h \
 	$(SRCDIR)/memory/clawt-summariser.h \
 	$(SRCDIR)/memory/clawt-operator-profile.h \
+	$(SRCDIR)/usage/clawt-usage-ledger.h \
 	$(SRCDIR)/usage/clawt-usage.h \
 	$(SRCDIR)/browser/clawt-browser.h \
 	$(SRCDIR)/mailbox/clawt-mailbox.h \
@@ -288,6 +289,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/memory/clawt-summariser.c \
 	$(SRCDIR)/memory/clawt-operator-profile.c \
 	$(SRCDIR)/usage/clawt-usage.c \
+	$(SRCDIR)/usage/clawt-usage-ledger.c \
 	$(SRCDIR)/browser/clawt-browser.c \
 	$(SRCDIR)/mailbox/clawt-mailbox-item.c \
 	$(SRCDIR)/mailbox/clawt-mailbox.c \
