@@ -450,6 +450,7 @@ Source: =clients/lrg/lrg-chat.c=; decisions in =clients/lrg/lrg-chat-model.c=. M
 - *Acknowledged answers*: a neutral badge reading =clawt_message_ack_label()= under an answer the acknowledgement check recorded without waking its asker (=acknowledged= on the history message or the ~message~ event).  On every such message, not only a run's first.
 - *Interrupted turns*: the daemon's notice that a turn was cut short and will not be resumed (=interrupted=) gets a warn badge reading =clawt_message_interrupted_label()= with =clawt_message_interrupted_tooltip()= written under it as a caption, since there is no tooltip to hold it.  See [[file:clients.org][clients.org]].
 - *Merged deliveries*: clawtilla's note of results handed over as one turn (=merged=) is drawn as =clawt_merge_split()='s sections -- the preface, then a card per result with its label as a heading.  See [[file:clients.org::#ack-and-merge-marks][the marks]].
+- *Consultations*: an info badge reading =clawt_message_consult_label()= under a consultation's question and its answer (=consult= 1 or 2 on the history message or the ~message~ event).  See [[file:clients.org::#delegation-marks][the marks]].
 - *Bodies*: markdown through =clawt_lrg_markdown()= (links open http, https and file only).
 - *Attachment previews*: every file named in a message's attachment block (=clawt_lrg_attachment_refs()=). A picture is a thumbnail decoded at drawing size (460×320 at most), click for full size; anything else is a chip with name and size, click to open with the desktop's handler. An agent's file (=clawt:<id>=) is fetched once with ~attachment.get~ and cached under =$XDG_CACHE_HOME/clawtilla/attachments=. Right-click: Open, Save a copy…, Copy path, Delete permanently (~attachment.remove~, confirmed).
 - *Turn steps*: ~turn.step~ events for the room on screen build a live block at the end of the transcript; runs of tool calls collapse into an =LrgExpander= titled with =clawt_turn_step_run_summary()= that opens onto the command lines in monospace; reasoning is marked "thinking:"; only failures are coloured (=clawt_turn_step_tone()=). When the turn ends the block is sealed where it is, not removed.
@@ -731,6 +732,8 @@ The Work section's task list, drawn as a tree: each task under the one that dele
 
 Each card shows "origin → assignee", a state badge toned by =clawt_task_state_tone()= (an unknown state stays neutral), the prompt, the freshest note (the assignee's =progress_note=, or the caveat that nobody reported the task finished when =result_inferred= is true), and the reason it ended. A running task's card shimmers (=clawt-busy=).
 
+A task delegated with ~thread: new~ carries an *Open room* button and =clawt_task_thread_summary()='s line: the button selects ~thread_room~ in the chat (=clawt_lrg_select_room()=), because the work is not in the conversation the two agents share.  A consulted task (~consult~) carries an info badge reading =clawt_task_consult_label()=.
+
 | Control | Frame | Notes |
 |---|---|---|
 | listing | ~task.list~ | on show and on =task.*= |
@@ -748,6 +751,8 @@ Each team's *Problems to look at* room is a sidebar entry under the team (=clawt
 The Work section's inbox of questions agents are waiting on. Its tab carries the open count in the warn tone (=clawt_lrg_set_page_badge()=), set from the reply's =open= on every refresh here and by the shell on every =decision.*= event, so both ends of a decision -- asked and settled -- move the count. The column is clamped to the reading measure from the appearance settings (=clawt_measure_resolve_px()=), as GTK clamps it to the chat's.
 
 Each decision is a card: who asked and how long ago (=created_at= is seconds, converted), the urgency badges ("closing soon" warn, "already decided" bad) with a sentence saying what each means, the whole question as a wrapping paragraph, "Going ahead with: <default> — <reason>", each option as a wrapping sentence with its own Choose button, an answer box with Answer on the same line, and "Does not need me" beside Delete. A typed answer wins over a clicked option. Enter in the answer box answers.
+
+A decision raised inside delegated work carries an info badge with =clawt_decision_routed_label()= (=routed_to=, =answered_by=): it was put to the delegator first, and the operator may still answer it.
 
 The same decision is also drawn inline in the chat of the room it was asked from (see Chat); answering it in either place redraws both, because both fold the same ~decision.settled~.
 

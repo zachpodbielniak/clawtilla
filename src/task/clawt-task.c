@@ -23,6 +23,17 @@ struct _ClawtTask {
     gchar *reason;
     gchar *model;
     gchar *session_key;
+
+    /*
+     * The room the work itself happens in, when the delegator asked for
+     * `thread: new` -- a session of its own.  Distinct from `room`,
+     * which is where the delegation was *made* and where the settle
+     * notice goes back to.
+     */
+    gchar *thread_room;
+
+    /* `mode: consult`: the assignee's turn is offered no tool that acts. */
+    gboolean consult;
     gchar *progress_note;
     gchar *cancelled_by;
     gchar *retried_by;
@@ -113,9 +124,11 @@ clawt_task_new(const gchar *origin_agent,
      * that used to sit here asserted the isolation as fact and was the
      * only reason anybody believed it.
      *
-     * Delivering it means routing a task into a room named for it. That
-     * moves a routine's output out of the operator's transcript, which
-     * is a decision rather than a repair.
+     * A task does get one when it asks: `thread: new` on
+     * clawtilla_delegate routes the work into a room named for it, and
+     * that is clawt_task_get_thread_room(), not this.  It is opt-in for
+     * the reason this comment used to give for not doing it: it moves
+     * the work out of the transcript somebody is reading.
      */
     self->session_key = g_strdup_printf("clawtilla-task-%s", self->id);
 
@@ -140,6 +153,8 @@ clawt_task_copy(ClawtTask *self)
     copy->parent_id = g_strdup(self->parent_id);
     copy->reason = g_strdup(self->reason);
     copy->model = g_strdup(self->model);
+    copy->thread_room = g_strdup(self->thread_room);
+    copy->consult = self->consult;
     copy->session_key = g_strdup(self->session_key);
     copy->progress_note = g_strdup(self->progress_note);
     copy->cancelled_by = g_strdup(self->cancelled_by);
@@ -189,6 +204,7 @@ clawt_task_free(ClawtTask *self)
     g_free(self->reason);
     g_free(self->model);
     g_free(self->session_key);
+    g_free(self->thread_room);
     g_free(self->progress_note);
     g_free(self->cancelled_by);
     g_free(self->retried_by);
@@ -214,6 +230,7 @@ GETTER(parent_id, parent_id)
 GETTER(reason, reason)
 GETTER(model, model)
 GETTER(session_key, session_key)
+GETTER(thread_room, thread_room)
 GETTER(progress_note, progress_note)
 GETTER(cancelled_by, cancelled_by)
 GETTER(retried_by, retried_by)
@@ -461,6 +478,47 @@ clawt_task_state_tone(ClawtTaskState state)
      * programming error rather than a state.
      */
     g_return_val_if_reached("neutral");
+}
+
+void
+clawt_task_set_thread_room(ClawtTask *self, const gchar *room)
+{
+    g_return_if_fail(self != NULL);
+
+    g_free(self->thread_room);
+    self->thread_room = (room != NULL && *room != '\0') ? g_strdup(room) : NULL;
+}
+
+gboolean
+clawt_task_get_consult(ClawtTask *self)
+{
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    return self->consult;
+}
+
+void
+clawt_task_set_consult(ClawtTask *self, gboolean consult)
+{
+    g_return_if_fail(self != NULL);
+
+    self->consult = consult;
+}
+
+gchar *
+clawt_task_thread_summary(const gchar *thread_room)
+{
+    if (thread_room == NULL || *thread_room == '\0')
+        return NULL;
+
+    return g_strdup_printf("runs in its own room, %s", thread_room);
+}
+
+const gchar *
+clawt_task_consult_label(void)
+{
+    /* The chat says the same word for the same thing. */
+    return clawt_message_consult_label(CLAWT_CONSULT_ASKED);
 }
 
 gboolean

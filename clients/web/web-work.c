@@ -537,6 +537,40 @@ clawt_web_tasks_body(ClawtWebApp *app, const gchar *agent_id)
                     "Nobody reported this finished -- it is the last thing "
                     "the assignee wrote.", "warn"));
 
+            /* A consultation: its result is an answer, not work done. */
+            if (clawt_web_schema_flag(task, "consult"))
+                clawt_web_add(head, clawt_web_badge(
+                    clawt_task_consult_label(), "info"));
+
+            /*
+             * The room the work runs in, when it has one of its own
+             * (`thread: new`), and a link into it: the work is not in
+             * the conversation the two agents share, so without this
+             * the transcript the result came out of cannot be found.
+             */
+            {
+                const gchar *room = clawt_web_member(task, "thread_room",
+                                                     NULL);
+                g_autofree gchar *summary = clawt_task_thread_summary(room);
+
+                if (summary != NULL) {
+                    g_autoptr(HtmxDiv) line = htmx_div_new();
+                    g_autofree gchar *escaped = g_uri_escape_string(
+                        room, NULL, FALSE);
+                    g_autofree gchar *url = g_strdup_printf("/r/%s",
+                                                            escaped);
+                    HtmxA *open = htmx_a_new_with_href(url);
+
+                    htmx_element_add_class(HTMX_ELEMENT(line), "btn-row");
+                    clawt_web_add(line, clawt_web_text(summary, "muted"));
+                    htmx_node_set_text_content(HTMX_NODE(open), "Open room");
+                    htmx_element_add_class(HTMX_ELEMENT(open),
+                                           "btn btn-default");
+                    clawt_web_add(line, open);
+                    htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(line));
+                }
+            }
+
             if (g_strcmp0(state, "running") == 0 ||
                 g_strcmp0(state, "pending") == 0) {
                 g_autoptr(HtmxDiv) actions = htmx_div_new();

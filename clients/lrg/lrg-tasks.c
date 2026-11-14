@@ -91,6 +91,25 @@ on_cancel_clicked(LrgButton *button, gpointer user_data)
                       g_free);
 }
 
+/*
+ * Opens the room a task runs in when it was delegated with `thread:
+ * new`: the work is not in the conversation the two agents share, so
+ * this is the only way from the task to the transcript it came out of.
+ * Copied off the button first, because selecting a room redraws this
+ * page and frees the button.
+ */
+static void
+on_open_room_clicked(LrgButton *button, gpointer user_data)
+{
+    g_autofree gchar *room = g_strdup(
+        g_object_get_data(G_OBJECT(button), "room-id"));
+
+    (void)user_data;
+
+    if (room != NULL)
+        clawt_lrg_select_room(tasks.app, room);
+}
+
 static void refresh_incidents(ClawtLrgApp *app, ClawtLrgRequestFlags flags);
 
 static void
@@ -351,6 +370,7 @@ task_card(JsonObject *task, guint depth)
     LrgWidget *row = clawt_lrg_row(title, NULL);
     LrgWidget *card;
     LrgInsets indent = { TASK_INDENT * (gfloat)depth, 0.0f, 0.0f, 0.0f };
+    g_autofree gchar *note_room = NULL;
 
     if (depth > 0)
         clawt_lrg_row_add_prefix(row, clawt_lrg_label("\342\206\263",
@@ -364,6 +384,28 @@ task_card(JsonObject *task, guint depth)
     clawt_lrg_row_add_suffix(row, clawt_lrg_badge(
                                       (state != NULL) ? state : "?",
                                       clawt_lrg_task_tone(state)));
+
+    /* A consultation: its result is an answer, not work done. */
+    if (clawt_ipc_payload_boolean(task, "consult", FALSE))
+        clawt_lrg_row_add_suffix(row, clawt_lrg_badge(
+                                          clawt_task_consult_label(), "info"));
+
+    /* The room the work runs in, and the way into it. */
+    {
+        const gchar *room = clawt_ipc_payload_string(task, "thread_room");
+        g_autofree gchar *summary = clawt_task_thread_summary(room);
+
+        if (summary != NULL) {
+            LrgWidget *open = clawt_lrg_button("Open room", "flat",
+                                               G_CALLBACK(on_open_room_clicked),
+                                               NULL);
+
+            g_object_set_data_full(G_OBJECT(open), "room-id",
+                                   g_strdup(room), g_free);
+            clawt_lrg_row_add_suffix(row, open);
+            note_room = g_steal_pointer(&summary);
+        }
+    }
 
     if (clawt_lrg_task_cancellable(state)) {
         LrgWidget *cancel = clawt_lrg_button("Cancel", "flat",
@@ -403,6 +445,9 @@ task_card(JsonObject *task, guint depth)
      */
     if (note != NULL)
         clawt_lrg_take(body, clawt_lrg_paragraph(note, "caption"));
+
+    if (note_room != NULL)
+        clawt_lrg_take(body, clawt_lrg_paragraph(note_room, "muted"));
 
     /* why it ended, which GTK carries as the badge's tooltip */
     if (reason != NULL && *reason != '\0')

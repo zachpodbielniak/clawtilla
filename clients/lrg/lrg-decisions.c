@@ -401,6 +401,21 @@ decision_card(JsonObject *decision, gint64 now_us)
     if (clawt_ipc_payload_boolean(decision, "settled_by_default", FALSE))
         clawt_lrg_take(badges, clawt_lrg_badge("already decided", "bad"));
 
+    /*
+     * Who it was put to first: a decision raised inside delegated work
+     * goes to the delegator before the operator.
+     */
+    {
+        g_autofree gchar *routed = clawt_decision_routed_label(
+            clawt_ipc_payload_string(decision, "routed_to"),
+            clawt_ipc_payload_string(decision, "answered_by"),
+            clawt_ipc_payload_int(decision, "state", 0) ==
+                CLAWT_DECISION_OPEN);
+
+        if (routed != NULL)
+            clawt_lrg_take(badges, clawt_lrg_badge(routed, "info"));
+    }
+
     if (is_rebuild)
         clawt_lrg_take(badges, clawt_lrg_badge("rebuild", "bad"));
 

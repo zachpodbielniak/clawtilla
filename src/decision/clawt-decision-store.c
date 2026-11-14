@@ -27,7 +27,9 @@ static const gchar *SCHEMA =
     "  answered_at INTEGER NOT NULL DEFAULT 0,"
     "  state INTEGER NOT NULL DEFAULT 0,"
     "  room TEXT,"
-    "  settled_via TEXT"
+    "  settled_via TEXT,"
+    "  routed_to TEXT,"
+    "  answered_by TEXT"
     ");"
     "CREATE INDEX IF NOT EXISTS decisions_state"
     "  ON decisions(state, reversible_until, created_at);";
@@ -47,7 +49,14 @@ static const struct {
     const gchar *add;
 } LATER_COLUMNS[] = {
     { "room",        "ALTER TABLE decisions ADD COLUMN room TEXT" },
-    { "settled_via", "ALTER TABLE decisions ADD COLUMN settled_via TEXT" }
+    { "settled_via", "ALTER TABLE decisions ADD COLUMN settled_via TEXT" },
+    /*
+     * Since 0.22.0: who a decision raised inside delegated work was put
+     * to first, and the agent that answered it.  Absent means every
+     * stored decision went to the operator alone, which each one did.
+     */
+    { "routed_to",   "ALTER TABLE decisions ADD COLUMN routed_to TEXT" },
+    { "answered_by", "ALTER TABLE decisions ADD COLUMN answered_by TEXT" }
 };
 
 /* Whether the decisions table on disk already has @column. */
@@ -219,8 +228,8 @@ clawt_decision_store_post(
             "INSERT OR REPLACE INTO decisions"
             " (id, agent, question, options, default_option, default_reason,"
             "  task, answer, reversible_until, created_at, answered_at,"
-            "  state, room, settled_via)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "  state, room, settled_via, routed_to, answered_by)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             -1, &stmt, NULL) != SQLITE_OK) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
                     "could not record the decision: %s",
@@ -253,6 +262,10 @@ clawt_decision_store_post(
     sqlite3_bind_text(stmt, 13, clawt_decision_get_room(decision), -1,
                       SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 14, clawt_decision_get_settled_via(decision), -1,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 15, clawt_decision_get_routed_to(decision), -1,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 16, clawt_decision_get_answered_by(decision), -1,
                       SQLITE_TRANSIENT);
 
     if (sqlite3_step(stmt) != SQLITE_DONE) {
@@ -305,6 +318,8 @@ decision_from_row(sqlite3_stmt *stmt)
         decision, (ClawtDecisionState)sqlite3_column_int(stmt, 11));
     clawt_decision_set_room(decision, column_text(stmt, 12));
     clawt_decision_set_settled_via(decision, column_text(stmt, 13));
+    clawt_decision_set_routed_to(decision, column_text(stmt, 14));
+    clawt_decision_set_answered_by(decision, column_text(stmt, 15));
 
     return decision;
 }
@@ -312,7 +327,7 @@ decision_from_row(sqlite3_stmt *stmt)
 #define SELECT_COLUMNS \
     "SELECT id, agent, question, options, default_option, default_reason," \
     " task, answer, reversible_until, created_at, answered_at, state," \
-    " room, settled_via" \
+    " room, settled_via, routed_to, answered_by" \
     " FROM decisions"
 
 GPtrArray *
@@ -412,6 +427,10 @@ clawt_decision_store_get(ClawtDecisionStore *self, const gchar *id)
     return decision;
 }
 
+static ClawtDecision *answer_full(ClawtDecisionStore *self, const gchar *id,
+                                  const gchar *answer, const gchar *via,
+                                  const gchar *who, GError **error);
+
 ClawtDecision *
 clawt_decision_store_answer(
     ClawtDecisionStore *self,
@@ -419,7 +438,7 @@ clawt_decision_store_answer(
     const gchar        *answer,
     GError            **error
 ){
-    return clawt_decision_store_answer_via(self, id, answer, NULL, error);
+    return answer_full(self, id, answer, NULL, NULL, error);
 }
 
 ClawtDecision *
@@ -428,6 +447,35 @@ clawt_decision_store_answer_via(
     const gchar        *id,
     const gchar        *answer,
     const gchar        *via,
+    GError            **error
+){
+    return answer_full(self, id, answer, via, NULL, error);
+}
+
+ClawtDecision *
+clawt_decision_store_answer_as(
+    ClawtDecisionStore *self,
+    const gchar        *id,
+    const gchar        *answer,
+    const gchar        *who,
+    GError            **error
+){
+    return answer_full(self, id, answer, NULL, who, error);
+}
+
+/*
+ * Every answer, from whichever surface and whoever gives it: a person
+ * through the chat, the inbox or the CLI (@via), or the delegator a
+ * decision was routed to (@who).  One body, so the refusal of a second
+ * answer is the same sentence whoever pressed.
+ */
+static ClawtDecision *
+answer_full(
+    ClawtDecisionStore *self,
+    const gchar        *id,
+    const gchar        *answer,
+    const gchar        *via,
+    const gchar        *who,
     GError            **error
 ){
     g_autoptr(ClawtDecision) decision = NULL;
@@ -468,6 +516,7 @@ clawt_decision_store_answer_via(
     clawt_decision_answer(decision, answer,
                           g_get_real_time() / G_USEC_PER_SEC);
     clawt_decision_set_settled_via(decision, via);
+    clawt_decision_set_answered_by(decision, who);
 
     /*
      * The id is transfer-full and is not wanted here -- the caller

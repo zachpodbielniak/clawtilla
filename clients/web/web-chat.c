@@ -242,6 +242,8 @@ message_element(JsonObject *message, const gchar *agent_id,
     gboolean acknowledged =
         clawt_web_member_int(message, "acknowledged", 0) != 0;
     gint64 merged = clawt_web_member_int(message, "merged", 0);
+    const gchar *consult = clawt_message_consult_label(
+        (gint)clawt_web_member_int(message, "consult", 0));
     gboolean interrupted =
         clawt_web_member_int(message, "interrupted", 0) != 0;
     gboolean from_user = (g_strcmp0(sender, "user") == 0);
@@ -394,6 +396,19 @@ message_element(JsonObject *message, const gchar *agent_id,
     }
 
     /*
+     * A consultation's question or answer: the agent that answered had
+     * no tool that acts, which a reader needs before taking the answer
+     * as a report of work done.
+     */
+    if (consult != NULL) {
+        g_autoptr(HtmxSpan) mark = clawt_web_badge(consult, "info");
+
+        htmx_element_set_attribute(HTMX_ELEMENT(mark), "title",
+                                   clawt_message_consult_tooltip());
+        clawt_web_add(who, g_steal_pointer(&mark));
+    }
+
+    /*
      * The daemon's notice that a turn was cut short and will not be
      * resumed: a warning badge, and the body in a box of its own so it
      * reads as a statement about the conversation, not one more line.
@@ -407,7 +422,8 @@ message_element(JsonObject *message, const gchar *agent_id,
         clawt_web_add(who, g_steal_pointer(&cut));
     }
 
-    if (run_start || task != NULL || depth > 1 || acknowledged || interrupted)
+    if (run_start || task != NULL || depth > 1 || acknowledged ||
+        consult != NULL || interrupted)
         htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(who));
 
     htmx_element_add_class(HTMX_ELEMENT(text), "msg-body");

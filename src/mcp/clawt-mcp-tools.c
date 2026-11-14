@@ -42,6 +42,7 @@ typedef enum {
     NEEDS_BROWSER_SCRIPTS,
     NEEDS_GROK,
     NEEDS_WAITS,
+    NEEDS_DECISION_ANSWER,
     NEEDS_RETRY,
     NEEDS_REBUILD,
     NEEDS_SKILL_PROPOSAL,
@@ -162,6 +163,17 @@ static const ClawtParamInfo ask_agent_params[] = {
     { "agent_id", "string", "Who to ask.", TRUE },
     { "message",  "string", "The question.", TRUE },
     /*
+     * A question that cannot become work.  Without it a question is
+     * answered with every tool the peer has, and "what do you think of
+     * this plan" grows delegations of its own.
+     */
+    { "consult",  "boolean",
+      "true to ask for an answer and nothing else: their turn is "
+      "offered no tool that acts -- no delegation, messaging, "
+      "connector writes or commands -- so the question cannot turn "
+      "into work. Use it when you want their knowledge, not their "
+      "effort.", FALSE },
+    /*
      * The same parameter the other hop tools take, and it was missing
      * here alone.  clawtilla_ask_agent dispatches into tool_message_agent(),
      * which reads turn_room -- so an agent calling this one could not
@@ -190,6 +202,17 @@ static const ClawtParamInfo delegate_params[] = {
                             "reasoning. A model name for the assignee's "
                             "provider; leave it out to use theirs. Their "
                             "later turns are on their own model.", FALSE },
+    { "thread",   "string",
+      "standing (the default) or new. standing puts the work in the "
+      "conversation you already share with them, with everything said "
+      "there behind it. new gives it a room -- and a context -- of its "
+      "own, so it neither inherits that conversation nor waits behind "
+      "it; you are told the room, and can read it with "
+      "clawtilla_room_history.", FALSE },
+    { "mode",     "string",
+      "work (the default) or consult. consult asks for an answer and "
+      "nothing else: their turn is offered no tool that acts, and what "
+      "they write back is the result.", FALSE },
     { "turn_room", "string",
       "Which of your conversations this call is part of, from the "
       "[clawtilla] line on the message you are handling. Only "
@@ -232,6 +255,14 @@ static const ClawtParamInfo handoff_params[] = {
       "[clawtilla] line on the message you are handling. Only "
       "needed when you are working in more than one at once; it is "
       "not where the tool acts.", FALSE }
+};
+
+static const ClawtParamInfo decision_answer_params[] = {
+    { "decision_id", "string",
+      "The decision, as the notice that routed it to you names it.", TRUE },
+    { "answer",      "string",
+      "What they should do. It replaces the default they said they "
+      "would take, and is sent to them at once.", TRUE }
 };
 
 static const ClawtParamInfo task_id_params[] = {
@@ -752,7 +783,8 @@ static const ToolDefinition tools[] = {
          "before you can continue, use clawtilla_delegate and check "
          "clawtilla_task_status. Ask everything you need in one go: their "
          "answer closes the exchange, and following up means calling this "
-         "again.",
+         "again. Pass consult: true when you want only their answer, so "
+         "the question cannot grow into work of its own.",
          NEEDS_PEER_COMMS, ask_agent_params, CLAWT_ACTION_MESSAGE),
 
     HOP_TOOL("clawtilla_delegate",
@@ -763,7 +795,9 @@ static const ToolDefinition tools[] = {
          "context, so put every constraint and scope limit into the task "
          "text itself. You can assign within your own team; for anything "
          "belonging to another team, send it to the chief of staff rather "
-         "than to that team directly.",
+         "than to that team directly. thread: new runs it in a "
+         "conversation of its own; mode: consult asks for an answer "
+         "rather than work.",
          NEEDS_ASSIGNMENT, delegate_params, CLAWT_ACTION_MESSAGE),
 
     HOP_TOOL("clawtilla_handoff",
@@ -794,6 +828,20 @@ static const ToolDefinition tools[] = {
          "Use this instead of stalling, and instead of deciding "
          "unilaterally on something they would want to have seen.",
          NEEDS_DECISION_INBOX, ask_decision_params, CLAWT_ACTION_READ),
+
+    /*
+     * The delegator's side of a routed decision.  Offered to whoever can
+     * delegate at all, since only a delegator is ever routed one; the
+     * hook checks it is *this* agent's to answer.
+     */
+    TOOL("clawtilla_decision_answer",
+         "Answer a decision somebody you delegated work to has asked. "
+         "It was put to you first because you know the work; your "
+         "answer replaces their default and goes straight to them. If "
+         "it is genuinely your operator's call, leave it: they see it "
+         "too, and the asker carries on with its default until somebody "
+         "answers.",
+         NEEDS_DECISION_ANSWER, decision_answer_params, CLAWT_ACTION_MESSAGE),
 
     TOOL("clawtilla_fleet_cost",
          "What the fleet has spent so far, per agent and in total, and "
@@ -1265,6 +1313,9 @@ struct _ClawtMcpTools {
     gpointer                ask_decision_data;
     GDestroyNotify          ask_decision_destroy;
 
+    ClawtMcpAnswerDecisionFunc answer_decision;
+    gpointer                   answer_decision_data;
+    GDestroyNotify             answer_decision_destroy;
     ClawtMcpRequestRebuildFunc request_rebuild;
     gpointer                   request_rebuild_data;
     GDestroyNotify             request_rebuild_destroy;
@@ -1546,6 +1597,23 @@ clawt_mcp_tools_set_ask_decision_func(ClawtMcpTools           *self,
 }
 
 void
+clawt_mcp_tools_set_answer_decision_func(ClawtMcpTools              *self,
+                                         ClawtMcpAnswerDecisionFunc  func,
+                                         gpointer                    user_data,
+                                         GDestroyNotify              destroy)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    if (self->answer_decision_destroy != NULL &&
+        self->answer_decision_data != NULL)
+        self->answer_decision_destroy(self->answer_decision_data);
+
+    self->answer_decision = func;
+    self->answer_decision_data = user_data;
+    self->answer_decision_destroy = destroy;
+}
+
+void
 clawt_mcp_tools_set_request_rebuild_func(
 	ClawtMcpTools              *self,
 	ClawtMcpRequestRebuildFunc  func,
@@ -1688,21 +1756,28 @@ static gboolean
 dispatch_delivery(ClawtMcpTools *self, const gchar *from_agent,
 	const gchar *target, const gchar *body, const gchar *task_id,
 	gint depth, ClawtPriority priority, const gchar *turn_room,
-	gboolean one_way, GError **error)
+	guint flags, GError **error)
 {
 	if (self->deliver_reply != NULL)
 		return self->deliver_reply(from_agent, target, body, task_id, depth,
-			priority, turn_room, one_way, self->deliver_data, error);
+			priority, turn_room, flags, self->deliver_data, error);
 
 	/*
 	 * An older callback cannot carry it, and sending a "no answer
 	 * wanted" notice as an ordinary message would cost the very turn
 	 * the caller was trying to save -- so it is refused, by name.
 	 */
-	if (one_way) {
+	if ((flags & CLAWT_MCP_DELIVER_ONE_WAY) != 0) {
 		g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
 			"reply: none is not available here; send it without reply "
 			"and they will answer once.");
+		return FALSE;
+	}
+
+	/* Nor a consultation, whose turn would otherwise be free to act. */
+	if ((flags & CLAWT_MCP_DELIVER_CONSULT) != 0) {
+		g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+			"consult is not available here; ask without it.");
 		return FALSE;
 	}
 	if (self->deliver_turn != NULL)
@@ -2245,6 +2320,41 @@ mark_turn_outward(
 #define READ_ONLY_RULE "this is a read-only routine run; report what you find " \
                        "with clawtilla_ask_decision instead of acting on it"
 
+gboolean
+clawt_mcp_tools_consult_withholds(const gchar *tool, ClawtActionClass action)
+{
+    const ToolDefinition *def = (tool != NULL) ? find_tool(tool) : NULL;
+
+    if (def != NULL)
+        action = def->action;
+
+    /*
+     * The one exception: a consulted assignee reports the answer it was
+     * asked for, and clawtilla_task_complete is how.  It reaches the
+     * delegator, which is the consultation working, not acting.
+     */
+    if (g_strcmp0(tool, "clawtilla_task_complete") == 0)
+        return FALSE;
+
+    return action != CLAWT_ACTION_READ;
+}
+
+gboolean
+clawt_mcp_tools_turn_is_consult(ClawtMcpTools *self, const gchar *agent_id,
+                                const gchar *room_id)
+{
+    ClawtAgent *agent;
+
+    g_return_val_if_fail(CLAWT_IS_MCP_TOOLS(self), FALSE);
+
+    if (agent_id == NULL || self->agents == NULL)
+        return FALSE;
+
+    agent = clawt_agent_manager_get(self->agents, agent_id);
+
+    return agent != NULL && clawt_agent_get_turn_consult_in(agent, room_id);
+}
+
 static ClawtPolicyMode
 policy_mode(ClawtMcpTools *self, const gchar *agent_id, const gchar *room_id,
             const gchar *tool, ClawtActionClass *out_action, gchar **out_rule)
@@ -2260,6 +2370,18 @@ policy_mode(ClawtMcpTools *self, const gchar *agent_id, const gchar *room_id,
     if (action != CLAWT_ACTION_READ && clawt_mcp_tools_room_is_read_only(self, room_id)) {
         if (out_rule != NULL)
             *out_rule = g_strdup(READ_ONLY_RULE);
+        return CLAWT_POLICY_DENY;
+    }
+
+    /*
+     * And so does a consultation, for the same reason: it is what the
+     * turn is.  The tool list already left these out; this is the
+     * refusal for a call that names one anyway.
+     */
+    if (clawt_mcp_tools_consult_withholds(tool, action) &&
+        clawt_mcp_tools_turn_is_consult(self, agent_id, room_id)) {
+        if (out_rule != NULL)
+            *out_rule = g_strdup(CLAWT_CONSULT_RULE);
         return CLAWT_POLICY_DENY;
     }
 
@@ -2566,6 +2688,16 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
          * task to be the agent's -- so there is nothing to gate here.
          */
         if (self->waits == NULL)
+            return FALSE;
+        break;
+
+    case NEEDS_DECISION_ANSWER:
+        /*
+         * Only a delegator is ever routed a decision, so only an agent
+         * that can delegate is offered the answer -- and only when the
+         * daemon can take one.
+         */
+        if (self->answer_decision == NULL || !may_assign_to_somebody(agent))
             return FALSE;
         break;
 
@@ -3115,11 +3247,13 @@ clawt_mcp_tools_list_in_room(ClawtMcpTools *self, const gchar *agent_id,
 {
     g_autoptr(JsonBuilder) builder = json_builder_new();
     gboolean read_only;
+    gboolean consult;
     gsize i;
 
     g_return_val_if_fail(CLAWT_IS_MCP_TOOLS(self), NULL);
 
     read_only = clawt_mcp_tools_room_is_read_only(self, room_id);
+    consult = clawt_mcp_tools_turn_is_consult(self, agent_id, room_id);
 
     json_builder_begin_object(builder);
     json_builder_set_member_name(builder, "tools");
@@ -3133,6 +3267,14 @@ clawt_mcp_tools_list_in_room(ClawtMcpTools *self, const gchar *agent_id,
 
         /* A tool a read-only run would be refused is not offered at all. */
         if (read_only && tools[i].action != CLAWT_ACTION_READ)
+            continue;
+
+        /*
+         * Nor one a consultation withholds.  The gate max_hops uses, one
+         * step on: there the hop tools go, here everything that acts.
+         */
+        if (consult &&
+            clawt_mcp_tools_consult_withholds(tools[i].name, tools[i].action))
             continue;
 
         json_builder_begin_object(builder);
@@ -3169,6 +3311,11 @@ clawt_mcp_tools_list_in_room(ClawtMcpTools *self, const gchar *agent_id,
             gsize n_params = 0;
 
             if (!clawt_mcp_tools_is_permitted(self, agent_id, names[j]))
+                continue;
+
+            /* A plugin's tool is classed external, which a consultation withholds. */
+            if (consult &&
+                clawt_mcp_tools_consult_withholds(names[j], CLAWT_ACTION_EXTERNAL))
                 continue;
 
             params = clawt_tool_provider_get_params(
@@ -4271,6 +4418,15 @@ tool_ask_decision(ClawtMcpTools *self,
             "it.");
     }
 
+    /*
+     * The task the asking turn is working on, when the agent did not
+     * name one.  It is what the daemon routes by: a question raised in a
+     * delegated turn goes to the delegator first, and an agent should
+     * not have to know that to have it happen.
+     */
+    if (task == NULL || *task == '\0')
+        task = delegating_from_task(self, agent_id, turn_room);
+
     decision = clawt_decision_new(NULL, agent_id, question);
     clawt_decision_set_default(decision, fallback, reason);
     clawt_decision_set_task(decision, task);
@@ -4311,6 +4467,45 @@ tool_ask_decision(ClawtMcpTools *self,
     }
 
     return answer;
+}
+
+/*
+ * A delegator answers a decision its assignee raised.  Everything that
+ * makes it this agent's to answer is the daemon's to check -- it holds
+ * the inbox and knows who the decision was routed to -- so the tool
+ * only refuses what it can see is incomplete.
+ */
+static gchar *
+tool_decision_answer(ClawtMcpTools *self,
+                     const gchar   *agent_id,
+                     JsonObject    *arguments,
+                     gboolean      *is_error)
+{
+    const gchar *id = argument_string(arguments, "decision_id");
+    const gchar *answer = argument_string(arguments, "answer");
+    g_autoptr(GError) error = NULL;
+    gchar *reply;
+
+    if (id == NULL || *id == '\0' || answer == NULL || *answer == '\0') {
+        *is_error = TRUE;
+        return g_strdup("decision_id and answer are both required.");
+    }
+
+    if (self->answer_decision == NULL) {
+        *is_error = TRUE;
+        return g_strdup("Answering decisions is not available here.");
+    }
+
+    reply = self->answer_decision(agent_id, id, answer,
+                                  self->answer_decision_data, &error);
+
+    if (reply == NULL) {
+        *is_error = TRUE;
+        return g_strdup(error != NULL ? error->message
+                                      : "the decision could not be answered");
+    }
+
+    return reply;
 }
 
 /*
@@ -4585,6 +4780,7 @@ tool_message_agent(ClawtMcpTools *self,
     g_autofree gchar *refusal = NULL;
     g_autoptr(GError) error = NULL;
 	gboolean one_way = FALSE;
+	gboolean consult = FALSE;
 
     /*
      * clawtilla_ask_agent's schema calls it "message"; both are accepted
@@ -4615,6 +4811,18 @@ tool_message_agent(ClawtMcpTools *self,
 		return g_steal_pointer(&refusal);
 	}
 
+	/*
+	 * A consultation is a question, so it wants its answer: the two
+	 * flags together would ask for an answer and refuse it in one call.
+	 */
+	consult = argument_boolean(arguments, "consult", FALSE);
+
+	if (consult && one_way) {
+		*is_error = TRUE;
+		return g_strdup("consult asks for an answer and reply: none asks "
+		                "for none -- drop one of them.");
+	}
+
     if (!can_deliver(self)) {
         *is_error = TRUE;
         return g_strdup("Messaging is not available.");
@@ -4640,7 +4848,8 @@ tool_message_agent(ClawtMcpTools *self,
     if (!dispatch_delivery(self, agent_id, target, body, NULL,
                        outbound_depth(self, agent_id, turn_room), priority,
                        turn_room,
-                       one_way, &error)) {
+                       (one_way ? CLAWT_MCP_DELIVER_ONE_WAY : 0) |
+                       (consult ? CLAWT_MCP_DELIVER_CONSULT : 0), &error)) {
         *is_error = TRUE;
         return g_strdup(error->message);
     }
@@ -4670,7 +4879,11 @@ tool_message_agent(ClawtMcpTools *self,
     return g_strdup_printf("Queued for %s. They will see it when they are "
                            "next running.%s", target,
                            one_way ? " No answer will come back: you asked "
-                                     "for none." : "");
+                                     "for none."
+                           : consult ? " It is a consultation: they can "
+                                       "answer and do nothing else, and "
+                                       "the answer comes back here."
+                           : "");
 }
 
 static gchar *
@@ -4683,12 +4896,43 @@ tool_delegate(ClawtMcpTools *self,
     const gchar *assignee = argument_string(arguments, "agent_id");
     const gchar *work = argument_string(arguments, "task");
     const gchar *reason = argument_string(arguments, "reason");
+    const gchar *thread = argument_string(arguments, "thread");
+    const gchar *mode = argument_string(arguments, "mode");
     g_autoptr(GError) error = NULL;
+    gboolean own_thread = FALSE;
+    gboolean consult = FALSE;
+    const gchar *target;
     ClawtTask *task;
 
     if (assignee == NULL || work == NULL) {
         *is_error = TRUE;
         return g_strdup("agent_id and task are both required.");
+    }
+
+    /*
+     * Both refused before anything is made, by name.  A misspelt value
+     * that fell back to the default would put the work somewhere the
+     * caller did not ask for -- in the shared conversation, or with
+     * every tool -- and it would never find out.
+     */
+    if (thread != NULL && *thread != '\0') {
+        if (g_strcmp0(thread, "new") == 0)
+            own_thread = TRUE;
+        else if (g_strcmp0(thread, "standing") != 0) {
+            *is_error = TRUE;
+            return g_strdup_printf("thread is standing or new, not '%s'. "
+                                   "Nothing was delegated.", thread);
+        }
+    }
+
+    if (mode != NULL && *mode != '\0') {
+        if (g_strcmp0(mode, "consult") == 0)
+            consult = TRUE;
+        else if (g_strcmp0(mode, "work") != 0) {
+            *is_error = TRUE;
+            return g_strdup_printf("mode is work or consult, not '%s'. "
+                                   "Nothing was delegated.", mode);
+        }
     }
 
     if (self->tasks == NULL || !can_deliver(self)) {
@@ -4755,6 +4999,39 @@ tool_delegate(ClawtMcpTools *self,
      */
     clawt_task_set_room(task, turn_room);
 
+    /* Read by the daemon as it delivers the assignment. */
+    clawt_task_set_consult(task, consult);
+
+    /*
+     * A room of its own, when asked: `task:<id>`, with the two of them
+     * as members.  A room is a session key, so the work gets a context
+     * of its own and does not queue behind whatever the pair is already
+     * doing -- the same machinery routines.isolate uses, for the same
+     * reason.  Recorded on the task, so the delegator and the clients
+     * can follow it; the settle notice still comes back to turn_room.
+     */
+    target = assignee;
+
+    if (own_thread) {
+        ClawtRoom *room = (self->room_manager != NULL)
+            ? clawt_room_manager_get_task(self->room_manager,
+                                          clawt_task_get_id(task),
+                                          agent_id, assignee)
+            : NULL;
+
+        if (room == NULL) {
+            clawt_task_manager_fail(self->tasks, clawt_task_get_id(task),
+                                    "its own room could not be made");
+            *is_error = TRUE;
+            return g_strdup("thread: new is not available here, so nothing "
+                            "was delegated. Delegate it without thread and it "
+                            "goes into the conversation you share.");
+        }
+
+        clawt_task_set_thread_room(task, clawt_room_get_id(room));
+        target = clawt_room_get_id(room);
+    }
+
     /*
      * The delivered text carries the contract; the task's own prompt
      * stays the bare work.  In the body rather than the drain preamble,
@@ -4767,7 +5044,7 @@ tool_delegate(ClawtMcpTools *self,
             clawt_task_assignment_guidance(clawt_task_get_id(task));
         g_autofree gchar *delivered = g_strconcat(work, guidance, NULL);
 
-        if (!dispatch_delivery(self, agent_id, assignee, delivered,
+        if (!dispatch_delivery(self, agent_id, target, delivered,
                            clawt_task_get_id(task),
                            outbound_depth(self, agent_id, turn_room),
                            CLAWT_PRIORITY_NORMAL,
@@ -4785,10 +5062,33 @@ tool_delegate(ClawtMcpTools *self,
         }
     }
 
-    return g_strdup_printf(
-        "Delegated to %s as task %s. You will be notified here when it "
-        "settles -- no need to poll clawtilla_task_status or ask them how "
-        "it is going.", assignee, clawt_task_get_id(task));
+    {
+        g_autoptr(GString) out = g_string_new(NULL);
+
+        g_string_append_printf(out, "Delegated to %s as task %s.", assignee,
+                               clawt_task_get_id(task));
+
+        if (consult)
+            g_string_append(out, " It is a consultation: they can answer "
+                                 "and do nothing else, and the answer is the "
+                                 "result.");
+
+        /*
+         * The room is named because it is the one thing the caller
+         * cannot work out, and the reason to name it is to read it.
+         */
+        if (own_thread)
+            g_string_append_printf(out, " It runs in a room of its own, "
+                                        "'%s'; read it with "
+                                        "clawtilla_room_history.",
+                                   clawt_task_get_thread_room(task));
+
+        g_string_append(out, " You will be notified here when it settles -- "
+                             "no need to poll clawtilla_task_status or ask "
+                             "them how it is going.");
+
+        return g_string_free(g_steal_pointer(&out), FALSE);
+    }
 }
 
 /*
@@ -6848,7 +7148,7 @@ tool_post_room(ClawtMcpTools *self, const gchar *agent_id,
     if (!dispatch_delivery(self, agent_id, room_id, body, NULL,
                        outbound_depth(self, agent_id, turn_room), CLAWT_PRIORITY_NORMAL,
                        turn_room,
-                       one_way, &error)) {
+                       one_way ? CLAWT_MCP_DELIVER_ONE_WAY : 0, &error)) {
         *is_error = TRUE;
         return g_strdup(error->message);
     }
@@ -8804,7 +9104,10 @@ tools_call(ClawtMcpTools *self,
              g_strcmp0(tool_name, "clawtilla_ask_agent") == 0)
         text = tool_message_agent(self, agent_id, turn_room, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_ask_decision") == 0)
-        text = tool_ask_decision(self, agent_id, turn_room, arguments, &is_error);
+        text = tool_ask_decision(self, agent_id, turn_room, arguments,
+                                 &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_decision_answer") == 0)
+        text = tool_decision_answer(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_fleet_cost") == 0)
         text = tool_fleet_cost(self, agent_id);
     else if (g_strcmp0(tool_name, "clawtilla_list_teams") == 0)
@@ -9094,6 +9397,14 @@ clawt_mcp_tools_dispose(GObject *object)
         self->policy_data = NULL;
     }
     self->policy = NULL;
+
+    if (self->answer_decision_destroy != NULL &&
+        self->answer_decision_data != NULL) {
+        self->answer_decision_destroy(self->answer_decision_data);
+        self->answer_decision_destroy = NULL;
+        self->answer_decision_data = NULL;
+    }
+    self->answer_decision = NULL;
     g_clear_pointer(&self->read_only_rooms, g_hash_table_unref);
 
     self->handoff = NULL;

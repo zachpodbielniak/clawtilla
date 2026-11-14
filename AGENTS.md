@@ -1309,6 +1309,25 @@ versions apart.
   origin. A person's message, a question, a one-way notice, a mention
   room and a per-turn model are never merged. Anything new that decides
   per delivery must decide per *part* there too.
+- **A merge can only fold what is still in the mailbox**, and a connected
+  agent takes every delivery at its socket -- so for its first version the
+  merge folded nothing in production, and the test that proved it used an
+  agent with no link, which is exactly the case that hid it. Results for a
+  room whose turn is running are now *held* (`result_is_held()`) and drained
+  on that room's falling edge and on every turn settle. A test of a queue
+  behaviour has to give the agent a link and a turn, or it is testing the
+  stopped-agent path.
+- **A consultation is per turn, like the hop depth.** The flag rides the
+  mailbox item (`consult` column) into `TurnSetup`; the gate
+  (`clawt_mcp_tools_consult_withholds()`) is read by the tool list, the
+  call (`policy_mode()`) and the CLI's `policy.check` hook alike. Only the
+  *question* carries it: the answer is marked `CLAWT_CONSULT_ANSWERED` for
+  the clients and never reaches an item, or answering a consultation would
+  make the asker's next turn one. A finished turn withholds nothing, so
+  `TOOLS.org` does not depend on what the last turn was. And a
+  consultation is never marked outward (`mark_turn_records()` skips
+  it): nothing that acts was reachable, so a mark there is the
+  agent-wide fold speaking for another turn.
 - **A group room counts in rounds, and a tree counts in requests.** A
   round starts at a message from a person, a routine or a trigger
   (depth 0); the thread of replies rides on the message and the stored

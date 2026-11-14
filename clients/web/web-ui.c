@@ -2181,6 +2181,14 @@ clawt_web_decision_inline(JsonObject *object, const gchar *notice)
 
     who = g_strdup_printf("%s asks", clawt_decision_get_agent(decision));
     clawt_web_add(card, clawt_web_text(who, "small muted"));
+
+    /* Who it was put to first, as the inbox says it. */
+    {
+        g_autofree gchar *routed = clawt_decision_routed_text(decision);
+
+        if (routed != NULL)
+            clawt_web_add(card, clawt_web_text(routed, "small muted"));
+    }
     clawt_web_add(card, clawt_web_text(clawt_decision_get_question(decision),
                                        "decision-question"));
 

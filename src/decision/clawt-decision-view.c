@@ -104,6 +104,9 @@ clawt_decision_new_from_object(
 	                           member_string(object, "default_reason"));
 	clawt_decision_set_task(decision, member_string(object, "task"));
 	clawt_decision_set_room(decision, member_string(object, "room"));
+	clawt_decision_set_routed_to(decision, member_string(object, "routed_to"));
+	clawt_decision_set_answered_by(decision,
+	                               member_string(object, "answered_by"));
 	clawt_decision_set_reversible_until(
 		decision, member_int(object, "reversible_until", 0));
 	clawt_decision_set_created_at(decision,

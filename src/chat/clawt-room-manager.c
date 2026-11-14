@@ -162,6 +162,17 @@ load_room(ClawtRoomManager *self, ClawtRoom *room)
 			clawt_message_set_merged(message,
 				(guint)MAX(json_object_get_int_member(object, "merged"), 0));
 
+		/*
+		 * Restored for the clients only.  A role this daemon does not
+		 * know is read as none rather than cast into one it is not.
+		 */
+		if (json_object_has_member(object, "consult")) {
+			gint64 role = json_object_get_int_member(object, "consult");
+
+			if (role == CLAWT_CONSULT_ASKED || role == CLAWT_CONSULT_ANSWERED)
+				clawt_message_set_consult(message, (ClawtConsultRole)role);
+		}
+
 		if (json_object_has_member(object, "interrupted"))
 			clawt_message_set_interrupted(message,
 				json_object_get_boolean_member(object, "interrupted"));
@@ -400,6 +411,48 @@ clawt_room_manager_get_trigger(ClawtRoomManager *self,
     g_return_val_if_fail(agent_id != NULL, NULL);
 
     return get_owned_room(self, "trigger", trigger_id, agent_id);
+}
+
+gchar *
+clawt_room_manager_task_room_id(const gchar *task_id)
+{
+    g_return_val_if_fail(task_id != NULL, NULL);
+
+    return g_strdup_printf("task:%s", task_id);
+}
+
+ClawtRoom *
+clawt_room_manager_get_task(ClawtRoomManager *self,
+                            const gchar      *task_id,
+                            const gchar      *delegator,
+                            const gchar      *assignee)
+{
+    g_autofree gchar *room_id = NULL;
+    ClawtRoom *room;
+
+    g_return_val_if_fail(CLAWT_IS_ROOM_MANAGER(self), NULL);
+    g_return_val_if_fail(task_id != NULL, NULL);
+    g_return_val_if_fail(delegator != NULL, NULL);
+    g_return_val_if_fail(assignee != NULL, NULL);
+
+    room_id = clawt_room_manager_task_room_id(task_id);
+    room = g_hash_table_lookup(self->rooms, room_id);
+
+    if (room != NULL)
+        return room;
+
+    /*
+     * Not get_owned_room(): that makes the *kind* a member and the
+     * sender, which is right for a routine (nobody's peer) and wrong
+     * here -- a task is a peer's work, and the preamble, the hop depth
+     * and clawtilla_message_user's guard all read the sender as the
+     * delegator.
+     */
+    room = clawt_room_new(room_id, NULL);
+    clawt_room_add_member(room, delegator);
+    clawt_room_add_member(room, assignee);
+
+    return insert_room(self, room);
 }
 
 ClawtRoom *

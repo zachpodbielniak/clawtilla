@@ -7,6 +7,8 @@
 
 #include "clawtilla.h"
 
+#include <string.h>
+
 #include "core/clawt-daemon.h"
 #include "core/clawt-daemon-private.h"
 
@@ -123,8 +125,34 @@ clawt_daemon_note_step(ClawtDaemon *self, ClawtTurnStep *step)
 		self->agents != NULL) {
 		ClawtAgent *agent = clawt_agent_manager_get(self->agents, agent_id);
 
-		if (agent != NULL)
+		if (agent != NULL) {
+			const gchar *tool = clawt_turn_step_get_tool_name(step);
+			gboolean failed = clawt_turn_step_get_failed(step);
+
 			clawt_agent_note_turn_tool(agent, room_id);
+
+			/*
+			 * And for the task progress guard, which wants work rather
+			 * than activity: a progress note is the assignee saying it
+			 * is still going, not evidence that it is, and a failure is
+			 * kept by its text so three identical ones can be seen.
+			 */
+			if (failed) {
+				g_autofree gchar *error = g_strdup_printf("%s: %s",
+					tool != NULL ? tool : "a tool",
+					(detail != NULL && *detail != '\0') ? detail
+						: (text != NULL ? text : "failed"));
+				g_autofree gchar *clipped = clawt_utf8_truncate(error, 200,
+					FALSE);
+
+				clawt_agent_note_turn_work(agent, room_id, FALSE, clipped);
+			} else {
+				/* Observed either way; only work that is not a note counts. */
+				clawt_agent_note_turn_work(agent, room_id,
+					tool == NULL ||
+					strstr(tool, "clawtilla_task_progress") == NULL, NULL);
+			}
+		}
 	}
 
     event = clawt_event_new("turn.step", agent_id);

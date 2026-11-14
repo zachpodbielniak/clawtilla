@@ -134,6 +134,14 @@ named.  If the link refuses the merged frame every part is nacked, in
 order; if it takes it every part is acknowledged.  The queue never holds
 a merged row.
 
+A result for a room in which the agent has a turn running is not leased
+at all: it waits in the queue, behind which the drain leases the first
+item that is not held (~clawt_mailbox_lease_id()~ again), and the drain
+on that room's falling edge hands the held results over together.  A
+connected agent otherwise takes every delivery at its socket, which left
+nothing in the queue for a merge to find.  See "Results wait for the
+turn they would interrupt" in [[file:orchestration.org][orchestration.org]].
+
 ** Retry and dead letters
 
 Exponential backoff with jitter.  The delay is ~backoff_seconds~ shifted
@@ -330,6 +338,19 @@ desktop call is marked when ~policy.check~ lets it through
 counted anyway, which costs a rerun rather than a second email.  A call
 that names its ~turn_room~ marks that room's turn; one that cannot say
 marks every running turn, for the same reason.
+
+*A consultation is never outward.*  Every tool that could make it so is
+withheld from a consultation's turn and refused if named
+(~clawt_mcp_tools_consult_withholds()~), so a mark that reaches one can
+only be the fold above acting for another turn; ~clawt_agent_mark_outward()~
+skips it.  A consultation cut by a restart is therefore rerun once,
+which asks the question again and does nothing else.
+
+*Held results are one turn and one record.*  Results waiting for a busy
+room (see "Results wait for the turn they would interrupt" in
+[[file:orchestration.org][orchestration.org]]) are handed over as one merged delivery, which opens
+a single record naming every part, with the highest ~replays~ among
+them -- so a cut merge is rerun at most once, as one.
 
 *** Recovery
 

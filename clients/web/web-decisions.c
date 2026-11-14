@@ -263,6 +263,21 @@ decision_row(ClawtWebApp *app, JsonObject *decision, gint64 now,
         clawt_web_add(head, clawt_web_badge("rebuild", "bad"));
 
     /*
+     * Who it was put to first: a decision raised inside delegated work
+     * goes to the delegator before the operator, and one that does not
+     * say so reads as nobody else having seen it.
+     */
+    {
+        g_autofree gchar *routed = clawt_decision_routed_label(
+            clawt_web_member(decision, "routed_to", NULL),
+            clawt_web_member(decision, "answered_by", NULL),
+            state == CLAWT_DECISION_OPEN);
+
+        if (routed != NULL)
+            clawt_web_add(head, clawt_web_badge(routed, "info"));
+    }
+
+    /*
      * What became of it, in the settled view.  Answered and dismissed
      * are different things -- both mean the work went a particular way,
      * only one of them means somebody chose -- and a list that showed

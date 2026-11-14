@@ -1872,11 +1872,31 @@ clawt_incident_desk_retry(
 
 	g_string_append(body, ". Start from the work itself.");
 
-	message = clawt_message_new(assignee, sender, body->str);
+	/*
+	 * Where the first attempt went: the task's own room when it was
+	 * delegated with `thread: new` -- its own session, which a retry
+	 * into the shared room would quietly give up -- and only from the
+	 * delegator, who is that room's other member.  And a consultation
+	 * stays one: the retry is the same question, not a licence to act.
+	 */
+	{
+		const gchar *thread = clawt_task_get_thread_room(task);
+		const gchar *target = assignee;
+
+		if (thread != NULL &&
+		    g_strcmp0(sender, clawt_task_get_origin(task)) == 0 &&
+		    clawt_room_manager_get(self->rooms, thread) != NULL)
+			target = thread;
+
+		message = clawt_message_new(target, sender, body->str);
+	}
 	clawt_message_set_composed(message, TRUE);
 	clawt_message_set_task_id(message, clawt_task_get_id(task));
 	clawt_message_set_model(message, clawt_task_get_model(task));
 	clawt_message_set_depth(message, 0);
+
+	if (clawt_task_get_consult(task))
+		clawt_message_set_consult(message, CLAWT_CONSULT_ASKED);
 
 	if (clawt_mailbox_router_send(self->router, message, &local) < 0) {
 		/*

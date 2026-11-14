@@ -377,6 +377,9 @@ record_in_room(ClawtMailboxRouter *self, ClawtRoom *room,
 		if (clawt_message_get_acknowledged(message))
 			clawt_event_set_detail_int(event, "acknowledged", 1);
 
+		if (clawt_message_get_consult(message) != CLAWT_CONSULT_NONE)
+			clawt_event_set_detail_int(event, "consult",
+				(gint64)clawt_message_get_consult(message));
 		if (clawt_message_get_merged(message) > 0)
 			clawt_event_set_detail_int(event, "merged",
 				(gint64)clawt_message_get_merged(message));
@@ -1066,6 +1069,13 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
             item, clawt_message_get_invites_reply(message));
 		clawt_mailbox_item_set_one_way(item,
 			clawt_message_get_one_way(message));
+		/*
+		 * Only the question.  An answer is marked for the clients and
+		 * nothing else: carried onto the asker's item it would make the
+		 * asker's next turn a consultation too.
+		 */
+		clawt_mailbox_item_set_consult(item,
+			clawt_message_get_consult(message) == CLAWT_CONSULT_ASKED);
 		clawt_mailbox_item_set_composed(item,
 			clawt_message_get_composed(message));
 		clawt_mailbox_item_set_reply_to(item, clawt_message_get_reply_to(message));
@@ -1546,6 +1556,27 @@ compose_single(ClawtMailboxRouter  *self,
             clawt_mailbox_item_get_room(item));
     }
 
+	/*
+	 * A consultation says so, after everything else: the turn it starts
+	 * is offered no tool that acts, and an agent that is not told why
+	 * its tools are missing goes looking for another way round.  The
+	 * gate is clawt_mcp_tools_turn_is_consult(); this is the sentence
+	 * that keeps the agent from arguing with it.
+	 */
+	if (clawt_mailbox_item_get_consult(item)) {
+		g_autofree gchar *asked = (body != NULL)
+			? g_steal_pointer(&body) : g_steal_pointer(&text);
+
+		body = g_strdup_printf(
+			"%s\n\n[clawtilla] This is a consultation. Answer from what "
+			"you know or can quickly read; act on nothing. You have been "
+			"given no tool that acts for this turn -- no delegation, no "
+			"messaging, no connector writes, no commands -- so do not look "
+			"for another way to do any of that. Write your answer as the "
+			"closing text of this turn; that is what reaches whoever "
+			"asked.", asked);
+	}
+
     *out_room = item_room;
     *out_peer = peer;
     *out_replies = turn_replies(system, peer, invites,
@@ -1721,6 +1752,64 @@ item_is_result(ClawtMailboxRouter *self, ClawtMailboxItem *item)
 		return clawt_mailbox_item_get_task_id(item) != NULL;
 
 	return from != NULL && clawt_agent_manager_get(self->agents, from) != NULL;
+}
+
+/*
+ * Whether @item is a result for a room @agent has a turn running in.
+ *
+ * Held in the mailbox until that turn ends, rather than handed over.
+ * A connected agent takes deliveries at the socket, and libreclaw runs
+ * one turn per message -- so five settle notices arriving while a chief
+ * was busy in that room became five turns queued behind the running
+ * one, and the merge below never saw them together: it could only
+ * merge what was still in the mailbox, which in production was
+ * nothing.  Held, they are waiting when the turn ends and the drain on
+ * that falling edge hands them over as one.  Only results, and only for
+ * the busy room: a person's message or a question is taken as before,
+ * and another room's turn is another session.
+ */
+static gboolean
+result_is_held(ClawtMailboxRouter *self, ClawtAgent *agent,
+               ClawtMailboxItem *item)
+{
+	const gchar *room_id = clawt_mailbox_item_get_room(item);
+
+	return room_id != NULL && clawt_agent_is_typing_in(agent, room_id) &&
+	       item_is_result(self, item);
+}
+
+/*
+ * The next item to deliver: the head of the queue, unless it is a
+ * result held for a busy room (result_is_held()), in which case the
+ * first one behind it that is not.  The ordinary path is the plain
+ * lease, taken whenever the agent has no turn running at all.
+ */
+static ClawtMailboxItem *
+lease_next(ClawtMailboxRouter *self, ClawtAgent *agent, ClawtMailbox *mailbox)
+{
+	g_autoptr(GPtrArray) waiting = NULL;
+	guint i;
+
+	if (clawt_agent_get_typing_rooms(agent) == 0)
+		return clawt_mailbox_lease(mailbox, 0);
+
+	waiting = clawt_mailbox_list(mailbox, NULL);
+
+	for (i = 0; waiting != NULL && i < waiting->len; i++) {
+		ClawtMailboxItem *candidate = g_ptr_array_index(waiting, i);
+		ClawtMailboxItem *leased;
+
+		if (result_is_held(self, agent, candidate))
+			continue;
+
+		leased = clawt_mailbox_lease_id(mailbox,
+			clawt_mailbox_item_get_id(candidate), 0);
+
+		if (leased != NULL)
+			return leased;
+	}
+
+	return NULL;
 }
 
 /*
@@ -2230,7 +2319,7 @@ clawt_mailbox_router_drain(ClawtMailboxRouter *self, const gchar *agent_id)
 		}
 		g_hash_table_remove(self->budget_waiting, agent_id);
 
-        item = clawt_mailbox_lease(mailbox, 0);
+        item = lease_next(self, agent, mailbox);
         if (item == NULL)
             break;
 

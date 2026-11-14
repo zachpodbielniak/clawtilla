@@ -118,6 +118,82 @@ void   clawt_decision_set_reversible_until(ClawtDecision *self, gint64 when);
 const gchar *clawt_decision_get_task(ClawtDecision *self);
 void         clawt_decision_set_task(ClawtDecision *self, const gchar *task);
 
+/**
+ * clawt_decision_get_routed_to:
+ * @self: a #ClawtDecision
+ *
+ * The agent this decision was put to before the operator: whoever
+ * delegated the work that raised it.  It may answer with
+ * clawtilla_decision_answer; the operator sees it in the inbox all the
+ * same and may answer first, and if nobody answers the asker's default
+ * stands, as for any decision.
+ *
+ * Returns: (transfer none) (nullable): the delegator, or %NULL for a
+ *   decision that went to the operator alone
+ */
+const gchar *clawt_decision_get_routed_to(ClawtDecision *self);
+
+/**
+ * clawt_decision_set_routed_to:
+ * @self: a #ClawtDecision
+ * @agent: (nullable): the delegator
+ *
+ * Set by the daemon when it files a decision raised in a delegated turn.
+ */
+void         clawt_decision_set_routed_to(ClawtDecision *self,
+                                          const gchar   *agent);
+
+/**
+ * clawt_decision_get_answered_by:
+ * @self: a #ClawtDecision
+ *
+ * Returns: (transfer none) (nullable): the agent that answered it, or
+ *   %NULL when the operator did (or nobody has)
+ */
+const gchar *clawt_decision_get_answered_by(ClawtDecision *self);
+
+/**
+ * clawt_decision_set_answered_by:
+ * @self: a #ClawtDecision
+ * @who: (nullable): the answering agent, or %NULL for the operator
+ */
+void         clawt_decision_set_answered_by(ClawtDecision *self,
+                                            const gchar   *who);
+
+/**
+ * clawt_decision_routed_label:
+ * @routed_to: (nullable): the `routed_to` a decision carries
+ * @answered_by: (nullable): its `answered_by`
+ * @open: whether it is still open
+ *
+ * Strings rather than a #ClawtDecision, because every client reads a
+ * decision off the wire as JSON and must reach the same sentence.
+ *
+ * The line every client draws on a decision that was routed, from one
+ * place: who it was put to while it is open ("asked of chief first --
+ * you can answer it too"), and who answered once an agent has.
+ *
+ * Returns: (transfer full) (nullable): the line, or %NULL for a
+ *   decision that went to the operator alone
+ */
+gchar       *clawt_decision_routed_label(const gchar *routed_to,
+                                         const gchar *answered_by,
+                                         gboolean     open);
+
+/**
+ * clawt_decision_routed_text:
+ * @self: a #ClawtDecision
+ *
+ * clawt_decision_routed_label() for a decision already read off the
+ * wire (clawt_decision_new_from_object()), which is what the inline card
+ * in the chat holds: the same line the inbox draws, from the same
+ * fields.
+ *
+ * Returns: (transfer full) (nullable): the line, or %NULL for a
+ *   decision that went to the operator alone
+ */
+gchar       *clawt_decision_routed_text(ClawtDecision *self);
+
 gint64 clawt_decision_get_created_at(ClawtDecision *self);
 void   clawt_decision_set_created_at(ClawtDecision *self, gint64 when);
 

@@ -101,6 +101,52 @@ const gchar   *clawt_task_get_reason(ClawtTask *self);
  */
 const gchar   *clawt_task_get_model(ClawtTask *self);
 const gchar   *clawt_task_get_session_key(ClawtTask *self);
+
+/**
+ * clawt_task_get_thread_room:
+ * @self: a #ClawtTask
+ *
+ * The room the work runs in when it was delegated with `thread: new`:
+ * `task:<id>`, a room and so a libreclaw session of its own, with the
+ * delegator and the assignee as its members.  The delegator and every
+ * client follow the work there.  Not where the settle notice goes --
+ * that is clawt_task_get_room(), the conversation that delegated.
+ *
+ * Returns: (transfer none) (nullable): the room, or %NULL for work
+ *   delivered into the room the two already share
+ */
+const gchar   *clawt_task_get_thread_room(ClawtTask *self);
+
+/**
+ * clawt_task_set_thread_room:
+ * @self: a #ClawtTask
+ * @room: (nullable): the task's own room, or %NULL
+ *
+ * Recorded by clawtilla_delegate when it made the room.
+ */
+void           clawt_task_set_thread_room(ClawtTask *self, const gchar *room);
+
+/**
+ * clawt_task_get_consult:
+ * @self: a #ClawtTask
+ *
+ * Whether the task was delegated with `mode: consult`: the assignee's
+ * turn on it is offered no tool that acts, and its answer is the
+ * result.
+ *
+ * Returns: %TRUE for a consultation
+ */
+gboolean       clawt_task_get_consult(ClawtTask *self);
+
+/**
+ * clawt_task_set_consult:
+ * @self: a #ClawtTask
+ * @consult: %TRUE for a consultation
+ *
+ * Recorded by clawtilla_delegate before the work is delivered, which
+ * is when the daemon reads it to mark the assignment.
+ */
+void           clawt_task_set_consult(ClawtTask *self, gboolean consult);
 const gchar   *clawt_task_get_progress_note(ClawtTask *self);
 
 /**
@@ -348,6 +394,28 @@ gboolean clawt_task_is_finished(ClawtTask *self);
  * Returns: (transfer none): the tone
  */
 const gchar *clawt_task_state_tone(ClawtTaskState state);
+
+/**
+ * clawt_task_thread_summary:
+ * @thread_room: (nullable): a task's `thread_room`, as the wire carries it
+ *
+ * The line every client draws on a task that runs in a room of its own,
+ * beside the control that opens that room -- one wording, so three
+ * clients cannot describe the same room three ways.
+ *
+ * Returns: (transfer full) (nullable): the line, or %NULL for a task
+ *   with no room of its own
+ */
+gchar *clawt_task_thread_summary(const gchar *thread_room);
+
+/**
+ * clawt_task_consult_label:
+ *
+ * The badge every client draws on a task delegated with `mode: consult`.
+ *
+ * Returns: (transfer none): the label
+ */
+const gchar *clawt_task_consult_label(void);
 
 /**
  * clawt_task_state_is_retryable:
