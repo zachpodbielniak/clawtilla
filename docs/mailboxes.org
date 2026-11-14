@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
-#+updated: [2026-08-26 Wed]
+#+updated: [2026-11-14 Sat]
 #+version: 0.1.1
 
 * Mailboxes
@@ -49,6 +49,8 @@ the trade the mailbox makes for not re-delivering the same work twice.
 | ~state~ | ~pending~, ~leased~, ~delivered~, ~acked~, ~failed~, ~dead~ |
 | ~attempts~, ~last_error~ | why it has not gone yet |
 | idempotency key | so a retried tool call does not enqueue twice |
+| ~invites_reply~ | whether the recipient's closing text is sent back |
+| ~one_way~ | the sender asked for no answer (~reply: none~); since 0.16.0 |
 
 Timestamps are seconds since the epoch, not microseconds, because they
 are compared against SQLite's own ~strftime('%s','now')~ in the queue's
@@ -117,6 +119,19 @@ An acknowledgement is refused unless the item is currently ~leased~.  An
 ack arriving after its lease expired refers to work that has already
 been handed to somebody else, and honouring it would mark that second
 delivery done before it had happened.
+
+*** Several results, one lease each
+
+A drain that finds several results waiting in one room --- answers from
+peers and settled-task notices --- delivers them as one sectioned item
+and one turn (see "One wake for many results" in
+[[file:orchestration.org][orchestration.org]]).  Each part is still its
+own row with its own lease: the first is leased as usual, the rest by id
+with ~clawt_mailbox_lease_id()~, which applies the same conditions as a
+plain lease, so an item in its retry backoff is not taken early by being
+named.  If the link refuses the merged frame every part is nacked, in
+order; if it takes it every part is acknowledged.  The queue never holds
+a merged row.
 
 ** Retry and dead letters
 
@@ -408,6 +423,8 @@ gchar *id = clawt_mailbox_post(mailbox, item, &error);
 
 /* 0 means the configured lease_seconds, not "no lease". */
 ClawtMailboxItem *item = clawt_mailbox_lease(mailbox, 0);
+/* One particular item, if it is deliverable now -- for the merge. */
+ClawtMailboxItem *next = clawt_mailbox_lease_id(mailbox, id, 0);
 clawt_mailbox_ack(mailbox, clawt_mailbox_item_get_id(item), &error);
 clawt_mailbox_nack(mailbox, id, "the link dropped", &error);
 

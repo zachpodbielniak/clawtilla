@@ -150,6 +150,18 @@ load_room(ClawtRoomManager *self, ClawtRoom *room)
             clawt_message_set_parent_id(
                 message, json_object_get_string_member(object, "parent_id"));
 
+		/*
+		 * Written only when true, so every transcript from before
+		 * either existed reads as an ordinary message.
+		 */
+		if (json_object_has_member(object, "acknowledged"))
+			clawt_message_set_acknowledged(message,
+				json_object_get_boolean_member(object, "acknowledged"));
+
+		if (json_object_has_member(object, "merged"))
+			clawt_message_set_merged(message,
+				(guint)MAX(json_object_get_int_member(object, "merged"), 0));
+
         /*
          * Restored, not appended: the transcript is append-only now, so
          * appending here would write every line back into the file it

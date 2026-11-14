@@ -138,6 +138,62 @@ typedef enum {
 } ClawtRuntimeConfine;
 
 /**
+ * ClawtRuntimeNetwork:
+ * @CLAWT_RUNTIME_NETWORK_OPEN: the agent's sandbox shares the machine's
+ *   network, so it reaches everything the daemon's user can -- the LAN,
+ *   the tailnet and this machine's own loopback services included
+ * @CLAWT_RUNTIME_NETWORK_GATED: the sandbox has no network of its own;
+ *   its only way out is clawtilla's egress gate, an HTTP proxy that
+ *   reaches public addresses only (plus the fleet's `egress.allow`)
+ * @CLAWT_RUNTIME_NETWORK_NONE: the sandbox has no network at all; only
+ *   the provider keys clawtilla brokers still reach their provider
+ *
+ * Where a confined agent's own process may connect.  Anything but open
+ * needs `runtime.confine: bwrap`, because without a network namespace of
+ * its own a process can ignore every proxy variable it is given.
+ */
+typedef enum {
+    CLAWT_RUNTIME_NETWORK_OPEN = 0,
+    CLAWT_RUNTIME_NETWORK_GATED,
+    CLAWT_RUNTIME_NETWORK_NONE
+} ClawtRuntimeNetwork;
+
+/**
+ * ClawtNetAddressClass:
+ * @CLAWT_NET_ADDRESS_PUBLIC: routable on the public internet
+ * @CLAWT_NET_ADDRESS_LOOPBACK: this machine (127.0.0.0/8, ::1)
+ * @CLAWT_NET_ADDRESS_PRIVATE: a local network (RFC 1918, and IPv6's
+ *   deprecated site-local fec0::/10)
+ * @CLAWT_NET_ADDRESS_LINK_LOCAL: link-local (169.254.0.0/16, fe80::/10)
+ * @CLAWT_NET_ADDRESS_CGNAT: shared address space, 100.64.0.0/10 -- which
+ *   is also where a tailnet lives
+ * @CLAWT_NET_ADDRESS_METADATA: a cloud metadata service (169.254.169.254,
+ *   fd00:ec2::254)
+ * @CLAWT_NET_ADDRESS_UNIQUE_LOCAL: IPv6 unique-local, fc00::/7
+ * @CLAWT_NET_ADDRESS_MULTICAST: multicast or broadcast
+ * @CLAWT_NET_ADDRESS_UNSPECIFIED: 0.0.0.0 or ::, which connect() takes to
+ *   mean this machine
+ * @CLAWT_NET_ADDRESS_RESERVED: reserved, documentation or benchmarking
+ *   space that nothing public should resolve to
+ *
+ * What kind of place an address is, for deciding whether an agent may
+ * connect to it.  An IPv6 address that embeds an IPv4 one -- v4-mapped,
+ * v4-compatible, NAT64, 6to4 -- is classified by the address it embeds.
+ */
+typedef enum {
+    CLAWT_NET_ADDRESS_PUBLIC = 0,
+    CLAWT_NET_ADDRESS_LOOPBACK,
+    CLAWT_NET_ADDRESS_PRIVATE,
+    CLAWT_NET_ADDRESS_LINK_LOCAL,
+    CLAWT_NET_ADDRESS_CGNAT,
+    CLAWT_NET_ADDRESS_METADATA,
+    CLAWT_NET_ADDRESS_UNIQUE_LOCAL,
+    CLAWT_NET_ADDRESS_MULTICAST,
+    CLAWT_NET_ADDRESS_UNSPECIFIED,
+    CLAWT_NET_ADDRESS_RESERVED
+} ClawtNetAddressClass;
+
+/**
  * ClawtTeamRole:
  * @CLAWT_TEAM_MEMBER: talks to anyone, assigns to nobody
  * @CLAWT_TEAM_LEAD: may hand work to the members of its own team
@@ -1018,6 +1074,8 @@ GType clawt_agent_state_get_type(void) G_GNUC_CONST;
 GType clawt_agent_caps_get_type(void) G_GNUC_CONST;
 GType clawt_runtime_type_get_type(void) G_GNUC_CONST;
 GType clawt_runtime_confine_get_type(void) G_GNUC_CONST;
+GType clawt_runtime_network_get_type(void) G_GNUC_CONST;
+GType clawt_net_address_class_get_type(void) G_GNUC_CONST;
 GType clawt_team_role_get_type(void) G_GNUC_CONST;
 GType clawt_restart_policy_get_type(void) G_GNUC_CONST;
 GType clawt_computer_type_get_type(void) G_GNUC_CONST;
@@ -1053,6 +1111,8 @@ GType clawt_credential_placement_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_AGENT_CAPS       (clawt_agent_caps_get_type())
 #define CLAWT_TYPE_RUNTIME_TYPE     (clawt_runtime_type_get_type())
 #define CLAWT_TYPE_RUNTIME_CONFINE  (clawt_runtime_confine_get_type())
+#define CLAWT_TYPE_RUNTIME_NETWORK  (clawt_runtime_network_get_type())
+#define CLAWT_TYPE_NET_ADDRESS_CLASS (clawt_net_address_class_get_type())
 #define CLAWT_TYPE_TEAM_ROLE        (clawt_team_role_get_type())
 #define CLAWT_TYPE_RESTART_POLICY   (clawt_restart_policy_get_type())
 #define CLAWT_TYPE_COMPUTER_TYPE    (clawt_computer_type_get_type())

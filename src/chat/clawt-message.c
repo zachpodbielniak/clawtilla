@@ -32,6 +32,9 @@ struct _ClawtMessage {
     ClawtPriority priority;
     gboolean      invites_reply;
 	gboolean      composed;
+	gboolean      one_way;
+	gboolean      acknowledged;
+	guint         merged;
 };
 
 static ClawtMessage *
@@ -111,6 +114,9 @@ clawt_message_copy(ClawtMessage *self)
     copy->priority = self->priority;
     copy->invites_reply = self->invites_reply;
 	copy->composed = self->composed;
+	copy->one_way = self->one_way;
+	copy->acknowledged = self->acknowledged;
+	copy->merged = self->merged;
 
     return copy;
 }
@@ -400,4 +406,88 @@ clawt_transcript_is_at_bottom(gdouble value, gdouble upper, gdouble page_size)
         return TRUE;
 
     return (bottom - value) < CLAWT_TRANSCRIPT_FOLLOW_TOLERANCE;
+}
+
+/*
+ * reply: none.  Kept apart from invites_reply because the two say
+ * different things to the recipient: a cleared invite on its own means
+ * "this is somebody answering you", which is a lie about an FYI, and the
+ * preamble has to be able to tell a notice from an answer.
+ */
+gboolean
+clawt_message_get_one_way(
+	ClawtMessage *self
+){
+	g_return_val_if_fail(self != NULL, FALSE);
+
+	return self->one_way;
+}
+
+void
+clawt_message_set_one_way(
+	ClawtMessage *self,
+	gboolean      one_way
+){
+	g_return_if_fail(self != NULL);
+
+	self->one_way = one_way;
+
+	/*
+	 * A one-way message never invites an answer: the two are set
+	 * together so no caller can produce the contradiction.
+	 */
+	if (one_way)
+		self->invites_reply = FALSE;
+}
+
+gboolean
+clawt_message_get_acknowledged(
+	ClawtMessage *self
+){
+	g_return_val_if_fail(self != NULL, FALSE);
+
+	return self->acknowledged;
+}
+
+void
+clawt_message_set_acknowledged(
+	ClawtMessage *self,
+	gboolean      acknowledged
+){
+	g_return_if_fail(self != NULL);
+
+	self->acknowledged = acknowledged;
+}
+
+guint
+clawt_message_get_merged(
+	ClawtMessage *self
+){
+	g_return_val_if_fail(self != NULL, 0);
+
+	return self->merged;
+}
+
+void
+clawt_message_set_merged(
+	ClawtMessage *self,
+	guint         parts
+){
+	g_return_if_fail(self != NULL);
+
+	self->merged = parts;
+}
+
+const gchar *
+clawt_message_ack_label(void)
+{
+	return "acknowledged (no wake)";
+}
+
+const gchar *
+clawt_message_ack_tooltip(void)
+{
+	return "This answer only acknowledged a message, so clawtilla recorded "
+	       "it here instead of waking the agent that asked. That agent "
+	       "is told about it on its next turn.";
 }

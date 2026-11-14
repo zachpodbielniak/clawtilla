@@ -1075,6 +1075,20 @@ clawt_daemon_turn_note_tool_call(ClawtDaemon *self,
      */
     clawt_daemon_turn_activity(self, agent_id);
 
+	/*
+	 * A clawtilla tool call is a tool call of the turn's, and the one
+	 * kind that sends something outward.  It carries no room, so every
+	 * running turn of the agent is charged -- the direction in which the
+	 * acknowledgement check wakes somebody it need not have, never the
+	 * one in which it skips somebody it should have woken.
+	 */
+	if (self->agents != NULL) {
+		ClawtAgent *agent = clawt_agent_manager_get(self->agents, agent_id);
+
+		if (agent != NULL)
+			clawt_agent_note_turn_tool(agent, NULL);
+	}
+
     if (self->repeats != NULL)
         clawt_repeat_watch_note(self->repeats, agent_id, tool, args);
 }

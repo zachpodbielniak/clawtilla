@@ -776,7 +776,7 @@ What is in the box:
 
 The login directory is the ~accounts:~ entry's ~config_dir~ when the agent has one, otherwise the CLI's default (=~/.claude= and =~/.claude.json=, =~/.codex=, =~/.grok=, opencode's XDG directories). A path that does not exist is left out rather than bound: bwrap refuses to start on a missing source. On a ~host~ computer, ~computer.host.deny_paths~ are denied in this box as well, so the sentence the agent is given about them is true of its own tools too.
 
-What it does not do: the network is left alone (the CLI has a provider to reach; limiting where it connects is an egress gate's job, and that is not built) -- so loopback services and the LAN are reachable from the box -- except for abstract unix sockets, below. The PID namespace is new but ~/proc~ is the box's own. bwrap does not forward signals, so a stop sends SIGTERM to libreclaw inside the box rather than to bwrap -- killing bwrap would end libreclaw with SIGKILL through ~--die-with-parent~ and skip its clean shutdown -- and an interrupt walks the tree below libreclaw, not below bwrap.
+What it does not do by itself: the network is left as ~runtime.network~ says -- shared with the machine when it is ~open~, the default, so loopback services and the LAN are reachable from the box (except for abstract unix sockets, below), and a namespace of its own when it is ~gated~ or ~none~ (see *Egress* below). The PID namespace is new but ~/proc~ is the box's own. bwrap does not forward signals, so a stop sends SIGTERM to libreclaw inside the box rather than to bwrap -- killing bwrap would end libreclaw with SIGKILL through ~--die-with-parent~ and skip its clean shutdown -- and an interrupt walks the tree below libreclaw, not below bwrap.
 
 *The box owns ~TMPDIR~, ~HOME~ and every ~XDG_*~.*  An agent's ~env:~ replaces allowlisted names, so it could set ~TMPDIR~ to a host directory the box binds writable -- the exchange, a mount -- and every temporary file would land there, outlive the box and reach other agents. Inside a box (this one, and the ~confine: bwrap~ box ~clawtilla_computer_exec~ uses) those variables are dropped from whatever the agent set and replaced: ~TMPDIR=/tmp~, ~HOME~ the daemon's home, the XDG base directories the daemon's own, ~XDG_RUNTIME_DIR~ an empty 0700 directory at the daemon's spelling. An unconfined agent keeps what it set.
 
@@ -885,6 +885,76 @@ redacting at display time leaves the leak permanent.
 A command that was *refused* is recorded too, with an exit of ~-1~.
 "We do not know what it did" is a different fact from "it did not
 happen", and the refused one is what somebody looks up.
+
+** Egress
+
+A confined agent with an open network reaches everything the daemon's user can: the LAN, the tailnet, this machine's own loopback services (the daemon's web client among them) and, on a cloud host, the metadata service that hands out the machine's credentials. ~runtime.network~ (per agent, default ~open~) closes that, and only inside the sandbox: a process outside a network namespace of its own can ignore every proxy variable it is handed, so ~gated~ or ~none~ without ~runtime.confine: bwrap~ is a ~SHADOW~ agent with the reason, at load and at start, and ~agent.set~ refuses the pair in either order. It is never run on an open network instead.
+
+| ~runtime.network~ | The box gets | Reaches |
+|-------------------+--------------+---------|
+| ~open~  | the machine's network | everything the daemon's user can |
+| ~gated~ | a namespace with only loopback in it, ~HTTPS_PROXY~/~HTTP_PROXY~ pointing at 127.0.0.1:3128 | public addresses through the egress gate, plus =egress.allow=; brokered provider keys |
+| ~none~  | a namespace with only loopback in it | brokered provider keys and nothing else |
+
+~none~ still reaching brokered provider keys is deliberate, not a leak: the broker forwards only to its pinned upstreams, with a key the agent never holds, so an API-key agent on ~none~ can talk to its model and to nothing else. An agent that must not reach even its provider has no use for being an agent; one on an OAuth login gets no broker route at all under ~none~, and so no network.
+
+*** The route out of the box
+
+The box has no interface but loopback. The daemon serves one unix socket per gated agent (=<state_dir>/egress/gate/<id>.sock=, 0600) and one for the broker (=<state_dir>/egress/broker.sock=); each is bound into the box as a file, never as the directory that holds every agent's. ~clawtilla-relay~, a small GIO program built beside the daemon, is what bwrap starts: it listens on 127.0.0.1:3128 (the gate) and 127.0.0.1:3129 (the broker) inside the namespace, bridges each connection to its socket, and runs libreclaw as its child, forwarding the signals a stop sends. The daemon looks past it, by name, for libreclaw's pid, as it looks past bwrap.
+
+The choice against the alternatives: a unix socket crosses a network namespace and a TCP port does not, so no veth, no slirp and no root are needed, and the namespace being empty is the enforcement -- the proxy variables are a convenience the CLI follows, not the wall. ~NO_PROXY~ is set to loopback so the broker is not sent through the gate, which would refuse it as this machine.
+
+Both are started the first time a gated or closed agent starts, never at daemon start, and binding them waits on nothing. A gate socket that cannot be bound, a relay that cannot be found (beside the daemon, one directory up, then ~PATH~) or a broker that is not listening while there is a key to broker each refuse the start, naming why.
+
+*** The egress gate
+
+An HTTP proxy in the daemon: ~CONNECT host:port~ for TLS, and a request with an absolute ~http://~ URL for plain HTTP, forwarded in origin form with ~Connection: close~ so a second request on the same connection cannot ride the first one's checked address to another host. It resolves names itself, and judges *addresses*, after resolution, with ~clawt_egress_decide()~ (=src/net/clawt-net-policy.c=). Its table, ~clawt_net_address_classify()~, is the same one the wait probes ask through ~clawt_net_address_is_public()~ (=src/clawt-net.c=), so the two cannot disagree about what is private:
+
+| Refused | Ranges |
+|---------+--------|
+| this machine | 127.0.0.0/8, ::1, 0.0.0.0, :: |
+| the LAN | 10/8, 172.16/12, 192.168/16, fec0::/10 |
+| link-local | 169.254/16, fe80::/10 |
+| CGNAT and tailnets | 100.64.0.0/10 -- not an octet boundary: 100.63.255.255 and 100.128.0.0 are public |
+| cloud metadata | 169.254.169.254, 169.254.170.2, 100.100.100.200, fd00:ec2::254 |
+| IPv6 local networks | fc00::/7 |
+| multicast and broadcast | 224/4, 255.255.255.255, ff00::/8 |
+| reserved | 0/8, 240/4, documentation and benchmarking ranges, Teredo, the local-use NAT64 prefix, anything outside 2000::/3 |
+
+An IPv6 address carrying an IPv4 one -- v4-mapped, v4-compatible, NAT64 64:ff9b::/96, 6to4 2002::/16 -- is judged by the address it carries, so ~::ffff:127.0.0.1~ is this machine. *Every* address a name resolves to must pass, not the first: a name answering one public and one private address is a name built to have the private one tried. The gate connects only to addresses it has judged (a ~GSocketClient~ given the address, with proxies off, so nothing resolves again), reads back the address the socket actually reached and judges that too, and when one family cannot route -- an AAAA answer on a host with no IPv6 -- it tries the next address, the families interleaved, each with a 10-second connect timeout. A CONNECT is a tunnel to one checked address, so neither DNS rebinding nor a redirect gets past it: a redirect is the client's next request, and goes through the gate like the first.
+
+A refusal answers 403 with the reason in the body and an ~X-Clawtilla-Egress~ header, because the client is a CLI that prints one of them and a bare 403 reads as the site refusing. Each is counted against the agent whose socket it came from and kept (the last 20), which is what the agent view shows: "egress: gated (3 refused today)" and, per refusal, the host, the address and why. A request head is bounded while it is read (16 KiB) and an agent may hold 256 connections through the gate at once.
+
+*=egress.allow=* opens private addresses anyway: an address, a network (~address/prefix~) or a host name, each with an optional ~:port~ (~[fd00::1]:443~ for IPv6). A name matches the name the agent asked for and never opens loopback -- a name is the agent's input, and a name pointed at 127.0.0.1 is the attack. Metadata, multicast, the unspecified address and reserved space cannot be opened; an entry naming one is refused where it is added (~egress.allow.add~) and, hand-edited into the file, makes the whole list open nothing, with a config warning saying why. The clients edit it beside the fleet's shared folders. It applies to the next connection; nothing needs restarting.
+
+*** The provider-key broker
+
+A gated agent can still send whatever it holds to any public host -- that is what the gate lets through -- so an API key in its environment is a key it can give away. Where the CLI lets its endpoint be moved, the broker keeps the key in the daemon:
+
+- the agent's environment gets a token (~clawt-broker-~ and 32 bytes from ~/dev/urandom~) in place of the key, minted for that one process, and the CLI's base URL pointed at ~http://127.0.0.1:3129/<provider>~;
+- the broker finds the token in ~X-Api-Key~ or ~Authorization: Bearer~, compares it by its SHA-256 (the daemon holds no token it could print), drops every header that can carry a credential (~Authorization~, ~X-Api-Key~, ~X-Goog-Api-Key~, ~Proxy-Authorization~, ~Cookie~), adds the real one, and forwards to an upstream the agent cannot choose -- streamed chunk by chunk, so a model's answer arrives as it is written;
+- the request is built by ~clawt_http_message_new(..., CLAWT_HTTP_CARRIES_CREDENTIALS)~, so the real key never follows a redirect; a 3xx from the pinned upstream becomes a 502 naming where it pointed;
+- the token is revoked when the process exits, and a new start mints a new one, which retires the old;
+- a brokered key's credential file is not written to =<state_dir>/agents/<id>/credentials/= (the box binds that directory read-write), and an existing one is removed.
+
+| Key | CLI | Upstream (pinned) | Sent as |
+|-----+-----+-------------------+---------|
+| ~ANTHROPIC_API_KEY~ | Claude Code (~claude-code~, ~claude-tmux~), and libreclaw's own ai-glib | ~https://api.anthropic.com~ via ~ANTHROPIC_BASE_URL~ | ~x-api-key~ |
+| ~ANTHROPIC_AUTH_TOKEN~ | the same | the same | ~Authorization: Bearer~ |
+| ~OPENAI_API_KEY~ | Codex (~codex-cli~) | ~https://api.openai.com/v1~ via ~OPENAI_BASE_URL~ | ~Authorization: Bearer~ |
+
+An operator who already set the base URL -- a LiteLLM in front of the provider -- has the broker pin *that*, if it is ~https://~; a cleartext one is left alone and the key reported unbrokered, since the broker will not send a real key in clear text on anybody's behalf.
+
+*** What is not brokered
+
+Said on the agent's view, per key, with the reason, so "keys brokered" can never be read off an agent that holds one the broker could not take:
+
+- *on an open network, nothing*: the box's own route reaches the provider, and a key that went through the broker there would protect nothing;
+- *a CLI that does not read the base URL*: ~grok-build~ (~XAI_API_KEY~), ~antigravity~ (~GEMINI_API_KEY~), ~cursor~ (~CURSOR_API_KEY~) and ~opencode~ are passed their keys as before. A CLI is assumed *not* to read the variable unless it is listed above: brokering a key for a CLI that ignores the base URL would send the token to the real provider, which answers "invalid API key" and sends somebody to the wrong place;
+- *any other credential-looking variable* (~*_API_KEY~, ~*_TOKEN~, ~*_SECRET~, ~*_ACCESS_KEY~ -- a ~GITHUB_TOKEN~, say): there is no base URL to point anywhere, so the agent holds the real value;
+- *an OAuth login is unaffected*: a Claude subscription keeps its login in the CLI's own directory, bound into the box for refresh, and has no key in the environment to swap. Its traffic goes through the gate like anything else; it is not brokered, and the login directory is the agent's to read.
+
+libreclaw's other channels (Matrix, email) speak through libsoup and GIO, which follow ~HTTPS_PROXY~ only when GLib's proxy resolver reads the environment; where it does not, a gated agent's channel has no route and fails closed rather than reaching anything directly.
 
 ** Desktop control
 

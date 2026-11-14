@@ -53,6 +53,7 @@ static gboolean deliver_for_tools(const gchar   *from_agent,
                                   gint           depth,
                                   ClawtPriority  priority,
                                   const gchar   *turn_room,
+                                  gboolean       one_way,
                                   gpointer       user_data,
                                   GError       **error);
 
@@ -2537,6 +2538,18 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
         }
     }
 
+	/*
+	 * An answer to a peer that may be no more than "thanks, noted" is
+	 * put to orchestration.ack_check_model first, which either records
+	 * it without waking the peer or routes it exactly as below.  Never
+	 * for the operator's room: a person reading an acknowledgement costs
+	 * nothing, and must not be second-guessed by a model.
+	 */
+	if (!is_operator_room(destination) &&
+		clawt_daemon_ack_consider(self, agent_id, room_id, destination,
+		                          message))
+		return;
+
     if (clawt_mailbox_router_send(self->router, message, &error) < 0) {
         g_info("daemon: %s's message was not routed: %s", agent_id,
                error->message);
@@ -3077,7 +3090,7 @@ static gboolean
 deliver_for_tools(const gchar *from_agent, const gchar *target,
                   const gchar *body, const gchar *task_id, gint depth,
                   ClawtPriority priority, const gchar *turn_room,
-				  gpointer user_data, GError **error)
+				  gboolean one_way, gpointer user_data, GError **error)
 {
     ClawtDaemon *self = user_data;
 	g_autoptr(ClawtMessage) message = NULL;
@@ -3128,6 +3141,12 @@ deliver_for_tools(const gchar *from_agent, const gchar *target,
 	clawt_message_set_priority(message, priority);
 
 	/*
+	 * `reply: none`, onto the message, so the router stores it on every
+	 * item and the receiver's turn is closed from the start.
+	 */
+	clawt_message_set_one_way(message, one_way);
+
+	/*
 	 * A delegation that named a model: only the assignment itself, sent
 	 * to the assignee, runs on it -- not the delegator's later notes on
 	 * the same task, nor anything sent the other way.
@@ -3147,9 +3166,10 @@ deliver_for_tools(const gchar *from_agent, const gchar *target,
 	 * durable mailbox. Neither task assignments nor room posts need it:
 	 * tasks already have settlement notices, and room posts are not
 	 * requests to one peer. Do not guess between concurrent callers
-	 * when an older harness provides no room.
+	 * when an older harness provides no room. A one-way notice needs none
+	 * either: nothing will answer it.
 	 */
-	if (sender != NULL && task_id == NULL &&
+	if (sender != NULL && task_id == NULL && !one_way &&
 		clawt_agent_manager_get(self->agents, target) != NULL) {
 		const gchar *request_room = turn_room;
 
@@ -4102,6 +4122,22 @@ start_agent_launch(ClawtDaemon *self, const gchar *agent_id,
         }
 
         clawt_process_runtime_set_sandbox(process, sandbox);
+
+        /*
+         * And its network, retaken with the sandbox for the same reason.
+         * A gated agent whose gate cannot be bound is refused, never
+         * started with the open network instead.
+         */
+        {
+            g_autoptr(GError) why = NULL;
+
+            if (!clawt_daemon_egress_prepare_agent(self, config, process,
+                                                   &why)) {
+                clawt_agent_set_error(agent, why->message);
+                g_propagate_error(error, g_steal_pointer(&why));
+                return FALSE;
+            }
+        }
     }
 
 	prime_agent_usage(self, agent_id);
@@ -4648,11 +4684,15 @@ release_components(ClawtDaemon *self)
     g_clear_object(&self->tasks);
     g_clear_object(&self->rooms);
     g_clear_object(&self->agents);
+    clawt_daemon_egress_release(self);
     g_clear_object(&self->vm_images);
     g_clear_object(&self->exchange);
     g_clear_object(&self->decisions);
     g_clear_object(&self->skill_proposals);
     g_clear_object(&self->operator_profile);
+	g_clear_object(&self->ack_provider);
+	g_clear_object(&self->ack_provider_override);
+	g_clear_pointer(&self->ack_provider_spec, g_free);
     g_clear_object(&self->summariser);
     g_clear_object(&self->transcripts);
     g_clear_object(&self->log);
@@ -6318,7 +6358,7 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      */
     clawt_mcp_tools_set_main_context(self->mcp_tools, self->main_context);
 
-    clawt_mcp_tools_set_deliver_turn_func(self->mcp_tools, deliver_for_tools,
+    clawt_mcp_tools_set_deliver_reply_func(self->mcp_tools, deliver_for_tools,
                                      self, NULL);
 
     /*
@@ -6797,6 +6837,9 @@ clawt_daemon_stop(ClawtDaemon *self)
     if (self->agents != NULL)
         clawt_agent_manager_stop_all(self->agents);
 
+    /* After the fleet, whose exits are what revoke the broker's tokens. */
+    clawt_daemon_egress_stop(self);
+
     if (self->rooms != NULL)
         clawt_room_manager_flush(self->rooms);
 
@@ -6943,6 +6986,9 @@ clawt_daemon_reload_internal(ClawtDaemon *self, GPtrArray *refusals,
      */
     clawt_daemon_render_all_agents_into(self, refusals);
 
+    /* egress.allow is read per connection, so it applies at once. */
+    clawt_daemon_egress_refresh_allowlist(self);
+
     clawt_event_bus_emit(self->bus, "daemon.reloaded", NULL);
     g_signal_emit(self, signals[SIGNAL_RELOADED], 0);
 
@@ -7043,7 +7089,13 @@ clawt_daemon_setting_needs_a_new_session(const gchar *key)
          * unconfined an hour later.
          */
         "runtime.confine",
-        "runtime.confine_paths"
+        "runtime.confine_paths",
+
+        /*
+         * The network namespace is made when the child is spawned, and
+         * the broker's token is minted for that process.
+         */
+        "runtime.network"
     };
     gsize i;
 
@@ -7682,6 +7734,9 @@ clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
     json_builder_set_member_name(builder, "runtime_type");
     json_builder_add_string_value(
         builder, clawt_agent_config_get_string(config, "runtime.type"));
+    json_builder_set_member_name(builder, "network");
+    json_builder_add_string_value(
+        builder, clawt_agent_config_get_string(config, "runtime.network"));
     json_builder_set_member_name(builder, "confine_available");
     json_builder_add_boolean_value(
         builder, !clawt_agent_confine_wanted(config) ||
@@ -9037,6 +9092,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_agent,
     clawt_daemon_handle_memory,
     clawt_daemon_handle_mount,
+    clawt_daemon_handle_egress,
     clawt_daemon_handle_image,
     clawt_daemon_handle_team,
     clawt_daemon_handle_room,
@@ -9057,6 +9113,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_teach,
     clawt_daemon_handle_activity,
     clawt_daemon_handle_browser,
+    clawt_daemon_handle_orchestration,
 };
 
 JsonNode *

@@ -136,6 +136,14 @@ typedef struct {
     gchar    *origin;
     gchar    *task_id;
     ClawtMailboxItem *input; /* The exact delivery, including return context. */
+
+	/*
+	 * What the turn did besides write, counted from its streamed tool
+	 * steps and its clawtilla tool calls.  Per turn, so it starts at
+	 * zero on the rising edge and is still there after the falling one,
+	 * when the answer it describes is posted.
+	 */
+	guint     tool_calls;
 } TurnSetup;
 
 
@@ -1003,6 +1011,30 @@ clawt_agent_close_turn_exchange(ClawtAgent *self, const gchar *room_id)
 }
 
 /*
+ * Who a delivery's turn is for and what task it is about.  Only a
+ * correlated, closed answer restores the requester's responsibility; an
+ * incoming question is still the peer's ask.  One function because
+ * clawt_agent_deliver_item() and the merge both need it, and two copies
+ * would disagree about whose turn a correlated answer starts.
+ */
+static void
+item_turn_owner(
+	ClawtMailboxItem  *item,
+	const gchar      **out_origin,
+	const gchar      **out_task
+){
+	*out_origin = clawt_mailbox_item_get_from(item);
+	*out_task = clawt_mailbox_item_get_task_id(item);
+
+	if (!clawt_mailbox_item_get_invites_reply(item) &&
+		clawt_mailbox_item_get_reply_to(item) != NULL &&
+		clawt_mailbox_item_get_request_room(item) != NULL) {
+		*out_origin = clawt_mailbox_item_get_request_origin(item);
+		*out_task = clawt_mailbox_item_get_request_task(item);
+	}
+}
+
+/*
  * Keep the exact input with its turn. Only a correlated, closed answer
  * restores responsibility; an incoming question is still the peer's ask.
  */
@@ -1016,18 +1048,149 @@ clawt_agent_deliver_item(ClawtAgent *self, ClawtMailboxItem *item,
 
 	g_return_if_fail(CLAWT_IS_AGENT(self));
 	g_return_if_fail(item != NULL);
-	origin = clawt_mailbox_item_get_from(item);
-	task_id = clawt_mailbox_item_get_task_id(item);
-	if (!clawt_mailbox_item_get_invites_reply(item) &&
-		clawt_mailbox_item_get_reply_to(item) != NULL &&
-		clawt_mailbox_item_get_request_room(item) != NULL) {
-		origin = clawt_mailbox_item_get_request_origin(item);
-		task_id = clawt_mailbox_item_get_request_task(item);
-	}
+	item_turn_owner(item, &origin, &task_id);
 	clawt_agent_deliver_turn(self, clawt_mailbox_item_get_room(item),
 		clawt_mailbox_item_get_depth(item), replies, origin, task_id);
 	setup = g_queue_peek_tail(self->pending);
 	setup->input = clawt_mailbox_item_copy(item);
+}
+
+void
+clawt_agent_deliver_merged(
+	ClawtAgent       *self,
+	ClawtMailboxItem *delivered,
+	GPtrArray        *items,
+	const gboolean   *replies,
+	const gboolean   *peers
+){
+	const gchar *origin = NULL;
+	const gchar *task_id = NULL;
+	gboolean any_replies = FALSE;
+	gboolean peer_origin = FALSE;
+	gboolean tasks_agree = TRUE;
+	gint depth = 0;
+	TurnSetup *setup;
+	guint i;
+
+	g_return_if_fail(CLAWT_IS_AGENT(self));
+	g_return_if_fail(delivered != NULL);
+	g_return_if_fail(items != NULL && items->len > 0);
+	g_return_if_fail(replies != NULL && peers != NULL);
+
+	/*
+	 * The one place several deliveries' turn state is folded into one,
+	 * and every field in the direction that errs towards stopping:
+	 *
+	 *   depth    the deepest, so max_hops is not bought back by merging
+	 *   replies  TRUE if any part may be answered -- swallowing a real
+	 *            answer is silent data loss, one extra answer is a turn
+	 *   task     only when every part names the same one (NULL counts):
+	 *            a wrong parent hangs work under somebody else's job,
+	 *            no parent is what an ambiguous turn gets elsewhere
+	 *   origin   any peer's, so clawtilla_message_user's guard holds
+	 *            when one part of the turn was a peer's
+	 *
+	 * The agent-wide getters fold *running* turns the same way; this is
+	 * the same rule applied before the turn starts, because after the
+	 * merge there is only one turn to describe.
+	 */
+	for (i = 0; i < items->len; i++) {
+		ClawtMailboxItem *item = g_ptr_array_index(items, i);
+		const gchar *item_origin;
+		const gchar *item_task;
+
+		item_turn_owner(item, &item_origin, &item_task);
+
+		depth = MAX(depth, clawt_mailbox_item_get_depth(item));
+		any_replies = any_replies || replies[i];
+
+		if (i == 0)
+			task_id = item_task;
+		else if (g_strcmp0(task_id, item_task) != 0)
+			tasks_agree = FALSE;
+
+		/*
+		 * A peer's part whose turn belongs to a peer.  A correlated
+		 * answer restores its requester, which may be the operator or
+		 * nobody the daemon can name; that origin is a fallback, never
+		 * preferred over a part that is a peer's business.
+		 */
+		if (peers[i] && item_origin != NULL && !peer_origin &&
+			g_strcmp0(item_origin, "user") != 0 &&
+			g_strcmp0(item_origin, CLAWT_SYSTEM_SENDER) != 0) {
+			origin = item_origin;
+			peer_origin = TRUE;
+		} else if (origin == NULL && item_origin != NULL) {
+			origin = item_origin;
+		}
+	}
+
+	clawt_agent_deliver_turn(self, clawt_mailbox_item_get_room(delivered),
+		depth, any_replies, origin, tasks_agree ? task_id : NULL);
+	setup = g_queue_peek_tail(self->pending);
+	setup->input = clawt_mailbox_item_copy(delivered);
+}
+
+void
+clawt_agent_note_turn_tool(
+	ClawtAgent  *self,
+	const gchar *room_id
+){
+	GHashTableIter iter;
+	gpointer key;
+	gpointer value;
+	gboolean any = FALSE;
+
+	g_return_if_fail(CLAWT_IS_AGENT(self));
+
+	if (room_id != NULL) {
+		TurnSetup *setup = turn_in(self, room_id);
+
+		if (setup != NULL)
+			setup->tool_calls++;
+		return;
+	}
+
+	/*
+	 * No room: a clawtilla tool call arrives on the agent's link with
+	 * none.  Every running turn is charged with it, which is the safe
+	 * direction -- a turn wrongly credited with a tool call wakes its
+	 * asker as it always did, and one wrongly left at zero might not.
+	 */
+	g_hash_table_iter_init(&iter, self->turns);
+
+	while (g_hash_table_iter_next(&iter, &key, &value)) {
+		if (!g_hash_table_contains(self->typing_rooms, key))
+			continue;
+		((TurnSetup *)value)->tool_calls++;
+		any = TRUE;
+	}
+
+	if (!any) {
+		TurnSetup *setup = latest_turn(self);
+
+		if (setup != NULL)
+			setup->tool_calls++;
+	}
+}
+
+guint
+clawt_agent_get_turn_tool_calls_in(
+	ClawtAgent  *self,
+	const gchar *room_id
+){
+	TurnSetup *setup;
+
+	g_return_val_if_fail(CLAWT_IS_AGENT(self), G_MAXUINT);
+
+	setup = turn_in(self, room_id);
+
+	/*
+	 * A room with no turn on record has no count, and "unknown" must
+	 * not read as zero to a caller deciding whether the turn did
+	 * anything.
+	 */
+	return setup != NULL ? setup->tool_calls : G_MAXUINT;
 }
 
 gboolean

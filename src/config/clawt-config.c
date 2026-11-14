@@ -396,6 +396,42 @@ agent_validate(ClawtAgentConfig *self)
     }
 
     /*
+     * The network, which only the sandbox can enforce: a process outside
+     * a network namespace of its own can ignore HTTPS_PROXY, so gated or
+     * none without bwrap would be a setting that described a wall and
+     * built none.  A shadow with the reason, never an open network.
+     */
+    {
+        const gchar *wanted =
+            clawt_agent_config_get_string(self, "runtime.network");
+
+        if (wanted != NULL &&
+            !clawt_enum_from_nick(CLAWT_TYPE_RUNTIME_NETWORK, wanted,
+                                  &value)) {
+            g_autofree gchar *known =
+                clawt_enum_nick_list(CLAWT_TYPE_RUNTIME_NETWORK);
+
+            agent_mark_shadow(self,
+                              "unknown runtime.network '%s'; this build "
+                              "knows %s", wanted, known);
+            return;
+        }
+
+        if (clawt_agent_config_get_enum(self, "runtime.network") !=
+                CLAWT_RUNTIME_NETWORK_OPEN &&
+            !clawt_agent_confine_wanted(self)) {
+            agent_mark_shadow(self,
+                              "runtime.network: %s needs runtime.confine: "
+                              "bwrap -- outside the sandbox the agent's CLI "
+                              "could ignore the gate. Turn sandboxing on, "
+                              "or set runtime.network: open. The agent is "
+                              "not run on an open network instead",
+                              wanted != NULL ? wanted : "gated");
+            return;
+        }
+    }
+
+    /*
      * A host computer without the confirmation is a shadow rather than a
      * silently-confined agent.  Quietly falling back to a safer mode would
      * be the wrong kind of helpful: the user asked for something the daemon
@@ -3192,6 +3228,26 @@ clawt_config_new(void)
  * the tree cannot disagree -- an agent removed from one but not the other
  * would be a bug that only shows up on the next save.
  */
+/*
+ * A bad egress.allow entry is a warning, not a refusal of the whole
+ * file: the gate then opens nothing beyond the public internet, which is
+ * the safe direction, and says why.  Refusing the daemon over a typo
+ * would take every agent down for one list.
+ */
+static void
+warn_about_egress(ClawtConfig *self)
+{
+    g_auto(GStrv) allow = clawt_config_get_string_list(self, "egress.allow");
+    g_autoptr(GError) bad = NULL;
+    g_autoptr(ClawtEgressAllowlist) list =
+        clawt_egress_allowlist_new((const gchar * const *)allow, &bad);
+
+    if (list == NULL)
+        g_ptr_array_add(self->warnings, g_strdup_printf(
+            "%s; until it is fixed egress.allow opens nothing, so gated "
+            "agents reach public addresses only", bad->message));
+}
+
 static void
 reload_agents(ClawtConfig *self)
 {
@@ -3660,6 +3716,7 @@ config_from_parser(YamlParser *parser, const gchar *path, GError **error)
     warn_block_keys(self, self->root, NULL, NULL);
     warn_block_keys_in_lists(self);
     warn_about_rooms(self);
+    warn_about_egress(self);
     reload_agents(self);
     reload_integrations(self);
     reload_routines(self);

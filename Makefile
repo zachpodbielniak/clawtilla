@@ -130,6 +130,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/browser/clawt-browser.h \
 	$(SRCDIR)/mailbox/clawt-mailbox.h \
 	$(SRCDIR)/mailbox/clawt-mailbox-router.h \
+	$(SRCDIR)/mailbox/clawt-ack-check.h \
 	$(SRCDIR)/agent/clawt-agent-runtime.h \
 	$(SRCDIR)/agent/clawt-process-runtime.h \
 	$(SRCDIR)/agent/clawt-embedded-runtime.h \
@@ -141,6 +142,9 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/agent/clawt-agent-confine.h \
 	$(SRCDIR)/computer/clawt-exec-result.h \
 	$(SRCDIR)/computer/clawt-sandbox.h \
+	$(SRCDIR)/net/clawt-net-policy.h \
+	$(SRCDIR)/net/clawt-egress-gate.h \
+	$(SRCDIR)/net/clawt-egress-broker.h \
 	$(SRCDIR)/computer/clawt-computer.h \
 	$(SRCDIR)/computer/clawt-null-computer.h \
 	$(SRCDIR)/computer/clawt-host-computer.h \
@@ -164,6 +168,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/decision/clawt-decision-store.h \
 	$(SRCDIR)/chat/clawt-attachment.h \
 	$(SRCDIR)/chat/clawt-preamble.h \
+	$(SRCDIR)/chat/clawt-merge.h \
 	$(SRCDIR)/chat/clawt-markdown.h \
 	$(SRCDIR)/chat/clawt-export.h \
 	$(SRCDIR)/chat/clawt-loop-guard.h \
@@ -235,6 +240,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-agent.c \
 	$(SRCDIR)/core/daemon-memory.c \
 	$(SRCDIR)/core/daemon-mount.c \
+	$(SRCDIR)/core/daemon-egress.c \
 	$(SRCDIR)/core/daemon-image.c \
 	$(SRCDIR)/core/daemon-team.c \
 	$(SRCDIR)/core/daemon-room.c \
@@ -262,6 +268,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-skill.c \
 	$(SRCDIR)/core/daemon-skill-proposal.c \
 	$(SRCDIR)/core/daemon-step.c \
+	$(SRCDIR)/core/daemon-ack.c \
 	$(SRCDIR)/core/clawt-event-bus.c \
 	$(SRCDIR)/core/clawt-event-log.c \
 	$(SRCDIR)/integration/clawt-connector.c \
@@ -302,6 +309,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/mailbox/clawt-mailbox-item.c \
 	$(SRCDIR)/mailbox/clawt-mailbox.c \
 	$(SRCDIR)/mailbox/clawt-mailbox-router.c \
+	$(SRCDIR)/mailbox/clawt-ack-check.c \
 	$(SRCDIR)/agent/clawt-agent-runtime.c \
 	$(SRCDIR)/agent/clawt-process-runtime.c \
 	$(SRCDIR)/agent/clawt-embedded-runtime.c \
@@ -313,6 +321,9 @@ LIB_SOURCES = \
 	$(SRCDIR)/agent/clawt-agent-confine.c \
 	$(SRCDIR)/computer/clawt-exec-result.c \
 	$(SRCDIR)/computer/clawt-sandbox.c \
+	$(SRCDIR)/net/clawt-net-policy.c \
+	$(SRCDIR)/net/clawt-egress-gate.c \
+	$(SRCDIR)/net/clawt-egress-broker.c \
 	$(SRCDIR)/computer/clawt-observable.c \
 	$(SRCDIR)/computer/clawt-screen.c \
 	$(SRCDIR)/computer/clawt-takeover.c \
@@ -341,6 +352,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/decision/clawt-decision-store.c \
 	$(SRCDIR)/chat/clawt-attachment.c \
 	$(SRCDIR)/chat/clawt-preamble.c \
+	$(SRCDIR)/chat/clawt-merge.c \
 	$(SRCDIR)/chat/clawt-markdown.c \
 	$(SRCDIR)/chat/clawt-export.c \
 	$(SRCDIR)/chat/clawt-loop-guard.c \
@@ -428,7 +440,7 @@ all:
 	@$(MAKE) --no-print-directory all-impl
 
 .PHONY: all-impl  ## @internal
-all-impl: gsurf-bin $(OUTDIR)/clawt-version.h shared static daemon cli mcp-server \
+all-impl: gsurf-bin $(OUTDIR)/clawt-version.h shared static daemon cli mcp-server relay \
           gtk web lrg $(PROJECT_NAME)-1.0.pc plugins pod-modules gir
 
 # ── gsurf (GSURF=1) ───────────────────────────────────────────────────
@@ -662,6 +674,24 @@ web:    $(WEB_BIN_TARGET)
 
 .PHONY: mcp-server  ## Build clawtilla-mcp-server only (an agent's CLI starts this)
 mcp-server: $(MCP_BIN_TARGET)
+
+# clawtilla-relay runs inside a gated agent's bubblewrap box and bridges
+# loopback ports there to the daemon's egress gate and broker.  It links
+# GIO and nothing of clawtilla's, so the box has as little to contain as
+# possible.  Named here rather than in config.mk beside the other
+# binaries only to keep the version file to the version.
+RELAY_SRCDIR     = clients/relay
+RELAY_SOURCES    = $(wildcard $(RELAY_SRCDIR)/*.c)
+RELAY_BIN_NAME   = clawtilla-relay
+RELAY_BIN_TARGET = $(OUTDIR)/$(RELAY_BIN_NAME)
+
+.PHONY: relay  ## Build clawtilla-relay only (the in-box end of a gated network)
+relay: $(RELAY_BIN_TARGET)
+
+$(RELAY_BIN_TARGET): $(RELAY_SOURCES) | $(OUTDIR)
+	@echo "Building $(RELAY_BIN_NAME)..."
+	$(CC) $(CFLAGS) $(RELAY_SOURCES) -o $@ \
+		$(shell pkg-config --libs gio-unix-2.0)
 
 # CLAWT_BINDIR is baked in so the .mcp.json clawtilla writes for an agent
 # names the binary this build installs, rather than whatever else is on
@@ -1058,6 +1088,7 @@ install: all
 	install -m 755 $(DAEMON_BIN_TARGET) $(DESTDIR)$(BINDIR)/
 	install -m 755 $(CLI_BIN_TARGET) $(DESTDIR)$(BINDIR)/
 	install -m 755 $(MCP_BIN_TARGET) $(DESTDIR)$(BINDIR)/
+	install -m 755 $(RELAY_BIN_TARGET) $(DESTDIR)$(BINDIR)/
 	@[ -x $(GTK_BIN_TARGET) ] && install -m 755 $(GTK_BIN_TARGET) $(DESTDIR)$(BINDIR)/ || true
 	@[ -x $(WEB_BIN_TARGET) ] && install -m 755 $(WEB_BIN_TARGET) $(DESTDIR)$(BINDIR)/ || true
 	@[ -x $(LRG_BIN_TARGET) ] && install -m 755 $(LRG_BIN_TARGET) $(DESTDIR)$(BINDIR)/ || true
@@ -1098,6 +1129,7 @@ uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/$(DAEMON_BIN_NAME)
 	rm -f $(DESTDIR)$(BINDIR)/$(CLI_BIN_NAME)
 	rm -f $(DESTDIR)$(BINDIR)/$(MCP_BIN_NAME)
+	rm -f $(DESTDIR)$(BINDIR)/$(RELAY_BIN_NAME)
 	rm -f $(DESTDIR)$(BINDIR)/$(GTK_BIN_NAME)
 	rm -f $(DESTDIR)$(BINDIR)/$(WEB_BIN_NAME)
 	rm -f $(DESTDIR)$(BINDIR)/$(LRG_BIN_NAME)
