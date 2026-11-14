@@ -362,6 +362,40 @@ agent_validate(ClawtAgentConfig *self)
     }
 
     /*
+     * The agent's own confinement, decided here so every surface that
+     * shows a shadow shows why.  Both refusals are the never-downgrade
+     * rule: an agent somebody asked to have confined that would run
+     * unconfined instead is the worst of the available outcomes, so it
+     * does not run at all and says what to change.
+     */
+    {
+        const gchar *wanted =
+            clawt_agent_config_get_string(self, "runtime.confine");
+
+        if (wanted != NULL &&
+            !clawt_enum_from_nick(CLAWT_TYPE_RUNTIME_CONFINE, wanted,
+                                  &value)) {
+            g_autofree gchar *known =
+                clawt_enum_nick_list(CLAWT_TYPE_RUNTIME_CONFINE);
+
+            agent_mark_shadow(self,
+                              "unknown runtime.confine '%s'; this build "
+                              "knows %s", wanted, known);
+            return;
+        }
+
+        if (clawt_agent_config_get_enum(self, "runtime.confine") ==
+                CLAWT_RUNTIME_CONFINE_BWRAP) {
+            g_autoptr(GError) why = NULL;
+
+            if (!clawt_agent_confine_check(self, &why)) {
+                agent_mark_shadow(self, "%s", why->message);
+                return;
+            }
+        }
+    }
+
+    /*
      * A host computer without the confirmation is a shadow rather than a
      * silently-confined agent.  Quietly falling back to a safer mode would
      * be the wrong kind of helpful: the user asked for something the daemon

@@ -3811,6 +3811,72 @@ start_agent_launch(ClawtDaemon *self, const gchar *agent_id,
                 runtime, clawt_hold_covers(self->hold, agent_id));
     }
 
+    /*
+     * And the agent's own confinement, retaken on every start for the
+     * same reason as the restart policy: the runtime outlives the
+     * configuration it was built from, and a sandbox decided at the
+     * first start would go on holding (or not holding) the agent after
+     * runtime.confine had been changed.
+     */
+    /*
+     * Checked again here as well as at load: bubblewrap can be removed
+     * under a running daemon, and an agent that would now start
+     * unconfined is a shadow with the reason, exactly as it would have
+     * been had the daemon started this way.  Before the runtime's class
+     * is looked at, so an embedded runtime is refused rather than
+     * skipped.
+     */
+    if (clawt_agent_confine_wanted(config)) {
+        g_autoptr(GError) why = NULL;
+
+        if (!clawt_agent_confine_check(config, &why) ||
+            !CLAWT_IS_PROCESS_RUNTIME(clawt_agent_get_runtime(agent))) {
+            if (why == NULL)
+                g_set_error_literal(&why, CLAWT_ERROR,
+                                    CLAWT_ERROR_CONFINEMENT,
+                                    "runtime.confine: bwrap applies only "
+                                    "to a process runtime");
+
+            clawt_agent_mark_shadow(agent, why->message);
+            g_propagate_error(error, g_steal_pointer(&why));
+            return FALSE;
+        }
+    }
+
+    if (CLAWT_IS_PROCESS_RUNTIME(clawt_agent_get_runtime(agent))) {
+        ClawtProcessRuntime *process =
+            CLAWT_PROCESS_RUNTIME(clawt_agent_get_runtime(agent));
+        g_autoptr(ClawtSandbox) sandbox = NULL;
+
+        if (clawt_agent_confine_wanted(config)) {
+            g_autoptr(GError) why = NULL;
+            g_autofree gchar *state_dir =
+                clawt_config_agent_state_dir(self->config, agent_id);
+            g_autofree gchar *ipc_socket =
+                clawt_config_get_path_value(self->config, "daemon.socket");
+            ClawtComputer *computer = clawt_agent_get_computer(agent);
+            const gchar *sockets[3];
+
+            sockets[0] = self->link_socket;
+            sockets[1] = ipc_socket;
+            sockets[2] = NULL;
+
+            sandbox = clawt_agent_confine_build(
+                config, state_dir,
+                computer != NULL ? clawt_computer_get_mounts(computer)
+                                 : NULL,
+                sockets, NULL, &why);
+
+            if (sandbox == NULL) {
+                clawt_agent_set_error(agent, why->message);
+                g_propagate_error(error, g_steal_pointer(&why));
+                return FALSE;
+            }
+        }
+
+        clawt_process_runtime_set_sandbox(process, sandbox);
+    }
+
 	prime_agent_usage(self, agent_id);
     if (!clawt_agent_start(agent, error))
         return FALSE;
@@ -6704,7 +6770,16 @@ clawt_daemon_setting_needs_a_new_session(const gchar *key)
          * moment the re-keying happens, so "needs a new session" is
          * literally what a mode change means.
          */
-        "session.routing_mode"
+        "session.routing_mode",
+
+        /*
+         * The sandbox is built when the child is spawned and the child
+         * is already running inside -- or outside -- one.  Saying so is
+         * the difference between "saved" and an agent that is still
+         * unconfined an hour later.
+         */
+        "runtime.confine",
+        "runtime.confine_paths"
     };
     gsize i;
 
@@ -7313,6 +7388,26 @@ clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
     json_builder_set_member_name(builder, "autostart");
     json_builder_add_boolean_value(
         builder, clawt_agent_config_get_boolean(config, "runtime.autostart"));
+
+    /*
+     * Whether the agent's own tools are sandboxed, and whether they can
+     * be here: a client draws the switch from the first, and from all
+     * three the warning clawt_agent_confine_notice() words -- an agent
+     * asked to be confined on a machine with no bubblewrap is a shadow,
+     * and the setting is where somebody will look for why.  Asked of
+     * PATH only when it matters, since this runs for every agent in
+     * every listing.
+     */
+    json_builder_set_member_name(builder, "confine");
+    json_builder_add_string_value(
+        builder, clawt_agent_config_get_string(config, "runtime.confine"));
+    json_builder_set_member_name(builder, "runtime_type");
+    json_builder_add_string_value(
+        builder, clawt_agent_config_get_string(config, "runtime.type"));
+    json_builder_set_member_name(builder, "confine_available");
+    json_builder_add_boolean_value(
+        builder, !clawt_agent_confine_wanted(config) ||
+                 clawt_agent_confine_available());
 
     json_builder_set_member_name(builder, "enabled");
     json_builder_add_boolean_value(

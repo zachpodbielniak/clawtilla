@@ -1103,6 +1103,22 @@ Other VM facts:
   with a reason, never an unconfined one.
 - `clawt_remove_tree()` takes the root it must stay inside and checks the
   **canonical** path, per child, against that same root.
+- An agent's own process is confined by `runtime.confine: bwrap`
+  (`clawt_agent_confine_build()` builds the box, `ClawtProcessRuntime`
+  wraps libreclaw in it). Only a process runtime can be; embedded with
+  bwrap is a shadow, and `agent.set` refuses the pair where it arrives.
+- **bwrap forwards no signals.** SIGTERM to bwrap kills it and
+  `--die-with-parent` SIGKILLs the payload, so a stop aimed at the pid
+  GSubprocess knows skipped libreclaw's clean shutdown, and an interrupt
+  walking the tree below bwrap killed libreclaw itself. Signal the first
+  non-bwrap descendant; `process_runtime_get_pid()` reports it.
+- **A bwrap box owns `TMPDIR`, `HOME` and `XDG_*`**
+  (`clawt_sandbox_wrap_environment()`). An agent's `env:` replaces
+  allowlisted names, so without this it could aim temporary files at a
+  writable bind and out of the box.
+- **A bind protects a path, not an inode.** `clawt_sandbox_check_links()`
+  refuses a read-only file bind or a denied file with a second hard link
+  before anything is spawned; call it wherever `wrap_argv()` is.
 
 ## Daemon, IPC and Clients
 

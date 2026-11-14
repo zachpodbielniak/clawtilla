@@ -957,7 +957,8 @@ clawt_config_render_agent(ClawtConfig       *config,
      * standing rule of ours should not silently discard one of theirs.
      */
     {
-        g_autofree gchar *directive = render_computer_directive(agent);
+        g_autofree gchar *computer = render_computer_directive(agent);
+        g_autofree gchar *directive = NULL;
         /*
          * The memory nudge rides here rather than being a mechanism of
          * its own, so an operator wondering where a line in the prompt
@@ -972,6 +973,30 @@ clawt_config_render_agent(ClawtConfig       *config,
         const gchar *configured =
             clawt_agent_config_get_string(agent, "prompt_suffix");
         g_autoptr(GString) suffix = g_string_new(NULL);
+
+        /*
+         * Said beside the computer directive, because that directive
+         * tells a container agent its own tools "run on the host" -- true,
+         * and incomplete once they run in a box that holds only part of
+         * it.  An agent that knows the box is there reads a missing path
+         * as a boundary rather than a broken filesystem, and stops
+         * spending turns looking for a file it was never given.
+         */
+        if (clawt_agent_confine_wanted(agent)) {
+            const gchar *sandboxed =
+                "[clawtilla] Your own bash, read and write tools run in a "
+                "bubblewrap sandbox. Your workspace, your mounts and your "
+                "CLI login are there; /usr and /etc are read-only; /tmp "
+                "and your home directory are private and empty otherwise. "
+                "A path that is missing is outside what you were given, "
+                "not a fault.";
+
+            directive = (computer != NULL)
+                ? g_strconcat(computer, "\n\n", sandboxed, NULL)
+                : g_strdup(sandboxed);
+        } else {
+            directive = g_steal_pointer(&computer);
+        }
 
         if (directive != NULL)
             g_string_append(suffix, directive);

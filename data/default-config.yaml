@@ -353,6 +353,19 @@ defaults:
   # not reach whoever can open the chat.
   stream_steps: true
 
+  # Whether agents' own CLIs run inside a bubblewrap sandbox: none or
+  # bwrap.
+  #
+  # The fleet-wide answer for agents.runtime.confine, which an agent may
+  # override either way. Off by default, so turning it on is a decision
+  # rather than something an upgrade did to agents that were running.
+  #
+  # Set to bwrap, every process-runtime agent that says nothing itself is
+  # confined. An embedded agent cannot be -- it is the daemon -- and is
+  # disabled with that reason rather than run unconfined; give it
+  # runtime.confine: none of its own to keep it embedded.
+  confine: "none"
+
   # # Largest profile picture the daemon will read and serve.
   # #
   # # A picture crosses IPC as bytes rather than as a path, because a

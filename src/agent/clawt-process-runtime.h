@@ -64,6 +64,44 @@ void clawt_process_runtime_set_environment(ClawtProcessRuntime *self,
                                            GHashTable          *env);
 
 /**
+ * clawt_process_runtime_set_sandbox:
+ * @self: a #ClawtProcessRuntime
+ * @sandbox: (nullable): the bubblewrap sandbox to start the child in, or
+ *   %NULL to start it unconfined
+ *
+ * Confines the libreclaw child, and so everything it spawns, in @sandbox
+ * from the next start -- `runtime.confine: bwrap`, built by
+ * clawt_agent_confine_build().  Set before every start rather than once,
+ * because a runtime outlives the configuration it was built from.
+ */
+void clawt_process_runtime_set_sandbox(ClawtProcessRuntime *self,
+                                       ClawtSandbox        *sandbox);
+
+/**
+ * clawt_process_runtime_prepare:
+ * @self: a #ClawtProcessRuntime
+ * @out_argv: (out) (array zero-terminated=1) (transfer full): the command
+ * @out_environment: (out) (array zero-terminated=1) (transfer full): its
+ *   environment, as `NAME=value` strings
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Works out exactly what the next start will spawn, without spawning it.
+ *
+ * Start runs this and nothing else decides the command, so a test can
+ * read the whole of it -- the bwrap argv and the environment the sandbox
+ * owns -- as data, with no bubblewrap installed.  Under a sandbox it also
+ * adds the libreclaw binary to it, refuses a bind whose file has a second
+ * hard link (clawt_sandbox_check_links()), and fails rather than
+ * downgrade when bubblewrap cannot be found.
+ *
+ * Returns: %TRUE if the child can be started
+ */
+gboolean clawt_process_runtime_prepare(ClawtProcessRuntime  *self,
+                                       GStrv                *out_argv,
+                                       GStrv                *out_environment,
+                                       GError              **error);
+
+/**
  * clawt_process_runtime_get_superseded_exits:
  * @self: a #ClawtProcessRuntime
  *

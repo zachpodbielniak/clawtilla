@@ -580,6 +580,8 @@ Each key's control is chosen by =clawt_lrg_agent_field_kind()=, dispatching on t
 | ~computer.vm.resolution~ | a combo of common sizes | a fixed list plus the current value |
 | anything else | an entry | the value |
 
+~runtime.confine~ is drawn as its enum, but labelled and explained with =clawt_agent_confine_label()= and =clawt_agent_confine_explanation()= rather than its key and the schema's first line; when the agent's =confine=, =runtime_type= and =confine_available= say it cannot be sandboxed here, a "cannot be sandboxed here" badge and =clawt_agent_confine_notice()= sit under it -- the same words as the GTK and web clients.
+
 Every chooser is drawn first holding only the current value, then refilled when its reply lands. A value the list does not have (an undeclared team, an unusable account, a model or reference typed by hand) is kept -- as itself, or in the "Other" entry -- so saving the page without touching the control never changes it. A provider change refills the model list from that provider's models.
 
 Save changes sends only what changed, one ~agent.set~ at a time in the order =clawt_lrg_agent_save_plan()= gives: the account is cleared first when it moves from one login to another (the daemon checks the provider/account pair), and a computer key the newly chosen shared machine owns is never sent. It stops at the first refusal (already toasted) and re-reads the page. The closing toast names the restart a change needs, and says so specifically when any reply carried =restart_required= (an AI CLI lists its tools once, at session start).

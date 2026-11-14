@@ -26,6 +26,31 @@ struct _ClawtProcessRuntime {
     gchar        *config_path;
     GHashTable   *environment;
 
+    /*
+     * `runtime.confine: bwrap`.  NULL runs the child as it always ran.
+     * Set before each start by the daemon, from the configuration as it
+     * stands then.
+     */
+    ClawtSandbox *sandbox;
+
+    /*
+     * Whether the child that is running was started in the sandbox.
+     * Kept apart from `sandbox`, which may be replaced for the *next*
+     * start while this child is still the one bwrap is holding -- and
+     * what stop() and interrupt() must do depends on how this one was
+     * started, not on how the next one will be.
+     */
+    gboolean      confined;
+
+    /*
+     * The libreclaw process inside the box, once found.  bwrap is the
+     * child GSubprocess knows about; libreclaw is one or two levels below
+     * it, depending on whether bwrap made itself an init.  Cached and
+     * rechecked against the tree before each use, because a pid is only
+     * an answer for as long as the process that held it is still there.
+     */
+    GPid          payload;
+
     GSubprocess      *process;
     GCancellable     *cancellable;
     GDataInputStream *log_stream;
@@ -79,6 +104,9 @@ struct _ClawtProcessRuntime {
 G_DEFINE_FINAL_TYPE(ClawtProcessRuntime, clawt_process_runtime,
                     CLAWT_TYPE_AGENT_RUNTIME)
 
+static GPid spawned_pid(ClawtProcessRuntime *self);
+static GPid confined_payload(ClawtProcessRuntime *self);
+
 ClawtProcessRuntime *
 clawt_process_runtime_new(ClawtAgentConfig *config, const gchar *config_path)
 {
@@ -114,6 +142,18 @@ clawt_process_runtime_set_environment(ClawtProcessRuntime *self,
 
     if (env != NULL)
         self->environment = g_hash_table_ref(env);
+}
+
+void
+clawt_process_runtime_set_sandbox(ClawtProcessRuntime *self,
+                                  ClawtSandbox        *sandbox)
+{
+    g_return_if_fail(CLAWT_IS_PROCESS_RUNTIME(self));
+
+    g_clear_object(&self->sandbox);
+
+    if (sandbox != NULL)
+        self->sandbox = g_object_ref(sandbox);
 }
 
 /* ── Reading the child's output ──────────────────────────────────── */
@@ -267,19 +307,6 @@ die_with_parent(gpointer user_data)
 }
 
 /*
- * Gives the child its environment: the shared allowlist plus whatever the
- * agent's own `env:` block names.
- */
-static void
-apply_environment(ClawtProcessRuntime  *self,
-                  GSubprocessLauncher  *launcher)
-{
-    g_auto(GStrv) environment = clawt_build_child_environment(self->environment);
-
-    g_subprocess_launcher_set_environ(launcher, environment);
-}
-
-/*
  * Where clawtillad is, so the things built beside it can be found.
  *
  * NULL when /proc is not available, which only costs those entries.
@@ -338,19 +365,22 @@ resolve_libreclaw(void)
     return g_find_program_in_path("libreclaw");
 }
 
-static gboolean
-process_runtime_start(ClawtAgentRuntime *runtime, GError **error)
+gboolean
+clawt_process_runtime_prepare(ClawtProcessRuntime  *self,
+                              GStrv                *out_argv,
+                              GStrv                *out_environment,
+                              GError              **error)
 {
-    ClawtProcessRuntime *self = CLAWT_PROCESS_RUNTIME(runtime);
-    g_autoptr(GSubprocessLauncher) launcher = NULL;
     g_autofree gchar *binary = NULL;
+    g_auto(GStrv) environment = NULL;
     const gchar *argv[4];
 
-    if (self->running) {
-        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_AGENT_STATE,
-                            "the agent is already running");
-        return FALSE;
-    }
+    g_return_val_if_fail(CLAWT_IS_PROCESS_RUNTIME(self), FALSE);
+    g_return_val_if_fail(out_argv != NULL, FALSE);
+    g_return_val_if_fail(out_environment != NULL, FALSE);
+
+    *out_argv = NULL;
+    *out_environment = NULL;
 
     binary = (self->binary != NULL)
              ? g_strdup(self->binary)
@@ -366,28 +396,114 @@ process_runtime_start(ClawtAgentRuntime *runtime, GError **error)
         return FALSE;
     }
 
-    launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE |
-                                         G_SUBPROCESS_FLAGS_STDERR_MERGE);
-
-    /*
-     * The daemon's own environment is discarded rather than extended.
-     * g_subprocess_launcher_set_environ with an empty list gives a genuinely
-     * clean slate; setenv then adds back exactly what belongs.
-     */
-    {
-        const gchar *empty[] = { NULL };
-
-        g_subprocess_launcher_set_environ(launcher, (gchar **)empty);
-    }
-
-    apply_environment(self, launcher);
-    g_subprocess_launcher_set_child_setup(launcher, die_with_parent, NULL,
-                                          NULL);
-
     argv[0] = binary;
     argv[1] = "-c";
     argv[2] = self->config_path;
     argv[3] = NULL;
+
+    /*
+     * The shared allowlist plus whatever the agent's own `env:` block
+     * names -- never the daemon's environment wholesale.
+     */
+    environment = clawt_build_child_environment(self->environment);
+
+    if (self->sandbox == NULL) {
+        *out_argv = g_strdupv((gchar **)argv);
+        *out_environment = g_steal_pointer(&environment);
+        return TRUE;
+    }
+
+    {
+        g_autofree gchar *bwrap = g_find_program_in_path("bwrap");
+        g_autofree gchar *real = clawt_canonicalize_missing(binary);
+        GStrv wrapped;
+
+        /*
+         * Gone since the configuration was validated.  Refused, not run
+         * bare: an agent somebody asked to have confined that comes up
+         * unconfined is the worst outcome available, and nothing on any
+         * surface would say it had happened.
+         */
+        if (bwrap == NULL) {
+            g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_CONFINEMENT,
+                                "runtime.confine: bwrap needs bubblewrap, "
+                                "which is not installed where the daemon "
+                                "runs; install it (Fedora: bubblewrap) or "
+                                "set runtime.confine: none. The agent is "
+                                "not run unconfined instead");
+            return FALSE;
+        }
+
+        /*
+         * libreclaw itself, which in a checkout lives in a build tree
+         * under $HOME that the box would otherwise not contain.  Bound
+         * here rather than by whoever built the sandbox, because only
+         * this function knows which binary it settled on.  Asked of the
+         * sandbox's own predicate first, so a second start does not bind
+         * it twice; one installed under /usr is already there.
+         */
+        if (real != NULL && !clawt_path_is_within(real, "/usr")) {
+            if (!clawt_sandbox_path_is_allowed(self->sandbox, binary))
+                clawt_sandbox_add_mount_path(self->sandbox, binary, FALSE);
+
+            if (!clawt_sandbox_path_is_allowed(self->sandbox, real))
+                clawt_sandbox_add_mount_path(self->sandbox, real, FALSE);
+
+            /* The name it is run by, when that is a symlink. */
+            clawt_sandbox_add_symlink(self->sandbox, binary);
+        }
+
+        if (!clawt_sandbox_check_links(self->sandbox, error))
+            return FALSE;
+
+        wrapped = clawt_sandbox_wrap_argv(self->sandbox, argv);
+
+        /*
+         * The resolved bubblewrap, not the bare name: the launcher's
+         * PATH is the agent's environment, which is not this process's,
+         * and which bwrap that finds is not a question worth leaving
+         * open.
+         */
+        g_free(wrapped[0]);
+        wrapped[0] = g_steal_pointer(&bwrap);
+
+        *out_argv = wrapped;
+        *out_environment = clawt_sandbox_wrap_environment(
+            self->sandbox, (const gchar * const *)environment);
+    }
+
+    return TRUE;
+}
+
+static gboolean
+process_runtime_start(ClawtAgentRuntime *runtime, GError **error)
+{
+    ClawtProcessRuntime *self = CLAWT_PROCESS_RUNTIME(runtime);
+    g_autoptr(GSubprocessLauncher) launcher = NULL;
+    g_auto(GStrv) argv = NULL;
+    g_auto(GStrv) environment = NULL;
+
+    if (self->running) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_AGENT_STATE,
+                            "the agent is already running");
+        return FALSE;
+    }
+
+    if (!clawt_process_runtime_prepare(self, &argv, &environment, error))
+        return FALSE;
+
+    launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE |
+                                         G_SUBPROCESS_FLAGS_STDERR_MERGE);
+
+    /*
+     * The daemon's own environment is discarded rather than extended:
+     * the launcher gets exactly what prepare() built, which is the
+     * allowlist, the agent's own variables, and under a sandbox the
+     * TMPDIR, HOME and XDG_* the sandbox owns.
+     */
+    g_subprocess_launcher_set_environ(launcher, environment);
+    g_subprocess_launcher_set_child_setup(launcher, die_with_parent, NULL,
+                                          NULL);
 
     /*
      * The previous one is released first.  Every restart overwrote this
@@ -396,12 +512,15 @@ process_runtime_start(ClawtAgentRuntime *runtime, GError **error)
      */
     g_clear_object(&self->process);
     self->exited = FALSE;
-    self->process = g_subprocess_launcher_spawnv(launcher, argv, error);
+    self->process = g_subprocess_launcher_spawnv(
+        launcher, (const gchar * const *)argv, error);
     if (self->process == NULL) {
-        g_prefix_error(error, "starting %s: ", binary);
+        g_prefix_error(error, "starting %s: ", argv[0]);
         return FALSE;
     }
 
+    self->confined = (self->sandbox != NULL);
+    self->payload = 0;
     self->running = TRUE;
     g_clear_object(&self->cancellable);
     self->cancellable = g_cancellable_new();
@@ -460,8 +579,21 @@ process_runtime_stop(ClawtAgentRuntime *runtime)
      * SIGTERM, not SIGKILL.  libreclaw closes its channels and says goodbye
      * on SIGTERM, which lets Matrix and the clawtilla daemon see a clean
      * shutdown rather than a dropped connection to time out.
+     *
+     * Under a sandbox it goes to libreclaw inside, not to bwrap: bwrap
+     * forwards nothing, and killing it takes libreclaw down with SIGKILL
+     * through --die-with-parent.  bwrap exits when its child does, so
+     * the wait below still sees the exit it is waiting for.
      */
-    g_subprocess_send_signal(self->process, SIGTERM);
+    {
+        GPid payload = self->confined ? confined_payload(self) : 0;
+
+        if (payload > 0 &&
+            clawt_process_is_descendant_of(payload, spawned_pid(self)))
+            kill(payload, SIGTERM);
+        else
+            g_subprocess_send_signal(self->process, SIGTERM);
+    }
 
     /*
      * ...and then wait for it, which this did not do.
@@ -553,10 +685,10 @@ process_runtime_is_alive(ClawtAgentRuntime *runtime)
     return self->running && self->process != NULL && !self->exited;
 }
 
+/* The pid GSubprocess started, which under a sandbox is bwrap. */
 static GPid
-process_runtime_get_pid(ClawtAgentRuntime *runtime)
+spawned_pid(ClawtProcessRuntime *self)
 {
-    ClawtProcessRuntime *self = CLAWT_PROCESS_RUNTIME(runtime);
     const gchar *identifier;
 
     if (self->process == NULL)
@@ -566,6 +698,88 @@ process_runtime_get_pid(ClawtAgentRuntime *runtime)
 
     return (identifier != NULL) ? (GPid)g_ascii_strtoll(identifier, NULL, 10)
                                 : 0;
+}
+
+/* Whether @pid is a bwrap, by the name the kernel has for it. */
+static gboolean
+is_bwrap(GPid pid)
+{
+    g_autofree gchar *path = g_strdup_printf("/proc/%d/comm", (gint)pid);
+    g_autofree gchar *comm = NULL;
+
+    if (!g_file_get_contents(path, &comm, NULL, NULL))
+        return FALSE;
+
+    return g_strcmp0(g_strstrip(comm), "bwrap") == 0;
+}
+
+/*
+ * The libreclaw process inside a sandbox, or 0 when it cannot be found
+ * yet.
+ *
+ * bwrap does not forward signals.  SIGTERM sent to it kills bwrap, and
+ * --die-with-parent then SIGKILLs libreclaw -- so a stop aimed at the
+ * pid GSubprocess knows ended every confined agent without the clean
+ * shutdown libreclaw gives its channels, and an interrupt walked the
+ * tree below bwrap and killed libreclaw itself along with the turn.
+ * Both now aim here, at the first process below bwrap that is not
+ * another bwrap (the init it makes for --unshare-pid).
+ */
+static GPid
+confined_payload(ClawtProcessRuntime *self)
+{
+    GPid root = spawned_pid(self);
+    g_autoptr(GArray) below = NULL;
+    guint i;
+
+    if (root <= 0)
+        return 0;
+
+    if (self->payload > 0 &&
+        clawt_process_is_descendant_of(self->payload, root))
+        return self->payload;
+
+    self->payload = 0;
+
+    /*
+     * Pre-order, which clawt_process_descendants() gives reversed: the
+     * first non-bwrap in walking order is the shallowest, and that is
+     * libreclaw rather than the CLI it spawned.
+     */
+    below = clawt_process_descendants(root);
+
+    for (i = below->len; i > 0; i--) {
+        GPid pid = g_array_index(below, GPid, i - 1);
+
+        if (!is_bwrap(pid)) {
+            self->payload = pid;
+            break;
+        }
+    }
+
+    return self->payload;
+}
+
+static GPid
+process_runtime_get_pid(ClawtAgentRuntime *runtime)
+{
+    ClawtProcessRuntime *self = CLAWT_PROCESS_RUNTIME(runtime);
+
+    /*
+     * The agent's process is libreclaw, wherever it runs.  Reporting
+     * bwrap's pid would aim interrupt() at bwrap's tree -- which holds
+     * libreclaw -- and point anyone reading /proc/<pid>/environ at the
+     * wrong environment.  Until libreclaw has been exec'd there is only
+     * bwrap to report.
+     */
+    if (self->confined && self->running && !self->exited) {
+        GPid payload = confined_payload(self);
+
+        if (payload > 0)
+            return payload;
+    }
+
+    return spawned_pid(self);
 }
 
 /*
@@ -692,6 +906,7 @@ clawt_process_runtime_dispose(GObject *object)
     g_clear_object(&self->cancellable);
     g_clear_object(&self->log_stream);
     g_clear_pointer(&self->environment, g_hash_table_unref);
+    g_clear_object(&self->sandbox);
 
     G_OBJECT_CLASS(clawt_process_runtime_parent_class)->dispose(object);
 }

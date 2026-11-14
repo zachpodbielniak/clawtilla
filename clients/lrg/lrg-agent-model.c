@@ -934,8 +934,20 @@ clawt_lrg_agent_form(JsonObject *settings)
 
         field = g_new0(ClawtLrgAgentField, 1);
         field->key = g_strdup(key);
-        field->label = clawt_lrg_agent_key_label(key);
-        field->hint = first_line(entry->doc);
+
+        /*
+         * The agent's own sandbox is named as the other two clients name
+         * it, from the library: "confine" under Runtime reads as one more
+         * restart knob, and it is the setting that decides what the
+         * agent's own tools can reach.
+         */
+        if (g_strcmp0(key, "runtime.confine") == 0) {
+            field->label = g_strdup(clawt_agent_confine_label());
+            field->hint = g_strdup(clawt_agent_confine_explanation());
+        } else {
+            field->label = clawt_lrg_agent_key_label(key);
+            field->hint = first_line(entry->doc);
+        }
         field->value = g_strdup(string_or(settings, key, ""));
         field->kind = clawt_lrg_agent_field_kind(key, entry);
         field->enum_type = (entry->enum_type != NULL) ? entry->enum_type()

@@ -489,6 +489,20 @@ static const ClawtSchemaEntry schema[] = {
   "Turn it off for a fleet where even a redacted command line should\n"
   "not reach whoever can open the chat.", "0.2.0" },
 
+{ "defaults.confine", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "none", clawt_runtime_confine_get_type,
+  "Whether agents' own CLIs run inside a bubblewrap sandbox: none or\n"
+  "bwrap.\n"
+  "\n"
+  "The fleet-wide answer for agents.runtime.confine, which an agent may\n"
+  "override either way. Off by default, so turning it on is a decision\n"
+  "rather than something an upgrade did to agents that were running.\n"
+  "\n"
+  "Set to bwrap, every process-runtime agent that says nothing itself is\n"
+  "confined. An embedded agent cannot be -- it is the daemon -- and is\n"
+  "disabled with that reason rather than run unconfined; give it\n"
+  "runtime.confine: none of its own to keep it embedded.", "0.14.0" },
+
 /* ── ai_assist ───────────────────────────────────────────────────── */
 { "defaults.avatar_max_bytes", CLAWT_SCHEMA_INT,
   CLAWT_SCHEMA_FLAG_COMMENTED, "4194304", NULL,
@@ -2316,6 +2330,39 @@ static const ClawtSchemaEntry schema[] = {
   "which is cheaper and is what an in-process host such as cmacs wants, at\n"
   "the cost of sharing a fate with every other embedded agent.", "0.1.0" },
 
+{ "agents.runtime.confine", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, clawt_runtime_confine_get_type,
+  "Run this agent's own CLI inside a bubblewrap sandbox: none or bwrap.\n"
+  "Defaults to defaults.confine.\n"
+  "\n"
+  "computer.host.confine governs clawtilla_computer_exec and nothing\n"
+  "else. The agent's own Bash, Read and Write belong to the AI CLI that\n"
+  "libreclaw spawns, and without this they reach the whole filesystem as\n"
+  "the daemon's user. bwrap wraps the libreclaw child -- and so the CLI,\n"
+  "every command it runs and its MCP servers -- in one sandbox that\n"
+  "binds the workspace and the agent's state directory read-write, the\n"
+  "CLI's login directory read-write (it refreshes its OAuth tokens there),\n"
+  "the agent's mounts as declared, the programs its .mcp.json names\n"
+  "read-only, and the daemon's sockets. /usr and /etc are read-only, /tmp\n"
+  "and $HOME are private and empty apart from those binds, and TMPDIR,\n"
+  "HOME and XDG_* are set by the sandbox -- an agent's env: cannot point\n"
+  "them somewhere else. The network is left alone.\n"
+  "\n"
+  "Only runtime.type: process can be confined; bwrap with embedded\n"
+  "disables the agent. bubblewrap missing disables it too, with the\n"
+  "reason, and it is never started unconfined instead. Takes effect at\n"
+  "the agent's next start.", "0.14.0" },
+
+{ "agents.runtime.confine_paths", CLAWT_SCHEMA_STRING_LIST,
+  CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
+  "More paths to bind read-only into a confined agent's sandbox.\n"
+  "\n"
+  "The sandbox finds libreclaw, the AI CLI and the programs in .mcp.json\n"
+  "for itself. A CLI installed somewhere it cannot follow -- a node\n"
+  "under ~/.nvm, a tool a skill shells out to -- is named here. Read-only\n"
+  "on purpose: something the agent should write is a mount, which says\n"
+  "so in its mode. Ignored unless runtime.confine is bwrap.", "0.14.0" },
+
 { "agents.runtime.autostart", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
   "Start with the daemon. Defaults to defaults.autostart.", "0.1.0" },
@@ -3567,6 +3614,7 @@ static const ClawtSchemaAgentKey agent_keys[] = {
     { "policy.ask_timeout_seconds", "defaults.policy.ask_timeout_seconds" },
     { "runtime.stream_steps",       "defaults.stream_steps" },
     { "runtime.restart",            "defaults.restart" },
+    { "runtime.confine",            "defaults.confine" },
     { "computer.container.image",   "defaults.container_image" }
 };
 

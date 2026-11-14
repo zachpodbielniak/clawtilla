@@ -1595,6 +1595,45 @@ clawt_daemon_handle_agent(
         }
 
         /*
+         * Confinement and an embedded runtime are refused together where
+         * they arrive.  The validator would accept the write and then
+         * shadow the agent, so the client heard "saved" for an agent that
+         * had just stopped being able to start.  bubblewrap being absent
+         * is not refused here: that is this machine today, and the shadow
+         * reply below says so with the remedy.
+         */
+        if (g_strcmp0(key, "runtime.confine") == 0 ||
+            g_strcmp0(key, "runtime.type") == 0) {
+            gint confine = 0;
+            gint type = 0;
+
+            if (g_strcmp0(key, "runtime.confine") == 0)
+                clawt_enum_from_nick(CLAWT_TYPE_RUNTIME_CONFINE, value,
+                                     &confine);
+            else
+                confine = clawt_agent_config_get_enum(config,
+                                                      "runtime.confine");
+
+            if (g_strcmp0(key, "runtime.type") == 0)
+                clawt_enum_from_nick(CLAWT_TYPE_RUNTIME_TYPE, value, &type);
+            else
+                type = clawt_agent_config_get_enum(config, "runtime.type");
+
+            if (confine == CLAWT_RUNTIME_CONFINE_BWRAP &&
+                type == CLAWT_RUNTIME_EMBEDDED)
+                return clawt_ipc_error_new(
+                    request, CLAWT_ERROR_INVALID_ARGUMENT,
+                    g_strcmp0(key, "runtime.type") == 0
+                    ? "this agent's runtime.confine is bwrap, and an "
+                      "embedded agent runs inside the daemon with no "
+                      "process of its own to sandbox; set runtime.confine "
+                      "to none first"
+                    : "an embedded agent runs inside the daemon with no "
+                      "process of its own to sandbox; set runtime.type to "
+                      "process first");
+        }
+
+        /*
          * Dispatch on what the schema says the key *is*, rather than
          * writing every value as a scalar.
          *

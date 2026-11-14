@@ -1090,6 +1090,29 @@ build_form(ClawtLrgApp *app, guint index)
                     "hands over real authority -- read what it does first",
                     "warn"));
 
+            /*
+             * And when the sandbox cannot be given here -- no
+             * bubblewrap, or an embedded runtime -- the reason the agent
+             * is a shadow, beside the setting that caused it, in the
+             * library's words so the three clients agree with the
+             * daemon.
+             */
+            if (g_strcmp0(field->key, "runtime.confine") == 0) {
+                JsonObject *agent = shown_object("agent");
+                const gchar *notice = clawt_agent_confine_notice(
+                    clawt_ipc_payload_string(agent, "confine"),
+                    clawt_ipc_payload_string(agent, "runtime_type"),
+                    clawt_ipc_payload_boolean(agent, "confine_available",
+                                              TRUE));
+
+                if (notice != NULL) {
+                    clawt_lrg_take(outer, clawt_lrg_badge(
+                        "cannot be sandboxed here", "warn"));
+                    clawt_lrg_take(outer, clawt_lrg_paragraph(notice,
+                                                              "caption"));
+                }
+            }
+
             if (field->kind == CLAWT_LRG_AGENT_FIELD_SHARED && use != NULL &&
                 *use != '\0')
                 clawt_lrg_take(outer, clawt_lrg_paragraph(

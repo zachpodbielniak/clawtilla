@@ -325,6 +325,22 @@ on_save_agent(GtkButton *button, gpointer user_data)
                             ADW_SWITCH_ROW(self->autostart_row))
                             ? "true" : "false");
 
+    /*
+     * Written only when it was changed here.  An agent that says nothing
+     * follows defaults.confine, and writing the switch back on every save
+     * would pin the fleet's answer onto it for good -- so turning the
+     * fleet default off later would quietly skip every agent somebody had
+     * merely opened.
+     */
+    if (self->confine_row != NULL) {
+        gboolean active = adw_switch_row_get_active(
+            ADW_SWITCH_ROW(self->confine_row));
+
+        if (active != self->confine_shown)
+            ok &= clawt_gtk_apply_setting(self, "runtime.confine",
+                                          active ? "bwrap" : "none");
+    }
+
     if (self->team_row != NULL && self->team_ids != NULL) {
         guint chosen = adw_combo_row_get_selected(
             ADW_COMBO_ROW(self->team_row));
@@ -2376,6 +2392,42 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
             ? json_object_get_boolean_member(agent, "autostart") : TRUE);
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
                               self->autostart_row);
+
+    /*
+     * Whether the agent's own tools are sandboxed.  The label and the
+     * sentence under it come from the library, so all three clients say
+     * the same thing; the warning row under it appears only when the
+     * daemon cannot give what is asked -- no bubblewrap, or an embedded
+     * runtime -- and says the agent is a shadow because of it, which is
+     * otherwise a state with its reason somewhere else on the page.
+     */
+    {
+        const gchar *notice;
+
+        self->confine_shown =
+            g_strcmp0(clawt_json_string(agent, "confine", "none"),
+                      "bwrap") == 0;
+        self->confine_row = switch_row(clawt_agent_confine_label(),
+                                       clawt_agent_confine_explanation(),
+                                       self->confine_shown);
+        adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(self->confine_row),
+                                          0);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                                  self->confine_row);
+
+        notice = clawt_agent_confine_notice(
+            clawt_json_string(agent, "confine", "none"),
+            clawt_json_string(agent, "runtime_type", "process"),
+            clawt_json_boolean(agent, "confine_available", TRUE));
+
+        if (notice != NULL) {
+            GtkWidget *row = info_row("Cannot be sandboxed here", notice);
+
+            adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(row), 0);
+            gtk_widget_add_css_class(row, "warning");
+            adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), row);
+        }
+    }
 
     /*
      * Which team, and what standing on it. Beside the chief switch

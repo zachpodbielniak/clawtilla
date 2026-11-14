@@ -121,10 +121,116 @@ void clawt_sandbox_add_allow_path(ClawtSandbox *self, const gchar *path);
 void clawt_sandbox_add_mount_path(ClawtSandbox *self, const gchar *path,
                                   gboolean writable);
 void clawt_sandbox_add_deny_path(ClawtSandbox *self, const gchar *path);
+
+/**
+ * clawt_sandbox_add_symlink:
+ * @self: a #ClawtSandbox
+ * @path: a symlink on this machine, spelled the way a program will be
+ *   called by -- ~/.local/bin/claude, say
+ *
+ * Recreates @path inside a bwrap sandbox as a symlink to where it really
+ * points, so the spelling works there too.
+ *
+ * Every stored path is canonicalised, which is right for a containment
+ * test and wrong for a name somebody calls a program by: a bind of the
+ * link resolves to a bind of its target, and the link's own spelling is
+ * then missing from the box.  An AI CLI installed as a symlink on PATH
+ * was bound and could not be found.  The target still has to be granted
+ * separately; this adds only the name.  Nothing is emitted when the
+ * link's directory is already inside a bind, where the link is already
+ * there.
+ */
+void clawt_sandbox_add_symlink(ClawtSandbox *self, const gchar *path);
 void clawt_sandbox_set_allow_network(ClawtSandbox *self, gboolean allow);
 void clawt_sandbox_set_allow_sudo(ClawtSandbox *self, gboolean allow);
 
 ClawtConfineMode clawt_sandbox_get_mode(ClawtSandbox *self);
+
+/**
+ * clawt_sandbox_set_private_home:
+ * @self: a #ClawtSandbox
+ * @home: (nullable): the home directory to put an empty tmpfs over, or
+ *   %NULL to leave $HOME as it is outside
+ *
+ * Gives a bwrap sandbox an empty, writable home directory at @home, with
+ * whatever the sandbox binds beneath it (an account directory, the
+ * workspace) brought back on top.
+ *
+ * Used for a confined agent's own process, where the AI CLI expects to
+ * be able to write dotfiles under $HOME and the real one holds every
+ * other credential on the machine.  The tmpfs is emitted before any bind,
+ * because bwrap applies its operations in order and a tmpfs mounted after
+ * a bind beneath it would cover the bind.
+ */
+void clawt_sandbox_set_private_home(ClawtSandbox *self, const gchar *home);
+
+/**
+ * clawt_sandbox_set_agent_confined:
+ * @self: a #ClawtSandbox
+ * @confined: whether the agent's own process is in a sandbox of its own
+ *
+ * Tells clawt_sandbox_describe() whether the agent's own Bash, Read and
+ * Write run confined (`runtime.confine: bwrap`), so the description it
+ * gives the agent stops saying those tools reach the whole host when they
+ * do not.
+ */
+void clawt_sandbox_set_agent_confined(ClawtSandbox *self, gboolean confined);
+
+/**
+ * clawt_sandbox_check_links:
+ * @self: a #ClawtSandbox
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Refuses a bwrap sandbox whose read-only file binds or denials name a
+ * file with more than one hard link.
+ *
+ * A bind mount protects a path, not an inode.  A file bound read-only
+ * that also has a second name under a writable bind is writable through
+ * that name, and a denied file covered with /dev/null is readable through
+ * its other one -- so `--ro-bind` and `deny_paths` both said more than
+ * they did.  A denied directory is walked (to a bound) for the same
+ * reason: covering it with a tmpfs hides its names, not its inodes.
+ *
+ * Anything under /usr or /etc is skipped: those are root's, and with
+ * fs.protected_hardlinks an agent cannot make a second name for them.
+ * Always %TRUE for the other modes, which bind nothing.
+ *
+ * Returns: %TRUE if the sandbox can be built as described
+ */
+gboolean clawt_sandbox_check_links(ClawtSandbox  *self,
+                                   GError       **error);
+
+/**
+ * clawt_sandbox_wrap_environment:
+ * @self: a #ClawtSandbox
+ * @environment: (array zero-terminated=1) (nullable): the environment the
+ *   command would otherwise get, as `NAME=value` strings
+ *
+ * The environment to run a wrapped command with.
+ *
+ * Under bwrap the sandbox owns TMPDIR, HOME and every XDG_* variable, and
+ * whatever @environment says about them is dropped: TMPDIR is the box's
+ * private /tmp, HOME is the daemon's own home (empty, under
+ * clawt_sandbox_set_private_home()), and the XDG base directories are
+ * the daemon's own.  An agent's `env:` replaces allowlisted names
+ * (clawt_build_child_environment()), so without this TMPDIR=/some/host/dir
+ * put the host directory back over the box's private /tmp the moment
+ * anything bound it writable.  Any other mode returns a copy unchanged.
+ *
+ * Returns: (transfer full) (array zero-terminated=1): the environment
+ */
+GStrv clawt_sandbox_wrap_environment(ClawtSandbox        *self,
+                                     const gchar * const *environment);
+
+/**
+ * clawt_sandbox_environment_is_owned:
+ * @name: an environment variable name
+ *
+ * Whether a bwrap sandbox sets @name itself: TMPDIR, HOME and XDG_*.
+ *
+ * Returns: %TRUE if an agent's `env:` cannot set @name inside a sandbox
+ */
+gboolean clawt_sandbox_environment_is_owned(const gchar *name);
 
 /**
  * clawt_sandbox_is_available:

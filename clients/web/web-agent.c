@@ -383,6 +383,21 @@ control_for(ClawtWebApp *app, const gchar *agent_id, const ClawtSchemaEntry *ent
                 (const gchar *const *)names, value));
     }
 
+    /*
+     * The agent's own sandbox, named the way all three clients name it
+     * rather than "runtime.confine" -- a key spelled as a label is a
+     * setting somebody scrolls past.  Still the enum's own values, walked
+     * from its type; the sentence and any warning follow it in the card.
+     */
+    if (g_strcmp0(key, "runtime.confine") == 0) {
+        g_auto(GStrv) choices = enum_choices(entry);
+
+        if (choices != NULL)
+            return HTMX_ELEMENT(clawt_web_select_field(
+                clawt_agent_confine_label(), field_name,
+                (const gchar *const *)choices, NULL, value));
+    }
+
     switch (entry->type) {
     case CLAWT_SCHEMA_BOOLEAN:
         return HTMX_ELEMENT(clawt_web_switch_field(
@@ -821,6 +836,27 @@ clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id)
 
                 clawt_web_add(group_body,
                               control_for(app, agent_id, entry, key, value));
+
+                /*
+                 * What sandboxing does, and -- when the daemon cannot
+                 * give it -- that the agent is a shadow because of it,
+                 * worded by the library so the three clients agree with
+                 * the reason the daemon actually gives.
+                 */
+                if (g_strcmp0(key, "runtime.confine") == 0) {
+                    const gchar *notice = clawt_agent_confine_notice(
+                        clawt_web_member(agent, "confine", "none"),
+                        clawt_web_member(agent, "runtime_type", "process"),
+                        clawt_web_member_bool(agent, "confine_available",
+                                              TRUE));
+
+                    clawt_web_add(group_body, clawt_web_text(
+                        clawt_agent_confine_explanation(), "small muted"));
+
+                    if (notice != NULL)
+                        clawt_web_add(group_body,
+                                      clawt_web_notice(notice, "bad"));
+                }
 
                 if (g_strcmp0(key, "computer.use") == 0 && *use != '\0')
                     clawt_web_add(group_body, clawt_web_notice(

@@ -177,5 +177,6 @@
 #include "agent/clawt-workspace.h"
 #include "agent/clawt-avatar.h"
 #include "agent/clawt-team.h"
+#include "agent/clawt-agent-confine.h"
 
 #undef CLAWT_INSIDE
