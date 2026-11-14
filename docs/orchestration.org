@@ -1796,6 +1796,22 @@ Beside the alerts rather than inside them. An alert is something that
 happened; a decision is something that needs you, and one badge meaning
 both is a badge nobody can act on.
 
+And in the conversation that raised it.  A decision remembers the room
+it was asked from -- the tool call's turn room, or for a policy ask the
+agent's one running room when it has exactly one -- and every client
+draws it there too, inline, as a second view of the same record: the
+question, the options as buttons, the default and its deadline, and
+once settled how it ended and who ended it.  Pressing an option there is
+the same ~decision.answer~ (with ~via: chat~), so the agent hears the
+answer the same way and the inbox shows it settled; settling it in the
+inbox, from the CLI or by the deadline redraws the inline view from the
+same ~decision.settled~, which carries the room for exactly that.  A
+press on one somebody already settled -- a stale view, a double tap --
+is refused with what happened and changes nothing.  A decision nobody
+could place in a room stays in the inbox only; drawing a question in
+the wrong conversation would be worse than drawing it in none.  The
+wire is in [[file:ipc-protocol.org][ipc-protocol.org]] and the drawing in [[file:clients.org][clients.org]].
+
 The store is sqlite under the state directory, durable for the same
 reason the mailbox is: an agent that asked and got no answer carried on
 with its default, and an operator who never saw the question has no way

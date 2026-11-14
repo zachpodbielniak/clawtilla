@@ -110,6 +110,17 @@ typedef struct {
     GPtrArray   *steps;          /* the running turn's, for the live block */
     gboolean     can_interrupt;
 
+    /*
+     * The decisions asked from the room on screen, drawn inline: the
+     * records (ClawtDecision, oldest first), their cards (id -> card,
+     * borrowed from the transcript) and the ones with a press in flight,
+     * whose buttons are not drawn until the daemon answers -- a double
+     * tap's second press has nothing to land on.
+     */
+    GPtrArray   *decisions;
+    GHashTable  *decision_cards;
+    GHashTable  *decision_pressing;
+
     /* ── following the live edge ── */
     gboolean     following;
     gboolean     auto_scrolling;
@@ -2049,6 +2060,7 @@ sync_selected_activity(ClawtLrgApp *app)
 typedef struct {
     guint      generation;
     JsonNode  *messages;      /* the history reply, held for the steps */
+    GPtrArray *steps;         /* the room's steps, held for the decisions */
 } HistoryLoad;
 
 static void
@@ -2065,6 +2077,7 @@ history_load_free(gpointer data)
         chat.history_inflight--;
 
     g_clear_pointer(&load->messages, json_node_unref);
+    g_clear_pointer(&load->steps, g_ptr_array_unref);
     g_free(load);
 }
 
@@ -2082,6 +2095,12 @@ reset_transcript(void)
     if (chat.steps != NULL)
         g_ptr_array_set_size(chat.steps, 0);
 
+    /* the cards are borrowed from the transcript, which is emptied below */
+    if (chat.decisions != NULL)
+        g_ptr_array_set_size(chat.decisions, 0);
+    if (chat.decision_cards != NULL)
+        g_hash_table_remove_all(chat.decision_cards);
+
     clawt_lrg_run_reset(&chat.run);
     chat.run_round = 0;
 
@@ -2091,8 +2110,270 @@ reset_transcript(void)
     set_following(TRUE);
 }
 
+/* ── Decisions inline ─────────────────────────────────────────────── */
+
+static void inline_card_fill(ClawtLrgApp *app, LrgWidget *card,
+                             ClawtDecision *decision);
+static void inline_fetch(ClawtLrgApp *app);
+
+/* A press reached the daemon, or was refused by it. */
 static void
-draw_history(ClawtLrgApp *app, JsonNode *history, GPtrArray *steps)
+on_inline_answered(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+                   gpointer user_data)
+{
+    const gchar *id = user_data;
+    JsonObject *root = clawt_ipc_reply_object(reply);
+    g_autoptr(ClawtDecision) settled = NULL;
+    ClawtDecision *held;
+    LrgWidget *card;
+    guint index;
+
+    g_hash_table_remove(chat.decision_pressing, id);
+
+    if (root != NULL && json_object_has_member(root, "decision"))
+        settled = clawt_decision_new_from_object(
+            json_object_get_object_member(root, "decision"));
+
+    held = clawt_lrg_inline_decision_find(chat.decisions, id);
+    card = g_hash_table_lookup(chat.decision_cards, id);
+
+    /*
+     * Refused -- the toast already says what happened instead (somebody
+     * settled it first, or it is gone) -- so the room's list is read
+     * again and the card redrawn from it, rather than offering buttons
+     * the daemon will refuse a second time.
+     */
+    if (settled == NULL || held == NULL || card == NULL) {
+        inline_fetch(app);
+        return;
+    }
+
+    if (g_ptr_array_find(chat.decisions, held, &index)) {
+        g_ptr_array_index(chat.decisions, index) = g_steal_pointer(&settled);
+        clawt_decision_free(held);
+        held = g_ptr_array_index(chat.decisions, index);
+    }
+
+    inline_card_fill(app, card, held);
+    clawt_lrg_app_wake(app);
+}
+
+static void
+on_inline_option(LrgButton *button, gpointer user_data)
+{
+    ClawtLrgApp *app = user_data;
+    const gchar *id = g_object_get_data(G_OBJECT(button), "decision-id");
+    const gchar *option = g_object_get_data(G_OBJECT(button), "option");
+    ClawtDecision *held = clawt_lrg_inline_decision_find(chat.decisions, id);
+    LrgWidget *card = (id != NULL)
+        ? g_hash_table_lookup(chat.decision_cards, id) : NULL;
+
+    /* a second press while the first is in flight is not sent at all */
+    if (id == NULL || option == NULL || held == NULL ||
+        g_hash_table_contains(chat.decision_pressing, id))
+        return;
+
+    g_hash_table_add(chat.decision_pressing, g_strdup(id));
+
+    if (card != NULL)
+        inline_card_fill(app, card, held);
+
+    clawt_lrg_request(app, "decision.answer",
+                      clawt_ipc_payload_new("decision", id, "answer", option,
+                                            "via", CLAWT_DECISION_VIA_CHAT,
+                                            NULL),
+                      CLAWT_LRG_REQUEST_NONE, on_inline_answered,
+                      g_strdup(id), g_free);
+}
+
+/*
+ * The card's contents from its record: who asks and the question; the
+ * options as buttons while it is open and nothing is in flight; and the
+ * footer the model writes -- the default and its deadline, or how it
+ * ended and who ended it.
+ */
+static void
+inline_card_fill(ClawtLrgApp *app, LrgWidget *card, ClawtDecision *decision)
+{
+    LrgWidget *body = g_object_get_data(G_OBJECT(card), "inline-body");
+    g_autofree gchar *who = NULL;
+    g_autofree gchar *footer = NULL;
+    const gchar *id = clawt_decision_get_id(decision);
+    gboolean pressing = g_hash_table_contains(chat.decision_pressing, id);
+
+    if (body == NULL)
+        return;
+
+    clawt_lrg_clear(body);
+
+    who = g_strdup_printf("%s asks", clawt_decision_get_agent(decision));
+    clawt_lrg_take(body, clawt_lrg_label(who, "caption"));
+    clawt_lrg_take(body, clawt_lrg_paragraph(
+                             clawt_decision_get_question(decision), "heading"));
+
+    if (clawt_lrg_inline_decision_pressable(decision) && !pressing) {
+        const gchar * const *options = clawt_decision_get_options(decision);
+        guint i;
+
+        for (i = 0; options[i] != NULL; i++) {
+            LrgWidget *pick = clawt_lrg_button(options[i], NULL,
+                                               G_CALLBACK(on_inline_option),
+                                               app);
+
+            g_object_set_data_full(G_OBJECT(pick), "decision-id",
+                                   g_strdup(id), g_free);
+            g_object_set_data_full(G_OBJECT(pick), "option",
+                                   g_strdup(options[i]), g_free);
+            lrg_widget_set_halign(pick, LRG_ALIGN_START);
+            clawt_lrg_take(body, pick);
+        }
+    } else if (pressing) {
+        clawt_lrg_take(body, clawt_lrg_paragraph("Answering\342\200\246",
+                                                 "muted"));
+    } else if (clawt_decision_get_state(decision) == CLAWT_DECISION_OPEN) {
+        clawt_lrg_take(body, clawt_lrg_paragraph(
+                                 "No options offered: answer it in Decisions.",
+                                 "muted"));
+    }
+
+    footer = clawt_lrg_inline_decision_footer(decision, NULL);
+
+    if (footer != NULL)
+        clawt_lrg_take(body, clawt_lrg_paragraph(footer, "muted"));
+}
+
+/*
+ * One decision as a card in the transcript, unless it is drawn already.
+ * Appended, then the live step block is moved back under it, so a turn
+ * still running stays the live edge.
+ */
+static void
+inline_card_append(ClawtLrgApp *app, ClawtDecision *decision)
+{
+    LrgWidget *body;
+    LrgWidget *card;
+    const gchar *id = clawt_decision_get_id(decision);
+
+    if (chat.transcript == NULL ||
+        g_hash_table_contains(chat.decision_cards, id))
+        return;
+
+    body = clawt_lrg_vbox(px(app, 6.0f));
+    card = clawt_lrg_card(body);
+    lrg_widget_add_class(card, "decision-card");
+    g_object_set_data(G_OBJECT(card), "inline-body", body);
+    g_object_unref(body);
+
+    g_hash_table_insert(chat.decision_cards, g_strdup(id), card);
+    inline_card_fill(app, card, decision);
+    clawt_lrg_take(chat.transcript, card);
+
+    if (chat.live_steps != NULL)
+        steps_rebuild(app);
+}
+
+/*
+ * The room's list again: new ones drawn at the live end, held ones
+ * redrawn from what the daemon now says, gone ones taken out.  What a
+ * `decision.asked` and a refused press both come back to.
+ */
+static void
+on_inline_list(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+               gpointer user_data)
+{
+    g_autoptr(GPtrArray) fresh = NULL;
+    GHashTableIter iter;
+    gpointer key;
+    gpointer value;
+    guint i;
+
+    if (reply == NULL || GPOINTER_TO_UINT(user_data) != chat.history_generation)
+        return;
+
+    fresh = clawt_lrg_inline_decisions(reply);
+
+    /* gone from the room's list: deleted while on screen */
+    g_hash_table_iter_init(&iter, chat.decision_cards);
+    while (g_hash_table_iter_next(&iter, &key, &value))
+        if (clawt_lrg_inline_decision_find(fresh, key) == NULL) {
+            ClawtDecision *held = clawt_lrg_inline_decision_find(chat.decisions,
+                                                                 key);
+
+            if (held != NULL)
+                g_ptr_array_remove(chat.decisions, held);
+            lrg_container_remove_child(LRG_CONTAINER(chat.transcript), value);
+            g_hash_table_iter_remove(&iter);
+        }
+
+    for (i = 0; i < fresh->len; i++) {
+        ClawtDecision *now = g_ptr_array_index(fresh, i);
+        const gchar *id = clawt_decision_get_id(now);
+        ClawtDecision *held = clawt_lrg_inline_decision_find(chat.decisions, id);
+        LrgWidget *card = g_hash_table_lookup(chat.decision_cards, id);
+
+        if (held != NULL)
+            g_ptr_array_remove(chat.decisions, held);
+
+        g_ptr_array_add(chat.decisions, clawt_decision_copy(now));
+        now = g_ptr_array_index(chat.decisions, chat.decisions->len - 1);
+
+        if (card != NULL)
+            inline_card_fill(app, card, now);
+        else
+            inline_card_append(app, now);
+    }
+
+    clawt_lrg_app_wake(app);
+}
+
+static void
+inline_fetch(ClawtLrgApp *app)
+{
+    if (chat.room == NULL)
+        return;
+
+    clawt_lrg_request(app, "decision.list",
+                      clawt_ipc_payload_new("room", chat.room, NULL),
+                      CLAWT_LRG_QUIET, on_inline_list,
+                      GUINT_TO_POINTER(chat.history_generation), NULL);
+}
+
+/* A `decision.*` event, folded into the inline view by the model. */
+static void
+on_decision_event(ClawtLrgApp *app, ClawtEvent *event)
+{
+    const gchar *id = clawt_event_get_detail(event, "decision");
+    LrgWidget *card = (id != NULL)
+        ? g_hash_table_lookup(chat.decision_cards, id) : NULL;
+
+    switch (clawt_lrg_inline_decision_event(chat.decisions, chat.room, event)) {
+    case CLAWT_LRG_INLINE_NONE:
+        return;
+
+    case CLAWT_LRG_INLINE_REDRAW:
+        if (card != NULL)
+            inline_card_fill(app, card,
+                             clawt_lrg_inline_decision_find(chat.decisions, id));
+        break;
+
+    case CLAWT_LRG_INLINE_FETCH:
+        inline_fetch(app);
+        break;
+
+    case CLAWT_LRG_INLINE_REMOVE:
+        if (card != NULL) {
+            lrg_container_remove_child(LRG_CONTAINER(chat.transcript), card);
+            g_hash_table_remove(chat.decision_cards, id);
+        }
+        break;
+    }
+
+    clawt_lrg_app_wake(app);
+}
+
+static void
+draw_history(ClawtLrgApp *app, JsonNode *history, GPtrArray *steps,
+             GPtrArray *decisions)
 {
     JsonObject *root = clawt_ipc_reply_object(history);
     JsonArray *messages = (root != NULL &&
@@ -2100,10 +2381,16 @@ draw_history(ClawtLrgApp *app, JsonNode *history, GPtrArray *steps)
         ? json_object_get_array_member(root, "messages") : NULL;
     guint n = (messages != NULL) ? json_array_get_length(messages) : 0;
     guint s_at = 0;
+    guint d_at = 0;
     guint i;
 
     reset_transcript();
     g_hash_table_remove_all(chat.shown);
+
+    /* held for the inline view, which redraws them as events arrive */
+    for (i = 0; decisions != NULL && i < decisions->len; i++)
+        g_ptr_array_add(chat.decisions,
+                        clawt_decision_copy(g_ptr_array_index(decisions, i)));
 
     if (n == 0) {
         g_autofree gchar *body = g_strdup_printf(
@@ -2126,9 +2413,14 @@ draw_history(ClawtLrgApp *app, JsonNode *history, GPtrArray *steps)
         const gchar *id = clawt_ipc_payload_string(message, "id");
         gint64 ts = clawt_ipc_payload_int(message, "ts", 0);
         guint run = clawt_lrg_steps_before(steps, s_at, ts);
+        guint asked = clawt_lrg_decisions_before(chat.decisions, d_at, ts);
 
         steps_append_sealed(app, steps, s_at, run);
         s_at = run;
+
+        /* each question where it was asked, by the rule all three share */
+        while (d_at < asked)
+            inline_card_append(app, g_ptr_array_index(chat.decisions, d_at++));
 
         if (id != NULL)
             g_hash_table_add(chat.shown, g_strdup(id));
@@ -2152,6 +2444,9 @@ draw_history(ClawtLrgApp *app, JsonNode *history, GPtrArray *steps)
     if (steps != NULL)
         steps_append_sealed(app, steps, s_at, steps->len);
 
+    while (d_at < chat.decisions->len)
+        inline_card_append(app, g_ptr_array_index(chat.decisions, d_at++));
+
     /*
      * Everything just drawn is read.  A message that arrived during the
      * wait was counted against the old room; it is on screen now.
@@ -2165,11 +2460,30 @@ draw_history(ClawtLrgApp *app, JsonNode *history, GPtrArray *steps)
     clawt_lrg_app_wake(app);
 }
 
+/*
+ * The last of the three history reads.  A failed decision listing still
+ * draws the conversation, without them -- the inbox has them all.
+ */
+static void
+on_history_decisions(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+                     gpointer user_data)
+{
+    HistoryLoad *load = user_data;
+    g_autoptr(GPtrArray) decisions = NULL;
+
+    if (load->generation != chat.history_generation)
+        return;
+
+    decisions = clawt_lrg_inline_decisions(reply);
+    draw_history(app, load->messages, load->steps, decisions);
+}
+
 static void
 on_steps(ClawtLrgApp *app, JsonNode *reply, const GError *error,
          gpointer user_data)
 {
     HistoryLoad *load = user_data;
+    HistoryLoad *next;
     g_autoptr(GPtrArray) steps = g_ptr_array_new_with_free_func(
         (GDestroyNotify)clawt_turn_step_free);
     JsonObject *root = clawt_ipc_reply_object(reply);
@@ -2196,8 +2510,20 @@ on_steps(ClawtLrgApp *app, JsonNode *reply, const GError *error,
         }
     }
 
-    /* a failed step listing still draws the conversation, without them */
-    draw_history(app, load->messages, steps);
+    /*
+     * And the decisions asked from this room, before drawing: a failed
+     * step listing still draws the conversation, without them.
+     */
+    next = g_new0(HistoryLoad, 1);
+    next->generation = load->generation;
+    next->messages = json_node_ref(load->messages);
+    next->steps = g_ptr_array_ref(steps);
+    chat.history_inflight++;
+
+    clawt_lrg_request(app, "decision.list",
+                      clawt_ipc_payload_new("room", chat.room, NULL),
+                      CLAWT_LRG_GUARDED | CLAWT_LRG_QUIET, on_history_decisions,
+                      next, history_load_free);
 }
 
 static void
@@ -4189,6 +4515,12 @@ build(ClawtLrgApp *app)
     chat.app = app;
     chat.page = page;
     chat.shown = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    chat.decisions = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)clawt_decision_free);
+    chat.decision_cards = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                                g_free, NULL);
+    chat.decision_pressing = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                                   g_free, NULL);
     chat.drafts = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                         g_free);
     chat.pending = g_ptr_array_new_with_free_func(pending_file_free);
@@ -4559,6 +4891,12 @@ on_event(ClawtLrgApp *app, ClawtEvent *event)
         if (g_strcmp0(clawt_event_get_subject(event), app->agent_id) == 0)
             sync_selected_activity(app);
 
+        return;
+    }
+
+    /* the inline view of a decision asked from the room on screen */
+    if (g_str_has_prefix(kind, "decision.")) {
+        on_decision_event(app, event);
         return;
     }
 

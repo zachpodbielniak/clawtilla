@@ -172,6 +172,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/chat/clawt-open-target.h \
 	$(SRCDIR)/decision/clawt-decision.h \
 	$(SRCDIR)/decision/clawt-decision-store.h \
+	$(SRCDIR)/decision/clawt-decision-view.h \
 	$(SRCDIR)/chat/clawt-attachment.h \
 	$(SRCDIR)/chat/clawt-preamble.h \
 	$(SRCDIR)/chat/clawt-merge.h \
@@ -366,6 +367,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/chat/clawt-open-target.c \
 	$(SRCDIR)/decision/clawt-decision.c \
 	$(SRCDIR)/decision/clawt-decision-store.c \
+	$(SRCDIR)/decision/clawt-decision-view.c \
 	$(SRCDIR)/chat/clawt-attachment.c \
 	$(SRCDIR)/chat/clawt-preamble.c \
 	$(SRCDIR)/chat/clawt-merge.c \

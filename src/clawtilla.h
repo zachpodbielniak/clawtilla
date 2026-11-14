@@ -75,6 +75,7 @@
 #include "chat/clawt-open-target.h"
 #include "decision/clawt-decision.h"
 #include "decision/clawt-decision-store.h"
+#include "decision/clawt-decision-view.h"
 #include "chat/clawt-attachment.h"
 #include "chat/clawt-preamble.h"
 #include "chat/clawt-merge.h"

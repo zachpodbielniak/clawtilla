@@ -777,6 +777,36 @@ turn_steps(ClawtWebApp *app, const gchar *agent_id, const gchar *peer)
     return HTMX_ELEMENT(g_steal_pointer(&box));
 }
 
+/*
+ * Draws the room's decisions from @from that were asked before
+ * @message_ts (seconds), and says where it stopped.  The comparison is
+ * clawt_decision_precedes(), shared with the other two clients, so the
+ * three cannot place one question in three different spots.
+ */
+static guint
+inline_decisions_before(HtmxDiv *into, JsonArray *asked, guint from,
+                        gint64 message_ts)
+{
+    guint at = from;
+
+    while (asked != NULL && at < json_array_get_length(asked)) {
+        JsonObject *object = json_array_get_object_element(asked, at);
+        g_autoptr(ClawtDecision) decision =
+            clawt_decision_new_from_object(object);
+
+        if (decision != NULL &&
+            !clawt_decision_precedes(decision, message_ts))
+            break;
+
+        if (decision != NULL)
+            clawt_web_add(into, clawt_web_decision_inline(object, NULL));
+
+        at++;
+    }
+
+    return at;
+}
+
 static HtmxElement *
 transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
            const gchar *peer)
@@ -896,13 +926,40 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
          * GTK client merges the same two lists.
          */
         g_autoptr(GPtrArray) steps = fetch_steps(app, agent_id, peer, FALSE);
+        g_autoptr(JsonNode) asked_reply = NULL;
+        JsonArray *asked = NULL;
         guint s_at = 0;
+        guint d_at = 0;
+
+        /*
+         * And the decisions asked from this room, merged on time the
+         * same way: each drawn where it was asked, as buttons while it
+         * is open and as how it ended once it is not.  The room is the
+         * one room.history resolved, so this client never spells a
+         * direct room's name itself.
+         */
+        {
+            const gchar *room = clawt_web_member(clawt_web_root(reply),
+                                                 "room", NULL);
+
+            if (room != NULL) {
+                ClawtWebPayload *query = clawt_web_payload_new();
+
+                clawt_web_payload_set(query, "room", room);
+                asked_reply = clawt_web_app_call(app, "decision.list",
+                                                 clawt_web_payload_take(query));
+                asked = clawt_web_member_array(clawt_web_root(asked_reply),
+                                               "decisions");
+            }
+        }
 
         for (i = 0; messages != NULL && i < json_array_get_length(messages);
              i++) {
             JsonObject *one = json_array_get_object_element(messages, i);
             gint64 ts = clawt_web_member_int(one, "ts", 0);
             guint run = s_at;
+
+            d_at = inline_decisions_before(inner, asked, d_at, ts);
             g_autoptr(GDateTime) when = (ts > 0)
                 ? g_date_time_new_from_unix_local(ts)
                 : g_date_time_new_now_local();
@@ -970,6 +1027,8 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
          */
         if (s_at < steps->len)
             clawt_web_add(inner, steps_block(steps, s_at, steps->len));
+
+        inline_decisions_before(inner, asked, d_at, G_MAXINT64);
     }
 
     /*

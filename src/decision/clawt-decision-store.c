@@ -25,10 +25,75 @@ static const gchar *SCHEMA =
     "  reversible_until INTEGER NOT NULL DEFAULT 0,"
     "  created_at INTEGER NOT NULL,"
     "  answered_at INTEGER NOT NULL DEFAULT 0,"
-    "  state INTEGER NOT NULL DEFAULT 0"
+    "  state INTEGER NOT NULL DEFAULT 0,"
+    "  room TEXT,"
+    "  settled_via TEXT"
     ");"
     "CREATE INDEX IF NOT EXISTS decisions_state"
     "  ON decisions(state, reversible_until, created_at);";
+
+/*
+ * Columns added after the table first shipped, each with the statement
+ * that adds it to a store written before it existed.
+ *
+ * CREATE TABLE IF NOT EXISTS does nothing to a table that is already
+ * there, so a daemon upgraded over an old store would prepare every
+ * SELECT against a column that is not on disk -- and the store answers
+ * a failed prepare with an empty list, which reads as an inbox with
+ * nothing in it rather than as a schema that never moved.
+ */
+static const struct {
+    const gchar *column;
+    const gchar *add;
+} LATER_COLUMNS[] = {
+    { "room",        "ALTER TABLE decisions ADD COLUMN room TEXT" },
+    { "settled_via", "ALTER TABLE decisions ADD COLUMN settled_via TEXT" }
+};
+
+/* Whether the decisions table on disk already has @column. */
+static gboolean
+has_column(sqlite3 *db, const gchar *column)
+{
+    sqlite3_stmt *stmt = NULL;
+    gboolean found = FALSE;
+
+    if (sqlite3_prepare_v2(db, "PRAGMA table_info(decisions)", -1, &stmt,
+                           NULL) != SQLITE_OK)
+        return FALSE;
+
+    while (!found && sqlite3_step(stmt) == SQLITE_ROW)
+        found = g_strcmp0((const gchar *)sqlite3_column_text(stmt, 1),
+                          column) == 0;
+
+    sqlite3_finalize(stmt);
+
+    return found;
+}
+
+static gboolean
+add_later_columns(sqlite3 *db, GError **error)
+{
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS(LATER_COLUMNS); i++) {
+        gchar *message = NULL;
+
+        if (has_column(db, LATER_COLUMNS[i].column))
+            continue;
+
+        if (sqlite3_exec(db, LATER_COLUMNS[i].add, NULL, NULL, &message) !=
+            SQLITE_OK) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                        "could not add '%s' to the decision store: %s",
+                        LATER_COLUMNS[i].column,
+                        message != NULL ? message : "unknown");
+            sqlite3_free(message);
+            return FALSE;
+        }
+    }
+
+    return TRUE;
+}
 
 struct _ClawtDecisionStore {
     GObject  parent_instance;
@@ -102,6 +167,9 @@ clawt_decision_store_new(const gchar *path, GError **error)
         return NULL;
     }
 
+    if (!add_later_columns(self->db, error))
+        return NULL;
+
     return g_steal_pointer(&self);
 }
 
@@ -151,8 +219,8 @@ clawt_decision_store_post(
             "INSERT OR REPLACE INTO decisions"
             " (id, agent, question, options, default_option, default_reason,"
             "  task, answer, reversible_until, created_at, answered_at,"
-            "  state)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "  state, room, settled_via)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             -1, &stmt, NULL) != SQLITE_OK) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
                     "could not record the decision: %s",
@@ -182,6 +250,10 @@ clawt_decision_store_post(
     sqlite3_bind_int64(stmt, 10, clawt_decision_get_created_at(decision));
     sqlite3_bind_int64(stmt, 11, clawt_decision_get_answered_at(decision));
     sqlite3_bind_int(stmt, 12, (gint)clawt_decision_get_state(decision));
+    sqlite3_bind_text(stmt, 13, clawt_decision_get_room(decision), -1,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 14, clawt_decision_get_settled_via(decision), -1,
+                      SQLITE_TRANSIENT);
 
     if (sqlite3_step(stmt) != SQLITE_DONE) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
@@ -231,13 +303,16 @@ decision_from_row(sqlite3_stmt *stmt)
     clawt_decision_set_answered_at(decision, sqlite3_column_int64(stmt, 10));
     clawt_decision_set_state(
         decision, (ClawtDecisionState)sqlite3_column_int(stmt, 11));
+    clawt_decision_set_room(decision, column_text(stmt, 12));
+    clawt_decision_set_settled_via(decision, column_text(stmt, 13));
 
     return decision;
 }
 
 #define SELECT_COLUMNS \
     "SELECT id, agent, question, options, default_option, default_reason," \
-    " task, answer, reversible_until, created_at, answered_at, state" \
+    " task, answer, reversible_until, created_at, answered_at, state," \
+    " room, settled_via" \
     " FROM decisions"
 
 GPtrArray *
@@ -278,6 +353,42 @@ clawt_decision_store_list(ClawtDecisionStore *self, gboolean open_only)
     return out;
 }
 
+GPtrArray *
+clawt_decision_store_list_room(ClawtDecisionStore *self, const gchar *room)
+{
+    GPtrArray *out;
+    sqlite3_stmt *stmt = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_DECISION_STORE(self), NULL);
+
+    out = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)clawt_decision_free);
+
+    if (room == NULL || *room == '\0')
+        return out;
+
+    /*
+     * Every state and in the order asked, because this is a
+     * conversation's view and a conversation is read in time order: a
+     * settled one stays where it was asked, showing how it ended, rather
+     * than vanishing out of the middle of the transcript.
+     */
+    if (sqlite3_prepare_v2(self->db,
+                           SELECT_COLUMNS " WHERE room = ?"
+                           " ORDER BY created_at ASC, id ASC",
+                           -1, &stmt, NULL) != SQLITE_OK)
+        return out;
+
+    sqlite3_bind_text(stmt, 1, room, -1, SQLITE_TRANSIENT);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW)
+        g_ptr_array_add(out, decision_from_row(stmt));
+
+    sqlite3_finalize(stmt);
+
+    return out;
+}
+
 ClawtDecision *
 clawt_decision_store_get(ClawtDecisionStore *self, const gchar *id)
 {
@@ -308,6 +419,17 @@ clawt_decision_store_answer(
     const gchar        *answer,
     GError            **error
 ){
+    return clawt_decision_store_answer_via(self, id, answer, NULL, error);
+}
+
+ClawtDecision *
+clawt_decision_store_answer_via(
+    ClawtDecisionStore *self,
+    const gchar        *id,
+    const gchar        *answer,
+    const gchar        *via,
+    GError            **error
+){
     g_autoptr(ClawtDecision) decision = NULL;
 
     g_return_val_if_fail(CLAWT_IS_DECISION_STORE(self), NULL);
@@ -328,16 +450,24 @@ clawt_decision_store_answer(
      * mind that nothing downstream would ever hear about -- which is
      * worse than being told to raise it again.
      */
+    /*
+     * The refusal says what *did* happen, because the person reading it
+     * pressed a button on a view that was out of date -- a second
+     * window, the inbox, or the clock got there first -- and "already
+     * settled" alone sends them looking for which.  The same text is
+     * what a double tap gets, since the second press of one is exactly
+     * a press on a decision the first one settled.
+     */
     if (clawt_decision_get_state(decision) != CLAWT_DECISION_OPEN) {
-        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
-                    "'%s' has already been settled; say so in a message "
-                    "to %s instead", id,
-                    clawt_decision_get_agent(decision));
+        g_autofree gchar *refusal = clawt_decision_refusal_text(decision);
+
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED, refusal);
         return NULL;
     }
 
     clawt_decision_answer(decision, answer,
                           g_get_real_time() / G_USEC_PER_SEC);
+    clawt_decision_set_settled_via(decision, via);
 
     /*
      * The id is transfer-full and is not wanted here -- the caller

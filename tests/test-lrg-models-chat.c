@@ -1035,6 +1035,119 @@ test_open_resolve(void)
     g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND);
 }
 
+/* ── Decisions inline ─────────────────────────────────────────────── */
+
+/*
+ * Two rooms' worth of a `decision.list`-by-room reply: two asked here,
+ * one already settled, in the order asked.
+ */
+#define ROOM_DECISIONS_JSON \
+    "{\"decisions\": [" \
+    " {\"id\": \"d1\", \"agent\": \"chief\", \"question\": \"Ship?\"," \
+    "  \"options\": [\"now\", \"later\"], \"default\": \"later\"," \
+    "  \"created_at\": 100, \"state\": 0, \"room\": \"talk-1\"}," \
+    " {\"id\": \"d2\", \"agent\": \"chief\", \"question\": \"Free text?\"," \
+    "  \"options\": [], \"default\": \"skip\"," \
+    "  \"answer\": \"skip\", \"created_at\": 200, \"state\": 2," \
+    "  \"room\": \"talk-1\"}]}"
+
+static ClawtEvent *
+decision_event(const gchar *kind, const gchar *id, const gchar *room)
+{
+    ClawtEvent *event = clawt_event_new(kind, "chief");
+
+    clawt_event_set_detail(event, "decision", id);
+    clawt_event_set_detail(event, "room", room);
+
+    return event;
+}
+
+/*
+ * The room's decisions are held in the order asked and placed between
+ * messages by the shared rule: strictly before the message.
+ */
+static void
+test_inline_decisions_are_placed(void)
+{
+    g_autoptr(JsonNode) reply = parse(ROOM_DECISIONS_JSON);
+    g_autoptr(GPtrArray) held = clawt_lrg_inline_decisions(reply);
+    g_autoptr(GPtrArray) none = clawt_lrg_inline_decisions(NULL);
+
+    g_assert_cmpuint(held->len, ==, 2);
+    g_assert_cmpuint(none->len, ==, 0);
+
+    g_assert_cmpuint(clawt_lrg_decisions_before(held, 0, 100), ==, 0);
+    g_assert_cmpuint(clawt_lrg_decisions_before(held, 0, 150), ==, 1);
+    g_assert_cmpuint(clawt_lrg_decisions_before(held, 1, 201), ==, 2);
+
+    /* buttons only while open, and only with options to press */
+    g_assert_true(clawt_lrg_inline_decision_pressable(
+        g_ptr_array_index(held, 0)));
+    g_assert_false(clawt_lrg_inline_decision_pressable(
+        g_ptr_array_index(held, 1)));
+}
+
+/*
+ * Settled in the inbox -- or anywhere -- the card in the chat redraws
+ * with how it ended, from the event alone.  Two rooms, so an event
+ * about the other one cannot be mistaken for this one's.
+ */
+static void
+test_inline_decision_follows_the_inbox(void)
+{
+    g_autoptr(JsonNode) reply = parse(ROOM_DECISIONS_JSON);
+    g_autoptr(GPtrArray) held = clawt_lrg_inline_decisions(reply);
+    g_autoptr(ClawtEvent) elsewhere =
+        decision_event("decision.settled", "d1", "talk-2");
+    g_autoptr(ClawtEvent) settled =
+        decision_event("decision.settled", "d1", "talk-1");
+    g_autoptr(ClawtEvent) asked =
+        decision_event("decision.asked", "d3", "talk-1");
+    g_autoptr(ClawtEvent) gone =
+        decision_event("decision.deleted", "d2", "talk-1");
+    g_autofree gchar *open_footer = NULL;
+    g_autofree gchar *footer = NULL;
+
+    open_footer = clawt_lrg_inline_decision_footer(g_ptr_array_index(held, 0),
+                                                   NULL);
+    g_assert_nonnull(strstr(open_footer, "If nobody answers"));
+
+    g_assert_cmpint(clawt_lrg_inline_decision_event(held, "talk-1", elsewhere),
+                    ==, CLAWT_LRG_INLINE_NONE);
+
+    clawt_event_set_detail(settled, "how", "answered");
+    clawt_event_set_detail(settled, "answer", "now");
+    clawt_event_set_detail(settled, "via", CLAWT_DECISION_VIA_INBOX);
+
+    g_assert_cmpint(clawt_lrg_inline_decision_event(held, "talk-1", settled),
+                    ==, CLAWT_LRG_INLINE_REDRAW);
+    g_assert_false(clawt_lrg_inline_decision_pressable(
+        clawt_lrg_inline_decision_find(held, "d1")));
+
+    footer = clawt_lrg_inline_decision_footer(
+        clawt_lrg_inline_decision_find(held, "d1"), NULL);
+    g_assert_nonnull(strstr(footer, "You answered"));
+    g_assert_nonnull(strstr(footer, "in the inbox"));
+
+    /* a replay of the same settle is not news */
+    g_assert_cmpint(clawt_lrg_inline_decision_event(held, "talk-1", settled),
+                    ==, CLAWT_LRG_INLINE_NONE);
+
+    /* asked here and not held: read the room's list */
+    g_assert_cmpint(clawt_lrg_inline_decision_event(held, "talk-1", asked),
+                    ==, CLAWT_LRG_INLINE_FETCH);
+
+    /* deleted: dropped from what is held, and the card goes */
+    g_assert_cmpint(clawt_lrg_inline_decision_event(held, "talk-1", gone),
+                    ==, CLAWT_LRG_INLINE_REMOVE);
+    g_assert_null(clawt_lrg_inline_decision_find(held, "d2"));
+    g_assert_cmpuint(held->len, ==, 1);
+
+    /* nothing on screen: nothing to change */
+    g_assert_cmpint(clawt_lrg_inline_decision_event(held, NULL, asked),
+                    ==, CLAWT_LRG_INLINE_NONE);
+}
+
 gint
 main(gint argc, gchar **argv)
 {
@@ -1072,6 +1185,11 @@ main(gint argc, gchar **argv)
     g_test_add_func("/lrg/chat/fold-viewer", test_fold_viewer);
     g_test_add_func("/lrg/chat/exchange-payload", test_exchange_payload);
     g_test_add_func("/lrg/chat/open-resolve", test_open_resolve);
+
+    g_test_add_func("/lrg/chat/inline-decisions/placed",
+                    test_inline_decisions_are_placed);
+    g_test_add_func("/lrg/chat/inline-decisions/follow-the-inbox",
+                    test_inline_decision_follows_the_inbox);
 
     return g_test_run();
 }

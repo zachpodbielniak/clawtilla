@@ -398,11 +398,17 @@ clawt_daemon_skill_propose_for_tools(
 		return NULL;
 	}
 
-	if (self->bus != NULL) {
-		clawt_event_bus_emit(self->bus, "decision.asked", agent_id);
+	/*
+	 * Through the one door every decision is announced by, so the event
+	 * names the decision as well as the agent.  Not placed in a room:
+	 * its "edit" option needs text a button cannot carry, so it is
+	 * answered in the inbox, which has the box for it.
+	 */
+	clawt_daemon_publish_decision_asked(self, decision);
+
+	if (self->bus != NULL)
 		clawt_event_bus_emit(self->bus, "skill.changed",
 		                     clawt_skill_proposal_get_name(proposal));
-	}
 
 	used = clawt_skill_proposals_count_recent(self->skill_proposals, agent_id,
 	                                          g_get_real_time());
