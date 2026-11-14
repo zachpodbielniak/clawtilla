@@ -741,9 +741,9 @@ clawt_connector_catalog_find(GPtrArray *catalog, const gchar *id)
 }
 
 gchar *
-clawt_connector_token_path(const gchar *secrets_dir, const gchar *name)
+clawt_connector_token_dir(const gchar *secrets_dir, const gchar *name)
 {
-    g_autofree gchar *file = NULL;
+    g_autofree gchar *folded = NULL;
 
     g_return_val_if_fail(secrets_dir != NULL, NULL);
     g_return_val_if_fail(name != NULL, NULL);
@@ -753,11 +753,95 @@ clawt_connector_token_path(const gchar *secrets_dir, const gchar *name)
      * slash -- which would put the credential somewhere other than the
      * secrets directory, possibly on top of something else.  Anything
      * that is not plainly a filename is folded to an underscore.
+     *
+     * And, because this is a directory a confined agent's box binds,
+     * a name that is empty or starts with a dot is folded too: `..`
+     * would make the directory the whole of secrets.dir, `` the whole
+     * of connectors/, and either bound into a box is every connector's
+     * credential handed to one agent.
      */
+    folded = (*name == '\0') ? g_strdup("_") : g_strdup(name);
+    g_strdelimit(folded, "/\\ \t", '_');
+
+    if (folded[0] == '.')
+        folded[0] = '_';
+
+    return g_build_filename(secrets_dir, "connectors", folded, NULL);
+}
+
+gchar *
+clawt_connector_token_path(const gchar *secrets_dir, const gchar *name)
+{
+    g_autofree gchar *dir = NULL;
+
+    g_return_val_if_fail(secrets_dir != NULL, NULL);
+    g_return_val_if_fail(name != NULL, NULL);
+
+    /*
+     * One file in a directory of its own, never a file beside every
+     * other connector's.  A confined agent's box binds the directory:
+     * a bind of the file itself is a bind of the inode it was when the
+     * box started, and a renewal writes a new file and renames it into
+     * place -- so the box went on reading the token it started with,
+     * and every relay started after the first renewal sent an expired
+     * one.
+     */
+    dir = clawt_connector_token_dir(secrets_dir, name);
+
+    return g_build_filename(dir, "token.json", NULL);
+}
+
+gchar *
+clawt_connector_legacy_token_path(const gchar *secrets_dir, const gchar *name)
+{
+    g_autofree gchar *file = NULL;
+
+    g_return_val_if_fail(secrets_dir != NULL, NULL);
+    g_return_val_if_fail(name != NULL, NULL);
+
     file = g_strdup_printf("connector-%s.json", name);
     g_strdelimit(file, "/\\ \t", '_');
 
     return g_build_filename(secrets_dir, file, NULL);
+}
+
+gchar *
+clawt_connector_find_token_file(const gchar *secrets_dir,
+                                const gchar *name,
+                                const gchar *configured)
+{
+    g_autofree gchar *current = NULL;
+    g_autofree gchar *legacy = NULL;
+
+    g_return_val_if_fail(secrets_dir != NULL, NULL);
+    g_return_val_if_fail(name != NULL, NULL);
+
+    current = clawt_connector_token_path(secrets_dir, name);
+    legacy = clawt_connector_legacy_token_path(secrets_dir, name);
+
+    /*
+     * A path somebody chose -- a key file written by hand, a broker's
+     * key -- is theirs, and is used as written.
+     */
+    if (configured != NULL && *configured != '\0' &&
+        g_strcmp0(configured, current) != 0 &&
+        g_strcmp0(configured, legacy) != 0)
+        return g_strdup(configured);
+
+    /*
+     * Otherwise the daemon's own file, which may be newer than the
+     * configuration that names it: a confined relay reads the
+     * clawtilla.yaml its box was started with, and a connector moved
+     * out of the flat layout -- or connected for the first time -- since
+     * then is only to be found where the daemon now keeps it.
+     */
+    if (g_file_test(current, G_FILE_TEST_IS_REGULAR))
+        return g_steal_pointer(&current);
+
+    if (configured != NULL && *configured != '\0')
+        return g_strdup(configured);
+
+    return NULL;
 }
 
 gchar *

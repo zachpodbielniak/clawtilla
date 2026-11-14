@@ -394,6 +394,132 @@ grant_mcp_targets(ClawtSandbox *sandbox, const gchar *workspace)
     }
 }
 
+/* ── A connector's credential ────────────────────────────────────── */
+
+GStrv
+clawt_agent_confine_connector_paths(ClawtAgentConfig *config)
+{
+    ClawtConfig *fleet;
+    g_autoptr(GPtrArray) out = g_ptr_array_new_with_free_func(g_free);
+    g_autoptr(GPtrArray) bindings = NULL;
+    g_autofree gchar *secrets_dir = NULL;
+    guint i;
+
+    g_return_val_if_fail(config != NULL, NULL);
+
+    fleet = clawt_agent_config_get_config(config);
+
+    if (fleet != NULL) {
+        secrets_dir = clawt_config_get_path_value(fleet, "secrets.dir");
+        bindings = clawt_integration_resolve_for_agent(fleet, config);
+    }
+
+    /*
+     * Exactly the connectors the agent's .mcp.json names, because that is
+     * what decides which relays its CLI starts: the same resolution the
+     * workspace writer walks, never the secrets directory as a whole and
+     * never a connector scoped to somebody else.
+     */
+    for (i = 0; secrets_dir != NULL && bindings != NULL && i < bindings->len;
+         i++) {
+        ClawtIntegrationBinding *binding = g_ptr_array_index(bindings, i);
+        const gchar *name = clawt_integration_binding_get_name(binding);
+        const gchar *configured;
+        g_autofree gchar *dir = NULL;
+
+        if (g_strcmp0(clawt_integration_binding_get_info(binding)->id,
+                      "connector") != 0 || name == NULL)
+            continue;
+
+        /*
+         * The connector's own directory, whether or not anything is in
+         * it yet: a directory bind sees what the daemon renames into it
+         * later -- a renewal, or the first connect after the agent
+         * started -- where a file bind is frozen at the box's start.
+         */
+        dir = clawt_connector_token_dir(secrets_dir, name);
+        g_ptr_array_add(out, g_strdup(dir));
+
+        /*
+         * A token_file somebody chose outside it -- a key written by
+         * hand, a broker's key -- is the file itself, which a change
+         * reaches at the agent's next start.  Only a file: a directory
+         * named here would hand over whatever else is in it.
+         */
+        configured = clawt_integration_binding_get_string(binding,
+                                                          "token_file");
+
+        if (configured != NULL && *configured != '\0' &&
+            !clawt_path_is_within(configured, dir) &&
+            !g_file_test(configured, G_FILE_TEST_IS_DIR))
+            g_ptr_array_add(out, g_strdup(configured));
+    }
+
+    /*
+     * And the catalogue overlay, when the agent holds any connector: the
+     * relay looks its provider up there, and a provider defined only in
+     * a file of the person's own was "a provider clawtilla does not
+     * know" inside a box whose home is empty.  Catalogue entries are
+     * descriptions, not secrets.
+     */
+    if (out->len > 0) {
+        g_autofree gchar *overlay =
+            clawt_config_get_path_value(fleet, "connectors.dir");
+
+        if (overlay != NULL && *overlay != '\0')
+            g_ptr_array_add(out, g_steal_pointer(&overlay));
+    }
+
+    g_ptr_array_add(out, NULL);
+
+    return (GStrv)g_ptr_array_free(g_steal_pointer(&out), FALSE);
+}
+
+gboolean
+clawt_agent_confine_prepare_connector_secrets(ClawtAgentConfig  *config,
+                                              GError           **error)
+{
+    ClawtConfig *fleet;
+    g_autofree gchar *secrets_dir = NULL;
+    g_autofree gchar *root = NULL;
+    g_auto(GStrv) paths = NULL;
+    guint i;
+
+    g_return_val_if_fail(config != NULL, FALSE);
+
+    fleet = clawt_agent_config_get_config(config);
+
+    if (fleet == NULL)
+        return TRUE;
+
+    secrets_dir = clawt_config_get_path_value(fleet, "secrets.dir");
+
+    if (secrets_dir == NULL)
+        return TRUE;
+
+    root = g_build_filename(secrets_dir, "connectors", NULL);
+    paths = clawt_agent_confine_connector_paths(config);
+
+    /*
+     * Made now, empty and 0700, for the same reason the list names them
+     * whether or not they exist: bwrap will not bind a missing source,
+     * and a directory that appears after the box was built is not in
+     * it.  Only the directories under connectors/; a file somebody named
+     * is theirs to create.
+     */
+    for (i = 0; paths != NULL && paths[i] != NULL; i++) {
+        if (!clawt_path_is_within(paths[i], root))
+            continue;
+
+        if (!clawt_ensure_dir(secrets_dir, 0700, error) ||
+            !clawt_ensure_dir(root, 0700, error) ||
+            !clawt_ensure_dir(paths[i], 0700, error))
+            return FALSE;
+    }
+
+    return TRUE;
+}
+
 /* ── The box ─────────────────────────────────────────────────────── */
 
 ClawtSandbox *
@@ -518,6 +644,22 @@ clawt_agent_confine_build(ClawtAgentConfig     *config,
 
     grant_program(sandbox, libreclaw, 0);
     grant_mcp_targets(sandbox, workspace);
+
+    /*
+     * Each granted connector's credential, read-only, one by one.  The
+     * relay its CLI starts runs in here and reads the credential itself;
+     * the rest of secrets.dir -- other agents' connectors, the OAuth
+     * registrations under connector-auth/, every other secret -- stays
+     * outside, under the empty home.  Granted through the one sandbox,
+     * so the predicate (clawt_sandbox_path_is_allowed()) and the argv
+     * say the same thing about each path.
+     */
+    {
+        g_auto(GStrv) secrets = clawt_agent_confine_connector_paths(config);
+
+        for (i = 0; secrets != NULL && secrets[i] != NULL; i++)
+            grant(sandbox, secrets[i], FALSE);
+    }
 
     /*
      * The daemon's sockets, writable because connect() on a unix socket is

@@ -223,6 +223,35 @@ gint clawt_connector_relay_run_full(ClawtConnectorPlan *plan,
                                     ClawtMcpDirectory  *directory);
 
 /**
+ * clawt_connector_relay_body_text:
+ * @body: (nullable): a reply body as libsoup read it
+ *
+ * The body as a string, whole.  Its own function so the copy can be
+ * tested without a socket: the one it replaced read the length before
+ * the call that sets it, and every successful reply from every remote
+ * connector arrived empty.
+ *
+ * Returns: (transfer full): the text, empty for a %NULL @body
+ */
+gchar *clawt_connector_relay_body_text(GBytes *body);
+
+/**
+ * clawt_connector_relay_failure_reply:
+ * @line: the request the relay was forwarding
+ * @text: what to tell the agent
+ *
+ * The answer to a request whose server could not be reached or refused
+ * it with something that is not JSON-RPC: a failed tool result for a
+ * `tools/call`, a JSON-RPC error for anything else, carrying @line's id.
+ * Without one the client waits for ever on an id nothing will answer.
+ *
+ * Returns: (transfer full) (nullable): the reply, or %NULL when @line is
+ *   a notification or not JSON-RPC at all
+ */
+gchar *clawt_connector_relay_failure_reply(const gchar *line,
+                                           const gchar *text);
+
+/**
  * clawt_connector_directory_new:
  * @config: the fleet's configuration
  * @binding: the connector, as this agent has it

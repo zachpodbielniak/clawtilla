@@ -347,6 +347,126 @@ clawt_connector_plan_new(const ClawtConnectorInfo *info,
     return g_steal_pointer(&plan);
 }
 
+/* ── What comes back, and what is said when nothing useful does ──── */
+
+gchar *
+clawt_connector_relay_body_text(GBytes *body)
+{
+    gconstpointer data;
+    gsize length = 0;
+
+    if (body == NULL)
+        return g_strdup("");
+
+    /*
+     * Two statements, never `g_strndup(g_bytes_get_data(body, &length),
+     * length)`: C leaves the order of a call's arguments to the
+     * compiler, and gcc on x86-64 read `length` first -- still 0 -- so
+     * every successful reply from every remote connector became an empty
+     * string and was dropped without a word.  Refusals came another way
+     * and worked, which is why it looked like the servers' fault.
+     */
+    data = g_bytes_get_data(body, &length);
+
+    return g_strndup(data, length);
+}
+
+gchar *
+clawt_connector_relay_failure_reply(const gchar *line,
+                                    const gchar *text)
+{
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autoptr(JsonGenerator) generator = NULL;
+    g_autoptr(JsonNode) root = NULL;
+    JsonObject *request;
+    JsonObject *reply;
+    const gchar *method;
+
+    g_return_val_if_fail(text != NULL, NULL);
+
+    if (line == NULL || !json_parser_load_from_data(parser, line, -1, NULL))
+        return NULL;
+
+    if (!JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser)))
+        return NULL;
+
+    request = json_node_get_object(json_parser_get_root(parser));
+
+    /* A notification has nothing to answer into. */
+    if (!json_object_has_member(request, "id"))
+        return NULL;
+
+    method = json_object_get_string_member_with_default(request, "method",
+                                                        NULL);
+
+    reply = json_object_new();
+    json_object_set_string_member(reply, "jsonrpc", "2.0");
+    json_object_set_member(reply, "id",
+                           json_node_copy(json_object_get_member(request,
+                                                                 "id")));
+
+    /*
+     * A tool call gets a failed tool *result*, because that is what a
+     * model reads; anything else a JSON-RPC error with the same words.
+     * Either way the request is answered: left unanswered, the client
+     * waits on an id nothing will ever reply to, which an agent sees as
+     * a tool that hangs.
+     */
+    if (g_strcmp0(method, "tools/call") == 0) {
+        JsonObject *result = json_object_new();
+        JsonArray *content = json_array_new();
+        JsonObject *item = json_object_new();
+
+        json_object_set_string_member(item, "type", "text");
+        json_object_set_string_member(item, "text", text);
+        json_array_add_object_element(content, item);
+        json_object_set_array_member(result, "content", content);
+        json_object_set_boolean_member(result, "isError", TRUE);
+        json_object_set_object_member(reply, "result", result);
+    } else {
+        JsonObject *error = json_object_new();
+
+        json_object_set_int_member(error, "code", -32603);
+        json_object_set_string_member(error, "message", text);
+        json_object_set_object_member(reply, "error", error);
+    }
+
+    root = json_node_new(JSON_NODE_OBJECT);
+    json_node_take_object(root, reply);
+    generator = json_generator_new();
+    json_generator_set_root(generator, root);
+
+    return json_generator_to_data(generator, NULL);
+}
+
+/*
+ * Whether @body is a JSON-RPC message of the server's own, which is
+ * passed through whatever the status: plenty of servers send a JSON-RPC
+ * error with a 400 or a 500, and it says more than anything said here.
+ */
+static gboolean
+is_jsonrpc(const gchar *content_type, const gchar *body)
+{
+    g_autoptr(JsonParser) parser = NULL;
+    JsonNode *root;
+
+    if (body == NULL || *body == '\0')
+        return FALSE;
+
+    if (content_type != NULL && strstr(content_type, "text/event-stream"))
+        return strstr(body, "data:") != NULL;
+
+    parser = json_parser_new();
+
+    if (!json_parser_load_from_data(parser, body, -1, NULL))
+        return FALSE;
+
+    root = json_parser_get_root(parser);
+
+    return root != NULL && JSON_NODE_HOLDS_OBJECT(root) &&
+           json_object_has_member(json_node_get_object(root), "jsonrpc");
+}
+
 /* ── An HTTP server, spoken to over stdio ────────────────────────── */
 
 /*
@@ -362,6 +482,12 @@ typedef struct {
     const ClawtMcpRelayPolicy *policy;
     gchar                     *session_id;
     GOutputStream             *out;
+
+    /*
+     * Whether every request goes out through the egress gate, so a
+     * refusal can say which setting would let it through.
+     */
+    gboolean                   gated;
 
     /*
      * How deep forward_one() has recursed for pages the directory asked
@@ -466,7 +592,6 @@ forward_one(HttpBridge *bridge, const gchar *line)
     SoupMessageHeaders *headers;
     const gchar *content_type;
     const gchar *fresh_session;
-    gsize length = 0;
 
     message = clawt_http_message_new("POST", bridge->plan->url,
                                      CLAWT_HTTP_CARRIES_CREDENTIALS);
@@ -504,6 +629,22 @@ forward_one(HttpBridge *bridge, const gchar *line)
                                         &error);
 
     if (response == NULL) {
+        g_autofree gchar *said = g_strdup_printf(
+            "The connector '%s' could not reach its tool server at %s: %s.%s",
+            bridge->plan->name != NULL ? bridge->plan->name : "?",
+            bridge->plan->url, error->message,
+            bridge->gated
+                ? " This agent's network is gated, so the request went "
+                  "through clawtilla's egress gate; a server on this "
+                  "machine or the local network is reachable only when "
+                  "the person adds its address to egress.allow."
+                : "");
+        g_autofree gchar *reply = clawt_connector_relay_failure_reply(line,
+                                                                      said);
+
+        if (reply != NULL)
+            write_line(bridge->out, reply);
+
         g_printerr("clawtilla: the request to the tool server failed: %s\n",
                    error->message);
         return;
@@ -539,6 +680,62 @@ forward_one(HttpBridge *bridge, const gchar *line)
         return;
     }
 
+    content_type = soup_message_headers_get_content_type(
+        soup_message_get_response_headers(message), NULL);
+    text = clawt_connector_relay_body_text(response);
+
+    /*
+     * A refusal that is not the server's own JSON-RPC -- the egress
+     * gate's 403, a proxy's 502, an HTML error page -- is answered here.
+     * Passed through, it is not a message the client can parse, and the
+     * request it belonged to was never answered at all.
+     */
+    if (soup_message_get_status(message) >= 400 &&
+        !is_jsonrpc(content_type, text)) {
+        const gchar *gate = soup_message_headers_get_one(
+            soup_message_get_response_headers(message),
+            "X-Clawtilla-Egress");
+        g_autofree gchar *said = NULL;
+        g_autofree gchar *reply = NULL;
+
+        /*
+         * The gate's own answer carries its reason in a header.  Only a
+         * 403 is a decision egress.allow can change; a 502 is the gate
+         * failing to reach a server it was allowed to.
+         */
+        if (gate != NULL && soup_message_get_status(message) == 403)
+            said = g_strdup_printf(
+                "clawtilla's egress gate refused the connector '%s' "
+                "(%s): %s. This agent's network is gated; if %s is "
+                "meant to be reachable, the person adds its address to "
+                "egress.allow.",
+                bridge->plan->name != NULL ? bridge->plan->name : "?",
+                bridge->plan->url, gate, bridge->plan->url);
+        else if (gate != NULL)
+            said = g_strdup_printf(
+                "clawtilla's egress gate could not reach the connector "
+                "'%s' tool server (%s): %s.",
+                bridge->plan->name != NULL ? bridge->plan->name : "?",
+                bridge->plan->url, gate);
+        else
+            said = g_strdup_printf(
+                "The connector '%s' tool server answered HTTP %u, so "
+                "nothing ran.",
+                bridge->plan->name != NULL ? bridge->plan->name : "?",
+                soup_message_get_status(message));
+
+        reply = clawt_connector_relay_failure_reply(line, said);
+
+        if (reply != NULL)
+            write_line(bridge->out, reply);
+
+        g_printerr("clawtilla: %s answered %u for connector '%s'%s%s\n",
+                   bridge->plan->url, soup_message_get_status(message),
+                   bridge->plan->name != NULL ? bridge->plan->name : "?",
+                   gate != NULL ? ": " : "", gate != NULL ? gate : "");
+        return;
+    }
+
     fresh_session = soup_message_headers_get_one(
         soup_message_get_response_headers(message), "Mcp-Session-Id");
 
@@ -554,11 +751,6 @@ forward_one(HttpBridge *bridge, const gchar *line)
      */
     if (g_bytes_get_size(response) == 0)
         return;
-
-    content_type = soup_message_headers_get_content_type(
-        soup_message_get_response_headers(message), NULL);
-
-    text = g_strndup(g_bytes_get_data(response, &length), length);
 
     deliver_response(bridge, content_type, text);
 }
@@ -580,6 +772,27 @@ run_http(ClawtConnectorPlan *plan, const ClawtMcpRelayPolicy *policy)
      */
     session = soup_session_new_with_options("user-agent", USER_AGENT,
                                             "timeout", 120, NULL);
+
+    /*
+     * A gated box has no route but the egress gate, and the relay is in
+     * the box.  Every request goes through it, set here rather than left
+     * to HTTPS_PROXY: whether libsoup reads that depends on which GIO
+     * proxy module the machine has, and NO_PROXY names 127.0.0.1 -- which
+     * in this namespace is the box's own loopback, not the host's the
+     * connector's URL means.  The gate then decides, as it does for
+     * everything else the agent reaches.
+     */
+    {
+        const gchar *gate = g_getenv(CLAWT_EGRESS_PROXY_ENV);
+
+        if (gate != NULL && *gate != '\0') {
+            g_autoptr(GProxyResolver) resolver =
+                g_simple_proxy_resolver_new(gate, NULL);
+
+            soup_session_set_proxy_resolver(session, resolver);
+            bridge.gated = TRUE;
+        }
+    }
 
     stdin_stream = g_unix_input_stream_new(STDIN_FILENO, FALSE);
     stdout_stream = g_unix_output_stream_new(STDOUT_FILENO, FALSE);
