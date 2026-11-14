@@ -166,7 +166,7 @@ typedef enum {
  * one -- a `reply: none` that invites an answer, or a consultation
  * whose turn may act, is the opposite of what the caller asked for.
  *
- * @flags was a #gboolean named `one_way` before 0.21.0;
+ * @flags was a #gboolean named `one_way` before 0.22.0;
  * %CLAWT_MCP_DELIVER_ONE_WAY is 1, so a callback written against that
  * reads the same bit.
  *

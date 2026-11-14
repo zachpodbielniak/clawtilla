@@ -395,6 +395,17 @@ struct _ClawtWindow {
     GtkWidget         *steps_block;      /* borrowed; owned by transcript */
     GPtrArray         *steps;            /* ClawtTurnStep*, the shown room's */
 
+    /*
+     * The decisions drawn inline in the shown room, id -> card.
+     *
+     * A second view of each record, not a copy: the card holds the
+     * #ClawtDecision it was last drawn from and redraws in place when a
+     * `decision.settled` about it arrives, however it was settled.  The
+     * widgets are borrowed -- the transcript owns them -- so the table
+     * is emptied wherever the transcript is (clawt_gtk_reset_transcript()).
+     */
+    GHashTable        *inline_decisions;
+
     GtkTextView       *entry;
     GtkWidget         *placeholder;
     GtkLabel          *streaming;
@@ -1230,6 +1241,43 @@ void clawt_gtk_steps_append_sealed(ClawtWindow *self, GPtrArray *steps,
  *   empty when the room has none -- which is not an error
  */
 GPtrArray *clawt_gtk_steps_fetch(ClawtWindow *self);
+
+/* gtk-inline-decisions.c */
+
+/**
+ * clawt_gtk_inline_decisions_fetch:
+ * @self: the window
+ *
+ * Asks the daemon for every decision asked from the shown room, oldest
+ * first, in any state.  Returned rather than stored, for the reason
+ * clawt_gtk_steps_fetch() gives.
+ *
+ * Returns: (transfer full) (element-type ClawtDecision): the decisions
+ */
+GPtrArray *clawt_gtk_inline_decisions_fetch(ClawtWindow *self);
+
+/**
+ * clawt_gtk_inline_decision_append:
+ * @self: the window
+ * @decision: (transfer none): one decision asked from the shown room
+ *
+ * Draws @decision as a card in the transcript -- before the live step
+ * block, if a turn is running -- unless it is already drawn.
+ */
+void clawt_gtk_inline_decision_append(ClawtWindow   *self,
+                                      ClawtDecision *decision);
+
+/**
+ * clawt_gtk_inline_decisions_on_event:
+ * @self: the window
+ * @event: a `decision.*` event
+ *
+ * Keeps the inline view in step with the record: a decision asked from
+ * the shown room is drawn, a settled one redrawn with how it ended, a
+ * deleted one taken out.  Events about other rooms change nothing.
+ */
+void clawt_gtk_inline_decisions_on_event(ClawtWindow *self,
+                                         ClawtEvent  *event);
 
 void
 clawt_gtk_set_following(ClawtWindow *self, gboolean following);

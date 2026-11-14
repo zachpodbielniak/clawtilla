@@ -31,6 +31,8 @@ struct _ClawtDecision {
     gchar             *answer;
     gchar             *routed_to;
     gchar             *answered_by;
+    gchar             *room;
+    gchar             *settled_via;
     gint64             reversible_until;
     gint64             created_at;
     gint64             answered_at;
@@ -75,6 +77,8 @@ clawt_decision_copy(ClawtDecision *self)
     copy->routed_to = g_strdup(self->routed_to);
     copy->answered_by = g_strdup(self->answered_by);
     copy->answer = g_strdup(self->answer);
+    copy->room = g_strdup(self->room);
+    copy->settled_via = g_strdup(self->settled_via);
     copy->reversible_until = self->reversible_until;
     copy->created_at = self->created_at;
     copy->answered_at = self->answered_at;
@@ -99,6 +103,8 @@ clawt_decision_free(ClawtDecision *self)
     g_free(self->routed_to);
     g_free(self->answered_by);
     g_free(self->answer);
+    g_free(self->room);
+    g_free(self->settled_via);
     g_free(self);
 }
 
@@ -206,6 +212,40 @@ clawt_decision_set_task(ClawtDecision *self, const gchar *task)
 
     g_free(self->task);
     self->task = g_strdup(task);
+}
+
+const gchar *
+clawt_decision_get_room(ClawtDecision *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    return self->room;
+}
+
+void
+clawt_decision_set_room(ClawtDecision *self, const gchar *room)
+{
+    g_return_if_fail(self != NULL);
+
+    g_free(self->room);
+    self->room = (room != NULL && *room != '\0') ? g_strdup(room) : NULL;
+}
+
+const gchar *
+clawt_decision_get_settled_via(ClawtDecision *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    return self->settled_via;
+}
+
+void
+clawt_decision_set_settled_via(ClawtDecision *self, const gchar *via)
+{
+    g_return_if_fail(self != NULL);
+
+    g_free(self->settled_via);
+    self->settled_via = (via != NULL && *via != '\0') ? g_strdup(via) : NULL;
 }
 
 gint64

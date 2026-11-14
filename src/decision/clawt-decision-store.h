@@ -68,6 +68,22 @@ GPtrArray *clawt_decision_store_list(ClawtDecisionStore *self,
                                      gboolean            open_only);
 
 /**
+ * clawt_decision_store_list_room:
+ * @self: a #ClawtDecisionStore
+ * @room: (nullable): a room id
+ *
+ * Every decision asked from @room, in any state, oldest first: the
+ * chat's view of the same records the inbox lists.  A %NULL or empty
+ * @room matches nothing -- a decision nobody could place belongs to no
+ * conversation, and listing those under every room would draw the same
+ * question in all of them.
+ *
+ * Returns: (transfer full) (element-type ClawtDecision): the decisions
+ */
+GPtrArray *clawt_decision_store_list_room(ClawtDecisionStore *self,
+                                          const gchar        *room);
+
+/**
  * clawt_decision_store_get:
  * @self: a #ClawtDecisionStore
  * @id: which one
@@ -111,6 +127,28 @@ ClawtDecision *clawt_decision_store_answer_as(ClawtDecisionStore *self,
                                               const gchar        *answer,
                                               const gchar        *who,
                                               GError            **error);
+
+/**
+ * clawt_decision_store_answer_via:
+ * @self: a #ClawtDecisionStore
+ * @id: which one
+ * @answer: what the person chose
+ * @via: (nullable): where they chose it -- `chat`, `inbox` or `cli`
+ * @error: (out) (optional): return location for a #GError
+ *
+ * clawt_decision_store_answer(), recording which surface the answer came
+ * from so both views can say how it was settled.  A decision that is no
+ * longer open is refused with clawt_decision_refusal_text() as the
+ * message: a stale press and the second press of a double tap are the
+ * same thing, and both are told what already happened.
+ *
+ * Returns: (transfer full) (nullable): the answered decision
+ */
+ClawtDecision *clawt_decision_store_answer_via(ClawtDecisionStore *self,
+                                               const gchar        *id,
+                                               const gchar        *answer,
+                                               const gchar        *via,
+                                               GError            **error);
 
 /**
  * clawt_decision_store_dismiss:

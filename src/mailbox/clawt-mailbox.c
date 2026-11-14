@@ -226,7 +226,7 @@ apply_schema(sqlite3 *db, GError **error)
 	}
 
 	/*
-	 * Since 0.21.0: a consultation.  Absent means nothing queued was
+	 * Since 0.22.0: a consultation.  Absent means nothing queued was
 	 * one, which is what each item meant when it was queued.
 	 */
 	if (!has_column(db, "items", "consult") &&

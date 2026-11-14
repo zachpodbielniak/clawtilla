@@ -183,6 +183,54 @@ gchar       *clawt_decision_routed_label(const gchar *routed_to,
 gint64 clawt_decision_get_created_at(ClawtDecision *self);
 void   clawt_decision_set_created_at(ClawtDecision *self, gint64 when);
 
+/**
+ * clawt_decision_get_room:
+ * @self: a #ClawtDecision
+ *
+ * The room the question was asked from, or %NULL when nobody can say.
+ *
+ * What lets a chat draw the question where it was asked, as a second
+ * view of this one record rather than a copy of it.  Unset for a
+ * decision raised outside any turn (a venture staging, a policy ask
+ * while the agent was mid-turn in several rooms at once): that one
+ * lives in the inbox only, which is better than guessing a room and
+ * drawing somebody's question in a conversation it was never part of.
+ *
+ * Returns: (nullable): the room id
+ */
+const gchar *clawt_decision_get_room(ClawtDecision *self);
+
+/**
+ * clawt_decision_set_room:
+ * @self: a #ClawtDecision
+ * @room: (nullable): the room it was asked from
+ *
+ * Records where the question was asked.
+ */
+void clawt_decision_set_room(ClawtDecision *self, const gchar *room);
+
+/**
+ * clawt_decision_get_settled_via:
+ * @self: a #ClawtDecision
+ *
+ * Where a person settled it: `chat` (the inline view in the room it was
+ * asked from), `inbox` (the Decisions page) or `cli`; %NULL when nobody
+ * said, or when nobody settled it at all -- a default taking effect is
+ * the clock, and the state already says so.
+ *
+ * Returns: (nullable): the surface
+ */
+const gchar *clawt_decision_get_settled_via(ClawtDecision *self);
+
+/**
+ * clawt_decision_set_settled_via:
+ * @self: a #ClawtDecision
+ * @via: (nullable): where it was settled
+ *
+ * Records which surface settled it.
+ */
+void clawt_decision_set_settled_via(ClawtDecision *self, const gchar *via);
+
 ClawtDecisionState clawt_decision_get_state(ClawtDecision *self);
 void clawt_decision_set_state(ClawtDecision *self, ClawtDecisionState state);
 

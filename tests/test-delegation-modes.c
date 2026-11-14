@@ -1536,7 +1536,7 @@ test_daemon_decision_operator_first_and_unrouted(void)
 
 		text = response_text(response, &is_error);
 		g_assert_true(is_error);
-		g_assert_nonnull(strstr(text, "already been settled"));
+		g_assert_nonnull(strstr(text, "Already settled"));
 	}
 
 	daemon_teardown(&fixture);

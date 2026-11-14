@@ -142,6 +142,10 @@ The transcript draws a *Round N* divider (=.round-divider=) where a group room's
 
 =message_element()= reads =consult= off each message and draws =clawt_message_consult_label()= as an info badge in the header line, with =clawt_message_consult_tooltip()= as its =title=.  The Tasks page draws =clawt_task_consult_label()= on a consulted task, and for one delegated with ~thread: new~ a line with =clawt_task_thread_summary()= and an *Open room* link to =/r/<thread_room>=.  A decision row carries =clawt_decision_routed_label()= when it has a =routed_to=.  See [[file:clients.org::#delegation-marks][the marks]].
 
+*** Decisions inline in the chat
+
+=transcript()= reads the room's decisions (~decision.list~ with the ~room~ ~room.history~ resolved) and merges them between the messages with =clawt_decision_precedes()=, each drawn by =clawt_web_decision_inline()= in =web-ui.c= (so =test-web-render= can hold it).  An open card is a form posting to =/f/decision/answer= with ~via: chat~ and one submit button per option; it targets ~closest .decision-inline~ with an ~outerHTML~ swap, has ~hx-sync="this:drop"~ so a second press while the first is in flight is dropped, and ~hx-disabled-elt~ so its buttons are disabled for the wait.  The route answers with the card redrawn from the daemon's reply -- settled -- or, when the daemon refused (a stale card, a double tap's second press, the inbox got there first), from the decision as the daemon now holds it with the refusal written into the card.  A decision deleted meanwhile becomes the refusal text in the card's place.  Without htmx the route redirects to =/decisions=.  The transcript re-renders on every fleet event anyway, so a decision settled in the inbox, another window or by its deadline is redrawn as settled with the next ~decision.settled~.  The inbox's own answers send ~via: inbox~.  See [[file:clients.org][Decisions inline]].
+
 *** Connectors
 
 Each connector's card has a /Tools/ row --
@@ -230,7 +234,7 @@ answers with the page it did it on.
 | =/=, =/fleet=                 | the fleet index                         |
 | =/a/:id/:view=                | the seven agent views                   |
 | =/a/:id/...=                  | everything done to one agent: send, start, stop, restart, reset, set, team, reorder, remove, exec, rebuild, attach, mount, mailbox, memories, file, files, compose, export, copy |
-| =/f/...=                      | fragments htmx swaps in: the sidebar, a transcript, an attachment |
+| =/f/...=                      | fragments htmx swaps in: the sidebar, a transcript, an attachment, an inline decision answered (=/f/decision/answer=) |
 | =/settings=, =/settings/:page= | the seven settings pages               |
 | =/settings/<page>/...=        | their actions: add, save, remove, health, test, authorize, revoke |
 | =/new=, =/import=, =/design=  | making an agent                         |

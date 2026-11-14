@@ -4202,6 +4202,14 @@ tool_ask_decision(ClawtMcpTools *self,
     clawt_decision_set_default(decision, fallback, reason);
     clawt_decision_set_task(decision, task);
 
+    /*
+     * The room the turn is in, so the question can be drawn inline in
+     * the conversation that raised it as well as in the inbox.  NULL
+     * when the call could not say; the daemon places it then only when
+     * the agent is in exactly one turn, rather than guessing.
+     */
+    clawt_decision_set_room(decision, turn_room);
+
     if (options != NULL && *options != '\0') {
         g_auto(GStrv) split = g_strsplit(options, "\n", -1);
 

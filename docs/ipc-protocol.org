@@ -237,7 +237,7 @@ deadline.  An open decision is withdrawn on the way out exactly as a
 dismissal would be: a turn it held is released, and a policy call
 waiting on it is refused with "The operator deleted the request".
 
-Two more members, present only when set (since 0.21.0): ~routed_to~,
+Two more members, present only when set (since 0.22.0): ~routed_to~,
 the agent a decision raised inside delegated work was put to before the
 operator (the delegator), and ~answered_by~, the agent that answered it
 when an agent did.  A client draws ~clawt_decision_routed_label()~ from
@@ -257,6 +257,36 @@ answer back to the agent that asked, as an ordinary message carrying
 the task id. That is what makes the inbox a loop rather than a
 suggestion box, and it is why answering twice is refused --- the first
 answer has already reached the agent.
+
+**** The room, and the inline view
+
+A decision remembers the room it was asked from, so a chat can draw it
+inline as a second view of the same record (see [[file:clients.org][clients.org]]).  Members
+added for that:
+
+| Where | Member | What it is |
+|-------+--------+------------|
+| each item (~decision.list~, ~decision.answer~'s ~decision~) | ~room~ | the room it was asked from, or null when nobody could say |
+| each item | ~settled_via~ | where a person settled it: ~chat~, ~inbox~, ~cli~, or null (an older client, the venture bridge, the clock) |
+| each item | ~answered_at~ | when it was settled, Unix seconds; 0 while open |
+| ~decision.list~ request | ~room~ | narrows the list to that room: every state, oldest first, ~open~ ignored -- a settled question stays in the transcript where it was asked |
+| ~decision.answer~ request | ~via~ | ~chat~, ~inbox~ or ~cli~; anything else is ~INVALID_ARGUMENT~, refused where it arrives rather than stored as a word no view can draw |
+
+The room is set from the tool call's turn room (~CLAWTILLA_ROOM_ID~ from
+libreclaw, or a ~turn_room~ the agent repeats); with neither, and for a
+policy ask or hand-back, it is the agent's one running room when it has
+exactly one, and unset otherwise.  A question drawn in the wrong
+conversation is worse than one that only reaches the inbox, so there is
+no guess beyond that.  A venture staging has no room.
+
+A press on a decision that is no longer open -- a stale view, or a
+double tap's second press -- is refused with a message that says what
+happened: ~Already settled: You answered "now" in the chat. Your press
+changed nothing; if you have changed your mind, say so in a message to
+chief.~ (~clawt_decision_refusal_text()~).  The check and the write run
+in one call on the daemon's main context, so two presses are ordered
+there and only the first settles.  A press on a deleted decision is
+~NOT_FOUND~.
 
 *** event.*
 
@@ -843,7 +873,7 @@ A task object carries ~retries~ and ~retried_by~ once it has been retried, and n
 Events: ~incident.opened~ and ~incident.updated~ (a repeat, a delivery, a retry) and ~incident.resolved~, each with the incident id as subject and details ~agent~ (the agent whose run broke, which is what a pod's scope is matched against), ~kind~, ~room~, ~occurrences~, and ~team~, ~task~, ~routine~ and ~recipient~ when there is one.  All three are routine-tier: the report is in the room, and a badge would be the same news twice.
 
 Each task object carries, besides its id, parties, state and prompt,
-two members present only when set (since 0.21.0):
+two members present only when set (since 0.22.0):
 
 - ~thread_room~ --- the room the work runs in when it was delegated with
   ~thread: new~ (~task:<id>~, a libreclaw session of its own).  A client
@@ -1688,7 +1718,7 @@ Every kind published, by subject:
 | a room | ~message~, ~message.refused~, ~exchange.stalled~, ~room.created~, ~room.changed~ |
 | an agent's mailbox | ~mailbox.queued~, ~mailbox.delivered~ |
 | a team | ~team.changed~ |
-| an agent | ~decision.asked~, ~decision.settled~ (~decision~, ~how~: ~answered~, ~dismissed~, ~defaulted~ or ~deleted~), ~decision.deleted~ (~decision~) |
+| an agent | ~decision.asked~ (~decision~, ~room~), ~decision.settled~ (~decision~, ~how~: ~answered~, ~dismissed~, ~defaulted~ or ~deleted~, ~room~, ~answer~, ~via~), ~decision.deleted~ (~decision~, ~room~) |
 | a routine | ~routine.ran~, ~routine.changed~, ~routine.turned_off~ (~agent~, ~failures~, ~error~) |
 | an agent | ~wait.changed~ (~wait~, ~state~) |
 | a trigger | ~trigger.fired~, ~trigger.posted~, ~trigger.changed~, ~trigger.refused~, ~trigger.verified~ |
@@ -1713,6 +1743,14 @@ already empty -- and a count that is merely too high reads as work
 somebody has not got to yet, so nothing looked wrong.  The subject is
 the agent, matching ~decision.asked~, so a client filing events by who
 they are about can file both the same way.
+
+Both ends carry the room -- ~decision.asked~ and ~decision.settled~ alike,
+and ~decision.deleted~ too -- because the chat's inline view is a fold
+over them: asked tells the chat on screen to draw the question, settled
+lets it redraw the card with the outcome (~answer~, ~via~) without asking
+again, whichever surface or clock settled it.  ~room~ is absent for a
+decision nobody could place.  Every door a decision comes in by
+publishes through ~clawt_daemon_publish_decision_asked()~.
 
 ~decision.deleted~ is published for every deletion; ~decision.settled~
 with ~how: deleted~ only when the row was still open.  A list holding
@@ -1878,7 +1916,7 @@ reader serves either source:
 - ~merged: N~ --- clawtilla's note that N results were delivered to an
   agent as one turn.  The body is sectioned; read it with
   ~clawt_merge_split()~ and draw the sections.
-- ~consult: 1|2~ --- part of a consultation (since 0.21.0): ~1~ is the
+- ~consult: 1|2~ --- part of a consultation (since 0.22.0): ~1~ is the
   question or the consulted task's assignment, ~2~ the answer the
   consulted turn wrote.  Draw ~clawt_message_consult_label()~, which
   returns nothing for a value it does not know.

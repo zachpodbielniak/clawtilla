@@ -405,6 +405,16 @@ clawt_web_stylesheet(void)
     ".decision-options{display:flex;flex-direction:column;gap:8px;"
       "align-items:stretch;margin-bottom:12px}"
     ".decision-options .btn{text-align:left;white-space:normal}"
+    /*
+     * The same decision, inline in the chat it was asked from: framed so
+     * it reads as a question waiting rather than as one more message,
+     * and inset to the message column so it does not claim the avatar
+     * gutter.  Settled, it quietens -- the outcome is history.
+     */
+    ".decision-inline{border:1px solid var(--line);border-radius:8px;"
+      "background:var(--surface-2);padding:10px 12px;margin:8px 0 8px 52px}"
+    ".decision-inline .decision-options{margin:8px 0}"
+    ".decision-inline-settled{opacity:0.85}"
     ".field{margin-bottom:16px}"
     ".field>label{display:block;font-size:12px;letter-spacing:0.02em;"
       "color:var(--muted);margin-bottom:5px}"
