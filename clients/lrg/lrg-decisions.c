@@ -475,10 +475,10 @@ decision_card(JsonObject *decision, gint64 now_us)
     }
 
 closing_row:
-    /* a proposal's review replaces the answer row it never drew into */
-    if (proposal != NULL)
-        g_object_unref(typed);
-
+    /*
+     * A proposal's review replaces the answer row; nothing of it was
+     * made, since the row is built only once an entry exists.
+     */
     drop = clawt_lrg_button("Does not need me", "flat",
                             G_CALLBACK(on_dismiss_clicked), NULL);
     g_object_set_data_full(G_OBJECT(drop), "decision-id", g_strdup(id),
