@@ -573,6 +573,29 @@ It is also the only one of the four that does not need the guest
 rebuilt: it reaches the virtual GPU rather than the cloud-init seed, so
 it applies at the VM's next boot.
 
+*** When the computer starts, its limits, and waking it
+
+The agent's computer settings carry three more things, in GTK, the web
+client and lrg alike, each drawn only for the computer types that read it
+(the daemon reports the values only for those):
+
+- *Start the computer* -- /When the agent starts/ or /On first use/, the
+  choices walked from ~clawt_computer_start_count()~.  On first use leaves
+  the machine off until the agent first runs something in it; its own
+  tools run on the host either way.  Container, distrobox, VM and ssh
+  agents.  See [[file:computers.org::#computer-start][When the machine
+  starts]].
+- *Process limit*, *Memory* and *Memory + swap* -- container and distrobox
+  agents.  Sizes are written as podman writes them (~512m~, ~4g~); empty
+  means podman's default.  A bad value is refused when saved, naming the
+  field, and a change reaches a running machine at once with ~podman
+  update~, without a rebuild.  See [[file:computers.org::#container-limits][Process
+  and memory limits]].
+- *Wake command* -- ssh agents.  One line, split into a program and its
+  arguments (~wakeonlan aa:bb:cc:dd:ee:ff~), never run through a shell;
+  a line using a pipe or a redirection is refused when saved.  See
+  [[file:computers.org::#ssh-wake][A machine that sleeps]].
+
 *** Choosing an account
 
 The agent inspector has an *Account* row beside the model and effort. Its choices come from ~account.list~ with the agent named, so it offers only the accounts the daemon will accept for that agent's provider; an account the agent already names and can no longer use is still shown, labelled, so saving cannot replace it without anybody choosing to. Saving clears the account before a provider change and sets it after, because the daemon checks the pair. The web client's agent page draws the same choices as a select.

@@ -5433,8 +5433,31 @@ exec_call_run(ExecCall *call)
 }
 
 /* Back on the main thread: the trail, then the answer. */
+static gchar *exec_call_reply_body(ExecCall *call, gboolean *is_error);
+
+/*
+ * The reply, with a line in front when the machine had to be woken first:
+ * an agent that waited a minute for a two-second command should be told
+ * where the minute went, or it learns that the machine is slow.
+ */
 static gchar *
 exec_call_reply(ExecCall *call, gboolean *is_error)
+{
+    g_autofree gchar *body = exec_call_reply_body(call, is_error);
+    gint64 woke = (call->result != NULL)
+                  ? clawt_exec_result_get_wake_usec(call->result) : 0;
+
+    if (woke <= 0)
+        return g_steal_pointer(&body);
+
+    return g_strdup_printf("[the machine was asleep and was woken first; "
+                           "that took %" G_GINT64_FORMAT " s and was not "
+                           "counted against the timeout]\n%s",
+                           (woke + G_USEC_PER_SEC / 2) / G_USEC_PER_SEC, body);
+}
+
+static gchar *
+exec_call_reply_body(ExecCall *call, gboolean *is_error)
 {
     if (call->result == NULL) {
         /*

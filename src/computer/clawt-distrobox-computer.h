@@ -21,6 +21,7 @@
 #endif
 
 #include "computer/clawt-computer.h"
+#include "computer/clawt-container-limits.h"
 #include "computer/clawt-pod-bridge.h"
 
 G_BEGIN_DECLS
@@ -139,6 +140,51 @@ void clawt_distrobox_computer_set_init(ClawtDistroboxComputer *self,
  */
 void clawt_distrobox_computer_set_keep(ClawtDistroboxComputer *self,
                                        gboolean                keep);
+
+/**
+ * clawt_distrobox_computer_set_limits:
+ * @self: a #ClawtDistroboxComputer
+ * @limits: (nullable): the process and memory limits, or %NULL for none
+ *
+ * Copied. A box is a podman container, so these are podman's options:
+ * passed through distrobox's --additional-flags when the box is created,
+ * and applied to an existing box with `podman update` at a start whose
+ * limits differ from what podman reports.
+ */
+void clawt_distrobox_computer_set_limits(ClawtDistroboxComputer     *self,
+                                         const ClawtContainerLimits *limits);
+
+/**
+ * clawt_distrobox_computer_apply_limits:
+ * @self: a #ClawtDistroboxComputer
+ * @error: return location for a #GError
+ *
+ * Gives the existing box its limits now, with `podman update` on the
+ * container of the same name, only for what differs. Run by every start,
+ * and by the daemon when a limit is changed under a running box.
+ * Blocking: call it from a worker thread.
+ *
+ * Returns: %TRUE if the box has its limits, or has none to have
+ */
+gboolean clawt_distrobox_computer_apply_limits(ClawtDistroboxComputer  *self,
+                                               GError                 **error);
+
+/**
+ * clawt_distrobox_computer_build_flags:
+ * @flags: (nullable): computer.distrobox.flags as configured
+ * @limits: (nullable): the box's limits
+ *
+ * The flags string handed to distrobox at creation: the configured flags,
+ * then one quoted word per limit. distrobox splits it into words and
+ * passes each as its own --additional-flags, so every limit has to be one
+ * complete option ("--memory=4g", never "--memory 4g").
+ *
+ * Exposed so it can be asserted on with no distrobox installed.
+ *
+ * Returns: (transfer full) (nullable): the flags, or %NULL for none
+ */
+gchar *clawt_distrobox_computer_build_flags(const gchar                *flags,
+                                            const ClawtContainerLimits *limits);
 
 /**
  * clawt_distrobox_computer_build_volume_args:

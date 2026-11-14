@@ -4007,6 +4007,145 @@ test_a_reloaded_mount_list_reaches_the_next_start(void)
 }
 
 
+/*
+ * computer.start: on_first_use leaves the machine alone at agent start.
+ *
+ * The mount below is one a container start refuses before podman is even
+ * asked, which is what makes this observable with no podman: an agent
+ * that starts its computer fails naming the mount, and one that waits for
+ * first use does not reach it at all -- its computer is built, attached,
+ * flagged, and still absent.
+ */
+static void
+test_on_first_use_does_not_start_the_computer(void)
+{
+    Fixture fixture = { 0 };
+    ClawtAgent *agent;
+    ClawtComputer *computer;
+    g_autoptr(GError) error = NULL;
+
+    if (geteuid() == 0) {
+        g_test_skip("running as root: every relabel is permitted");
+        return;
+    }
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "    computer:\n"
+                  "      type: container\n"
+                  "      start: on_first_use\n"
+                  "      mounts:\n"
+                  "        - source: \"/usr\"\n"
+                  "          target: \"/work/usr\"\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    /*
+     * Whether the libreclaw child then spawns depends on a binary this
+     * suite does not ship; what matters is that the computer was not the
+     * reason either way.
+     */
+    (void)clawt_daemon_start_agent(fixture.daemon, "chief", &error);
+
+    if (error != NULL)
+        g_assert_null(strstr(error->message, "mount /usr:"));
+
+    agent = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+                                    "chief");
+    g_assert_nonnull(agent);
+
+    computer = clawt_agent_get_computer(agent);
+    g_assert_nonnull(computer);
+    g_assert_true(clawt_computer_get_start_on_first_use(computer));
+    g_assert_cmpint(clawt_computer_get_state(computer), ==,
+                    CLAWT_COMPUTER_STATE_ABSENT);
+
+    fixture_teardown(&fixture);
+}
+
+static const gchar *
+error_text(JsonNode *reply)
+{
+    g_assert_true(clawt_ipc_frame_is_error(reply));
+
+    return json_object_get_string_member(json_node_get_object(reply),
+                                         "error");
+}
+
+/*
+ * The new computer settings are refused where they arrive, naming the
+ * field, rather than saved and found at the next start: a size podman
+ * cannot read, a swap total with no memory to total against, and a wake
+ * command that leans on a shell. A good wake command is stored as the
+ * argv it splits into, and shown back as the line that splits into it.
+ */
+static void
+test_computer_settings_refused_where_they_arrive(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) fraction = NULL;
+    g_autoptr(JsonNode) lone_swap = NULL;
+    g_autoptr(JsonNode) piped = NULL;
+    g_autoptr(JsonNode) wake = NULL;
+    g_autoptr(JsonNode) memory = NULL;
+    g_autoptr(JsonNode) start = NULL;
+    g_auto(GStrv) stored = NULL;
+    ClawtAgentConfig *config;
+
+    fixture_setup(&fixture,
+                  "agents:\n"
+                  "  - id: chief\n"
+                  "    computer:\n"
+                  "      type: ssh\n"
+                  "      ssh:\n"
+                  "        host: buildbox\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    fraction = request(&fixture, "agent.set",
+                       "{\"agent\":\"chief\",\"key\":"
+                       "\"computer.container.memory\",\"value\":\"1.5g\"}");
+    g_assert_nonnull(strstr(error_text(fraction), "1536m"));
+
+    lone_swap = request(&fixture, "agent.set",
+                        "{\"agent\":\"chief\",\"key\":"
+                        "\"computer.container.memory_swap\",\"value\":\"8g\"}");
+    g_assert_nonnull(strstr(error_text(lone_swap),
+                            "computer.container.memory"));
+
+    piped = request(&fixture, "agent.set",
+                    "{\"agent\":\"chief\",\"key\":"
+                    "\"computer.ssh.wake_command\",\"value\":"
+                    "\"wakeonlan aa:bb | tee log\"}");
+    g_assert_nonnull(strstr(error_text(piped), "pipe"));
+
+    start = request(&fixture, "agent.set",
+                    "{\"agent\":\"chief\",\"key\":\"computer.start\","
+                    "\"value\":\"whenever\"}");
+    g_assert_nonnull(strstr(error_text(start), "on_first_use"));
+
+    memory = request(&fixture, "agent.set",
+                     "{\"agent\":\"chief\",\"key\":"
+                     "\"computer.container.memory\",\"value\":\"4g\"}");
+    g_assert_false(clawt_ipc_frame_is_error(memory));
+
+    wake = request(&fixture, "agent.set",
+                   "{\"agent\":\"chief\",\"key\":"
+                   "\"computer.ssh.wake_command\",\"value\":"
+                   "\"wakeonlan 'aa:bb:cc:dd:ee:ff'\"}");
+    g_assert_false(clawt_ipc_frame_is_error(wake));
+
+    config = clawt_config_get_agent(clawt_daemon_get_config(fixture.daemon),
+                                    "chief");
+    stored = clawt_agent_config_get_string_list(config,
+                                                "computer.ssh.wake_command");
+    g_assert_cmpuint(g_strv_length(stored), ==, 2);
+    g_assert_cmpstr(stored[0], ==, "wakeonlan");
+    g_assert_cmpstr(stored[1], ==, "aa:bb:cc:dd:ee:ff");
+
+    fixture_teardown(&fixture);
+}
+
+
 
 /*
  * Creating an agent starts it.
@@ -12040,6 +12179,10 @@ main(int argc, char *argv[])
                     test_rebuild_drops_the_agents_held_computer);
     g_test_add_func("/daemon/computer/a-reload-reaches-the-next-start",
                     test_a_reloaded_mount_list_reaches_the_next_start);
+    g_test_add_func("/daemon/computer/on-first-use-does-not-start-it",
+                    test_on_first_use_does_not_start_the_computer);
+    g_test_add_func("/daemon/computer/settings-refused-where-they-arrive",
+                    test_computer_settings_refused_where_they_arrive);
     g_test_add_func("/daemon/mount/an-unapplicable-relabel-is-refused-on-add",
                     test_an_unapplicable_relabel_is_refused_when_it_is_added);
     g_test_add_func("/daemon/mount/removing-the-last-one-removes-the-key",

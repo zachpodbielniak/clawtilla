@@ -681,6 +681,26 @@ clawt_daemon_health_run_start(HealthRun *run);
 void
 clawt_daemon_lifecycle_job_free(LifecycleJob *job);
 
+/*
+ * Whether @key is one of computer.container.pids_limit, memory or
+ * memory_swap -- the settings a running machine takes in place.
+ */
+gboolean
+clawt_daemon_is_limit_key(
+	const gchar *key
+);
+
+/*
+ * Gives @agent_id's running container or distrobox the limits its config
+ * now names, with `podman update`, on a worker thread. Does nothing for a
+ * machine that is not running: its next start applies them.
+ */
+void
+clawt_daemon_apply_limits_in_place(
+	ClawtDaemon *self,
+	const gchar *agent_id
+);
+
 ClawtMailbox *
 clawt_daemon_mailbox_for(ClawtDaemon *self, JsonObject *payload,
                          GError **error);

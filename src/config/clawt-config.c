@@ -1763,6 +1763,23 @@ clawt_agent_config_set_from_string(ClawtAgentConfig *self,
         return clawt_agent_config_set_string(self, key, value);
 
     /*
+     * A command's argv is split into words, not on commas: an argument
+     * may hold a comma, and a list of words is what a person typing a
+     * command into a text field means. A line that would need a shell is
+     * refused here too, so a caller that skipped the check where the
+     * value arrived still cannot store an operator as an argument.
+     */
+    if (entry->flags & CLAWT_SCHEMA_FLAG_ARGV) {
+        g_auto(GStrv) words = clawt_command_line_split(value, NULL);
+
+        if (words == NULL)
+            return FALSE;
+
+        return clawt_agent_config_set_string_list(
+            self, key, words[0] != NULL ? (const gchar *const *)words : NULL);
+    }
+
+    /*
      * Comma-separated, which is how the schema table spells a list
      * default and therefore the one spelling a person has already seen.
      * Blanks are trimmed so "a, b" and "a,b" mean the same thing.

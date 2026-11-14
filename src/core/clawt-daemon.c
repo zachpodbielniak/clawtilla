@@ -3999,6 +3999,22 @@ start_agent_prepare(ClawtDaemon    *self,
      */
     if (*pending == NULL) {
         ClawtComputer *existing = clawt_agent_get_computer(agent);
+        g_autoptr(GError) refresh_error = NULL;
+
+        /*
+         * And what it can take without a rebuild is retaken from the
+         * config: a kept computer would otherwise start with the limits,
+         * the start mode and the wake command it was built with, and a
+         * changed memory limit would wait for a rebuild that applying it
+         * with `podman update` exists to avoid.
+         */
+        if (existing != NULL &&
+            !clawt_computer_factory_refresh(config, existing,
+                                            &refresh_error)) {
+            clawt_agent_set_error(agent, refresh_error->message);
+            g_propagate_error(error, g_steal_pointer(&refresh_error));
+            return FALSE;
+        }
 
         if (existing != NULL)
             *pending = g_object_ref(existing);
@@ -4362,7 +4378,11 @@ clawt_daemon_start_agent(ClawtDaemon *self, const gchar *agent_id,
      * must not hold the loop, and that goes through the async form
      * below.
      */
-    if (pending != NULL) {
+    /*
+     * A computer that starts on first use is left down: the first command
+     * that needs it brings it up, through clawt_computer_exec().
+     */
+    if (pending != NULL && !clawt_computer_get_start_on_first_use(pending)) {
         g_autoptr(GError) local = NULL;
 
         if (!clawt_computer_start(pending, &local))
@@ -4517,7 +4537,15 @@ daemon_start_agent_async(ClawtDaemon *self, const gchar *agent_id,
 
     job->prepared = TRUE;
     job->config_path = g_steal_pointer(&config_path);
-    job->computer = (pending != NULL) ? g_object_ref(pending) : NULL;
+
+    /*
+     * Nothing to wait on for a computer that starts on first use, the
+     * same as for an agent with none -- the synchronous start skips it
+     * for the same reason.
+     */
+    job->computer = (pending != NULL &&
+                     !clawt_computer_get_start_on_first_use(pending))
+                    ? g_object_ref(pending) : NULL;
 
     /*
      * Nothing to wait on, so nothing to put on a thread.  The completion
@@ -7427,8 +7455,15 @@ clawt_daemon_add_agent_settings(JsonBuilder *builder, ClawtAgent *agent)
         case CLAWT_SCHEMA_STRING_LIST: {
             g_auto(GStrv) values =
                 clawt_agent_config_get_string_list(config, key);
+            /*
+             * A command's argv is shown as the line that splits back into
+             * it: joined with commas it would be saved back split on
+             * spaces, and an argument holding a space would come apart.
+             */
             g_autofree gchar *joined =
-                (values != NULL) ? g_strjoinv(", ", values) : NULL;
+                (entry->flags & CLAWT_SCHEMA_FLAG_ARGV)
+                ? clawt_command_line_join((const gchar * const *)values)
+                : (values != NULL) ? g_strjoinv(", ", values) : NULL;
 
             json_builder_add_string_value(builder,
                                           joined != NULL ? joined : "");
@@ -7830,6 +7865,63 @@ clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
     json_builder_set_member_name(builder, "computer_stop_removes");
     json_builder_add_boolean_value(builder,
                                    clawt_daemon_computer_stop_removes(config));
+
+    /*
+     * When the machine starts, for each type where that is a choice; left
+     * out where it is not, so no client offers a setting nothing reads.
+     */
+    if (clawt_computer_type_starts_lazily(
+            (ClawtComputerType)clawt_agent_config_get_enum(config,
+                                                           "computer.type"))) {
+        json_builder_set_member_name(builder, "computer_start");
+        json_builder_add_string_value(
+            builder, clawt_enum_to_nick(
+                         CLAWT_TYPE_COMPUTER_START,
+                         clawt_agent_config_get_enum(config,
+                                                     "computer.start")));
+    }
+
+    /*
+     * The podman limits, for both kinds of podman machine. Strings, and
+     * empty for unset, so a client's text field shows exactly what will
+     * be saved back; the process limit's 0 is shown as empty for the same
+     * reason -- it means "podman's default", not a limit of nothing.
+     */
+    if (clawt_agent_config_get_enum(config, "computer.type") ==
+            CLAWT_COMPUTER_CONTAINER ||
+        clawt_agent_config_get_enum(config, "computer.type") ==
+            CLAWT_COMPUTER_DISTROBOX) {
+        gint64 pids = clawt_agent_config_get_int(
+            config, "computer.container.pids_limit");
+        g_autofree gchar *pids_text = (pids != 0)
+            ? g_strdup_printf("%" G_GINT64_FORMAT, pids) : g_strdup("");
+        const gchar *memory = clawt_agent_config_get_string(
+            config, "computer.container.memory");
+        const gchar *swap = clawt_agent_config_get_string(
+            config, "computer.container.memory_swap");
+
+        json_builder_set_member_name(builder, "container_pids_limit");
+        json_builder_add_string_value(builder, pids_text);
+        json_builder_set_member_name(builder, "container_memory");
+        json_builder_add_string_value(builder, memory != NULL ? memory : "");
+        json_builder_set_member_name(builder, "container_memory_swap");
+        json_builder_add_string_value(builder, swap != NULL ? swap : "");
+    }
+
+    /*
+     * The wake command as one line, in the spelling that splits back into
+     * the same argv, so a field that is opened and saved changes nothing.
+     */
+    if (clawt_agent_config_get_enum(config, "computer.type") ==
+        CLAWT_COMPUTER_SSH) {
+        g_auto(GStrv) wake = clawt_agent_config_get_string_list(
+            config, "computer.ssh.wake_command");
+        g_autofree gchar *line =
+            clawt_command_line_join((const gchar * const *)wake);
+
+        json_builder_set_member_name(builder, "ssh_wake_command");
+        json_builder_add_string_value(builder, line);
+    }
 
     /*
      * Reported for a container agent so a client can show what it will
@@ -9194,6 +9286,14 @@ clawt_daemon_on_ipc_exec_finished(GObject *source, GAsyncResult *result,
     json_builder_add_string_value(builder, clawt_exec_result_get_stdout(exec));
     json_builder_set_member_name(builder, "stderr");
     json_builder_add_string_value(builder, clawt_exec_result_get_stderr(exec));
+
+    /*
+     * How long this command waited for its machine to be woken, which is
+     * not part of its timeout; 0 when it did not.
+     */
+    json_builder_set_member_name(builder, "wake_ms");
+    json_builder_add_int_value(builder,
+                               clawt_exec_result_get_wake_usec(exec) / 1000);
     json_builder_end_object(builder);
 
     clawt_ipc_pending_respond(
@@ -9221,6 +9321,8 @@ lifecycle_name(ClawtComputerLifecycle op)
         return "start";
     case CLAWT_COMPUTER_LIFECYCLE_STOP:
         return "stop";
+    case CLAWT_COMPUTER_LIFECYCLE_FIRST_USE:
+        return "first-use start";
     case CLAWT_COMPUTER_LIFECYCLE_RESTART:
     default:
         return "restart";
