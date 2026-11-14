@@ -23,6 +23,7 @@ static gchar *opt_token = NULL;
 static gchar *opt_self_test = NULL;
 static gboolean opt_version = FALSE;
 static gboolean opt_license = FALSE;
+static gchar *opt_open = NULL;
 
 static GOptionEntry entries[] = {
     {
@@ -51,6 +52,11 @@ static GOptionEntry entries[] = {
         "and exit (for tests)", "PAGE"
     },
     {
+        "open", 'o', 0, G_OPTION_ARG_STRING, &opt_open,
+        "Open on an agent's chat, a peer conversation or a group room",
+        "ROOM"
+    },
+    {
         "version", 'V', 0, G_OPTION_ARG_NONE, &opt_version,
         "Print version information and exit", NULL
     },
@@ -76,6 +82,11 @@ static const gchar *description_text =
     "  # Start on a daemon reached over a tailnet\n"
     "  clawtilla-lrg --host 100.72.0.41 --token \"$(ssh box clawtilla "
     "daemon token)\"\n"
+    "\n"
+    "  # Open on a conversation: an agent's chat, a group room, or a\n"
+    "  # direct room between two agents (`clawtilla:<room>` works too)\n"
+    "  clawtilla-lrg --open chief\n"
+    "  clawtilla-lrg --open clawtilla:dm:chief:lead\n"
     "\n"
     "  # Print the Chat page's widget tree, for a test script\n"
     "  clawtilla-lrg --self-test chat\n"
@@ -168,6 +179,25 @@ main(int argc, char *argv[])
         return EXIT_SUCCESS;
     }
 
+    /*
+     * The spelling is checked here, where the person who typed it is
+     * looking; whether the room exists needs the daemon and is the
+     * window's to say, as a toast, once the fleet has been read.
+     */
+    if (opt_open != NULL) {
+        g_autofree gchar *target = clawt_open_target_normalize(opt_open,
+                                                               &error);
+
+        if (target == NULL) {
+            g_printerr("%s: --open %s: %s\n", CLAWT_LRG_BIN_NAME, opt_open,
+                       error->message);
+            return EXIT_FAILURE;
+        }
+
+        g_free(opt_open);
+        opt_open = g_steal_pointer(&target);
+    }
+
     connection = choose_connection(&error);
 
     if (connection == NULL) {
@@ -177,6 +207,7 @@ main(int argc, char *argv[])
 
     client = clawt_connection_create_client(connection);
     app = clawt_lrg_app_new(client, connection);
+    app->open_target = g_steal_pointer(&opt_open);
     status = clawt_lrg_app_run(app, opt_self_test);
     clawt_lrg_app_free(app);
 

@@ -23,6 +23,7 @@ static gint opt_port = 0;
 static gchar *opt_token = NULL;
 static gboolean opt_version = FALSE;
 static gboolean opt_license = FALSE;
+static gchar *opt_open = NULL;
 
 static GOptionEntry entries[] = {
     {
@@ -44,6 +45,11 @@ static GOptionEntry entries[] = {
     {
         "token", 0, 0, G_OPTION_ARG_STRING, &opt_token,
         "Bearer token for --host", "TOKEN"
+    },
+    {
+        "open", 'o', 0, G_OPTION_ARG_STRING, &opt_open,
+        "Open an agent's chat, a peer conversation or a group room "
+        "(in the running window, if there is one)", "ROOM"
     },
     {
         "version", 'V', 0, G_OPTION_ARG_NONE, &opt_version,
@@ -72,6 +78,17 @@ static const gchar *description_text =
     "  clawtilla-gtk --host 100.72.0.41 --token \"$(ssh box clawtilla "
     "daemon token)\"\n"
     "\n"
+    "  # Open a conversation: an agent's chat, a group room, or a\n"
+    "  # direct room between two agents.  `clawtilla:<room>` works too,\n"
+    "  # which is what an org-mode link hands over\n"
+    "  clawtilla-gtk --open chief\n"
+    "  clawtilla-gtk --open standup\n"
+    "  clawtilla-gtk --open clawtilla:dm:chief:lead\n"
+    "\n"
+    "--open goes to the window that is already running when there is\n"
+    "one (the app is single-instance), and a name the daemon does not\n"
+    "know is reported in the window rather than opened.\n"
+    "\n"
     "A local daemon is started with `clawtillad --foreground`, or by the\n"
     "systemd --user service. It does not have to be running: the window\n"
     "opens either way, keeps trying, and the connection menu left of the\n"
@@ -87,6 +104,92 @@ on_activate(AdwApplication *app, gpointer user_data)
 
     window = clawt_window_new(app, client, connection);
     gtk_window_present(GTK_WINDOW(window));
+
+    /*
+     * This process's own --open, once there is a window to open it in.
+     * Taken, so a second activation (another invocation with no
+     * --open) does not reopen it over whatever is on screen by then.
+     */
+    if (opt_open != NULL) {
+        g_autofree gchar *target = g_steal_pointer(&opt_open);
+
+        clawt_window_open_target(window, target);
+    }
+}
+
+/*
+ * Opens @target in the newest window, the one somebody last used; with
+ * no window yet (activate has not run) the target waits for it.
+ */
+static void
+open_in_app(GtkApplication *app, const gchar *target)
+{
+    GtkWindow *window = gtk_application_get_active_window(app);
+
+    if (window == NULL || !CLAWT_IS_WINDOW(window)) {
+        g_free(opt_open);
+        opt_open = g_strdup(target);
+        g_application_activate(G_APPLICATION(app));
+        return;
+    }
+
+    clawt_window_open_target(CLAWT_WINDOW(window), target);
+}
+
+/*
+ * Every invocation's command line, run in the primary instance.
+ *
+ * This process's own arrives with its options already parsed by main()
+ * (it is handed argv[0] alone), so it simply activates.  Another
+ * invocation's arrives whole: a `--open` in it opens in the window
+ * already on screen, and anything else opens a window as a second
+ * `clawtilla-gtk` always has.  Only `--open` is read here; the rest
+ * were checked in the process that typed them.
+ */
+static gint
+on_command_line(GApplication *app, GApplicationCommandLine *cmdline,
+                gpointer user_data)
+{
+    gchar *target = NULL;
+    GOptionEntry open_entries[] = {
+        { "open", 'o', 0, G_OPTION_ARG_STRING, NULL, NULL, NULL },
+        { NULL }
+    };
+    g_autoptr(GOptionContext) context = NULL;
+    g_auto(GStrv) argv = NULL;
+    gint argc;
+
+    (void)user_data;
+
+    if (!g_application_command_line_get_is_remote(cmdline)) {
+        g_application_activate(app);
+        return EXIT_SUCCESS;
+    }
+
+    argv = g_application_command_line_get_arguments(cmdline, &argc);
+    open_entries[0].arg_data = &target;
+    context = g_option_context_new(NULL);
+    g_option_context_set_help_enabled(context, FALSE);
+    g_option_context_set_ignore_unknown_options(context, TRUE);
+    g_option_context_add_main_entries(context, open_entries, NULL);
+
+    {
+        /* g_option_context_parse() rearranges the vector it is given */
+        gchar **work = argv;
+
+        if (!g_option_context_parse(context, &argc, &work, NULL))
+            g_clear_pointer(&target, g_free);
+    }
+
+    if (target == NULL) {
+        g_application_activate(app);
+        return EXIT_SUCCESS;
+    }
+
+    open_in_app(GTK_APPLICATION(app), target);
+    g_free(target);
+
+    return EXIT_SUCCESS;
 }
 
 int
@@ -137,7 +240,55 @@ main(int argc, char *argv[])
         return EXIT_SUCCESS;
     }
 
-    app = adw_application_new("org.clawtilla.Gtk", G_APPLICATION_DEFAULT_FLAGS);
+    /*
+     * The spelling is checked here, where the person who typed it is
+     * looking, so only a well-formed target is ever forwarded; whether
+     * the room exists needs the daemon and is the window's to say.
+     */
+    if (opt_open != NULL) {
+        g_autofree gchar *target = clawt_open_target_normalize(opt_open,
+                                                               &error);
+
+        if (target == NULL) {
+            g_printerr("clawtilla-gtk: --open %s: %s\n", opt_open,
+                       error->message);
+            return EXIT_FAILURE;
+        }
+
+        g_free(opt_open);
+        opt_open = g_steal_pointer(&target);
+    }
+
+    app = adw_application_new("org.clawtilla.Gtk",
+                              G_APPLICATION_HANDLES_COMMAND_LINE);
+    g_signal_connect(app, "command-line", G_CALLBACK(on_command_line), NULL);
+
+    /*
+     * One window answers links.  Registered before anything connects,
+     * so a second `clawtilla-gtk --open` hands its target to the first
+     * over D-Bus and exits without opening a daemon connection of its
+     * own -- which is what makes an org link click land in the window
+     * already on screen rather than in a new one.  A registration that
+     * fails (no session bus) is not fatal: the process carries on as
+     * its own primary instance.
+     */
+    if (!g_application_register(G_APPLICATION(app), NULL, &error)) {
+        g_printerr("clawtilla-gtk: %s\n", error->message);
+        g_clear_error(&error);
+    } else if (opt_open != NULL &&
+               g_application_get_is_remote(G_APPLICATION(app))) {
+        /*
+         * Through g_application_run(), which sends the command line,
+         * waits for the primary to answer it and takes the bus
+         * registration down afterwards -- the last of which a bare
+         * D-Bus call followed by an exit does not.
+         */
+        gchar *forward[] = { argv[0], (gchar *)"--open", opt_open, NULL };
+
+        status = g_application_run(G_APPLICATION(app), 3, forward);
+        g_clear_pointer(&opt_open, g_free);
+        return status;
+    }
 
     /*
      * Which daemon to open on.  --host wins over --profile, which wins

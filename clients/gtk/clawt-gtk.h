@@ -58,6 +58,20 @@ ClawtWindow *clawt_window_new(AdwApplication  *app,
 void clawt_window_toast(ClawtWindow *self, const gchar *text);
 
 /**
+ * clawt_window_open_target:
+ * @self: a #ClawtWindow
+ * @text: what `--open` or a `clawtilla:` link named
+ *
+ * Opens the agent's chat, the peer conversation or the group room
+ * @text names, after clawt_open_target_normalize() and a check against
+ * the daemon's `agent.list` and `room.list`.  A target that does not
+ * exist is a toast naming it, never a crash or an empty pane; one that
+ * arrives before the daemon answers is held and opened on the first
+ * connection.
+ */
+void clawt_window_open_target(ClawtWindow *self, const gchar *text);
+
+/**
  * clawt_window_request:
  * @self: a #ClawtWindow
  * @kind: the request kind

@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-24 Mon]
-#+updated: [2026-08-26 Wed]
+#+updated: [2026-11-14 Sat]
 #+version: 0.2.0
 
 * The web client
@@ -236,8 +236,11 @@ answers with the page it did it on.
 | =/fleet-usage/:agent/stop=, =/fleet-usage/stop-idle=, =/f/fleet-usage= | the Fleet page's actions and its polled panel (=?period== picks the window) |
 | =/a/:id/browser/open=, =/a/:id/browser/click=, =/a/:id/browser/stop=, =/a/:id/browser/frame=, =/f/a/:id/browser= | the Computer page's Browser view: its actions, its picture and its polled panel |
 | =/triggers/...=, =/f/triggers/:trigger/match= | the Triggers page's actions, and the fragment a trigger's "Check against the last delivery" swaps in under its condition lines |
+| =/r/:id=                      | a group room; also the open-room link, which redirects an agent or a direct room to its chat and answers a name nobody has with 404 and a sentence (see [[file:clients.org::#open-room-links][open-room links]]) |
+| =/a/:id/exchange=, =/f/a/:id/exchange= | the exchange between two agents (~?with=<peer>~), as a page and as the side panel's fragment; registered with the chat routes, ahead of =/a/:id/:view= |
+| =/manifest.webmanifest=       | the web app manifest, ~application/manifest+json~ |
 | =/events=                     | the SSE stream                          |
-| =/static=                     | the vendored scripts                    |
+| =/static=                     | the vendored scripts and the app icons  |
 
 ~/a/:id/:view~ is registered *last*, from its own
 ~clawt_web_register_views()~, and nothing may go after it.  A route
@@ -933,10 +936,76 @@ nowhere in the sidebar reads as a team that was not created, and filling
 it is the next thing somebody meant to do.  Teamless agents come first,
 unlabelled, as they always have here.
 
+*** Folded requests and the exchange
+
+In a peer conversation (~/a/<id>/chat?with=<peer>~), the peer's messages
+longer than ~clawt_chat_should_fold()~ allows are a =<details class="fold">=:
+the summary is ~clawt_chat_fold_preview()~ as text, the body is the
+ordinary =.msg-body=, and under it *Show less* (a =type="button"= the
+page script answers by closing the =<details>=) and *View exchange*, a
+real link to ~/a/<id>/exchange?with=<peer>~ that htmx turns into a
+request for ~/f/a/<id>/exchange~ swapped into =#exchange-panel=.  The
+panel is an =<aside>= beside the transcript, outside the element every
+fleet event replaces, fixed to the right edge and hidden while it is
+empty; its *Close* button and Escape empty it.  With scripting off the
+summary opens and closes the message and the link opens the exchange as
+a page with a way back.  Both renderers, =clawt_web_fold_element()= and
+=clawt_web_exchange_element()=, live in =web-ui.c= so
+=tests/test-web-render.c= asserts their markup and escaping.
+
+The transcript's own refresh URL now carries ~?with=~: it used to be
+~/f/a/<id>/transcript~ for both conversations, so the first fleet event
+after opening a peer conversation swapped the operator's chat in over it.
+
+The whole design, and why a group room folds nothing, is in
+[[file:clients.org::#folded-requests][clients.org]].
+
+*** Installable, with no service worker
+:PROPERTIES:
+:CUSTOM_ID: web-manifest
+:END:
+
+Every page links =/manifest.webmanifest= (~clawt_web_manifest_json()~):
+name and short name "clawtilla", ~id~, ~start_url~ and ~scope~ all =/=,
+=display: standalone=, the light canvas as theme and background colour,
+and three icons -- 192 and 512 pixels, the 512 also as =maskable= (the
+logo's art sits inside the safe circle on a full-bleed background).  So
+a phone's "Add to home screen" or a desktop browser's "Install" gives
+the fleet its own window with no address bar.
+
+- *Root-relative, never absolute.*  The client answers at the loopback,
+  a tailnet address and whatever a proxy calls it; one absolute URL in
+  the manifest would be wrong at two of them.  The test asserts no
+  =http= in it.
+- *Served by the binary*, with ~Content-Type: application/manifest+json~
+  and an hour's ~Cache-Control~, so an upgrade is picked up the same
+  day.  =tests/test-web-render.c= fetches it over a loopback HTTP
+  exchange and checks the header as a browser would read it, and checks
+  that each icon it names is a PNG of the size it claims, read from the
+  file's own header.
+- *Behind a login.*  The =<link rel="manifest">= carries
+  ~crossorigin="use-credentials"~.  A browser fetches a manifest
+  *without* cookies by default; on the loopback or a tailnet that
+  changes nothing, but behind the authenticating proxy "It has no login"
+  tells people to put in front of this, the uncredentialed fetch is
+  refused and the browser decides the page cannot be installed, without
+  saying why.
+- *Icons are vendored* in =data/web/icons/= and served from =/static=
+  with the scripts; see "The scripts are vendored" and
+  =data/web/README.org= for how they were made.  Nothing is fetched at
+  page load.
+- *No service worker.*  The page is a live view of a daemon; a cached
+  copy offline would show a fleet that has moved on, and every action
+  would fail.  A worker that only made the page installable would be
+  code that runs in front of every request to a page that can drive the
+  whole fleet, for nothing a manifest does not already give.  Current
+  browsers install a page with a manifest and no worker.
+
 *** The scripts are vendored
 
-=data/web/htmx.min.js= and =data/web/htmx-ext-sse.js= are checked in and
-served from the binary's own directory.  Never a CDN, for three reasons
+=data/web/htmx.min.js=, =data/web/htmx-ext-sse.js= and the app icons in
+=data/web/icons/= are checked in and served from the binary's own
+directory (~make install~ puts them in =$PREFIX/share/clawtilla/web=).  Never a CDN, for three reasons
 in order of how much they matter: a fleet console must work without the
 public internet, which is the whole point of binding the tailnet; a CDN
 script that can change what runs on this page can change what runs on

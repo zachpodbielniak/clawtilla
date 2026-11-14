@@ -2050,6 +2050,296 @@ test_the_fallback_editor_will_not_save_over_a_bad_list(void)
     g_assert_null(strstr(html, "<form"));
 }
 
+/* ── The web app manifest, folded requests and the exchange ─────── */
+
+/* The manifest's fields, and that every icon it names is vendored. */
+static void
+test_the_manifest_names_what_an_install_needs(void)
+{
+	g_autofree gchar *json = clawt_web_manifest_json();
+	g_autoptr(JsonParser) parser = json_parser_new();
+	g_autoptr(GError) error = NULL;
+	JsonObject *root;
+	JsonArray *icons;
+	gboolean any_192 = FALSE;
+	gboolean any_512 = FALSE;
+	guint i;
+
+	g_assert_true(json_parser_load_from_data(parser, json, -1, &error));
+	g_assert_no_error(error);
+	root = json_node_get_object(json_parser_get_root(parser));
+	g_assert_nonnull(root);
+
+	g_assert_cmpstr(json_object_get_string_member(root, "name"), ==,
+			"clawtilla");
+	g_assert_cmpstr(json_object_get_string_member(root, "start_url"), ==,
+			"/");
+	g_assert_cmpstr(json_object_get_string_member(root, "scope"), ==, "/");
+	g_assert_cmpstr(json_object_get_string_member(root, "display"), ==,
+			"standalone");
+
+	/*
+	 * Root-relative URLs only: the client answers at the loopback, a
+	 * tailnet address and a proxy's name, and one absolute URL in here
+	 * would be wrong at two of them.
+	 */
+	g_assert_null(strstr(json, "http:"));
+	g_assert_null(strstr(json, "https:"));
+
+	icons = json_object_get_array_member(root, "icons");
+	g_assert_nonnull(icons);
+
+	for (i = 0; i < json_array_get_length(icons); i++) {
+		JsonObject *icon = json_array_get_object_element(icons, i);
+		const gchar *src = json_object_get_string_member(icon, "src");
+		const gchar *sizes = json_object_get_string_member(icon, "sizes");
+		g_autofree gchar *path = NULL;
+		g_autofree gchar *bytes = NULL;
+		gsize length = 0;
+		guint32 width;
+		guint32 height;
+		g_autofree gchar *want = NULL;
+
+		g_assert_true(g_str_has_prefix(src, "/static/"));
+		g_assert_cmpstr(json_object_get_string_member(icon, "type"), ==,
+				"image/png");
+
+		/*
+		 * The file is in data/web, where /static is served from, and
+		 * it is a PNG of the size the manifest claims -- read from the
+		 * IHDR chunk rather than trusted from the name.
+		 */
+		path = g_build_filename(CLAWT_TEST_FIXTURES, "..", "..", "data",
+					"web", src + strlen("/static/"), NULL);
+		g_assert_true(g_file_get_contents(path, &bytes, &length, &error));
+		g_assert_no_error(error);
+		g_assert_cmpuint(length, >, 24);
+		g_assert_cmpint(memcmp(bytes, "\x89PNG\r\n\x1a\n", 8), ==, 0);
+
+		width = ((guint32)(guchar)bytes[16] << 24) |
+			((guint32)(guchar)bytes[17] << 16) |
+			((guint32)(guchar)bytes[18] << 8) | (guint32)(guchar)bytes[19];
+		height = ((guint32)(guchar)bytes[20] << 24) |
+			 ((guint32)(guchar)bytes[21] << 16) |
+			 ((guint32)(guchar)bytes[22] << 8) | (guint32)(guchar)bytes[23];
+		want = g_strdup_printf("%ux%u", width, height);
+		g_assert_cmpstr(want, ==, sizes);
+
+		any_192 = any_192 || width == 192;
+		any_512 = any_512 || width == 512;
+	}
+
+	/* the two sizes an installability check asks for */
+	g_assert_true(any_192);
+	g_assert_true(any_512);
+}
+
+/* Every page links the manifest, credentialed, and nothing off-host. */
+static void
+test_every_page_links_the_manifest(void)
+{
+	g_autofree gchar *html = NULL;
+
+	html = clawt_web_page(NULL, "chief", CLAWT_PAGE_CHAT, NULL, NULL);
+	g_assert_nonnull(html);
+	g_assert_nonnull(strstr(html, "rel=\"manifest\""));
+	g_assert_nonnull(strstr(html, "href=\"" CLAWT_WEB_MANIFEST_PATH "\""));
+	g_assert_nonnull(strstr(html, "crossorigin=\"use-credentials\""));
+	g_assert_nonnull(strstr(html, "rel=\"apple-touch-icon\""));
+	g_assert_null(strstr(html, "src=\"http"));
+	g_assert_null(strstr(html, "href=\"http"));
+}
+
+typedef struct {
+	GMainLoop *loop;
+	gchar     *content_type;
+	gchar     *body;
+	guint      status;
+} ManifestFetch;
+
+/* Answers every request with exactly what the route returns. */
+static void
+on_manifest_request(SoupServer *server, SoupServerMessage *message,
+		    const char *path, GHashTable *query, gpointer user_data)
+{
+	g_autoptr(HtmxResponse) response = clawt_web_manifest_response();
+
+	(void)server;
+	(void)path;
+	(void)query;
+	(void)user_data;
+
+	htmx_response_apply(response, message);
+}
+
+static void
+on_manifest_fetched(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+	ManifestFetch *fetch = user_data;
+	SoupMessage *message;
+	g_autoptr(GBytes) bytes = NULL;
+	g_autoptr(GError) error = NULL;
+
+	bytes = soup_session_send_and_read_finish(SOUP_SESSION(source), result,
+						  &error);
+	g_assert_no_error(error);
+	message = soup_session_get_async_result_message(SOUP_SESSION(source),
+							result);
+	fetch->status = soup_message_get_status(message);
+	fetch->content_type = g_strdup(soup_message_headers_get_content_type(
+		soup_message_get_response_headers(message), NULL));
+	fetch->body = g_strndup(g_bytes_get_data(bytes, NULL),
+				g_bytes_get_size(bytes));
+	g_main_loop_quit(fetch->loop);
+}
+
+/*
+ * Served, over a real HTTP exchange on the loopback: the media type a
+ * browser's installability check reads off the wire, not the one the
+ * handler meant to set.
+ */
+static void
+test_the_manifest_is_served_as_a_manifest(void)
+{
+	g_autoptr(SoupServer) server = soup_server_new(NULL, NULL);
+	/*
+	 * No proxy resolver: the default one is libproxy, which may go
+	 * looking for a PAC file, and this test must reach nothing but the
+	 * loopback server it started.
+	 */
+	g_autoptr(SoupSession) session = soup_session_new_with_options(
+		"proxy-resolver", NULL, NULL);
+	g_autoptr(SoupMessage) message = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GMainLoop) loop = g_main_loop_new(NULL, FALSE);
+	g_autoptr(JsonParser) parser = json_parser_new();
+	g_autofree gchar *url = NULL;
+	ManifestFetch fetch = { NULL, NULL, NULL, 0 };
+	GSList *uris;
+
+	soup_server_add_handler(server, CLAWT_WEB_MANIFEST_PATH,
+				on_manifest_request, NULL, NULL);
+	g_assert_true(soup_server_listen_local(server, 0,
+					       SOUP_SERVER_LISTEN_IPV4_ONLY,
+					       &error));
+	g_assert_no_error(error);
+
+	uris = soup_server_get_uris(server);
+	g_assert_nonnull(uris);
+	url = g_strdup_printf("http://127.0.0.1:%d" CLAWT_WEB_MANIFEST_PATH,
+			      g_uri_get_port(uris->data));
+	g_slist_free_full(uris, (GDestroyNotify)g_uri_unref);
+
+	fetch.loop = loop;
+	message = soup_message_new("GET", url);
+	soup_session_send_and_read_async(session, message, G_PRIORITY_DEFAULT,
+					 NULL, on_manifest_fetched, &fetch);
+	g_main_loop_run(loop);
+
+	g_assert_cmpuint(fetch.status, ==, 200);
+	g_assert_cmpstr(fetch.content_type, ==, CLAWT_WEB_MANIFEST_TYPE);
+	g_assert_true(json_parser_load_from_data(parser, fetch.body, -1,
+						 &error));
+	g_assert_no_error(error);
+
+	g_free(fetch.content_type);
+	g_free(fetch.body);
+	soup_server_disconnect(server);
+}
+
+/* A folded request: one escaped line, the body, and both actions. */
+static void
+test_a_folded_request_renders_closed_and_escaped(void)
+{
+	g_autoptr(HtmxDiv) body = htmx_div_new();
+	g_autoptr(HtmxElement) fold = NULL;
+	g_autofree gchar *html = NULL;
+	const gchar *text = "<script>alert(1)</script> step one\nstep two";
+
+	htmx_node_set_text_content(HTMX_NODE(body), "the whole body");
+	fold = clawt_web_fold_element(HTMX_ELEMENT(g_steal_pointer(&body)),
+				      "lead", "chief&co", "m-1", text);
+	html = htmx_element_render(fold);
+
+	/* a <details> that is closed until somebody opens it */
+	g_assert_true(g_str_has_prefix(html, "<details"));
+	g_assert_null(strstr(html, " open"));
+	g_assert_nonnull(strstr(html, "id=\"fold-m-1\""));
+	g_assert_nonnull(strstr(html, "hx-preserve=\"true\""));
+	g_assert_nonnull(strstr(html, "class=\"fold-line\""));
+
+	/* the preview is text, escaped, on one line */
+	g_assert_nonnull(strstr(html, "&lt;script&gt;alert(1)&lt;/script&gt; "
+				      "step one step two"));
+	g_assert_null(strstr(html, "<script>"));
+	g_assert_nonnull(strstr(html, "the whole body"));
+
+	/* both actions, the exchange a real link with the peer escaped */
+	g_assert_nonnull(strstr(html, ">Show less<"));
+	g_assert_nonnull(strstr(html, ">View exchange<"));
+	g_assert_nonnull(strstr(html,
+		"href=\"/a/lead/exchange?with=chief%26co\""));
+	g_assert_nonnull(strstr(html,
+		"hx-get=\"/f/a/lead/exchange?with=chief%26co\""));
+	g_assert_nonnull(strstr(html, "hx-target=\"#exchange-panel\""));
+}
+
+/* The exchange: the two agents only, in order, the request marked. */
+static void
+test_the_exchange_lists_requests_and_answers(void)
+{
+	g_autoptr(JsonArray) messages = json_array_new();
+	g_autoptr(JsonArray) exchange = NULL;
+	g_autoptr(HtmxElement) panel = NULL;
+	g_autoptr(HtmxElement) page = NULL;
+	g_autofree gchar *panel_html = NULL;
+	g_autofree gchar *page_html = NULL;
+	const gchar *request_at;
+	const gchar *answer_at;
+	static const gchar *rows[][2] = {
+		{ "chief", "Please <b>build</b> it." },
+		{ "user", "operator aside" },
+		{ "lead", "an answer to the operator" },
+		{ "chief", "And the tests." },
+		{ "lead", "Built and tested." },
+	};
+	guint i;
+
+	for (i = 0; i < G_N_ELEMENTS(rows); i++) {
+		JsonObject *one = json_object_new();
+
+		json_object_set_string_member(one, "sender", rows[i][0]);
+		json_object_set_string_member(one, "body", rows[i][1]);
+		json_array_add_object_element(messages, one);
+	}
+
+	exchange = clawt_chat_exchange(messages, "lead", "chief");
+	panel = clawt_web_exchange_element(exchange, "lead", "chief", TRUE);
+	panel_html = htmx_element_render(panel);
+
+	g_assert_nonnull(strstr(panel_html, "Between chief and lead"));
+	g_assert_nonnull(strstr(panel_html, "class=\"exchange-close\""));
+	g_assert_null(strstr(panel_html, "operator aside"));
+	g_assert_null(strstr(panel_html, "an answer to the operator"));
+
+	/* markdown rendered, a person's tag escaped rather than obeyed */
+	g_assert_null(strstr(panel_html, "<b>build</b>"));
+
+	request_at = strstr(panel_html, "And the tests.");
+	answer_at = strstr(panel_html, "Built and tested.");
+	g_assert_nonnull(request_at);
+	g_assert_nonnull(answer_at);
+	g_assert_true(request_at < answer_at);
+	g_assert_nonnull(strstr(panel_html, "class=\"exchange-request\""));
+	g_assert_nonnull(strstr(panel_html, "class=\"exchange-answer\""));
+
+	/* as a page of its own, a way back instead of a close button */
+	page = clawt_web_exchange_element(exchange, "lead", "chief", FALSE);
+	page_html = htmx_element_render(page);
+	g_assert_null(strstr(page_html, "exchange-close"));
+	g_assert_nonnull(strstr(page_html, "href=\"/a/lead/chat?with=chief\""));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -2184,6 +2474,16 @@ main(int argc, char *argv[])
                     test_a_stringified_boolean_still_reads_as_on);
     g_test_add_func("/web-render/an-enabled-routine-renders-ticked",
                     test_an_enabled_routine_renders_a_ticked_switch);
+    g_test_add_func("/web-render/manifest-fields",
+                    test_the_manifest_names_what_an_install_needs);
+    g_test_add_func("/web-render/manifest-linked",
+                    test_every_page_links_the_manifest);
+    g_test_add_func("/web-render/manifest-served",
+                    test_the_manifest_is_served_as_a_manifest);
+    g_test_add_func("/web-render/fold-closed-and-escaped",
+                    test_a_folded_request_renders_closed_and_escaped);
+    g_test_add_func("/web-render/exchange",
+                    test_the_exchange_lists_requests_and_answers);
 
     return g_test_run();
 }

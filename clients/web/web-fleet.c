@@ -1662,6 +1662,72 @@ on_room_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
     g_autoptr(HtmxElement) body = NULL;
     g_autofree gchar *html = NULL;
 
+    /*
+     * `/r/<room>` is also the web client's open-room link, so it takes
+     * whatever `clawtilla-gtk --open` takes -- a group room, an agent,
+     * a direct room -- checked against what exists.  An agent's chat is
+     * a redirect to its own URL; a name nobody has is the chat page with
+     * the sentence saying so, never an empty room with that name.
+     */
+    {
+        g_autoptr(GError) error = NULL;
+        g_autofree gchar *target = clawt_open_target_normalize(room_id,
+                                                               &error);
+        g_autoptr(JsonNode) agents = NULL;
+        g_autoptr(JsonNode) rooms = NULL;
+        g_autofree gchar *agent = NULL;
+        g_autofree gchar *peer = NULL;
+        g_autofree gchar *room = NULL;
+
+        if (target != NULL) {
+            agents = clawt_web_app_call(app, "agent.list", NULL);
+            rooms = (agents != NULL)
+                ? clawt_web_app_call(app, "room.list", NULL) : NULL;
+
+            /*
+             * A daemon that did not answer is not a room that does not
+             * exist: saying "no such room" here would send somebody to
+             * check a name that is fine.  Copied at once, because the
+             * next call frees the borrowed string.
+             */
+            if (agents == NULL || rooms == NULL) {
+                g_autofree gchar *why =
+                    g_strdup(clawt_web_app_last_error(app));
+
+                return clawt_web_error_page(app, request, NULL,
+                                            CLAWT_PAGE_CHAT, why);
+            }
+        }
+
+        if (target == NULL ||
+            !clawt_open_target_resolve(
+                target,
+                clawt_web_member_array(clawt_web_root(agents), "agents"),
+                clawt_web_member_array(clawt_web_root(rooms), "rooms"),
+                &agent, &peer, &room, &error)) {
+            HtmxResponse *response = clawt_web_error_page(
+                app, request, NULL, CLAWT_PAGE_CHAT, error->message);
+
+            htmx_response_set_status(response, SOUP_STATUS_NOT_FOUND);
+            return response;
+        }
+
+        if (agent != NULL) {
+            g_autofree gchar *escaped = g_uri_escape_string(agent, NULL,
+                                                            FALSE);
+            g_autofree gchar *with = (peer != NULL)
+                ? g_uri_escape_string(peer, NULL, FALSE) : NULL;
+            g_autofree gchar *url = (with != NULL)
+                ? g_strdup_printf("/a/%s/chat?with=%s", escaped, with)
+                : g_strdup_printf("/a/%s/chat", escaped);
+
+            return clawt_web_redirect(request, url);
+        }
+
+        g_free(room_id);
+        room_id = g_steal_pointer(&room);
+    }
+
     clawt_web_app_set_viewing_room(app, room_id);
 
     body = clawt_web_room_body(app, room_id);

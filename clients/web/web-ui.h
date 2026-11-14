@@ -536,6 +536,102 @@ gboolean clawt_web_write_is_cross_site(HtmxMethod   method,
                                        const gchar *referer,
                                        const gchar *host);
 
+/**
+ * clawt_web_fold_element:
+ * @body: (transfer full): the message body element, as the transcript
+ *   would have drawn it
+ * @agent_id: the agent whose conversation this is
+ * @peer_id: the agent that sent the message
+ * @message_id: (nullable): the message's id, for the element's own id
+ * @text: (nullable): the message's raw text, for the folded line
+ *
+ * A message clawt_chat_should_fold() said to fold: a `<details>` whose
+ * summary is the one-line preview, holding @body and a row with "Show
+ * less" and "View exchange".
+ *
+ * A `<details>` so it opens and closes with scripting off.  It carries
+ * an id and `hx-preserve`, because htmx swaps the whole transcript on
+ * every fleet event and an opened request would otherwise snap shut
+ * each time anything happened anywhere.  "View exchange" is a real link
+ * to the exchange page and, with htmx, loads the same list into the
+ * side panel instead.
+ *
+ * Returns: (transfer full): the element
+ */
+HtmxElement *clawt_web_fold_element(HtmxElement *body,
+                                    const gchar *agent_id,
+                                    const gchar *peer_id,
+                                    const gchar *message_id,
+                                    const gchar *text);
+
+/**
+ * clawt_web_exchange_url:
+ * @agent_id: the agent whose conversation it is
+ * @peer_id: the agent whose requests are listed
+ * @fragment: %TRUE for the side panel's fragment, %FALSE for the page
+ *
+ * Returns: (transfer full): `/a/<agent>/exchange?with=<peer>`, or under
+ *   `/f/` for the fragment, each part escaped
+ */
+gchar *clawt_web_exchange_url(const gchar *agent_id, const gchar *peer_id,
+                              gboolean fragment);
+
+/**
+ * clawt_web_exchange_element:
+ * @exchange: (nullable): what clawt_chat_exchange() kept
+ * @agent_id: the agent whose conversation it is
+ * @peer_id: the agent whose requests are listed
+ * @in_panel: %TRUE inside the chat's side panel (a close button),
+ *   %FALSE as a page of its own (a link back to the conversation)
+ *
+ * The exchange: a heading from clawt_chat_exchange_title() and one entry
+ * per message, the peer's requests marked apart from the answers, each
+ * body rendered from markdown like the transcript's.
+ *
+ * Returns: (transfer full): the element
+ */
+HtmxElement *clawt_web_exchange_element(JsonArray   *exchange,
+                                        const gchar *agent_id,
+                                        const gchar *peer_id,
+                                        gboolean     in_panel);
+
+/**
+ * CLAWT_WEB_MANIFEST_PATH:
+ *
+ * Where the web app manifest is served, and what every page links.
+ */
+#define CLAWT_WEB_MANIFEST_PATH "/manifest.webmanifest"
+
+/**
+ * CLAWT_WEB_MANIFEST_TYPE:
+ *
+ * The manifest's media type.  Browsers accept `application/json` too,
+ * but this is the registered one and the one Chromium's installability
+ * check names.
+ */
+#define CLAWT_WEB_MANIFEST_TYPE "application/manifest+json"
+
+/**
+ * clawt_web_manifest_json:
+ *
+ * The web app manifest: the name, `start_url` and `scope` of `/`,
+ * `display: standalone`, the theme colours, and the vendored icons
+ * under `/static/icons/`.  Nothing in it names a host, so one manifest
+ * is right for every address the client listens on.
+ *
+ * Returns: (transfer full): the manifest, as JSON
+ */
+gchar *clawt_web_manifest_json(void);
+
+/**
+ * clawt_web_manifest_response:
+ *
+ * The manifest as a response: %CLAWT_WEB_MANIFEST_TYPE, and a short
+ * cache lifetime so an upgraded client's manifest is picked up.
+ *
+ * Returns: (transfer full): the response
+ */
+HtmxResponse *clawt_web_manifest_response(void);
 
 /* Append an escaped destination if it matches; return 1 when appended. */
 guint clawt_web_navigation_result(HtmxElement *list, const gchar *query,

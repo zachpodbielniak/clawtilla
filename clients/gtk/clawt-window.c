@@ -3660,6 +3660,9 @@ reload_after_connect(gpointer user_data)
     clawt_gtk_refresh_skills(self);
     clawt_gtk_load_history(self);
 
+    /* and a --open that came before there was a fleet to check it in */
+    clawt_gtk_open_pending(self);
+
     return G_SOURCE_REMOVE;
 }
 
@@ -6307,6 +6310,7 @@ clawt_window_finalize(GObject *object)
     ClawtWindow *self = CLAWT_WINDOW(object);
 
     g_free(self->selected_agent);
+    g_free(self->pending_open);
     g_free(self->inspector_computer);
     g_free(self->last_toast);
     g_clear_pointer(&self->settings_bars, g_hash_table_unref);

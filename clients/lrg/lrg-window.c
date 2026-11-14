@@ -24,6 +24,7 @@
  */
 
 #include "clawt-lrg.h"
+#include "clawt-lrg-chat-model.h"
 
 #include <raylib.h>
 #include <string.h>
@@ -516,6 +517,48 @@ clawt_lrg_select_room(ClawtLrgApp *app, const gchar *room_id)
 
 /* ── Fleet ────────────────────────────────────────────────────────── */
 
+/*
+ * A `--open` target, once both listings are in: the agent's chat, its
+ * conversation with a peer, or a group room -- or a toast saying there
+ * is nothing by that name, after which the window opens as it would
+ * have anyway.  Taken either way, so a later refresh does not reopen it
+ * over whatever the person has moved on to.
+ */
+static gboolean
+open_pending(ClawtLrgApp *app)
+{
+    g_autofree gchar *target = NULL;
+    g_autofree gchar *agent = NULL;
+    g_autofree gchar *peer = NULL;
+    g_autofree gchar *room = NULL;
+    g_autoptr(GError) error = NULL;
+
+    if (app->open_target == NULL || app->agents == NULL ||
+        app->rooms == NULL)
+        return FALSE;
+
+    target = g_steal_pointer(&app->open_target);
+
+    if (!clawt_lrg_open_resolve(target, app->agents, app->rooms, &agent,
+                                &peer, &room, &error)) {
+        clawt_lrg_toast(app, error->message);
+        return FALSE;
+    }
+
+    app->page = CLAWT_PAGE_CHAT;
+
+    if (room != NULL) {
+        clawt_lrg_select_room(app, room);
+        return TRUE;
+    }
+
+    if (peer != NULL)
+        clawt_lrg_chat_open_conversation(app, peer);
+
+    clawt_lrg_select_agent(app, agent);
+    return TRUE;
+}
+
 static void
 on_agents(ClawtLrgApp *app, JsonNode *reply, const GError *error,
           gpointer user_data)
@@ -526,8 +569,15 @@ on_agents(ClawtLrgApp *app, JsonNode *reply, const GError *error,
     g_clear_pointer(&app->agents, json_node_unref);
     app->agents = json_node_copy(reply);
 
-    /* first load: open on the first agent rather than an empty page */
-    if (app->agent_id == NULL && app->room_id == NULL) {
+    if (open_pending(app))
+        return;
+
+    /*
+     * first load: open on the first agent rather than an empty page --
+     * unless a --open is still waiting for room.list, which decides
+     */
+    if (app->agent_id == NULL && app->room_id == NULL &&
+        app->open_target == NULL) {
         JsonObject *root = clawt_ipc_reply_object(reply);
         JsonArray *agents = (root != NULL &&
                              json_object_has_member(root, "agents"))
@@ -553,6 +603,27 @@ on_rooms(ClawtLrgApp *app, JsonNode *reply, const GError *error,
 
     g_clear_pointer(&app->rooms, json_node_unref);
     app->rooms = json_node_copy(reply);
+
+    if (open_pending(app))
+        return;
+
+    /*
+     * A --open that named nothing, with agent.list answered first and
+     * the first-agent default held back for it: open as usual now.
+     */
+    if (app->agent_id == NULL && app->room_id == NULL) {
+        JsonObject *root = clawt_ipc_reply_object(app->agents);
+        JsonArray *agents = (root != NULL &&
+                             json_object_has_member(root, "agents"))
+            ? json_object_get_array_member(root, "agents") : NULL;
+
+        if (agents != NULL && json_array_get_length(agents) > 0) {
+            clawt_lrg_select_agent(app, clawt_ipc_payload_string(
+                json_array_get_object_element(agents, 0), "id"));
+            return;
+        }
+    }
+
     clawt_lrg_sidebar_refresh(app);
 }
 

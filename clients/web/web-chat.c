@@ -232,7 +232,8 @@ round_divider(gint64 round)
 
 static HtmxElement *
 message_element(JsonObject *message, const gchar *agent_id,
-                gboolean has_avatar, gboolean run_start, const gchar *color)
+                gboolean has_avatar, gboolean run_start, const gchar *color,
+                const gchar *fold_viewer)
 {
     const gchar *sender = clawt_web_member(message, "sender", "?");
     const gchar *body = clawt_web_member(message, "body", "");
@@ -445,6 +446,16 @@ message_element(JsonObject *message, const gchar *agent_id,
 
             htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(text));
             htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(list));
+        } else if (clawt_chat_should_fold(sender, fold_viewer, body)) {
+            /*
+             * Another agent's long request to this one: one line until
+             * opened, the same rule the GTK and libregnum transcripts
+             * ask.  The folded element takes the body element over.
+             */
+            set_body(HTMX_NODE(text), prose != NULL ? prose : body);
+            clawt_web_add(row, clawt_web_fold_element(
+                HTMX_ELEMENT(g_steal_pointer(&text)), fold_viewer, sender,
+                clawt_web_member(message, "id", NULL), body));
         } else {
             set_body(HTMX_NODE(text), prose != NULL ? prose : body);
             htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(text));
@@ -789,7 +800,18 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
         g_autofree gchar *url = NULL;
         g_autofree gchar *escaped = g_uri_escape_string(agent_id, NULL, FALSE);
 
-        url = g_strdup_printf("/f/a/%s/transcript", escaped);
+        /*
+         * With the peer, or the refresh would swap the operator's own
+         * chat in over the peer conversation on the first fleet event.
+         */
+        if (peer != NULL) {
+            g_autofree gchar *with = g_uri_escape_string(peer, NULL, FALSE);
+
+            url = g_strdup_printf("/f/a/%s/transcript?with=%s", escaped,
+                                  with);
+        } else {
+            url = g_strdup_printf("/f/a/%s/transcript", escaped);
+        }
         htmx_element_set_attribute(HTMX_ELEMENT(scroll), "hx-get", url);
         /*
          * The umbrella event, not the individual ones. The daemon's kinds
@@ -930,7 +952,15 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
 
             clawt_web_add(inner,
                           message_element(one, agent_id, has_avatar,
-                                          run_start, color));
+                                          run_start, color,
+                                          /*
+                                           * Only a peer conversation
+                                           * folds: a room page is drawn
+                                           * through here too, with the
+                                           * room's id in agent_id.
+                                           */
+                                          peer != NULL ? agent_id
+                                                       : NULL));
         }
 
         /*
@@ -1465,6 +1495,20 @@ clawt_web_chat_body_full(ClawtWebApp *app, const gchar *agent_id,
         clawt_web_add(body, transcript(app, agent_id, cleared, peer));
         htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(pill));
         htmx_node_add_child(HTMX_NODE(main_el), HTMX_NODE(body));
+    }
+
+    /*
+     * Where "View exchange" loads its list, beside the transcript and
+     * outside the element every fleet event swaps, so the panel stays
+     * open while the conversation updates.  Empty, and so hidden, until
+     * somebody asks.
+     */
+    if (peer != NULL) {
+        g_autoptr(HtmxElement) panel = HTMX_ELEMENT(htmx_aside_new());
+
+        htmx_element_set_id(panel, "exchange-panel");
+        htmx_element_add_class(panel, "exchange-panel");
+        htmx_node_add_child(HTMX_NODE(main_el), HTMX_NODE(panel));
     }
 
     /*
@@ -2279,8 +2323,10 @@ on_transcript_fragment(HtmxRequest *request, GHashTable *params,
     ClawtWebApp *app = user_data;
     g_autofree gchar *agent_id = clawt_web_param(params, "id");
     g_autoptr(HtmxElement) fragment = NULL;
+    const gchar *peer = htmx_request_get_query_param(request, "with");
 
-    (void)request;
+    if (peer != NULL && *peer == '\0')
+        peer = NULL;
 
     /*
      * The transcript is re-fetched on every fleet event, so this fires
@@ -2292,7 +2338,7 @@ on_transcript_fragment(HtmxRequest *request, GHashTable *params,
      */
     clawt_web_app_set_viewing(app, agent_id);
 
-    fragment = transcript(app, agent_id, FALSE, NULL);
+    fragment = transcript(app, agent_id, FALSE, peer);
 
     return clawt_web_fragment_response(fragment);
 }
@@ -2493,6 +2539,93 @@ on_draft(HtmxRequest *request, GHashTable *params, gpointer user_data)
     return response;
 }
 
+/* ── The exchange between two agents ───────────────────────────── */
+
+/*
+ * What clawt_chat_exchange() keeps of the direct room between the two,
+ * read as the conversation switcher reads it -- the daemon resolves the
+ * room from a member and a viewer -- with a longer reach back.
+ */
+static JsonArray *
+exchange_for(ClawtWebApp *app, const gchar *agent_id, const gchar *peer_id)
+{
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+
+    clawt_web_payload_set(payload, "room", peer_id);
+    clawt_web_payload_set(payload, "as", agent_id);
+    clawt_web_payload_set_int(payload, "limit", 500);
+
+    reply = clawt_web_app_call(app, "room.history",
+                               clawt_web_payload_take(
+                                   g_steal_pointer(&payload)));
+
+    return clawt_chat_exchange(
+        clawt_web_member_array(clawt_web_root(reply), "messages"),
+        agent_id, peer_id);
+}
+
+/* The side panel's list, for the htmx request "View exchange" makes. */
+static HtmxResponse *
+on_exchange_fragment(HtmxRequest *request, GHashTable *params,
+                     gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+    const gchar *peer = htmx_request_get_query_param(request, "with");
+    g_autoptr(JsonArray) exchange = NULL;
+    g_autoptr(HtmxElement) element = NULL;
+
+    if (peer == NULL || *peer == '\0')
+        return clawt_web_fragment_response(HTMX_ELEMENT(clawt_web_text(
+            "Which agent's requests? The link names none.", "muted")));
+
+    exchange = exchange_for(app, agent_id, peer);
+    element = clawt_web_exchange_element(exchange, agent_id, peer, TRUE);
+
+    return clawt_web_fragment_response(element);
+}
+
+/*
+ * The same list as a page of its own: what the link opens with
+ * scripting off, and what a bookmark of it opens.
+ */
+static HtmxResponse *
+on_exchange_page(HtmxRequest *request, GHashTable *params,
+                 gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+    const gchar *peer = htmx_request_get_query_param(request, "with");
+    g_autoptr(JsonArray) exchange = NULL;
+    g_autoptr(HtmxElement) main_el = HTMX_ELEMENT(htmx_main_new());
+    g_autofree gchar *html = NULL;
+
+    if (peer == NULL || *peer == '\0')
+        return clawt_web_error_page(app, request, agent_id, CLAWT_PAGE_CHAT,
+                                    "Which agent's requests? The link "
+                                    "names none.");
+
+    exchange = exchange_for(app, agent_id, peer);
+    htmx_element_add_class(main_el, "chat");
+    clawt_web_add(main_el, clawt_web_exchange_element(exchange, agent_id,
+                                                      peer, FALSE));
+    html = clawt_web_page(app, agent_id, CLAWT_PAGE_CHAT, main_el, request);
+
+    return clawt_web_html_response(html);
+}
+
+/* The web app manifest; see clawt_web_manifest_json(). */
+static HtmxResponse *
+on_manifest(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    (void)request;
+    (void)params;
+    (void)user_data;
+
+    return clawt_web_manifest_response();
+}
+
 void
 clawt_web_register_chat(HtmxRouter *router, ClawtWebApp *app)
 {
@@ -2507,4 +2640,9 @@ clawt_web_register_chat(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_get(router, "/a/:id/export", on_export, app);
     htmx_router_get(router, "/a/:id/copy", on_copy, app);
     htmx_router_get(router, "/a/:id/compose", on_compose, app);
+
+    /* before clawt_web_register_views(), whose /a/:id/:view takes all */
+    htmx_router_get(router, "/a/:id/exchange", on_exchange_page, app);
+    htmx_router_get(router, "/f/a/:id/exchange", on_exchange_fragment, app);
+    htmx_router_get(router, CLAWT_WEB_MANIFEST_PATH, on_manifest, app);
 }

@@ -694,4 +694,60 @@ JsonNode *clawt_lrg_history_payload(const gchar *room_entry,
                                     const gchar *agent_id,
                                     const gchar *limit);
 
+/* ── Folded requests, the exchange, and --open ────────────────────── */
+
+/**
+ * clawt_lrg_fold_viewer:
+ * @room_entry: (nullable): a selected room
+ * @conversation: (nullable): a peer conversation of @agent_id
+ * @agent_id: (nullable): the selected agent
+ *
+ * Whose conversation the transcript is, for clawt_chat_should_fold():
+ * @agent_id when a peer conversation of it is on screen, %NULL for a
+ * group room or the operator's own chat -- which has no other agent's
+ * messages in it to fold.
+ *
+ * Returns: (transfer none) (nullable): the viewer
+ */
+const gchar *clawt_lrg_fold_viewer(const gchar *room_entry,
+                                   const gchar *conversation,
+                                   const gchar *agent_id);
+
+/**
+ * clawt_lrg_exchange_payload:
+ * @agent_id: the agent whose conversation is on screen
+ * @peer_id: the agent whose requests the exchange lists
+ *
+ * The `room.history` request the exchange view makes: the direct room
+ * of the two, resolved by the daemon, reaching further back than the
+ * transcript does.
+ *
+ * Returns: (transfer full) (nullable): the payload, %NULL without both
+ */
+JsonNode *clawt_lrg_exchange_payload(const gchar *agent_id,
+                                     const gchar *peer_id);
+
+/**
+ * clawt_lrg_open_resolve:
+ * @target: a room id from clawt_open_target_normalize()
+ * @agents: (nullable): an `agent.list` reply
+ * @rooms: (nullable): a `room.list` reply
+ * @out_agent: (out) (transfer full) (nullable): the agent to select
+ * @out_peer: (out) (transfer full) (nullable): its peer conversation
+ * @out_room: (out) (transfer full) (nullable): the group room to select
+ * @error: return location for a #GError
+ *
+ * clawt_open_target_resolve() over the two replies this client keeps,
+ * for `--open`.
+ *
+ * Returns: %TRUE when @target names something this client can open
+ */
+gboolean clawt_lrg_open_resolve(const gchar  *target,
+                                JsonNode     *agents,
+                                JsonNode     *rooms,
+                                gchar       **out_agent,
+                                gchar       **out_peer,
+                                gchar       **out_room,
+                                GError      **error);
+
 G_END_DECLS
