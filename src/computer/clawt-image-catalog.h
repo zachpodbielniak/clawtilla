@@ -45,7 +45,7 @@ typedef struct {
  * on, and because a container whose package manager the user already
  * knows is one they can debug.
  *
- * Every entry names its registry explicitly. A bare "fedora:44" resolves
+ * Every entry names its registry explicitly. A bare "fedora:45" resolves
  * through podman's search list, which differs per machine, so the same
  * config can pull different images on two hosts.
  *

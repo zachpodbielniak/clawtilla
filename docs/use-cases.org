@@ -359,7 +359,7 @@ agents:
     computer:
       type: container
       container:
-        image: "registry.fedoraproject.org/fedora:44"
+        image: "registry.fedoraproject.org/fedora:45"
         network: "bridge"
         keep: false
       mounts:
@@ -373,7 +373,7 @@ agents:
 #+begin_src bash
 clawtilla image
 clawtilla agent create --id builder --computer container \
-    --image registry.fedoraproject.org/fedora:44
+    --image registry.fedoraproject.org/fedora:45
 clawtilla agent mount add builder ~/src/clawtilla /work ro
 clawtilla agent start builder
 
@@ -456,7 +456,7 @@ agents:
     computer:
       type: vm
       vm:
-        image: "~/.local/share/clawtilla/images/fedora-44"
+        image: "~/.local/share/clawtilla/images/fedora-45"
         cpus: 2
         memory_mb: 8192
         disk_gb: 128
@@ -473,9 +473,9 @@ agents:
 
 #+begin_src bash
 clawtilla image vm catalog
-clawtilla image vm get fedora-44
+clawtilla image vm get fedora-45
 clawtilla agent create --id deskbot --computer vm \
-    --vm-image ~/.local/share/clawtilla/images/fedora-44
+    --vm-image ~/.local/share/clawtilla/images/fedora-45
 
 clawtilla agent set deskbot computer.desktop.enabled true
 clawtilla agent set deskbot computer.desktop.allow_input true
@@ -491,8 +491,9 @@ clawtilla computer exec deskbot -- bash -c 'echo ">>> hello <<<" > /dev/console'
 
 #+begin_example
 Fedora
-  fedora-44          Fedora 44 Cloud Base         the default, and what clawtilla is tested against
-  fedora-43          Fedora 43 Cloud Base         the previous release
+  fedora-45          Fedora 45 Cloud Base         the default, and what clawtilla is tested against
+  fedora-44          Fedora 44 Cloud Base         the previous release
+  fedora-43          Fedora 43 Cloud Base         end of life four weeks after Fedora 45
 
 Enterprise Linux
   centos-stream-10   CentOS Stream 10             closest to RHEL
@@ -515,7 +516,7 @@ on the host --- so a picture it takes inside the guest is a file its own
 *** What to watch out for
 
 *=agents.computer.vm.image= is a path, not a catalogue id.*  ~clawtilla
-image vm get fedora-44~ writes a file called ~fedora-44~ under
+image vm get fedora-45~ writes a file called ~fedora-45~ under
 =defaults.image_dir=; point the setting at that file.  A bare id is
 accepted at creation and refused at provision, several minutes later,
 naming a disk that is not there.

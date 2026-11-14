@@ -703,7 +703,7 @@ One copy per image serves the whole fleet, and they are large:
 
 #+begin_src bash
 clawtilla image vm list
-clawtilla image vm rm fedora-44
+clawtilla image vm rm fedora-45
 #+end_src
 
 Removing one an agent's overlay is built on is *refused*, because the VM

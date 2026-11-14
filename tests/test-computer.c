@@ -1389,7 +1389,7 @@ test_vm_ssh_argv_quotes_the_command(void)
  * Needs CLAWT_TEST_INTEGRATION and a cloud image in CLAWT_TEST_VM_IMAGE:
  *
  *   CLAWT_TEST_INTEGRATION=1 \
- *   CLAWT_TEST_VM_IMAGE=~/vms/Fedora-Cloud-Base-44.qcow2 \
+ *   CLAWT_TEST_VM_IMAGE=~/vms/Fedora-Cloud-Base-45.qcow2 \
  *   make test-integration
  */
 static void
@@ -2639,7 +2639,7 @@ test_image_catalog(void)
     g_assert_cmpuint(n_images, >, 0);
 
     g_assert_cmpstr(clawt_image_catalog_default(), ==,
-                    "registry.fedoraproject.org/fedora:44");
+                    "registry.fedoraproject.org/fedora:45");
     g_assert_cmpstr(catalog[0].reference, ==, clawt_image_catalog_default());
 
     for (i = 0; i < n_images; i++) {
@@ -2648,7 +2648,7 @@ test_image_catalog(void)
         g_assert_nonnull(catalog[i].group);
 
         /*
-         * Every reference names its registry.  A bare "fedora:44" is
+         * Every reference names its registry.  A bare "fedora:45" is
          * resolved through podman's unqualified-search list, which is
          * per-machine, so the same config would pull different images on
          * two hosts -- and the difference surfaces much later as a

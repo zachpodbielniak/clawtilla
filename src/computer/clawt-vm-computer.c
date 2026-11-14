@@ -1842,7 +1842,7 @@ vm_provision(ClawtComputer *computer, GError **error)
                             "this VM has no disk image, so there would be "
                             "nothing for it to boot. Set computer.vm.image "
                             "to a qcow2 -- `clawtilla image vm get "
-                            "fedora-44` fetches one, or pick one under "
+                            "fedora-45` fetches one, or pick one under "
                             "Settings in the GTK client.");
         clawt_computer_set_state(computer, CLAWT_COMPUTER_STATE_ERROR,
                                  (error != NULL && *error != NULL)

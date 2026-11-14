@@ -4923,7 +4923,7 @@ cmd_image_vm(int argc, char *argv[])
         if (json_array_get_length(images) == 0) {
             g_print("No cloud images yet.\n\n");
             g_print("  clawtilla image vm catalog        what is suggested\n");
-            g_print("  clawtilla image vm get fedora-44  fetch one\n");
+            g_print("  clawtilla image vm get fedora-45  fetch one\n");
             return EXIT_SUCCESS;
         }
 
@@ -4988,7 +4988,7 @@ cmd_image_vm(int argc, char *argv[])
         if (url == NULL) {
             g_printerr("Usage: clawtilla image vm get <url-or-id> "
                        "[name]\n");
-            g_printerr("  e.g. clawtilla image vm get fedora-44\n");
+            g_printerr("  e.g. clawtilla image vm get fedora-45\n");
             return EXIT_FAILURE;
         }
 
@@ -5078,8 +5078,8 @@ cmd_image_vm(int argc, char *argv[])
     }
 
     g_printerr("Usage: clawtilla image vm <list|catalog|get|rm|cancel>\n");
-    g_printerr("  clawtilla image vm get fedora-44\n");
-    g_printerr("  clawtilla image vm rm fedora-44 --force\n");
+    g_printerr("  clawtilla image vm get fedora-45\n");
+    g_printerr("  clawtilla image vm rm fedora-45 --force\n");
     return EXIT_FAILURE;
 }
 

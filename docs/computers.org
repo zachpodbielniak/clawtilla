@@ -389,7 +389,7 @@ what they are told instead is that this is somebody's real machine.
 
 *** Which image
 
-Defaults to ~registry.fedoraproject.org/fedora:44~ -- change it once for
+Defaults to ~registry.fedoraproject.org/fedora:45~ -- change it once for
 the fleet with ~defaults.container_image~, or per agent with
 ~image~.
 
@@ -418,7 +418,7 @@ The GTK client shows this list as a dropdown with the full reference
 underneath, and an /Other.../ entry that reveals a free-text field for
 anything not on it.
 
-*Name the registry.*  Every suggestion does.  A bare ~fedora:44~ is
+*Name the registry.*  Every suggestion does.  A bare ~fedora:45~ is
 resolved through podman's unqualified-search list, which is per-machine
 configuration, so the same clawtilla.yaml can pull different images on
 two hosts -- and the difference shows up much later as a missing
@@ -701,7 +701,7 @@ computer:
     backend: libvirt              # libvirt (default) | qemu
     domain: "clawt-researcher"
     uri: "qemu:///session"
-    image: "~/vms/Fedora-Cloud-Base-44.qcow2"
+    image: "~/vms/Fedora-Cloud-Base-45.qcow2"
     cpus: 2
     memory_mb: 4096
     ssh_user: "agent"
@@ -757,7 +757,7 @@ copy serving the whole fleet:
 
 #+begin_src bash
 clawtilla image vm catalog          # what is suggested
-clawtilla image vm get fedora-44    # fetch it, with a progress bar
+clawtilla image vm get fedora-45    # fetch it, with a progress bar
 clawtilla image vm list
 #+end_src
 
@@ -766,8 +766,9 @@ installing a desktop into it:
 
 | id | family | note |
 |---+---+---|
-| ~fedora-44~ | fedora | the default, and the only one booted end to end |
-| ~fedora-43~ | fedora | the previous release |
+| ~fedora-45~ | fedora | the default (GNOME 51); booted end to end on 2026-11-14 |
+| ~fedora-44~ | fedora | the previous release (GNOME 50) |
+| ~fedora-43~ | fedora | end of life four weeks after Fedora 45 |
 | ~centos-stream-10~ | enterprise | closest to RHEL |
 | ~debian-13~ | debian | trixie |
 | ~debian-12~ | debian | bookworm |
@@ -787,7 +788,7 @@ Then point an agent at it -- or pick it from /Disk image/ in the Agent
 tab, which lists what has been fetched:
 
 #+begin_src bash
-clawtilla agent set researcher computer.vm.image ~/.local/share/clawtilla/images/fedora-44
+clawtilla agent set researcher computer.vm.image ~/.local/share/clawtilla/images/fedora-45
 #+end_src
 
 *** What needs the machine rebuilt
@@ -894,7 +895,7 @@ names it: without the base, the VM stops booting at all.  Point the agent
 somewhere else first, or insist:
 
 #+begin_src bash
-clawtilla image vm rm fedora-44 --force
+clawtilla image vm rm fedora-45 --force
 #+end_src
 
 A plain installer ISO or a desktop image will *not* work unattended: it
@@ -1754,11 +1755,11 @@ computers:
     description: the build box
     type: container
     container:
-      image: registry.fedoraproject.org/fedora:44
+      image: registry.fedoraproject.org/fedora:45
   - id: beta
     type: vm
     vm:
-      image: ~/vms/fedora-44.qcow2
+      image: ~/vms/fedora-45.qcow2
     desktop:
       enabled: true
       backend: guest
@@ -2464,7 +2465,7 @@ guest's first boot:
 computer:
   type: vm
   vm:
-    image: "~/.local/share/clawtilla/images/Fedora-Cloud-Base-44.qcow2"
+    image: "~/.local/share/clawtilla/images/Fedora-Cloud-Base-45.qcow2"
     cpus: 2
     memory_mb: 8192
     disk_gb: 128

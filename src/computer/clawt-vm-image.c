@@ -28,15 +28,31 @@
 /* ── The catalog ─────────────────────────────────────────────────── */
 
 static const ClawtVmImageSource sources[] = {
-    { "fedora-44", "Fedora 44 Cloud Base",
+    /*
+     * Fedora keeps two releases alive, so the catalog offers the current
+     * one, the previous one, and the one before that until its end of
+     * life four weeks after a release -- an id somebody already fetched
+     * by must not vanish from `image vm get` on the day a new release
+     * ships.  The desktop package list is shared by all three and was
+     * checked against Fedora 45's repositories when 45 became the
+     * default (GNOME Shell 51).
+     */
+    { "fedora-45", "Fedora 45 Cloud Base",
       "the default, and what clawtilla is tested against", "Fedora",
+      "https://download.fedoraproject.org/pub/fedora/linux/releases/45/"
+      "Cloud/x86_64/images/",
+      "Fedora-Cloud-Base-Generic-45-*.x86_64.qcow2",
+      CLAWT_GUEST_FLAVOUR_FEDORA },
+
+    { "fedora-44", "Fedora 44 Cloud Base",
+      "the previous release", "Fedora",
       "https://download.fedoraproject.org/pub/fedora/linux/releases/44/"
       "Cloud/x86_64/images/",
       "Fedora-Cloud-Base-Generic-44-*.x86_64.qcow2",
       CLAWT_GUEST_FLAVOUR_FEDORA },
 
     { "fedora-43", "Fedora 43 Cloud Base",
-      "the previous release", "Fedora",
+      "end of life four weeks after Fedora 45", "Fedora",
       "https://download.fedoraproject.org/pub/fedora/linux/releases/43/"
       "Cloud/x86_64/images/",
       "Fedora-Cloud-Base-Generic-43-*.x86_64.qcow2",

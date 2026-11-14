@@ -252,7 +252,7 @@ defaults:
   # Fedora because that is what clawtilla is developed and tested on, and
   # because a container whose package manager you already know is one you
   # can debug. Change it once here rather than per agent.
-  container_image: "registry.fedoraproject.org/fedora:44"
+  container_image: "registry.fedoraproject.org/fedora:45"
 
   # Extra images to offer in a client's image list.
   #
@@ -2349,10 +2349,10 @@ agents:
         #
         # Any reference podman can pull. Unset means defaults.container_image.
         #
-        # Name the registry: a bare 'fedora:44' is resolved through podman's
+        # Name the registry: a bare 'fedora:45' is resolved through podman's
         # unqualified-search list, which is per-machine, so the same config can
         # pull a different image on two hosts.
-        image: "registry.fedoraproject.org/fedora:44"
+        image: "registry.fedoraproject.org/fedora:45"
 
         # Container name. Defaults to clawt-<agent-id>.
         name: null
@@ -2508,7 +2508,7 @@ agents:
         # which is a Fedora toolbox image.
         #
         # Name the registry, for the reason the container image does: a bare
-        # 'fedora:44' is resolved through podman's unqualified-search list,
+        # 'fedora:45' is resolved through podman's unqualified-search list,
         # which is per-machine.
         image: null
 

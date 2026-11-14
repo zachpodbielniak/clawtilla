@@ -1219,7 +1219,7 @@ clawtilla agent start <id>      # provision rewrites the domain
 
 #+begin_example
 this VM has no disk image, so there would be nothing for it to boot. Set
-computer.vm.image to a qcow2 -- `clawtilla image vm get fedora-44`
+computer.vm.image to a qcow2 -- `clawtilla image vm get fedora-45`
 fetches one, or pick one under Settings in the GTK client.
 #+end_example
 
@@ -1231,7 +1231,7 @@ setting, and nothing anywhere connecting them.
 
 #+begin_src bash
 clawtilla image vm list                 # what is already fetched
-clawtilla image vm get fedora-44        # or fetch one
+clawtilla image vm get fedora-45        # or fetch one
 clawtilla agent set <id> computer.vm.image /path/to/disk.qcow2
 #+end_src
 

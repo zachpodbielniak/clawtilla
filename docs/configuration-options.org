@@ -360,7 +360,7 @@ for rather than inherited.
 *** =defaults.container_image=
 
 - Type :: string
-- Default :: =registry.fedoraproject.org/fedora:44=
+- Default :: =registry.fedoraproject.org/fedora:45=
 - Since :: 0.1.0
 
 Image a container agent gets when it does not name one.
@@ -3676,14 +3676,14 @@ Settings for computer.type: container.
 *** =agents.computer.container.image=
 
 - Type :: string
-- Default :: =registry.fedoraproject.org/fedora:44=
+- Default :: =registry.fedoraproject.org/fedora:45=
 - Since :: 0.1.0
 
 Image the container is created from.
 
 Any reference podman can pull. Unset means defaults.container_image.
 
-Name the registry: a bare 'fedora:44' is resolved through podman's
+Name the registry: a bare 'fedora:45' is resolved through podman's
 unqualified-search list, which is per-machine, so the same config can
 pull a different image on two hosts.
 
@@ -3904,7 +3904,7 @@ Image the box is created from. Unset uses distrobox's own default,
 which is a Fedora toolbox image.
 
 Name the registry, for the reason the container image does: a bare
-'fedora:44' is resolved through podman's unqualified-search list,
+'fedora:45' is resolved through podman's unqualified-search list,
 which is per-machine.
 
 *** =agents.computer.distrobox.name=

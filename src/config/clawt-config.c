@@ -1181,7 +1181,7 @@ clawt_agent_config_validate_computer(ClawtAgentConfig *self, GError **error)
     g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
                         "a VM needs a disk image to boot: set "
                         "computer.vm.image. `clawtilla image vm get "
-                        "fedora-44` fetches one, or pick one from the Disk "
+                        "fedora-45` fetches one, or pick one from the Disk "
                         "image row when creating the agent.");
 
     return FALSE;

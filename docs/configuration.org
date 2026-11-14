@@ -211,7 +211,7 @@ defaults:
   provider: "claude-code"
   model: "sonnet"
   computer: none
-  container_image: "registry.fedoraproject.org/fedora:44"
+  container_image: "registry.fedoraproject.org/fedora:45"
   workspace_root: "~/.clawtilla/agents"
   exchange_dir: "$XDG_DATA_HOME/clawtilla/exchange"
   image_dir: "$XDG_DATA_HOME/clawtilla/images"
@@ -387,7 +387,7 @@ agents:
     computer:
       type: container
       container:
-        image: "registry.fedoraproject.org/fedora:44"
+        image: "registry.fedoraproject.org/fedora:45"
         network: none          # or a podman network name
 #+end_src
 
@@ -428,7 +428,7 @@ agents:
       type: vm
       vm:
         backend: libvirt          # libvirt | qemu
-        image: "~/.local/share/clawtilla/images/fedora-44.qcow2"
+        image: "~/.local/share/clawtilla/images/fedora-45.qcow2"
         cpus: 2
         memory_mb: 4096
         disk_gb: 40

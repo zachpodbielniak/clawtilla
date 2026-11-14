@@ -284,7 +284,7 @@ static const ClawtSchemaEntry schema[] = {
   "for rather than inherited.", "0.1.0" },
 
 { "defaults.container_image", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
-  "registry.fedoraproject.org/fedora:44", NULL,
+  "registry.fedoraproject.org/fedora:45", NULL,
   "Image a container agent gets when it does not name one.\n"
   "\n"
   "Fedora because that is what clawtilla is developed and tested on, and\n"
@@ -2585,12 +2585,12 @@ static const ClawtSchemaEntry schema[] = {
   "Settings for computer.type: container.", "0.1.0" },
 
 { "agents.computer.container.image", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
-  "registry.fedoraproject.org/fedora:44", NULL,
+  "registry.fedoraproject.org/fedora:45", NULL,
   "Image the container is created from.\n"
   "\n"
   "Any reference podman can pull. Unset means defaults.container_image.\n"
   "\n"
-  "Name the registry: a bare 'fedora:44' is resolved through podman's\n"
+  "Name the registry: a bare 'fedora:45' is resolved through podman's\n"
   "unqualified-search list, which is per-machine, so the same config can\n"
   "pull a different image on two hosts.", "0.1.0" },
 
@@ -2773,7 +2773,7 @@ static const ClawtSchemaEntry schema[] = {
   "which is a Fedora toolbox image.\n"
   "\n"
   "Name the registry, for the reason the container image does: a bare\n"
-  "'fedora:44' is resolved through podman's unqualified-search list,\n"
+  "'fedora:45' is resolved through podman's unqualified-search list,\n"
   "which is per-machine.", "0.1.0" },
 
 { "agents.computer.distrobox.name", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,

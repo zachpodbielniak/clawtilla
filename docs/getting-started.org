@@ -298,11 +298,11 @@ Teams are optional, and a fleet of three does not need them.
 
 #+begin_src bash
 ./build/release/clawtilla agent create --id builder \
-    --computer container --image registry.fedoraproject.org/fedora:44
+    --computer container --image registry.fedoraproject.org/fedora:45
 ./build/release/clawtilla computer exec builder -- uname -a
 #+end_src
 
-Pull the image first -- ~podman pull registry.fedoraproject.org/fedora:44~.
+Pull the image first -- ~podman pull registry.fedoraproject.org/fedora:45~.
 Creating does not pull, deliberately, so a typo in an image name fails in
 a second rather than after a download.  ~clawtilla image~ lists the ones
 clawtilla suggests, and ~clawtilla image vm~ the disk images for a VM

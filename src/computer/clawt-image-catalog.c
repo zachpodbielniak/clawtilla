@@ -13,19 +13,19 @@
 /*
  * Every reference carries its registry.
  *
- * A bare "fedora:44" is resolved through podman's unqualified-search
+ * A bare "fedora:45" is resolved through podman's unqualified-search
  * list, which is per-machine configuration: the same clawtilla.yaml then
  * pulls a different image on two hosts, and the failure -- if there is
  * one -- arrives much later as a missing package.
  */
 static const ClawtImageInfo images[] = {
-    { "registry.fedoraproject.org/fedora:44", "Fedora 44",
+    { "registry.fedoraproject.org/fedora:45", "Fedora 45",
       "the default; what clawtilla is developed and tested on", "Fedora" },
-    { "registry.fedoraproject.org/fedora:43", "Fedora 43",
+    { "registry.fedoraproject.org/fedora:44", "Fedora 44",
       "the previous release", "Fedora" },
-    { "registry.fedoraproject.org/fedora-minimal:44", "Fedora 44 minimal",
+    { "registry.fedoraproject.org/fedora-minimal:45", "Fedora 45 minimal",
       "microdnf instead of dnf; smaller, fewer tools", "Fedora" },
-    { "registry.fedoraproject.org/fedora-toolbox:44", "Fedora Toolbox 44",
+    { "registry.fedoraproject.org/fedora-toolbox:45", "Fedora Toolbox 45",
       "Fedora with the interactive tooling already installed", "Fedora" },
 
     { "quay.io/centos/centos:stream10", "CentOS Stream 10",

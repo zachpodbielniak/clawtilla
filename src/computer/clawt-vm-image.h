@@ -28,7 +28,7 @@ G_BEGIN_DECLS
 
 /**
  * ClawtVmImageSource:
- * @id: a short stable name, e.g. `fedora-44`
+ * @id: a short stable name, e.g. `fedora-45`
  * @name: what to call it in a list
  * @note: (nullable): a line about why you would pick it
  * @group: a heading to file it under
@@ -91,7 +91,7 @@ ClawtGuestFlavour clawt_vm_image_flavour(const gchar *image);
 /**
  * clawt_vm_image_pick_newest:
  * @listing: a directory listing page, as a mirror served it
- * @pattern: a glob such as `Fedora-Cloud-Base-Generic-44-*.x86_64.qcow2`
+ * @pattern: a glob such as `Fedora-Cloud-Base-Generic-45-*.x86_64.qcow2`
  *
  * Picks the highest-sorting filename in @listing matching @pattern.
  *
