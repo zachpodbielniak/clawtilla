@@ -59,8 +59,9 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 
 * P1 -- removing silent cost and silent failure
 
-** TODO Waits: a condition checked by code, not by the model                                       :orchestration:tools:
-- *Today:* no wait tool in =src/mcp/clawt-mcp-tools.c=. "Tell me when X" is a cron routine that wakes the model on every tick.
+** DONE Waits: a condition checked by code, not by the model                                       :orchestration:tools:
+- *Done (version assigned at merge):* =clawtilla_wait_until= / =_wait_list= / =_wait_cancel= with url, file, task, computer and command probes (=src/wait/=, =src/core/daemon-wait.c=); the address policy is =clawt_net_address_is_public()= in =src/clawt-net.c=, ready for the egress gate. Per-wait records under =<state_dir>/waits=, =orchestration.max_waits_per_agent=, =wait.list= / =wait.cancel= and a "Waiting for" list in all three clients. See =docs/orchestration.org=, "Waits".
+- *Was:* no wait tool in =src/mcp/clawt-mcp-tools.c=. "Tell me when X" is a cron routine that wakes the model on every tick.
 - *Prior art:* =server/waits.ts=, =wait-probes.ts=, =docs/superpowers/specs/2026-10-27-waits-design.md=. Three tools: =wait_until=, =list_waits=, =cancel_wait=. Waits expire (24 h default, 7 days max). URL probes run at most once a minute with backoff, and private addresses are refused.
 - *Proposal:* tools =clawtilla_wait_until= / =_wait_list= / =_wait_cancel=. Probe kinds: URL status/body match (through the egress gate's address rules), file exists/changed in the workspace, task settled, computer reachable, command exit status on the computer (=clawt_computer_exec_async()=). A satisfied wait is a mailbox delivery into the room it was set from. Waits persist under =<state_dir>= and survive a daemon restart.
 - *Rules that apply:* every timer names its context (=clawt_timeout_add_seconds()=). The wait record is per wait, never a scalar on the agent. The tool description is behaviour, so say the wait costs nothing while pending.

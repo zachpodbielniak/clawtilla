@@ -4269,6 +4269,7 @@ release_components(ClawtDaemon *self)
      */
     clawt_daemon_turn_teardown(self);
     clawt_daemon_handoff_teardown(self);
+    clawt_daemon_wait_teardown(self);
     clawt_daemon_search_teardown(self);
     clawt_daemon_policy_teardown(self);
     clawt_daemon_idle_teardown(self);
@@ -6253,6 +6254,13 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     clawt_daemon_search_setup(self);
 
     /*
+     * After the tools exist, whose wait tools it supplies, and after
+     * start can no longer refuse: it arms a timer, and one armed by a
+     * daemon that never ran is one nothing takes down.
+     */
+    clawt_daemon_wait_setup(self);
+
+    /*
      * After the trigger listener, whose Grok routes it answers, and after
      * the tools exist, whose clawtilla_grok_* it supplies.
      */
@@ -6406,6 +6414,7 @@ clawt_daemon_stop(ClawtDaemon *self)
      */
     clawt_daemon_turn_teardown(self);
     clawt_daemon_handoff_teardown(self);
+    clawt_daemon_wait_teardown(self);
     clawt_daemon_search_teardown(self);
     clawt_daemon_policy_teardown(self);
     clawt_daemon_idle_teardown(self);
@@ -8605,6 +8614,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_connector,
     clawt_daemon_handle_integration,
     clawt_daemon_handle_routine,
+    clawt_daemon_handle_wait,
     clawt_daemon_handle_trigger,
     clawt_daemon_handle_grok,
     clawt_daemon_handle_config,

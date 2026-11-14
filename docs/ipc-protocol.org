@@ -1018,6 +1018,18 @@ both the schedule and ~enabled~ and returns the ~task~ it started.
 
 ~routine.ran~ and ~routine.changed~ are published as events.
 
+*** wait.*
+
+Conditions an agent asked to be told about with ~clawtilla_wait_until~, checked by the daemon rather than by the model.  See [[file:orchestration.org::*Waits: a condition checked by code][orchestration.org]].
+
+~wait.list~ takes an optional ~agent~ and returns ~{"waits": [...]}~, the pending ones only, oldest first.  Each carries ~id~, ~agent~, ~room~ (where its notice goes), ~label~ (the agent's words), ~note~ when there is one, ~kind~ (~url~, ~file~, ~task~, ~computer~ or ~command~), ~condition~ (the daemon's phrase for it, so a client does not rebuild one per kind), ~state~ (always ~pending~ here), ~created_at~, ~last_check_at~ (0 before the first look), ~next_check_at~ and ~expires_at~ in microseconds since the epoch, ~checks~, ~failures~ (looks in a row that went unanswered, which is what the backoff counts) and ~last_result~ when a look has seen something.  A client draws the schedule with ~clawt_wait_schedule_label()~ from the three timestamps, at render time.
+
+~wait.cancel~ takes ~wait~ (the id) and ends it as the operator: any agent's wait, and the agent is sent a notice saying so, because it would otherwise go on believing it was waiting.  The reply is ~{"cancelled": "<id>"}~; an id that is not pending is ~NOT_FOUND~.
+
+Both answer ~NOT_SUPPORTED~ from a daemon with no state directory, which keeps no waits.
+
+~wait.changed~ is published, with the agent as subject and ~wait~ and ~state~ (~pending~, or ~ended~ once it has gone) as detail, when a wait is set, when it ends, and when a look sees something different from the last one -- not on every look.
+
 *** trigger.*
 
 ~trigger.list~ returns every trigger with its own schema fields plus
@@ -1370,6 +1382,7 @@ Every kind published, by subject:
 | a team | ~team.changed~ |
 | an agent | ~decision.asked~, ~decision.settled~ (~decision~, ~how~: ~answered~, ~dismissed~, ~defaulted~ or ~deleted~), ~decision.deleted~ (~decision~) |
 | a routine | ~routine.ran~, ~routine.changed~ |
+| an agent | ~wait.changed~ (~wait~, ~state~) |
 | a trigger | ~trigger.fired~, ~trigger.changed~, ~trigger.refused~, ~trigger.verified~ |
 | a Grok job | ~grok.job_updated~ (~bot~, ~agent~, ~state~) |
 | a Grok bot | ~grok.bots_changed~ |

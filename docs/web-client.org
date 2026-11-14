@@ -442,6 +442,10 @@ lives in hand-written tables in =clawt-agent-manager.c= and
 produce fields that are accepted and read from nowhere, which is the
 failure the rule exists to prevent, arrived at from the other direction.
 
+*** Waiting for
+
+The agent page has a *Waiting for* card, from ~wait.list~ with the agent: each pending wait's label, its kind, its condition, the schedule line ~clawt_wait_schedule_label()~ builds (the same one the GTK and libregnum clients draw), what the last check saw, and a *Cancel* form that posts to ~/a/:id/wait/cancel~ -- registered before the ~/a/:id/:view~ catch-all, with the other agent actions.  A cancel from here is the operator's, so the daemon tells the agent.  The card is drawn with the page; ~max_waits~ is one of the schema-built settings below it.
+
 *** Only what changed is sent
 
 Saving compares each field against what the daemon reported.  ~agent.set~

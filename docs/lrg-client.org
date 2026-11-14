@@ -584,6 +584,10 @@ Every chooser is drawn first holding only the current value, then refilled when 
 
 Save changes sends only what changed, one ~agent.set~ at a time in the order =clawt_lrg_agent_save_plan()= gives: the account is cleared first when it moves from one login to another (the daemon checks the provider/account pair), and a computer key the newly chosen shared machine owns is never sent. It stops at the first refusal (already toasted) and re-reads the page. The closing toast names the restart a change needs, and says so specifically when any reply carried =restart_required= (an AI CLI lists its tools once, at session start).
 
+*** Waiting for
+
+From ~wait.list~ with the agent: a row per pending wait with the agent's label as its title and, under it, the condition, the schedule line from =clawt_wait_schedule_label()= and what the last check saw, with a *Cancel* button that sends ~wait.cancel~ (the daemon tells the agent).  Only this section re-reads on a ~wait.changed~ event for the agent shown, so a form being edited above it is never thrown away.
+
 *** Credentials
 
 The agent's credentials by name and reference, never by value.

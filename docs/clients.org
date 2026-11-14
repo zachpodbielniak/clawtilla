@@ -77,6 +77,8 @@ licence, send nothing, and exit 0.
 | ~decision answer <id> <answer>~ | free text; it routes back to the agent |
 | ~decision dismiss <id>~ | it carries on with its default |
 | ~decision delete <id>~ | gone from the inbox for good, answered or not; an open one is withdrawn first |
+| ~wait list [agent]~ | conditions agents are waiting on, checked by code: condition, last and next check, expiry |
+| ~wait cancel <id>~ | stop one; the agent is told it is no longer waiting |
 | ~event list [subject]~ | what the fleet has been doing, from the event log |
 | ~cost [--today \vert{} --days N] [--agent ID]~ | what the fleet has spent |
 | ~computer exec <agent> -- CMD…~ | |
@@ -520,6 +522,10 @@ The agent inspector has an *Account* row beside the model and effort. Its choice
 *** Choosing a shared computer
 
 The agent inspector has a *Use computer* row above the computer type. Its choices come from ~computer.shared~: /Its own machine/, then every machine declared under ~computers:~ that can be shared, with its type and description. A machine the agent names that is no longer declared is still shown, labelled, so saving cannot move the agent without anybody choosing to. While the agent is on a shared machine the computer type is shown greyed out -- it is the machine's -- and the per-agent image and VM rows are not drawn, because ~agent.set~ refuses those keys for it. Saving writes ~computer.use~ first. The web client's agent page draws the same select in its Computer card, hides the same rows, and says why.
+
+*** What an agent is waiting for
+
+The agent inspector has a *Waiting for* group, above the integrations: one row per pending wait the agent set with ~clawtilla_wait_until~, titled with the agent's own words for it, with the condition, a schedule line from ~clawt_wait_schedule_label()~ (~checked 4m ago · next check in 1m · expires in 23h~), what the last check saw, and a *Cancel* button.  Cancelling sends ~wait.cancel~, and the daemon tells the agent, which would otherwise go on believing it was waiting.  The list -- and only the list, never the form above it -- refills on every ~wait.changed~ event.  An agent that looks idle and is in fact waiting on a deploy is not one somebody should nudge, which is why it is on the agent's own view.  The web client's agent page draws the same list as a card with a Cancel form per row, and the libregnum client's Overview as a section.  How many an agent may have is ~max_waits~, in the agent's settings with the other fleet settings it may override.  See [[file:orchestration.org::*Waits: a condition checked by code][orchestration.org]].
 
 *** Teams in the sidebar
 

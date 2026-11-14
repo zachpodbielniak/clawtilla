@@ -199,6 +199,13 @@ declare -A AFFORDANCES=(
     #
     ["sidebar collapses"]="clawt_appearance_set_sidebar_collapsed|nav-toggle|clawt_lrg_window_toggle_sidebar"
     #
+    # The agent view's "Waiting for" list. The frames (wait.list,
+    # wait.cancel) are layer 1's; this is the schedule line, which every
+    # client must draw from the one library function rather than its own
+    # wording of "next check in".
+    #
+    ["waiting for schedule"]="clawt_wait_schedule_label|clawt_wait_schedule_label|clawt_wait_schedule_label"
+    #
     # The Fleet page: what each agent costs and which sit idle, the last
     # fourteen days, and stopping the idle ones -- one at a time and all
     # at once.  The text is libclawt's in all three.

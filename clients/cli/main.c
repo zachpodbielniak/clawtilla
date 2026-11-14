@@ -3679,6 +3679,88 @@ cmd_event(int argc, char *argv[])
  * somebody runs a fleet, and a decision an operator cannot see over ssh
  * is one that silently takes its default.
  */
+/*
+ * What agents are waiting for: conditions the daemon checks by code on
+ * their behalf.  `list` takes an optional agent; `cancel` is the
+ * operator's, and the daemon tells the agent it is no longer waiting.
+ */
+static int
+cmd_wait(
+	int   argc,
+	char *argv[]
+){
+	g_autoptr(ClawtClient) client = NULL;
+	g_autoptr(JsonNode) reply = NULL;
+	const gchar *verb = (argc > 2) ? argv[2] : "list";
+
+	client = connect_to_daemon();
+	if (client == NULL)
+		return EXIT_FAILURE;
+
+	if (g_strcmp0(verb, "list") == 0) {
+		JsonArray *waits;
+		gint64 now = g_get_real_time();
+		guint i;
+
+		reply = call(client, "wait.list",
+		             (argc > 3) ? build_payload("agent", argv[3], NULL)
+		                        : NULL);
+		if (reply == NULL)
+			return EXIT_FAILURE;
+
+		waits = json_object_get_array_member(json_node_get_object(reply),
+		                                     "waits");
+
+		if (json_array_get_length(waits) == 0) {
+			g_print("Nothing is being waited on.\n");
+			return EXIT_SUCCESS;
+		}
+
+		for (i = 0; i < json_array_get_length(waits); i++) {
+			JsonObject *wait = json_array_get_object_element(waits, i);
+			g_autofree gchar *schedule = clawt_wait_schedule_label(
+				json_object_get_int_member(wait, "last_check_at"),
+				json_object_get_int_member(wait, "next_check_at"),
+				json_object_get_int_member(wait, "expires_at"), now);
+
+			g_print("%s  [%s]  %s\n", member_or(wait, "id", "?"),
+			        member_or(wait, "agent", "?"),
+			        member_or(wait, "label", ""));
+			g_print("  %s\n  %s\n", member_or(wait, "condition", ""),
+			        schedule);
+
+			if (json_object_has_member(wait, "last_result"))
+				g_print("  last check saw: %s\n",
+				        member_or(wait, "last_result", ""));
+
+			g_print("\n");
+		}
+
+		return EXIT_SUCCESS;
+	}
+
+	if (g_strcmp0(verb, "cancel") == 0) {
+		if (argc < 4) {
+			g_printerr("Usage: clawtilla wait cancel <id>\n"
+			           "\n"
+			           "The agent is told it is no longer waiting.\n");
+			return EXIT_FAILURE;
+		}
+
+		reply = call(client, "wait.cancel",
+		             build_payload("wait", argv[3], NULL));
+		if (reply == NULL)
+			return EXIT_FAILURE;
+
+		g_print("Cancelled %s. The agent has been told.\n", argv[3]);
+		return EXIT_SUCCESS;
+	}
+
+	g_printerr("Usage: clawtilla wait list [agent]\n"
+	           "       clawtilla wait cancel <id>\n");
+	return EXIT_FAILURE;
+}
+
 static int
 cmd_decision(int argc, char *argv[])
 {
@@ -8748,6 +8830,8 @@ static const ClawtVerb verbs[] = {
       cmd_task },
     { "decision", "<verb>",  "Answer what an agent has asked you",
       cmd_decision },
+    { "wait",    "<verb>",   "What agents are waiting for (list, cancel)",
+      cmd_wait },
     { "event",   "<verb>",   "The daemon's event history",
       cmd_event },
     { "cost",    "[--days N] [--by-day]", "What the fleet has spent, per agent",

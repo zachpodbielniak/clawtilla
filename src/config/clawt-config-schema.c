@@ -830,6 +830,20 @@ static const ClawtSchemaEntry schema[] = {
   "however old it is: it is undrained rather than finished. 0 keeps\n"
   "receipts until the count alone drops them.", "0.2.0" },
 
+{ "orchestration.max_waits_per_agent", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_PER_AGENT, "10", NULL,
+  "How many pending waits one agent may have.\n"
+  "\n"
+  "A wait (clawtilla_wait_until) is a condition clawtilla checks by code\n"
+  "-- a URL, a file, a task, the agent's computer, a command -- so the\n"
+  "model is woken once when it holds rather than on every look. A pending\n"
+  "wait costs no turns, but each one is a probe: a URL fetched once a\n"
+  "minute, a command run on the agent's computer. This bounds how many\n"
+  "of those one agent can leave running, and the refusal names its\n"
+  "pending waits so it can fold a new one into an old one.\n"
+  "\n"
+  "Override with max_waits on an agent. 0 removes the limit.", "0.14.0" },
+
 { "memories", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "What an agent remembers between conversations.\n"
   "\n"
@@ -3511,6 +3525,7 @@ clawt_config_schema_get(gsize *n_entries)
  */
 static const ClawtSchemaAgentKey agent_keys[] = {
     { "daily_agent_budget_micros", "orchestration.daily_agent_budget_micros" },
+    { "max_waits",                 "orchestration.max_waits_per_agent" },
     /*
      * Fleet policy an agent may override. The `orchestration.` section
      * is the fleet's own, so the per-agent form drops it.

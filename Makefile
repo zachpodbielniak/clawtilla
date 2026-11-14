@@ -217,6 +217,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/clawt-error.c \
 	$(SRCDIR)/clawt-util.c \
 	$(SRCDIR)/clawt-http.c \
+	$(SRCDIR)/clawt-net.c \
 	$(SRCDIR)/clawt-backup.c \
 	$(SRCDIR)/config/clawt-config-schema.c \
 	$(SRCDIR)/config/clawt-appearance.c \
@@ -248,6 +249,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-connector.c \
 	$(SRCDIR)/core/daemon-integration.c \
 	$(SRCDIR)/core/daemon-routine.c \
+	$(SRCDIR)/core/daemon-wait.c \
 	$(SRCDIR)/core/daemon-trigger.c \
 	$(SRCDIR)/core/daemon-venture.c \
 	$(SRCDIR)/core/daemon-grok.c \
@@ -344,6 +346,8 @@ LIB_SOURCES = \
 	$(SRCDIR)/task/clawt-handoff.c \
 	$(SRCDIR)/task/clawt-handoff-store.c \
 	$(SRCDIR)/task/clawt-routine-runner.c \
+	$(SRCDIR)/wait/clawt-wait.c \
+	$(SRCDIR)/wait/clawt-wait-manager.c \
 	$(SRCDIR)/trigger/clawt-trigger-event.c \
 	$(SRCDIR)/trigger/clawt-trigger-provider.c \
 	$(SRCDIR)/trigger/clawt-trigger.c \
