@@ -112,12 +112,12 @@ Every turn is tagged when clawtilla first sees it, from the turn state of the ag
 | ~trigger:<id>~    | the same for a trigger                                                                                                                         |
 | ~operator~        | you, from any client or the CLI                                                                                                                 |
 | ~agent:<id>~      | another agent in the fleet                                                                                                                      |
-| ~task:<id>~       | a task whose run the daemon no longer remembers -- a routine that was running across a daemon restart                                          |
+| ~task:<id>~       | a task no routine or trigger run is on record for -- one created some other way, or an entry older than a week (below)                          |
 | ~channel:<name>~  | the agent's own Matrix, email or other channel, which clawtilla never routed                                                                   |
 | ~other:<sender>~  | a sender known by name only, such as a Grok bot                                                                                                 |
 | ~untagged~        | a turn recorded before the ledger existed, or before the daemon's baseline when it started, or one no turn state described                     |
 
-A routine wins over the agent that delivered its delegated work on purpose: the agent is still there under ~--by agent~, and "which routine" is the question origin exists to answer.  Which run created a task is held in the daemon's memory, so a run in flight across a daemon restart is charged to its ~task:<id>~ rather than its routine.
+A routine wins over the agent that delivered its delegated work on purpose: the agent is still there under ~--by agent~, and "which routine" is the question origin exists to answer.  Which run created a task is kept in =<state_dir>/task-sources.tsv= (=ClawtTaskSources=), written when a run creates its task and when a delegated child is first found to belong to one, so a run in flight across a daemon restart is still charged to its routine: tasks themselves live in memory, but a mailbox item carries its task id to the next daemon, and that id is looked up there.  A child is recorded the first time a turn of it is tagged, because its parent link goes with the task manager at a restart.  Entries for finished tasks are swept once the file holds 1024; an entry for a task the running daemon has never heard of -- every entry, just after a restart -- is kept for a week (=CLAWT_TASK_SOURCES_MAX_AGE_SECONDS=).
 
 *** Unpriced turns
 

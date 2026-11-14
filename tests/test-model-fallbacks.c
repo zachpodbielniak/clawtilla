@@ -436,6 +436,58 @@ test_account_fits(void)
     g_assert_false(clawt_model_fallback_account_fits("", ""));
 }
 
+/*
+ * Putting a cleared list back: first onto the new backend, then with the
+ * old backend restored under it -- and nothing to do when there was no
+ * list to lose.
+ */
+static void
+test_restore_plan(void)
+{
+    g_autoptr(GPtrArray) keep = NULL;
+    g_autoptr(GPtrArray) undo = NULL;
+    g_autoptr(GPtrArray) none = NULL;
+    ClawtModelSetting *step;
+
+    keep = clawt_model_fallback_restore_plan("codex-cli:gpt-5.5",
+                                             "claude-code", "work", "opus",
+                                             FALSE);
+    g_assert_cmpuint(keep->len, ==, 1);
+    step = g_ptr_array_index(keep, 0);
+    g_assert_cmpstr(step->key, ==, "model.fallbacks");
+    g_assert_cmpstr(step->value, ==, "codex-cli:gpt-5.5");
+
+    undo = clawt_model_fallback_restore_plan("codex-cli:gpt-5.5",
+                                             "claude-code", "work", "opus",
+                                             TRUE);
+    g_assert_cmpuint(undo->len, ==, 5);
+    step = g_ptr_array_index(undo, 0);
+    g_assert_cmpstr(step->key, ==, "model.account");
+    g_assert_cmpstr(step->value, ==, "");
+    step = g_ptr_array_index(undo, 1);
+    g_assert_cmpstr(step->key, ==, "model.provider");
+    g_assert_cmpstr(step->value, ==, "claude-code");
+    step = g_ptr_array_index(undo, 2);
+    g_assert_cmpstr(step->key, ==, "model.account");
+    g_assert_cmpstr(step->value, ==, "work");
+    step = g_ptr_array_index(undo, 3);
+    g_assert_cmpstr(step->key, ==, "model.model");
+    g_assert_cmpstr(step->value, ==, "opus");
+    step = g_ptr_array_index(undo, 4);
+    g_assert_cmpstr(step->key, ==, "model.fallbacks");
+    g_assert_cmpstr(step->value, ==, "codex-cli:gpt-5.5");
+
+    /* No account to restore: it is cleared and stays so. */
+    g_clear_pointer(&undo, g_ptr_array_unref);
+    undo = clawt_model_fallback_restore_plan("codex-cli:gpt-5.5",
+                                             "claude-code", NULL, NULL, TRUE);
+    g_assert_cmpuint(undo->len, ==, 3);
+
+    none = clawt_model_fallback_restore_plan("", "claude-code", NULL, NULL,
+                                             TRUE);
+    g_assert_cmpuint(none->len, ==, 0);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -459,6 +511,7 @@ main(int argc, char *argv[])
     g_test_add_func("/model-fallbacks/describe", test_describe);
     g_test_add_func("/model-fallbacks/alert-tier", test_alert_tier);
     g_test_add_func("/model-fallbacks/account-fits", test_account_fits);
+    g_test_add_func("/model-fallbacks/restore-plan", test_restore_plan);
 
     return g_test_run();
 }

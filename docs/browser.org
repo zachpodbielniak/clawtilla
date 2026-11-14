@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-11-07 Sat]
-#+updated: [2026-11-07 Sat]
+#+updated: [2026-11-14 Sat]
 #+version: 0.1.0
 
 * Browser sessions
@@ -25,7 +25,7 @@ gsurf is *not* a dependency and clawtilla links nothing from it.  The daemon mus
 
 - defines =CLAWT_HAVE_GSURF=, which is what lets an agent have a browser at all;
 - records =GSURF_DIR='s build as a place to find the binary;
-- runs =tools/clawt-gsurf-check.sh=, which refuses a gsurf older than 0.5.10 (the release that added ~page.click~, ~page.type~, ~page.key~ and the inline screenshot the tools are made of) and builds =GSURF_DIR= when its binary is missing.  A gsurf that is already built is never rebuilt: it is somebody's browser, built with their options.
+- runs =tools/clawt-gsurf-check.sh=, which refuses a gsurf older than 0.5.13 (0.5.10 added ~page.click~, ~page.type~, ~page.key~ and the inline screenshot the tools are made of; 0.5.13 added ~page.fill_secret~ and the secret hold the vault fills through) and builds =GSURF_DIR= when its binary is missing.  A gsurf that is already built is never rebuilt: it is somebody's browser, built with their options.
 
 | Needs | Fedora package | For |
 |-------+----------------+-----|
@@ -36,7 +36,7 @@ An agent configured with a browser in a build without =GSURF=1= is disabled, wit
 
 *** Which gsurf runs
 
-Beside =clawtillad=, the install location, the =GSURF_DIR= build, then =PATH= -- and each candidate's =--version= is read, so one older than 0.5.10 is passed over.  The build comes before =PATH= on purpose: the first live run found a distribution gsurf 0.4.4 on =PATH= ahead of the 0.5.10 build, and an old gsurf has no ~control.name~, so it starts, opens its window, and the socket clawtilla waits for never appears under the name it asked for.  None found names every place looked at and why each was not used.
+Beside =clawtillad=, the install location, the =GSURF_DIR= build, then =PATH= -- and each candidate's =--version= is read, so one older than 0.5.13 is passed over.  The build comes before =PATH= on purpose: the first live run found a distribution gsurf 0.4.4 on =PATH= ahead of the 0.5.10 build, and an old gsurf has no ~control.name~, so it starts, opens its window, and the socket clawtilla waits for never appears under the name it asked for.  None found names every place looked at and why each was not used.
 
 ** Configuring it
 
@@ -97,16 +97,72 @@ Offered only to an agent whose =agents.browser.mode= is not =none=, in a daemon 
 | =clawtilla_browser_back= | back one page |
 | =clawtilla_browser_release= | give up a shared session's wheel |
 | =clawtilla_browser_eval= | the agent's own JavaScript -- only with =agents.browser.allow_scripts= |
+| =clawtilla_secret_ref= | a one-use reference to a =vault:= entry it was granted, or the list of them -- only with =agents.browser.secrets= (since 0.25.0) |
+| =clawtilla_browser_fill_secret= | a granted secret typed into a field by reference; the agent hears only that it was filled (since 0.25.0) |
 
 *A reply means handed over, not done.*  gsurf answers ~page.click~ when the events reach the engine, not when the page has handled them, so every tool that can navigate -- open, click, type with submit, key, back -- waits for ~document.readyState~ to be =complete= and then reports the page it is on.  That last line is what makes a click that navigated visible to the agent without another call.
 
-Click, type and key are =desktop-input= actions to the action rules, open and back are =external=, and eval is =exec=, so a policy can gate the browser the way it gates a screen.
+Click, type, key and fill_secret are =desktop-input= actions to the action rules, secret_ref is =read=, open and back are =external=, and eval is =exec=, so a policy can gate the browser the way it gates a screen.
 
 =clawtilla_browser_eval= is off by default: reading, clicking and typing cover what a person does, and a script can read every field and post anything as the logged-in user without a visible step.  It is refused at the call as well as left out of the listing.
 
+** Secrets the agent never sees
+
+Since 0.25.0.  A login form is where an agent most needs a browser and where it should least hold what it types.  A secret is never handed to the agent: the agent names it, and the daemon has gsurf type it.
+
+#+begin_src yaml
+secrets:
+  dir: ~/.clawtilla/secrets
+vault:
+  - name: github
+    description: the release bot's login
+    secret: {command: "pass show web/github"}
+    sites: [github.com]
+  - name: github-2fa
+    kind: totp
+    secret: {file: github-totp}       # a base32 seed or an otpauth://totp/ URI
+    sites: [github.com]
+agents:
+  - id: releaser
+    browser:
+      mode: own
+      secrets: [github, github-2fa]
+#+end_src
+
+*** The flow
+
+1. =clawtilla_secret_ref= with ~name~ answers a reference -- ~secret-ref:~ and 32 hex digits from =/dev/urandom= -- and nothing else.  Without a name it lists the entries the agent may ask for, by name, kind and sites.  Nothing is resolved yet.
+2. =clawtilla_browser_fill_secret= with that reference as ~secret~, a ~selector~ and optionally ~submit~ spends the reference and checks the grant and the entry again on the daemon's context (the config is not a worker's to read), then on a worker refuses a session that is not running, checks that the page's host is one of the entry's ~sites~, resolves the value through the ordinary secret reference (=secrets.dir=, =secrets.command_timeout_seconds=), turns a TOTP seed into the RFC 6238 code for this second, and sends gsurf ~page.fill_secret~.
+3. gsurf finds the field, refuses if the page is no longer on the host the daemon checked (the ~host~ parameter: a redirect or a script may have moved it since), then focuses it, selects what is in it and types the secret as key input -- GDK key events on GTK3, ~execCommand('insertText')~ where there is no native input -- never a JavaScript value assignment.  It answers ~{done, secret_hold}~ and nothing else.
+4. The agent hears "Filled github into #password. Now on ...".  The event bus gets ~browser.secret_filled~ with the name, kind, host and session.
+
+*** The reference
+
+- *One use.*  The first redemption spends it, whatever the fill then does: a reference that reached a transcript is already worthless.
+- *Bound to the agent and the conversation.*  Minted for the room the agent's turn is in (the same ~turn_room~ resolution the other tools use; no room is its own conversation), redeemed only from there and only by that agent.  A redemption from anywhere else is refused *and spends it*, since the attempt is the one sign it travelled.
+- *Ten minutes* (=CLAWT_SECRET_REF_TTL_SECONDS=), forgotten when the agent stops, and lost with the daemon.  At most 256 are outstanding.
+- =ClawtSecretVault= (=src/browser/clawt-secret-vault.c=) maps references to entry *names*: a dump of it holds no value.
+
+*** Sites
+
+An entry is typed only on a page whose host is one of its ~sites~ or a subdomain of one (~login.example.com~ under ~example.com~; never ~evilexample.com~).  An agent steered by a page it read to a look-alike login cannot be made to fill it there.  A page whose address cannot be read is refused, not assumed.  An entry with no ~sites~ is ignored with a warning, as is one with no secret or a ~kind~ that is neither ~password~ nor ~totp~ -- a seed typed into a password box would be the seed itself.
+
+*** The hold
+
+From the moment a fill is sent -- before the first key, so a fill that fails half-way counts -- the session refuses screenshots and scripts: =clawtilla_browser_screenshot=, =clawtilla_browser_eval=, and =clawtilla_browser_html= and =clawtilla_browser_scroll=, which are scripts underneath.  =clawtilla_browser_read= still works: a page's text carries no field values.  The Browser view gets no picture and says why.
+
+Two walls, one per process.  gsurf keeps its own hold on the view and refuses ~page.eval~ and ~page.screenshot~ with -32003 whoever asks; clawtilla keeps one on the session and lifts it only when gsurf's ~page.secret_hold~ answers that its hold is gone, which happens when a main-frame navigation commits a new document.  A ~page.secret_hold~ that errors, times out or answers anything else keeps the hold on: fail closed.  Stopping the session clears it, since the page is gone.
+
+*** What it cannot do
+
+- A page can still read its own field and send it anywhere; this keeps the value from the *agent*, not from the site.
+- gsurf's hold is per document.  Going back to the page may restore it from the page cache with the field filled, and the hold does not come back.
+- The value is wiped from clawtilla's copies (the resolved string, the JSON-RPC line) and from gsurf's, but a command backend's pipe and the allocator's past are not under our control.
+- Nothing here stops the agent reading a password the page itself prints.
+
 ** Watching and driving it yourself
 
-The Computer page has a Browser view in every client ([[file:clients.org][clients.org]]): the line saying what it is on, a picture refreshed every three seconds while the view is open, an address to open, Stop, and a click on the picture as a click in the page.  An agent with a browser and no computer gets the Browser view on its own.
+The Computer page has a Browser view in every client ([[file:clients.org][clients.org]]): the vault entries the agent may have filled, one switch each (~vault.list~, saved through ~agent.set~ ~browser.secrets~), the line saying what it is on and when a secret was last filled, a picture refreshed every three seconds while the view is open, an address to open, Stop, and a click on the picture as a click in the page.  An agent with a browser and no computer gets the Browser view on its own.
 
 #+begin_src bash
 clawtilla browser                              # every session, running or not
@@ -114,13 +170,15 @@ clawtilla browser open researcher example.org
 clawtilla browser click researcher 40 20      # the page's CSS pixels
 clawtilla browser screenshot researcher page.png
 clawtilla browser stop researcher
+clawtilla browser secrets researcher          # the vault entries it may fill, [x] granted
+clawtilla agent set researcher browser.secrets github,github-2fa
 #+end_src
 
 The IPC verbs are in [[file:ipc-protocol.org][ipc-protocol.org]].
 
 ** Testing it
 
-=tests/test-browser.c= covers everything above gsurf's control socket with a fake transport (=clawt_browser_manager_set_transport()=): the session keys, the keys a shared session takes from its entry, the shadow reasons, the lease, which agents are offered which tools, and what each tool sends.  It cannot see a real X server or a real page.
+=tests/test-browser.c= covers everything above gsurf's control socket with a fake transport (=clawt_browser_manager_set_transport()=): the session keys, the keys a shared session takes from its entry, the shadow reasons, the lease, which agents are offered which tools, and what each tool sends.  It cannot see a real X server or a real page.  Its =/browser/tools/secrets-never-seen= case walks the whole secret path against a fake gsurf that keeps a hold the way 0.5.13 does: the fill sends the value and the agent hears "Filled", the reference works once and only in its conversation, a page on another host is refused, a TOTP fill types the code for now, screenshots and HTML are refused until a navigation, a hold gsurf cannot be asked about stays on -- and the value, the seed and the code are in none of the tool results, the events or the log.  =tests/test-secret-vault.c= has the references on their own, RFC 6238's vectors for SHA1, SHA256 and SHA512, the seed formats, and which vault entries are offered.  gsurf's own =test-control-webkit= types into a real login form.
 
 =tests/test-browser-integration.sh= can, behind =CLAWT_TEST_INTEGRATION=1=: against a =GSURF=1= build it starts a daemon, opens a fixture page whose title only its script sets, takes a screenshot and checks it is a PNG, clicks the button and waits for the page to retitle itself, and stops the session.  It skips, saying why, when Xvfb or a =GSURF=1= daemon is missing.
 

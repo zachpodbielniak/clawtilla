@@ -1371,6 +1371,7 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
     if (clawt_gtk_current_page(self) == CLAWT_PAGE_FLEET &&
         (g_strcmp0(kind, "message") == 0 || g_strcmp0(kind, "agent.state") == 0 ||
          g_strcmp0(kind, "agent.idle_stopped") == 0 ||
+         g_strcmp0(kind, "agent.failover") == 0 ||
          g_strcmp0(kind, "spending.limit-reached") == 0))
         clawt_gtk_refresh_fleet(self);
 
@@ -1463,6 +1464,16 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
          */
         clawt_gtk_refresh_flow(self);
         clawt_gtk_refresh_agents(self);
+        return;
+    }
+
+    /*
+     * The integration broker moved -- started, came up, failed, stopped:
+     * its row on the Connectors page redraws.
+     */
+    if (g_strcmp0(kind, "broker.changed") == 0) {
+        if (self->settings != NULL)
+            clawt_gtk_refresh_settings_connectors(self);
         return;
     }
 
@@ -5187,6 +5198,11 @@ on_settings_closed(AdwDialog *dialog, gpointer user_data)
     self->settings_rounds_group = NULL;
     g_clear_pointer(&self->settings_rounds_rows, g_ptr_array_unref);
     self->settings_connectors = NULL;
+    self->settings_broker_row = NULL;
+    self->settings_broker_dashboard = NULL;
+    self->settings_broker_start = NULL;
+    self->settings_broker_stop = NULL;
+    self->settings_broker_restart = NULL;
     self->settings_directory_min_tools = NULL;
     self->settings_directory_min_chars = NULL;
     self->settings_devices = NULL;
@@ -6367,6 +6383,7 @@ clawt_window_finalize(GObject *object)
     g_clear_pointer(&self->use_ids, g_ptr_array_unref);
     g_clear_pointer(&self->inspector_account, g_free);
     g_clear_pointer(&self->inspector_provider, g_free);
+    g_clear_pointer(&self->inspector_model, g_free);
     clawt_gtk_fallback_editor_clear(self);
 
     /*

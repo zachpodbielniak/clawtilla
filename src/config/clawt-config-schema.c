@@ -1368,6 +1368,17 @@ static const ClawtSchemaEntry schema[] = {
   "of them is one skill, and the most specific place it was asked for is\n"
   "what gets reported.", "0.2.0" },
 
+{ "teams.broker_server", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "The broker's gateway server for this team's agents.\n"
+  "\n"
+  "For anythingmcp, the id of an MCP server made in its dashboard (the\n"
+  "last part of the server's MCP URL); its connectors are what the\n"
+  "team's agents may use. For jentic, the Jentic agent the team acts\n"
+  "as, whose API key `clawtilla broker key team:<id>` stores. An agent\n"
+  "with its own agents.broker_server uses that one instead. Unused\n"
+  "unless broker.enabled is on.", "0.24.0" },
+
 /* ── computers ───────────────────────────────────────────────────── */
 { "computers", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Machines several agents share.\n"
@@ -1410,6 +1421,55 @@ static const ClawtSchemaEntry schema[] = {
 { "browsers.description", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
   "What this session is for -- say which logins it holds.", "0.9.0" },
+
+/* ── vault ───────────────────────────────────────────────────────── */
+{ "vault", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
+  "Secrets an agent can have typed into a web page without ever seeing\n"
+  "them: passwords, and TOTP seeds the daemon turns into one-time codes.\n"
+  "\n"
+  "  vault:\n"
+  "    - name: github\n"
+  "      secret: {command: \"pass show web/github\"}\n"
+  "      sites: [github.com]\n"
+  "    - name: github-2fa\n"
+  "      kind: totp\n"
+  "      secret: {file: github-totp}\n"
+  "      sites: [github.com]\n"
+  "\n"
+  "An agent may ask only for the names its agents.browser.secrets lists.\n"
+  "It calls clawtilla_secret_ref for a one-use reference bound to it and\n"
+  "to the conversation it is in, then clawtilla_browser_fill_secret with\n"
+  "that reference and a field. The daemon resolves the value, types it\n"
+  "into the field as key input, and the agent hears only that it was\n"
+  "filled. Screenshots and clawtilla_browser_eval are refused on that\n"
+  "page until the browser navigates away. Needs a GSURF=1 build.", "0.25.0" },
+
+{ "vault.name", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED, NULL, NULL,
+  "What an agent asks for, and what agents.browser.secrets lists. The\n"
+  "name is all an agent or a client ever sees of the entry's secret.", "0.25.0" },
+
+{ "vault.description", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Whose login this is, or which field it belongs in.", "0.25.0" },
+
+{ "vault.kind", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "password", clawt_vault_kind_get_type,
+  "`password` types the value itself. `totp` reads the value as a TOTP\n"
+  "seed -- base32, or an otpauth://totp/ URI with its algorithm, digits\n"
+  "and period -- and types the RFC 6238 code for the current time.", "0.25.0" },
+
+{ "vault.secret", CLAWT_SCHEMA_SECRET, CLAWT_SCHEMA_FLAG_REQUIRED, NULL, NULL,
+  "A secret reference, never the value: {file: ...}, {env: ...} or\n"
+  "{command: ...}, resolved the way secrets: says, at the moment of the\n"
+  "fill and not before.", "0.25.0" },
+
+{ "vault.sites", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_REQUIRED,
+  NULL, NULL,
+  "The hosts the secret may be typed into: a page on any other host is\n"
+  "refused, so an agent steered to a look-alike site cannot be made to\n"
+  "fill it there. `example.com` also matches its subdomains\n"
+  "(login.example.com); a page whose address cannot be read is refused.\n"
+  "An entry without sites is never filled.", "0.25.0" },
 
 /* ── accounts ────────────────────────────────────────────────────── */
 { "accounts", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
@@ -1611,7 +1671,10 @@ static const ClawtSchemaEntry schema[] = {
   "wrong answer when the daemon is on a workstation and you are not.\n"
   "`ntfy` and `gotify` reach a phone. `matrix` posts into a room, which\n"
   "on a bridged homeserver means it reaches you wherever you already\n"
-  "read messages. `command` runs a program and hands it the text.", "0.2.0" },
+  "read messages. `command` runs a program and hands it the text.\n"
+  "`apprise` (since 0.22.0) hands it to the apprise CLI, which reaches a\n"
+  "hundred-odd services -- Telegram, Signal, email, Pushover, Gotify, SMS\n"
+  "-- through one URL scheme; the URL is `apprise_url`.", "0.2.0" },
 
 { "integrations.token", CLAWT_SCHEMA_SECRET, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
@@ -1624,6 +1687,18 @@ static const ClawtSchemaEntry schema[] = {
   "notification: a `command` reference to a locked password manager\n"
   "blocks until it times out, and doing that each time something needed\n"
   "saying would make the notifier the slowest thing in the daemon.", "0.2.0" },
+
+{ "integrations.apprise_url", CLAWT_SCHEMA_SECRET, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "notify: with `backend: apprise`, the Apprise URL -- or several, one per\n"
+  "line -- as a secret reference: `{file: ~/.config/clawtilla/apprise.url}`.\n"
+  "\n"
+  "A secret because an Apprise URL nearly always carries a credential\n"
+  "(`tgram://BOT_TOKEN/CHAT_ID`, `mailtos://user:password@host`). It\n"
+  "reaches apprise in a 0600 file passed with `--config`, deleted when\n"
+  "apprise exits, and never on its command line, which any user on the\n"
+  "machine can read. `command` names the apprise binary when it is not on\n"
+  "PATH.", "0.23.0" },
 
 { "integrations.room", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
@@ -1679,7 +1754,10 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "This is the general way to give the fleet anything with an MCP server:\n"
   "one entry here reaches every agent in scope, instead of the same block\n"
-  "pasted into each agent's .mcp.json by hand.", "0.2.0" },
+  "pasted into each agent's .mcp.json by hand.\n"
+  "\n"
+  "notify: with `backend: command`, the program to run; with\n"
+  "`backend: apprise`, the apprise binary when it is not on PATH.", "0.2.0" },
 
 { "integrations.args", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL, "mcp: arguments for `command`.", "0.2.0" },
@@ -1983,6 +2061,105 @@ static const ClawtSchemaEntry schema[] = {
   "documentation; about where Claude Code starts searching its own tools\n"
   "rather than listing them. Only read when a connector's `directory` is\n"
   "`auto`.", "0.18.0" },
+
+/* ── broker ──────────────────────────────────────────────────────── */
+{ "broker", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "An integration broker clawtilla runs for you, in podman.\n"
+  "\n"
+  "Ready-made app integrations -- hundreds of SaaS and business systems\n"
+  "-- behind one MCP gateway on this machine. clawtilla pulls the\n"
+  "pinned image, keeps the gateway's database, keys and token under\n"
+  "<daemon.state_dir>/broker/, starts it with the daemon and keeps it\n"
+  "running. Each agent or team names its own gateway server in\n"
+  "agents.broker_server or teams.broker_server and reaches it as a\n"
+  "connector, through the same relay as every other connector.\n"
+  "\n"
+  "Not the provider-key broker of runtime.network: gated, which is a\n"
+  "different thing with a similar name. See docs/connectors.org,\n"
+  "\"An integration broker\".", "0.24.0" },
+
+{ "broker.enabled", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "false", NULL,
+  "Run the broker.\n"
+  "\n"
+  "Off by default, because turning it on pulls an image of several\n"
+  "hundred megabytes and opens ports on this machine. Started in the\n"
+  "background when the daemon starts or this is turned on, never in the\n"
+  "way of either: broker.status says starting while the image pulls.", "0.24.0" },
+
+{ "broker.type", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "anythingmcp", clawt_broker_type_get_type,
+  "Which broker: anythingmcp or jentic.\n"
+  "\n"
+  "anythingmcp is an MCP gateway (AGPL-3.0) whose adapters turn REST,\n"
+  "SOAP, GraphQL and SQL services into tools, with OAuth through your\n"
+  "own client. jentic is Jentic One (Apache-2.0, a public beta whose\n"
+  "schemas may change), a credential broker that checks a per-agent\n"
+  "rule before it injects a stored key. Jentic One's own caveat is\n"
+  "that an agent running as the same OS user can read its state, so it\n"
+  "is refused unless every agent using it has runtime.confine: bwrap.\n"
+  "Its telemetry and release check are always switched off.", "0.24.0" },
+
+{ "broker.image", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_COMMENTED,
+  NULL, NULL,
+  "The gateway's image, pinned to a tag.\n"
+  "\n"
+  "Empty means the image this release was checked against:\n"
+  "docker.io/helpcodeai/anythingmcp:v0.54.0 for anythingmcp and\n"
+  "ghcr.io/jentic/jentic-one-app:0.44.0 for jentic. An image with no\n"
+  "tag, or tagged latest, is refused: an upgrade should be a change\n"
+  "somebody made. AnythingMCP publishes amd64 only, so an aarch64\n"
+  "machine names a locally built one here -- docs/connectors.org says\n"
+  "how.", "0.24.0" },
+
+{ "broker.database_image", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_COMMENTED,
+  NULL, NULL,
+  "The database image beside an AnythingMCP gateway, pinned to a tag.\n"
+  "\n"
+  "Empty means docker.io/library/postgres:17.12-alpine. The database\n"
+  "publishes no port: the two containers share a unix socket under\n"
+  "<daemon.state_dir>/broker/run. Jentic One keeps SQLite files and\n"
+  "runs no database container, so this is unused for jentic.", "0.24.0" },
+
+{ "broker.bind", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  "127.0.0.1", NULL,
+  "The address the gateway's ports are published on.\n"
+  "\n"
+  "Loopback by default: the relay that reaches it runs on this machine.\n"
+  "Anything wider puts the gateway's dashboard and MCP endpoint on that\n"
+  "network, and the dashboard's own sign-in is all that guards it.", "0.24.0" },
+
+{ "broker.port", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "47400", NULL,
+  "The host port of the gateway's MCP endpoint and API.\n"
+  "\n"
+  "For jentic this is also its dashboard, which shares the port.", "0.24.0" },
+
+{ "broker.dashboard_port", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "47300", NULL,
+  "The host port of AnythingMCP's dashboard.\n"
+  "\n"
+  "Where you register the first (admin) account, sign in to SaaS apps\n"
+  "with your own OAuth clients and make a gateway server for each agent\n"
+  "or team. Unused for jentic, whose dashboard is on broker.port.", "0.24.0" },
+
+{ "broker.connection", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_COMMENTED,
+  NULL, NULL,
+  "Which podman runs the broker, as computer.container.connection says.\n"
+  "\n"
+  "Empty is this user's rootless podman. A remote podman runs the\n"
+  "containers there while broker.bind and the relay still dial this\n"
+  "machine, so a remote one also needs a tunnel to its ports.", "0.24.0" },
+
+{ "broker.restart", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "always", clawt_restart_policy_get_type,
+  "What to do when a broker container stops without being asked to.\n"
+  "\n"
+  "never leaves it stopped and says so; on-failure and always both\n"
+  "start it again, since podman's listing does not say how a container\n"
+  "ended. Five restarts within ten minutes stop the retries, so a\n"
+  "gateway that cannot start is reported rather than restarted for\n"
+  "ever.", "0.24.0" },
 
 /* ── grok ────────────────────────────────────────────────────────── */
 { "grok", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
@@ -2461,6 +2638,19 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "Unset means no team: the agent still messages and is messaged, it is\n"
   "simply not grouped and no team lead may assign to it.", "0.1.0" },
+
+{ "agents.broker_server", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "This agent's own gateway server on the broker.\n"
+  "\n"
+  "For anythingmcp, the id of an MCP server made in its dashboard (the\n"
+  "last part of the server's MCP URL); the connectors assigned to that\n"
+  "server are this agent's permission, and clawtilla reaches it as the\n"
+  "connector broker-agent-<id>. For jentic, the Jentic agent this one\n"
+  "acts as, whose API key `clawtilla broker key <id>` stores. Unset\n"
+  "means the team's teams.broker_server, or no broker at all. An agent\n"
+  "with runtime.network gated or none cannot reach the gateway on\n"
+  "loopback and is not given it.", "0.24.0" },
 
 { "agents.team_role", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
   "member", clawt_team_role_get_type,
@@ -3872,6 +4062,13 @@ static const ClawtSchemaEntry schema[] = {
   "Stop the session after this many minutes without a browser call. The\n"
   "profile stays, so a login survives; the open page does not. 0 keeps\n"
   "it running until its agent stops.", "0.9.0" },
+
+{ "agents.browser.secrets", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "The vault: entries this agent may have filled into a page, by name.\n"
+  "Empty, the agent is offered no secret tools. Always the agent's own,\n"
+  "even on a shared browser: what an agent may ask for is about the\n"
+  "agent, not the session.", "0.25.0" },
 
 { "agents.browser.width", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "1280", NULL,

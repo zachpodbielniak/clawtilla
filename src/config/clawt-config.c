@@ -899,9 +899,13 @@ agent_node_for_key(ClawtAgentConfig *self, const gchar *key, const gchar **out_k
      * The same rule for a shared browser, except that `use` alone does not
      * decide it: `mode` says whether the agent is on a shared session at
      * all, and both stay the agent's own, since they are about the agent.
+     * So does `secrets`: which vault entries an agent may have filled is
+     * a grant to the agent, and reading it off the shared entry would
+     * hand every agent on the session whatever the entry listed.
      */
     if (self->config != NULL && key != NULL && g_str_has_prefix(key, "browser.") &&
         g_strcmp0(key, "browser.use") != 0 && g_strcmp0(key, "browser.mode") != 0 &&
+        g_strcmp0(key, "browser.secrets") != 0 &&
         g_strcmp0(lookup_string(self->node, "browser.mode"), "shared") == 0) {
         entry = list_entry(self->config, "browsers",
                            lookup_string(self->node, "browser.use"));
@@ -2243,6 +2247,7 @@ clawt_team_spec_free(ClawtTeamSpec *self)
     g_free(self->name);
     g_free(self->description);
     g_free(self->color);
+    g_free(self->broker_server);
     g_free(self);
 }
 
@@ -2276,6 +2281,172 @@ clawt_account_spec_free(ClawtAccountSpec *self)
     g_free(self->config_dir);
     g_free(self->description);
     g_free(self);
+}
+
+void
+clawt_vault_entry_free(ClawtVaultEntry *self)
+{
+    if (self == NULL)
+        return;
+
+    g_free(self->name);
+    g_free(self->description);
+    g_clear_pointer(&self->secret, clawt_secret_ref_free);
+    g_strfreev(self->sites);
+    g_free(self);
+}
+
+/* The strings of a YAML sequence member, or NULL when it is not one. */
+static GStrv
+member_string_list(YamlMapping *mapping, const gchar *key)
+{
+    YamlNode *node = yaml_mapping_get_member(mapping, key);
+    YamlSequence *sequence;
+    GPtrArray *out;
+    guint i;
+
+    if (node == NULL || yaml_node_get_node_type(node) != YAML_NODE_SEQUENCE)
+        return NULL;
+
+    sequence = yaml_node_get_sequence(node);
+    out = g_ptr_array_new();
+    for (i = 0; i < yaml_sequence_get_length(sequence); i++) {
+        YamlNode *element = yaml_sequence_get_element(sequence, i);
+        const gchar *text;
+
+        if (element == NULL || yaml_node_get_node_type(element) != YAML_NODE_SCALAR)
+            continue;
+        text = yaml_node_get_string(element);
+        if (text != NULL && *text != '\0')
+            g_ptr_array_add(out, g_ascii_strdown(text, -1));
+    }
+    g_ptr_array_add(out, NULL);
+    return (GStrv)g_ptr_array_free(out, FALSE);
+}
+
+GPtrArray *
+clawt_config_get_vault(ClawtConfig *self)
+{
+    GPtrArray *out;
+    YamlNode *list;
+    YamlSequence *sequence;
+    ClawtSecretBackend default_backend;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), NULL);
+
+    out = g_ptr_array_new_with_free_func((GDestroyNotify)clawt_vault_entry_free);
+    list = node_at_path(self->root, "vault", FALSE);
+    if (list == NULL || yaml_node_get_node_type(list) != YAML_NODE_SEQUENCE)
+        return out;
+
+    default_backend = (ClawtSecretBackend)clawt_config_get_enum(self, "secrets.default_backend");
+    sequence = yaml_node_get_sequence(list);
+    for (i = 0; i < yaml_sequence_get_length(sequence); i++) {
+        YamlNode *element = yaml_sequence_get_element(sequence, i);
+        YamlMapping *mapping;
+        YamlNode *secret;
+        const gchar *name;
+        const gchar *kind;
+        gint parsed = CLAWT_VAULT_PASSWORD;
+        g_autoptr(GError) error = NULL;
+        g_autoptr(ClawtVaultEntry) entry = NULL;
+
+        if (element == NULL || yaml_node_get_node_type(element) != YAML_NODE_MAPPING)
+            continue;
+        mapping = yaml_node_get_mapping(element);
+        name = member_string(mapping, "name");
+        kind = member_string(mapping, "kind");
+        secret = yaml_mapping_get_member(mapping, "secret");
+
+        /*
+         * Skipped, never half-used.  An entry with no sites would be a
+         * password any page could ask for, and one whose kind does not
+         * parse would type a TOTP seed into a password box -- the
+         * secret itself, where only a code was meant to go.
+         */
+        if (name == NULL || *name == '\0' || secret == NULL) {
+            g_warning("vault[%u]: name and secret are both required, so this "
+                      "entry is ignored", i);
+            continue;
+        }
+        if (kind != NULL && !clawt_enum_from_nick(CLAWT_TYPE_VAULT_KIND, kind, &parsed)) {
+            g_warning("vault '%s': kind '%s' is neither password nor totp, so this "
+                      "entry is ignored", name, kind);
+            continue;
+        }
+
+        entry = g_new0(ClawtVaultEntry, 1);
+        entry->name = g_strdup(name);
+        entry->description = g_strdup(member_string(mapping, "description"));
+        entry->kind = (ClawtVaultKind)parsed;
+        entry->sites = member_string_list(mapping, "sites");
+        if (entry->sites == NULL || entry->sites[0] == NULL) {
+            g_warning("vault '%s': no sites, so it could be typed into any page; "
+                      "this entry is ignored until it names its sites", name);
+            continue;
+        }
+        entry->secret = clawt_secret_ref_parse(secret, default_backend, &error);
+        if (entry->secret == NULL) {
+            /* The reference is named by its key, never by what it holds. */
+            g_warning("vault '%s': secret: %s", name,
+                      error != NULL ? error->message : "not a secret reference");
+            continue;
+        }
+        g_ptr_array_add(out, g_steal_pointer(&entry));
+    }
+
+    return out;
+}
+
+ClawtVaultEntry *
+clawt_config_get_vault_entry(ClawtConfig *self, const gchar *name)
+{
+    g_autoptr(GPtrArray) entries = NULL;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), NULL);
+
+    if (name == NULL || *name == '\0')
+        return NULL;
+    entries = clawt_config_get_vault(self);
+    for (i = 0; i < entries->len; i++) {
+        ClawtVaultEntry *entry = g_ptr_array_index(entries, i);
+
+        if (g_strcmp0(entry->name, name) == 0)
+            return g_ptr_array_steal_index(entries, i);
+    }
+    return NULL;
+}
+
+gboolean
+clawt_vault_entry_allows_host(ClawtVaultEntry *self, const gchar *host)
+{
+    g_autofree gchar *lower = NULL;
+    gsize length;
+    guint i;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    if (host == NULL || *host == '\0' || self->sites == NULL)
+        return FALSE;
+
+    lower = g_ascii_strdown(host, -1);
+    length = strlen(lower);
+    for (i = 0; self->sites[i] != NULL; i++) {
+        const gchar *site = self->sites[i];
+        gsize site_length = strlen(site);
+
+        if (g_strcmp0(lower, site) == 0)
+            return TRUE;
+
+        /* A subdomain: "login.example.com" under "example.com", never
+         * "evilexample.com" -- the character before must be a dot. */
+        if (length > site_length && g_str_has_suffix(lower, site) &&
+            lower[length - site_length - 1] == '.')
+            return TRUE;
+    }
+    return FALSE;
 }
 
 /* ~ and ~/ expanded; anything else as written. */
@@ -2567,6 +2738,9 @@ clawt_config_get_teams(ClawtConfig *self)
                                    "description"));
         spec->color = g_strdup(member_string(yaml_node_get_mapping(entry),
                                              "color"));
+        spec->broker_server =
+            g_strdup(member_string(yaml_node_get_mapping(entry),
+                                   "broker_server"));
 
         {
             YamlNode *node = node_at_path(entry, "order", FALSE);
@@ -4685,6 +4859,14 @@ struct _ClawtIntegrationConfig {
     gchar       *name;
     YamlNode    *node;        /* the instance's mapping, unowned */
     gchar       *shadow_reason;
+
+    /*
+     * Made by clawtilla rather than read from the file: the broker's
+     * per-agent connectors.  Such an instance owns its node, which is in
+     * no tree a save would write.
+     */
+    gboolean     managed;
+    YamlNode    *owned_node;
 };
 
 static ClawtIntegrationConfig *
@@ -4723,6 +4905,7 @@ clawt_integration_config_unref(ClawtIntegrationConfig *self)
 
     g_free(self->name);
     g_free(self->shadow_reason);
+    g_clear_pointer(&self->owned_node, yaml_node_unref);
     g_free(self);
 }
 
@@ -4762,6 +4945,14 @@ clawt_integration_config_get_type_id(ClawtIntegrationConfig *self)
     g_return_val_if_fail(self != NULL, NULL);
 
     return member_string(yaml_node_get_mapping(self->node), "type");
+}
+
+gboolean
+clawt_integration_config_is_managed(ClawtIntegrationConfig *self)
+{
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    return self->managed;
 }
 
 gboolean
@@ -5340,6 +5531,78 @@ clawt_integration_config_set_enabled(ClawtIntegrationConfig *self,
  * Rebuilds the instance list from the YAML tree, exactly as reload_agents()
  * does for agents and for the same reason.
  */
+/*
+ * The broker's connectors, one per gateway server the fleet names.
+ *
+ * Made here, where every other instance is, so the daemon's resolver, the
+ * relay a CLI starts and the bwrap box all find the same connector by the
+ * same name -- one list, not a second path through each of them.  They
+ * are kept out of the file: the config says which server an agent uses,
+ * and this is derived from it, so writing it back would be a second copy
+ * to disagree with the first.  A name somebody already used for their own
+ * integration wins, with a warning, because theirs is a decision.
+ */
+static void
+add_broker_connectors(ClawtConfig *self, GHashTable *seen)
+{
+    g_autoptr(GPtrArray) nodes = NULL;
+    guint i;
+
+    nodes = clawt_broker_connector_nodes(self, self->warnings);
+
+    for (i = 0; nodes != NULL && i < nodes->len; i++) {
+        YamlNode *node = g_ptr_array_index(nodes, i);
+        const gchar *name = member_string(yaml_node_get_mapping(node),
+                                          "name");
+        ClawtIntegrationConfig *instance;
+
+        if (name == NULL)
+            continue;
+
+        if (seen != NULL && g_hash_table_contains(seen, name)) {
+            g_ptr_array_add(self->warnings,
+                g_strdup_printf("the broker's connector '%s' is not made: "
+                                "an integration in the file already has "
+                                "that name", name));
+            continue;
+        }
+
+        instance = clawt_integration_config_new(self, name, node);
+        instance->managed = TRUE;
+        instance->owned_node = yaml_node_ref(node);
+        g_ptr_array_add(self->integrations, instance);
+    }
+}
+
+void
+clawt_config_refresh_broker_connectors(ClawtConfig *self)
+{
+    g_autoptr(GHashTable) seen = NULL;
+    guint i;
+
+    g_return_if_fail(CLAWT_IS_CONFIG(self));
+
+    /*
+     * Only the derived ones are replaced: a file instance somebody holds
+     * a pointer to stays the same object.
+     */
+    for (i = self->integrations->len; i > 0; i--) {
+        ClawtIntegrationConfig *instance =
+            g_ptr_array_index(self->integrations, i - 1);
+
+        if (instance->managed)
+            g_ptr_array_remove_index(self->integrations, i - 1);
+    }
+
+    seen = g_hash_table_new(g_str_hash, g_str_equal);
+
+    for (i = 0; i < self->integrations->len; i++)
+        g_hash_table_add(seen, (gpointer)clawt_integration_config_get_name(
+            g_ptr_array_index(self->integrations, i)));
+
+    add_broker_connectors(self, seen);
+}
+
 static void
 reload_integrations(ClawtConfig *self)
 {
@@ -5352,11 +5615,13 @@ reload_integrations(ClawtConfig *self)
     g_ptr_array_set_size(self->integrations, 0);
 
     node = node_at_path(self->root, "integrations", FALSE);
-
-    if (node == NULL || yaml_node_get_node_type(node) != YAML_NODE_SEQUENCE)
-        return;
-
     seen = g_hash_table_new(g_str_hash, g_str_equal);
+
+    if (node == NULL || yaml_node_get_node_type(node) != YAML_NODE_SEQUENCE) {
+        add_broker_connectors(self, seen);
+        return;
+    }
+
     sequence = yaml_node_get_sequence(node);
     length = yaml_sequence_get_length(sequence);
 
@@ -5399,6 +5664,8 @@ reload_integrations(ClawtConfig *self)
 
         g_ptr_array_add(self->integrations, instance);
     }
+
+    add_broker_connectors(self, seen);
 }
 
 GPtrArray *

@@ -1244,6 +1244,16 @@ teams:
     # what gets reported.
     skills: []
 
+    # The broker's gateway server for this team's agents.
+    #
+    # For anythingmcp, the id of an MCP server made in its dashboard (the
+    # last part of the server's MCP URL); its connectors are what the
+    # team's agents may use. For jentic, the Jentic agent the team acts
+    # as, whose API key `clawtilla broker key team:<id>` stores. An agent
+    # with its own agents.broker_server uses that one instead. Unused
+    # unless broker.enabled is on.
+    broker_server: null
+
 # Machines several agents share.
 #
 # Each entry takes an id and the same keys as an agent's computer:
@@ -1284,6 +1294,55 @@ browsers:
 
     # What this session is for -- say which logins it holds.
     description: null
+
+# Secrets an agent can have typed into a web page without ever seeing
+# them: passwords, and TOTP seeds the daemon turns into one-time codes.
+#
+#   vault:
+#     - name: github
+#       secret: {command: "pass show web/github"}
+#       sites: [github.com]
+#     - name: github-2fa
+#       kind: totp
+#       secret: {file: github-totp}
+#       sites: [github.com]
+#
+# An agent may ask only for the names its agents.browser.secrets lists.
+# It calls clawtilla_secret_ref for a one-use reference bound to it and
+# to the conversation it is in, then clawtilla_browser_fill_secret with
+# that reference and a field. The daemon resolves the value, types it
+# into the field as key input, and the agent hears only that it was
+# filled. Screenshots and clawtilla_browser_eval are refused on that
+# page until the browser navigates away. Needs a GSURF=1 build.
+vault:
+
+    # What an agent asks for, and what agents.browser.secrets lists. The
+    # name is all an agent or a client ever sees of the entry's secret.
+    # Required.
+  - name: null
+
+    # Whose login this is, or which field it belongs in.
+    description: null
+
+    # `password` types the value itself. `totp` reads the value as a TOTP
+    # seed -- base32, or an otpauth://totp/ URI with its algorithm, digits
+    # and period -- and types the RFC 6238 code for the current time.
+    # Values: password, totp
+    kind: "password"
+
+    # A secret reference, never the value: {file: ...}, {env: ...} or
+    # {command: ...}, resolved the way secrets: says, at the moment of the
+    # fill and not before.
+    # Required.
+    secret: null
+
+    # The hosts the secret may be typed into: a page on any other host is
+    # refused, so an agent steered to a look-alike site cannot be made to
+    # fill it there. `example.com` also matches its subdomains
+    # (login.example.com); a page whose address cannot be read is refused.
+    # An entry without sites is never filled.
+    # Required.
+    sites: []
 
 # Separate logins for an agent CLI, so two agents on one machine can
 # spend two subscriptions.
@@ -1472,7 +1531,10 @@ integrations:
     # `ntfy` and `gotify` reach a phone. `matrix` posts into a room, which
     # on a bridged homeserver means it reaches you wherever you already
     # read messages. `command` runs a program and hands it the text.
-    # Values: desktop, ntfy, gotify, matrix, command
+    # `apprise` (since 0.22.0) hands it to the apprise CLI, which reaches a
+    # hundred-odd services -- Telegram, Signal, email, Pushover, Gotify, SMS
+    # -- through one URL scheme; the URL is `apprise_url`.
+    # Values: desktop, ntfy, gotify, matrix, command, apprise
     backend: "desktop"
 
     # notify: the credential for ntfy, gotify or Matrix, as a secret
@@ -1485,6 +1547,17 @@ integrations:
     # blocks until it times out, and doing that each time something needed
     # saying would make the notifier the slowest thing in the daemon.
     token: null
+
+    # notify: with `backend: apprise`, the Apprise URL -- or several, one per
+    # line -- as a secret reference: `{file: ~/.config/clawtilla/apprise.url}`.
+    #
+    # A secret because an Apprise URL nearly always carries a credential
+    # (`tgram://BOT_TOKEN/CHAT_ID`, `mailtos://user:password@host`). It
+    # reaches apprise in a 0600 file passed with `--config`, deleted when
+    # apprise exits, and never on its command line, which any user on the
+    # machine can read. `command` names the apprise binary when it is not on
+    # PATH.
+    apprise_url: null
 
     # notify: with `backend: matrix`, the room id to post into.
     #
@@ -1534,6 +1607,9 @@ integrations:
     # This is the general way to give the fleet anything with an MCP server:
     # one entry here reaches every agent in scope, instead of the same block
     # pasted into each agent's .mcp.json by hand.
+    #
+    # notify: with `backend: command`, the program to run; with
+    # `backend: apprise`, the apprise binary when it is not on PATH.
     command: null
 
     # mcp: arguments for `command`.
@@ -1804,6 +1880,97 @@ connectors:
   # rather than listing them. Only read when a connector's `directory` is
   # `auto`.
   directory_min_chars: 100000
+
+# An integration broker clawtilla runs for you, in podman.
+#
+# Ready-made app integrations -- hundreds of SaaS and business systems
+# -- behind one MCP gateway on this machine. clawtilla pulls the
+# pinned image, keeps the gateway's database, keys and token under
+# <daemon.state_dir>/broker/, starts it with the daemon and keeps it
+# running. Each agent or team names its own gateway server in
+# agents.broker_server or teams.broker_server and reaches it as a
+# connector, through the same relay as every other connector.
+#
+# Not the provider-key broker of runtime.network: gated, which is a
+# different thing with a similar name. See docs/connectors.org,
+# "An integration broker".
+broker:
+
+  # Run the broker.
+  #
+  # Off by default, because turning it on pulls an image of several
+  # hundred megabytes and opens ports on this machine. Started in the
+  # background when the daemon starts or this is turned on, never in the
+  # way of either: broker.status says starting while the image pulls.
+  enabled: false
+
+  # Which broker: anythingmcp or jentic.
+  #
+  # anythingmcp is an MCP gateway (AGPL-3.0) whose adapters turn REST,
+  # SOAP, GraphQL and SQL services into tools, with OAuth through your
+  # own client. jentic is Jentic One (Apache-2.0, a public beta whose
+  # schemas may change), a credential broker that checks a per-agent
+  # rule before it injects a stored key. Jentic One's own caveat is
+  # that an agent running as the same OS user can read its state, so it
+  # is refused unless every agent using it has runtime.confine: bwrap.
+  # Its telemetry and release check are always switched off.
+  # Values: anythingmcp, jentic
+  type: "anythingmcp"
+
+  # The gateway's image, pinned to a tag.
+  #
+  # Empty means the image this release was checked against:
+  # docker.io/helpcodeai/anythingmcp:v0.54.0 for anythingmcp and
+  # ghcr.io/jentic/jentic-one-app:0.44.0 for jentic. An image with no
+  # tag, or tagged latest, is refused: an upgrade should be a change
+  # somebody made. AnythingMCP publishes amd64 only, so an aarch64
+  # machine names a locally built one here -- docs/connectors.org says
+  # how.
+  image: null
+
+  # The database image beside an AnythingMCP gateway, pinned to a tag.
+  #
+  # Empty means docker.io/library/postgres:17.12-alpine. The database
+  # publishes no port: the two containers share a unix socket under
+  # <daemon.state_dir>/broker/run. Jentic One keeps SQLite files and
+  # runs no database container, so this is unused for jentic.
+  database_image: null
+
+  # The address the gateway's ports are published on.
+  #
+  # Loopback by default: the relay that reaches it runs on this machine.
+  # Anything wider puts the gateway's dashboard and MCP endpoint on that
+  # network, and the dashboard's own sign-in is all that guards it.
+  bind: "127.0.0.1"
+
+  # The host port of the gateway's MCP endpoint and API.
+  #
+  # For jentic this is also its dashboard, which shares the port.
+  port: 47400
+
+  # The host port of AnythingMCP's dashboard.
+  #
+  # Where you register the first (admin) account, sign in to SaaS apps
+  # with your own OAuth clients and make a gateway server for each agent
+  # or team. Unused for jentic, whose dashboard is on broker.port.
+  dashboard_port: 47300
+
+  # Which podman runs the broker, as computer.container.connection says.
+  #
+  # Empty is this user's rootless podman. A remote podman runs the
+  # containers there while broker.bind and the relay still dial this
+  # machine, so a remote one also needs a tunnel to its ports.
+  connection: null
+
+  # What to do when a broker container stops without being asked to.
+  #
+  # never leaves it stopped and says so; on-failure and always both
+  # start it again, since podman's listing does not say how a container
+  # ended. Five restarts within ten minutes stop the retries, so a
+  # gateway that cannot start is reported rather than restarted for
+  # ever.
+  # Values: never, on-failure, always
+  restart: "always"
 
 # Handing work to Grok bots, and hearing back.
 #
@@ -2240,6 +2407,18 @@ agents:
     # Unset means no team: the agent still messages and is messaged, it is
     # simply not grouped and no team lead may assign to it.
     team: null
+
+    # This agent's own gateway server on the broker.
+    #
+    # For anythingmcp, the id of an MCP server made in its dashboard (the
+    # last part of the server's MCP URL); the connectors assigned to that
+    # server are this agent's permission, and clawtilla reaches it as the
+    # connector broker-agent-<id>. For jentic, the Jentic agent this one
+    # acts as, whose API key `clawtilla broker key <id>` stores. Unset
+    # means the team's teams.broker_server, or no broker at all. An agent
+    # with runtime.network gated or none cannot reach the gateway on
+    # loopback and is not given it.
+    broker_server: null
 
     # Standing within that team.
     #
@@ -3528,6 +3707,12 @@ agents:
       # profile stays, so a login survives; the open page does not. 0 keeps
       # it running until its agent stops.
       idle_minutes: 15
+
+      # The vault: entries this agent may have filled into a page, by name.
+      # Empty, the agent is offered no secret tools. Always the agent's own,
+      # even on a shared browser: what an agent may ask for is about the
+      # agent, not the session.
+      secrets: []
 
       # The session's window width, in pixels.
       width: 1280

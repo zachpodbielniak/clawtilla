@@ -92,6 +92,41 @@ void clawt_container_computer_set_network(ClawtContainerComputer *self,
                                           const gchar            *network);
 
 /**
+ * clawt_container_computer_set_env:
+ * @self: a #ClawtContainerComputer
+ * @env_json: (nullable): a JSON object of variable names to values, or
+ *   %NULL for none
+ *
+ * The environment the container is created with.  Read at the next
+ * provision, so it reaches a container created after the call and never
+ * one that already exists.  The values travel to podman's API and no
+ * further: nothing here logs them.
+ */
+void clawt_container_computer_set_env(ClawtContainerComputer *self,
+                                      const gchar            *env_json);
+
+/**
+ * clawt_container_computer_set_ports:
+ * @self: a #ClawtContainerComputer
+ * @ports_json: (nullable): a JSON array of libpod port mappings
+ *   (`host_ip`, `host_port`, `container_port`, `protocol`), or %NULL
+ *
+ * The ports the container publishes, read at the next provision.
+ */
+void clawt_container_computer_set_ports(ClawtContainerComputer *self,
+                                        const gchar            *ports_json);
+
+/**
+ * clawt_container_computer_get_container_id:
+ * @self: a #ClawtContainerComputer
+ *
+ * Returns: (transfer none) (nullable): podman's id for the container this
+ *   object created, or %NULL before a create or after a removal
+ */
+const gchar *clawt_container_computer_get_container_id(
+    ClawtContainerComputer *self);
+
+/**
  * clawt_container_computer_set_keep:
  * @self: a #ClawtContainerComputer
  * @keep: whether to leave the container behind when the agent stops

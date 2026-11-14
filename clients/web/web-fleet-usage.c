@@ -64,6 +64,13 @@ agent_element(JsonObject *agent, gint64 total, gint64 now)
     /* the state in words when it is not running: the badge is recency */
     if (state != NULL && g_strcmp0(state, "running") != 0)
         clawt_web_add(head, clawt_web_badge(state, "neutral"));
+    /* on a fallback: the cost is another backend's bill now */
+    {
+        HtmxSpan *fleet_fallback = clawt_web_failover_badge(agent);
+
+        if (fleet_fallback != NULL)
+            clawt_web_add(head, fleet_fallback);
+    }
     clawt_web_add(head, clawt_web_badge(cost_text, "info"));
     htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(head));
 

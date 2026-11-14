@@ -157,7 +157,9 @@ transcript and run commands like the owner can -- with three
 differences, all about losing one: it can be revoked on its own, it
 expires after ~daemon.device_idle_days~ of not being seen, and it cannot
 issue a pairing code, so a stolen device cannot pair a replacement for
-itself and outlive its own revocation.  See [[*Paired devices][Paired devices]].
+itself and outlive its own revocation.  Nor can it revoke another
+device -- only itself ("sign out this device") -- so a stolen phone
+cannot cut the owner's laptop off.  See [[*Paired devices][Paired devices]].
 
 *** Anything with the socket has the fleet
 
@@ -393,6 +395,15 @@ credentials:
   created, and the agent started cleanly and never authenticated, which
   looks exactly like an agent nobody is talking to
 
+** Secrets an agent fills but never sees
+
+Since 0.25.0, and in detail in [[file:browser.org][browser.org]].  A =vault:= entry is a secret reference with a name and the ~sites~ it may be typed on; =agents.browser.secrets= grants an agent names.  The agent gets a one-use =secret-ref:= bound to it and to its conversation (=clawtilla_secret_ref=), and spends it on =clawtilla_browser_fill_secret=; the daemon resolves the value, makes a TOTP code from a seed when the entry is ~totp~, and has gsurf type it as key input.
+
+- *What crosses which boundary.*  The value goes from the secret reference to the daemon's worker thread to gsurf's same-user control socket, once.  It is never in a tool result, an error, an event (~browser.secret_filled~ carries the name, kind, host and session), a log line, an IPC reply (~vault.list~ carries names, kinds, descriptions and sites) or the reference table.  =tests/test-browser.c= asserts each of those negatively.
+- *Where it can be typed.*  Only on the entry's ~sites~ and their subdomains, checked against the page's address at the fill.  An unreadable address is a refusal.
+- *Reading it back.*  Screenshots and scripts are refused on a page a secret was typed into until the browser navigates away -- by gsurf and by the daemon, each failing closed.
+- *Not a boundary against the page.*  The site gets the secret; that is the point.  A malicious page, or a page the agent was steered to on an allowed host, can read its own field.  Choose ~sites~ narrowly.
+
 ** A credential never follows a redirect
 
 libsoup follows a 301, 302, 303, 307 or 308 by default, keeps every request header it was given -- ~Authorization~, ~X-Gotify-Key~, whatever a connector's ~header_name~ is -- and on a 307 or 308 sends the body again. So until this was closed, a server that answered with a redirect received nothing worse than any other reply, and the host it named received the bearer token, the OAuth client secret or the Matrix password. Turning that off is opt-in, per message (~SOUP_MESSAGE_NO_REDIRECT~).
@@ -532,6 +543,20 @@ Validating and then trusting printf anyway would leave the whole of
 printf standing behind a check that has to be perfect for ever.  As it
 is, the worst a wrong one can do is produce a credential the service
 rejects.
+
+** The integration broker
+
+With =broker.enabled= on, clawtilla runs AnythingMCP or Jentic One in rootless podman (=src/integration/clawt-broker.c=, [[file:connectors.org::*An integration broker][connectors.org]]).  What that changes, said plainly:
+
+- *A second credential store.*  The SaaS tokens the gateway holds are in its own encrypted store under =<state_dir>/broker/=, encrypted with a key that lives beside it (=encryption-key=, or =jentic-encryption-key=), 0600.  It is not =secrets.dir= and nothing in clawtilla reads it; backing up, rotating and revoking those tokens happen in the gateway's dashboard.
+- *Only the keys are clawtilla's.*  One per gateway server, at =<state_dir>/broker/keys/=, 0600, in the shape every connector token has; written by ~broker.key~, which answers with the path, and never returned over IPC -- ~broker.status~ reports ~key_stored~, a boolean.  No instance-wide gateway token exists: AnythingMCP's ~MCP_BEARER_TOKEN~, which reaches every server of every workspace, is never set, and each key made on a server's page is refused (403) by every other server.
+- *Loopback by default.*  The ports are published on =broker.bind=, 127.0.0.1 unless somebody widens it; the database publishes no port and listens on no TCP socket, reached by the gateway through a unix socket in =<state_dir>/broker/run=.  An agent with ~runtime.network~ ~gated~ or ~none~ is not given the broker at all, since its sandbox's loopback is not this one.
+- *Jentic One only for confined agents.*  Its own threat model says an agent running as the same OS user can read its credential database and encryption key.  It is refused while any agent naming a gateway server lacks ~runtime.confine: bwrap~, and a confined agent's box binds exactly its own key file read-only -- the relay that reads it runs in the box -- and nothing else of =<state_dir>/broker/=.  =tests/test-agent-confine.c= checks the box for the key and for the absence of everything beside it; the predicate (~clawt_broker_assignment_for_agent()~) and the box are answered by one function.  Its telemetry, release check and OTLP exporters are always off.
+- *Secrets in the containers' environment.*  The database password, the JWT secret and the encryption key reach the containers as environment, so ~podman inspect~ shows them -- to this user, who can read =<state_dir>= anyway.  They are in no argv, no IPC reply, and no log line clawtilla writes; ~broker.logs~ runs what the containers print through ~clawt_redact_secrets()~, which is best effort.
+- *Images are pinned.*  An image with no tag or tagged ~latest~ is refused at start.
+- *A refusal names who refused.*  The gateway's refusals are prefixed with its name and its reason is repeated only in one bounded line from a recognised shape, never the raw body; clawtilla's own refusals say clawtilla.
+
+For an unconfined host agent this is the boundary every connector has: it keeps the credentials out of the agent's files, environment, argv and transcript, and does not stop an agent that goes looking under =<state_dir>=.
 
 ** Inbound triggers
 

@@ -83,6 +83,8 @@ typedef struct {
     GrlTexture         *browser_texture;
     gboolean            browser_inflight;
     GSource            *browser_poll;
+    LrgWidget          *browser_secrets;   /* one switch per vault entry */
+    JsonObject         *browser_vault;     /* the last vault.list reply */
 
     /* mounts and exchange */
     LrgWidget          *mount_list;
@@ -1001,6 +1003,92 @@ browser_start_polling(ClawtLrgApp *app)
     clawt_lrg_app_attach(app, cp.browser_poll);
 }
 
+/*
+ * The vault entries this agent may have filled: a switch each, by name,
+ * sent as the whole list through agent.set browser.secrets.  vault.list
+ * carries no value, so there is none here to show or to leak.
+ */
+static void browser_vault_refresh(ClawtLrgApp *app);
+
+static void
+on_browser_granted(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+                   gpointer user_data)
+{
+    (void)reply;
+    (void)user_data;
+    if (error != NULL)
+        clawt_lrg_toast(app, error->message);
+    browser_vault_refresh(app);
+}
+
+static void
+on_browser_grant(LrgCheckbox *toggle, gboolean checked, gpointer user_data)
+{
+    ClawtLrgApp *app = user_data;
+    const gchar *name = g_object_get_data(G_OBJECT(toggle), "clawt-vault-name");
+    g_autofree gchar *value = NULL;
+
+    if (app->agent_id == NULL || name == NULL)
+        return;
+    value = clawt_vault_grants_with(cp.browser_vault, name, checked);
+    clawt_lrg_request(app, "agent.set",
+                      clawt_ipc_payload_new("agent", app->agent_id, "key", "browser.secrets",
+                                            "value", value, NULL),
+                      CLAWT_LRG_GUARDED, on_browser_granted, NULL, NULL);
+}
+
+static void
+on_browser_vault(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+                 gpointer user_data)
+{
+    JsonObject *root = clawt_ipc_reply_object(reply);
+    JsonArray *entries;
+    guint i;
+
+    (void)error;
+    (void)user_data;
+    if (cp.browser_secrets == NULL || root == NULL ||
+        g_strcmp0(clawt_ipc_payload_string(root, "agent"), app->agent_id) != 0)
+        return;
+
+    g_clear_pointer(&cp.browser_vault, json_object_unref);
+    cp.browser_vault = json_object_ref(root);
+    clawt_lrg_clear(cp.browser_secrets);
+    entries = json_object_has_member(root, "entries")
+        ? json_object_get_array_member(root, "entries") : NULL;
+    if (entries == NULL || json_array_get_length(entries) == 0) {
+        clawt_lrg_take(cp.browser_secrets, clawt_lrg_paragraph(
+            "No vault entries. Declare them under vault: in clawtilla.yaml to let an "
+            "agent log in without seeing the password.", "muted"));
+        clawt_lrg_app_wake(app);
+        return;
+    }
+    for (i = 0; i < json_array_get_length(entries); i++) {
+        JsonObject *entry = json_array_get_object_element(entries, i);
+        g_autofree gchar *label = clawt_vault_entry_label(entry);
+        LrgWidget *toggle = clawt_lrg_switch(label,
+                                             json_object_get_boolean_member_with_default(
+                                                 entry, "granted", FALSE));
+
+        g_object_set_data_full(G_OBJECT(toggle), "clawt-vault-name",
+                               g_strdup(clawt_ipc_payload_string(entry, "name")), g_free);
+        /* Connected after the state is set: drawing it is not the person. */
+        g_signal_connect(toggle, "toggled", G_CALLBACK(on_browser_grant), app);
+        clawt_lrg_take(cp.browser_secrets, toggle);
+    }
+    clawt_lrg_app_wake(app);
+}
+
+static void
+browser_vault_refresh(ClawtLrgApp *app)
+{
+    if (app->agent_id == NULL)
+        return;
+    clawt_lrg_request(app, "vault.list",
+                      clawt_ipc_payload_new("agent", app->agent_id, NULL),
+                      CLAWT_LRG_QUIET | CLAWT_LRG_GUARDED, on_browser_vault, NULL, NULL);
+}
+
 static void
 on_browser_done(ClawtLrgApp *app, JsonNode *reply, const GError *error,
                 gpointer user_data)
@@ -1090,6 +1178,11 @@ build_browser_view(ClawtLrgApp *app)
     clawt_lrg_take(bar, clawt_lrg_button("Stop the browser", NULL,
                                          G_CALLBACK(on_browser_stop), app));
     clawt_lrg_take(box, bar);
+
+    clawt_lrg_take(box, clawt_lrg_section("Secrets it may have filled"));
+    cp.browser_secrets = clawt_lrg_vbox(4.0f);
+    clawt_lrg_add(box, cp.browser_secrets);
+    g_object_unref(cp.browser_secrets);
 
     cp.browser_line = clawt_lrg_paragraph("", "muted");
     clawt_lrg_add(box, cp.browser_line);
@@ -1214,6 +1307,7 @@ refresh_view(ClawtLrgApp *app)
 
     case CLAWT_COMPUTER_VIEW_BROWSER:
         browser_start_polling(app);
+        browser_vault_refresh(app);
         break;
     }
 

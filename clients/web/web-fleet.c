@@ -1265,7 +1265,8 @@ banner_around(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
               const gchar *tone)
 {
     /*
-     * Copied before anything else happens.
+     * Copied before anything else happens -- and by both callers before
+     * they build @body, which is where the daemon calls actually are.
      *
      * Callers pass clawt_web_app_last_error(), which points at a string
      * the app object owns -- and building the body below makes half a
@@ -1306,9 +1307,18 @@ static HtmxResponse *
 page_with_banner(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
                  ClawtPage view, const gchar *text, const gchar *tone)
 {
-    return banner_around(app, request, agent_id, view,
-                         clawt_web_view_body(app, agent_id, view),
-                         text, tone);
+    /*
+     * Copied here, before the body is built -- not only in
+     * banner_around().  An argument is evaluated before the call, so
+     * clawt_web_view_body() made its daemon calls, freed the
+     * last_error @text points at, and only then did banner_around()
+     * take its "early" copy: a refused traversal still rendered some
+     * other string, and the smoke run's check for the refusal failed.
+     */
+    g_autofree gchar *said = g_strdup(text);
+    HtmxElement *body = clawt_web_view_body(app, agent_id, view);
+
+    return banner_around(app, request, agent_id, view, body, said, tone);
 }
 
 /*
@@ -1326,8 +1336,12 @@ clawt_web_room_notice(ClawtWebApp *app, HtmxRequest *request,
                       const gchar *room_id, const gchar *text,
                       const gchar *tone)
 {
-    return banner_around(app, request, NULL, CLAWT_PAGE_CHAT,
-                         clawt_web_room_body(app, room_id), text, tone);
+    /* Copied before the body is built, for page_with_banner()'s reason. */
+    g_autofree gchar *said = g_strdup(text);
+    HtmxElement *body = clawt_web_room_body(app, room_id);
+
+    return banner_around(app, request, NULL, CLAWT_PAGE_CHAT, body, said,
+                         tone);
 }
 
 HtmxResponse *

@@ -32,6 +32,10 @@ typedef struct {
     /* connectors.directory_min_tools and _min_chars, filled on refresh. */
     LrgWidget *min_tools;
     LrgWidget *min_chars;
+
+    /* The integration broker's row and buttons, refilled per broker.status. */
+    LrgWidget *broker;
+    guint      broker_generation;
 } Connectors;
 
 static Connectors connectors;
@@ -985,6 +989,127 @@ on_thresholds_save(LrgButton *button, gpointer user_data)
                       on_thresholds_saved, NULL, NULL);
 }
 
+/* ── The integration broker ──────────────────────────────────────── */
+
+static void
+on_broker_moved(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+                gpointer user_data)
+{
+    refresh(app);
+}
+
+/* Start, stop and restart answer at once; the row follows the events. */
+static void
+on_broker_clicked(LrgButton *button, gpointer user_data)
+{
+    ClawtLrgApp *app = user_data;
+    const gchar *kind = g_object_get_data(G_OBJECT(button), "clawt-kind");
+
+    if (kind != NULL)
+        clawt_lrg_request(app, kind, NULL, CLAWT_LRG_REQUEST_NONE,
+                          on_broker_moved, NULL, NULL);
+}
+
+static void
+add_broker_button(ClawtLrgApp *app, LrgWidget *row, const gchar *label,
+                  const gchar *kind)
+{
+    LrgWidget *button = clawt_lrg_button(label, "flat",
+                                         G_CALLBACK(on_broker_clicked), app);
+
+    g_object_set_data(G_OBJECT(button), "clawt-kind", (gpointer)kind);
+    clawt_lrg_row_add_suffix(row, button);
+}
+
+/*
+ * The row: which broker and the library's word for its state, what it
+ * is doing or why it failed, its dashboard, and the buttons that can do
+ * something now.
+ */
+static void
+on_broker_status(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+                 gpointer user_data)
+{
+    JsonObject *status;
+    g_autofree gchar *title = NULL;
+    g_autofree gchar *subtitle = NULL;
+    const gchar *nick;
+    const gchar *detail;
+    const gchar *url;
+    gint state = (gint)CLAWT_BROKER_STATE_DISABLED;
+    gboolean enabled;
+    LrgWidget *row;
+
+    if (GPOINTER_TO_UINT(user_data) != connectors.broker_generation ||
+        reply == NULL || connectors.broker == NULL)
+        return;
+
+    status = clawt_ipc_reply_object(reply);
+    enabled = clawt_ipc_payload_boolean(status, "enabled", FALSE);
+    nick = clawt_ipc_payload_string(status, "state");
+    detail = clawt_ipc_payload_string(status, "detail");
+    url = clawt_ipc_payload_string(status, "dashboard_url");
+
+    if (nick != NULL)
+        clawt_enum_from_nick(CLAWT_TYPE_BROKER_STATE, nick, &state);
+
+    title = g_strdup_printf("%s — %s",
+                            clawt_ipc_payload_string(status, "label") != NULL
+                            ? clawt_ipc_payload_string(status, "label")
+                            : "Integration broker",
+                            clawt_broker_state_label((ClawtBrokerState)state));
+
+    if (!enabled)
+        subtitle = g_strdup("Off. Set broker.enabled to run it");
+    else if (clawt_ipc_payload_string(status, "refusal") != NULL)
+        subtitle = g_strdup(clawt_ipc_payload_string(status, "refusal"));
+    else
+        subtitle = g_strdup_printf("Dashboard: %s", url != NULL ? url : "?");
+
+    clawt_lrg_clear(connectors.broker);
+    row = clawt_lrg_row(title, subtitle);
+
+    if (url != NULL && state == CLAWT_BROKER_STATE_RUNNING) {
+        LrgWidget *open = clawt_lrg_button("Dashboard", "flat", NULL, NULL);
+
+        /* on_open_page() reads the app off the button and the URL as data */
+        g_object_set_data(G_OBJECT(open), "clawt-app", app);
+        g_signal_connect_data(open, "clicked", G_CALLBACK(on_open_page),
+                              g_strdup(url),
+                              (GClosureNotify)(void (*)(void))g_free, 0);
+        clawt_lrg_row_add_suffix(row, open);
+    }
+
+    if (enabled && (state == CLAWT_BROKER_STATE_STOPPED ||
+                    state == CLAWT_BROKER_STATE_ERROR))
+        add_broker_button(app, row, "Start", "broker.start");
+
+    if (state == CLAWT_BROKER_STATE_STARTING ||
+        state == CLAWT_BROKER_STATE_RUNNING ||
+        state == CLAWT_BROKER_STATE_ERROR)
+        add_broker_button(app, row, "Stop", "broker.stop");
+
+    if (enabled && (state == CLAWT_BROKER_STATE_RUNNING ||
+                    state == CLAWT_BROKER_STATE_ERROR))
+        add_broker_button(app, row, "Restart", "broker.restart");
+
+    clawt_lrg_take(connectors.broker, row);
+
+    /* What it is doing, on a line of its own: a row's subtitle is one. */
+    if (enabled && detail != NULL)
+        clawt_lrg_take(connectors.broker, clawt_lrg_paragraph(detail,
+                                                              "muted"));
+
+    clawt_lrg_app_wake(app);
+}
+
+void
+clawt_lrg_settings_connectors_event(ClawtLrgApp *app, ClawtEvent *event)
+{
+    if (g_strcmp0(clawt_event_get_kind(event), "broker.changed") == 0)
+        refresh(app);
+}
+
 static void
 refresh(ClawtLrgApp *app)
 {
@@ -994,6 +1119,14 @@ refresh(ClawtLrgApp *app)
     connectors.generation++;
     clawt_lrg_request(app, "connector.list", NULL, CLAWT_LRG_QUIET, on_list,
                       GUINT_TO_POINTER(connectors.generation), NULL);
+
+    if (connectors.broker != NULL) {
+        connectors.broker_generation++;
+        clawt_lrg_request(app, "broker.status", NULL, CLAWT_LRG_QUIET,
+                          on_broker_status,
+                          GUINT_TO_POINTER(connectors.broker_generation),
+                          NULL);
+    }
 }
 
 static LrgWidget *
@@ -1010,6 +1143,24 @@ build(ClawtLrgApp *app)
     clawt_lrg_take(toolbar,
                    clawt_lrg_button("Connect an account", "primary",
                                     G_CALLBACK(on_add_clicked), app));
+
+    /*
+     * The integration broker first: its connectors are in the list below,
+     * and its dashboard is where SaaS sign-ins happen.
+     */
+    {
+        LrgWidget *broker = clawt_lrg_vbox(6.0f);
+
+        clawt_lrg_take(broker, clawt_lrg_section("Integration broker"));
+        clawt_lrg_take(broker, clawt_lrg_paragraph(
+            "App integrations behind one gateway clawtilla runs in podman. "
+            "Each agent or team names its gateway server in broker_server "
+            "and reaches it as a connector below.", "muted"));
+        connectors.broker = clawt_lrg_vbox(6.0f);
+        clawt_lrg_add(broker, connectors.broker);
+        g_object_unref(connectors.broker);
+        clawt_lrg_take(clawt_lrg_page_body(page), clawt_lrg_card(broker));
+    }
 
     clawt_lrg_take(box, clawt_lrg_paragraph(
         "An account clawtilla holds the credential for. Agents get its "

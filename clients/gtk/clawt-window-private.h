@@ -345,6 +345,15 @@ struct _ClawtWindow {
     GPtrArray         *settings_rounds_rows;
     GtkWidget         *settings_connectors;
     /*
+     * The integration broker's row on the Connectors page, and its
+     * buttons, made sensitive from each broker.status.
+     */
+    GtkWidget         *settings_broker_row;
+    GtkWidget         *settings_broker_dashboard;
+    GtkWidget         *settings_broker_start;
+    GtkWidget         *settings_broker_stop;
+    GtkWidget         *settings_broker_restart;
+    /*
      * The two directory thresholds on the Connectors page, and whether
      * a refresh is the one writing them -- so filling the rows from the
      * daemon's answer is not taken for somebody changing them.
@@ -437,6 +446,7 @@ struct _ClawtWindow {
     /* model.account as the inspector was drawn, so a save clears it only on a change */
     gchar             *inspector_account;
     gchar             *inspector_provider;  /* model.provider, likewise */
+    gchar             *inspector_model;     /* model.model, for putting a backend back */
 
     /*
      * model.fallbacks: the expander holding the editor (weak), its
@@ -556,6 +566,10 @@ struct _ClawtWindow {
     guint              browser_generation;
     gboolean           browser_in_flight;
     gboolean           browser_again;
+    /* The vault entries this agent may have filled: names, never values */
+    GtkBox            *browser_secrets;
+    JsonObject        *browser_vault;     /* the last vault.list reply, owned */
+    gboolean           browser_vault_filling;   /* drawing it: toggles are not the person */
     GtkListBox        *computer_mount_list;
     GtkListBox        *exchange_list;
 

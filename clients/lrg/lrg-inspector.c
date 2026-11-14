@@ -1312,13 +1312,27 @@ view_value(FieldView *view)
     return NULL;
 }
 
+/*
+ * Which plan a save is running.  The save itself, and then -- only when
+ * it had cleared the stored fallback list and was refused after that --
+ * the two ways of putting the list back: onto the new backend, and if
+ * that is refused too, with the old backend restored under it.
+ */
+typedef enum {
+    SAVE_PHASE_SAVE,
+    SAVE_PHASE_KEEP_LIST,
+    SAVE_PHASE_UNDO_BACKEND
+} SavePhase;
+
 /* One running save: the plan, where it is, and what it learned. */
 typedef struct {
-    GPtrArray *plan;
-    guint      next;
-    guint      sent;
-    gboolean   restart;
-    gchar     *agent_id;
+    GPtrArray  *plan;
+    guint       next;
+    guint       sent;
+    gboolean    restart;
+    gchar      *agent_id;
+    JsonObject *settings;   /* agent.show's, from before the save */
+    SavePhase   phase;
 } SaveJob;
 
 static void
@@ -1326,7 +1340,20 @@ save_job_free(SaveJob *job)
 {
     g_ptr_array_unref(job->plan);
     g_free(job->agent_id);
+    if (job->settings != NULL)
+        json_object_unref(job->settings);
     g_free(job);
+}
+
+/* Replaces the job's plan with a recovery plan and starts it. */
+static void
+save_switch_phase(SaveJob *job, SavePhase phase)
+{
+    g_ptr_array_unref(job->plan);
+    job->plan = clawt_lrg_agent_fallback_restore_plan(
+        job->settings, phase == SAVE_PHASE_UNDO_BACKEND);
+    job->next = 0;
+    job->phase = phase;
 }
 
 static void save_next(ClawtLrgApp *app, SaveJob *job);
@@ -1343,6 +1370,31 @@ on_saved_one(ClawtLrgApp *app, JsonNode *reply, const GError *error,
      * is re-read so it shows what the daemon actually has.
      */
     if (reply == NULL) {
+        /*
+         * Cleared and then refused: put the old list back before
+         * stopping, or the agent has none until somebody saves again.
+         * The step that failed was job->next - 1, so everything before
+         * it was accepted.
+         */
+        if (job->phase == SAVE_PHASE_SAVE &&
+            clawt_lrg_agent_plan_cleared_fallbacks(job->plan, job->next - 1,
+                                                   job->settings)) {
+            save_switch_phase(job, SAVE_PHASE_KEEP_LIST);
+            save_next(app, job);
+            return;
+        }
+
+        if (job->phase == SAVE_PHASE_KEEP_LIST) {
+            save_switch_phase(job, SAVE_PHASE_UNDO_BACKEND);
+            save_next(app, job);
+            return;
+        }
+
+        if (job->phase == SAVE_PHASE_UNDO_BACKEND)
+            clawt_lrg_toast(app, "The fallback list could not be put back. "
+                                 "Check Model and fallbacks before saving "
+                                 "again.");
+
         if (ins.save != NULL)
             lrg_widget_set_enabled(ins.save, TRUE);
         save_job_free(job);
@@ -1362,6 +1414,21 @@ static void
 save_next(ClawtLrgApp *app, SaveJob *job)
 {
     ClawtLrgAgentSetting *setting;
+
+    if (job->next >= job->plan->len && job->phase != SAVE_PHASE_SAVE) {
+        clawt_lrg_toast(app, job->phase == SAVE_PHASE_KEEP_LIST
+            ? "The fallback list was not saved; the agent keeps the list "
+              "it had."
+            : "The fallback list was not saved, and the list the agent had "
+              "does not fit the new provider -- so the provider and account "
+              "are back as they were, with that list.");
+        if (ins.save != NULL)
+            lrg_widget_set_enabled(ins.save, TRUE);
+        save_job_free(job);
+        clawt_lrg_refresh_fleet(app);
+        refresh(app);
+        return;
+    }
 
     if (job->next >= job->plan->len) {
         g_autofree gchar *said =
@@ -1432,6 +1499,11 @@ on_save(LrgButton *button, gpointer user_data)
     job->plan = clawt_lrg_agent_save_plan(posted,
                                           shown_object("settings"));
     job->agent_id = g_strdup(app->agent_id);
+    job->phase = SAVE_PHASE_SAVE;
+
+    /* Held, not borrowed: a refresh mid-save replaces what was shown. */
+    if (shown_object("settings") != NULL)
+        job->settings = json_object_ref(shown_object("settings"));
 
     lrg_widget_set_enabled(ins.save, FALSE);
     save_next(app, job);

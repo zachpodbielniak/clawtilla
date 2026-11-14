@@ -101,6 +101,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/integration/clawt-oauth.h \
 	$(SRCDIR)/integration/clawt-mcp-auth.h \
 	$(SRCDIR)/integration/clawt-connector-accounts.h \
+	$(SRCDIR)/integration/clawt-broker.h \
 	$(SRCDIR)/integration/clawt-matrix.h \
 	$(SRCDIR)/integration/clawt-notify.h \
 	$(SRCDIR)/config/clawt-config.h \
@@ -131,8 +132,11 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/memory/clawt-summariser.h \
 	$(SRCDIR)/memory/clawt-operator-profile.h \
 	$(SRCDIR)/usage/clawt-usage-ledger.h \
+	$(SRCDIR)/usage/clawt-task-sources.h \
 	$(SRCDIR)/usage/clawt-usage.h \
 	$(SRCDIR)/browser/clawt-browser.h \
+	$(SRCDIR)/browser/clawt-secret-vault.h \
+	$(SRCDIR)/browser/clawt-totp.h \
 	$(SRCDIR)/mailbox/clawt-mailbox.h \
 	$(SRCDIR)/mailbox/clawt-mailbox-router.h \
 	$(SRCDIR)/mailbox/clawt-ack-check.h \
@@ -259,6 +263,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-steps.c \
 	$(SRCDIR)/core/daemon-mount.c \
 	$(SRCDIR)/core/daemon-egress.c \
+	$(SRCDIR)/core/daemon-broker.c \
 	$(SRCDIR)/core/daemon-image.c \
 	$(SRCDIR)/core/daemon-team.c \
 	$(SRCDIR)/core/daemon-room.c \
@@ -305,6 +310,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/integration/clawt-oauth.c \
 	$(SRCDIR)/integration/clawt-mcp-auth.c \
 	$(SRCDIR)/integration/clawt-connector-accounts.c \
+	$(SRCDIR)/integration/clawt-broker.c \
 	$(SRCDIR)/integration/clawt-matrix.c \
 	$(SRCDIR)/integration/clawt-notify.c \
 	$(SRCDIR)/config/clawt-config.c \
@@ -330,7 +336,10 @@ LIB_SOURCES = \
 	$(SRCDIR)/memory/clawt-operator-profile.c \
 	$(SRCDIR)/usage/clawt-usage.c \
 	$(SRCDIR)/usage/clawt-usage-ledger.c \
+	$(SRCDIR)/usage/clawt-task-sources.c \
 	$(SRCDIR)/browser/clawt-browser.c \
+	$(SRCDIR)/browser/clawt-secret-vault.c \
+	$(SRCDIR)/browser/clawt-totp.c \
 	$(SRCDIR)/mailbox/clawt-mailbox-item.c \
 	$(SRCDIR)/mailbox/clawt-mailbox.c \
 	$(SRCDIR)/mailbox/clawt-mailbox-router.c \

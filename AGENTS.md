@@ -118,7 +118,7 @@ place when it is missing, older than its sources, or lacks a symbol in
 Browser sessions are opt-in too (`GSURF=1`, `GSURF_DIR` defaulting to
 `../gsurf`).  clawtilla links nothing from gsurf: a session is Xvfb plus
 a gsurf process driven over gsurf's control socket, because the daemon
-must never link GTK.  `make GSURF=1` refuses a gsurf older than 0.5.10
+must never link GTK.  `make GSURF=1` refuses a gsurf older than 0.5.13
 and builds `GSURF_DIR` when its binary is missing; building that needs
 `webkit2gtk4.1-devel` and `gtk3-devel`.  See `docs/browser.org`.
 
@@ -303,6 +303,8 @@ ClawtDaemon (owns everything; clients hold no transports)
 ├── ClawtTaskManager       (delegation, each task its own libreclaw session)
 ├── ClawtMcpTools          (orchestration tools served to agents over their link)
 ├── ClawtPluginManager
+├── ClawtBroker            (the integration broker, AnythingMCP or Jentic One,
+│                           in podman; made only when broker.enabled is on)
 ├── ClawtLinkServer        (agents dial in here)
 └── ClawtIpcServer         (CLI / GTK / web dial in here)
 ```
@@ -535,6 +537,12 @@ critical fired.
   its `.in` template.
 - Prefix `cd` with `CDPATH=` in any script, or the resolved directory is echoed
   into a command substitution.
+- **`f(g_bytes_get_data(b, &length), length)` reads `length` before the
+  call that sets it** -- the order of a call's arguments is unspecified,
+  and gcc on x86-64 goes right to left. The HTTP connector bridge did
+  exactly this, so every successful reply from every remote connector was
+  an empty string, dropped in silence; only running a real server through
+  it showed it. Two statements.
 - A shared `SoupSession` cannot carry per-request state. Parking a pointer on it
   with `g_object_set_data()` breaks the moment two requests are in flight,
   which for a room listing is immediately. Allocate a struct per request.
@@ -864,6 +872,18 @@ critical fired.
   domain logs two errors. Ask `list_domains` first.
 - Never sleep uninterruptibly on a thread something has to join -- poll the
   cancellable's fd.
+- **Two of the container module's answers are empty by construction.**
+  `inspect` never fills `status`, and `logs` parses podman's multiplexed log
+  stream as JSON and returns no text. Whether a container runs is the
+  `list` action (podman's listing without `all`), compared on `ids` --
+  its `names` reads an array as a string and is always empty. The roadmap
+  carries the fix upstream.
+- A container computer runs `sleep infinity` unless given a command. A
+  service in one (the broker's containers) must name the image's own.
+- Rootless podman under pasta maps `host.containers.internal` to the
+  machine's *external* address, not its loopback: a service published on
+  127.0.0.1 is unreachable from a sibling container. Share a unix socket
+  in a bind instead.
 
 ### sqlite
 
@@ -1138,6 +1158,15 @@ Other VM facts:
   said so. Extras replace now; `tests/test-browser.c` asserts one copy.
 - **Never `pkill gsurf`.** The person runs gsurf as their browser. Stop
   a test's processes by pid, or through the daemon.
+- **A secret is filled, never handed over.** `clawtilla_secret_ref` gives
+  the agent a one-use reference bound to it and its conversation;
+  `clawtilla_browser_fill_secret` resolves the value on the worker and
+  gsurf types it (`page.fill_secret`). Nothing the agent, a client, an
+  event or a log sees may carry the value -- `tests/test-browser.c`
+  asserts it negatively, so a new message about a fill needs adding to
+  that scan, not just to the code. The hold on screenshots and scripts
+  is lifted only on gsurf's word (`page.secret_hold` false); anything
+  else keeps it on.
 
 ### Host confinement
 

@@ -86,7 +86,7 @@ struct _ClawtDaemon {
      * for a routine sharing the operator's room is "user", and the
      * usage ledger asks which routine a turn's work began at.
      */
-    GHashTable         *task_sources;
+    ClawtTaskSources   *task_sources;
     ClawtEventBus      *bus;
     ClawtEventLog      *log;
 
@@ -486,6 +486,12 @@ struct _ClawtDaemon {
      */
     ClawtEgressGate   *egress_gate;
     ClawtEgressBroker *egress_broker;
+
+    /*
+     * The integration broker (daemon-broker.c): made when `broker.enabled`
+     * is first seen on, never otherwise.
+     */
+    ClawtBroker       *broker;
     guint    sweep_source_id;
     gboolean running;
 };
@@ -1294,6 +1300,29 @@ void clawt_daemon_egress_stop(ClawtDaemon *self);
 void clawt_daemon_egress_release(ClawtDaemon *self);
 
 JsonNode *
+clawt_daemon_handle_broker(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
+
+/*
+ * The integration broker (daemon-broker.c).  sync() starts or stops it to
+ * match `broker.enabled`, at daemon start and after every reload; stop()
+ * and release() are the daemon's own stop and dispose.
+ * refuse_managed() is the error for an edit aimed at one of the
+ * broker's connectors, or NULL when @name is not one.
+ */
+void clawt_daemon_broker_sync(ClawtDaemon *self);
+void clawt_daemon_broker_stop(ClawtDaemon *self);
+void clawt_daemon_broker_release(ClawtDaemon *self);
+JsonNode *clawt_daemon_broker_refuse_managed(ClawtDaemon *self,
+                                             JsonNode    *request,
+                                             const gchar *name);
+
+JsonNode *
 clawt_daemon_handle_mount(
     ClawtDaemon  *self,
     const gchar  *kind,
@@ -1975,6 +2004,17 @@ ClawtUsageOrigin *clawt_daemon_usage_origin(ClawtDaemon *self,
                                             const gchar *agent_id,
                                             const gchar *room,
                                             const gchar *channel);
+
+/*
+ * clawt_daemon_add_failover_members:
+ * @builder: a builder inside an agent's object
+ * @agent: the agent
+ *
+ * Adds `failover` and `failover_message` while @agent is on a fallback,
+ * and nothing otherwise.
+ */
+void clawt_daemon_add_failover_members(JsonBuilder *builder,
+                                       ClawtAgent  *agent);
 
 void clawt_daemon_note_task_source(ClawtDaemon          *self,
                                    const gchar          *task_id,

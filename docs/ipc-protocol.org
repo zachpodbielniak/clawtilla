@@ -169,7 +169,7 @@ why each rule is the shape it is.
 | ~device.pair_cancel~ | owner | | ~{}~ |
 | ~device.redeem~ | anyone, *before* ~control.hello~ | ~code~, ~name~ (optional) | ~version~, ~daemon~, ~id~, ~name~, ~token~ |
 | ~device.list~ | any authenticated client | | ~owner~, ~idle_days~, ~pairing_expires_in~, ~devices~ |
-| ~device.revoke~ | any authenticated client | ~id~ | ~id~, ~closed~ |
+| ~device.revoke~ | the owner; a paired device for its own ~id~ only | ~id~ | ~id~, ~closed~ |
 
 "Owner" is a unix-socket client or a network client that said
 ~control.hello~ with the daemon's own token.  A paired device asking for
@@ -201,7 +201,11 @@ code is outstanding without saying which.
 
 ~device.revoke~ closes every connection the device has open -- including
 the one asking, when a device revokes itself, which then never sees the
-reply.  ~closed~ counts them.
+reply.  ~closed~ counts them.  A paired device naming any id but its own
+is refused with =PERMISSION_DENIED= before the id is looked up; the
+clients ask =clawt_device_row_action()= which button a row gets, so a
+paired device's list offers *Sign out this device* on its own row and
+nothing on the others.
 
 *** attachment.*
 
@@ -981,7 +985,7 @@ Cost crosses the wire in *micro-dollars as an integer*, not as a float.
 It is summed across every agent, and a running total of floats disagrees
 with itself depending on the order the agents happened to be visited in.
 
-Since 0.8.0 it also takes ~days~ (1 to 92) and ~sort~ (~"cost"~, most first; otherwise the fleet's own order), and every agent carries ~last_turn_at~ (unix seconds, 0 for never), ~idle~ and ~idle_tone~ (=clawt_usage_idle_label()= and =clawt_usage_idle_tone()=, so a client does not decide what idle means), ~state~, ~idle_stop_hours~ and ~asleep~ (stopped by the daemon for being idle, and woken by the next message). With ~days~, each agent has a ~daily~ array of cost per day and the reply a ~days~ array of ~{start, cost_micros}~, oldest first, the last being today from local midnight. The reply also carries ~now~ (the daemon's clock, for ages), ~idle_hours~ and ~daily_fleet_budget_micros~. A client older than this reads none of them and loses nothing.
+Since 0.8.0 it also takes ~days~ (1 to 92) and ~sort~ (~"cost"~, most first; otherwise the fleet's own order), and every agent carries ~last_turn_at~ (unix seconds, 0 for never), ~idle~ and ~idle_tone~ (=clawt_usage_idle_label()= and =clawt_usage_idle_tone()=, so a client does not decide what idle means), ~state~, ~idle_stop_hours~ and ~asleep~ (stopped by the daemon for being idle, and woken by the next message). An agent running on one of its fallbacks also carries ~failover~ and ~failover_message~, exactly as in ~agent.list~ (one daemon function writes both), so the Fleet page can badge it.  With ~days~, each agent has a ~daily~ array of cost per day and the reply a ~days~ array of ~{start, cost_micros}~, oldest first, the last being today from local midnight. The reply also carries ~now~ (the daemon's clock, for ages), ~idle_hours~ and ~daily_fleet_budget_micros~. A client older than this reads none of them and loses nothing.
 
 ~task.tree_budget~ (since 0.18.0) is published once when a task tree
 uses =orchestration.tree_message_budget=, and not again until a task in
@@ -1010,6 +1014,14 @@ Since 0.9.0. Every verb but ~browser.list~ takes ~agent~ and acts on the session
 - ~browser.open~ (~url~; ~https://~ is assumed without a scheme) starts the session if it must, navigates, and waits up to twenty seconds for the load.
 - ~browser.click~ (~x~, ~y~, in the page's CSS pixels) is a person's click. It does not take a shared session's driver lease, since a person at the Computer page outranks an agent.
 - ~browser.stop~ stops it. The profile and its logins stay; the open page does not.
+
+Since 0.25.0 every session object -- in ~browser.list~ and in each ~browser.*~ reply -- also carries ~secret_hold~ (a secret was filled on the page and it has not been seen to navigate away) and ~last_fill~ (~{name, host, at}~: the vault entry's name, the host it was typed on and unix seconds, or ~null~). Never a value. While ~secret_hold~ is true ~browser.frame~ answers without ~png_base64~ rather than with an error: the daemon takes no picture of a page a secret is on. Clients draw both through =clawt_browser_session_line()=, whose second line is =clawt_browser_fill_line()=.
+
+*** vault.list
+
+Since 0.25.0. The =vault:= entries, for a client choosing which ones an agent may have filled. Takes an optional ~agent~ (an unknown one is =NOT_FOUND=). Answers ~entries~, each ~{name, kind, description, sites}~ (~kind~ is ~password~ or ~totp~), and with ~agent~ also ~agent~, ~browser~ (whether its =agents.browser.mode= is not =none=) and a ~granted~ boolean per entry. Names only: neither the value nor the reference it is resolved through crosses the socket. An entry missing its secret or its sites is not listed, since it is never filled.
+
+A grant is changed with ~agent.set~ ~browser.secrets~, the whole list comma-separated (=clawt_vault_grants_with()= builds it from a ~vault.list~ reply); a name that is not a usable vault entry is refused there with =NOT_FOUND=.
 
 *** computer.*
 
@@ -1249,6 +1261,26 @@ reached by URL), ~sign_in~ (offer a sign-in: discovery found an
 authorization server, or the server answered 401), ~needs_sign_in~ (the
 server refused the agent's last call) and, once discovery has run,
 ~auth_server~ -- the issuer, to put on the button.
+
+The integration broker (docs/connectors.org, "An integration broker"):
+~broker.status~ answers ~enabled~, ~type~ and ~label~ (~anythingmcp~,
+"AnythingMCP"), ~state~ (a ~ClawtBrokerState~ nick) and ~state_label~
+(~clawt_broker_state_label()~), ~detail~ when it is doing something or
+failed, ~image~, ~dashboard_url~, ~mcp_url~, ~restarts~, ~refusal~ when
+Jentic One is refused for an unconfined agent, ~assignments~ (each with
+~target~, ~server~, ~connector~, ~agents~ and ~key_stored~ -- whether, never
+what) and ~warnings~.  ~broker.start~, ~broker.stop~ and ~broker.restart~
+answer at once with the same members, saying ~starting~ or ~stopping~:
+the work is on worker threads and ~broker.changed~ follows it.  A start
+is refused with ~CLAWT_ERROR_NOT_SUPPORTED~ while ~broker.enabled~ is off
+and ~CLAWT_ERROR_CONFINEMENT~ for Jentic One with an unconfined agent.
+~broker.logs~ is deferred and answers ~logs~.  ~broker.key~ takes
+~target~ (an agent id, or ~team:<id>~) and ~key~, writes it 0600 and
+answers ~key_file~ -- the path, never the key.  ~integration.update~,
+~integration.remove~, ~connector.begin~, ~connector.discover~,
+~connector.key~ and ~connector.revoke~ aimed at one of the broker's own
+connectors (~broker-agent-*~, ~broker-team-*~) are refused with
+~CLAWT_ERROR_INVALID_ARGUMENT~, naming the settings that change it.
 
 ~integration.add~ for a ~connector~ given a ~url~ and no ~provider~ is the
 built-in ~remote~ entry.  A second connector on a ~provider~ that already
@@ -1817,9 +1849,11 @@ Every kind published, by subject:
 | a skill | ~skill.changed~ |
 | a recording | ~teach.changed~ |
 | an integration | ~integration.changed~ |
+| the broker's state (~stopped~, ~starting~, ~running~, ...), or ~key~ | ~broker.changed~ (the integration broker moved, or a key was stored) |
 | a cloud image | ~image.progress~ (~done~, ~total~), ~image.finished~ (~path~ or ~error~) |
 | the daemon | ~device.paired~ (~device~, ~name~), ~device.revoked~ (~device~), ~device.expired~ (~device~) |
 | an agent | ~computer.exec~ |
+| an agent | ~browser.secret_filled~ (~name~, ~kind~, ~host~, ~session~: never the value) |
 | an agent | ~turn.timed_out~, ~turn.repeating~, ~message.steered~ |
 | an agent | ~egress.refused~ (the gate refused one of its connections; agent.show's ~egress~ has the detail) |
 | an agent | ~turn.step~ (~step_kind~, ~room_id~, ~text~, ~tool~, ~detail~, ~failed~) |
