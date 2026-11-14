@@ -350,7 +350,11 @@ const ClawtLrgSettingsPage *clawt_lrg_settings_integrations_page(void); /* lrg-s
 const ClawtLrgSettingsPage *clawt_lrg_settings_connectors_page(void);   /* lrg-settings-connectors.c */
 const ClawtLrgSettingsPage *clawt_lrg_settings_folders_page(void);      /* lrg-settings-folders.c */
 const ClawtLrgSettingsPage *clawt_lrg_settings_appearance_page(void);   /* lrg-settings-appearance.c */
+const ClawtLrgSettingsPage *clawt_lrg_settings_devices_page(void);      /* lrg-settings-devices.c */
 const ClawtLrgSettingsPage *clawt_lrg_settings_connections_page(void);  /* lrg-settings-connections.c */
+
+/* device.* events: the Devices list redraws, a code on screen learns it was used. */
+void clawt_lrg_settings_devices_event(ClawtLrgApp *app, ClawtEvent *event);
 
 /* Dialogs reachable from the header menu and the sidebar (lrg-dialogs.c). */
 void clawt_lrg_new_agent_dialog(ClawtLrgApp *app);

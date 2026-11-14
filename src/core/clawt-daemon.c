@@ -405,6 +405,8 @@ static const gchar GIT_BLOCK[] =
     "credentials/\n"
     "secrets/\n"
     "*/token\n"
+    "tcp-token\n"
+    "devices.yaml\n"
     "agents/*/token\n"
     "agents/*/credentials/\n"
     "\n"
@@ -4297,6 +4299,7 @@ release_components(ClawtDaemon *self)
     g_clear_object(&self->skills);
 
     g_clear_object(&self->ipc_server);
+    g_clear_object(&self->devices);
     g_clear_object(&self->link_server);
     g_clear_object(&self->pod_bridge);
     g_clear_object(&self->router);
@@ -4481,6 +4484,12 @@ void
 clawt_daemon_sweep(ClawtDaemon *self)
 {
     g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+    /*
+     * Ahead of the router check: a paired device's idle window has
+     * nothing to do with whether any agent has a mailbox.
+     */
+    clawt_daemon_devices_sweep(self);
 
     if (self->router == NULL)
         return;
@@ -5316,6 +5325,9 @@ configure_limits(ClawtDaemon *self)
         self->tasks,
         (guint)clawt_config_get_int(self->config, "orchestration.max_hops"));
 
+    /* daemon.device_idle_days, so a reload reaches it. */
+    clawt_daemon_devices_configure(self);
+
     /*
      * The turn budgets go through here too, so a reload reaches them.
      * A no-op before clawt_daemon_turn_setup() has run, which is what
@@ -6107,6 +6119,12 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     clawt_ipc_server_set_handler(self->ipc_server, on_ipc_request, self,
                                  NULL);
     clawt_ipc_server_attach_bus(self->ipc_server, self->bus);
+
+    /*
+     * Before any listener binds, so the first network client to say
+     * hello can already be a paired device.
+     */
+    clawt_daemon_devices_start(self);
 
     {
         guint16 port =
@@ -8590,6 +8608,7 @@ clawt_daemon_on_ipc_lifecycle_finished(GObject *source, GAsyncResult *result,
 static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_control,
     clawt_daemon_handle_hold,
+    clawt_daemon_handle_device,
     clawt_daemon_handle_misc,
     clawt_daemon_handle_agent,
     clawt_daemon_handle_memory,

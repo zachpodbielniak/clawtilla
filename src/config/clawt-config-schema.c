@@ -158,6 +158,18 @@ static const ClawtSchemaEntry schema[] = {
   "first time a TCP or tailnet listener needs one, so enabling either\n"
   "cannot leave the daemon open by omission.", "0.1.0" },
 
+{ "daemon.device_idle_days", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "90", NULL,
+  "Days a paired device may go unseen before its token stops working.\n"
+  "0 means never.\n"
+  "\n"
+  "A device is seen when it connects and, once a minute, for as long as\n"
+  "it stays connected -- so a laptop left open on the fleet never lapses\n"
+  "while somebody is looking at it. An expired device is removed exactly\n"
+  "as `clawtilla device revoke` would remove it, live connections and\n"
+  "all; pair it again with a fresh code. The daemon's own token\n"
+  "(token_file) is the owner credential and never expires.", "0.13.0" },
+
 { "daemon.event_log_days", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "30", NULL,
   "How many days of per-room event logs to keep. 0 disables the sweep.\n"

@@ -19,6 +19,7 @@
 
 #include "clawt-types.h"
 #include "core/clawt-event-bus.h"
+#include "ipc/clawt-device-store.h"
 
 G_BEGIN_DECLS
 
@@ -223,6 +224,20 @@ gboolean clawt_ipc_server_is_listening_on(ClawtIpcServer *self,
                                           guint16         port);
 
 /**
+ * clawt_ipc_server_list_bound:
+ * @self: a #ClawtIpcServer
+ *
+ * Every network address that actually bound, as `host:port` (IPv6 in
+ * brackets).  What a device being paired needs to be told to dial --
+ * and, like clawt_ipc_server_is_listening_on(), what was bound rather
+ * than what was asked for.
+ *
+ * Returns: (transfer full) (array zero-terminated=1): the addresses,
+ *   possibly none
+ */
+gchar **clawt_ipc_server_list_bound(ClawtIpcServer *self);
+
+/**
  * clawt_ipc_server_set_tls:
  * @self: a #ClawtIpcServer
  * @certificate_path: (nullable): PEM certificate
@@ -263,5 +278,97 @@ void clawt_ipc_server_stop(ClawtIpcServer *self);
 guint clawt_ipc_server_count_clients(ClawtIpcServer *self);
 
 const gchar *clawt_ipc_server_get_socket_path(ClawtIpcServer *self);
+
+/**
+ * clawt_ipc_server_set_device_store:
+ * @self: a #ClawtIpcServer
+ * @store: (nullable) (transfer none): the paired devices
+ *
+ * Lets a network client authenticate with a token of its own as well as
+ * with the owner token, and lets one with neither redeem a pairing code
+ * (`device.redeem`, the one frame answered before `control.hello`).
+ *
+ * Without a store only the owner token is accepted, which is how the
+ * daemon behaved before devices existed.
+ */
+void clawt_ipc_server_set_device_store(ClawtIpcServer   *self,
+                                       ClawtDeviceStore *store);
+
+/**
+ * clawt_ipc_server_check_credential:
+ * @self: a #ClawtIpcServer
+ * @token: (nullable): what a network client presented in `control.hello`
+ * @now: the current time, in seconds since the epoch
+ * @device_id: (out) (optional) (transfer full) (nullable): the device it
+ *   belongs to, or %NULL when it is the owner token
+ *
+ * Whether @token lets a network client in, and as whom.
+ *
+ * The owner token is tried first and is untouched by anything the device
+ * store does: revoking every device, or expiring them, never changes
+ * what the owner token opens.  Both comparisons are constant-time.
+ *
+ * Returns: %TRUE when @token is accepted
+ */
+gboolean clawt_ipc_server_check_credential(ClawtIpcServer  *self,
+                                           const gchar     *token,
+                                           gint64           now,
+                                           gchar          **device_id);
+
+/**
+ * clawt_ipc_server_get_current_device:
+ * @self: a #ClawtIpcServer
+ *
+ * Who sent the request being handled right now.
+ *
+ * Only meaningful from inside a #ClawtIpcHandler.  %NULL means the owner:
+ * a unix-socket client, or a network client that presented the owner
+ * token.
+ *
+ * Returns: (transfer none) (nullable): the device id, or %NULL
+ */
+const gchar *clawt_ipc_server_get_current_device(ClawtIpcServer *self);
+
+/**
+ * clawt_ipc_server_device_is_connected:
+ * @self: a #ClawtIpcServer
+ * @id: a device id
+ *
+ * Returns: %TRUE when @id has a connection open now
+ */
+gboolean clawt_ipc_server_device_is_connected(ClawtIpcServer *self,
+                                              const gchar    *id);
+
+/**
+ * clawt_ipc_server_close_device:
+ * @self: a #ClawtIpcServer
+ * @id: a device id
+ *
+ * Closes every connection that authenticated as @id.
+ *
+ * Revoking a token only refuses the *next* hello; a client already
+ * connected never says hello again, so without this a revoked laptop
+ * kept its live session -- events and all -- until it next lost its
+ * network.
+ *
+ * Returns: how many connections were closed
+ */
+guint clawt_ipc_server_close_device(ClawtIpcServer *self, const gchar *id);
+
+/**
+ * clawt_ipc_server_sweep_devices:
+ * @self: a #ClawtIpcServer
+ * @now: the current time, in seconds since the epoch
+ *
+ * Marks every connected device as seen, then expires the idle ones and
+ * closes whatever they still had open.
+ *
+ * In that order, because a device that has been connected for the whole
+ * idle window never presented its token in it, and expiring it would cut
+ * off somebody who is using it.
+ *
+ * Returns: (transfer full) (element-type utf8): the ids that expired
+ */
+GPtrArray *clawt_ipc_server_sweep_devices(ClawtIpcServer *self, gint64 now);
 
 G_END_DECLS

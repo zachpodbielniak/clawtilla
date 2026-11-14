@@ -132,6 +132,17 @@ daemon:
   # # cannot leave the daemon open by omission.
   # token_file: null
 
+  # Days a paired device may go unseen before its token stops working.
+  # 0 means never.
+  #
+  # A device is seen when it connects and, once a minute, for as long as
+  # it stays connected -- so a laptop left open on the fleet never lapses
+  # while somebody is looking at it. An expired device is removed exactly
+  # as `clawtilla device revoke` would remove it, live connections and
+  # all; pair it again with a fresh code. The daemon's own token
+  # (token_file) is the owner credential and never expires.
+  device_idle_days: 90
+
   # How many days of per-room event logs to keep. 0 disables the sweep.
   #
   # The event log is the file you paste into a bug report. Secrets are

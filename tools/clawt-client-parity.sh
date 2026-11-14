@@ -389,6 +389,19 @@ declare -A AFFORDANCES=(
     # to decide a trace was safe to share.
     #
     ["teach caveats"]="caveats|caveats|caveats"
+    #
+    # Per-device tokens.  The four device.* kinds are compared by layer 1;
+    # these are the halves that send nothing of their own.  Pairing with
+    # a code goes through the library on the *connecting* side, inside
+    # ClawtClient's handshake, so no client spells `device.redeem` and
+    # layer 1 is blind to whether a connection screen offers it at all.
+    # The countdown and the last-seen phrasing are libclawt's, so the
+    # marker is the call in each.
+    #
+    ["pair with a code"]="clawt_connection_new_paired|/settings/connections/pair|clawt_connection_pair(job->connection"
+    ["pairing countdown"]="clawt_device_countdown_text|clawt_device_countdown_text|clawt_device_countdown_text"
+    ["device last seen"]="clawt_device_seen_text|clawt_device_seen_text|clawt_device_seen_text"
+    ["a code on screen learns it was used"]="\"device.paired\"|/settings/devices/pair-status|\"device.paired\""
 )
 
 usage () {

@@ -1494,6 +1494,13 @@ versions apart.
   writes the token to a 0600 file and puts the **path** in the reply. There is
   deliberately no `--password` flag -- an argument is in the shell history and
   the process table.
+- A device token crosses IPC exactly once: in the `device.redeem` reply,
+  to the device that redeemed the code. The daemon keeps only its SHA-256
+  (`<state_dir>/devices.yaml`), `ClawtDevice` has no field to carry one,
+  and the owner token is checked first and by itself, so nothing done to
+  devices -- revoke, idle expiry, a damaged `devices.yaml` -- changes what
+  it opens. Revoking closes live connections too: a client that stays
+  connected never says hello again.
 - An argv is world-readable; an environment is not. `ClawtConnectorPlan` is
   tested with a *negative* assertion: the credential must be in `envp` or a
   header and nowhere in `argv`.

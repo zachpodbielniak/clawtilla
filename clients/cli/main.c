@@ -8550,6 +8550,8 @@ cmd_remote(int argc, char *argv[])
 
         if (connections->len == 0) {
             g_print("No saved connections.\n");
+            g_print("  clawtilla remote pair <name> <host> <code>   "
+                    "(code from `clawtilla device pair`)\n");
             g_print("  clawtilla remote add <name> <host> [--port N] "
                     "[--token T]\n");
             return EXIT_SUCCESS;
@@ -8631,6 +8633,81 @@ cmd_remote(int argc, char *argv[])
         return EXIT_SUCCESS;
     }
 
+    /*
+     * The easy path: a six-digit code from `clawtilla device pair` on the
+     * other machine, traded for a token of this device's own and saved
+     * here, 0600.  Nothing to copy across by hand, and nothing in the
+     * shell history that opens the daemon.
+     */
+    if (g_strcmp0(verb, "pair") == 0) {
+        const gchar *name = (argc > 3) ? argv[3] : NULL;
+        const gchar *address = (argc > 4) ? argv[4] : NULL;
+        const gchar *code = (argc > 5) ? argv[5] : NULL;
+        const gchar *device_name = NULL;
+        g_autofree gchar *host = NULL;
+        guint16 port = CLAWT_DEFAULT_TCP_PORT;
+        gboolean tls = FALSE;
+        gboolean insecure = FALSE;
+        ClawtConnection *connection;
+        gint arg;
+
+        if (name == NULL || address == NULL || code == NULL) {
+            g_printerr("Usage: clawtilla remote pair <name> <host[:port]> "
+                       "<code> [--device-name N] [--tls] [--insecure]\n");
+            g_printerr("  e.g. clawtilla remote pair workstation "
+                       "100.72.0.41 123456\n");
+            g_printerr("  `clawtilla device pair` on that machine prints "
+                       "the code.\n");
+            return EXIT_FAILURE;
+        }
+
+        for (arg = 6; arg < argc; arg++) {
+            if (g_strcmp0(argv[arg], "--device-name") == 0 &&
+                arg + 1 < argc)
+                device_name = argv[++arg];
+            else if (g_strcmp0(argv[arg], "--tls") == 0)
+                tls = TRUE;
+            else if (g_strcmp0(argv[arg], "--insecure") == 0)
+                insecure = TRUE;
+        }
+
+        if (!clawt_ipc_parse_listen_address(address, CLAWT_DEFAULT_TCP_PORT,
+                                            &host, &port, &error)) {
+            g_printerr("clawtilla: %s\n", error->message);
+            return EXIT_FAILURE;
+        }
+
+        if (clawt_connection_list_find(connections, name) != NULL) {
+            g_printerr("clawtilla: there is already a connection called "
+                       "'%s'\n", name);
+            return EXIT_FAILURE;
+        }
+
+        connection = clawt_connection_new_paired(name, host, port, tls,
+                                                 insecure, code, device_name,
+                                                 &error);
+
+        if (connection == NULL) {
+            g_printerr("clawtilla: %s\n", error->message);
+            return EXIT_FAILURE;
+        }
+
+        g_ptr_array_add(connections, connection);
+
+        if (!clawt_connection_list_save(NULL, connections, &error)) {
+            g_printerr("clawtilla: paired, but the token could not be "
+                       "saved: %s\n", error->message);
+            g_printerr("  Revoke the new device on that machine "
+                       "(`clawtilla device list`) and try again.\n");
+            return EXIT_FAILURE;
+        }
+
+        g_print("Paired and saved %s. Try it:\n"
+                "  clawtilla --profile %s status\n", name, name);
+
+        return EXIT_SUCCESS;
+    }
+
     if (g_strcmp0(verb, "rm") == 0) {
         const gchar *name = (argc > 3) ? argv[3] : NULL;
         ClawtConnection *found;
@@ -8660,9 +8737,202 @@ cmd_remote(int argc, char *argv[])
         return EXIT_SUCCESS;
     }
 
-    g_printerr("Usage: clawtilla remote {list,add,rm}\n");
+    g_printerr("Usage: clawtilla remote {list,add,pair,rm}\n");
 
     return EXIT_FAILURE;
+}
+
+/* ── device ──────────────────────────────────────────────────────── */
+
+static void
+print_device_usage(gboolean asked_for)
+{
+    static const gchar *text =
+        "Usage: clawtilla device [list|pair|revoke] [ARGS...]\n"
+        "\n"
+        "  list                  paired devices: id, name, when paired, when\n"
+        "                        last seen -- never a token\n"
+        "  pair [--name NAME]    print a six-digit code another device trades\n"
+        "                        for a token of its own (five minutes, single\n"
+        "                        use, five wrong guesses and it is gone)\n"
+        "  revoke ID             stop that device's token working, and close\n"
+        "                        whatever it has connected now\n"
+        "\n"
+        "The daemon's own token (`clawtilla daemon token`) stays the owner\n"
+        "credential: revoking or expiring devices never touches it. Only the\n"
+        "owner can pair; any connected client can list and revoke, so a laptop\n"
+        "can cut off a lost phone. daemon.device_idle_days expires a device\n"
+        "nobody has used for that long (0 = never).\n"
+        "\n"
+        "Examples:\n"
+        "  # On the machine running the fleet\n"
+        "  clawtilla device pair --name phone\n"
+        "\n"
+        "  # On the device being paired, with the address and code it printed\n"
+        "  clawtilla remote pair workstation 100.72.0.41 123456\n"
+        "\n"
+        "  clawtilla device list\n"
+        "  clawtilla device revoke d3f9a01bc\n";
+
+    print_usage_text(text, asked_for);
+}
+
+static gint
+cmd_device(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *verb = (argc > 2) ? argv[2] : "list";
+
+    if (g_strcmp0(verb, "-h") == 0 || g_strcmp0(verb, "--help") == 0 ||
+        g_strcmp0(verb, "help") == 0) {
+        print_device_usage(TRUE);
+        return EXIT_SUCCESS;
+    }
+
+    /* Refused before connecting: answering a typo needs no daemon. */
+    if (g_strcmp0(verb, "list") != 0 && g_strcmp0(verb, "pair") != 0 &&
+        g_strcmp0(verb, "revoke") != 0) {
+        g_printerr("clawtilla: unknown device verb '%s'\n", verb);
+        print_device_usage(FALSE);
+        return EXIT_FAILURE;
+    }
+
+    if (g_strcmp0(verb, "revoke") == 0 && argc < 4) {
+        g_printerr("Usage: clawtilla device revoke ID\n"
+                   "  `clawtilla device list` shows the ids.\n");
+        return EXIT_FAILURE;
+    }
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    if (g_strcmp0(verb, "pair") == 0) {
+        const gchar *name = NULL;
+        JsonObject *payload;
+        JsonArray *addresses;
+        gint arg;
+        guint i;
+
+        for (arg = 3; arg < argc; arg++) {
+            if (g_strcmp0(argv[arg], "--name") == 0 && arg + 1 < argc)
+                name = argv[++arg];
+            else {
+                g_printerr("clawtilla: unexpected argument '%s'\n",
+                           argv[arg]);
+                return EXIT_FAILURE;
+            }
+        }
+
+        reply = call(client, "device.pair", build_payload("name", name,
+                                                          NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        payload = json_node_get_object(reply);
+        addresses = json_object_has_member(payload, "addresses")
+            ? json_object_get_array_member(payload, "addresses") : NULL;
+
+        g_print("Pairing code:  %s\n",
+                json_object_get_string_member(payload, "display"));
+        g_print("Good for %" G_GINT64_FORMAT " minutes, once.\n\n",
+                json_object_get_int_member(payload, "expires_in") / 60);
+
+        /*
+         * Where to dial, because a code is no use without an address and
+         * this is the one moment somebody is guaranteed to be looking.
+         */
+        if (addresses == NULL || json_array_get_length(addresses) == 0) {
+            g_print("This daemon is not listening on the network, so no other "
+                    "device can reach it\nto redeem this. Turn on "
+                    "daemon.tailscale or daemon.tcp_enabled, or start it\n"
+                    "with --bind.\n");
+            return EXIT_SUCCESS;
+        }
+
+        g_print("On the other device, enter the address and the code under "
+                "\"Pair with a code\"\nin Connections, or run:\n\n");
+
+        for (i = 0; i < json_array_get_length(addresses); i++)
+            g_print("  clawtilla remote pair %s %s %s\n",
+                    name != NULL ? name : "NAME",
+                    json_array_get_string_element(addresses, i),
+                    json_object_get_string_member(payload, "code"));
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "revoke") == 0) {
+        JsonObject *payload;
+
+        reply = call(client, "device.revoke", build_payload("id", argv[3],
+                                                            NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        payload = json_node_get_object(reply);
+
+        g_print("Revoked %s.", argv[3]);
+
+        if (json_object_get_int_member(payload, "closed") > 0)
+            g_print(" Closed %" G_GINT64_FORMAT " live connection(s).",
+                    json_object_get_int_member(payload, "closed"));
+
+        g_print("\n");
+
+        return EXIT_SUCCESS;
+    }
+
+    /* list */
+    {
+        JsonObject *payload;
+        JsonArray *devices;
+        gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+        guint i;
+
+        reply = call(client, "device.list", NULL);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        payload = json_node_get_object(reply);
+        devices = json_object_get_array_member(payload, "devices");
+
+        if (devices == NULL || json_array_get_length(devices) == 0) {
+            g_print("No paired devices.\n"
+                    "  clawtilla device pair --name phone\n");
+            return EXIT_SUCCESS;
+        }
+
+        g_print("%-11s %-22s %-17s %s\n", "ID", "NAME", "PAIRED",
+                "LAST SEEN");
+
+        for (i = 0; i < json_array_get_length(devices); i++) {
+            JsonObject *device = json_array_get_object_element(devices, i);
+            g_autoptr(GDateTime) created = g_date_time_new_from_unix_local(
+                json_object_get_int_member(device, "created"));
+            g_autofree gchar *when = (created != NULL)
+                ? g_date_time_format(created, "%Y-%m-%d %H:%M")
+                : g_strdup("?");
+            g_autofree gchar *seen = clawt_device_seen_text(
+                json_object_get_int_member(device, "last_seen"),
+                json_object_get_boolean_member(device, "connected"), now);
+
+            g_print("%-11s %-22s %-17s %s%s\n",
+                    json_object_get_string_member(device, "id"),
+                    json_object_get_string_member(device, "name"), when,
+                    seen,
+                    json_object_get_boolean_member(device, "current")
+                        ? "  (this connection)" : "");
+        }
+
+        if (json_object_get_int_member(payload, "idle_days") > 0)
+            g_print("\nA device unseen for %" G_GINT64_FORMAT " days stops "
+                    "working (daemon.device_idle_days).\n",
+                    json_object_get_int_member(payload, "idle_days"));
+
+        return EXIT_SUCCESS;
+    }
 }
 
 static gint
@@ -8722,6 +8992,8 @@ static const ClawtVerb verbs[] = {
       cmd_daemon },
     { "remote",  "<verb>",   "Saved connections to other machines",
       cmd_remote },
+    { "device",  "<verb>",   "Pair, list and revoke client devices",
+      cmd_device },
     { "status",  "",         "What this daemon is running right now",
       cmd_status },
     { "pause",   "[agent]",  "Hold the fleet: stop delivery, let turns finish",

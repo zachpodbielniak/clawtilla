@@ -1497,6 +1497,37 @@ open_document(HtmxBuilder *builder, const gchar *title,
         "})();");
     htmx_builder_end(builder);
 
+    /*
+     * The pairing code's countdown, ticking in the browser.
+     *
+     * The page carries how many seconds the code had left when it was
+     * rendered, not the daemon's clock: a browser on another machine
+     * counting down to the daemon's `expires_at` is only right when the
+     * two clocks agree.  The text matches clawt_device_countdown_text(),
+     * which renders the first value server-side, so nothing jumps when
+     * the first tick lands.  Polled from the document rather than bound
+     * to the element, because an htmx swap replaces the element.
+     */
+    htmx_builder_begin(builder, "script");
+    htmx_builder_raw_html(builder,
+        "(function(){"
+        "function tick(){"
+        "document.querySelectorAll('[data-pair-expires-in]').forEach("
+        "function(n){"
+        "if(!n.dataset.pairDeadline){n.dataset.pairDeadline=String("
+        "Date.now()+1000*parseInt(n.dataset.pairExpiresIn,10));}"
+        "var left=Math.round((parseInt(n.dataset.pairDeadline,10)-"
+        "Date.now())/1000);"
+        "if(left<=0){n.textContent='expired';"
+        "document.querySelectorAll('.pair-code').forEach(function(c){"
+        "c.classList.add('expired');});return;}"
+        "var s=left%60;n.textContent=Math.floor(left/60)+':'+"
+        "(s<10?'0':'')+s;});}"
+        "setInterval(tick,1000);"
+        "document.addEventListener('htmx:afterSwap',tick);"
+        "})();");
+    htmx_builder_end(builder);
+
     htmx_builder_end(builder);  /* head */
 
     htmx_builder_begin(builder, "body");

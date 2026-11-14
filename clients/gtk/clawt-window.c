@@ -1431,6 +1431,15 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
     }
 
     /*
+     * A device paired, revoked or expired: the Devices list redraws, and
+     * a code being shown learns it was used.
+     */
+    if (g_str_has_prefix(kind != NULL ? kind : "", "device.")) {
+        clawt_gtk_devices_on_event(self, event);
+        return;
+    }
+
+    /*
      * A download's progress moves the bar it belongs to and nothing else.
      * Rebuilding the list on every one of a hundred events would fight
      * whoever is using that window.
@@ -4130,9 +4139,25 @@ typedef struct {
     GtkWidget   *token_entry;
     GtkWidget   *tls_row;
     GtkWidget   *insecure_row;
+
+    /* "Pair with a code": the easy path, beside pasting a token. */
+    GtkWidget   *pair_name_entry;
+    GtkWidget   *pair_host_entry;
+    GtkWidget   *pair_port_entry;
+    GtkWidget   *pair_code_entry;
+    GtkWidget   *pair_tls_row;
+    GtkWidget   *pair_button;
 } ConnectionDialog;
 
 static void connection_dialog_fill(ConnectionDialog *dialog);
+
+/*
+ * The connection dialog that is open, if any.  A pairing finishes on a
+ * worker's schedule, and the dialog it was started from may have been
+ * closed -- and freed -- by then; the answer is only drawn into a dialog
+ * that is still this one.
+ */
+static ConnectionDialog *open_connection_dialog;
 
 /*
  * Saves the remote profiles only.
@@ -4266,6 +4291,244 @@ on_connection_added(GtkButton *button, gpointer user_data)
     clawt_window_toast(self, "Saved.");
 }
 
+/* ── Pairing with a code ─────────────────────────────────────────── */
+
+typedef struct {
+    ClawtWindow     *window;       /* owned */
+    ConnectionDialog *dialog;      /* compared, never dereferenced stale */
+    gchar           *name;
+    gchar           *host;
+    guint16          port;
+    gboolean         tls;
+    gchar           *code;
+} PairJob;
+
+static void
+pair_job_free(gpointer data)
+{
+    PairJob *job = data;
+
+    g_clear_object(&job->window);
+    g_free(job->name);
+    g_free(job->host);
+    g_free(job->code);
+    g_free(job);
+}
+
+/*
+ * Off the main thread: clawt_connection_pair() blocks for as long as the
+ * far end takes, on a context of its own, exactly like the probe.
+ */
+static void
+pair_worker(GTask *task, gpointer source, gpointer data,
+            GCancellable *cancellable)
+{
+    PairJob *job = data;
+    GError *error = NULL;
+    ClawtConnection *connection;
+
+    (void)source;
+    (void)cancellable;
+
+    connection = clawt_connection_new_paired(job->name, job->host, job->port,
+                                             job->tls, FALSE, job->code,
+                                             NULL, &error);
+
+    if (connection == NULL) {
+        g_task_return_error(task, error);
+        return;
+    }
+
+    g_task_return_pointer(task, connection,
+                          (GDestroyNotify)clawt_connection_free);
+}
+
+static void
+on_paired(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    PairJob *job = g_task_get_task_data(G_TASK(result));
+    ClawtWindow *self = job->window;
+    ConnectionDialog *dialog = (open_connection_dialog == job->dialog)
+                               ? job->dialog : NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtConnection *connection;
+
+    (void)source;
+    (void)user_data;
+
+    connection = g_task_propagate_pointer(G_TASK(result), &error);
+
+    if (dialog != NULL)
+        gtk_widget_set_sensitive(dialog->pair_button, TRUE);
+
+    if (connection == NULL) {
+        clawt_window_toast(self, error->message);
+        return;
+    }
+
+    g_ptr_array_add(self->connections, connection);
+
+    if (!save_connections(self)) {
+        g_ptr_array_remove(self->connections, connection);
+        return;
+    }
+
+    {
+        g_autofree gchar *text = g_strdup_printf(
+            "Paired with %s. Choose it from the connection menu.",
+            clawt_connection_get_name(connection));
+
+        clawt_window_toast(self, text);
+    }
+
+    rebuild_connection_menu(self);
+
+    if (dialog != NULL) {
+        gtk_editable_set_text(GTK_EDITABLE(dialog->pair_name_entry), "");
+        gtk_editable_set_text(GTK_EDITABLE(dialog->pair_host_entry), "");
+        gtk_editable_set_text(GTK_EDITABLE(dialog->pair_code_entry), "");
+        connection_dialog_fill(dialog);
+    }
+}
+
+static void
+on_pair_with_code(GtkButton *button, gpointer user_data)
+{
+    ConnectionDialog *dialog = user_data;
+    ClawtWindow *self = dialog->window;
+    const gchar *name =
+        gtk_editable_get_text(GTK_EDITABLE(dialog->pair_name_entry));
+    const gchar *host =
+        gtk_editable_get_text(GTK_EDITABLE(dialog->pair_host_entry));
+    const gchar *port_text =
+        gtk_editable_get_text(GTK_EDITABLE(dialog->pair_port_entry));
+    const gchar *code =
+        gtk_editable_get_text(GTK_EDITABLE(dialog->pair_code_entry));
+    g_autofree gchar *digits = clawt_device_code_normalize(code);
+    g_autoptr(GTask) task = NULL;
+    PairJob *job;
+    gint64 port;
+
+    (void)button;
+
+    if (host == NULL || *host == '\0') {
+        clawt_window_toast(self, "Pairing needs the daemon's address -- "
+                                 "the one shown beside the code.");
+        return;
+    }
+
+    /* Checked here so a typo costs nothing against the guess limit. */
+    if (digits == NULL) {
+        clawt_window_toast(self, "A pairing code is six digits.");
+        return;
+    }
+
+    port = (port_text != NULL && *port_text != '\0')
+           ? g_ascii_strtoll(port_text, NULL, 10) : CLAWT_DEFAULT_TCP_PORT;
+
+    if (port <= 0 || port > G_MAXUINT16) {
+        clawt_window_toast(self, "That is not a port.");
+        return;
+    }
+
+    if (name == NULL || *name == '\0')
+        name = host;
+
+    if (clawt_connection_list_find(self->connections, name) != NULL) {
+        clawt_window_toast(self, "There is already a connection with that "
+                                 "name.");
+        return;
+    }
+
+    job = g_new0(PairJob, 1);
+    job->window = g_object_ref(self);
+    job->dialog = dialog;
+    job->name = g_strdup(name);
+    job->host = g_strdup(host);
+    job->port = (guint16)port;
+    job->tls = adw_switch_row_get_active(ADW_SWITCH_ROW(dialog->pair_tls_row));
+    job->code = g_strdup(digits);
+
+    gtk_widget_set_sensitive(dialog->pair_button, FALSE);
+    clawt_window_toast(self, "Pairing\342\200\246");
+
+    task = g_task_new(NULL, NULL, on_paired, NULL);
+    g_task_set_task_data(task, job, pair_job_free);
+    g_task_run_in_thread(task, pair_worker);
+}
+
+static GtkWidget *
+build_pair_group(ConnectionDialog *dialog)
+{
+    GtkWidget *group = adw_preferences_group_new();
+    g_autofree gchar *port_default = g_strdup_printf(
+        "%d", CLAWT_DEFAULT_TCP_PORT);
+
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group),
+                                    "Pair with a code");
+    adw_preferences_group_set_description(
+        ADW_PREFERENCES_GROUP(group),
+        "The easy way. On the daemon's machine run `clawtilla device pair` "
+        "(or Settings \342\206\222 Devices \342\206\222 Pair a new "
+        "device), then enter its address and the six digits here. This "
+        "machine gets a token of its own, saved for you.");
+
+    dialog->pair_name_entry = adw_entry_row_new();
+    adw_preferences_row_set_use_markup(
+        ADW_PREFERENCES_ROW(dialog->pair_name_entry), FALSE);
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->pair_name_entry),
+                                  "Name");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              dialog->pair_name_entry);
+
+    dialog->pair_host_entry = adw_entry_row_new();
+    adw_preferences_row_set_use_markup(
+        ADW_PREFERENCES_ROW(dialog->pair_host_entry), FALSE);
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->pair_host_entry),
+                                  "Host");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              dialog->pair_host_entry);
+
+    dialog->pair_port_entry = adw_entry_row_new();
+    adw_preferences_row_set_use_markup(
+        ADW_PREFERENCES_ROW(dialog->pair_port_entry), FALSE);
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->pair_port_entry),
+                                  "Port");
+    gtk_editable_set_text(GTK_EDITABLE(dialog->pair_port_entry),
+                          port_default);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              dialog->pair_port_entry);
+
+    dialog->pair_code_entry = adw_entry_row_new();
+    adw_preferences_row_set_use_markup(
+        ADW_PREFERENCES_ROW(dialog->pair_code_entry), FALSE);
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->pair_code_entry),
+                                  "Code");
+    adw_entry_row_set_input_purpose(ADW_ENTRY_ROW(dialog->pair_code_entry),
+                                    GTK_INPUT_PURPOSE_DIGITS);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              dialog->pair_code_entry);
+
+    dialog->pair_tls_row = adw_switch_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->pair_tls_row),
+                                  "TLS");
+    adw_action_row_set_subtitle(
+        ADW_ACTION_ROW(dialog->pair_tls_row),
+        "Only if that daemon has a certificate.");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              dialog->pair_tls_row);
+
+    dialog->pair_button = gtk_button_new_with_label("Pair");
+    gtk_widget_add_css_class(dialog->pair_button, "suggested-action");
+    gtk_widget_set_margin_top(dialog->pair_button, 12);
+    g_signal_connect(dialog->pair_button, "clicked",
+                     G_CALLBACK(on_pair_with_code), dialog);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              dialog->pair_button);
+
+    return group;
+}
+
 static void
 connection_dialog_fill(ConnectionDialog *dialog)
 {
@@ -4334,6 +4597,9 @@ connection_dialog_free(gpointer data)
 {
     ConnectionDialog *dialog = data;
 
+    if (open_connection_dialog == dialog)
+        open_connection_dialog = NULL;
+
     g_ptr_array_unref(dialog->rows);
     g_free(dialog);
 }
@@ -4366,11 +4632,12 @@ on_manage_connections(GtkButton *button, gpointer user_data)
     connection_dialog_fill(dialog);
 
     adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(add_group),
-                                    "Add a daemon");
+                                    "Or paste a token");
     adw_preferences_group_set_description(
         ADW_PREFERENCES_GROUP(add_group),
         "The address the daemon reports at startup, and the token from "
-        "`clawtilla daemon token` on that machine.");
+        "`clawtilla daemon token` on that machine -- the owner's token, "
+        "which revoking devices never touches.");
 
     dialog->name_entry = adw_entry_row_new();
     adw_preferences_row_set_use_markup(
@@ -4434,10 +4701,13 @@ on_manage_connections(GtkButton *button, gpointer user_data)
     adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
                              ADW_PREFERENCES_GROUP(dialog->list_group));
     adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                             ADW_PREFERENCES_GROUP(build_pair_group(dialog)));
+    adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
                              ADW_PREFERENCES_GROUP(add_group));
 
     g_object_set_data_full(G_OBJECT(window), "dialog", dialog,
                            connection_dialog_free);
+    open_connection_dialog = dialog;
 
     {
         GtkWidget *toolbar = adw_toolbar_view_new();
@@ -4770,6 +5040,8 @@ on_settings_closed(AdwDialog *dialog, gpointer user_data)
     self->settings_spending = NULL;
     self->settings_spending_period = NULL;
     self->settings_connectors = NULL;
+    self->settings_devices = NULL;
+    self->settings_devices_pair = NULL;
     self->settings_catalog_row = NULL;
     self->settings_url_row = NULL;
     g_clear_pointer(&self->settings_catalog, json_node_unref);
@@ -4941,6 +5213,9 @@ on_settings_activate(GSimpleAction *action, GVariant *parameter,
     adw_preferences_dialog_add(ADW_PREFERENCES_DIALOG(dialog),
                                ADW_PREFERENCES_PAGE(
                                    clawt_gtk_build_appearance_page(self)));
+    adw_preferences_dialog_add(ADW_PREFERENCES_DIALOG(dialog),
+                               ADW_PREFERENCES_PAGE(
+                                   clawt_gtk_build_devices_page(self)));
 
     self->settings = dialog;
     g_signal_connect(dialog, "closed", G_CALLBACK(on_settings_closed), self);
@@ -4951,6 +5226,7 @@ on_settings_activate(GSimpleAction *action, GVariant *parameter,
     clawt_gtk_refresh_settings_spending(self);
     clawt_gtk_refresh_settings_integrations(self);
     clawt_gtk_refresh_settings_connectors(self);
+    clawt_gtk_refresh_settings_devices(self);
     adw_dialog_present(dialog, GTK_WIDGET(self));
 }
 

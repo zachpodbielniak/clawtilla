@@ -111,7 +111,7 @@ The same seven the GTK client's view switcher has, in the same order.
 | Fleet    | cost per agent, the last fourteen days, idle agents to stop ([[file:clients.org::#fleet-tab][the Fleet tab]]) |
 
 And the settings pages: fleet, VM images, teams, shared folders,
-spending, integrations, connectors, appearance and connections.
+spending, integrations, connectors, appearance, connections and devices.
 
 *** The integration editor
 
@@ -676,6 +676,47 @@ nothing because of a typo in a port.
 Afterwards every page is sent to the fleet index rather than left where
 it was.  Agent ids, room ids and message ids are all per-daemon, so a
 page still showing the previous fleet is showing another machine's.
+
+*** Pairing with a code
+
+The *Pair with a code* card comes first on the page, because it is the
+easy way: a name, the host, the port and the six digits ~clawtilla
+device pair~ (or another client's *Pair a new device*) showed.  It posts
+to ~/settings/connections/pair~, which calls
+~clawt_connection_new_paired()~ -- the code's shape is checked before
+anything is dialled -- and saves the paired profile, holding a token of
+this server's own, to ~connections.yaml~ (0600).  The token is never
+drawn.  Like *Check*, the request blocks for as long as the far end
+takes, on a context of its own.
+
+*Or add one by hand* below it is the old form: a socket path, or a host
+and the owner's token from ~clawtilla daemon token~.
+
+** Devices
+
+=/settings/devices= lists the devices paired with the daemon this server
+is connected to: name, "connected now" or "seen 3 days ago"
+(~clawt_device_seen_text()~, the phrasing every client and the CLI
+share), when it was paired, its id, a *this device* badge when it is the
+connection this server holds, and *Revoke* with a confirmation that says
+what revoking the current device does to every open page.
+
+*Pair a new device* (shown only when ~device.list~ says this server is
+the owner) posts to =/settings/devices/pair=, and only that response
+draws the code -- large, with the addresses to dial and a countdown.  The
+countdown ticks in the page head's script from ~data-pair-expires-in~,
+the seconds left when it was rendered, against the browser's own clock;
+its text matches ~clawt_device_countdown_text()~, which rendered the
+first value.  A small region under it asks
+=/settings/devices/pair-status= every three seconds until it has an
+answer -- a device paired since the code was issued, or the code no
+longer outstanding -- and then stops, since a settings page has no event
+stream of its own to hear ~device.paired~ on.  *Withdraw the code*
+(~device.pair_cancel~) makes it stop working at once.
+
+Reloading the page shows that a code is outstanding and for how long,
+never which: the code is on screen only in the answer to the request
+that asked for it.
 
 ** Live updates
 

@@ -121,6 +121,13 @@ struct _ClawtDaemon {
     ClawtTakeover      *takeover;
     ClawtLinkServer    *link_server;
     ClawtIpcServer     *ipc_server;
+
+    /*
+     * Paired client devices.  NULL when <state_dir>/devices.yaml could
+     * not be read, so that pairing a new device cannot write over the
+     * ones a damaged file still holds.
+     */
+    ClawtDeviceStore   *devices;
     ClawtMcpTools      *mcp_tools;
     ClawtPodBridge     *pod_bridge;
     ClawtPluginManager *plugins;
@@ -809,6 +816,20 @@ clawt_daemon_handle_hold(ClawtDaemon  *self,
                          JsonObject   *payload,
                          gboolean     *handled);
 void clawt_daemon_triggers_stop(ClawtDaemon *self);
+
+/*
+ * device.pair, device.list, device.revoke, and what the daemon does for
+ * paired devices on start, reload and sweep.  See src/core/daemon-device.c.
+ */
+JsonNode *
+clawt_daemon_handle_device(ClawtDaemon  *self,
+                           const gchar  *kind,
+                           JsonNode     *request,
+                           JsonObject   *payload,
+                           gboolean     *handled);
+void clawt_daemon_devices_start(ClawtDaemon *self);
+void clawt_daemon_devices_configure(ClawtDaemon *self);
+void clawt_daemon_devices_sweep(ClawtDaemon *self);
 
 /*
  * clawt_daemon_trigger_deliver:

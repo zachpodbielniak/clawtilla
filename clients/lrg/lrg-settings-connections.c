@@ -49,6 +49,14 @@ typedef struct {
     LrgWidget   *token;
     LrgWidget   *tls;
     LrgWidget   *insecure;
+
+    /* "Pair with a code", the easy path beside pasting a token */
+    LrgWidget   *pair_name;
+    LrgWidget   *pair_host;
+    LrgWidget   *pair_port;
+    LrgWidget   *pair_code;
+    LrgWidget   *pair_tls;
+    gboolean     pairing;       /* one exchange at a time */
 } Connections;
 
 static Connections links;
@@ -514,10 +522,11 @@ build_add_card(ClawtLrgApp *app)
     g_autofree gchar *port = g_strdup_printf("%d", CLAWT_DEFAULT_TCP_PORT);
     LrgWidget *save;
 
-    clawt_lrg_take(box, clawt_lrg_label("Add a daemon", "heading"));
+    clawt_lrg_take(box, clawt_lrg_label("Or paste a token", "heading"));
     clawt_lrg_take(box, clawt_lrg_paragraph(
         "The address the daemon reports at startup, and the token from "
-        "`clawtilla daemon token` on that machine.", "muted"));
+        "`clawtilla daemon token` on that machine -- the owner's token, "
+        "which revoking devices never touches.", "muted"));
 
     links.name = clawt_lrg_entry(NULL, "workstation");
     links.host = clawt_lrg_entry(NULL, "100.64.0.7 or a name");
@@ -544,6 +553,165 @@ build_add_card(ClawtLrgApp *app)
                             app);
     lrg_widget_set_halign(save, LRG_ALIGN_START);
     clawt_lrg_take(form, save);
+    clawt_lrg_take(box, form);
+
+    return clawt_lrg_card(box);
+}
+
+/* ── Pairing with a code ──────────────────────────────────────────── */
+
+typedef struct {
+    ClawtConnection *connection;   /* validated by the form model */
+    gchar           *code;
+} PairJob;
+
+static void
+pair_job_free(gpointer data)
+{
+    PairJob *job = data;
+
+    g_clear_pointer(&job->connection, clawt_connection_free);
+    g_free(job->code);
+    g_free(job);
+}
+
+/*
+ * Off the loop, like the probe: clawt_connection_pair() blocks for as
+ * long as the far end takes, on a context of its own.
+ */
+static void
+pair_worker(GTask *task, gpointer source, gpointer data,
+            GCancellable *cancellable)
+{
+    PairJob *job = data;
+    GError *error = NULL;
+
+    if (!clawt_connection_pair(job->connection, job->code, NULL, &error)) {
+        g_task_return_error(task, error);
+        return;
+    }
+
+    g_task_return_boolean(task, TRUE);
+}
+
+static void
+on_paired(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    ClawtLrgApp *app = user_data;
+    PairJob *job = g_task_get_task_data(G_TASK(result));
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *text = NULL;
+
+    links.pairing = FALSE;
+
+    if (!g_task_propagate_boolean(G_TASK(result), &error)) {
+        clawt_lrg_toast(app, error->message);
+        return;
+    }
+
+    g_ptr_array_add(links.connections,
+                    clawt_connection_copy(job->connection));
+
+    if (!save_connections(app)) {
+        g_ptr_array_set_size(links.connections, links.connections->len - 1);
+        return;
+    }
+
+    /* the code is spent; nothing of it stays in the form */
+    lrg_text_input_set_text(LRG_TEXT_INPUT(links.pair_name), "");
+    lrg_text_input_set_text(LRG_TEXT_INPUT(links.pair_host), "");
+    lrg_text_input_set_text(LRG_TEXT_INPUT(links.pair_code), "");
+
+    text = g_strdup_printf("Paired with %s. Switch to it below.",
+                           clawt_connection_get_name(job->connection));
+    clawt_lrg_toast(app, text);
+    reload_connections(app);
+    rebuild_list(app);
+    probe_all(app);
+}
+
+static void
+on_pair_clicked(LrgButton *button, gpointer user_data)
+{
+    ClawtLrgApp *app = user_data;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GTask) task = NULL;
+    g_autofree gchar *digits = NULL;
+    ClawtConnection *connection;
+    PairJob *job;
+
+    if (links.pairing) {
+        clawt_lrg_toast(app, "Already pairing…");
+        return;
+    }
+
+    /* checked first, so a typo costs nothing against the guess limit */
+    digits = clawt_device_code_normalize(clawt_lrg_entry_text(links.pair_code));
+
+    if (digits == NULL) {
+        clawt_lrg_toast(app, "A pairing code is six digits.");
+        return;
+    }
+
+    connection = clawt_lrg_settings_connection_from_form(
+        links.connections, clawt_lrg_entry_text(links.pair_name),
+        clawt_lrg_entry_text(links.pair_host),
+        clawt_lrg_entry_text(links.pair_port), NULL,
+        clawt_lrg_switch_active(links.pair_tls), FALSE, &error);
+
+    if (connection == NULL) {
+        clawt_lrg_toast(app, error->message);
+        return;
+    }
+
+    job = g_new0(PairJob, 1);
+    job->connection = connection;
+    job->code = g_steal_pointer(&digits);
+    links.pairing = TRUE;
+    clawt_lrg_toast(app, "Pairing…");
+
+    /* pushed so the GTask returns on our context, as probe() does */
+    g_main_context_push_thread_default(app->context);
+    task = g_task_new(NULL, NULL, on_paired, app);
+    g_main_context_pop_thread_default(app->context);
+
+    g_task_set_task_data(task, job, pair_job_free);
+    g_task_run_in_thread(task, pair_worker);
+}
+
+static LrgWidget *
+build_pair_card(ClawtLrgApp *app)
+{
+    LrgWidget *box = clawt_lrg_vbox(10.0f);
+    LrgWidget *form = clawt_lrg_form_new();
+    g_autofree gchar *port = g_strdup_printf("%d", CLAWT_DEFAULT_TCP_PORT);
+    LrgWidget *pair;
+
+    clawt_lrg_take(box, clawt_lrg_label("Pair with a code", "heading"));
+    clawt_lrg_take(box, clawt_lrg_paragraph(
+        "The easy way. On the daemon's machine run `clawtilla device pair` "
+        "(or Settings → Devices → Pair a new device), then enter its "
+        "address and the six digits here. This machine gets a token of its "
+        "own, saved for you.", "muted"));
+
+    links.pair_name = clawt_lrg_entry(NULL, "workstation");
+    links.pair_host = clawt_lrg_entry(NULL, "the address shown beside the "
+                                            "code");
+    links.pair_port = clawt_lrg_entry(port, NULL);
+    links.pair_code = clawt_lrg_entry(NULL, "123 456");
+    links.pair_tls = clawt_lrg_switch("TLS", FALSE);
+
+    clawt_lrg_form_add(form, "Name", links.pair_name, NULL);
+    clawt_lrg_form_add(form, "Host", links.pair_host, NULL);
+    clawt_lrg_form_add(form, "Port", links.pair_port, NULL);
+    clawt_lrg_form_add(form, "Code", links.pair_code, NULL);
+    clawt_lrg_form_add(form, NULL, links.pair_tls,
+                       "Only if that daemon has a certificate.");
+
+    pair = clawt_lrg_button("Pair", "primary", G_CALLBACK(on_pair_clicked),
+                            app);
+    lrg_widget_set_halign(pair, LRG_ALIGN_START);
+    clawt_lrg_take(form, pair);
     clawt_lrg_take(box, form);
 
     return clawt_lrg_card(box);
@@ -598,6 +766,7 @@ build(ClawtLrgApp *app)
     g_object_unref(links.list);
     clawt_lrg_take(body, clawt_lrg_card(saved));
 
+    clawt_lrg_take(body, build_pair_card(app));
     clawt_lrg_take(body, build_add_card(app));
 
     return page;
