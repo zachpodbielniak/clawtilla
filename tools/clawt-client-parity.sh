@@ -435,6 +435,9 @@ declare -A AFFORDANCES=(
     # full editors for them.
     #
     ["integration fields"]="clawt_integration_fields|clawt_integration_fields|clawt_integration_fields"
+    # A credential field is asked for as a reference and never shown
+    # back -- an apprise notifier's URL is one, and so is every token.
+    ["integration secret field as a reference"]="CLAWT_FIELD_SECRET|CLAWT_FIELD_SECRET|CLAWT_FIELD_SECRET"
     #
     # A skill's `/name` is dynamic, so layer 2 cannot see it.
     #

@@ -204,6 +204,42 @@ void clawt_notify_send_async(ClawtIntegrationBinding *binding,
 gboolean clawt_notify_send_finish(GAsyncResult *result, GError **error);
 
 /**
+ * clawt_notify_apprise_write_config:
+ * @urls: one or more Apprise URLs, one per line
+ * @error: return location for a #GError
+ *
+ * Writes @urls to a new file that only this user can read (0600, made
+ * with mkstemp in the temporary directory), for `apprise --config`.
+ *
+ * An Apprise URL nearly always carries a credential --
+ * `tgram://BOT_TOKEN/CHAT`, `mailtos://user:password@host` -- so it is
+ * a secret, and an argv is world-readable through /proc.  The file is
+ * how the URL reaches apprise without being on its command line.
+ *
+ * Returns: (transfer full) (nullable): the file's path, which the
+ *   caller deletes once apprise has exited
+ */
+gchar *clawt_notify_apprise_write_config(const gchar  *urls,
+                                         GError      **error);
+
+/**
+ * clawt_notify_apprise_argv:
+ * @program: (nullable): the apprise binary; %NULL for `apprise` on PATH
+ * @config_path: the file clawt_notify_apprise_write_config() wrote
+ * @title: (nullable): the notification's title
+ *
+ * The command line for one Apprise notification: the program,
+ * `--config` naming @config_path, and `--title`.  Never a URL, and never
+ * the body: the body goes on standard input, which apprise reads when
+ * no `--body` is given.
+ *
+ * Returns: (transfer full) (array zero-terminated=1): the argv
+ */
+GStrv clawt_notify_apprise_argv(const gchar *program,
+                                const gchar *config_path,
+                                const gchar *title);
+
+/**
  * ClawtNotifier:
  *
  * The thing that decides whether an event is worth a notification, and

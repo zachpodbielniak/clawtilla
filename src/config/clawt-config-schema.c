@@ -1562,7 +1562,10 @@ static const ClawtSchemaEntry schema[] = {
   "wrong answer when the daemon is on a workstation and you are not.\n"
   "`ntfy` and `gotify` reach a phone. `matrix` posts into a room, which\n"
   "on a bridged homeserver means it reaches you wherever you already\n"
-  "read messages. `command` runs a program and hands it the text.", "0.2.0" },
+  "read messages. `command` runs a program and hands it the text.\n"
+  "`apprise` (since 0.22.0) hands it to the apprise CLI, which reaches a\n"
+  "hundred-odd services -- Telegram, Signal, email, Pushover, Gotify, SMS\n"
+  "-- through one URL scheme; the URL is `apprise_url`.", "0.2.0" },
 
 { "integrations.token", CLAWT_SCHEMA_SECRET, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
@@ -1575,6 +1578,18 @@ static const ClawtSchemaEntry schema[] = {
   "notification: a `command` reference to a locked password manager\n"
   "blocks until it times out, and doing that each time something needed\n"
   "saying would make the notifier the slowest thing in the daemon.", "0.2.0" },
+
+{ "integrations.apprise_url", CLAWT_SCHEMA_SECRET, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "notify: with `backend: apprise`, the Apprise URL -- or several, one per\n"
+  "line -- as a secret reference: `{file: ~/.config/clawtilla/apprise.url}`.\n"
+  "\n"
+  "A secret because an Apprise URL nearly always carries a credential\n"
+  "(`tgram://BOT_TOKEN/CHAT_ID`, `mailtos://user:password@host`). It\n"
+  "reaches apprise in a 0600 file passed with `--config`, deleted when\n"
+  "apprise exits, and never on its command line, which any user on the\n"
+  "machine can read. `command` names the apprise binary when it is not on\n"
+  "PATH.", "0.22.0" },
 
 { "integrations.room", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
@@ -1630,7 +1645,10 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "This is the general way to give the fleet anything with an MCP server:\n"
   "one entry here reaches every agent in scope, instead of the same block\n"
-  "pasted into each agent's .mcp.json by hand.", "0.2.0" },
+  "pasted into each agent's .mcp.json by hand.\n"
+  "\n"
+  "notify: with `backend: command`, the program to run; with\n"
+  "`backend: apprise`, the apprise binary when it is not on PATH.", "0.2.0" },
 
 { "integrations.args", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL, "mcp: arguments for `command`.", "0.2.0" },

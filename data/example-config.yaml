@@ -1428,7 +1428,10 @@ integrations:
     # `ntfy` and `gotify` reach a phone. `matrix` posts into a room, which
     # on a bridged homeserver means it reaches you wherever you already
     # read messages. `command` runs a program and hands it the text.
-    # Values: desktop, ntfy, gotify, matrix, command
+    # `apprise` (since 0.22.0) hands it to the apprise CLI, which reaches a
+    # hundred-odd services -- Telegram, Signal, email, Pushover, Gotify, SMS
+    # -- through one URL scheme; the URL is `apprise_url`.
+    # Values: desktop, ntfy, gotify, matrix, command, apprise
     backend: "desktop"
 
     # notify: the credential for ntfy, gotify or Matrix, as a secret
@@ -1441,6 +1444,17 @@ integrations:
     # blocks until it times out, and doing that each time something needed
     # saying would make the notifier the slowest thing in the daemon.
     token: null
+
+    # notify: with `backend: apprise`, the Apprise URL -- or several, one per
+    # line -- as a secret reference: `{file: ~/.config/clawtilla/apprise.url}`.
+    #
+    # A secret because an Apprise URL nearly always carries a credential
+    # (`tgram://BOT_TOKEN/CHAT_ID`, `mailtos://user:password@host`). It
+    # reaches apprise in a 0600 file passed with `--config`, deleted when
+    # apprise exits, and never on its command line, which any user on the
+    # machine can read. `command` names the apprise binary when it is not on
+    # PATH.
+    apprise_url: null
 
     # notify: with `backend: matrix`, the room id to post into.
     #
@@ -1490,6 +1504,9 @@ integrations:
     # This is the general way to give the fleet anything with an MCP server:
     # one entry here reaches every agent in scope, instead of the same block
     # pasted into each agent's .mcp.json by hand.
+    #
+    # notify: with `backend: command`, the program to run; with
+    # `backend: apprise`, the apprise binary when it is not on PATH.
     command: null
 
     # mcp: arguments for `command`.

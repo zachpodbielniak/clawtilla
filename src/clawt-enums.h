@@ -884,6 +884,8 @@ typedef enum {
  * @CLAWT_NOTIFY_BACKEND_GOTIFY: a gotify server
  * @CLAWT_NOTIFY_BACKEND_MATRIX: a message into a Matrix room
  * @CLAWT_NOTIFY_BACKEND_COMMAND: run a program and hand it the text
+ * @CLAWT_NOTIFY_BACKEND_APPRISE: hand it to the `apprise` CLI, which
+ *   reaches a hundred-odd services through one URL scheme
  *
  * How a notification reaches the operator.
  *
@@ -897,7 +899,8 @@ typedef enum {
     CLAWT_NOTIFY_BACKEND_NTFY,
     CLAWT_NOTIFY_BACKEND_GOTIFY,
     CLAWT_NOTIFY_BACKEND_MATRIX,
-    CLAWT_NOTIFY_BACKEND_COMMAND
+    CLAWT_NOTIFY_BACKEND_COMMAND,
+    CLAWT_NOTIFY_BACKEND_APPRISE
 } ClawtNotifyBackend;
 
 /**

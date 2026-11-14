@@ -857,7 +857,10 @@ See [[file:computers.org][computers.org]] for what to do with one.
 Everything configured once and pointed at one agent, some agents or the
 whole fleet.  *+* adds one; the type decides which fields appear, so a
 Matrix instance asks for a homeserver and rooms while a notifier asks for
-a backend and quiet hours.
+a backend and quiet hours.  Choosing *Apprise* as the backend asks for the
+*Apprise URL* as a secret reference (~env:NAME~, ~file:PATH~ or
+~command:...~), like any token, never the URL itself and never shown
+back; all three clients draw it from =clawt_integration_fields()=.
 
 Two things here do real work rather than editing a file.  *Sign in* runs
 a Matrix password login and stores the resulting token in a 0600 file --
