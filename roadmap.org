@@ -267,6 +267,7 @@ OpenMausBot has none of the structural withholding or cycle stalling that I coul
 
 ** TODO P3 Fold long agent-to-agent requests in the clients                                    :clients:
 - *Prior art:* =da87bd0b2=. A long request from another bot shows as one line in that bot's chat. Clicking it expands the request in place, with "Show less" and "View exchange". The exchange is a side panel listing the requests from that peer and this agent's written answers, in order, without the tool chatter. Short requests and search hits stay open.
+- *The problem:* a chief's delegation brief is often a page long. In the receiving agent's chat it lands as a wall of text, and a few of them bury the person's own lines. The exchange panel answers "what have these two said to each other" without scrolling through tool output or other rooms.
 - *Why it is P3:* it changes how cross-talk *reads*, not how much of it happens. It is worth doing when a chief's chat is mostly delegation briefs and the operator's own lines get lost among them.
 - *Proposal:* a library rule, =clawt_chat_should_fold()= (sender is an agent, the message is longer than N lines), and an exchange view built from room history filtered to the two agents. GTK, web and lrg together; add an affordance row to =make parity=.
 - *Version:* minor (all three clients).
