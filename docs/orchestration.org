@@ -2895,6 +2895,15 @@ every client draws it as steered, not as a message waiting for a turn.
 - *Restart replay.*  A cut turn hands back every item of its joined
   record.  A steered item asked to steer again is answered from
   libreclaw's steer journal and not delivered a second time.
+- *The first-reply rescue.*  "Try <model> instead" hands the running
+  turn back and interrupts.  It hands back the running turn's own record
+  (~clawt_agent_get_turn_record_in()~), never "the newest in the room":
+  a delivery parked while libreclaw decides whether to steer it has an
+  open record of its own that is newer, and handing that back would rerun
+  the wrong message.  Steered items the turn already joined go back with
+  it, and libreclaw answers them from its steer journal on redelivery --
+  steer or not -- instead of running them twice; a steer that lands after
+  the rescue finds its turn's record gone, and its own is closed.
 - *Egress and confinement.*  Steering adds no path out: the request and
   the answer ride the agent's existing link socket, and libreclaw's steer
   journal lives in the agent's own ~sessions~ directory under its state

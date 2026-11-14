@@ -284,7 +284,16 @@ switch_model(
 		return FALSE;
 	}
 
-	if (clawt_mailbox_turn_hand_back(mailbox, room_id, model, error) == 0)
+	/*
+	 * The running turn's own record, by id: a delivery parked while
+	 * libreclaw decides whether to steer it has a newer open record in
+	 * the same room, and "the newest" would rerun that one instead.
+	 * Steered items the turn joined go back with it; libreclaw's steer
+	 * journal answers them without running them twice.
+	 */
+	if (clawt_mailbox_turn_hand_back_full(mailbox, room_id,
+			clawt_agent_get_turn_record_in(agent, room_id), model,
+			error) == 0)
 		return FALSE;
 
 	return clawt_daemon_interrupt_agent(self, agent_id, out_killed, error);

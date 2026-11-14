@@ -1579,6 +1579,37 @@ clawt_mailbox_turn_join(
 	if (!exec_simple(self, "BEGIN IMMEDIATE", error))
 		return FALSE;
 
+	/*
+	 * The turn it would join is gone: handed back by a rescue
+	 * (clawt_mailbox_turn_hand_back()) or closed.  Its items would be
+	 * moved onto a record nothing will ever close or recover -- so the
+	 * steered part is closed instead.  The turn that read it was rerun
+	 * or finished, and either way these words are not run again.
+	 */
+	{
+		sqlite3_stmt *stmt = NULL;
+		gboolean exists = FALSE;
+
+		if (sqlite3_prepare_v2(self->db, "SELECT 1 FROM turns WHERE id = ?",
+				-1, &stmt, NULL) == SQLITE_OK) {
+			sqlite3_bind_int64(stmt, 1, into);
+			exists = sqlite3_step(stmt) == SQLITE_ROW;
+			sqlite3_finalize(stmt);
+		}
+
+		if (!exists) {
+			if (!delete_turn(self, from, error)) {
+				exec_simple(self, "ROLLBACK", NULL);
+				return FALSE;
+			}
+			if (!exec_simple(self, "COMMIT", error)) {
+				exec_simple(self, "ROLLBACK", NULL);
+				return FALSE;
+			}
+			return TRUE;
+		}
+	}
+
 	for (i = 0; i < G_N_ELEMENTS(statements); i++) {
 		sqlite3_stmt *stmt = NULL;
 
@@ -1844,6 +1875,17 @@ clawt_mailbox_turn_hand_back(
 	const gchar   *model,
 	GError       **error
 ){
+	return clawt_mailbox_turn_hand_back_full(self, room_id, 0, model, error);
+}
+
+guint
+clawt_mailbox_turn_hand_back_full(
+	ClawtMailbox  *self,
+	const gchar   *room_id,
+	gint64         turn,
+	const gchar   *model,
+	GError       **error
+){
 	g_autoptr(GPtrArray) open = NULL;
 	ClawtTurnRecord *record = NULL;
 	const gchar *why = NULL;
@@ -1855,9 +1897,22 @@ clawt_mailbox_turn_hand_back(
 
 	open = clawt_mailbox_turn_list_open(self);
 
-	/* The newest open turn in that room: the one running now. */
+	/*
+	 * The running turn's own record when the caller names it -- the
+	 * agent knows which it is.  Otherwise the newest open record in the
+	 * room, which is the running turn's unless a delivery is waiting to
+	 * hear whether it was steered: that one has an open record of its
+	 * own, newer than the turn it is asking to join, and handing it back
+	 * would rerun the wrong message.
+	 */
 	for (i = 0; i < open->len; i++) {
 		ClawtTurnRecord *candidate = g_ptr_array_index(open, i);
+
+		if (turn > 0) {
+			if (candidate->id == turn)
+				record = candidate;
+			continue;
+		}
 
 		if (g_strcmp0(candidate->room, room_id) == 0 &&
 			(record == NULL || candidate->opened_at >= record->opened_at))

@@ -1416,6 +1416,25 @@ clawt_agent_await_steer(
 	return TRUE;
 }
 
+gint64
+clawt_agent_get_turn_record_in(
+	ClawtAgent  *self,
+	const gchar *room_id
+){
+	TurnSetup *setup;
+
+	g_return_val_if_fail(CLAWT_IS_AGENT(self), 0);
+
+	if (room_id == NULL || !room_is_live(self, room_id))
+		return 0;
+
+	setup = turn_in(self, room_id);
+	if (setup == NULL || setup->records == NULL || setup->records->len == 0)
+		return 0;
+
+	return g_array_index(setup->records, gint64, 0);
+}
+
 gboolean
 clawt_agent_get_turn_steer_facts(
 	ClawtAgent       *self,

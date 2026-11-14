@@ -540,6 +540,24 @@ ClawtSteerSettle clawt_agent_settle_steer(ClawtAgent  *self,
 					  gboolean     asked);
 
 /**
+ * clawt_agent_get_turn_record_in:
+ * @self: a #ClawtAgent
+ * @room_id: the room
+ *
+ * The mailbox turn record of the turn running in @room_id -- the one a
+ * steered delivery's record joins (clawt_mailbox_turn_join()).  Asked by
+ * id rather than as "the newest open record in the room", because a
+ * delivery waiting to hear whether it was steered has an open record of
+ * its own that is newer than the running turn's.
+ *
+ * Returns: the record id, or 0 when no turn runs there or it has none
+ *
+ * Since: 0.28.0
+ */
+gint64 clawt_agent_get_turn_record_in(ClawtAgent  *self,
+				      const gchar *room_id);
+
+/**
  * clawt_agent_get_turn_steer_facts:
  * @self: a #ClawtAgent
  * @room_id: the room

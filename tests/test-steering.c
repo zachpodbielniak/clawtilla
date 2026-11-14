@@ -434,6 +434,71 @@ test_router_steers_the_delegators_correction(void)
 }
 
 /*
+ * The first-reply rescue ("Try <model> instead") hands the running turn
+ * back and interrupts.  With a delivery parked while libreclaw decides
+ * whether to steer it, the room has two open records, and the parked
+ * one is newer: the rescue must hand back the running turn's own record
+ * (clawt_agent_get_turn_record_in()), not "the newest in the room".
+ * And when the steer then answers delivered, the turn it joined is
+ * gone: its record is closed rather than moved onto a deleted one, so
+ * nothing reruns it and nothing is orphaned.
+ */
+static void
+test_rescue_and_a_parked_steer(void)
+{
+	Fixture fixture = { 0 };
+	g_autofree gchar *room = NULL;
+	g_autoptr(JsonObject) first = NULL;
+	g_autoptr(JsonObject) steered = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *first_id = NULL;
+	g_autofree gchar *steer_id = NULL;
+	ClawtAgent *beta;
+	ClawtMailbox *mailbox;
+
+	fixture_setup(&fixture, "agents:\n  - id: alpha\n  - id: beta\n");
+	beta = clawt_agent_manager_get(fixture.agents, "beta");
+	mailbox = clawt_agent_get_mailbox(beta);
+	room = clawt_room_manager_direct_id("alpha", "beta");
+	give_beta_a_link(&fixture, TRUE);
+
+	alpha_says(&fixture, "do the thing", 1, FALSE, NULL);
+	first = read_one(&fixture);
+	first_id = g_strdup(json_object_get_string_member(first, "message_id"));
+	clawt_agent_note_typing(beta, room, TRUE);
+
+	alpha_says(&fixture, "use the staging DB", 1, TRUE, NULL);
+	steered = read_one(&fixture);
+	steer_id = g_strdup(json_object_get_string_member(steered, "message_id"));
+	g_assert_true(json_object_get_boolean_member(steered, "steer"));
+	g_assert_cmpuint(clawt_mailbox_turn_count_open(mailbox), ==, 2);
+
+	/* The rescue hands back the running turn's record, by id. */
+	g_assert_cmpint(clawt_mailbox_turn_hand_back_full(mailbox, room,
+		clawt_agent_get_turn_record_in(beta, room), "haiku", &error), ==, 1);
+	g_assert_no_error(error);
+	{
+		g_autoptr(ClawtMailboxItem) back = clawt_mailbox_get(mailbox, first_id);
+		g_autoptr(ClawtMailboxItem) parked = clawt_mailbox_get(mailbox,
+			steer_id);
+
+		g_assert_cmpint(clawt_mailbox_item_get_state(back), ==,
+			CLAWT_MAILBOX_PENDING);
+		g_assert_cmpstr(clawt_mailbox_item_get_model(back), ==, "haiku");
+		g_assert_cmpint(clawt_mailbox_item_get_state(parked), ==,
+			CLAWT_MAILBOX_ACKED);
+	}
+	g_assert_cmpuint(clawt_mailbox_turn_count_open(mailbox), ==, 1);
+
+	/* The steer lands after: its record closes, nothing is left over. */
+	g_assert_cmpint(clawt_agent_settle_steer(beta, room, steer_id,
+		"delivered", TRUE), ==, CLAWT_STEER_SETTLE_JOINED);
+	g_assert_cmpuint(clawt_mailbox_turn_count_open(mailbox), ==, 0);
+
+	fixture_teardown(&fixture);
+}
+
+/*
  * A refusal: the description waits for the message's own turn, and no
  * other turn takes it while the answer is pending.  Before asking it
  * keeps its place; after the engine refused, it goes to the back,
@@ -894,6 +959,8 @@ main(int argc, char *argv[])
 		test_router_steers_the_delegators_correction);
 	g_test_add_func("/steering/router/asks-only-when-it-may",
 		test_router_asks_only_when_it_may);
+	g_test_add_func("/steering/turn/rescue-and-a-parked-steer",
+		test_rescue_and_a_parked_steer);
 	g_test_add_func("/steering/turn/refused-waits",
 		test_refused_steer_waits_for_its_own_turn);
 	g_test_add_func("/steering/turn/refused-before-asking",

@@ -367,6 +367,10 @@ gboolean clawt_mailbox_turn_close(ClawtMailbox  *self,
  * reruns the steered words alone after the turn that already read them.
  * @into keeps the higher replay count and gains @from's outward marks.
  *
+ * When @into is gone -- a rescue handed the running turn back, or it
+ * closed -- @from is closed instead: its items would otherwise sit on a
+ * record nothing closes or recovers.
+ *
  * Returns: %TRUE on success, including @from already gone
  *
  * Since: 0.28.0
@@ -442,6 +446,32 @@ GPtrArray *clawt_mailbox_turn_recover(ClawtMailbox       *self,
                                       ClawtTurnVetoFunc   veto,
                                       gpointer            veto_data,
                                       GError            **error);
+
+/**
+ * clawt_mailbox_turn_hand_back_full:
+ * @self: a #ClawtMailbox
+ * @room_id: (nullable): the room, when @turn is 0
+ * @turn: the running turn's record (clawt_agent_get_turn_record_in()),
+ *   or 0 for the newest open record in @room_id
+ * @model: (nullable): as for clawt_mailbox_turn_hand_back()
+ * @error: return location for a #GError
+ *
+ * clawt_mailbox_turn_hand_back() for a named record.  A delivery waiting
+ * to hear whether it was steered (agents.steer) has an open record of its
+ * own, newer than the running turn's, so "the newest in the room" can be
+ * the wrong one; the agent knows which record its running turn holds.
+ * Items a steered delivery joined to the turn are handed back with it,
+ * and libreclaw's steer journal keeps them from running twice.
+ *
+ * Returns: how many items went back to the queue, 0 on refusal
+ *
+ * Since: 0.28.0
+ */
+guint clawt_mailbox_turn_hand_back_full(ClawtMailbox  *self,
+                                        const gchar   *room_id,
+                                        gint64         turn,
+                                        const gchar   *model,
+                                        GError       **error);
 
 /**
  * clawt_mailbox_turn_hand_back:
