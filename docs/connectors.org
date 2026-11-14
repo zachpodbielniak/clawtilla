@@ -77,6 +77,8 @@ A stdio MCP server exits when its stdin closes and nothing else tells it
 to, so waiting for both directions left an abandoned process holding a
 live credential indefinitely.
 
+A remote (HTTP) connector's requests never follow a redirect, because the credential is a request header and libsoup would carry it to whatever host the server named. A tool server that answers with one gets the relay's error instead -- ~clawtilla: the request to the tool server failed: https://mcp.example answered 307, a redirect to https://other.example; ...~ -- and the fix is to set the connector's ~url~ to the address it names. See [[file:security.org::*A credential never follows a redirect][A credential never follows a redirect]].
+
 ** How a credential is obtained
 
 Three ways, and the catalogue says which apply to a given service.

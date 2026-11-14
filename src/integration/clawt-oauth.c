@@ -8,6 +8,7 @@
  */
 
 #include "clawtilla.h"
+#include "clawt-http.h"
 #include "integration/clawt-oauth.h"
 
 #include <json-glib/json-glib.h>
@@ -84,7 +85,8 @@ form_encode(const gchar *first_key, ...)
 static SoupMessage *
 form_post(const gchar *url, gchar *body)
 {
-    SoupMessage *message = soup_message_new("POST", url);
+    SoupMessage *message = clawt_http_message_new(
+        "POST", url, CLAWT_HTTP_CARRIES_CREDENTIALS);
     g_autoptr(GBytes) bytes = NULL;
 
     if (message == NULL) {
@@ -597,8 +599,8 @@ on_device_begin(GObject *source, GAsyncResult *result, gpointer user_data)
     const gchar *text;
     gsize length = 0;
 
-    body = soup_session_send_and_read_finish(SOUP_SESSION(source), result,
-                                             &error);
+    body = clawt_http_send_and_read_finish(SOUP_SESSION(source), result,
+                                           &error);
 
     if (body == NULL) {
         g_task_return_error(task, g_steal_pointer(&error));
@@ -733,8 +735,8 @@ on_poll_response(GObject *source, GAsyncResult *result, gpointer user_data)
     const gchar *text;
     gsize length = 0;
 
-    body = soup_session_send_and_read_finish(SOUP_SESSION(source), result,
-                                             &error);
+    body = clawt_http_send_and_read_finish(SOUP_SESSION(source), result,
+                                           &error);
 
     if (body == NULL) {
         g_task_return_error(poll->task, g_steal_pointer(&error));
@@ -1332,8 +1334,8 @@ on_token_response(GObject *source, GAsyncResult *result, gpointer user_data)
     const gchar *text;
     gsize length = 0;
 
-    body = soup_session_send_and_read_finish(SOUP_SESSION(source), result,
-                                             &error);
+    body = clawt_http_send_and_read_finish(SOUP_SESSION(source), result,
+                                           &error);
 
     if (body == NULL) {
         g_task_return_error(task, g_steal_pointer(&error));
@@ -1456,8 +1458,8 @@ on_revoke_response(GObject *source, GAsyncResult *result, gpointer user_data)
     SoupMessage *message = g_task_get_task_data(task);
     guint status;
 
-    body = soup_session_send_and_read_finish(SOUP_SESSION(source), result,
-                                             &error);
+    body = clawt_http_send_and_read_finish(SOUP_SESSION(source), result,
+                                           &error);
 
     if (body == NULL) {
         g_task_return_error(task, g_steal_pointer(&error));

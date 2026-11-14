@@ -215,6 +215,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/clawt-enums.c \
 	$(SRCDIR)/clawt-error.c \
 	$(SRCDIR)/clawt-util.c \
+	$(SRCDIR)/clawt-http.c \
 	$(SRCDIR)/clawt-backup.c \
 	$(SRCDIR)/config/clawt-config-schema.c \
 	$(SRCDIR)/config/clawt-appearance.c \

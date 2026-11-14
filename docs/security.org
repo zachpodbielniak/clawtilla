@@ -312,6 +312,35 @@ credentials:
   created, and the agent started cleanly and never authenticated, which
   looks exactly like an agent nobody is talking to
 
+** A credential never follows a redirect
+
+libsoup follows a 301, 302, 303, 307 or 308 by default, keeps every request header it was given -- ~Authorization~, ~X-Gotify-Key~, whatever a connector's ~header_name~ is -- and on a 307 or 308 sends the body again. So until this was closed, a server that answered with a redirect received nothing worse than any other reply, and the host it named received the bearer token, the OAuth client secret or the Matrix password. Turning that off is opt-in, per message (~SOUP_MESSAGE_NO_REDIRECT~).
+
+Every ~SoupMessage~ clawtilla builds is made by ~clawt_http_message_new()~ (=src/clawt-http.c=), which takes no default: the caller says ~CLAWT_HTTP_CARRIES_CREDENTIALS~ or ~CLAWT_HTTP_NO_CREDENTIALS~. A credentialed message refuses redirects, and its reply is finished through ~clawt_http_send_and_read_finish()~ (or the synchronous ~clawt_http_send_and_read()~), which turns the 3xx into an error instead of handing back a body the caller would parse as the answer:
+
+#+begin_example
+https://ntfy.example answered 302, a redirect to https://other.example; clawtilla never sends a credential across a redirect, so the request was not repeated -- if https://other.example is where it should go, configure that address instead
+#+end_example
+
+The error names only the *origin* of each end, never a path or a query: an ntfy topic is a capability, and a redirect target's query can carry a code of its own, while this message reaches the daemon log and, through a tool reply, an agent's transcript. A redirect elsewhere on the same server is refused too -- the fix, configuring the path it names, is the same -- and there the path is named, because it is the one the person should set. Nothing follows a redirect even to the same origin: a credentialed request that needs one is a configuration to correct, not a hop to take.
+
+| Request                                                     | Carries                        | Redirects |
+|-------------------------------------------------------------+--------------------------------+-----------|
+| ntfy, Gotify and Matrix notifiers (=clawt-notify.c=)        | bearer token, ~X-Gotify-Key~   | refused   |
+| Matrix login, joined rooms, room state (=clawt-matrix.c=)   | password, access token         | refused   |
+| OAuth device flow, code exchange, refresh, revoke (=clawt-oauth.c=) | client secret, device code, refresh and access tokens | refused |
+| remote MCP connector relay (=clawt-connector-relay.c=)      | the connector's header         | refused   |
+| Grok routine push and dispatch (=daemon-grok.c=)            | routine key                    | refused   |
+| VENTURE bridge and replay (=daemon-venture.c=)              | bearer token                   | refused   |
+| update check (=clawt-update.c=)                             | nothing                        | followed  |
+| VM image downloads and directory listings (=clawt-vm-image.c=) | nothing                     | followed  |
+| open MCP registry (=clawt-connector-registry.c=)            | nothing                        | followed  |
+| tailscaled LocalAPI (=clawt-tailscale.c=)                   | nothing; a unix socket         | followed  |
+
+Image mirrors redirect as a matter of course, which is why the public half keeps libsoup's default.
+
+=tests/test-http-constructors.sh= fails the suite when a ~soup_message_new()~ (or any of its siblings) appears under =src/=, =clients/= or =plugins/= outside =clawt-http.c=, so a new request cannot skip the decision. It reads clawtilla's own sources and nothing else: a request built inside libreclaw, ai-glib or mcp-glib is outside what it can see. Web research is one of those -- the libresearch client is ai-glib's ~AiLibresearchSearch~, whose asynchronous path (search, research, LQL) sends its bearer token on a session with no redirect guard, and the fix belongs upstream. =tests/test-http-redirect.c= checks the flag and the refusal as data; =make test= opens no network socket, so libsoup honouring the flag against a real 302 is libsoup's contract and is not exercised here.
+
 ** Connectors
 
 A connector holds a credential for a real account and hands agents the
