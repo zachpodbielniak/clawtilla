@@ -5632,15 +5632,19 @@ print_connector_usage(gboolean asked_for)
 "  registry-refresh        import the open MCP registry now\n"
 "  add <name> --provider <id> [options]\n"
 "                          add one, and connect it if it can\n"
-"  connect <name>          authorize, or authorize again\n"
+"  connect <name>          authorize, or sign in where the server says\n"
+"  discover <name>         ask a remote server how to sign in to it\n"
 "  key <name>              paste a token instead (read from stdin)\n"
 "  refresh <name>          renew the credential now\n"
 "  revoke <name>           forget it here and withdraw it there\n"
 "  rm <name>               remove the connector entirely\n"
 "\n"
 "Options for add:\n"
-"  --provider <id>         from `clawtilla connector catalog`\n"
-"  --account <label>       which account, in your words (work, personal)\n"
+"  --provider <id>         from `clawtilla connector catalog`; with only\n"
+"                          --url, `remote` -- any MCP server by URL\n"
+"  --account <label>       which account, in your words (work, personal);\n"
+"                          required, and unique, for a second account\n"
+"                          on the same service\n"
 "  --client-id <id>        the OAuth app you registered with the provider\n"
 "  --instance <url>        for a service you host yourself\n"
 "  --scopes \"<a b>\"        override what to ask for\n"
@@ -5661,6 +5665,15 @@ print_connector_usage(gboolean asked_for)
 "  # Or the full device flow, once you have registered an app:\n"
 "  clawtilla connector add gl --provider gitlab --client-id abc123 \\\n"
 "      --scope selected --agents researcher,scribe\n"
+"\n"
+"  # Any remote MCP server: the URL is all it needs. The server says\n"
+"  # where to sign in, and clawtilla registers itself there if it can:\n"
+"  clawtilla connector add notion --url https://mcp.notion.com/mcp\n"
+"  clawtilla connector connect notion\n"
+"\n"
+"  # A second account on the same service needs a label of its own:\n"
+"  clawtilla connector add gh-home --provider github --account personal \\\n"
+"      --command github-mcp-server --scope all\n"
 "\n"
 "  # Your own GitLab:\n"
 "  clawtilla connector add work --provider gitlab \\\n"
@@ -5736,6 +5749,12 @@ connector_connect(ClawtClient *client, const gchar *name)
         if (complete != NULL)
             g_print("or open %s, which fills it in for you.\n", complete);
     } else {
+        const gchar *server = member_or(root, "auth_server", NULL);
+
+        /* Where, before the link: the person checks the host against it. */
+        if (server != NULL)
+            g_print("Signing in at %s\n\n", server);
+
         g_print("Open this to approve:\n\n    %s\n\n",
                 member_or(root, "authorize_url", "?"));
     }
@@ -5796,6 +5815,27 @@ connector_policy_gate(const gchar *tool, gchar **refusal, gpointer user_data)
 {
     *refusal = NULL;
     return relay_policy_gate(user_data, tool, "external", refusal);
+}
+
+/*
+ * Tells the daemon a remote server answered 401, so every client can
+ * offer the sign-in.  Best effort: the agent has already been told, in
+ * words, what to do -- a daemon that cannot be reached loses only the
+ * button, never the explanation.
+ */
+static void
+connector_unauthorized(const gchar *name, const gchar *challenge,
+                       gboolean sent_credential, gpointer user_data)
+{
+    g_autoptr(ClawtClient) client = connect_to_daemon();
+    g_autoptr(JsonNode) ignored = NULL;
+
+    if (client == NULL)
+        return;
+
+    ignored = clawt_client_request(
+        client, "connector.unauthorized",
+        build_payload("name", name, "challenge", challenge, NULL), NULL);
 }
 
 static gint
@@ -5876,26 +5916,70 @@ connector_relay(const gchar *name, const gchar *agent_id)
     binding = clawt_integration_binding_for_instance(instance, info, NULL);
     token_file = clawt_integration_binding_get_string(binding, "token_file");
 
-    if (token_file == NULL) {
-        g_printerr("clawtilla: '%s' is not connected yet; run `clawtilla "
-                   "connector connect %s`\n", name, name);
-        return EXIT_FAILURE;
+    /*
+     * No credential yet is still a relay for a server reached by URL:
+     * plenty list their tools to anybody, and the 401 on the first call
+     * is what turns into "sign in to this connector" for the agent and
+     * a Sign in button for the person.  clawt_connector_plan_new()
+     * refuses it for a stdio server, which has nowhere to say so.
+     */
+    if (token_file != NULL) {
+        token = clawt_oauth_token_load(token_file, &error);
+
+        if (token == NULL) {
+            g_printerr("clawtilla: cannot read the credential for '%s': "
+                       "%s\n", name, error->message);
+            return EXIT_FAILURE;
+        }
     }
 
-    token = clawt_oauth_token_load(token_file, &error);
-
-    if (token == NULL) {
-        g_printerr("clawtilla: cannot read the credential for '%s': %s\n",
-                   name, error->message);
-        return EXIT_FAILURE;
-    }
-
-    plan = clawt_connector_plan_new(connector, binding, token->access_token,
+    plan = clawt_connector_plan_new(connector, binding,
+                                    token != NULL ? token->access_token
+                                                  : NULL,
                                     &error);
 
     if (plan == NULL) {
         g_printerr("clawtilla: %s\n", error->message);
         return EXIT_FAILURE;
+    }
+
+    plan->unauthorized = connector_unauthorized;
+
+    /*
+     * Several accounts on one service: this account's tools carry its
+     * label, decided from every connector the agent holds -- the same
+     * answer each sibling relay reaches on its own.
+     */
+    if (agent_id != NULL) {
+        ClawtAgentConfig *agent = clawt_config_get_agent(config, agent_id);
+
+        if (agent != NULL) {
+            g_autoptr(GPtrArray) bindings =
+                clawt_integration_resolve_for_agent(config, agent);
+            g_autoptr(GError) conflict = NULL;
+            guint i;
+
+            for (i = 0; bindings != NULL && i < bindings->len; i++) {
+                ClawtIntegrationBinding *mine = g_ptr_array_index(bindings,
+                                                                  i);
+
+                if (g_strcmp0(clawt_integration_binding_get_name(mine),
+                              name) != 0)
+                    continue;
+
+                plan->account_prefix = clawt_connector_account_prefix(
+                    bindings, mine, &plan->account_siblings, &conflict);
+                plan->accounts = plan->account_prefix != NULL ||
+                                 conflict != NULL;
+
+                if (conflict != NULL) {
+                    g_printerr("clawtilla: %s\n", conflict->message);
+                    plan->account_conflict = g_strdup(conflict->message);
+                }
+
+                break;
+            }
+        }
     }
 
     if (agent_id != NULL)
@@ -6012,9 +6096,35 @@ cmd_connector(int argc, char *argv[])
                     status = g_strdup("expired -- connect again");
             }
 
-            g_print("%-14s %-10s %-10s %s\n", member_or(entry, "name", "?"),
-                    member_or(entry, "provider", "?"),
-                    member_or(entry, "scope", ""), status);
+            /*
+             * A server that refused us is worth more than the expiry: the
+             * credential may look fine and still be one it will not take.
+             */
+            if (json_object_get_boolean_member_with_default(
+                    entry, "needs_sign_in", FALSE) ||
+                (!connected && json_object_get_boolean_member_with_default(
+                                   entry, "sign_in", FALSE))) {
+                g_free(status);
+                status = g_strdup_printf(
+                    "sign in needed%s%s -- `clawtilla connector connect %s`",
+                    member_or(entry, "auth_server", NULL) != NULL
+                    ? " at " : "",
+                    member_or(entry, "auth_server", ""),
+                    member_or(entry, "name", "?"));
+            }
+
+            {
+                const gchar *account = member_or(entry, "account", NULL);
+                g_autofree gchar *provider = (account != NULL)
+                    ? g_strdup_printf("%s/%s",
+                                      member_or(entry, "provider", "?"),
+                                      account)
+                    : g_strdup(member_or(entry, "provider", "?"));
+
+                g_print("%-14s %-18s %-10s %s\n",
+                        member_or(entry, "name", "?"), provider,
+                        member_or(entry, "scope", ""), status);
+            }
         }
 
         return EXIT_SUCCESS;
@@ -6047,6 +6157,7 @@ cmd_connector(int argc, char *argv[])
      * long way off.
      */
     if (g_strcmp0(verb, "add") != 0 && g_strcmp0(verb, "connect") != 0 &&
+        g_strcmp0(verb, "discover") != 0 &&
         g_strcmp0(verb, "key") != 0 && g_strcmp0(verb, "refresh") != 0 &&
         g_strcmp0(verb, "revoke") != 0 && g_strcmp0(verb, "rm") != 0) {
         g_printerr("clawtilla: unknown connector command '%s'\n", verb);
@@ -6063,6 +6174,7 @@ cmd_connector(int argc, char *argv[])
         g_autoptr(JsonBuilder) builder = json_builder_new();
         const gchar *client_id = NULL;
         gboolean have_provider = FALSE;
+        gboolean have_url = FALSE;
         int a;
 
         json_builder_begin_object(builder);
@@ -6105,6 +6217,9 @@ cmd_connector(int argc, char *argv[])
             if (g_strcmp0(key, "provider") == 0)
                 have_provider = TRUE;
 
+            if (g_strcmp0(key, "url") == 0)
+                have_url = TRUE;
+
             if (g_strcmp0(key, "client_id") == 0)
                 client_id = argv[a + 1];
 
@@ -6114,9 +6229,11 @@ cmd_connector(int argc, char *argv[])
 
         json_builder_end_object(builder);
 
-        if (!have_provider) {
-            g_printerr("clawtilla: connector add needs --provider; "
-                       "`clawtilla connector catalog` lists them\n");
+        /* A URL alone is a remote server; the daemon fills the provider. */
+        if (!have_provider && !have_url) {
+            g_printerr("clawtilla: connector add needs --provider, or --url "
+                       "for a remote MCP server; `clawtilla connector "
+                       "catalog` lists the providers\n");
             return EXIT_FAILURE;
         }
 
@@ -6137,6 +6254,26 @@ cmd_connector(int argc, char *argv[])
         if (client_id != NULL)
             return connector_connect(client, name);
 
+        /*
+         * A server reached by URL is asked how to sign in to it now --
+         * the person is here and has just asked for this server, which is
+         * the moment the network is wanted.
+         */
+        if (have_url) {
+            g_autoptr(JsonNode) found = call(client, "connector.discover",
+                                             build_payload("name", name,
+                                                           NULL));
+
+            if (found != NULL &&
+                json_object_get_boolean_member_with_default(
+                    json_node_get_object(found), "sign_in", FALSE)) {
+                g_print("It signs in at %s.\n",
+                        member_or(json_node_get_object(found), "auth_server",
+                                  "?"));
+                return connector_connect(client, name);
+            }
+        }
+
         g_print("\nNow give it a credential, either:\n"
                 "  clawtilla connector key %s        (paste a token)\n"
                 "  clawtilla connector connect %s    (needs --client-id)\n",
@@ -6147,6 +6284,35 @@ cmd_connector(int argc, char *argv[])
 
     if (g_strcmp0(verb, "connect") == 0)
         return connector_connect(client, name);
+
+    if (g_strcmp0(verb, "discover") == 0) {
+        JsonObject *root;
+
+        reply = call(client, "connector.discover",
+                     build_payload("name", name, NULL));
+
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        root = json_node_get_object(reply);
+
+        if (!json_object_get_boolean_member_with_default(root, "sign_in",
+                                                         FALSE)) {
+            g_print("No sign-in found: %s\n",
+                    member_or(root, "reason", "the server publishes none"));
+            return EXIT_SUCCESS;
+        }
+
+        g_print("Signs in at %s (%s)%s.\n"
+                "Run `clawtilla connector connect %s` to sign in.\n",
+                member_or(root, "auth_server", "?"),
+                member_or(root, "source", "?"),
+                json_object_get_boolean_member_with_default(
+                    root, "registration", FALSE)
+                ? "; clawtilla can register itself there" : "",
+                name);
+        return EXIT_SUCCESS;
+    }
 
     if (g_strcmp0(verb, "key") == 0) {
         g_autofree gchar *key = NULL;

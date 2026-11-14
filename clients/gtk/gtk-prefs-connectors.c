@@ -87,8 +87,20 @@ connector_run_flow(ClawtWindow *self, const gchar *name)
         const gchar *url =
             json_object_get_string_member_with_default(root, "authorize_url",
                                                        NULL);
+        const gchar *server =
+            json_object_get_string_member_with_default(root, "auth_server",
+                                                       NULL);
+        g_autofree gchar *where = (server != NULL)
+            ? clawt_connector_sign_in_label(server) : NULL;
 
-        body = g_strdup_printf("Open this to approve:\n\n%s",
+        /*
+         * Where, before the link: a discovered server is the remote
+         * server's claim, and this is what the address bar is checked
+         * against.
+         */
+        body = g_strdup_printf("%s%sOpen this to approve:\n\n%s",
+                               where != NULL ? where : "",
+                               where != NULL ? ".\n\n" : "",
                                url != NULL ? url : "(no URL)");
         dialog = ADW_ALERT_DIALOG(adw_alert_dialog_new("Waiting for you",
                                                         body));
@@ -146,6 +158,16 @@ connector_action_free(gpointer data, GClosure *closure)
 
 static void
 on_connector_connect(GtkButton *button, gpointer user_data)
+{
+    ConnectorAction *action = user_data;
+
+    adw_dialog_close(action->dialog);
+    connector_run_flow(action->window, action->name);
+}
+
+/* The same flow as Authorize again; the daemon decides where it signs in. */
+static void
+on_connector_sign_in(GtkButton *button, gpointer user_data)
 {
     ConnectorAction *action = user_data;
 
@@ -315,6 +337,10 @@ on_connector_activated(GtkListBox *list, GtkListBoxRow *row,
     const gchar *name = g_object_get_data(G_OBJECT(row), "clawt-connector");
     const gchar *provider = g_object_get_data(G_OBJECT(row),
                                               "clawt-connector-provider");
+    const gchar *server = g_object_get_data(G_OBJECT(row),
+                                            "clawt-connector-auth-server");
+    gboolean sign_in = GPOINTER_TO_INT(g_object_get_data(
+        G_OBJECT(row), "clawt-connector-sign-in"));
     AdwDialog *dialog;
     GtkWidget *toolbar;
     GtkWidget *box;
@@ -357,6 +383,27 @@ on_connector_activated(GtkListBox *list, GtkListBoxRow *row,
 
         gtk_widget_add_css_class(label, "dim-label");
         gtk_box_append(GTK_BOX(box), label);
+    }
+
+    /*
+     * First when discovery found a server or the server refused the
+     * agent: the one action this row is asking for, named with where it
+     * happens.
+     */
+    if (sign_in) {
+        g_autofree gchar *label = clawt_connector_sign_in_label(server);
+
+        action = g_new0(ConnectorAction, 1);
+        action->window = self;
+        action->name = g_strdup(name);
+        action->dialog = dialog;
+
+        button = gtk_button_new_with_label(label);
+        gtk_widget_add_css_class(button, "suggested-action");
+        g_signal_connect_data(button, "clicked",
+                              G_CALLBACK(on_connector_sign_in), action,
+                              connector_action_free, 0);
+        gtk_box_append(GTK_BOX(box), button);
     }
 
     for (i = 0; i < G_N_ELEMENTS(actions); i++) {
@@ -475,10 +522,31 @@ clawt_gtk_refresh_settings_connectors(ClawtWindow *self)
              */
             const gchar *icon = "channel-insecure-symbolic";
 
-            if (account != NULL && *account != '\0')
-                subtitle = g_strdup_printf("%s -- %s", provider, account);
-            else
-                subtitle = g_strdup(provider);
+            subtitle = clawt_connector_row_subtitle(provider, account);
+
+            /*
+             * A server that refused the agent's last call says so on the
+             * row; one that publishes a sign-in nobody has used yet says
+             * where.  The button is one click further, in the dialog.
+             */
+            if (json_object_get_boolean_member_with_default(
+                    entry, "needs_sign_in", FALSE)) {
+                gchar *more = g_strdup_printf("%s -- needs a sign-in",
+                                              subtitle);
+
+                g_free(subtitle);
+                subtitle = more;
+            } else if (!connected &&
+                       json_object_get_boolean_member_with_default(
+                           entry, "sign_in", FALSE)) {
+                g_autofree gchar *where = clawt_connector_sign_in_label(
+                    json_object_get_string_member_with_default(
+                        entry, "auth_server", NULL));
+                gchar *more = g_strdup_printf("%s -- %s", subtitle, where);
+
+                g_free(subtitle);
+                subtitle = more;
+            }
 
             adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), name);
             adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
@@ -519,6 +587,14 @@ clawt_gtk_refresh_settings_connectors(ClawtWindow *self)
                                    g_strdup(name), g_free);
             g_object_set_data_full(G_OBJECT(row), "clawt-connector-provider",
                                    g_strdup(provider), g_free);
+            g_object_set_data_full(
+                G_OBJECT(row), "clawt-connector-auth-server",
+                g_strdup(json_object_get_string_member_with_default(
+                    entry, "auth_server", NULL)), g_free);
+            g_object_set_data(G_OBJECT(row), "clawt-connector-sign-in",
+                              GINT_TO_POINTER(
+                                  json_object_get_boolean_member_with_default(
+                                      entry, "sign_in", FALSE)));
 
             /*
              * This used to pass the row as its own activatable widget,
@@ -540,6 +616,7 @@ typedef struct {
     GtkWidget     *account;
     GtkWidget     *client_id;
     GtkWidget     *instance;
+    GtkWidget     *url;
     GtkWidget     *scope;
     GtkWidget     *agents;
     GtkStringList *provider_ids;
@@ -564,16 +641,25 @@ on_create_connector(GtkButton *button, gpointer user_data)
     const gchar *client_id =
         gtk_editable_get_text(GTK_EDITABLE(add->client_id));
     const gchar *instance = gtk_editable_get_text(GTK_EDITABLE(add->instance));
+    const gchar *url = gtk_editable_get_text(GTK_EDITABLE(add->url));
     const gchar *account = gtk_editable_get_text(GTK_EDITABLE(add->account));
     const gchar *agents = gtk_editable_get_text(GTK_EDITABLE(add->agents));
     const gchar *provider;
     guint selected;
-    g_autofree gchar *chosen = g_strdup(name);
+    gboolean remote = (url != NULL && *url != '\0');
+    g_autofree gchar *chosen = NULL;
 
-    if (name == NULL || *name == '\0') {
+    /* A URL is enough: the name comes from its host, as in every client. */
+    chosen = (name != NULL && *name != '\0')
+        ? g_strdup(name)
+        : (remote ? clawt_connector_name_for_url(url) : NULL);
+
+    if (chosen == NULL) {
         clawt_window_toast(add->window, "It needs a name.");
         return;
     }
+
+    name = chosen;
 
     selected = adw_combo_row_get_selected(ADW_COMBO_ROW(add->provider));
     provider = gtk_string_list_get_string(add->provider_ids, selected);
@@ -603,6 +689,11 @@ on_create_connector(GtkButton *button, gpointer user_data)
     if (instance != NULL && *instance != '\0') {
         json_builder_set_member_name(builder, "instance");
         json_builder_add_string_value(builder, instance);
+    }
+
+    if (remote) {
+        json_builder_set_member_name(builder, "url");
+        json_builder_add_string_value(builder, url);
     }
 
     if (agents != NULL && *agents != '\0') {
@@ -635,9 +726,30 @@ on_create_connector(GtkButton *button, gpointer user_data)
      * the request, and starting something that cannot succeed is worse
      * than leaving the person on a list where the next step is visible.
      */
-    if (client_id != NULL && *client_id != '\0')
+    if (client_id != NULL && *client_id != '\0') {
         connector_run_flow(add->window, chosen);
-    else
+    } else if (remote) {
+        g_autoptr(JsonNode) found = NULL;
+
+        /*
+         * Asked how to sign in now -- the person has just asked for this
+         * server, which is when the network is wanted -- and signed in to
+         * when it says.
+         */
+        found = clawt_window_request(add->window, "connector.discover",
+                                     clawt_build_payload("name", chosen,
+                                                         NULL));
+        clawt_gtk_refresh_settings_connectors(add->window);
+
+        if (found != NULL &&
+            json_object_get_boolean_member_with_default(
+                json_node_get_object(found), "sign_in", FALSE))
+            connector_run_flow(add->window, chosen);
+        else
+            clawt_window_toast(add->window,
+                               "Added. It publishes no sign-in; open it to "
+                               "paste a token.");
+    } else
         clawt_window_toast(add->window,
                            "Added. Open it to paste a token, or set a "
                            "client id to authorize.");
@@ -716,13 +828,24 @@ on_add_connector(GtkButton *button, gpointer user_data)
                             G_LIST_MODEL(labels));
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), add->provider);
 
+    add->url = adw_entry_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(add->url),
+                                  "Server URL (any remote MCP server)");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), add->url);
+
     add->name = adw_entry_row_new();
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(add->name), "Name");
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(add->name),
+                                  "Name (from the URL if empty)");
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), add->name);
 
+    /*
+     * Said on the field, not only in the refusal: the label is what the
+     * agent's tools are named for once there are two accounts.
+     */
     add->account = adw_entry_row_new();
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(add->account),
-                                  "Account (work, personal)");
+    adw_preferences_row_set_title(
+        ADW_PREFERENCES_ROW(add->account),
+        "Account label (required for a second account)");
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), add->account);
 
     add->client_id = adw_entry_row_new();

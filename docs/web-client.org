@@ -117,6 +117,14 @@ spending, integrations, connectors, appearance, connections and devices.
 
 =/settings/spending?period=N&by=NICK= draws two rows of tabs -- the periods from =clawt_usage_period_count()= and the groupings from =clawt_usage_group_count()=, both by index into the library's tables, so there is no list of slugs here to drift -- then ~usage.ledger~'s groups as a table with Turns, Unpriced, In, Out and Cost columns and a Fleet footer.  An unpriced turn in the period adds a notice under the table saying how many and that they are not in the cost.  *Export CSV* is a plain =<a download>= to =/settings/spending/export= with the same query; that route asks the daemon again and answers =text/csv= with a =Content-Disposition= attachment, because the browser is not necessarily on the machine running =clawtilla-web=.  The document is =clawt_usage_ledger_csv()='s, the same bytes the CLI and the other clients write.
 
+*** Connectors
+
+=/settings/connectors= draws one card per ~connector.list~ entry, titled with its name and subtitled ~provider -- account~ (~clawt_connector_row_subtitle()~, the same text the other clients draw), so two accounts on one service are told apart on sight.  A card whose server refused the agent's last call has a *Server* row saying so; one whose discovery found an authorization server has a *Signs in at* row, and its primary button reads *Sign in at <host>* (~clawt_connector_sign_in_label()~) instead of *Authorize* -- both lead to =/settings/connectors/<name>/authorize=, which is ~connector.begin~.
+
+The add form opens on "Remote MCP server" (the catalogue sorts it first) and takes a *Server URL*, a *Name* (from the URL's host when empty, ~clawt_connector_name_for_url()~), an *Account label* the form says is required for a second account, and a client id.  An add with a URL asks ~connector.discover~ at once and says where it signs in, or that it publishes no sign-in.
+
+The authorize page reads the members ~connector.begin~ sends -- ~authorize_url~, else ~verification_uri_complete~ or ~verification_uri~ -- and names ~auth_server~ above the link.  It read a member called ~url~ before, which the daemon has never sent, so neither flow ever showed the page to open.
+
 *** The integration editor
 
 Drawn from ~clawt_integration_fields()~, the same table the GTK client

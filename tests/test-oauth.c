@@ -339,7 +339,7 @@ test_an_authorize_url_keeps_a_query_the_endpoint_already_had(void)
 
     plain = clawt_oauth_authorize_url("https://example.test/authorize", "cid",
                                       "http://127.0.0.1:8765/callback",
-                                      "read", "st4te", "ch4llenge");
+                                      "read", "st4te", "ch4llenge", NULL);
 
     g_assert_nonnull(g_strstr_len(plain, -1, "/authorize?response_type=code"));
     g_assert_nonnull(g_strstr_len(plain, -1, "code_challenge_method=S256"));
@@ -352,7 +352,7 @@ test_an_authorize_url_keeps_a_query_the_endpoint_already_had(void)
 
     tenanted = clawt_oauth_authorize_url("https://example.test/authorize?t=1",
                                          "cid", "http://127.0.0.1/cb", NULL,
-                                         "s", NULL);
+                                         "s", NULL, NULL);
 
     /* Appended, not replaced -- and no PKCE method without a challenge. */
     g_assert_nonnull(g_strstr_len(tenanted, -1, "?t=1&response_type=code"));
@@ -618,7 +618,7 @@ test_a_token_is_renewed(void)
     token_url = g_strconcat(fake->base, "/token", NULL);
 
     clawt_oauth_refresh_async(token_url, "cid", NULL, "old-refresh", NULL,
-                              on_refreshed, fake);
+                              NULL, on_refreshed, fake);
 
     g_main_loop_run(fake->loop);
 

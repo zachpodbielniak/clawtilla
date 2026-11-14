@@ -1014,9 +1014,22 @@ Connectors: ~connector.catalog~ (the services clawtilla knows how to
 connect, with the auth kind each uses); ~connector.list~ (the ones you
 have, with whether each is live, when it expires and whether it can renew
 itself -- never the credential); ~connector.begin~ and ~connector.await~;
+~connector.discover~; ~connector.unauthorized~;
 ~connector.key~; ~connector.refresh~; ~connector.revoke~;
 ~connector.registry_refresh~.  Adding and removing a connector go through
 ~integration.add~ and ~integration.remove~ like any other integration.
+
+~connector.list~ also sends, per connector: ~remote~ (its server is
+reached by URL), ~sign_in~ (offer a sign-in: discovery found an
+authorization server, or the server answered 401), ~needs_sign_in~ (the
+server refused the agent's last call) and, once discovery has run,
+~auth_server~ -- the issuer, to put on the button.
+
+~integration.add~ for a ~connector~ given a ~url~ and no ~provider~ is the
+built-in ~remote~ entry.  A second connector on a ~provider~ that already
+has one is refused (~CLAWT_ERROR_INVALID_ARGUMENT~) without an ~account~,
+and with one another account on that provider already folds to
+(~CLAWT_ERROR_ALREADY_EXISTS~); nothing is written either way.
 
 A secret is written by naming its *reference*: ~secret_key~,
 ~secret_backend~ (~file~, ~env~ or ~command~) and ~secret_locator~.  A
@@ -1310,6 +1323,34 @@ The ~device_code~ is deliberately absent from every reply.  It is the
 secret half of the pair -- it authorises the exchange -- while the user
 code is the half meant to be read aloud.
 
+~connector.begin~ on a remote connector whose catalogue entry names no
+endpoints is deferred through discovery and, with no ~client_id~,
+dynamic client registration before it answers; its reply then carries
+~auth_server~ too, for the client to show beside the link.
+
+*** connector.discover
+
+Takes ~name~ and asks the connector's server how to sign in to it (RFC
+9728 then RFC 8414), keeping what it finds in the connector's 0600 auth
+file.  Deferred.  Answers ~sign_in~ (a boolean), and when it is true
+~auth_server~, ~source~ (~protected-resource~ or ~origin~) and
+~registration~ (whether clawtilla can register itself there).  Finding
+nothing is an *answer* -- ~sign_in: false~ with a ~reason~ -- not an
+error: most MCP servers take a key, and a client asking straight after an
+add must not toast a failure for something that is not wrong.  A
+connector with no URL, or whose catalogue entry names its endpoints,
+answers the same way at once, with no request made.
+
+*** connector.unauthorized
+
+Sent by a connector's relay when its remote server answers 401.  Takes
+~name~ and, optionally, ~challenge~ (the ~WWW-Authenticate~ header).
+Records that a sign-in is wanted and the challenge's ~resource_metadata~
+hint for the next discovery, publishes ~integration.changed~ the first
+time, and answers an empty object at once: the relay is in the middle of
+a tool call, and nothing here goes to the network.  Kept in memory only
+-- a restarted daemon learns it again on the next refused call.
+
 *** connector.key
 
 Takes a token and stores it 0600 under ~secrets.dir~.  The reply names
@@ -1347,8 +1388,9 @@ nothing happens, so this is the only honest way to check one.
 
 ~integration.health~, ~integration.matrix_login~,
 ~integration.matrix_rooms~, ~integration.notify_test~,
-~connector.begin~, ~connector.await~, ~connector.refresh~,
-~connector.revoke~ and ~connector.registry_refresh~ all wait on the
+~connector.begin~, ~connector.await~, ~connector.discover~,
+~connector.refresh~, ~connector.revoke~ and ~connector.registry_refresh~
+all wait on the
 network, so their handlers
 *defer*: the request is answered when the work finishes rather than
 before the handler returns.  A client sees nothing different -- the reply

@@ -60,6 +60,9 @@ typedef struct {
     ClawtMcpRelayGate gate;
     gpointer          gate_data;
 
+    ClawtMcpRelayRewrite rewrite;
+    gpointer             rewrite_data;
+
     GDataInputStream  *from_client;
     GDataInputStream  *from_guest;
     GOutputStream     *to_client;
@@ -469,6 +472,29 @@ on_line(GObject *source, GAsyncResult *result, gpointer user_data)
         return;
     }
 
+    /*
+     * Outbound, the rewrite goes first, so the tool list and the gate
+     * judge the server's own name rather than the one the agent saw.
+     */
+    if (stream == relay->from_client && relay->rewrite != NULL) {
+        g_autofree gchar *reply = NULL;
+        gchar *rewritten = relay->rewrite(line, TRUE, &reply,
+                                          relay->rewrite_data);
+
+        if (rewritten == NULL) {
+            if (reply != NULL && !write_line(relay->to_client, reply)) {
+                direction_closed(relay);
+                return;
+            }
+
+            relay_read_next(relay, stream);
+            return;
+        }
+
+        g_free(line);
+        line = rewritten;
+    }
+
     if (stream == relay->from_client) {
         g_autofree gchar *refusal = NULL;
 
@@ -526,6 +552,17 @@ on_line(GObject *source, GAsyncResult *result, gpointer user_data)
             ? clawt_mcp_relay_filter_inbound(line, relay->permitted)
             : g_strdup(line);
 
+        /* Inbound it goes last, after the list has removed what it removes. */
+        if (relay->rewrite != NULL) {
+            gchar *rewritten = relay->rewrite(filtered, FALSE, NULL,
+                                              relay->rewrite_data);
+
+            if (rewritten != NULL) {
+                g_free(filtered);
+                filtered = rewritten;
+            }
+        }
+
         if (!write_line(relay->to_client, filtered)) {
             direction_closed(relay);
             return;
@@ -543,8 +580,9 @@ relay_read_next(Relay *relay, GDataInputStream *source)
 }
 
 static gint
-relay_run(GStrv argv, GStrv envp, GStrv permitted, gboolean filter,
-          const gchar *hint, ClawtMcpRelayGate gate, gpointer gate_data)
+relay_run_full(GStrv argv, GStrv envp, GStrv permitted, gboolean filter,
+               const gchar *hint, ClawtMcpRelayGate gate, gpointer gate_data,
+               ClawtMcpRelayRewrite rewrite, gpointer rewrite_data)
 {
     Relay relay = { 0 };
     g_autoptr(GSubprocessLauncher) launcher = NULL;
@@ -619,6 +657,8 @@ relay_run(GStrv argv, GStrv envp, GStrv permitted, gboolean filter,
     relay.hint = hint;
     relay.gate = gate;
     relay.gate_data = gate_data;
+    relay.rewrite = rewrite;
+    relay.rewrite_data = rewrite_data;
     relay.from_client = from_client;
     relay.from_guest = from_guest;
     relay.to_client = stdout_stream;
@@ -641,6 +681,29 @@ relay_run(GStrv argv, GStrv envp, GStrv permitted, gboolean filter,
     g_subprocess_wait(child, NULL, NULL);
 
     return EXIT_SUCCESS;
+}
+
+static gint
+relay_run(GStrv argv, GStrv envp, GStrv permitted, gboolean filter,
+          const gchar *hint, ClawtMcpRelayGate gate, gpointer gate_data)
+{
+    return relay_run_full(argv, envp, permitted, filter, hint, gate,
+                          gate_data, NULL, NULL);
+}
+
+gint
+clawt_mcp_relay_run_rewritten(GStrv                 argv,
+                              GStrv                 envp,
+                              gboolean              filtered,
+                              GStrv                 permitted,
+                              const gchar          *hint,
+                              ClawtMcpRelayGate     gate,
+                              gpointer              gate_data,
+                              ClawtMcpRelayRewrite  rewrite,
+                              gpointer              rewrite_data)
+{
+    return relay_run_full(argv, envp, filtered ? permitted : NULL, filtered,
+                          hint, gate, gate_data, rewrite, rewrite_data);
 }
 
 gint

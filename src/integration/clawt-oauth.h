@@ -351,8 +351,17 @@ gchar *clawt_oauth_pkce_challenge(const gchar *verifier);
  * @scopes: (nullable): what to ask for
  * @state: an unguessable value echoed back, to bind the reply to this attempt
  * @challenge: (nullable): the PKCE challenge
+ * @resource: (nullable): the RFC 8707 resource indicator -- the MCP
+ *   server the token is for
  *
  * Builds the URL a person opens to approve the request.
+ *
+ * @resource binds the token to one server.  An MCP authorization server
+ * may front several, and a token minted with no audience is one any of
+ * them would accept -- so a server that turned out to be hostile could
+ * replay what it was handed against the others.  It goes on all three
+ * legs (this URL, the exchange and every renewal), because a server that
+ * checks it checks it on whichever leg it sees.
  *
  * Returns: (transfer full): the URL
  */
@@ -361,7 +370,8 @@ gchar *clawt_oauth_authorize_url(const gchar *auth_url,
                                  const gchar *redirect_uri,
                                  const gchar *scopes,
                                  const gchar *state,
-                                 const gchar *challenge);
+                                 const gchar *challenge,
+                                 const gchar *resource);
 
 /**
  * clawt_oauth_parse_redirect:
@@ -416,6 +426,46 @@ gchar *clawt_oauth_await_redirect_finish(GAsyncResult  *result,
                                          GError       **error);
 
 /**
+ * clawt_oauth_exchange_body:
+ * @client_id: (nullable): the application
+ * @client_secret: (nullable): if the provider insists on one
+ * @code: the authorization code
+ * @redirect_uri: the same one the authorization request carried
+ * @verifier: (nullable): the PKCE verifier
+ * @resource: (nullable): the RFC 8707 resource indicator
+ *
+ * The form body clawt_oauth_exchange_async() posts.
+ *
+ * Separate so what is sent can be asserted on without a token endpoint:
+ * a `resource` that never reaches the exchange is invisible from the
+ * outside until a server that checks audiences refuses the token.
+ *
+ * Returns: (transfer full): an `application/x-www-form-urlencoded` body
+ */
+gchar *clawt_oauth_exchange_body(const gchar *client_id,
+                                 const gchar *client_secret,
+                                 const gchar *code,
+                                 const gchar *redirect_uri,
+                                 const gchar *verifier,
+                                 const gchar *resource);
+
+/**
+ * clawt_oauth_refresh_body:
+ * @client_id: (nullable): the application
+ * @client_secret: (nullable): if the provider insists on one
+ * @refresh_token: what to renew with
+ * @resource: (nullable): the RFC 8707 resource indicator
+ *
+ * The form body clawt_oauth_refresh_async() posts.
+ *
+ * Returns: (transfer full): an `application/x-www-form-urlencoded` body
+ */
+gchar *clawt_oauth_refresh_body(const gchar *client_id,
+                                const gchar *client_secret,
+                                const gchar *refresh_token,
+                                const gchar *resource);
+
+/**
  * clawt_oauth_exchange_async:
  * @token_url: the token endpoint
  * @client_id: the application
@@ -423,6 +473,8 @@ gchar *clawt_oauth_await_redirect_finish(GAsyncResult  *result,
  * @code: the authorization code
  * @redirect_uri: the same one the authorization request carried
  * @verifier: (nullable): the PKCE verifier
+ * @resource: (nullable): the RFC 8707 resource indicator, as the
+ *   authorization request carried it
  * @cancellable: (nullable): a #GCancellable
  * @callback: called with the token
  * @user_data: for @callback
@@ -435,6 +487,7 @@ void clawt_oauth_exchange_async(const gchar         *token_url,
                                 const gchar         *code,
                                 const gchar         *redirect_uri,
                                 const gchar         *verifier,
+                                const gchar         *resource,
                                 GCancellable        *cancellable,
                                 GAsyncReadyCallback  callback,
                                 gpointer             user_data);
@@ -455,6 +508,8 @@ ClawtOauthToken *clawt_oauth_exchange_finish(GAsyncResult  *result,
  * @client_id: the application
  * @client_secret: (nullable): if the provider insists on one
  * @refresh_token: what to renew with
+ * @resource: (nullable): the RFC 8707 resource indicator the token was
+ *   minted for
  * @cancellable: (nullable): a #GCancellable
  * @callback: called with the new token
  * @user_data: for @callback
@@ -465,6 +520,7 @@ void clawt_oauth_refresh_async(const gchar         *token_url,
                                const gchar         *client_id,
                                const gchar         *client_secret,
                                const gchar         *refresh_token,
+                               const gchar         *resource,
                                GCancellable        *cancellable,
                                GAsyncReadyCallback  callback,
                                gpointer             user_data);

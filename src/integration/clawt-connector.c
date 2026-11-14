@@ -255,6 +255,23 @@ static const ClawtConnectorInfo builtin[] = {
       NULL, NULL, NULL,
       NULL,
       CLAWT_CREDENTIAL_PLACEMENT_HEADER, "Authorization", "Bearer %s",
+      NULL, NULL, NULL },
+
+    /*
+     * Any remote MCP server, by its URL and nothing else.
+     *
+     * PKCE with no endpoints is what makes it work: the sign-in is asked
+     * of the server (RFC 9728, RFC 8414, RFC 7591; see clawt-mcp-auth.h)
+     * instead of copied into a catalogue file by hand.  A server that
+     * turns out to want a key takes one pasted, like any connector.
+     */
+    { CLAWT_CONNECTOR_PROVIDER_REMOTE, "Remote MCP server",
+      "Any MCP server reached by URL; it says how to sign in.", "Generic",
+      CLAWT_CONNECTOR_AUTH_PKCE,
+      NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+      NULL, NULL, NULL,
+      NULL,
+      CLAWT_CREDENTIAL_PLACEMENT_HEADER, "Authorization", "Bearer %s",
       NULL, NULL, NULL }
 };
 
@@ -632,7 +649,19 @@ compare_entries(gconstpointer a, gconstpointer b)
 {
     const ClawtConnectorInfo *left = *(const ClawtConnectorInfo **)a;
     const ClawtConnectorInfo *right = *(const ClawtConnectorInfo **)b;
-    gint by_category = g_strcmp0(left->category, right->category);
+    gint by_category;
+
+    /*
+     * The entry that needs nothing but a URL goes first, so a list that
+     * opens on its first entry opens on the one most adds want -- in
+     * every client, without any of them knowing its id.
+     */
+    if (g_strcmp0(left->id, CLAWT_CONNECTOR_PROVIDER_REMOTE) == 0 ||
+        g_strcmp0(right->id, CLAWT_CONNECTOR_PROVIDER_REMOTE) == 0)
+        return (g_strcmp0(right->id, CLAWT_CONNECTOR_PROVIDER_REMOTE) == 0) -
+               (g_strcmp0(left->id, CLAWT_CONNECTOR_PROVIDER_REMOTE) == 0);
+
+    by_category = g_strcmp0(left->category, right->category);
 
     if (by_category != 0)
         return by_category;
@@ -898,4 +927,80 @@ clawt_connector_state_tone(ClawtConnectorState state)
     }
 
     return "neutral";
+}
+
+gchar *
+clawt_connector_name_for_url(const gchar *url)
+{
+    g_autoptr(GUri) uri = NULL;
+    g_auto(GStrv) labels = NULL;
+    g_autoptr(GInetAddress) literal = NULL;
+    const gchar *host;
+    const gchar *label;
+    const gchar *p;
+    GString *out;
+    guint count;
+
+    if (url == NULL)
+        return NULL;
+
+    uri = g_uri_parse(url, G_URI_FLAGS_NONE, NULL);
+
+    if (uri == NULL || (host = g_uri_get_host(uri)) == NULL || *host == '\0')
+        return NULL;
+
+    /* An address says nothing about the service behind it. */
+    literal = g_inet_address_new_from_string(host);
+
+    if (literal != NULL)
+        return g_strdup(CLAWT_CONNECTOR_PROVIDER_REMOTE);
+
+    /*
+     * The label before the top-level domain is the one that names the
+     * service -- `mcp.notion.com` is notion, `api.linear.app` is linear
+     * -- and a single-label host such as `localhost` is itself.
+     */
+    labels = g_strsplit(host, ".", -1);
+    count = g_strv_length(labels);
+    label = (count >= 2) ? labels[count - 2] : labels[0];
+
+    out = g_string_new(NULL);
+
+    for (p = label; *p != '\0'; p++)
+        g_string_append_c(out, g_ascii_isalnum(*p) ? g_ascii_tolower(*p)
+                                                   : '-');
+
+    if (out->len == 0) {
+        g_string_free(out, TRUE);
+        return NULL;
+    }
+
+    return g_string_free(out, FALSE);
+}
+
+gchar *
+clawt_connector_row_subtitle(const gchar *provider, const gchar *account)
+{
+    if (account != NULL && *account != '\0')
+        return g_strdup_printf("%s -- %s", provider != NULL ? provider : "",
+                               account);
+
+    return g_strdup(provider != NULL ? provider : "");
+}
+
+gchar *
+clawt_connector_sign_in_label(const gchar *auth_server)
+{
+    g_autoptr(GUri) uri = NULL;
+    const gchar *host;
+
+    if (auth_server == NULL || *auth_server == '\0')
+        return g_strdup("Sign in");
+
+    uri = g_uri_parse(auth_server, G_URI_FLAGS_NONE, NULL);
+    host = (uri != NULL) ? g_uri_get_host(uri) : NULL;
+
+    return g_strdup_printf("Sign in at %s",
+                           (host != NULL && *host != '\0') ? host
+                                                           : auth_server);
 }

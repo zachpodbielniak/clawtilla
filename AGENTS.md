@@ -1557,6 +1557,17 @@ versions apart.
 - A refusal names the feature that imposed it, supplied by the caller. The
   relay's own message told a connector-refused agent to enable a setting about
   seeing the screen.
+- **A URL in a server's OAuth metadata is that server's input, not ours.**
+  MCP sign-in discovery (`clawt-mcp-auth.c`) refuses redirects on every leg,
+  plain http except loopback-from-loopback, and a document about another
+  resource or issuer -- a public server's 401 naming `http://127.0.0.1:...`
+  would otherwise aim the daemon at this machine. Hand-configured endpoints
+  and `client_id` always win over what a server publishes.
+- **Two accounts on one service share tool names.** Each connector is its
+  own relay, so the CLI keeps the servers apart, but the model, action rules
+  and decision cards see `create_issue` twice. The relay prefixes each
+  account's tools with its label and refuses the bare name; never route a
+  colliding name to whichever registered first.
 
 ## GTK4 and libadwaita
 

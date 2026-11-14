@@ -123,6 +123,59 @@ gint clawt_mcp_relay_run_unfiltered_gated(GStrv              argv,
                                           gpointer           gate_data);
 
 /**
+ * ClawtMcpRelayRewrite: (skip)
+ * @line: one JSON-RPC message
+ * @outbound: %TRUE for a message from the agent's client to the server,
+ *   %FALSE for one coming back
+ * @reply: (out) (transfer full) (nullable): what to answer the agent
+ *   with instead, when an outbound message is dropped
+ * @user_data: whatever was handed to clawt_mcp_relay_run_rewritten()
+ *
+ * Changes a message on its way past, before the tool list is applied to
+ * it outbound and after it inbound -- so a permission is always judged
+ * against the server's own tool names, never the ones the agent sees.
+ *
+ * Returns: (transfer full) (nullable): the message to pass on, or %NULL
+ *   to drop it
+ */
+typedef gchar *(*ClawtMcpRelayRewrite)(const gchar  *line,
+                                       gboolean      outbound,
+                                       gchar       **reply,
+                                       gpointer      user_data);
+
+/**
+ * clawt_mcp_relay_run_rewritten:
+ * @argv: (array zero-terminated=1): the server to run
+ * @envp: (array zero-terminated=1) (nullable): added to its environment
+ * @filtered: whether @permitted applies at all
+ * @permitted: (array zero-terminated=1) (nullable): the tools this agent
+ *   may use, read only when @filtered is %TRUE
+ * @hint: (nullable): one sentence on why, for a refusal from @permitted
+ * @gate: (scope call) (nullable): asked once per permitted tool call
+ * @gate_data: data for @gate
+ * @rewrite: (scope call): changes each message on its way past
+ * @rewrite_data: data for @rewrite
+ *
+ * The relay with a rewrite in the middle, which is how several accounts
+ * on one service get their tools named for the account.
+ *
+ * @filtered says outright whether there is a tool list, rather than
+ * letting a %NULL @permitted mean it: the same %NULL has meant both
+ * "allow nothing" and "allow everything" here before.
+ *
+ * Returns: the exit status for the process
+ */
+gint clawt_mcp_relay_run_rewritten(GStrv                 argv,
+                                   GStrv                 envp,
+                                   gboolean              filtered,
+                                   GStrv                 permitted,
+                                   const gchar          *hint,
+                                   ClawtMcpRelayGate     gate,
+                                   gpointer              gate_data,
+                                   ClawtMcpRelayRewrite  rewrite,
+                                   gpointer              rewrite_data);
+
+/**
  * clawt_mcp_relay_call_name:
  * @line: one JSON-RPC message from the agent's MCP client
  *

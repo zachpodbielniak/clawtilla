@@ -904,9 +904,14 @@ connectors_content(ClawtWebApp *app)
          * "not authorised" for every connector including a working one,
          * and the granted scopes never appeared.
          */
-        g_autoptr(HtmxDiv) card = clawt_web_card(
-            name, clawt_web_member(connector, "provider", NULL));
+        g_autofree gchar *subtitle = clawt_connector_row_subtitle(
+            clawt_web_member(connector, "provider", NULL),
+            clawt_web_member(connector, "account", NULL));
+        g_autoptr(HtmxDiv) card = clawt_web_card(name, subtitle);
         HtmxElement *body = clawt_web_card_body(card);
+        gboolean sign_in = clawt_web_member_bool(connector, "sign_in", FALSE);
+        g_autofree gchar *sign_in_label = clawt_connector_sign_in_label(
+            clawt_web_member(connector, "auth_server", NULL));
         g_autoptr(HtmxDiv) row = htmx_div_new();
         gint64 expires = clawt_web_member_int(connector, "expires_at", 0);
         const gchar *status = clawt_connector_state_label(
@@ -922,6 +927,20 @@ connectors_content(ClawtWebApp *app)
             "/settings/connectors/%s/remove", escaped);
 
         clawt_web_add(body, clawt_web_row("Status", status));
+
+        /*
+         * A server that refused the agent's last call says so here, and
+         * a sign-in discovery found says where it happens -- the button
+         * below is the fix for both.
+         */
+        if (clawt_web_member_bool(connector, "needs_sign_in", FALSE))
+            clawt_web_add(body, clawt_web_row(
+                "Server", "refused the agent's last call (401); sign in "
+                          "again"));
+
+        if (clawt_web_member(connector, "auth_server", NULL) != NULL)
+            clawt_web_add(body, clawt_web_row(
+                "Signs in at", clawt_web_member(connector, "auth_server", "")));
 
         if (expires > 0) {
             g_autoptr(GDateTime) when =
@@ -947,7 +966,8 @@ connectors_content(ClawtWebApp *app)
 
             htmx_element_add_class(HTMX_ELEMENT(link), "btn");
             htmx_element_add_class(HTMX_ELEMENT(link), "btn-primary");
-            htmx_node_set_text_content(HTMX_NODE(link), "Authorize");
+            htmx_node_set_text_content(HTMX_NODE(link),
+                                       sign_in ? sign_in_label : "Authorize");
             htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(link));
         }
 
@@ -992,11 +1012,22 @@ connectors_content(ClawtWebApp *app)
         g_ptr_array_add(ids, NULL);
         g_ptr_array_add(labels, NULL);
 
-        clawt_web_add(form, clawt_web_field("Name", "name", NULL,
-                                            "my-slack"));
         clawt_web_add(form, clawt_web_select_field(
             "Service", "type", (const gchar *const *)ids->pdata,
             (const gchar *const *)labels->pdata, NULL));
+        clawt_web_add(form, clawt_web_field(
+            "Server URL", "url", NULL,
+            "any remote MCP server -- it says where to sign in"));
+        clawt_web_add(form, clawt_web_field("Name", "name", NULL,
+                                            "from the URL if empty"));
+
+        /*
+         * Said on the field, not only in the refusal: the label is what
+         * the agent's tools are named for once there are two accounts.
+         */
+        clawt_web_add(form, clawt_web_field(
+            "Account label", "account", NULL,
+            "work, personal -- required for a second account"));
         clawt_web_add(form, clawt_web_field(
             "Client id", "client_id", NULL,
             "from the service's own developer settings"));
@@ -2718,8 +2749,18 @@ on_connector_add(HtmxRequest *request, GHashTable *params, gpointer user_data)
     g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
     g_autoptr(JsonNode) reply = NULL;
     g_autoptr(HtmxElement) content = NULL;
+    const gchar *url = clawt_web_form_value(request, "url");
+    const gchar *typed = clawt_web_form_value(request, "name");
+    gboolean remote = (url != NULL && *url != '\0');
+    g_autofree gchar *name = NULL;
+    g_autofree gchar *done = NULL;
 
     (void)params;
+
+    /* A URL is enough: the name comes from its host, as in every client. */
+    name = (typed != NULL && *typed != '\0')
+        ? g_strdup(typed)
+        : (remote ? clawt_connector_name_for_url(url) : NULL);
 
     /*
      * A connector is an integration whose type is "connector"; the
@@ -2727,20 +2768,53 @@ on_connector_add(HtmxRequest *request, GHashTable *params, gpointer user_data)
      * inventing one here would be a second creation path -- which is
      * exactly how validation got skipped for agents before.
      */
-    clawt_web_payload_set(payload, "name",
-                          clawt_web_form_value(request, "name"));
+    clawt_web_payload_set(payload, "name", name);
     clawt_web_payload_set(payload, "type", "connector");
     clawt_web_payload_set(payload, "provider",
                           clawt_web_form_value(request, "type"));
     clawt_web_payload_set(payload, "scope", "all");
     clawt_web_payload_set(payload, "client_id",
                           clawt_web_form_value(request, "client_id"));
+    if (clawt_web_form_value(request, "account") != NULL &&
+        *clawt_web_form_value(request, "account") != '\0')
+        clawt_web_payload_set(payload, "account",
+                              clawt_web_form_value(request, "account"));
+
+    if (remote)
+        clawt_web_payload_set(payload, "url", url);
 
     reply = clawt_web_app_call(app, "integration.add",
                                clawt_web_payload_take(g_steal_pointer(&payload)));
 
     if (reply == NULL)
         failure = g_strdup(clawt_web_app_last_error(app));
+
+    /*
+     * A server added by URL is asked how to sign in now -- the person has
+     * just asked for it, which is when the network is wanted.  The card
+     * then carries the sign-in and where it happens.
+     */
+    if (failure == NULL && remote) {
+        g_autoptr(ClawtWebPayload) ask = clawt_web_payload_new();
+        g_autoptr(JsonNode) found = NULL;
+
+        clawt_web_payload_set(ask, "name", name);
+        found = clawt_web_app_call(app, "connector.discover",
+                                   clawt_web_payload_take(
+                                       g_steal_pointer(&ask)));
+
+        if (found != NULL &&
+            clawt_web_member_bool(clawt_web_root(found), "sign_in", FALSE)) {
+            g_autofree gchar *where = clawt_connector_sign_in_label(
+                clawt_web_member(clawt_web_root(found), "auth_server",
+                                 NULL));
+
+            done = g_strdup_printf("Added. %s to finish.", where);
+        } else {
+            done = g_strdup("Added. It publishes no sign-in; paste a token "
+                            "for it.");
+        }
+    }
 
     content = connectors_content(app);
 
@@ -2749,7 +2823,8 @@ on_connector_add(HtmxRequest *request, GHashTable *params, gpointer user_data)
                                  failure, TRUE);
 
     return settings_response(app, request, "connectors", content,
-                             "Added. Authorize it to get a credential.",
+                             done != NULL ? done
+                             : "Added. Authorize it to get a credential.",
                              FALSE);
 }
 
@@ -2793,9 +2868,30 @@ on_connector_authorize(HtmxRequest *request, GHashTable *params,
         g_autoptr(HtmxDiv) card = clawt_web_card(
             "Authorize", "Finish this in the service's own window.");
         HtmxElement *body = clawt_web_card_body(card);
-        const gchar *url = clawt_web_member(root, "url", NULL);
+        /*
+         * The members connector.begin sends.  This read `url`, which it
+         * has never sent, so neither flow ever showed the page to open:
+         * a browser flow's link is `authorize_url`, a device flow's page
+         * is `verification_uri` (with the code filled in, when the
+         * provider offers it, as `verification_uri_complete`).
+         */
+        const gchar *url = clawt_web_member(root, "authorize_url", NULL);
         const gchar *code = clawt_web_member(root, "user_code", NULL);
         const gchar *flow = clawt_web_member(root, "flow", NULL);
+        const gchar *server = clawt_web_member(root, "auth_server", NULL);
+
+        if (url == NULL)
+            url = clawt_web_member(root, "verification_uri_complete", NULL);
+
+        if (url == NULL)
+            url = clawt_web_member(root, "verification_uri", NULL);
+
+        /* Where, before the link: what the address bar is checked against. */
+        if (server != NULL) {
+            g_autofree gchar *where = clawt_connector_sign_in_label(server);
+
+            clawt_web_add(body, clawt_web_row(where, server));
+        }
 
         if (code != NULL)
             clawt_web_add(body, clawt_web_row("Code", code));

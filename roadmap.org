@@ -165,8 +165,9 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 - *Proposal:* a per-connector =max_result_bytes=, the full result spilled under =<state_dir>=, and a query tool over it. Bound what accumulates, not the result ("a limit applied after the read").
 - *Version:* minor.
 
-** TODO MCP OAuth discovery and dynamic client registration                                         :connectors:
-- *Today:* =docs/connectors.org= remotes take a hand-configured =auth_url= and =token_url=.
+** DONE MCP OAuth discovery and dynamic client registration (version assigned at merge)           :connectors:
+- *Done:* =src/integration/clawt-mcp-auth.c=. A remote connector whose catalogue entry names no endpoints (the new built-in =remote=, or any PKCE pack without them) asks the server: RFC 9728 protected-resource (the 401's =resource_metadata=, then the well-known addresses), RFC 8414 metadata, RFC 7591 registration when no =client_id= is set, PKCE S256 and the RFC 8707 =resource= on authorize, exchange and refresh. No leg follows a redirect; nothing is plain http except loopback from loopback; a document about another resource or issuer is refused; documents are capped at 64 KiB while read. Hand-configured endpoints and =client_id= win (=clawt_mcp_auth_plan()=). =connector.discover= (deferred) and =connector.unauthorized= (the relay's 401 report, recorded, no network); a refused =tools/call= becomes an =isError= tool result naming the connector and the sign-in. Registered clients in =secrets.dir/connector-auth/<name>.json= at 0600. Keys =connectors.discovery=, =connectors.client_name=. GTK, web and lrg: add by URL alone, *Sign in at <host>* on the row, the host above the link. Docs: =docs/connectors.org= ("Signing in where the server says"), =docs/security.org=. Tests: =tests/test-mcp-auth.c=, =tests/test-connector-accounts.c=.
+- *Before:* =docs/connectors.org= remotes took a hand-configured =auth_url= and =token_url=.
 - *Prior art:* =mcp-oauth-discovery.ts= (RFC 9728 protected-resource metadata, RFC 8414, DCR, the RFC 8707 =resource= parameter; it never follows a redirect). =broker-mcp-refusal.ts= turns a 401 into an actionable tool error. =608ff19fb= / =17c69990f=: a server that refused only tool calls never offered sign-in.
 - *Version:* minor.
 
@@ -423,8 +424,10 @@ When somebody turns the broker on, clawtilla starts a local AnythingMCP for them
   2. Prior art only, for the P0 egress gate and provider-key broker, which put the same check-then-inject step in front of provider APIs one layer down. Do this first whatever is decided about running it.
 - *Revisit when:* it leaves beta, or describes OAuth for SaaS apps.
 
-** TODO P2 Several accounts on one service: make the agent choose                                   :connectors:
-- *Today:* =clawtilla connector add gh --provider github --account work= allows several accounts per service. Whether an agent granted two of them is made to say which one, or silently gets the first, is not verified.
+** DONE P2 Several accounts on one service: make the agent choose (version assigned at merge)        :connectors:
+- *Found:* nothing was routed to the first account -- each connector is its own =.mcp.json= entry and relay, so the CLI namespaced the servers -- but the tool names inside were identical, so the model, action rules and decision cards saw =create_issue= twice with nothing saying which account.
+- *Done:* =src/integration/clawt-connector-accounts.c=. With two or more accounts on one =provider= bound to an agent, each relay (stdio through =clawt_mcp_relay_run_rewritten()=, HTTP inline) renames its tools =<label>_<tool>= and refuses the bare name; two labels that fold to one prefix refuse every call on both. =integration.add= refuses a second account without a label or with a used one. TOOLS.org says which connectors are prefixed. Every client shows =provider -- account= on the row (=clawt_connector_row_subtitle()=) and says the label is required for a second account. Tested with two accounts on one service.
+- *Before:* =clawtilla connector add gh --provider github --account work= allowed several accounts per service, unverified.
 - *Prior art:* =docs/composio.md=. Every new account must carry a unique label. Explicit selection is required whenever more than one account could run a tool, and a new OAuth flow never silently becomes the default for an existing connection. "Disconnect" revokes only the account on that row.
 - *Proposal:* check first. If an agent with two GitHub connectors gets two identically named tool sets, or one shadowing the other, the relay prefixes each set with its account label. A tool whose name collides across accounts is refused rather than routed to whichever was registered first. Test it with two accounts on one service, because "a test with one key cannot see a shared-scalar bug".
 - *Version:* micro.

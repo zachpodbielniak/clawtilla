@@ -1510,7 +1510,12 @@ static const ClawtSchemaEntry schema[] = {
   "two different servers and there is no way to tell which was meant.\n"
   "\n"
   "libresearch: where its server answers. grokbot: the Grok routine's\n"
-  "webhook address, as Grok shows it under \"POST to\".", "0.2.0" },
+  "webhook address, as Grok shows it under \"POST to\".\n"
+  "\n"
+  "connector: a remote MCP server, instead of the catalogue's. With\n"
+  "`provider: remote` -- or no provider at all -- this is the only thing\n"
+  "a connector needs: the server says how to sign in to it (see\n"
+  "connectors.discovery).", "0.2.0" },
 
 { "integrations.env", CLAWT_SCHEMA_MAPPING, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
@@ -1536,7 +1541,15 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "Two connectors for the same provider are the ordinary case -- work\n"
   "and personal, or one GitLab org and another -- and the account label\n"
-  "is what tells them apart everywhere they are shown.", "0.2.0" },
+  "is what tells them apart everywhere they are shown.\n"
+  "\n"
+  "Required, and unique per provider, for every account after the first:\n"
+  "adding a second one without a label, or with one another account on\n"
+  "that service already uses, is refused. An agent granted several\n"
+  "accounts on one service sees each account's tools prefixed with its\n"
+  "label -- `work_create_issue`, `personal_create_issue` -- and a call to\n"
+  "the bare name is refused rather than run as whichever account it\n"
+  "happened to reach.", "0.2.0" },
 
 { "integrations.instance", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
@@ -1687,7 +1700,36 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "Bound on 127.0.0.1 only. A redirect carries an authorization code in\n"
   "a URL, and a listener on every interface offers that code to whoever\n"
-  "on the network reaches the port first.", "0.2.0" },
+  "on the network reaches the port first.\n"
+  "\n"
+  "A client clawtilla registers for itself by dynamic client registration\n"
+  "is registered with this redirect, so changing the port means signing\n"
+  "in again.", "0.2.0" },
+
+{ "connectors.discovery", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "true", NULL,
+  "Whether a remote connector finds out for itself how to sign in.\n"
+  "\n"
+  "A connector reached by URL whose catalogue entry names no endpoints\n"
+  "asks the server: its RFC 9728 protected-resource document names an\n"
+  "authorization server, whose RFC 8414 metadata names the endpoints,\n"
+  "and RFC 7591 dynamic client registration supplies a client id when\n"
+  "the connector has none. Endpoints a catalogue entry names by hand\n"
+  "always win, and so does a configured `client_id`.\n"
+  "\n"
+  "Only when somebody asks for a sign-in -- never at daemon start. No\n"
+  "request in it follows a redirect, and nothing it finds may be plain\n"
+  "http unless the server itself is on loopback. Off, such a connector\n"
+  "takes a pasted token only.", "0.18.0" },
+
+{ "connectors.client_name", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  "clawtilla", NULL,
+  "What clawtilla calls itself when it registers with a server.\n"
+  "\n"
+  "Sent as `client_name` in a dynamic client registration, so it is what\n"
+  "the server's consent screen shows the person approving it -- worth\n"
+  "setting to something that says which machine is asking when several\n"
+  "fleets sign in to one service.", "0.18.0" },
 
 /* ── routines ────────────────────────────────────────────────────── */
 { "connectors.registry_enabled", CLAWT_SCHEMA_BOOLEAN,
