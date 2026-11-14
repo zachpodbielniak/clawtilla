@@ -537,6 +537,22 @@ gboolean clawt_web_write_is_cross_site(HtmxMethod   method,
                                        const gchar *host);
 
 
+/**
+ * clawt_web_decision_inline:
+ * @decision: one decision as `decision.list` puts it on the wire
+ * @notice: (nullable): a refusal to write into the card, after a press
+ *   the daemon turned down
+ *
+ * The inline view of a decision in the chat it was asked from: who asks,
+ * the question, and while it is open the options as buttons posting
+ * `decision.answer` with `via: chat` and the default with its deadline;
+ * once settled, how it ended and who ended it.
+ *
+ * Returns: (transfer full): the card
+ */
+HtmxElement *clawt_web_decision_inline(JsonObject  *decision,
+                                       const gchar *notice);
+
 /* Append an escaped destination if it matches; return 1 when appended. */
 guint clawt_web_navigation_result(HtmxElement *list, const gchar *query,
                                   const gchar *name, const gchar *detail,

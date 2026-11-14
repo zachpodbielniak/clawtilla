@@ -452,6 +452,7 @@ Source: =clients/lrg/lrg-chat.c=; decisions in =clients/lrg/lrg-chat-model.c=. M
 - *Bodies*: markdown through =clawt_lrg_markdown()= (links open http, https and file only).
 - *Attachment previews*: every file named in a message's attachment block (=clawt_lrg_attachment_refs()=). A picture is a thumbnail decoded at drawing size (460×320 at most), click for full size; anything else is a chip with name and size, click to open with the desktop's handler. An agent's file (=clawt:<id>=) is fetched once with ~attachment.get~ and cached under =$XDG_CACHE_HOME/clawtilla/attachments=. Right-click: Open, Save a copy…, Copy path, Delete permanently (~attachment.remove~, confirmed).
 - *Turn steps*: ~turn.step~ events for the room on screen build a live block at the end of the transcript; runs of tool calls collapse into an =LrgExpander= titled with =clawt_turn_step_run_summary()= that opens onto the command lines in monospace; reasoning is marked "thinking:"; only failures are coloured (=clawt_turn_step_tone()=). When the turn ends the block is sealed where it is, not removed.
+- *Decisions inline*: the decisions asked from the room on screen (~decision.list~ with ~room~, read after ~room.steps~) are cards merged into the history by =clawt_lrg_decisions_before()= (=clawt_decision_precedes()=): who asks, the question, the options as buttons while it is open and the default with its deadline, or once settled how it ended and who ended it (=clawt_lrg_inline_decision_footer()=). A press sends ~decision.answer~ with ~via: chat~; the card shows "Answering…" instead of its buttons until the reply, so a second press has nothing to land on, and a refusal (a stale card, or the inbox got there first) is toasted and the room's list read again. ~decision.asked~, ~decision.settled~ and ~decision.deleted~ for the room on screen are folded by =clawt_lrg_inline_decision_event()=: fetch and draw, redraw from the event, or take the card out. See [[file:clients.org][Decisions inline]].
 - *Activity line*: "thinking", or "working for <peer>" when the turn is for somebody else (=clawt_lrg_typing_activity()=), "delivered -- waiting for a reply" after a send; shimmering while shown.
 - *Following the live edge*: the transcript stays at its newest message while the reader is there (=clawt_transcript_is_at_bottom()=). A reader who scrolls up is left alone; a message arriving then draws a "New messages" rule in the text and a "↓ New messages" pill over it, both cleared by any return to the bottom. A loaded history lands at the bottom instantly; later arrivals scroll smoothly.
 - *Measure*: the column (and the composer under it) is the appearance's measure (=clawt_measure_resolve_px()=, characters measured on a zero in the label font, as CSS's =ch=), centred, so a wider window widens the margins rather than the lines. The composer's frame stands on the same line as the message bodies (=clawt_chat_body_inset()=).
@@ -747,12 +748,14 @@ The Work section's inbox of questions agents are waiting on. Its tab carries the
 
 Each decision is a card: who asked and how long ago (=created_at= is seconds, converted), the urgency badges ("closing soon" warn, "already decided" bad) with a sentence saying what each means, the whole question as a wrapping paragraph, "Going ahead with: <default> — <reason>", each option as a wrapping sentence with its own Choose button, an answer box with Answer on the same line, and "Does not need me" beside Delete. A typed answer wins over a clicked option. Enter in the answer box answers.
 
+The same decision is also drawn inline in the chat of the room it was asked from (see Chat); answering it in either place redraws both, because both fold the same ~decision.settled~.
+
 A policy ask is a decision like any other on the wire; the daemon writes the action and the matched action rule into the question, which is why the question is drawn whole rather than as a one-line title.
 
 | Control | Frame |
 |---|---|
 | listing | ~decision.list~ |
-| Choose / Answer / Enter | ~decision.answer~ |
+| Choose / Answer / Enter | ~decision.answer~ (~via: inbox~) |
 | Does not need me | ~decision.dismiss~ |
 | Delete | ~decision.delete~ |
 

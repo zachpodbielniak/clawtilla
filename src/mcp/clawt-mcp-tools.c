@@ -3886,6 +3886,7 @@ tool_agent_options(ClawtMcpTools *self)
 static gchar *
 tool_ask_decision(ClawtMcpTools *self,
                   const gchar   *agent_id,
+                  const gchar   *turn_room,
                   JsonObject    *arguments,
                   gboolean      *is_error)
 {
@@ -3917,6 +3918,14 @@ tool_ask_decision(ClawtMcpTools *self,
     decision = clawt_decision_new(NULL, agent_id, question);
     clawt_decision_set_default(decision, fallback, reason);
     clawt_decision_set_task(decision, task);
+
+    /*
+     * The room the turn is in, so the question can be drawn inline in
+     * the conversation that raised it as well as in the inbox.  NULL
+     * when the call could not say; the daemon places it then only when
+     * the agent is in exactly one turn, rather than guessing.
+     */
+    clawt_decision_set_room(decision, turn_room);
 
     if (options != NULL && *options != '\0') {
         g_auto(GStrv) split = g_strsplit(options, "\n", -1);
@@ -8309,7 +8318,7 @@ tools_call(ClawtMcpTools *self,
              g_strcmp0(tool_name, "clawtilla_ask_agent") == 0)
         text = tool_message_agent(self, agent_id, turn_room, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_ask_decision") == 0)
-        text = tool_ask_decision(self, agent_id, arguments, &is_error);
+        text = tool_ask_decision(self, agent_id, turn_room, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_fleet_cost") == 0)
         text = tool_fleet_cost(self, agent_id);
     else if (g_strcmp0(tool_name, "clawtilla_list_teams") == 0)

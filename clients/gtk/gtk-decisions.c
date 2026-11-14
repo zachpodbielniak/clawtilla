@@ -48,6 +48,8 @@ on_decision_answer(GtkButton *button, gpointer user_data)
     reply = clawt_window_request(self, "decision.answer",
                                  clawt_build_payload("decision", id,
                                                      "answer", answer,
+                                                     "via",
+                                                     CLAWT_DECISION_VIA_INBOX,
                                                      NULL));
 
     if (reply != NULL)

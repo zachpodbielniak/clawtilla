@@ -7102,6 +7102,171 @@ test_deleting_a_decision(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * Both ends name the room, so a chat can draw the question where it was
+ * asked and redraw it however it was settled.
+ *
+ * Asked through tool.rpc with the room libreclaw hands the MCP server,
+ * the same way an agent's CLI asks; answered over IPC from the inline
+ * view (`via: chat`); answered again from the inbox, which is the double
+ * tap and the stale press at once and must be refused in words that say
+ * what already happened -- with nothing more published.
+ */
+typedef struct {
+    gchar *asked_id;
+    gchar *asked_room;
+    gchar *settled_room;
+    gchar *settled_answer;
+    gchar *settled_via;
+    guint  settled;
+} InlineTrail;
+
+static void
+on_inline_bus_event(ClawtEventBus *bus, ClawtEvent *event, gpointer data)
+{
+    InlineTrail *trail = data;
+    const gchar *kind = clawt_event_get_kind(event);
+
+    (void)bus;
+
+    if (g_strcmp0(kind, "decision.asked") == 0) {
+        g_free(trail->asked_id);
+        g_free(trail->asked_room);
+        trail->asked_id = g_strdup(clawt_event_get_detail(event, "decision"));
+        trail->asked_room = g_strdup(clawt_decision_event_room(event));
+    }
+
+    if (g_strcmp0(kind, "decision.settled") == 0) {
+        trail->settled++;
+        g_free(trail->settled_room);
+        g_free(trail->settled_answer);
+        g_free(trail->settled_via);
+        trail->settled_room = g_strdup(clawt_decision_event_room(event));
+        trail->settled_answer = g_strdup(clawt_event_get_detail(event,
+                                                                "answer"));
+        trail->settled_via = g_strdup(clawt_event_get_detail(event, "via"));
+    }
+}
+
+static void
+test_an_inline_decision_names_its_room_at_both_ends(void)
+{
+    Fixture fixture = { 0 };
+    InlineTrail trail = { NULL, NULL, NULL, NULL, NULL, 0 };
+    g_autofree gchar *token = NULL;
+    g_autofree gchar *token_path = NULL;
+    g_autofree gchar *call = NULL;
+    g_autofree gchar *body = NULL;
+    g_autoptr(JsonNode) asked = NULL;
+
+    fixture_setup(&fixture, "agents:\n  - id: chief\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    g_signal_connect(clawt_daemon_get_event_bus(fixture.daemon), "event",
+                     G_CALLBACK(on_inline_bus_event), &trail);
+
+    token_path = g_build_filename(fixture.dir, "state", "agents", "chief",
+                                  "token", NULL);
+    g_assert_true(g_file_get_contents(token_path, &token, NULL, NULL));
+    g_strstrip(token);
+
+    call = g_strdup_printf(
+        "{\"agent\":\"chief\",\"token\":\"%s\",\"room\":\"talk-1\","
+        "\"request\":{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\","
+        "\"params\":{\"name\":\"clawtilla_ask_decision\","
+        "\"arguments\":{\"question\":\"Take the outage now?\","
+        "\"options\":\"now\\nafter the release\","
+        "\"default\":\"after the release\"}}}}",
+        token);
+
+    asked = request(&fixture, "tool.rpc", call);
+    g_assert_false(clawt_ipc_frame_is_error(asked));
+
+    /* asked: the decision and the room it came from */
+    g_assert_nonnull(trail.asked_id);
+    g_assert_cmpstr(trail.asked_room, ==, "talk-1");
+
+    /* the room's list is that room's, with the room on each entry */
+    {
+        g_autoptr(JsonNode) here = request(&fixture, "decision.list",
+                                           "{\"room\": \"talk-1\"}");
+        g_autoptr(JsonNode) there = request(&fixture, "decision.list",
+                                            "{\"room\": \"talk-2\"}");
+        JsonArray *items = json_object_get_array_member(payload_of(here),
+                                                        "decisions");
+        JsonObject *first;
+
+        g_assert_cmpuint(json_array_get_length(items), ==, 1);
+        first = json_array_get_object_element(items, 0);
+        g_assert_cmpstr(json_object_get_string_member(first, "room"), ==,
+                        "talk-1");
+        g_assert_cmpstr(json_object_get_string_member(first, "id"), ==,
+                        trail.asked_id);
+        g_assert_cmpuint(json_array_get_length(json_object_get_array_member(
+                             payload_of(there), "decisions")), ==, 0);
+    }
+
+    /* a surface nobody can name is refused where it arrives */
+    {
+        g_autofree gchar *odd = g_strdup_printf(
+            "{\"decision\": \"%s\", \"answer\": \"now\","
+            " \"via\": \"telepathy\"}", trail.asked_id);
+        g_autoptr(JsonNode) refused = request(&fixture, "decision.answer", odd);
+
+        g_assert_true(clawt_ipc_frame_is_error(refused));
+        g_assert_cmpuint(trail.settled, ==, 0);
+    }
+
+    /* pressed in the chat: settled names the room, the answer and the surface */
+    body = g_strdup_printf("{\"decision\": \"%s\", \"answer\": \"now\","
+                           " \"via\": \"chat\"}", trail.asked_id);
+    {
+        g_autoptr(JsonNode) reply = request(&fixture, "decision.answer", body);
+        JsonObject *decision;
+
+        g_assert_false(clawt_ipc_frame_is_error(reply));
+        decision = json_object_get_object_member(payload_of(reply),
+                                                 "decision");
+        g_assert_cmpstr(json_object_get_string_member(decision,
+                                                      "settled_via"), ==,
+                        "chat");
+    }
+
+    g_assert_cmpuint(trail.settled, ==, 1);
+    g_assert_cmpstr(trail.settled_room, ==, "talk-1");
+    g_assert_cmpstr(trail.settled_answer, ==, "now");
+    g_assert_cmpstr(trail.settled_via, ==, "chat");
+
+    /*
+     * The second press -- a double tap, or the inbox pressed after the
+     * chat -- is refused with what happened, and publishes nothing.
+     */
+    {
+        g_autofree gchar *late = g_strdup_printf(
+            "{\"decision\": \"%s\", \"answer\": \"after the release\","
+            " \"via\": \"inbox\"}", trail.asked_id);
+        g_autoptr(JsonNode) again = request(&fixture, "decision.answer", late);
+        const gchar *said;
+
+        g_assert_true(clawt_ipc_frame_is_error(again));
+        said = json_object_get_string_member(json_node_get_object(again),
+                                             "error");
+        g_assert_nonnull(strstr(said, "Already settled"));
+        g_assert_nonnull(strstr(said, "You answered"));
+        g_assert_nonnull(strstr(said, "in the chat"));
+        g_assert_nonnull(strstr(said, "changed nothing"));
+    }
+
+    g_assert_cmpuint(trail.settled, ==, 1);
+
+    g_free(trail.asked_id);
+    g_free(trail.asked_room);
+    g_free(trail.settled_room);
+    g_free(trail.settled_answer);
+    g_free(trail.settled_via);
+    fixture_teardown(&fixture);
+}
+
 /* ── Autostart ───────────────────────────────────────────────────── */
 
 /*
@@ -11909,6 +12074,8 @@ main(int argc, char *argv[])
                     test_dismissing_a_decision_says_so);
     g_test_add_func("/daemon/decision-deleting",
                     test_deleting_a_decision);
+    g_test_add_func("/daemon/decision-inline-names-its-room",
+                    test_an_inline_decision_names_its_room_at_both_ends);
     g_test_add_func("/daemon/autostart-does-not-run-inside-start",
                     test_autostart_does_not_run_inside_start);
     g_test_add_func("/daemon/start-returns-with-a-mute-podman-socket",

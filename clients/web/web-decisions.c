@@ -381,11 +381,107 @@ on_answer(HtmxRequest *request, GHashTable *params, gpointer user_data)
 
         clawt_web_payload_set(payload, "decision", id);
         clawt_web_payload_set(payload, "answer", answer);
+        clawt_web_payload_set(payload, "via", CLAWT_DECISION_VIA_INBOX);
         reply = clawt_web_app_call(app, "decision.answer",
                                    clawt_web_payload_take(payload));
     }
 
     return clawt_web_redirect(request, "/decisions");
+}
+
+/*
+ * The decision as the daemon now has it, found in its room's list -- or
+ * in the whole inbox when the room is not known -- for redrawing a card
+ * after a press the daemon refused.
+ */
+static JsonNode *
+current_decision(ClawtWebApp *app, const gchar *id, JsonObject **found)
+{
+    ClawtWebPayload *query = clawt_web_payload_new();
+    JsonNode *reply;
+    JsonArray *items;
+    guint i;
+
+    *found = NULL;
+    clawt_web_payload_set_bool(query, "open", FALSE);
+    reply = clawt_web_app_call(app, "decision.list",
+                               clawt_web_payload_take(query));
+    items = clawt_web_member_array(clawt_web_root(reply), "decisions");
+
+    for (i = 0; items != NULL && i < json_array_get_length(items); i++) {
+        JsonObject *one = json_array_get_object_element(items, i);
+
+        if (g_strcmp0(clawt_web_member(one, "id", NULL), id) == 0) {
+            *found = one;
+            break;
+        }
+    }
+
+    return reply;
+}
+
+/*
+ * A press on the inline view in the chat.
+ *
+ * Answers with `via: chat` and returns the card redrawn from what the
+ * daemon now holds: settled by this press, or -- when the daemon refused
+ * it because the inbox, another window or the clock settled it first,
+ * or because it was a double tap's second press -- settled by whatever
+ * did, with the refusal written into the card.  A card that went on
+ * offering the buttons would invite the same refusal again.
+ */
+static HtmxResponse *
+on_inline_answer(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    const gchar *id = clawt_web_form_value(request, "decision");
+    const gchar *answer = clawt_web_form_value(request, "answer");
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(JsonNode) listing = NULL;
+    g_autofree gchar *refusal = NULL;
+    g_autoptr(HtmxElement) card = NULL;
+    JsonObject *settled = NULL;
+
+    (void)params;
+
+    if (id == NULL || *id == '\0')
+        return clawt_web_redirect(request, "/decisions");
+
+    if (answer != NULL && *answer != '\0') {
+        ClawtWebPayload *payload = clawt_web_payload_new();
+
+        clawt_web_payload_set(payload, "decision", id);
+        clawt_web_payload_set(payload, "answer", answer);
+        clawt_web_payload_set(payload, "via", CLAWT_DECISION_VIA_CHAT);
+        reply = clawt_web_app_call(app, "decision.answer",
+                                   clawt_web_payload_take(payload));
+
+        /* copied now: the next call frees the app's last error */
+        if (reply == NULL)
+            refusal = g_strdup(clawt_web_app_last_error(app));
+    }
+
+    /* Without htmx there is no card to swap: the inbox shows the result. */
+    if (!htmx_request_is_htmx(request))
+        return clawt_web_redirect(request, "/decisions");
+
+    settled = clawt_web_member_object(clawt_web_root(reply), "decision");
+
+    if (settled == NULL)
+        listing = current_decision(app, id, &settled);
+
+    /*
+     * Gone from the store altogether: deleted while the card was on
+     * screen.  Said in the card's place rather than leaving it blank.
+     */
+    if (settled == NULL)
+        card = HTMX_ELEMENT(clawt_web_text(
+            refusal != NULL ? refusal : "That decision no longer exists.",
+            "error"));
+    else
+        card = clawt_web_decision_inline(settled, refusal);
+
+    return clawt_web_fragment_response(card);
 }
 
 /*
@@ -451,6 +547,7 @@ clawt_web_register_decisions(HtmxRouter *router, ClawtWebApp *app)
 {
     htmx_router_get(router, "/decisions", on_decisions, app);
     htmx_router_post(router, "/decisions/answer", on_answer, app);
+    htmx_router_post(router, "/f/decision/answer", on_inline_answer, app);
     htmx_router_post(router, "/decisions/dismiss", on_dismiss, app);
     htmx_router_post(router, "/decisions/delete", on_delete, app);
 }
