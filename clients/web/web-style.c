@@ -704,6 +704,12 @@ clawt_web_stylesheet(void)
       "padding:6px 10px;background:var(--surface-2);"
       "overflow-wrap:anywhere}"
     ".merge-section-label{font-size:.85em;font-weight:600;margin-bottom:2px}"
+    /* a turn cut short and not resumed: the notice, boxed in warning */
+    ".msg-interrupted{border:1px solid var(--warn-fg);border-radius:8px;"
+      "padding:6px 10px;background:var(--warn-bg)}"
+    /* a rebuild request's loss, above its Approve and Decline */
+    ".decision-loses{border:1px solid var(--warn-fg);border-radius:8px;"
+      "padding:6px 10px;background:var(--warn-bg);margin:6px 0}"
     ".msg-body code{font-family:var(--mono);font-size:var(--mono-size);"
       "background:var(--surface-2);padding:1px 5px;border-radius:4px}"
     ".msg-body pre{font-family:var(--mono);font-size:var(--mono-size);"

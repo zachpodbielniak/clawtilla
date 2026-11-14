@@ -362,8 +362,13 @@ clawt_daemon_handle_misc(
          * answer releases (or refuses) that call, and a message as well
          * would tell the agent twice and cost it a turn to read.
          */
-        /* A proposal has told its agent already, in its own words. */
+        /*
+         * A proposal has told its agent already, in its own words; and a
+         * rebuild request is answered by doing it, or by saying it was
+         * not done -- not by quoting the answer back.
+         */
         if (proposal == NULL &&
+            !clawt_daemon_rebuild_settle(self, settled, "answered") &&
             !clawt_daemon_policy_settle(self, settled, "answered"))
             clawt_daemon_deliver_decision_answer(self, settled);
 
@@ -416,7 +421,8 @@ clawt_daemon_handle_misc(
 
         if (dismissed != NULL) {
             /* settle() releases its own hold; anything else is released here. */
-            if (!clawt_daemon_policy_settle(self, dismissed, "dismissed"))
+            if (!clawt_daemon_rebuild_settle(self, dismissed, "dismissed") &&
+                !clawt_daemon_policy_settle(self, dismissed, "dismissed"))
                 clawt_daemon_turn_release(self,
                                           clawt_decision_get_agent(dismissed));
             /* a draft nobody will be asked about again is rejected */
@@ -462,7 +468,8 @@ clawt_daemon_handle_misc(
 
         if (deleted != NULL &&
             clawt_decision_get_state(deleted) == CLAWT_DECISION_OPEN) {
-            if (!clawt_daemon_policy_settle(self, deleted, "deleted"))
+            if (!clawt_daemon_rebuild_settle(self, deleted, "deleted") &&
+                !clawt_daemon_policy_settle(self, deleted, "deleted"))
                 clawt_daemon_turn_release(self,
                                           clawt_decision_get_agent(deleted));
             clawt_daemon_skill_proposal_withdraw(self, deleted);
@@ -1030,6 +1037,25 @@ clawt_daemon_handle_misc(
                                 "with clawtilla_ask_decision instead of acting on it");
                 mode = CLAWT_POLICY_DENY;
             }
+        }
+
+        /*
+         * A call a relay is about to pass on, marked on the agent's turn
+         * when it reaches outside the fleet -- a connector's write, a
+         * click.  Here, before the call, because a relay reports nothing
+         * after it: a call that then fails is counted anyway, which is
+         * the direction that costs a rerun rather than a second email.
+         * Not for a denial, which did nothing.
+         */
+        if (mode != CLAWT_POLICY_DENY) {
+            g_autofree gchar *outward =
+                clawt_mcp_tools_relay_outward_label(tool, action);
+            ClawtAgent *caller = clawt_agent_manager_get(self->agents, agent_id);
+
+            if (outward != NULL && caller != NULL &&
+                !clawt_policy_native_is_clawtilla(tool))
+                clawt_agent_mark_outward(caller,
+                    clawt_ipc_payload_string(payload, "room"), outward);
         }
 
         if (mode == CLAWT_POLICY_ALLOW || mode == CLAWT_POLICY_DENY) {

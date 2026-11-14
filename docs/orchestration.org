@@ -893,6 +893,7 @@ Served over each agent's link as an MCP endpoint.
 | ~clawtilla_post_room~, ~clawtilla_create_room~, ~clawtilla_room_history~ | rooms |
 | ~clawtilla_mailbox_list~ / ~clawtilla_mailbox_read~ / ~clawtilla_mailbox_ack~ / ~clawtilla_mailbox_reply~ | your own mail |
 | ~clawtilla_computer_exec~, ~clawtilla_computer_state~ | your computer |
+| ~clawtilla_request_rebuild~ | ask the operator to rebuild your stuck computer; files a decision that says what a rebuild destroys, and never rebuilds by itself -- see ~docs/computers.org~, "An agent asking for a rebuild" |
 | ~clawtilla_memory_*~ | six tools over your own searchable memories |
 | ~clawtilla_message_user~ | reach the operator; replying does not |
 | ~clawtilla_ask_decision~ | put a choice in the operator's decision inbox |
@@ -914,6 +915,7 @@ offered depends on a gate per tool:
 | retrying (~clawtilla_task_retry~) | the same as assigning, *and* the daemon's incident desk; the run's assignee is checked at call time |
 | fleet admin (create agent, options) | ~agents.tools.manage_fleet~, *and* the daemon offering the hook |
 | a computer | ~computer.type~ not ~none~ |
+| a rebuild request | a ~computer.type~ with a machine of its own (~container~, ~vm~, ~distrobox~), *and* the daemon offering the hook |
 | memories | ~memories.enabled~ |
 | the decision inbox | the daemon offering the hook; no config key |
 | waits | the daemon offering the manager; a command or computer wait also needs a computer and ~clawtilla_computer_exec~ |
@@ -1043,6 +1045,8 @@ Now the team's lead hears first. ~ClawtIncidentDesk~ (=src/task/clawt-incident.c
 The desk listens to ~ClawtTaskManager::task-changed~ itself, from the moment it exists, so every path that fails or stalls a task reaches it -- there is no list of call sites to keep in step. The two kinds with no task behind them are reported by the daemon: ~start_agent_computer_failed()~ and the launch that follows it call ~clawt_incident_desk_note_unstartable()~, and ~run_routine()~ reports each refusal before it returns.
 
 *An agent that crashes mid-run fails its running tasks.* An agent going from ~running~ (or ~degraded~) to ~error~ has lost its process, and with it the work: deliveries are acknowledged at the socket and libreclaw's queue is in memory, so nothing will come back to finish a ~running~ task. Those tasks are failed with the reason -- which is what tells their delegators, and what opens the incident with the agent's last log lines, the moment those are worth having. Tasks still ~pending~ are left in the mailbox; they run when the agent does.
+
+*The turns it cut are settled after that* (~docs/mailboxes.org~, "A turn a restart cut short"). A turn nothing outward is known of is handed back once -- unless its task is one the crash has just failed, which ends as an interrupted notice instead: a rerun would do work for a task its delegator has already been told failed.
 
 *What is not an incident:* a task somebody cancelled, and the tasks of an agent somebody stopped. ~agent stop~ fails its tasks with "the agent handling this stopped", which is true and is that person's own decision; the desk is quiet for it (~clawt_incident_desk_quiet_begin()~). The delegators are still told, by the settle notice, because they are waiting on the work.
 

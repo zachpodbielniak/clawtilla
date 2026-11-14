@@ -250,6 +250,14 @@ declare -A AFFORDANCES=(
     ["spending csv export"]="clawt_usage_ledger_csv(root)|clawt_usage_ledger_csv(root)|clawt_usage_ledger_csv(root)"
     ["acknowledged answers"]="clawt_message_ack_label|clawt_message_ack_label|clawt_message_ack_label"
     ["merged deliveries as sections"]="clawt_merge_split|clawt_merge_split|clawt_merge_split"
+    #
+    # A turn a restart or a stop cut short, drawn as the daemon's notice
+    # with libclawt's label in all three; and an agent's rebuild request,
+    # drawn as a decision that says what it destroys (the `loses` member)
+    # beside Approve and Decline.
+    #
+    ["interrupted-turn notices"]="clawt_message_interrupted_label|clawt_message_interrupted_label|clawt_message_interrupted_label"
+    ["rebuild requests say what is lost"]="\"loses\"|\"loses\"|\"loses\""
     ["ack-check model choices"]="clawt_ack_check_model_nth_value|clawt_ack_check_model_nth_value|clawt_ack_check_model_nth_value"
     #
     # Rounds in a group room and the budget per task tree: a divider

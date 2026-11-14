@@ -245,6 +245,13 @@ them would differ exactly once --- on the item whose deadline had just
 gone, which is the one that matters. The raw ~reversible_until~ goes
 too, so a client can still say *when*.
 
+A rebuild request (~clawtilla_request_rebuild~, ids ~rebuild-<uuid>~)
+carries two more: ~kind: "rebuild"~ and ~loses~, the sentence saying what
+a rebuild destroys, which is also the question's last paragraph.  Only
+the answer ~approve~ rebuilds; the daemon answers a rebuild request by
+doing it or by telling the agent it was not done, never by quoting the
+answer back.  See ~docs/computers.org~, "An agent asking for a rebuild".
+
 ~decision.answer~ has a side effect the other two do not: it routes the
 answer back to the agent that asked, as an ordinary message carrying
 the task id. That is what makes the inbox a loop rather than a
@@ -1897,6 +1904,11 @@ reader serves either source:
 - ~merged: N~ --- clawtilla's note that N results were delivered to an
   agent as one turn.  The body is sectioned; read it with
   ~clawt_merge_split()~ and draw the sections.
+- ~interrupted: 1~ --- the daemon's notice that a turn was cut short and
+  will not be resumed (it had acted outside the fleet, it was already a
+  rerun, or somebody stopped it).  Draw
+  ~clawt_message_interrupted_label()~ beside it, apart from ordinary
+  talk.  See ~docs/mailboxes.org~, "A turn a restart cut short".
 - ~round: N~ --- the round of a group room the message belongs to
   (since 0.18.0).  Draw ~clawt_round_label()~ where it changes.
 - ~skipped~ and ~skip_reason~ --- strings: the members a message named

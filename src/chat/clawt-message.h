@@ -385,6 +385,49 @@ guint clawt_message_get_merged(ClawtMessage *self);
 void clawt_message_set_merged(ClawtMessage *self, guint parts);
 
 /**
+ * clawt_message_get_interrupted:
+ * @self: a #ClawtMessage
+ *
+ * Whether this is the daemon's notice that a turn was cut short and
+ * will not be resumed -- by a restart after it had already acted
+ * outside the fleet, by a second restart, or by a stop somebody asked
+ * for.  Every client draws it apart from ordinary talk, because it says
+ * the request above it was not finished.
+ *
+ * Returns: %TRUE for an interrupted-turn notice
+ */
+gboolean clawt_message_get_interrupted(ClawtMessage *self);
+
+/**
+ * clawt_message_set_interrupted:
+ * @self: a #ClawtMessage
+ * @interrupted: %TRUE for an interrupted-turn notice
+ *
+ * Marks the daemon's notice of an interrupted turn.
+ */
+void clawt_message_set_interrupted(ClawtMessage *self,
+                                   gboolean      interrupted);
+
+/**
+ * clawt_message_interrupted_label:
+ *
+ * What every client draws on an interrupted-turn notice
+ * (clawt_message_get_interrupted()), from one place so three clients
+ * cannot word it three ways.
+ *
+ * Returns: (transfer none): the label
+ */
+const gchar *clawt_message_interrupted_label(void);
+
+/**
+ * clawt_message_interrupted_tooltip:
+ *
+ * Returns: (transfer none): the explanation beside
+ *   clawt_message_interrupted_label()
+ */
+const gchar *clawt_message_interrupted_tooltip(void);
+
+/**
  * clawt_message_get_round:
  * @self: a #ClawtMessage
  *
