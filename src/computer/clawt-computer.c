@@ -24,6 +24,24 @@ typedef struct {
     GPtrArray          *mounts;
     ClawtComputerState  state;
     gchar              *last_error;
+
+    /*
+     * computer.start: on_first_use, and the one start a wave of first
+     * uses shares. Everything from start_lock down is read and written
+     * under it: a caller finding @starting set waits on @start_done for
+     * @start_generation to move and takes the outcome left behind.
+     * @starter is the thread doing the start, so a backend that reaches
+     * clawt_computer_exec() from inside its own start is not made to wait
+     * on itself.
+     */
+    gboolean            first_use;
+    GMutex              start_lock;
+    GCond               start_done;
+    gboolean            starting;
+    GThread            *starter;
+    guint64             start_generation;
+    gboolean            start_ok;
+    GError             *start_error;
 } ClawtComputerPrivate;
 
 G_DEFINE_ABSTRACT_TYPE_WITH_PRIVATE(ClawtComputer, clawt_computer,
@@ -183,6 +201,130 @@ clawt_computer_teardown(ClawtComputer *self, GError **error)
     return klass->teardown(self, error);
 }
 
+void
+clawt_computer_set_start_on_first_use(ClawtComputer *self,
+                                      gboolean       first_use)
+{
+    ClawtComputerPrivate *priv;
+
+    g_return_if_fail(CLAWT_IS_COMPUTER(self));
+
+    priv = PRIV(self);
+
+    g_mutex_lock(&priv->start_lock);
+    priv->first_use = first_use;
+    g_mutex_unlock(&priv->start_lock);
+}
+
+gboolean
+clawt_computer_get_start_on_first_use(ClawtComputer *self)
+{
+    ClawtComputerPrivate *priv;
+    gboolean first_use;
+
+    g_return_val_if_fail(CLAWT_IS_COMPUTER(self), FALSE);
+
+    priv = PRIV(self);
+
+    g_mutex_lock(&priv->start_lock);
+    first_use = priv->first_use;
+    g_mutex_unlock(&priv->start_lock);
+
+    return first_use;
+}
+
+gboolean
+clawt_computer_ensure_started(ClawtComputer *self, GError **error)
+{
+    ClawtComputerPrivate *priv;
+    g_autoptr(GError) local = NULL;
+    guint64 joined;
+    gboolean ok;
+
+    g_return_val_if_fail(CLAWT_IS_COMPUTER(self), FALSE);
+
+    priv = PRIV(self);
+
+    g_mutex_lock(&priv->start_lock);
+
+    /*
+     * A machine that started with its agent is not this function's to
+     * start. A stopped one stays stopped and its command says so -- what
+     * every computer did before on_first_use existed, and what somebody
+     * who pressed Stop on it is entitled to.
+     */
+    if (!priv->first_use) {
+        g_mutex_unlock(&priv->start_lock);
+        return TRUE;
+    }
+
+    if (priv->starting) {
+        /*
+         * The start itself asking: let it through rather than have it
+         * wait for its own end.
+         */
+        if (priv->starter == g_thread_self()) {
+            g_mutex_unlock(&priv->start_lock);
+            return TRUE;
+        }
+
+        /* Another first use is starting it: share that start. */
+        joined = priv->start_generation;
+
+        while (priv->start_generation == joined)
+            g_cond_wait(&priv->start_done, &priv->start_lock);
+
+        ok = priv->start_ok;
+
+        if (!ok && priv->start_error != NULL)
+            g_propagate_error(error, g_error_copy(priv->start_error));
+
+        g_mutex_unlock(&priv->start_lock);
+
+        return ok;
+    }
+
+    /*
+     * Read under the lock with the flag, so a wave that has just ended
+     * is seen as the RUNNING it left rather than started a second time.
+     */
+    if (priv->state == CLAWT_COMPUTER_STATE_RUNNING) {
+        g_mutex_unlock(&priv->start_lock);
+        return TRUE;
+    }
+
+    priv->starting = TRUE;
+    priv->starter = g_thread_self();
+
+    g_mutex_unlock(&priv->start_lock);
+
+    ok = clawt_computer_start(self, &local);
+
+    if (!ok && local == NULL)
+        g_set_error_literal(&local, CLAWT_ERROR, CLAWT_ERROR_COMPUTER_PROVISION,
+                            "it did not start, and gave no reason");
+
+    g_mutex_lock(&priv->start_lock);
+
+    priv->start_ok = ok;
+    g_clear_error(&priv->start_error);
+
+    if (local != NULL)
+        priv->start_error = g_error_copy(local);
+
+    priv->starting = FALSE;
+    priv->starter = NULL;
+    priv->start_generation++;
+    g_cond_broadcast(&priv->start_done);
+
+    g_mutex_unlock(&priv->start_lock);
+
+    if (!ok)
+        g_propagate_error(error, g_steal_pointer(&local));
+
+    return ok;
+}
+
 ClawtExecResult *
 clawt_computer_exec(ClawtComputer        *self,
                     const gchar * const  *argv,
@@ -201,6 +343,19 @@ clawt_computer_exec(ClawtComputer        *self,
     if (klass->exec == NULL) {
         g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
                             "this agent has no computer to run commands on");
+        return NULL;
+    }
+
+    /*
+     * Here, at the one door every command comes through, rather than at
+     * the tool, the IPC handler and the wait runner separately -- three
+     * copies of "start it first" would differ exactly once. Before the
+     * command is handed its timeout, so a two-minute boot is not taken
+     * out of a two-minute command.
+     */
+    if (!clawt_computer_ensure_started(self, error)) {
+        g_prefix_error(error, "this computer starts on first use, and it "
+                              "did not start for this command: ");
         return NULL;
     }
 
@@ -249,6 +404,31 @@ exec_worker(GTask *task, gpointer source, gpointer data,
     else
         g_task_return_pointer(task, result,
                               (GDestroyNotify)clawt_exec_result_free);
+}
+
+/*
+ * The machine a command was waiting on is up, or is not. Takes the
+ * reference to the command's task that clawt_computer_exec_async() held
+ * across the start.
+ */
+static void
+on_exec_first_use_started(GObject *source, GAsyncResult *result,
+                          gpointer user_data)
+{
+    GTask *task = G_TASK(user_data);
+    GError *local = NULL;
+
+    if (!clawt_computer_lifecycle_finish(CLAWT_COMPUTER(source), result,
+                                         &local)) {
+        g_prefix_error(&local, "this computer starts on first use, and it "
+                               "did not start for this command: ");
+        g_task_return_error(task, local);
+        g_object_unref(task);
+        return;
+    }
+
+    g_task_run_in_thread(task, exec_worker);
+    g_object_unref(task);
 }
 
 void
@@ -301,6 +481,25 @@ clawt_computer_exec_async(ClawtComputer        *self,
     request->timeout_seconds = timeout_seconds;
 
     g_task_set_task_data(task, request, exec_request_free);
+
+    /*
+     * A machine waiting for its first use is started through the
+     * lifecycle verb first, and the command follows once it is up -- so
+     * the start is the same one an operator's Start would run, shared
+     * with any other first use already starting it, and the command's
+     * worker is not the thread spent waiting on a boot.
+     * clawt_computer_exec() checks again on the worker, which by then
+     * finds the machine running and costs nothing.
+     */
+    if (clawt_computer_get_start_on_first_use(self) &&
+        clawt_computer_get_state(self) != CLAWT_COMPUTER_STATE_RUNNING) {
+        clawt_computer_lifecycle_async(self,
+                                       CLAWT_COMPUTER_LIFECYCLE_FIRST_USE,
+                                       context, cancellable,
+                                       on_exec_first_use_started, task);
+        return;
+    }
+
     g_task_run_in_thread(task, exec_worker);
     g_object_unref(task);
 }
@@ -344,6 +543,9 @@ lifecycle_worker(GTask *task, gpointer source, gpointer data,
         break;
     case CLAWT_COMPUTER_LIFECYCLE_STOP:
         ok = clawt_computer_stop(self, &local);
+        break;
+    case CLAWT_COMPUTER_LIFECYCLE_FIRST_USE:
+        ok = clawt_computer_ensure_started(self, &local);
         break;
     case CLAWT_COMPUTER_LIFECYCLE_RESTART:
     default:
@@ -692,6 +894,9 @@ clawt_computer_finalize(GObject *object)
     g_clear_pointer(&priv->agent_id, g_free);
     g_clear_pointer(&priv->last_error, g_free);
     g_clear_pointer(&priv->mounts, g_ptr_array_unref);
+    g_clear_error(&priv->start_error);
+    g_mutex_clear(&priv->start_lock);
+    g_cond_clear(&priv->start_done);
 
     G_OBJECT_CLASS(clawt_computer_parent_class)->finalize(object);
 }
@@ -721,4 +926,6 @@ clawt_computer_init(ClawtComputer *self)
     priv->mounts = g_ptr_array_new_with_free_func(
         (GDestroyNotify)clawt_mount_free);
     priv->state = CLAWT_COMPUTER_STATE_ABSENT;
+    g_mutex_init(&priv->start_lock);
+    g_cond_init(&priv->start_done);
 }

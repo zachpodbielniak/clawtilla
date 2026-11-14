@@ -4616,10 +4616,23 @@ cmd_computer(int argc, char *argv[])
         g_auto(GStrv) tools = NULL;
         JsonObject *result;
 
-        reply = call(client, "computer.desktop",
-                     build_payload("agent", agent_id, NULL));
-        if (reply == NULL)
-            return EXIT_FAILURE;
+        /*
+         * Fifteen minutes rather than the usual two: a VM that starts on
+         * first use is booted by this very request, and a first boot
+         * runs cloud-init and installs a desktop before it answers.
+         */
+        {
+            g_autoptr(GError) desktop_error = NULL;
+
+            reply = clawt_client_request_full(
+                client, "computer.desktop",
+                build_payload("agent", agent_id, NULL), 900, &desktop_error);
+
+            if (reply == NULL) {
+                g_printerr("clawtilla: %s\n", desktop_error->message);
+                return EXIT_FAILURE;
+            }
+        }
 
         result = json_node_get_object(reply);
         relay_argv = string_array_member(result, "argv");
@@ -5880,6 +5893,77 @@ connector_policy_gate(const gchar *tool, gchar **refusal, gpointer user_data)
     return relay_policy_gate(user_data, tool, "external", refusal);
 }
 
+typedef struct {
+    const gchar *name;
+    const gchar *agent_id;
+
+    /* What was last reported, so an unchanged list is not sent again. */
+    gint64       tools;
+    gboolean     active;
+} CatalogueReport;
+
+/*
+ * Tells the daemon how big the server turned out to be.
+ *
+ * The daemon never starts a connector's server itself -- the relay does,
+ * with the credential -- so this is the only place the count exists.
+ * Best effort: a daemon that is not there loses a number on a settings
+ * page, not a tool call, and nothing is written to stdout, which is the
+ * MCP channel.
+ */
+static void
+on_connector_catalogued(ClawtMcpDirectory *directory, gpointer user_data)
+{
+    CatalogueReport *report = user_data;
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) ignored = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonBuilder) builder = NULL;
+    g_autofree gchar *areas = NULL;
+    gint64 tools = clawt_mcp_directory_get_tool_count(directory);
+    gboolean active = clawt_mcp_directory_is_active(directory);
+
+    if (tools == report->tools && active == report->active)
+        return;
+
+    report->tools = tools;
+    report->active = active;
+
+    client = connect_to_daemon();
+
+    if (client == NULL)
+        return;
+
+    areas = clawt_mcp_directory_overview(directory, 2000);
+    builder = json_builder_new();
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "name");
+    json_builder_add_string_value(builder, report->name);
+
+    if (report->agent_id != NULL) {
+        json_builder_set_member_name(builder, "agent");
+        json_builder_add_string_value(builder, report->agent_id);
+    }
+
+    json_builder_set_member_name(builder, "tools");
+    json_builder_add_int_value(builder, tools);
+    json_builder_set_member_name(builder, "chars");
+    json_builder_add_int_value(
+        builder, (gint64)clawt_mcp_directory_get_char_count(directory));
+    json_builder_set_member_name(builder, "areas");
+    json_builder_add_string_value(builder, areas);
+    json_builder_set_member_name(builder, "directory");
+    json_builder_add_boolean_value(builder, active);
+    json_builder_end_object(builder);
+
+    ignored = clawt_client_request(client, "connector.tools_seen",
+                                   json_builder_get_root(builder), &error);
+
+    if (ignored == NULL && error != NULL)
+        g_printerr("clawtilla: connector '%s': could not report its tool "
+                   "count: %s\n", report->name, error->message);
+}
+
 static gint
 connector_relay(const gchar *name, const gchar *agent_id)
 {
@@ -5888,8 +5972,10 @@ connector_relay(const gchar *name, const gchar *agent_id)
     g_autoptr(ClawtIntegrationBinding) binding = NULL;
     g_autoptr(ClawtOauthToken) token = NULL;
     g_autoptr(ClawtConnectorPlan) plan = NULL;
+    g_autoptr(ClawtMcpDirectory) directory = NULL;
     g_autoptr(GError) error = NULL;
     g_autofree gchar *catalog_dir = NULL;
+    CatalogueReport report = { NULL, NULL, -1, FALSE };
     ClawtIntegrationConfig *instance;
     const ClawtIntegrationInfo *info;
     const ClawtConnectorInfo *connector;
@@ -5980,10 +6066,21 @@ connector_relay(const gchar *name, const gchar *agent_id)
         return EXIT_FAILURE;
     }
 
-    if (agent_id != NULL)
-        return clawt_connector_relay_run_gated(plan, connector_policy_gate,
-                                               (gpointer)agent_id);
-    return clawt_connector_relay_run(plan);
+    /*
+     * The directory is always in the path: it presents a big server as
+     * three tools when the connector and the agent's CLI call for it,
+     * and otherwise only counts what goes past -- which is how the
+     * Connectors page and TOOLS.org learn how big a server is.
+     */
+    directory = clawt_connector_directory_new(config, binding, agent_id);
+    report.name = name;
+    report.agent_id = agent_id;
+    g_signal_connect(directory, "catalogued",
+                     G_CALLBACK(on_connector_catalogued), &report);
+
+    return clawt_connector_relay_run_full(
+        plan, (agent_id != NULL) ? connector_policy_gate : NULL,
+        (gpointer)agent_id, directory);
 }
 
 static gint
@@ -6097,6 +6194,23 @@ cmd_connector(int argc, char *argv[])
             g_print("%-14s %-10s %-10s %s\n", member_or(entry, "name", "?"),
                     member_or(entry, "provider", "?"),
                     member_or(entry, "scope", ""), status);
+
+            /* How many tools, and whether agents get them as a directory. */
+            {
+                JsonObject *root = json_node_get_object(reply);
+                g_autofree gchar *tools = clawt_mcp_directory_status_label(
+                    member_or(entry, "directory", "auto"),
+                    json_object_get_int_member_with_default(entry,
+                                                            "tool_count", -1),
+                    json_object_get_int_member_with_default(entry,
+                                                            "tool_chars", 0),
+                    json_object_get_int_member_with_default(
+                        root, "directory_min_tools", 40),
+                    json_object_get_int_member_with_default(
+                        root, "directory_min_chars", 100000));
+
+                g_print("%-14s tools: %s\n", "", tools);
+            }
         }
 
         return EXIT_SUCCESS;
@@ -6837,6 +6951,9 @@ print_skill_usage(gboolean asked_for)
         "  assign <name> <target>     to an agent, team:<id>, or fleet\n"
         "  unassign <name> <target>   take it away again\n"
         "  reload                     rescan the library now\n"
+        "  proposals                  skills agents have proposed, waiting\n"
+        "  approve <proposal>         apply one: enable it, or write the update\n"
+        "  reject <proposal> [why]    discard one; the agent is told why\n"
         "\n"
         "An imported skill lands disabled and its scripts are left behind.\n"
         "Read it, then enable it: what a skill says goes into a model's\n"
@@ -6846,7 +6963,9 @@ print_skill_usage(gboolean asked_for)
         "  clawtilla skill import ~/src/some-repo/skills/release\n"
         "  clawtilla skill show release\n"
         "  clawtilla skill enable release\n"
-        "  clawtilla skill assign release team:engineering\n";
+        "  clawtilla skill assign release team:engineering\n"
+        "  clawtilla skill proposals\n"
+        "  clawtilla skill reject skill-proposal-1f0c... \"too specific to one repo\"\n";
 
     print_usage_text(text, asked_for);
 }
@@ -7190,6 +7309,81 @@ cmd_skill(int argc, char *argv[])
                     target);
 
         report_refusals(reply);
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "proposals") == 0) {
+        JsonArray *proposals;
+
+        reply = call(client, "skill.proposals", NULL);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        proposals = json_object_get_array_member(json_node_get_object(reply),
+                                                 "proposals");
+
+        if (proposals == NULL || json_array_get_length(proposals) == 0) {
+            g_print("No skill proposals are waiting.\n");
+            return EXIT_SUCCESS;
+        }
+
+        /*
+         * The text the agent wrote arrives escaped, and the full draft or
+         * diff is printed so the person approving it from a terminal has
+         * read what they are approving.
+         */
+        for (i = 0; i < json_array_get_length(proposals); i++) {
+            JsonObject *proposal = json_array_get_object_element(proposals, i);
+            const gchar *kind = member_or(proposal, "kind", "create");
+            const gchar *diff = member_or(proposal, "diff", "");
+
+            g_print("%s\n  %s %s '%s'\n",
+                    member_or(proposal, "id", "?"),
+                    member_or(proposal, "agent", "?"),
+                    g_strcmp0(kind, "update") == 0 ? "proposes a change to"
+                                                  : "proposes a new skill",
+                    member_or(proposal, "name", "?"));
+
+            if (*member_or(proposal, "reason", "") != '\0')
+                g_print("  why: %s\n", member_or(proposal, "reason", ""));
+            if (json_object_get_boolean_member_with_default(proposal, "stale", FALSE))
+                g_print("  ! the file changed since it was proposed; approve is refused\n");
+
+            g_print("\n%s\n", g_strcmp0(kind, "update") == 0 && *diff != '\0'
+                                  ? diff : member_or(proposal, "text", ""));
+        }
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "approve") == 0 || g_strcmp0(verb, "reject") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+
+        if (name == NULL) {
+            g_printerr("Usage: clawtilla skill %s <proposal>%s\n", verb,
+                       g_strcmp0(verb, "reject") == 0 ? " [why]" : "");
+            return EXIT_FAILURE;
+        }
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "proposal");
+        json_builder_add_string_value(builder, name);
+        json_builder_set_member_name(builder, "action");
+        json_builder_add_string_value(builder, verb);
+        if (argc > 4) {
+            json_builder_set_member_name(builder, "note");
+            json_builder_add_string_value(builder, argv[4]);
+        }
+        json_builder_end_object(builder);
+
+        reply = call(client, "skill.proposal_resolve",
+                     json_builder_get_root(builder));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("%s %s.\n", name,
+                g_strcmp0(verb, "approve") == 0 ? "approved" : "rejected");
 
         return EXIT_SUCCESS;
     }

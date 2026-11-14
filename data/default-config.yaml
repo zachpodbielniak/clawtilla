@@ -934,6 +934,16 @@ skills:
   # # instead.
   # teach_max_events: 20000
 
+  # # How many skills one agent may propose in any 24 hours.
+  # #
+  # # clawtilla_skill_propose lets an agent write down a technique it
+  # # worked out -- a new skill, or a change to one that exists -- as a
+  # # draft that reaches no prompt, with a decision in your inbox to
+  # # approve, edit or reject it. Every proposal spends your attention, so
+  # # this bounds how often one agent can ask for it; a rejected proposal
+  # # still counts. 0 turns proposing off, and the tool is not offered.
+  # max_proposals_per_day: 3
+
 # # Standing rooms, created at startup if they do not exist.
 # #
 # # A room is a conversation with members. Posting into one enqueues to
@@ -1075,6 +1085,25 @@ connectors:
   # # fleet that bounces every hour would refresh every hour regardless of
   # # what this key says.
   # registry_refresh_hours: 24
+
+  # More tools than this makes a connector's server a directory.
+  #
+  # Counted after the connector's `tools:` narrowing, because that is the
+  # list the agent would otherwise read. Forty is where a tool list starts
+  # to cost more than it helps -- and API-model engines refuse more than
+  # 128 tools a turn across every server they have. Only read when a
+  # connector's `directory` is `auto`.
+  directory_min_tools: 40
+
+  # More characters of tool definitions than this makes a directory too.
+  #
+  # The names, descriptions and input schemas together, which is what the
+  # model actually reads on every call. A server with thirty tools can
+  # still be a hundred thousand characters when each one carries a page of
+  # documentation; about where Claude Code starts searching its own tools
+  # rather than listing them. Only read when a connector's `directory` is
+  # `auto`.
+  directory_min_chars: 100000
 
 # Handing work to Grok bots, and hearing back.
 #

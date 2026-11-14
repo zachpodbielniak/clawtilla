@@ -190,6 +190,36 @@ ClawtSkill *clawt_skill_library_create_taught(ClawtSkillLibrary  *self,
                                               GError            **error);
 
 /**
+ * clawt_skill_library_replace:
+ * @self: a #ClawtSkillLibrary
+ * @name: a skill that exists in the library's own directory
+ * @description: the new description
+ * @body: the new markdown
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Rewrites an existing skill's text, keeping everything else about it:
+ * whether it is enabled, where it came from, and every front-matter key
+ * clawtilla does not itself understand.
+ *
+ * Validated by the same parse a read gets before anything is written, so
+ * a description over the bound or with an angle bracket in it is refused
+ * here rather than leaving a skill the next scan cannot load.  The
+ * recorded digest is updated with the file, because this *is* the
+ * reviewed change -- left alone, every replaced skill would warn that it
+ * had been edited since import.
+ *
+ * Refused for a skill read from `skills.extra_dirs` or installed by
+ * clawtilla itself: neither directory is the library's to write.
+ *
+ * Returns: (transfer none) (nullable): the rewritten skill, or %NULL
+ */
+ClawtSkill *clawt_skill_library_replace(ClawtSkillLibrary  *self,
+                                        const gchar        *name,
+                                        const gchar        *description,
+                                        const gchar        *body,
+                                        GError            **error);
+
+/**
  * clawt_skill_library_import:
  * @self: a #ClawtSkillLibrary
  * @source: a directory holding a `SKILL.md`, or a `SKILL.md` itself

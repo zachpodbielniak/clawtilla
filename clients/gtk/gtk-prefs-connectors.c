@@ -299,6 +299,93 @@ on_connector_remove(GtkButton *button, gpointer user_data)
     clawt_gtk_refresh_settings_connectors(action->window);
 }
 
+typedef struct {
+    ClawtWindow *window;
+    gchar       *name;
+} DirectoryChoice;
+
+static void
+directory_choice_free(gpointer data, GClosure *closure)
+{
+    DirectoryChoice *choice = data;
+
+    g_free(choice->name);
+    g_free(choice);
+}
+
+/*
+ * Saved the moment it changes, through the same integration.update every
+ * other connector field goes through.  It reaches an agent the next time
+ * its relay starts, which is the next time its CLI starts a session.
+ */
+static void
+on_directory_chosen(AdwComboRow *row, GParamSpec *pspec, gpointer user_data)
+{
+    DirectoryChoice *choice = user_data;
+    g_autoptr(JsonNode) reply = NULL;
+    guint selected = adw_combo_row_get_selected(row);
+
+    if (selected >= clawt_tool_directory_mode_count())
+        return;
+
+    reply = clawt_window_request(
+        choice->window, "integration.update",
+        clawt_build_payload("name", choice->name,
+                            "directory",
+                            clawt_tool_directory_mode_nth_nick(selected),
+                            NULL));
+
+    if (reply != NULL)
+        clawt_gtk_refresh_settings_connectors(choice->window);
+}
+
+/*
+ * "Present as a directory: Auto / Always / Never", walked from the
+ * library's enumeration so a mode added there is offered here at once.
+ */
+static GtkWidget *
+build_directory_choice(ClawtWindow *self, AdwDialog *dialog,
+                       const gchar *name, const gchar *current)
+{
+    GtkWidget *list = gtk_list_box_new();
+    GtkWidget *row = adw_combo_row_new();
+    GtkStringList *labels = gtk_string_list_new(NULL);
+    DirectoryChoice *choice = g_new0(DirectoryChoice, 1);
+    guint selected = 0;
+    guint i;
+
+    for (i = 0; i < clawt_tool_directory_mode_count(); i++) {
+        gtk_string_list_append(labels, clawt_tool_directory_mode_nth_label(i));
+
+        if (g_strcmp0(current, clawt_tool_directory_mode_nth_nick(i)) == 0)
+            selected = i;
+    }
+
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), GTK_SELECTION_NONE);
+    gtk_widget_add_css_class(list, "boxed-list");
+
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                  "Present as a directory");
+    adw_action_row_set_subtitle(
+        ADW_ACTION_ROW(row),
+        "Three tools that search, describe and run the rest, instead of "
+        "every tool in every prompt");
+    adw_combo_row_set_model(ADW_COMBO_ROW(row), G_LIST_MODEL(labels));
+    g_object_unref(labels);
+    adw_combo_row_set_selected(ADW_COMBO_ROW(row), selected);
+
+    choice->window = self;
+    choice->name = g_strdup(name);
+    g_signal_connect_data(row, "notify::selected",
+                          G_CALLBACK(on_directory_chosen), choice,
+                          directory_choice_free, 0);
+
+    gtk_list_box_append(GTK_LIST_BOX(list), row);
+    (void)dialog;
+
+    return list;
+}
+
 /*
  * Plain buttons in a box rather than a list.
  *
@@ -359,6 +446,12 @@ on_connector_activated(GtkListBox *list, GtkListBoxRow *row,
         gtk_box_append(GTK_BOX(box), label);
     }
 
+    gtk_box_append(GTK_BOX(box),
+                   build_directory_choice(self, dialog, name,
+                                          g_object_get_data(
+                                              G_OBJECT(row),
+                                              "clawt-connector-directory")));
+
     for (i = 0; i < G_N_ELEMENTS(actions); i++) {
         action = g_new0(ConnectorAction, 1);
         action->window = self;
@@ -409,6 +502,58 @@ on_registry_refresh(GtkButton *button, gpointer user_data)
     (void)button;
 }
 
+/* Fills the threshold rows without that counting as an edit. */
+static void
+sync_directory_thresholds(ClawtWindow *self, gint64 min_tools,
+                          gint64 min_chars)
+{
+    if (self->settings_directory_min_tools == NULL)
+        return;
+
+    self->settings_directory_syncing = TRUE;
+    adw_spin_row_set_value(ADW_SPIN_ROW(self->settings_directory_min_tools),
+                           (gdouble)min_tools);
+    adw_spin_row_set_value(ADW_SPIN_ROW(self->settings_directory_min_chars),
+                           (gdouble)min_chars);
+    self->settings_directory_syncing = FALSE;
+}
+
+/*
+ * connectors.directory_min_tools and _min_chars, written through
+ * connector.settings, which checks both before saving either.
+ */
+static void
+on_directory_threshold_changed(AdwSpinRow *row, GParamSpec *pspec,
+                               gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(JsonBuilder) builder = NULL;
+
+    if (self->settings_directory_syncing)
+        return;
+
+    builder = json_builder_new();
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "directory_min_tools");
+    json_builder_add_int_value(
+        builder, (gint64)adw_spin_row_get_value(
+                     ADW_SPIN_ROW(self->settings_directory_min_tools)));
+    json_builder_set_member_name(builder, "directory_min_chars");
+    json_builder_add_int_value(
+        builder, (gint64)adw_spin_row_get_value(
+                     ADW_SPIN_ROW(self->settings_directory_min_chars)));
+    json_builder_end_object(builder);
+
+    reply = clawt_window_request(self, "connector.settings",
+                                 json_builder_get_root(builder));
+
+    if (reply != NULL)
+        clawt_gtk_refresh_settings_connectors(self);
+
+    (void)row;
+}
+
 void
 clawt_gtk_refresh_settings_connectors(ClawtWindow *self)
 {
@@ -421,6 +566,8 @@ clawt_gtk_refresh_settings_connectors(ClawtWindow *self)
     do {
         g_autoptr(JsonNode) reply = NULL;
         JsonArray *connectors;
+        gint64 min_tools;
+        gint64 min_chars;
         guint i;
 
         clawt_gtk_clear_list(GTK_LIST_BOX(self->settings_connectors));
@@ -432,6 +579,11 @@ clawt_gtk_refresh_settings_connectors(ClawtWindow *self)
 
         connectors = json_object_get_array_member(json_node_get_object(reply),
                                                   "connectors");
+        min_tools = json_object_get_int_member_with_default(
+            json_node_get_object(reply), "directory_min_tools", 40);
+        min_chars = json_object_get_int_member_with_default(
+            json_node_get_object(reply), "directory_min_chars", 100000);
+        sync_directory_thresholds(self, min_tools, min_chars);
 
         if (json_array_get_length(connectors) == 0) {
             GtkWidget *row = adw_action_row_new();
@@ -475,10 +627,27 @@ clawt_gtk_refresh_settings_connectors(ClawtWindow *self)
              */
             const gchar *icon = "channel-insecure-symbolic";
 
+            const gchar *directory =
+                json_object_get_string_member_with_default(entry, "directory",
+                                                           "auto");
+            g_autofree gchar *tools_line = clawt_mcp_directory_status_label(
+                directory,
+                json_object_get_int_member_with_default(entry, "tool_count",
+                                                        -1),
+                json_object_get_int_member_with_default(entry, "tool_chars",
+                                                        0),
+                min_tools, min_chars);
+
+            /*
+             * How many tools, and whether agents see them as a directory,
+             * on the row itself: the reason somebody opens this page
+             * after an agent's context filled up with one server.
+             */
             if (account != NULL && *account != '\0')
-                subtitle = g_strdup_printf("%s -- %s", provider, account);
+                subtitle = g_strdup_printf("%s -- %s\n%s", provider, account,
+                                           tools_line);
             else
-                subtitle = g_strdup(provider);
+                subtitle = g_strdup_printf("%s\n%s", provider, tools_line);
 
             adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), name);
             adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
@@ -519,6 +688,8 @@ clawt_gtk_refresh_settings_connectors(ClawtWindow *self)
                                    g_strdup(name), g_free);
             g_object_set_data_full(G_OBJECT(row), "clawt-connector-provider",
                                    g_strdup(provider), g_free);
+            g_object_set_data_full(G_OBJECT(row), "clawt-connector-directory",
+                                   g_strdup(directory), g_free);
 
             /*
              * This used to pass the row as its own activatable widget,
@@ -813,6 +984,51 @@ clawt_gtk_build_connectors_page(ClawtWindow *self)
 
     adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
                              ADW_PREFERENCES_GROUP(group));
+
+    /*
+     * Servers with many tools: when a connector becomes three tools
+     * instead of hundreds.  Per connector the choice is in its dialog;
+     * these are the thresholds `auto` measures against.
+     */
+    {
+        GtkWidget *many = adw_preferences_group_new();
+
+        adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(many),
+                                        "Servers with many tools");
+        adw_preferences_group_set_description(
+            ADW_PREFERENCES_GROUP(many),
+            "Past either of these, a connector set to Auto reaches agents "
+            "as a directory -- search, describe and call -- unless the "
+            "agent's CLI searches tools itself, as Claude Code does.");
+
+        self->settings_directory_min_tools =
+            adw_spin_row_new_with_range(1, 10000, 1);
+        adw_preferences_row_set_title(
+            ADW_PREFERENCES_ROW(self->settings_directory_min_tools),
+            "More tools than");
+        adw_spin_row_set_value(
+            ADW_SPIN_ROW(self->settings_directory_min_tools), 40);
+
+        self->settings_directory_min_chars =
+            adw_spin_row_new_with_range(1000, 10000000, 1000);
+        adw_preferences_row_set_title(
+            ADW_PREFERENCES_ROW(self->settings_directory_min_chars),
+            "More characters of tool definitions than");
+        adw_spin_row_set_value(
+            ADW_SPIN_ROW(self->settings_directory_min_chars), 100000);
+
+        g_signal_connect(self->settings_directory_min_tools, "notify::value",
+                         G_CALLBACK(on_directory_threshold_changed), self);
+        g_signal_connect(self->settings_directory_min_chars, "notify::value",
+                         G_CALLBACK(on_directory_threshold_changed), self);
+
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(many),
+                                  self->settings_directory_min_tools);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(many),
+                                  self->settings_directory_min_chars);
+        adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                                 ADW_PREFERENCES_GROUP(many));
+    }
 
     return page;
 }

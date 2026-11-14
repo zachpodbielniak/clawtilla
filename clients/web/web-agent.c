@@ -339,6 +339,63 @@ key_belongs_to_shared(const gchar *key, const gchar *use)
 }
 
 /*
+ * The agent member the daemon reports a computer key under, for the keys
+ * that only apply to some computer types.
+ *
+ * The daemon reports `computer_start` only where the start is a choice,
+ * the `container_*` limits only for a container or distrobox machine and
+ * `ssh_wake_command` only for ssh -- so the member's presence is the
+ * answer to "does this agent read it", given by the daemon rather than
+ * by a list of types kept here. The renderer draws such a key only when
+ * its member is there, and since an undrawn field is never posted the
+ * saver follows without a second rule.
+ */
+static const gchar *
+reported_member(const gchar *key)
+{
+    if (g_strcmp0(key, "computer.start") == 0)
+        return "computer_start";
+    if (g_strcmp0(key, "computer.container.pids_limit") == 0)
+        return "container_pids_limit";
+    if (g_strcmp0(key, "computer.container.memory") == 0)
+        return "container_memory";
+    if (g_strcmp0(key, "computer.container.memory_swap") == 0)
+        return "container_memory_swap";
+    if (g_strcmp0(key, "computer.ssh.wake_command") == 0)
+        return "ssh_wake_command";
+
+    return NULL;
+}
+
+static gboolean
+key_applies_to_agent(const gchar *key, JsonObject *agent)
+{
+    const gchar *member = reported_member(key);
+
+    return member == NULL ||
+           (agent != NULL && json_object_has_member(agent, member));
+}
+
+/*
+ * What a field shows, and what a save compares the posted value with.
+ *
+ * The agent member where there is one: it is the resolved value -- the
+ * start choice an unset agent inherits, and an empty process limit where
+ * `settings` says 0 -- so a form opened and saved untouched sends
+ * nothing, rather than pinning a default onto the agent.
+ */
+static const gchar *
+shown_value(JsonObject *agent, JsonObject *settings, const gchar *key)
+{
+    const gchar *member = reported_member(key);
+
+    if (member != NULL && agent != NULL && json_object_has_member(agent, member))
+        return clawt_web_member(agent, member, "");
+
+    return (settings != NULL) ? clawt_web_member(settings, key, "") : "";
+}
+
+/*
  * Whether this agent's network can be chosen: only inside the sandbox,
  * since outside it the CLI could ignore the gate.  Asked of the agent as
  * the daemon reports it, so the page and the refusal agree.
@@ -398,6 +455,58 @@ control_for(ClawtWebApp *app, const gchar *agent_id, const ClawtSchemaEntry *ent
                 label, field_name, (const gchar *const *)ids,
                 (const gchar *const *)names, value));
     }
+
+    /*
+     * When the machine starts, walked from the library's enumeration with
+     * its labels, so a choice added there is offered here and all three
+     * clients word it the same.
+     */
+    if (g_strcmp0(key, "computer.start") == 0) {
+        guint n = clawt_computer_start_count();
+        g_autofree const gchar **ids = g_new0(const gchar *, n + 1);
+        g_autofree const gchar **names = g_new0(const gchar *, n + 1);
+        guint i;
+
+        for (i = 0; i < n; i++) {
+            ids[i] = clawt_computer_start_nth_nick(i);
+            names[i] = clawt_computer_start_nth_label(i);
+        }
+
+        return HTMX_ELEMENT(clawt_web_select_field(
+            "Start the computer", field_name, (const gchar *const *)ids,
+            (const gchar *const *)names, value));
+    }
+
+    /*
+     * The podman limits and the wake command, named for what they do
+     * rather than as keys -- "container · memory swap" does not say that
+     * it is the total, which is the thing people get wrong.
+     */
+    if (g_strcmp0(key, "computer.container.pids_limit") == 0)
+        return HTMX_ELEMENT(clawt_web_field(
+            "Process limit", field_name, value,
+            "e.g. 2048 -- empty for podman's default, -1 for no limit"));
+
+    if (g_strcmp0(key, "computer.container.memory") == 0)
+        return HTMX_ELEMENT(clawt_web_field(
+            "Memory", field_name, value,
+            "e.g. 512m or 4g -- empty for no limit"));
+
+    if (g_strcmp0(key, "computer.container.memory_swap") == 0)
+        return HTMX_ELEMENT(clawt_web_field(
+            "Memory + swap", field_name, value,
+            "memory and swap together, e.g. 8g; equal to Memory for no "
+            "swap, -1 for unlimited swap"));
+
+    /*
+     * One command line, not the comma list a string list gets: the
+     * daemon reports and takes an argv as the line that splits back into
+     * it, so an argument holding a space survives a round trip.
+     */
+    if (g_strcmp0(key, "computer.ssh.wake_command") == 0)
+        return HTMX_ELEMENT(clawt_web_field(
+            "Wake command", field_name, value,
+            "e.g. wakeonlan aa:bb:cc:dd:ee:ff -- empty for none"));
 
     /*
      * The agent's own sandbox, named the way all three clients name it
@@ -1061,12 +1170,12 @@ clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id)
             for (k = 0; k < bucket->len; k++) {
                 const ClawtSchemaEntry *entry = g_ptr_array_index(bucket, k);
                 const gchar *key = clawt_config_schema_agent_name(entry);
-                const gchar *value = (settings != NULL)
-                                     ? clawt_web_member(settings, key, "") : "";
+                const gchar *value = shown_value(agent, settings, key);
                 const gchar *use = (settings != NULL)
                                    ? clawt_web_member(settings, "computer.use", "") : "";
 
-                if (key_belongs_to_shared(key, use))
+                if (key_belongs_to_shared(key, use) ||
+                    !key_applies_to_agent(key, agent))
                     continue;
 
                 clawt_web_add(group_body,
@@ -1092,6 +1201,27 @@ clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id)
                         clawt_web_add(group_body,
                                       clawt_web_notice(notice, "bad"));
                 }
+
+                /* What each of these does, where it is set. */
+                if (g_strcmp0(key, "computer.start") == 0)
+                    clawt_web_add(group_body, clawt_web_text(
+                        "On first use leaves the machine off until the agent "
+                        "first runs a command in it; the agent's own tools "
+                        "run on the host either way.", "small muted"));
+
+                if (g_strcmp0(key, "computer.container.memory_swap") == 0)
+                    clawt_web_add(group_body, clawt_web_text(
+                        "A change to these limits reaches a running machine "
+                        "in place with podman update; nothing is rebuilt.",
+                        "small muted"));
+
+                if (g_strcmp0(key, "computer.ssh.wake_command") == 0)
+                    clawt_web_add(group_body, clawt_web_text(
+                        "Run when the machine does not answer, to wake it -- "
+                        "e.g. wakeonlan aa:bb:cc:dd:ee:ff. A program and its "
+                        "arguments, not a shell line; it gets up to 2 minutes "
+                        "and runs once however many commands are waiting.",
+                        "small muted"));
 
                 /*
                  * The chosen network's one line, or -- with the sandbox
@@ -1194,12 +1324,14 @@ clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id)
  */
 static guint
 apply_form(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
-           JsonObject *settings, gboolean *out_restart, GError **error)
+           JsonObject *agent, JsonObject *settings, gboolean *out_restart,
+           GError **error)
 {
     const ClawtSchemaEntry *schema;
     gsize n_entries = 0;
     gsize i;
     guint changed = 0;
+    gboolean swap_first = FALSE;
 
     *out_restart = FALSE;
     schema = clawt_config_schema_get(&n_entries);
@@ -1229,6 +1361,44 @@ apply_form(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
                 return 0;
             if (settings != NULL)
                 json_object_set_string_member(settings, "model.account", "");
+        }
+    }
+
+    /*
+     * The swap total goes ahead of memory when memory first would be
+     * refused against the stored swap (clawt_container_limits_swap_first());
+     * the walk below then reaches memory_swap after memory and finds it
+     * already sent.
+     */
+    {
+        g_autofree gchar *memory = g_strdup(
+            clawt_web_form_value(request, "k:computer.container.memory"));
+        g_autofree gchar *swap = g_strdup(
+            clawt_web_form_value(request, "k:computer.container.memory_swap"));
+        const gchar *old_memory =
+            shown_value(agent, settings, "computer.container.memory");
+        const gchar *old_swap =
+            shown_value(agent, settings, "computer.container.memory_swap");
+
+        if (memory != NULL && swap != NULL)
+            swap_first = g_strcmp0(g_strstrip(memory), old_memory) != 0 &&
+                         g_strcmp0(g_strstrip(swap), old_swap) != 0 &&
+                         clawt_container_limits_swap_first(old_memory, old_swap, memory, swap);
+
+        if (swap_first) {
+            g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+            g_autoptr(JsonNode) reply = NULL;
+
+            clawt_web_payload_set(payload, "agent", agent_id);
+            clawt_web_payload_set(payload, "key",
+                                  "computer.container.memory_swap");
+            clawt_web_payload_set(payload, "value", swap);
+            reply = clawt_web_app_request(app, "agent.set",
+                                          clawt_web_payload_take(g_steal_pointer(&payload)),
+                                          error);
+            if (reply == NULL)
+                return 0;
+            changed++;
         }
     }
 
@@ -1288,6 +1458,10 @@ apply_form(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
         if (key_belongs_to_shared(key, clawt_web_form_value(request, "k:computer.use")))
             continue;
 
+        /* Already sent, ahead of memory, by the pass above. */
+        if (swap_first && g_strcmp0(key, "computer.container.memory_swap") == 0)
+            continue;
+
         field = g_strdup_printf("k:%s", key);
 
         if (entry->type == CLAWT_SCHEMA_BOOLEAN) {
@@ -1315,7 +1489,8 @@ apply_form(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
             g_strstrip(posted);
         }
 
-        current = (settings != NULL) ? clawt_web_member(settings, key, "") : "";
+        /* Compared with what the field was drawn from, not always settings. */
+        current = shown_value(agent, settings, key);
 
         if (g_strcmp0(posted, current) == 0)
             continue;
@@ -1355,6 +1530,8 @@ on_save(HtmxRequest *request, GHashTable *params, gpointer user_data)
     g_autofree gchar *said = NULL;
 
     changed = apply_form(app, request, agent_id,
+                         clawt_web_member_object(clawt_web_root(current),
+                                                 "agent"),
                          clawt_web_member_object(clawt_web_root(current),
                                                  "settings"),
                          &restart, &error);

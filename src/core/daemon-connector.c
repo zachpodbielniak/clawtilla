@@ -15,6 +15,70 @@
 #include "core/clawt-daemon.h"
 #include "core/clawt-daemon-private.h"
 
+/*
+ * The two thresholds, as members of whatever object is open.  Read
+ * through the config getters, so the schema's defaults are what an
+ * untouched fleet reports.
+ */
+static void
+add_directory_thresholds(ClawtDaemon *self, JsonBuilder *builder)
+{
+    json_builder_set_member_name(builder, "directory_min_tools");
+    json_builder_add_int_value(
+        builder, clawt_config_get_int(self->config,
+                                      "connectors.directory_min_tools"));
+    json_builder_set_member_name(builder, "directory_min_chars");
+    json_builder_add_int_value(
+        builder, clawt_config_get_int(self->config,
+                                      "connectors.directory_min_chars"));
+}
+
+/*
+ * How big a connector's server is, as a relay last saw it, and whether
+ * an agent whose CLI does not search tools itself gets it as a
+ * directory.  -1 tools means no relay has reported it yet, which is a
+ * different thing from a server with none.
+ */
+static void
+add_directory_members(ClawtDaemon            *self,
+                      JsonBuilder            *builder,
+                      ClawtIntegrationConfig *instance)
+{
+    g_autofree gchar *path = clawt_tool_census_path(self->state_dir);
+    g_autoptr(ClawtToolCensus) census = clawt_tool_census_load(
+        path, clawt_integration_config_get_name(instance));
+    const gchar *nick =
+        clawt_integration_config_get_string(instance, NULL, "directory");
+    ClawtToolDirectoryMode mode = CLAWT_TOOL_DIRECTORY_AUTO;
+
+    /* A spelling no mode has is reported as auto, which is what it does. */
+    (void)clawt_tool_directory_mode_from_nick(nick, &mode);
+
+    clawt_daemon_add_string_member(
+        builder, "directory",
+        clawt_enum_to_nick(CLAWT_TYPE_TOOL_DIRECTORY_MODE, (gint)mode));
+
+    json_builder_set_member_name(builder, "tool_count");
+    json_builder_add_int_value(builder, census != NULL ? census->tools : -1);
+    json_builder_set_member_name(builder, "tool_chars");
+    json_builder_add_int_value(builder, census != NULL ? census->chars : 0);
+
+    if (census != NULL && census->areas != NULL)
+        clawt_daemon_add_string_member(builder, "tool_areas", census->areas);
+
+    json_builder_set_member_name(builder, "presented_as_directory");
+    json_builder_add_boolean_value(
+        builder,
+        clawt_mcp_directory_decide(
+            mode, FALSE,
+            census != NULL ? (guint64)census->tools : 0,
+            census != NULL ? (guint64)census->chars : 0,
+            (guint64)MAX(clawt_config_get_int(
+                self->config, "connectors.directory_min_tools"), 0),
+            (guint64)MAX(clawt_config_get_int(
+                self->config, "connectors.directory_min_chars"), 0)));
+}
+
 JsonNode *
 clawt_daemon_handle_connector(
     ClawtDaemon  *self,
@@ -147,10 +211,13 @@ clawt_daemon_handle_connector(
                 clawt_daemon_add_string_member(builder, "granted_scopes",
                                                token->scopes);
 
+            add_directory_members(self, builder, instance);
+
             json_builder_end_object(builder);
         }
 
         json_builder_end_array(builder);
+        add_directory_thresholds(self, builder);
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
@@ -539,6 +606,80 @@ clawt_daemon_handle_connector(
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "connector.settings") == 0) {
+        const gchar *keys[] = { "directory_min_tools",
+                                "directory_min_chars", NULL };
+        gboolean changed = FALSE;
+        gsize k;
+
+        /*
+         * Both checked before either is written, so a refused value
+         * leaves the other where it was rather than half an edit saved.
+         */
+        for (k = 0; keys[k] != NULL; k++) {
+            if (json_object_has_member(payload, keys[k]) &&
+                clawt_ipc_payload_int(payload, keys[k], 0) < 0)
+                return clawt_ipc_error_new(request,
+                                           CLAWT_ERROR_INVALID_ARGUMENT,
+                                           "a threshold cannot be below "
+                                           "zero");
+        }
+
+        for (k = 0; keys[k] != NULL; k++) {
+            g_autofree gchar *key = NULL;
+
+            if (!json_object_has_member(payload, keys[k]))
+                continue;
+
+            key = g_strdup_printf("connectors.%s", keys[k]);
+            clawt_config_set_int(self->config, key,
+                                 clawt_ipc_payload_int(payload, keys[k], 0));
+            changed = TRUE;
+        }
+
+        if (changed && !clawt_config_save(self->config, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        json_builder_begin_object(builder);
+        add_directory_thresholds(self, builder);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "connector.tools_seen") == 0) {
+        const gchar *name = clawt_ipc_payload_string(payload, "name");
+        ClawtIntegrationConfig *instance = (name != NULL)
+            ? clawt_config_get_integration(self->config, name) : NULL;
+        g_autofree gchar *path = NULL;
+        ClawtToolCensus census = { 0 };
+
+        /*
+         * Only for a connector that exists: the file is keyed by name,
+         * and a relay for something since removed must not bring its
+         * row back.
+         */
+        if (instance == NULL ||
+            g_strcmp0(clawt_integration_config_get_type_id(instance),
+                      "connector") != 0)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "there is no connector called that");
+
+        census.name = (gchar *)name;
+        census.tools = MAX(clawt_ipc_payload_int(payload, "tools", 0), 0);
+        census.chars = MAX(clawt_ipc_payload_int(payload, "chars", 0), 0);
+        census.areas = (gchar *)clawt_ipc_payload_string(payload, "areas");
+        census.seen_at = g_get_real_time() / G_USEC_PER_SEC;
+
+        path = clawt_tool_census_path(self->state_dir);
+
+        if (!clawt_tool_census_store(path, &census, &error))
+            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                       error->message);
+
+        return clawt_ipc_response_new(request, NULL);
     }
 
     if (g_strcmp0(kind, "connector.registry_refresh") == 0) {

@@ -630,6 +630,86 @@ teach_group(ClawtWindow *self)
     return group;
 }
 
+static void
+on_review_proposals(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+
+    clawt_gtk_show_page(user_data, CLAWT_PAGE_DECISIONS);
+}
+
+/*
+ * What agents have proposed and nobody has answered yet.
+ *
+ * On the Skills page as well as in the inbox, because this is where
+ * somebody looks when they wonder why a skill they did not write has
+ * appeared disabled -- and the answer is a person's name and a reason,
+ * not a provenance hash.  Reviewing happens in Decisions, where the card
+ * shows the text; a second set of Approve buttons here would be a second
+ * place to approve something without having read it.
+ */
+static void
+append_pending_proposals(ClawtWindow *self)
+{
+    g_autoptr(JsonNode) reply = NULL;
+    JsonArray *proposals = NULL;
+    GtkWidget *group;
+    gint64 now = g_get_real_time();
+    guint i;
+
+    reply = clawt_window_request(self, "skill.proposals", NULL);
+
+    if (reply != NULL)
+        proposals = json_object_get_array_member(clawt_payload_of(reply),
+                                                 "proposals");
+
+    if (proposals == NULL || json_array_get_length(proposals) == 0)
+        return;
+
+    group = adw_preferences_group_new();
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group),
+                                    "Proposed by agents");
+    adw_preferences_group_set_description(
+        ADW_PREFERENCES_GROUP(group),
+        "Waiting for you in Decisions. A new skill is in the library "
+        "disabled; a change is staged and the skill is unchanged.");
+
+    for (i = 0; i < json_array_get_length(proposals); i++) {
+        JsonObject *proposal = json_array_get_object_element(proposals, i);
+        const gchar *reason = clawt_json_string(proposal, "reason", NULL);
+        gboolean update = g_strcmp0(clawt_json_string(proposal, "kind", ""),
+                                    "update") == 0;
+        g_autofree gchar *age = clawt_time_ago_label(
+            clawt_json_int(proposal, "created_at", 0), now);
+        g_autofree gchar *subtitle = NULL;
+        GtkWidget *row = adw_action_row_new();
+        GtkWidget *review = gtk_button_new_with_label("Review");
+
+        subtitle = g_strdup_printf(
+            "%s proposes %s, %s%s%s",
+            clawt_json_string(proposal, "agent", "an agent"),
+            update ? "a change to this skill" : "a new skill",
+            age != NULL ? age : "just now",
+            (reason != NULL && *reason != '\0') ? "\n" : "",
+            (reason != NULL && *reason != '\0') ? reason : "");
+
+        /* the agent wrote the reason: plain text, never markup */
+        adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row), FALSE);
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                      clawt_json_string(proposal, "name", "?"));
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
+        adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(row), 0);
+
+        gtk_widget_set_valign(review, GTK_ALIGN_CENTER);
+        g_signal_connect(review, "clicked", G_CALLBACK(on_review_proposals),
+                         self);
+        adw_action_row_add_suffix(ADW_ACTION_ROW(row), review);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), row);
+    }
+
+    gtk_box_append(GTK_BOX(self->skill_box), group);
+}
+
 void
 clawt_gtk_refresh_skills(ClawtWindow *self)
 {
@@ -651,6 +731,7 @@ clawt_gtk_refresh_skills(ClawtWindow *self)
             gtk_box_remove(GTK_BOX(self->skill_box), child);
 
         gtk_box_append(GTK_BOX(self->skill_box), teach_group(self));
+        append_pending_proposals(self);
 
         reply = clawt_window_request(self, "skill.list", NULL);
 

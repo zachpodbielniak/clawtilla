@@ -151,6 +151,8 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/computer/clawt-pod-bridge.h \
 	$(SRCDIR)/computer/clawt-container-computer.h \
 	$(SRCDIR)/computer/clawt-distrobox-computer.h \
+	$(SRCDIR)/computer/clawt-container-limits.h \
+	$(SRCDIR)/computer/clawt-wake.h \
 	$(SRCDIR)/computer/clawt-cloud-init.h \
 	$(SRCDIR)/computer/clawt-vm-image.h \
 	$(SRCDIR)/computer/clawt-vm-computer.h \
@@ -200,6 +202,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/interfaces/clawt-tool-provider.h \
 	$(SRCDIR)/interfaces/clawt-computer-provider.h \
 	$(SRCDIR)/interfaces/clawt-integration-provider.h \
+	$(SRCDIR)/mcp/clawt-mcp-directory.h \
 	$(SRCDIR)/mcp/clawt-mcp-relay.h \
 	$(SRCDIR)/mcp/clawt-mcp-socket.h \
 	$(SRCDIR)/mcp/clawt-mcp-tools.h \
@@ -211,6 +214,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/skill/clawt-skill-bundled.h \
 	$(SRCDIR)/policy/clawt-policy.h \
 	$(SRCDIR)/skill/clawt-skill-commands.h \
+	$(SRCDIR)/skill/clawt-skill-proposal.h \
 	$(SRCDIR)/ai/clawt-model-catalog.h \
 	$(SRCDIR)/ai/clawt-agent-designer.h \
 	$(SRCDIR)/teach/clawt-teach-trace.h \
@@ -267,6 +271,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-grok.c \
 	$(SRCDIR)/core/daemon-config.c \
 	$(SRCDIR)/core/daemon-skill.c \
+	$(SRCDIR)/core/daemon-skill-proposal.c \
 	$(SRCDIR)/core/daemon-step.c \
 	$(SRCDIR)/core/daemon-ack.c \
 	$(SRCDIR)/core/clawt-event-bus.c \
@@ -334,6 +339,8 @@ LIB_SOURCES = \
 	$(SRCDIR)/computer/clawt-pod-bridge.c \
 	$(SRCDIR)/computer/clawt-container-computer.c \
 	$(SRCDIR)/computer/clawt-distrobox-computer.c \
+	$(SRCDIR)/computer/clawt-container-limits.c \
+	$(SRCDIR)/computer/clawt-wake.c \
 	$(SRCDIR)/computer/clawt-ssh-computer.c \
 	$(SRCDIR)/computer/clawt-cloud-init.c \
 	$(SRCDIR)/computer/clawt-vm-image.c \
@@ -386,6 +393,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/interfaces/clawt-tool-provider.c \
 	$(SRCDIR)/interfaces/clawt-computer-provider.c \
 	$(SRCDIR)/interfaces/clawt-integration-provider.c \
+	$(SRCDIR)/mcp/clawt-mcp-directory.c \
 	$(SRCDIR)/mcp/clawt-mcp-relay.c \
 	$(SRCDIR)/mcp/clawt-mcp-socket.c \
 	$(SRCDIR)/mcp/clawt-mcp-tools.c \
@@ -397,6 +405,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/skill/clawt-skill-bundled.c \
 	$(SRCDIR)/policy/clawt-policy.c \
 	$(SRCDIR)/skill/clawt-skill-commands.c \
+	$(SRCDIR)/skill/clawt-skill-proposal.c \
 	$(SRCDIR)/ai/clawt-model-catalog.c \
 	$(SRCDIR)/ai/clawt-agent-designer.c \
 	$(SRCDIR)/teach/clawt-teach-trace.c \

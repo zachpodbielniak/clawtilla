@@ -153,6 +153,81 @@ taken from whatever happened to be thread-default, because
 dispatching a source pushes nothing -- so a caller reached from an idle
 of its own would have its answer delivered on a loop nobody runs.
 
+** When the machine starts: with the agent, or on first use
+:PROPERTIES:
+:CUSTOM_ID: computer-start
+:END:
+
+*Checked against the code before this key existed: starting an agent
+starts its computer.*  Both start paths do it --- ~agent start~ through
+~clawt_daemon_start_agent()~, and the fleet coming up through the
+asynchronous form --- by calling ~clawt_computer_start()~ before the agent
+process is launched.  For a VM that is a boot: libvirt defines and starts
+the domain and the start waits for the guest's SSH.  For a container it is
+~podman start~.  So an agent that spent the day planning and delegating
+had a VM running for it all day.
+
+~computer.start~ chooses:
+
+| Value | The machine comes up |
+|-------+----------------------|
+| ~on_agent_start~ (default) | with the agent, before its first turn, as before |
+| ~on_first_use~ | the first time anything runs in it |
+
+#+begin_src yaml
+computer:
+  type: vm
+  start: on_first_use
+#+end_src
+
+*A use is a command.*  ~clawtilla_computer_exec~, ~clawtilla computer
+exec~ and a wait condition that runs a command all go through
+~clawt_computer_exec()~, which calls ~clawt_computer_ensure_started()~
+first --- one door, so there is no caller that forgets.  The async form,
+which the daemon uses, starts the machine through
+~clawt_computer_lifecycle_async()~ with
+~CLAWT_COMPUTER_LIFECYCLE_FIRST_USE~ and runs the command once it is up,
+so the boot is never waited on where an IPC handler runs.
+
+*Concurrent first uses share one start.*  Five commands sent at once to a
+VM that is not up boot it once; the four that arrived while it was booting
+wait for that boot and get its answer.  A boot that fails fails all five,
+each saying "this computer starts on first use, and it did not start for
+this command" and why; the next command is a new attempt rather than an
+inherited failure.
+
+*The boot is not the command's.*  The command's ~timeout~ begins when the
+machine is up, so a two-minute boot is not taken out of a two-minute
+command.
+
+*Which types.*  ~container~, ~distrobox~, ~vm~ and ~ssh~ (whose start is a
+round trip, and with a [[#ssh-wake][wake command]] possibly a wake).  ~host~
+always starts with the agent: its start is a local confinement check that
+should fail when the agent starts, not a turn later.  ~none~ has nothing
+to start.
+
+*What it does not cover.*
+
+- The agent's own ~bash~, ~read~ and ~write~ run on the host, so they
+  never start the machine --- which is the point.
+- A *VM desktop* is a use, and in practice an early one: the agent's MCP
+  client starts the desktop relay when the agent starts, and the relay's
+  ~computer.desktop~ request boots the VM (deferred, so nothing waits on
+  it).  ~clawtilla computer desktop-mcp~ allows fifteen minutes for that
+  answer, because a first boot runs cloud-init.  A VM with a desktop
+  granted therefore gains little from ~on_first_use~.
+- *Browser sessions* never needed the computer: gsurf and its Xvfb run on
+  the host, beside the daemon.  ~on_first_use~ changes nothing for them.
+- A machine stopped by hand under a running agent is started again by its
+  next use.  That is what the setting says; ~on_agent_start~ keeps the old
+  behaviour, where a stopped machine stays stopped and its commands fail
+  saying so.
+- ~computer status~ reports what the machine is, so a lazy machine shows
+  ~absent~ or ~stopped~ until its first use.
+
+The setting is reread at every agent start, like the limits below, so
+changing it does not need a rebuild.
+
 ** none
 
 The default, and the right starting point.  An agent that answers
@@ -495,6 +570,61 @@ The mount list is the same for a VM, where the entries become virtiofs
 devices rather than bind mounts.  You write source, target and mode; the
 right kind is filled in from the backend.
 
+*** Process and memory limits
+:PROPERTIES:
+:CUSTOM_ID: container-limits
+:END:
+
+An agent's build can fork without bound or eat the host's memory, and
+without a limit the machine that suffers is yours.  Three keys:
+
+| Key | Takes | Unset |
+|-----+-------+-------|
+| ~computer.container.pids_limit~ | the most processes and threads; ~-1~ for none | ~0~: podman's default (2048 on Fedora) |
+| ~computer.container.memory~ | a size: ~512m~, ~4g~ | no limit |
+| ~computer.container.memory_swap~ | memory *and* swap together; ~-1~ for unlimited swap | podman's default (as much swap again) |
+
+#+begin_src yaml
+computer:
+  type: container
+  container:
+    pids_limit: 2048
+    memory: 4g
+    memory_swap: 6g   # 4g of memory, 2g of swap
+#+end_src
+
+*Sizes are podman's:* a whole number and an optional ~b~, ~k~, ~m~ or ~g~
+(either case, ~gb~ too), in powers of 1024.  A fraction is refused rather
+than rounded --- ~1.5g~ is answered with "write 1536m" --- because a limit
+has to have exactly one value.  Memory under podman's 6 MiB floor,
+~memory_swap~ without ~memory~, and ~memory_swap~ smaller than ~memory~ are
+refused too.  All of it is refused *where it arrives*: ~agent set~ and the
+clients' forms answer with the key at fault, and a hand-edited file stops
+the computer being built at the next start, naming it, rather than reaching
+podman as a libpod error.
+
+*Applied with ~podman update~, in place.*  podomation's create request
+carries no limits, so the container is created and then given them with
+~podman update~ before its first start --- it never runs without them.  At
+every later start clawtilla asks ~podman container inspect~ what the
+machine has and sends ~podman update~ for whatever differs, and only that.
+A changed limit therefore reaches the existing container without a rebuild
+and without losing what the agent installed.  Changed with ~agent set~ (or
+a client) while the machine is running, it is applied at once, on a
+worker thread; the next start would apply it anyway.
+
+*Clearing a key leaves the last value.*  podman cannot tell its own
+default from a value somebody chose, so an unset limit is never touched:
+to lift one, set ~-1~ (processes, swap), or rebuild.
+
+*Remote podman is reached the same way.*  The podman commands carry
+~--url~ with ~computer.container.connection~ (or ~--connection~ for a named
+connection), so the limits reach the podman that owns the machine.  They
+need the ~podman~ command on this machine (Fedora: ~podman~).
+
+The same three keys apply to a [[#distrobox-limits][distrobox]], which is
+a podman container underneath.
+
 *** A container left behind
 
 The container name is derived from the agent id -- =clawt-<agent>= --
@@ -650,6 +780,21 @@ runs a package install inside it, and a distrobox is the kind of
 computer somebody chose precisely so that what the agent installs
 survives --- so discarding it at every stop would mean paying that cost
 on every start.
+
+*** Process and memory limits
+:PROPERTIES:
+:CUSTOM_ID: distrobox-limits
+:END:
+
+The [[#container-limits][container limits]] apply here too ---
+~computer.container.pids_limit~, ~memory~ and ~memory_swap~, the same keys,
+because a box is a podman container.  At creation they go to distrobox as
+~--additional-flags~, one complete option per flag (~--memory=4g~, never
+~--memory 4g~: distrobox passes every word as its own flag, and a lone
+~4g~ would reach podman as the image).  A box made before they were set,
+or since changed, gets them with ~podman update~ on the container of the
+same name at its next start --- in place, so what the agent installed in
+the box survives.
 
 *** Mounts
 :PROPERTIES:
@@ -1637,6 +1782,72 @@ wrong one until a file it wrote is not where it put it.
 says so in the strongest wording of the five backends, and ~describe()~
 repeats it.
 
+*** A machine that sleeps: the wake command
+:PROPERTIES:
+:CUSTOM_ID: ssh-wake
+:END:
+
+A homelab box that suspends when idle, or a cloud server that is paused,
+answers nothing until it is woken, so every command reports it
+unreachable.  ~computer.ssh.wake_command~ names a program that wakes it:
+
+#+begin_src yaml
+computer:
+  type: ssh
+  ssh:
+    host: buildbox
+    wake_command: [wakeonlan, "aa:bb:cc:dd:ee:ff"]
+#+end_src
+
+*An argv, never a shell line.*  It is a list, run as the program and its
+arguments with the daemon's allowlisted environment; nothing is
+substituted into it.  Written as one line in a client or ~agent set~ it
+is split into words as a shell would split them, and a line using a pipe,
+a redirection, ~;~, ~&&~, ~$VAR~ or backquotes is refused rather than run
+with the operator as a literal argument.  Wanting a shell is spelled out:
+~[sh, -c, "wakeonlan aa:bb:cc:dd:ee:ff && sleep 20"]~.
+
+*When it runs.*  Before a command, and before the start's checks, but only
+when nothing answers: a live multiplexing master means the machine is up
+(no round trip at all); otherwise ~ssh <alias> true~ is tried and only a
+failure that reads as "nothing answered" wakes it --- a refused host key
+or login came from a machine that is awake, and waking it would spend two
+minutes before the same refusal.  The probe is repeated, never the agent's
+command, so a command is never run twice.
+
+*Once per wave.*  Commands that arrive while the wake runs do not start
+their own; they wait for that run and share its answer.  The next command
+after it has ended starts a new wave if the machine has gone back to
+sleep.
+
+*At most 120 seconds, and everything it started dies with it.*  The
+command runs in a process group of its own.  At the deadline the whole
+group is sent SIGKILL and the wait ends --- a script that started a
+provider's CLI does not leave that CLI holding the turn.  When the command
+itself exits, anything it left running in its group is killed too: a wake
+command is done when it returns.
+
+*The wake is not the command's time.*  The command's ~timeout~ starts
+after the wake, and each command is told only the time *it* waited --- one
+that joined a wake half way through waited half of it.  The agent's tool
+result begins "[the machine was asleep and was woken first; that took N s
+and was not counted against the timeout]", and ~computer.exec~ replies
+carry it as ~wake_ms~.
+
+*A wake that fails says so, and how*, after the connection failure: "the
+wake command (wakeonlan aa:bb:cc:dd:ee:ff) failed: it exited with status 1:
+<the end of what it wrote>", "... it was still running after 120 seconds,
+so it was stopped along with everything it started", or "... it could not
+be started: <why>".
+
+The command should return once the machine is on its way up; ssh's own
+~connect_timeout~ then covers the rest of the boot.  With
+~computer.start: on_first_use~ the machine is not even probed until the
+agent first needs it.
+
+A shared machine takes it as ~computers[].ssh.wake_command~, like every
+other key of an agent's computer block.
+
 *** Requirements
 
 | Command | Fedora package | Needed for |
@@ -1718,6 +1929,11 @@ written anything.
 
 So a remote container agent wants ~computer.workspace: false~ and
 ~computer.exchange: false~, or it wants to be an ~ssh~ computer instead.
+
+*A remote podman host that sleeps is not woken.*  The
+[[#ssh-wake][wake command]] belongs to the ~ssh~ backend; a container whose
+podman is reached over ~ssh://~ fails its start against a sleeping host as
+it always has.
 
 *** Remote libvirt does not work
 
@@ -1807,7 +2023,7 @@ Each agent is told, in the computer region of its =TOOLS.org= and by ~clawtilla_
 
 *** Starting and stopping
 
-- Starting any user starts the machine if it is not running.
+- Starting any user starts the machine if it is not running --- unless the entry says ~start: on_first_use~, in which case the first command from any of them does, once.
 - Stopping a user stops the machine only when no other user is still running on it.
 - ~computer.stop~, ~computer.restart~ and ~computer.start~ on one user's behalf are refused while another user is running, naming them -- stopping it would pull the machine out from under them.
 - ~computer.rebuild~ is refused while any user runs. A rebuild detaches the machine from every user, so each builds against the new one at its next start.

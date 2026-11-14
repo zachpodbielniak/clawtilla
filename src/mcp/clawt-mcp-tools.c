@@ -43,6 +43,7 @@ typedef enum {
     NEEDS_GROK,
     NEEDS_WAITS,
     NEEDS_RETRY,
+    NEEDS_SKILL_PROPOSAL,
     NEEDS_NEVER
 } ToolRequirement;
 
@@ -508,6 +509,34 @@ static const ClawtParamInfo grok_replies_params[] = {
 
 static const ClawtParamInfo skill_read_params[] = {
     { "name", "string", "Which skill, by the name in the listing.", TRUE }
+};
+
+/*
+ * What goes in a proposal, and the bar for making one, where the agent
+ * reads it at the moment it is deciding.
+ */
+static const ClawtParamInfo skill_propose_params[] = {
+    { "name", "string",
+      "The new skill's name: lowercase letters, digits and single "
+      "hyphens, at most 64 characters. Leave it out when you name an "
+      "existing skill in `skill`.", FALSE },
+    { "skill", "string",
+      "To change a skill that exists, its name, from "
+      "clawtilla_skill_list or the skills in your TOOLS.org. Leave it out "
+      "to propose a new skill.", FALSE },
+    { "description", "string",
+      "When an agent should reach for it, as \"Use this when ...\". It is "
+      "the only part an agent reads before deciding to open the skill. "
+      "At most 1024 characters, no angle brackets.", TRUE },
+    { "body", "string",
+      "The procedure, in markdown: what it is for, then the steps. Write "
+      "the general procedure, not a narrative of this one time -- replace "
+      "paths and names that were specific to it. Never include a "
+      "credential. At most 64 KiB.", TRUE },
+    { "reason", "string",
+      "Why, in a sentence or two: what you worked out, and what it saves "
+      "the next agent. The operator reads this first. Required for a "
+      "change to an existing skill.", FALSE }
 };
 
 static const ClawtParamInfo create_agent_params[] = {
@@ -1041,6 +1070,18 @@ static const ToolDefinition tools[] = {
          "written to help you choose, not the procedure.",
          NEEDS_SKILLS, skill_read_params, CLAWT_ACTION_READ),
 
+    TOOL("clawtilla_skill_propose",
+         "Propose a skill -- a new one, or a change to one that exists -- "
+         "for the operator to approve. Use it when you have worked out a "
+         "procedure the next agent would otherwise have to rediscover: a "
+         "command sequence that took several attempts, a gotcha in a tool, "
+         "the steps you would explain to somebody doing this again. Not for "
+         "one-off facts or notes about this conversation. It is written as "
+         "a draft that reaches no prompt and raises a decision; the "
+         "operator approves, edits or rejects it. Do not wait for it, and "
+         "do not write the skill file yourself.",
+         NEEDS_SKILL_PROPOSAL, skill_propose_params, CLAWT_ACTION_WRITE),
+
     TOOL("clawtilla_web_search",
          "Search the web through the fleet's libresearch server: many "
          "engines at once, merged and ranked. Results name the engines that "
@@ -1210,6 +1251,10 @@ struct _ClawtMcpTools {
 
     /* Incidents and retries, for clawtilla_task_retry; borrowed. */
     ClawtIncidentDesk      *incidents;
+
+    ClawtMcpSkillProposeFunc skill_propose;
+    gpointer                 skill_propose_data;
+    GDestroyNotify           skill_propose_destroy;
 
     ClawtMcpSearchFunc      search;
     gpointer                search_data;
@@ -1474,6 +1519,22 @@ clawt_mcp_tools_set_ask_decision_func(ClawtMcpTools           *self,
     self->ask_decision = func;
     self->ask_decision_data = user_data;
     self->ask_decision_destroy = destroy;
+}
+
+void
+clawt_mcp_tools_set_skill_propose_func(ClawtMcpTools            *self,
+                                       ClawtMcpSkillProposeFunc  func,
+                                       gpointer                  user_data,
+                                       GDestroyNotify            destroy)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    if (self->skill_propose_destroy != NULL && self->skill_propose_data != NULL)
+        self->skill_propose_destroy(self->skill_propose_data);
+
+    self->skill_propose = func;
+    self->skill_propose_data = user_data;
+    self->skill_propose_destroy = destroy;
 }
 
 void
@@ -2251,6 +2312,22 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
          * task to be the agent's -- so there is nothing to gate here.
          */
         if (self->waits == NULL)
+            return FALSE;
+        break;
+
+    case NEEDS_SKILL_PROPOSAL:
+        /*
+         * The daemon's hook, a library to propose into, and a fleet that
+         * has not set the daily allowance to zero.  Not gated on the
+         * agent having skills of its own: the point is that an agent
+         * with none can still write down what it learned.
+         */
+        if (self->skill_propose == NULL || self->skills == NULL)
+            return FALSE;
+
+        if (clawt_config_get_int(
+                clawt_agent_config_get_config(clawt_agent_get_config(agent)),
+                "skills.max_proposals_per_day") <= 0)
             return FALSE;
         break;
 
@@ -3957,6 +4034,65 @@ tool_ask_decision(ClawtMcpTools *self,
     return answer;
 }
 
+/*
+ * An agent proposes a skill.
+ *
+ * `skill` names an existing skill and makes this an update; `name` is a
+ * new one.  Both may be given only when they agree, because a proposal
+ * that renames a skill as it changes it would be two changes reviewed as
+ * one.  Everything else -- the name gate, the bounds, the rate limit --
+ * is the store's, so the same rules hold however a proposal arrives.
+ */
+static gchar *
+tool_skill_propose(ClawtMcpTools *self,
+                   const gchar   *agent_id,
+                   JsonObject    *arguments,
+                   gboolean      *is_error)
+{
+    const gchar *name = argument_string(arguments, "name");
+    const gchar *skill = argument_string(arguments, "skill");
+    const gchar *description = argument_string(arguments, "description");
+    const gchar *body = argument_string(arguments, "body");
+    const gchar *reason = argument_string(arguments, "reason");
+    g_autoptr(GError) error = NULL;
+    gboolean is_update = (skill != NULL && *skill != '\0');
+    gchar *answer;
+
+    if (self->skill_propose == NULL) {
+        *is_error = TRUE;
+        return g_strdup("Skill proposals are not available here.");
+    }
+
+    if (is_update && name != NULL && *name != '\0' &&
+        g_strcmp0(name, skill) != 0) {
+        *is_error = TRUE;
+        return g_strdup(
+            "Give either `skill` (to change that skill) or `name` (for a new "
+            "one), not two different names: a proposal cannot rename a "
+            "skill.");
+    }
+
+    if (!is_update && (name == NULL || *name == '\0')) {
+        *is_error = TRUE;
+        return g_strdup(
+            "A new skill needs a `name`; to change one that exists, name it "
+            "in `skill` instead.");
+    }
+
+    answer = self->skill_propose(agent_id, is_update ? skill : name,
+                                 description, body, is_update, reason,
+                                 self->skill_propose_data, &error);
+
+    if (answer == NULL) {
+        *is_error = TRUE;
+        return g_strdup_printf("Not proposed: %s",
+                               error != NULL ? error->message
+                                             : "the proposal could not be filed");
+    }
+
+    return answer;
+}
+
 static gchar *
 tool_create_agent(ClawtMcpTools *self,
                   JsonObject    *arguments,
@@ -5306,8 +5442,31 @@ exec_call_run(ExecCall *call)
 }
 
 /* Back on the main thread: the trail, then the answer. */
+static gchar *exec_call_reply_body(ExecCall *call, gboolean *is_error);
+
+/*
+ * The reply, with a line in front when the machine had to be woken first:
+ * an agent that waited a minute for a two-second command should be told
+ * where the minute went, or it learns that the machine is slow.
+ */
 static gchar *
 exec_call_reply(ExecCall *call, gboolean *is_error)
+{
+    g_autofree gchar *body = exec_call_reply_body(call, is_error);
+    gint64 woke = (call->result != NULL)
+                  ? clawt_exec_result_get_wake_usec(call->result) : 0;
+
+    if (woke <= 0)
+        return g_steal_pointer(&body);
+
+    return g_strdup_printf("[the machine was asleep and was woken first; "
+                           "that took %" G_GINT64_FORMAT " s and was not "
+                           "counted against the timeout]\n%s",
+                           (woke + G_USEC_PER_SEC / 2) / G_USEC_PER_SEC, body);
+}
+
+static gchar *
+exec_call_reply_body(ExecCall *call, gboolean *is_error)
 {
     if (call->result == NULL) {
         /*
@@ -8496,6 +8655,8 @@ tools_call(ClawtMcpTools *self,
         text = g_strdup("Grok dispatch is not available to you.");
         is_error = TRUE;
     }
+    else if (g_strcmp0(tool_name, "clawtilla_skill_propose") == 0)
+        text = tool_skill_propose(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_skill_read") == 0)
         text = tool_skill_read(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_request_hands") == 0)
