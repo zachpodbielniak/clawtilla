@@ -211,6 +211,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/skill/clawt-skill-bundled.h \
 	$(SRCDIR)/policy/clawt-policy.h \
 	$(SRCDIR)/skill/clawt-skill-commands.h \
+	$(SRCDIR)/skill/clawt-skill-proposal.h \
 	$(SRCDIR)/ai/clawt-model-catalog.h \
 	$(SRCDIR)/ai/clawt-agent-designer.h \
 	$(SRCDIR)/teach/clawt-teach-trace.h \
@@ -267,6 +268,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-grok.c \
 	$(SRCDIR)/core/daemon-config.c \
 	$(SRCDIR)/core/daemon-skill.c \
+	$(SRCDIR)/core/daemon-skill-proposal.c \
 	$(SRCDIR)/core/daemon-step.c \
 	$(SRCDIR)/core/daemon-ack.c \
 	$(SRCDIR)/core/clawt-event-bus.c \
@@ -397,6 +399,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/skill/clawt-skill-bundled.c \
 	$(SRCDIR)/policy/clawt-policy.c \
 	$(SRCDIR)/skill/clawt-skill-commands.c \
+	$(SRCDIR)/skill/clawt-skill-proposal.c \
 	$(SRCDIR)/ai/clawt-model-catalog.c \
 	$(SRCDIR)/ai/clawt-agent-designer.c \
 	$(SRCDIR)/teach/clawt-teach-trace.c \

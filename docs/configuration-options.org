@@ -1515,6 +1515,21 @@ events and would spend the whole budget on the mouse travelling,
 so every click and scroll carries the position it happened at
 instead.
 
+*** =skills.max_proposals_per_day=
+
+- Type :: integer
+- Default :: =3=
+- Since :: 0.18.0
+
+How many skills one agent may propose in any 24 hours.
+
+clawtilla_skill_propose lets an agent write down a technique it
+worked out -- a new skill, or a change to one that exists -- as a
+draft that reaches no prompt, with a decision in your inbox to
+approve, edit or reject it. Every proposal spends your attention, so
+this bounds how often one agent can ask for it; a rejected proposal
+still counts. 0 turns proposing off, and the tool is not offered.
+
 ** =rooms=
 
 Standing rooms, created at startup if they do not exist.

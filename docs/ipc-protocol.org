@@ -1307,6 +1307,44 @@ moment it is unescaped.
 
 ~skill.changed~ is published as an event.
 
+*** Skill proposals
+
+What agents proposed with ~clawtilla_skill_propose~.  Each proposal
+raises a decision whose id *is* the proposal's id (=skill-proposal-= and
+a UUID); a client recognises one with
+~clawt_skill_proposal_id_is_valid()~ rather than its own copy of the
+rule.
+
+~skill.proposals~ takes an optional ~pending~ (a JSON boolean, default
+true; false includes the ones settled in the last week) and returns
+~proposals~, oldest first, each with ~id~, ~decision~ (the same id),
+~agent~, ~name~, ~kind~ (~create~ or ~update~), ~state~ (~pending~,
+~approved~, ~edited~ or ~rejected~), ~reason~, ~description~, ~body~,
+~text~ (the whole proposed ~SKILL.md~), ~diff~ (an update's unified diff
+against the skill as it is *now*, else null), ~created_at~ and
+~settled_at~ (microseconds), ~stale~ (a JSON boolean: the file changed
+since the proposal, so approving is refused) and ~warnings~ (the scan's).
+Beside them, ~max_per_day~ and ~skills_enabled~ say why a list is empty.
+
+Every member an agent wrote -- ~reason~, ~description~, ~body~, ~text~,
+~diff~ -- has been through ~clawt_preamble_escape()~, so render it as
+text.  The raw text never crosses: the edit form is prefilled with the
+escaped form, so a forged ~[clawtilla]~ line cannot be saved back in
+without the person seeing it rewritten.
+
+~skill.proposal_resolve~ takes ~proposal~, ~action~ (~approve~, ~reject~
+or ~edit~), an optional ~note~ that is passed to the agent, and for
+~edit~ the new ~description~ and ~body~.  It answers the decision too
+(with ~approved~, ~edited~ or ~rejected~), publishes ~decision.settled~
+and ~skill.changed~, tells the agent, and returns ~proposal~.  Approve is
+refused -- and the proposal stays pending -- when the bytes on disk are
+not the ones that were reviewed.
+
+~decision.answer~ on a proposal's decision carries it out the same way:
+~approve~ approves, ~edit~ is refused (it needs text), and anything else
+is a rejection with the answer passed on as the note.  ~decision.dismiss~
+and ~decision.delete~ on an open one reject the draft.
+
 *** teach.*
 
 Recording a task, and turning the recording into a skill.

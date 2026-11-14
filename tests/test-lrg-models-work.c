@@ -825,6 +825,101 @@ test_decision_answer_typed_wins(void)
     g_assert_null(clawt_lrg_decision_answer("", NULL));
 }
 
+/* ── Skill proposals ──────────────────────────────────────────────── */
+
+#define PROPOSAL_ID "skill-proposal-0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
+
+static void
+test_proposal_title_and_find(void)
+{
+    g_autoptr(JsonNode) decision = parse(
+        "{\"id\":\"" PROPOSAL_ID "\",\"question\":\"kudu proposes a new "
+        "skill, 'release'.\\n\\nWhy:\\n```text\\nbecause\\n```\"}");
+    g_autoptr(JsonNode) one_line = parse("{\"question\":\"just this\"}");
+    g_autoptr(JsonNode) reply = parse(
+        "{\"proposals\":[{\"id\":\"" PROPOSAL_ID "\",\"name\":\"release\"}]}");
+    g_autofree gchar *title = clawt_lrg_proposal_title(object_of(decision));
+    g_autofree gchar *whole = clawt_lrg_proposal_title(object_of(one_line));
+    g_autofree gchar *none = clawt_lrg_proposal_title(object_of(reply));
+    JsonObject *found;
+
+    g_assert_cmpstr(title, ==, "kudu proposes a new skill, 'release'.");
+    g_assert_cmpstr(whole, ==, "just this");
+    g_assert_cmpstr(none, ==, "");
+
+    found = clawt_lrg_proposal_find(reply, PROPOSAL_ID);
+    g_assert_nonnull(found);
+    g_assert_cmpstr(clawt_ipc_payload_string(found, "name"), ==, "release");
+
+    /* a policy ask is never a proposal, whatever the list holds */
+    g_assert_null(clawt_lrg_proposal_find(reply, "policy-1"));
+    g_assert_null(clawt_lrg_proposal_find(NULL, PROPOSAL_ID));
+    g_assert_cmpuint(json_array_get_length(clawt_lrg_proposal_items(reply)),
+                     ==, 1);
+    g_assert_null(clawt_lrg_proposal_items(NULL));
+}
+
+static void
+test_proposal_shown_and_summary(void)
+{
+    g_autoptr(JsonNode) update = parse(
+        "{\"agent\":\"kudu\",\"kind\":\"update\",\"diff\":\"-a\\n+b\\n\","
+        "\"text\":\"whole\",\"created_at\":1000000000}");
+    g_autoptr(JsonNode) update_no_diff = parse(
+        "{\"kind\":\"update\",\"diff\":null,\"text\":\"whole\"}");
+    g_autoptr(JsonNode) create = parse(
+        "{\"agent\":\"kudu\",\"kind\":\"create\",\"text\":\"---\\nname: x\"}");
+    g_autofree gchar *summary = NULL;
+    g_autofree gchar *summary_bare = NULL;
+
+    g_assert_cmpstr(clawt_lrg_proposal_shown(object_of(update)), ==, "-a\n+b\n");
+    g_assert_cmpstr(clawt_lrg_proposal_shown(object_of(update_no_diff)), ==,
+                    "whole");
+    g_assert_cmpstr(clawt_lrg_proposal_shown(object_of(create)), ==,
+                    "---\nname: x");
+
+    /* created_at is microseconds: five minutes later is "5m ago" */
+    summary = clawt_lrg_proposal_summary(object_of(update),
+                                         1000000000 + 300 * G_USEC_PER_SEC);
+    g_assert_cmpstr(summary, ==,
+                    "kudu proposes a change to this skill \302\267 5m ago");
+    summary_bare = clawt_lrg_proposal_summary(object_of(create), 0);
+    g_assert_cmpstr(summary_bare, ==, "kudu proposes a new skill");
+}
+
+static void
+test_proposal_resolve_payload(void)
+{
+    g_autofree gchar *refusal = NULL;
+    g_autoptr(JsonNode) approve = clawt_lrg_proposal_resolve_payload(
+        PROPOSAL_ID, "approve", "", "ignored", "ignored", NULL);
+    g_autoptr(JsonNode) edit = clawt_lrg_proposal_resolve_payload(
+        PROPOSAL_ID, "edit", "tidied", "Use this when.", "Steps.", NULL);
+    JsonObject *object;
+
+    object = json_node_get_object(approve);
+    g_assert_cmpstr(json_object_get_string_member(object, "action"), ==,
+                    "approve");
+    g_assert_false(json_object_has_member(object, "note"));
+    g_assert_false(json_object_has_member(object, "body"));
+
+    object = json_node_get_object(edit);
+    g_assert_cmpstr(json_object_get_string_member(object, "proposal"), ==,
+                    PROPOSAL_ID);
+    g_assert_cmpstr(json_object_get_string_member(object, "note"), ==,
+                    "tidied");
+    g_assert_cmpstr(json_object_get_string_member(object, "body"), ==,
+                    "Steps.");
+
+    g_assert_null(clawt_lrg_proposal_resolve_payload(
+        PROPOSAL_ID, "edit", NULL, "Use this when.", "  ", &refusal));
+    g_assert_nonnull(refusal);
+    g_clear_pointer(&refusal, g_free);
+    g_assert_null(clawt_lrg_proposal_resolve_payload(
+        "policy-1", "approve", NULL, NULL, NULL, &refusal));
+    g_assert_nonnull(refusal);
+}
+
 /* ── Go to… ───────────────────────────────────────────────────────── */
 
 static void
@@ -933,6 +1028,12 @@ main(int argc, char *argv[])
                     test_decision_going_options_meta);
     g_test_add_func("/lrg-work/decision/answer",
                     test_decision_answer_typed_wins);
+    g_test_add_func("/lrg-work/proposal/title-find",
+                    test_proposal_title_and_find);
+    g_test_add_func("/lrg-work/proposal/shown-summary",
+                    test_proposal_shown_and_summary);
+    g_test_add_func("/lrg-work/proposal/resolve-payload",
+                    test_proposal_resolve_payload);
     g_test_add_func("/lrg-work/trigger/mode-cap-match",
                     test_trigger_payload_mode_cap_and_match);
     g_test_add_func("/lrg-work/trigger/match-report", test_match_report);

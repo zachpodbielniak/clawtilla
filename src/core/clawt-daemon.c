@@ -4877,6 +4877,7 @@ release_components(ClawtDaemon *self)
     g_clear_object(&self->vm_images);
     g_clear_object(&self->exchange);
     g_clear_object(&self->decisions);
+    g_clear_object(&self->skill_proposals);
     g_clear_object(&self->operator_profile);
 	g_clear_object(&self->ack_provider);
 	g_clear_object(&self->ack_provider_override);
@@ -6318,6 +6319,9 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
             g_warning("decisions: %s", decision_error->message);
     }
 
+    /* Beside the inbox the proposals' decisions are filed in. */
+    clawt_daemon_skill_proposals_open(self);
+
     {
         g_autofree gchar *transcript_db =
             g_build_filename(self->state_dir, "transcripts.db", NULL);
@@ -6624,6 +6628,9 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     clawt_mcp_tools_set_ask_decision_func(self->mcp_tools,
                                           file_decision_for_tools, self,
                                           NULL);
+    clawt_mcp_tools_set_skill_propose_func(self->mcp_tools,
+                                           clawt_daemon_skill_propose_for_tools,
+                                           self, NULL);
     clawt_mcp_tools_set_image_store(self->mcp_tools, self->vm_images);
 
     /*
@@ -9329,6 +9336,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_grok,
     clawt_daemon_handle_config,
     clawt_daemon_handle_skill,
+    clawt_daemon_handle_skill_proposal,
     clawt_daemon_handle_teach,
     clawt_daemon_handle_activity,
     clawt_daemon_handle_browser,

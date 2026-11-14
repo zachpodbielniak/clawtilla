@@ -184,7 +184,8 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 - *Proposal:* render a decision inline in its room in all three clients, as a second view of the same decision. Settling it either way settles both, which needs the publish-both-ends rule for =decision.asked=.
 - *Version:* minor (parity across GTK, web and lrg).
 
-** TODO Learned skills proposed from ordinary work                                                  :skills:
+** DONE Learned skills proposed from ordinary work (version assigned at merge)                         :skills:
+- *Done:* =clawtilla_skill_propose= (=src/skill/clawt-skill-proposal.c=, =src/core/daemon-skill-proposal.c=). A new skill goes through =clawt_skill_library_create_taught()= and lands disabled with origin =propose:<id>=; a change is staged under =<state_dir>/skill-proposals= and written only on approval (=clawt_skill_library_replace()=). A decision with the proposal's id carries the escaped, fenced text or a diff; approve / edit / reject from the card in GTK, web and lrg, =skill.proposal_resolve=, =decision.answer= or =clawtilla skill approve|reject=; dismissing rejects. Approval is refused when the draft or the live skill changed since it was proposed. =skills.max_proposals_per_day= (3; 0 withholds the tool). The Skills page lists pending proposals. Design in =docs/skills.org=, "Skills agents propose".
 - *Today:* =teach= records, drafts and commits a skill disabled for review (=docs/teach.org=). No path from an agent's ordinary turn.
 - *Prior art:* =6140532ea=, =server/skills.ts=. A bot proposes a create or update, and it lands behind an approval card.
 - *Proposal:* =clawtilla_skill_propose= writes a draft through teach's pipeline and raises a decision. This is the AGENTS.md shape "a technique an agent explains back to you belongs in the software", done by the agent.

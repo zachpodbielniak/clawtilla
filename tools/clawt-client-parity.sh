@@ -451,6 +451,17 @@ declare -A AFFORDANCES=(
     ["skills library"]="clawt_gtk_refresh_skills|clawt_web_skills_body|refresh_skills_library"
     ["skill provenance"]="Provenance|sha256|Provenance"
     ["skill scan warnings"]="Not copied|Not copied|Not copied"
+    #
+    # Skills agents propose (clawtilla_skill_propose).  The frames are
+    # layer 1's (skill.proposals, skill.proposal_resolve); these are the
+    # three things a person needs that no frame proves: the decision card
+    # recognising a proposal by the library's own rule, the card showing
+    # the proposed text (or the diff) with Approve / Reject / Edit, and
+    # the Skills page listing what is pending, who proposed it and why.
+    #
+    ["skill proposal decisions"]="clawt_skill_proposal_id_is_valid|clawt_skill_proposal_id_is_valid|clawt_skill_proposal_id_is_valid"
+    ["skill proposal review"]="clawt_gtk_proposal_review|web_proposal_review|lrg_proposal_review"
+    ["pending skill proposals"]="append_pending_proposals|web_pending_proposals|lrg_pending_proposals"
     ["fleet recall"]="recall_entry|recall-form|recall_entry"
     ["recall results"]="refresh_recall_once|recall-hit|recall-hit"
     ["operator profile"]="operator_view|operator-profile|operator-profile"

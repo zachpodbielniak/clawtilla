@@ -749,12 +749,16 @@ Each decision is a card: who asked and how long ago (=created_at= is seconds, co
 
 A policy ask is a decision like any other on the wire; the daemon writes the action and the matched action rule into the question, which is why the question is drawn whole rather than as a one-line title.
 
+A skill an agent proposed (~clawtilla_skill_propose~, [[file:skills.org][Skills]]) is a decision too, recognised by the library's own rule (=clawt_skill_proposal_id_is_valid()=) rather than a copy of it. Every refresh asks ~skill.proposals~ first and then ~decision.list~, so each proposal's card is drawn knowing its proposal (=lrg_proposal_review()=; the choices are in =clawt_lrg_proposal_*()= in =lrg-work-model.c=, tested by =tests/test-lrg-models-work.c=). Its heading is the question's first line only -- the one line the daemon builds from an agent id and a validated skill name -- and under it: "Why: <reason>", each scan warning, a caution when the file changed since it was proposed (Approve is then refused), and the diff (a change to an existing skill) or the whole proposed SKILL.md (a new one) as plain monospace text. Everything the agent wrote arrives escaped by the daemon and is never drawn as markdown. The options and the answer box are replaced by a "Why (optional, sent to the agent)" entry and Approve, Edit and Reject; Edit opens a form prefilled with the (escaped) description and body and sends the person's version with "Save and approve". "Does not need me" and Delete stay, and both reject the draft. When ~skill.proposals~ fails (skills switched off) the card falls back to the whole question, which the daemon wrote complete.
+
 | Control | Frame |
 |---|---|
 | listing | ~decision.list~ |
 | Choose / Answer / Enter | ~decision.answer~ |
 | Does not need me | ~decision.dismiss~ |
 | Delete | ~decision.delete~ |
+| skill proposals, before the listing | ~skill.proposals~ |
+| Approve / Reject / Edit's Save and approve | ~skill.proposal_resolve~ |
 
 ** Go to… (Ctrl+K)
 A command palette in an =LrgDialog=: a search entry, the results, and a footer of keys. Opened by Ctrl+K or the header menu's "Go to…"; pressing Ctrl+K while it is open does nothing.
@@ -848,6 +852,8 @@ A card listing ~teach.list~'s recordings: goal (or id), "source, agent, N step(s
 
 *** The library
 ~skill.list~'s problems as banners, then the skills as an =LrgTileView= grid -- name, a toned state badge ("Disabled · 1 warning"), the description's first line -- with the selected one opened underneath in full. Tiles are a fixed size, so the variable-length part lives in the open card: the "Not enabled" caution and every warning above the buttons (a warning below Enable gets enabled around), then "Not copied", "Provenance" (source and origin), the sha256 and the directory, then Enable / Disable (~skill.enable~, a JSON boolean) and Remove (~skill.remove~, confirmed). The open skill stays open across the refresh its own button causes. An empty library says which of the two reasons it is: skills switched off, or none in the directory.
+
+Between the recordings and the library, "Proposed by agents" (=lrg_pending_proposals()=, ~skill.proposals~): one row per pending proposal -- the skill's name, "<agent> proposes a new skill" or "proposes a change to this skill" with its age (=created_at= is microseconds here), a "changed since" badge when approving would be refused, and the agent's reason as "Why: ..." in plain text -- with Review, which opens Decisions, where the proposal is approved, edited or rejected. Hidden when nothing is pending.
 
 The toolbar: Rescan (~skill.reload~), Import (~skill.import~: a directory on the daemon's machine and where it came from; it arrives disabled), New skill (~skill.create~: name and "use this when ..." description). Any =skill.*= or =teach.*= event re-reads the page while it is showing.
 
