@@ -8,6 +8,7 @@
  */
 
 #include "clawtilla.h"
+#include "clawt-http.h"
 #include "integration/clawt-matrix.h"
 
 #include <json-glib/json-glib.h>
@@ -378,8 +379,8 @@ on_login_response(GObject *source, GAsyncResult *result, gpointer user_data)
     gsize size = 0;
     const gchar *data;
 
-    body = soup_session_send_and_read_finish(SOUP_SESSION(source), result,
-                                             &error);
+    body = clawt_http_send_and_read_finish(SOUP_SESSION(source), result,
+                                           &error);
 
     if (body == NULL) {
         g_task_return_error(task, g_steal_pointer(&error));
@@ -477,7 +478,8 @@ clawt_matrix_login_async(const gchar         *homeserver,
     payload = json_generator_to_data(generator, NULL);
 
     url = g_strconcat(base, "/_matrix/client/v3/login", NULL);
-    message = soup_message_new("POST", url);
+    message = clawt_http_message_new("POST", url,
+                                     CLAWT_HTTP_CARRIES_CREDENTIALS);
 
     if (message == NULL) {
         g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
@@ -611,8 +613,8 @@ on_room_state(GObject *source, GAsyncResult *result, gpointer user_data)
     gsize size = 0;
     const gchar *data;
 
-    body = soup_session_send_and_read_finish(SOUP_SESSION(source), result,
-                                             &error);
+    body = clawt_http_send_and_read_finish(SOUP_SESSION(source), result,
+                                           &error);
     listing->outstanding--;
 
     /*
@@ -674,7 +676,8 @@ fetch_room_state(Listing *listing, ClawtMatrixRoom *room,
 
     url = g_strdup_printf("%s/_matrix/client/v3/rooms/%s/state/%s",
                           listing->base, escaped, event);
-    message = soup_message_new("GET", url);
+    message = clawt_http_message_new("GET", url,
+                                     CLAWT_HTTP_CARRIES_CREDENTIALS);
 
     if (message == NULL)
         return;
@@ -709,8 +712,8 @@ on_joined_rooms(GObject *source, GAsyncResult *result, gpointer user_data)
     const gchar *data;
     guint i;
 
-    body = soup_session_send_and_read_finish(SOUP_SESSION(source), result,
-                                             &error);
+    body = clawt_http_send_and_read_finish(SOUP_SESSION(source), result,
+                                           &error);
 
     if (body == NULL) {
         g_task_return_error(task, g_steal_pointer(&error));
@@ -785,7 +788,8 @@ clawt_matrix_rooms_async(const gchar         *homeserver,
     }
 
     url = g_strconcat(base, "/_matrix/client/v3/joined_rooms", NULL);
-    message = soup_message_new("GET", url);
+    message = clawt_http_message_new("GET", url,
+                                     CLAWT_HTTP_CARRIES_CREDENTIALS);
 
     if (message == NULL) {
         g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,

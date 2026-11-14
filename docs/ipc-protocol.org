@@ -1012,13 +1012,23 @@ daemon works out: ~expression~ (what the schedule *means* as cron),
 client that had to turn "weekdays at 09:00" into an expression itself
 would be a second implementation of the schedule.
 
+From the start-failure guard (=routines.max_start_failures=): ~start_failures~,
+the runs in a row whose computer did not start, and -- only while the
+routine is off for that reason -- ~turned_off_after~ (how many turned it
+off) and ~turned_off_error~ (the computer's error).  Numbers and the raw
+error, not a sentence: each client words them with
+~clawt_routine_turned_off_note()~.  Turning it back on is ~routine.update~
+with =enabled: true=, which clears both.
+
 ~routine.add~ and ~routine.update~ take the schema's own keys and refuse
 a schedule that does not parse, so a bad expression is rejected while
 somebody is still looking at what they typed rather than at the next tick.
 ~routine.remove~ and ~routine.run~ take an ~id~; ~routine.run~ ignores
 both the schedule and ~enabled~ and returns the ~task~ it started.
 
-~routine.ran~ and ~routine.changed~ are published as events.
+~routine.ran~, ~routine.changed~ and ~routine.turned_off~ are published
+as events; the last carries ~agent~, ~failures~ and ~error~ and is an
+error in every client's alerts panel.
 
 *** trigger.*
 
@@ -1371,7 +1381,7 @@ Every kind published, by subject:
 | an agent's mailbox | ~mailbox.queued~, ~mailbox.delivered~ |
 | a team | ~team.changed~ |
 | an agent | ~decision.asked~, ~decision.settled~ (~decision~, ~how~: ~answered~, ~dismissed~, ~defaulted~ or ~deleted~), ~decision.deleted~ (~decision~) |
-| a routine | ~routine.ran~, ~routine.changed~ |
+| a routine | ~routine.ran~, ~routine.changed~, ~routine.turned_off~ (~agent~, ~failures~, ~error~) |
 | a trigger | ~trigger.fired~, ~trigger.changed~, ~trigger.refused~, ~trigger.verified~ |
 | a Grok job | ~grok.job_updated~ (~bot~, ~agent~, ~state~) |
 | a Grok bot | ~grok.bots_changed~ |

@@ -1699,6 +1699,19 @@ routines:
     # need to be later still.
     jitter_seconds: 0
 
+    # Turn the routine off after this many runs in a row whose computer
+    # did not start. 0 never turns it off.
+    #
+    # A dead VM or a missing image otherwise fails the routine on every
+    # tick, and nobody hears about it. At the limit the routine is turned
+    # off -- `enabled: false`, so it shows as off everywhere and is turned
+    # back on the same way -- and an alert names the routine and the
+    # computer's error. The count is run state, kept beside the config and
+    # never in it. Any run whose computer starts sets it back to zero, and
+    # so does editing the routine; a run that began before the edit is not
+    # counted. A negative value reads as the default.
+    max_start_failures: 3
+
     # Keep the agent from changing or removing this routine.
     #
     # An agent with tools.schedule may adjust the routines that run on it --

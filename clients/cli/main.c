@@ -7324,6 +7324,24 @@ cmd_routine(int argc, char *argv[])
             if (member_or(routine, "problem", NULL) != NULL)
                 g_printerr("  %s: %s\n", member_or(routine, "id", "?"),
                            member_or(routine, "problem", ""));
+
+            /*
+             * Off because its computer would not start, which "(off)"
+             * alone cannot tell apart from somebody switching it off --
+             * so why, in libclawt's words, and how to turn it back on.
+             */
+            if (json_object_has_member(routine, "turned_off_after")) {
+                g_autofree gchar *note = clawt_routine_turned_off_note(
+                    (guint)json_object_get_int_member(routine,
+                                                      "turned_off_after"),
+                    member_or(routine, "turned_off_error", NULL));
+
+                g_printerr("  %s: %s\n"
+                           "  turn it back on: clawtilla routine set %s "
+                           "enabled=true\n",
+                           member_or(routine, "id", "?"), note,
+                           member_or(routine, "id", "?"));
+            }
         }
 
         return EXIT_SUCCESS;

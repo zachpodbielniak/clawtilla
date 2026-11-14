@@ -4722,7 +4722,11 @@ tool_task_status(ClawtMcpTools *self, const gchar *agent_id,
 
     append_handoff_history(self, out, task_id);
 
-    return g_strdup(out->str);
+	/*
+	 * The reason, the progress note and the handoff receipts are agents'
+	 * words; none of this is a notice, so none of it may read as one.
+	 */
+    return clawt_preamble_escape(out->str);
 }
 
 static gchar *
@@ -4731,6 +4735,9 @@ tool_task_result(ClawtMcpTools *self, const gchar *agent_id,
 {
     const gchar *task_id = argument_string(arguments, "task_id");
     ClawtTask *task;
+	g_autofree gchar *note = NULL;
+	g_autofree gchar *result = NULL;
+	g_autofree gchar *reason = NULL;
 
     if (task_id == NULL) {
         *is_error = TRUE;
@@ -4755,15 +4762,23 @@ tool_task_result(ClawtMcpTools *self, const gchar *agent_id,
         }
     }
 
+	/*
+	 * What the assignee wrote, handed to somebody else.  Not after a
+	 * preamble, but a line in it that reads as the daemon is believed
+	 * here just the same, so it gets the escaping a delivery does.
+	 */
+	note = clawt_preamble_escape(clawt_task_get_progress_note(task));
+	result = clawt_preamble_escape(clawt_task_get_result(task));
+	reason = clawt_preamble_escape(clawt_task_get_reason(task));
+
     if (!clawt_task_is_finished(task)) {
-        if (clawt_task_get_progress_note(task) != NULL)
+        if (note != NULL)
             return g_strdup_printf(
                 "Task %s is still %s; there is no result yet. The latest "
                 "from %s is: %s", task_id,
                 clawt_enum_to_nick(CLAWT_TYPE_TASK_STATE,
                                    clawt_task_get_state(task)),
-                clawt_task_get_assignee(task),
-                clawt_task_get_progress_note(task));
+                clawt_task_get_assignee(task), note);
 
         return g_strdup_printf("Task %s is still %s; there is no result yet.",
                                task_id,
@@ -4771,23 +4786,21 @@ tool_task_result(ClawtMcpTools *self, const gchar *agent_id,
                                    clawt_task_get_state(task)));
     }
 
-    if (clawt_task_get_result(task) == NULL)
+    if (result == NULL)
         return g_strdup_printf("Task %s ended as %s with no result: %s",
                                task_id,
                                clawt_enum_to_nick(CLAWT_TYPE_TASK_STATE,
                                    clawt_task_get_state(task)),
-                               clawt_task_get_reason(task) != NULL
-                                   ? clawt_task_get_reason(task)
-                                   : "no reason given");
+                               reason != NULL ? reason : "no reason given");
 
     if (clawt_task_get_result_inferred(task))
         return g_strdup_printf(
             "%s\n\n(Nobody reported this task complete. That is the last "
             "thing %s wrote before its turn ended, and clawtilla recorded "
             "the task as finished on the strength of it.)",
-            clawt_task_get_result(task), clawt_task_get_assignee(task));
+            result, clawt_task_get_assignee(task));
 
-    return g_strdup(clawt_task_get_result(task));
+    return g_steal_pointer(&result);
 }
 
 /*

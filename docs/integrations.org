@@ -493,7 +493,7 @@ clawtilla integration test phone
 | =question= | on      | An agent said something to you and is waiting |
 | =error=    | on      | An agent stopped in a way nobody asked for |
 | =done=     | off     | A task finished |
-| =routine=  | off     | A scheduled run failed |
+| =routine=  | off     | A scheduled run failed, or a routine was turned off because its computer did not start (that one is sent as =error= too) |
 
 Blocked on you is worth a buzz.  Broken is worth a buzz.  Everything a
 fleet does while it works is not -- a notifier that fires on every turn

@@ -113,6 +113,20 @@ clawt_lrg_alerts_add_event(GPtrArray *alerts, ClawtEvent *event,
         return TRUE;
     }
 
+    /*
+     * A routine turned off because its computer would not start: worded
+     * by libclawt, as the GTK and web panels word it.
+     */
+    if (g_strcmp0(kind, "routine.turned_off") == 0) {
+        line = clawt_routine_turned_off_alert(
+            subject, (guint)clawt_event_get_detail_int(event, "failures"),
+            clawt_event_get_detail(event, "error"));
+        clawt_lrg_alerts_add(alerts, CLAWT_ALERT_ERROR, kind,
+                             clawt_event_get_detail(event, "agent"), line,
+                             now, showing);
+        return TRUE;
+    }
+
     tier = clawt_alert_tier_for_event(event);
 
     if (tier != CLAWT_ALERT_ROUTINE && tier != CLAWT_ALERT_NOTICE)

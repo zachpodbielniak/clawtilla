@@ -188,6 +188,295 @@ clawt_daemon_routine_for_tools(const gchar *verb, const gchar *id,
                                      g_strcmp0(verb, "add") == 0, error);
 }
 
+/* ── Runs whose computer did not start ───────────────────────────── */
+
+static void
+ensure_start_tables(
+	ClawtDaemon *self
+){
+	if (self->routine_starts == NULL)
+		self->routine_starts = g_hash_table_new_full(
+			g_str_hash, g_str_equal, g_free,
+			(GDestroyNotify)g_hash_table_unref);
+
+	if (self->routine_computer_down == NULL)
+		self->routine_computer_down = g_hash_table_new_full(
+			g_str_hash, g_str_equal, g_free, g_free);
+
+	if (self->routine_waking == NULL)
+		self->routine_waking = g_hash_table_new_full(
+			g_str_hash, g_str_equal, g_free, NULL);
+}
+
+void
+clawt_daemon_routine_start_watch(
+	ClawtDaemon *self,
+	const gchar *routine_id,
+	const gchar *agent_id,
+	gint64       run_at_us
+){
+	ClawtAgent *agent;
+	ClawtAgentState state;
+	GHashTable *pending;
+	gint64 *when;
+
+	g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+	if (routine_id == NULL || agent_id == NULL || self->routines == NULL)
+		return;
+
+	agent = clawt_agent_manager_get(self->agents, agent_id);
+
+	if (agent == NULL)
+		return;
+
+	/*
+	 * Already up is a computer that started.  Said now rather than
+	 * waited for: there is no start coming to settle it.
+	 */
+	state = clawt_agent_get_state(agent);
+
+	if (state == CLAWT_AGENT_STATE_RUNNING ||
+	    state == CLAWT_AGENT_STATE_DEGRADED) {
+		clawt_routine_runner_note_start(self->routines, routine_id,
+		                                run_at_us, NULL);
+		return;
+	}
+
+	ensure_start_tables(self);
+
+	/*
+	 * One entry per routine, holding its latest run.  Several runs
+	 * queued behind one start are one start, and counting each of them
+	 * would turn a routine off on the first refusal of a computer that
+	 * had been down for an afternoon.
+	 */
+	pending = g_hash_table_lookup(self->routine_starts, agent_id);
+
+	if (pending == NULL) {
+		pending = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+		                                g_free);
+		g_hash_table_insert(self->routine_starts, g_strdup(agent_id),
+		                    pending);
+	}
+
+	when = g_new(gint64, 1);
+	*when = run_at_us;
+	g_hash_table_replace(pending, g_strdup(routine_id), when);
+
+	/*
+	 * An agent whose computer refused to start sits in ERROR until
+	 * somebody starts it, so without this the run would wait in its
+	 * mailbox for good and the routine would report a run that never
+	 * happened, every tick.  Each run is another attempt -- which is
+	 * also what lets a computer that has been fixed come back on its
+	 * own.  In the background, because a VM can take minutes and this
+	 * is the scheduler's tick.
+	 *
+	 * Only that ERROR.  A stopped agent was stopped by somebody, and one
+	 * in ERROR for any other reason is not this guard's to restart; the
+	 * run waits for whoever starts it next, as it always has, and that
+	 * start settles it.
+	 */
+	if (state == CLAWT_AGENT_STATE_ERROR &&
+	    g_hash_table_contains(self->routine_computer_down, agent_id) &&
+	    !g_hash_table_contains(self->routine_waking, agent_id)) {
+		g_hash_table_add(self->routine_waking, g_strdup(agent_id));
+		clawt_daemon_start_agent_background(self, agent_id);
+	}
+}
+
+typedef struct {
+	ClawtDaemon *daemon;    /* ref */
+	gchar       *routine_id;
+	gchar       *agent_id;
+	guint        failures;
+	gchar       *error;
+} TurnOff;
+
+static void
+turn_off_free(
+	gpointer data
+){
+	TurnOff *job = data;
+
+	g_object_unref(job->daemon);
+	g_free(job->routine_id);
+	g_free(job->agent_id);
+	g_free(job->error);
+	g_free(job);
+}
+
+/*
+ * Turns the routine off and says so.
+ *
+ * Through clawt_daemon_routine_save(), the function every client's edit
+ * goes through, so the change is saved, reloaded, announced as
+ * `routine.changed` and visible as `enabled: false` everywhere -- and
+ * turned back on the same way.  A routine that was off by some private
+ * flag would read as on in every editor while never running, which is a
+ * wrong answer that looks like a working configuration.
+ *
+ * On an idle rather than where the failure was noticed: that is inside
+ * an agent start, and a save reloads the fleet, which reconciles the
+ * very agent whose start is still on the stack.
+ */
+static gboolean
+on_turn_off(
+	gpointer user_data
+){
+	TurnOff *job = user_data;
+	ClawtDaemon *self = job->daemon;
+	g_autoptr(JsonObject) payload = json_object_new();
+	g_autoptr(GError) error = NULL;
+	g_autoptr(ClawtEvent) event = NULL;
+	g_autofree gchar *alert = NULL;
+
+	json_object_set_string_member(payload, "id", job->routine_id);
+	json_object_set_boolean_member(payload, "enabled", FALSE);
+
+	if (!clawt_daemon_routine_save(self, job->routine_id, payload, FALSE,
+	                               &error)) {
+		g_warning("routine '%s' reached routines.max_start_failures but could "
+		          "not be turned off: %s", job->routine_id, error->message);
+		return G_SOURCE_REMOVE;
+	}
+
+	alert = clawt_routine_turned_off_alert(job->routine_id, job->failures,
+	                                       job->error);
+	/* A message, not a warning: it is reported, not a fault in the daemon. */
+	g_message("%s", alert);
+
+	/*
+	 * An alert, because it arrived on its own: nobody was looking at
+	 * the routine when its computer refused for the third time.
+	 */
+	event = clawt_event_new("routine.turned_off", job->routine_id);
+	clawt_event_set_detail(event, "agent", job->agent_id);
+	clawt_event_set_detail_int(event, "failures", (gint64)job->failures);
+
+	if (job->error != NULL)
+		clawt_event_set_detail(event, "error", job->error);
+
+	clawt_event_bus_publish(self->bus, event);
+
+	/*
+	 * And to a notifier, as an error as well as a routine event: the
+	 * default subscription is questions and errors, and a routine that
+	 * has stopped running is the second.
+	 */
+	if (self->notifier != NULL) {
+		ClawtAgentConfig *config = clawt_config_get_agent(self->config,
+		                                                  job->agent_id);
+		g_autoptr(ClawtNotification) notification = NULL;
+		g_autofree gchar *title = g_strdup_printf("routine %s turned off",
+		                                          job->routine_id);
+
+		notification = clawt_notification_new(
+			(ClawtNotifyEvents)(CLAWT_NOTIFY_EVENTS_ERROR |
+			                    CLAWT_NOTIFY_EVENTS_ROUTINE),
+			job->agent_id,
+			(config != NULL) ? clawt_agent_config_get_string(config, "name")
+			                 : NULL,
+			title, alert);
+		clawt_notifier_notify(self->notifier, notification);
+	}
+
+	return G_SOURCE_REMOVE;
+}
+
+void
+clawt_daemon_routine_starts_settle(
+	ClawtDaemon *self,
+	const gchar *agent_id,
+	const gchar *computer_error
+){
+	g_autoptr(GHashTable) pending = NULL;
+	g_autofree gchar *stolen_key = NULL;
+	GHashTableIter iter;
+	gpointer key;
+	gpointer value;
+
+	g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+	if (agent_id == NULL)
+		return;
+
+	ensure_start_tables(self);
+	g_hash_table_remove(self->routine_waking, agent_id);
+
+	/* Remembered for every agent, so the first routine run can act on it. */
+	if (computer_error != NULL)
+		g_hash_table_replace(self->routine_computer_down, g_strdup(agent_id),
+		                     g_strdup(computer_error));
+	else
+		g_hash_table_remove(self->routine_computer_down, agent_id);
+
+	/*
+	 * Taken out before it is walked: a note can turn a routine off, and
+	 * nothing here may be reached again for this agent while the table
+	 * is being read.
+	 */
+	if (!g_hash_table_steal_extended(self->routine_starts, agent_id,
+	                                 (gpointer *)&stolen_key,
+	                                 (gpointer *)&pending))
+		return;
+
+	if (self->routines == NULL)
+		return;
+
+	g_hash_table_iter_init(&iter, pending);
+
+	while (g_hash_table_iter_next(&iter, &key, &value)) {
+		const gchar *routine_id = key;
+		TurnOff *job;
+		GSource *source;
+		guint failures = 0;
+
+		if (!clawt_routine_runner_note_start(self->routines, routine_id,
+		                                     *(gint64 *)value,
+		                                     computer_error))
+			continue;
+
+		clawt_routine_runner_get_turned_off(self->routines, routine_id,
+		                                    &failures, NULL);
+
+		job = g_new0(TurnOff, 1);
+		job->daemon = g_object_ref(self);
+		job->routine_id = g_strdup(routine_id);
+		job->agent_id = g_strdup(agent_id);
+		job->failures = failures;
+		job->error = g_strdup(computer_error);
+
+		source = g_idle_source_new();
+		g_source_set_callback(source, on_turn_off, job, turn_off_free);
+		g_source_attach(source, self->main_context);
+		g_source_unref(source);
+	}
+}
+
+void
+clawt_daemon_routine_wake_done(
+	ClawtDaemon *self,
+	const gchar *agent_id
+){
+	g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+	if (self->routine_waking != NULL && agent_id != NULL)
+		g_hash_table_remove(self->routine_waking, agent_id);
+}
+
+void
+clawt_daemon_routine_starts_teardown(
+	ClawtDaemon *self
+){
+	g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+	g_clear_pointer(&self->routine_starts, g_hash_table_unref);
+	g_clear_pointer(&self->routine_computer_down, g_hash_table_unref);
+	g_clear_pointer(&self->routine_waking, g_hash_table_unref);
+}
+
 JsonNode *
 clawt_daemon_handle_routine(
     ClawtDaemon  *self,
@@ -315,6 +604,36 @@ clawt_daemon_handle_routine(
             if (detail != NULL) {
                 json_builder_set_member_name(builder, "last_detail");
                 json_builder_add_string_value(builder, detail);
+            }
+
+            /*
+             * The start-failure guard: the count so far, and -- while the
+             * routine is off for it -- how many failures and which error
+             * turned it off.  Numbers and the raw error rather than a
+             * sentence, so each client words it with
+             * clawt_routine_turned_off_note() and none of them parses it.
+             */
+            if (self->routines != NULL) {
+                guint off_after = 0;
+                const gchar *off_error = NULL;
+
+                json_builder_set_member_name(builder, "start_failures");
+                json_builder_add_int_value(
+                    builder, (gint64)clawt_routine_runner_get_start_failures(
+                        self->routines, id));
+
+                if (clawt_routine_runner_get_turned_off(self->routines, id,
+                                                        &off_after,
+                                                        &off_error)) {
+                    json_builder_set_member_name(builder, "turned_off_after");
+                    json_builder_add_int_value(builder, (gint64)off_after);
+
+                    if (off_error != NULL) {
+                        json_builder_set_member_name(builder,
+                                                     "turned_off_error");
+                        json_builder_add_string_value(builder, off_error);
+                    }
+                }
             }
 
             json_builder_end_object(builder);

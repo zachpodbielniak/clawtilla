@@ -454,12 +454,19 @@ on_repeat_threshold(ClawtRepeatWatch *watch,
 {
     ClawtDaemon *self = user_data;
     g_autofree gchar *message = NULL;
+	g_autofree gchar *quoted = NULL;
     gboolean last = count >= clawt_repeat_watch_get_highest_threshold(watch);
+
+	/*
+	 * The call is the agent's own text, inside a note the daemon
+	 * signs; a room's catch-up quotes the note to every member.
+	 */
+	quoted = clawt_preamble_escape(key);
 
     message = g_strdup_printf(
         "[clawtilla] '%s' has made the same call %u times in this turn: %s\n"
         "%s",
-        agent_id, count, key,
+        agent_id, count, quoted != NULL ? quoted : "",
         last
             ? "That is the last threshold, so the turn has been stopped."
             : "Nothing has been stopped; clawtilla cannot steer a turn that "
@@ -532,6 +539,14 @@ on_guard_stalled(ClawtLoopGuard *guard,
                                   detail, 120) - detail), detail)
             : g_strdup(detail);
     }
+
+	/* What was going round is the agents' text, quoted in a note. */
+	if (clipped != NULL) {
+		gchar *quoted = clawt_preamble_escape(clipped);
+
+		g_free(clipped);
+		clipped = quoted;
+	}
 
     message = g_strdup_printf(
         "[clawtilla] The exchange in %s has been ended: %s kept sending the "

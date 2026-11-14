@@ -218,6 +218,7 @@ run_one(ClawtDaemon *self, ClawtHandoff *handoff)
     ClawtAgent *taker;
     ClawtTask *task;
     g_autofree gchar *body = NULL;
+	gboolean sent = FALSE;
     g_autoptr(GError) error = NULL;
 
     /*
@@ -343,23 +344,42 @@ run_one(ClawtDaemon *self, ClawtHandoff *handoff)
      */
     {
         g_autofree gchar *guidance = clawt_task_assignment_guidance(task_id);
+		g_autofree gchar *reason = NULL;
+		g_autofree gchar *prompt = NULL;
+
+		/*
+		 * The reason and the task's prompt are agents' words inside
+		 * the daemon's own notice, and the notice goes out under the
+		 * giver's name, so the router would escape it whole -- the
+		 * genuine opening line with it.  So the quoted parts are
+		 * escaped here and the message is marked composed below.
+		 */
+		reason = clawt_preamble_escape(clawt_handoff_get_reason(handoff));
+		prompt = clawt_preamble_escape(clawt_task_get_prompt(task));
 
         body = g_strdup_printf(
             "[clawtilla] %s has handed you task %s. It is yours now -- "
             "they are no longer working on it.\n\nWhy you: %s\n\n"
             "What the task is:\n%s%s",
             from, task_id,
-            clawt_handoff_get_reason(handoff) != NULL
-                ? clawt_handoff_get_reason(handoff) : "not said",
-            clawt_task_get_prompt(task) != NULL
-                ? clawt_task_get_prompt(task) : "(nothing recorded)",
+            reason != NULL ? reason : "not said",
+            prompt != NULL ? prompt : "(nothing recorded)",
             guidance);
     }
 
-    if (self->router == NULL ||
-        clawt_mailbox_router_send_to(self->router, from, to, body, task_id,
-                                     clawt_handoff_get_depth(handoff),
-                                     &error) < 0) {
+	/* The same refusals clawt_mailbox_router_send_to() made, kept. */
+	if (self->router != NULL && from != NULL && to != NULL) {
+		g_autoptr(ClawtMessage) message = NULL;
+
+		message = clawt_message_new(to, from, body);
+		clawt_message_set_task_id(message, task_id);
+		clawt_message_set_depth(message, clawt_handoff_get_depth(handoff));
+		clawt_message_set_priority(message, CLAWT_PRIORITY_NORMAL);
+		clawt_message_set_composed(message, TRUE);
+		sent = clawt_mailbox_router_send(self->router, message, &error) >= 0;
+	}
+
+    if (!sent) {
         g_autofree gchar *verdict = g_strdup_printf(
             "Handing task %s to %s failed: %s", task_id, to,
             error != NULL ? error->message
@@ -383,11 +403,13 @@ run_one(ClawtDaemon *self, ClawtHandoff *handoff)
     clawt_task_transfer_owner(task, to);
 
     {
+		/* The giver's reason, quoted in a note a room's catch-up shows. */
+		g_autofree gchar *reason =
+			clawt_preamble_escape(clawt_handoff_get_reason(handoff));
         g_autofree gchar *verdict = g_strdup_printf(
             "Task %s now belongs to %s, handed over by %s: %s",
             task_id, to, from != NULL ? from : "somebody",
-            clawt_handoff_get_reason(handoff) != NULL
-                ? clawt_handoff_get_reason(handoff) : "no reason given");
+            reason != NULL ? reason : "no reason given");
 
         settle(self, handoff, CLAWT_HANDOFF_DONE, verdict);
     }

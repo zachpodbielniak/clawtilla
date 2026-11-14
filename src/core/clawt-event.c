@@ -278,6 +278,16 @@ clawt_alert_tier_for_event(ClawtEvent *event)
         return CLAWT_ALERT_ERROR;
 
     /*
+     * A routine turned off because its computer would not start.  An
+     * error: scheduled work has stopped, and it stays stopped until a
+     * person fixes the computer and turns the routine back on --
+     * nothing else will mention it, since a disabled routine is silent
+     * by design.
+     */
+    if (g_strcmp0(kind, "routine.turned_off") == 0)
+        return CLAWT_ALERT_ERROR;
+
+    /*
      * A repeated tool call is a warning about a turn that is still
      * running.  Nothing has been stopped, so it is not an error; but it
      * arrived on its own while nobody was looking at that agent, which
