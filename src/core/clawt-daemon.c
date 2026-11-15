@@ -5291,6 +5291,8 @@ release_components(ClawtDaemon *self)
 	g_clear_object(&self->review_provider_override);
 	g_clear_pointer(&self->review_provider_spec, g_free);
 	g_clear_pointer(&self->review_running, g_free);
+	g_clear_pointer(&self->review_errors, g_hash_table_unref);
+	g_clear_pointer(&self->app_call_command, g_strfreev);
     g_clear_object(&self->summariser);
     g_clear_object(&self->transcripts);
     g_clear_object(&self->log);

@@ -146,6 +146,14 @@ struct _ClawtDaemon {
 	gchar      *review_provider_spec;
 	AiProvider *review_provider_override;
 	gchar      *review_running;
+
+	/*
+	 * An MCP app's own calls (connector.app_call, daemon-connector.c):
+	 * a test's stand-in for the relay's command line, and the limit (0
+	 * for CLAWT_MCP_APP_CALL_TIMEOUT_SECONDS).
+	 */
+	GStrv       app_call_command;
+	guint       app_call_timeout_seconds;
 	GHashTable *review_errors;
 	GSource    *review_tick;
 	guint       review_timeout_ms;

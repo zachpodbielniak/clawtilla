@@ -73,14 +73,16 @@ clawt_mcp_app_tool_resource(JsonObject *tool)
 	return g_strdup(uri);
 }
 
-gboolean
-clawt_mcp_app_tool_model_visible(JsonObject *tool)
+/*
+ * Whether `_meta.ui.visibility` names @who.  Absent means both, which is
+ * the extension's default; present, it is the whole list.
+ */
+static gboolean
+tool_visible_to(JsonObject *tool, const gchar *who)
 {
 	JsonObject *ui;
 	JsonArray *visibility;
 	guint i;
-
-	g_return_val_if_fail(tool != NULL, TRUE);
 
 	ui = ui_meta(tool);
 
@@ -91,14 +93,31 @@ clawt_mcp_app_tool_model_visible(JsonObject *tool)
 	visibility = json_object_get_array_member(ui, "visibility");
 
 	for (i = 0; i < json_array_get_length(visibility); i++) {
-		JsonNode *who = json_array_get_element(visibility, i);
+		JsonNode *entry = json_array_get_element(visibility, i);
 
-		if (JSON_NODE_HOLDS_VALUE(who) &&
-		    g_strcmp0(json_node_get_string(who), "model") == 0)
+		if (JSON_NODE_HOLDS_VALUE(entry) &&
+		    json_node_get_value_type(entry) == G_TYPE_STRING &&
+		    g_strcmp0(json_node_get_string(entry), who) == 0)
 			return TRUE;
 	}
 
 	return FALSE;
+}
+
+gboolean
+clawt_mcp_app_tool_model_visible(JsonObject *tool)
+{
+	g_return_val_if_fail(tool != NULL, TRUE);
+
+	return tool_visible_to(tool, "model");
+}
+
+gboolean
+clawt_mcp_app_tool_app_visible(JsonObject *tool)
+{
+	g_return_val_if_fail(tool != NULL, FALSE);
+
+	return tool_visible_to(tool, "app");
 }
 
 /* ── The policy and the document ─────────────────────────────────── */
@@ -658,6 +677,14 @@ struct _ClawtMcpApps {
 	/* our own read's id -> AppWait */
 	GHashTable           *waits;
 	guint                 next_read;
+
+	/*
+	 * Set when the caller is an app's view, not the agent: tools the
+	 * server lets its apps call, seen in tools/list -- the only ones a
+	 * call may name.
+	 */
+	gboolean              app_caller;
+	GHashTable           *app_visible;
 };
 
 ClawtMcpApps *
@@ -679,8 +706,20 @@ clawt_mcp_apps_new(
 	                                    app_view_free);
 	self->waits = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
 	                                    app_wait_free);
+	self->app_visible = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+	                                          NULL);
 
 	return self;
+}
+
+void
+clawt_mcp_apps_set_app_caller(
+	ClawtMcpApps *self,
+	gboolean      app_caller
+){
+	g_return_if_fail(self != NULL);
+
+	self->app_caller = app_caller;
 }
 
 void
@@ -695,6 +734,7 @@ clawt_mcp_apps_free(ClawtMcpApps *self)
 	g_hash_table_unref(self->calls);
 	g_hash_table_unref(self->views);
 	g_hash_table_unref(self->waits);
+	g_hash_table_unref(self->app_visible);
 	g_free(self);
 }
 
@@ -854,9 +894,30 @@ clawt_mcp_apps_outbound(
 		JsonObject *tool;
 
 		/*
+		 * An app's own call: only a tool the server listed as visible
+		 * to apps, and nothing else about it -- no view is read for a
+		 * call the view itself made.  A tool not seen in tools/list is
+		 * refused like one hidden from apps: the relay cannot vouch for
+		 * what it was not shown.
+		 */
+		if (self->app_caller) {
+			if (name == NULL ||
+			    !g_hash_table_contains(self->app_visible, name)) {
+				if (json_object_has_member(message, "id"))
+					*to_client = refusal(message, "This tool is not one "
+					                              "the server lets its "
+					                              "apps call.");
+				return;
+			}
+
+			*to_server = g_strdup(line);
+			return;
+		}
+
+		/*
 		 * Taken out of the list and refused when called: a wall with
-		 * no door.  The view's own calls would come from the view, and
-		 * there is no way for a view here to make one.
+		 * no door.  An app's own calls come through a relay started
+		 * for them (clawt_mcp_apps_set_app_caller()), never this one.
 		 */
 		if (name != NULL && g_hash_table_contains(self->app_only, name)) {
 			if (json_object_has_member(message, "id"))
@@ -930,6 +991,17 @@ note_tools(ClawtMcpApps *self, JsonObject *result)
 		if (uri != NULL)
 			g_hash_table_replace(self->tools, g_strdup(name),
 			                     json_object_ref(tool));
+
+		/* For an app's caller the list is the app's, whole. */
+		if (self->app_caller) {
+			if (clawt_mcp_app_tool_app_visible(tool))
+				g_hash_table_add(self->app_visible, g_strdup(name));
+			else
+				g_hash_table_remove(self->app_visible, name);
+
+			json_array_add_element(kept, json_node_copy(element));
+			continue;
+		}
 
 		if (!clawt_mcp_app_tool_model_visible(tool)) {
 			g_hash_table_add(self->app_only, g_strdup(name));

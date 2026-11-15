@@ -124,6 +124,7 @@
 #include "mcp/clawt-mcp-directory.h"
 #include "mcp/clawt-mcp-result.h"
 #include "mcp/clawt-mcp-app.h"
+#include "mcp/clawt-mcp-app-call.h"
 #include "mcp/clawt-mcp-relay.h"
 #include "mcp/clawt-mcp-socket.h"
 #include "mcp/clawt-mcp-tools.h"

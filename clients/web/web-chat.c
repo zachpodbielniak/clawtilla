@@ -2810,6 +2810,74 @@ on_app_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
     return clawt_web_html_response(html);
 }
 
+/*
+ * An app's own tools/call, forwarded by the page's bridge.  The body is
+ * the view's message as it posted it; the answer is the JSON-RPC
+ * response the bridge posts back.  Always 200 with JSON: a refusal is a
+ * JSON-RPC error the view can read, not a page.
+ */
+static HtmxResponse *
+on_app_call(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+    g_autofree gchar *app_id = clawt_web_param(params, "app");
+    g_autofree gchar *tool = NULL;
+    g_autofree gchar *refusal = NULL;
+    g_autofree gchar *answer = NULL;
+    g_autoptr(JsonNode) arguments = NULL;
+    g_autoptr(JsonNode) id = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GError) error = NULL;
+    HtmxResponse *response;
+
+    if (!clawt_web_app_bridge_parse(htmx_request_get_body(request), &tool,
+                                    &arguments, &id, &refusal)) {
+        answer = g_steal_pointer(&refusal);
+    } else {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        JsonObject *root;
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "agent");
+        json_builder_add_string_value(builder, agent_id);
+        json_builder_set_member_name(builder, "app");
+        json_builder_add_string_value(builder, app_id);
+        json_builder_set_member_name(builder, "tool");
+        json_builder_add_string_value(builder, tool);
+
+        if (arguments != NULL) {
+            json_builder_set_member_name(builder, "arguments");
+            json_builder_add_value(builder, json_node_copy(arguments));
+        }
+
+        json_builder_end_object(builder);
+
+        /*
+         * Longer than the daemon's own limit on the call, so the
+         * daemon's sentence arrives rather than this client's timeout.
+         */
+        reply = clawt_web_app_request_timeout(app, "connector.app_call",
+            json_builder_get_root(builder),
+            CLAWT_MCP_APP_CALL_TIMEOUT_SECONDS + 30, &error);
+        root = clawt_web_root(reply);
+
+        if (root != NULL && json_object_has_member(root, "result") &&
+            JSON_NODE_HOLDS_OBJECT(json_object_get_member(root, "result")))
+            answer = clawt_web_app_bridge_response(id,
+                json_object_get_object_member(root, "result"), NULL);
+        else
+            answer = clawt_web_app_bridge_response(id, NULL,
+                error != NULL ? error->message : "the daemon did not answer");
+    }
+
+    response = htmx_response_new_with_content(answer);
+    htmx_response_set_content_type(response, "application/json");
+    htmx_response_add_header(response, "Cache-Control", "no-store");
+
+    return response;
+}
+
 /* The web app manifest; see clawt_web_manifest_json(). */
 static HtmxResponse *
 on_manifest(HtmxRequest *request, GHashTable *params, gpointer user_data)
@@ -2840,6 +2908,7 @@ clawt_web_register_chat(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_get(router, "/a/:id/exchange", on_exchange_page, app);
     htmx_router_get(router, "/f/a/:id/exchange", on_exchange_fragment, app);
     htmx_router_get(router, "/a/:id/app/:app/frame", on_app_frame, app);
+    htmx_router_post(router, "/a/:id/app/:app/call", on_app_call, app);
     htmx_router_get(router, "/a/:id/app/:app", on_app_page, app);
     htmx_router_get(router, CLAWT_WEB_MANIFEST_PATH, on_manifest, app);
 }

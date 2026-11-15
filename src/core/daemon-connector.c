@@ -520,6 +520,263 @@ agent_connector(ClawtDaemon *self, const gchar *agent_id, const gchar *name)
     return NULL;
 }
 
+/* ── An app calling its own server's tools ───────────────────────── */
+
+/* One app call waiting on its relay. */
+typedef struct {
+    ClawtDaemon     *daemon;     /* owned */
+    ClawtIpcPending *pending;    /* answered exactly once */
+    gchar           *agent_id;
+    gchar           *app_id;
+    gchar           *connector;
+    gchar           *title;
+    gchar           *tool;
+    gchar           *room;
+} AppCallJob;
+
+static void
+app_call_job_free(AppCallJob *job)
+{
+    g_clear_object(&job->daemon);
+    g_free(job->agent_id);
+    g_free(job->app_id);
+    g_free(job->connector);
+    g_free(job->title);
+    g_free(job->tool);
+    g_free(job->room);
+    g_free(job);
+}
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(AppCallJob, app_call_job_free)
+
+/*
+ * Puts the call in the conversation the app is in, as the app's and not
+ * the model's, whether it ran or not.  Recorded, never delivered: the
+ * agent did not make this call and has nothing to answer.
+ */
+static void
+note_app_call(AppCallJob *job, const gchar *failure)
+{
+    ClawtDaemon *self = job->daemon;
+    g_autofree gchar *body = NULL;
+    g_autoptr(ClawtMessage) note = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtRoom *room = NULL;
+
+    if (self->bus != NULL) {
+        g_autoptr(ClawtEvent) event = clawt_event_new("connector.app_called",
+                                                      job->agent_id);
+
+        clawt_event_set_detail(event, "app", job->app_id);
+        clawt_event_set_detail(event, "connector", job->connector);
+        clawt_event_set_detail(event, "tool", job->tool);
+        clawt_event_set_detail(event, "ok", failure == NULL ? "true"
+                                                            : "false");
+        clawt_event_bus_publish(self->bus, event);
+    }
+
+    if (self->router == NULL || self->rooms == NULL)
+        return;
+
+    if (job->room != NULL)
+        room = clawt_room_manager_get(self->rooms, job->room);
+    if (room == NULL)
+        room = clawt_room_manager_get_direct(self->rooms, "user",
+                                             job->agent_id);
+    if (room == NULL)
+        return;
+
+    body = clawt_mcp_app_call_note(job->connector, job->title, job->tool,
+                                   failure);
+    note = clawt_message_new(clawt_room_get_id(room), CLAWT_SYSTEM_SENDER,
+                             body);
+    clawt_message_set_invites_reply(note, FALSE);
+
+    if (!clawt_mailbox_router_record(self->router, note, &error))
+        g_warning("%s: an app's call was not recorded: %s", job->agent_id,
+                  error != NULL ? error->message : "unknown");
+}
+
+static void
+on_app_called(GObject *source, GAsyncResult *result, gpointer data)
+{
+    g_autoptr(AppCallJob) job = data;
+    g_autoptr(JsonObject) answer = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    JsonNode *request = clawt_ipc_pending_get_request(job->pending);
+
+    (void)source;
+
+    answer = clawt_mcp_app_call_finish(result, &error);
+
+    if (answer == NULL) {
+        g_message("%s: an app's call of %s did not run: %s", job->agent_id,
+                  job->tool, error->message);
+        note_app_call(job, error->message);
+        clawt_ipc_pending_respond(job->pending,
+            clawt_ipc_error_new(request, error->code, error->message));
+        return;
+    }
+
+    /*
+     * A result that says isError -- the tool ran and failed, or the
+     * relay's gate refused it -- is still the app's answer, and the
+     * transcript says which.
+     */
+    {
+        gboolean failed = json_object_get_boolean_member_with_default(
+            answer, "isError", FALSE);
+
+        note_app_call(job, failed ? "the server or an action rule said no"
+                                  : NULL);
+    }
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "result");
+    {
+        JsonNode *node = json_node_new(JSON_NODE_OBJECT);
+
+        json_node_set_object(node, answer);
+        json_builder_add_value(builder, node);
+    }
+    json_builder_end_object(builder);
+
+    clawt_ipc_pending_respond(job->pending,
+        clawt_ipc_response_new(request, json_builder_get_root(builder)));
+}
+
+/*
+ * connector.app_call: an app's view asks to call a tool on the server
+ * that shipped it.  Through a relay started for the purpose with
+ * `--app-call` -- the same credential, granted tool list and action
+ * rules (approvals included, naming the inner tool) as the agent's own
+ * calls, and only tools the server lists as visible to apps.
+ */
+static JsonNode *
+app_call(ClawtDaemon *self, JsonNode *request, JsonObject *payload)
+{
+    const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+    const gchar *app_id = clawt_ipc_payload_string(payload, "app");
+    const gchar *tool = clawt_ipc_payload_string(payload, "tool");
+    JsonNode *arguments = (payload != NULL &&
+                           json_object_has_member(payload, "arguments"))
+        ? json_object_get_member(payload, "arguments") : NULL;
+    ClawtAgentConfig *agent;
+    g_autoptr(JsonObject) record = NULL;
+    g_autoptr(ClawtIntegrationBinding) binding = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *dir = NULL;
+    g_auto(GStrv) argv = NULL;
+    const gchar *connector;
+    AppCallJob *job;
+
+    agent = (agent_id != NULL) ? clawt_config_get_agent(self->config, agent_id)
+                               : NULL;
+
+    if (agent == NULL)
+        return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                   "no such agent");
+
+    if (!clawt_mcp_app_id_is_valid(app_id))
+        return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                   "that is not an app id");
+
+    if (tool == NULL || *tool == '\0')
+        return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                   "an app's call names a tool");
+
+    /* An app is looked up under its own agent and nowhere else. */
+    dir = clawt_mcp_app_store_dir(self->config, agent_id);
+    record = clawt_mcp_app_load(dir, app_id, &error);
+
+    if (record == NULL)
+        return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                   error->message);
+
+    connector = json_object_get_string_member_with_default(record,
+                                                           "connector", NULL);
+    binding = agent_connector(self, agent_id, connector);
+
+    if (binding == NULL)
+        return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                   "that agent no longer holds the "
+                                   "connector this app came from");
+
+    /* The person's switch, asked now: turned off since, the app is mute. */
+    if (!clawt_integration_binding_get_boolean(binding, "show_apps"))
+        return clawt_ipc_error_new(request, CLAWT_ERROR_PERMISSION_DENIED,
+                                   "this connector does not show its apps "
+                                   "in chat, so its apps cannot call it");
+
+    /*
+     * A confined agent's relay runs inside its box, under its network
+     * rule.  The daemon will not start a second one outside it on an
+     * app's behalf -- that would be the connector run unconfined for
+     * an agent somebody chose to confine.
+     */
+    if (clawt_agent_confine_wanted(agent))
+        return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
+                                   "this agent is confined (runtime.confine: "
+                                   "bwrap), and an app's call would run its "
+                                   "connector outside the box; ask the agent "
+                                   "to make the call instead");
+
+    if (arguments != NULL && !JSON_NODE_HOLDS_OBJECT(arguments) &&
+        !JSON_NODE_HOLDS_NULL(arguments))
+        return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                   "an app's call takes an arguments object");
+
+    if (arguments != NULL && JSON_NODE_HOLDS_OBJECT(arguments)) {
+        g_autofree gchar *text = json_to_string(arguments, FALSE);
+
+        if (strlen(text) > CLAWT_MCP_APP_CALL_MAX_ARGUMENTS)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "an app's arguments are larger than "
+                                       "a call may carry");
+    } else {
+        arguments = NULL;
+    }
+
+    if (self->app_call_command != NULL) {
+        argv = g_strdupv(self->app_call_command);
+    } else {
+        g_autofree gchar *socket =
+            clawt_config_get_path_value(self->config, "daemon.socket");
+
+        argv = clawt_workspace_connector_relay_argv(self->config, connector,
+                                                    agent_id, socket, TRUE);
+    }
+
+    job = g_new0(AppCallJob, 1);
+    job->pending = clawt_ipc_server_defer(self->ipc_server, request);
+
+    if (job->pending == NULL) {
+        g_free(job);
+        return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                   "this request cannot be answered later");
+    }
+
+    job->daemon = g_object_ref(self);
+    job->agent_id = g_strdup(agent_id);
+    job->app_id = g_strdup(app_id);
+    job->connector = g_strdup(connector);
+    job->title = g_strdup(json_object_get_string_member_with_default(
+        record, "title", NULL));
+    job->tool = g_strdup(tool);
+    job->room = g_strdup(json_object_get_string_member_with_default(
+        record, "room", NULL));
+
+    /* Under the daemon's context, where the call's sources attach. */
+    g_main_context_push_thread_default(self->main_context);
+    clawt_mcp_app_call_async((const gchar * const *)argv, tool, arguments,
+                             self->app_call_timeout_seconds, NULL,
+                             on_app_called, job);
+    g_main_context_pop_thread_default(self->main_context);
+
+    return NULL;
+}
+
 /*
  * How big a connector's server is, as a relay last saw it, and whether
  * an agent whose CLI does not search tools itself gets it as a
@@ -1428,6 +1685,9 @@ clawt_daemon_handle_connector(
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
+
+    if (g_strcmp0(kind, "connector.app_call") == 0)
+        return app_call(self, request, payload);
 
     if (g_strcmp0(kind, "connector.app_get") == 0) {
         const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");

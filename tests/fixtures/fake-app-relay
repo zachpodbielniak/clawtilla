@@ -1,0 +1,63 @@
+#!/bin/bash
+# fake-app-relay - stands in for `clawtilla connector relay --app-call`
+# in tests/test-mcp-app-call.c
+#
+# Copyright (C) 2026
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# The test is about what the daemon's MCP client sends and what it does
+# with the answers, so this answers the three requests it makes and
+# writes down every method it was sent, one per line, to the file named
+# by its first argument.  Its tools: `draw` (no visibility, so both),
+# `save_view` (apps only) and `secret` (the model only).  Calling
+# `boom` answers with a JSON-RPC error, `slow` waits before answering,
+# and a second argument of `die` ends before answering anything.
+#
+#   $1  the file every received method is appended to
+#   $2  optional: `die`
+
+log="${1:?the log file is the first argument}"
+mode="${2:-}"
+
+: > "${log}"
+
+if [[ "${mode}" == "die" ]]
+then
+    exit 3
+fi
+
+while IFS= read -r line
+do
+    method="$(printf '%s' "${line}" | sed -n 's/.*"method":"\([^"]*\)".*/\1/p')"
+    id="$(printf '%s' "${line}" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')"
+
+    printf '%s\n' "${method}" >> "${log}"
+
+    case "${method}" in
+        initialize)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}}}}\n' "${id}"
+            ;;
+        tools/list)
+            printf '{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"listing"}}\n'
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"draw"},{"name":"save_view","_meta":{"ui":{"visibility":["app"]}}},{"name":"secret","_meta":{"ui":{"visibility":["model"]}}},{"name":"boom"},{"name":"slow"}]}}\n' "${id}"
+            ;;
+        tools/call)
+            name="$(printf '%s' "${line}" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p')"
+            printf '%s\n' "call:${name}" >> "${log}"
+
+            if [[ "${name}" == "boom" ]]
+            then
+                printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"the server fell over"}}\n' "${id}"
+            else
+                if [[ "${name}" == "slow" ]]
+                then
+                    sleep 5
+                fi
+
+                printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"called %s"}]}}\n' "${id}" "${name}"
+            fi
+            ;;
+        *)
+            ;;
+    esac
+done

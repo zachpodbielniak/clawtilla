@@ -96,6 +96,7 @@ declare -A GTK_MAY_LACK=(
     ["agent.file_read"]="same capability, different mechanism: /edit opens the file in \$EDITOR there, which is the better answer when the client and the daemon share a machine"
     ["agent.file_write"]="the other half of the same; \$EDITOR writes the file directly"
     ["browser.list"]="the Browser view's line comes from browser.frame's reply here; the web client reads browser.list for it because its picture is a separate request, and two frames per poll would be two screenshots"
+    ["connector.app_call"]="an MCP app's own tools/call comes from its view, and only the web client can draw a view; GTK's Open ... in the browser link opens the web client's page of the same app, where the call is made (docs/connectors.org, \"Apps in chat\")"
 )
 
 #
@@ -344,6 +345,11 @@ declare -A AFFORDANCES=(
     #
     ["show apps in chat"]="build_apps_switch|clawt_web_apps_form|apps_toggle"
     ["MCP app in chat"]="app_link_button|clawt_web_app_frame|app_link"
+    # An app calling its own server's tools (connector.app_call): the
+    # web client's bridge makes the call; GTK and lrg reach it through the
+    # same link to the web client's page of the app (layer 1's exception
+    # map says so for the frame kind).
+    ["MCP app calls its own tools"]="app_link_button|data-app-call|app_link"
     #
     # A group room drawn beside the agents, and the two things you can
     # only do to one from a client.
@@ -1038,6 +1044,7 @@ declare -A LRG_MAY_LACK=(
     ["agent.file_read"]="same capability as GTK's, same mechanism: the file opens in \$EDITOR, which is the better answer when the client and the daemon share a machine"
     ["agent.file_write"]="the other half of the same; \$EDITOR writes the file directly"
     ["browser.list"]="the Browser view's line comes from browser.frame's reply here, as in GTK; the web client reads browser.list because its picture is a separate request"
+    ["connector.app_call"]="as in GTK: an app's own call comes from its view, which only the web client draws; lrg links to the web client's page of the app, where the call is made"
 )
 
 #

@@ -1973,10 +1973,16 @@ open_document(HtmxBuilder *builder, const gchar *title,
      * app frames on this page -- its source is that frame's window, the
      * one check an opaque origin leaves, since it cannot be named.  The
      * view is answered `ui/initialize`, handed the tool's input and
-     * result once it says it is ready, and resized when it asks; every
-     * other request -- calling tools, opening links, sending messages --
-     * is refused, because nothing here lets a view act for anybody.
-     * On `window`, which exists in the head; `document.body` does not.
+     * result once it says it is ready, and resized when it asks.  A
+     * `tools/call` is forwarded, as the view sent it, to this app's own
+     * route (`data-app-call`), where the web client reads it
+     * (clawt_web_app_bridge_parse()) and the daemon runs it through the
+     * agent's relay and rules; the JSON-RPC answer comes back whole and
+     * is posted into the view.  The fetch is same-origin, made by this
+     * page and never by the view, whose origin is opaque.  Every other
+     * request -- opening links, writing into the conversation -- is
+     * refused.  On `window`, which exists in the head; `document.body`
+     * does not.
      */
     htmx_builder_begin(builder, "script");
     htmx_builder_raw_html(builder,
@@ -2008,6 +2014,16 @@ open_document(HtmxBuilder *builder, const gchar *title,
         "var h=m.params&&m.params.height;if(typeof h==='number'){"
         "f.style.height=Math.max(120,Math.min(1600,Math.round(h)))+'px';}"
         "return;}"
+        "if(m.method==='tools/call'&&m.id!==undefined){"
+        "var u=f.closest('.app-frame').getAttribute('data-app-call');"
+        "if(!u){post(f,{jsonrpc:'2.0',id:m.id,error:{code:-32601,"
+        "message:'this app cannot call its server here'}});return;}"
+        "fetch(u,{method:'POST',credentials:'same-origin',"
+        "headers:{'Content-Type':'application/json'},body:JSON.stringify(m)})"
+        ".then(function(r){return r.json();})"
+        ".then(function(a){if(a&&a.jsonrpc==='2.0'){post(f,a);}})"
+        ".catch(function(){post(f,{jsonrpc:'2.0',id:m.id,error:{code:-32603,"
+        "message:'the call did not reach clawtilla'}});});return;}"
         "if(m.id!==undefined&&typeof m.method==='string'){"
         "post(f,{jsonrpc:'2.0',id:m.id,error:{code:-32601,"
         "message:'not supported by clawtilla'}});}"
@@ -2846,6 +2862,22 @@ clawt_web_app_frame(JsonObject *app)
     {
         g_autofree gchar *input = member_json(app, "input");
         g_autofree gchar *result = member_json(app, "result");
+        const gchar *agent_id = json_object_get_string_member_with_default(
+            app, "agent", NULL);
+        const gchar *app_id = json_object_get_string_member_with_default(
+            app, "id", NULL);
+
+        /*
+         * Where the bridge sends the view's own tools/call: this app's
+         * route, built only from an id of the shape the daemon makes.
+         */
+        if (agent_id != NULL && clawt_mcp_app_id_is_valid(app_id)) {
+            g_autofree gchar *path = clawt_mcp_app_web_path(agent_id, app_id);
+            g_autofree gchar *call = g_strconcat(path, "/call", NULL);
+
+            htmx_element_set_attribute(HTMX_ELEMENT(box), "data-app-call",
+                                       call);
+        }
 
         if (input != NULL)
             htmx_element_set_attribute(HTMX_ELEMENT(box), "data-app-input",
@@ -2913,6 +2945,167 @@ clawt_web_app_frame(JsonObject *app)
     }
 
     return HTMX_ELEMENT(g_steal_pointer(&box));
+}
+
+/* A JSON-RPC error answer, with @id when the message had one. */
+static gchar *
+bridge_error(JsonNode *id, gint code, const gchar *message)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autoptr(JsonNode) root = NULL;
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "jsonrpc");
+    json_builder_add_string_value(builder, "2.0");
+    json_builder_set_member_name(builder, "id");
+    if (id != NULL)
+        json_builder_add_value(builder, json_node_copy(id));
+    else
+        json_builder_add_null_value(builder);
+    json_builder_set_member_name(builder, "error");
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "code");
+    json_builder_add_int_value(builder, code);
+    json_builder_set_member_name(builder, "message");
+    json_builder_add_string_value(builder, message);
+    json_builder_end_object(builder);
+    json_builder_end_object(builder);
+
+    root = json_builder_get_root(builder);
+
+    return json_to_string(root, FALSE);
+}
+
+gboolean
+clawt_web_app_bridge_parse(const gchar  *body,
+                           gchar       **tool,
+                           JsonNode    **arguments,
+                           JsonNode    **id,
+                           gchar       **refusal)
+{
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autoptr(JsonNode) the_id = NULL;
+    JsonObject *message;
+    JsonObject *params;
+    JsonNode *root;
+    JsonNode *args;
+    const gchar *method;
+    const gchar *name;
+
+    *tool = NULL;
+    *arguments = NULL;
+    *id = NULL;
+    *refusal = NULL;
+
+    if (body == NULL || !json_parser_load_from_data(parser, body, -1, NULL) ||
+        (root = json_parser_get_root(parser)) == NULL ||
+        !JSON_NODE_HOLDS_OBJECT(root) ||
+        (message = json_node_get_object(root)) == NULL) {
+        *refusal = bridge_error(NULL, -32700, "not a JSON-RPC message");
+        return FALSE;
+    }
+
+    if (json_object_has_member(message, "id") &&
+        JSON_NODE_HOLDS_VALUE(json_object_get_member(message, "id")))
+        the_id = json_node_copy(json_object_get_member(message, "id"));
+
+    method = json_object_get_string_member_with_default(message, "method",
+                                                        "");
+
+    /*
+     * The two the extension defines and clawtilla decided against, named
+     * so the view can say why: nothing in a view writes into a
+     * conversation, and nothing in it sends the person to an address of
+     * its choosing -- the frame has no popups for the same reason.
+     */
+    if (g_strcmp0(method, "ui/message") == 0) {
+        *refusal = bridge_error(the_id, -32601, "clawtilla does not let an "
+                                "app write into the conversation");
+        return FALSE;
+    }
+
+    if (g_strcmp0(method, "ui/open-link") == 0) {
+        *refusal = bridge_error(the_id, -32601, "clawtilla does not open "
+                                "links for an app; show the address so the "
+                                "person can copy it");
+        return FALSE;
+    }
+
+    if (g_strcmp0(method, "tools/call") != 0) {
+        *refusal = bridge_error(the_id, -32601, "not supported by clawtilla");
+        return FALSE;
+    }
+
+    if (the_id == NULL) {
+        *refusal = bridge_error(NULL, -32600, "a call needs an id to be "
+                                "answered");
+        return FALSE;
+    }
+
+    params = (json_object_has_member(message, "params") &&
+              JSON_NODE_HOLDS_OBJECT(json_object_get_member(message,
+                                                            "params")))
+        ? json_object_get_object_member(message, "params") : NULL;
+    name = (params != NULL)
+        ? json_object_get_string_member_with_default(params, "name", NULL)
+        : NULL;
+
+    if (name == NULL || *name == '\0') {
+        *refusal = bridge_error(the_id, -32602, "a call names a tool");
+        return FALSE;
+    }
+
+    args = json_object_has_member(params, "arguments")
+        ? json_object_get_member(params, "arguments") : NULL;
+
+    if (args != NULL && !JSON_NODE_HOLDS_OBJECT(args) &&
+        !JSON_NODE_HOLDS_NULL(args)) {
+        *refusal = bridge_error(the_id, -32602, "a call's arguments are an "
+                                "object");
+        return FALSE;
+    }
+
+    *tool = g_strdup(name);
+    *arguments = (args != NULL && JSON_NODE_HOLDS_OBJECT(args))
+        ? json_node_copy(args) : NULL;
+    *id = g_steal_pointer(&the_id);
+
+    return TRUE;
+}
+
+gchar *
+clawt_web_app_bridge_response(JsonNode    *id,
+                              JsonObject  *result,
+                              const gchar *error)
+{
+    g_autoptr(JsonBuilder) builder = NULL;
+    g_autoptr(JsonNode) root = NULL;
+
+    if (result == NULL)
+        return bridge_error(id, -32603, error != NULL ? error
+                                                      : "the call failed");
+
+    builder = json_builder_new();
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "jsonrpc");
+    json_builder_add_string_value(builder, "2.0");
+    json_builder_set_member_name(builder, "id");
+    if (id != NULL)
+        json_builder_add_value(builder, json_node_copy(id));
+    else
+        json_builder_add_null_value(builder);
+    json_builder_set_member_name(builder, "result");
+    {
+        JsonNode *node = json_node_new(JSON_NODE_OBJECT);
+
+        json_node_set_object(node, result);
+        json_builder_add_value(builder, node);
+    }
+    json_builder_end_object(builder);
+
+    root = json_builder_get_root(builder);
+
+    return json_to_string(root, FALSE);
 }
 
 HtmxElement *

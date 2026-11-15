@@ -190,9 +190,11 @@ A small host bridge in the page head speaks the MCP Apps protocol to the frame o
 | ~ui/initialize~                  | answers with the protocol version, ~hostInfo: clawtilla~, no capabilities, and the light or dark theme |
 | ~ui/notifications/initialized~   | sends ~ui/notifications/tool-input~ and ~ui/notifications/tool-result~ |
 | ~ui/notifications/size-changed~  | resizes the frame, between 120 and 1600 pixels                    |
+| ~tools/call~ with an id          | ~POST~s the message, from the page, to the frame's ~data-app-call~ route and posts the JSON-RPC answer back |
+| ~ui/message~, ~ui/open-link~     | a JSON-RPC error saying clawtilla does not do that (from the route) |
 | anything else that has an id     | a JSON-RPC error, -32601 "not supported by clawtilla"              |
 
-So a view shows what its tool returned and cannot call tools, send a message or open a link through clawtilla.
+~data-app-call~ is =/a/<agent>/app/<app>/call=, set only for an app id of the daemon's shape.  The route (=on_app_call()= in =web-chat.c=, registered with the chat routes) reads the message with =clawt_web_app_bridge_parse()=, asks ~connector.app_call~ with a limit longer than the daemon's own (so the daemon's sentence arrives rather than a timeout), and always answers 200 with one JSON-RPC response (=clawt_web_app_bridge_response()=) carrying the view's own id.  The same-origin check every write passes applies: the fetch is the page's, not the frame's.  So a view can call its own server's tools that it is allowed to -- see [[file:connectors.org::*A view calling its own server's tools][connectors.org]] -- and cannot write into the conversation or open a link.
 
 =/a/<agent>/app/<app>= is the same frame on a page of its own, in the ordinary page shell: what GTK and lrg open, since they cannot draw it.
 
@@ -285,7 +287,7 @@ answers with the page it did it on.
 | =/triggers/...=, =/f/triggers/:trigger/match= | the Triggers page's actions, and the fragment a trigger's "Check against the last delivery" swaps in under its condition lines |
 | =/r/:id=                      | a group room; also the open-room link, which redirects an agent or a direct room to its chat and answers a name nobody has with 404 and a sentence (see [[file:clients.org::#open-room-links][open-room links]]) |
 | =/a/:id/exchange=, =/f/a/:id/exchange= | the exchange between two agents (~?with=<peer>~), as a page and as the side panel's fragment; registered with the chat routes, ahead of =/a/:id/:view= |
-| =/a/:id/app/:app=, =/a/:id/app/:app/frame= | an MCP app shown in chat: its own page (what GTK and lrg link to) and the fragment the chat's *Open app* swaps in; registered with the chat routes, ahead of =/a/:id/:view= |
+| =/a/:id/app/:app=, =/a/:id/app/:app/frame=, =/a/:id/app/:app/call= | an MCP app shown in chat: its own page (what GTK and lrg link to), the fragment the chat's *Open app* swaps in, and its view's own ~tools/call~ (~POST~, JSON in and out); registered with the chat routes, ahead of =/a/:id/:view= |
 | =/manifest.webmanifest=       | the web app manifest, ~application/manifest+json~ |
 | =/events=                     | the SSE stream                          |
 | =/static=                     | the vendored scripts and the app icons  |

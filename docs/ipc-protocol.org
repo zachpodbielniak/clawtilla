@@ -1287,7 +1287,7 @@ itself -- never the credential); ~connector.begin~ and ~connector.await~;
 ~connector.key~; ~connector.refresh~; ~connector.revoke~;
 ~connector.registry_refresh~; ~connector.settings~;
 ~connector.tools_seen~; ~connector.result_trimmed~; ~connector.app~;
-~connector.app_get~.  Adding and removing a connector go through
+~connector.app_get~; ~connector.app_call~.  Adding and removing a connector go through
 ~integration.add~ and ~integration.remove~ like any other integration,
 and its ~directory~, ~max_result_bytes~ and ~show_apps~ are set with
 ~integration.update~ (an integer field takes a JSON number or a string
@@ -1370,6 +1370,7 @@ arrives from a file somebody edits by hand.
 | ~tool~    | the tool as the agent called it |
 | ~class~   | optional action class, when the caller knows better than the native table (the relays send ~external~ and ~desktop_input~) |
 | ~summary~ | the call, for a person asked to approve it |
+| ~origin~  | optional; ~app~ for a call an MCP app's view made (the app-call relay sends it): judged by the same rules, never marked as the agent's turn reaching outward |
 
 Reply: ~allowed~ (boolean) and, when refused, ~reason~. ~allow~ and ~deny~ answer at once; ~ask~, ~review~ and ~hand_back~ are deferred (see [[*Some replies arrive later][Some replies arrive later]]) until a person, a model or the inbox has answered -- up to ~policy.ask_timeout_seconds~. See [[file:security.org][security.org]], "Action policy".
 
@@ -1762,6 +1763,22 @@ under the agent named and nowhere else; an id that is not there is
 ~CLAWT_ERROR_NOT_FOUND~ whatever the reason.  The web client sets
 ~document~ verbatim; GTK and lrg ask it before opening ~url~, so a swept
 app is a toast rather than a browser on a missing page.
+
+*** connector.app_call
+
+Takes ~agent~, ~app~, ~tool~ (the server's own name) and optionally
+~arguments~ (an object, at most 256 KiB as JSON) and runs that tool for
+the app's view through =clawtilla connector relay <name> --agent <id>
+--app-call= (see [[file:connectors.org::*A view calling its own server's tools][connectors.org]]).  Deferred; the reply is ~result~, the
+~tools/call~ result object, which may itself say ~isError~ (the tool
+failed, or an action rule refused it).  Refused with
+~CLAWT_ERROR_NOT_FOUND~ for an app or connector that is not this agent's,
+~CLAWT_ERROR_PERMISSION_DENIED~ when *Show its apps in chat* is off or
+the tool is not visible to apps, ~CLAWT_ERROR_NOT_SUPPORTED~ for a
+confined agent, and ~CLAWT_ERROR_TIMEOUT~ past ten minutes.  Every call
+is recorded in the app's room as the app's (=clawt_mcp_app_call_note()=)
+and published as ~connector.app_called~ (subject the agent; ~app~,
+~connector~, ~tool~, ~ok~).
 
 A ~turn.step~ event and a ~room.steps~ element may carry ~app_id~,
 ~app_url~ and ~app_title~ (=CLAWT_STEP_MEMBER_APP=, =_APP_URL=,

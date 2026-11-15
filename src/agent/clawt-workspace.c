@@ -1297,17 +1297,21 @@ build_integration_server(ClawtIntegrationBinding  *binding,
  * the workspace was last rendered, which for an hour-long access token
  * is almost never the one that works.
  */
-static JsonObject *
-build_connector_server(ClawtConfig             *config,
-                       ClawtIntegrationBinding *binding,
-                       const gchar             *daemon_socket)
+GStrv
+clawt_workspace_connector_relay_argv(ClawtConfig *config,
+                                     const gchar *connector,
+                                     const gchar *agent_id,
+                                     const gchar *daemon_socket,
+                                     gboolean     app_call)
 {
-    JsonObject *entry = json_object_new();
-    g_autofree gchar *cli = sibling_binary_path("clawtilla");
-    JsonArray *args = json_array_new();
-    const gchar *config_path = clawt_config_get_path(config);
+    GPtrArray *argv = g_ptr_array_new_with_free_func(g_free);
+    const gchar *config_path;
 
-    json_object_set_string_member(entry, "command", cli);
+    g_return_val_if_fail(CLAWT_IS_CONFIG(config), NULL);
+    g_return_val_if_fail(connector != NULL, NULL);
+
+    config_path = clawt_config_get_path(config);
+    g_ptr_array_add(argv, sibling_binary_path("clawtilla"));
 
     /*
      * Both global options go before the verb.  The CLI splits its own
@@ -1316,25 +1320,51 @@ build_connector_server(ClawtConfig             *config,
      * which has never heard of it.
      */
     if (config_path != NULL) {
-        json_array_add_string_element(args, "--config");
-        json_array_add_string_element(args, config_path);
+        g_ptr_array_add(argv, g_strdup("--config"));
+        g_ptr_array_add(argv, g_strdup(config_path));
     }
 
     if (daemon_socket != NULL) {
-        json_array_add_string_element(args, "--socket");
-        json_array_add_string_element(args, daemon_socket);
+        g_ptr_array_add(argv, g_strdup("--socket"));
+        g_ptr_array_add(argv, g_strdup(daemon_socket));
     }
 
-    json_array_add_string_element(args, "connector");
-    json_array_add_string_element(args, "relay");
-    json_array_add_string_element(args,
-                                  clawt_integration_binding_get_name(binding));
+    g_ptr_array_add(argv, g_strdup("connector"));
+    g_ptr_array_add(argv, g_strdup("relay"));
+    g_ptr_array_add(argv, g_strdup(connector));
 
     /* So the relay can ask the agent's action rules about each call. */
-    if (clawt_integration_binding_get_agent_id(binding) != NULL) {
-        json_array_add_string_element(args, "--agent");
-        json_array_add_string_element(args, clawt_integration_binding_get_agent_id(binding));
+    if (agent_id != NULL) {
+        g_ptr_array_add(argv, g_strdup("--agent"));
+        g_ptr_array_add(argv, g_strdup(agent_id));
     }
+
+    if (app_call)
+        g_ptr_array_add(argv, g_strdup("--app-call"));
+
+    g_ptr_array_add(argv, NULL);
+
+    return (GStrv)g_ptr_array_free(argv, FALSE);
+}
+
+static JsonObject *
+build_connector_server(ClawtConfig             *config,
+                       ClawtIntegrationBinding *binding,
+                       const gchar             *daemon_socket)
+{
+    JsonObject *entry = json_object_new();
+    JsonArray *args = json_array_new();
+    g_auto(GStrv) argv = clawt_workspace_connector_relay_argv(
+        config, clawt_integration_binding_get_name(binding),
+        clawt_integration_binding_get_agent_id(binding), daemon_socket,
+        FALSE);
+    guint i;
+
+    /* One spelling of the relay's command line, shared with app calls. */
+    json_object_set_string_member(entry, "command", argv[0]);
+
+    for (i = 1; argv[i] != NULL; i++)
+        json_array_add_string_element(args, argv[i]);
 
     json_object_set_array_member(entry, "args", args);
 
