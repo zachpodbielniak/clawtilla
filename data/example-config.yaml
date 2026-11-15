@@ -2009,8 +2009,8 @@ broker:
   # What to do when a broker container stops without being asked to.
   #
   # never leaves it stopped and says so; on-failure and always both
-  # start it again, since podman's listing does not say how a container
-  # ended. Five restarts within ten minutes stop the retries, so a
+  # start it again, since the container module's inspect does not say
+  # how a container ended. Five restarts within ten minutes stop the retries, so a
   # gateway that cannot start is reported rather than restarted for
   # ever.
   # Values: never, on-failure, always

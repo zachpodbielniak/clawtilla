@@ -646,4 +646,72 @@ gchar *clawt_broker_logs_finish(ClawtBroker   *self,
                                 GAsyncResult  *result,
                                 GError       **error);
 
+/**
+ * clawt_broker_read_logs:
+ * @bridge: the #ClawtPodBridge whose `container` module reads them
+ * @connection: (nullable): the podman connection, as `broker.connection`
+ * @names: (array zero-terminated=1): the containers, in order
+ * @tail: (nullable): lines from the end of each: a count or `all`;
+ *   %NULL for a hundred
+ * @error: (out) (optional): why the container module could not be loaded
+ *
+ * What clawt_broker_logs_async() runs on its worker, blocking: each
+ * container's log under a `== name ==` heading.  A container whose
+ * standard output and standard error both have lines gets each under a
+ * `-- stdout --` / `-- stderr --` subheading, because podman keeps them
+ * as two streams and the order between them is not kept; one with a
+ * single stream's lines gets them bare.  A container podman cannot read
+ * says why in its section and the rest are still read.
+ *
+ * Returns: (transfer full) (nullable): the text, with anything shaped
+ *   like a credential redacted, or %NULL when the module cannot be loaded
+ */
+gchar *clawt_broker_read_logs(ClawtPodBridge      *bridge,
+                              const gchar         *connection,
+                              const gchar * const *names,
+                              const gchar         *tail,
+                              GError             **error);
+
+/**
+ * clawt_broker_container_is_up:
+ * @status: (nullable): a podman container state, as the `container`
+ *   module's inspect gives it in `status`
+ *
+ * Whether a container in @status still counts as up for the watch:
+ * `running`, and the transient `paused` and `stopping` (the gateway's
+ * health check decides about those).  `exited`, `stopped`, `created`,
+ * `configured`, `initialized`, `dead` and `removing` are down.
+ *
+ * Returns: %TRUE when @status is up
+ */
+gboolean clawt_broker_container_is_up(const gchar *status);
+
+/**
+ * clawt_broker_find_stopped:
+ * @bridge: the #ClawtPodBridge whose `container` module asks
+ * @connection: (nullable): the podman connection, as `broker.connection`
+ * @ids: (array zero-terminated=1): each container's podman id, in order;
+ *   an empty one is a container that was never made
+ * @names: (array zero-terminated=1): each container's name, in the same
+ *   order as @ids
+ * @stopped: (out) (transfer full) (nullable): the first container that
+ *   is down, gone or was never made, or %NULL when every one is up
+ * @error: (out) (optional): why podman's answer could not be had
+ *
+ * What the watch asks podman, blocking: each container's inspect state,
+ * through clawt_broker_container_is_up().  An inspect that fails is told
+ * apart by asking for the container list: when podman answers that, the
+ * container is gone; when it does not, podman did not answer, which is
+ * not the gateway stopping.  An empty state -- podomation before 1.0.2,
+ * or podman's own `unknown` -- is "did not say" too.
+ *
+ * Returns: %FALSE when podman did not answer, with @error set
+ */
+gboolean clawt_broker_find_stopped(ClawtPodBridge      *bridge,
+                                   const gchar         *connection,
+                                   const gchar * const *ids,
+                                   const gchar * const *names,
+                                   gchar              **stopped,
+                                   GError             **error);
+
 G_END_DECLS
