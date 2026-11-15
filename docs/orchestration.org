@@ -2788,11 +2788,126 @@ correction runs --- that is the feature.  Pressing stop is how somebody
 says "not that, this", and dropping the "this" would leave them having
 only cancelled.
 
-Only a person steers.  A message from one agent to another is ordinary
-traffic and goes to the mailbox, which is durable and ordered precisely
-so a busy recipient is not a special case; and a message to an agent that
-is *not* working goes to the mailbox too, because nothing settles a turn
-that never started.
+A message from one agent to another goes to the mailbox, which is durable
+and ordered precisely so a busy recipient is not a special case; and a
+message to an agent that is *not* working goes to the mailbox too, because
+nothing settles a turn that never started.  Whether a delivery from the
+mailbox then *steers* -- reaches the running turn itself rather than
+waiting for the next one -- is the agent's ~agents.steer~, below.  Under
+~all~ your own message in your conversation with the agent is not held
+either: it goes straight into the running turn, and ~msg.send~'s reply
+says ~steering~.
+
+*** Steering a delivery into a running turn
+
+Without steering, a message for an agent whose turn is running waits in
+libreclaw's queue and becomes its next turn.  A delegator's correction
+("stop, use the staging DB") then arrives after the work it was meant to
+change, and a peer's follow-up costs a whole extra turn that rereads
+everything.  With libreclaw 0.30.0 and an engine that can take input
+(Claude Code, claude-tmux, codex on libreclaw's ~ai.codex.transport:
+app-server~), the router can ask the agent to hand a delivery to the
+running turn instead: ~chat.message_in~ carries ~steer: true~ and the
+mailbox item's id, and the agent answers ~chat.steered~.  Nothing is
+killed or restarted; the words reach the turn at its next step.
+
+**** Which deliveries steer: ~agents.steer~
+
+| Level         | Steers                                                                                                     |
+|---------------+------------------------------------------------------------------------------------------------------------|
+| ~never~       | nothing                                                                                                    |
+| ~delegator~   | (the default) a message from whoever handed out the work the running turn is on: the agent the turn is answering, or the delegator of its task |
+| ~peers~       | as delegator, and any other agent's message in the same room                                               |
+| ~all~         | as peers, and your own message in your conversation with the agent                                         |
+
+The rules no level lifts (~clawt_steer_decide()~, one pure function the
+clients also read their explanations from):
+
+- *Never into another room's turn.*  Only a turn running in the
+  delivery's own room is steered.  libreclaw checks it again: under the
+  ~agent~ routing mode one session serves every room, and a steer for
+  another room's turn is refused.
+- *Never in a group room.*  A group room's answer continues one thread of
+  one round, read off the delivery that started the turn; a steered part
+  from another thread would be answered under the wrong one, and the
+  once-per-thread rule would count a turn that never ran.  Group rooms
+  keep rounds and threads exactly as they are.
+- *Never a held result, never the daemon's notice.*  Results for a busy
+  room are held and merged into one wake when the turn ends ("Results
+  wait for the turn they would interrupt"); steering them one by one
+  would be the interruptions that exists to prevent, and a settle notice
+  read mid-turn is read before the work it reports could be checked.
+- *Never a delivery asking for a model of its own or naming another
+  task.*  A turn has one model, and a turn that ended two tasks would mark
+  one of them done with an answer that was never about it.
+- *The consultation line.*  A consultation question never steers into a
+  turn that can act -- it would run with every tool -- and an ordinary
+  message never steers into a consultation, which would run it with none.
+  Into a consultation only the consulting agent may steer, asking again;
+  the turn stays a consultation.
+- *Only an agent that said it answers.*  libreclaw lists ~"steer"~ in its
+  hello's ~features~; an older agent is never asked, because it would take
+  the message as an ordinary turn and never answer.
+
+**** The turn state a steered message carries
+
+A steered message starts no turn, so its ~TurnSetup~ cannot wait to be
+taken by one.  Delivered with a steer request, it is parked
+(~clawt_agent_await_steer()~) and ~clawt_agent_begin_turn()~ passes over
+it.  ~chat.steered~ then decides:
+
+- ~delivered~ or ~indeterminate~ (which counts as delivered -- the words
+  may already be running): ~clawt_agent_settle_steer()~ takes it out of the
+  waiting list and folds it into the running turn's record for that room,
+  in the safe direction, as ~clawt_agent_deliver_merged()~ does before a
+  turn: the deepest depth, replies if either may be answered, a peer's
+  origin over the operator's or nobody's, a consultation if either is, and
+  the task kept only when they agree (a steer naming none keeps the
+  turn's).  The turn's input -- the delivery whose round and thread its
+  answer continues -- stays the running turn's.  Left queued instead, the
+  next real turn would pop it and inherit its ~replies~ flag, which is the
+  bug class ~on_runtime_exited()~ had to clear.
+- ~refused~: provably not delivered; libreclaw queued it, and its own turn
+  takes the description.  ~asked: false~ (refused before the engine was
+  asked) means libreclaw queued it on arrival, so it keeps its place;
+  ~asked: true~ (the engine's own refusal) means it joined the back of the
+  queue, and so does its description.
+- An agent that ran the message as a turn without answering (it went away
+  mid-answer) is running /that/ message: with nothing else waiting for the
+  room, the turn takes the parked description as a last resort.
+
+The mailbox turn record joins the running turn's ([[file:mailboxes.org][mailboxes.org]], "A
+steered message joins the turn that read it"), and the room message is
+marked ~steered~ -- a line of its own in the append-only transcript -- so
+every client draws it as steered, not as a message waiting for a turn.
+
+**** Cross-talk rules still hold
+
+- *It is still a hop.*  The message was sent through the router like any
+  other, so the loop guard -- ~max_hops~, the rate limit, the cycle
+  detector, the tree budget -- passed it before it was recorded; steering
+  decides only how it reaches the agent, never whether it may.  Its depth
+  is folded into the turn, so whatever the turn sends next is a hop
+  deeper than the deepest part of it.
+- *It earns no separate answer.*  libreclaw finishes it with no reply of
+  its own; the running turn's closing text answers both, under the folded
+  ~replies~ flag.
+- *Restart replay.*  A cut turn hands back every item of its joined
+  record.  A steered item asked to steer again is answered from
+  libreclaw's steer journal and not delivered a second time.
+- *The first-reply rescue.*  "Try <model> instead" hands the running
+  turn back and interrupts.  It hands back the running turn's own record
+  (~clawt_agent_get_turn_record_in()~), never "the newest in the room":
+  a delivery parked while libreclaw decides whether to steer it has an
+  open record of its own that is newer, and handing that back would rerun
+  the wrong message.  Steered items the turn already joined go back with
+  it, and libreclaw answers them from its steer journal on redelivery --
+  steer or not -- instead of running them twice; a steer that lands after
+  the rescue finds its turn's record gone, and its own is closed.
+- *Egress and confinement.*  Steering adds no path out: the request and
+  the answer ride the agent's existing link socket, and libreclaw's steer
+  journal lives in the agent's own ~sessions~ directory under its state
+  directory, which a bubblewrap-confined agent already writes.
 
 *** Drafts
 

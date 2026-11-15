@@ -53,9 +53,9 @@ typedef struct {
  *
  * @agent is whether libreclaw can drive it.  libreclaw's provider table
  * is command-line only -- lc_provider_type_normalize() knows
- * claude-code, claude-tmux, opencode, grok-build, antigravity, cursor
- * and codex-cli, and turns anything else into claude-code with a
- * warning.  Offering "OpenAI" as an agent's
+ * claude-code, claude-tmux, opencode, grok-build, antigravity, cursor,
+ * codex-cli and acp, and refuses anything else (libreclaw 0.30.0; it
+ * used to turn it into claude-code with a warning).  Offering "OpenAI" as an agent's
  * provider therefore did not run OpenAI: it ran Claude Code and handed
  * it "gpt-4o" as a model name.
  *
@@ -162,5 +162,28 @@ typedef void (*ClawtModelsReadyFunc)(const gchar *provider_id,
 void clawt_model_catalog_fetch_models_async(const gchar          *provider_id,
                                             ClawtModelsReadyFunc  ready,
                                             gpointer              user_data);
+
+/**
+ * clawt_model_catalog_acp_command_label:
+ *
+ * What the clients call `model.command` in an agent's settings.
+ *
+ * Returns: (transfer none): the label
+ *
+ * Since: 0.28.0
+ */
+const gchar *clawt_model_catalog_acp_command_label(void);
+
+/**
+ * clawt_model_catalog_acp_command_hint:
+ *
+ * The sentence under it, so GTK, web and lrg say the same thing about
+ * an acp agent's command and its model.
+ *
+ * Returns: (transfer none): the hint
+ *
+ * Since: 0.28.0
+ */
+const gchar *clawt_model_catalog_acp_command_hint(void);
 
 G_END_DECLS

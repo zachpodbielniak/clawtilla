@@ -418,6 +418,20 @@ test_the_daemon_runs_it_out_of_process(
 	GSource *timeout;
 	g_autofree gchar *moved = NULL;
 	g_autofree gchar *events = NULL;
+	g_autoptr(GDateTime) now_utc = g_date_time_new_now_utc();
+	g_autofree gchar *daemon_day = g_date_time_format(now_utc, "%Y-%m-%d");
+	gint64 expected_files;
+
+	/*
+	 * The fixture writes two dated files, and the running daemon writes
+	 * its own events into the same directory under today's UTC date.
+	 * When that date is one of the fixture's, the daemon appends to it;
+	 * on any other day (the fixture's dates are fixed) it is a third
+	 * file.  Counting it from the clock keeps the test true on every day
+	 * instead of only on the day it was written.
+	 */
+	expected_files = (g_strcmp0(daemon_day, "2026-11-14") == 0 ||
+	                  g_strcmp0(daemon_day, "2026-11-13") == 0) ? 2 : 3;
 
 	if (!g_file_test(cli, G_FILE_TEST_IS_EXECUTABLE)) {
 		g_test_skip("the clawtilla CLI is not built beside this test");
@@ -483,7 +497,8 @@ test_the_daemon_runs_it_out_of_process(
 	report = json_object_get_object_member(payload_of(after), "report");
 	g_assert_nonnull(report);
 	g_assert_cmpint(json_object_get_int_member(
-		json_object_get_object_member(report, "sentinel"), "files"), ==, 2);
+		json_object_get_object_member(report, "sentinel"), "files"), ==,
+		expected_files);
 
 	/*
 	 * The config reached the child: min_failures 4 drops alpha's three

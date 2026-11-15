@@ -70,6 +70,20 @@ void clawt_mailbox_router_set_event_bus(ClawtMailboxRouter *self,
                                         ClawtEventBus      *bus);
 
 /**
+ * clawt_mailbox_router_set_task_manager:
+ * @self: a #ClawtMailboxRouter
+ * @tasks: (nullable) (transfer none): the fleet's tasks
+ *
+ * Lets the steer policy ask who delegated the task a running turn is on
+ * (see clawt_steer_decide()).  Without it a delivery steers under
+ * `delegator` only when its sender is the agent the turn is answering.
+ *
+ * Since: 0.28.0
+ */
+void clawt_mailbox_router_set_task_manager(ClawtMailboxRouter *self,
+                                           ClawtTaskManager   *tasks);
+
+/**
  * clawt_mailbox_router_set_transcript_index:
  * @self: a #ClawtMailboxRouter
  * @index: (transfer none) (nullable): where to record what was said, or

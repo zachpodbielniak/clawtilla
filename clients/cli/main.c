@@ -2904,7 +2904,9 @@ static gint
 account_login(const gchar *provider, const gchar *config_dir)
 {
     const gchar *cli_type = lc_provider_type_normalize(provider, "account");
-    g_autoptr(AiCliClient) probe = lc_client_factory_new(cli_type, NULL, NULL, NULL, FALSE);
+    /* A provider libreclaw refuses has no CLI to log in with. */
+    g_autoptr(AiCliClient) probe = (provider == NULL || cli_type != NULL)
+        ? lc_client_factory_new(cli_type, NULL, NULL, NULL, FALSE) : NULL;
     g_autoptr(GError) error = NULL;
     g_autofree gchar *executable = NULL;
     g_auto(GStrv) envp = NULL;

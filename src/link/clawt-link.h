@@ -174,6 +174,73 @@ gboolean clawt_link_deliver_full(ClawtLink    *self,
                                  GError      **error);
 
 /**
+ * clawt_link_deliver_steer:
+ * @self: a #ClawtLink
+ * @room_id: (nullable): the room the message is in
+ * @sender_id: who sent it
+ * @sender_name: (nullable): their display name
+ * @body: the message
+ * @thread_id: (nullable): thread to reply into
+ * @session_peer: (nullable): as for clawt_link_deliver()
+ * @model: (nullable): as for clawt_link_deliver_full()
+ * @overrides_allowed: as for clawt_link_deliver_full()
+ * @message_id: (nullable): the daemon's id for the message, which
+ *   `chat.steered` names when the agent answers
+ * @steer: ask the agent to hand the message to the turn already running
+ *   in its session instead of queueing it
+ * @error: (out) (optional): return location for a #GError
+ *
+ * clawt_link_deliver_full() with the two members libreclaw 0.30.0 reads.
+ * @steer is sent only with a @message_id and only to an agent that said
+ * it answers steer requests (clawt_link_get_can_steer()); otherwise the
+ * message goes as an ordinary one, which is what the agent would have
+ * done with it anyway.
+ *
+ * Returns: %TRUE if it reached the socket
+ *
+ * Since: 0.28.0
+ */
+gboolean clawt_link_deliver_steer(ClawtLink    *self,
+                                  const gchar  *room_id,
+                                  const gchar  *sender_id,
+                                  const gchar  *sender_name,
+                                  const gchar  *body,
+                                  const gchar  *thread_id,
+                                  const gchar  *session_peer,
+                                  const gchar  *model,
+                                  gboolean      overrides_allowed,
+                                  const gchar  *message_id,
+                                  gboolean      steer,
+                                  GError      **error);
+
+/**
+ * clawt_link_get_can_steer:
+ * @self: a #ClawtLink
+ *
+ * Whether the agent on this link answers steer requests: its hello
+ * listed "steer" in `features` (libreclaw 0.30.0 and later).  An agent
+ * that did not would take a steer as an ordinary message and never say
+ * so, leaving the daemon holding that message's turn description for an
+ * answer that never comes.
+ *
+ * Returns: %TRUE if a steer may be asked of this agent
+ *
+ * Since: 0.28.0
+ */
+gboolean clawt_link_get_can_steer(ClawtLink *self);
+
+/**
+ * clawt_link_set_can_steer:
+ * @self: a #ClawtLink
+ * @can_steer: what the agent said
+ *
+ * For tests standing in for an agent's hello.
+ *
+ * Since: 0.28.0
+ */
+void clawt_link_set_can_steer(ClawtLink *self, gboolean can_steer);
+
+/**
  * clawt_link_send_welcome:
  * @self: a #ClawtLink
  * @error: (out) (optional): return location for a #GError

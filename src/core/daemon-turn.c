@@ -1325,6 +1325,119 @@ clawt_daemon_turn_note_tool_call(ClawtDaemon *self,
 /* ── Steering ────────────────────────────────────────────────────── */
 
 gboolean
+clawt_daemon_turn_person_steers(ClawtDaemon *self,
+                                const gchar *target)
+{
+    g_autofree gchar *direct = NULL;
+    ClawtAgent *agent;
+    ClawtLink *link;
+
+    g_return_val_if_fail(CLAWT_IS_DAEMON(self), FALSE);
+
+    agent = (self->agents != NULL && target != NULL)
+        ? clawt_agent_manager_get(self->agents, target) : NULL;
+    if (agent == NULL || clawt_agent_get_config(agent) == NULL)
+        return FALSE;
+
+    if ((ClawtSteerPolicy)clawt_agent_config_get_enum(
+            clawt_agent_get_config(agent), "steer") != CLAWT_STEER_ALL)
+        return FALSE;
+
+    link = (self->link_server != NULL)
+        ? clawt_link_server_get_link(self->link_server, target) : NULL;
+    if (link == NULL || !clawt_link_get_can_steer(link))
+        return FALSE;
+
+    /*
+     * Only while the turn is running in the person's own room with the
+     * agent.  A turn elsewhere is a conversation they are not in, and
+     * their words held for its end is still the right answer there.
+     */
+    direct = clawt_room_manager_direct_id("user", target);
+
+    return clawt_agent_is_typing_in(agent, direct);
+}
+
+ClawtSteerSettle
+clawt_daemon_turn_settle_steer(ClawtDaemon *self,
+                               const gchar *agent_id,
+                               const gchar *room_id,
+                               const gchar *item_id,
+                               const gchar *outcome,
+                               const gchar *reason,
+                               gboolean     asked)
+{
+    g_autoptr(ClawtMailboxItem) item = NULL;
+    ClawtSteerSettle settled;
+    ClawtAgent *agent;
+    const gchar *message_id = NULL;
+    const gchar *from = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_DAEMON(self), CLAWT_STEER_SETTLE_UNKNOWN);
+
+    agent = (self->agents != NULL && agent_id != NULL)
+        ? clawt_agent_manager_get(self->agents, agent_id) : NULL;
+    if (agent == NULL || item_id == NULL || outcome == NULL)
+        return CLAWT_STEER_SETTLE_UNKNOWN;
+
+    /*
+     * The delivery, for the room message it posted and who sent it --
+     * still in the queue, acknowledged at the socket and not yet swept.
+     */
+    if (clawt_agent_get_mailbox(agent) != NULL)
+        item = clawt_mailbox_get(clawt_agent_get_mailbox(agent), item_id);
+    if (item != NULL) {
+        message_id = clawt_mailbox_item_get_message_id(item);
+        from = clawt_mailbox_item_get_from(item);
+        if (room_id == NULL)
+            room_id = clawt_mailbox_item_get_room(item);
+    }
+
+    settled = clawt_agent_settle_steer(agent, room_id, item_id, outcome,
+                                       asked);
+
+    if (settled != CLAWT_STEER_SETTLE_JOINED) {
+        g_debug("steer: %s did not take %s (%s%s%s)", agent_id, item_id,
+                outcome, reason != NULL ? ": " : "",
+                reason != NULL ? reason : "");
+        return settled;
+    }
+
+    g_info("steer: %s took %s into its running turn in %s (%s)", agent_id,
+           item_id, room_id != NULL ? room_id : "?", outcome);
+
+    /*
+     * Drawn as steered, not as a message waiting for a turn: the mark
+     * on the room message, kept in the transcript, and the event every
+     * client redraws the room on.
+     */
+    if (room_id != NULL && message_id != NULL && self->rooms != NULL) {
+        ClawtRoom *room = clawt_room_manager_get(self->rooms, room_id);
+        g_autoptr(GError) error = NULL;
+
+        if (room != NULL &&
+            !clawt_room_mark_steered(room, message_id, outcome, &error) &&
+            error != NULL)
+            g_warning("steer: could not record that %s was steered: %s",
+                      message_id, error->message);
+    }
+
+    if (self->bus != NULL) {
+        g_autoptr(ClawtEvent) event = clawt_event_new("turn.steered",
+                                                      agent_id);
+
+        clawt_event_set_detail(event, "room", room_id);
+        clawt_event_set_detail(event, "message", message_id);
+        clawt_event_set_detail(event, "item", item_id);
+        clawt_event_set_detail(event, "outcome", outcome);
+        clawt_event_set_detail(event, "from", from);
+        clawt_event_bus_publish(self->bus, event);
+    }
+
+    return settled;
+}
+
+gboolean
 clawt_daemon_turn_steer(ClawtDaemon *self,
                         const gchar *from,
                         const gchar *target,
@@ -1336,6 +1449,17 @@ clawt_daemon_turn_steer(ClawtDaemon *self,
     g_return_val_if_fail(CLAWT_IS_DAEMON(self), FALSE);
 
     if (self->steers == NULL || target == NULL || body == NULL)
+        return FALSE;
+
+    /*
+     * Not held when it can go straight in: under `agents.steer: all` the
+     * person's message is routed like any other, and the router asks the
+     * agent to steer it into the turn running in this room
+     * (clawt_steer_decide()).  Held, it would wait for the end of the
+     * very turn it was meant to change.
+     */
+    if (g_strcmp0(from, "user") == 0 &&
+        clawt_daemon_turn_person_steers(self, target))
         return FALSE;
 
     /*

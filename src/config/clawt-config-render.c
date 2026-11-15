@@ -1093,6 +1093,16 @@ clawt_config_render_agent(ClawtConfig       *config,
     append_key_value(out, 2, "default_effort",
                      clawt_agent_config_get_string(agent, "model.effort"));
     /*
+     * The program an acp agent is (libreclaw's ai.command, since 0.28.0),
+     * only for that provider: another CLI has nothing to start it with.
+     */
+    if (g_strcmp0(lc_provider_type_normalize(
+                      clawt_agent_config_get_string(agent, "model.provider"),
+                      "agent"), "acp") == 0)
+        append_key_value(out, 2, "command",
+                         clawt_agent_config_get_string(agent,
+                                                       "model.command"));
+    /*
      * The account travels through the rendered config, not the agent's
      * environment, so an embedded runtime -- which never sees agents.env --
      * logs in as the same account a process runtime would.  Validation has

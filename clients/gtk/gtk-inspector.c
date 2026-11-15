@@ -901,6 +901,10 @@ on_save_agent(GtkButton *button, gpointer user_data)
     if (model != NULL)
         model_ok &= clawt_gtk_apply_setting(self, "model.model", model);
 
+    if (self->acp_command_row != NULL)
+        ok &= clawt_gtk_apply_setting(self, "model.command",
+                  gtk_editable_get_text(GTK_EDITABLE(self->acp_command_row)));
+
     ok &= clawt_gtk_apply_setting(self, "model.effort",
                                   efforts[MIN(adw_combo_row_get_selected(
                                         ADW_COMBO_ROW(self->effort_row)), 4)]);
@@ -1065,6 +1069,12 @@ on_save_agent(GtkButton *button, gpointer user_data)
         if (chosen < count)
             ok &= clawt_gtk_apply_setting(self, "team", self->team_ids[chosen]);
     }
+
+    if (self->steer_row != NULL)
+        ok &= clawt_gtk_apply_setting(self, "steer",
+                  clawt_steer_policy_nick((ClawtSteerPolicy)
+                      adw_combo_row_get_selected(
+                          ADW_COMBO_ROW(self->steer_row))));
 
     if (self->team_role_row != NULL) {
         static const gchar *const roles[] = { "member", "lead" };
@@ -1496,6 +1506,50 @@ use_row_value(ClawtWindow *self)
 
     chosen = adw_combo_row_get_selected(ADW_COMBO_ROW(self->use_row));
     return chosen < self->use_ids->len ? g_ptr_array_index(self->use_ids, chosen) : "";
+}
+
+/*
+ * The steer level's own explanation, under the row, following the
+ * choice -- libclawt's words, so the three clients say the same thing
+ * the daemon does.
+ */
+static void
+on_steer_selected(GObject *row, GParamSpec *pspec, gpointer user_data)
+{
+    (void)pspec;
+    (void)user_data;
+
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(row),
+        clawt_steer_policy_explanation((ClawtSteerPolicy)
+            adw_combo_row_get_selected(ADW_COMBO_ROW(row))));
+}
+
+/*
+ * agents.steer: which messages may be handed to the turn the agent is
+ * already running.  The levels are walked from libclawt in order, so
+ * the row's position is the enumeration value.
+ */
+static GtkWidget *
+steer_row_new(const gchar *current)
+{
+    g_autoptr(GtkStringList) labels = gtk_string_list_new(NULL);
+    GtkWidget *row = adw_combo_row_new();
+    guint i;
+
+    for (i = 0; i < clawt_steer_policy_count(); i++)
+        gtk_string_list_append(labels,
+                               clawt_steer_policy_label((ClawtSteerPolicy)i));
+
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                  "Messages that steer a running turn");
+    adw_combo_row_set_model(ADW_COMBO_ROW(row), G_LIST_MODEL(labels));
+    adw_combo_row_set_selected(ADW_COMBO_ROW(row),
+                               (guint)clawt_steer_policy_from_nick(current));
+    on_steer_selected(G_OBJECT(row), NULL, NULL);
+    g_signal_connect(row, "notify::selected",
+                     G_CALLBACK(on_steer_selected), NULL);
+
+    return row;
 }
 
 static GtkWidget *
@@ -3366,6 +3420,19 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
                                                    "medium"));
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), self->effort_row);
 
+    /* An acp agent's program, in libclawt's words (model.command). */
+    self->acp_command_row = entry_row(
+        clawt_model_catalog_acp_command_label(),
+        (payload != NULL && json_object_has_member(payload, "settings"))
+            ? clawt_json_string(
+                  json_object_get_object_member(payload, "settings"),
+                  "model.command", "")
+            : "");
+    clawt_gtk_set_row_hint(self->acp_command_row,
+                           clawt_model_catalog_acp_command_hint());
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              self->acp_command_row);
+
     self->account_row = account_row_build(
         self,
         (payload != NULL && json_object_has_member(payload, "settings"))
@@ -3759,6 +3826,10 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
         adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
                                   self->team_role_row);
     }
+
+    self->steer_row = steer_row_new(clawt_json_string(agent, "steer",
+                                                      "delegator"));
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), self->steer_row);
 
     self->chief_row = switch_row(
         "Chief of staff", "Hands work to the other agents",

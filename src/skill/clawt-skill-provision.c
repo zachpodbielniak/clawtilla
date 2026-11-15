@@ -76,7 +76,16 @@ static const struct {
      * is a harness with no skills concept; the claude fallback is a
      * claim that it has Claude's.
      */
-    { "codex-cli",    "codex",       FALSE }
+    { "codex-cli",    "codex",       FALSE },
+
+    /*
+     * A generic ACP agent (libreclaw 0.30.0) is whatever program the
+     * agent's model.command starts, so there is no customization root to
+     * know of.  The origin resolves to no paths, as codex's does, rather
+     * than falling through to claude's and linking skills into a
+     * `.claude/skills` the program never reads.
+     */
+    { "acp",          "acp",         FALSE }
 };
 
 /*
@@ -103,10 +112,10 @@ clawt_skill_provider_origin(const gchar *provider)
     }
 
     /*
-     * Unreachable while the table covers what normalize() returns, and
-     * a test pins exactly that.  If it ever is reached, claude's
-     * directories are the right guess: normalize() itself falls back to
-     * claude-code, so the CLI being run will be looking there.
+     * Reached for a provider libreclaw does not know -- normalize()
+     * refuses it (libreclaw 0.30.0) and the agent runs nothing until it
+     * is fixed -- or for no provider at all, which is claude-code.
+     * claude's directories are the harmless guess for both.
      */
     return "claude";
 }

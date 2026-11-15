@@ -2580,6 +2580,21 @@ agents:
       # Reasoning effort: low, medium, high, xhigh or max, when the model has one.
       effort: null
 
+      # The command line an acp agent is started from, e.g.
+      # "gemini --experimental-acp". Only read when model.provider is acp.
+      #
+      # acp runs any program that speaks the Agent Client Protocol (v1,
+      # JSON-RPC over stdio) as the agent's engine, so which program is this
+      # setting. It is split like a shell would split it, with no shell: no
+      # pipes, no variables. Left empty, libreclaw falls back to
+      # $AI_ACP_COMMAND in the agent's environment, and a turn with neither
+      # fails saying so.
+      #
+      # The model is the agent's own default: ACP has no request that picks
+      # one, so model.model is not sent and the program's own configuration
+      # (or its command line) chooses.
+      command: null
+
       # Which entry of accounts this agent's CLI logs in as. Unset is the CLI's
       # default login. The account's provider must be this agent's provider.
       account: null
@@ -2638,6 +2653,39 @@ agents:
           # CLI's default login. The account's provider must be this entry's
           # provider.
           account: null
+
+    # Which messages may be handed to the turn this agent is already
+    # running, instead of waiting to become a turn of their own.
+    #
+    # Without steering, a message for a busy agent waits and becomes its
+    # next turn: a correction ("stop, use the staging DB") arrives after
+    # the work it was meant to change has finished, and a follow-up costs a
+    # whole extra turn that rereads everything. A steered message reaches
+    # the running turn at the next point its engine accepts input -- before
+    # the next model call -- and the turn's closing answer answers it too.
+    # Nothing is killed or restarted.
+    #
+    # never: nothing steers. delegator, the default: a message steers when
+    # its sender handed out the work the running turn is on -- the agent
+    # that turn is answering, or the delegator of the task it is working.
+    # peers: as delegator, and any other agent's message in the same room.
+    # all: as peers, and your own message in your conversation with this
+    # agent (otherwise held and sent when the turn ends).
+    #
+    # No level lifts these: a message never steers into another room's
+    # turn; never into a consultation unless the consulting agent is asking
+    # again, and a consultation never steers into a turn that can act; a
+    # result held for the end of a turn, a message naming another task or
+    # a model of its own, and anything in a group room take turns of their
+    # own. A steered message is still a hop and still passes the loop guard
+    # when it is sent.
+    #
+    # Only some engines can be steered: Claude Code, claude-tmux and codex
+    # on libreclaw's ai.codex.transport app-server. On any other the agent
+    # says no and the message waits as before. Needs libreclaw 0.30.0 or
+    # later; an older agent is never asked.
+    # Values: never, delegator, peers, all
+    steer: "delegator"
 
     # How this agent's conversations map to AI sessions.
     session:

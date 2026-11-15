@@ -306,6 +306,30 @@ void clawt_mailbox_item_set_round_chain(ClawtMailboxItem *self,
                                         const gchar      *chain);
 
 /**
+ * clawt_mailbox_item_get_message_id:
+ * @self: a #ClawtMailboxItem
+ *
+ * The id of the room message this item delivers, when it was posted as
+ * one.  What a later note about the delivery -- that it was steered
+ * into a running turn -- is attached to in the room.
+ *
+ * Returns: (transfer none) (nullable): the message id, or %NULL
+ *
+ * Since: 0.28.0
+ */
+const gchar *clawt_mailbox_item_get_message_id(ClawtMailboxItem *self);
+
+/**
+ * clawt_mailbox_item_set_message_id:
+ * @self: a #ClawtMailboxItem
+ * @message_id: (nullable): the room message's id
+ *
+ * Since: 0.28.0
+ */
+void clawt_mailbox_item_set_message_id(ClawtMailboxItem *self,
+                                       const gchar      *message_id);
+
+/**
  * clawt_mailbox_item_dup_delivered_body:
  * @self: a #ClawtMailboxItem
  *

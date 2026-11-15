@@ -1203,6 +1203,22 @@ clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id)
                                       clawt_web_notice(notice, "bad"));
                 }
 
+                /*
+                 * The steer level, in libclawt's words: which messages
+                 * reach the running turn instead of waiting for one.
+                 */
+                if (g_strcmp0(key, "model.command") == 0)
+                    clawt_web_add(group_body, clawt_web_text(
+                        clawt_model_catalog_acp_command_hint(),
+                        "small muted"));
+
+                if (g_strcmp0(key, "steer") == 0)
+                    clawt_web_add(group_body, clawt_web_text(
+                        clawt_steer_policy_explanation(
+                            clawt_steer_policy_from_nick(
+                                *value != '\0' ? value : NULL)),
+                        "small muted"));
+
                 /* What each of these does, where it is set. */
                 if (g_strcmp0(key, "computer.start") == 0)
                     clawt_web_add(group_body, clawt_web_text(

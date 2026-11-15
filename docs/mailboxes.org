@@ -352,6 +352,20 @@ room (see "Results wait for the turn they would interrupt" in
 a single record naming every part, with the highest ~replays~ among
 them -- so a cut merge is rerun at most once, as one.
 
+*A steered message joins the turn that read it.*  A delivery steered into
+a running turn (see "Steering a delivery into a running turn" in
+[[file:orchestration.org][orchestration.org]]) opened a record of its own when it was handed over,
+because nothing knew yet whether it would be a turn.  When the agent
+answers that the running turn took it, ~clawt_mailbox_turn_join()~ moves
+its item onto the running turn's record, in one transaction, keeping the
+higher ~replays~ and any outward mark.  A restart that cut that turn then
+hands both items back together, or ends both as interrupted -- it never
+reruns the steered words on their own after the turn that already read
+them.  The item also carries the room message it was posted as
+(~message_id~ column, since 0.28.0), which is what the room's "steered"
+mark is attached to.  A redelivered steered item is answered by libreclaw
+from its steer journal and is not run twice.
+
 *** Recovery
 
 Whenever an agent's process ends -- its state becomes ~stopped~ or

@@ -230,8 +230,8 @@ test_an_unknown_provider_follows_libreclaw(void)
     GLogLevelFlags fatal;
 
     /*
-     * libreclaw warns about the unknown name and carries on, which is
-     * the behaviour being pinned -- so the warning is swallowed rather
+     * libreclaw warns about the unknown name and refuses it (0.30.0);
+     * clawtilla's guess of claude's directories is what is pinned -- so the warning is swallowed rather
      * than avoided.  Restored immediately: g_log_set_always_fatal(0)
      * left in place would make every later test in this binary ignore a
      * real warning.
@@ -248,6 +248,8 @@ test_an_unknown_provider_follows_libreclaw(void)
     g_assert_cmpstr(clawt_skill_provider_origin("cursor-agent"), ==,
                     "cursor");
     g_assert_cmpstr(clawt_skill_provider_origin("codex"), ==, "codex");
+    g_assert_cmpstr(clawt_skill_provider_origin("acp"), ==, "acp");
+    g_assert_cmpstr(clawt_skill_provider_origin("acp-agent"), ==, "acp");
     g_assert_cmpstr(clawt_skill_provider_origin("claude-code-tmux"), ==,
                     "claude");
 

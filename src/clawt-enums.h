@@ -159,6 +159,33 @@ typedef enum {
 } ClawtRuntimeNetwork;
 
 /**
+ * ClawtSteerPolicy:
+ * @CLAWT_STEER_NEVER: nothing is steered; a message for a busy turn
+ *   waits and becomes the next turn, as before steering existed
+ * @CLAWT_STEER_DELEGATOR: a message steers when its sender handed out
+ *   the work the running turn is on -- the agent the turn is answering,
+ *   or the delegator of the task it is working
+ * @CLAWT_STEER_PEERS: as delegator, and any other agent's message in the
+ *   same room as the running turn
+ * @CLAWT_STEER_ALL: as peers, and a person's message in the agent's own
+ *   conversation with them
+ *
+ * Which deliveries may be handed to the turn already running in their
+ * room instead of waiting to become a turn of their own
+ * (`agents.steer`, since 0.28.0).  Every level keeps the rules no policy
+ * lifts: never into another room's turn, never into a consultation
+ * unless it is the consulting agent asking again, never a result the
+ * daemon holds for the end of the turn, never a delivery naming
+ * another task or a model of its own.
+ */
+typedef enum {
+    CLAWT_STEER_NEVER = 0,
+    CLAWT_STEER_DELEGATOR,
+    CLAWT_STEER_PEERS,
+    CLAWT_STEER_ALL
+} ClawtSteerPolicy;
+
+/**
  * ClawtNetAddressClass:
  * @CLAWT_NET_ADDRESS_PUBLIC: routable on the public internet
  * @CLAWT_NET_ADDRESS_LOOPBACK: this machine (127.0.0.0/8, ::1)
@@ -1153,6 +1180,7 @@ GType clawt_agent_caps_get_type(void) G_GNUC_CONST;
 GType clawt_runtime_type_get_type(void) G_GNUC_CONST;
 GType clawt_runtime_confine_get_type(void) G_GNUC_CONST;
 GType clawt_runtime_network_get_type(void) G_GNUC_CONST;
+GType clawt_steer_policy_get_type(void) G_GNUC_CONST;
 GType clawt_net_address_class_get_type(void) G_GNUC_CONST;
 GType clawt_team_role_get_type(void) G_GNUC_CONST;
 GType clawt_restart_policy_get_type(void) G_GNUC_CONST;
@@ -1195,6 +1223,7 @@ GType clawt_tool_directory_mode_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_RUNTIME_CONFINE  (clawt_runtime_confine_get_type())
 #define CLAWT_TYPE_RUNTIME_NETWORK  (clawt_runtime_network_get_type())
 #define CLAWT_TYPE_NET_ADDRESS_CLASS (clawt_net_address_class_get_type())
+#define CLAWT_TYPE_STEER_POLICY     (clawt_steer_policy_get_type())
 #define CLAWT_TYPE_TEAM_ROLE        (clawt_team_role_get_type())
 #define CLAWT_TYPE_RESTART_POLICY   (clawt_restart_policy_get_type())
 #define CLAWT_TYPE_BROKER_TYPE      (clawt_broker_type_get_type())
