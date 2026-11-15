@@ -2825,6 +2825,21 @@ static const ClawtSchemaEntry schema[] = {
 { "agents.model.effort", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Reasoning effort: low, medium, high, xhigh or max, when the model has one.", "0.1.0" },
 
+{ "agents.model.command", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "The command line an acp agent is started from, e.g.\n"
+  "\"gemini --experimental-acp\". Only read when model.provider is acp.\n"
+  "\n"
+  "acp runs any program that speaks the Agent Client Protocol (v1,\n"
+  "JSON-RPC over stdio) as the agent's engine, so which program is this\n"
+  "setting. It is split like a shell would split it, with no shell: no\n"
+  "pipes, no variables. Left empty, libreclaw falls back to\n"
+  "$AI_ACP_COMMAND in the agent's environment, and a turn with neither\n"
+  "fails saying so.\n"
+  "\n"
+  "The model is the agent's own default: ACP has no request that picks\n"
+  "one, so model.model is not sent and the program's own configuration\n"
+  "(or its command line) chooses.", "0.28.0" },
+
 { "agents.model.account", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Which entry of accounts this agent's CLI logs in as. Unset is the CLI's\n"
   "default login. The account's provider must be this agent's provider.", "0.2.0" },
@@ -2886,6 +2901,39 @@ static const ClawtSchemaEntry schema[] = {
   "Which entry of accounts this fallback's CLI logs in as. Unset is the\n"
   "CLI's default login. The account's provider must be this entry's\n"
   "provider.", "0.16.0" },
+
+{ "agents.steer", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "delegator", clawt_steer_policy_get_type,
+  "Which messages may be handed to the turn this agent is already\n"
+  "running, instead of waiting to become a turn of their own.\n"
+  "\n"
+  "Without steering, a message for a busy agent waits and becomes its\n"
+  "next turn: a correction (\"stop, use the staging DB\") arrives after\n"
+  "the work it was meant to change has finished, and a follow-up costs a\n"
+  "whole extra turn that rereads everything. A steered message reaches\n"
+  "the running turn at the next point its engine accepts input -- before\n"
+  "the next model call -- and the turn's closing answer answers it too.\n"
+  "Nothing is killed or restarted.\n"
+  "\n"
+  "never: nothing steers. delegator, the default: a message steers when\n"
+  "its sender handed out the work the running turn is on -- the agent\n"
+  "that turn is answering, or the delegator of the task it is working.\n"
+  "peers: as delegator, and any other agent's message in the same room.\n"
+  "all: as peers, and your own message in your conversation with this\n"
+  "agent (otherwise held and sent when the turn ends).\n"
+  "\n"
+  "No level lifts these: a message never steers into another room's\n"
+  "turn; never into a consultation unless the consulting agent is asking\n"
+  "again, and a consultation never steers into a turn that can act; a\n"
+  "result held for the end of a turn, a message naming another task or\n"
+  "a model of its own, and anything in a group room take turns of their\n"
+  "own. A steered message is still a hop and still passes the loop guard\n"
+  "when it is sent.\n"
+  "\n"
+  "Only some engines can be steered: Claude Code, claude-tmux and codex\n"
+  "on libreclaw's ai.codex.transport app-server. On any other the agent\n"
+  "says no and the message waits as before. Needs libreclaw 0.30.0 or\n"
+  "later; an older agent is never asked.", "0.28.0" },
 
 { "agents.session", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "How this agent's conversations map to AI sessions.", "0.2.0" },

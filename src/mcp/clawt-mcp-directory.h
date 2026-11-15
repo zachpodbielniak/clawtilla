@@ -145,15 +145,13 @@ gboolean clawt_mcp_directory_decide(ClawtToolDirectoryMode mode,
  * Claude Code does: past about a tenth of its context in MCP tools it
  * defers them and searches.  Wrapping such a CLI's servers in a second
  * search would make it search a search.  claude-tmux runs the same
- * binary and is answered the same way.  Every other CLI reads the whole
- * list, so this is %FALSE for them.
+ * binary, and grok-build searches too.
  *
- * The answer belongs to ai-glib -- it is a fact about a CLI, like
- * `AiCliClientClass.config_dir_env` -- and it lives here only until a
- * class datum exists there; see the roadmap item "ai-glib: a
- * searches_tools class datum".  The provider is normalised through
- * libreclaw first, so an unknown spelling is answered for the CLI it
- * will actually run.
+ * The answer is ai-glib's class datum `AiCliClientClass.searches_tools`
+ * (ai_cli_client_searches_tools(), ai-glib v0.11.0), read off a probe
+ * client built by libreclaw's factory -- never a table here.  The
+ * provider is normalised through libreclaw first, so an unknown spelling
+ * is answered for the CLI it will actually run.
  *
  * Returns: %TRUE when the CLI searches tools itself
  */

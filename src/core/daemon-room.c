@@ -158,11 +158,22 @@ clawt_daemon_handle_room(
         const gchar *target = clawt_ipc_payload_string(payload, "target");
         const gchar *body = clawt_ipc_payload_string(payload, "body");
         const gchar *from = clawt_ipc_payload_string(payload, "from");
+        gboolean steering;
         gint queued;
 
         if (target == NULL || body == NULL)
             return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
                                        "target and body are both required");
+
+        /*
+         * Under `agents.steer: all`, a person's message to an agent busy
+         * in their conversation goes straight into that turn instead of
+         * being held.  Said in the reply (`steering`), so a client can
+         * tell the person; the transcript marks it once the agent says
+         * the turn took it.
+         */
+        steering = g_strcmp0(from != NULL ? from : "user", "user") == 0 &&
+                   clawt_daemon_turn_person_steers(self, target);
 
         /*
          * A correction typed at an agent that is already working is held
@@ -204,6 +215,8 @@ clawt_daemon_handle_room(
         json_builder_add_int_value(builder, queued);
         json_builder_set_member_name(builder, "steered");
         json_builder_add_boolean_value(builder, FALSE);
+        json_builder_set_member_name(builder, "steering");
+        json_builder_add_boolean_value(builder, steering);
 
         /*
          * Whether anything is going to read it.  A mailbox accepts a
@@ -798,6 +811,17 @@ clawt_daemon_handle_room(
 			if (clawt_message_get_interrupted(message)) {
 				json_builder_set_member_name(builder, "interrupted");
 				json_builder_add_int_value(builder, 1);
+			}
+
+			/*
+			 * Steered into the turn its recipient was running: the
+			 * outcome, so a client draws it as steered and not as a
+			 * message waiting for a turn of its own.
+			 */
+			if (clawt_message_get_steered(message) != NULL) {
+				json_builder_set_member_name(builder, "steered");
+				json_builder_add_string_value(builder,
+					clawt_message_get_steered(message));
 			}
 
 			/*

@@ -437,6 +437,7 @@ struct _ClawtWindow {
     /* The agent's action rules, MATCH=MODE, comma-separated like skills. */
     GtkWidget         *policy_row;
     GtkWidget         *effort_row;
+    GtkWidget         *acp_command_row;  /* model.command */
     /*
      * Which login the agent's CLI uses. The ids are kept beside the
      * combo because its labels say more than the id ("work -- Claude
@@ -477,6 +478,7 @@ struct _ClawtWindow {
     GtkWidget         *manage_fleet_row;
     GtkWidget         *team_row;
     GtkWidget         *team_role_row;
+    GtkWidget         *steer_row;      /* agents.steer, walked from libclawt */
     GStrv              team_ids;
     gboolean           settings_need_restart;
 
@@ -1166,14 +1168,15 @@ clawt_gtk_append_message_to(ClawtWindow *self, const TranscriptView *view,
                             const gchar *sender, const gchar *body, gboolean from_user,
                             gint64 ts, const gchar *task, gint64 depth,
                             gboolean acknowledged, gint64 merged,
-                            gint64 consult, gboolean interrupted);
+                            gint64 consult, gboolean interrupted,
+                            const gchar *steered);
 
 void
 clawt_gtk_append_message_marked(ClawtWindow *self, const gchar *sender,
                                 const gchar *body, gboolean from_user,
                                 gint64 ts, gboolean acknowledged,
                                 gint64 merged, gint64 consult,
-                                gboolean interrupted);
+                                gboolean interrupted, const gchar *steered);
 
 void
 clawt_gtk_append_round_marks(ClawtWindow *self, gint64 round,

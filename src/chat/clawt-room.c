@@ -590,6 +590,12 @@ append_to_transcript(ClawtRoom     *self,
 			clawt_message_get_chain(message));
 	}
 
+	if (clawt_message_get_steered(message) != NULL) {
+		json_builder_set_member_name(builder, "steered");
+		json_builder_add_string_value(builder,
+			clawt_message_get_steered(message));
+	}
+
 	if (clawt_message_get_skipped(message) != NULL) {
 		json_builder_set_member_name(builder, "skipped");
 		json_builder_add_string_value(builder,
@@ -694,6 +700,135 @@ clawt_room_append(ClawtRoom *self, ClawtMessage *message, GError **error)
     g_signal_emit(self, signals[SIGNAL_MESSAGE_ADDED], 0, message);
 
     return TRUE;
+}
+
+/*
+ * One line that annotates a message already in the transcript.
+ *
+ * The transcript is append-only -- rewriting a line would change history
+ * an agent has already reasoned from -- so what is learnt about a
+ * message after it was written is a line of its own, naming the message
+ * by id.  It has no `sender` or `body`, so a daemon that predates it
+ * skips it as it skips any line it cannot read, and the message reads as
+ * it did before.
+ */
+static gboolean
+append_annotation(
+	ClawtRoom    *self,
+	const gchar  *message_id,
+	const gchar  *member,
+	const gchar  *value,
+	GError      **error
+){
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonGenerator) generator = NULL;
+	g_autoptr(JsonNode) root = NULL;
+	g_autofree gchar *line = NULL;
+	g_autoptr(GFile) file = NULL;
+	g_autoptr(GFileOutputStream) stream = NULL;
+	g_autofree gchar *dir = NULL;
+
+	if (self->transcript_path == NULL)
+		return TRUE;
+
+	dir = g_path_get_dirname(self->transcript_path);
+	if (!clawt_ensure_dir(dir, 0700, error))
+		return FALSE;
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "annotates");
+	json_builder_add_string_value(builder, message_id);
+	json_builder_set_member_name(builder, member);
+	json_builder_add_string_value(builder, value);
+	json_builder_end_object(builder);
+
+	root = json_builder_get_root(builder);
+	generator = json_generator_new();
+	json_generator_set_root(generator, root);
+	line = json_generator_to_data(generator, NULL);
+
+	file = g_file_new_for_path(self->transcript_path);
+	stream = g_file_append_to(file, G_FILE_CREATE_PRIVATE, NULL, error);
+	if (stream == NULL)
+		return FALSE;
+
+	if (!g_output_stream_write_all(G_OUTPUT_STREAM(stream), line,
+			strlen(line), NULL, NULL, error))
+		return FALSE;
+
+	return g_output_stream_write_all(G_OUTPUT_STREAM(stream), "\n", 1, NULL,
+		NULL, error);
+}
+
+/* The message with @message_id, newest first since that is where it is. */
+static ClawtMessage *
+find_message(
+	ClawtRoom   *self,
+	const gchar *message_id
+){
+	guint i;
+
+	if (message_id == NULL)
+		return NULL;
+
+	for (i = self->messages->len; i > 0; i--) {
+		ClawtMessage *message = g_ptr_array_index(self->messages, i - 1);
+
+		if (g_strcmp0(clawt_message_get_id(message), message_id) == 0)
+			return message;
+	}
+
+	return NULL;
+}
+
+gboolean
+clawt_room_mark_steered(
+	ClawtRoom    *self,
+	const gchar  *message_id,
+	const gchar  *outcome,
+	GError      **error
+){
+	ClawtMessage *message;
+
+	g_return_val_if_fail(CLAWT_IS_ROOM(self), FALSE);
+	g_return_val_if_fail(outcome != NULL, FALSE);
+
+	message = find_message(self, message_id);
+	if (message == NULL)
+		return FALSE;
+
+	/* Once: a second answer for the same message changes nothing. */
+	if (clawt_message_get_steered(message) != NULL)
+		return TRUE;
+
+	clawt_message_set_steered(message, outcome);
+
+	return append_annotation(self, message_id, "steered", outcome, error);
+}
+
+gboolean
+clawt_room_restore_annotation(
+	ClawtRoom   *self,
+	const gchar *message_id,
+	const gchar *member,
+	const gchar *value
+){
+	ClawtMessage *message;
+
+	g_return_val_if_fail(CLAWT_IS_ROOM(self), FALSE);
+
+	message = find_message(self, message_id);
+	if (message == NULL || member == NULL)
+		return FALSE;
+
+	if (g_strcmp0(member, "steered") == 0) {
+		clawt_message_set_steered(message, value);
+		return TRUE;
+	}
+
+	/* A kind this build does not know: left alone, as an unread line. */
+	return FALSE;
 }
 
 guint

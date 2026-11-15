@@ -108,6 +108,24 @@ load_room(ClawtRoomManager *self, ClawtRoom *room)
 
         object = json_node_get_object(root);
 
+        /*
+         * A line about an earlier message rather than a message of its
+         * own (clawt_room_mark_steered()), applied to the message it
+         * names, which is already restored above it.
+         */
+        if (json_object_has_member(object, "annotates")) {
+            const gchar *annotated =
+                json_object_get_string_member_with_default(object,
+                                                           "annotates", NULL);
+
+            if (json_object_has_member(object, "steered"))
+                clawt_room_restore_annotation(room, annotated, "steered",
+                    json_object_get_string_member_with_default(object,
+                                                               "steered",
+                                                               NULL));
+            continue;
+        }
+
         if (!json_object_has_member(object, "sender") ||
             !json_object_has_member(object, "body"))
             continue;

@@ -264,7 +264,8 @@ show_flow_room(ClawtWindow *self, const gchar *room_id, const gchar *label)
                                     clawt_json_int(message, "acknowledged", 0) != 0,
                                     clawt_json_int(message, "merged", 0),
                                     clawt_json_int(message, "consult", 0),
-                                    clawt_json_int(message, "interrupted", 0) != 0);
+                                    clawt_json_int(message, "interrupted", 0) != 0,
+                                    clawt_json_string(message, "steered", NULL));
     }
 
     gtk_stack_set_visible_child_name(GTK_STACK(self->flow_stack), "room");

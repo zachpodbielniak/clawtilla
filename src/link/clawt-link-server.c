@@ -60,6 +60,7 @@ enum {
     SIGNAL_TYPING,
     SIGNAL_STEP,
     SIGNAL_FAILOVER,
+    SIGNAL_STEERED,
     SIGNAL_LINK_CONTESTED,
     N_SIGNALS
 };
@@ -168,6 +169,23 @@ on_link_failover(ClawtLink  *link,
 
     g_signal_emit(self, signals[SIGNAL_FAILOVER], 0,
                   clawt_link_get_agent_id(link), payload);
+}
+
+/* Relays what became of a steer, with the agent the link belongs to. */
+static void
+on_link_steered(ClawtLink   *link,
+                const gchar *room_id,
+                const gchar *message_id,
+                const gchar *outcome,
+                const gchar *reason,
+                gboolean     asked,
+                gpointer     user_data)
+{
+    ClawtLinkServer *self = user_data;
+
+    g_signal_emit(self, signals[SIGNAL_STEERED], 0,
+                  clawt_link_get_agent_id(link), room_id, message_id,
+                  outcome, reason, asked);
 }
 
 /*
@@ -413,6 +431,7 @@ on_incoming(GSocketService    *service,
     g_signal_connect(link, "typing", G_CALLBACK(on_link_typing), self);
     g_signal_connect(link, "step", G_CALLBACK(on_link_step), self);
     g_signal_connect(link, "failover", G_CALLBACK(on_link_failover), self);
+    g_signal_connect(link, "steered", G_CALLBACK(on_link_steered), self);
     g_signal_connect(link, "closed", G_CALLBACK(on_link_closed), self);
 
     /*
@@ -823,6 +842,24 @@ clawt_link_server_class_init(ClawtLinkServerClass *klass)
         g_signal_new("failover", CLAWT_TYPE_LINK_SERVER, G_SIGNAL_RUN_LAST,
                      0, NULL, NULL, NULL, G_TYPE_NONE, 2,
                      G_TYPE_STRING, JSON_TYPE_OBJECT);
+
+    /**
+     * ClawtLinkServer::steered:
+     * @self: the server
+     * @agent_id: the agent
+     * @room_id: (nullable): the room
+     * @message_id: the daemon's id for the message
+     * @outcome: "delivered", "indeterminate" or "refused"
+     * @reason: (nullable): why it was refused
+     * @asked: whether the agent's engine was asked
+     *
+     * See #ClawtLink::steered.  Since: 0.28.0
+     */
+    signals[SIGNAL_STEERED] =
+        g_signal_new("steered", CLAWT_TYPE_LINK_SERVER, G_SIGNAL_RUN_LAST,
+                     0, NULL, NULL, NULL, G_TYPE_NONE, 6,
+                     G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
+                     G_TYPE_STRING, G_TYPE_STRING, G_TYPE_BOOLEAN);
 
     /**
      * ClawtLinkServer::link-contested:

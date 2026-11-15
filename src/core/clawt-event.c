@@ -328,6 +328,15 @@ clawt_alert_tier_for_event(ClawtEvent *event)
         return CLAWT_ALERT_SKIP;
 
     /*
+     * The same for a delivery steered into a running turn: the room
+     * draws it on the message (clawt_message_steered_label()), and a
+     * notification per steered sentence would be noise about the fleet
+     * doing what it was configured to do.
+     */
+    if (g_strcmp0(kind, "turn.steered") == 0)
+        return CLAWT_ALERT_SKIP;
+
+    /*
      * A download that *succeeded* is routine; only the failure arrived on
      * its own with nobody watching.
      */

@@ -35,6 +35,12 @@ struct _ClawtMailboxRouter {
 	 * the courtesy of saying so.
 	 */
 	GHashTable *ack_notes;
+
+	/*
+	 * The fleet's tasks, unowned, for the steer policy's one question
+	 * about them: who delegated the task a running turn is on.
+	 */
+	ClawtTaskManager *tasks;
 };
 
 G_DEFINE_FINAL_TYPE(ClawtMailboxRouter, clawt_mailbox_router, G_TYPE_OBJECT)
@@ -216,6 +222,15 @@ clawt_mailbox_router_set_event_bus(ClawtMailboxRouter *self,
     g_return_if_fail(CLAWT_IS_MAILBOX_ROUTER(self));
 
     self->bus = bus;
+}
+
+void
+clawt_mailbox_router_set_task_manager(ClawtMailboxRouter *self,
+                                      ClawtTaskManager   *tasks)
+{
+    g_return_if_fail(CLAWT_IS_MAILBOX_ROUTER(self));
+
+    self->tasks = tasks;
 }
 
 void
@@ -1053,6 +1068,12 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
                                        clawt_message_get_task_id(message));
         clawt_mailbox_item_set_model(item, clawt_message_get_model(message));
         clawt_mailbox_item_set_depth(item, clawt_message_get_depth(message));
+
+        /*
+         * The room message it delivers, so what becomes of the delivery
+         * -- steered into a running turn -- can be drawn on it.
+         */
+        clawt_mailbox_item_set_message_id(item, clawt_message_get_id(message));
 
         /*
          * The band the sender asked for, carried onto every item the
@@ -1945,6 +1966,73 @@ record_merge_note(ClawtMailboxRouter *self, ClawtRoom *room,
 }
 
 /*
+ * Whether to ask the agent to steer @item into its running turn.
+ *
+ * The facts are gathered here, where the delivery and the agent's turn
+ * state meet, and decided by clawt_steer_decide(), which states the rule
+ * (docs/orchestration.org, "Steering a delivery into a running turn").
+ * The loop guard has already passed the message when it was sent: a
+ * steered message is a hop like any other, and steering decides only
+ * how it reaches the agent, never whether it may.
+ */
+static gboolean
+steer_wanted(ClawtMailboxRouter *self, ClawtAgent *agent, ClawtLink *link,
+             ClawtMailboxItem *item)
+{
+	ClawtSteerFacts facts;
+	const gchar *agent_id = clawt_agent_get_id(agent);
+	const gchar *room_id = clawt_mailbox_item_get_room(item);
+	const gchar *why = NULL;
+	ClawtRoom *room;
+	gboolean steer;
+
+	memset(&facts, 0, sizeof(facts));
+
+	if (room_id == NULL)
+		return FALSE;
+
+	facts.policy = (ClawtSteerPolicy)clawt_agent_config_get_enum(
+		clawt_agent_get_config(agent), "steer");
+	facts.link_can_steer = clawt_link_get_can_steer(link);
+	facts.turn_running = clawt_agent_get_turn_steer_facts(agent, room_id,
+		&facts.turn_origin, &facts.turn_task_id, &facts.turn_consult);
+
+	room = clawt_room_manager_get(self->rooms, room_id);
+	facts.group_room = room != NULL && clawt_room_is_group(room);
+
+	{
+		g_autofree gchar *direct = clawt_room_manager_direct_id("user",
+			agent_id);
+
+		facts.person_room = g_strcmp0(direct, room_id) == 0;
+	}
+
+	facts.sender = clawt_mailbox_item_get_from(item);
+	facts.sender_is_agent = facts.sender != NULL &&
+		clawt_agent_manager_get(self->agents, facts.sender) != NULL;
+	facts.is_result = item_is_result(self, item);
+	facts.consult = clawt_mailbox_item_get_consult(item);
+	facts.task_id = clawt_mailbox_item_get_task_id(item);
+	facts.model = clawt_mailbox_item_get_model(item);
+
+	if (facts.turn_task_id != NULL && self->tasks != NULL) {
+		ClawtTask *task = clawt_task_manager_get(self->tasks,
+			facts.turn_task_id);
+
+		if (task != NULL)
+			facts.turn_task_delegator = clawt_task_get_origin(task);
+	}
+
+	steer = clawt_steer_decide(&facts, &why);
+
+	if (facts.turn_running)
+		g_debug("router: %s -> %s in %s: %s (%s)", facts.sender, agent_id,
+		        room_id, steer ? "asking to steer" : "not steered", why);
+
+	return steer;
+}
+
+/*
  * One delivery, one entry, one turn.
  *
  * Returns: %FALSE when the link refused it; the item is put back and
@@ -1961,6 +2049,7 @@ deliver_single(ClawtMailboxRouter *self, ClawtAgent *agent, ClawtLink *link,
 	ClawtRoom *item_room = NULL;
 	gboolean peer = FALSE;
 	gboolean replies = TRUE;
+	gboolean steer;
 
 	body = compose_single(self, agent_id, item, &item_room, &peer, &replies);
 	body = with_ack_notes(self, agent_id, body);
@@ -1971,16 +2060,24 @@ deliver_single(ClawtMailboxRouter *self, ClawtAgent *agent, ClawtLink *link,
 	 * model.  The model a routine or a delegation chose is sent on its
 	 * own, for that turn only.
 	 */
-	if (!clawt_link_deliver_full(link,
-	                             clawt_mailbox_item_get_room(item),
-	                             from,
-	                             NULL,
-	                             body,
-	                             clawt_mailbox_item_get_task_id(item),
-	                             session_peer_for(item_room, agent_id),
-	                             clawt_mailbox_item_get_model(item),
-	                             !peer,
-	                             &error)) {
+	steer = steer_wanted(self, agent, link, item);
+
+	/*
+	 * The item's id rides every delivery, and with a steer request when
+	 * the policy asks for one: the agent answers chat.steered naming it.
+	 */
+	if (!clawt_link_deliver_steer(link,
+	                              clawt_mailbox_item_get_room(item),
+	                              from,
+	                              NULL,
+	                              body,
+	                              clawt_mailbox_item_get_task_id(item),
+	                              session_peer_for(item_room, agent_id),
+	                              clawt_mailbox_item_get_model(item),
+	                              !peer,
+	                              clawt_mailbox_item_get_id(item),
+	                              steer,
+	                              &error)) {
 		/*
 		 * Put back and the drain stops here.  Continuing past a failed
 		 * delivery would hand the agent its messages out of order once
@@ -2044,6 +2141,15 @@ deliver_single(ClawtMailboxRouter *self, ClawtAgent *agent, ClawtLink *link,
      * precisely what a notice's turn is for.
      */
     clawt_agent_deliver_item(agent, item, replies);
+
+    /*
+     * Asked to steer: no turn takes this description until the agent
+     * says whether the running turn took the words (chat.steered).  If
+     * it did, the description joins that turn instead of waiting for one
+     * that will never start; if not, it waits for the message's own.
+     */
+    if (steer)
+        clawt_agent_await_steer(agent, clawt_mailbox_item_get_id(item));
 
     /*
      * And who this turn is for.  Delivery is the only moment that knows

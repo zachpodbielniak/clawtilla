@@ -377,7 +377,7 @@ Each is refused by ~agent.set~ where it arrives, and an agent that reaches that 
 *** An agent runs on a CLI backend, and only on a CLI backend
 
 libreclaw drives command-line tools, not HTTP APIs.  Its provider table
-knows exactly six:
+knows exactly eight:
 
 | Provider       | What it is                                          |
 |----------------+-----------------------------------------------------|
@@ -387,26 +387,26 @@ knows exactly six:
 | ~opencode~     | the OpenCode CLI, which routes to xAI, Google, OpenAI and others itself |
 | ~antigravity~  | Google's ~agy~ CLI in print mode; alias ~agy~, ~AGY_PATH~ overrides the binary |
 | ~cursor~       | Cursor's ~cursor-agent~ CLI in print mode; alias ~cursor-agent~, ~CURSOR_AGENT_PATH~ overrides |
+| ~codex-cli~    | OpenAI's ~codex exec~; alias ~codex~ |
+| ~acp~          | any Agent Client Protocol agent over stdio, started from ~model.command~; aliases ~acp-agent~, ~acp_agent~ (libreclaw 0.30.0) |
 
-Anything else is *not* an error.  ~lc_provider_type_normalize()~
-rewrites an unrecognised provider to ~claude-code~ with a warning in the
-log, so an agent configured for ~openai~ does not run OpenAI: it runs
-Claude Code and hands it ~gpt-4o~ as a model name, which fails somewhere
-much further along.
+Anything else *is* an error (libreclaw 0.30.0).  ~lc_provider_type_normalize()~
+used to rewrite an unrecognised provider to ~claude-code~ with a warning,
+so an agent configured for ~openai~ ran Claude Code holding ~gpt-4o~ as a
+model name, which failed much further along.  Now it returns nothing and
+warns with the valid list; the agent's every turn is refused with that
+reason until ~model.provider~ is fixed, and a fallback naming it is
+skipped.
 
-Two of those rewrites are *silent*, and they are the ones somebody is
-most likely to type.  ~claude~ becomes ~claude-code~ and ~grok~ becomes
-~grok-build~ with no warning at all, because both are treated as
-spellings of the CLI rather than as mistakes.  That is defensible and it
-is also the trap: ~claude~ and ~grok~ are exactly the names offered for
+Two spellings are still accepted rather than refused, and they are the
+ones somebody is most likely to type: ~claude~ is ~claude-code~ and
+~grok~ is ~grok-build~, treated as spellings of the CLI.  That is the
+trap worth knowing: ~claude~ and ~grok~ are exactly the names offered for
 the agent *designer* further down this page, so putting one in
-~model.provider~ gives an agent quietly running a different backend with
-nothing in the log to say so.  The warning fires only for ~openai~,
-~gemini~ and ~ollama~ -- and it names ~claude-code-tmux~, which is
-libreclaw's own older spelling of what clawtilla calls ~claude-tmux~.
+~model.provider~ gives an agent running the CLI, not the HTTP API.
 
 So ~model.list~ reports ~agent~ per provider and clients offer only
-those six for an agent.  ~grok-build~ was missing from that list for a
+those eight for an agent.  ~grok-build~ was missing from that list for a
 while and could not be chosen at all, which is the bug this table
 exists to stop recurring; ~tests/test-model-catalog.c~ checks the column
 against ~lc_provider_type_normalize()~ itself rather than against a
@@ -416,6 +416,32 @@ To reach OpenAI or Gemini from an agent, use ~opencode~, ~cursor~ or
 ~antigravity~ --- all three are CLIs that route to other people's models.
 The HTTP providers are offered for *designing* an agent, where ai-glib
 drives them directly -- see below.
+
+**** Any ACP agent (~acp~)
+
+~acp~ (libreclaw 0.30.0, over ai-glib v0.12.0's ~AiAcpClient~) makes any
+program that speaks the Agent Client Protocol (v1, JSON-RPC over stdio)
+an agent's engine --- Gemini CLI's ~--experimental-acp~, Zed's agents,
+anything that implements the protocol.
+
+- *Which program is ~model.command~* (since 0.28.0): the command line,
+  split like a shell would split it but with no shell.  It is rendered
+  into libreclaw's ~ai.command~ only for an ~acp~ agent.  Left empty,
+  libreclaw falls back to ~$AI_ACP_COMMAND~ in the agent's environment,
+  and a turn with neither fails saying so.  GTK, web and lrg show it as
+  "ACP agent command" in the agent's settings, with
+  ~clawt_model_catalog_acp_command_hint()~ under it.
+- *The model is the agent's own default.*  ACP v1 has no request that
+  selects a model, so the catalogue lists one entry, ~default~ ("The
+  agent's own default"), and ~model.model~ is not sent; the program's own
+  configuration or its command line chooses.
+- *Permissions are answered "allow" by kind*, as every backend here skips
+  its prompts, and the agent's file reads are confined to its workspace
+  by ai-glib.  It does not steer (~agents.steer~ is refused by it and the
+  message waits) and does not search its tools itself, so a big connector
+  is presented as a directory.
+- *Tested against ai-glib's scripted fake agent only.*  Point one agent
+  at a real ACP program before relying on it.
 
 **** The two newest, and what is different about them
 

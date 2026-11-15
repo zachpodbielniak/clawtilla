@@ -186,18 +186,25 @@ gboolean
 clawt_mcp_directory_cli_searches_tools(
 	const gchar *provider
 ){
+	g_autoptr(AiCliClient) probe = NULL;
 	const gchar *cli;
 
 	/*
-	 * TODO(ai-glib): ask the client class.  This belongs beside
-	 * AiCliClientClass.config_dir_env as a class datum the provider
-	 * declares; until ai-glib has one, this is the only table of it and
-	 * the roadmap carries the move.
+	 * Asked of the client's class (ai-glib v0.11.0's
+	 * AiCliClientClass.searches_tools), on a probe built the way the
+	 * agent's own client will be, as clawt_account_check() asks
+	 * config_dir_env.  A CLI that gains deferred tool loading then needs
+	 * no edit here -- the table this replaced did.
 	 */
 	cli = lc_provider_type_normalize(provider, "agent");
 
-	return g_strcmp0(cli, "claude-code") == 0 ||
-	       g_strcmp0(cli, "claude-tmux") == 0;
+	/* A provider libreclaw refuses runs nothing, and searches nothing. */
+	if (provider != NULL && cli == NULL)
+		return FALSE;
+
+	probe = lc_client_factory_new(cli, NULL, NULL, NULL, FALSE);
+
+	return probe != NULL && ai_cli_client_searches_tools(probe);
 }
 
 gchar *

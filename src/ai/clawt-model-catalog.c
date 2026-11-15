@@ -125,6 +125,18 @@ static const ClawtModelInfo codex_models[] = {
 };
 
 /*
+ * An Agent Client Protocol agent is whatever program the agent's
+ * model.command starts, and ACP v1 has no request that selects a model
+ * -- so the one entry is the agent's own default (ai-glib's
+ * AI_ACP_MODEL_DEFAULT), which is all libreclaw can honestly offer.
+ */
+static const ClawtModelInfo acp_models[] = {
+    { "default", "The agent's own default",
+      "ACP has no request that picks a model; the program's own "
+      "configuration or its command line chooses" }
+};
+
+/*
  * Ollama runs whatever has been pulled locally, so these are only the
  * common ones.  open_ended is TRUE so a client offers a way to type a
  * name that is not here.
@@ -141,17 +153,17 @@ static const ClawtModelInfo ollama_models[] = {
  *
  * The `agent` column is libreclaw's list, not a preference: its
  * provider table is command-line only, and lc_provider_type_normalize()
- * silently rewrites anything it does not know to claude-code.  Adding a
- * name here without adding it there is therefore worse than leaving it
- * out: the client offers it, the agent is created, and it runs on
- * Claude Code holding a model name Claude Code rejects.  An agent
+ * refuses anything it does not know (libreclaw 0.30.0; before that it
+ * rewrote it to claude-code).  Adding a name here without adding it
+ * there is therefore worse than leaving it out: the client offers it,
+ * the agent is created, and every turn it takes is refused.  An agent
  * configured for "openai" was therefore running Claude Code with
  * "gpt-4o" in the model field -- so those providers are offered for
  * designing an agent, where ai-glib drives them over HTTP directly, and
  * not for being one.
  */
 static const ClawtProviderInfo providers[] = {
-    /* ── can back an agent: libreclaw's seven CLI backends ───────── */
+    /* ── can back an agent: libreclaw's eight CLI backends ───────── */
     { "claude-code", "Claude Code",
       "the CLI, billed against your subscription",
       claude_code_models, G_N_ELEMENTS(claude_code_models),
@@ -192,6 +204,13 @@ static const ClawtProviderInfo providers[] = {
       "the agent's workspace rather than run with approvals bypassed",
       codex_models, G_N_ELEMENTS(codex_models),
       TRUE, TRUE, FALSE },
+
+    { "acp", "Any ACP agent",
+      "any program that speaks the Agent Client Protocol over stdio, "
+      "started from the agent's model.command (e.g. gemini "
+      "--experimental-acp); it brings its own login and its own model",
+      acp_models, G_N_ELEMENTS(acp_models),
+      FALSE, TRUE, FALSE },
 
     /* ── can design an agent: ai-glib's HTTP providers ───────────── */
     { "claude", "Claude API",
@@ -454,4 +473,18 @@ clawt_model_catalog_fetch_models_async(const gchar          *provider_id,
 
     ai_provider_list_models_async(AI_PROVIDER(provider), NULL,
                                    on_models_listed_async, fetch);
+}
+
+const gchar *
+clawt_model_catalog_acp_command_label(void)
+{
+	return "ACP agent command";
+}
+
+const gchar *
+clawt_model_catalog_acp_command_hint(void)
+{
+	return "Only for the \"Any ACP agent\" provider: the program that is the "
+		"agent, e.g. gemini --experimental-acp. Split like a shell would, "
+		"with no shell. Its model is the program's own default.";
 }

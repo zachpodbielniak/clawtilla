@@ -1409,7 +1409,8 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
                                      clawt_event_get_detail_int(event, "acknowledged") != 0,
                                      clawt_event_get_detail_int(event, "merged"),
                                      clawt_event_get_detail_int(event, "consult"),
-                                     clawt_event_get_detail_int(event, "interrupted") != 0);
+                                     clawt_event_get_detail_int(event, "interrupted") != 0,
+                                     NULL);
             clawt_gtk_append_round_marks(self, 0,
                                      clawt_event_get_detail(event, "skipped"),
                                      clawt_event_get_detail(event, "skip_reason"),
@@ -1574,6 +1575,19 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
         clawt_window_alert(self, CLAWT_ALERT_ERROR, kind,
                            clawt_event_get_detail(event, "agent"), message);
         clawt_gtk_refresh_routines(self);
+        return;
+    }
+
+    /*
+     * A message on screen was steered into the turn already running:
+     * the room is redrawn so it carries the mark, and does not read as
+     * a message still waiting for a turn of its own.
+     */
+    if (g_strcmp0(kind, "turn.steered") == 0) {
+        if (self->selected_room != NULL &&
+            g_strcmp0(clawt_event_get_detail(event, "room"),
+                      self->selected_room) == 0)
+            clawt_gtk_load_history(self);
         return;
     }
 

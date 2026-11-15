@@ -170,6 +170,17 @@ typedef struct {
 	 * one no delivery set up, or one handed over with no mailbox.
 	 */
 	GArray   *records;
+
+	/*
+	 * Delivered with a steer request and not yet answered (Since
+	 * 0.28.0).  libreclaw has either handed the message to the turn
+	 * running in its room or is about to queue it, and only its
+	 * chat.steered says which -- so until then no turn may take this
+	 * entry: clawt_agent_begin_turn() passes over it, and
+	 * clawt_agent_settle_steer() either folds it into the running turn
+	 * or releases it to be taken like any other.
+	 */
+	gboolean  steering;
 } TurnSetup;
 
 
@@ -1359,6 +1370,275 @@ clawt_agent_deliver_merged(
 	}
 }
 
+/* ── Steering (Since 0.28.0) ─────────────────────────────────────── */
+
+/* The waiting delivery whose input is @item_id, and where it stands. */
+static TurnSetup *
+pending_for_item(
+	ClawtAgent  *self,
+	const gchar *item_id,
+	guint       *out_index
+){
+	guint i;
+
+	if (item_id == NULL)
+		return NULL;
+
+	for (i = 0; i < g_queue_get_length(self->pending); i++) {
+		TurnSetup *candidate = g_queue_peek_nth(self->pending, i);
+
+		if (candidate->input != NULL &&
+			g_strcmp0(clawt_mailbox_item_get_id(candidate->input),
+				item_id) == 0) {
+			if (out_index != NULL)
+				*out_index = i;
+			return candidate;
+		}
+	}
+
+	return NULL;
+}
+
+gboolean
+clawt_agent_await_steer(
+	ClawtAgent  *self,
+	const gchar *item_id
+){
+	TurnSetup *setup;
+
+	g_return_val_if_fail(CLAWT_IS_AGENT(self), FALSE);
+
+	setup = pending_for_item(self, item_id, NULL);
+	if (setup == NULL)
+		return FALSE;
+
+	setup->steering = TRUE;
+	return TRUE;
+}
+
+gint64
+clawt_agent_get_turn_record_in(
+	ClawtAgent  *self,
+	const gchar *room_id
+){
+	TurnSetup *setup;
+
+	g_return_val_if_fail(CLAWT_IS_AGENT(self), 0);
+
+	if (room_id == NULL || !room_is_live(self, room_id))
+		return 0;
+
+	setup = turn_in(self, room_id);
+	if (setup == NULL || setup->records == NULL || setup->records->len == 0)
+		return 0;
+
+	return g_array_index(setup->records, gint64, 0);
+}
+
+gboolean
+clawt_agent_get_turn_steer_facts(
+	ClawtAgent       *self,
+	const gchar      *room_id,
+	const gchar     **origin,
+	const gchar     **task_id,
+	gboolean         *consult
+){
+	TurnSetup *setup;
+
+	g_return_val_if_fail(CLAWT_IS_AGENT(self), FALSE);
+
+	/* Only a turn that is running: a finished one has nothing to steer. */
+	if (room_id == NULL || !room_is_live(self, room_id))
+		return FALSE;
+
+	setup = turn_in(self, room_id);
+	if (setup == NULL)
+		return FALSE;
+
+	if (origin != NULL)
+		*origin = setup->origin;
+	if (task_id != NULL)
+		*task_id = setup->task_id;
+	if (consult != NULL)
+		*consult = setup->consult;
+
+	return TRUE;
+}
+
+/*
+ * Folds a steered delivery's description into the turn it joined.
+ *
+ * Every field in the direction that errs towards stopping, as
+ * clawt_agent_deliver_merged() folds several deliveries before a turn --
+ * this is the same rule applied after the turn has started:
+ *
+ *   depth    the deepest, so max_hops is not bought back by steering
+ *   replies  TRUE if either may be answered: the turn's closing text now
+ *            answers both, and swallowing a real answer is silent loss
+ *   origin   a peer's over nobody's or the operator's, so
+ *            clawtilla_message_user's guard holds once a peer's words
+ *            are part of the turn
+ *   task     kept when the steer names none or the same one, and dropped
+ *            when they differ: a wrong parent hangs work under somebody
+ *            else's job, and a turn completing a task it was never about
+ *            is a lie where one completing late is a delay
+ *   consult  TRUE if either is; the policy never steers across the line,
+ *            so this only ever holds a consultation a consultation
+ *
+ * The turn's input -- the delivery that started it, whose round and
+ * thread its answer continues -- is the running turn's and is kept.
+ */
+static void
+fold_steer_into(
+	TurnSetup *into,
+	TurnSetup *steer
+){
+	if (steer->depth > into->depth)
+		into->depth = steer->depth;
+
+	into->replies = into->replies || steer->replies;
+	into->consult = into->consult || steer->consult;
+
+	if (steer->origin != NULL &&
+		g_strcmp0(steer->origin, "user") != 0 &&
+		g_strcmp0(steer->origin, CLAWT_SYSTEM_SENDER) != 0 &&
+		(into->origin == NULL ||
+		 g_strcmp0(into->origin, "user") == 0 ||
+		 g_strcmp0(into->origin, CLAWT_SYSTEM_SENDER) == 0)) {
+		g_free(into->origin);
+		into->origin = g_strdup(steer->origin);
+	} else if (into->origin == NULL) {
+		into->origin = g_strdup(steer->origin);
+	}
+
+	if (steer->task_id != NULL &&
+		g_strcmp0(steer->task_id, into->task_id) != 0)
+		g_clear_pointer(&into->task_id, g_free);
+}
+
+/*
+ * The steered delivery's turn record joins the running turn's, so a
+ * restart that cuts the turn hands both back as one -- or ends both as
+ * interrupted -- and never reruns the steered words as a turn of their
+ * own after the turn that already read them was rerun.
+ */
+static void
+join_turn_records(
+	ClawtAgent *self,
+	TurnSetup  *into,
+	TurnSetup  *steer
+){
+	guint i;
+
+	if (steer->records == NULL || steer->records->len == 0)
+		return;
+
+	if (into->records == NULL || into->records->len == 0 ||
+		self->mailbox == NULL) {
+		if (into->records == NULL)
+			into->records = g_array_new(FALSE, FALSE, sizeof(gint64));
+		g_array_append_vals(into->records, steer->records->data,
+			steer->records->len);
+		g_array_set_size(steer->records, 0);
+		return;
+	}
+
+	for (i = 0; i < steer->records->len; i++) {
+		g_autoptr(GError) error = NULL;
+		gint64 from = g_array_index(steer->records, gint64, i);
+
+		if (!clawt_mailbox_turn_join(self->mailbox,
+				g_array_index(into->records, gint64, 0), from, &error)) {
+			g_warning("agent %s: a steered message's turn record could not "
+				"join the running turn's, so it is kept apart: %s",
+				clawt_agent_get_id(self),
+				error != NULL ? error->message : "unknown");
+			g_array_append_val(into->records, from);
+		}
+	}
+
+	g_array_set_size(steer->records, 0);
+}
+
+ClawtSteerSettle
+clawt_agent_settle_steer(
+	ClawtAgent  *self,
+	const gchar *room_id,
+	const gchar *item_id,
+	const gchar *outcome,
+	gboolean     asked
+){
+	TurnSetup *steer;
+	TurnSetup *into;
+	guint index = 0;
+
+	g_return_val_if_fail(CLAWT_IS_AGENT(self), CLAWT_STEER_SETTLE_UNKNOWN);
+	g_return_val_if_fail(outcome != NULL, CLAWT_STEER_SETTLE_UNKNOWN);
+
+	steer = pending_for_item(self, item_id, &index);
+
+	/*
+	 * Already gone: the agent ran it as a turn of its own before its
+	 * answer arrived (clawt_agent_begin_turn()'s last resort), or a
+	 * restart cleared the queue.  Nothing left to describe.
+	 */
+	if (steer == NULL)
+		return CLAWT_STEER_SETTLE_UNKNOWN;
+
+	if (g_strcmp0(outcome, "refused") == 0) {
+		/*
+		 * Provably not delivered: libreclaw queued it, and its own turn
+		 * will take this entry like any other.  Where it now stands is
+		 * libreclaw's queue order.  A refusal decided before asking
+		 * queued it the moment it arrived, which is where it already is;
+		 * the engine's own refusal queued it behind everything that
+		 * arrived meanwhile, which is the tail.
+		 */
+		steer->steering = FALSE;
+
+		if (asked) {
+			g_queue_pop_nth(self->pending, index);
+			g_queue_push_tail(self->pending, steer);
+		}
+
+		return CLAWT_STEER_SETTLE_QUEUED;
+	}
+
+	/*
+	 * Delivered, or indeterminate -- which counts as delivered.  The
+	 * message starts no turn, so its description must not wait to be
+	 * taken by one: left queued, the next real turn in this room would
+	 * pop it and inherit its replies flag, its depth and its task, the
+	 * bug class on_runtime_exited() had to clear.  It joins the turn it
+	 * was steered into, which is the one this room has on record.
+	 */
+	g_queue_pop_nth(self->pending, index);
+	into = turn_in(self, room_id != NULL ? room_id : steer->room);
+
+	if (into == NULL) {
+		/* No turn on record to join: nothing will close its records. */
+		close_turn_records(self, steer);
+		turn_setup_free(steer);
+		return CLAWT_STEER_SETTLE_JOINED;
+	}
+
+	fold_steer_into(into, steer);
+
+	/*
+	 * A turn that has already ended (an indeterminate answer can come
+	 * after the falling edge) closed its records then, so the steered
+	 * part's are closed here: the turn read the words, and a restart has
+	 * nothing of it to rerun.
+	 */
+	if (room_is_live(self, into->room))
+		join_turn_records(self, into, steer);
+	else
+		close_turn_records(self, steer);
+
+	turn_setup_free(steer);
+	return CLAWT_STEER_SETTLE_JOINED;
+}
+
 gboolean
 clawt_agent_get_turn_consult_in(
 	ClawtAgent  *self,
@@ -1912,11 +2192,36 @@ clawt_agent_begin_turn(ClawtAgent *self, const gchar *room_id)
     for (i = 0; i < g_queue_get_length(self->pending); i++) {
         TurnSetup *candidate = g_queue_peek_nth(self->pending, i);
 
+        /*
+         * Not a delivery still waiting to hear whether it was steered:
+         * libreclaw answers a steer before it queues the message, so a
+         * turn starting now is somebody else's.
+         */
+        if (candidate->steering)
+            continue;
+
         if (candidate->room == NULL ||
             g_strcmp0(room_key(candidate->room), key) == 0) {
             setup = candidate;
             g_queue_remove(self->pending, candidate);
             break;
+        }
+    }
+
+    /*
+     * Unless nothing else is waiting for this room.  An agent that ran
+     * the message as a turn without ever answering the steer -- one
+     * that went away and came back mid-answer -- is running *this*
+     * message, and its description is the right one.
+     */
+    for (i = 0; setup == NULL && i < g_queue_get_length(self->pending); i++) {
+        TurnSetup *candidate = g_queue_peek_nth(self->pending, i);
+
+        if (candidate->steering &&
+            g_strcmp0(room_key(candidate->room), key) == 0) {
+            setup = candidate;
+            setup->steering = FALSE;
+            g_queue_remove(self->pending, candidate);
         }
     }
 

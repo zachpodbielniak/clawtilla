@@ -27,6 +27,7 @@ enum {
     SIGNAL_TYPING,
     SIGNAL_STEP,
     SIGNAL_FAILOVER,
+    SIGNAL_STEERED,
     SIGNAL_CLOSED,
     N_SIGNALS
 };
@@ -47,6 +48,7 @@ struct _ClawtLink {
     gboolean  open;
     gboolean  reading;
     gint64    last_seen;
+    gboolean  can_steer;   /* the hello listed "steer" in features */
 
     ClawtLinkMcpHandler mcp_handler;
     gpointer            mcp_data;
@@ -159,6 +161,30 @@ handle_hello(ClawtLink *self, JsonObject *payload)
 
     g_free(self->agent_name);
     self->agent_name = g_strdup(agent_name);
+
+    /*
+     * What the agent can do beyond the protocol version.  Only "steer"
+     * is read: an agent that lists it answers every steer request with
+     * one chat.steered, and one that does not must never be asked.
+     */
+    self->can_steer = FALSE;
+    if (json_object_has_member(payload, "features")) {
+        JsonNode *node = json_object_get_member(payload, "features");
+
+        if (JSON_NODE_HOLDS_ARRAY(node)) {
+            JsonArray *features = json_node_get_array(node);
+            guint i;
+
+            for (i = 0; i < json_array_get_length(features); i++) {
+                JsonNode *element = json_array_get_element(features, i);
+
+                if (JSON_NODE_HOLDS_VALUE(element) &&
+                    json_node_get_value_type(element) == G_TYPE_STRING &&
+                    g_strcmp0(json_node_get_string(element), "steer") == 0)
+                    self->can_steer = TRUE;
+            }
+        }
+    }
 
     /*
      * The server decides whether to accept, because only it knows the
@@ -298,6 +324,52 @@ handle_failover(ClawtLink *self, JsonObject *payload)
     g_signal_emit(self, signals[SIGNAL_FAILOVER], 0, payload);
 }
 
+/*
+ * What became of a message the daemon asked the agent to steer.
+ *
+ * Read as telemetry about a message already delivered, like a step: no
+ * path from here reaches the router.  A frame without a message id or
+ * an outcome names nothing and is dropped, and so is one from an agent
+ * that never said it steers -- it cannot be answering a question it was
+ * never asked.
+ */
+static void
+handle_steered(ClawtLink *self, JsonObject *payload)
+{
+    const gchar *room_id;
+    const gchar *message_id;
+    const gchar *outcome;
+    const gchar *reason;
+    gboolean asked;
+
+    if (payload == NULL || self->agent_id == NULL || !self->can_steer)
+        return;
+
+    room_id = json_object_get_string_member_with_default(payload, "room_id",
+                                                         NULL);
+    message_id = json_object_get_string_member_with_default(payload,
+                                                            "message_id",
+                                                            NULL);
+    outcome = json_object_get_string_member_with_default(payload, "outcome",
+                                                         NULL);
+    reason = json_object_get_string_member_with_default(payload, "reason",
+                                                        NULL);
+
+    /*
+     * Whether the engine was asked.  Absent reads as asked, which only
+     * moves a refused delivery to the back of the agent's queue -- the
+     * conservative place for a message whose position is not known.
+     */
+    asked = json_object_get_boolean_member_with_default(payload, "asked",
+                                                        TRUE);
+
+    if (message_id == NULL || outcome == NULL)
+        return;
+
+    g_signal_emit(self, signals[SIGNAL_STEERED], 0, room_id, message_id,
+                  outcome, reason, asked);
+}
+
 static void
 handle_mcp_request(ClawtLink *self, const LcBridgeFrame *frame)
 {
@@ -370,6 +442,10 @@ handle_frame(ClawtLink *self, const LcBridgeFrame *frame)
 
     case LC_BRIDGE_FRAME_AGENT_FAILOVER:
         handle_failover(self, frame->payload);
+        break;
+
+    case LC_BRIDGE_FRAME_CHAT_STEERED:
+        handle_steered(self, frame->payload);
         break;
 
     case LC_BRIDGE_FRAME_MCP_REQUEST:
@@ -575,6 +651,41 @@ clawt_link_deliver_full(ClawtLink    *self,
                         gboolean      overrides_allowed,
                         GError      **error)
 {
+    return clawt_link_deliver_steer(self, room_id, sender_id, sender_name,
+                                    body, thread_id, session_peer, model,
+                                    overrides_allowed, NULL, FALSE, error);
+}
+
+gboolean
+clawt_link_get_can_steer(ClawtLink *self)
+{
+    g_return_val_if_fail(CLAWT_IS_LINK(self), FALSE);
+
+    return self->can_steer;
+}
+
+void
+clawt_link_set_can_steer(ClawtLink *self, gboolean can_steer)
+{
+    g_return_if_fail(CLAWT_IS_LINK(self));
+
+    self->can_steer = can_steer;
+}
+
+gboolean
+clawt_link_deliver_steer(ClawtLink    *self,
+                         const gchar  *room_id,
+                         const gchar  *sender_id,
+                         const gchar  *sender_name,
+                         const gchar  *body,
+                         const gchar  *thread_id,
+                         const gchar  *session_peer,
+                         const gchar  *model,
+                         gboolean      overrides_allowed,
+                         const gchar  *message_id,
+                         gboolean      steer,
+                         GError      **error)
+{
     g_autoptr(JsonObject) payload = json_object_new();
 
     g_return_val_if_fail(CLAWT_IS_LINK(self), FALSE);
@@ -604,6 +715,17 @@ clawt_link_deliver_full(ClawtLink    *self,
         json_object_set_string_member(payload, "model", model);
     if (!overrides_allowed)
         json_object_set_boolean_member(payload, "overrides", FALSE);
+
+    /*
+     * The id rides every delivery that has one, so a later chat.steered
+     * can name it.  The request itself only with an id and only to an
+     * agent that answers it: anything else would leave the daemon
+     * waiting for an answer that cannot come.
+     */
+    if (message_id != NULL)
+        json_object_set_string_member(payload, "message_id", message_id);
+    if (steer && message_id != NULL && self->can_steer)
+        json_object_set_boolean_member(payload, "steer", TRUE);
 
     return send_frame(self, LC_BRIDGE_FRAME_CHAT_MESSAGE_IN, NULL, payload,
                       error);
@@ -815,6 +937,26 @@ clawt_link_class_init(ClawtLinkClass *klass)
     signals[SIGNAL_FAILOVER] =
         g_signal_new("failover", CLAWT_TYPE_LINK, G_SIGNAL_RUN_LAST, 0,
                      NULL, NULL, NULL, G_TYPE_NONE, 1, JSON_TYPE_OBJECT);
+
+    /**
+     * ClawtLink::steered:
+     * @self: the link
+     * @room_id: (nullable): the room the message was for
+     * @message_id: the daemon's id for the message
+     * @outcome: "delivered", "indeterminate" or "refused"
+     * @reason: (nullable): why it was refused
+     * @asked: whether the running turn's engine was asked, which says
+     *   where a refused message now stands in the agent's queue
+     *
+     * The agent says what became of a message the daemon asked it to
+     * steer into its running turn.  Telemetry about a delivered message,
+     * never a message.  Since: 0.28.0
+     */
+    signals[SIGNAL_STEERED] =
+        g_signal_new("steered", CLAWT_TYPE_LINK, G_SIGNAL_RUN_LAST, 0,
+                     NULL, NULL, NULL, G_TYPE_NONE, 5,
+                     G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
+                     G_TYPE_STRING, G_TYPE_BOOLEAN);
 
     signals[SIGNAL_CLOSED] =
         g_signal_new("closed", CLAWT_TYPE_LINK, G_SIGNAL_RUN_LAST, 0,

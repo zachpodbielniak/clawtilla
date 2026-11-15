@@ -78,6 +78,7 @@ static const gchar *SCHEMA_SQL =
 	"  consult INTEGER NOT NULL DEFAULT 0,"
 	"  room_round INTEGER NOT NULL DEFAULT 0,"
 	"  chain TEXT,"
+	"  message_id TEXT,"
     "  created_at INTEGER NOT NULL,"
     "  not_before INTEGER NOT NULL DEFAULT 0,"
     "  expires_at INTEGER NOT NULL DEFAULT 0,"
@@ -295,6 +296,18 @@ apply_schema(sqlite3 *db, GError **error)
 		return FALSE;
 	}
 
+	/*
+	 * Since 0.28.0: the room message an item delivers, so a steer's
+	 * outcome can be drawn on it.  Absent means none, which only costs
+	 * an older queued item its "steered" mark.
+	 */
+	if (!has_column(db, "items", "message_id") &&
+		sqlite3_exec(db, "ALTER TABLE items ADD COLUMN message_id TEXT",
+			NULL, NULL, NULL) != SQLITE_OK) {
+		set_sqlite_error(error, db, "adding message_id to the mailbox");
+		return FALSE;
+	}
+
 	/* Existing mailboxes must retain their queued work when upgraded. */
 	for (i = 0; i < G_N_ELEMENTS(context_columns); i++) {
 		g_autofree gchar *sql = NULL;
@@ -358,6 +371,7 @@ item_from_row(sqlite3_stmt *stmt)
 		(guint)MAX(sqlite3_column_int(stmt, 25), 0), column_text(stmt, 26));
 	clawt_mailbox_item_set_replays(item,
 		(guint)MAX(sqlite3_column_int(stmt, 27), 0));
+	clawt_mailbox_item_set_message_id(item, column_text(stmt, 28));
 
     return item;
 }
@@ -367,7 +381,7 @@ item_from_row(sqlite3_stmt *stmt)
     "idempotency_key, last_error, priority, state, depth, attempts, " \
     "created_at, not_before, expires_at, invites_reply, " \
 	"request_room, request_origin, request_task, model, composed, one_way, " \
-	"consult, room_round, chain, replays"
+	"consult, room_round, chain, replays, message_id"
 
 /* ── Depth ───────────────────────────────────────────────────────── */
 
@@ -699,8 +713,8 @@ clawt_mailbox_post(ClawtMailbox *self, ClawtMailboxItem *item, GError **error)
             " reply_to, subject, idempotency_key, priority, state, depth,"
             " attempts, created_at, not_before, expires_at, invites_reply,"
 			" request_room, request_origin, request_task, model, composed,"
-			" one_way, consult, room_round, chain)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+			" one_way, consult, room_round, chain, message_id)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             -1, &stmt, NULL) != SQLITE_OK) {
         set_sqlite_error(error, self->db, "queueing a message");
         return NULL;
@@ -745,6 +759,8 @@ clawt_mailbox_post(ClawtMailbox *self, ClawtMailboxItem *item, GError **error)
 	sqlite3_bind_int(stmt, 24, clawt_mailbox_item_get_consult(item) ? 1 : 0);
 	sqlite3_bind_int(stmt, 25, (gint)clawt_mailbox_item_get_round(item));
 	sqlite3_bind_text(stmt, 26, clawt_mailbox_item_get_chain(item), -1,
+		SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 27, clawt_mailbox_item_get_message_id(item), -1,
 		SQLITE_TRANSIENT);
 
     rc = sqlite3_step(stmt);
@@ -1527,6 +1543,100 @@ clawt_mailbox_turn_close(
 	return TRUE;
 }
 
+gboolean
+clawt_mailbox_turn_join(
+	ClawtMailbox  *self,
+	gint64         into,
+	gint64         from,
+	GError       **error
+){
+	static const gchar *statements[] = {
+		/* the items, after the ones already there, in their own order */
+		"UPDATE turn_items SET turn = ?1, position = position +"
+		" (SELECT COALESCE(MAX(position), -1) + 1 FROM turn_items"
+		"  WHERE turn = ?1) WHERE turn = ?2",
+		/* the higher replay count, so the join buys no extra rerun */
+		"UPDATE turns SET replays = MAX(replays,"
+		" COALESCE((SELECT replays FROM turns WHERE id = ?2), 0))"
+		" WHERE id = ?1",
+		/* and anything the steered part is marked as having done */
+		"UPDATE turns SET outward = CASE"
+		" WHEN (SELECT outward FROM turns WHERE id = ?2) IS NULL"
+		"   OR (SELECT outward FROM turns WHERE id = ?2) = '' THEN outward"
+		" WHEN outward IS NULL OR outward = ''"
+		"   THEN (SELECT outward FROM turns WHERE id = ?2)"
+		" ELSE outward || ', ' || (SELECT outward FROM turns WHERE id = ?2)"
+		" END WHERE id = ?1",
+		"DELETE FROM turns WHERE id = ?2"
+	};
+	guint i;
+
+	g_return_val_if_fail(CLAWT_IS_MAILBOX(self), FALSE);
+
+	if (into == from)
+		return TRUE;
+
+	if (!exec_simple(self, "BEGIN IMMEDIATE", error))
+		return FALSE;
+
+	/*
+	 * The turn it would join is gone: handed back by a rescue
+	 * (clawt_mailbox_turn_hand_back()) or closed.  Its items would be
+	 * moved onto a record nothing will ever close or recover -- so the
+	 * steered part is closed instead.  The turn that read it was rerun
+	 * or finished, and either way these words are not run again.
+	 */
+	{
+		sqlite3_stmt *stmt = NULL;
+		gboolean exists = FALSE;
+
+		if (sqlite3_prepare_v2(self->db, "SELECT 1 FROM turns WHERE id = ?",
+				-1, &stmt, NULL) == SQLITE_OK) {
+			sqlite3_bind_int64(stmt, 1, into);
+			exists = sqlite3_step(stmt) == SQLITE_ROW;
+			sqlite3_finalize(stmt);
+		}
+
+		if (!exists) {
+			if (!delete_turn(self, from, error)) {
+				exec_simple(self, "ROLLBACK", NULL);
+				return FALSE;
+			}
+			if (!exec_simple(self, "COMMIT", error)) {
+				exec_simple(self, "ROLLBACK", NULL);
+				return FALSE;
+			}
+			return TRUE;
+		}
+	}
+
+	for (i = 0; i < G_N_ELEMENTS(statements); i++) {
+		sqlite3_stmt *stmt = NULL;
+
+		if (sqlite3_prepare_v2(self->db, statements[i], -1, &stmt,
+				NULL) != SQLITE_OK) {
+			set_sqlite_error(error, self->db, "joining a turn record");
+			exec_simple(self, "ROLLBACK", NULL);
+			return FALSE;
+		}
+
+		sqlite3_bind_int64(stmt, 1, into);
+		sqlite3_bind_int64(stmt, 2, from);
+
+		if (!step_write(self, stmt, "joining a turn record", error)) {
+			exec_simple(self, "ROLLBACK", NULL);
+			return FALSE;
+		}
+	}
+
+	if (!exec_simple(self, "COMMIT", error)) {
+		exec_simple(self, "ROLLBACK", NULL);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
 /* The items one record names, in the order they were delivered. */
 static gchar **
 turn_items(
@@ -1765,6 +1875,17 @@ clawt_mailbox_turn_hand_back(
 	const gchar   *model,
 	GError       **error
 ){
+	return clawt_mailbox_turn_hand_back_full(self, room_id, 0, model, error);
+}
+
+guint
+clawt_mailbox_turn_hand_back_full(
+	ClawtMailbox  *self,
+	const gchar   *room_id,
+	gint64         turn,
+	const gchar   *model,
+	GError       **error
+){
 	g_autoptr(GPtrArray) open = NULL;
 	ClawtTurnRecord *record = NULL;
 	const gchar *why = NULL;
@@ -1776,9 +1897,22 @@ clawt_mailbox_turn_hand_back(
 
 	open = clawt_mailbox_turn_list_open(self);
 
-	/* The newest open turn in that room: the one running now. */
+	/*
+	 * The running turn's own record when the caller names it -- the
+	 * agent knows which it is.  Otherwise the newest open record in the
+	 * room, which is the running turn's unless a delivery is waiting to
+	 * hear whether it was steered: that one has an open record of its
+	 * own, newer than the turn it is asking to join, and handing it back
+	 * would rerun the wrong message.
+	 */
 	for (i = 0; i < open->len; i++) {
 		ClawtTurnRecord *candidate = g_ptr_array_index(open, i);
+
+		if (turn > 0) {
+			if (candidate->id == turn)
+				record = candidate;
+			continue;
+		}
 
 		if (g_strcmp0(candidate->room, room_id) == 0 &&
 			(record == NULL || candidate->opened_at >= record->opened_at))
