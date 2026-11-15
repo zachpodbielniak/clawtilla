@@ -336,6 +336,13 @@ OpenMausBot has none of the structural withholding or cycle stalling that I coul
 - *Limit:* the request context lives in memory, so an exchange replayed after a restart has no source and its note comes to the chat.
 - *Version:* minor (config key, C API, all three clients).
 
+** DONE P1 Between agents: a request and one answer, in the room that asked v0.34.0 :orchestration:safety:
+- *Requested:* by the user on 2026-11-15, after a review of every cross-talk path for agents talking back and forth without end ("they would go back and forth like 20 times before stopping").
+- *Found:* the polite loop was already fixed (a closing text earns no answer: 2 turns). Four ways to run long remained, measured against the real router: a pair that calls =clawtilla_message_agent= every turn ran 7 turns, and 53 when each turn also wrote closing text, because both were delivered; daemon notices start a turn at depth 0 and a settle renews the tree budget, so "notice, ask, answer" ran 200 rounds with no refusal; nothing counted messages outside a task tree; and two agents in one Matrix room loop inside libreclaw where clawtilla sees nothing.
+- *Done:* the answer wakes the asker in the conversation it asked from (=orchestration.answer_in_request_room=); the first message to the asker from the answering turn is the one answer; =orchestration.pair_message_budget= (12 rounds) with =orchestration.pair_quiet_minutes= (30), and the ~crosstalk.pair_budget~ alert; libreclaw 0.30.3 ignores ~m.notice~ and answers at most =max_bot_replies= messages in a row from =bot_users=, which clawtilla fills with the fleet's other Matrix accounts.
+- *Limit:* a request made while answering in a Matrix room is still answered in the two agents' room -- the daemon has no session there to wake. The pair counts are in memory, so a restart starts them again.
+- *Version:* minor (config keys, an event kind, C API; libreclaw patch).
+
 * Steering: words into a running turn
 
 Today a message for an agent whose turn is running waits in libreclaw's queue and becomes the next turn. Two costs follow. A delegator's correction ("stop, use the staging DB") arrives after the work it was meant to change has finished. And a peer's follow-up costs a whole extra turn that rereads everything.

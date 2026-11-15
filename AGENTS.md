@@ -1616,6 +1616,23 @@ versions apart.
   through `clawt_redact_secrets()`, which once turned every task id into
   `ta[REDACTED]`.
 
+- **Between agents it is a request and one answer, not a chat** (0.34.0).
+  Three things hold that, and a change to messaging has to keep all three:
+  the answer is handed to the asker in the room it asked from
+  (`hand_answer_back()`, `orchestration.answer_in_request_room`) as a
+  system notice carrying the request context and the answer's depth, with
+  the answer itself only *recorded* in the pair's room; the first message an
+  agent sends the asker from the turn their request started is the answer
+  (`deliver_for_tools()` marks it non-inviting and spends the turn's
+  invite, so the closing text is dropped); and
+  `orchestration.pair_message_budget` counts rounds of requests per pair in
+  the router (`clawt_loop_guard_check_pair()` / `_count_pair()`), renewed
+  only by a non-agent, non-system, non-`grok:` sender or by quiet. Do not
+  send a new daemon notice at depth 0 and assume `max_hops` bounds what it
+  starts: it does not, which is exactly the loop the pair budget exists
+  for. Matrix-to-Matrix loops are libreclaw's to stop (`bot_users`,
+  rendered by `fleet_matrix_users()`).
+
 ### Config
 
 - The schema table's **order is the generated file's order**. A new top-level

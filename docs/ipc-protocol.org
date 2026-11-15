@@ -1046,6 +1046,13 @@ it settles.  Subject the root task's id; details ~tree~ (what to call
 it: the root's brief, its id and its assignee), ~count~ and ~limit~
 (integers), ~agent~ (the root's assignee, for a pod's scope) and
 ~message~, the sentence ~clawt_loop_guard_tree_alert_text()~ writes.
+
+~crosstalk.pair_budget~ (since 0.34.0) is published once when two agents
+use =orchestration.pair_message_budget=, and not again until the pair's
+count has started over.  Subject the agent whose request was the last one
+allowed; details ~agent~ (the same, for a pod's scope), ~peer~ (the
+other), ~count~ and ~limit~ (integers) and ~message~, the sentence
+~clawt_loop_guard_pair_alert_text()~ writes.
 It is a notice.
 
 Two events go with it: ~agent.idle_stopped~ (subject the agent, detail ~hours~) when =agents.runtime.idle_stop_hours= stops one -- a routine alert -- and ~spending.limit-reached~ (subject ~fleet~ or ~agent:<id>~, details ~cost_micros~ and ~limit_micros~), published by the router since 0.7.x and tiered as a notice from 0.8.0.

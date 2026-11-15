@@ -628,6 +628,57 @@ orchestration:
   # exactly as max_hops withholds them, and one alert names the tree.
   tree_message_budget: 60
 
+  # How many rounds of requests two agents may send each other with no
+  # person in between. 0 disables the budget.
+  #
+  # Every other limit here can be started again by the agents
+  # themselves. The hop count begins at zero on a notice of the daemon's
+  # (a task settling, a wait ending), and the tree budget renews when a
+  # task settles -- so two agents trading one job at a time, or asking
+  # each other something after every notice, could do it for as long as
+  # both were willing and nothing was ever refused. This is the count
+  # nothing an agent does renews.
+  #
+  # A round is every request one agent sends the other from one turn --
+  # clawtilla_message_agent, clawtilla_ask_agent, clawtilla_delegate, a
+  # handoff -- so a chief handing a worker ten jobs at once has used one
+  # round, and a pair passing one job back and forth has used a round
+  # each time. Answers are not counted and never refused. Group rooms
+  # are not counted: rounds and rooms.max_chain bound those.
+  #
+  # The count starts again when a person, a routine or a trigger writes
+  # to either agent, or when the two have sent each other nothing for
+  # orchestration.pair_quiet_minutes. At the limit a request between
+  # the two is refused, saying so, and one alert names the pair.
+  pair_message_budget: 12
+
+  # How long two agents must send each other nothing before their pair
+  # budget starts again. 0 means only a person renews it.
+  #
+  # A fleet driven from somewhere the daemon does not see -- a Matrix
+  # room, a webhook -- never shows it a person, so without this two
+  # agents that had ever done pair_message_budget rounds of honest work
+  # could not ask each other anything again until somebody opened a
+  # chat. A loop is never quiet, so it does not earn this; once it has
+  # been stopped nothing is left running to start it again.
+  pair_quiet_minutes: 30
+
+  # Hand an agent's answer to the asker in the conversation it asked
+  # from, rather than in the room the two agents share.
+  #
+  # An agent that asks a teammate something from your chat, or from a
+  # group, is woken with the answer there: it has the conversation
+  # behind it, what it writes at the end of that turn reaches you as any
+  # reply does, and anything more it wants from the teammate is a tool
+  # call. The answer itself stays on the record in the two agents' own
+  # room, where Flow shows the exchange.
+  #
+  # Off, the answer wakes the asker in the two agents' room -- a
+  # separate session that holds none of your conversation -- as it did
+  # before 0.34.0. A request made while answering somewhere the daemon
+  # does not see (a Matrix room) is always answered that way.
+  answer_in_request_room: true
+
   # Tell you about agent-to-agent conversations: chief, on or off.
   #
   # When an exchange between agents ends -- a message and its answer, a

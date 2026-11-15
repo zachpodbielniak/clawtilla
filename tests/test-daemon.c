@@ -5145,34 +5145,47 @@ test_peer_request_context(void)
 	g_signal_emit_by_name(links, "typing", "worker", clawt_room_get_id(peer_room), TRUE);
 	g_signal_emit_by_name(links, "typing", "worker", clawt_room_get_id(peer_room), FALSE);
 	g_signal_emit_by_name(links, "message", "worker", clawt_room_get_id(peer_room), "Peer answer.", NULL);
-	g_signal_emit_by_name(links, "typing", "chief", clawt_room_get_id(peer_room), TRUE);
-	text = request_context_tool(&fixture, clawt_room_get_id(peer_room),
+
+	/*
+	 * Each answer wakes the chief in the conversation it asked from
+	 * (0.34.0), not in the room it shares with the worker -- and the
+	 * turn it starts there belongs to whoever asked the chief.
+	 */
+	g_signal_emit_by_name(links, "typing", "chief", clawt_room_get_id(parent_room), TRUE);
+	text = request_context_tool(&fixture, clawt_room_get_id(parent_room),
 		"clawtilla_message_user", "{\"body\":\"This belongs to the peer.\"}", &is_error);
 	g_assert_true(is_error);
 	g_assert_nonnull(strstr(text, "'peer'"));
 	g_assert_null(strstr(text, "'worker'"));
 	g_assert_cmpstr(clawt_agent_get_turn_task_id_in(chief,
-		clawt_room_get_id(peer_room)), ==, clawt_task_get_id(parent));
+		clawt_room_get_id(parent_room)), ==, clawt_task_get_id(parent));
 	g_clear_pointer(&text, g_free);
-	g_signal_emit_by_name(links, "typing", "chief", clawt_room_get_id(peer_room), FALSE);
-	g_signal_emit_by_name(links, "message", "chief", clawt_room_get_id(peer_room), "Read the answer.", NULL);
+	g_signal_emit_by_name(links, "typing", "chief", clawt_room_get_id(parent_room), FALSE);
+	g_signal_emit_by_name(links, "message", "chief", clawt_room_get_id(parent_room), "Read the answer.", NULL);
 
 	/* The next answer belongs to the operator, despite sharing the peer. */
 	g_signal_emit_by_name(links, "typing", "worker", clawt_room_get_id(peer_room), TRUE);
 	g_signal_emit_by_name(links, "typing", "worker", clawt_room_get_id(peer_room), FALSE);
 	g_signal_emit_by_name(links, "message", "worker", clawt_room_get_id(peer_room), "Operator answer.", NULL);
-	g_signal_emit_by_name(links, "typing", "chief", clawt_room_get_id(peer_room), TRUE);
-	text = request_context_tool(&fixture, clawt_room_get_id(peer_room),
+	g_signal_emit_by_name(links, "typing", "chief", clawt_room_get_id(operator_room), TRUE);
+	text = request_context_tool(&fixture, clawt_room_get_id(operator_room),
 		"clawtilla_message_user", "{\"body\":\"Here is the operator's result.\"}", &is_error);
 	g_assert_false(is_error);
-	g_assert_null(clawt_agent_get_turn_task_id_in(chief, clawt_room_get_id(peer_room)));
-	g_assert_false(clawt_agent_get_turn_replies_in(chief, clawt_room_get_id(peer_room)));
-	g_signal_emit_by_name(links, "typing", "chief", clawt_room_get_id(peer_room), FALSE);
-	g_signal_emit_by_name(links, "message", "chief", clawt_room_get_id(peer_room), "Report delivered.", NULL);
+	g_assert_null(clawt_agent_get_turn_task_id_in(chief, clawt_room_get_id(operator_room)));
+	g_assert_false(clawt_agent_get_turn_replies_in(chief, clawt_room_get_id(operator_room)));
+	g_signal_emit_by_name(links, "typing", "chief", clawt_room_get_id(operator_room), FALSE);
 
+	/* Nothing woke the chief in the room it shares with the worker. */
+	g_assert_null(clawt_agent_get_turn_input_in(chief, clawt_room_get_id(peer_room)));
+
+	/* The operator's room: the daemon's notice of the answer, then the report. */
 	history = clawt_room_get_history(operator_room, 0);
-	g_assert_cmpuint(history->len, ==, 1);
-	g_assert_cmpstr(clawt_message_get_body(g_ptr_array_index(history, 0)), ==,
+	g_assert_cmpuint(history->len, ==, 2);
+	g_assert_cmpstr(clawt_message_get_sender_id(g_ptr_array_index(history, 0)), ==,
+		CLAWT_SYSTEM_SENDER);
+	g_assert_nonnull(strstr(clawt_message_get_body(g_ptr_array_index(history, 0)),
+		"Operator answer."));
+	g_assert_cmpstr(clawt_message_get_body(g_ptr_array_index(history, 1)), ==,
 		"Here is the operator's result.");
 	receipts = clawt_mailbox_list(clawt_agent_get_mailbox(worker), &all_items);
 	g_assert_cmpuint(receipts->len, ==, 2);

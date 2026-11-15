@@ -144,9 +144,44 @@ typedef struct {
     gboolean alerted;
 } TreeCount;
 
+/*
+ * Two agents' requests to each other since a person last spoke to
+ * either, or since the pair last went quiet.
+ *
+ * Every other count here can be started again by the agents themselves:
+ * a hop count begins at zero on a daemon notice (a task settling, a wait
+ * ending), and the tree budget renews when a task settles -- so "notice,
+ * ask, answer, notice, ask, answer" ran for as long as both were
+ * willing, with nothing ever refused.  This is the count nothing an
+ * agent does can renew.
+ *
+ * A *round* rather than a message: every request one agent sends the
+ * other from the same turn is one round, so a chief handing a worker
+ * ten jobs at once has used one and a pair trading one job at a time
+ * has used ten.  The turn is named by the sender's turn number, which
+ * the caller supplies.
+ */
+typedef struct {
+    guint    count;
+    gboolean alerted;
+    gint64   last_at;      /* monotonic microseconds */
+    gchar   *last_sender;
+    guint64  last_turn;
+} PairCount;
+
+static void
+pair_count_free(gpointer data)
+{
+    PairCount *pair = data;
+
+    g_free(pair->last_sender);
+    g_free(pair);
+}
+
 enum {
     SIGNAL_STALLED,
     SIGNAL_TREE_EXHAUSTED,
+    SIGNAL_PAIR_EXHAUSTED,
     N_SIGNALS
 };
 
@@ -167,6 +202,9 @@ struct _ClawtLoopGuard {
     GHashTable *stalls;        /* room_id -> Stall* */
     GHashTable *trees;         /* root task id -> TreeCount* */
     guint       tree_budget;
+    GHashTable *pairs;         /* "a\x1fb", sorted -> PairCount* */
+    guint       pair_budget;
+    guint       pair_quiet_seconds;
 
     ClawtLoopGuardPeerFunc peer_func;
     gpointer               peer_data;
@@ -892,6 +930,248 @@ count_tree(ClawtLoopGuard *self, const gchar *root)
 	}
 }
 
+/* ── The pair budget ───────────────────────────────────────────── */
+
+void
+clawt_loop_guard_set_pair_budget(
+	ClawtLoopGuard *self,
+	guint           budget,
+	guint           quiet_seconds
+){
+	g_return_if_fail(CLAWT_IS_LOOP_GUARD(self));
+
+	self->pair_budget = budget;
+	self->pair_quiet_seconds = quiet_seconds;
+}
+
+guint
+clawt_loop_guard_get_pair_budget(
+	ClawtLoopGuard *self
+){
+	g_return_val_if_fail(CLAWT_IS_LOOP_GUARD(self), 0);
+
+	return self->pair_budget;
+}
+
+/* The pair's key: the two ids in order, so a-to-b and b-to-a are one. */
+static gchar *
+pair_key(const gchar *a, const gchar *b)
+{
+	if (g_strcmp0(a, b) > 0) {
+		const gchar *swap = a;
+
+		a = b;
+		b = swap;
+	}
+
+	return g_strdup_printf("%s\x1f%s", a, b);
+}
+
+/*
+ * The pair's count, with a pair that has been quiet for long enough
+ * started again first.  Quiet is the second way a count ends, and the
+ * one that keeps this from being a trap: a fleet driven from somewhere
+ * the daemon cannot see -- a Matrix room, a webhook -- never shows it a
+ * person, and without this two agents that had ever done twelve rounds
+ * of honest work could not talk again until somebody opened a chat.  A
+ * loop is never quiet, so it does not get this; once it is stopped it
+ * is quiet, and by then nothing is left running to start it again.
+ */
+static PairCount *
+pair_lookup(ClawtLoopGuard *self, const gchar *a, const gchar *b)
+{
+	g_autofree gchar *key = NULL;
+	PairCount *pair;
+
+	if (a == NULL || b == NULL)
+		return NULL;
+
+	key = pair_key(a, b);
+	pair = g_hash_table_lookup(self->pairs, key);
+
+	if (pair != NULL && self->pair_quiet_seconds > 0 &&
+		g_get_monotonic_time() - pair->last_at >
+			(gint64)self->pair_quiet_seconds * G_USEC_PER_SEC) {
+		g_hash_table_remove(self->pairs, key);
+		return NULL;
+	}
+
+	return pair;
+}
+
+/* Whether @sender's turn @turn is the one the pair last counted. */
+static gboolean
+pair_same_turn(PairCount *pair, const gchar *sender, guint64 turn)
+{
+	return pair != NULL && turn != 0 && pair->last_turn == turn &&
+	       g_strcmp0(pair->last_sender, sender) == 0;
+}
+
+guint
+clawt_loop_guard_get_pair_count(
+	ClawtLoopGuard *self,
+	const gchar    *a,
+	const gchar    *b
+){
+	PairCount *pair;
+
+	g_return_val_if_fail(CLAWT_IS_LOOP_GUARD(self), 0);
+
+	pair = pair_lookup(self, a, b);
+
+	return (pair != NULL) ? pair->count : 0;
+}
+
+gboolean
+clawt_loop_guard_check_pair(
+	ClawtLoopGuard  *self,
+	const gchar     *sender,
+	const gchar     *peer,
+	guint64          turn,
+	GError         **error
+){
+	PairCount *pair;
+
+	g_return_val_if_fail(CLAWT_IS_LOOP_GUARD(self), FALSE);
+
+	if (self->pair_budget == 0 || sender == NULL || peer == NULL)
+		return TRUE;
+
+	pair = pair_lookup(self, sender, peer);
+
+	/* More from a turn already counted is the same round. */
+	if (pair == NULL || pair->count < self->pair_budget ||
+		pair_same_turn(pair, sender, turn))
+		return TRUE;
+
+	/*
+	 * What to do instead and what reopens it, because a refusal that
+	 * only says no is retried in another shape: the way out is to stop
+	 * and tell whoever asked.
+	 */
+	if (self->pair_quiet_seconds > 0)
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT,
+		            "you and '%s' have sent each other %u rounds of "
+		            "requests with no person in between, which is the "
+		            "limit (orchestration.pair_message_budget). It stops "
+		            "here: finish with what you have and say so to whoever "
+		            "asked for it. It opens again when a person writes to "
+		            "either of you, or after %u minutes with nothing "
+		            "between you.",
+		            peer, pair->count, self->pair_quiet_seconds / 60);
+	else
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT,
+		            "you and '%s' have sent each other %u rounds of "
+		            "requests with no person in between, which is the "
+		            "limit (orchestration.pair_message_budget). It stops "
+		            "here: finish with what you have and say so to whoever "
+		            "asked for it. It opens again when a person writes to "
+		            "either of you.", peer, pair->count);
+
+	return FALSE;
+}
+
+void
+clawt_loop_guard_count_pair(
+	ClawtLoopGuard *self,
+	const gchar    *sender,
+	const gchar    *peer,
+	guint64         turn
+){
+	PairCount *pair;
+
+	g_return_if_fail(CLAWT_IS_LOOP_GUARD(self));
+
+	if (self->pair_budget == 0 || sender == NULL || peer == NULL)
+		return;
+
+	pair = pair_lookup(self, sender, peer);
+
+	if (pair == NULL) {
+		pair = g_new0(PairCount, 1);
+		g_hash_table_insert(self->pairs, pair_key(sender, peer), pair);
+	}
+
+	pair->last_at = g_get_monotonic_time();
+
+	if (pair_same_turn(pair, sender, turn))
+		return;
+
+	g_free(pair->last_sender);
+	pair->last_sender = g_strdup(sender);
+	pair->last_turn = turn;
+	pair->count++;
+
+	/* Once per exhaustion, when the pair stops, as the tree's is. */
+	if (pair->count >= self->pair_budget && !pair->alerted) {
+		pair->alerted = TRUE;
+		g_signal_emit(self, signals[SIGNAL_PAIR_EXHAUSTED], 0, sender, peer,
+		              pair->count, self->pair_budget);
+	}
+}
+
+void
+clawt_loop_guard_renew_pairs_of(
+	ClawtLoopGuard *self,
+	const gchar    *agent_id
+){
+	GHashTableIter iter;
+	gpointer key;
+	gsize length;
+
+	g_return_if_fail(CLAWT_IS_LOOP_GUARD(self));
+
+	if (agent_id == NULL)
+		return;
+
+	length = strlen(agent_id);
+	g_hash_table_iter_init(&iter, self->pairs);
+
+	while (g_hash_table_iter_next(&iter, &key, NULL)) {
+		const gchar *name = key;
+		const gchar *second = strchr(name, '\x1f');
+
+		if ((strncmp(name, agent_id, length) == 0 && name[length] == '\x1f') ||
+			(second != NULL && g_strcmp0(second + 1, agent_id) == 0))
+			g_hash_table_iter_remove(&iter);
+	}
+}
+
+void
+clawt_loop_guard_age_pairs(
+	ClawtLoopGuard *self,
+	guint           seconds
+){
+	GHashTableIter iter;
+	gpointer value;
+
+	g_return_if_fail(CLAWT_IS_LOOP_GUARD(self));
+
+	g_hash_table_iter_init(&iter, self->pairs);
+
+	while (g_hash_table_iter_next(&iter, NULL, &value))
+		((PairCount *)value)->last_at -= (gint64)seconds * G_USEC_PER_SEC;
+}
+
+gchar *
+clawt_loop_guard_pair_alert_text(
+	const gchar *first,
+	const gchar *second,
+	guint        count,
+	guint        limit
+){
+	return g_strdup_printf(
+		"%s and %s have sent each other %u round%s of requests with no "
+		"person in between, which is the limit of %u "
+		"(orchestration.pair_message_budget). They can still answer and "
+		"finish their own work, but cannot ask each other anything more "
+		"until you write to either of them, or they have been quiet for "
+		"a while.",
+		(first != NULL && *first != '\0') ? first : "(unnamed)",
+		(second != NULL && *second != '\0') ? second : "(unnamed)",
+		count, count == 1 ? "" : "s", limit);
+}
+
 gboolean
 clawt_loop_guard_check(ClawtLoopGuard  *self,
                        ClawtMessage    *message,
@@ -1060,6 +1340,7 @@ clawt_loop_guard_reset(ClawtLoopGuard *self)
     g_hash_table_remove_all(self->task_spend);
     g_hash_table_remove_all(self->stalls);
     g_hash_table_remove_all(self->trees);
+    g_hash_table_remove_all(self->pairs);
 }
 
 static void
@@ -1074,6 +1355,7 @@ clawt_loop_guard_finalize(GObject *object)
         self->tree_notify(self->tree_data);
 
     g_clear_pointer(&self->trees, g_hash_table_unref);
+    g_clear_pointer(&self->pairs, g_hash_table_unref);
     g_clear_pointer(&self->rates, g_hash_table_unref);
     g_clear_pointer(&self->recent, g_hash_table_unref);
     g_clear_pointer(&self->task_spend, g_hash_table_unref);
@@ -1119,6 +1401,26 @@ clawt_loop_guard_class_init(ClawtLoopGuardClass *klass)
         g_signal_new("tree-exhausted", CLAWT_TYPE_LOOP_GUARD,
                      G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL, G_TYPE_NONE, 3,
                      G_TYPE_STRING, G_TYPE_UINT, G_TYPE_UINT);
+
+    /**
+     * ClawtLoopGuard::pair-exhausted:
+     * @self: the guard
+     * @sender: the agent whose request was the last one allowed
+     * @peer: the agent it was sent to
+     * @count: how many rounds the two have had
+     * @limit: the budget they reached
+     *
+     * Emitted once when two agents reach
+     * `orchestration.pair_message_budget`, and not again until the
+     * pair's count has started over.  The daemon turns it into the
+     * `crosstalk.pair_budget` alert.
+     *
+     * Since: 0.34
+     */
+    signals[SIGNAL_PAIR_EXHAUSTED] =
+        g_signal_new("pair-exhausted", CLAWT_TYPE_LOOP_GUARD,
+                     G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL, G_TYPE_NONE, 4,
+                     G_TYPE_STRING, G_TYPE_STRING, G_TYPE_UINT, G_TYPE_UINT);
 }
 
 static void
@@ -1129,6 +1431,8 @@ clawt_loop_guard_init(ClawtLoopGuard *self)
     self->cycle_window = 10;
     self->cycle_seconds = 300;
     self->task_budget_usd = 5.0;
+    self->pair_budget = 12;
+    self->pair_quiet_seconds = 30 * 60;
 
     self->rates = g_hash_table_new_full(g_str_hash, g_str_equal,
                                         g_free, rate_window_free);
@@ -1140,4 +1444,6 @@ clawt_loop_guard_init(ClawtLoopGuard *self)
                                          g_free, stall_free);
     self->trees = g_hash_table_new_full(g_str_hash, g_str_equal,
                                         g_free, g_free);
+    self->pairs = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                        g_free, pair_count_free);
 }

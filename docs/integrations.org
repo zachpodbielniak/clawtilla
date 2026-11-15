@@ -253,6 +253,8 @@ bridged.  Its =TOOLS.org= says so, because an agent reasoning about
 
 The daemon itself posts with the same account in one case: a cross-talk summary of an exchange the agent began while answering in one of these rooms goes back to that room (=crosstalk_summary_to=, [[file:orchestration.org][orchestration.org]]), as an ~m.notice~.
 
+Two agents that share a Matrix room would answer each other for as long as both were willing, and clawtilla sees none of it --- those turns run inside each agent's libreclaw.  So every agent's rendered Matrix channel names the fleet's /other/ Matrix accounts as ~bot_users~ (since 0.34.0, from each agent's ~user_id~; libreclaw 0.30.3), and libreclaw answers at most three of their messages in a row in one room until a person writes there (~max_bot_replies~ on the Matrix channel, settable through an agent's =libreclaw:= passthrough).  libreclaw also never answers an ~m.notice~, which is what the summary above is sent as.  A bot outside the fleet is not known to be one: add it to ~bot_users~ through the passthrough.
+
 Health check: a TCP connection to the homeserver.
 
 ** email
