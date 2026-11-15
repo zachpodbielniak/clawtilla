@@ -185,6 +185,49 @@ clawt_steer_policy_get_type(void)
     return g_define_type_id__volatile;
 }
 
+/* Register ClawtCrosstalkSummary as a GLib enum type */
+GType
+clawt_crosstalk_summary_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_CROSSTALK_SUMMARY_CHIEF, "CLAWT_CROSSTALK_SUMMARY_CHIEF", "chief" },
+            { CLAWT_CROSSTALK_SUMMARY_ON, "CLAWT_CROSSTALK_SUMMARY_ON", "on" },
+            { CLAWT_CROSSTALK_SUMMARY_OFF, "CLAWT_CROSSTALK_SUMMARY_OFF", "off" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtCrosstalkSummary", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
+/* Register ClawtCrosstalkOutcome as a GLib enum type */
+GType
+clawt_crosstalk_outcome_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_CROSSTALK_ANSWERED, "CLAWT_CROSSTALK_ANSWERED", "answered" },
+            { CLAWT_CROSSTALK_NO_REPLY, "CLAWT_CROSSTALK_NO_REPLY", "no-reply" },
+            { CLAWT_CROSSTALK_SETTLED, "CLAWT_CROSSTALK_SETTLED", "settled" },
+            { CLAWT_CROSSTALK_FAILED, "CLAWT_CROSSTALK_FAILED", "failed" },
+            { CLAWT_CROSSTALK_STALLED, "CLAWT_CROSSTALK_STALLED", "stalled" },
+            { CLAWT_CROSSTALK_CANCELLED, "CLAWT_CROSSTALK_CANCELLED", "cancelled" },
+            { CLAWT_CROSSTALK_REFUSED, "CLAWT_CROSSTALK_REFUSED", "refused" },
+            { CLAWT_CROSSTALK_WORKING, "CLAWT_CROSSTALK_WORKING", "working" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtCrosstalkOutcome", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
 /* Register ClawtTeamRole as a GLib enum type */
 GType
 clawt_team_role_get_type(void)

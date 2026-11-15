@@ -1600,6 +1600,19 @@ versions apart.
   `clawt_workspace_measure_identity()` warns before anything fails, and the
   arithmetic is checked against `lc_agent_context_load_identity()` rather than
   reimplemented.
+- **Telling the operator about something is recording it, not sending it.**
+  A cross-talk summary (`orchestration.crosstalk_summary`,
+  `src/core/daemon-crosstalk.c`) goes through
+  `clawt_mailbox_router_record()` into the operator's room, so no mailbox,
+  turn, hop, guard, budget, incident or acknowledgement check ever sees it,
+  and it lands in a room that is not cross-talk, so it is never summarised.
+  An exchange ends on the record's own signals -- no turn running in the
+  room, nothing waiting in a mailbox for it, no carried task unfinished --
+  plus a quiet counted from the last *turn edge*, not the last message:
+  libreclaw drops the typing indicator before it posts the answer. Read a
+  message's fields from the room, not from its event: event details pass
+  through `clawt_redact_secrets()`, which once turned every task id into
+  `ta[REDACTED]`.
 
 ### Config
 

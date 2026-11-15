@@ -798,6 +798,45 @@ static const ClawtSchemaEntry schema[] = {
   "At the limit the messaging tools are withheld from that tree's turns,\n"
   "exactly as max_hops withholds them, and one alert names the tree.", "0.20.0" },
 
+{ "orchestration.crosstalk_summary", CLAWT_SCHEMA_ENUM,
+  CLAWT_SCHEMA_FLAG_PER_AGENT, "chief", clawt_crosstalk_summary_get_type,
+  "Tell you about agent-to-agent conversations: chief, on or off.\n"
+  "\n"
+  "When an exchange between agents ends -- a message and its answer, a\n"
+  "delegated task settling, a Grok bot reaching out and being answered,\n"
+  "a group room's round -- a short summary of it is posted into your own\n"
+  "conversation with the agent that took part: who reached out, what\n"
+  "they asked, what the agent did (tool calls by kind, tasks it handed\n"
+  "on, decisions it raised) and how it ended, with a link that opens the\n"
+  "exchange in Flow. Without it, that conversation is only in Flow, and\n"
+  "you have to go and look.\n"
+  "\n"
+  "chief, the default: only the chief of staff's conversation with you\n"
+  "gets them. on: every agent's. off: none. Set per agent as\n"
+  "`crosstalk_summary` to turn one agent on or off whatever this says.\n"
+  "\n"
+  "The summary is the daemon's note, built from the record and costing\n"
+  "no model call: it is never delivered to the agent, never starts a\n"
+  "turn, invites no reply and counts towards no hop, budget or incident.\n"
+  "An exchange ends when nobody in it has a turn running or a message\n"
+  "waiting there, no task it carries is still running, and it has been\n"
+  "quiet for 15 seconds; exchanges ending within a few seconds of each\n"
+  "other are posted as one note. Work a trigger or routine started is\n"
+  "not cross-talk and is never summarised.", "0.30.0" },
+
+{ "orchestration.crosstalk_summary_model", CLAWT_SCHEMA_STRING,
+  CLAWT_SCHEMA_FLAG_COMMENTED, "", NULL,
+  "A small model that rewrites each cross-talk summary as one friendly\n"
+  "paragraph, as provider/model -- the same spelling as\n"
+  "orchestration.ack_check_model. Empty, the default, posts the summary\n"
+  "built from the record and asks no model anything.\n"
+  "\n"
+  "The model is given the record-built summary, fenced as data, and 10\n"
+  "seconds. Nothing waits on it: the note is posted when it answers. A\n"
+  "failure, a timeout, an empty reply or one longer than 1200\n"
+  "characters posts the record-built summary instead, so turning this on\n"
+  "can delay a note and never lose one.", "0.30.0" },
+
 { "orchestration.mailbox", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Defaults for every agent's mailbox.\n"
   "\n"
@@ -4463,6 +4502,7 @@ clawt_config_schema_get(gsize *n_entries)
 static const ClawtSchemaAgentKey agent_keys[] = {
     { "daily_agent_budget_micros", "orchestration.daily_agent_budget_micros" },
     { "max_waits",                 "orchestration.max_waits_per_agent" },
+    { "crosstalk_summary",         "orchestration.crosstalk_summary" },
     /*
      * Fleet policy an agent may override. The `orchestration.` section
      * is the fleet's own, so the per-agent form drops it.

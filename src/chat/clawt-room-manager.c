@@ -204,6 +204,14 @@ load_room(ClawtRoomManager *self, ClawtRoom *room)
 			clawt_message_set_chain(message,
 				json_object_get_string_member(object, "chain"));
 
+		if (json_object_has_member(object, "crosstalk_room"))
+			clawt_message_set_crosstalk(message,
+				json_object_get_string_member(object, "crosstalk_room"),
+				json_object_has_member(object, "crosstalk_message")
+					? json_object_get_string_member(object,
+						"crosstalk_message")
+					: NULL);
+
 		if (json_object_has_member(object, "skipped"))
 			clawt_message_set_skipped(message,
 				json_object_get_string_member(object, "skipped"),

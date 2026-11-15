@@ -158,6 +158,13 @@ struct _ClawtDaemon {
 	GSource    *review_tick;
 	guint       review_timeout_ms;
 
+	/*
+	 * Cross-talk summaries (orchestration.crosstalk_summary): the
+	 * exchanges open in agent-to-agent rooms and what has been told.
+	 * See daemon-crosstalk.c.
+	 */
+	struct _ClawtDaemonCrosstalk *crosstalk;
+
     ClawtExchange      *exchange;
 
     /*
@@ -1078,6 +1085,24 @@ void clawt_daemon_venture_sync(ClawtDaemon *self);
 typedef void (*ClawtDaemonGrokSent)(ClawtGrokJob *job,
                                     const gchar  *refusal,
                                     gpointer      user_data);
+
+/*
+ * Cross-talk summaries, in daemon-crosstalk.c.
+ *
+ * clawt_daemon_crosstalk_tick() is what the daemon's own timer calls
+ * every two seconds with the wall clock; a test calls it with a time of
+ * its choosing.  _set_provider() is a test's fake rewriting model,
+ * winning over orchestration.crosstalk_summary_model.
+ */
+typedef struct _ClawtDaemonCrosstalk ClawtDaemonCrosstalk;
+
+void clawt_daemon_crosstalk_setup(ClawtDaemon *self);
+void clawt_daemon_crosstalk_teardown(ClawtDaemon *self);
+void clawt_daemon_crosstalk_tick(ClawtDaemon *self, gint64 now);
+void clawt_daemon_crosstalk_set_provider(ClawtDaemon *self,
+                                         AiProvider  *provider);
+guint clawt_daemon_crosstalk_rewrites_pending(ClawtDaemon *self);
+ClawtCrosstalk *clawt_daemon_crosstalk_get_tracker(ClawtDaemon *self);
 
 void clawt_daemon_grok_start(ClawtDaemon *self);
 void clawt_daemon_grok_stop(ClawtDaemon *self);

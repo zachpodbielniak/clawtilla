@@ -106,7 +106,7 @@ The same seven the GTK client's view switcher has, in the same order.
 | Computer | exec console, mounts, the exchange, rebuild                |
 | Routines | scheduled work, running one now, turning one back on       |
 | Tasks    | Problems to look at (settings, open incidents, Retry), delegated work, the budget, cancelling, retrying |
-| Flow     | what the agents are saying to each other                   |
+| Flow     | what the agents are saying to each other; each room's card carries the anchor a cross-talk summary's "View in Flow" links to |
 | Activity | every running turn, to stop or steer ([[file:clients.org::#activity-tab][the Activity tab]]) |
 | Fleet    | cost per agent, the last fourteen days, idle agents to stop ([[file:clients.org::#fleet-tab][the Fleet tab]]) |
 

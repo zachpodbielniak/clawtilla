@@ -46,6 +46,13 @@ struct _ClawtMessage {
 
 	/* Steered into a running turn: libreclaw's outcome, or NULL. */
 	gchar        *steered;
+
+	/*
+	 * A cross-talk summary's jump targets: the Flow rooms and the first
+	 * message of each exchange, space-separated and paired by position.
+	 */
+	gchar        *crosstalk_rooms;
+	gchar        *crosstalk_messages;
 };
 
 static ClawtMessage *
@@ -133,6 +140,8 @@ clawt_message_copy(ClawtMessage *self)
 	copy->round = self->round;
 	copy->chain = g_strdup(self->chain);
 	copy->steered = g_strdup(self->steered);
+	copy->crosstalk_rooms = g_strdup(self->crosstalk_rooms);
+	copy->crosstalk_messages = g_strdup(self->crosstalk_messages);
 	copy->skipped = g_strdup(self->skipped);
 	copy->skip_reason = g_strdup(self->skip_reason);
 
@@ -163,6 +172,8 @@ clawt_message_free(ClawtMessage *self)
 	g_free(self->request_task);
 	g_free(self->chain);
 	g_free(self->steered);
+	g_free(self->crosstalk_rooms);
+	g_free(self->crosstalk_messages);
 	g_free(self->skipped);
 	g_free(self->skip_reason);
     g_free(self);
@@ -538,6 +549,47 @@ clawt_message_set_steered(
 	g_free(self->steered);
 	self->steered = (outcome != NULL && *outcome != '\0')
 		? g_strdup(outcome) : NULL;
+}
+
+const gchar *
+clawt_message_get_crosstalk_rooms(
+	ClawtMessage *self
+){
+	g_return_val_if_fail(self != NULL, NULL);
+
+	return self->crosstalk_rooms;
+}
+
+const gchar *
+clawt_message_get_crosstalk_messages(
+	ClawtMessage *self
+){
+	g_return_val_if_fail(self != NULL, NULL);
+
+	return self->crosstalk_messages;
+}
+
+void
+clawt_message_set_crosstalk(
+	ClawtMessage *self,
+	const gchar  *rooms,
+	const gchar  *messages
+){
+	g_return_if_fail(self != NULL);
+
+	g_clear_pointer(&self->crosstalk_rooms, g_free);
+	g_clear_pointer(&self->crosstalk_messages, g_free);
+
+	/*
+	 * Both or neither: a message id with no room has nowhere to open,
+	 * and a client pairing the two lists by position must never find
+	 * one longer than the other because a half was dropped here.
+	 */
+	if (rooms == NULL || *rooms == '\0')
+		return;
+
+	self->crosstalk_rooms = g_strdup(rooms);
+	self->crosstalk_messages = g_strdup(messages != NULL ? messages : "");
 }
 
 guint

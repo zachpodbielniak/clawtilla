@@ -5229,6 +5229,7 @@ release_components(ClawtDaemon *self)
     clawt_daemon_turn_teardown(self);
     clawt_daemon_sentinel_teardown(self);
     clawt_daemon_tree_teardown(self);
+    clawt_daemon_crosstalk_teardown(self);
     clawt_daemon_handoff_teardown(self);
     clawt_daemon_wait_teardown(self);
     clawt_daemon_search_teardown(self);
@@ -7489,6 +7490,13 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      * the tools exist, whose clawtilla_grok_* it supplies.
      */
     clawt_daemon_grok_start(self);
+
+    /*
+     * After everything that publishes what it watches -- the router, the
+     * tasks, the turns -- and after start can no longer refuse, because
+     * it arms a timer.
+     */
+    clawt_daemon_crosstalk_setup(self);
     clawt_daemon_policy_setup(self);
     clawt_daemon_rebuild_setup(self);
     clawt_daemon_idle_setup(self);
@@ -7663,6 +7671,7 @@ clawt_daemon_stop(ClawtDaemon *self)
     clawt_daemon_turn_teardown(self);
     clawt_daemon_sentinel_teardown(self);
     clawt_daemon_tree_teardown(self);
+    clawt_daemon_crosstalk_teardown(self);
     clawt_daemon_handoff_teardown(self);
     clawt_daemon_wait_teardown(self);
     clawt_daemon_search_teardown(self);
@@ -8533,6 +8542,16 @@ clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
         builder, clawt_steer_policy_nick((ClawtSteerPolicy)
             clawt_agent_config_get_enum(clawt_agent_get_config(agent),
                                         "steer")));
+
+    /*
+     * crosstalk_summary as this agent resolves it -- its own value, or
+     * the fleet's -- for the clients' agent settings.
+     */
+    json_builder_set_member_name(builder, "crosstalk_summary");
+    json_builder_add_string_value(
+        builder, clawt_crosstalk_summary_nick((ClawtCrosstalkSummary)
+            clawt_agent_config_get_enum(clawt_agent_get_config(agent),
+                                        "crosstalk_summary")));
 
     json_builder_set_member_name(builder, "manage_fleet");
     json_builder_add_boolean_value(

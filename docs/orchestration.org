@@ -1794,6 +1794,117 @@ A Grok bot is not an agent in the fleet: it runs on xAI's side, reached through 
 
 The call returns as soon as Grok has started a run.  The answer arrives later as a message from =grok:<bot>= in the room the dispatching turn was in, one hop further along than that turn -- so =max_hops= still bounds a chain that passes through a bot -- and under the task that turn was working on.  Sending a job under a task notes progress on it, which holds off the turn-end completion for the turn that sent it: the task is completed by the turn the answer starts, not by the turn that asked.  A job nobody answers is given up at its deadline and the agent is told so.  See [[file:grok.org][grok.org]].
 
+** Telling you about cross-talk
+:PROPERTIES:
+:CUSTOM_ID: crosstalk-summaries
+:END:
+
+When agents talk among themselves -- a Grok bot reaches out to the chief, the chief asks a teammate something, a delegation settles, a group room runs a round -- it happens in Flow, and the person running the fleet only learns of it by going there to look.  With ~orchestration.crosstalk_summary~ (since 0.30.0), each such exchange that *ends* is summarised into your own conversation with every agent that took part and has the setting on: who reached out, what they asked, what the agent did, and how it ended, with an action that opens the exchange in Flow.
+
+*** Who is told
+
+| Value   | Meaning                                                              |
+|---------+----------------------------------------------------------------|
+| =chief= | the default: only the chief of staff's conversation with you gets them |
+| =on=    | this agent's (or, fleet-wide, every agent's) conversation gets them   |
+| =off=   | nothing is posted                                                      |
+
+#+begin_src yaml
+orchestration:
+  crosstalk_summary: chief        # chief | on | off, the fleet default
+
+agents:
+  - id: chief
+    chief_of_staff: true          # told, because the fleet says "chief"
+  - id: researcher
+    crosstalk_summary: "on"       # told as well, whatever the fleet says
+  - id: scribe
+    crosstalk_summary: "off"      # never told
+#+end_src
+
+The chief is whichever agent ~clawt_agent_manager_get_chief_of_staff()~ names -- =chief_of_staff: true= on the agent, or ~orchestration.chief_of_staff~.  The three values are an enumeration and not a switch because the default depends on who the agent is: a boolean fleet key cannot say "the chief only", and a boolean on the agent cannot say "whatever the fleet says".  Every client offers it in the agent's settings as "Tell me about agent-to-agent conversations", explained in ~clawt_crosstalk_summary_explanation()~'s words.
+
+An exchange between two agents that both have it on is told to both, once each, in each one's conversation with you: it was each one's exchange.
+
+*** What counts as cross-talk
+
+Flow's own rule, so a summary is always about something Flow shows (~clawt_crosstalk_room_counts()~): a room with messages that you are not a member of.  That covers
+
+- a direct room between two agents -- ~clawtilla_message_agent~, ~clawtilla_ask_agent~ and consultations, and an answer to any of them;
+- a direct room between an agent and a Grok bot (=grok:<bot>=);
+- a task's own room (=thread: new=);
+- a group room, by round.
+
+It does *not* cover your own conversations, a routine's or a trigger's room -- work a schedule or a webhook started is not an agent reaching out -- or an incident room, which is the daemon's own report.
+
+*** When an exchange ends
+
+An exchange is the run of messages in one of those rooms from the first one after the last summary until the room goes quiet.  It ends when all of these hold, which is the existing machinery read rather than a second clock:
+
+- *No turn is running in its room.*  The agent typing indicator, per room (~clawt_agent_is_typing_in()~).  A turn starting or ending restarts the quiet: libreclaw drops its indicator /before/ it posts the answer, so a quiet counted from the last message would end the exchange in the instant before the answer arrives and the answer would open a second one.
+- *No message for its room is waiting in a member's mailbox* -- a delivery to a stopped agent, a result held for the end of a busy turn.  An answer that has not been read has not been answered.
+- *No task a message in it carried is still running.*  A delegation's end is its settlement, not its last message: the exchange stays open across a long task and ends on the settle, so the summary says how the work came out.
+- *It has been quiet for 15 seconds* (=CLAWT_CROSSTALK_QUIET_SECONDS=): no message, no step and no turn edge in the room.
+
+Per kind, that means:
+
+| Kind | Ends |
+|------+------|
+| a message and its answer | after the asker's turn on the answer (=invites_reply= false, so it sends nothing) is over and the room is quiet |
+| a one-way message (=reply: none=) | once the recipient's turn on it is over |
+| a consultation | after the consulted turn's answer, like any question |
+| a delegation | when its task is completed, failed, stalled or cancelled, and the delegator's turn on the settle notice is over |
+| a Grok bot reaching out | after the agent's answer is posted (and handed to the bot) and the room is quiet |
+| a group room's round | when the next round opens, or the round goes quiet -- one summary per round, never per message |
+
+Something can hold an exchange open for ever -- a message waiting for an agent that is never started, a task that runs for days.  After an hour of quiet (=CLAWT_CROSSTALK_STALE_SECONDS=) it is summarised as it stands: "no reply", or "went quiet with the delegated work still running".  A summary that arrives saying "still working" is better than one that never arrives.
+
+*** What the summary says
+
+Built from the record, with no model call:
+
+#+begin_example
+An agent-to-agent conversation ended: chief and the Grok bot scout
+
+- Who reached out: the Grok bot scout
+- Asked: "Did the nightly build pass?"
+- What chief did: 4 tool calls (2 to read, 1 to run commands, 1 to message); delegated task-0kq3… to ops (running); raised 1 decision
+- Outcome: answered · 3 messages over 2 minutes
+                                                      [Cross-talk summary] [View in Flow]
+#+end_example
+
+- *Who reached out* is the first message's sender: an agent, "the Grok bot <name>", "you" (a group round you opened) or clawtilla (a settle notice landing in a peer room).
+- *Asked* is the first line of the first message, clipped to 160 characters.  For a Grok bot it is the first line of what the bot wrote, not the daemon's wrapper around it.  It is quoted text in the daemon's own note, so it goes through ~clawt_preamble_escape_all()~ before it is clipped: a forged =[clawtilla]= line in an ask reads =[not from clawtilla]=, and the clip cannot cut a marker in half.
+- *What each agent did* -- the conversation's own agent first -- counts the tool calls its turns in that room made, by #ClawtActionClass (the classes the policy uses: read, write, delete, message, run commands, external services, screen, fleet admin), the tasks it delegated from that room with their state, and the decisions it raised there.  An agent whose steps are not streamed reads "no tool calls or tasks recorded", never "did nothing": unknown is not zero.  Bots, you and the daemon run no tools here and get no line.
+- *Outcome* is decided from the record (~ClawtCrosstalkOutcome~): a task the exchange carried settling outranks a refusal by a loop guard, which outranks an answer; the worst of several tasks wins, so "two of three completed" never reads as "completed".
+
+Exchanges that end within five seconds of each other for one conversation (=CLAWT_CROSSTALK_COALESCE_SECONDS=) are posted as one note -- "3 agent-to-agent conversations ended" -- with a numbered section each and a "View 1 in Flow", "View 2 in Flow" ... per section, rather than as a burst of notes.
+
+*** The note is the daemon's, and goes nowhere
+
+The summary is recorded with ~clawt_mailbox_router_record()~ into your direct room with the agent, from =clawtilla=, with =invites_reply= false and depth 0.  Recording puts it in the room, the recall index and one ~message~ event, and queues it into no mailbox, so:
+
+- it never reaches the agent: no delivery, no turn, nothing in its session;
+- it is not a hop and passes no loop guard, so it cannot trip ~max_hops~ or a cycle check;
+- the tree budget never sees it, the incident desk does not file it, and the acknowledgement check is never asked about it;
+- it lands in a room you are a member of, which is not cross-talk, so it is never itself summarised.
+
+It carries its jump targets as ~crosstalk_room~ and ~crosstalk_message~ (the Flow room of each exchange and the message it began with), on the stored message, in ~room.history~ and on the ~message~ event -- see [[file:ipc-protocol.org][ipc-protocol.org]].
+
+*** Once, across restarts
+
+What has been told is kept in =<state_dir>/crosstalk-summaries.json=: for each room, the last message of its last summarised exchange.  A restart replays each cross-talk room's messages after that mark (from the last six hours), so an exchange the daemon stopped in the middle of is told once it ends -- and one already told is not told again.  The steps and decisions of a replayed exchange were not persisted, so its summary may say "no tool calls or tasks recorded" for the part before the restart.
+
+A fleet that has never had the ledger -- the first start of a daemon with this feature -- marks every cross-talk room as told up to its last message, so the history it already had arrives as history and not as a flood of summaries.
+
+*** A friendlier paragraph, if you want one
+
+~orchestration.crosstalk_summary_model~, as =provider/model= like ~orchestration.ack_check_model~, has a small model rewrite each note as one friendly paragraph.  Off by default: it is a model call nobody asked for.  The model is given the record-built note fenced as data (a fence longer than any backtick run in it) and told to keep every fact and add none; the call is asynchronous with a hard 10-second limit (=CLAWT_CROSSTALK_MODEL_TIMEOUT_MS=), so nothing on the daemon's loop waits for it.  A failure, a timeout, an empty reply or one longer than 1200 characters posts the record-built note instead, so turning it on can delay a note and never lose one.  The rewrite is escaped like the ask, because it was written by a model that read text agents wrote.
+
+*** In the clients
+
+All three draw a summary apart from ordinary talk -- libclawt's badge (~clawt_crosstalk_mark_label()~) and one action per exchange (~clawt_crosstalk_flow_label()~) that opens the conversation on the Flow page: GTK selects that room in Flow's list, lrg opens it in Flow's pane, and the web client links to the room's card on its Flow digest (~clawt_crosstalk_anchor()~).  See [[file:clients.org][clients.org]].
+
 ** Waits: a condition checked by code
 
 "Tell me when the build finishes" used to be a routine that woke the model on every tick to look and go back to sleep -- a turn's worth of money for each "not yet".  A *wait* is the same request with the looking done by the daemon: the model is needed when it sets the wait and once more when the condition holds, and nothing in between.  A pending wait costs no turns and no tokens, and the tool's own description says so, because that is the whole decision an agent makes about it.

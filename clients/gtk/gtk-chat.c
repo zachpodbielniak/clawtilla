@@ -2164,6 +2164,70 @@ steered_chip_new(const gchar *outcome, gboolean from_user)
     return chip;
 }
 
+/* ── Cross-talk summaries ──────────────────────────────────────── */
+
+static void
+on_crosstalk_flow_clicked(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    clawt_gtk_open_flow_room(self,
+        g_object_get_data(G_OBJECT(button), "room"));
+}
+
+/*
+ * The daemon's summary of a conversation this agent had with another
+ * agent or a bot (orchestration.crosstalk_summary): the message just
+ * appended is marked, and under it go libclawt's badge and one "View in
+ * Flow" button per exchange it summarises, each opening that
+ * conversation on the Flow page.  Called after the row is appended, so
+ * the row is the transcript's last child.
+ */
+void
+clawt_gtk_mark_crosstalk(ClawtWindow *self, const gchar *rooms)
+{
+    g_auto(GStrv) targets = clawt_crosstalk_split_targets(rooms);
+    GtkWidget *row;
+    GtkWidget *actions;
+    GtkWidget *chip;
+    guint n = g_strv_length(targets);
+    guint i;
+
+    row = gtk_widget_get_last_child(GTK_WIDGET(self->transcript));
+
+    if (n == 0 || row == NULL || !GTK_IS_BOX(row))
+        return;
+
+    gtk_widget_add_css_class(row, "clawt-crosstalk");
+
+    actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_set_margin_start(actions, CHAT_GUTTER);
+    gtk_widget_set_margin_top(actions, 4);
+
+    chip = gtk_label_new(clawt_crosstalk_mark_label());
+    gtk_widget_add_css_class(chip, "caption-heading");
+    gtk_widget_add_css_class(chip, "accent");
+    gtk_widget_set_tooltip_text(chip, clawt_crosstalk_mark_tooltip());
+    gtk_widget_set_valign(chip, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(actions), chip);
+
+    for (i = 0; i < n; i++) {
+        g_autofree gchar *label = clawt_crosstalk_flow_label(i, n);
+        GtkWidget *button = gtk_button_new_with_label(label);
+
+        gtk_widget_add_css_class(button, "flat");
+        gtk_widget_add_css_class(button, "caption");
+        gtk_widget_set_tooltip_text(button, targets[i]);
+        g_object_set_data_full(G_OBJECT(button), "room",
+                               g_strdup(targets[i]), g_free);
+        g_signal_connect(button, "clicked",
+                         G_CALLBACK(on_crosstalk_flow_clicked), self);
+        gtk_box_append(GTK_BOX(actions), button);
+    }
+
+    gtk_box_append(GTK_BOX(row), actions);
+}
+
 /* ── Folding a long request from another agent ─────────────────── */
 
 static void
@@ -4710,6 +4774,8 @@ clawt_gtk_load_history(ClawtWindow *self)
                                      clawt_json_int(message, "consult", 0),
                                      clawt_json_int(message, "interrupted", 0) != 0,
                                      clawt_json_string(message, "steered", NULL));
+            clawt_gtk_mark_crosstalk(self,
+                                     clawt_json_string(message, "crosstalk_room", NULL));
             clawt_gtk_append_round_marks(self, 0,
                                      clawt_json_string(message, "skipped", NULL),
                                      clawt_json_string(message, "skip_reason", NULL),

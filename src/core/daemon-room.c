@@ -835,6 +835,20 @@ clawt_daemon_handle_room(
 					(gint64)clawt_message_get_round(message));
 			}
 
+			/*
+			 * A cross-talk summary's jump targets: the Flow rooms and
+			 * where in each the exchange began, space-separated and
+			 * paired by position, as the `message` event carries them.
+			 */
+			if (clawt_message_get_crosstalk_rooms(message) != NULL) {
+				json_builder_set_member_name(builder, "crosstalk_room");
+				json_builder_add_string_value(builder,
+					clawt_message_get_crosstalk_rooms(message));
+				json_builder_set_member_name(builder, "crosstalk_message");
+				json_builder_add_string_value(builder,
+					clawt_message_get_crosstalk_messages(message));
+			}
+
 			if (clawt_message_get_skipped(message) != NULL) {
 				json_builder_set_member_name(builder, "skipped");
 				json_builder_add_string_value(builder,

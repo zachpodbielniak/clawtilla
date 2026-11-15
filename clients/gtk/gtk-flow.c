@@ -415,6 +415,39 @@ clawt_gtk_refresh_flow(ClawtWindow *self)
     } while (clawt_gtk_refresh_repeat(self, CLAWT_REFRESH_FLOW));
 }
 
+/*
+ * Opens one conversation on the Flow page: what a cross-talk summary's
+ * "View in Flow" does.  Selecting its row is the same path a click
+ * takes, so the conversation is drawn and followed exactly as one the
+ * reader picked.  A room that is not listed -- emptied since, or one of
+ * the operator's own while they are filtered out -- leaves the page on
+ * its list, and the toast says why.
+ */
+void
+clawt_gtk_open_flow_room(ClawtWindow *self, const gchar *room_id)
+{
+    GtkWidget *child;
+
+    if (room_id == NULL)
+        return;
+
+    clawt_gtk_show_page(self, CLAWT_PAGE_FLOW);
+    clawt_gtk_refresh_flow(self);
+
+    for (child = gtk_widget_get_first_child(GTK_WIDGET(self->flow_list));
+         child != NULL; child = gtk_widget_get_next_sibling(child)) {
+        if (GTK_IS_LIST_BOX_ROW(child) &&
+            g_strcmp0(g_object_get_data(G_OBJECT(child), "room"),
+                      room_id) == 0) {
+            gtk_list_box_select_row(self->flow_list,
+                                    GTK_LIST_BOX_ROW(child));
+            return;
+        }
+    }
+
+    clawt_window_toast(self, "That conversation is not in Flow any more.");
+}
+
 static void
 on_flow_filter_toggled(GtkCheckButton *button, gpointer user_data)
 {

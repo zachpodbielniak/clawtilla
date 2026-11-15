@@ -249,6 +249,8 @@ message_element(JsonObject *message, const gchar *agent_id,
         clawt_web_member_int(message, "interrupted", 0) != 0;
     /* Steered into the running turn: libreclaw's outcome, or NULL. */
     const gchar *steered = clawt_web_member(message, "steered", NULL);
+    /* A cross-talk summary's Flow rooms, space-separated, or NULL. */
+    const gchar *crosstalk = clawt_web_member(message, "crosstalk_room", NULL);
     gboolean from_user = (g_strcmp0(sender, "user") == 0);
     g_autoptr(HtmxElement) row = HTMX_ELEMENT(htmx_article_new());
     g_autoptr(HtmxDiv) who = htmx_div_new();
@@ -439,8 +441,24 @@ message_element(JsonObject *message, const gchar *agent_id,
         clawt_web_add(who, g_steal_pointer(&mark));
     }
 
+    /*
+     * The daemon's summary of a conversation this agent had with another
+     * agent or a bot: libclawt's badge, and the body boxed like the other
+     * statements the daemon makes about a conversation.
+     */
+    if (crosstalk != NULL) {
+        g_autoptr(HtmxSpan) mark = clawt_web_badge(
+            clawt_crosstalk_mark_label(), "info");
+
+        htmx_element_set_attribute(HTMX_ELEMENT(mark), "title",
+                                   clawt_crosstalk_mark_tooltip());
+        clawt_web_add(who, g_steal_pointer(&mark));
+        htmx_element_add_class(row, "msg-crosstalk");
+    }
+
     if (run_start || task != NULL || depth > 1 || acknowledged ||
-        consult != NULL || interrupted || steered != NULL)
+        consult != NULL || interrupted || steered != NULL ||
+        crosstalk != NULL)
         htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(who));
 
     htmx_element_add_class(HTMX_ELEMENT(text), "msg-body");
@@ -523,6 +541,37 @@ message_element(JsonObject *message, const gchar *agent_id,
 
             htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(tray));
         }
+    }
+
+    /*
+     * One "View in Flow" link per exchange the summary is about, each to
+     * that conversation's card on the agent's Flow page
+     * (clawt_crosstalk_anchor()), numbered as its section is.
+     */
+    if (crosstalk != NULL && agent_id != NULL) {
+        g_auto(GStrv) targets = clawt_crosstalk_split_targets(crosstalk);
+        g_autofree gchar *flow = clawt_web_agent_url(agent_id,
+                                                     CLAWT_PAGE_FLOW);
+        g_autoptr(HtmxDiv) actions = htmx_div_new();
+        guint n = g_strv_length(targets);
+        guint t;
+
+        htmx_element_add_class(HTMX_ELEMENT(actions), "crosstalk-actions");
+
+        for (t = 0; t < n; t++) {
+            g_autofree gchar *anchor = clawt_crosstalk_anchor(targets[t]);
+            g_autofree gchar *href = g_strdup_printf("%s#%s", flow, anchor);
+            g_autofree gchar *label = clawt_crosstalk_flow_label(t, n);
+            g_autoptr(HtmxA) link = htmx_a_new_with_href(href);
+
+            htmx_element_set_attribute(HTMX_ELEMENT(link), "title",
+                                       targets[t]);
+            htmx_node_set_text_content(HTMX_NODE(link), label);
+            htmx_node_add_child(HTMX_NODE(actions), HTMX_NODE(link));
+        }
+
+        if (n > 0)
+            htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(actions));
     }
 
     /*

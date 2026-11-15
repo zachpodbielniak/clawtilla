@@ -479,6 +479,7 @@ struct _ClawtWindow {
     GtkWidget         *team_row;
     GtkWidget         *team_role_row;
     GtkWidget         *steer_row;      /* agents.steer, walked from libclawt */
+    GtkWidget         *crosstalk_row;  /* crosstalk_summary, likewise */
     GStrv              team_ids;
     gboolean           settings_need_restart;
 
@@ -1192,6 +1193,9 @@ clawt_gtk_append_round_marks(ClawtWindow *self, gint64 round,
                              gboolean before);
 
 void
+clawt_gtk_mark_crosstalk(ClawtWindow *self, const gchar *rooms);
+
+void
 clawt_gtk_attachment_free(Attachment *attachment);
 
 GtkWidget *
@@ -1468,6 +1472,9 @@ clawt_gtk_on_flow_task_clicked(GtkButton *button, gpointer user_data);
 
 void
 clawt_gtk_refresh_flow(ClawtWindow *self);
+
+void
+clawt_gtk_open_flow_room(ClawtWindow *self, const gchar *room_id);
 
 /* ── Defined in gtk-inspector.c: the inspector page ──────────────── */
 

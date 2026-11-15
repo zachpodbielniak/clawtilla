@@ -831,6 +831,9 @@ It is a view, not an editor: =can-connect= refuses any wire the page did not mak
 
 The open room is appended to, never redrawn, keyed on the message id: the widgets being read are the same widgets after a refresh. It scrolls to the newest message only when it is being opened or the reader was already at the bottom (=clawt_transcript_is_at_bottom()=), after the next layout. A reply for a room somebody has since navigated away from is dropped.
 
+*** Opened from a cross-talk summary
+A cross-talk summary in the chat (the daemon's note of an agent-to-agent exchange that ended; see [[file:clients.org::#crosstalk-summaries][Cross-talk summaries]]) is drawn with an ~info~ badge (=clawt_crosstalk_mark_label()=) and one flat button per exchange (=clawt_crosstalk_flow_label()=) under the message. A button calls =clawt_lrg_flow_open()=, which shows this page and asks for that room through the same path a click on its row takes, so the conversation opens in the pane and stays selected across refreshes. The agent's settings form titles the =crosstalk_summary= field =clawt_crosstalk_summary_title()= with =clawt_crosstalk_summary_explanation()= as its hint.
+
 *** Frame kinds
 ~room.list~, ~room.history~.
 

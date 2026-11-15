@@ -782,6 +782,18 @@ Four marks in the transcript, drawn the same way in all three clients from field
 - *Not delivered to @name -- why* -- =clawt_round_skip_note()= -- a dim line under a message whose =@mention= was kept and not delivered (=skipped=, =skip_reason=): the member had already answered in that thread of replies, or the thread had reached =rooms.max_chain=.  It is the whole answer to "why did that member never reply", so it is a sentence rather than a chip.  GTK and the web client carry =clawt_round_skip_tooltip()= as the tooltip.
 - *Delivered as one turn* -- clawtilla's note when several results waiting in one room were handed to an agent as a single turn (=merged=, the number of parts).  Its body is split with =clawt_merge_split()= and drawn as its sections: the opening line, then one block per result with its label ("'oryx' answering you", "clawtilla: task t-12") as a small heading and the result's first line beneath.  The results themselves are already in the room above it; the note says they cost one wake, not N.
 
+*** Cross-talk summaries
+:PROPERTIES:
+:CUSTOM_ID: crosstalk-summaries
+:END:
+
+The daemon's summary of an agent-to-agent exchange that ended -- a Grok bot reaching out to the chief, two agents settling a delegation, a group round (since 0.30.0, ~orchestration.crosstalk_summary~) -- arrives in your conversation with the agent as a message from clawtilla carrying =crosstalk_room= and =crosstalk_message=.  All three clients draw it apart from ordinary talk, from those fields on ~room.history~ and the ~message~ event alike, so a summary seen live and one seen on reopening the conversation are the same:
+
+- *the badge* -- =clawt_crosstalk_mark_label()=, "Cross-talk summary", with =clawt_crosstalk_mark_tooltip()= saying it was not sent to the agent and needs no answer (GTK: an ~accent~ chip under the message, and the row carries ~clawt-crosstalk~; web: an ~info~ badge in the header and the body boxed in the info tone, ~.msg-crosstalk~; libregnum: an ~info~ badge under the message);
+- *View in Flow* -- =clawt_crosstalk_flow_label()=, one per exchange the note summarises, numbered like its sections ("View 2 in Flow") when there are several.  GTK shows the Flow page and selects that conversation in its list, through the same path a click takes (=clawt_gtk_open_flow_room()=), and toasts when the conversation is no longer listed; libregnum shows the Flow page and opens the conversation in its pane (=clawt_lrg_flow_open()=); the web client links to the agent's Flow page at the conversation's card, whose =id= is =clawt_crosstalk_anchor()= of the room.  The lists are split with =clawt_crosstalk_split_targets()=, so no client parses them its own way.
+
+The setting is in each client's agent settings as *Tell me about agent-to-agent conversations* (=clawt_crosstalk_summary_title()=), with the three choices walked from =clawt_crosstalk_summary_label()= in order and the current one explained under it in =clawt_crosstalk_summary_explanation()=: GTK a combo row in the agent's settings group, the web client a select in the agent's form, libregnum the form field with the explanation as its hint.  The value shown is the agent's resolved one (the agent member ~crosstalk_summary~), and GTK writes it back only when you changed it, so an agent left to follow the fleet keeps following it.  =make parity= checks the badge, the action and the explanation as three affordance rows.
+
 *** Consultations, a task's own room, and who a decision went to
 :PROPERTIES:
 :CUSTOM_ID: delegation-marks

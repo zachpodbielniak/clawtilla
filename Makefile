@@ -194,6 +194,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/chat/clawt-rescue.h \
 	$(SRCDIR)/chat/clawt-steer-queue.h \
 	$(SRCDIR)/chat/clawt-steer-policy.h \
+	$(SRCDIR)/chat/clawt-crosstalk.h \
 	$(SRCDIR)/chat/clawt-draft-store.h \
 	$(SRCDIR)/chat/clawt-room.h \
 	$(SRCDIR)/chat/clawt-room-manager.h \
@@ -298,6 +299,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-skill-proposal.c \
 	$(SRCDIR)/core/daemon-step.c \
 	$(SRCDIR)/core/daemon-ack.c \
+	$(SRCDIR)/core/daemon-crosstalk.c \
 	$(SRCDIR)/core/daemon-replay.c \
 	$(SRCDIR)/core/daemon-rebuild.c \
 	$(SRCDIR)/core/daemon-tree.c \
@@ -410,6 +412,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/chat/clawt-rescue.c \
 	$(SRCDIR)/chat/clawt-steer-queue.c \
 	$(SRCDIR)/chat/clawt-steer-policy.c \
+	$(SRCDIR)/chat/clawt-crosstalk.c \
 	$(SRCDIR)/chat/clawt-draft-store.c \
 	$(SRCDIR)/chat/clawt-room.c \
 	$(SRCDIR)/chat/clawt-room-manager.c \

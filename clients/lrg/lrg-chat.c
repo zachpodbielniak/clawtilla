@@ -1108,6 +1108,53 @@ append_round_marks(ClawtLrgApp *app, gint64 round, const gchar *skipped,
 }
 
 static void
+on_crosstalk_flow(LrgButton *button, gpointer user_data)
+{
+    clawt_lrg_flow_open(user_data,
+                        g_object_get_data(G_OBJECT(button), "room"));
+}
+
+/*
+ * The daemon's summary of a conversation this agent had with another
+ * agent or a bot (orchestration.crosstalk_summary), under the message:
+ * libclawt's badge and one "View in Flow" button per exchange the note
+ * summarises.  The history and the live path both come through here.
+ */
+static void
+append_crosstalk_marks(ClawtLrgApp *app, const gchar *rooms)
+{
+    g_auto(GStrv) targets = clawt_crosstalk_split_targets(rooms);
+    guint n = g_strv_length(targets);
+    LrgWidget *row;
+    LrgInsets margin = { px(app, CHAT_ROW_MARGIN + CHAT_GUTTER),
+                         px(app, 4.0f), px(app, CHAT_ROW_MARGIN), 0.0f };
+    guint i;
+
+    if (n == 0 || chat.transcript == NULL)
+        return;
+
+    row = clawt_lrg_hbox(px(app, 8.0f));
+    clawt_lrg_take(row, clawt_lrg_badge(clawt_crosstalk_mark_label(),
+                                        "info"));
+
+    for (i = 0; i < n; i++) {
+        g_autofree gchar *label = clawt_crosstalk_flow_label(i, n);
+        LrgWidget *button = clawt_lrg_button(label, "flat",
+                                             G_CALLBACK(on_crosstalk_flow),
+                                             app);
+
+        g_object_set_data_full(G_OBJECT(button), "room",
+                               g_strdup(targets[i]), g_free);
+        lrg_widget_add_class(button, "caption");
+        lrg_widget_set_valign(button, LRG_ALIGN_CENTER);
+        clawt_lrg_take(row, button);
+    }
+
+    lrg_widget_set_margin(row, &margin);
+    clawt_lrg_take(chat.transcript, row);
+}
+
+static void
 on_task_chip(LrgButton *button, gpointer user_data)
 {
     /* the task board is where the rest of the story is */
@@ -2595,6 +2642,9 @@ draw_history(ClawtLrgApp *app, JsonNode *history, GPtrArray *steps,
                        clawt_ipc_payload_int(message, "consult", 0),
                        clawt_ipc_payload_int(message, "interrupted", 0) != 0,
                        clawt_ipc_payload_string(message, "steered"));
+        append_crosstalk_marks(app,
+                               clawt_ipc_payload_string(message,
+                                                        "crosstalk_room"));
         append_round_marks(app, 0,
                            clawt_ipc_payload_string(message, "skipped"),
                            clawt_ipc_payload_string(message, "skip_reason"),
@@ -4907,6 +4957,8 @@ on_message_event(ClawtLrgApp *app, ClawtEvent *event)
                        clawt_event_get_detail_int(event, "consult"),
                        clawt_event_get_detail_int(event, "interrupted") != 0,
                        NULL);
+        append_crosstalk_marks(app,
+                               clawt_event_get_detail(event, "crosstalk_room"));
         append_round_marks(app, 0, clawt_event_get_detail(event, "skipped"),
                            clawt_event_get_detail(event, "skip_reason"),
                            FALSE);

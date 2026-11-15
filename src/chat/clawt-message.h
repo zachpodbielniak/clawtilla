@@ -435,6 +435,53 @@ void clawt_message_set_steered(ClawtMessage *self,
                                const gchar  *outcome);
 
 /**
+ * clawt_message_get_crosstalk_rooms:
+ * @self: a #ClawtMessage
+ *
+ * The Flow conversations a cross-talk summary is about, space-separated
+ * -- one per exchange the note summarises, in the order its sections
+ * are numbered.  Set only on the daemon's own summary notes
+ * (`orchestration.crosstalk_summary`); every client draws a "View in
+ * Flow" action per room (clawt_crosstalk_flow_label()).
+ *
+ * Returns: (transfer none) (nullable): the rooms, or %NULL when the
+ *   message is not a cross-talk summary
+ *
+ * Since: 0.30.0
+ */
+const gchar *clawt_message_get_crosstalk_rooms(ClawtMessage *self);
+
+/**
+ * clawt_message_get_crosstalk_messages:
+ * @self: a #ClawtMessage
+ *
+ * The first message of each exchange clawt_message_get_crosstalk_rooms()
+ * names, space-separated and paired with it by position: where in the
+ * room the exchange began.
+ *
+ * Returns: (transfer none) (nullable): the message ids, or %NULL when
+ *   the message is not a cross-talk summary
+ *
+ * Since: 0.30.0
+ */
+const gchar *clawt_message_get_crosstalk_messages(ClawtMessage *self);
+
+/**
+ * clawt_message_set_crosstalk:
+ * @self: a #ClawtMessage
+ * @rooms: (nullable): space-separated room ids, or %NULL to clear
+ * @messages: (nullable): space-separated message ids, paired with @rooms
+ *
+ * Marks @self as a cross-talk summary with its jump targets.  Both
+ * lists are set or neither is.
+ *
+ * Since: 0.30.0
+ */
+void clawt_message_set_crosstalk(ClawtMessage *self,
+                                 const gchar  *rooms,
+                                 const gchar  *messages);
+
+/**
  * clawt_message_interrupted_label:
  *
  * What every client draws on an interrupted-turn notice
