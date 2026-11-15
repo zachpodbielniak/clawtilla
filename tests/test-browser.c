@@ -27,6 +27,9 @@ typedef struct {
     GPtrArray *params;      /* their params, as JSON text ("" for none) */
     gboolean   held;        /* gsurf's secret hold, as the fake keeps it */
     gboolean   hold_fails;  /* page.secret_hold answers with an error */
+    guint      documents;   /* one more for every navigate */
+    guint      commit_lag;  /* reads after a navigate still on the old page */
+    guint      stale;       /* how many of those are left */
 } Fake;
 
 static JsonNode *
@@ -50,11 +53,14 @@ fake_transport(ClawtBrowser *browser, const gchar *method, JsonNode *params,
     g_ptr_array_add(fake->params, params != NULL ? json_to_string(params, FALSE)
                                                  : g_strdup(""));
 
-    /* The secret hold, as gsurf 0.5.13 keeps it: set by a fill (lifted at
+    /* The secret hold, as gsurf 0.5.13 and later keep it: set by a fill (lifted at
      * once by its submit, which navigates), lifted by navigating, and
      * refusing screenshots and scripts in between. */
-    if (g_strcmp0(method, "navigate") == 0)
+    if (g_strcmp0(method, "navigate") == 0) {
         fake->held = FALSE;
+        fake->documents++;
+        fake->stale = fake->commit_lag;
+    }
     if (g_strcmp0(method, "page.fill_secret") == 0) {
         JsonNode *node = json_node_new(JSON_NODE_OBJECT);
         JsonObject *object = json_object_new();
@@ -103,6 +109,22 @@ fake_transport(ClawtBrowser *browser, const gchar *method, JsonNode *params,
 
         if (g_strcmp0(script, "document.readyState") == 0)
             return string_node("complete");
+        /* clawt_browser_navigate()'s: the old page answers until the
+         * engine commits the new one, and the old page is complete. */
+        if (g_str_has_prefix(script, "document.readyState + ")) {
+            g_autofree gchar *line = NULL;
+
+            guint showing = fake->documents;
+
+            if (fake->stale > 0) {
+                fake->stale--;
+                showing--;
+            }
+            /* a new view starts on about:blank */
+            line = showing == 0 ? g_strdup("complete 0 about:blank")
+                                : g_strdup_printf("complete %u https://example.org/", showing);
+            return string_node(line);
+        }
         if (strstr(script, "querySelectorAll('a[href]')") != NULL)
             return string_node("More information -> https://www.iana.org/domains/example");
         return string_node("evaluated");
@@ -595,6 +617,40 @@ test_tools_send_and_say(void)
     fixture_teardown(&fixture);
 }
 
+/*
+ * An open waits for the page it asked for.
+ *
+ * On a cold start WebKit takes a moment to commit the first page, and
+ * all that while about:blank answers readyState "complete" -- so an open
+ * that only polled readyState came back "Running -- about:blank" about
+ * one time in six against a real gsurf.  Here the fake keeps the old page
+ * for three reads after each navigate, the first time and a second time
+ * to the same address.
+ */
+static void
+test_open_waits_for_the_new_page(void)
+{
+    Fixture fixture = { 0 };
+    gboolean is_error = TRUE;
+    const gchar *text;
+    guint pass;
+
+    fixture_setup(&fixture);
+    fixture.fake->commit_lag = 3;
+
+    for (pass = 0; pass < 2; pass++) {
+        g_autoptr(JsonNode) opened = run_tool(&fixture, "surfer", "clawtilla_browser_open",
+                                              "{\"url\":\"example.org\"}");
+
+        text = result_text(opened, &is_error, NULL);
+        g_assert_false(is_error);
+        g_assert_null(strstr(text, "still loading"));
+        g_assert_cmpuint(fixture.fake->stale, ==, 0);
+    }
+
+    fixture_teardown(&fixture);
+}
+
 /* Two agents on one shared session: the second is refused while the first drives. */
 static void
 test_a_shared_session_has_one_driver(void)
@@ -1028,6 +1084,8 @@ main(int argc, char *argv[])
     g_test_add_func("/browser/the-session-line", test_the_session_line);
     g_test_add_func("/browser/tools/follow-the-browser", test_tools_follow_the_browser);
     g_test_add_func("/browser/tools/send-and-say", test_tools_send_and_say);
+    g_test_add_func("/browser/tools/open-waits-for-the-new-page",
+                    test_open_waits_for_the_new_page);
     g_test_add_func("/browser/tools/a-shared-session-has-one-driver",
                     test_a_shared_session_has_one_driver);
     g_test_add_func("/browser/tools/eval-with-allow-scripts",

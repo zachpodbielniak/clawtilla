@@ -19,7 +19,9 @@
  *   not exist, because GTK finds `wayland-0` in XDG_RUNTIME_DIR on its own
  *   and a "headless" session would open on the person's screen.
  * - Both children die with the daemon (PR_SET_PDEATHSIG), or a killed
- *   daemon leaves browsers holding profiles the next one wants.
+ *   daemon leaves browsers holding profiles the next one wants.  That
+ *   signal follows the thread that forked, so the forking is done by one
+ *   thread that lasts as long as the process (spawn_lasting()).
  */
 
 #include "clawtilla.h"
@@ -64,15 +66,17 @@ executable_dir(void)
 }
 
 /*
- * The oldest gsurf with page.fill_secret and the secret hold (0.5.13),
- * on top of page.click, page.type, page.key and an inline screenshot
- * (0.5.10).  An older one would answer the fill with "no such method",
- * and -- worse -- would take a screenshot of a page a secret was just
- * typed into, since it has no hold to refuse it with.
+ * The oldest gsurf whose typing answers only once the page has every key
+ * (0.5.14), on top of page.fill_secret and the secret hold (0.5.13) and
+ * page.click, page.type, page.key and an inline screenshot (0.5.10).  An
+ * older one would answer the fill with "no such method", or take a
+ * screenshot of a page a secret was just typed into, or -- 0.5.13 --
+ * answer a fill while its keys were still arriving, so that the next
+ * fill's field took the rest of the secret.
  */
 #define GSURF_MIN_MAJOR (0)
 #define GSURF_MIN_MINOR (5)
-#define GSURF_MIN_MICRO (13)
+#define GSURF_MIN_MICRO (14)
 
 /*
  * Whether @path is a gsurf new enough for the tools, from its --version.
@@ -184,6 +188,82 @@ die_with_parent(gpointer user_data)
 #if defined(__linux__)
     prctl(PR_SET_PDEATHSIG, SIGTERM);
 #endif
+}
+
+/*
+ * Where the children are forked.
+ *
+ * PR_SET_PDEATHSIG is tied to the *thread* that forked, not the process:
+ * the child is signalled when that thread ends.  A session is started by
+ * whichever thread first needs it -- an agent's browser tool runs on a
+ * thread of its own that ends with the tool call -- so Xvfb and gsurf
+ * were sent SIGTERM moments after starting, and the agent's next call
+ * found a new browser on about:blank.  Every fork happens here instead,
+ * on one thread that lives as long as the process.
+ */
+typedef struct {
+    GSubprocessLauncher  *launcher;
+    const gchar * const  *argv;
+    GSubprocess          *child;
+    GError               *error;
+    gboolean              done;
+    GMutex                lock;
+    GCond                 cond;
+} SpawnRequest;
+
+static gpointer
+spawner_main(gpointer data)
+{
+    GAsyncQueue *queue = data;
+
+    for (;;) {
+        SpawnRequest *request = g_async_queue_pop(queue);
+        GSubprocess *child;
+        GError *error = NULL;
+
+        child = g_subprocess_launcher_spawnv(request->launcher, request->argv, &error);
+
+        g_mutex_lock(&request->lock);
+        request->child = child;
+        request->error = error;
+        request->done = TRUE;
+        g_cond_signal(&request->cond);
+        g_mutex_unlock(&request->lock);
+    }
+    return NULL;
+}
+
+/* g_subprocess_launcher_spawnv(), forked from the lasting thread. */
+static GSubprocess *
+spawn_lasting(GSubprocessLauncher *launcher, const gchar * const *argv, GError **error)
+{
+    static GAsyncQueue *queue = NULL;
+    SpawnRequest request = { 0 };
+
+    if (g_once_init_enter(&queue)) {
+        GAsyncQueue *made = g_async_queue_new();
+
+        /* Never joined: it ends with the process, and that is the point. */
+        g_thread_unref(g_thread_new("clawt-browser-spawn", spawner_main, made));
+        g_once_init_leave(&queue, made);
+    }
+
+    request.launcher = launcher;
+    request.argv = argv;
+    g_mutex_init(&request.lock);
+    g_cond_init(&request.cond);
+
+    g_mutex_lock(&request.lock);
+    g_async_queue_push(queue, &request);
+    while (!request.done)
+        g_cond_wait(&request.cond, &request.lock);
+    g_mutex_unlock(&request.lock);
+
+    g_mutex_clear(&request.lock);
+    g_cond_clear(&request.cond);
+    if (request.error != NULL)
+        g_propagate_error(error, request.error);
+    return request.child;
 }
 
 /* ── The session ──────────────────────────────────────────────────── */
@@ -588,8 +668,12 @@ start_locked(ClawtBrowser *self, GError **error)
      * browser it starts -- measured: gsurf then never opens a window and
      * its control socket never appears.
      */
-    xvfb = g_subprocess_launcher_spawn(xl, error, xvfb_path, "-displayfd", "1",
-                                       "-screen", "0", screen, "-nolisten", "tcp", NULL);
+    {
+        const gchar *argv[] = { xvfb_path, "-displayfd", "1", "-screen", "0", screen,
+                                "-nolisten", "tcp", NULL };
+
+        xvfb = spawn_lasting(xl, argv, error);
+    }
     if (xvfb == NULL)
         return FALSE;
 
@@ -621,8 +705,12 @@ start_locked(ClawtBrowser *self, GError **error)
     g_subprocess_launcher_set_stdout_file_path(gl, log);
     g_subprocess_launcher_set_stderr_file_path(gl, log);
     g_subprocess_launcher_set_child_setup(gl, die_with_parent, NULL, NULL);
-    gsurf = g_subprocess_launcher_spawn(gl, error, gsurf_path, "-c", config,
-                                        "--no-c-config", "--no-modules", home, NULL);
+    {
+        const gchar *argv[] = { gsurf_path, "-c", config, "--no-c-config", "--no-modules",
+                                home, NULL };
+
+        gsurf = spawn_lasting(gl, argv, error);
+    }
     if (gsurf == NULL) {
         end_child(xvfb);
         return FALSE;
@@ -1205,6 +1293,102 @@ clawt_browser_wait_loaded(ClawtBrowser *self, guint timeout_seconds)
         g_usleep(250 * 1000);
     }
     return FALSE;
+}
+
+/*
+ * Which document is showing, and how far it has loaded: one eval, read
+ * as "<readyState> <timeOrigin> <href>".  Every new document has its own
+ * performance.timeOrigin, so a reload of the same address is told apart
+ * from the page it replaced; a jump within the page (#anchor) keeps the
+ * document but changes the address.
+ */
+#define DOCUMENT_SCRIPT \
+    "document.readyState + ' ' + performance.timeOrigin + ' ' + location.href"
+
+/* The page's state (TRUE) split into its readyState and identity. */
+static gboolean
+read_document(ClawtBrowser *self, gchar **state, gchar **identity)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autoptr(JsonNode) params = NULL;
+    g_autofree gchar *line = NULL;
+    const gchar *space;
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "script");
+    json_builder_add_string_value(builder, DOCUMENT_SCRIPT);
+    json_builder_end_object(builder);
+    params = json_builder_get_root(builder);
+
+    line = call_string(self, "page.eval", params, 5);
+    if (line == NULL || (space = strchr(line, ' ')) == NULL)
+        return FALSE;
+    *state = g_strndup(line, (gsize)(space - line));
+    *identity = g_strdup(space + 1);
+    return TRUE;
+}
+
+JsonNode *
+clawt_browser_navigate(ClawtBrowser *self, const gchar *uri, guint timeout_seconds,
+                       gboolean *loaded, GError **error)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autoptr(JsonNode) params = NULL;
+    g_autofree gchar *before_state = NULL;
+    g_autofree gchar *before = NULL;
+    JsonNode *result;
+    gint64 deadline;
+    gboolean done = FALSE;
+
+    g_return_val_if_fail(CLAWT_IS_BROWSER(self), NULL);
+    g_return_val_if_fail(uri != NULL, NULL);
+
+    if (loaded != NULL)
+        *loaded = FALSE;
+
+    /*
+     * 1. The document showing now.  Unread (no session yet, or a secret
+     *    hold refusing scripts) is fine: a session's first page and a
+     *    held page are both replaced by a new document anyway.
+     */
+    if (clawt_browser_is_running(self))
+        (void)read_document(self, &before_state, &before);
+
+    /* 2. The navigation itself: gsurf answers when it is handed over. */
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "uri");
+    json_builder_add_string_value(builder, uri);
+    json_builder_end_object(builder);
+    params = json_builder_get_root(builder);
+    result = clawt_browser_call(self, "navigate", params, 30, error);
+    if (result == NULL)
+        return NULL;
+
+    /*
+     * 3. Loaded means a different document (or address) that is
+     *    complete.  readyState alone is not enough: until the engine
+     *    commits the new page, the old one -- about:blank on a cold
+     *    start -- answers "complete", and the caller reads the wrong
+     *    page.
+     */
+    deadline = g_get_monotonic_time() + (gint64)timeout_seconds * G_USEC_PER_SEC;
+    while (!done && g_get_monotonic_time() < deadline) {
+        g_autofree gchar *state = NULL;
+        g_autofree gchar *identity = NULL;
+
+        g_usleep(250 * 1000);
+        if (!read_document(self, &state, &identity))
+            continue;
+        /* Unread before (a cold start), the only page that is not the
+         * one asked for is the blank one a new view starts on. */
+        done = g_strcmp0(state, "complete") == 0 &&
+               (before != NULL ? g_strcmp0(identity, before) != 0
+                               : g_str_has_prefix(uri, "about:") ||
+                                 !g_str_has_suffix(identity, " about:blank"));
+    }
+    if (loaded != NULL)
+        *loaded = done;
+    return result;
 }
 
 /* ── What the clients draw ─────────────────────────────────────────── */

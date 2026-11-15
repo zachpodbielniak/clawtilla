@@ -9107,11 +9107,9 @@ browser_job_run(BrowserJob *job)
         full = strstr(url, "://") != NULL || g_str_has_prefix(url, "about:") ||
                g_str_has_prefix(url, "data:") || g_str_has_prefix(url, "file:")
             ? g_strdup(url) : g_strconcat("https://", url, NULL);
-        params = browser_params("uri", full, NULL);
-        result = clawt_browser_call(browser, "navigate", params, 30, &error);
+        result = clawt_browser_navigate(browser, full, 20, &loaded, &error);
         if (result == NULL)
             goto failed;
-        loaded = clawt_browser_wait_loaded(browser, 20);
         where = browser_where(browser);
         {
             g_autofree gchar *text = g_strdup_printf(
