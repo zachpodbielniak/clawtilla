@@ -2205,6 +2205,17 @@ reader serves either source:
   answered in its thread of replies or the thread had reached
   =rooms.max_chain=, and why.  Draw ~clawt_round_skip_note()~ under the
   message.  The message itself is in the room for everyone either way.
+- ~answer_from~ --- string (since 0.34.2): the message is the daemon's
+  notice handing a teammate's answer back to the conversation that asked
+  for it (~orchestration.answer_in_request_room~); the value is the
+  answering agent.  It also carries ~crosstalk_room~ and
+  ~crosstalk_message~, naming the exchange and the answer in it.  Draw
+  ~clawt_message_answer_label()~ on it *in place of*
+  ~clawt_crosstalk_mark_label()~, with the same Flow action.
+- ~waiting_on~ --- string (since 0.34.2): what an agent wrote at the end
+  of a turn that asked a teammate something; the value is who it asked.
+  Draw the message quietly, with ~clawt_message_waiting_note()~ under it
+  (~clawt_message_waiting_tooltip()~ says what it means).
 - ~crosstalk_room~ and ~crosstalk_message~ --- strings (since 0.30.0):
   the message is the daemon's summary of agent-to-agent exchanges that
   ended (~orchestration.crosstalk_summary~).  ~crosstalk_room~ names the

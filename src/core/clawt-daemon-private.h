@@ -1118,6 +1118,21 @@ typedef gboolean (*ClawtDaemonCrosstalkChannelSend)(const gchar  *agent_id,
 void clawt_daemon_crosstalk_setup(ClawtDaemon *self);
 void clawt_daemon_crosstalk_teardown(ClawtDaemon *self);
 void clawt_daemon_crosstalk_tick(ClawtDaemon *self, gint64 now);
+/*
+ * An answer in @room_id was handed back to @agent_id in the conversation
+ * it asked from, so that exchange needs no summary for that agent: the
+ * answer is already in front of whoever reads the room (since 0.34.2).
+ */
+/*
+ * Whether @room_id is a room on @agent_id's Matrix channel: a
+ * `!room:server` id its `matrix` integration listens in.
+ */
+gboolean clawt_daemon_agent_takes_matrix_room(ClawtDaemon *self,
+                                              const gchar *agent_id,
+                                              const gchar *room_id);
+void clawt_daemon_crosstalk_note_handback(ClawtDaemon *self,
+                                          const gchar *room_id,
+                                          const gchar *agent_id);
 void clawt_daemon_crosstalk_set_provider(ClawtDaemon *self,
                                          AiProvider  *provider);
 guint clawt_daemon_crosstalk_rewrites_pending(ClawtDaemon *self);
@@ -1838,6 +1853,17 @@ gboolean clawt_daemon_ack_consider(ClawtDaemon  *self,
                                    const gchar  *room_id,
                                    const gchar  *destination,
                                    ClawtMessage *message);
+
+/*
+ * Routes an agent's answer the way a turn's closing text is routed: back
+ * to the conversation that asked when the daemon can
+ * (`orchestration.answer_in_request_room`), into the room it was written
+ * in otherwise.  For an answer that was held for a verdict first -- the
+ * acknowledgement check -- and must not then take a different road from
+ * one that was not (since 0.34.2).
+ */
+gboolean clawt_daemon_route_answer(ClawtDaemon *self, ClawtMessage *message,
+                                   GError **error);
 
 /* A test's fake model; wins over orchestration.ack_check_model. */
 void clawt_daemon_ack_set_provider(ClawtDaemon *self, AiProvider *provider);

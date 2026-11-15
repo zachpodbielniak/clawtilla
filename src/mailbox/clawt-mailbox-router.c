@@ -419,6 +419,14 @@ record_in_room(ClawtMailboxRouter *self, ClawtRoom *room,
 				clawt_message_get_crosstalk_messages(message));
 		}
 
+		if (clawt_message_get_answer_from(message) != NULL)
+			clawt_event_set_detail(event, "answer_from",
+				clawt_message_get_answer_from(message));
+
+		if (clawt_message_get_waiting_on(message) != NULL)
+			clawt_event_set_detail(event, "waiting_on",
+				clawt_message_get_waiting_on(message));
+
 		if (clawt_message_get_skipped(message) != NULL) {
 			clawt_event_set_detail(event, "skipped",
 				clawt_message_get_skipped(message));
@@ -1125,8 +1133,15 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
         g_autofree gchar *item_id = NULL;
         g_autoptr(GError) local = NULL;
 
+        /*
+         * What the recipient is handed, which for a notice of the
+         * daemon's can be more than the room shows: see
+         * clawt_message_set_delivered_body().
+         */
         item = clawt_mailbox_item_new(sender, member,
-                                      clawt_message_get_body(message));
+            clawt_message_get_delivered_body(message) != NULL
+                ? clawt_message_get_delivered_body(message)
+                : clawt_message_get_body(message));
         clawt_mailbox_item_set_room(item, clawt_room_get_id(room));
         clawt_mailbox_item_set_task_id(item,
                                        clawt_message_get_task_id(message));
@@ -2078,6 +2093,13 @@ steer_wanted(ClawtMailboxRouter *self, ClawtAgent *agent, ClawtLink *link,
 	facts.sender_is_agent = facts.sender != NULL &&
 		clawt_agent_manager_get(self->agents, facts.sender) != NULL;
 	facts.is_result = item_is_result(self, item);
+
+	/* A handed-back answer, for the turn that asked for it. */
+	facts.handed_answer =
+		g_strcmp0(facts.sender, CLAWT_SYSTEM_SENDER) == 0 &&
+		clawt_mailbox_item_get_reply_to(item) != NULL &&
+		clawt_mailbox_item_get_request_room(item) != NULL &&
+		clawt_agent_get_turn_asked(agent, room_id) != NULL;
 	facts.consult = clawt_mailbox_item_get_consult(item);
 	facts.task_id = clawt_mailbox_item_get_task_id(item);
 	facts.model = clawt_mailbox_item_get_model(item);

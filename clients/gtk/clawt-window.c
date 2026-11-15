@@ -1588,7 +1588,10 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
                                      clawt_event_get_detail_int(event, "interrupted") != 0,
                                      NULL);
             clawt_gtk_mark_crosstalk(self,
-                                     clawt_event_get_detail(event, "crosstalk_room"));
+                                     clawt_event_get_detail(event, "crosstalk_room"),
+                                     clawt_event_get_detail(event, "answer_from"));
+            clawt_gtk_mark_waiting(self,
+                                     clawt_event_get_detail(event, "waiting_on"));
             clawt_gtk_append_round_marks(self, 0,
                                      clawt_event_get_detail(event, "skipped"),
                                      clawt_event_get_detail(event, "skip_reason"),

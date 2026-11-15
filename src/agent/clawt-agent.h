@@ -979,6 +979,104 @@ gint clawt_agent_get_hop_depth_in(ClawtAgent *self, const gchar *room_id);
  * Returns: %TRUE if the daemon should route what that turn says
  */
 /**
+ * clawt_agent_note_channel_room:
+ * @self: a #ClawtAgent
+ * @room_id: (nullable): a room the agent's runtime named on a tool call
+ * @channel: (nullable): the channel of the agent's that room is on
+ * @peer: (nullable): who that conversation is with, as the runtime
+ *   keyed its session
+ *
+ * Remembers that @room_id is a conversation on one of the agent's own
+ * channels -- a Matrix room -- and whose.  libreclaw says so on every
+ * tool call from such a turn (`CLAWTILLA_CHANNEL_ID`,
+ * `CLAWTILLA_SESSION_PEER`, 0.30.4), and it is what lets the daemon
+ * start a turn in that conversation later
+ * (clawt_link_deliver_channel()).  In memory only.
+ *
+ * Since: 0.34.2
+ */
+void clawt_agent_note_channel_room(ClawtAgent  *self,
+                                   const gchar *room_id,
+                                   const gchar *channel,
+                                   const gchar *peer);
+
+/**
+ * clawt_agent_get_channel_room:
+ * @self: a #ClawtAgent
+ * @room_id: (nullable): a room
+ * @channel: (out) (transfer full) (optional): the channel it is on
+ * @peer: (out) (transfer full) (optional) (nullable): who it is with
+ *
+ * Returns: %TRUE if @room_id is known to be on one of the agent's own
+ *   channels
+ *
+ * Since: 0.34.2
+ */
+gboolean clawt_agent_get_channel_room(ClawtAgent   *self,
+                                      const gchar  *room_id,
+                                      gchar       **channel,
+                                      gchar       **peer);
+
+/**
+ * clawt_agent_note_turn_told_operator:
+ * @self: a #ClawtAgent
+ * @room_id: (nullable): the room whose running turn told the operator
+ *
+ * Records that the turn recorded for @room_id has already written to the
+ * operator in that room with a tool.  A turn the operator did not ask
+ * for -- one a daemon notice started -- then has nothing left for its
+ * closing text to say, and the daemon does not route it.  Scoped to the
+ * turn that exists now, as clawt_agent_close_turn_exchange() is.
+ *
+ * Since: 0.34.2
+ */
+void clawt_agent_note_turn_told_operator(ClawtAgent  *self,
+                                         const gchar *room_id);
+
+/**
+ * clawt_agent_get_turn_told_operator:
+ * @self: a #ClawtAgent
+ * @room_id: (nullable): the room being asked about
+ *
+ * Returns: %TRUE if the turn recorded for @room_id told the operator
+ *   with a tool
+ *
+ * Since: 0.34.2
+ */
+gboolean clawt_agent_get_turn_told_operator(ClawtAgent  *self,
+                                            const gchar *room_id);
+
+/**
+ * clawt_agent_note_turn_asked:
+ * @self: a #ClawtAgent
+ * @room_id: (nullable): the room whose running turn sent the request
+ * @peer: (nullable): the agent it asked
+ *
+ * Records that the turn recorded for @room_id asked @peer something
+ * whose answer will come back to that room.  The text such a turn ends
+ * with can only say that it asked, and is marked so a client can draw
+ * it as the interim line it is.
+ *
+ * Since: 0.34.2
+ */
+void clawt_agent_note_turn_asked(ClawtAgent  *self,
+                                 const gchar *room_id,
+                                 const gchar *peer);
+
+/**
+ * clawt_agent_get_turn_asked:
+ * @self: a #ClawtAgent
+ * @room_id: (nullable): the room being asked about
+ *
+ * Returns: (transfer none) (nullable): the agent the turn recorded for
+ *   @room_id last asked, or %NULL
+ *
+ * Since: 0.34.2
+ */
+const gchar *clawt_agent_get_turn_asked(ClawtAgent  *self,
+                                        const gchar *room_id);
+
+/**
  * clawt_agent_close_turn_exchange:
  * @self: a #ClawtAgent
  * @room_id: (nullable): the room whose running turn is spoken for

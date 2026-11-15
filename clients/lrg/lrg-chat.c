@@ -1121,9 +1121,13 @@ on_crosstalk_flow(LrgButton *button, gpointer user_data)
  * summarises.  The history and the live path both come through here.
  */
 static void
-append_crosstalk_marks(ClawtLrgApp *app, const gchar *rooms)
+append_crosstalk_marks(ClawtLrgApp *app, const gchar *rooms,
+                       const gchar *answer_from)
 {
     g_auto(GStrv) targets = clawt_crosstalk_split_targets(rooms);
+    /* A handed-back answer says whose it is (`answer_from`, 0.34.2). */
+    g_autofree gchar *answer = (answer_from != NULL && *answer_from != '\0')
+        ? clawt_message_answer_label(answer_from) : NULL;
     guint n = g_strv_length(targets);
     LrgWidget *row;
     LrgInsets margin = { px(app, CHAT_ROW_MARGIN + CHAT_GUTTER),
@@ -1134,8 +1138,8 @@ append_crosstalk_marks(ClawtLrgApp *app, const gchar *rooms)
         return;
 
     row = clawt_lrg_hbox(px(app, 8.0f));
-    clawt_lrg_take(row, clawt_lrg_badge(clawt_crosstalk_mark_label(),
-                                        "info"));
+    clawt_lrg_take(row, clawt_lrg_badge(
+        answer != NULL ? answer : clawt_crosstalk_mark_label(), "info"));
 
     for (i = 0; i < n; i++) {
         g_autofree gchar *label = clawt_crosstalk_flow_label(i, n);
@@ -1152,6 +1156,28 @@ append_crosstalk_marks(ClawtLrgApp *app, const gchar *rooms)
 
     lrg_widget_set_margin(row, &margin);
     clawt_lrg_take(chat.transcript, row);
+}
+
+/*
+ * Under what an agent wrote at the end of a turn that asked a teammate
+ * something (`waiting_on`, since 0.34.2): libclawt's line saying what is
+ * being waited for, so "I have asked" reads as the interim line it is.
+ */
+static void
+append_waiting_mark(ClawtLrgApp *app, const gchar *waiting_on)
+{
+    g_autofree gchar *note = NULL;
+    LrgWidget *line;
+    LrgInsets margin = { px(app, CHAT_ROW_MARGIN + CHAT_GUTTER),
+                         px(app, 2.0f), px(app, CHAT_ROW_MARGIN), 0.0f };
+
+    if (waiting_on == NULL || *waiting_on == '\0' || chat.transcript == NULL)
+        return;
+
+    note = clawt_message_waiting_note(waiting_on);
+    line = clawt_lrg_paragraph(note, "muted");
+    lrg_widget_set_margin(line, &margin);
+    clawt_lrg_take(chat.transcript, line);
 }
 
 static void
@@ -2621,7 +2647,11 @@ draw_history(ClawtLrgApp *app, JsonNode *history, GPtrArray *steps,
                        clawt_ipc_payload_string(message, "steered"));
         append_crosstalk_marks(app,
                                clawt_ipc_payload_string(message,
-                                                        "crosstalk_room"));
+                                                        "crosstalk_room"),
+                               clawt_ipc_payload_string(message,
+                                                        "answer_from"));
+        append_waiting_mark(app,
+                            clawt_ipc_payload_string(message, "waiting_on"));
         append_round_marks(app, 0,
                            clawt_ipc_payload_string(message, "skipped"),
                            clawt_ipc_payload_string(message, "skip_reason"),
@@ -4935,7 +4965,10 @@ on_message_event(ClawtLrgApp *app, ClawtEvent *event)
                        clawt_event_get_detail_int(event, "interrupted") != 0,
                        NULL);
         append_crosstalk_marks(app,
-                               clawt_event_get_detail(event, "crosstalk_room"));
+                               clawt_event_get_detail(event, "crosstalk_room"),
+                               clawt_event_get_detail(event, "answer_from"));
+        append_waiting_mark(app,
+                            clawt_event_get_detail(event, "waiting_on"));
         append_round_marks(app, 0, clawt_event_get_detail(event, "skipped"),
                            clawt_event_get_detail(event, "skip_reason"),
                            FALSE);

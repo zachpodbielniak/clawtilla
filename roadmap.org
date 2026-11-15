@@ -344,6 +344,14 @@ OpenMausBot has none of the structural withholding or cycle stalling that I coul
 - *Live run (v0.34.1):* a throwaway fleet of two claude-code (sonnet) agents and one grok-build agent, GTK client on Xvfb. Both directions handed the answer back into the asking chat's own session; a pair told never to stop was refused at the budget, raised the alert and reported the refusal. It found one fault: a Grok asker waited inside its turn (=sleep 8=, then read the room), or called =clawtilla_message_user= as well as writing closing text, so its report arrived twice. The request tool now says to end the turn, and the notice says the closing text is the message.
 - *Version:* minor (config keys, an event kind, C API; libreclaw patch).
 
+** DONE P2 Hand-back polish: one account of an answer, and Matrix v0.34.2 :orchestration:clients:
+- *Requested:* by the user on 2026-11-15, from what the live run of v0.34.1 showed.
+- *Done:* the notice's room text is who answered and what they said, with the agent's instructions only on the delivery (=clawt_message_set_delivered_body()=) and a link into Flow (~answer_from~); a handed-back exchange is not summarised as well; a notice-started turn that told the operator with a tool has its closing text dropped, and an answer landing while the asker's turn still runs is steered into it; a turn that asked a teammate marks what it ends with (~waiting_on~), drawn quietly in all three clients; an answer to something asked from a Matrix room starts a turn in that Matrix conversation (libreclaw 0.30.4: =inject=, =CLAWTILLA_CHANNEL_ID=, =CLAWTILLA_SESSION_PEER=).
+- *Also found:* with ~orchestration.ack_check_model~ on, an answer that passed the check was sent into the two agents' room, so the check turned the hand-back off. Routed through =clawt_daemon_route_answer()= now.
+- *Limit:* the Matrix path is tested against the link and a libreclaw unit test, not a real homeserver. The Matrix conversation is remembered in memory only.
+- *Live run:* a throwaway fleet again (claude-code sonnet and grok-build, GTK on Xvfb): in both directions the chat showed one marked interim line, the short notice with its Flow link, and one report, and no summary followed.
+- *Version:* micro.
+
 * Steering: words into a running turn
 
 Today a message for an agent whose turn is running waits in libreclaw's queue and becomes the next turn. Two costs follow. A delegator's correction ("stop, use the staging DB") arrives after the work it was meant to change has finished. And a peer's follow-up costs a whole extra turn that rereads everything.

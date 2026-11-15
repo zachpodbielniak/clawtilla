@@ -1630,7 +1630,14 @@ versions apart.
   only by a non-agent, non-system, non-`grok:` sender or by quiet. Do not
   send a new daemon notice at depth 0 and assume `max_hops` bounds what it
   starts: it does not, which is exactly the loop the pair budget exists
-  for. Matrix-to-Matrix loops are libreclaw's to stop (`bot_users`,
+  for. A daemon notice has two texts since 0.34.2: the room records the
+  message *body* and a mailbox item takes
+  `clawt_message_set_delivered_body()` when set -- put what a person reads
+  in the first and agent instructions in the second. Every new message
+  member is written in four places (transcript, reload, `room.history`,
+  the live `message` event) or it is missing from one of them. An answer
+  held for any verdict must still go through `clawt_daemon_route_answer()`.
+  Matrix-to-Matrix loops are libreclaw's to stop (`bot_users`,
   rendered by `fleet_matrix_users()`).
 
 ### Config

@@ -251,6 +251,9 @@ message_element(JsonObject *message, const gchar *agent_id,
     const gchar *steered = clawt_web_member(message, "steered", NULL);
     /* A cross-talk summary's Flow rooms, space-separated, or NULL. */
     const gchar *crosstalk = clawt_web_member(message, "crosstalk_room", NULL);
+    /* A teammate's answer handed back here, and a turn left waiting. */
+    const gchar *answer_from = clawt_web_member(message, "answer_from", NULL);
+    const gchar *waiting_on = clawt_web_member(message, "waiting_on", NULL);
     gboolean from_user = (g_strcmp0(sender, "user") == 0);
     g_autoptr(HtmxElement) row = HTMX_ELEMENT(htmx_article_new());
     g_autoptr(HtmxDiv) who = htmx_div_new();
@@ -460,14 +463,25 @@ message_element(JsonObject *message, const gchar *agent_id,
      * statements the daemon makes about a conversation.
      */
     if (crosstalk != NULL) {
+        /*
+         * A handed-back answer (`answer_from`, since 0.34.2) says whose
+         * it is; anything else carrying a Flow room is a summary.
+         */
+        g_autofree gchar *answer = (answer_from != NULL && *answer_from != '\0')
+            ? clawt_message_answer_label(answer_from) : NULL;
         g_autoptr(HtmxSpan) mark = clawt_web_badge(
-            clawt_crosstalk_mark_label(), "info");
+            answer != NULL ? answer : clawt_crosstalk_mark_label(), "info");
 
-        htmx_element_set_attribute(HTMX_ELEMENT(mark), "title",
-                                   clawt_crosstalk_mark_tooltip());
+        if (answer == NULL)
+            htmx_element_set_attribute(HTMX_ELEMENT(mark), "title",
+                                       clawt_crosstalk_mark_tooltip());
         clawt_web_add(who, g_steal_pointer(&mark));
         htmx_element_add_class(row, "msg-crosstalk");
     }
+
+    /* What a turn that asked a teammate ended with: drawn quietly. */
+    if (waiting_on != NULL && *waiting_on != '\0')
+        htmx_element_add_class(row, "msg-interim");
 
     if (run_start || task != NULL || depth > 1 || acknowledged ||
         consult != NULL || interrupted || steered != NULL ||
@@ -606,6 +620,23 @@ message_element(JsonObject *message, const gchar *agent_id,
             htmx_node_set_text_content(HTMX_NODE(skip), note);
             htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(skip));
         }
+    }
+
+    /*
+     * And what such a turn is waiting for (since 0.34.2), in libclawt's
+     * words: the line itself is only "I have asked", and the answer that
+     * follows makes it old news.
+     */
+    if (waiting_on != NULL && *waiting_on != '\0') {
+        g_autofree gchar *note = clawt_message_waiting_note(waiting_on);
+        g_autoptr(HtmxDiv) waiting = htmx_div_new();
+
+        htmx_element_add_class(HTMX_ELEMENT(waiting), "skip-note");
+        htmx_element_add_class(HTMX_ELEMENT(waiting), "waiting-note");
+        htmx_element_set_attribute(HTMX_ELEMENT(waiting), "title",
+                                   clawt_message_waiting_tooltip());
+        htmx_node_set_text_content(HTMX_NODE(waiting), note);
+        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(waiting));
     }
 
     return g_steal_pointer(&row);

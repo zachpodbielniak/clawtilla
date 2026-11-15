@@ -114,6 +114,7 @@ struct _ClawtAgent {
      * safe direction rather than a plausible one.
      */
     GHashTable     *turns;         /* room -> TurnSetup (owned) */
+    GHashTable     *channel_rooms; /* room -> "channel\npeer" (owned) */
     GHashTable     *typing_rooms;  /* room -> gint64*: when its turn began */
     gchar          *last_room;
     guint64         turn_serial;   /* turns begun, for the pair budget */
@@ -152,6 +153,16 @@ typedef struct {
 	 * wherever several deliveries become one turn.
 	 */
 	gboolean  consult;
+
+	/*
+	 * What the turn has done that changes what its closing text is
+	 * (since 0.34.2): it already told the operator with a tool, so the
+	 * closing text of a turn nobody asked for would say it twice; and
+	 * who it asked something of, so closing text that can only say "I
+	 * have asked, waiting" is marked as that.
+	 */
+	gboolean  told_operator;
+	gchar    *asked;
 
 	/*
 	 * Evidence of work, for the task progress guard: tool calls that
@@ -194,6 +205,7 @@ turn_setup_free(gpointer data)
     g_free(setup->origin);
     g_free(setup->task_id);
 	g_free(setup->last_error);
+	g_free(setup->asked);
 	g_clear_pointer(&setup->input, clawt_mailbox_item_free);
 	g_clear_pointer(&setup->records, g_array_unref);
     g_free(setup);
@@ -1064,6 +1076,113 @@ clawt_agent_close_turn_exchange(ClawtAgent *self, const gchar *room_id)
 
     if (setup != NULL)
         setup->replies = FALSE;
+}
+
+/* How many foreign rooms are remembered; the oldest go when it is full. */
+#define CHANNEL_ROOMS_MAX (64)
+
+void
+clawt_agent_note_channel_room(ClawtAgent *self, const gchar *room_id,
+                              const gchar *channel, const gchar *peer)
+{
+    g_return_if_fail(CLAWT_IS_AGENT(self));
+
+    if (room_id == NULL || channel == NULL || *channel == '\0')
+        return;
+
+    /*
+     * Bounded, and crudely: an agent in more rooms than this at once is
+     * not a case worth an eviction order, and forgetting one costs only
+     * an answer arriving in the two agents' room instead.
+     */
+    if (g_hash_table_size(self->channel_rooms) >= CHANNEL_ROOMS_MAX &&
+        !g_hash_table_contains(self->channel_rooms, room_id))
+        g_hash_table_remove_all(self->channel_rooms);
+
+    g_hash_table_replace(self->channel_rooms, g_strdup(room_id),
+                         g_strdup_printf("%s\n%s", channel,
+                                         peer != NULL ? peer : ""));
+}
+
+gboolean
+clawt_agent_get_channel_room(ClawtAgent *self, const gchar *room_id,
+                             gchar **channel, gchar **peer)
+{
+    const gchar *known;
+    const gchar *split;
+
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), FALSE);
+
+    known = (room_id != NULL)
+        ? g_hash_table_lookup(self->channel_rooms, room_id) : NULL;
+
+    if (known == NULL)
+        return FALSE;
+
+    split = strchr(known, '\n');
+
+    if (channel != NULL)
+        *channel = g_strndup(known, split != NULL ? (gsize)(split - known)
+                                                  : strlen(known));
+    if (peer != NULL)
+        *peer = (split != NULL && split[1] != '\0') ? g_strdup(split + 1)
+                                                    : NULL;
+
+    return TRUE;
+}
+
+void
+clawt_agent_note_turn_told_operator(ClawtAgent *self, const gchar *room_id)
+{
+    TurnSetup *setup;
+
+    g_return_if_fail(CLAWT_IS_AGENT(self));
+
+    setup = (room_id != NULL) ? turn_in(self, room_id) : NULL;
+
+    if (setup != NULL)
+        setup->told_operator = TRUE;
+}
+
+gboolean
+clawt_agent_get_turn_told_operator(ClawtAgent *self, const gchar *room_id)
+{
+    TurnSetup *setup;
+
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), FALSE);
+
+    setup = (room_id != NULL) ? turn_in(self, room_id) : NULL;
+
+    return setup != NULL && setup->told_operator;
+}
+
+void
+clawt_agent_note_turn_asked(ClawtAgent *self, const gchar *room_id,
+                            const gchar *peer)
+{
+    TurnSetup *setup;
+
+    g_return_if_fail(CLAWT_IS_AGENT(self));
+
+    setup = (room_id != NULL) ? turn_in(self, room_id) : NULL;
+
+    if (setup == NULL || peer == NULL)
+        return;
+
+    g_free(setup->asked);
+    setup->asked = g_strdup(peer);
+}
+
+const gchar *
+clawt_agent_get_turn_asked(ClawtAgent *self, const gchar *room_id)
+{
+    TurnSetup *setup;
+
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), NULL);
+
+    setup = (room_id != NULL) ? turn_in(self, room_id) : NULL;
+
+    return (setup != NULL) ? setup->asked : NULL;
 }
 
 /*
@@ -2705,6 +2824,7 @@ clawt_agent_dispose(GObject *object)
     g_clear_object(&self->runtime);
     g_clear_pointer(&self->pending, queue_of_turns_free);
     g_clear_pointer(&self->turns, g_hash_table_unref);
+    g_clear_pointer(&self->channel_rooms, g_hash_table_unref);
     g_clear_pointer(&self->typing_rooms, g_hash_table_unref);
     g_clear_pointer(&self->last_room, g_free);
     g_clear_object(&self->computer);
@@ -2775,6 +2895,8 @@ clawt_agent_init(ClawtAgent *self)
     self->state = CLAWT_AGENT_STATE_STOPPED;
     self->caps = CLAWT_AGENT_CAPS_NONE;
     self->pending = g_queue_new();
+    self->channel_rooms = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                                g_free, g_free);
     self->turns = g_hash_table_new_full(g_str_hash, g_str_equal,
                                         g_free, turn_setup_free);
     self->typing_rooms = g_hash_table_new_full(g_str_hash, g_str_equal,

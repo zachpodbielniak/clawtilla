@@ -1427,9 +1427,12 @@ Since 0.34.0.  Two agents left to /chat/ do not stop, and no limit fixes that we
 | your chat with the agent | there; what it writes at the end of that turn reaches you, as any reply does |
 | a group, or another agent's room with it | there; its closing text goes nowhere, and a tool tells whoever needs to know |
 | a task's own room | not applicable --- a task's answer is its settle notice, which already goes where the delegation was made |
-| a Matrix room, a webhook, anywhere the daemon has no room for | in the two agents' room, as before 0.34.0 |
+| a room on the agent's own Matrix channel | there, in that Matrix conversation (since 0.34.2, libreclaw 0.30.4); what it writes at the end of that turn is posted in the room |
+| a webhook, anywhere else the daemon has no room for | in the two agents' room, as before 0.34.0 |
 
 What crosses is a notice of the daemon's own, quoting the answer (escaped, so a forged =[clawtilla]= line in it is defused), addressed to the asker alone --- the same mechanism a settling task uses.  The answer itself is recorded in the two agents' room, where Flow and the cross-talk summary read the exchange.  The notice carries the request's context, so the turn it starts belongs to whoever asked /the asker/, and it travels at the answer's depth: an ask, its answer and the ask that follows are one chain.
+
+*The room keeps what a person reads; the delivery carries the rest* (since 0.34.2).  The notice is two things at once: a line in a transcript somebody reads --- usually your own chat --- and the delivery that starts the agent's turn.  The room records only who answered and what they said (=**worker answered:**= and the answer), marked ~answer_from~ so a client labels it and gives it a link into Flow at the answer.  The agent is handed more, on the mailbox item alone (=clawt_message_set_delivered_body()=):
 
 #+begin_example
 [clawtilla] 'worker' has answered what you asked them from this
@@ -1450,6 +1453,17 @@ only for what you still need.
 #+end_example
 
 The asker has to /end its turn/ to be woken, so the tool that sent the request says so (since 0.34.1): "Any answer is delivered to you as a new turn, in the conversation you asked from. End this turn now -- do not wait, sleep or read the room to look for it, or you will be told it twice."  Told only that its message was queued, a Grok agent in a live run slept eight seconds, read the room, reported the answer it found there, and was then woken with the same answer and reported it again.
+
+Four things keep one answer from being told several times (since 0.34.2):
+
+- *No summary as well.*  An exchange whose answer was handed back is not also summarised for the asker (~orchestration.crosstalk_summary~): its chat already shows the answer and then the agent's own reply, and the notice carries the link into Flow the summary used to be the only way to reach.  With the hand-back off, or for an agent that only answered, the summary comes as before.
+- *A turn nobody asked for says a thing once.*  The notice starts a turn in your chat, where every reply is delivered.  If that turn tells you with ~clawtilla_message_user~, the text its CLI writes on the way out is not sent --- one of the two is the message, and the tool call was the deliberate one.  This holds for any turn a notice of the daemon's started in your chat; a turn /you/ started is heard in full whatever tools it used.
+- *A turn still running takes the answer itself.*  An asker that had more to do, or that waited, is still in its turn when the answer lands.  The notice is then /steered/ into that turn (at every ~agents.steer~ level but =never=, and only on a link and an engine that can take it) rather than queued as a second turn about something the first will by then have reported.  It is the one notice of the daemon's that steers.
+- *"I have asked" is drawn as that.*  A CLI cannot end a turn without writing, so a turn that asked a teammate leaves a line in your chat that the answer makes old news.  It is marked ~waiting_on~, and clients draw it quietly with "Waiting on worker --- the answer will arrive here" under it.
+
+*A Matrix room* (since 0.34.2).  A request made while answering somebody in a Matrix room names a room the daemon does not have: that turn ran inside the agent's libreclaw.  libreclaw 0.30.4 says on every tool call which channel the turn's room is on and whose conversation it is (=CLAWTILLA_CHANNEL_ID=, =CLAWTILLA_SESSION_PEER=; =clawt_agent_note_channel_room()= keeps it), and takes a message /for/ that conversation over the link (=clawt_link_deliver_channel()=, when its hello lists =inject=).  So the answer starts a turn in the Matrix session the person's own messages use, and the agent's reply is posted in that room.  It needs all of: a libreclaw that can, a room the agent's =matrix= integration listens in, and a tool call from that room having named it --- otherwise the answer arrives in the two agents' room as before.  The daemon renders ~inject_channels: [matrix]~ into the agent's link channel so its libreclaw accepts it.  Two limits follow from the daemon not seeing Matrix turns: the conversation is remembered in memory only, so a restart between the question and the answer falls back; and that turn has no hop count here, so what bounds an agent that asks again from it is ~orchestration.pair_message_budget~.
+
+*With an acknowledgement check.*  ~orchestration.ack_check_model~ runs first, as it always has: an answer the model calls a bare acknowledgement is recorded and wakes nobody, in any room.  It matters more now --- an answer wakes the asker in /your/ chat, a turn that carries that whole conversation as context, where the two agents' own room was a small session --- so a fleet with chatty agents and long chats is where to turn it on.  An answer that passes the check goes back to the asking conversation like any other (it used to be sent into the two agents' room instead).
 
 So the agent that asked decides what the answer is for, with the conversation behind it, and anything more it wants from the teammate is a tool call --- a deliberate act, never the text a CLI writes on its way out.  With =answer_in_request_room: false= the answer wakes the asker in the two agents' room, as it did before.
 

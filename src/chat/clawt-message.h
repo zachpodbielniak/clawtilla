@@ -611,6 +611,123 @@ void clawt_message_set_skipped(ClawtMessage *self,
                                const gchar  *reason);
 
 /**
+ * clawt_message_set_delivered_body:
+ * @self: a #ClawtMessage
+ * @text: (nullable): what the recipient's mailbox item says instead of
+ *   the body, or %NULL for the body itself
+ *
+ * What the *recipient* is handed, when that differs from what the room
+ * records.  A notice of the daemon's is two things at once: a line in a
+ * transcript somebody reads, and a delivery that tells an agent what the
+ * turn it starts is for and which tools to reach for.  The room keeps
+ * the first -- the body -- and each mailbox item takes this.  In memory
+ * only, as clawt_message_set_only_for() is: the item is what persists.
+ *
+ * Since: 0.34.2
+ */
+void clawt_message_set_delivered_body(ClawtMessage *self,
+                                      const gchar  *text);
+
+/**
+ * clawt_message_get_delivered_body:
+ * @self: a #ClawtMessage
+ *
+ * Returns: (transfer none) (nullable): the text for the recipient, or
+ *   %NULL when the body is delivered as it is
+ *
+ * Since: 0.34.2
+ */
+const gchar *clawt_message_get_delivered_body(ClawtMessage *self);
+
+/**
+ * clawt_message_set_answer_from:
+ * @self: a #ClawtMessage
+ * @agent_id: (nullable): the agent whose answer this notice hands back
+ *
+ * Marks the daemon's notice that hands a teammate's answer back to the
+ * conversation that asked for it (`orchestration.answer_in_request_room`).
+ * Kept in the transcript and sent to clients as `answer_from`, which
+ * draw clawt_message_answer_label() on it in place of the cross-talk
+ * summary's label: its link into Flow opens the exchange the answer
+ * came out of.
+ *
+ * Since: 0.34.2
+ */
+void clawt_message_set_answer_from(ClawtMessage *self,
+                                   const gchar  *agent_id);
+
+/**
+ * clawt_message_get_answer_from:
+ * @self: a #ClawtMessage
+ *
+ * Returns: (transfer none) (nullable): the answering agent, or %NULL
+ *
+ * Since: 0.34.2
+ */
+const gchar *clawt_message_get_answer_from(ClawtMessage *self);
+
+/**
+ * clawt_message_set_waiting_on:
+ * @self: a #ClawtMessage
+ * @agent_id: (nullable): the agent the turn that wrote this asked
+ *
+ * Marks what an agent wrote at the end of a turn that asked a teammate
+ * something.  An AI CLI cannot end a turn without writing, so every
+ * such turn leaves a line -- "I have asked, waiting" -- in front of the
+ * person it will shortly be superseded for.  Kept in the transcript and
+ * sent to clients as `waiting_on`, which draw the message quietly with
+ * clawt_message_waiting_note() under it.
+ *
+ * Since: 0.34.2
+ */
+void clawt_message_set_waiting_on(ClawtMessage *self,
+                                  const gchar  *agent_id);
+
+/**
+ * clawt_message_get_waiting_on:
+ * @self: a #ClawtMessage
+ *
+ * Returns: (transfer none) (nullable): who the turn was waiting on
+ *
+ * Since: 0.34.2
+ */
+const gchar *clawt_message_get_waiting_on(ClawtMessage *self);
+
+/**
+ * clawt_message_answer_label:
+ * @answer_from: (nullable): the answering agent, as `answer_from` carries
+ *
+ * The mark on a handed-back answer, from one place so the three clients
+ * word it alike.
+ *
+ * Returns: (transfer full): "Answer from <agent>"
+ *
+ * Since: 0.34.2
+ */
+gchar *clawt_message_answer_label(const gchar *answer_from);
+
+/**
+ * clawt_message_waiting_note:
+ * @waiting_on: (nullable): the agent asked, as `waiting_on` carries
+ *
+ * The line under a message written by a turn that asked a teammate.
+ *
+ * Returns: (transfer full): the line
+ *
+ * Since: 0.34.2
+ */
+gchar *clawt_message_waiting_note(const gchar *waiting_on);
+
+/**
+ * clawt_message_waiting_tooltip:
+ *
+ * Returns: what clawt_message_waiting_note() means, for a tooltip
+ *
+ * Since: 0.34.2
+ */
+const gchar *clawt_message_waiting_tooltip(void);
+
+/**
  * clawt_message_ack_label:
  *
  * What every client draws beside an acknowledged answer, from one

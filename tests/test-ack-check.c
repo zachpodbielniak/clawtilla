@@ -477,6 +477,82 @@ test_daemon_delivers_needs_and_unsaid(void)
 }
 
 /*
+ * An answer that needed its asker goes back where the question came
+ * from, checked or not (0.34.2).
+ *
+ * alpha asked from its chat with the operator.  The verdict used to be
+ * followed by a plain send into the two agents' room, so turning the
+ * check on quietly turned the hand-back off; and an acknowledgement
+ * must wake nobody anywhere -- no notice in the operator's chat either.
+ */
+static void
+test_a_checked_answer_still_goes_back_to_the_asking_room(void)
+{
+	Fixture fixture = { 0 };
+	g_autoptr(AiMockProvider) mock = ai_mock_provider_new();
+	ClawtLinkServer *server;
+	ClawtAgent *alpha;
+	ClawtAgent *beta;
+	ClawtRoom *chat;
+	ClawtMailboxFilter all_items = { -1, 0, TRUE };
+	g_autoptr(GPtrArray) queued = NULL;
+	g_autoptr(GPtrArray) history = NULL;
+	guint round;
+
+	fixture_setup(&fixture, NULL);
+	clawt_daemon_ack_set_provider(fixture.daemon, AI_PROVIDER(mock));
+	server = clawt_daemon_get_link_server(fixture.daemon);
+	alpha = clawt_agent_manager_get(
+		clawt_daemon_get_agents(fixture.daemon), "alpha");
+	beta = clawt_agent_manager_get(
+		clawt_daemon_get_agents(fixture.daemon), "beta");
+	chat = clawt_room_manager_get_direct(
+		clawt_daemon_get_rooms(fixture.daemon), "alpha", "user");
+
+	for (round = 0; round < 2; round++) {
+		g_autoptr(ClawtMailboxItem) question = clawt_mailbox_item_new(
+			"alpha", "beta", "Can you check the build?");
+
+		clawt_mailbox_item_set_room(question, fixture.room);
+		clawt_mailbox_item_set_depth(question, 1);
+		clawt_mailbox_item_set_request_context(question,
+			clawt_room_get_id(chat), "user", NULL);
+		clawt_agent_deliver_item(beta, question, TRUE);
+
+		ai_mock_provider_push_text(mock, round == 0 ? "ACK" : "NEEDS");
+		g_signal_emit_by_name(server, "typing", "beta", fixture.room, TRUE);
+		g_signal_emit_by_name(server, "typing", "beta", fixture.room, FALSE);
+		g_signal_emit_by_name(server, "message", "beta", fixture.room,
+			round == 0 ? "Thanks, noted."
+			           : "Noted -- but the build is red on arm64.", NULL);
+		settle(&fixture);
+
+		/* The acknowledgement woke nobody and wrote nothing to the chat. */
+		if (round == 0) {
+			g_autoptr(GPtrArray) quiet = clawt_room_get_history(chat, 0);
+
+			g_assert_cmpuint(alpha_queue(&fixture), ==, 0);
+			g_assert_cmpuint(quiet->len, ==, 0);
+		}
+	}
+
+	/* The answer that mattered is waiting for alpha in its own chat. */
+	queued = clawt_mailbox_list(clawt_agent_get_mailbox(alpha), &all_items);
+	g_assert_cmpuint(queued->len, ==, 1);
+	g_assert_cmpstr(clawt_mailbox_item_get_room(g_ptr_array_index(queued, 0)),
+	                ==, clawt_room_get_id(chat));
+	g_assert_cmpstr(clawt_mailbox_item_get_from(g_ptr_array_index(queued, 0)),
+	                ==, CLAWT_SYSTEM_SENDER);
+
+	history = clawt_room_get_history(chat, 0);
+	g_assert_cmpuint(history->len, ==, 1);
+	g_assert_cmpstr(clawt_message_get_answer_from(
+		g_ptr_array_index(history, 0)), ==, "beta");
+
+	fixture_teardown(&fixture);
+}
+
+/*
  * The gates hold before any model is asked: a turn that used a tool,
  * and an answer over 600 characters, are delivered without a question.
  */
@@ -580,6 +656,8 @@ main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 
+	g_test_add_func("/ack-check/daemon/checked-answer-goes-back",
+	                test_a_checked_answer_still_goes_back_to_the_asking_room);
 	g_test_add_func("/ack-check/gate", test_the_gate);
 	g_test_add_func("/ack-check/parse", test_parse_separates_said_from_unsaid);
 	g_test_add_func("/ack-check/prompt", test_the_prompt_fences_both_texts);
