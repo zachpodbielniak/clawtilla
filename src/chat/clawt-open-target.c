@@ -289,8 +289,6 @@ clawt_open_target_from_argv(
 	};
 	g_autoptr(GOptionContext) context = NULL;
 	g_auto(GStrv) copy = NULL;
-	gchar **work;
-	gint argc;
 
 	if (argv == NULL || argv[0] == NULL)
 		return NULL;
@@ -298,11 +296,10 @@ clawt_open_target_from_argv(
 	/*
 	 * Parsed with GOption rather than by hand, so every spelling the
 	 * typing invocation accepted (`-o x`, `--open=x`) is read the same
-	 * way here.  On a copy: parsing rearranges the vector it is given.
+	 * way here.  On a copy, through the _strv form: plain parse drops
+	 * the strings it consumes from the vector without freeing them.
 	 */
 	copy = g_strdupv((gchar **)argv);
-	argc = (gint)g_strv_length(copy);
-	work = copy;
 	entries[0].arg_data = &target;
 
 	context = g_option_context_new(NULL);
@@ -310,7 +307,7 @@ clawt_open_target_from_argv(
 	g_option_context_set_ignore_unknown_options(context, TRUE);
 	g_option_context_add_main_entries(context, entries, NULL);
 
-	if (!g_option_context_parse(context, &argc, &work, NULL))
+	if (!g_option_context_parse_strv(context, &copy, NULL))
 		g_clear_pointer(&target, g_free);
 
 	return target;
