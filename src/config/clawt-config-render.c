@@ -437,12 +437,56 @@ render_clawtilla_channel(GString          *out,
  * and pointed at four agents renders exactly what four inline blocks
  * would have.  There is one code path, so there is one behaviour.
  */
+/*
+ * The fleet's other Matrix accounts, for libreclaw's `bot_users`.
+ *
+ * Two agents in one Matrix room answer each other for as long as both
+ * are willing, and clawtilla sees none of it: the turns run inside each
+ * agent's libreclaw, on its Matrix channel.  libreclaw stops answering a
+ * bot after a few of its messages in a row (`max_bot_replies`), but it
+ * cannot tell a bot from a person by a Matrix id -- it has to be told
+ * which accounts are bots, and the fleet's own are the ones clawtilla
+ * knows.  Every other agent's `user_id`, once each, never this agent's
+ * own (two agents may share an account).
+ *
+ * Returns: (transfer full): the ids, possibly none
+ */
+static GStrv
+fleet_matrix_users(ClawtConfig *config, const gchar *own)
+{
+    g_autoptr(GPtrArray) users = g_ptr_array_new_with_free_func(g_free);
+    GPtrArray *agents = clawt_config_get_agents(config);
+    guint i;
+
+    for (i = 0; agents != NULL && i < agents->len; i++) {
+        g_autoptr(GPtrArray) bindings =
+            clawt_integration_resolve_for_agent(config,
+                                                g_ptr_array_index(agents, i));
+        ClawtIntegrationBinding *matrix =
+            clawt_integration_find_binding(bindings, "matrix");
+        const gchar *user = (matrix != NULL)
+            ? clawt_integration_binding_get_string(matrix, "user_id") : NULL;
+
+        if (user == NULL || *user == '\0' || g_strcmp0(user, own) == 0 ||
+            g_ptr_array_find_with_equal_func(users, user, g_str_equal, NULL))
+            continue;
+
+        g_ptr_array_add(users, g_strdup(user));
+    }
+
+    g_ptr_array_add(users, NULL);
+
+    return (GStrv)g_ptr_array_free(g_steal_pointer(&users), FALSE);
+}
+
 static void
 render_matrix_channel(GString                 *out,
+                      ClawtConfig             *config,
                       ClawtIntegrationBinding *binding,
                       const gchar             *token_path)
 {
     g_auto(GStrv) rooms = NULL;
+    g_auto(GStrv) bots = NULL;
 
     if (binding == NULL)
         return;
@@ -462,6 +506,11 @@ render_matrix_channel(GString                 *out,
     append_key_bool(out, 4, "require_mention",
                     clawt_integration_binding_get_boolean(binding,
                                                           "require_mention"));
+
+    /* The rest of the fleet, so two agents cannot answer each other for ever. */
+    bots = fleet_matrix_users(config,
+        clawt_integration_binding_get_string(binding, "user_id"));
+    append_string_list(out, 4, "bot_users", bots);
 }
 
 static void
@@ -1383,7 +1432,7 @@ clawt_config_render_agent(ClawtConfig       *config,
             g_build_filename(state_dir, "credentials",
                              "smtp_credentials.json", NULL);
 
-        render_matrix_channel(channels,
+        render_matrix_channel(channels, config,
                               clawt_integration_find_binding(bindings,
                                                              "matrix"),
                               matrix_token);

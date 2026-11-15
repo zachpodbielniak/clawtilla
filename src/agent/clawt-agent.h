@@ -394,6 +394,22 @@ gint clawt_agent_get_hop_depth(ClawtAgent *self);
 void clawt_agent_set_hop_depth(ClawtAgent *self, gint depth);
 
 /**
+ * clawt_agent_get_turn_serial:
+ * @self: a #ClawtAgent
+ *
+ * How many turns this agent has begun since the daemon started.  It
+ * names a turn for `orchestration.pair_message_budget`, which counts
+ * every request one agent sends another from the same turn as one
+ * round.  An agent running turns in two rooms at once moves it twice,
+ * which can only count a round the more.
+ *
+ * Returns: the count, or 0 before the first turn
+ *
+ * Since: 0.34
+ */
+guint64 clawt_agent_get_turn_serial(ClawtAgent *self);
+
+/**
  * clawt_agent_deliver_turn:
  * @self: a #ClawtAgent
  * @room_id: (nullable): the room the message was delivered into

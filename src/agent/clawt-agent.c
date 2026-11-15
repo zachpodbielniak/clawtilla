@@ -116,6 +116,7 @@ struct _ClawtAgent {
     GHashTable     *turns;         /* room -> TurnSetup (owned) */
     GHashTable     *typing_rooms;  /* room -> gint64*: when its turn began */
     gchar          *last_room;
+    guint64         turn_serial;   /* turns begun, for the pair budget */
     GQueue         *pending;       /* TurnSetup (owned), tagged by room */
 
     gchar          *status_detail;
@@ -2249,6 +2250,17 @@ clawt_agent_begin_turn(ClawtAgent *self, const gchar *room_id)
 
     g_free(self->last_room);
     self->last_room = g_strdup(key);
+
+    /* Never zero once a turn has begun: zero means "no turn known". */
+    self->turn_serial++;
+}
+
+guint64
+clawt_agent_get_turn_serial(ClawtAgent *self)
+{
+    g_return_val_if_fail(CLAWT_IS_AGENT(self), 0);
+
+    return self->turn_serial;
 }
 
 void

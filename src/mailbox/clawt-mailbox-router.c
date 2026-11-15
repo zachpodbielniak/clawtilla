@@ -873,6 +873,30 @@ skip_reason(guint in_chain, guint at_cap, guint chain_length, guint cap,
 	return g_string_free(g_steal_pointer(&out), FALSE);
 }
 
+/*
+ * The agent asking, when @message is one agent's *request* of another:
+ * something it chose to send that costs the other a turn -- a message,
+ * a question, a delegation, a one-way notice.  An answer is not, and
+ * neither is anything in a group room, whose rounds and threads have
+ * their own limits (`rooms.max_chain`).  %NULL for everything else.
+ * What `orchestration.pair_message_budget` counts.
+ */
+static ClawtAgent *
+pair_request_sender(ClawtMailboxRouter *self, ClawtRoom *room,
+                    ClawtMessage *message)
+{
+	const gchar *sender = clawt_message_get_sender_id(message);
+
+	if (sender == NULL || clawt_room_is_group(room))
+		return NULL;
+
+	if (!clawt_message_get_invites_reply(message) &&
+		!clawt_message_get_one_way(message))
+		return NULL;
+
+	return clawt_agent_manager_get(self->agents, sender);
+}
+
 gint
 clawt_mailbox_router_send(ClawtMailboxRouter  *self,
                           ClawtMessage        *message,
@@ -1003,6 +1027,32 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
     if (self->guard != NULL) {
         g_autoptr(GError) refusal = NULL;
 		g_autoptr(ClawtMessage) guarded = clawt_message_copy(message);
+		ClawtAgent *asking = pair_request_sender(self, room, message);
+		gboolean pair_ok = TRUE;
+
+		/*
+		 * A person, a routine or a trigger writing to an agent is the
+		 * one thing that starts its pair counts again.  Not the daemon's
+		 * own notices and not a Grok bot: both are things agents cause,
+		 * and a count they could renew is a count they could run round.
+		 */
+		if (sender != NULL && !clawt_message_is_from_system(message) &&
+			!g_str_has_prefix(sender, "grok:") &&
+			clawt_agent_manager_get(self->agents, sender) == NULL) {
+			for (i = 0; i < recipients->len; i++)
+				clawt_loop_guard_renew_pairs_of(self->guard,
+					clawt_agent_get_id(g_ptr_array_index(recipients, i)));
+		}
+
+		/*
+		 * The pair budget, asked before the rest because it counts
+		 * nothing until the message is certain to go: every recipient
+		 * is checked first, so a refusal has spent nobody's round.
+		 */
+		for (i = 0; asking != NULL && pair_ok && i < recipients->len; i++)
+			pair_ok = clawt_loop_guard_check_pair(self->guard, sender,
+				clawt_agent_get_id(g_ptr_array_index(recipients, i)),
+				clawt_agent_get_turn_serial(asking), &refusal);
 
 		/*
 		 * The destination may still say "bob", while this conversation
@@ -1023,7 +1073,8 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
          * a room declaring a limit was counted against the fleet's.  0
          * means the room said nothing and the fleet's applies.
          */
-        if (!clawt_loop_guard_check_in_room(self->guard, guarded,
+        if (!pair_ok ||
+            !clawt_loop_guard_check_in_room(self->guard, guarded,
                                             clawt_room_get_max_hops(room),
                                             recipients->len > 0,
                                             &refusal)) {
@@ -1048,6 +1099,11 @@ clawt_mailbox_router_send(ClawtMailboxRouter  *self,
             g_propagate_error(error, g_steal_pointer(&refusal));
             return -1;
         }
+
+		for (i = 0; asking != NULL && i < recipients->len; i++)
+			clawt_loop_guard_count_pair(self->guard, sender,
+				clawt_agent_get_id(g_ptr_array_index(recipients, i)),
+				clawt_agent_get_turn_serial(asking));
     }
 
     /* Past every refusal, so the round the message names is now real. */
@@ -1522,8 +1578,11 @@ compose_single(ClawtMailboxRouter  *self,
             "'%s' and ends the exchange -- they will read it and will "
             "not answer. So put everything you have to say into it, "
             "and do not expect another round. If you need something "
-            "back from them, ask for it here.\n\n%s",
-            from, from, text);
+            "back from them, ask for it here. Answer once: a message "
+            "you send '%s' with clawtilla_message_agent during this "
+            "turn is your answer, and what you write at the end is "
+            "then not sent.\n\n%s",
+            from, from, from, text);
     else if (peer)
         body = g_strdup_printf(
             "[clawtilla] The following is '%s' answering you, which "

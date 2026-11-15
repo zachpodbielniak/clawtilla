@@ -327,6 +327,10 @@ clawt_alert_tier_for_event(ClawtEvent *event)
      */
     if (g_strcmp0(kind, "task.tree_budget") == 0)
         return CLAWT_ALERT_NOTICE;
+
+    /* Two agents out of rounds with each other: the same, for a pair. */
+    if (g_strcmp0(kind, "crosstalk.pair_budget") == 0)
+        return CLAWT_ALERT_NOTICE;
     if (g_strcmp0(kind, "agent.idle_stopped") == 0)
         return CLAWT_ALERT_ROUTINE;
 

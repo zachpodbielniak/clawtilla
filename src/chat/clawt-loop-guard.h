@@ -456,6 +456,135 @@ gchar *clawt_loop_guard_tree_alert_text(const gchar *tree,
                                         guint        limit);
 
 /**
+ * clawt_loop_guard_set_pair_budget:
+ * @self: a #ClawtLoopGuard
+ * @budget: how many rounds of requests two agents may send each other,
+ *   or 0 for no limit (`orchestration.pair_message_budget`)
+ * @quiet_seconds: how long the two must have sent each other nothing
+ *   for the count to start again, or 0 for never
+ *   (`orchestration.pair_quiet_minutes`)
+ *
+ * The one count nothing an agent does renews: only a person writing to
+ * either agent (clawt_loop_guard_renew_pairs_of()) or the pair going
+ * quiet starts it again.  A round is every request one agent sends the
+ * other from one turn.
+ *
+ * Since: 0.34
+ */
+void clawt_loop_guard_set_pair_budget(ClawtLoopGuard *self,
+                                      guint           budget,
+                                      guint           quiet_seconds);
+
+/**
+ * clawt_loop_guard_get_pair_budget:
+ * @self: a #ClawtLoopGuard
+ *
+ * Returns: the budget, or 0 for none
+ *
+ * Since: 0.34
+ */
+guint clawt_loop_guard_get_pair_budget(ClawtLoopGuard *self);
+
+/**
+ * clawt_loop_guard_get_pair_count:
+ * @self: a #ClawtLoopGuard
+ * @a: (nullable): one agent
+ * @b: (nullable): the other
+ *
+ * Returns: how many rounds the two have had since the count last began
+ *
+ * Since: 0.34
+ */
+guint clawt_loop_guard_get_pair_count(ClawtLoopGuard *self,
+                                      const gchar    *a,
+                                      const gchar    *b);
+
+/**
+ * clawt_loop_guard_check_pair:
+ * @self: a #ClawtLoopGuard
+ * @sender: the agent sending a request
+ * @peer: the agent it is for
+ * @turn: the sender's turn number, or 0 when it is not known
+ * @error: (nullable): return location for a #GError
+ *
+ * Whether @sender may send @peer another request.  Counts nothing: the
+ * caller counts with clawt_loop_guard_count_pair() once the message is
+ * certain to go.  A request from the turn the pair last counted is
+ * always allowed -- it is the same round.
+ *
+ * Returns: %TRUE when it may; %FALSE with a #CLAWT_ERROR_LOOP_LIMIT
+ *   whose message says what reopens the pair
+ *
+ * Since: 0.34
+ */
+gboolean clawt_loop_guard_check_pair(ClawtLoopGuard  *self,
+                                     const gchar     *sender,
+                                     const gchar     *peer,
+                                     guint64          turn,
+                                     GError         **error);
+
+/**
+ * clawt_loop_guard_count_pair:
+ * @self: a #ClawtLoopGuard
+ * @sender: the agent that sent a request
+ * @peer: the agent it went to
+ * @turn: the sender's turn number, or 0 when it is not known
+ *
+ * Counts one round between the two, unless @sender's turn @turn was
+ * already counted.  Emits #ClawtLoopGuard::pair-exhausted at the limit.
+ *
+ * Since: 0.34
+ */
+void clawt_loop_guard_count_pair(ClawtLoopGuard *self,
+                                 const gchar    *sender,
+                                 const gchar    *peer,
+                                 guint64         turn);
+
+/**
+ * clawt_loop_guard_renew_pairs_of:
+ * @self: a #ClawtLoopGuard
+ * @agent_id: (nullable): an agent a person, a routine or a trigger has
+ *   just written to
+ *
+ * Starts the count again for every pair @agent_id is half of.
+ *
+ * Since: 0.34
+ */
+void clawt_loop_guard_renew_pairs_of(ClawtLoopGuard *self,
+                                     const gchar    *agent_id);
+
+/**
+ * clawt_loop_guard_age_pairs:
+ * @self: a #ClawtLoopGuard
+ * @seconds: how far to move every pair's last request into the past
+ *
+ * For tests of the quiet rule, which otherwise need a real half hour.
+ *
+ * Since: 0.34
+ */
+void clawt_loop_guard_age_pairs(ClawtLoopGuard *self,
+                                guint           seconds);
+
+/**
+ * clawt_loop_guard_pair_alert_text:
+ * @first: (nullable): one agent's name
+ * @second: (nullable): the other's
+ * @count: how many rounds they had
+ * @limit: the budget
+ *
+ * The sentence the `crosstalk.pair_budget` alert carries, from one place
+ * so the daemon and the three clients word it the same way.
+ *
+ * Returns: (transfer full): the sentence
+ *
+ * Since: 0.34
+ */
+gchar *clawt_loop_guard_pair_alert_text(const gchar *first,
+                                        const gchar *second,
+                                        guint        count,
+                                        guint        limit);
+
+/**
  * clawt_loop_guard_reset:
  * @self: a #ClawtLoopGuard
  *

@@ -768,6 +768,8 @@ What it does, in the words the page uses: when one agent answers another with on
 
 The tree budget's alert, ~task.tree_budget~, is a notice in each client's alerts surface, worded by =clawt_loop_guard_tree_alert_text()= from the event's ~tree~, ~count~ and ~limit~ so the root task's brief, id and assignee are in the line; GTK also raises it as a toast, since the tree's agents have just gone quiet in front of whoever is watching them.
 
+The pair budget's alert, ~crosstalk.pair_budget~ (since 0.34.0), is a notice in the same surface: two agents have used =orchestration.pair_message_budget= and can ask each other nothing more until you write to either.  It needs no code of its own in a client --- each one draws an alert that carries a ~message~ with that sentence, and the daemon puts =clawt_loop_guard_pair_alert_text()= there.  The budget itself is set in the config file; no client has a row for it.
+
 *** Answers that woke nobody, and results delivered together
 :PROPERTIES:
 :CUSTOM_ID: ack-and-merge-marks

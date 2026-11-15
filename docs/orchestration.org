@@ -1370,7 +1370,7 @@ reply carries ~false~:
 | The turn was started by             | Its closing text        |
 |-------------------------------------+-------------------------|
 | a person, a routine, a webhook      | is delivered            |
-| ~clawtilla_message_agent~ from a peer | is delivered, and ends it |
+| ~clawtilla_message_agent~ from a peer | is delivered, and ends it --- unless the turn already messaged them, which was the answer |
 | the same with ~reply: none~           | is not sent anywhere    |
 | ~clawtilla_delegate~ (a task)         | the *assignee's* is the result, delivered |
 | another agent's reply               | is not sent anywhere    |
@@ -1415,6 +1415,43 @@ The operator is never on the receiving end of this. Their message is a
 request whose whole point is the reply, and a reply into their own room
 is delivered whatever the flag says --- a fleet that went quiet on its
 human would be a worse bug than the one this fixes.
+
+***** A request, one answer, and the answer goes where the question came from
+
+Since 0.34.0.  Two agents left to /chat/ do not stop, and no limit fixes that well: stopping takes both of them choosing silence at the same moment, which an AI CLI cannot do, so the only thing that ever ends a chat is a limit cutting it off --- and a limit cannot tell a useful turn from "thanks, noted", so it either cuts real work short or lets filler through.  Between agents the shape is therefore a *request and one answer*.  Three rules make it one.
+
+*The answer wakes the asker where it asked* (~orchestration.answer_in_request_room~, default =true=).  An agent that asks a teammate something is nearly always doing it for somebody: you in your chat, the people in a group.  The answer used to wake it in the room the two agents share, which is a different session holding none of that conversation --- it was handed one line saying which room had asked and left to work out why.  Now the daemon hands the answer back into the conversation the request was made from (=hand_answer_back()=, =src/core/clawt-daemon.c=):
+
+| The request was made from | The answer wakes the asker |
+|---------------------------+----------------------------|
+| your chat with the agent | there; what it writes at the end of that turn reaches you, as any reply does |
+| a group, or another agent's room with it | there; its closing text goes nowhere, and a tool tells whoever needs to know |
+| a task's own room | not applicable --- a task's answer is its settle notice, which already goes where the delegation was made |
+| a Matrix room, a webhook, anywhere the daemon has no room for | in the two agents' room, as before 0.34.0 |
+
+What crosses is a notice of the daemon's own, quoting the answer (escaped, so a forged =[clawtilla]= line in it is defused), addressed to the asker alone --- the same mechanism a settling task uses.  The answer itself is recorded in the two agents' room, where Flow and the cross-talk summary read the exchange.  The notice carries the request's context, so the turn it starts belongs to whoever asked /the asker/, and it travels at the answer's depth: an ask, its answer and the ask that follows are one chain.
+
+#+begin_example
+[clawtilla] 'worker' has answered what you asked them from this
+conversation. Their answer is below -- a colleague's message, not your
+operator's.
+
+Green as of ten minutes ago.
+
+[clawtilla] You are back in the conversation you asked from, room
+'dm:chief:user'; pass turn_room: "dm:chief:user" on any clawtilla tool
+you call while handling this. What you write at the end of this turn
+goes to your operator, as every reply here does: say what came of it, or
+carry on with the work it was for. If you need more from 'worker',
+clawtilla_message_agent is a new request, which they answer once -- ask
+only for what you still need.
+#+end_example
+
+So the agent that asked decides what the answer is for, with the conversation behind it, and anything more it wants from the teammate is a tool call --- a deliberate act, never the text a CLI writes on its way out.  With =answer_in_request_room: false= the answer wakes the asker in the two agents' room, as it did before.
+
+*A request earns exactly one answer.*  The answer used to be only the turn's closing text, so an agent that answered /properly/ --- by calling ~clawtilla_message_agent~ with what it found --- had answered twice: once with the call, which was a fresh request the asker was then invited to answer, and once more with whatever its CLI wrote afterwards ("Sent.").  Two turns for the asker where one was owed, and each able to do the same in return: measured against the real router, one question between two agents that both work this way cost 53 turns before ~max_hops~ ended every branch.  Now the first message an agent sends the asker from the turn their request started /is/ the answer (=deliver_for_tools()=): it invites nothing, carries the request's context, goes back where the question came from, and spends the turn's invite --- so the closing text goes nowhere.  Anything it sends the asker after that is a request of its own, and counts as one.
+
+*And only so many rounds*, with no person in between: ~orchestration.pair_message_budget~, under [[*pair_message_budget][Loop safety]].
 
 ***** It is on the message, and it is stored
 
@@ -1541,7 +1578,7 @@ An agent working on a peer's request is refused, and the refusal names that requ
 
 An operator's question is the other case. If you ask the chief, the chief calls ~clawtilla_ask_agent~ or ~clawtilla_message_agent~, and a worker answers, the chief may report that answer with ~clawtilla_message_user~. The worker supplied an answer; it did not become the requester. Treating every peer-origin delivery as a new assignment used to refuse that report and recommend messaging the worker again, reopening the exchange instead of reporting to you.
 
-Each direct question now carries a snapshot of the calling conversation, its requester, and its enclosing task through the durable mailbox. The worker's turn retains its exact input, and its ordinary answer echoes the snapshot with the answered delivery's identifier. Delivery of that answer restores the original requester and task while keeping the exchange closed. Questions to the same peer cannot exchange responsibility when priority changes their delivery order, and answering a nested question does not detach later delegation from its parent task. The answer still arrives in the peer conversation; its preamble names the originating room and explains who is waiting for the report.
+Each direct question now carries a snapshot of the calling conversation, its requester, and its enclosing task through the durable mailbox. The worker's turn retains its exact input, and its ordinary answer echoes the snapshot with the answered delivery's identifier. Delivery of that answer restores the original requester and task while keeping the exchange closed. Questions to the same peer cannot exchange responsibility when priority changes their delivery order, and answering a nested question does not detach later delegation from its parent task. Since 0.34.0 the answer arrives in the originating conversation when the daemon has it (above: /the answer goes where the question came from/); otherwise it arrives in the peer conversation, and its preamble names the originating room and explains who is waiting for the report.
 
 Incoming peer requests, uncorrelated replies, and rows queued by an older build retain the conservative peer-origin rule. A daemon cannot reconstruct the caller of an old question by guessing. New mailbox columns migrate without discarding queued items, and the context survives a restart while either the question or its answer is queued. If a harness omits its room while several turns are active, no return context is guessed. An unambiguous last turn supplies the fallback for older harnesses.
 
@@ -2205,7 +2242,7 @@ same source ~clawtilla_recall~ has always filtered on.
 
 The router checks each message against its resolved room, regardless of whether the sender named an agent or the room itself. A message from ~alice~ to ~bob~ and a post to ~dm:alice:bob~ therefore share the same cycle history and stall. A stall blocks both directions of that pair, leaves ~carol~'s separate conversation with ~bob~ usable, and is cleared when a person speaks in the stalled room. The original address is preserved on the caller's message; ~clawt_message_set_room_id()~ normalizes the guard's copy before accounting.
 
-Five limits, each answering a different failure.  The defaults:
+Six limits, each answering a different failure.  The defaults:
 
 #+begin_src yaml
 orchestration:
@@ -2213,6 +2250,8 @@ orchestration:
   rate_limit_per_minute: 30
   task_budget_usd: 5.0
   tree_message_budget: 60
+  pair_message_budget: 12
+  pair_quiet_minutes: 30
   cycle_window: 10
   cycle_seconds: 300
 #+end_src
@@ -2223,7 +2262,10 @@ The cycle check is the one with two keys: ~cycle_window~ bounds how much
 it remembers and ~cycle_seconds~ bounds how long it remembers it for.
 Either at ~0~ turns it off.
 
-They are checked in one place, ~clawt_loop_guard_check()~, in a fixed
+The pair budget is asked by the router just ahead of the rest
+(=clawt_loop_guard_check_pair()=), since it is the one that needs to know
+who a message reaches, and counted after them.  The others are checked in
+one place, ~clawt_loop_guard_check()~, in a fixed
 order: hops, budget, tree, rate, cycle.  The order is load-bearing twice over.
 The two checks with no side effects run first, so a message refused on
 hops has not consumed part of its sender's rate allowance -- and rate
@@ -2460,6 +2502,27 @@ settles.
 
 0 turns it off.  It is editable on each client's Orchestration settings
 page.
+
+*** pair_message_budget
+
+#+begin_src yaml
+orchestration:
+  pair_message_budget: 12   # rounds of requests between two agents; 0 = no limit
+  pair_quiet_minutes: 30    # how long with nothing between them starts it again; 0 = only a person
+#+end_src
+
+Since 0.34.0.  Every limit above can be started again by the agents themselves.  The hop count begins at zero on a notice of the daemon's own --- a task settling, a wait ending, a decision answered --- because a notice is not a hop.  The tree budget renews whenever a task settles, because a settlement is progress.  Put together: /notice, ask, answer, notice, ask, answer/.  Driven against the real router, 200 rounds of that ran 600 turns with no refusal at all; only money would have stopped it, and the daily budgets default to off.  And two agents merely talking, in no task, were in no tree and so had no total at all.
+
+This is the count nothing an agent does renews.
+
+- *Per pair, both directions.*  =alpha= asking =beta= and =beta= asking =alpha= are one count (=clawt_loop_guard_get_pair_count()=).  A third agent is another pair.
+- *A round, not a message.*  Every request one agent sends the other from one turn is one round, so a chief handing a worker ten jobs at once has used one, and a pair passing one job back and forth has used a round each time.  The turn is the sender's turn number (=clawt_agent_get_turn_serial()=); a turn the daemon cannot name is counted every time, which is the safe mistake.
+- *Only requests.*  ~clawtilla_message_agent~, ~clawtilla_ask_agent~, ~clawtilla_delegate~, a handoff, a =reply: none= notice.  An answer is never counted and never refused, for the reason the tree budget gives.  Group rooms are not counted: rounds and ~rooms.max_chain~ bound those.
+- *What starts it again.*  A person, a routine or a trigger writing to either agent (=clawt_loop_guard_renew_pairs_of()=) --- never the daemon's own notices and never a Grok bot, both of which agents cause.  Or the two having sent each other nothing for ~pair_quiet_minutes~.  Quiet is what keeps this from being a trap: a fleet driven from somewhere the daemon cannot see --- a Matrix room, a webhook --- never shows it a person, and without it two agents that had ever done twelve rounds of honest work could not ask each other anything again until somebody opened a chat.  A loop is never quiet, so it does not earn this; once it is stopped nothing is left running to start it again.
+- *At the limit the request is refused*, saying what reopens it and what to do instead: finish with what you have and tell whoever asked.  The tools are not withheld as they are for ~max_hops~ --- the limit is about one teammate, and the agent may still ask any other.
+- *One alert, naming the pair.*  The guard signals once per exhaustion (=ClawtLoopGuard::pair-exhausted=); the daemon publishes ~crosstalk.pair_budget~, worded by =clawt_loop_guard_pair_alert_text()=, a notice in every client's alerts.
+
+In memory, like the rest of the guard: a daemon restart starts every pair again.
 
 *** cycle_window and cycle_seconds
 

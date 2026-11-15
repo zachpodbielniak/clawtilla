@@ -192,6 +192,44 @@ on_tree_exhausted(
 	clawt_event_bus_publish(self->bus, event);
 }
 
+/*
+ * Two agents out of rounds (`orchestration.pair_message_budget`): one
+ * alert per exhaustion, for the reason the tree's has one -- a pair
+ * that has stopped asking each other things reads as a broken fleet to
+ * anybody who was not told why.  Under the agent whose request was the
+ * last one allowed, so a pod scoped to it hears about it.
+ */
+static void
+on_pair_exhausted(
+	ClawtLoopGuard *guard,
+	const gchar    *sender,
+	const gchar    *peer,
+	guint           count,
+	guint           limit,
+	gpointer        user_data
+){
+	ClawtDaemon *self = user_data;
+	g_autoptr(ClawtEvent) event = NULL;
+	g_autofree gchar *text = clawt_loop_guard_pair_alert_text(sender, peer,
+	                                                          count, limit);
+
+	(void)guard;
+
+	g_message("orchestration: %s", text);
+
+	if (self->bus == NULL)
+		return;
+
+	event = clawt_event_new("crosstalk.pair_budget", sender);
+	clawt_event_set_detail(event, "agent", sender);
+	clawt_event_set_detail(event, "peer", peer);
+	clawt_event_set_detail(event, "message", text);
+	clawt_event_set_detail_int(event, "count", (gint64)count);
+	clawt_event_set_detail_int(event, "limit", (gint64)limit);
+
+	clawt_event_bus_publish(self->bus, event);
+}
+
 void
 clawt_daemon_tree_settled(
 	ClawtDaemon *self,
@@ -227,6 +265,8 @@ clawt_daemon_tree_setup(
 	clawt_loop_guard_set_tree_func(self->guard, resolve_tree, self, NULL);
 	g_signal_connect(self->guard, "tree-exhausted",
 	                 G_CALLBACK(on_tree_exhausted), self);
+	g_signal_connect(self->guard, "pair-exhausted",
+	                 G_CALLBACK(on_pair_exhausted), self);
 }
 
 void
@@ -240,5 +280,7 @@ clawt_daemon_tree_teardown(
 
 	g_signal_handlers_disconnect_by_func(self->guard,
 	                                     G_CALLBACK(on_tree_exhausted), self);
+	g_signal_handlers_disconnect_by_func(self->guard,
+	                                     G_CALLBACK(on_pair_exhausted), self);
 	clawt_loop_guard_set_tree_func(self->guard, NULL, NULL, NULL);
 }

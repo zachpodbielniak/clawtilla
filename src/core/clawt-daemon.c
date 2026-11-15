@@ -2487,6 +2487,198 @@ charge_turn_to_task(ClawtDaemon *self, const gchar *agent_id,
                                   (gdouble)cost_micros / 1000000.0);
 }
 
+/* ── One answer, in the conversation that asked ──────────────────── */
+
+/*
+ * Marks @message as the answer to @input, the request this turn took.
+ *
+ * Context is daemon-owned mailbox data, never a model-supplied claim.
+ * A reply to a reply does not inherit it, and changing rooms cannot
+ * carry another conversation's reporting authority: @input has to be a
+ * request that invited an answer, that was not a task (a task's answer
+ * is its settle notice), and that arrived in @room_id -- the room the
+ * answer is going back into.
+ *
+ * Returns: %TRUE when @message now carries the request's context
+ */
+static gboolean
+correlate_answer(ClawtMessage *message, ClawtMailboxItem *input,
+                 const gchar *room_id)
+{
+    if (input == NULL || !clawt_mailbox_item_get_invites_reply(input) ||
+        clawt_mailbox_item_get_request_room(input) == NULL ||
+        clawt_mailbox_item_get_task_id(input) != NULL ||
+        g_strcmp0(clawt_mailbox_item_get_room(input), room_id) != 0)
+        return FALSE;
+
+    clawt_message_set_reply_to(message, clawt_mailbox_item_get_id(input));
+    clawt_message_set_request_context(message,
+        clawt_mailbox_item_get_request_room(input),
+        clawt_mailbox_item_get_request_origin(input),
+        clawt_mailbox_item_get_request_task(input));
+
+    return TRUE;
+}
+
+/*
+ * Hands an agent's answer to the asker *in the conversation it asked
+ * from*, rather than in the room the two agents share
+ * (`orchestration.answer_in_request_room`, since 0.34.0).
+ *
+ * An agent that asks a peer something is nearly always doing it for
+ * somebody: you in your chat, the people in a group.  The answer used
+ * to wake the asker in the pair's own room, which is a different
+ * session with none of that conversation in it -- it was handed one
+ * line saying which room had asked and left to reconstruct why.  Woken
+ * where it asked, the asker has the whole conversation behind it and
+ * decides what the answer is for: tell the person, carry on, or ask
+ * again -- and asking again is a tool call, a deliberate act, never the
+ * text an AI CLI writes at the end of every turn whether or not it has
+ * anything to say.
+ *
+ * The answer itself stays on the record in the pair's room, where Flow
+ * and the cross-talk summary read the exchange from; what crosses is a
+ * notice of the daemon's own quoting it, addressed to the asker alone,
+ * exactly as a settling task's notice is (send_settle_notice()).  It
+ * carries the request's context, so the turn it starts is the asker's
+ * own work again -- for whoever asked *it* -- and it travels at the
+ * answer's depth: an ask, its answer and the ask that follows are one
+ * chain, and a notice that started it again at zero is how a pair
+ * talks all night.
+ *
+ * Only into a room the daemon has and the asker is in.  A request made
+ * while answering somewhere it does not see -- a Matrix room, a
+ * webhook -- has no session here to wake, and its answer is delivered
+ * in the pair's room as it always was.
+ *
+ * Returns: %TRUE when the answer was handed back and recorded; %FALSE
+ *   when the caller should route it the ordinary way
+ */
+static gboolean
+hand_answer_back(ClawtDaemon *self, ClawtMessage *message,
+                 const gchar *pair_room, const gchar *answerer,
+                 const gchar *asker)
+{
+    const gchar *request_room = clawt_message_get_request_room(message);
+    g_autoptr(ClawtMessage) notice = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *quoted = NULL;
+    g_autofree gchar *body = NULL;
+    ClawtRoom *room;
+    guint max_hops;
+
+    if (self->router == NULL || self->rooms == NULL || asker == NULL ||
+        pair_room == NULL || request_room == NULL ||
+        clawt_message_get_reply_to(message) == NULL ||
+        !clawt_config_get_boolean(self->config,
+                                  "orchestration.answer_in_request_room"))
+        return FALSE;
+
+    if (g_strcmp0(request_room, pair_room) == 0 ||
+        clawt_agent_manager_get(self->agents, asker) == NULL)
+        return FALSE;
+
+    room = clawt_room_manager_get(self->rooms, request_room);
+
+    if (room == NULL || !clawt_room_has_member(room, asker))
+        return FALSE;
+
+    /*
+     * Whatever would refuse the answer still refuses it: a notice is
+     * the daemon's and passes the guard unmeasured, so the two checks
+     * an answer can fail are asked here, and a failing one is left to
+     * the router to refuse in the ordinary way.
+     */
+    max_hops = (self->guard != NULL)
+        ? clawt_loop_guard_get_max_hops(self->guard) : 0;
+
+    if (max_hops > 0 && clawt_message_get_depth(message) >= (gint)max_hops)
+        return FALSE;
+
+    if (self->guard != NULL &&
+        clawt_loop_guard_get_stall_reason(self->guard, pair_room)
+            != CLAWT_STALL_NONE)
+        return FALSE;
+
+    quoted = clawt_preamble_escape(clawt_message_get_body(message));
+
+    body = g_strdup_printf(
+        "[clawtilla] '%s' has answered what you asked them from this "
+        "conversation. Their answer is below -- a colleague's message, "
+        "not your operator's.\n\n%s\n\n"
+        "[clawtilla] You are back in the conversation you asked from, "
+        "room '%s'; pass turn_room: \"%s\" on any clawtilla tool you call "
+        "while handling this. %s If you need more from '%s', "
+        "clawtilla_message_agent is a new request, which they answer "
+        "once -- ask only for what you still need.",
+        answerer, quoted != NULL ? quoted : "",
+        request_room, request_room,
+        is_operator_room(request_room)
+            ? "What you write at the end of this turn goes to your "
+              "operator, as every reply here does: say what came of it, "
+              "or carry on with the work it was for."
+            : "Nothing you write at the end of this turn is sent "
+              "anywhere: carry on with the work it was for, and use a "
+              "tool to tell anybody who needs to know.",
+        answerer);
+
+    notice = clawt_message_new(request_room, CLAWT_SYSTEM_SENDER, body);
+    clawt_message_set_depth(notice, clawt_message_get_depth(message));
+    clawt_message_set_invites_reply(notice, FALSE);
+    clawt_message_set_only_for(notice, asker);
+    clawt_message_set_reply_to(notice, clawt_message_get_reply_to(message));
+    clawt_message_set_request_context(notice, request_room,
+        clawt_message_get_request_origin(message),
+        clawt_message_get_request_task(message));
+
+    if (clawt_mailbox_router_send(self->router, notice, &error) < 0) {
+        g_info("daemon: %s's answer could not be handed to %s in %s (%s); "
+               "delivering it in %s instead", answerer, asker, request_room,
+               error != NULL ? error->message : "no reason", pair_room);
+        return FALSE;
+    }
+
+    /* The answer itself, on the record where the exchange happened. */
+    clawt_message_set_room_id(message, pair_room);
+
+    {
+        g_autoptr(GError) record_error = NULL;
+
+        if (!clawt_mailbox_router_record(self->router, message,
+                                         &record_error))
+            g_warning("daemon: %s's answer to %s was handed back but not "
+                      "recorded: %s", answerer, asker,
+                      record_error != NULL ? record_error->message
+                                           : "no reason");
+    }
+
+    return TRUE;
+}
+
+/* The other half of the direct room @room_id, or %NULL. */
+static gchar *
+direct_peer_of(const gchar *room_id, const gchar *agent_id)
+{
+    g_auto(GStrv) parts = NULL;
+
+    if (room_id == NULL || agent_id == NULL ||
+        !g_str_has_prefix(room_id, "dm:"))
+        return NULL;
+
+    parts = g_strsplit(room_id + 3, ":", 2);
+
+    if (parts[0] == NULL || parts[1] == NULL)
+        return NULL;
+
+    if (g_strcmp0(parts[0], agent_id) == 0)
+        return g_strdup(parts[1]);
+
+    if (g_strcmp0(parts[1], agent_id) == 0)
+        return g_strdup(parts[0]);
+
+    return NULL;
+}
+
 static void
 on_link_message(ClawtLinkServer *server, const gchar *agent_id,
                 const gchar *room_id, const gchar *body,
@@ -2612,17 +2804,7 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
 		 * claim. A reply to a reply does not inherit it, and changing
 		 * rooms cannot carry another conversation's reporting authority.
 		 */
-		if (input != NULL &&
-			clawt_mailbox_item_get_invites_reply(input) &&
-			clawt_mailbox_item_get_request_room(input) != NULL &&
-			clawt_mailbox_item_get_task_id(input) == NULL &&
-			g_strcmp0(clawt_mailbox_item_get_room(input), destination) == 0) {
-			clawt_message_set_reply_to(message, clawt_mailbox_item_get_id(input));
-			clawt_message_set_request_context(message,
-				clawt_mailbox_item_get_request_room(input),
-				clawt_mailbox_item_get_request_origin(input),
-				clawt_mailbox_item_get_request_task(input));
-		}
+		correlate_answer(message, input, destination);
 
 		/*
 		 * The answer to a consultation says so, for the clients.  Marked
@@ -2902,6 +3084,17 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
 		clawt_daemon_ack_consider(self, agent_id, room_id, destination,
 		                          message))
 		return;
+
+	/*
+	 * An answer goes back to the conversation that asked for it, when
+	 * the daemon has that conversation: see hand_answer_back().
+	 */
+	if (!is_operator_room(destination)) {
+		g_autofree gchar *asker = direct_peer_of(destination, agent_id);
+
+		if (hand_answer_back(self, message, destination, agent_id, asker))
+			return;
+	}
 
     if (clawt_mailbox_router_send(self->router, message, &error) < 0) {
         g_info("daemon: %s's message was not routed: %s", agent_id,
@@ -3641,6 +3834,7 @@ deliver_for_tools(const gchar *from_agent, const gchar *target,
 	gboolean one_way = (flags & CLAWT_MCP_DELIVER_ONE_WAY) != 0;
 	gboolean consult = (flags & CLAWT_MCP_DELIVER_CONSULT) != 0;
 	ClawtTask *assignment = NULL;
+	const gchar *answered_room = NULL;
 
 	/*
 	 * The task's own assignment: its first delivery, from its delegator,
@@ -3730,6 +3924,64 @@ deliver_for_tools(const gchar *from_agent, const gchar *target,
 	 * when an older harness provides no room. A one-way notice needs none
 	 * either: nothing will answer it.
 	 */
+	/*
+	 * A message to the agent whose request this turn is answering *is*
+	 * the answer (since 0.34.0).
+	 *
+	 * A request earns one answer.  The answer used to be only the text
+	 * the turn ended with, so an agent that answered properly -- by
+	 * calling clawtilla_message_agent with its findings -- had answered
+	 * twice: once with the call, which was a fresh request the asker
+	 * was then invited to answer, and once more with whatever its CLI
+	 * wrote on the way out ("Sent.").  Two turns for the asker where
+	 * one was owed, and each of them able to do the same in return: one
+	 * question between two agents that both worked this way cost
+	 * fifty-three turns before max_hops ended every branch of it.
+	 *
+	 * So the first such message takes the request's place in the
+	 * exchange exactly as the closing text would have -- it invites no
+	 * answer, carries the request's context, and goes back to the
+	 * conversation that asked -- and the turn's invite is spent, so the
+	 * closing text goes nowhere.  Anything the agent sends the asker
+	 * after that is a request of its own.
+	 */
+	if (sender != NULL && task_id == NULL && !one_way && !consult &&
+		self->rooms != NULL &&
+		clawt_agent_manager_get(self->agents, target) != NULL) {
+		ClawtRoom *pair = clawt_room_manager_get_direct(self->rooms,
+			from_agent, target);
+		const gchar *pair_id = (pair != NULL) ? clawt_room_get_id(pair) : NULL;
+		ClawtMailboxItem *input = (pair_id != NULL)
+			? clawt_agent_get_turn_input_in(sender, pair_id) : NULL;
+
+		if (input != NULL &&
+			(turn_room != NULL
+				? g_strcmp0(turn_room, pair_id) == 0
+				: clawt_agent_is_typing_in(sender, pair_id)) &&
+			g_strcmp0(clawt_mailbox_item_get_from(input), target) == 0 &&
+			g_strcmp0(clawt_mailbox_item_get_room(input), pair_id) == 0 &&
+			clawt_mailbox_item_get_invites_reply(input) &&
+			clawt_mailbox_item_get_task_id(input) == NULL &&
+			clawt_agent_get_turn_replies_in(sender, pair_id)) {
+			answered_room = pair_id;
+			clawt_message_set_invites_reply(message, FALSE);
+			correlate_answer(message, input, pair_id);
+		}
+	}
+
+	if (answered_room != NULL) {
+		gboolean handed = hand_answer_back(self, message, answered_room,
+		                                   from_agent, target);
+
+		if (!handed &&
+			clawt_mailbox_router_send(self->router, message, error) < 0)
+			return FALSE;
+
+		clawt_agent_close_turn_exchange(sender, answered_room);
+
+		return TRUE;
+	}
+
 	if (sender != NULL && task_id == NULL && !one_way &&
 		clawt_agent_manager_get(self->agents, target) != NULL) {
 		const gchar *request_room = turn_room;
@@ -6550,6 +6802,15 @@ configure_limits(ClawtDaemon *self)
         (guint)MAX(clawt_config_get_int(self->config,
                                         "orchestration.tree_message_budget"),
                    0));
+
+    clawt_loop_guard_set_pair_budget(
+        self->guard,
+        (guint)MAX(clawt_config_get_int(self->config,
+                                        "orchestration.pair_message_budget"),
+                   0),
+        (guint)MAX(clawt_config_get_int(self->config,
+                                        "orchestration.pair_quiet_minutes"),
+                   0) * 60);
 
     clawt_task_manager_set_max_depth(
         self->tasks,

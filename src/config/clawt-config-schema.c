@@ -798,6 +798,60 @@ static const ClawtSchemaEntry schema[] = {
   "At the limit the messaging tools are withheld from that tree's turns,\n"
   "exactly as max_hops withholds them, and one alert names the tree.", "0.20.0" },
 
+{ "orchestration.pair_message_budget", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "12", NULL,
+  "How many rounds of requests two agents may send each other with no\n"
+  "person in between. 0 disables the budget.\n"
+  "\n"
+  "Every other limit here can be started again by the agents\n"
+  "themselves. The hop count begins at zero on a notice of the daemon's\n"
+  "(a task settling, a wait ending), and the tree budget renews when a\n"
+  "task settles -- so two agents trading one job at a time, or asking\n"
+  "each other something after every notice, could do it for as long as\n"
+  "both were willing and nothing was ever refused. This is the count\n"
+  "nothing an agent does renews.\n"
+  "\n"
+  "A round is every request one agent sends the other from one turn --\n"
+  "clawtilla_message_agent, clawtilla_ask_agent, clawtilla_delegate, a\n"
+  "handoff -- so a chief handing a worker ten jobs at once has used one\n"
+  "round, and a pair passing one job back and forth has used a round\n"
+  "each time. Answers are not counted and never refused. Group rooms\n"
+  "are not counted: rounds and rooms.max_chain bound those.\n"
+  "\n"
+  "The count starts again when a person, a routine or a trigger writes\n"
+  "to either agent, or when the two have sent each other nothing for\n"
+  "orchestration.pair_quiet_minutes. At the limit a request between\n"
+  "the two is refused, saying so, and one alert names the pair.", "0.34.0" },
+
+{ "orchestration.pair_quiet_minutes", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "30", NULL,
+  "How long two agents must send each other nothing before their pair\n"
+  "budget starts again. 0 means only a person renews it.\n"
+  "\n"
+  "A fleet driven from somewhere the daemon does not see -- a Matrix\n"
+  "room, a webhook -- never shows it a person, so without this two\n"
+  "agents that had ever done pair_message_budget rounds of honest work\n"
+  "could not ask each other anything again until somebody opened a\n"
+  "chat. A loop is never quiet, so it does not earn this; once it has\n"
+  "been stopped nothing is left running to start it again.", "0.34.0" },
+
+{ "orchestration.answer_in_request_room", CLAWT_SCHEMA_BOOLEAN,
+  CLAWT_SCHEMA_FLAG_NONE, "true", NULL,
+  "Hand an agent's answer to the asker in the conversation it asked\n"
+  "from, rather than in the room the two agents share.\n"
+  "\n"
+  "An agent that asks a teammate something from your chat, or from a\n"
+  "group, is woken with the answer there: it has the conversation\n"
+  "behind it, what it writes at the end of that turn reaches you as any\n"
+  "reply does, and anything more it wants from the teammate is a tool\n"
+  "call. The answer itself stays on the record in the two agents' own\n"
+  "room, where Flow shows the exchange.\n"
+  "\n"
+  "Off, the answer wakes the asker in the two agents' room -- a\n"
+  "separate session that holds none of your conversation -- as it did\n"
+  "before 0.34.0. A request made while answering somewhere the daemon\n"
+  "does not see (a Matrix room) is always answered that way.", "0.34.0" },
+
 { "orchestration.crosstalk_summary", CLAWT_SCHEMA_ENUM,
   CLAWT_SCHEMA_FLAG_PER_AGENT, "chief", clawt_crosstalk_summary_get_type,
   "Tell you about agent-to-agent conversations: chief, on or off.\n"
