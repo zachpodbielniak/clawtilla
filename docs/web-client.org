@@ -835,7 +835,14 @@ what revoking the current device does to every open page.
 
 *Pair a new device* (shown only when ~device.list~ says this server is
 the owner) posts to =/settings/devices/pair=, and only that response
-draws the code -- large, with the addresses to dial and a countdown.  The
+draws the code -- large, with the addresses to dial and a countdown,
+and the pairing link (~uri~) as a QR code for a phone to scan.  The code
+is an inline ~<svg>~ from ~clawt_qr_render_svg()~, placed unescaped
+because its markup holds numbers and fixed text only, nothing from the
+link; black on its own white whatever the theme, since an inverted code
+is one many scanners refuse; fixed at 240 pixels.  The link is printed
+under it as text, and is all that is shown in a build without
+libqrencode.  The
 countdown ticks in the page head's script from ~data-pair-expires-in~,
 the seconds left when it was rendered, against the browser's own clock;
 its text matches ~clawt_device_countdown_text()~, which rendered the

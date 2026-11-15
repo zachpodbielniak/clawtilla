@@ -20,6 +20,8 @@
 
 #include "clawt-lrg.h"
 
+#include <string.h>
+
 typedef struct {
     LrgWidget *list;
     LrgWidget *pair_button;
@@ -112,6 +114,80 @@ on_pair_response(ClawtLrgApp *app, LrgDialog *dialog, gint response,
     return TRUE;
 }
 
+/*
+ * Pixels per QR module, as the GTK dialog draws it: a pairing link with
+ * two addresses is about 50 modules with the quiet zone, so about 250
+ * pixels -- large enough for a phone at arm's length.
+ */
+#define PAIR_QR_SCALE (5)
+
+/*
+ * The pairing link as a QR code, drawn at the size it is shown at with
+ * point filtering: a linearly filtered, resampled code blurs the module
+ * edges a camera locks on to.  %NULL when this build has no libqrencode,
+ * and the caller shows the link as text instead.
+ */
+static LrgWidget *
+pair_qr_image(const gchar *uri)
+{
+    g_autoptr(GBytes) modules = NULL;
+    g_autoptr(GrlImage) image = NULL;
+    g_autofree guint8 *pixels = NULL;
+    const guint8 *dark;
+    GrlTexture *texture;
+    LrgImage *picture;
+    guint size = 0;
+    gsize side;
+    gsize x;
+    gsize y;
+
+    modules = clawt_qr_encode(uri, &size, NULL);
+
+    if (modules == NULL)
+        return NULL;
+
+    dark = g_bytes_get_data(modules, NULL);
+    side = ((gsize)size + 2 * CLAWT_QR_QUIET_ZONE) * PAIR_QR_SCALE;
+
+    /* opaque white everywhere first, so the quiet zone draws itself */
+    pixels = g_malloc(side * side * 4);
+    memset(pixels, 0xff, side * side * 4);
+
+    for (y = 0; y < side; y++) {
+        gssize my = (gssize)(y / PAIR_QR_SCALE) - CLAWT_QR_QUIET_ZONE;
+
+        if (my < 0 || my >= (gssize)size)
+            continue;
+
+        for (x = 0; x < side; x++) {
+            gssize mx = (gssize)(x / PAIR_QR_SCALE) - CLAWT_QR_QUIET_ZONE;
+
+            if (mx >= 0 && mx < (gssize)size &&
+                dark[(gsize)my * size + (gsize)mx] != 0)
+                memset(pixels + (y * side + x) * 4, 0x00, 3);
+        }
+    }
+
+    image = grl_image_new_from_pixels((gint)side, (gint)side,
+                                      GRL_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8,
+                                      pixels);
+
+    if (image == NULL)
+        return NULL;
+
+    texture = grl_texture_new_from_image(image);
+    grl_texture_set_filter(texture, GRL_TEXTURE_FILTER_POINT);
+
+    picture = lrg_image_new();
+    lrg_image_set_scale_mode(picture, LRG_IMAGE_SCALE_MODE_FIT);
+    lrg_image_set_texture(picture, texture);
+    lrg_widget_set_min_size(LRG_WIDGET(picture), (gfloat)side, (gfloat)side);
+    lrg_widget_set_max_size(LRG_WIDGET(picture), (gfloat)side, (gfloat)side);
+    g_object_unref(texture);
+
+    return LRG_WIDGET(picture);
+}
+
 static void
 on_paired_code(ClawtLrgApp *app, JsonNode *reply, const GError *error,
                gpointer user_data)
@@ -159,6 +235,22 @@ on_paired_code(ClawtLrgApp *app, JsonNode *reply, const GError *error,
                      clawt_ipc_payload_int(payload, "expires_in", 0);
 
     box = clawt_lrg_vbox(10.0f);
+
+    /*
+     * The pairing link above the code it carries, for a phone to scan;
+     * the link as text when this build cannot draw it.  The daemon
+     * leaves `uri` out when no address is dialable, and the body says so.
+     */
+    {
+        const gchar *uri = clawt_ipc_payload_string(payload, "uri");
+        LrgWidget *qr = (uri != NULL) ? pair_qr_image(uri) : NULL;
+
+        if (qr != NULL)
+            clawt_lrg_take(box, qr);
+        else if (uri != NULL)
+            clawt_lrg_take(box, clawt_lrg_paragraph(uri, "mono"));
+    }
+
     clawt_lrg_take(box, clawt_lrg_label(display, "heading"));
     show->countdown = clawt_lrg_paragraph("", "muted");
     clawt_lrg_add(box, show->countdown);

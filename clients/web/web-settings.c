@@ -2146,6 +2146,37 @@ pairing_card(ClawtWebApp *app, JsonObject *pairing)
     }
 
     /*
+     * The pairing link as a QR code for a phone to scan.  The SVG comes
+     * from clawt_qr_render_svg(), whose markup holds numbers and fixed
+     * text only -- nothing from the link or any other input reaches it --
+     * which is what makes placing it unescaped safe; every other element
+     * here is built from the typed classes.  Without libqrencode in this
+     * build, the link itself, so it can still be copied to the phone.
+     */
+    {
+        const gchar *uri = clawt_web_member(pairing, "uri", NULL);
+        g_autofree gchar *svg = (uri != NULL)
+            ? clawt_qr_render_svg(uri, NULL) : NULL;
+
+        if (svg != NULL) {
+            g_autoptr(HtmxDiv) qr = htmx_div_new();
+
+            htmx_element_add_class(HTMX_ELEMENT(qr), "pair-qr");
+            htmx_element_set_attribute(HTMX_ELEMENT(qr), "title", uri);
+            htmx_node_set_html_content(HTMX_NODE(qr), svg);
+            htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(qr));
+        }
+
+        if (uri != NULL) {
+            g_autoptr(HtmxP) link = htmx_p_new();
+
+            htmx_element_add_class(HTMX_ELEMENT(link), "pair-link");
+            htmx_node_set_text_content(HTMX_NODE(link), uri);
+            htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(link));
+        }
+    }
+
+    /*
      * Where to dial, beside what to type: the code is useless without
      * the address, and a daemon with no listener cannot be reached to
      * redeem it at all -- better said here than as a refusal there.

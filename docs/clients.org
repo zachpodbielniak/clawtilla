@@ -42,7 +42,7 @@ licence, send nothing, and exit 0.
 | ~daemon token~ | print the owner's bearer token |
 | ~remote list/add/rm~ | saved daemons on other machines |
 | ~remote pair <name> <host[:port]> <code>~ | trade a pairing code for this device's own token, and save it |
-| ~device pair [--name NAME]~ | a six-digit code another device trades for a token (owner only) |
+| ~device pair [--name NAME] [--qr [--qr-light]]~ | a six-digit code another device trades for a token (owner only); ~--qr~ also draws the pairing link as a QR code |
 | ~device list~ | paired devices: id, name, when paired, last seen -- never a token |
 | ~device revoke ID~ | stop that device's token working and close what it has open |
 | ~status~ | version, build, hold, update, agent and client counts |
@@ -251,6 +251,44 @@ there is none -- a code on a daemon nobody can reach is a code nobody
 can use.  ~remote pair~ checks the code's shape before dialling, so a
 typo costs nothing against the guess limit; the space or dash a person
 types to read it is ignored.
+
+*** Pairing a phone by QR code
+
+~device.pair~ also answers with a pairing link (~uri~,
+[[file:ipc-protocol.org::*The pairing URI][ipc-protocol.org]]) holding the code and the addresses, and every
+client can draw it as a QR code for a phone's camera:
+
+#+begin_src sh
+clawtilla device pair --name phone --qr
+#   (the QR code, in half blocks)
+#   Pairing link:  clawtilla://pair?v=1&code=123456&port=8792&host=100.72.0.41&name=phone
+#   Pairing code:  123 456
+#   ...
+#+end_src
+
+The terminal code is drawn with the half blocks ~▀ ▄ █~, two modules a
+character cell so it comes out square, with the four-module quiet zone
+scanners need.  A block is drawn in the terminal's text colour, so by
+default the *light* modules are the blocks, which is right on a dark
+terminal; ~--qr-light~ draws it for a light one.  Drawn the wrong way
+round the code is inverted, and many phone scanners will not read it.
+
+The link is printed in ~--qr~ mode whether or not a code could be drawn,
+so it can be sent to the phone as text.  A build without libqrencode
+prints the link and says that drawing it needs libqrencode at build time
+(Fedora: ~qrencode-devel~ to build, ~qrencode-libs~ at runtime) -- see
+[[file:getting-started.org][getting-started.org]].  A daemon with no address another machine could
+dial (only loopback, say) sends no link at all, and ~--qr~ says so.
+
+Settings, *Devices*, *Pair a new device* draws the same code in the GTK
+client (a picture above the code and countdown), the web client (an
+inline SVG) and clawtilla-lrg (a texture), each from the library's
+encoder (~clawt_qr_encode()~, ~clawt_qr_render_svg()~), with the link as
+text beneath or in its place.
+
+The link carries only what the screen already showed: the short-lived,
+single-use, guess-limited code and the addresses.  Never a token -- see
+[[file:security.org::*Paired devices][security.org]].
 
 The token lands in ~connections.yaml~ (0600) like a pasted one and is
 never printed.  ~device list~ never prints one either -- the daemon only
@@ -3081,7 +3119,11 @@ the other clients), when it was paired, its id, and a *Revoke* button,
 with *this device* on the row that is this window.  On a window
 connected as a paired device the only button is *Sign out this device*,
 on its own row: revoking is the owner's (=clawt_device_row_action()=).  *Pair a new device*
-shows the code large, the addresses to dial, and a countdown; the
+shows the code large, the addresses to dial, and a countdown, with the
+pairing link drawn as a QR code above them for a phone to scan
+(=clawt_gtk_qr_texture()=, at five pixels a module and never shrunk,
+since a resampled code blurs) -- or the link as selectable text in a
+build without libqrencode; the
 dialog says so when the code is used (the ~device.paired~ event), and
 closing it unused withdraws the code.  The button is offered only to the
 owner -- a window connected as a paired device cannot pair another, and
