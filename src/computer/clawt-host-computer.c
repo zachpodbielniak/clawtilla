@@ -519,6 +519,71 @@ host_observe_geometry(ClawtObservable *observable, guint *width,
     return TRUE;
 }
 
+/*
+ * The focused window's title, for a saved-steps checkpoint.  Through the
+ * same observing tools as a frame: gowl's get_focused_client, or the
+ * extension's window list on GNOME -- neither needs a grant the screen
+ * view does not already have.
+ */
+static gchar *
+host_observe_focused_title(ClawtObservable *observable, GError **error)
+{
+    ClawtHostComputer *self = CLAWT_HOST_COMPUTER(observable);
+    g_autofree gchar *json = NULL;
+    gchar *title = NULL;
+
+    if (self->desktop == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                            "this agent has no desktop to ask about its "
+                            "windows");
+        return NULL;
+    }
+
+    if (host_backend(self) == CLAWT_DESKTOP_BACKEND_GNOME) {
+        g_auto(GStrv) argv = clawt_screen_gnome_windows_argv();
+        g_autoptr(GSubprocess) process = NULL;
+        g_autofree gchar *out = NULL;
+        g_autofree gchar *err = NULL;
+
+        process = g_subprocess_newv((const gchar * const *)argv,
+                                    G_SUBPROCESS_FLAGS_STDOUT_PIPE |
+                                    G_SUBPROCESS_FLAGS_STDERR_PIPE, error);
+
+        if (process == NULL)
+            return NULL;
+
+        if (!g_subprocess_communicate_utf8(process, NULL, NULL, &out, &err,
+                                           error))
+            return NULL;
+
+        if (g_subprocess_get_exit_status(process) != 0) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                        "the desktop would not list its windows: %s",
+                        (err != NULL && *g_strstrip(err) != '\0')
+                        ? err : "no reason given");
+            return NULL;
+        }
+
+        json = clawt_screen_parse_gdbus_string(out);
+    } else {
+        g_autoptr(JsonNode) result = NULL;
+
+        result = clawt_mcp_socket_call(
+            clawt_desktop_get_socket_path(self->desktop),
+            "get_focused_client", NULL, 10, error);
+
+        if (result == NULL)
+            return NULL;
+
+        json = clawt_mcp_socket_result_text(result);
+    }
+
+    if (!clawt_screen_parse_focused_title(json, &title, error))
+        return NULL;
+
+    return title;
+}
+
 static void
 host_observable_init(ClawtObservableInterface *iface)
 {
@@ -527,6 +592,7 @@ host_observable_init(ClawtObservableInterface *iface)
     iface->observe_can_input = host_observe_can_input;
     iface->observe_send_input = host_observe_send_input;
     iface->observe_geometry = host_observe_geometry;
+    iface->observe_focused_title = host_observe_focused_title;
 
     /*
      * observe_viewer_uri is left refusing.  There is no VNC server in

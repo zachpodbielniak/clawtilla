@@ -965,21 +965,33 @@ Events, subject the agent: ~turn.no_reply~ (~room~, ~seconds~,
 *** steps.*
 
 Saved steps (see [[file:computers.org::#saved-steps][computers.org]]).  Each takes ~agent~; ~save~,
-~replay~ and ~delete~ take ~name~.
+~replay~, ~set_check~ and ~delete~ take ~name~.  A check is
+~picture-and-title~ or ~title-only~ (=ClawtStepCheck=).
 
 - ~steps.last~ → the agent's last turn that touched its screen, or an
-  empty object: ~finished_at~, ~calls~, ~saveable~ (a JSON boolean),
-  ~why_not~ and ~steps~ (one line per step, from
+  empty object: ~finished_at~, ~calls~, ~saveable~ (a JSON boolean:
+  savable at least as title only), ~why_not~, ~has_picture~ (a JSON
+  boolean), ~title~ (the focused window's when the turn began; absent
+  when it could not be read), ~check~ and ~check_label~ (what a Save
+  would use: picture and title when there is a picture, title only when
+  not) and ~steps~ (one line per step, from
   =clawt_saved_step_describe()=).
-- ~steps.save~ → ~saved~.  Refused, with the recorder's reason, for a
-  turn that cannot be saved; a name is letters, digits, spaces, ~-~,
-  ~_~ and ~.~.
-- ~steps.list~ → ~replaying~ and ~saved~ (~name~, ~created_at~, ~steps~).
+- ~steps.save~ (optional ~check~) → ~saved~ and ~check~.  Refused, with
+  the reason from =clawt_step_run_can_save()=, for a turn that cannot be
+  saved with that check; a name is letters, digits, spaces, ~-~, ~_~
+  and ~.~.
+- ~steps.list~ → ~replaying~ and ~saved~ (~name~, ~created_at~,
+  ~title~, ~check~, ~check_label~, ~check_line~ from
+  =clawt_step_check_describe()=, ~other_check~ and ~other_check_label~
+  when the list could be switched, and ~steps~).
+- ~steps.set_check~ (~check~) → ~check~.  Picture and title is refused
+  for a list saved with no picture.
 - ~steps.delete~ → ~deleted~.
-- ~steps.replay~ → ~started~, ~steps~; answered at once, and the end is
-  the ~steps.replayed~ event (~name~, ~ok~, ~done~, ~steps~, ~error~).
-  Refused for an agent with no screen, a screen not held, and a replay
-  already running.
+- ~steps.replay~ → ~started~, ~steps~, ~check~; answered at once, and
+  the end is the ~steps.replayed~ event (~name~, ~ok~, ~done~, ~steps~,
+  ~error~).  Refused for an agent with no screen, a screen not held, a
+  replay already running, a list saved before titles were recorded, and
+  one set to picture and title with no picture.
 
 ~computer.control~ takes ~arguments~ (the call's own object) beside
 ~tool~, which is what the steps are recorded from.  Events, subject the

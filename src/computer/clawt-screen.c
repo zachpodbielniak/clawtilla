@@ -147,6 +147,148 @@ clawt_screen_gnome_monitors_argv(void)
 }
 
 GStrv
+clawt_screen_gnome_windows_argv(void)
+{
+    GPtrArray *argv = g_ptr_array_new_with_free_func(g_free);
+
+    add_gdbus_prefix(argv, "ListWindows");
+    g_ptr_array_add(argv, NULL);
+
+    return (GStrv)g_ptr_array_free(argv, FALSE);
+}
+
+/* One window's title, or FALSE when the member is not a string. */
+static gboolean
+window_title(JsonObject *window, gchar **title)
+{
+    JsonNode *node;
+
+    if (!json_object_has_member(window, "title")) {
+        *title = g_strdup("");
+        return TRUE;
+    }
+
+    node = json_object_get_member(window, "title");
+
+    if (JSON_NODE_HOLDS_NULL(node)) {
+        *title = g_strdup("");
+        return TRUE;
+    }
+
+    if (!JSON_NODE_HOLDS_VALUE(node) ||
+        json_node_get_value_type(node) != G_TYPE_STRING)
+        return FALSE;
+
+    *title = g_strdup(json_node_get_string(node));
+    return TRUE;
+}
+
+/* Whether a window-list entry says it has the focus. */
+static gboolean
+window_is_focused(JsonObject *window)
+{
+    const gchar *names[] = { "focused", "has_focus", NULL };
+    guint i;
+
+    for (i = 0; names[i] != NULL; i++) {
+        JsonNode *node;
+
+        if (!json_object_has_member(window, names[i]))
+            continue;
+
+        node = json_object_get_member(window, names[i]);
+
+        if (JSON_NODE_HOLDS_VALUE(node) &&
+            json_node_get_value_type(node) == G_TYPE_BOOLEAN &&
+            json_node_get_boolean(node))
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+gboolean
+clawt_screen_parse_focused_title(const gchar  *json,
+                                 gchar       **title,
+                                 GError      **error)
+{
+    g_autoptr(JsonParser) parser = json_parser_new();
+    JsonNode *root;
+
+    g_return_val_if_fail(title != NULL, FALSE);
+
+    *title = NULL;
+
+    if (json == NULL || !json_parser_load_from_data(parser, json, -1, NULL) ||
+        (root = json_parser_get_root(parser)) == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                            "the desktop's answer about the focused window "
+                            "is not JSON");
+        return FALSE;
+    }
+
+    /* gowl's `null`: no window has the focus. */
+    if (JSON_NODE_HOLDS_NULL(root)) {
+        *title = g_strdup("");
+        return TRUE;
+    }
+
+    /* gowl's object: it is the focused window. */
+    if (JSON_NODE_HOLDS_OBJECT(root)) {
+        if (!window_title(json_node_get_object(root), title)) {
+            g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                                "the focused window's title is not text");
+            return FALSE;
+        }
+
+        return TRUE;
+    }
+
+    /* A window list: exactly one focused entry, or none. */
+    if (JSON_NODE_HOLDS_ARRAY(root)) {
+        JsonArray *windows = json_node_get_array(root);
+        guint i;
+
+        for (i = 0; i < json_array_get_length(windows); i++) {
+            JsonNode *node = json_array_get_element(windows, i);
+            JsonObject *window = JSON_NODE_HOLDS_OBJECT(node)
+                ? json_node_get_object(node) : NULL;
+            g_autofree gchar *found = NULL;
+
+            if (window == NULL || !window_is_focused(window))
+                continue;
+
+            if (*title != NULL) {
+                g_clear_pointer(title, g_free);
+                g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                                    "the desktop says two windows have the "
+                                    "focus");
+                return FALSE;
+            }
+
+            if (!window_title(window, &found)) {
+                g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                                    "the focused window's title is not "
+                                    "text");
+                return FALSE;
+            }
+
+            *title = g_steal_pointer(&found);
+        }
+
+        if (*title == NULL)
+            *title = g_strdup("");
+
+        return TRUE;
+    }
+
+    g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                        "the desktop's answer about the focused window is "
+                        "neither a window nor a list of them");
+    return FALSE;
+}
+
+GStrv
 clawt_screen_gnome_input_argv(ClawtInputEvent *event)
 {
     GPtrArray *argv;

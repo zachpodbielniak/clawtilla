@@ -192,6 +192,16 @@ default_geometry(ClawtObservable *self, guint *width, guint *height)
     return FALSE;
 }
 
+static gchar *
+default_focused_title(ClawtObservable *self, GError **error)
+{
+    g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                "%s cannot say which window has the focus",
+                G_OBJECT_TYPE_NAME(self));
+
+    return NULL;
+}
+
 static void
 clawt_observable_default_init(ClawtObservableInterface *iface)
 {
@@ -202,6 +212,7 @@ clawt_observable_default_init(ClawtObservableInterface *iface)
     iface->observe_send_input = default_send_input;
     iface->observe_viewer_uri = default_viewer_uri;
     iface->observe_geometry = default_geometry;
+    iface->observe_focused_title = default_focused_title;
 }
 
 gboolean
@@ -268,6 +279,15 @@ clawt_observable_geometry(ClawtObservable *self, guint *width, guint *height)
 
     return CLAWT_OBSERVABLE_GET_IFACE(self)->observe_geometry(self, width,
                                                               height);
+}
+
+gchar *
+clawt_observable_focused_title(ClawtObservable *self, GError **error)
+{
+    g_return_val_if_fail(CLAWT_IS_OBSERVABLE(self), NULL);
+
+    return CLAWT_OBSERVABLE_GET_IFACE(self)->observe_focused_title(self,
+                                                                   error);
 }
 
 guint

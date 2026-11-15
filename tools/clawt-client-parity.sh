@@ -604,6 +604,12 @@ declare -A AFFORDANCES=(
     # the fleet's model choice is a walk of the ack-check catalogue that
     # another page already makes, so layer 3 cannot tell whether this
     # card offers it.  The group is the marker.
+    # Saved steps under the Screen view (docs/computers.org, "Saved
+    # steps"): the section itself, and the per-list switch between
+    # "picture and title" and "title only", whose words are the daemon's
+    # (check_line, other_check_label) so no client spells a check.
+    ["saved steps"]="clawt_gtk_build_saved_steps|clawt_web_add_saved_steps|clawt_lrg_steps_build"
+    ["saved steps check"]="\"steps.set_check\"|/steps/check|\"steps.set_check\""
     ["memory review proposals"]="clawt_gtk_build_memory_proposals|clawt_web_add_memory_proposals_card|build_memory_proposals"
     ["memory review model"]="\"memory.review_set\"|\"memory.review_set\"|\"memory.review_set\""
     ["pairing countdown"]="clawt_device_countdown_text|clawt_device_countdown_text|clawt_device_countdown_text"

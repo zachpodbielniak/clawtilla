@@ -1828,11 +1828,16 @@ arithmetic.
 last turn pressed on it (~steps.last~), one line per step, with a name
 field and *Save* when the daemon says the turn can be replayed exactly
 -- and the reason when it cannot (a call that is not a plain key, text,
-move, click or scroll; a secret typed; no picture from before the first
-step).  Each saved list has *Replay* and *Delete*.  Replay runs only
-while you hold the screen and only when a fresh picture of it hashes the
-same as the one taken before the steps were recorded; otherwise it
-sends nothing and says why.  See [[file:computers.org::#saved-steps][computers.org]].
+move, click or scroll; a secret typed; the focused window's title could
+not be read when the turn began).  Each saved list says how it is
+checked -- "Checked by picture and title (“Report — Editor”)" -- and has
+*Replay*, a *Check: Title only* (or *Check: Picture and title*) button
+that switches it (~steps.set_check~; the daemon names the other check),
+and *Delete*.  Replay runs only while you hold the screen and only when
+the focused window's title matches and, for picture and title, a fresh
+picture hashes the same as the one taken before the steps were
+recorded; otherwise it sends nothing and says which half differed.
+Title only is for a screen with a clock on it.  See [[file:computers.org::#saved-steps][computers.org]].
 
 *Open in a viewer* appears for a VM whose domain is running.  The GTK
 client spawns ~remote-viewer~ and names the package when it is missing;
