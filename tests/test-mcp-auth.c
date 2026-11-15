@@ -7,8 +7,9 @@
  * This file is part of clawtilla.
  *
  * Every document discovery reads, every decision it takes and every
- * request it builds is tested here as data.  None of it opens a socket:
- * the three network legs are thin wrappers around these functions, and
+ * request it builds is tested here as data.  The one socket is a unix
+ * one, for the bounded read: a server sending more than the cap.  The
+ * network legs are thin wrappers around these functions, and
  * the ways discovery goes wrong -- a document about some other server, a
  * mix-up between issuers, an endpoint in the clear, a hostile hint aimed
  * at loopback -- are all decisions made on text.
@@ -18,6 +19,7 @@
 #include "clawt-http.h"
 #include "clawt-test-util.h"
 
+#include <gio/gunixsocketaddress.h>
 #include <glib.h>
 #include <glib/gstdio.h>
 #include <libsoup/soup.h>
@@ -694,6 +696,132 @@ test_auth_file_round_trips_at_0600(
 	clawt_test_remove_tree(dir);
 }
 
+/* ── The document cap, against a server ──────────────────────────── */
+
+#define LOOPBACK_METADATA \
+	"{\"issuer\":\"http://127.0.0.1\"," \
+	"\"authorization_endpoint\":\"http://127.0.0.1/authorize\"," \
+	"\"token_endpoint\":\"http://127.0.0.1/token\"," \
+	"\"code_challenge_methods_supported\":[\"S256\"]}"
+
+/*
+ * Serves the authorization server's metadata padded with spaces to
+ * @user_data bytes (still valid JSON) at every server-stage address,
+ * and nothing anywhere else.
+ */
+static void
+padded_metadata_handler(
+	SoupServer        *server,
+	SoupServerMessage *message,
+	const char        *path,
+	GHashTable        *query,
+	gpointer           user_data
+){
+	gsize size = GPOINTER_TO_SIZE(user_data);
+	gchar *body;
+
+	if (!g_str_has_prefix(path, "/.well-known/oauth-authorization-server") &&
+	    !g_str_has_prefix(path, "/.well-known/openid-configuration")) {
+		soup_server_message_set_status(message, 404, NULL);
+		return;
+	}
+
+	g_assert_cmpuint(size, >=, strlen(LOOPBACK_METADATA));
+	body = g_malloc(size);
+	memset(body, ' ', size);
+	memcpy(body, LOOPBACK_METADATA, strlen(LOOPBACK_METADATA));
+
+	soup_server_message_set_status(message, 200, NULL);
+	soup_server_message_set_response(message, "application/json",
+	                                 SOUP_MEMORY_TAKE, body, size);
+}
+
+static void
+on_discovered(
+	GObject      *source,
+	GAsyncResult *result,
+	gpointer      user_data
+){
+	GAsyncResult **out = user_data;
+
+	*out = g_object_ref(result);
+}
+
+static gboolean
+discovery_watchdog(
+	gpointer user_data
+){
+	g_error("discovery did not finish within 10 seconds");
+	return G_SOURCE_REMOVE;
+}
+
+/* Runs discovery against a server whose metadata is @size bytes long. */
+static ClawtMcpAuthMetadata *
+discover_with_metadata_of(
+	gsize    size,
+	GError **error
+){
+	g_autofree gchar *dir = g_dir_make_tmp("clawt-mcp-auth-XXXXXX", NULL);
+	g_autofree gchar *path = g_build_filename(dir, "auth.sock", NULL);
+	g_autoptr(SoupServer) server = soup_server_new(NULL, NULL);
+	g_autoptr(GSocketAddress) address = g_unix_socket_address_new(path);
+	g_autoptr(SoupSession) session = NULL;
+	g_autoptr(GAsyncResult) result = NULL;
+	ClawtMcpAuthMetadata *metadata;
+	guint watchdog;
+
+	soup_server_add_handler(server, NULL, padded_metadata_handler,
+	                        GSIZE_TO_POINTER(size), NULL);
+	g_assert_true(soup_server_listen(server, address, 0, NULL));
+	session = soup_session_new_with_options("remote-connectable", address,
+	                                        NULL);
+	clawt_mcp_auth_set_session(session);
+
+	clawt_mcp_auth_discover_async("http://127.0.0.1/mcp", NULL, NULL,
+	                              on_discovered, &result);
+	watchdog = g_timeout_add_seconds(10, discovery_watchdog, NULL);
+	while (result == NULL)
+		g_main_context_iteration(NULL, TRUE);
+	g_source_remove(watchdog);
+
+	metadata = clawt_mcp_auth_discover_finish(result, error);
+
+	clawt_mcp_auth_set_session(NULL);
+	soup_server_disconnect(server);
+	while (g_main_context_iteration(NULL, FALSE))
+		;
+	clawt_test_remove_tree(dir);
+
+	return metadata;
+}
+
+/*
+ * Every document is read up to the cap and no further.  A server's
+ * metadata exactly %CLAWT_MCP_AUTH_MAX_DOCUMENT_BYTES long is read and
+ * used; one byte more and discovery refuses it, saying so, rather than
+ * reading whatever a server cares to send.
+ */
+static void
+test_a_document_over_the_cap_is_refused(
+	void
+){
+	g_autoptr(ClawtMcpAuthMetadata) fits = NULL;
+	g_autoptr(ClawtMcpAuthMetadata) over = NULL;
+	g_autoptr(GError) error = NULL;
+
+	fits = discover_with_metadata_of(CLAWT_MCP_AUTH_MAX_DOCUMENT_BYTES,
+	                                 &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(fits);
+	g_assert_cmpstr(fits->token_endpoint, ==, "http://127.0.0.1/token");
+
+	over = discover_with_metadata_of(CLAWT_MCP_AUTH_MAX_DOCUMENT_BYTES + 1,
+	                                 &error);
+	g_assert_null(over);
+	g_assert_nonnull(error);
+	g_assert_nonnull(strstr(error->message, "more than 65536 bytes"));
+}
+
 /* ── Adding by URL alone ─────────────────────────────────────────── */
 
 static void
@@ -832,6 +960,8 @@ main(
 	                test_a_refused_tool_call_is_actionable);
 	g_test_add_func("/mcp-auth/401/other-requests",
 	                test_other_refused_requests_are_errors);
+	g_test_add_func("/mcp-auth/fetch/document-cap",
+	                test_a_document_over_the_cap_is_refused);
 	g_test_add_func("/mcp-auth/file/round-trip",
 	                test_auth_file_round_trips_at_0600);
 	g_test_add_func("/mcp-auth/add/name-from-url",
