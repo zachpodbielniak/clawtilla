@@ -3568,13 +3568,16 @@ GTK, web and lrg: the last turn's steps with Save and a name, or the
 reason it cannot be saved; each saved list with how it is checked,
 Replay, a *Check: ...* switch and Delete.
 
-The GNOME half reads the extension's ~ListWindows~, expecting entries
-with ~title~ and ~focused~ (or ~has_focus~) as gnome-desktop-mcp's
-~list_windows~ reports them; it has been exercised against fakes in
-=tests/test-saved-steps.c= and not yet against a live GNOME session.  If
-the extension names the method differently, the title cannot be read,
-and saving refuses with that reason rather than saving a list that
-checks nothing.
+The GNOME half reads the extension's ~ListWindows~ on
+=io.github.gnomemcp.DesktopAutomation= at
+=/io/github/gnomemcp/DesktopAutomation=, which answers one string: a JSON
+array of windows, each with ~title~ (=win.get_title()=) and ~focused~
+(=win.has_focus()=).  That was checked against gnome-desktop-mcp's own
+source (=extension/.../dbus.js= and =windows.js= at =bf774a4=), and the
+parser is exercised with that shape in =tests/test-saved-steps.c=; it has
+not run against a live GNOME session here.  An older extension without
+the method makes the title unreadable, and saving refuses with that
+reason rather than saving a list that checks nothing.
 
 ** Adding a backend
 
