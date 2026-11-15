@@ -735,6 +735,13 @@ chief_asks_from_the_operators_chat(Fixture *fixture)
 		"{\"agent_id\":\"worker\",\"body\":\"Is the build green?\"}",
 		&is_error);
 	g_assert_false(is_error);
+
+	/*
+	 * The asker is told to stop: the answer starts a turn of its own,
+	 * and one that waits for it inside this turn hears it twice.
+	 */
+	g_assert_nonnull(strstr(text, "delivered to you as a new turn"));
+	g_assert_nonnull(strstr(text, "End this turn now"));
 	closing_text(fixture, "chief", chat, "I have asked the worker.");
 }
 
@@ -786,6 +793,8 @@ test_the_answer_wakes_the_asker_where_it_asked(void)
 	                        "Green as of ten minutes ago."));
 	g_assert_nonnull(strstr(clawt_mailbox_item_get_body(item),
 	                        "goes to your operator"));
+	g_assert_nonnull(strstr(clawt_mailbox_item_get_body(item),
+	                        "Do not call clawtilla_message_user as well"));
 	g_assert_nonnull(strstr(clawt_mailbox_item_get_body(item),
 	                        "clawtilla_message_agent is a new request"));
 

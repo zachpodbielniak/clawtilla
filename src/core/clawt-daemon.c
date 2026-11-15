@@ -2616,7 +2616,9 @@ hand_answer_back(ClawtDaemon *self, ClawtMessage *message,
         is_operator_room(request_room)
             ? "What you write at the end of this turn goes to your "
               "operator, as every reply here does: say what came of it, "
-              "or carry on with the work it was for."
+              "or carry on with the work it was for. Do not call "
+              "clawtilla_message_user as well -- your closing text is "
+              "the message, and both would arrive."
             : "Nothing you write at the end of this turn is sent "
               "anywhere: carry on with the work it was for, and use a "
               "tool to tell anybody who needs to know.",
