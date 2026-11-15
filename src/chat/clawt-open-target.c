@@ -275,3 +275,60 @@ clawt_open_target_resolve(
 		    target);
 	return FALSE;
 }
+
+/* ── Another invocation's command line ───────────────────────────── */
+
+gchar *
+clawt_open_target_from_argv(
+	const gchar * const *argv
+){
+	gchar *target = NULL;
+	GOptionEntry entries[] = {
+		{ "open", 'o', 0, G_OPTION_ARG_STRING, NULL, NULL, NULL },
+		{ NULL, 0, 0, G_OPTION_ARG_NONE, NULL, NULL, NULL }
+	};
+	g_autoptr(GOptionContext) context = NULL;
+	g_auto(GStrv) copy = NULL;
+	gchar **work;
+	gint argc;
+
+	if (argv == NULL || argv[0] == NULL)
+		return NULL;
+
+	/*
+	 * Parsed with GOption rather than by hand, so every spelling the
+	 * typing invocation accepted (`-o x`, `--open=x`) is read the same
+	 * way here.  On a copy: parsing rearranges the vector it is given.
+	 */
+	copy = g_strdupv((gchar **)argv);
+	argc = (gint)g_strv_length(copy);
+	work = copy;
+	entries[0].arg_data = &target;
+
+	context = g_option_context_new(NULL);
+	g_option_context_set_help_enabled(context, FALSE);
+	g_option_context_set_ignore_unknown_options(context, TRUE);
+	g_option_context_add_main_entries(context, entries, NULL);
+
+	if (!g_option_context_parse(context, &argc, &work, NULL))
+		g_clear_pointer(&target, g_free);
+
+	return target;
+}
+
+gchar *
+clawt_open_target_hold(
+	gchar    **pending,
+	gchar     *target,
+	gboolean   connected
+){
+	g_return_val_if_fail(pending != NULL, target);
+
+	if (connected)
+		return target;
+
+	g_free(*pending);
+	*pending = target;
+
+	return NULL;
+}
