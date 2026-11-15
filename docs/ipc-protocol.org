@@ -702,6 +702,36 @@ undone, ~CLAWT_ERROR_NOT_FOUND~ for one older than the journal keeps, and
 ~CLAWT_ERROR_PERMISSION_DENIED~ for a row in a shared database that this
 agent did not make.  Publishes ~memory.changed~.
 
+~memory.proposals~ (~agent~) → the periodic review's state and open
+proposals (~memories.review.*~): ~agent~, ~enabled~ (a JSON boolean: a
+model is named), ~model~ (the stored ~provider/model~, ~""~ for off),
+~model_label~ (=clawt_ack_check_model_label()=), ~interval_hours~,
+~last_run_at~ (unix seconds, 0 never), ~running~ (a pass for this agent
+is in flight), ~last_error~ when the last pass proposed nothing because
+it failed, timed out or answered something unreadable, and ~proposals~.
+Each proposal carries ~id~ (~p~ and sixteen hex digits), ~kind~
+(~merge~, ~forget~, ~pin~, ~unpin~), ~kind_label~
+(=clawt_memory_proposal_kind_label()=), ~line~
+(=clawt_memory_proposal_describe()=), ~content~ (a merge's text),
+~reason~ (the model's, clipped to one line), ~created_at~, and
+~memories~: each named memory's ~id~, its ~excerpt~ as it is now, and
+~present~ (a JSON boolean; false once it was forgotten since).
+
+~memory.proposal_accept~ (~agent~, ~id~) → ~accepted~.  Applies the
+proposal through the journaled store as ~operator~
+(=clawt_memory_proposal_apply()=) and takes it off the list; a proposal
+naming a memory that was forgotten since is refused with
+~CLAWT_ERROR_NOT_FOUND~ and stays listed, so it can be read and
+rejected.  ~memory.proposal_reject~ (~agent~, ~id~) → ~rejected~,
+changing nothing.  Both publish ~memory.changed~.
+
+~memory.review~ (~agent~) → ~started~: one pass now, refused while the
+review is off, while any pass is running, or for an agent with fewer
+than two memories.  ~memory.review_set~ (~model~ and/or
+~interval_hours~) → both as saved: the fleet's ~memories.review.model~
+(~provider/model~ or ~""~) and ~memories.review.interval_hours~ (1 to
+720), validated and saved like ~orchestration.set~.
+
 ~memory.recall~ (~query~, and optionally ~agent~, ~days~ and ~limit~) →
 ~hits~, ~full_text~ and ~indexed~.  This searches the *transcript*, not
 the memories: every message the fleet has routed, across every room and

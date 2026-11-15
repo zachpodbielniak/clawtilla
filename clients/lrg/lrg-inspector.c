@@ -53,6 +53,7 @@ typedef struct {
     LrgWidget  *mounts;
     LrgWidget  *waits;
     LrgWidget *memory_review;   /* the Memory review list */
+    LrgWidget *memory_proposals; /* the review's suggestions */
     LrgWidget  *files;
     LrgWidget  *usage_today;
     LrgWidget  *usage_total;
@@ -2466,6 +2467,286 @@ build_memory_review(
 	return index;
 }
 
+/* ── The review's proposals ───────────────────────────────────────── */
+
+/*
+ * memories.review.model: a small model suggests merges, forgets and pins
+ * over this agent's own memories.  Nothing changes until a person
+ * accepts one, and then it goes through the journaled store, so it lands
+ * in the Memory review above with an Undo.
+ */
+
+static void ask_memory_proposals(ClawtLrgApp *app);
+
+static void
+on_proposal_answered(
+	ClawtLrgApp  *app,
+	JsonNode     *reply,
+	const GError *error,
+	gpointer      user_data
+){
+	(void)error;
+
+	if (reply != NULL)
+		clawt_lrg_toast(app, GPOINTER_TO_INT(user_data)
+			? "Accepted. It is in the Memory review with an Undo."
+			: "Rejected. Nothing was changed.");
+
+	ask_memory_review(app);
+}
+
+static void
+on_proposal_answer(
+	LrgButton *button,
+	gpointer   user_data
+){
+	ClawtLrgApp *app = user_data;
+	const gchar *id = g_object_get_data(G_OBJECT(button), "clawt-proposal");
+	gboolean accept = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button),
+		"clawt-accept"));
+
+	if (app->agent_id == NULL || id == NULL)
+		return;
+
+	clawt_lrg_request(app, accept ? "memory.proposal_accept"
+		: "memory.proposal_reject",
+		clawt_ipc_payload_new("agent", app->agent_id, "id", id, NULL),
+		CLAWT_LRG_REQUEST_NONE, on_proposal_answered,
+		GINT_TO_POINTER(accept), NULL);
+}
+
+static void
+on_review_started(
+	ClawtLrgApp  *app,
+	JsonNode     *reply,
+	const GError *error,
+	gpointer      user_data
+){
+	(void)error;
+	(void)user_data;
+
+	if (reply != NULL)
+		clawt_lrg_toast(app, "Reviewing. Its suggestions appear here when "
+		                "the model answers.");
+}
+
+static void
+on_review_now(
+	LrgButton *button,
+	gpointer   user_data
+){
+	ClawtLrgApp *app = user_data;
+
+	(void)button;
+
+	if (app->agent_id == NULL)
+		return;
+
+	clawt_lrg_request(app, "memory.review",
+		clawt_ipc_payload_new("agent", app->agent_id, NULL),
+		CLAWT_LRG_REQUEST_NONE, on_review_started, NULL, NULL);
+}
+
+static void
+on_review_model_saved(
+	ClawtLrgApp  *app,
+	JsonNode     *reply,
+	const GError *error,
+	gpointer      user_data
+){
+	(void)error;
+	(void)user_data;
+
+	if (reply != NULL)
+		clawt_lrg_toast(app, "Saved for the whole fleet.");
+
+	ask_memory_proposals(app);
+}
+
+static void
+on_review_model_changed(
+	LrgComboBox *combo,
+	gpointer     user_data
+){
+	ClawtLrgApp *app = user_data;
+	const gchar *value = clawt_lrg_combo_id(LRG_WIDGET(combo));
+
+	if (value == NULL)
+		return;
+
+	clawt_lrg_request(app, "memory.review_set",
+		clawt_ipc_payload_new("model", value, NULL),
+		CLAWT_LRG_REQUEST_NONE, on_review_model_saved, NULL, NULL);
+}
+
+static void
+on_memory_proposals(
+	ClawtLrgApp  *app,
+	JsonNode     *reply,
+	const GError *error,
+	gpointer      user_data
+){
+	JsonObject *root = clawt_ipc_reply_object(reply);
+	JsonArray *proposals = (root != NULL &&
+	                        json_object_has_member(root, "proposals"))
+		? json_object_get_array_member(root, "proposals") : NULL;
+	g_autoptr(GPtrArray) ids = g_ptr_array_new();
+	g_autoptr(GPtrArray) labels = g_ptr_array_new();
+	const gchar *current;
+	gint64 now = g_get_real_time();
+	LrgWidget *combo;
+	guint i;
+
+	(void)error;
+	(void)user_data;
+
+	if (ins.memory_proposals == NULL)
+		return;
+
+	clawt_lrg_clear(ins.memory_proposals);
+
+	if (root == NULL) {
+		clawt_lrg_take(ins.memory_proposals, clawt_lrg_paragraph(
+			"This agent has no memory store, or the daemon could not say.",
+			"muted"));
+		clawt_lrg_app_wake(app);
+		return;
+	}
+
+	/*
+	 * The model choice is libclawt's list; one written into the file by
+	 * hand is kept by clawt_lrg_combo() rather than shown as Off.
+	 */
+	current = clawt_ipc_payload_string(root, "model");
+
+	for (i = 0; i < clawt_ack_check_model_count(); i++) {
+		g_ptr_array_add(ids, (gpointer)clawt_ack_check_model_nth_value(i));
+		g_ptr_array_add(labels, (gpointer)clawt_ack_check_model_nth_label(i));
+	}
+	g_ptr_array_add(ids, NULL);
+	g_ptr_array_add(labels, NULL);
+
+	combo = clawt_lrg_combo((const gchar *const *)ids->pdata,
+	                        (const gchar *const *)labels->pdata,
+	                        current != NULL ? current : "");
+
+	/* connected after the selection, so building is not a change */
+	g_signal_connect(combo, "changed", G_CALLBACK(on_review_model_changed),
+	                 app);
+	clawt_lrg_take(ins.memory_proposals, clawt_lrg_paragraph(
+		"Reviewed by (the whole fleet):", "muted"));
+	clawt_lrg_take(ins.memory_proposals, combo);
+
+	{
+		const gchar *failure = clawt_ipc_payload_string(root, "last_error");
+		gint64 last = clawt_ipc_payload_int(root, "last_run_at", 0);
+		gboolean running = clawt_ipc_payload_boolean(root, "running", FALSE);
+		g_autofree gchar *ago = (last > 0)
+			? clawt_time_ago_label(last * G_USEC_PER_SEC, now) : NULL;
+		g_autofree gchar *line = running
+			? g_strdup("A pass is running now.")
+			: (failure != NULL)
+				? g_strdup_printf("The last pass proposed nothing: %s",
+				                  failure)
+				: (ago != NULL) ? g_strdup_printf("Last reviewed %s.", ago)
+				: g_strdup("Not reviewed yet.");
+		LrgWidget *row = clawt_lrg_row("Review", line);
+
+		if (clawt_ipc_payload_boolean(root, "enabled", FALSE) && !running)
+			clawt_lrg_row_add_suffix(row, clawt_lrg_button("Review now",
+				"flat", G_CALLBACK(on_review_now), app));
+
+		clawt_lrg_take(ins.memory_proposals, row);
+	}
+
+	for (i = 0; proposals != NULL && i < json_array_get_length(proposals);
+	     i++) {
+		JsonObject *proposal = json_array_get_object_element(proposals, i);
+		JsonArray *about = json_object_has_member(proposal, "memories")
+			? json_object_get_array_member(proposal, "memories") : NULL;
+		const gchar *reason = clawt_ipc_payload_string(proposal, "reason");
+		const gchar *content = clawt_ipc_payload_string(proposal, "content");
+		const gchar *id = clawt_ipc_payload_string(proposal, "id");
+		const gchar *line = clawt_ipc_payload_string(proposal, "line");
+		g_autoptr(GString) subtitle = g_string_new(NULL);
+		LrgWidget *row;
+		LrgWidget *accept;
+		LrgWidget *reject;
+		guint j;
+
+		/* The model's words, marked as its own; the memories as they are. */
+		if (reason != NULL)
+			g_string_append_printf(subtitle, "Why: %s", reason);
+
+		if (content != NULL)
+			g_string_append_printf(subtitle, "%sInto: %s",
+			                       subtitle->len > 0 ? " \302\267 " : "",
+			                       content);
+
+		for (j = 0; about != NULL && j < json_array_get_length(about); j++) {
+			JsonObject *memory = json_array_get_object_element(about, j);
+			const gchar *excerpt = clawt_ipc_payload_string(memory,
+			                                                "excerpt");
+
+			g_string_append_printf(subtitle, "%s%s: %s",
+			                       subtitle->len > 0 ? " \302\267 " : "",
+			                       clawt_ipc_payload_string(memory, "id"),
+			                       excerpt != NULL ? excerpt
+			                                       : "(gone since)");
+		}
+
+		row = clawt_lrg_row(line != NULL ? line : "A change", subtitle->str);
+		accept = clawt_lrg_button("Accept", "primary",
+		                          G_CALLBACK(on_proposal_answer), app);
+		reject = clawt_lrg_button("Reject", "flat",
+		                          G_CALLBACK(on_proposal_answer), app);
+		g_object_set_data_full(G_OBJECT(accept), "clawt-proposal",
+		                       g_strdup(id), g_free);
+		g_object_set_data_full(G_OBJECT(reject), "clawt-proposal",
+		                       g_strdup(id), g_free);
+		g_object_set_data(G_OBJECT(accept), "clawt-accept",
+		                  GINT_TO_POINTER(TRUE));
+		clawt_lrg_row_add_suffix(row, accept);
+		clawt_lrg_row_add_suffix(row, reject);
+		clawt_lrg_appear(app, row, i);
+		clawt_lrg_take(ins.memory_proposals, row);
+	}
+
+	clawt_lrg_app_wake(app);
+}
+
+static void
+ask_memory_proposals(
+	ClawtLrgApp *app
+){
+	if (app->agent_id == NULL || ins.memory_proposals == NULL)
+		return;
+
+	clawt_lrg_request(app, "memory.proposals",
+	                  clawt_ipc_payload_new("agent", app->agent_id, NULL),
+	                  CLAWT_LRG_GUARDED | CLAWT_LRG_QUIET, on_memory_proposals,
+	                  NULL, NULL);
+}
+
+static guint
+build_memory_proposals(
+	ClawtLrgApp *app,
+	guint        index
+){
+	LrgWidget *box = section_card(
+		app, ins.body, "Suggested by the review",
+		"Merges, forgets and pins a small model suggests for this agent's "
+		"own memories. Nothing changes until you accept one; an accepted "
+		"one appears in the Memory review with an Undo.", index++);
+
+	ins.memory_proposals = clawt_lrg_vbox(6.0f);
+	clawt_lrg_add(box, ins.memory_proposals);
+	g_object_unref(ins.memory_proposals);
+
+	ask_memory_proposals(app);
+	return index;
+}
+
 /* ── Files ────────────────────────────────────────────────────────── */
 
 static void
@@ -2752,6 +3033,7 @@ draw_all(ClawtLrgApp *app)
     ins.mounts = NULL;
     ins.waits = NULL;
     ins.memory_review = NULL;
+    ins.memory_proposals = NULL;
     ins.files = NULL;
     ins.save = NULL;
     ins.fallbacks = NULL;
@@ -2786,6 +3068,7 @@ draw_all(ClawtLrgApp *app)
     index = build_form(app, index);
     index = build_waits(app, index);
     index = build_memory_review(app, index);
+    index = build_memory_proposals(app, index);
     index = build_credentials(app, agent, index);
     index = build_integrations(app, index);
     index = build_computer_detail(app, agent, index);
@@ -2845,6 +3128,7 @@ refresh(ClawtLrgApp *app)
         ins.mounts = NULL;
         ins.waits = NULL;
         ins.memory_review = NULL;
+        ins.memory_proposals = NULL;
         ins.files = NULL;
         ins.usage_today = NULL;
         ins.usage_total = NULL;
@@ -2900,8 +3184,10 @@ event(ClawtLrgApp *app, ClawtEvent *ev)
         ask_waits(app);
 
     if (g_strcmp0(kind, "memory.changed") == 0 &&
-        g_strcmp0(subject, app->agent_id) == 0)
+        g_strcmp0(subject, app->agent_id) == 0) {
         ask_memory_review(app);
+        ask_memory_proposals(app);
+    }
 }
 
 static LrgWidget *

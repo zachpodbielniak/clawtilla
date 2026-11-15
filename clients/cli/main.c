@@ -2444,18 +2444,108 @@ cmd_memory(int argc, char *argv[])
 
     if (verb == NULL || target == NULL ||
         (g_strcmp0(verb, "list") != 0 && g_strcmp0(verb, "search") != 0 &&
-         g_strcmp0(verb, "journal") != 0 && g_strcmp0(verb, "undo") != 0)) {
+         g_strcmp0(verb, "journal") != 0 && g_strcmp0(verb, "undo") != 0 &&
+         g_strcmp0(verb, "proposals") != 0 &&
+         g_strcmp0(verb, "accept") != 0 && g_strcmp0(verb, "reject") != 0 &&
+         g_strcmp0(verb, "review") != 0)) {
         g_printerr("Usage: clawtilla memory list <agent> [--category C]\n");
         g_printerr("       clawtilla memory search <agent> <query>\n");
         g_printerr("       clawtilla memory journal <agent>\n");
         g_printerr("       clawtilla memory undo <agent> <change> "
                    "[--scope agent|team|fleet]\n");
+        g_printerr("       clawtilla memory proposals <agent>\n");
+        g_printerr("       clawtilla memory accept|reject <agent> "
+                   "<proposal>\n");
+        g_printerr("       clawtilla memory review <agent>\n");
         return EXIT_FAILURE;
     }
 
     client = connect_to_daemon();
     if (client == NULL)
         return EXIT_FAILURE;
+
+    /*
+     * The periodic review's proposals (memories.review.model): listed,
+     * and accepted or rejected one at a time.  Accepting is applied by
+     * the daemon through the journaled store, so `memory journal` shows
+     * it afterwards with an undo like any other change.
+     */
+    if (g_strcmp0(verb, "proposals") == 0) {
+        JsonObject *root;
+        JsonArray *rows;
+
+        reply = call(client, "memory.proposals",
+                     build_payload("agent", target, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        root = json_node_get_object(reply);
+        rows = json_object_get_array_member(root, "proposals");
+        g_print("Review: %s\n", member_or(root, "model_label", "Off"));
+
+        if (member_or(root, "last_error", NULL) != NULL)
+            g_print("Last pass: %s\n", member_or(root, "last_error", ""));
+
+        if (rows == NULL || json_array_get_length(rows) == 0) {
+            g_print("No proposals waiting.\n");
+            return EXIT_SUCCESS;
+        }
+
+        for (i = 0; i < json_array_get_length(rows); i++) {
+            JsonObject *row = json_array_get_object_element(rows, i);
+            JsonArray *about = json_object_get_array_member(row, "memories");
+            guint j;
+
+            g_print("%s  %s\n", member_or(row, "id", "?"),
+                    member_or(row, "line", ""));
+
+            if (member_or(row, "reason", NULL) != NULL)
+                g_print("    why: %s\n", member_or(row, "reason", ""));
+
+            if (member_or(row, "content", NULL) != NULL)
+                g_print("    into: %s\n", member_or(row, "content", ""));
+
+            for (j = 0; about != NULL && j < json_array_get_length(about);
+                 j++) {
+                JsonObject *memory = json_array_get_object_element(about, j);
+
+                g_print("    %s: %s\n", member_or(memory, "id", "?"),
+                        member_or(memory, "excerpt", "(gone)"));
+            }
+        }
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "accept") == 0 || g_strcmp0(verb, "reject") == 0) {
+        if (argc < 5) {
+            g_printerr("Usage: clawtilla memory %s <agent> <proposal>\n",
+                       verb);
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, g_strcmp0(verb, "accept") == 0
+                     ? "memory.proposal_accept" : "memory.proposal_reject",
+                     build_payload("agent", target, "id", argv[4], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print(g_strcmp0(verb, "accept") == 0
+                ? "Accepted; `clawtilla memory journal %s` can undo it.\n"
+                : "Rejected; nothing was changed for %s.\n", target);
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "review") == 0) {
+        reply = call(client, "memory.review",
+                     build_payload("agent", target, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Reviewing; `clawtilla memory proposals %s` lists what it "
+                "suggests.\n", target);
+        return EXIT_SUCCESS;
+    }
 
     /*
      * The review: every remember, forget and pin, and an undo per row.

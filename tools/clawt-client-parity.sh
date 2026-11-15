@@ -599,6 +599,13 @@ declare -A AFFORDANCES=(
     ["first-reply rescue offer"]="clawt_rescue_offer_text|clawt_rescue_offer_text|clawt_rescue_offer_text"
     ["first-reply switch label"]="clawt_rescue_switch_label|clawt_rescue_switch_label|clawt_rescue_switch_label"
     ["memory review undo"]="clawt_memory_journal_undo_label|clawt_memory_journal_undo_label|clawt_memory_journal_undo_label"
+    # The periodic memory review (memories.review.model): the proposals
+    # list with Accept and Reject sends memory.proposal_* (layer 1), but
+    # the fleet's model choice is a walk of the ack-check catalogue that
+    # another page already makes, so layer 3 cannot tell whether this
+    # card offers it.  The group is the marker.
+    ["memory review proposals"]="clawt_gtk_build_memory_proposals|clawt_web_add_memory_proposals_card|build_memory_proposals"
+    ["memory review model"]="\"memory.review_set\"|\"memory.review_set\"|\"memory.review_set\""
     ["pairing countdown"]="clawt_device_countdown_text|clawt_device_countdown_text|clawt_device_countdown_text"
     ["device last seen"]="clawt_device_seen_text|clawt_device_seen_text|clawt_device_seen_text"
     # Revoke is the owner's; a paired device signs itself out.  Each

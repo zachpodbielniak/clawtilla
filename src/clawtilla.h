@@ -191,6 +191,7 @@
 #include "memory/clawt-transcript-index.h"
 #include "memory/clawt-summariser.h"
 #include "memory/clawt-operator-profile.h"
+#include "memory/clawt-memory-review.h"
 #include "usage/clawt-usage-ledger.h"
 #include "usage/clawt-task-sources.h"
 #include "usage/clawt-usage.h"

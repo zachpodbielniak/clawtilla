@@ -540,7 +540,7 @@ failure the rule exists to prevent, arrived at from the other direction.
 
 *** Memory review
 
-The agent page has a *Memory review* card below *Waiting for*, from ~memory.journal~: each journal row's action and excerpt, who and when, a badge naming the shared database for a team or fleet row, and either an undo form (labelled by =clawt_memory_journal_undo_label()=) posting to ~/a/:id/memory/undo~ -- registered by =clawt_web_register_review()= before the ~/a/:id/:view~ catch-all -- or the daemon's reason it cannot be undone.
+The agent page has a *Memory review* card below *Waiting for*, from ~memory.journal~: each journal row's action and excerpt, who and when, a badge naming the shared database for a team or fleet row, and either an undo form (labelled by =clawt_memory_journal_undo_label()=) posting to ~/a/:id/memory/undo~ -- registered by =clawt_web_register_review()= before the ~/a/:id/:view~ catch-all -- or the daemon's reason it cannot be undone.  Below it, *Suggested by the review* (=clawt_web_add_memory_proposals_card()=, ~memory.proposals~): the fleet's review model as a select posting ~memory.review_set~ to ~/a/:id/memory/review-model~, when the agent was last reviewed or why the last pass proposed nothing, a *Review now* form (~/a/:id/memory/review~), and each proposal with its memories, reason and merged text and an Accept/Reject form (~/a/:id/memory/proposal~); all registered by =clawt_web_register_review()=.  See [[file:agents.org::*The periodic review ("dream"): proposals, never changes][agents.org]].
 
 *** Waiting for
 

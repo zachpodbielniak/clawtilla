@@ -898,6 +898,40 @@ memories:
   # # Off removes the region again.
   # operator_profile: false
 
+  # A periodic review of each agent's memories by a small model, which
+  # proposes merges, forgets and pins for a person to accept one at a
+  # time. Off unless a model is named.
+  review:
+
+    # The model that reviews memories, as provider/model --
+    # claude/claude-haiku-4-5-20251001, ollama/llama3.2. Empty turns the
+    # review off, which is the default.
+    #
+    # Off by default because every pass is a model call nobody asked for,
+    # billed to whoever set this. On, each agent's own memories are read
+    # by the model at most once per interval, fenced as data, and what it
+    # proposes -- merge two memories into one, forget one, pin or unpin
+    # one -- is never applied. It is listed as a proposal in the Memory
+    # review group of every client, and only a person accepting it changes
+    # anything, through the same journaled store as every other change, so
+    # an accepted proposal can be undone like any other.
+    #
+    # A provider ai-glib reaches over HTTP, with its key configured the way
+    # ai_assist's is. The model has a hard limit of 60 seconds per pass; a
+    # timeout, a failure and a reply that cannot be read propose nothing.
+    model: ""
+
+    # How often each agent's memories are reviewed, in hours (1 to 720).
+    #
+    # A pass is skipped while the agent still has proposals nobody has
+    # answered, so an unread list never grows by itself.
+    interval_hours: 24
+
+    # How many of an agent's memories one pass reads at most, newest first
+    # (5 to 500). This is the size of the request, so it is the cost of
+    # one pass.
+    max_memories: 60
+
 # What `clawtilla sentinel` looks for in the event log.
 #
 # The sentinel is a read-only scan of <state_dir>/events/*.ndjson that

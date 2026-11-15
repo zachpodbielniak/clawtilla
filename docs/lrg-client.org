@@ -604,7 +604,7 @@ Save changes sends only what changed, one ~agent.set~ at a time in the order =cl
 
 *** Memory review
 
-A section below *Waiting for* (~memory.journal~): one row per journal entry with the action and excerpt, who and when, and the shared database for a team or fleet row; an undo button labelled by =clawt_memory_journal_undo_label()= (~memory.undo~) or the daemon's reason it cannot be undone.  Guarded and quiet like the waits, and refilled alone on ~memory.changed~ for the agent on screen.
+A section below *Waiting for* (~memory.journal~): one row per journal entry with the action and excerpt, who and when, and the shared database for a team or fleet row; an undo button labelled by =clawt_memory_journal_undo_label()= (~memory.undo~) or the daemon's reason it cannot be undone.  Guarded and quiet like the waits, and refilled alone on ~memory.changed~ for the agent on screen.  Below it, *Suggested by the review* (~memory.proposals~): the fleet's review model as a combo (~memory.review_set~), the last pass or its failure, *Review now* (~memory.review~), and each proposal with its memories, reason and merged text and *Accept* / *Reject* (~memory.proposal_accept~, ~memory.proposal_reject~), refilled with the review on ~memory.changed~.
 
 *** Waiting for
 

@@ -131,6 +131,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/memory/clawt-transcript-index.h \
 	$(SRCDIR)/memory/clawt-summariser.h \
 	$(SRCDIR)/memory/clawt-operator-profile.h \
+	$(SRCDIR)/memory/clawt-memory-review.h \
 	$(SRCDIR)/usage/clawt-usage-ledger.h \
 	$(SRCDIR)/usage/clawt-task-sources.h \
 	$(SRCDIR)/usage/clawt-usage.h \
@@ -261,6 +262,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-misc.c \
 	$(SRCDIR)/core/daemon-agent.c \
 	$(SRCDIR)/core/daemon-memory.c \
+	$(SRCDIR)/core/daemon-memory-review.c \
 	$(SRCDIR)/core/daemon-sentinel.c \
 	$(SRCDIR)/core/daemon-rescue.c \
 	$(SRCDIR)/core/daemon-steps.c \
@@ -337,6 +339,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/memory/clawt-transcript-index.c \
 	$(SRCDIR)/memory/clawt-summariser.c \
 	$(SRCDIR)/memory/clawt-operator-profile.c \
+	$(SRCDIR)/memory/clawt-memory-review.c \
 	$(SRCDIR)/usage/clawt-usage.c \
 	$(SRCDIR)/usage/clawt-usage-ledger.c \
 	$(SRCDIR)/usage/clawt-task-sources.c \

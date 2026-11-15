@@ -5235,6 +5235,7 @@ release_components(ClawtDaemon *self)
     clawt_daemon_policy_teardown(self);
     clawt_daemon_rebuild_teardown(self);
     clawt_daemon_idle_teardown(self);
+    clawt_daemon_memory_review_teardown(self);
     clawt_daemon_browser_teardown(self);
     clawt_daemon_routine_starts_teardown(self);
     g_clear_pointer(&self->shared_computers, g_hash_table_unref);
@@ -5286,6 +5287,10 @@ release_components(ClawtDaemon *self)
 	g_clear_object(&self->ack_provider);
 	g_clear_object(&self->ack_provider_override);
 	g_clear_pointer(&self->ack_provider_spec, g_free);
+	g_clear_object(&self->review_provider);
+	g_clear_object(&self->review_provider_override);
+	g_clear_pointer(&self->review_provider_spec, g_free);
+	g_clear_pointer(&self->review_running, g_free);
     g_clear_object(&self->summariser);
     g_clear_object(&self->transcripts);
     g_clear_object(&self->log);
@@ -7485,6 +7490,7 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     clawt_daemon_policy_setup(self);
     clawt_daemon_rebuild_setup(self);
     clawt_daemon_idle_setup(self);
+    clawt_daemon_memory_review_setup(self);
     clawt_daemon_browser_setup(self);
 
     /*
@@ -7660,6 +7666,7 @@ clawt_daemon_stop(ClawtDaemon *self)
     clawt_daemon_search_teardown(self);
     clawt_daemon_policy_teardown(self);
     clawt_daemon_idle_teardown(self);
+    clawt_daemon_memory_review_teardown(self);
     clawt_daemon_browser_teardown(self);
     g_clear_pointer(&self->shared_computers, g_hash_table_unref);
     g_clear_pointer(&self->drive_leases, g_hash_table_unref);

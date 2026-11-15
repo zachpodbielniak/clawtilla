@@ -32,6 +32,12 @@ clawt_daemon_handle_memory(
 {
     g_autoptr(JsonBuilder) builder = NULL;
 
+    /* The review's proposals and its setting have a file of their own. */
+    if (g_str_has_prefix(kind, "memory.proposal") ||
+        g_str_has_prefix(kind, "memory.review"))
+        return clawt_daemon_handle_memory_review(self, kind, request,
+                                                 payload, handled);
+
     builder = json_builder_new();
     *handled = TRUE;
 
