@@ -1442,10 +1442,14 @@ Green as of ten minutes ago.
 'dm:chief:user'; pass turn_room: "dm:chief:user" on any clawtilla tool
 you call while handling this. What you write at the end of this turn
 goes to your operator, as every reply here does: say what came of it, or
-carry on with the work it was for. If you need more from 'worker',
+carry on with the work it was for. Do not call clawtilla_message_user as
+well -- your closing text is the message, and both would arrive. If you
+need more from 'worker',
 clawtilla_message_agent is a new request, which they answer once -- ask
 only for what you still need.
 #+end_example
+
+The asker has to /end its turn/ to be woken, so the tool that sent the request says so (since 0.34.1): "Any answer is delivered to you as a new turn, in the conversation you asked from. End this turn now -- do not wait, sleep or read the room to look for it, or you will be told it twice."  Told only that its message was queued, a Grok agent in a live run slept eight seconds, read the room, reported the answer it found there, and was then woken with the same answer and reported it again.
 
 So the agent that asked decides what the answer is for, with the conversation behind it, and anything more it wants from the teammate is a tool call --- a deliberate act, never the text a CLI writes on its way out.  With =answer_in_request_room: false= the answer wakes the asker in the two agents' room, as it did before.
 

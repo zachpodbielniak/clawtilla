@@ -2033,6 +2033,16 @@ find_provider(ClawtMcpTools *self, const gchar *tool_name)
 }
 
 /*
+ * What a caller is told about the answer to a request it has just sent.
+ * "Any answer" rather than "the answer": the message may itself have
+ * been the caller's answer to somebody, and then none is owed.
+ */
+#define ANSWER_COMES_TO_YOU \
+    " Any answer is delivered to you as a new turn, in the conversation " \
+    "you asked from. End this turn now -- do not wait, sleep or read " \
+    "the room to look for it, or you will be told it twice."
+
+/*
  * How far a message sent by this agent has travelled.
  *
  * One hop beyond whatever it is replying to.  Every tool used to pass a
@@ -5047,22 +5057,32 @@ tool_message_agent(ClawtMcpTools *self,
 	 * And that no answer is coming, when none was asked for: an agent
 	 * that expects one waits for it, and one told otherwise stops.
 	 */
+	/*
+	 * And that the answer comes to the caller, so it ends its turn
+	 * (since 0.34.1).  Told only that the message was queued, an agent
+	 * waits for the answer *inside* the turn: a Grok agent slept eight
+	 * seconds, read the room, reported what it found there -- and was
+	 * then woken with the answer and reported it a second time.  The
+	 * answer starts a turn of its own in the conversation that asked;
+	 * the only way to hear it once is to stop.
+	 */
     if (priority != CLAWT_PRIORITY_NORMAL)
         return g_strdup_printf("Queued for %s at %s priority. They will see "
                                "it when they are next running.%s", target,
                                clawt_enum_to_nick(CLAWT_TYPE_PRIORITY,
                                                   priority),
                                one_way ? " No answer will come back: you "
-                                         "asked for none." : "");
+                                         "asked for none."
+                                       : ANSWER_COMES_TO_YOU);
 
     return g_strdup_printf("Queued for %s. They will see it when they are "
-                           "next running.%s", target,
+                           "next running.%s%s", target,
                            one_way ? " No answer will come back: you asked "
                                      "for none."
                            : consult ? " It is a consultation: they can "
-                                       "answer and do nothing else, and "
-                                       "the answer comes back here."
-                           : "");
+                                       "answer and do nothing else."
+                           : "",
+                           one_way ? "" : ANSWER_COMES_TO_YOU);
 }
 
 static gchar *
