@@ -263,11 +263,12 @@ GIT_SHA ?= unknown
 # builds that checkout when its binary is missing, and refuses a gsurf
 # older than GSURF_MIN_VERSION: 0.5.10 added page.click, page.type,
 # page.key and the inline screenshot the agent tools are made of, and
-# 0.5.13 page.fill_secret and the secret hold the vault fills through.
+# 0.5.13 page.fill_secret and the secret hold the vault fills through,
+# and 0.5.14 typing that answers only once the page has every key.
 GSURF       ?= 0
 GSURF_DIR   ?= $(abspath $(CURDIR)/../gsurf)
 GSURF_BIN    = $(GSURF_DIR)/build/release/gsurf
-GSURF_MIN_VERSION = 0.5.13
+GSURF_MIN_VERSION = 0.5.14
 
 ifeq ($(GSURF),1)
 GSURF_CFLAGS = -DCLAWT_HAVE_GSURF=1 -DCLAWT_GSURF_BUILD_BIN=\"$(GSURF_BIN)\"
