@@ -335,6 +335,46 @@ test_one_key_can_be_two_fields(void)
 }
 
 /*
+ * The apprise backend's two fields, which is all any client draws for
+ * it: every client renders notify from this table and none names apprise
+ * itself, so these rows are the whole of its form.  The URL is a secret
+ * reference (it carries the service's token), required under apprise
+ * and nowhere else; the program is optional and shares `command` with
+ * the command backend, as a different field.
+ */
+static void
+test_the_apprise_fields_are_drawn(void)
+{
+    const ClawtIntegrationField *list;
+    const ClawtIntegrationField *url = NULL;
+    const ClawtIntegrationField *program = NULL;
+    gsize n = 0;
+    gsize i;
+
+    list = clawt_integration_fields("notify", &n);
+
+    for (i = 0; i < n; i++) {
+        if (g_strcmp0(list[i].key, "apprise_url") == 0)
+            url = &list[i];
+        else if (g_strcmp0(list[i].key, "command") == 0 &&
+                 clawt_integration_field_applies(&list[i], "apprise"))
+            program = &list[i];
+    }
+
+    g_assert_nonnull(url);
+    g_assert_cmpint(url->kind, ==, CLAWT_FIELD_SECRET);
+    g_assert_true(url->required);
+    g_assert_true(clawt_integration_field_applies(url, "apprise"));
+    g_assert_false(clawt_integration_field_applies(url, "ntfy"));
+    g_assert_false(clawt_integration_field_applies(url, "command"));
+
+    g_assert_nonnull(program);
+    g_assert_cmpint(program->kind, ==, CLAWT_FIELD_TEXT);
+    g_assert_false(program->required);
+    g_assert_false(clawt_integration_field_applies(program, "command"));
+}
+
+/*
  * The sentence shown before a type is chosen.
  *
  * It lists only the *unconditionally* required fields: saying a notifier
@@ -579,6 +619,8 @@ main(int argc, char *argv[])
                     test_a_conditional_field_applies_to_its_choice);
     g_test_add_func("/integration-field/one-key-can-be-two-fields",
                     test_one_key_can_be_two_fields);
+    g_test_add_func("/integration-field/apprise-fields",
+                    test_the_apprise_fields_are_drawn);
     g_test_add_func("/integration-field/needs-summary-skips-conditionals",
                     test_the_needs_summary_skips_conditional_fields);
     g_test_add_func("/integration-field/every-type-has-a-label",
