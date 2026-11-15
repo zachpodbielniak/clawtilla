@@ -409,6 +409,36 @@ gboolean clawt_turn_step_joins_run(ClawtTurnStep *self);
  */
 gboolean clawt_turn_step_precedes(ClawtTurnStep *self, gint64 message_ts);
 
+/**
+ * clawt_turn_step_precedes_message:
+ * @self: a step
+ * @message_ts: a #ClawtMessage timestamp, in *seconds*
+ * @message_id: (nullable): that message's id
+ *
+ * Whether @self happened before the message, for a client merging a
+ * room's steps back into its transcript -- clawt_turn_step_precedes()
+ * with the tie inside one second broken.
+ *
+ * The second alone cannot order a step against a message stamped in the
+ * same second, and both answers to the tie were wrong for someone.  At
+ * or before put a fast agent's first step above the operator's prompt
+ * that started it (the prompt and the step share a second); strictly
+ * before would put a turn's last step under the answer it produced.
+ * The message's id carries the millisecond it was made in
+ * (clawt_id_get_time_ms()), so the tie is broken by the time both were
+ * actually stamped.  Within one millisecond the step still comes first:
+ * that is the answer written from the same output as its last step,
+ * never a prompt, which has to reach the agent before a step exists.
+ *
+ * An id that does not carry a time -- one chosen elsewhere, or none --
+ * falls back to clawt_turn_step_precedes()'s at-or-before.
+ *
+ * Returns: %TRUE if @self belongs before that message
+ */
+gboolean clawt_turn_step_precedes_message(ClawtTurnStep *self,
+                                          gint64         message_ts,
+                                          const gchar   *message_id);
+
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtTurnStep, clawt_turn_step_free)
 
 G_END_DECLS

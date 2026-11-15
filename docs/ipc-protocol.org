@@ -887,6 +887,8 @@ A client offers the choices by walking ~clawt_ack_check_model_count()~
 
 ~task.list~, ~task.show~, ~task.cancel~, ~task.retry~.
 
+~task.list~ and ~incident.list~ both answer ~since~ (since 0.29.0): when this daemon started, as a Unix time.  Tasks are held in memory and incidents with them, so both lists reach back only that far; every client words it through =clawt_held_since_caption()= ("Since the daemon started at 09:14. Tasks and problems are held in memory, so a daemon restart clears this list; ...") rather than letting an empty list after a restart read as nothing having happened.  A reply without it (an older daemon) is "Since the daemon last started".
+
 A task object carries ~retries~ and ~retried_by~ once it has been retried, and not before.
 
 ~task.retry~ takes ~task~ (a task id) *or* ~incident~ (an incident id), and an optional ~reason~ the assignee sees with the work.  It is the operator's Retry: a ~failed~ or ~stalled~ task is re-queued for its assignee with its original work and ~retried_by: "user"~; a routine's run is run again.  It answers ~task~ (the task now carrying the work -- the same id for a re-queue, the new run's for a routine) and ~rerun~ (a JSON boolean, true for a routine).  Any other task state is =INVALID_ARGUMENT= with the reason, as is an incident whose agent could not start (its work is still queued); an unknown id is =NOT_FOUND=.  See docs/orchestration.org, "Incidents: broken runs reach the lead".
@@ -1366,6 +1368,11 @@ a schedule that does not parse, so a bad expression is rejected while
 somebody is still looking at what they typed rather than at the next tick.
 ~routine.remove~ and ~routine.run~ take an ~id~; ~routine.run~ ignores
 both the schedule and ~enabled~ and returns the ~task~ it started.
+~routine.run~ is a person's Run now: the loop guard's cycle detector
+does not measure it (a second press inside ~orchestration.cycle_seconds~
+runs again), and a refusal -- the rate limit, a spending cap, an agent
+that is gone -- is the error this request returns and is never filed as
+an incident; the task it had created is cancelled with the reason.
 
 ~routine.ran~, ~routine.changed~ and ~routine.turned_off~ are published
 as events; the last carries ~agent~, ~failures~ and ~error~ and is an

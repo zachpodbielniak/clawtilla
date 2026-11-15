@@ -126,6 +126,50 @@ test_an_alert_is_dated_by_its_event(
 	clawt_event_free(event);
 }
 
+/*
+ * The agent page speaks to the operator.  It printed what the agent is
+ * told about its computer, which is written to the agent -- "You have no
+ * computer. You cannot run commands..." -- so the page addressed the
+ * person reading it as the agent.  With no computer the operator gets a
+ * sentence of their own; with one, the agent's words are captioned as
+ * the agent's.
+ */
+static void
+test_the_agent_page_does_not_address_the_operator_as_the_agent(
+	void
+){
+	const gchar *agent_text = "You have no computer. You cannot run "
+	                          "commands, read files or reach a filesystem.";
+	const gchar *caption = "unset";
+	const gchar *said;
+
+	said = clawt_agent_computer_text_for_operator("none", agent_text,
+	                                              &caption);
+	g_assert_nonnull(said);
+	g_assert_null(caption);
+	g_assert_true(g_str_has_prefix(said, "This agent has no computer"));
+	g_assert_null(strstr(said, "You "));
+	g_assert_null(strstr(said, "you "));
+
+	/* absent is the same answer as "none" */
+	g_assert_cmpstr(clawt_agent_computer_text_for_operator(NULL, NULL, NULL),
+	                ==, said);
+
+	/* a computer: the agent's own words, introduced as the agent's */
+	caption = NULL;
+	said = clawt_agent_computer_text_for_operator(
+		"container", "You have a container of your own.", &caption);
+	g_assert_cmpstr(said, ==, "You have a container of your own.");
+	g_assert_nonnull(caption);
+	g_assert_nonnull(strstr(caption, "the agent itself is told"));
+
+	/* a computer the daemon said nothing about: nothing to show */
+	caption = "unset";
+	g_assert_null(clawt_agent_computer_text_for_operator("host", NULL,
+	                                                     &caption));
+	g_assert_null(caption);
+}
+
 int
 main(
 	int    argc,
@@ -141,6 +185,8 @@ main(
 	                test_a_rebuild_question_drops_its_loss);
 	g_test_add_func("/ui-smoke/alert-dated-by-event",
 	                test_an_alert_is_dated_by_its_event);
+	g_test_add_func("/ui-smoke/agent-page-speaks-to-the-operator",
+	                test_the_agent_page_does_not_address_the_operator_as_the_agent);
 
 	return g_test_run();
 }

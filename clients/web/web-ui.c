@@ -362,12 +362,15 @@ clawt_web_avatar(const gchar *name, const gchar *agent_id,
             htmx_element_set_attribute(HTMX_ELEMENT(face), "style", style);
         } else {
             /*
-             * One of the sheet's own tones, chosen by the name, rather
-             * than a colour computed here -- so a palette recolours the
-             * faces with everything else.
+             * One of the sheet's own tones, rather than a colour
+             * computed here -- so a palette recolours the faces with
+             * everything else.  Which tone is clawt_avatar_tone()'s,
+             * keyed on the agent's id: the transcript passes the sender
+             * and the fleet the display name, and hashing the name made
+             * one agent two colours.
              */
             g_autofree gchar *cls = g_strdup_printf(
-                "avatar-tone-%u", g_str_hash(name) % 6);
+                "avatar-tone-%u", clawt_avatar_tone(agent_id, name));
 
             htmx_element_add_class(HTMX_ELEMENT(face), cls);
         }

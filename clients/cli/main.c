@@ -980,11 +980,27 @@ cmd_agent(int argc, char *argv[])
             }
         }
 
-        if (json_object_has_member(json_node_get_object(reply),
-                                   "computer_detail"))
-            g_print("\n%s\n",
-                    json_object_get_string_member(json_node_get_object(reply),
-                                                  "computer_detail"));
+        /*
+         * What the agent is told is written to the agent; with no
+         * computer the operator gets a sentence of their own, and with
+         * one the agent's words are introduced as the agent's.
+         */
+        {
+            const gchar *caption = NULL;
+            const gchar *said = clawt_agent_computer_text_for_operator(
+                member_or(agent, "computer", "none"),
+                json_object_has_member(json_node_get_object(reply),
+                                       "computer_detail")
+                    ? json_object_get_string_member(
+                          json_node_get_object(reply), "computer_detail")
+                    : NULL,
+                &caption);
+
+            if (said != NULL && caption != NULL)
+                g_print("\n%s\n%s\n", caption, said);
+            else if (said != NULL)
+                g_print("\n%s\n", said);
+        }
 
         return EXIT_SUCCESS;
     }
@@ -4413,6 +4429,21 @@ cmd_task(int argc, char *argv[])
 
         tasks = json_object_get_array_member(json_node_get_object(reply),
                                              "tasks");
+
+        /*
+         * How far back the list reaches, on stderr so a script reading
+         * the table is unaffected: tasks are held in memory, and "No
+         * tasks." straight after a restart is not "nothing happened".
+         */
+        {
+            JsonObject *root = json_node_get_object(reply);
+            g_autofree gchar *since = clawt_held_since_caption(
+                json_object_has_member(root, "since")
+                    ? json_object_get_int_member(root, "since") : 0,
+                g_get_real_time() / G_USEC_PER_SEC);
+
+            g_printerr("%s\n", since);
+        }
 
         if (json_array_get_length(tasks) == 0) {
             g_print("No tasks.\n");

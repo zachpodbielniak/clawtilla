@@ -595,6 +595,29 @@ clawtilla routine run draft
 point: a disabled routine you can still run by hand is how you find out
 whether the instructions are any good before putting them on a timer.
 
+*Run now is a person's action, and is treated as one.*  A routine's
+prompt is the same text every run, by construction, and the loop guard's
+cycle detector refuses an exact repeat inside
+=orchestration.cycle_seconds= (300 by default) -- so pressing Run now a
+second time within five minutes used to be refused as the conversation
+"going in circles", and the refusal failed the run's task, which filed it
+as an incident.  Now:
+
+- a Run now (any client's button, =clawtilla routine run=, an incident's
+  Retry) is marked by hand (=clawt_message_set_by_hand()=), and the cycle
+  detector does not measure it.  Every other limit still does: hops, the
+  per-minute rate, the spending caps, a stalled room.
+- a refusal is an answer, never an incident.  A Run now refused for any
+  reason comes back to whoever pressed it as the error; its task, if one
+  was made, is cancelled by clawtilla with the reason rather than failed.
+  A *scheduled* run refused by the loop guard or a spending cap
+  (=CLAWT_ERROR_LOOP_LIMIT=) is cancelled the same way; a scheduled run
+  that could not be delivered for any other reason still fails and still
+  opens an incident, which is what incidents are for.
+- an automation's =run_routine= action is not a person: it is measured
+  like a scheduled run (=clawt_routine_runner_run_unscheduled()= with
+  =by_hand= false).
+
 ** Run state
 :PROPERTIES:
 :CUSTOM_ID: run-state

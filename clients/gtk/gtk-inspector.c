@@ -584,7 +584,7 @@ fallback_editor_draw(ClawtWindow *self, GPtrArray *list)
         g_ptr_array_add(self->fallback_rows, entry->models.model_row);
         g_ptr_array_add(self->fallback_rows, entry->models.model_entry);
 
-        entry->account_row = adw_combo_row_new();
+        entry->account_row = clawt_gtk_combo_row_new();
         adw_preferences_row_set_title(ADW_PREFERENCES_ROW(entry->account_row),
                                       "Account");
         fallback_fill_accounts(entry,
@@ -1374,7 +1374,7 @@ account_row_build(ClawtWindow *self, const gchar *current)
 {
     g_autoptr(JsonNode) reply = NULL;
     g_autoptr(GtkStringList) labels = gtk_string_list_new(NULL);
-    GtkWidget *row = adw_combo_row_new();
+    GtkWidget *row = clawt_gtk_combo_row_new();
     JsonArray *accounts = NULL;
     guint selected = 0;
     guint i;
@@ -1441,7 +1441,7 @@ use_row_build(ClawtWindow *self, const gchar *current)
 {
     g_autoptr(JsonNode) reply = NULL;
     g_autoptr(GtkStringList) labels = gtk_string_list_new(NULL);
-    GtkWidget *row = adw_combo_row_new();
+    GtkWidget *row = clawt_gtk_combo_row_new();
     JsonArray *computers = NULL;
     guint selected = 0;
     guint i;
@@ -1534,7 +1534,7 @@ static GtkWidget *
 steer_row_new(const gchar *current)
 {
     g_autoptr(GtkStringList) labels = gtk_string_list_new(NULL);
-    GtkWidget *row = adw_combo_row_new();
+    GtkWidget *row = clawt_gtk_combo_row_new();
     guint i;
 
     for (i = 0; i < clawt_steer_policy_count(); i++)
@@ -1557,7 +1557,7 @@ static GtkWidget *
 combo_row(const gchar *title, const gchar *const *values,
           const gchar *selected)
 {
-    GtkWidget *row = adw_combo_row_new();
+    GtkWidget *row = clawt_gtk_combo_row_new();
 
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), title);
     adw_combo_row_set_model(ADW_COMBO_ROW(row),
@@ -1782,7 +1782,7 @@ static GtkWidget *
 computer_start_row_build(const gchar *current)
 {
     g_autoptr(GtkStringList) labels = gtk_string_list_new(NULL);
-    GtkWidget *row = adw_combo_row_new();
+    GtkWidget *row = clawt_gtk_combo_row_new();
     guint n = clawt_computer_start_count();
     guint selected = 0;
     guint i;
@@ -3751,7 +3751,7 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
                 self->network_shown = i;
         }
 
-        self->network_row = adw_combo_row_new();
+        self->network_row = clawt_gtk_combo_row_new();
         adw_preferences_row_set_title(ADW_PREFERENCES_ROW(self->network_row),
                                       clawt_egress_network_label());
         adw_combo_row_set_model(ADW_COMBO_ROW(self->network_row),
@@ -3801,7 +3801,7 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
         choices = clawt_gtk_team_choices(self, clawt_json_string(agent, "team", ""),
                                          &self->team_ids);
 
-        self->team_row = adw_combo_row_new();
+        self->team_row = clawt_gtk_combo_row_new();
         adw_preferences_row_set_title(ADW_PREFERENCES_ROW(self->team_row),
                                       "Team");
         adw_combo_row_set_model(ADW_COMBO_ROW(self->team_row),
@@ -3895,20 +3895,36 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
     clawt_gtk_build_memory_review(self);
     build_agent_integrations(self);
 
-    if (clawt_json_string(payload, "computer_detail", NULL) != NULL) {
-        GtkWidget *detail = adw_preferences_group_new();
-        GtkWidget *label = gtk_label_new(
-            clawt_json_string(payload, "computer_detail", ""));
+    /*
+     * What the agent is told is written to the agent -- "You have no
+     * computer..." -- so the page shows the operator's sentence instead
+     * when there is no computer, and otherwise the agent's words under a
+     * caption saying whose they are.  The choice is the library's, so
+     * the three clients and the CLI say it the same way.
+     */
+    {
+        const gchar *caption = NULL;
+        const gchar *said = clawt_agent_computer_text_for_operator(
+            clawt_json_string(agent, "computer", "none"),
+            clawt_json_string(payload, "computer_detail", NULL), &caption);
 
-        adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(detail),
-                                        "Computer");
-        gtk_label_set_wrap(GTK_LABEL(label), TRUE);
-        gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
-        gtk_label_set_selectable(GTK_LABEL(label), TRUE);
-        gtk_widget_set_margin_top(label, 6);
-        adw_preferences_group_add(ADW_PREFERENCES_GROUP(detail), label);
+        if (said != NULL) {
+            GtkWidget *detail = adw_preferences_group_new();
+            GtkWidget *label = gtk_label_new(said);
 
-        gtk_box_append(self->inspector, detail);
+            adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(detail),
+                                            "Computer");
+            if (caption != NULL)
+                adw_preferences_group_set_description(
+                    ADW_PREFERENCES_GROUP(detail), caption);
+            gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+            gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+            gtk_label_set_selectable(GTK_LABEL(label), TRUE);
+            gtk_widget_set_margin_top(label, 6);
+            adw_preferences_group_add(ADW_PREFERENCES_GROUP(detail), label);
+
+            gtk_box_append(self->inspector, detail);
+        }
     }
 
     /*

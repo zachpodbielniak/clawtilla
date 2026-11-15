@@ -145,6 +145,15 @@ clawt_daemon_handle_task(
             clawt_ipc_payload_boolean(payload, "all", TRUE));
 
         json_builder_begin_object(builder);
+
+        /*
+         * Tasks are held in memory: the list is everything since this
+         * daemon started, and saying when is what keeps an empty list
+         * after a restart from reading as "nothing was ever delegated".
+         */
+        json_builder_set_member_name(builder, "since");
+        json_builder_add_int_value(builder, self->started_at);
+
         json_builder_set_member_name(builder, "tasks");
         json_builder_begin_array(builder);
 
@@ -259,6 +268,10 @@ clawt_daemon_handle_task(
             clawt_incident_recipient_nick((ClawtIncidentRecipient)
                 clawt_config_get_enum(self->config,
                                       "orchestration.incidents.to")));
+
+        /* Held in memory like the tasks they describe; see task.list. */
+        json_builder_set_member_name(builder, "since");
+        json_builder_add_int_value(builder, self->started_at);
 
         json_builder_set_member_name(builder, "incidents");
         json_builder_begin_array(builder);

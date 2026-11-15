@@ -523,6 +523,261 @@ test_escaped_lines_draw_without_backslashes(void)
                     "the *db* is_bad|```|");
 }
 
+/* The first LrgCheckbox under @widget labelled @label, or NULL. */
+static LrgCheckbox *
+find_checkbox(LrgWidget *widget, const gchar *label)
+{
+    GList *l;
+
+    if (LRG_IS_CHECKBOX(widget) &&
+        g_strcmp0(lrg_checkbox_get_label(LRG_CHECKBOX(widget)), label) == 0)
+        return LRG_CHECKBOX(widget);
+
+    if (!LRG_IS_CONTAINER(widget))
+        return NULL;
+
+    for (l = lrg_container_get_children(LRG_CONTAINER(widget)); l != NULL;
+         l = l->next) {
+        LrgCheckbox *found = find_checkbox(l->data, label);
+
+        if (found != NULL)
+            return found;
+    }
+
+    return NULL;
+}
+
+/*
+ * The Flow page's "Include your own chats" switch.  Its handler took two
+ * arguments for a signal that passes three, read the new state as the
+ * app, and the first click crashed the client.  Clicked both ways here,
+ * through the signal the click emits.
+ */
+static void
+test_the_flow_switch_does_not_crash(Fixture *fixture, gconstpointer data)
+{
+    ClawtLrgApp *app = fixture->app;
+    LrgCheckbox *include;
+
+    clawt_lrg_show_page(app, CLAWT_PAGE_FLOW);
+    drain(app);
+    g_free(snapshot(app));
+
+    include = find_checkbox(LRG_WIDGET(app->canvas),
+                            "Include your own chats");
+    g_assert_nonnull(include);
+
+    lrg_checkbox_set_checked(include, TRUE);
+    g_signal_emit_by_name(include, "toggled", TRUE);
+    drain(app);
+    lrg_checkbox_set_checked(include, FALSE);
+    g_signal_emit_by_name(include, "toggled", FALSE);
+    drain(app);
+}
+
+/* ── Things that fit their slot ─────────────────────────────────────── */
+
+/*
+ * The first visible widget under @widget whose bottom is below @bottom,
+ * or NULL: the vertical half of first_past(), for a slot of fixed height.
+ */
+static LrgWidget *
+first_below(LrgWidget *widget, gfloat bottom)
+{
+    GList *l;
+
+    if (!lrg_widget_get_visible(widget))
+        return NULL;
+
+    if (lrg_widget_get_world_y(widget) + lrg_widget_get_height(widget) >
+        bottom + 0.5f)
+        return widget;
+
+    if (!LRG_IS_CONTAINER(widget))
+        return NULL;
+
+    for (l = lrg_container_get_children(LRG_CONTAINER(widget)); l != NULL;
+         l = l->next) {
+        LrgWidget *found = first_below(l->data, bottom);
+
+        if (found != NULL)
+            return found;
+    }
+
+    return NULL;
+}
+
+/*
+ * The first label under @widget that draws past its own allocation, or
+ * NULL.  A one-line label given less width than its text keeps the
+ * width it was given and paints the rest over whatever is beside it --
+ * so first_past() sees nothing wrong, and the screen does.  An
+ * ellipsized label cuts its text at the allocation instead.
+ */
+static LrgWidget *
+first_overdrawn(LrgWidget *widget)
+{
+    GList *l;
+
+    if (!lrg_widget_get_visible(widget))
+        return NULL;
+
+    if (LRG_IS_LABEL(widget) && !lrg_label_get_ellipsize(LRG_LABEL(widget))) {
+        gfloat natural = 0.0f;
+
+        lrg_widget_measure(widget, &natural, NULL);
+
+        if (natural > lrg_widget_get_width(widget) + 0.5f)
+            return widget;
+    }
+
+    if (!LRG_IS_CONTAINER(widget))
+        return NULL;
+
+    for (l = lrg_container_get_children(LRG_CONTAINER(widget)); l != NULL;
+         l = l->next) {
+        LrgWidget *found = first_overdrawn(l->data);
+
+        if (found != NULL)
+            return found;
+    }
+
+    return NULL;
+}
+
+/*
+ * @child laid out in a slot of @width x @height, the way a list row or a
+ * tile is given one.  The slot is returned; @child is its only child.
+ */
+static LrgWidget *
+in_slot(LrgWidget *child, gfloat width, gfloat height)
+{
+    LrgWidget *slot = clawt_lrg_vbox(0.0f);
+
+    clawt_lrg_take(slot, child);
+    lrg_widget_set_size(slot, width, height);
+    lrg_widget_layout(slot);
+    lrg_widget_layout(slot);
+
+    return slot;
+}
+
+#define LONG_PREVIEW \
+    "2m ago \302\267 beta: **Beta** heard: there is another one you are " \
+    "also in, and it has been going for a while now with nobody saying " \
+    "anything that would let the reader of this list tell it apart"
+
+/*
+ * A Flow conversation row stays inside the 64 the list draws it at.  The
+ * last message under the room's name wrapped, so a row was three lines
+ * tall in a 64-high slot and the rows drew over one another.
+ */
+static void
+test_a_flow_row_fits_its_height(void)
+{
+    g_autoptr(LrgWidget) wrapping = NULL;
+    g_autoptr(LrgWidget) one_line = NULL;
+    LrgWidget *row;
+
+    /* the wrapping row is the bug: it does not fit, and this can see it */
+    wrapping = in_slot(clawt_lrg_row("alpha, beta and gamma", LONG_PREVIEW),
+                       300.0f, 64.0f);
+    g_assert_nonnull(first_below(wrapping, 64.0f));
+
+    row = clawt_lrg_row_one_line("alpha, beta and gamma", LONG_PREVIEW);
+    clawt_lrg_row_add_suffix(row, clawt_lrg_label("5", "caption"));
+    one_line = in_slot(row, 300.0f, 64.0f);
+
+    g_assert_null(first_below(one_line, 64.0f));
+    g_assert_null(first_past(one_line, 300.0f));
+    g_assert_null(first_overdrawn(one_line));
+
+    /* and the subtitle is still there, cut short rather than dropped */
+    g_assert_nonnull(clawt_lrg_row_subtitle(row));
+    g_assert_true(lrg_label_get_ellipsize(
+        LRG_LABEL(clawt_lrg_row_subtitle(row))));
+}
+
+/*
+ * A skill tile's text stays on the tile.  The description was a 60
+ * character line on a 240-wide tile, drawn past the card's edge and over
+ * the next tile; the name can be as long.
+ */
+static void
+test_a_skill_tile_keeps_its_text_inside(void)
+{
+    g_autoptr(JsonObject) skill = json_object_new();
+    g_autoptr(LrgWidget) slot = NULL;
+    LrgWidget *tile = clawt_lrg_vbox(6.0f);
+
+    json_object_set_string_member(skill, "name",
+                                  "web-research-with-citations-and-more");
+    json_object_set_string_member(skill, "description",
+        "Search the web, read pages, run LQL queries and get cited "
+        "research answers back as org for the notes repository.");
+    json_object_set_boolean_member(skill, "enabled", TRUE);
+
+    lrg_container_set_padding(LRG_CONTAINER(tile), 12.0f);
+    clawt_lrg_skill_tile_fill(tile, skill);
+    slot = in_slot(tile, 240.0f, 112.0f);
+
+    g_assert_null(first_past(slot, 240.0f));
+    g_assert_null(first_below(slot, 112.0f));
+    g_assert_null(first_overdrawn(slot));
+
+    /* a plain label with the same line is the bug, and this sees it */
+    {
+        g_autoptr(LrgWidget) old = in_slot(
+            clawt_lrg_label("Search the web, read pages, run LQL queries "
+                            "and get cited re...", "muted"),
+            216.0f, 20.0f);
+
+        g_assert_nonnull(first_overdrawn(old));
+    }
+}
+
+/*
+ * A message's mark -- the interrupted notice, the steered one -- wraps
+ * its sentence inside the transcript.  The explanation was a one-line
+ * label, which ran off the right edge of a window of ordinary width.
+ */
+static void
+test_a_message_mark_wraps_inside_the_transcript(void)
+{
+    const gchar *sentences[] = { clawt_message_interrupted_tooltip(),
+                                 clawt_message_steered_tooltip("delivered"),
+                                 NULL };
+    guint i;
+
+    for (i = 0; sentences[i] != NULL; i++) {
+        g_autoptr(LrgWidget) agent_side = NULL;
+        g_autoptr(LrgWidget) user_side = NULL;
+
+        agent_side = in_slot(clawt_lrg_message_mark("interrupted", "warn",
+                                                    sentences[i], FALSE,
+                                                    44.0f),
+                             360.0f, 400.0f);
+        user_side = in_slot(clawt_lrg_message_mark("steered", "neutral",
+                                                   sentences[i], TRUE,
+                                                   44.0f),
+                            360.0f, 400.0f);
+
+        g_assert_null(first_past(agent_side, 360.0f));
+        g_assert_null(first_past(user_side, 360.0f));
+        g_assert_null(first_overdrawn(agent_side));
+        g_assert_null(first_overdrawn(user_side));
+    }
+
+    /* the one-line label it replaces does run off -- the bug, seen */
+    {
+        g_autoptr(LrgWidget) old = in_slot(
+            clawt_lrg_label(clawt_message_interrupted_tooltip(), "caption"),
+            360.0f, 400.0f);
+
+        g_assert_nonnull(first_overdrawn(old));
+    }
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -556,6 +811,14 @@ main(int argc, char *argv[])
     g_test_add("/lrgui/widgets/typing-a-slash-stays-quick", Fixture, NULL,
                fixture_set_up, test_typing_a_slash_stays_quick, fixture_tear_down);
 
+    g_test_add("/lrgui/widgets/flow-switch", Fixture, NULL, fixture_set_up,
+               test_the_flow_switch_does_not_crash, fixture_tear_down);
+    g_test_add_func("/lrgui/widgets/flow-row-fits-its-height",
+                    test_a_flow_row_fits_its_height);
+    g_test_add_func("/lrgui/widgets/skill-tile-keeps-text-inside",
+                    test_a_skill_tile_keeps_its_text_inside);
+    g_test_add_func("/lrgui/widgets/message-mark-wraps",
+                    test_a_message_mark_wraps_inside_the_transcript);
     g_test_add_func("/lrgui/widgets/escaped-lines-no-backslashes",
                     test_escaped_lines_draw_without_backslashes);
 

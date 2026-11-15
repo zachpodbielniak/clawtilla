@@ -407,7 +407,7 @@ open_routine_editor(ClawtWindow *self, JsonObject *existing)
     g_ptr_array_add(ids, NULL);
     dialog->agent_ids = (GStrv)g_ptr_array_free(g_steal_pointer(&ids), FALSE);
 
-    dialog->agent_row = adw_combo_row_new();
+    dialog->agent_row = clawt_gtk_combo_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->agent_row),
                                   "Agent");
     adw_combo_row_set_model(ADW_COMBO_ROW(dialog->agent_row),
@@ -458,7 +458,7 @@ open_routine_editor(ClawtWindow *self, JsonObject *existing)
 
     adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(when), "When");
 
-    dialog->schedule_row = adw_combo_row_new();
+    dialog->schedule_row = clawt_gtk_combo_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->schedule_row),
                                   "Schedule");
     adw_combo_row_set_model(ADW_COMBO_ROW(dialog->schedule_row),
@@ -487,7 +487,7 @@ open_routine_editor(ClawtWindow *self, JsonObject *existing)
     clawt_gtk_set_row_hint(dialog->at_row,
                            "Local time, such as 09:00");
 
-    dialog->weekday_row = adw_combo_row_new();
+    dialog->weekday_row = clawt_gtk_combo_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->weekday_row),
                                   "Day");
     adw_combo_row_set_model(ADW_COMBO_ROW(dialog->weekday_row),

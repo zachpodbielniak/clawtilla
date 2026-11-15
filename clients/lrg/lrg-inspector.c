@@ -1790,22 +1790,31 @@ build_computer_detail(ClawtLrgApp *app, JsonObject *agent, guint index)
     const gchar *detail = clawt_ipc_payload_string(shown_root(),
                                                    "computer_detail");
     const gchar *type = clawt_ipc_payload_string(agent, "computer");
+    const gchar *caption = NULL;
+    const gchar *said;
     LrgWidget *box;
     LrgWidget *text;
 
-    if (detail == NULL && (type == NULL || g_strcmp0(type, "none") == 0))
+    /*
+     * The library decides what the page says, and to whom: the agent's
+     * own words under a caption when it has a computer, the operator's
+     * sentence when it has none -- never "You have no computer" printed
+     * at the person reading the page.
+     */
+    said = clawt_agent_computer_text_for_operator(type, detail, &caption);
+
+    if (said == NULL)
         return index;
 
-    box = section_card(app, ins.body, "Computer",
-                       "What the agent itself is told about its computer -- "
-                       "the text that decides whether it goes looking for a "
-                       "tool it does not have.", index++);
+    box = section_card(app, ins.body, "Computer", caption, index++);
 
-    if (detail != NULL) {
-        text = clawt_lrg_editor(detail, NULL);
+    if (caption != NULL) {
+        text = clawt_lrg_editor(said, NULL);
         lrg_text_editor_set_read_only(LRG_TEXT_EDITOR(text), TRUE);
         lrg_widget_add_class(text, "clawt-terminal");
         clawt_lrg_take(box, text);
+    } else {
+        clawt_lrg_take(box, clawt_lrg_paragraph(said, NULL));
     }
 
     /*

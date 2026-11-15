@@ -387,6 +387,17 @@ check_cycle(ClawtLoopGuard *self, ClawtMessage *message, GError **error)
     if (self->cycle_window == 0 || self->cycle_seconds == 0 || room == NULL)
         return TRUE;
 
+    /*
+     * A person's explicit action is not a loop.  A routine's Run now
+     * sends the routine's prompt, which is the same text every time by
+     * construction, so a second press inside the window was refused as
+     * the conversation "going in circles" -- and filed as a broken run.
+     * Not recorded either: a later message from an agent repeating the
+     * prompt has not repeated anything an agent said.
+     */
+    if (clawt_message_get_by_hand(message))
+        return TRUE;
+
     now = g_get_monotonic_time();
     cutoff = now - (gint64)G_USEC_PER_SEC * (gint64)self->cycle_seconds;
 

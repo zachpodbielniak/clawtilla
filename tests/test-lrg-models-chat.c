@@ -801,11 +801,11 @@ test_steps_merge(void)
     g_ptr_array_add(steps, step_at(300));
 
     /* message stamps are seconds, step stamps microseconds */
-    g_assert_cmpuint(clawt_lrg_steps_before(steps, 0, 50), ==, 0);
-    g_assert_cmpuint(clawt_lrg_steps_before(steps, 0, 200), ==, 2);
-    g_assert_cmpuint(clawt_lrg_steps_before(steps, 2, 200), ==, 2);
-    g_assert_cmpuint(clawt_lrg_steps_before(steps, 2, 400), ==, 3);
-    g_assert_cmpuint(clawt_lrg_steps_before(NULL, 0, 400), ==, 0);
+    g_assert_cmpuint(clawt_lrg_steps_before(steps, 0, 50, NULL), ==, 0);
+    g_assert_cmpuint(clawt_lrg_steps_before(steps, 0, 200, NULL), ==, 2);
+    g_assert_cmpuint(clawt_lrg_steps_before(steps, 2, 200, NULL), ==, 2);
+    g_assert_cmpuint(clawt_lrg_steps_before(steps, 2, 400, NULL), ==, 3);
+    g_assert_cmpuint(clawt_lrg_steps_before(NULL, 0, 400, NULL), ==, 0);
 }
 
 /*

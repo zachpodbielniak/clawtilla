@@ -287,6 +287,36 @@ gboolean clawt_message_get_invites_reply(ClawtMessage *self);
 void clawt_message_set_invites_reply(ClawtMessage *self, gboolean invites);
 
 /**
+ * clawt_message_get_by_hand:
+ * @self: a #ClawtMessage
+ *
+ * Whether a person's explicit action sent this -- see
+ * clawt_message_set_by_hand().
+ *
+ * Returns: %TRUE when somebody pressed something to send it
+ */
+gboolean clawt_message_get_by_hand(ClawtMessage *self);
+
+/**
+ * clawt_message_set_by_hand:
+ * @self: a #ClawtMessage
+ * @by_hand: %TRUE when a person's explicit action sent it
+ *
+ * Marks a message that exists because a person pressed something for
+ * it -- a routine's Run now -- rather than because a conversation
+ * produced it.
+ *
+ * The loop guard's cycle detector does not measure such a message.  It
+ * exists to stop two agents alternating the same text; a routine's
+ * prompt is the same text by construction, so a second Run now inside
+ * `orchestration.cycle_seconds` was refused as "going in circles" and
+ * filed as a broken run.  A person repeating an action is not a loop.
+ * Every other limit -- hops, budgets, the rate, a stalled room -- still
+ * applies.  Not stored: the mark is about the send, not the transcript.
+ */
+void clawt_message_set_by_hand(ClawtMessage *self, gboolean by_hand);
+
+/**
  * clawt_message_get_composed:
  * @self: a #ClawtMessage
  *

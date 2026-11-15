@@ -370,7 +370,7 @@ build_directory_choice(ClawtWindow *self, AdwDialog *dialog,
                        const gchar *name, const gchar *current)
 {
     GtkWidget *list = gtk_list_box_new();
-    GtkWidget *row = adw_combo_row_new();
+    GtkWidget *row = clawt_gtk_combo_row_new();
     GtkStringList *labels = gtk_string_list_new(NULL);
     DirectoryChoice *choice = g_new0(DirectoryChoice, 1);
     guint selected = 0;
@@ -1334,7 +1334,7 @@ on_add_connector(GtkButton *button, gpointer user_data)
         "clawtilla holds the credential and hands it to the tool server. "
         "Agents get the tools; they never get the token.");
 
-    add->provider = adw_combo_row_new();
+    add->provider = clawt_gtk_combo_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(add->provider),
                                   "Service");
     adw_combo_row_set_model(ADW_COMBO_ROW(add->provider),
@@ -1375,7 +1375,7 @@ on_add_connector(GtkButton *button, gpointer user_data)
     gtk_string_list_append(scopes, "Every agent");
     gtk_string_list_append(scopes, "Only the agents I name");
 
-    add->scope = adw_combo_row_new();
+    add->scope = clawt_gtk_combo_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(add->scope), "Who gets it");
     adw_combo_row_set_model(ADW_COMBO_ROW(add->scope), G_LIST_MODEL(scopes));
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), add->scope);

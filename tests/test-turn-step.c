@@ -358,6 +358,101 @@ test_an_unstamped_step_sorts_first(void)
 }
 
 /*
+ * An id in clawt_generate_id()'s form for a chosen millisecond, so the
+ * tie inside one second can be set up exactly rather than raced.
+ */
+static gchar *
+id_at_ms(gint64 ms)
+{
+    static const gchar alphabet[] = "0123456789abcdefghjkmnpqrstvwxyz";
+    gchar id[21];
+    gint i;
+
+    for (i = 9; i >= 0; i--) {
+        id[i] = alphabet[ms & 0x1f];
+        ms >>= 5;
+    }
+
+    for (i = 10; i < 20; i++)
+        id[i] = 'q';
+
+    id[20] = '\0';
+
+    return g_strdup(id);
+}
+
+/*
+ * The millisecond comes back out of an id, with or without a prefix, and
+ * an id that is not in that form says so rather than decoding to a time.
+ */
+static void
+test_an_id_carries_its_millisecond(void)
+{
+    g_autofree gchar *fresh = clawt_generate_id(NULL);
+    g_autofree gchar *prefixed = clawt_generate_id("task");
+    g_autofree gchar *chosen = id_at_ms(1788000000123LL);
+    gint64 now_ms = g_get_real_time() / 1000;
+
+    g_assert_cmpint(clawt_id_get_time_ms(chosen), ==, 1788000000123LL);
+    g_assert_cmpint(ABS(clawt_id_get_time_ms(fresh) - now_ms), <, 5000);
+    g_assert_cmpint(ABS(clawt_id_get_time_ms(prefixed) - now_ms), <, 5000);
+
+    g_assert_cmpint(clawt_id_get_time_ms(NULL), ==, -1);
+    g_assert_cmpint(clawt_id_get_time_ms("matrix-$event:server"), ==, -1);
+    g_assert_cmpint(clawt_id_get_time_ms("short"), ==, -1);
+    g_assert_cmpint(clawt_id_get_time_ms("ILLEGAL!!!0123456789"), ==, -1);
+}
+
+/*
+ * A step taken in the same second as the operator's prompt goes *under*
+ * it.  At-or-before on the second alone drew a fast agent's first tool
+ * call above the message that asked for it.  The message's id carries
+ * the millisecond, which puts the prompt (made before the step) above it
+ * and the answer (made after) below it -- within one second both ways.
+ */
+static void
+test_a_step_in_the_prompts_second_follows_it(void)
+{
+    g_autoptr(JsonObject) object = json_object_new();
+    g_autoptr(ClawtTurnStep) step = NULL;
+    gint64 second = 1788000000LL;
+    g_autofree gchar *prompt = id_at_ms(second * 1000 + 100);
+    g_autofree gchar *answer = id_at_ms(second * 1000 + 700);
+    g_autofree gchar *same_ms = id_at_ms(second * 1000 + 400);
+    g_autofree gchar *other_second = id_at_ms((second - 5) * 1000 + 900);
+
+    json_object_set_string_member(object, CLAWT_STEP_MEMBER_KIND, "tool");
+    json_object_set_int_member(object, CLAWT_STEP_MEMBER_TS,
+                               second * G_USEC_PER_SEC + 400 * 1000 + 250);
+    step = clawt_turn_step_new_from_object(object, NULL);
+    g_assert_nonnull(step);
+
+    /* the old rule, on the second alone, puts it above both */
+    g_assert_true(clawt_turn_step_precedes(step, second));
+
+    g_assert_false(clawt_turn_step_precedes_message(step, second, prompt));
+    g_assert_true(clawt_turn_step_precedes_message(step, second, answer));
+
+    /* the same millisecond: the answer written from the step's output */
+    g_assert_true(clawt_turn_step_precedes_message(step, second, same_ms));
+
+    /* different seconds are decided by the seconds, whatever the id */
+    g_assert_true(clawt_turn_step_precedes_message(step, second + 1, prompt));
+    g_assert_false(clawt_turn_step_precedes_message(step, second - 1,
+                                                    answer));
+
+    /*
+     * An id that tells no time, or a time that disagrees with the
+     * message's own stamp, is not a clock: at-or-before, as before.
+     */
+    g_assert_true(clawt_turn_step_precedes_message(step, second, NULL));
+    g_assert_true(clawt_turn_step_precedes_message(step, second,
+                                                   "not-an-id"));
+    g_assert_true(clawt_turn_step_precedes_message(step, second,
+                                                   other_second));
+}
+
+/*
  * The timestamp survives the array form, in the unit it was sent in.
  */
 static void
@@ -480,6 +575,10 @@ main(int argc, char *argv[])
 	g_test_add_func("/turn-step/provider-previews", test_provider_aware_previews);
     g_test_add_func("/turn-step/placed-by-seconds",
                     test_a_step_is_placed_by_seconds_not_microseconds);
+    g_test_add_func("/turn-step/id-carries-its-millisecond",
+                    test_an_id_carries_its_millisecond);
+    g_test_add_func("/turn-step/same-second-prompt-comes-first",
+                    test_a_step_in_the_prompts_second_follows_it);
     g_test_add_func("/turn-step/unstamped-sorts-first",
                     test_an_unstamped_step_sorts_first);
     g_test_add_func("/turn-step/timestamp-round-trips",

@@ -481,7 +481,7 @@ on_teach_start_clicked(GtkButton *button, gpointer user_data)
     AdwDialog *dialog;
     GtkWidget *group = adw_preferences_group_new();
     GtkWidget *agent = adw_entry_row_new();
-    GtkWidget *kind = adw_combo_row_new();
+    GtkWidget *kind = clawt_gtk_combo_row_new();
     GtkWidget *goal = adw_entry_row_new();
     GtkStringList *kinds = gtk_string_list_new(NULL);
     guint i;

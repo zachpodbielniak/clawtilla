@@ -990,7 +990,7 @@ build_type_rows(IntegrationDialog *dialog, GtkWidget *group,
                 clawt_integration_field_default(field));
             gsize c;
 
-            row = adw_combo_row_new();
+            row = clawt_gtk_combo_row_new();
             adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
                                           field->label);
 
@@ -1216,7 +1216,7 @@ open_integration_editor(ClawtWindow *self, const gchar *name,
     clawt_gtk_set_row_hint(dialog->description_row,
                            "Written into every agent's TOOLS.org");
 
-    dialog->scope_row = adw_combo_row_new();
+    dialog->scope_row = clawt_gtk_combo_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->scope_row),
                                   "Who gets it");
     adw_combo_row_set_model(ADW_COMBO_ROW(dialog->scope_row),
@@ -1451,7 +1451,7 @@ on_add_integration(GtkButton *button, gpointer user_data)
      * integration runs in -- so a picker of types labelled Kind was
      * naming the wrong concept.
      */
-    add->type_row = adw_combo_row_new();
+    add->type_row = clawt_gtk_combo_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(add->type_row),
                                   "What it is");
     adw_combo_row_set_model(ADW_COMBO_ROW(add->type_row),

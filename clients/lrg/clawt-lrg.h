@@ -356,6 +356,9 @@ void clawt_lrg_steps_refresh(ClawtLrgApp *app);
 const ClawtLrgPage *clawt_lrg_fleet_page(void);      /* lrg-fleet-page.c */
 const ClawtLrgPage *clawt_lrg_grok_page(void);       /* lrg-grok.c */
 const ClawtLrgPage *clawt_lrg_skills_page(void);     /* lrg-skills.c */
+/* Draws @skill into one library tile (a fixed-size vbox): name and
+ * description each one line, cut short at the tile's edge. */
+void clawt_lrg_skill_tile_fill(LrgWidget *tile, JsonObject *skill);
 const ClawtLrgPage *clawt_lrg_memory_page(void);     /* lrg-recall.c */
 
 /* Fills the Memory page's recall box with @query and searches (/recall). */
@@ -419,6 +422,17 @@ LrgWidget *clawt_lrg_label(const gchar *text, const gchar *style_class);
 /* A wrapping paragraph of plain text. */
 LrgWidget *clawt_lrg_paragraph(const gchar *text, const gchar *style_class);
 
+/* One line of plain text, cut short with "…" when it does not fit: for a
+ * fixed-size slot (a list row, a tile) a paragraph would wrap out of. */
+LrgWidget *clawt_lrg_one_line(const gchar *text, const gchar *style_class);
+
+/* A badge with the sentence explaining it wrapped under it, both at the
+ * transcript's gutter unless @from_user: a message's mark (interrupted,
+ * steered).  The sentence wraps, so it never runs off the right edge. */
+LrgWidget *clawt_lrg_message_mark(const gchar *label, const gchar *tone,
+                                  const gchar *caption, gboolean from_user,
+                                  gfloat gutter);
+
 /* Rendered markdown (model output): links open only http(s) and file. */
 LrgWidget *clawt_lrg_markdown(ClawtLrgApp *app, const gchar *body);
 
@@ -448,6 +462,9 @@ void       clawt_lrg_avatar_invalidate(const gchar *agent_id);
 
 /* A row: title and optional subtitle on the left, suffixes on the right. */
 LrgWidget *clawt_lrg_row(const gchar *title, const gchar *subtitle);
+/* clawt_lrg_row() for a fixed-height list: title and subtitle are one
+ * line each, cut short rather than wrapped over the next row. */
+LrgWidget *clawt_lrg_row_one_line(const gchar *title, const gchar *subtitle);
 void       clawt_lrg_row_add_prefix(LrgWidget *row, LrgWidget *prefix);
 /* Caps the title/subtitle column so the suffixes stay inside a narrow row. */
 /* Sets a clawt_lrg_paragraph()'s text, escaped as the constructor does. */

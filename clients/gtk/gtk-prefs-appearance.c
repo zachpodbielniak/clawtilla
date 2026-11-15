@@ -744,7 +744,7 @@ static GtkWidget *
 build_reading_group(ClawtWindow *self)
 {
     GtkWidget *group = adw_preferences_group_new();
-    GtkWidget *unit_row = adw_combo_row_new();
+    GtkWidget *unit_row = clawt_gtk_combo_row_new();
     GtkWidget *measure_row = adw_action_row_new();
     GtkWidget *gap_row = adw_action_row_new();
     GtkWidget *measure_spin = gtk_spin_button_new_with_range(1, 2, 1);
@@ -893,7 +893,7 @@ clawt_gtk_build_appearance_page(ClawtWindow *self)
 {
     GtkWidget *page = adw_preferences_page_new();
     GtkWidget *theme_group = adw_preferences_group_new();
-    GtkWidget *theme_row = adw_combo_row_new();
+    GtkWidget *theme_row = clawt_gtk_combo_row_new();
     g_autoptr(GtkStringList) theme_names = gtk_string_list_new(NULL);
     guint selected = 0;
     guint t;

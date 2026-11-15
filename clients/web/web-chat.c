@@ -289,8 +289,21 @@ message_element(JsonObject *message, const gchar *agent_id,
      */
     if (run_start && !from_user) {
         g_autoptr(HtmxSpan) name = htmx_span_new();
-        HtmxElement *face = clawt_web_avatar(sender, agent_id, has_avatar,
-                                             color, "msg-avatar");
+        /*
+         * The sender's face, not the page's.  @agent_id is whose page
+         * this is -- a room page passes the room's id -- so a face built
+         * from it gave every member of a room the room's colour, and a
+         * notice from clawtilla the agent's picture.  Another sender is
+         * drawn from its own id with no picture, the same tone the
+         * sidebar gives it (clawt_avatar_tone()).
+         */
+        gboolean own = (agent_id != NULL &&
+                        g_strcmp0(sender, agent_id) == 0);
+        const gchar *face_id = own ? agent_id : sender;
+        gboolean face_picture = own && has_avatar;
+        HtmxElement *face = clawt_web_avatar(sender, face_id, face_picture,
+                                             own ? color : NULL,
+                                             "msg-avatar");
 
         /*
          * A face with a real picture behind it opens that picture.
@@ -307,10 +320,10 @@ message_element(JsonObject *message, const gchar *agent_id,
          * emitted once per run, so a per-face lightbox would repeat one
          * element id down the length of a conversation.
          */
-        if (has_avatar && agent_id != NULL) {
+        if (face_picture) {
             g_autoptr(HtmxButton) zoom = htmx_button_new();
             g_autofree gchar *escaped =
-                g_uri_escape_string(agent_id, NULL, FALSE);
+                g_uri_escape_string(face_id, NULL, FALSE);
             g_autofree gchar *url =
                 g_strdup_printf("/a/%s/avatar", escaped);
 
@@ -969,7 +982,8 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
          * merge puts each stretch back between the message that
          * prompted it and the answer it produced.
          *
-         * The comparison is clawt_turn_step_precedes(), from libclawt,
+         * The comparison is clawt_turn_step_precedes_message(), from
+         * libclawt, with the message's id breaking a same-second tie,
          * because the two stamps are in different units and because the
          * GTK client merges the same two lists.
          */
@@ -1024,8 +1038,9 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
                                                 day, &new_day);
 
             while (run < steps->len &&
-                   clawt_turn_step_precedes(g_ptr_array_index(steps, run),
-                                            ts))
+                   clawt_turn_step_precedes_message(
+                       g_ptr_array_index(steps, run), ts,
+                       clawt_web_member(one, "id", NULL)))
                 run++;
 
             if (run > s_at) {

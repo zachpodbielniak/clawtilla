@@ -658,6 +658,7 @@ add_summary_card(HtmxElement *parent, JsonObject *agent,
     HtmxElement *body = clawt_web_card_body(card);
     const gchar *state = clawt_web_member(agent, "state", "stopped");
     const gchar *detail = clawt_web_member(agent, "detail", NULL);
+    const gchar *computer_caption = NULL;
 
     clawt_web_add(body, clawt_web_row("State", state));
 
@@ -737,6 +738,23 @@ add_summary_card(HtmxElement *parent, JsonObject *agent,
         }
     }
 
+    /*
+     * The operator's sentence when there is no computer -- the agent's
+     * own "You have no computer" read as the page talking to the person
+     * reading it -- and the agent's words, captioned, when there is.
+     * The library's choice, so every client says it the same way.
+     */
+    {
+        const gchar *said = clawt_agent_computer_text_for_operator(
+            clawt_web_member(agent, "computer", "none"), computer_detail,
+            &computer_caption);
+
+        if (said != NULL && computer_caption == NULL)
+            clawt_web_add(body, clawt_web_row("Computer", said));
+
+        computer_detail = (computer_caption != NULL) ? said : NULL;
+    }
+
     if (computer_detail != NULL) {
         g_autoptr(HtmxElement) details = HTMX_ELEMENT(htmx_div_new());
         g_autoptr(HtmxElement) pre = HTMX_ELEMENT(htmx_pre_new());
@@ -750,8 +768,8 @@ add_summary_card(HtmxElement *parent, JsonObject *agent,
          * looking for a tool it does not have -- so somebody debugging
          * "why did it try that" should be able to read the same words.
          */
-        clawt_web_add(details, clawt_web_text(
-            "What the agent is told about its computer:", "small muted"));
+        clawt_web_add(details, clawt_web_text(computer_caption,
+                                              "small muted"));
         htmx_node_add_child(HTMX_NODE(details), HTMX_NODE(pre));
         htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(details));
     }

@@ -866,7 +866,7 @@ open_trigger_editor(ClawtWindow *self, JsonObject *existing)
         gtk_string_list_append(provider_labels,
                                clawt_trigger_provider_nth_label(i));
 
-    dialog->provider_row = adw_combo_row_new();
+    dialog->provider_row = clawt_gtk_combo_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->provider_row),
                                   "Sent by");
     adw_combo_row_set_model(ADW_COMBO_ROW(dialog->provider_row),
@@ -1085,7 +1085,7 @@ open_trigger_editor(ClawtWindow *self, JsonObject *existing)
     g_ptr_array_add(ids, NULL);
     dialog->agent_ids = (GStrv)g_ptr_array_free(g_steal_pointer(&ids), FALSE);
 
-    dialog->agent_row = adw_combo_row_new();
+    dialog->agent_row = clawt_gtk_combo_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->agent_row),
                                   "Agent");
     adw_combo_row_set_model(ADW_COMBO_ROW(dialog->agent_row),
@@ -1147,7 +1147,7 @@ open_trigger_editor(ClawtWindow *self, JsonObject *existing)
                 selected = i;
         }
 
-        dialog->mode_row = adw_combo_row_new();
+        dialog->mode_row = clawt_gtk_combo_row_new();
         adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->mode_row),
                                       "When it fires");
         adw_combo_row_set_model(ADW_COMBO_ROW(dialog->mode_row),

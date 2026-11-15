@@ -31,6 +31,10 @@ G_BEGIN_DECLS
  * @routine_id: which routine
  * @agent_id: who should do it
  * @prompt: what to ask for
+ * @by_hand: %TRUE for a person's Run now (clawt_routine_runner_run_now()),
+ *   %FALSE for the schedule -- a person's explicit action is not
+ *   measured by the loop guard's cycle detector, and a refusal of one is
+ *   answered to that person rather than filed as an incident
  * @user_data: data passed to clawt_routine_runner_set_run_func()
  * @error: (out) (optional): return location for a #GError
  *
@@ -42,6 +46,7 @@ G_BEGIN_DECLS
 typedef const gchar *(*ClawtRoutineRunFunc)(const gchar  *routine_id,
                                             const gchar  *agent_id,
                                             const gchar  *prompt,
+                                            gboolean      by_hand,
                                             gpointer      user_data,
                                             GError      **error);
 
@@ -154,11 +159,36 @@ gint64 clawt_routine_runner_last_run(ClawtRoutineRunner  *self,
  * Being able to run a disabled routine is the point: it is how you try
  * one before trusting it with a schedule.
  *
+ * A person's Run now: the run function is told @by_hand, so a second
+ * press inside the loop guard's cycle window is not refused as a
+ * repeat, and a refusal goes back to the person rather than becoming an
+ * incident.  Something automated starting a run uses
+ * clawt_routine_runner_run_unscheduled() instead.
+ *
  * Returns: (transfer none) (nullable): the task id
  */
 const gchar *clawt_routine_runner_run_now(ClawtRoutineRunner  *self,
                                           const gchar         *routine_id,
                                           GError             **error);
+
+/**
+ * clawt_routine_runner_run_unscheduled:
+ * @self: a #ClawtRoutineRunner
+ * @routine_id: which routine
+ * @by_hand: whether a person's explicit action started it
+ * @error: (out) (optional): return location for a #GError
+ *
+ * clawt_routine_runner_run_now(), saying whether a person asked.  An
+ * automation's `run_routine` action is not a person, and is measured by
+ * every limit a scheduled run is.
+ *
+ * Returns: (transfer none) (nullable): the task id
+ */
+const gchar *clawt_routine_runner_run_unscheduled(
+    ClawtRoutineRunner  *self,
+    const gchar         *routine_id,
+    gboolean             by_hand,
+    GError             **error);
 
 /**
  * clawt_routine_runner_catch_up:

@@ -2419,9 +2419,29 @@ clawt_gtk_append_message_to(ClawtWindow *self, const TranscriptView *view,
             GtkWidget *header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
             GtkWidget *who = gtk_label_new(sender);
             GtkWidget *at = gtk_label_new(stamp);
+            /*
+             * The sender's own face.  The view's agent is whose
+             * conversation this is, and in a group room -- or for
+             * clawtilla's own notices in a direct one -- the sender is
+             * somebody else, whose picture and colour are on its
+             * sidebar row.  Keyed on the sender's id either way, which
+             * is what the sidebar keys the derived colour on too
+             * (clawt_avatar_tone()): the face was hashed from the
+             * sender here and from the display name there, so one
+             * agent was two colours on one screen.
+             */
+            gboolean own = (view->agent_id != NULL &&
+                            g_strcmp0(sender, view->agent_id) == 0);
+            const gchar *face_color = own ? view->color
+                : clawt_gtk_agent_row_data(self, sender, "agent-color");
+            gboolean face_picture = own ? view->has_avatar
+                : g_strcmp0(clawt_gtk_agent_row_data(self, sender,
+                                                     "agent-has-avatar"),
+                            "1") == 0;
+            const gchar *face_id = own ? view->agent_id : sender;
             GtkWidget *avatar = clawt_gtk_build_avatar(
-                self->client, sender, view->agent_id, view->has_avatar,
-                view->color, CHAT_AVATAR);
+                self->client, sender, face_id, face_picture, face_color,
+                CHAT_AVATAR);
 
             gtk_widget_add_css_class(header, "clawt-run-header");
 
@@ -2455,7 +2475,7 @@ clawt_gtk_append_message_to(ClawtWindow *self, const TranscriptView *view,
              * this is the same "open it full size" the attachment
              * thumbnails already offer as buttons.
              */
-            if (view->has_avatar && view->agent_id != NULL) {
+            if (face_picture && face_id != NULL) {
                 GtkWidget *open = gtk_button_new();
 
                 gtk_button_set_child(GTK_BUTTON(open), avatar);
@@ -2464,7 +2484,7 @@ clawt_gtk_append_message_to(ClawtWindow *self, const TranscriptView *view,
                 gtk_widget_set_valign(open, GTK_ALIGN_CENTER);
                 gtk_widget_set_tooltip_text(open, "See this picture larger");
                 g_object_set_data_full(G_OBJECT(open), "agent-id",
-                                       g_strdup(view->agent_id), g_free);
+                                       g_strdup(face_id), g_free);
                 g_object_set_data_full(G_OBJECT(open), "agent-name",
                                        g_strdup(sender), g_free);
                 g_signal_connect(open, "clicked",
@@ -4684,13 +4704,14 @@ clawt_gtk_load_history(ClawtWindow *self)
 
             /*
              * Everything that happened before this message.  The
-             * comparison is clawt_turn_step_precedes(), because the two
-             * stamps are in different units and doing it by hand here
-             * is how every step ends up after every message.
+             * comparison is clawt_turn_step_precedes_message(), because
+             * the two stamps are in different units and doing it by hand
+             * here is how every step ends up after every message -- and
+             * the message's id breaks a tie inside one second.
              */
             while (run < steps->len &&
-                   clawt_turn_step_precedes(g_ptr_array_index(steps, run),
-                                            ts))
+                   clawt_turn_step_precedes_message(
+                       g_ptr_array_index(steps, run), ts, id))
                 run++;
 
             clawt_gtk_steps_append_sealed(self, steps, s_at, run);

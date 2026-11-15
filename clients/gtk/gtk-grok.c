@@ -602,12 +602,12 @@ clawt_gtk_build_grok_page(ClawtWindow *self)
                                     GTK_SELECTION_NONE);
     gtk_widget_add_css_class(composer, "boxed-list");
 
-    self->grok_bot_row = adw_combo_row_new();
+    self->grok_bot_row = clawt_gtk_combo_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(self->grok_bot_row),
                                   "Bot");
     gtk_list_box_append(GTK_LIST_BOX(composer), self->grok_bot_row);
 
-    self->grok_agent_row = adw_combo_row_new();
+    self->grok_agent_row = clawt_gtk_combo_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(self->grok_agent_row),
                                   "On behalf of");
     clawt_gtk_set_row_hint(self->grok_agent_row,

@@ -327,6 +327,26 @@ create_tile(LrgTileView *view, gpointer user_data)
     return tile;
 }
 
+void
+clawt_lrg_skill_tile_fill(LrgWidget *tile, JsonObject *skill)
+{
+    g_autofree gchar *caption = clawt_lrg_skill_caption(skill);
+    g_autofree gchar *line = clawt_lrg_flow_one_line(
+        clawt_ipc_payload_string(skill, "description"), 60);
+
+    /*
+     * Cut short at the tile's edge: the tile is a fixed 240 wide, and a
+     * one-line label draws its whole text whatever it is given, so a
+     * description ran out of the card and over the next tile.  The whole
+     * of it is in the open card below.
+     */
+    clawt_lrg_take(tile, clawt_lrg_one_line(
+        clawt_ipc_payload_string(skill, "name"), "heading"));
+    clawt_lrg_take(tile, clawt_lrg_badge(caption,
+                                         clawt_lrg_skill_tone(skill)));
+    clawt_lrg_take(tile, clawt_lrg_one_line(line, "muted"));
+}
+
 /* Tiles are recycled, so a bind redraws the tile's whole content. */
 static void
 bind_tile(LrgTileView *view, LrgWidget *tile, GObject *item, guint position,
@@ -334,25 +354,14 @@ bind_tile(LrgTileView *view, LrgWidget *tile, GObject *item, guint position,
 {
     JsonArray *skills = skills_array();
     guint index = GPOINTER_TO_UINT(g_object_get_data(item, SKILL_INDEX_KEY));
-    JsonObject *skill;
-    g_autofree gchar *caption = NULL;
-    g_autofree gchar *line = NULL;
 
     clawt_lrg_clear(tile);
 
     if (skills == NULL || index >= json_array_get_length(skills))
         return;
 
-    skill = json_array_get_object_element(skills, index);
-    caption = clawt_lrg_skill_caption(skill);
-    line = clawt_lrg_flow_one_line(
-        clawt_ipc_payload_string(skill, "description"), 60);
-
-    clawt_lrg_take(tile, clawt_lrg_label(
-        clawt_ipc_payload_string(skill, "name"), "heading"));
-    clawt_lrg_take(tile, clawt_lrg_badge(caption,
-                                         clawt_lrg_skill_tone(skill)));
-    clawt_lrg_take(tile, clawt_lrg_label(line, "muted"));
+    clawt_lrg_skill_tile_fill(tile, json_array_get_object_element(skills,
+                                                                  index));
 }
 
 static void
