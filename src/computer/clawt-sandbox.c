@@ -379,13 +379,8 @@ mutated(ClawtSandbox *self, ClawtSandboxMutation which)
     return (self->mutations & (guint)which) != 0;
 }
 
-/*
- * The most entries one denied directory is walked for.  A deny is a
- * small thing -- ~/.ssh, a key file, a credentials directory -- and a
- * walk that would take longer than this is a deny that names the wrong
- * thing; it is refused rather than half-checked.
- */
-#define LINK_WALK_LIMIT (20000)
+/* CLAWT_SANDBOX_LINK_WALK_LIMIT, under the name the code has always used. */
+#define LINK_WALK_LIMIT CLAWT_SANDBOX_LINK_WALK_LIMIT
 
 /*
  * Whether @path is root's by construction: /usr and /etc are bound from
