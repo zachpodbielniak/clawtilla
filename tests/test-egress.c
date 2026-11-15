@@ -11,16 +11,20 @@
  * rewrite and its token swap are all pure functions, and the process
  * runtime's gated command is read through clawt_process_runtime_prepare()
  * with a stub bwrap and a stub relay -- nothing is resolved and nothing
- * connects.  The one socket is the broker's, a unix socket in a
- * temporary directory that nothing dials.  The tests that run a real
+ * connects.  The sockets are unix sockets in a temporary directory: the
+ * broker's -- forwarding to an upstream SoupServer on another unix socket
+ * through a session's `remote-connectable` -- and the gate's, driven with its upstream
+ * connect replaced by a socketpair (clawt_egress_gate_set_dial_func()).  The tests that run a real
  * gate and a real box are in test-egress-integration.c, behind
  * CLAWT_TEST_INTEGRATION=1.
  */
 
 #include <clawtilla.h>
 
+#include <gio/gunixsocketaddress.h>
 #include <glib/gstdio.h>
 #include <string.h>
+#include <sys/socket.h>
 
 #include "clawt-test-util.h"
 #include "clawt-net.h"
@@ -558,6 +562,515 @@ test_gate_counts_refusals_per_agent(void)
 	g_assert_true(g_str_has_prefix(path, dir));
 	g_assert_true(g_str_has_suffix(path, "/kudu.sock"));
 
+	clawt_test_remove_tree(dir);
+}
+
+/* ── The gate on a socket, with the upstream connect injected ────── */
+
+/*
+ * The gate is driven over its own unix socket, as the relay drives it;
+ * only the outbound connect is replaced (clawt_egress_gate_set_dial_func()),
+ * because a hermetic suite cannot reach a public address -- and the two
+ * checks that matter most happen after that connect.  The upstream is one
+ * end of a socketpair the test holds the other end of.
+ */
+
+typedef struct {
+	GPtrArray *tried;        /* gchar *: every address the gate dialled */
+	gchar     *fail;         /* addresses that refuse, space-separated */
+	gchar     *reach;        /* NULL: reach what was asked for */
+	GSocket   *peer;         /* the far end of the last stream made */
+} Dialler;
+
+static GIOStream *
+fake_dial(
+	GInetAddress  *address,
+	guint16        port,
+	GInetAddress **reached,
+	gpointer       user_data,
+	GError       **error
+){
+	Dialler *dialler = user_data;
+	g_autofree gchar *text = g_inet_address_to_string(address);
+	g_autofree gchar *padded = NULL;
+	g_autoptr(GSocket) near = NULL;
+	gint fds[2];
+
+	g_ptr_array_add(dialler->tried, g_strdup(text));
+	padded = g_strdup_printf(" %s ", text);
+
+	if (dialler->fail != NULL && strstr(dialler->fail, padded) != NULL) {
+		g_set_error(error, G_IO_ERROR, G_IO_ERROR_NETWORK_UNREACHABLE,
+		            "%s is unreachable", text);
+		return NULL;
+	}
+
+	g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), ==, 0);
+	near = g_socket_new_from_fd(fds[0], NULL);
+	g_assert_nonnull(near);
+	g_clear_object(&dialler->peer);
+	dialler->peer = g_socket_new_from_fd(fds[1], NULL);
+	g_assert_nonnull(dialler->peer);
+
+	*reached = (dialler->reach != NULL)
+	           ? g_inet_address_new_from_string(dialler->reach)
+	           : g_object_ref(address);
+
+	return G_IO_STREAM(g_socket_connection_factory_create_connection(near));
+}
+
+static void
+dialler_clear(
+	Dialler *dialler
+){
+	g_clear_pointer(&dialler->tried, g_ptr_array_unref);
+	g_clear_object(&dialler->peer);
+}
+
+/*
+ * A resolver that answers every name with a fixed list, so a hostname
+ * reaches the gate's per-address loop without a DNS server.
+ */
+typedef struct {
+	GResolver  parent_instance;
+	gchar    **answers;
+} FakeResolver;
+
+typedef struct {
+	GResolverClass parent_class;
+} FakeResolverClass;
+
+static GType fake_resolver_get_type(void);
+G_DEFINE_TYPE(FakeResolver, fake_resolver, G_TYPE_RESOLVER)
+
+static GList *
+fake_resolver_answer(
+	FakeResolver *self
+){
+	GList *out = NULL;
+	guint i;
+
+	for (i = 0; self->answers[i] != NULL; i++)
+		out = g_list_append(out,
+		                    g_inet_address_new_from_string(self->answers[i]));
+
+	return out;
+}
+
+static GList *
+fake_resolver_lookup_by_name(
+	GResolver     *resolver,
+	const gchar   *hostname,
+	GCancellable  *cancellable,
+	GError       **error
+){
+	return fake_resolver_answer((FakeResolver *)resolver);
+}
+
+static void
+fake_resolver_lookup_by_name_async(
+	GResolver           *resolver,
+	const gchar         *hostname,
+	GCancellable        *cancellable,
+	GAsyncReadyCallback  callback,
+	gpointer             user_data
+){
+	g_autoptr(GTask) task = g_task_new(resolver, cancellable, callback,
+	                                   user_data);
+
+	g_task_return_pointer(task, fake_resolver_answer((FakeResolver *)resolver),
+	                      (GDestroyNotify)g_resolver_free_addresses);
+}
+
+static GList *
+fake_resolver_lookup_by_name_finish(
+	GResolver     *resolver,
+	GAsyncResult  *result,
+	GError       **error
+){
+	return g_task_propagate_pointer(G_TASK(result), error);
+}
+
+static void
+fake_resolver_finalize(
+	GObject *object
+){
+	g_strfreev(((FakeResolver *)object)->answers);
+	G_OBJECT_CLASS(fake_resolver_parent_class)->finalize(object);
+}
+
+static void
+fake_resolver_class_init(
+	FakeResolverClass *klass
+){
+	GResolverClass *resolver_class = G_RESOLVER_CLASS(klass);
+
+	G_OBJECT_CLASS(klass)->finalize = fake_resolver_finalize;
+	resolver_class->lookup_by_name = fake_resolver_lookup_by_name;
+	resolver_class->lookup_by_name_async = fake_resolver_lookup_by_name_async;
+	resolver_class->lookup_by_name_finish =
+		fake_resolver_lookup_by_name_finish;
+}
+
+static void
+fake_resolver_init(
+	FakeResolver *self
+){
+}
+
+static gboolean
+gate_watchdog(
+	gpointer user_data
+){
+	g_error("the egress gate did not answer within 10 seconds");
+	return G_SOURCE_REMOVE;
+}
+
+/*
+ * Sends @request through @agent's gate socket and returns what the gate
+ * answered, up to the end of the reply head (or the close, for a reply
+ * with a body).  Iterates the default context while it waits, as the
+ * daemon's loop would, under a watchdog.
+ */
+static gchar *
+gate_exchange(
+	ClawtEgressGate *gate,
+	const gchar     *agent,
+	const gchar     *request
+){
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *path = clawt_egress_gate_open(gate, agent, &error);
+	g_autoptr(GSocketAddress) address = NULL;
+	g_autoptr(GSocket) socket = NULL;
+	GString *got = g_string_new(NULL);
+	guint watchdog;
+
+	g_assert_no_error(error);
+	address = g_unix_socket_address_new(path);
+	socket = g_socket_new(G_SOCKET_FAMILY_UNIX, G_SOCKET_TYPE_STREAM,
+	                      G_SOCKET_PROTOCOL_DEFAULT, &error);
+	g_assert_no_error(error);
+	g_assert_true(g_socket_connect(socket, address, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(g_socket_send(socket, request, strlen(request), NULL,
+	                              &error), ==, (gssize)strlen(request));
+	g_socket_set_blocking(socket, FALSE);
+
+	watchdog = g_timeout_add_seconds(10, gate_watchdog, NULL);
+
+	for (;;) {
+		gchar buffer[1024];
+		gssize n;
+
+		g_clear_error(&error);
+		n = g_socket_receive(socket, buffer, sizeof(buffer), NULL, &error);
+
+		if (n > 0) {
+			g_string_append_len(got, buffer, n);
+			if (strstr(got->str, "200 Connection Established\r\n\r\n"))
+				break;
+			continue;
+		}
+
+		if (n == 0)
+			break;
+
+		g_assert_true(g_error_matches(error, G_IO_ERROR,
+		                              G_IO_ERROR_WOULD_BLOCK));
+		g_main_context_iteration(NULL, TRUE);
+	}
+
+	g_source_remove(watchdog);
+
+	return g_string_free(got, FALSE);
+}
+
+/*
+ * The DNS-rebinding defence.  The name was judged before the connect
+ * (a public literal passes), but the socket reached loopback -- the
+ * shape of a resolver or a route that moved under the gate.  The gate
+ * reads the reached address back and refuses on *that*, counting the
+ * refusal against the agent and naming the address it reached.  The
+ * control is the same request reaching what it asked for.
+ */
+static void
+test_gate_rechecks_the_connected_address(void)
+{
+	g_autofree gchar *dir = g_dir_make_tmp("clawt-egress-XXXXXX", NULL);
+	g_autoptr(ClawtEgressGate) gate = clawt_egress_gate_new(NULL, dir);
+	g_autoptr(GPtrArray) recent = NULL;
+	g_autofree gchar *refused = NULL;
+	g_autofree gchar *passed = NULL;
+	Dialler dialler = { 0 };
+	ClawtEgressRefusal *newest;
+
+	dialler.tried = g_ptr_array_new_with_free_func(g_free);
+	dialler.reach = g_strdup("127.0.0.1");
+	clawt_egress_gate_set_dial_func(gate, fake_dial, &dialler, NULL);
+
+	refused = gate_exchange(gate, "kudu",
+	                        "CONNECT 93.184.216.34:443 HTTP/1.1\r\n"
+	                        "Host: 93.184.216.34:443\r\n\r\n");
+
+	g_assert_cmpuint(dialler.tried->len, ==, 1);
+	g_assert_true(g_str_has_prefix(refused, "HTTP/1.1 403 "));
+	g_assert_nonnull(strstr(refused, "X-Clawtilla-Egress: "));
+	g_assert_cmpuint(clawt_egress_gate_refused_today(gate, "kudu"), ==, 1);
+	recent = clawt_egress_gate_recent_refusals(gate, "kudu");
+	newest = g_ptr_array_index(recent, 0);
+	g_assert_cmpstr(newest->host, ==, "93.184.216.34");
+	g_assert_cmpstr(newest->address, ==, "127.0.0.1");
+
+	/* The control: the same request, reaching the address it named. */
+	g_clear_pointer(&dialler.reach, g_free);
+	passed = gate_exchange(gate, "oryx",
+	                       "CONNECT 93.184.216.34:443 HTTP/1.1\r\n"
+	                       "Host: 93.184.216.34:443\r\n\r\n");
+	g_assert_true(g_str_has_prefix(passed,
+	                               "HTTP/1.1 200 Connection Established"));
+	g_assert_cmpuint(clawt_egress_gate_refused_today(gate, "oryx"), ==, 0);
+
+	clawt_egress_gate_stop(gate);
+	while (g_main_context_iteration(NULL, FALSE))
+		;
+	dialler_clear(&dialler);
+	clawt_test_remove_tree(dir);
+}
+
+/*
+ * A name with both families: the gate interleaves them, IPv6 first,
+ * and a family that does not route is the ordinary case -- so a failed
+ * address falls through to the next one rather than failing the
+ * request.  When every address fails, the 502 names the last reason.
+ */
+static void
+test_gate_falls_through_to_the_next_address(void)
+{
+	g_autofree gchar *dir = g_dir_make_tmp("clawt-egress-XXXXXX", NULL);
+	g_autoptr(ClawtEgressGate) gate = clawt_egress_gate_new(NULL, dir);
+	g_autoptr(GResolver) previous = g_resolver_get_default();
+	g_autoptr(GResolver) resolver = g_object_new(fake_resolver_get_type(),
+	                                             NULL);
+	g_autofree gchar *passed = NULL;
+	g_autofree gchar *failed = NULL;
+	Dialler dialler = { 0 };
+
+	((FakeResolver *)resolver)->answers = g_strsplit(
+		"93.184.216.34 1.1.1.1 2606:4700:4700::1111", " ", -1);
+	g_resolver_set_default(resolver);
+
+	dialler.tried = g_ptr_array_new_with_free_func(g_free);
+	dialler.fail = g_strdup(" 2606:4700:4700::1111 93.184.216.34 ");
+	clawt_egress_gate_set_dial_func(gate, fake_dial, &dialler, NULL);
+
+	passed = gate_exchange(gate, "kudu",
+	                       "CONNECT both.example:443 HTTP/1.1\r\n"
+	                       "Host: both.example:443\r\n\r\n");
+	g_assert_true(g_str_has_prefix(passed,
+	                               "HTTP/1.1 200 Connection Established"));
+
+	/* IPv6 first, then IPv4, then the next IPv4: one failure each. */
+	g_assert_cmpuint(dialler.tried->len, ==, 3);
+	g_assert_cmpstr(g_ptr_array_index(dialler.tried, 0), ==,
+	                "2606:4700:4700::1111");
+	g_assert_cmpstr(g_ptr_array_index(dialler.tried, 1), ==,
+	                "93.184.216.34");
+	g_assert_cmpstr(g_ptr_array_index(dialler.tried, 2), ==, "1.1.1.1");
+
+	/* Every address failing is a 502 that says why, not a refusal. */
+	g_free(dialler.fail);
+	dialler.fail = g_strdup(" 2606:4700:4700::1111 93.184.216.34 1.1.1.1 ");
+	g_ptr_array_set_size(dialler.tried, 0);
+	failed = gate_exchange(gate, "kudu",
+	                       "CONNECT both.example:443 HTTP/1.1\r\n"
+	                       "Host: both.example:443\r\n\r\n");
+	g_assert_cmpuint(dialler.tried->len, ==, 3);
+	g_assert_true(g_str_has_prefix(failed, "HTTP/1.1 502 "));
+	g_assert_nonnull(strstr(failed, "1.1.1.1 is unreachable"));
+	g_assert_cmpuint(clawt_egress_gate_refused_today(gate, "kudu"), ==, 0);
+
+	g_resolver_set_default(previous);
+	clawt_egress_gate_stop(gate);
+	while (g_main_context_iteration(NULL, FALSE))
+		;
+	g_free(dialler.fail);
+	dialler_clear(&dialler);
+	clawt_test_remove_tree(dir);
+}
+
+/* ── The broker forwarding, with the upstream on a unix socket ───── */
+
+typedef struct {
+	guint  requests;
+	gchar *last_path;
+	gchar *last_key;
+} Upstream;
+
+/*
+ * The pinned upstream: /v1/moved answers 302 to another host, anything
+ * else answers 200.  It records what it was sent, so the test can see
+ * the real key arrived and the redirect was not followed.
+ */
+static void
+upstream_handler(
+	SoupServer        *server,
+	SoupServerMessage *message,
+	const char        *path,
+	GHashTable        *query,
+	gpointer           user_data
+){
+	Upstream *upstream = user_data;
+	SoupMessageHeaders *in = soup_server_message_get_request_headers(message);
+
+	upstream->requests++;
+	g_free(upstream->last_path);
+	upstream->last_path = g_strdup(path);
+	g_free(upstream->last_key);
+	upstream->last_key = g_strdup(soup_message_headers_get_one(in,
+	                                                           "X-Api-Key"));
+
+	if (g_strcmp0(path, "/v1/moved") == 0) {
+		soup_server_message_set_redirect(message, 302,
+		                                 "http://collector.test/grab");
+		return;
+	}
+
+	soup_server_message_set_status(message, 200, NULL);
+	soup_server_message_set_response(message, "text/plain", SOUP_MEMORY_STATIC,
+	                                 "fine", 4);
+}
+
+typedef struct {
+	gboolean  done;
+	GBytes   *body;
+} Sent;
+
+static void
+on_broker_answered(
+	GObject      *source,
+	GAsyncResult *result,
+	gpointer      user_data
+){
+	Sent *sent = user_data;
+
+	sent->body = soup_session_send_and_read_finish(SOUP_SESSION(source),
+	                                               result, NULL);
+	sent->done = TRUE;
+}
+
+/* GET @path through the broker as the agent's CLI would, with @token. */
+static guint
+broker_get(
+	SoupSession *agent,
+	const gchar *path,
+	const gchar *token,
+	gchar      **body
+){
+	g_autofree gchar *url = g_strconcat("http://127.0.0.1:3129", path, NULL);
+	g_autoptr(SoupMessage) message = soup_message_new("GET", url);
+	Sent sent = { 0 };
+	guint watchdog;
+
+	soup_message_headers_append(soup_message_get_request_headers(message),
+	                            "X-Api-Key", token);
+	soup_session_send_and_read_async(agent, message, G_PRIORITY_DEFAULT, NULL,
+	                                 on_broker_answered, &sent);
+
+	watchdog = g_timeout_add_seconds(10, gate_watchdog, NULL);
+	while (!sent.done)
+		g_main_context_iteration(NULL, TRUE);
+	g_source_remove(watchdog);
+
+	*body = (sent.body != NULL)
+	        ? g_strndup(g_bytes_get_data(sent.body, NULL),
+	                    g_bytes_get_size(sent.body))
+	        : g_strdup("");
+	g_clear_pointer(&sent.body, g_bytes_unref);
+
+	return soup_message_get_status(message);
+}
+
+/*
+ * A pinned upstream answering 3xx: the broker built that request carrying
+ * the real key, so the redirect is neither followed (the key would go to
+ * the new host) nor passed back (the CLI would follow it with its token).
+ * The agent is told 502 and why; the upstream saw exactly one request.
+ * The control is a 200 from the same upstream streaming back unchanged,
+ * which also shows the real key replaced the token on the way.
+ */
+static void
+test_broker_refuses_a_redirect(void)
+{
+	g_autofree gchar *dir = g_dir_make_tmp("clawt-egress-XXXXXX", NULL);
+	g_autofree gchar *upstream_path = g_build_filename(dir, "up.sock", NULL);
+	g_autofree gchar *broker_path = g_build_filename(dir, "broker.sock",
+	                                                 NULL);
+	g_autoptr(ClawtEgressBroker) broker = clawt_egress_broker_new(NULL);
+	g_autoptr(SoupServer) server = soup_server_new(NULL, NULL);
+	g_autoptr(GSocketAddress) up_address = NULL;
+	g_autoptr(GSocketAddress) broker_address = NULL;
+	g_autoptr(SoupSession) outbound = NULL;
+	g_autoptr(SoupSession) agent = NULL;
+	g_autoptr(GPtrArray) grants = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *token = NULL;
+	g_autofree gchar *refused = NULL;
+	g_autofree gchar *passed = NULL;
+	ClawtEgressGrant *grant;
+	Upstream upstream = { 0 };
+
+	up_address = g_unix_socket_address_new(upstream_path);
+	soup_server_add_handler(server, NULL, upstream_handler, &upstream, NULL);
+	g_assert_true(soup_server_listen(server, up_address, 0, &error));
+	g_assert_no_error(error);
+
+	grant = g_new0(ClawtEgressGrant, 1);
+	grant->name = g_strdup("anthropic");
+	grant->upstream = g_strdup("http://upstream.test");
+	grant->headers = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+	                                       g_free);
+	g_hash_table_insert(grant->headers, g_strdup("x-api-key"),
+	                    g_strdup("sk-ant-real"));
+	grants = g_ptr_array_new_with_free_func(
+		(GDestroyNotify)clawt_egress_grant_free);
+	g_ptr_array_add(grants, grant);
+
+	token = clawt_egress_broker_mint_token(&error);
+	g_assert_no_error(error);
+	clawt_egress_broker_register(broker, "kudu", token, grants);
+
+	outbound = soup_session_new_with_options("remote-connectable",
+	                                         up_address, NULL);
+	clawt_egress_broker_set_session(broker, outbound);
+	g_assert_true(clawt_egress_broker_listen(broker, broker_path, &error));
+	g_assert_no_error(error);
+
+	broker_address = g_unix_socket_address_new(broker_path);
+	agent = soup_session_new_with_options("remote-connectable",
+	                                      broker_address, NULL);
+
+	g_assert_cmpuint(broker_get(agent, "/anthropic/v1/moved", token,
+	                            &refused), ==, 502);
+	g_assert_cmpuint(upstream.requests, ==, 1);
+	g_assert_cmpstr(upstream.last_path, ==, "/v1/moved");
+	g_assert_cmpstr(upstream.last_key, ==, "sk-ant-real");
+	g_assert_nonnull(strstr(refused, "clawtilla_broker"));
+	g_assert_nonnull(strstr(refused, "redirect to http://collector.test"));
+	g_assert_null(strstr(refused, "sk-ant-real"));
+
+	/* The control: an ordinary answer passes through. */
+	g_assert_cmpuint(broker_get(agent, "/anthropic/v1/messages", token,
+	                            &passed), ==, 200);
+	g_assert_cmpstr(passed, ==, "fine");
+	g_assert_cmpuint(upstream.requests, ==, 2);
+	g_assert_cmpstr(upstream.last_key, ==, "sk-ant-real");
+
+	clawt_egress_broker_stop(broker);
+	soup_server_disconnect(server);
+	while (g_main_context_iteration(NULL, FALSE))
+		;
+	g_free(upstream.last_path);
+	g_free(upstream.last_key);
 	clawt_test_remove_tree(dir);
 }
 
@@ -1481,11 +1994,17 @@ main(
 	g_test_add_func("/egress/request/head-end", test_find_head_end);
 	g_test_add_func("/egress/gate/refusals-per-agent",
 	                test_gate_counts_refusals_per_agent);
+	g_test_add_func("/egress/gate/rechecks-the-connected-address",
+	                test_gate_rechecks_the_connected_address);
+	g_test_add_func("/egress/gate/next-address",
+	                test_gate_falls_through_to_the_next_address);
 	g_test_add_func("/egress/clients/words", test_client_words);
 	g_test_add_func("/egress/broker/plan", test_broker_plan);
 	g_test_add_func("/egress/broker/plan-unbrokered",
 	                test_broker_plan_unbrokered);
 	g_test_add_func("/egress/broker/token-swap", test_broker_token_swap);
+	g_test_add_func("/egress/broker/refuses-a-redirect",
+	                test_broker_refuses_a_redirect);
 	g_test_add_func("/egress/config/gated-needs-bwrap",
 	                test_gated_without_bwrap_is_refused);
 	g_test_add_func("/egress/config/bad-allowlist",

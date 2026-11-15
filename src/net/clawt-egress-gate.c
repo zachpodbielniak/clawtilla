@@ -353,6 +353,10 @@ struct _ClawtEgressGate {
 	ClawtEgressAllowlist *allow;
 	GHashTable           *agents;      /* agent id -> AgentGate */
 	GCancellable         *cancellable;
+
+	ClawtEgressDialFunc   dial;
+	gpointer              dial_data;
+	GDestroyNotify        dial_destroy;
 };
 
 enum {
@@ -446,6 +450,9 @@ clawt_egress_gate_finalize(
 	g_clear_object(&self->cancellable);
 	g_free(self->socket_dir);
 
+	if (self->dial_destroy != NULL)
+		self->dial_destroy(self->dial_data);
+
 	G_OBJECT_CLASS(clawt_egress_gate_parent_class)->finalize(object);
 }
 
@@ -504,6 +511,23 @@ clawt_egress_gate_new(
 	                : g_main_context_ref_thread_default();
 
 	return self;
+}
+
+void
+clawt_egress_gate_set_dial_func(
+	ClawtEgressGate     *self,
+	ClawtEgressDialFunc  dial,
+	gpointer             user_data,
+	GDestroyNotify       destroy
+){
+	g_return_if_fail(CLAWT_IS_EGRESS_GATE(self));
+
+	if (self->dial_destroy != NULL)
+		self->dial_destroy(self->dial_data);
+
+	self->dial = dial;
+	self->dial_data = user_data;
+	self->dial_destroy = destroy;
 }
 
 void
@@ -639,7 +663,8 @@ typedef struct {
 	GPtrArray          *addresses;   /* GInetAddress, each one checked */
 	guint               next;
 	GSocketClient      *connector;
-	GSocketConnection  *upstream;
+	GIOStream          *upstream;
+	GInetAddress       *reached;     /* where the upstream socket went */
 	gchar              *last_error;
 	gboolean            counted;
 } Conn;
@@ -657,6 +682,7 @@ conn_free(
 	}
 
 	g_clear_object(&conn->upstream);
+	g_clear_object(&conn->reached);
 	g_clear_object(&conn->connector);
 	g_clear_pointer(&conn->addresses, g_ptr_array_unref);
 	g_clear_pointer(&conn->request, clawt_egress_request_free);
@@ -844,27 +870,25 @@ static void conn_connect_next(Conn *conn);
  * Connected.  The address the socket actually reached is read back and
  * judged again, rather than assumed to be the one asked for: the check
  * is about where the bytes go, and this is the only place that knows.
+ * conn->reached is that address -- read off the socket for a real
+ * connection, reported by the dial function for an injected one.
  */
 static void
 conn_established(
 	Conn *conn
 ){
-	g_autoptr(GSocketAddress) remote = NULL;
 	g_autoptr(GPtrArray) reached = NULL;
 	g_autofree gchar *refusal = NULL;
 	g_autofree gchar *text = NULL;
-	GInetAddress *address;
+	GInetAddress *address = conn->reached;
 
-	remote = g_socket_connection_get_remote_address(conn->upstream, NULL);
-
-	if (remote == NULL || !G_IS_INET_SOCKET_ADDRESS(remote)) {
+	if (address == NULL) {
+		g_io_stream_close(conn->upstream, NULL, NULL);
 		conn_answer(conn, 502, "Bad Gateway",
 		            "could not tell which address the connection reached");
 		return;
 	}
 
-	address = g_inet_socket_address_get_address(
-		G_INET_SOCKET_ADDRESS(remote));
 	reached = g_ptr_array_new_with_free_func(g_object_unref);
 	g_ptr_array_add(reached, g_object_ref(address));
 
@@ -929,11 +953,13 @@ on_connected(
 ){
 	Conn *conn = user_data;
 	g_autoptr(GError) error = NULL;
+	g_autoptr(GSocketAddress) remote = NULL;
+	GSocketConnection *connection;
 
-	conn->upstream = g_socket_client_connect_finish(G_SOCKET_CLIENT(source),
-	                                                result, &error);
+	connection = g_socket_client_connect_finish(G_SOCKET_CLIENT(source),
+	                                            result, &error);
 
-	if (conn->upstream == NULL) {
+	if (connection == NULL) {
 		if (g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
 			conn_free(conn);
 			return;
@@ -948,6 +974,13 @@ on_connected(
 		conn_connect_next(conn);
 		return;
 	}
+
+	conn->upstream = G_IO_STREAM(connection);
+	remote = g_socket_connection_get_remote_address(connection, NULL);
+
+	if (remote != NULL && G_IS_INET_SOCKET_ADDRESS(remote))
+		conn->reached = g_object_ref(g_inet_socket_address_get_address(
+			G_INET_SOCKET_ADDRESS(remote)));
 
 	conn_established(conn);
 }
@@ -970,6 +1003,36 @@ conn_connect_next(
 	}
 
 	address = g_ptr_array_index(conn->addresses, conn->next++);
+
+	/*
+	 * An injected dial stands in for the socket, and is handed exactly
+	 * what the socket would be: one checked address.  What it reports
+	 * reaching goes through the same re-check as a real connection's
+	 * remote address, which is the point of having it.
+	 */
+	if (conn->gate->dial != NULL) {
+		g_autoptr(GError) error = NULL;
+		GInetAddress *reached = NULL;
+		GIOStream *stream;
+
+		stream = conn->gate->dial(address, conn->request->port, &reached,
+		                          conn->gate->dial_data, &error);
+
+		if (stream == NULL) {
+			g_clear_object(&reached);
+			g_free(conn->last_error);
+			conn->last_error = g_strdup(error != NULL ? error->message
+			                                          : "dial failed");
+			conn_connect_next(conn);
+			return;
+		}
+
+		conn->upstream = stream;
+		conn->reached = reached;
+		conn_established(conn);
+		return;
+	}
+
 	target = g_inet_socket_address_new(address, conn->request->port);
 
 	if (conn->connector == NULL) {

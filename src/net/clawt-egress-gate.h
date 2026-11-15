@@ -255,6 +255,50 @@ clawt_egress_gate_socket_path(
 );
 
 /**
+ * ClawtEgressDialFunc:
+ * @address: the address to connect to, already judged by the gate
+ * @port: the port asked for
+ * @reached: (out) (transfer full) (nullable): where the stream actually
+ *   went, which the gate judges again
+ * @user_data: what was given to clawt_egress_gate_set_dial_func()
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Opens the upstream side of one gated connection in place of a socket.
+ * Returning %NULL with @error set makes the gate try the next address,
+ * as a refused connect would.
+ *
+ * Returns: (transfer full) (nullable): the upstream stream
+ */
+typedef GIOStream *(*ClawtEgressDialFunc)(
+	GInetAddress  *address,
+	guint16        port,
+	GInetAddress **reached,
+	gpointer       user_data,
+	GError       **error
+);
+
+/**
+ * clawt_egress_gate_set_dial_func: (skip)
+ * @self: a #ClawtEgressGate
+ * @dial: (nullable): the dial function, or %NULL for real sockets
+ * @user_data: passed to @dial
+ * @destroy: (nullable): frees @user_data
+ *
+ * Replaces the gate's outbound connect.  For tests: the checks that
+ * matter most -- the address the connection reached is judged again,
+ * and a failed address falls through to the next -- happen after a
+ * connect, which a hermetic suite cannot make to a public address.
+ * The daemon never sets one.
+ */
+void
+clawt_egress_gate_set_dial_func(
+	ClawtEgressGate     *self,
+	ClawtEgressDialFunc  dial,
+	gpointer             user_data,
+	GDestroyNotify       destroy
+);
+
+/**
  * clawt_egress_gate_open:
  * @self: a #ClawtEgressGate
  * @agent_id: the agent whose sandbox the socket is bound into

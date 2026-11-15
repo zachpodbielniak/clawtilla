@@ -1001,6 +1001,17 @@ handle_request(
 	g_main_context_pop_thread_default(self->context);
 }
 
+void
+clawt_egress_broker_set_session(
+	ClawtEgressBroker *self,
+	SoupSession       *session
+){
+	g_return_if_fail(CLAWT_IS_EGRESS_BROKER(self));
+	g_return_if_fail(SOUP_IS_SESSION(session));
+
+	g_set_object(&self->session, session);
+}
+
 gboolean
 clawt_egress_broker_listen(
 	ClawtEgressBroker  *self,
