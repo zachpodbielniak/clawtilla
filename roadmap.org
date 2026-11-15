@@ -601,6 +601,15 @@ When somebody turns the broker on, clawtilla starts a local AnythingMCP for them
   - *connections* and *an unknown command*: stale markers ("Add a daemon", "No such command"); now the form's action and "There is no /nonsense".
 - The same 4 of 48 fail on an untouched build; found during the fallbacks work.
 
+* Verification status (2026-11-15)
+
+Every DONE item has code, a docs section and tests (audited item by item at v0.28.1; gaps closed in v0.28.3). What was not run against the real thing, and the operator's decision on each:
+- *Codex steering (ai-glib app-server transport) and the generic ACP driver:* built from the published protocols, tested against scripted fake servers; no codex or ACP agent is installed here. Accepted as is.
+- *AnythingMCP on aarch64 (Asahi):* upstream has no working arm64 build as of v0.54.0; the docs give the options. Untested here.
+- *GNOME window-title read for saved steps:* checked against gnome-desktop-mcp's source (=bf774a4=); not run against a live GNOME session.
+- *Client screens not reachable headless* (Screen and Saved steps, browser secrets with GSURF=1, running container/VM/SSH computers and the broker, real connector sign-in, MCP apps in the web chat): covered by hermetic and integration tests; a second live walk-through was declined.
+- *Android device computer:* DEFERRED by decision.
+
 * Design decisions to make, not gaps
 
 ** Takeover: refuse or park
