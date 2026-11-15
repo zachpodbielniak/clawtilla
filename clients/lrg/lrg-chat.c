@@ -2455,11 +2455,18 @@ inline_card_append(ClawtLrgApp *app, ClawtDecision *decision)
         g_hash_table_contains(chat.decision_cards, id))
         return;
 
+    /*
+     * clawt_lrg_card() takes the body's reference, so the card is what
+     * keeps it alive and the pointer kept on it is borrowed.  This
+     * dropped a second reference here, which freed the body under the
+     * card: every inline decision then cleared and filled a dead
+     * container -- criticals on every room with a question in it, and a
+     * segfault once the memory was reused.
+     */
     body = clawt_lrg_vbox(px(app, 6.0f));
     card = clawt_lrg_card(body);
     lrg_widget_add_class(card, "decision-card");
     g_object_set_data(G_OBJECT(card), "inline-body", body);
-    g_object_unref(body);
 
     g_hash_table_insert(chat.decision_cards, g_strdup(id), card);
     inline_card_fill(app, card, decision);
@@ -2829,9 +2836,13 @@ fill_conversation_bar(ClawtLrgApp *app)
     own = chat.conversation == NULL || room_entry(app) != NULL;
     lrg_widget_set_enabled(chat.editor, own);
     lrg_text_editor_set_read_only(LRG_TEXT_EDITOR(chat.editor), !own);
+    /*
+     * "--", not an em dash: the composer draws in the monospace face,
+     * whose glyph set need not have one, and it came out as "?".
+     */
     lrg_text_editor_set_placeholder(
         LRG_TEXT_EDITOR(chat.editor),
-        own ? "Message  \342\200\224  / for commands, Ctrl+G to write it in "
+        own ? "Message  --  / for commands, Ctrl+G to write it in "
               "$EDITOR"
             : "A conversation between two agents: read-only here");
 
@@ -4663,7 +4674,7 @@ build_composer(ClawtLrgApp *app)
                                                FALSE);
     lrg_text_editor_set_placeholder(
         LRG_TEXT_EDITOR(chat.editor),
-        "Message  \342\200\224  / for commands, Ctrl+G to write it in "
+        "Message  --  / for commands, Ctrl+G to write it in "
         "$EDITOR");
     lrg_widget_set_min_size(chat.editor, 0.0f, px(app, 64.0f));
     lrg_widget_set_max_size(chat.editor, -1.0f, px(app, 200.0f));
@@ -4932,8 +4943,14 @@ on_message_event(ClawtLrgApp *app, ClawtEvent *event)
         note_arrival(app);
         append_round_marks(app, clawt_event_get_detail_int(event, "round"),
                            NULL, NULL, TRUE);
+        /*
+         * The event's time is when the daemon routed it: the record's
+         * own time, as the history's `ts` is.  This passed 0, so a live
+         * message had no time in its header until the room was reopened.
+         */
         append_message(app, from != NULL ? from : "?",
-                       body != NULL ? body : "", 0,
+                       body != NULL ? body : "",
+                       clawt_event_get_timestamp(event) / G_USEC_PER_SEC,
                        clawt_event_get_detail(event, "task"), 0, TRUE,
                        clawt_event_get_detail_int(event, "acknowledged") != 0,
                        clawt_event_get_detail_int(event, "merged"),
@@ -4951,7 +4968,7 @@ on_message_event(ClawtLrgApp *app, ClawtEvent *event)
          * the message overtakes it often enough to leave a spinner under
          * an answer already there.
          */
-        if (g_strcmp0(from, app->agent_id) == 0)
+        if (clawt_chat_reply_ends_wait(from, app->agent_id))
             set_activity(NULL);
     } else if (chat.history_inflight == 0 && chat.conversation == NULL &&
                app->agent_id != NULL && room != NULL &&

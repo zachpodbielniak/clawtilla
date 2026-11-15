@@ -228,6 +228,54 @@ test_unknown_key_warns_but_loads(void)
     g_assert_true(found);
 }
 
+/*
+ * An agent's enum that is not one of its values says so, once, naming
+ * the agent.  The fleet-wide pass skips agent blocks, so `steer: always`
+ * and `computer.start: lazy` loaded in silence and ran as the defaults.
+ */
+static void
+test_agent_enum_typo_warns(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = NULL;
+    GPtrArray *warnings;
+    guint i;
+    guint steer = 0;
+    guint start = 0;
+    guint good = 0;
+
+    config = clawt_config_load_from_string(
+        "agents:\n"
+        "  - id: alpha\n"
+        "    steer: always\n"
+        "    computer:\n"
+        "      type: container\n"
+        "      start: lazy\n"
+        "  - id: beta\n"
+        "    steer: all\n", &error);
+
+    g_assert_no_error(error);
+    g_assert_nonnull(config);
+
+    warnings = clawt_config_get_warnings(config);
+    for (i = 0; i < warnings->len; i++) {
+        const gchar *w = g_ptr_array_index(warnings, i);
+
+        if (strstr(w, "'alpha'") != NULL && strstr(w, "'always'") != NULL &&
+            strstr(w, "'steer'") != NULL && strstr(w, "delegator") != NULL)
+            steer++;
+        if (strstr(w, "'alpha'") != NULL && strstr(w, "'lazy'") != NULL &&
+            strstr(w, "on_first_use") != NULL)
+            start++;
+        if (strstr(w, "'beta'") != NULL && strstr(w, "not a value") != NULL)
+            good++;
+    }
+
+    g_assert_cmpuint(steer, ==, 1);
+    g_assert_cmpuint(start, ==, 1);
+    g_assert_cmpuint(good, ==, 0);
+}
+
 static void
 test_malformed_yaml_is_an_error(void)
 {
@@ -2084,6 +2132,8 @@ main(int argc, char *argv[])
     g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/config/reads-configured", test_reads_configured_values);
+    g_test_add_func("/config/agent-enum-typo-warns",
+                    test_agent_enum_typo_warns);
     g_test_add_func("/config/teams/none-by-default",
                     test_a_fleet_with_no_teams_has_none);
     g_test_add_func("/config/teams/round-trip", test_teams_round_trip);

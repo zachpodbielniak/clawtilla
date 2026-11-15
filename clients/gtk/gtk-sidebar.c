@@ -355,7 +355,7 @@ agent_row(ClawtWindow *self, JsonObject *agent, guint unread)
      * the tooltip.
      */
     {
-        GtkWidget *fallback = clawt_gtk_failover_badge(agent);
+        GtkWidget *fallback = clawt_gtk_failover_badge(agent, TRUE);
 
         if (fallback != NULL)
             gtk_box_append(GTK_BOX(box), fallback);
@@ -1721,9 +1721,8 @@ room_row(ClawtWindow *self, JsonObject *room, guint unread)
      * everything.  The second is the thing somebody actually needs to
      * know about a room before they type in it.
      */
-    subtitle = clawt_json_boolean(room, "require_mention", FALSE)
-        ? g_strdup_printf("%u members \xc2\xb7 answers when named", count)
-        : g_strdup_printf("%u members \xc2\xb7 everyone answers", count);
+    subtitle = clawt_room_sidebar_subtitle(
+        room_id, count, clawt_json_boolean(room, "require_mention", FALSE));
 
     clawt_gtk_set_row_text(row, label, subtitle);
 

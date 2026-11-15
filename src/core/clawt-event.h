@@ -43,6 +43,23 @@ const gchar *clawt_event_get_subject(ClawtEvent *self);
 gint64       clawt_event_get_timestamp(ClawtEvent *self);
 
 /**
+ * clawt_event_happened_at:
+ * @self: a #ClawtEvent
+ * @now: the client's clock, in microseconds since the epoch
+ *
+ * When to say an alert raised for @self happened.  The event's own time
+ * when it has one, so the events replayed on reconnect -- everything
+ * since the cursor the client last saw -- read as when they happened
+ * rather than as the moment the window came back; a routine turned off
+ * twenty minutes ago said "6m ago" in a window opened six minutes ago.
+ * @now when the event has no time, or one ahead of @now, because "in 3
+ * minutes" is never the answer about something that already happened.
+ *
+ * Returns: microseconds since the epoch
+ */
+gint64 clawt_event_happened_at(ClawtEvent *self, gint64 now);
+
+/**
  * clawt_event_set_timestamp:
  * @self: a #ClawtEvent
  * @timestamp: microseconds since the epoch

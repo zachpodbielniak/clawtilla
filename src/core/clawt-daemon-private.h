@@ -1917,7 +1917,7 @@ void  clawt_daemon_turns_abandon(ClawtDaemon *self, const gchar *agent_id,
 /* The id prefix every rebuild request's decision carries. */
 #define CLAWT_REBUILD_DECISION_PREFIX "rebuild-"
 /* Where a rebuild request's question says what a rebuild destroys. */
-#define CLAWT_REBUILD_LOSS_MARKER "\n\nWhat a rebuild destroys: "
+#define CLAWT_REBUILD_LOSS_MARKER CLAWT_DECISION_LOSS_MARKER
 
 /* The operator's rebuild, shared by computer.rebuild and an approval. */
 gboolean clawt_daemon_computer_rebuild(ClawtDaemon  *self,

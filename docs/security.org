@@ -386,7 +386,10 @@ credentials:
   access token pasted on its own has no prefix, no key word and no header
   to recognise, and will not be caught.  It is a net over the places a
   credential is written by accident, never a reason to let one reach a
-  sink
+  sink.  A well-known prefix counts only where a token can start --
+  not inside a word: "sk-" and twenty characters is also the tail of
+  every task id (=task-01m7…=), and before that rule each daemon notice
+  naming a task reached its agent as "Task ta[REDACTED] failed"
 - a credential the integration's own type table declares --- a Matrix
   ~access_token~, an email ~password~ --- is *required* at the point the
   credential file would be written, whether the integration is an inline
@@ -432,7 +435,7 @@ The error names only the *origin* of each end, never a path or a query: an ntfy 
 
 Image mirrors redirect as a matter of course, which is why the public half keeps libsoup's default.
 
-=tests/test-http-constructors.sh= fails the suite when a ~soup_message_new()~ (or any of its siblings) appears under =src/=, =clients/= or =plugins/= outside =clawt-http.c=, so a new request cannot skip the decision. It reads clawtilla's own sources and nothing else: a request built inside libreclaw, ai-glib or mcp-glib is outside what it can see. Web research is one of those -- the libresearch client is ai-glib's ~AiLibresearchSearch~, whose asynchronous path (search, research, LQL) sends its bearer token on a session with no redirect guard, and the fix belongs upstream. =tests/test-http-redirect.c= checks the flag and the refusal as data; =make test= opens no network socket, so libsoup honouring the flag against a real 302 is libsoup's contract and is not exercised here.
+=tests/test-http-constructors.sh= fails the suite when a ~soup_message_new()~ (or any of its siblings) appears under =src/=, =clients/= or =plugins/= outside =clawt-http.c=, so a new request cannot skip the decision. It reads clawtilla's own sources and nothing else: a request built inside libreclaw, ai-glib or mcp-glib is outside what it can see. Web research is one of those -- the libresearch client is ai-glib's ~AiLibresearchSearch~ -- and since ai-glib v0.11.0 (pinned here at v0.12.0, through libreclaw v0.30.1) both of its sessions, the asynchronous search, research and LQL path included, are guarded by ~ai_http_guard_session()~: a request carrying a credential is never redirected, and one without follows a redirect only on the same scheme, host and port. That guard is ai-glib's and is tested there; clawtilla's suite does not reach inside it. =tests/test-http-redirect.c= checks the flag and the refusal as data, and against a live 302: a server on a unix socket (reached through the session's ~remote-connectable~, so =make test= still opens no network socket) answers 3xx, the credentialed request stops there with its credential sent once, and the same request without one follows.
 
 ** Connectors
 
@@ -871,7 +874,7 @@ What it does not do by itself: the network is left as ~runtime.network~ says -- 
 
 *** Hard links through a bind
 
-A bind protects a path, not an inode. A file bound read-only that has a second name under a writable bind is writable through that name; a denied file covered with ~/dev/null~ is readable through its other one; a denied directory covered with a tmpfs hides its names, not the files in it. So a ~bwrap~ box -- either kind -- refuses to start when a read-only *file* bind or a denied file has ~st_nlink > 1~, and walks a denied directory (to 20000 entries) for the same, naming the file and how to find its other names. Anything under ~/usr~ and ~/etc~ is exempt: those are root's, and ~fs.protected_hardlinks~ stops an agent naming them again. A read-only *directory* bind is not walked -- the CLI's install can be large -- so a second name for a file inside one is not caught; that would need the operator to have bound a writable directory inside a read-only one, which the mount list already shows.
+A bind protects a path, not an inode. A file bound read-only that has a second name under a writable bind is writable through that name; a denied file covered with ~/dev/null~ is readable through its other one; a denied directory covered with a tmpfs hides its names, not the files in it. So a ~bwrap~ box -- either kind -- refuses to start when a read-only *file* bind or a denied file has ~st_nlink > 1~, and walks a denied directory (to 20000 entries) for the same, naming the file and how to find its other names. Anything under ~/usr~ and ~/etc~ is exempt: those are root's, and ~fs.protected_hardlinks~ stops an agent naming them again. A read-only *directory* bind is not walked -- the CLI's install can be large -- so a second name for a file inside one is not caught; that would need the operator to have bound a writable directory inside a read-only one, which the mount list already shows. The check runs once, when the box is spawned (~clawt_sandbox_check_links()~, called wherever ~clawt_sandbox_wrap_argv()~ is): a second name the agent makes afterwards, under a writable bind of a box already running, is not seen until the next spawn. And a denied directory with more than 20000 entries (~CLAWT_SANDBOX_LINK_WALK_LIMIT~) is refused outright, naming the directory, rather than checked halfway.
 
 *** Abstract unix sockets
 

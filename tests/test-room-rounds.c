@@ -1159,6 +1159,102 @@ test_the_daemon_counts_per_tree_and_renews_on_settle(void)
 	daemon_teardown(&fixture);
 }
 
+/*
+ * What a turn on the settle notice would do, done at the moment the
+ * notice is published: the delegator sends a request in the tree.
+ */
+typedef struct {
+	DaemonFixture *fixture;
+	const gchar   *child;
+	const gchar   *root;
+	gboolean       armed;
+	gint           sent;
+	gint           code;
+} OwedFollowUp;
+
+static void
+on_notice_published(ClawtEventBus *bus, ClawtEvent *event,
+                    gpointer user_data)
+{
+	OwedFollowUp *owed = user_data;
+	g_autoptr(GError) error = NULL;
+
+	(void)bus;
+
+	if (!owed->armed ||
+	    g_strcmp0(clawt_event_get_kind(event), "message") != 0 ||
+	    g_strcmp0(clawt_event_get_detail(event, "from"),
+	              CLAWT_SYSTEM_SENDER) != 0 ||
+	    g_strcmp0(clawt_event_get_detail(event, "task"), owed->child) != 0)
+		return;
+
+	owed->armed = FALSE;
+	owed->sent = daemon_request(owed->fixture, "w1", "w2", owed->root,
+	                            &error);
+	owed->code = (error != NULL) ? error->code : 0;
+}
+
+/*
+ * The order, not just the renewal.  The tree renews in on_task_changed()
+ * *before* the settle notice goes out, so anything the notice sets off --
+ * here, a request in the tree sent the instant the notice is published --
+ * finds the budget already renewed.  Renewed after the notice, that
+ * request would be refused with the tree still exhausted.
+ */
+static void
+test_the_tree_renews_before_the_settle_notice(void)
+{
+	DaemonFixture fixture = { 0 };
+	ClawtTaskManager *tasks;
+	ClawtTask *root;
+	ClawtTask *child;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *id_root = NULL;
+	g_autofree gchar *id_child = NULL;
+	OwedFollowUp owed = { 0 };
+
+	daemon_setup(&fixture, "orchestration:\n  tree_message_budget: 1\n");
+	tasks = clawt_daemon_get_tasks(fixture.daemon);
+
+	root = clawt_task_manager_create(tasks, "chief", "w1",
+		"Write the quarterly report", NULL, &error);
+	g_assert_no_error(error);
+	id_root = g_strdup(clawt_task_get_id(root));
+	child = clawt_task_manager_create(tasks, "w1", "w2",
+		"Pull the numbers", id_root, &error);
+	g_assert_no_error(error);
+	id_child = g_strdup(clawt_task_get_id(child));
+	clawt_task_manager_start(tasks, id_root);
+	clawt_task_manager_start(tasks, id_child);
+
+	/* The one request the tree may send; the next would be refused. */
+	g_assert_cmpint(daemon_request(&fixture, "w2", "w1", id_child, &error),
+	                ==, 1);
+	g_assert_no_error(error);
+	g_assert_true(clawt_loop_guard_tree_exhausted(fixture.daemon->guard,
+	                                              id_root));
+
+	owed.fixture = &fixture;
+	owed.child = id_child;
+	owed.root = id_root;
+	owed.armed = TRUE;
+	owed.sent = -2;
+	g_signal_connect(clawt_daemon_get_event_bus(fixture.daemon), "event",
+	                 G_CALLBACK(on_notice_published), &owed);
+
+	g_assert_true(clawt_task_manager_complete(tasks, id_child,
+	                                          "Q3 numbers attached"));
+
+	/* The notice was published, and what it set off was not refused. */
+	g_assert_false(owed.armed);
+	g_assert_cmpint(owed.code, ==, 0);
+	g_assert_cmpint(owed.sent, ==, 1);
+
+	g_signal_handlers_disconnect_by_data(
+		clawt_daemon_get_event_bus(fixture.daemon), &owed);
+	daemon_teardown(&fixture);
+}
+
 /* The settings, read and written as the clients do. */
 static void
 test_the_settings_frames(void)
@@ -1278,6 +1374,8 @@ main(int argc, char **argv)
 	                test_answers_and_notices_are_never_refused);
 	g_test_add_func("/tree-budget/daemon",
 	                test_the_daemon_counts_per_tree_and_renews_on_settle);
+	g_test_add_func("/tree-budget/renews-before-the-notice",
+	                test_the_tree_renews_before_the_settle_notice);
 	g_test_add_func("/tree-budget/settings-frames", test_the_settings_frames);
 
 	return g_test_run();

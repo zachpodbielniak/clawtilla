@@ -383,6 +383,8 @@ test_escape_shows_text_as_written(void)
     g_autofree gchar *file = clawt_lrg_markdown_escape("my_file_name.c");
     g_autofree gchar *link = clawt_lrg_markdown_escape("[x](javascript:y)");
     g_autofree gchar *lines = clawt_lrg_markdown_escape("a\r\nb");
+    g_autofree gchar *blank = clawt_lrg_markdown_escape("a\n\n\nb");
+    g_autofree gchar *leading = clawt_lrg_markdown_escape("\na");
     g_autofree gchar *none = clawt_lrg_markdown_escape(NULL);
 
     g_assert_cmpstr(plain, ==, "hello world");
@@ -390,8 +392,13 @@ test_escape_shows_text_as_written(void)
     g_assert_cmpstr(file, ==, "my\\_file\\_name\\.c");
     /* nothing in somebody's words can become a link */
     g_assert_cmpstr(link, ==, "\\[x\\]\\(javascript\\:y\\)");
-    /* a line break is a hard break, and \r is dropped */
-    g_assert_cmpstr(lines, ==, "a\\\nb");
+    /*
+     * a line break is a paragraph break, never a backslash (libregnum
+     * draws one), and \r is dropped
+     */
+    g_assert_cmpstr(lines, ==, "a\n\nb");
+    g_assert_cmpstr(blank, ==, "a\n\nb");
+    g_assert_cmpstr(leading, ==, "a");
     g_assert_cmpstr(none, ==, "");
 }
 

@@ -495,6 +495,34 @@ test_typing_a_slash_stays_quick(Fixture *fixture, gconstpointer data)
     clawt_lrg_chat_debug_type(app, "", NULL);
 }
 
+/*
+ * Somebody's words, escaped and drawn, read as they were written.
+ *
+ * The escaper wrote CommonMark's hard break -- a backslash before the
+ * newline -- and LrgMarkdownLabel has none, so a decision's question
+ * was drawn as "configuration.\ \ Its reason, in its own words:\ ```".
+ * Each line is a paragraph now, and no backslash reaches the screen.
+ */
+static void
+test_escaped_lines_draw_without_backslashes(void)
+{
+    g_autofree gchar *escaped = clawt_lrg_markdown_escape(
+        "beta asks for a rebuild.\n\nIts reason:\n```\nthe *db* is_bad\n```");
+    g_autoptr(LrgMarkdownLabel) label = lrg_markdown_label_new(escaped);
+    g_autoptr(GString) all = g_string_new(NULL);
+    guint i;
+
+    for (i = 0; i < lrg_markdown_label_get_n_blocks(label); i++) {
+        g_string_append(all, lrg_markdown_label_get_block_text(label, i));
+        g_string_append_c(all, '|');
+    }
+
+    g_assert_null(strchr(all->str, '\\'));
+    g_assert_cmpstr(all->str, ==,
+                    "beta asks for a rebuild.|Its reason:|```|"
+                    "the *db* is_bad|```|");
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -527,6 +555,9 @@ main(int argc, char *argv[])
 
     g_test_add("/lrgui/widgets/typing-a-slash-stays-quick", Fixture, NULL,
                fixture_set_up, test_typing_a_slash_stays_quick, fixture_tear_down);
+
+    g_test_add_func("/lrgui/widgets/escaped-lines-no-backslashes",
+                    test_escaped_lines_draw_without_backslashes);
 
     result = g_test_run();
 

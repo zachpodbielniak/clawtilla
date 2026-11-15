@@ -630,10 +630,25 @@ open_routine_editor(ClawtWindow *self, JsonObject *existing)
                                                          "max_start_failures"))
             : g_strdup("3");
 
+        GtkWidget *hint = gtk_label_new(clawt_routine_start_failures_hint());
+
         dialog->max_failures_row = clawt_gtk_add_entry(
             when, "Turn off after failed starts", limit);
         clawt_gtk_set_row_hint(dialog->max_failures_row,
                                clawt_routine_start_failures_hint());
+
+        /*
+         * Under the row as well as in its tooltip, as the other two
+         * editors have it: an entry row has no subtitle, so the
+         * sentence was only ever a hover away -- which on a dialog
+         * nobody hovers over is nowhere.
+         */
+        gtk_label_set_wrap(GTK_LABEL(hint), TRUE);
+        gtk_label_set_xalign(GTK_LABEL(hint), 0.0f);
+        gtk_widget_add_css_class(hint, "caption");
+        gtk_widget_add_css_class(hint, "dim-label");
+        gtk_widget_set_margin_top(hint, 6);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(when), hint);
     }
 
     g_signal_connect(dialog->schedule_row, "notify::selected",

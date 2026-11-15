@@ -296,7 +296,14 @@ decision_row(ClawtWebApp *app, JsonObject *decision, gint64 now,
     if (proposal != NULL && state == 0) {
         web_proposal_review(row, decision, proposal);
     } else {
-        clawt_web_add(row, clawt_web_text(question, "decision-question"));
+        /*
+         * Without the loss paragraph when it is drawn on its own just
+         * below: the whole question said it twice.
+         */
+        g_autofree gchar *asked = clawt_decision_question_text(
+            question, (is_rebuild && state == 0) ? loses : NULL);
+
+        clawt_web_add(row, clawt_web_text(asked, "decision-question"));
 
         if (is_rebuild && loses != NULL && state == 0) {
             g_autofree gchar *lost = g_strdup_printf(

@@ -216,11 +216,15 @@ declare -A AFFORDANCES=(
     # Each client draws the row from the agent member the daemon reports
     # for exactly those types, so the member name is the marker: a client
     # that stopped reading it would offer the setting everywhere or
-    # nowhere.  The limits are marked by the swap key, the one that has
-    # to be ordered against memory on a save.
+    # nowhere.  The limits are marked by each key a client saves: the
+    # swap key, the one that has to be ordered against memory on a save,
+    # and the process and memory limits beside it.  The closing quote is
+    # part of the memory marker, so `memory_swap` cannot satisfy it.
     #
     ["computer start choice"]="\"computer_start\"|\"computer_start\"|\"computer_start\""
     ["container limits"]="\"computer.container.memory_swap\"|\"computer.container.memory_swap\"|\"computer.container.memory_swap\""
+    ["container process limit"]="\"computer.container.pids_limit\"|\"computer.container.pids_limit\"|\"computer.container.pids_limit\""
+    ["container memory limit"]="\"computer.container.memory\"|\"computer.container.memory\"|\"computer.container.memory\""
     ["ssh wake command"]="\"ssh_wake_command\"|\"ssh_wake_command\"|\"ssh_wake_command\""
     #
     # The agent view's "Waiting for" list. The frames (wait.list,
@@ -248,6 +252,12 @@ declare -A AFFORDANCES=(
     #
     ["spending unpriced turns"]="clawt_usage_ledger_unpriced_line|clawt_usage_ledger_unpriced_line|clawt_usage_ledger_unpriced_line"
     ["spending csv export"]="clawt_usage_ledger_csv(root)|clawt_usage_ledger_csv(root)|clawt_usage_ledger_csv(root)"
+    #
+    # The ledger's Group by control itself.  Layer 3 sees a client walk
+    # clawt_usage_group_*, which a client could do for a column heading
+    # and still offer no way to choose; the control is each client's own.
+    #
+    ["spending group by"]="on_spending_group_changed|spending_tabs(\"Group by\"|clawt_lrg_form_add(form, \"Group by\""
     ["acknowledged answers"]="clawt_message_ack_label|clawt_message_ack_label|clawt_message_ack_label"
     ["merged deliveries as sections"]="clawt_merge_split|clawt_merge_split|clawt_merge_split"
     #
@@ -295,6 +305,10 @@ declare -A AFFORDANCES=(
     #
     ["an acp agent's command"]="clawt_model_catalog_acp_command_hint|clawt_model_catalog_acp_command_hint|clawt_model_catalog_acp_command_hint"
     ["rebuild requests say what is lost"]="\"loses\"|\"loses\"|\"loses\""
+    ["rebuild requests are badged"]="clawt_gtk_badge(\"rebuild\"|clawt_web_badge(\"rebuild\"|clawt_lrg_badge(\"rebuild\""
+    # ...and say it once: the question is drawn without the loss
+    # paragraph each client draws on its own.
+    ["rebuild question without its loss"]="clawt_decision_question_text|clawt_decision_question_text|clawt_decision_question_text"
     ["ack-check model choices"]="clawt_ack_check_model_nth_value|clawt_ack_check_model_nth_value|clawt_ack_check_model_nth_value"
     #
     # Rounds in a group room and the budget per task tree: a divider
@@ -325,6 +339,13 @@ declare -A AFFORDANCES=(
     ["open a page in the browser"]="\"browser.open\"|/browser/open|\"browser.open\""
     ["choose the secrets an agent may have filled"]="on_grant_toggled|/browser/secret|on_browser_grant"
     ["list the vault entries by name"]="clawt_vault_entry_label|clawt_vault_entry_label|clawt_vault_entry_label"
+    #
+    # When and where a secret was last filled.  The line is part of
+    # libclawt's session line (clawt_browser_session_line() appends
+    # clawt_browser_fill_line()), so the session line is the marker: a
+    # client that wrote its own would lose the fill.
+    #
+    ["vault last fill on the browser line"]="clawt_browser_session_line|clawt_browser_session_line|clawt_browser_session_line"
     #
     # Servers with many tools, on the Connectors page: each connector's
     # tool count and whether agents see it as a directory (libclawt's
@@ -366,7 +387,10 @@ declare -A AFFORDANCES=(
     #
     ["rooms in the sidebar"]="room_row|room_row|room_row"
     ["making a room"]="clawt_gtk_on_new_room|on_new_room_submit|on_room_response"
-    ["a room says how it delivers"]="answers when named|answers when named|answers when named"
+    # The wording is libclawt's (clawt_room_sidebar_subtitle()), so the
+    # marker is the call: a client spelling its own line had "1 members"
+    # and promised answers in a "Problems to look at" room.
+    ["a room says how it delivers"]="clawt_room_sidebar_subtitle|clawt_room_sidebar_subtitle|clawt_room_sidebar_subtitle"
     #
     # Putting a room in a team's group.
     #
@@ -657,6 +681,16 @@ declare -A AFFORDANCES=(
     # site calls.
     #
     ["incidents rooms in the sidebar"]="clawt_room_is_listed|clawt_room_is_listed|clawt_room_is_listed"
+    #
+    # The Tasks page's "Problems to look at" section, its Retry on each
+    # open incident, and Retry on a failed task row.  task.retry and
+    # incident.list are layer 1's; the section, and which rows offer the
+    # button, are not -- a failed row is offered Retry by the library's
+    # rule, so the button and the daemon's refusal cannot disagree.
+    #
+    ["problems to look at section"]="\"Problems to look at\"|\"Problems to look at\"|\"Problems to look at\""
+    ["retry an incident"]="retry_button(self, \"incident\"|/incidents/%s/retry|retry_button(\"incident\""
+    ["retry a failed task"]="clawt_task_state_is_retryable|clawt_task_state_is_retryable|clawt_task_state_is_retryable"
     #
     # Another agent's long request folds to one line in a peer
     # conversation, opens in place with "Show less", and "View exchange"

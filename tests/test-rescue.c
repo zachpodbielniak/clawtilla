@@ -12,7 +12,8 @@
  * the link server's own signal -- and moves the turn watch's fake clock,
  * since twenty seconds cannot be reached by waiting in a test that must
  * not hang.  The switch is tested at the mailbox, where the message is
- * handed back with its model, because a hermetic test has no CLI to
+ * handed back with its model, and through `turn.rescue` itself with a
+ * runtime whose interrupt succeeds, since a hermetic test has no CLI to
  * interrupt.
  */
 
@@ -355,6 +356,282 @@ test_the_daemon_offers_and_withdraws(
 	clawt_test_remove_tree(dir);
 }
 
+/* ── Stop and switch, through turn.rescue ────────────────────────── */
+
+/*
+ * A runtime whose interrupt succeeds, so the daemon's half of Stop and
+ * Switch runs end to end without a libreclaw child.  It records what
+ * the room's message looked like at the moment of the interrupt: a
+ * switch must hand the message back *before* interrupting, because the
+ * interrupt's settle is what drains it again.
+ */
+typedef struct {
+	ClawtAgentRuntime  parent_instance;
+	guint              interrupts;
+	ClawtMailbox      *mailbox;     /* borrowed */
+	gchar             *watch_id;
+	gint               state_at_interrupt;
+	gchar             *model_at_interrupt;
+} FakeRuntime;
+
+typedef struct {
+	ClawtAgentRuntimeClass parent_class;
+} FakeRuntimeClass;
+
+static GType fake_runtime_get_type(void);
+G_DEFINE_TYPE(FakeRuntime, fake_runtime, CLAWT_TYPE_AGENT_RUNTIME)
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(FakeRuntime, g_object_unref)
+
+static gboolean
+fake_runtime_interrupt(
+	ClawtAgentRuntime  *runtime,
+	guint              *out_killed,
+	GError            **error
+){
+	FakeRuntime *self = (FakeRuntime *)runtime;
+
+	(void)error;
+
+	self->interrupts++;
+
+	if (self->mailbox != NULL && self->watch_id != NULL) {
+		g_autoptr(ClawtMailboxItem) item =
+			clawt_mailbox_get(self->mailbox, self->watch_id);
+
+		self->state_at_interrupt = (gint)clawt_mailbox_item_get_state(item);
+		g_free(self->model_at_interrupt);
+		self->model_at_interrupt =
+			g_strdup(clawt_mailbox_item_get_model(item));
+	}
+
+	*out_killed = 2;
+
+	return TRUE;
+}
+
+static gboolean
+fake_runtime_is_alive(
+	ClawtAgentRuntime *runtime
+){
+	(void)runtime;
+
+	return TRUE;
+}
+
+static void
+fake_runtime_finalize(
+	GObject *object
+){
+	FakeRuntime *self = (FakeRuntime *)object;
+
+	g_free(self->watch_id);
+	g_free(self->model_at_interrupt);
+
+	G_OBJECT_CLASS(fake_runtime_parent_class)->finalize(object);
+}
+
+static void
+fake_runtime_class_init(
+	FakeRuntimeClass *klass
+){
+	ClawtAgentRuntimeClass *runtime_class = CLAWT_AGENT_RUNTIME_CLASS(klass);
+
+	G_OBJECT_CLASS(klass)->finalize = fake_runtime_finalize;
+	runtime_class->interrupt = fake_runtime_interrupt;
+	runtime_class->is_alive = fake_runtime_is_alive;
+}
+
+static void
+fake_runtime_init(
+	FakeRuntime *self
+){
+	self->state_at_interrupt = -1;
+}
+
+static JsonObject *
+rescue_reply(
+	ClawtDaemon *daemon,
+	const gchar *action,
+	const gchar *room,
+	const gchar *model,
+	JsonNode   **keep
+){
+	g_autoptr(JsonNode) frame = clawt_ipc_request_new("turn.rescue", "r1");
+	JsonObject *payload = json_object_new();
+
+	json_object_set_string_member(payload, "action", action);
+	json_object_set_string_member(payload, "agent", "alpha");
+
+	if (room != NULL)
+		json_object_set_string_member(payload, "room", room);
+	if (model != NULL)
+		json_object_set_string_member(payload, "model", model);
+
+	json_object_set_object_member(json_node_get_object(frame), "payload",
+		payload);
+	*keep = clawt_daemon_handle_request(daemon, frame);
+
+	return json_node_get_object(*keep);
+}
+
+static guint
+offers_now(
+	ClawtDaemon *daemon
+){
+	g_autoptr(JsonNode) frame = clawt_ipc_request_new("turn.rescue", "l1");
+	g_autoptr(JsonNode) listing = clawt_daemon_handle_request(daemon, frame);
+
+	return json_array_get_length(json_object_get_array_member(
+		json_object_get_object_member(json_node_get_object(listing),
+			"payload"), "offers"));
+}
+
+/*
+ * The two answers to an offer, through the IPC verb the clients send.
+ * Stop interrupts and withdraws the offer.  Switch refuses a model that
+ * is not one of the turn's choices without touching anything, refuses
+ * without a room, and otherwise hands the running turn's message back
+ * with the chosen model *before* the interrupt -- the order is the
+ * whole mechanism, so the fake runtime checks it at the moment of the
+ * interrupt -- and withdraws the offer.  Two rooms, so the switch is
+ * seen to take its own room's message and not the other's.
+ */
+static void
+test_stop_and_switch_through_the_daemon(
+	void
+){
+	g_autofree gchar *dir = g_dir_make_tmp("clawt-rescue-s-XXXXXX", NULL);
+	g_autofree gchar *config_path = g_build_filename(dir, "config.yaml",
+		NULL);
+	g_autofree gchar *yaml = NULL;
+	g_autoptr(GMainContext) context = g_main_context_new();
+	g_autoptr(ClawtDaemon) daemon = NULL;
+	g_autoptr(FakeRuntime) runtime = NULL;
+	g_autoptr(ClawtMailboxItem) back = NULL;
+	g_autoptr(ClawtMailboxItem) other = NULL;
+	g_autoptr(JsonNode) stopped = NULL;
+	g_autoptr(JsonNode) wrong = NULL;
+	g_autoptr(JsonNode) roomless = NULL;
+	g_autoptr(JsonNode) switched = NULL;
+	g_autofree gchar *here = NULL;
+	g_autofree gchar *there = NULL;
+	ClawtLinkServer *links;
+	ClawtAgent *alpha;
+	ClawtMailbox *mailbox;
+	JsonObject *reply;
+	Seen seen = { 0 };
+	gint64 turn_here = 0;
+	gint64 turn_there = 0;
+
+	yaml = g_strdup_printf(
+		"daemon:\n"
+		"  tailscale: false\n"
+		"  state_dir: \"%s/state\"\n"
+		"  socket: \"%s/daemon.sock\"\n"
+		"  automation_dir: \"%s/pods\"\n"
+		"secrets:\n  dir: \"%s/secrets\"\n"
+		"skills:\n  dir: \"%s/skills\"\n"
+		"defaults:\n  workspace_root: \"%s/agents\"\n"
+		"agents:\n"
+		"  - id: alpha\n"
+		"    model:\n"
+		"      provider: claude-code\n"
+		"      fallbacks:\n"
+		"        - provider: claude-code\n"
+		"          model: sonnet\n"
+		"    runtime:\n"
+		"      stream_steps: true\n"
+		"      first_reply_seconds: 20\n",
+		dir, dir, dir, dir, dir, dir);
+	g_assert_true(g_file_set_contents(config_path, yaml, -1, NULL));
+
+	daemon = clawt_daemon_new(config_path, context);
+	g_assert_true(clawt_daemon_start(daemon, NULL));
+
+	fake_now = 1000 * SECOND;
+	clawt_turn_watch_set_clock(daemon->turn_watch, fake_clock, NULL, NULL);
+	g_signal_connect(clawt_daemon_get_event_bus(daemon), "event",
+		G_CALLBACK(on_event), &seen);
+
+	alpha = clawt_agent_manager_get(clawt_daemon_get_agents(daemon), "alpha");
+	mailbox = clawt_agent_get_mailbox(alpha);
+	runtime = g_object_new(fake_runtime_get_type(), NULL);
+	runtime->mailbox = mailbox;
+	clawt_agent_set_runtime(alpha, CLAWT_AGENT_RUNTIME(runtime));
+
+	/* A silent turn in one room, offered. */
+	links = clawt_daemon_get_link_server(daemon);
+	g_signal_emit_by_name(links, "typing", "alpha", "dm:alpha:user", TRUE);
+	fake_now += 25 * SECOND;
+	clawt_daemon_turn_sweep_now(daemon);
+	g_assert_cmpuint(seen.offered, ==, 1);
+	g_assert_cmpuint(offers_now(daemon), ==, 1);
+
+	/* Stop: interrupted, the offer answered and withdrawn. */
+	reply = rescue_reply(daemon, "stop", "dm:alpha:user", NULL, &stopped);
+	g_assert_false(json_object_has_member(reply, "error"));
+	reply = json_object_get_object_member(reply, "payload");
+	g_assert_true(json_object_get_boolean_member(reply, "done"));
+	g_assert_cmpint(json_object_get_int_member(reply, "killed"), ==, 2);
+	g_assert_cmpuint(runtime->interrupts, ==, 1);
+	g_assert_cmpuint(seen.cleared, ==, 1);
+	g_assert_cmpuint(offers_now(daemon), ==, 0);
+
+	/* A new silent turn, with a message in each of two rooms. */
+	here = delivered(mailbox, "dm:alpha:user", &turn_here);
+	there = delivered(mailbox, "planning", &turn_there);
+	runtime->watch_id = g_strdup(here);
+	g_signal_emit_by_name(links, "typing", "alpha", "dm:alpha:user", FALSE);
+	g_signal_emit_by_name(links, "typing", "alpha", "dm:alpha:user", TRUE);
+	fake_now += 25 * SECOND;
+	clawt_daemon_turn_sweep_now(daemon);
+	g_assert_cmpuint(offers_now(daemon), ==, 1);
+
+	/* A model that is not a choice: refused, nothing touched. */
+	reply = rescue_reply(daemon, "switch", "dm:alpha:user", "opus", &wrong);
+	g_assert_true(json_object_has_member(reply, "error"));
+	g_assert_cmpuint(runtime->interrupts, ==, 1);
+	g_assert_cmpuint(offers_now(daemon), ==, 1);
+
+	/* No room: refused -- a switch reruns one room's turn. */
+	reply = rescue_reply(daemon, "switch", NULL, "sonnet", &roomless);
+	g_assert_true(json_object_has_member(reply, "error"));
+	g_assert_cmpuint(runtime->interrupts, ==, 1);
+
+	/* Switch: handed back with the model, then interrupted. */
+	reply = rescue_reply(daemon, "switch", "dm:alpha:user", "sonnet",
+		&switched);
+	g_assert_false(json_object_has_member(reply, "error"));
+	g_assert_true(json_object_get_boolean_member(
+		json_object_get_object_member(reply, "payload"), "done"));
+	g_assert_cmpuint(runtime->interrupts, ==, 2);
+	g_assert_cmpint(runtime->state_at_interrupt, ==, CLAWT_MAILBOX_PENDING);
+	g_assert_cmpstr(runtime->model_at_interrupt, ==, "sonnet");
+	g_assert_cmpuint(offers_now(daemon), ==, 0);
+	g_assert_cmpuint(seen.cleared, ==, 2);
+
+	back = clawt_mailbox_get(mailbox, here);
+	g_assert_cmpstr(clawt_mailbox_item_get_model(back), ==, "sonnet");
+
+	/* The other room's message stays delivered, on its own model. */
+	other = clawt_mailbox_get(mailbox, there);
+	g_assert_cmpint(clawt_mailbox_item_get_state(other), ==,
+		CLAWT_MAILBOX_ACKED);
+	g_assert_null(clawt_mailbox_item_get_model(other));
+
+	g_signal_handlers_disconnect_by_data(clawt_daemon_get_event_bus(daemon),
+		&seen);
+	clawt_daemon_stop(daemon);
+	g_clear_object(&daemon);
+
+	while (g_main_context_iteration(context, FALSE))
+		;
+
+	g_free(seen.room);
+	g_free(seen.choices);
+	clawt_test_remove_tree(dir);
+}
+
 gint
 main(
 	gint   argc,
@@ -371,6 +648,8 @@ main(
 		test_hand_back_carries_the_model);
 	g_test_add_func("/rescue/daemon/offer-and-withdraw",
 		test_the_daemon_offers_and_withdraws);
+	g_test_add_func("/rescue/daemon/stop-and-switch",
+		test_stop_and_switch_through_the_daemon);
 
 	return g_test_run();
 }

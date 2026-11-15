@@ -175,6 +175,30 @@ test_no_time_is_no_stamp(void)
     g_assert_null(clawt_chat_time_label(NULL));
 }
 
+/*
+ * The waiting line goes when the conversation is answered.
+ *
+ * In a room the clients compared the sender with the selected agent,
+ * which a room leaves NULL -- so "delivered -- waiting for a reply"
+ * stayed under every answer in a group room until the window closed.
+ */
+static void
+test_a_reply_ends_the_wait(void)
+{
+    /* an agent's own conversation: only that agent */
+    g_assert_true(clawt_chat_reply_ends_wait("alpha", "alpha"));
+    g_assert_false(clawt_chat_reply_ends_wait("beta", "alpha"));
+    g_assert_false(clawt_chat_reply_ends_wait("user", "alpha"));
+
+    /* a room: any member answering, never you or the daemon */
+    g_assert_true(clawt_chat_reply_ends_wait("alpha", NULL));
+    g_assert_true(clawt_chat_reply_ends_wait("beta", NULL));
+    g_assert_false(clawt_chat_reply_ends_wait("user", NULL));
+    g_assert_false(clawt_chat_reply_ends_wait("clawtilla", NULL));
+    g_assert_false(clawt_chat_reply_ends_wait(NULL, NULL));
+    g_assert_false(clawt_chat_reply_ends_wait("", "alpha"));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -190,6 +214,7 @@ main(int argc, char *argv[])
     g_test_add_func("/chat-run/stamp-is-a-fixed-width-clock",
                     test_a_transcript_stamp_is_a_fixed_width_clock);
     g_test_add_func("/chat-run/no-time-no-stamp", test_no_time_is_no_stamp);
+    g_test_add_func("/chat-run/reply-ends-wait", test_a_reply_ends_the_wait);
 
     return g_test_run();
 }

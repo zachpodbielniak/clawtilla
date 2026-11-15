@@ -93,6 +93,49 @@ clawt_open_target_resolve(
 	GError      **error
 );
 
+/**
+ * clawt_open_target_from_argv:
+ * @argv: (array zero-terminated=1): another invocation's whole command
+ *   line, program name first
+ *
+ * The `--open` (or `-o`, or `--open=`) in a command line a single-instance
+ * client was handed by a second invocation, or %NULL when it names none.
+ * Every other option is ignored -- the invocation that typed them already
+ * checked them -- and the last `--open` wins, as it would have there.
+ * The value is returned as written: normalising it is the window's job,
+ * so a link that does not parse is reported where somebody is looking.
+ *
+ * Returns: (transfer full) (nullable): the target, or %NULL
+ */
+gchar *
+clawt_open_target_from_argv(
+	const gchar * const *argv
+);
+
+/**
+ * clawt_open_target_hold:
+ * @pending: (inout) (transfer full) (nullable): where a target waiting
+ *   for the daemon is kept
+ * @target: (transfer full): a target to open
+ * @connected: whether the client is connected and can open it now
+ *
+ * Whether to open @target now or keep it for later.  Not connected, it
+ * replaces whatever was waiting in @pending (clicking a second link
+ * before the daemon answers means the second) and %NULL is returned;
+ * opening it then would refuse a daemon that is merely starting and lose
+ * the link.  Connected, it is returned to open now and @pending is left
+ * alone -- the window opens what waited when the connection arrives.
+ *
+ * Returns: (transfer full) (nullable): the target to open now, or %NULL
+ *   when it is held
+ */
+gchar *
+clawt_open_target_hold(
+	gchar    **pending,
+	gchar     *target,
+	gboolean   connected
+);
+
 G_END_DECLS
 
 #endif /* CLAWT_OPEN_TARGET_H */

@@ -192,9 +192,11 @@ gboolean clawt_room_names_any_member(ClawtRoom         *self,
  * A direct room, a routine's room and a trigger's room have no config
  * entry: their members follow from the pair or the owner, so editing
  * one is meaningless and removing one deletes nothing and comes back
- * the moment the two speak again.  Told apart by the prefixes that
- * already name them -- a declared id cannot contain a colon, so the two
- * sets cannot overlap.
+ * the moment the two speak again.  So does a task's own room.  Told
+ * apart by the colon every derived id has (`dm:`, `routine:`,
+ * `trigger:`, `task:`, `incidents:`) -- a declared id cannot contain
+ * one, so the two sets cannot overlap and a derived prefix added later
+ * is covered without being listed.
  *
  * Takes an id rather than a room because every caller is checking
  * whether it may act on a name it was handed.
@@ -220,6 +222,25 @@ gboolean clawt_room_is_declared(const gchar *room_id);
  * Returns: %TRUE if the room gets a row
  */
 gboolean clawt_room_is_listed(const gchar *room_id);
+
+/**
+ * clawt_room_sidebar_subtitle:
+ * @room_id: (nullable): the room's id
+ * @members: how many members it has
+ * @require_mention: whether a member answers only when named
+ *
+ * The line under a room's name in every client's sidebar: how many are
+ * in it and whether being in it means answering everything -- "3
+ * members · answers when named", "1 member · everyone answers".  A
+ * "Problems to look at" room says what it holds instead, because its
+ * one member is the desk that files the reports and nobody answers
+ * there.
+ *
+ * Returns: (transfer full): the subtitle
+ */
+gchar *clawt_room_sidebar_subtitle(const gchar *room_id,
+                                   guint        members,
+                                   gboolean     require_mention);
 
 /**
  * clawt_room_member_list:

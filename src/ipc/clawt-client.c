@@ -1027,6 +1027,35 @@ connect_attempt_free(gpointer data)
     g_free(attempt);
 }
 
+/*
+ * The remembered subscription went out on an async connect; a cursor the
+ * daemon could not resume from is a hole, said as on a reconnect.
+ */
+static void
+on_wanted_subscribe_done(GObject *source, GAsyncResult *result,
+                         gpointer user_data)
+{
+    ClawtClient *self = CLAWT_CLIENT(source);
+    g_autoptr(GError) error = NULL;
+    gboolean resumed = TRUE;
+
+    (void)user_data;
+
+    /*
+     * Debug, not a warning: the usual failure is the connection going
+     * away before the reply, and the reconnect that follows subscribes
+     * again with the intent still recorded.
+     */
+    if (!clawt_client_subscribe_finish(self, result, &resumed, &error)) {
+        g_debug("client: the subscription sent on connecting failed: %s",
+                error->message);
+        return;
+    }
+
+    if (!resumed)
+        g_signal_emit(self, signals[SIGNAL_RESYNC], 0);
+}
+
 static void
 on_hello_finished(GObject *source, GAsyncResult *result, gpointer user_data)
 {
@@ -1054,6 +1083,26 @@ on_hello_finished(GObject *source, GAsyncResult *result, gpointer user_data)
         clawt_client_disconnect(self);
         g_task_return_error(task, g_steal_pointer(&error));
         return;
+    }
+
+    /*
+     * A subscription asked for before there was a connection goes out
+     * now.  Only the reconnect path honoured it, so a host that asked
+     * and then connected asynchronously -- clawtilla-lrg does exactly
+     * that, at startup -- was connected, drew the fleet it fetched, and
+     * never heard another event: no new message, no decision, no paired
+     * device, until the daemon happened to restart.  On this client's
+     * own context, so the reply lands on the loop the host turns.
+     */
+    if (self->subscribe_wanted) {
+        if (self->context != NULL)
+            g_main_context_push_thread_default(self->context);
+
+        clawt_client_subscribe_async(self, self->cursor, NULL,
+                                     on_wanted_subscribe_done, NULL);
+
+        if (self->context != NULL)
+            g_main_context_pop_thread_default(self->context);
     }
 
     g_signal_emit(self, signals[SIGNAL_CONNECTED], 0);

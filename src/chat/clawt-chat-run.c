@@ -106,3 +106,18 @@ clawt_chat_conversation_peer(const gchar * const *members,
 
     return other;
 }
+
+gboolean
+clawt_chat_reply_ends_wait(const gchar *from,
+                           const gchar *agent)
+{
+    if (from == NULL || *from == '\0')
+        return FALSE;
+
+    /* an agent's conversation: only that agent's answer */
+    if (agent != NULL)
+        return g_strcmp0(from, agent) == 0;
+
+    /* a room: any member, but not you and not the daemon */
+    return g_strcmp0(from, "user") != 0 && g_strcmp0(from, "clawtilla") != 0;
+}

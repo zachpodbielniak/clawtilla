@@ -664,9 +664,13 @@ alert_free(gpointer data)
     g_free(alert);
 }
 
+/*
+ * @ts is when it happened (clawt_event_happened_at()), so the events
+ * replayed on reconnect are not all "just now".
+ */
 static void
 clawt_window_alert(ClawtWindow *self, ClawtAlertTier tier, const gchar *source,
-                   const gchar *agent, const gchar *text)
+                   const gchar *agent, const gchar *text, gint64 ts)
 {
     Alert *alert;
 
@@ -678,7 +682,7 @@ clawt_window_alert(ClawtWindow *self, ClawtAlertTier tier, const gchar *source,
     alert->text = g_strdup(text);
     alert->source = g_strdup(source != NULL ? source : "");
     alert->agent = g_strdup(agent != NULL ? agent : "");
-    alert->ts = g_get_real_time();
+    alert->ts = ts;
 
     /*
      * An alert that lands while the panel is open has been seen as it
@@ -1359,7 +1363,8 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
                                                        : "the fleet");
             }
 
-            clawt_window_alert(self, tier, kind, subject, line);
+            clawt_window_alert(self, tier, kind, subject, line,
+                           clawt_event_happened_at(event, g_get_real_time()));
         }
     }
 
@@ -1403,9 +1408,18 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
             clawt_gtk_append_round_marks(self,
                                      clawt_event_get_detail_int(event, "round"),
                                      NULL, NULL, TRUE);
+            /*
+             * Stamped with the event's time, which is when the daemon
+             * routed the message -- the record's own time, as the
+             * history's `ts` is.  This passed 0, and a message that
+             * arrived live drew its run header with no time at all
+             * until the conversation was reopened.
+             */
             clawt_gtk_append_message_marked(self, from != NULL ? from : "?",
                                      body != NULL ? body : "",
-                                     g_strcmp0(from, "user") == 0, 0,
+                                     g_strcmp0(from, "user") == 0,
+                                     clawt_event_get_timestamp(event) /
+                                         G_USEC_PER_SEC,
                                      clawt_event_get_detail_int(event, "acknowledged") != 0,
                                      clawt_event_get_detail_int(event, "merged"),
                                      clawt_event_get_detail_int(event, "consult"),
@@ -1424,7 +1438,7 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
              * enough that relying on the indicator alone leaves a
              * spinner running under an answer that has already arrived.
              */
-            if (g_strcmp0(from, self->selected_agent) == 0)
+            if (clawt_chat_reply_ends_wait(from, self->selected_agent))
                 clawt_gtk_set_activity(self, NULL);
 
             clawt_gtk_queue_scroll(self);
@@ -1555,7 +1569,9 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
              * leaves no trace anywhere if nobody was looking.
              */
             clawt_window_alert(self, CLAWT_ALERT_ERROR, "download",
-                               clawt_event_get_subject(event), message);
+                               clawt_event_get_subject(event), message,
+                               clawt_event_happened_at(event,
+                                                       g_get_real_time()));
         }
 
         refresh_settings_images(self);
@@ -1575,7 +1591,8 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
             clawt_event_get_detail(event, "error"));
 
         clawt_window_alert(self, CLAWT_ALERT_ERROR, kind,
-                           clawt_event_get_detail(event, "agent"), message);
+                           clawt_event_get_detail(event, "agent"), message,
+                           clawt_event_happened_at(event, g_get_real_time()));
         clawt_gtk_refresh_routines(self);
         return;
     }
@@ -1608,7 +1625,8 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
          * operator most wants to find again an hour later, which a toast
          * cannot offer.
          */
-        clawt_window_alert(self, CLAWT_ALERT_ERROR, "message", from, message);
+        clawt_window_alert(self, CLAWT_ALERT_ERROR, "message", from, message,
+                           clawt_event_happened_at(event, g_get_real_time()));
         clawt_gtk_refresh_flow(self);
         return;
     }

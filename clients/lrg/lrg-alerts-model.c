@@ -72,10 +72,13 @@ clawt_lrg_alerts_add_event(GPtrArray *alerts, ClawtEvent *event,
     const gchar *subject;
     ClawtAlertTier tier;
     g_autofree gchar *line = NULL;
-    gint64 now = g_get_real_time();
+    gint64 now;
 
     g_return_val_if_fail(alerts != NULL, FALSE);
     g_return_val_if_fail(event != NULL, FALSE);
+
+    /* when it happened, not when this window heard about it */
+    now = clawt_event_happened_at(event, g_get_real_time());
 
     kind = clawt_event_get_kind(event);
     subject = clawt_event_get_subject(event);

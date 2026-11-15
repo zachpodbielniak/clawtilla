@@ -391,6 +391,56 @@ test_acp_is_an_agent_with_its_own_default(void)
     g_assert_nonnull(clawt_config_schema_lookup("agents.model.command"));
 }
 
+/*
+ * The command reaches libreclaw: an acp agent's model.command is
+ * rendered as ai.command, which libreclaw reads back for the acp client
+ * it starts; the same key on a Claude Code agent renders nothing, since
+ * that CLI has nothing to start it with.
+ */
+static void
+test_an_acp_agents_command_is_rendered(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+        "agents:\n"
+        "  - id: acp-one\n"
+        "    model:\n"
+        "      provider: acp\n"
+        "      command: \"my-acp-agent --stdio\"\n"
+        "  - id: claude-one\n"
+        "    model:\n"
+        "      provider: claude-code\n"
+        "      command: \"my-acp-agent --stdio\"\n", &error);
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-acp-XXXXXX", NULL);
+    g_autofree gchar *path = g_build_filename(dir, "config.yaml", NULL);
+    g_autofree gchar *acp = NULL;
+    g_autofree gchar *claude = NULL;
+    g_autoptr(LcConfig) parsed = lc_config_new();
+
+    g_assert_no_error(error);
+
+    acp = clawt_config_render_agent(config,
+        clawt_config_get_agent(config, "acp-one"), "/tmp/s.sock",
+        "/tmp/state", &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(strstr(acp, "\n  command: "));
+    g_assert_nonnull(strstr(acp, "my-acp-agent --stdio"));
+
+    g_assert_true(g_file_set_contents(path, acp, -1, &error));
+    g_assert_true(lc_config_load_from_path(parsed, path, &error));
+    g_assert_no_error(error);
+    g_assert_cmpstr(lc_config_get_ai_command_for(parsed, "acp"), ==,
+                    "my-acp-agent --stdio");
+
+    claude = clawt_config_render_agent(config,
+        clawt_config_get_agent(config, "claude-one"), "/tmp/s.sock",
+        "/tmp/state", &error);
+    g_assert_no_error(error);
+    g_assert_null(strstr(claude, "my-acp-agent"));
+
+    clawt_test_remove_tree(dir);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -398,6 +448,8 @@ main(int argc, char *argv[])
 
     g_test_add_func("/model-catalog/acp-is-an-agent",
                     test_acp_is_an_agent_with_its_own_default);
+    g_test_add_func("/model-catalog/acp-command-is-rendered",
+                    test_an_acp_agents_command_is_rendered);
 
     g_test_add_func("/model-catalog/agent-providers-are-libreclaws",
                     test_agent_providers_are_the_ones_libreclaw_runs);

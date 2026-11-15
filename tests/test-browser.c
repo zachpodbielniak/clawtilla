@@ -821,12 +821,15 @@ test_secrets_never_seen(void)
         g_assert_cmpuint(fake_count(fixture.fake, "page.fill_secret"), ==, 1);
     }
 
-    /* 3. The hold: no picture, no HTML, until the page changes. */
+    /* 3. The hold: no picture, no HTML, no scroll, until the page changes. */
     {
+        guint evals_before = fake_count(fixture.fake, "page.eval");
         g_autoptr(JsonNode) shot = run_tool(&fixture, "keeper", "clawtilla_browser_screenshot",
                                             "{}");
         g_autoptr(JsonNode) html = run_tool(&fixture, "keeper", "clawtilla_browser_html", "{}");
-        g_autoptr(JsonNode) read = run_tool(&fixture, "keeper", "clawtilla_browser_read", "{}");
+        g_autoptr(JsonNode) scroll = run_tool(&fixture, "keeper", "clawtilla_browser_scroll",
+                                              "{\"pages\":1}");
+        g_autoptr(JsonNode) read = NULL;
         g_autoptr(JsonNode) opened = NULL;
         g_autoptr(JsonNode) after = NULL;
         guint n_content = 0;
@@ -836,8 +839,19 @@ test_secrets_never_seen(void)
         g_assert_nonnull(strstr(text, "a secret was just filled on this page"));
         text = said(heard, html, &is_error);
         g_assert_true(is_error);
+        /*
+         * Scrolling is a script underneath, and its answer says where the
+         * page is -- refused by clawtilla before gsurf is asked, with the
+         * same remedy, so no further page.eval reaches the browser.
+         */
+        text = said(heard, scroll, &is_error);
+        g_assert_true(is_error);
+        g_assert_nonnull(strstr(text, "a secret was just filled on this page"));
+        g_assert_cmpuint(fake_count(fixture.fake, "page.eval"), ==,
+                         evals_before);
         g_assert_cmpuint(fake_count(fixture.fake, "page.screenshot"), ==, 0);
         /* reading the text is not reading the field */
+        read = run_tool(&fixture, "keeper", "clawtilla_browser_read", "{}");
         said(heard, read, &is_error);
         g_assert_false(is_error);
 

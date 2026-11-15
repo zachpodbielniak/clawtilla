@@ -477,6 +477,78 @@ test_open_target_resolve(void)
 	g_clear_pointer(&agent, g_free);
 }
 
+/*
+ * A second `clawtilla-gtk --open` hands its whole command line to the
+ * window already running, which takes only --open out of it: every
+ * spelling the typing invocation accepted, the last one winning, other
+ * options ignored, and nothing when there is no --open (which opens a
+ * window, as a second invocation always has).
+ */
+static void
+test_open_target_from_another_invocation(void)
+{
+	static const gchar *const plain[] = {
+		"clawtilla-gtk", "--open", "chief", NULL
+	};
+	static const gchar *const shortopt[] = {
+		"clawtilla-gtk", "-o", "standup", NULL
+	};
+	static const gchar *const equals[] = {
+		"clawtilla-gtk", "--open=clawtilla:dm:chief:lead", NULL
+	};
+	static const gchar *const mixed[] = {
+		"clawtilla-gtk", "--host", "box:7777", "--open", "first",
+		"--profile", "work", "--open", "second", NULL
+	};
+	static const gchar *const none[] = {
+		"clawtilla-gtk", "--host", "box:7777", NULL
+	};
+	static const gchar *const empty[] = { NULL };
+	g_autofree gchar *a = clawt_open_target_from_argv(plain);
+	g_autofree gchar *b = clawt_open_target_from_argv(shortopt);
+	g_autofree gchar *c = clawt_open_target_from_argv(equals);
+	g_autofree gchar *d = clawt_open_target_from_argv(mixed);
+	g_autofree gchar *e = clawt_open_target_from_argv(none);
+	g_autofree gchar *f = clawt_open_target_from_argv(empty);
+
+	g_assert_cmpstr(a, ==, "chief");
+	g_assert_cmpstr(b, ==, "standup");
+	g_assert_cmpstr(c, ==, "clawtilla:dm:chief:lead");
+	g_assert_cmpstr(d, ==, "second");
+	g_assert_null(e);
+	g_assert_null(f);
+	g_assert_null(clawt_open_target_from_argv(NULL));
+
+	/* The caller's vector is not rearranged by the parse. */
+	g_assert_cmpstr(mixed[1], ==, "--host");
+	g_assert_cmpstr(mixed[4], ==, "first");
+}
+
+/*
+ * A link followed before the daemon answers is held, and a second one
+ * replaces it -- clicking twice means the second.  Once connected, a
+ * link opens at once and leaves what was waiting for the connection's
+ * own open.
+ */
+static void
+test_open_target_waits_for_the_connection(void)
+{
+	g_autofree gchar *pending = NULL;
+	g_autofree gchar *now = NULL;
+
+	g_assert_null(clawt_open_target_hold(&pending, g_strdup("chief"),
+	                                     FALSE));
+	g_assert_cmpstr(pending, ==, "chief");
+
+	g_assert_null(clawt_open_target_hold(&pending, g_strdup("standup"),
+	                                     FALSE));
+	g_assert_cmpstr(pending, ==, "standup");
+
+	now = clawt_open_target_hold(&pending, g_strdup("lead"), TRUE);
+	g_assert_cmpstr(now, ==, "lead");
+	g_assert_cmpstr(pending, ==, "standup");
+}
+
 static void
 test_open_target_unknown(void)
 {
@@ -533,6 +605,10 @@ main(
 	g_test_add_func("/open-target/normalize", test_open_target_normalize);
 	g_test_add_func("/open-target/resolve", test_open_target_resolve);
 	g_test_add_func("/open-target/unknown", test_open_target_unknown);
+	g_test_add_func("/open-target/from-another-invocation",
+	                test_open_target_from_another_invocation);
+	g_test_add_func("/open-target/waits-for-the-connection",
+	                test_open_target_waits_for_the_connection);
 
 	return g_test_run();
 }

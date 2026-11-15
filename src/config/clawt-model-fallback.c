@@ -329,6 +329,13 @@ clawt_failover_badge(JsonObject *failover)
 }
 
 gchar *
+clawt_failover_sidebar_badge(JsonObject *failover)
+{
+    return clawt_failover_is_active(failover) ? g_strdup("On fallback")
+                                              : NULL;
+}
+
+gchar *
 clawt_failover_describe(const gchar *agent,
                         JsonObject  *failover)
 {

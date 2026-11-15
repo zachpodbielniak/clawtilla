@@ -286,7 +286,8 @@ test_agent_row_on_fallback(void)
     g_autoptr(ClawtLrgAgentRow) off = clawt_lrg_agent_row_new(
         json_node_get_object(home), unread, typing, TRUE);
 
-    g_assert_cmpstr(on->fallback, ==, "On fallback: codex-cli gpt-5.5");
+    /* short: the model is on its page, the row needs the width */
+    g_assert_cmpstr(on->fallback, ==, "On fallback");
     g_assert_cmpstr(on->fallback_message, ==, "scout is running on fallback");
     g_assert_null(off->fallback);
     g_assert_null(off->fallback_message);

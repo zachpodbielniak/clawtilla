@@ -177,6 +177,17 @@ void clawt_sandbox_set_private_home(ClawtSandbox *self, const gchar *home);
 void clawt_sandbox_set_agent_confined(ClawtSandbox *self, gboolean confined);
 
 /**
+ * CLAWT_SANDBOX_LINK_WALK_LIMIT:
+ *
+ * The most entries clawt_sandbox_check_links() walks in one denied
+ * directory.  A deny is a small thing -- ~/.ssh, a key file, a
+ * credentials directory -- and a walk that would take longer than this
+ * is a deny that names the wrong thing, so it is refused rather than
+ * half-checked.
+ */
+#define CLAWT_SANDBOX_LINK_WALK_LIMIT (20000)
+
+/**
  * clawt_sandbox_check_links:
  * @self: a #ClawtSandbox
  * @error: (out) (optional): return location for a #GError
@@ -194,6 +205,11 @@ void clawt_sandbox_set_agent_confined(ClawtSandbox *self, gboolean confined);
  * Anything under /usr or /etc is skipped: those are root's, and with
  * fs.protected_hardlinks an agent cannot make a second name for them.
  * Always %TRUE for the other modes, which bind nothing.
+ *
+ * A check made once, when the box is spawned: a second name made later,
+ * from inside a writable bind of a box already running, is not seen.
+ * A denied directory holding more than %CLAWT_SANDBOX_LINK_WALK_LIMIT
+ * entries is refused rather than half-walked.
  *
  * Returns: %TRUE if the sandbox can be built as described
  */

@@ -394,6 +394,16 @@ test_describe(void)
     g_assert_cmpstr(badge, ==, "On fallback: codex-cli gpt-5.5");
     g_assert_null(no_badge);
 
+    /* a sidebar row's badge leaves the model to the agent's page */
+    {
+        g_autofree gchar *brief = clawt_failover_sidebar_badge(away);
+        g_autofree gchar *no_brief = clawt_failover_sidebar_badge(home);
+
+        g_assert_cmpstr(brief, ==, "On fallback");
+        g_assert_null(no_brief);
+        g_assert_null(clawt_failover_sidebar_badge(NULL));
+    }
+
     g_assert_true(clawt_failover_is_active(away));
     g_assert_false(clawt_failover_is_active(home));
     g_assert_false(clawt_failover_is_active(NULL));
