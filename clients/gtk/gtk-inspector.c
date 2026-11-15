@@ -1095,6 +1095,19 @@ on_save_agent(GtkButton *button, gpointer user_data)
                           (ClawtCrosstalkSummary)chosen));
     }
 
+    /* Likewise only when changed: the fleet's value may be what shows. */
+    if (self->crosstalk_to_row != NULL) {
+        guint chosen = adw_combo_row_get_selected(
+            ADW_COMBO_ROW(self->crosstalk_to_row));
+        guint shown = GPOINTER_TO_UINT(g_object_get_data(
+            G_OBJECT(self->crosstalk_to_row), "shown"));
+
+        if (chosen != shown)
+            ok &= clawt_gtk_apply_setting(self, "crosstalk_summary_to",
+                      clawt_crosstalk_summary_to_nick(
+                          (ClawtCrosstalkSummaryTo)chosen));
+    }
+
     if (self->team_role_row != NULL) {
         static const gchar *const roles[] = { "member", "lead" };
 
@@ -1584,6 +1597,47 @@ crosstalk_row_new(const gchar *current)
     on_crosstalk_selected(G_OBJECT(row), NULL, NULL);
     g_signal_connect(row, "notify::selected",
                      G_CALLBACK(on_crosstalk_selected), NULL);
+
+    return row;
+}
+
+/* crosstalk_summary_to's explanation, following the choice. */
+static void
+on_crosstalk_to_selected(GObject *row, GParamSpec *pspec, gpointer user_data)
+{
+    (void)pspec;
+    (void)user_data;
+
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(row),
+        clawt_crosstalk_summary_to_explanation((ClawtCrosstalkSummaryTo)
+            adw_combo_row_get_selected(ADW_COMBO_ROW(row))));
+}
+
+/*
+ * crosstalk_summary_to: whether a summary goes back where the request
+ * came from (a Matrix room, a group) or always to your chat with the
+ * agent.  Walked from libclawt in order, as crosstalk_row_new() is.
+ */
+static GtkWidget *
+crosstalk_to_row_new(const gchar *current)
+{
+    g_autoptr(GtkStringList) labels = gtk_string_list_new(NULL);
+    GtkWidget *row = clawt_gtk_combo_row_new();
+    guint shown = (guint)clawt_crosstalk_summary_to_from_nick(current);
+    guint i;
+
+    for (i = 0; i < clawt_crosstalk_summary_to_count(); i++)
+        gtk_string_list_append(labels, clawt_crosstalk_summary_to_label(
+            (ClawtCrosstalkSummaryTo)i));
+
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                  clawt_crosstalk_summary_to_title());
+    adw_combo_row_set_model(ADW_COMBO_ROW(row), G_LIST_MODEL(labels));
+    adw_combo_row_set_selected(ADW_COMBO_ROW(row), shown);
+    g_object_set_data(G_OBJECT(row), "shown", GUINT_TO_POINTER(shown));
+    on_crosstalk_to_selected(G_OBJECT(row), NULL, NULL);
+    g_signal_connect(row, "notify::selected",
+                     G_CALLBACK(on_crosstalk_to_selected), NULL);
 
     return row;
 }
@@ -3899,6 +3953,11 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
         clawt_json_string(agent, "crosstalk_summary", "chief"));
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
                               self->crosstalk_row);
+
+    self->crosstalk_to_row = crosstalk_to_row_new(
+        clawt_json_string(agent, "crosstalk_summary_to", "source"));
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              self->crosstalk_to_row);
 
     self->chief_row = switch_row(
         "Chief of staff", "Hands work to the other agents",

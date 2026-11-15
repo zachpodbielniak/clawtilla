@@ -824,6 +824,26 @@ static const ClawtSchemaEntry schema[] = {
   "other are posted as one note. Work a trigger or routine started is\n"
   "not cross-talk and is never summarised.", "0.30.0" },
 
+{ "orchestration.crosstalk_summary_to", CLAWT_SCHEMA_ENUM,
+  CLAWT_SCHEMA_FLAG_PER_AGENT, "source", clawt_crosstalk_summary_to_get_type,
+  "Where a cross-talk summary is posted: source or chat.\n"
+  "\n"
+  "source, the default: back where the request came from. An agent that\n"
+  "reached out to another agent or a Grok bot while answering somebody in\n"
+  "a Matrix room has the summary posted in that room, from its own Matrix\n"
+  "account, so the person who asked hears how it went. Asked in a\n"
+  "clawtilla room you are in -- a group -- it is recorded there. Anything\n"
+  "else comes to your chat with the agent, as does a Matrix post that\n"
+  "fails (with a line saying why).\n"
+  "\n"
+  "chat: always your chat with the agent.\n"
+  "\n"
+  "Only the agent whose turn began the exchange posts it at the source;\n"
+  "another agent in it that is told (`crosstalk_summary`) is told in your\n"
+  "chat with it. An exchange picked up again after a daemon restart has\n"
+  "lost where it came from and comes to your chat. Set per agent as\n"
+  "`crosstalk_summary_to`.", "0.33.0" },
+
 { "orchestration.crosstalk_summary_model", CLAWT_SCHEMA_STRING,
   CLAWT_SCHEMA_FLAG_COMMENTED, "", NULL,
   "A small model that rewrites each cross-talk summary as one friendly\n"
@@ -4503,6 +4523,7 @@ static const ClawtSchemaAgentKey agent_keys[] = {
     { "daily_agent_budget_micros", "orchestration.daily_agent_budget_micros" },
     { "max_waits",                 "orchestration.max_waits_per_agent" },
     { "crosstalk_summary",         "orchestration.crosstalk_summary" },
+    { "crosstalk_summary_to",      "orchestration.crosstalk_summary_to" },
     /*
      * Fleet policy an agent may override. The `orchestration.` section
      * is the fleet's own, so the per-agent form drops it.

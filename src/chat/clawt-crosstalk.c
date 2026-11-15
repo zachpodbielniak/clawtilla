@@ -128,6 +128,84 @@ clawt_crosstalk_summary_applies(
 	return FALSE;
 }
 
+/* ── Where it goes ────────────────────────────────────────────────── */
+
+guint
+clawt_crosstalk_summary_to_count(void)
+{
+	return 2;
+}
+
+const gchar *
+clawt_crosstalk_summary_to_nick(
+	ClawtCrosstalkSummaryTo setting
+){
+	/* Every value spelled out, no default: -Wswitch names a new one. */
+	switch (setting) {
+	case CLAWT_CROSSTALK_SUMMARY_TO_SOURCE:
+		return "source";
+	case CLAWT_CROSSTALK_SUMMARY_TO_CHAT:
+		return "chat";
+	}
+
+	return "source";
+}
+
+ClawtCrosstalkSummaryTo
+clawt_crosstalk_summary_to_from_nick(
+	const gchar *nick
+){
+	gint value = (gint)CLAWT_CROSSTALK_SUMMARY_TO_SOURCE;
+
+	if (nick == NULL || *nick == '\0')
+		return CLAWT_CROSSTALK_SUMMARY_TO_SOURCE;
+
+	if (!clawt_enum_from_nick(CLAWT_TYPE_CROSSTALK_SUMMARY_TO, nick, &value))
+		return CLAWT_CROSSTALK_SUMMARY_TO_SOURCE;
+
+	return (ClawtCrosstalkSummaryTo)value;
+}
+
+const gchar *
+clawt_crosstalk_summary_to_title(void)
+{
+	return "Where those summaries go";
+}
+
+const gchar *
+clawt_crosstalk_summary_to_label(
+	ClawtCrosstalkSummaryTo setting
+){
+	switch (setting) {
+	case CLAWT_CROSSTALK_SUMMARY_TO_SOURCE:
+		return "Where the request came from (default)";
+	case CLAWT_CROSSTALK_SUMMARY_TO_CHAT:
+		return "Always my chat with the agent";
+	}
+
+	return "Where the request came from (default)";
+}
+
+const gchar *
+clawt_crosstalk_summary_to_explanation(
+	ClawtCrosstalkSummaryTo setting
+){
+	switch (setting) {
+	case CLAWT_CROSSTALK_SUMMARY_TO_SOURCE:
+		return "If the agent reached out while answering someone in a "
+		       "Matrix room, the summary is posted in that room, from the "
+		       "agent's Matrix account; if it was asked in a clawtilla room "
+		       "you are in, such as a group, it goes there. Anything else "
+		       "-- and a Matrix post that fails -- comes to your chat with "
+		       "the agent.";
+	case CLAWT_CROSSTALK_SUMMARY_TO_CHAT:
+		return "Every summary comes to your chat with the agent, wherever "
+		       "the request that led to it was made.";
+	}
+
+	return "";
+}
+
 /* ── What counts as cross-talk ───────────────────────────────────── */
 
 gboolean
@@ -297,6 +375,8 @@ struct _ClawtCrosstalkExchange {
 	gint64      last_activity; /* microseconds */
 	gboolean    refused;
 	gboolean    closed;        /* a new round ended it */
+	gchar      *source_room;   /* the room whose turn began it, if another */
+	gchar      *source_agent;  /* whose turn that was */
 	GHashTable *doing;         /* agent -> Doing* */
 	GPtrArray  *delegated;     /* Delegated* */
 	GHashTable *carried;       /* task id -> GINT_TO_POINTER(state + 1) */
@@ -368,6 +448,8 @@ clawt_crosstalk_exchange_unref(
 	g_free(self->ask);
 	g_free(self->first_message_id);
 	g_free(self->last_message_id);
+	g_free(self->source_room);
+	g_free(self->source_agent);
 	g_hash_table_unref(self->doing);
 	g_ptr_array_unref(self->delegated);
 	g_hash_table_unref(self->carried);
@@ -385,6 +467,24 @@ clawt_crosstalk_exchange_get_room_id(
 	g_return_val_if_fail(self != NULL, NULL);
 
 	return self->room_id;
+}
+
+const gchar *
+clawt_crosstalk_exchange_get_source_room(
+	ClawtCrosstalkExchange *self
+){
+	g_return_val_if_fail(self != NULL, NULL);
+
+	return self->source_room;
+}
+
+const gchar *
+clawt_crosstalk_exchange_get_source_agent(
+	ClawtCrosstalkExchange *self
+){
+	g_return_val_if_fail(self != NULL, NULL);
+
+	return self->source_agent;
 }
 
 const gchar *
@@ -818,6 +918,38 @@ clawt_crosstalk_note_message(
 		                    GINT_TO_POINTER((gint)CLAWT_TASK_PENDING + 1));
 
 	return TRUE;
+}
+
+void
+clawt_crosstalk_note_source(
+	ClawtCrosstalk *self,
+	const gchar    *room_id,
+	const gchar    *message_id,
+	const gchar    *agent_id,
+	const gchar    *source_room
+){
+	ClawtCrosstalkExchange *exchange;
+
+	g_return_if_fail(CLAWT_IS_CROSSTALK(self));
+
+	if (room_id == NULL || agent_id == NULL || source_room == NULL ||
+		*source_room == '\0' || g_strcmp0(source_room, room_id) == 0)
+		return;
+
+	exchange = open_in(self, room_id);
+
+	/*
+	 * Only the message that opened the exchange says where it came
+	 * from: an answer's request context is the asker's, echoed back,
+	 * and a later message in the same exchange was caused by the first.
+	 */
+	if (exchange == NULL || exchange->source_room != NULL ||
+		g_strcmp0(exchange->first_message_id, message_id) != 0 ||
+		g_strcmp0(exchange->initiator, agent_id) != 0)
+		return;
+
+	exchange->source_room = g_strdup(source_room);
+	exchange->source_agent = g_strdup(agent_id);
 }
 
 void

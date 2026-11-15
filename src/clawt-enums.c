@@ -185,6 +185,24 @@ clawt_steer_policy_get_type(void)
     return g_define_type_id__volatile;
 }
 
+/* Register ClawtCrosstalkSummaryTo as a GLib enum type */
+GType
+clawt_crosstalk_summary_to_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_CROSSTALK_SUMMARY_TO_SOURCE, "CLAWT_CROSSTALK_SUMMARY_TO_SOURCE", "source" },
+            { CLAWT_CROSSTALK_SUMMARY_TO_CHAT, "CLAWT_CROSSTALK_SUMMARY_TO_CHAT", "chat" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtCrosstalkSummaryTo", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
 /* Register ClawtCrosstalkSummary as a GLib enum type */
 GType
 clawt_crosstalk_summary_get_type(void)

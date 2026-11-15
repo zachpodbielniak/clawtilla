@@ -653,6 +653,25 @@ orchestration:
   # not cross-talk and is never summarised.
   crosstalk_summary: "chief"
 
+  # Where a cross-talk summary is posted: source or chat.
+  #
+  # source, the default: back where the request came from. An agent that
+  # reached out to another agent or a Grok bot while answering somebody in
+  # a Matrix room has the summary posted in that room, from its own Matrix
+  # account, so the person who asked hears how it went. Asked in a
+  # clawtilla room you are in -- a group -- it is recorded there. Anything
+  # else comes to your chat with the agent, as does a Matrix post that
+  # fails (with a line saying why).
+  #
+  # chat: always your chat with the agent.
+  #
+  # Only the agent whose turn began the exchange posts it at the source;
+  # another agent in it that is told (`crosstalk_summary`) is told in your
+  # chat with it. An exchange picked up again after a daemon restart has
+  # lost where it came from and comes to your chat. Set per agent as
+  # `crosstalk_summary_to`.
+  crosstalk_summary_to: "source"
+
   # # A small model that rewrites each cross-talk summary as one friendly
   # # paragraph, as provider/model -- the same spelling as
   # # orchestration.ack_check_model. Empty, the default, posts the summary

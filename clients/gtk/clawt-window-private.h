@@ -480,6 +480,7 @@ struct _ClawtWindow {
     GtkWidget         *team_role_row;
     GtkWidget         *steer_row;      /* agents.steer, walked from libclawt */
     GtkWidget         *crosstalk_row;  /* crosstalk_summary, likewise */
+    GtkWidget         *crosstalk_to_row;  /* crosstalk_summary_to, likewise */
     GStrv              team_ids;
     gboolean           settings_need_restart;
 

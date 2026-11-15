@@ -366,6 +366,8 @@ reported_member(const gchar *key)
     /* Resolved through the fleet's key, as the select shows it. */
     if (g_strcmp0(key, "crosstalk_summary") == 0)
         return "crosstalk_summary";
+    if (g_strcmp0(key, "crosstalk_summary_to") == 0)
+        return "crosstalk_summary_to";
 
     return NULL;
 }
@@ -498,6 +500,24 @@ control_for(ClawtWebApp *app, const gchar *agent_id, const ClawtSchemaEntry *ent
 
         return HTMX_ELEMENT(clawt_web_select_field(
             clawt_crosstalk_summary_title(), field_name,
+            (const gchar *const *)ids, (const gchar *const *)names, value));
+    }
+
+    /* Where those summaries go, likewise. */
+    if (g_strcmp0(key, "crosstalk_summary_to") == 0) {
+        guint n = clawt_crosstalk_summary_to_count();
+        g_autofree const gchar **ids = g_new0(const gchar *, n + 1);
+        g_autofree const gchar **names = g_new0(const gchar *, n + 1);
+        guint i;
+
+        for (i = 0; i < n; i++) {
+            ids[i] = clawt_crosstalk_summary_to_nick((ClawtCrosstalkSummaryTo)i);
+            names[i] = clawt_crosstalk_summary_to_label(
+                (ClawtCrosstalkSummaryTo)i);
+        }
+
+        return HTMX_ELEMENT(clawt_web_select_field(
+            clawt_crosstalk_summary_to_title(), field_name,
             (const gchar *const *)ids, (const gchar *const *)names, value));
     }
 
@@ -1263,6 +1283,12 @@ clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id)
                     clawt_web_add(group_body, clawt_web_text(
                         clawt_crosstalk_summary_explanation(
                             clawt_crosstalk_summary_from_nick(value)),
+                        "small muted"));
+
+                if (g_strcmp0(key, "crosstalk_summary_to") == 0)
+                    clawt_web_add(group_body, clawt_web_text(
+                        clawt_crosstalk_summary_to_explanation(
+                            clawt_crosstalk_summary_to_from_nick(value)),
                         "small muted"));
 
                 if (g_strcmp0(key, "steer") == 0)

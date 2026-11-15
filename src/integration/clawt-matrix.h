@@ -200,6 +200,45 @@ void clawt_matrix_rooms_async(const gchar         *homeserver,
  */
 GPtrArray *clawt_matrix_rooms_finish(GAsyncResult *result, GError **error);
 
+/**
+ * clawt_matrix_send_text_async:
+ * @homeserver: the homeserver, as typed
+ * @access_token: the account's access token
+ * @room_id: a Matrix room id (`!abc:example.org`)
+ * @text: what to post
+ * @txn_seed: (nullable): what the transaction id is made from; the
+ *   same seed is the same transaction, so a retry posts once
+ * @cancellable: (nullable): a #GCancellable
+ * @callback: called when the homeserver has answered
+ * @user_data: for @callback
+ *
+ * Posts @text in @room_id as an `m.notice` -- the message type a bot
+ * uses for what it reports rather than what it says, which clients draw
+ * apart and other bots do not answer.
+ *
+ * Since: 0.33.0
+ */
+void clawt_matrix_send_text_async(const gchar         *homeserver,
+                                  const gchar         *access_token,
+                                  const gchar         *room_id,
+                                  const gchar         *text,
+                                  const gchar         *txn_seed,
+                                  GCancellable        *cancellable,
+                                  GAsyncReadyCallback  callback,
+                                  gpointer             user_data);
+
+/**
+ * clawt_matrix_send_text_finish:
+ * @result: the #GAsyncResult
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Returns: %TRUE when the homeserver took the message
+ *
+ * Since: 0.33.0
+ */
+gboolean clawt_matrix_send_text_finish(GAsyncResult  *result,
+                                       GError       **error);
+
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtMatrixLogin, clawt_matrix_login_free)
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtMatrixRoom, clawt_matrix_room_free)
 

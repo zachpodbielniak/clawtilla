@@ -13,6 +13,7 @@
  */
 
 #include <clawtilla.h>
+#include <libsoup/soup.h>
 
 #include <string.h>
 
@@ -224,6 +225,127 @@ test_a_room_describes_itself(void)
     g_assert_cmpstr(by_name, ==, "Fleet ops");
 }
 
+/* ── Sending ─────────────────────────────────────────────────────── */
+
+/* A homeserver that keeps what it was sent, and answers @status. */
+typedef struct {
+    guint      status;
+    GPtrArray *paths;   /* each request's method and path */
+    gchar     *auth;
+    gchar     *body;
+} Homeserver;
+
+static void
+homeserver_serve(SoupServer *server, SoupServerMessage *message,
+                 const char *path, GHashTable *query, gpointer user_data)
+{
+    Homeserver *hs = user_data;
+    SoupMessageBody *body = soup_server_message_get_request_body(message);
+    g_autoptr(GBytes) bytes = soup_message_body_flatten(body);
+    const gchar *reply = hs->status == 200
+        ? "{\"event_id\":\"$ev1\"}"
+        : "{\"errcode\":\"M_FORBIDDEN\",\"error\":\"You are not in this room.\"}";
+
+    (void)server;
+    (void)query;
+    g_ptr_array_add(hs->paths, g_strdup_printf("%s %s",
+        soup_server_message_get_method(message), path));
+    g_free(hs->auth);
+    hs->auth = g_strdup(soup_message_headers_get_one(
+        soup_server_message_get_request_headers(message), "Authorization"));
+    g_free(hs->body);
+    hs->body = g_strndup(g_bytes_get_data(bytes, NULL), g_bytes_get_size(bytes));
+    soup_server_message_set_status(message, hs->status, NULL);
+    soup_server_message_set_response(message, "application/json",
+                                     SOUP_MEMORY_COPY, reply, strlen(reply));
+}
+
+typedef struct {
+    gboolean  done;
+    gboolean  ok;
+    GError   *error;
+} Sent;
+
+static void
+on_sent(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    Sent *sent = user_data;
+
+    (void)source;
+    sent->ok = clawt_matrix_send_text_finish(result, &sent->error);
+    sent->done = TRUE;
+}
+
+static void
+send_and_wait(const gchar *base, const gchar *room, const gchar *seed,
+              Sent *sent)
+{
+    clawt_matrix_send_text_async(base, "tok-123", room,
+                                 "Summary: answered", seed, NULL, on_sent, sent);
+    while (!sent->done)
+        g_main_context_iteration(NULL, TRUE);
+}
+
+/*
+ * A post is a PUT of an m.notice to the room, with the token as a
+ * bearer header; the same seed is the same transaction, so a retry is
+ * one message; and a refusal arrives in the server's own words.
+ */
+static void
+test_a_notice_is_posted(void)
+{
+    Homeserver hs = { 200, g_ptr_array_new_with_free_func(g_free), NULL, NULL };
+    g_autoptr(SoupServer) server = soup_server_new(NULL, NULL);
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *base = NULL;
+    GSList *uris;
+    Sent first = { FALSE, FALSE, NULL };
+    Sent again = { FALSE, FALSE, NULL };
+    Sent refused = { FALSE, FALSE, NULL };
+    Sent bad_room = { FALSE, FALSE, NULL };
+
+    soup_server_add_handler(server, NULL, homeserver_serve, &hs, NULL);
+    g_assert_true(soup_server_listen_local(server, 0,
+                                           SOUP_SERVER_LISTEN_IPV4_ONLY, &error));
+    g_assert_no_error(error);
+    uris = soup_server_get_uris(server);
+    base = g_strdup_printf("http://127.0.0.1:%d", g_uri_get_port(uris->data));
+    g_slist_free_full(uris, (GDestroyNotify)g_uri_unref);
+
+    send_and_wait(base, "!ops:example.org", "seed-1", &first);
+    g_assert_no_error(first.error);
+    g_assert_true(first.ok);
+    g_assert_cmpuint(hs.paths->len, ==, 1);
+    g_assert_true(g_str_has_prefix(g_ptr_array_index(hs.paths, 0),
+        "PUT /_matrix/client/v3/rooms/!ops:example.org/send/m.room.message/clawt"));
+    g_assert_cmpstr(hs.auth, ==, "Bearer tok-123");
+    g_assert_nonnull(strstr(hs.body, "\"msgtype\":\"m.notice\""));
+    g_assert_nonnull(strstr(hs.body, "\"body\":\"Summary: answered\""));
+
+    send_and_wait(base, "!ops:example.org", "seed-1", &again);
+    g_assert_true(again.ok);
+    g_assert_cmpstr(g_ptr_array_index(hs.paths, 1), ==,
+                    g_ptr_array_index(hs.paths, 0));
+
+    hs.status = 403;
+    send_and_wait(base, "!ops:example.org", "seed-2", &refused);
+    g_assert_false(refused.ok);
+    g_assert_nonnull(refused.error);
+    g_assert_nonnull(strstr(refused.error->message, "not in this room"));
+
+    /* Not a Matrix room id: nothing is sent. */
+    send_and_wait(base, "dm:chief:w1", "seed-3", &bad_room);
+    g_assert_false(bad_room.ok);
+    g_assert_error(bad_room.error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT);
+    g_assert_cmpuint(hs.paths->len, ==, 3);
+
+    g_clear_error(&refused.error);
+    g_clear_error(&bad_room.error);
+    g_ptr_array_unref(hs.paths);
+    g_free(hs.auth);
+    g_free(hs.body);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -246,6 +368,7 @@ main(int argc, char *argv[])
     g_test_add_func("/matrix/rooms-rejected",
                     test_a_rejected_room_list_is_an_error);
     g_test_add_func("/matrix/room-label", test_a_room_describes_itself);
+    g_test_add_func("/matrix/send", test_a_notice_is_posted);
 
     return g_test_run();
 }

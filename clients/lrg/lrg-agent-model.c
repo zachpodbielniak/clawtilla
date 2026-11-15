@@ -1196,6 +1196,13 @@ clawt_lrg_agent_form(JsonObject *settings)
             field->label = g_strdup(clawt_crosstalk_summary_title());
             field->hint = g_strdup(clawt_crosstalk_summary_explanation(
                 clawt_crosstalk_summary_from_nick(current)));
+        } else if (g_strcmp0(key, "crosstalk_summary_to") == 0) {
+            const gchar *current = string_or(settings, key, "");
+
+            /* Where those summaries go, in libclawt's words. */
+            field->label = g_strdup(clawt_crosstalk_summary_to_title());
+            field->hint = g_strdup(clawt_crosstalk_summary_to_explanation(
+                clawt_crosstalk_summary_to_from_nick(current)));
         } else if (g_strcmp0(key, "steer") == 0) {
             const gchar *current = string_or(settings, key, "");
 

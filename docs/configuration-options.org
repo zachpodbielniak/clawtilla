@@ -1098,6 +1098,31 @@ quiet for 15 seconds; exchanges ending within a few seconds of each
 other are posted as one note. Work a trigger or routine started is
 not cross-talk and is never summarised.
 
+*** =orchestration.crosstalk_summary_to=
+
+- Type :: enum
+- Values :: source, chat
+- Default :: =source=
+- Since :: 0.33.0
+
+Where a cross-talk summary is posted: source or chat.
+
+source, the default: back where the request came from. An agent that
+reached out to another agent or a Grok bot while answering somebody in
+a Matrix room has the summary posted in that room, from its own Matrix
+account, so the person who asked hears how it went. Asked in a
+clawtilla room you are in -- a group -- it is recorded there. Anything
+else comes to your chat with the agent, as does a Matrix post that
+fails (with a line saying why).
+
+chat: always your chat with the agent.
+
+Only the agent whose turn began the exchange posts it at the source;
+another agent in it that is told (`crosstalk_summary`) is told in your
+chat with it. An exchange picked up again after a daemon restart has
+lost where it came from and comes to your chat. Set per agent as
+`crosstalk_summary_to`.
+
 *** =orchestration.crosstalk_summary_model=
 
 - Type :: string

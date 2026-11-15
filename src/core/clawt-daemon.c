@@ -8617,6 +8617,13 @@ clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
             clawt_agent_config_get_enum(clawt_agent_get_config(agent),
                                         "crosstalk_summary")));
 
+    /* crosstalk_summary_to likewise (since 0.33.0). */
+    json_builder_set_member_name(builder, "crosstalk_summary_to");
+    json_builder_add_string_value(
+        builder, clawt_crosstalk_summary_to_nick((ClawtCrosstalkSummaryTo)
+            clawt_agent_config_get_enum(clawt_agent_get_config(agent),
+                                        "crosstalk_summary_to")));
+
     json_builder_set_member_name(builder, "manage_fleet");
     json_builder_add_boolean_value(
         builder, clawt_agent_config_get_boolean(clawt_agent_get_config(agent),
