@@ -59,6 +59,27 @@ check list "-s /nonexistent/d.sock list"
 check list "--socket=/nonexistent/d.sock list"
 check frobnicate "-s /nonexistent/d.sock frobnicate extra words"
 
+# Non-ASCII survives the trip to the terminal.  Without setlocale() the
+# CLI ran in the "C" locale, and GLib converts what g_print()/g_printerr()
+# write to a *terminal* into that locale's ASCII, every other character
+# becoming '?': `device pair --qr` drew its QR code as a field of question
+# marks.  Only a tty shows it -- a pipe or file gets the bytes untouched --
+# so the CLI runs under script(1) for a pseudo-terminal.  An unknown verb
+# is echoed back, which is the hermetic way to see it.  C.UTF-8 is built
+# into glibc, so no locale package is needed.
+if command -v script > /dev/null
+then
+    utf8_output="$(LC_ALL=C.UTF-8 script -qec "${cli} frobnicaté" /dev/null 2>&1)"
+
+    if [[ "${utf8_output}" != *"unknown command 'frobnicaté'"* ]]
+    then
+        echo "test-cli-args: a UTF-8 word came back mangled on a terminal: ${utf8_output}"
+        failures=$((failures + 1))
+    fi
+else
+    echo "test-cli-args: script(1) not found (util-linux); terminal UTF-8 check skipped"
+fi
+
 if [[ ${failures} -ne 0 ]]
 then
     exit 1

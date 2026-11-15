@@ -31,6 +31,7 @@
 #include <errno.h>
 #include <ai-glib.h>
 #include <stdio.h>
+#include <locale.h>
 #include <stdlib.h>
 
 /* Generated from data/default-config.yaml at build time. */
@@ -10918,6 +10919,22 @@ main(int argc, char *argv[])
     g_autoptr(GOptionContext) context = NULL;
     g_autoptr(GError) error = NULL;
     g_autofree gchar *usage = build_usage_text();
+
+    /*
+     * Take the terminal's character set from the environment.
+     *
+     * A program that never calls setlocale() runs in the "C" locale, and
+     * g_print() / g_printerr() convert their UTF-8 to that locale's ASCII
+     * when writing to a terminal -- every character outside it becomes
+     * '?' (a pipe or a file gets the bytes untouched, which is why it hid).
+     * The QR code from `device pair --qr` is drawn in half-block
+     * characters, so it printed as a field of question marks; agent names,
+     * message bodies and any other non-ASCII text were mangled the same way.
+     *
+     * LC_CTYPE only: LC_NUMERIC would turn "%.2f" into "0,25" under some
+     * locales, and the CLI's numbers are read by scripts as well as people.
+     */
+    setlocale(LC_CTYPE, "");
 
     context = g_option_context_new("- orchestrate a fleet of libreclaw agents");
     g_option_context_add_main_entries(context, entries, NULL);
