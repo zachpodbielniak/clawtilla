@@ -1278,7 +1278,11 @@ The integration broker (docs/connectors.org, "An integration broker"):
 ~broker.status~ answers ~enabled~, ~type~ and ~label~ (~anythingmcp~,
 "AnythingMCP"), ~state~ (a ~ClawtBrokerState~ nick) and ~state_label~
 (~clawt_broker_state_label()~), ~detail~ when it is doing something or
-failed, ~image~, ~dashboard_url~, ~mcp_url~, ~restarts~, ~refusal~ when
+failed, ~image~, ~dashboard_url~, ~mcp_url~, ~restarts~, ~last_exit~ once
+the watch has found a container down (~container~, podman's ~status~,
+~how~ -- a phrase such as ~exited with code 3~ --, ~exit_code~ and
+~oom_killed~ when the container module reported them, ~failure~ in
+~broker.restart: on-failure~'s sense and ~restarted~), ~refusal~ when
 Jentic One is refused for an unconfined agent, ~assignments~ (each with
 ~target~, ~server~, ~connector~, ~agents~ and ~key_stored~ -- whether, never
 what) and ~warnings~.  ~broker.start~, ~broker.stop~ and ~broker.restart~

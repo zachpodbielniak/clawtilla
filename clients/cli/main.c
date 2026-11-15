@@ -6579,6 +6579,20 @@ print_broker_status(JsonObject *root)
                 json_object_get_int_member_with_default(root, "restarts",
                                                         0));
 
+    /* How the last container to stop ended, and what broker.restart did. */
+    if (json_object_has_member(root, "last_exit") &&
+        JSON_NODE_HOLDS_OBJECT(json_object_get_member(root, "last_exit"))) {
+        JsonObject *last = json_object_get_object_member(root, "last_exit");
+
+        if (last != NULL)
+            g_print("  last exit: %s %s; %s\n",
+                    member_or(last, "container", "?"),
+                    member_or(last, "how", "stopped"),
+                    json_object_get_boolean_member_with_default(
+                        last, "restarted", FALSE)
+                    ? "restarted" : "not restarted");
+    }
+
     if (json_object_has_member(root, "refusal"))
         g_print("  refused:   %s\n", member_or(root, "refusal", ""));
 

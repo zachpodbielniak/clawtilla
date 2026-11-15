@@ -21,6 +21,7 @@
 #include "clawtilla.h"
 #include "clawt-test-util.h"
 #include "core/clawt-daemon-private.h"
+#include "integration/clawt-broker-private.h"
 #include "integration/clawt-connector-relay.h"
 
 #include <glib.h>
@@ -1160,6 +1161,25 @@ fake_podman_answer(
 		json = "{\"Id\":\"run1\",\"State\":{\"Status\":\"running\",\"Pid\":7}}";
 	} else if (strstr(path, "/containers/exit1/json") != NULL) {
 		json = "{\"Id\":\"exit1\",\"State\":{\"Status\":\"exited\",\"Pid\":0}}";
+	} else if (strstr(path, "/containers/clean1/json") != NULL) {
+		json = "{\"Id\":\"clean1\",\"State\":{\"Status\":\"exited\",\"Pid\":0,"
+		       "\"ExitCode\":0,\"OOMKilled\":false}}";
+	} else if (strstr(path, "/containers/fail1/json") != NULL) {
+		json = "{\"Id\":\"fail1\",\"State\":{\"Status\":\"exited\",\"Pid\":0,"
+		       "\"ExitCode\":3,\"OOMKilled\":false}}";
+	} else if (strstr(path, "/containers/oom1/json") != NULL) {
+		json = "{\"Id\":\"oom1\",\"State\":{\"Status\":\"exited\",\"Pid\":0,"
+		       "\"ExitCode\":137,\"OOMKilled\":true}}";
+	} else if (strstr(path, "/containers/oomzero1/json") != NULL) {
+		/* OOMKilled with a zero code: the flag alone is a failure. */
+		json = "{\"Id\":\"oomzero1\",\"State\":{\"Status\":\"stopped\","
+		       "\"Pid\":0,\"ExitCode\":0,\"OOMKilled\":true}}";
+	} else if (strstr(path, "/containers/kill1/json") != NULL) {
+		json = "{\"Id\":\"kill1\",\"State\":{\"Status\":\"exited\",\"Pid\":0,"
+		       "\"ExitCode\":137,\"OOMKilled\":false}}";
+	} else if (strstr(path, "/containers/made1/json") != NULL) {
+		json = "{\"Id\":\"made1\",\"State\":{\"Status\":\"created\",\"Pid\":0,"
+		       "\"ExitCode\":0,\"OOMKilled\":false}}";
 	} else if (strstr(path, "/containers/blank1/json") != NULL) {
 		json = "{\"Id\":\"blank1\"}";
 	} else if (strstr(path, "/containers/json") != NULL) {
@@ -1367,7 +1387,7 @@ test_watch_reads_inspect(
 ){
 	g_autoptr(ClawtPodBridge) bridge = NULL;
 	g_autoptr(GError) error = NULL;
-	g_autofree gchar *stopped = NULL;
+	g_autoptr(ClawtBrokerExit) stopped = NULL;
 	g_autofree gchar *nowhere = NULL;
 	g_autofree gchar *empty_dir = NULL;
 	FakePodman *fake;
@@ -1396,21 +1416,23 @@ test_watch_reads_inspect(
 	g_assert_true(clawt_broker_find_stopped(bridge, fake->uri, exit_ids,
 	                                        up_names, &stopped, &error));
 	g_assert_no_error(error);
-	g_assert_cmpstr(stopped, ==, "database");
-	g_clear_pointer(&stopped, g_free);
+	g_assert_cmpstr(stopped->name, ==, "database");
+	g_clear_pointer(&stopped, clawt_broker_exit_free);
 
 	/* A 404 while podman answers its list: the container is gone. */
 	g_assert_true(clawt_broker_find_stopped(bridge, fake->uri, gone_ids,
 	                                        up_names, &stopped, &error));
 	g_assert_no_error(error);
-	g_assert_cmpstr(stopped, ==, "database");
-	g_clear_pointer(&stopped, g_free);
+	g_assert_cmpstr(stopped->name, ==, "database");
+	g_assert_true(stopped->gone);
+	g_clear_pointer(&stopped, clawt_broker_exit_free);
 
 	/* Never made: stopped, without asking. */
 	g_assert_true(clawt_broker_find_stopped(bridge, fake->uri, unmade_ids,
 	                                        up_names, &stopped, &error));
-	g_assert_cmpstr(stopped, ==, "database");
-	g_clear_pointer(&stopped, g_free);
+	g_assert_cmpstr(stopped->name, ==, "database");
+	g_assert_true(stopped->never_made);
+	g_clear_pointer(&stopped, clawt_broker_exit_free);
 
 	/* No state at all is "did not say", not "stopped". */
 	g_assert_false(clawt_broker_find_stopped(bridge, fake->uri, blank_ids,
@@ -1435,6 +1457,281 @@ test_watch_reads_inspect(
 	g_assert_nonnull(error);
 	g_assert_null(stopped);
 	clawt_test_remove_tree(empty_dir);
+}
+
+/*
+ * broker.restart against what podman says, case by case.  Each container
+ * is inspected through the real podomation container module on a canned
+ * socket, and each policy is asked what it would do with the answer.
+ * on-failure used to behave as always, because inspect did not say how
+ * a container ended; it restarts a non-zero exit or an OOM kill now, and
+ * nothing else.
+ */
+static void
+test_restart_policy_per_exit(
+	void
+){
+	static const struct {
+		const gchar *id;
+		gboolean     gone;
+		gboolean     never_made;
+		gint         exit_code;
+		gboolean     oom_killed;
+		gboolean     never;
+		gboolean     on_failure;
+		gboolean     always;
+		const gchar *how;
+	} cases[] = {
+		/* id         gone   unmade code  oom    never  on-fail always */
+		{ "clean1",   FALSE, FALSE,   0,  FALSE, FALSE, FALSE, TRUE,
+		  "exited cleanly (exit code 0)" },
+		{ "fail1",    FALSE, FALSE,   3,  FALSE, FALSE, TRUE,  TRUE,
+		  "exited with code 3" },
+		{ "oom1",     FALSE, FALSE, 137,  TRUE,  FALSE, TRUE,  TRUE,
+		  "was killed for running out of memory (exit code 137)" },
+		{ "oomzero1", FALSE, FALSE,   0,  TRUE,  FALSE, TRUE,  TRUE,
+		  "was killed for running out of memory (exit code 0)" },
+		{ "kill1",    FALSE, FALSE, 137,  FALSE, FALSE, TRUE,  TRUE,
+		  "exited with code 137" },
+		{ "made1",    FALSE, FALSE,   0,  FALSE, FALSE, FALSE, TRUE,
+		  "never ran (podman says created)" },
+		{ "gone1",    TRUE,  FALSE,   0,  FALSE, FALSE, FALSE, TRUE,
+		  "is gone from podman" },
+		{ "",         FALSE, TRUE,    0,  FALSE, FALSE, FALSE, TRUE,
+		  "was never made" }
+	};
+	g_autoptr(ClawtPodBridge) bridge = NULL;
+	FakePodman *fake;
+	guint i;
+
+	fake = fake_podman_start();
+	bridge = container_bridge(fake->uri);
+
+	if (bridge == NULL) {
+		fake_podman_stop(fake);
+		return;
+	}
+
+	for (i = 0; i < G_N_ELEMENTS(cases); i++) {
+		g_autoptr(GError) error = NULL;
+		g_autoptr(ClawtBrokerExit) stopped = NULL;
+		g_autofree gchar *how = NULL;
+		g_autofree gchar *never = NULL;
+		g_autofree gchar *on_failure = NULL;
+		g_autofree gchar *always = NULL;
+		const gchar *ids[] = { "run1", NULL, NULL };
+		const gchar *names[] = { "gateway", "database", NULL };
+
+		ids[1] = cases[i].id;
+		g_test_message("case %s", cases[i].id);
+
+		/* What podman says, through the module. */
+		g_assert_true(clawt_broker_find_stopped(bridge, fake->uri, ids,
+		                                        names, &stopped, &error));
+		g_assert_no_error(error);
+		g_assert_nonnull(stopped);
+		g_assert_cmpstr(stopped->name, ==, "database");
+		g_assert_cmpint(stopped->gone, ==, cases[i].gone);
+		g_assert_cmpint(stopped->never_made, ==, cases[i].never_made);
+
+		if (!cases[i].gone && !cases[i].never_made) {
+			g_assert_true(stopped->exit_known);
+			g_assert_cmpint(stopped->exit_code, ==, cases[i].exit_code);
+			g_assert_cmpint(stopped->oom_killed, ==, cases[i].oom_killed);
+		}
+
+		how = clawt_broker_exit_describe(stopped);
+		g_assert_cmpstr(how, ==, cases[i].how);
+		g_assert_cmpint(clawt_broker_exit_is_failure(stopped), ==,
+		                cases[i].on_failure);
+
+		/* What each policy does with it. */
+		g_assert_cmpint(clawt_broker_should_restart(CLAWT_RESTART_NEVER,
+		                                            stopped, &never),
+		                ==, cases[i].never);
+		g_assert_cmpint(clawt_broker_should_restart(
+		                    CLAWT_RESTART_ON_FAILURE, stopped, &on_failure),
+		                ==, cases[i].on_failure);
+		g_assert_cmpint(clawt_broker_should_restart(CLAWT_RESTART_ALWAYS,
+		                                            stopped, &always),
+		                ==, cases[i].always);
+
+		/* A restart needs no reason; a refusal always gives one. */
+		g_assert_null(always);
+		g_assert_nonnull(never);
+		g_assert_nonnull(strstr(never, "database "));
+		g_assert_nonnull(strstr(never, cases[i].how));
+		g_assert_nonnull(strstr(never, "broker.restart is never"));
+
+		if (cases[i].on_failure) {
+			g_assert_null(on_failure);
+		} else {
+			g_assert_nonnull(on_failure);
+			g_assert_nonnull(strstr(on_failure, cases[i].how));
+			g_assert_nonnull(strstr(on_failure,
+			                        "broker.restart is on-failure"));
+			g_assert_nonnull(strstr(on_failure, "not restarted"));
+		}
+	}
+
+	fake_podman_stop(fake);
+}
+
+/*
+ * A container module older than podomation 1.0.3 says the container
+ * stopped and not how.  on-failure cannot call that a failure, so it
+ * does not restart, and says that the module is why.
+ */
+static void
+test_restart_policy_without_exit(
+	void
+){
+	ClawtBrokerExit ended = { 0 };
+	g_autofree gchar *reason = NULL;
+	g_autofree gchar *how = NULL;
+
+	ended.name = (gchar *)"gateway";
+	ended.status = (gchar *)"exited";
+
+	how = clawt_broker_exit_describe(&ended);
+	g_assert_nonnull(strstr(how, "podman says exited"));
+	g_assert_false(clawt_broker_exit_is_failure(&ended));
+
+	g_assert_true(clawt_broker_should_restart(CLAWT_RESTART_ALWAYS, &ended,
+	                                          NULL));
+	g_assert_false(clawt_broker_should_restart(CLAWT_RESTART_ON_FAILURE,
+	                                           &ended, &reason));
+	g_assert_nonnull(strstr(reason, "podomation 1.0.3"));
+	g_clear_pointer(&reason, g_free);
+	g_assert_false(clawt_broker_should_restart(CLAWT_RESTART_NEVER, &ended,
+	                                           &reason));
+	g_assert_nonnull(strstr(reason, "broker.restart is never"));
+}
+
+/* Iterates @fixture until the broker is failed, or twenty seconds pass. */
+static void
+wait_for_error(
+	DaemonFixture *fixture
+){
+	gint64 deadline = g_get_monotonic_time() + 20 * G_USEC_PER_SEC;
+
+	while (clawt_broker_get_state(fixture->daemon->broker) !=
+	       CLAWT_BROKER_STATE_ERROR &&
+	       g_get_monotonic_time() < deadline)
+		g_main_context_iteration(fixture->context, TRUE);
+
+	g_assert_cmpint(clawt_broker_get_state(fixture->daemon->broker), ==,
+	                CLAWT_BROKER_STATE_ERROR);
+}
+
+/*
+ * What the watch does with a stopped container, and what broker.status
+ * says about it, for each policy.  A restart begins a start (which fails
+ * here: there is no podman); a container left down leaves the broker
+ * failed with the reason in its detail and in last_exit.
+ */
+static void
+check_policy_in_status(
+	const gchar *policy,
+	gboolean     restarts_clean,
+	gboolean     restarts_failure
+){
+	DaemonFixture fixture = { 0 };
+	g_autofree gchar *broker = NULL;
+	ClawtBrokerExit clean = { 0 };
+	ClawtBrokerExit failed = { 0 };
+	ClawtBrokerExit *each[2];
+	gboolean expect[2];
+	guint restarts = 0;
+	guint i;
+
+	clean.name = (gchar *)"clawt-broker-anythingmcp";
+	clean.status = (gchar *)"exited";
+	clean.exit_known = TRUE;
+	failed = clean;
+	failed.exit_code = 2;
+	each[0] = &clean;
+	each[1] = &failed;
+	expect[0] = restarts_clean;
+	expect[1] = restarts_failure;
+
+	broker = g_strdup_printf("  enabled: true\n  restart: %s\n", policy);
+	daemon_setup(&fixture, broker);
+
+	/* No podman: the first start fails, which is where each case begins. */
+	wait_for_error(&fixture);
+
+	for (i = 0; i < G_N_ELEMENTS(each); i++) {
+		g_autoptr(JsonNode) status = NULL;
+		JsonObject *root;
+		JsonObject *last;
+		const gchar *detail;
+
+		g_test_message("%s, exit code %d", policy, each[i]->exit_code);
+		clawt_broker_test_handle_exit(fixture.daemon->broker, each[i]);
+
+		status = ask(&fixture, "broker.status", NULL);
+		root = payload_of(status);
+		g_assert_true(json_object_has_member(root, "last_exit"));
+		last = json_object_get_object_member(root, "last_exit");
+		g_assert_cmpstr(json_object_get_string_member(last, "container"),
+		                ==, "clawt-broker-anythingmcp");
+		g_assert_cmpint(json_object_get_int_member(last, "exit_code"), ==,
+		                each[i]->exit_code);
+		g_assert_false(json_object_get_boolean_member(last, "oom_killed"));
+		g_assert_cmpint(json_object_get_boolean_member(last, "failure"), ==,
+		                each[i]->exit_code != 0);
+		g_assert_cmpint(json_object_get_boolean_member(last, "restarted"),
+		                ==, expect[i]);
+
+		if (expect[i]) {
+			/* Started again: counted, and no longer failed. */
+			restarts++;
+			g_assert_cmpint(clawt_broker_get_state(fixture.daemon->broker),
+			                ==, CLAWT_BROKER_STATE_STARTING);
+			g_assert_cmpuint(clawt_broker_get_restarts(
+			                     fixture.daemon->broker), ==, restarts);
+			wait_for_error(&fixture);
+			continue;
+		}
+
+		/* Left down: failed, and the detail says why. */
+		g_assert_cmpint(clawt_broker_get_state(fixture.daemon->broker), ==,
+		                CLAWT_BROKER_STATE_ERROR);
+		g_assert_cmpuint(clawt_broker_get_restarts(fixture.daemon->broker),
+		                 ==, restarts);
+		detail = json_object_get_string_member(root, "detail");
+		g_assert_nonnull(detail);
+		g_assert_nonnull(strstr(detail, "clawt-broker-anythingmcp "));
+		g_assert_nonnull(strstr(detail, "not restarted"));
+		g_assert_nonnull(strstr(detail, policy));
+		g_assert_nonnull(strstr(detail, each[i]->exit_code == 0
+		                                ? "exited cleanly (exit code 0)"
+		                                : "exited with code 2"));
+	}
+
+	daemon_teardown(&fixture);
+}
+
+static void
+test_status_policy_never(
+	void
+){
+	check_policy_in_status("never", FALSE, FALSE);
+}
+
+static void
+test_status_policy_on_failure(
+	void
+){
+	check_policy_in_status("on-failure", FALSE, TRUE);
+}
+
+static void
+test_status_policy_always(
+	void
+){
+	check_policy_in_status("always", TRUE, TRUE);
 }
 
 static void
@@ -1483,6 +1780,15 @@ main(
 	g_test_add_func("/broker/logs/text", test_logs_print_the_text);
 	g_test_add_func("/broker/watch/inspect", test_watch_reads_inspect);
 	g_test_add_func("/broker/watch/states", test_container_states);
+	g_test_add_func("/broker/watch/restart-per-exit",
+	                test_restart_policy_per_exit);
+	g_test_add_func("/broker/watch/restart-without-exit",
+	                test_restart_policy_without_exit);
+	g_test_add_func("/broker/watch/status/never", test_status_policy_never);
+	g_test_add_func("/broker/watch/status/on-failure",
+	                test_status_policy_on_failure);
+	g_test_add_func("/broker/watch/status/always",
+	                test_status_policy_always);
 
 	return g_test_run();
 }

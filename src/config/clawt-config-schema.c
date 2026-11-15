@@ -2203,11 +2203,16 @@ static const ClawtSchemaEntry schema[] = {
   "always", clawt_restart_policy_get_type,
   "What to do when a broker container stops without being asked to.\n"
   "\n"
-  "never leaves it stopped and says so; on-failure and always both\n"
-  "start it again, since the container module's inspect does not say\n"
-  "how a container ended. Five restarts within ten minutes stop the retries, so a\n"
-  "gateway that cannot start is reported rather than restarted for\n"
-  "ever.", "0.24.0" },
+  "always starts it again however it ended. on-failure starts it again\n"
+  "only when it exited non-zero or was killed for running out of\n"
+  "memory; a clean exit, a container that never ran and one removed\n"
+  "from podman are left down. never leaves it down whatever the exit.\n"
+  "A container left down leaves the broker failed, and broker status\n"
+  "says how it ended and why it was not restarted. on-failure needs\n"
+  "podomation 1.0.3 or later, whose inspect reports the exit code;\n"
+  "with an older one it cannot tell a failure and restarts nothing.\n"
+  "Five restarts within ten minutes stop the retries, so a gateway\n"
+  "that cannot start is reported rather than restarted for ever.", "0.24.0" },
 
 /* ── grok ────────────────────────────────────────────────────────── */
 { "grok", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,

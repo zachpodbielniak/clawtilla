@@ -253,6 +253,172 @@ run_broker(
 	remove_state(dir);
 }
 
+/* Runs `podman` with @args, quietly; the exit status is not asked. */
+static void
+podman_quietly(
+	const gchar * const *args
+){
+	g_autoptr(GPtrArray) argv = g_ptr_array_new();
+	guint i;
+
+	g_ptr_array_add(argv, (gpointer)"podman");
+
+	for (i = 0; args[i] != NULL; i++)
+		g_ptr_array_add(argv, (gpointer)args[i]);
+
+	g_ptr_array_add(argv, NULL);
+	g_spawn_sync(NULL, (gchar **)argv->pdata, NULL,
+	             G_SPAWN_SEARCH_PATH | G_SPAWN_STDOUT_TO_DEV_NULL |
+	             G_SPAWN_STDERR_TO_DEV_NULL,
+	             NULL, NULL, NULL, NULL, NULL, NULL);
+}
+
+/* broker.status's last_exit, as the daemon would answer it. */
+static JsonObject *
+last_exit_of(
+	ClawtBroker *broker,
+	ClawtConfig *config
+){
+	g_autoptr(JsonBuilder) builder = json_builder_new();
+	g_autoptr(JsonNode) root = NULL;
+	JsonObject *status;
+
+	json_builder_begin_object(builder);
+	clawt_broker_build_status(broker, config, builder);
+	json_builder_end_object(builder);
+	root = json_builder_get_root(builder);
+	status = json_node_get_object(root);
+
+	if (!json_object_has_member(status, "last_exit"))
+		return NULL;
+
+	return json_object_ref(json_object_get_object_member(status,
+	                                                     "last_exit"));
+}
+
+/*
+ * broker.restart: on-failure against real exits.  A gateway killed with
+ * SIGKILL exits 137, which is a failure, and is started again; a
+ * database stopped with `podman stop` shuts down cleanly and exits 0,
+ * which is not, and is left down with the broker failed and saying so.
+ * Before podomation 1.0.3 the container module did not report the exit,
+ * and both were restarted.
+ */
+static void
+test_anythingmcp_on_failure(
+	void
+){
+	g_autoptr(GMainContext) context = NULL;
+	g_autoptr(ClawtPodBridge) bridge = NULL;
+	g_autoptr(ClawtBroker) broker = NULL;
+	g_autoptr(ClawtConfig) config = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonObject) last = NULL;
+	g_autofree gchar *dir = NULL;
+	g_autofree gchar *state_dir = NULL;
+	g_autofree gchar *yaml = NULL;
+	const gchar *kill_gateway[] = { "kill", "--signal", "KILL",
+	                                "clawt-broker-anythingmcp", NULL };
+	const gchar *stop_database[] = { "stop", "clawt-broker-anythingmcp-db",
+	                                 NULL };
+	const gchar *detail;
+	ClawtBrokerState state;
+	gint64 deadline;
+
+	if (!integration_enabled()) {
+		g_test_skip("set CLAWT_TEST_INTEGRATION=1 to run AnythingMCP in "
+		            "podman");
+		return;
+	}
+
+	context = g_main_context_new();
+	dir = g_dir_make_tmp("clawt-broker-real-XXXXXX", NULL);
+	state_dir = g_build_filename(dir, "state", NULL);
+	yaml = g_strdup_printf(
+		"daemon:\n  state_dir: \"%s\"\n"
+		"defaults:\n  workspace_root: \"%s/agents\"\n"
+		"broker:\n  enabled: true\n  type: anythingmcp\n"
+		"  port: 47492\n  dashboard_port: 47392\n"
+		"  restart: on-failure\n",
+		state_dir, dir);
+	config = clawt_config_load_from_string(yaml, &error);
+	g_assert_no_error(error);
+
+	g_main_context_push_thread_default(context);
+
+	bridge = clawt_pod_bridge_new(CLAWT_TEST_POD_MODULE_DIR);
+	broker = clawt_broker_new(bridge, context);
+	clawt_broker_set_config(broker, config, state_dir);
+	clawt_broker_start(broker);
+
+	state = wait_for(broker, context, CLAWT_BROKER_STATE_RUNNING);
+	g_assert_cmpint(state, ==, CLAWT_BROKER_STATE_RUNNING);
+
+	/* SIGKILL: exit 137, a failure, so started again. */
+	podman_quietly(kill_gateway);
+	deadline = g_get_monotonic_time() +
+	           (gint64)BROKER_WAIT_SECONDS * G_USEC_PER_SEC;
+
+	while (g_get_monotonic_time() < deadline &&
+	       clawt_broker_get_state(broker) != CLAWT_BROKER_STATE_ERROR &&
+	       (clawt_broker_get_restarts(broker) == 0 ||
+	        clawt_broker_get_state(broker) != CLAWT_BROKER_STATE_RUNNING))
+		g_main_context_iteration(context, TRUE);
+
+	g_test_message("after the kill: %s (%s), %u restart(s)",
+	               clawt_broker_state_label(clawt_broker_get_state(broker)),
+	               clawt_broker_get_detail(broker) != NULL
+	               ? clawt_broker_get_detail(broker) : "",
+	               clawt_broker_get_restarts(broker));
+	g_assert_cmpint(clawt_broker_get_state(broker), ==,
+	                CLAWT_BROKER_STATE_RUNNING);
+	g_assert_cmpuint(clawt_broker_get_restarts(broker), ==, 1);
+
+	last = last_exit_of(broker, config);
+	g_assert_nonnull(last);
+	g_assert_cmpstr(json_object_get_string_member(last, "container"), ==,
+	                "clawt-broker-anythingmcp");
+	g_assert_cmpint(json_object_get_int_member(last, "exit_code"), ==, 137);
+	g_assert_true(json_object_get_boolean_member(last, "failure"));
+	g_assert_true(json_object_get_boolean_member(last, "restarted"));
+	g_clear_pointer(&last, json_object_unref);
+
+	/* podman stop on PostgreSQL: a clean shutdown, exit 0, left down. */
+	podman_quietly(stop_database);
+	state = wait_for(broker, context, CLAWT_BROKER_STATE_ERROR);
+	detail = clawt_broker_get_detail(broker);
+	g_test_message("after the stop: %s (%s)",
+	               clawt_broker_state_label(state),
+	               detail != NULL ? detail : "");
+	g_assert_cmpint(state, ==, CLAWT_BROKER_STATE_ERROR);
+	g_assert_cmpuint(clawt_broker_get_restarts(broker), ==, 1);
+	g_assert_nonnull(detail);
+	g_assert_nonnull(strstr(detail, "clawt-broker-anythingmcp-db exited "
+	                                "cleanly (exit code 0)"));
+	g_assert_nonnull(strstr(detail, "broker.restart is on-failure"));
+
+	last = last_exit_of(broker, config);
+	g_assert_nonnull(last);
+	g_assert_cmpint(json_object_get_int_member(last, "exit_code"), ==, 0);
+	g_assert_false(json_object_get_boolean_member(last, "failure"));
+	g_assert_false(json_object_get_boolean_member(last, "restarted"));
+
+	clawt_broker_stop_sync(broker);
+	g_main_context_pop_thread_default(context);
+
+	{
+		const gchar *rm_gateway[] = { "rm", "-f", "--ignore",
+		                              "clawt-broker-anythingmcp", NULL };
+		const gchar *rm_database[] = { "rm", "-f", "--ignore",
+		                               "clawt-broker-anythingmcp-db", NULL };
+
+		podman_quietly(rm_gateway);
+		podman_quietly(rm_database);
+	}
+
+	remove_state(dir);
+}
+
 static void
 test_anythingmcp(
 	void
@@ -288,6 +454,8 @@ main(
 	g_test_init(&argc, &argv, NULL);
 
 	g_test_add_func("/broker-integration/anythingmcp", test_anythingmcp);
+	g_test_add_func("/broker-integration/anythingmcp/on-failure",
+	                test_anythingmcp_on_failure);
 	g_test_add_func("/broker-integration/jentic", test_jentic);
 
 	return g_test_run();
