@@ -2107,8 +2107,8 @@ typedef struct {
 	GStrv           names;
 
 	/* Answers. */
-	gboolean        listed;
-	gchar          *list_error;
+	gboolean        answered;
+	gchar          *answer_error;
 	gchar          *missing;
 	gboolean        healthy;
 } Probe;
@@ -2122,7 +2122,7 @@ probe_free(
 	g_free(probe->health_url);
 	g_strfreev(probe->ids);
 	g_strfreev(probe->names);
-	g_free(probe->list_error);
+	g_free(probe->answer_error);
 	g_free(probe->missing);
 	g_free(probe);
 }
@@ -2162,6 +2162,146 @@ probe_health(
 	return healthy;
 }
 
+/*
+ * A container's podman state, from the module's inspect.  %TRUE with
+ * @status set (possibly empty) when inspect answered; %FALSE with
+ * @error set when it did not.
+ */
+static gboolean
+inspect_status(
+	ClawtPodBridge  *bridge,
+	const gchar     *connection,
+	const gchar     *id,
+	gchar          **status,
+	GError         **error
+){
+	g_autoptr(GHashTable) params = NULL;
+	g_autoptr(GHashTable) result = NULL;
+	const gchar *value;
+
+	params = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	g_hash_table_insert(params, g_strdup("target"), g_strdup(id));
+	result = clawt_pod_bridge_call_for(bridge, "container", connection,
+	                                   "inspect", params, error);
+
+	if (result == NULL)
+		return FALSE;
+
+	value = g_hash_table_lookup(result, "status");
+	*status = g_strdup(value != NULL ? value : "");
+	return TRUE;
+}
+
+/*
+ * Whether podman answers at all: its container list.  Asked only after
+ * an inspect fails, to tell "that container is gone" (podman answers
+ * this) from "podman is not there" (it does not).
+ */
+static gboolean
+podman_answers(
+	ClawtPodBridge  *bridge,
+	const gchar     *connection,
+	GError         **error
+){
+	g_autoptr(GHashTable) params = NULL;
+	g_autoptr(GHashTable) result = NULL;
+
+	params = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	result = clawt_pod_bridge_call_for(bridge, "container", connection,
+	                                   "list", params, error);
+
+	return result != NULL;
+}
+
+gboolean
+clawt_broker_container_is_up(
+	const gchar *status
+){
+	/*
+	 * Paused and stopping are not up in any useful sense, but they are
+	 * not a container that ended either: restarting one would fight
+	 * whoever paused or is stopping it.  The health check sees a paused
+	 * gateway stop answering, which is the right report for it.
+	 */
+	return g_strcmp0(status, "running") == 0 ||
+	       g_strcmp0(status, "paused") == 0 ||
+	       g_strcmp0(status, "stopping") == 0;
+}
+
+gboolean
+clawt_broker_find_stopped(
+	ClawtPodBridge      *bridge,
+	const gchar         *connection,
+	const gchar * const *ids,
+	const gchar * const *names,
+	gchar              **stopped,
+	GError             **error
+){
+	guint i;
+
+	g_return_val_if_fail(CLAWT_IS_POD_BRIDGE(bridge), FALSE);
+	g_return_val_if_fail(stopped != NULL, FALSE);
+
+	*stopped = NULL;
+
+	if (!clawt_pod_bridge_load_module_for(bridge, "container", connection,
+	                                      error))
+		return FALSE;
+
+	for (i = 0; ids != NULL && ids[i] != NULL; i++) {
+		g_autoptr(GError) local = NULL;
+		g_autofree gchar *status = NULL;
+		const gchar *name = (names != NULL && names[i] != NULL)
+		                    ? names[i] : ids[i];
+
+		/* Never made, so certainly not running. */
+		if (*ids[i] == '\0') {
+			*stopped = g_strdup(name);
+			return TRUE;
+		}
+
+		/*
+		 * Inspect, not the running list.  The list used to be the only
+		 * place the module said whether a container ran, because its
+		 * inspect left the status empty; podomation 1.0.2 fills it.
+		 */
+		if (!inspect_status(bridge, connection, ids[i], &status, &local)) {
+			g_autoptr(GError) list_error = NULL;
+
+			/*
+			 * podman answering its list while refusing this inspect
+			 * means the container is gone (a 404); podman not
+			 * answering at all is not the gateway stopping.
+			 */
+			if (podman_answers(bridge, connection, &list_error)) {
+				*stopped = g_strdup(name);
+				return TRUE;
+			}
+
+			g_propagate_error(error, g_steal_pointer(&local));
+			return FALSE;
+		}
+
+		/* "It did not say" is not "it said no". */
+		if (*status == '\0' || g_strcmp0(status, "unknown") == 0) {
+			g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_PROTOCOL,
+			            "podman's inspect of %s gave no state%s", name,
+			            *status == '\0'
+			            ? " (the container module is older than "
+			              "podomation 1.0.2)"
+			            : "");
+			return FALSE;
+		}
+
+		if (!clawt_broker_container_is_up(status)) {
+			*stopped = g_strdup(name);
+			return TRUE;
+		}
+	}
+
+	return TRUE;
+}
+
 static void
 probe_worker(
 	GTask        *task,
@@ -2170,49 +2310,19 @@ probe_worker(
 	GCancellable *cancellable
 ){
 	Probe *probe = task_data;
-	g_autoptr(GHashTable) params = NULL;
-	g_autoptr(GHashTable) result = NULL;
 	g_autoptr(GError) error = NULL;
-	g_auto(GStrv) running = NULL;
-	guint i;
 
-	/*
-	 * podman's listing without `all` is the running containers only, and
-	 * it is the one place the module says whether a container is running:
-	 * its inspect leaves the status empty.
-	 */
-	if (!clawt_pod_bridge_load_module_for(probe->bridge, "container",
-	                                      probe->connection, &error)) {
-		probe->list_error = g_strdup(error->message);
+	if (!clawt_broker_find_stopped(probe->bridge, probe->connection,
+	                               (const gchar * const *)probe->ids,
+	                               (const gchar * const *)probe->names,
+	                               &probe->missing, &error)) {
+		probe->answer_error = g_strdup(error != NULL ? error->message
+		                                             : "no reason given");
 		g_task_return_boolean(task, TRUE);
 		return;
 	}
 
-	params = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
-	result = clawt_pod_bridge_call_for(probe->bridge, "container",
-	                                   probe->connection, "list", params,
-	                                   &error);
-
-	if (result == NULL) {
-		probe->list_error = g_strdup(error != NULL ? error->message
-		                                           : "no reason given");
-		g_task_return_boolean(task, TRUE);
-		return;
-	}
-
-	probe->listed = TRUE;
-	running = g_strsplit(g_hash_table_lookup(result, "ids") != NULL
-	                     ? (const gchar *)g_hash_table_lookup(result, "ids")
-	                     : "", ",", -1);
-
-	for (i = 0; probe->ids != NULL && probe->ids[i] != NULL; i++) {
-		if (*probe->ids[i] != '\0' &&
-		    g_strv_contains((const gchar * const *)running, probe->ids[i]))
-			continue;
-
-		probe->missing = g_strdup(probe->names[i]);
-		break;
-	}
+	probe->answered = TRUE;
 
 	if (probe->missing == NULL)
 		probe->healthy = probe_health(probe->health_url);
@@ -2282,9 +2392,9 @@ on_probed(
 	 * is not "it said no", and restarting on it would replace a working
 	 * gateway because a socket was busy.
 	 */
-	if (!probe->listed) {
+	if (!probe->answered) {
 		g_warning("broker: podman did not answer the watch: %s",
-		          probe->list_error != NULL ? probe->list_error : "?");
+		          probe->answer_error != NULL ? probe->answer_error : "?");
 		return;
 	}
 
@@ -2394,38 +2504,40 @@ logs_job_free(
 	g_free(job);
 }
 
-static void
-logs_worker(
-	GTask        *task,
-	gpointer      source,
-	gpointer      task_data,
-	GCancellable *cancellable
+gchar *
+clawt_broker_read_logs(
+	ClawtPodBridge      *bridge,
+	const gchar         *connection,
+	const gchar * const *names,
+	const gchar         *tail,
+	GError             **error
 ){
-	LogsJob *job = task_data;
 	g_autoptr(GString) out = g_string_new(NULL);
-	g_autoptr(GError) error = NULL;
 	guint i;
 
-	if (!clawt_pod_bridge_load_module_for(job->bridge, "container",
-	                                      job->connection, &error)) {
-		g_task_return_error(task, g_steal_pointer(&error));
-		return;
-	}
+	g_return_val_if_fail(CLAWT_IS_POD_BRIDGE(bridge), NULL);
 
-	for (i = 0; job->names[i] != NULL; i++) {
+	if (!clawt_pod_bridge_load_module_for(bridge, "container", connection,
+	                                      error))
+		return NULL;
+
+	for (i = 0; names != NULL && names[i] != NULL; i++) {
 		g_autoptr(GHashTable) params = g_hash_table_new_full(
 			g_str_hash, g_str_equal, g_free, g_free);
 		g_autoptr(GHashTable) result = NULL;
 		g_autoptr(GError) local = NULL;
-		const gchar *text;
+		const gchar *text_out;
+		const gchar *text_err;
+		gboolean has_out;
+		gboolean has_err;
 
-		g_hash_table_insert(params, g_strdup("target"),
-		                    g_strdup(job->names[i]));
-		result = clawt_pod_bridge_call_for(job->bridge, "container",
-		                                   job->connection, "logs", params,
-		                                   &local);
+		g_hash_table_insert(params, g_strdup("target"), g_strdup(names[i]));
+		g_hash_table_insert(params, g_strdup("tail"),
+		                    g_strdup(tail != NULL ? tail : "100"));
+		result = clawt_pod_bridge_call_for(bridge, "container", connection,
+		                                   "logs", params, &local);
 
-		g_string_append_printf(out, "== %s ==\n", job->names[i]);
+		g_string_append_printf(out, "== %s ==\n", names[i]);
 
 		if (result == NULL) {
 			g_string_append_printf(out, "(no logs: %s)\n",
@@ -2434,33 +2546,38 @@ logs_worker(
 			continue;
 		}
 
-		text = g_hash_table_lookup(result, "stdout");
-
-		if (text != NULL && *text != '\0')
-			g_string_append(out, text);
-
-		text = g_hash_table_lookup(result, "stderr");
-
-		if (text != NULL && *text != '\0')
-			g_string_append(out, text);
-
 		/*
-		 * Said rather than shown as an empty log.  podomation's logs
-		 * action parses podman's reply as JSON, and podman sends the
-		 * multiplexed log stream, which is not -- so it answers with no
-		 * text for every container, running or not.  The fix belongs
-		 * in podomation (the roadmap carries it); until then the
-		 * command that shows them is named.
+		 * podomation splits podman's log stream into its two streams,
+		 * the way an exec's output is split, and the order between a
+		 * stdout line and a stderr line is not kept.  With both, each
+		 * gets a heading so nobody reads one after the other as the
+		 * order things happened in; with one, it is the whole log.
 		 */
-		if (out->len > 0 && out->str[out->len - 1] == '\n' &&
-		    g_str_has_suffix(out->str, " ==\n"))
-			g_string_append_printf(
-				out, "(podomation returned no log text for it; "
-				"`podman logs --tail 100 %s` shows them)\n",
-				job->names[i]);
+		text_out = g_hash_table_lookup(result, "stdout");
+		text_err = g_hash_table_lookup(result, "stderr");
+		has_out = text_out != NULL && *text_out != '\0';
+		has_err = text_err != NULL && *text_err != '\0';
 
-		if (out->len > 0 && out->str[out->len - 1] != '\n')
-			g_string_append_c(out, '\n');
+		if (!has_out && !has_err) {
+			g_string_append(out, "(no lines yet)\n");
+			continue;
+		}
+
+		if (has_out) {
+			if (has_err)
+				g_string_append(out, "-- stdout --\n");
+			g_string_append(out, text_out);
+			if (!g_str_has_suffix(text_out, "\n"))
+				g_string_append_c(out, '\n');
+		}
+
+		if (has_err) {
+			if (has_out)
+				g_string_append(out, "-- stderr --\n");
+			g_string_append(out, text_err);
+			if (!g_str_has_suffix(text_err, "\n"))
+				g_string_append_c(out, '\n');
+		}
 	}
 
 	/*
@@ -2468,7 +2585,30 @@ logs_worker(
 	 * is credentials.  Best effort, like every other redaction here:
 	 * an opaque token on its own is not recognisable.
 	 */
-	g_task_return_pointer(task, clawt_redact_secrets(out->str), g_free);
+	return clawt_redact_secrets(out->str);
+}
+
+static void
+logs_worker(
+	GTask        *task,
+	gpointer      source,
+	gpointer      task_data,
+	GCancellable *cancellable
+){
+	LogsJob *job = task_data;
+	g_autoptr(GError) error = NULL;
+	gchar *text;
+
+	text = clawt_broker_read_logs(job->bridge, job->connection,
+	                              (const gchar * const *)job->names, NULL,
+	                              &error);
+
+	if (text == NULL) {
+		g_task_return_error(task, g_steal_pointer(&error));
+		return;
+	}
+
+	g_task_return_pointer(task, text, g_free);
 }
 
 void

@@ -1147,9 +1147,9 @@ Only the keys are clawtilla's to hold.  They are written 0600, never returned ov
 | ~clawtilla broker logs~   | ~broker.logs~     | each container's last hundred lines, credential-shaped text redacted |
 | ~clawtilla broker key <agent or team:id>~ | ~broker.key~ | stores a gateway server's key from stdin |
 
-A container that stops on its own is started again under =broker.restart= (~always~ by default; ~on-failure~ behaves the same, since podman's listing does not say how a container ended; ~never~ leaves it stopped and says so).  Five restarts within ten minutes stop the retries and leave the broker /failed/, naming the container and ~broker logs~.  The watch asks podman which containers run -- its listing, because the module's inspect never fills in a status -- and asks the gateway's =/health=; a gateway that runs and stops answering three times in a row is reported as failed until it answers again.  Daemon stop stops the broker with it.
+A container that stops on its own is started again under =broker.restart= (~always~ by default; ~on-failure~ behaves the same, since the container module's inspect does not say how a container ended; ~never~ leaves it stopped and says so).  Five restarts within ten minutes stop the retries and leave the broker /failed/, naming the container and ~broker logs~.  The watch asks podman for each container's state -- the container module's ~inspect~, whose =status= is podman's =State.Status= -- and asks the gateway's =/health=.  =running= is up, and so are =paused= and =stopping=, which the health check judges; anything else (=exited=, =created=, =dead=, ...) is a container that stopped.  An inspect that fails while podman still answers its container list is a container that is gone, and counts as stopped; podman not answering at all, or an inspect with no state, is "did not say", logged and not acted on.  A gateway that runs and stops answering three times in a row is reported as failed until it answers again.  Daemon stop stops the broker with it.
 
-~broker logs~ has a known gap: podomation's ~logs~ action parses podman's reply as JSON, and podman sends the multiplexed log stream, so it returns no text.  The reply says so and names ~podman logs --tail 100 <container>~; the fix belongs in podomation (see the roadmap).
+~broker logs~ prints each container's last hundred lines under a ~== name ==~ heading.  podman keeps a container's standard output and standard error as two streams and the order between them is lost, so a container that wrote to both gets each under a ~-- stdout --~ / ~-- stderr --~ subheading; one that wrote to only one gets its lines bare, and one that wrote nothing says ~(no lines yet)~.  A container podman cannot read says why in its own section and the others are still shown.  Anything shaped like a credential is redacted.  It needs podomation 1.0.2 or later, whose ~logs~ action demultiplexes podman's log stream; before it the action returned no text at all.
 
 Every client has a Broker row at the top of the Connectors page: the broker, its state in ~clawt_broker_state_label()~'s word, what it is doing or why it failed, the dashboard link, and Start, Stop and Restart where each can do something.  It redraws on ~broker.changed~.
 
@@ -1500,7 +1500,7 @@ Set ~runtime.confine: bwrap~ on the agents it names, or take their =broker_serve
 
 *** The broker says failed after five restarts
 
-A container keeps stopping.  ~clawtilla broker logs~ (or ~podman logs --tail 100 <container>~) says why; ~clawtilla broker start~ tries again once it is fixed.
+A container keeps stopping.  ~clawtilla broker logs~ says why; ~clawtilla broker start~ tries again once it is fixed.
 
 *** "connectors.registry_enabled is off"
 

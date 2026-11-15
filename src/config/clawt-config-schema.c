@@ -2204,8 +2204,8 @@ static const ClawtSchemaEntry schema[] = {
   "What to do when a broker container stops without being asked to.\n"
   "\n"
   "never leaves it stopped and says so; on-failure and always both\n"
-  "start it again, since podman's listing does not say how a container\n"
-  "ended. Five restarts within ten minutes stop the retries, so a\n"
+  "start it again, since the container module's inspect does not say\n"
+  "how a container ended. Five restarts within ten minutes stop the retries, so a\n"
   "gateway that cannot start is reported rather than restarted for\n"
   "ever.", "0.24.0" },
 

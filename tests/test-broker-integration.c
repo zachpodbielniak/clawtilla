@@ -101,6 +101,67 @@ status_without_key(
 	return soup_message_get_status(message);
 }
 
+/* Collects clawt_broker_logs_async()'s answer. */
+static void
+on_logs(
+	GObject      *source,
+	GAsyncResult *result,
+	gpointer      user_data
+){
+	gchar **text = user_data;
+	g_autoptr(GError) error = NULL;
+
+	*text = clawt_broker_logs_finish(CLAWT_BROKER(source), result, &error);
+	g_assert_no_error(error);
+}
+
+/*
+ * `broker logs`, as the daemon answers it.  A gateway that has come up
+ * has logged something, so every container's section has lines under
+ * it: podomation before 1.0.2 returned none for any container.
+ */
+static void
+assert_logs_have_text(
+	ClawtBroker  *broker,
+	GMainContext *context
+){
+	g_autofree gchar *text = NULL;
+	g_auto(GStrv) lines = NULL;
+	guint headings = 0;
+	guint lines_under = 0;
+	guint i;
+
+	clawt_broker_logs_async(broker, NULL, on_logs, &text);
+
+	while (text == NULL)
+		g_main_context_iteration(context, TRUE);
+
+	g_test_message("broker logs:\n%s", text);
+	g_assert_null(strstr(text, "(no logs:"));
+	g_assert_null(strstr(text, "(no lines yet)"));
+
+	/* Every `== name ==` heading has at least one line of log under it. */
+	lines = g_strsplit(text, "\n", -1);
+
+	for (i = 0; lines[i] != NULL; i++) {
+		gboolean heading = g_str_has_prefix(lines[i], "== ") &&
+		                   g_str_has_suffix(lines[i], " ==");
+
+		if (heading) {
+			if (headings > 0)
+				g_assert_cmpuint(lines_under, >, 0);
+			headings++;
+			lines_under = 0;
+		} else if (*lines[i] != '\0' &&
+		           !g_str_has_prefix(lines[i], "-- std")) {
+			lines_under++;
+		}
+	}
+
+	g_assert_cmpuint(headings, >=, 1);
+	g_assert_cmpuint(lines_under, >, 0);
+}
+
 static void
 run_broker(
 	const gchar *broker_yaml,
@@ -151,6 +212,9 @@ run_broker(
 	refused = status_without_key(url);
 	g_test_message("%s without a key: HTTP %u", url, refused);
 	g_assert_cmpuint(refused, ==, 401);
+
+	/* Its logs are its logs, not headings over nothing. */
+	assert_logs_have_text(broker, context);
 
 	/* Stopped, then started on the same state: the data outlives them. */
 	clawt_broker_stop(broker);

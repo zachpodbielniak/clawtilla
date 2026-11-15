@@ -1097,6 +1097,361 @@ test_daemon_on_without_podman(
 	daemon_teardown(&fixture);
 }
 
+/* ── Logs and the watch, against a canned podman ─────────────────── */
+
+/*
+ * A podman API socket that answers from a script: each request is one
+ * connection, routed on its path.  Real podomation container module on
+ * the other end, so what is asserted is what `clawtilla broker logs` and
+ * the watch would see -- with no podman on the machine.
+ */
+typedef struct {
+	gchar           *dir;
+	gchar           *socket;
+	gchar           *uri;
+	GSocketListener *listener;
+	GCancellable    *cancel;
+	GThread         *thread;
+} FakePodman;
+
+/* One Docker log frame: stream id, three bytes of padding, length. */
+static void
+log_frame(
+	GByteArray  *buf,
+	guint8       kind,
+	const gchar *payload
+){
+	guint32 len = (guint32)strlen(payload);
+	guint8 header[8];
+
+	header[0] = kind;
+	header[1] = 0;
+	header[2] = 0;
+	header[3] = 0;
+	header[4] = (guint8)((len >> 24) & 0xff);
+	header[5] = (guint8)((len >> 16) & 0xff);
+	header[6] = (guint8)((len >> 8) & 0xff);
+	header[7] = (guint8)(len & 0xff);
+
+	g_byte_array_append(buf, header, 8);
+	g_byte_array_append(buf, (const guint8 *)payload, len);
+}
+
+/* What the canned podman says to @path. */
+static GBytes *
+fake_podman_answer(
+	const gchar *path
+){
+	g_autoptr(GByteArray) body = g_byte_array_new();
+	g_autofree gchar *head = NULL;
+	gint status = 200;
+	const gchar *json = NULL;
+
+	if (strstr(path, "/containers/gw/logs?") != NULL) {
+		log_frame(body, 1, "listening on :3000\n");
+		log_frame(body, 2, "warn: Authorization: Bearer sk-ant-api03-"
+		                   "abcdefghijklmnopqrstuvwxyz0123456789\n");
+		log_frame(body, 1, "GET /health 200\n");
+	} else if (strstr(path, "/containers/db/logs?") != NULL) {
+		log_frame(body, 2, "database system is ready\n");
+	} else if (strstr(path, "/containers/quiet/logs?") != NULL) {
+		/* Nothing logged yet: an empty, successful body. */
+	} else if (strstr(path, "/containers/run1/json") != NULL) {
+		json = "{\"Id\":\"run1\",\"State\":{\"Status\":\"running\",\"Pid\":7}}";
+	} else if (strstr(path, "/containers/exit1/json") != NULL) {
+		json = "{\"Id\":\"exit1\",\"State\":{\"Status\":\"exited\",\"Pid\":0}}";
+	} else if (strstr(path, "/containers/blank1/json") != NULL) {
+		json = "{\"Id\":\"blank1\"}";
+	} else if (strstr(path, "/containers/json") != NULL) {
+		json = "[]";
+	} else {
+		status = 404;
+		json = "{\"cause\":\"no such container\","
+		       "\"message\":\"no container with name or ID found\","
+		       "\"response\":404}";
+	}
+
+	if (json != NULL)
+		g_byte_array_append(body, (const guint8 *)json, (guint)strlen(json));
+
+	head = g_strdup_printf("HTTP/1.1 %d X\r\n"
+	                       "Content-Length: %u\r\n"
+	                       "Connection: close\r\n\r\n",
+	                       status, body->len);
+	g_byte_array_prepend(body, (const guint8 *)head, (guint)strlen(head));
+
+	return g_byte_array_free_to_bytes(g_steal_pointer(&body));
+}
+
+static gpointer
+fake_podman_serve(
+	gpointer data
+){
+	FakePodman *fake = data;
+
+	for (;;) {
+		g_autoptr(GSocketConnection) conn = NULL;
+		g_autoptr(GDataInputStream) in = NULL;
+		g_autoptr(GBytes) answer = NULL;
+		g_autofree gchar *request = NULL;
+		g_auto(GStrv) words = NULL;
+		gchar *line;
+		gsize size;
+		gconstpointer bytes;
+
+		conn = g_socket_listener_accept(fake->listener, NULL, fake->cancel,
+		                                NULL);
+		if (conn == NULL)
+			break;
+
+		in = g_data_input_stream_new(
+			g_io_stream_get_input_stream(G_IO_STREAM(conn)));
+		g_data_input_stream_set_newline_type(in,
+		                                     G_DATA_STREAM_NEWLINE_TYPE_ANY);
+		g_filter_input_stream_set_close_base_stream(
+			G_FILTER_INPUT_STREAM(in), FALSE);
+
+		/* Read to the blank line: unread input resets the connection. */
+		while ((line = g_data_input_stream_read_line(in, NULL, NULL,
+		                                             NULL)) != NULL) {
+			gboolean blank = *line == '\0';
+
+			if (request == NULL)
+				request = g_strdup(line);
+			g_free(line);
+			if (blank)
+				break;
+		}
+
+		words = g_strsplit(request != NULL ? request : "", " ", 3);
+		answer = fake_podman_answer(words[0] != NULL && words[1] != NULL
+		                            ? words[1] : "");
+		bytes = g_bytes_get_data(answer, &size);
+		g_output_stream_write_all(
+			g_io_stream_get_output_stream(G_IO_STREAM(conn)), bytes, size,
+			NULL, NULL, NULL);
+		g_io_stream_close(G_IO_STREAM(conn), NULL, NULL);
+	}
+
+	return NULL;
+}
+
+static FakePodman *
+fake_podman_start(
+	void
+){
+	FakePodman *fake = g_new0(FakePodman, 1);
+	g_autoptr(GSocketAddress) address = NULL;
+	g_autoptr(GError) error = NULL;
+
+	fake->dir = g_dir_make_tmp("clawt-broker-podman-XXXXXX", NULL);
+	g_assert_nonnull(fake->dir);
+	fake->socket = g_build_filename(fake->dir, "podman.sock", NULL);
+	fake->uri = g_strdup_printf("unix://%s", fake->socket);
+	fake->cancel = g_cancellable_new();
+	fake->listener = g_socket_listener_new();
+	address = g_unix_socket_address_new(fake->socket);
+	g_socket_listener_add_address(fake->listener, address,
+	                              G_SOCKET_TYPE_STREAM,
+	                              G_SOCKET_PROTOCOL_DEFAULT, NULL, NULL,
+	                              &error);
+	g_assert_no_error(error);
+	fake->thread = g_thread_new("fake-podman", fake_podman_serve, fake);
+
+	return fake;
+}
+
+static void
+fake_podman_stop(
+	FakePodman *fake
+){
+	g_cancellable_cancel(fake->cancel);
+	g_thread_join(fake->thread);
+	g_socket_listener_close(fake->listener);
+	g_object_unref(fake->listener);
+	g_object_unref(fake->cancel);
+	clawt_test_remove_tree(fake->dir);
+	g_free(fake->dir);
+	g_free(fake->socket);
+	g_free(fake->uri);
+	g_free(fake);
+}
+
+/*
+ * A bridge with the container module loaded for @uri, or %NULL with the
+ * test skipped where the module was never built.  The deps are built release whatever
+ * build type this is, so this directory serves both trees.
+ */
+static ClawtPodBridge *
+container_bridge(
+	const gchar *uri
+){
+	g_autofree gchar *module_dir = g_build_filename(
+		CLAWT_TEST_SRCDIR, "deps", "libreclaw", "build", "release",
+		"modules", NULL);
+	g_autoptr(ClawtPodBridge) bridge = clawt_pod_bridge_new(module_dir);
+	g_autoptr(GError) error = NULL;
+
+	/*
+	 * Loaded for the fake's socket, never the default connection: that
+	 * would reach for this machine's own podman.
+	 */
+	if (!clawt_pod_bridge_load_module_for(bridge, "container", uri,
+	                                      &error)) {
+		g_test_skip(error->message);
+		return NULL;
+	}
+
+	return g_steal_pointer(&bridge);
+}
+
+/*
+ * `broker logs` prints the log.  podomation's logs action parsed the
+ * multiplexed log stream as JSON and returned no text for any container,
+ * so this used to print a heading per container and a line naming
+ * `podman logs`.
+ */
+static void
+test_logs_print_the_text(
+	void
+){
+	g_autoptr(ClawtPodBridge) bridge = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *text = NULL;
+	FakePodman *fake;
+	const gchar *names[] = { "gw", "db", "quiet", "gone", NULL };
+
+	fake = fake_podman_start();
+	bridge = container_bridge(fake->uri);
+
+	if (bridge == NULL) {
+		fake_podman_stop(fake);
+		return;
+	}
+
+	text = clawt_broker_read_logs(bridge, fake->uri, names, NULL, &error);
+	fake_podman_stop(fake);
+
+	g_assert_no_error(error);
+	g_assert_nonnull(text);
+
+	/* Both streams: each under its own heading. */
+	g_assert_nonnull(strstr(text,
+		"== gw ==\n"
+		"-- stdout --\n"
+		"listening on :3000\n"
+		"GET /health 200\n"
+		"-- stderr --\n"
+		"warn: Authorization: "));
+
+	/* A credential in the log is not shown. */
+	g_assert_null(strstr(text, "abcdefghijklmnopqrstuvwxyz0123456789"));
+
+	/* One stream: bare. */
+	g_assert_nonnull(strstr(text,
+		"== db ==\ndatabase system is ready\n== quiet ==\n"));
+
+	/* Nothing yet says so; a container podman cannot read says why. */
+	g_assert_nonnull(strstr(text, "== quiet ==\n(no lines yet)\n"));
+	g_assert_nonnull(strstr(text, "== gone ==\n(no logs: "));
+	g_assert_nonnull(strstr(text, "no container with name or ID found"));
+
+	/* The workaround is gone with the bug. */
+	g_assert_null(strstr(text, "podman logs"));
+}
+
+/* The watch reads inspect's state, and tells gone from unanswered. */
+static void
+test_watch_reads_inspect(
+	void
+){
+	g_autoptr(ClawtPodBridge) bridge = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *stopped = NULL;
+	g_autofree gchar *nowhere = NULL;
+	g_autofree gchar *empty_dir = NULL;
+	FakePodman *fake;
+	const gchar *up_ids[] = { "run1", "run1", NULL };
+	const gchar *up_names[] = { "gateway", "database", NULL };
+	const gchar *exit_ids[] = { "run1", "exit1", NULL };
+	const gchar *gone_ids[] = { "run1", "gone1", NULL };
+	const gchar *blank_ids[] = { "blank1", NULL };
+	const gchar *unmade_ids[] = { "run1", "", NULL };
+
+	fake = fake_podman_start();
+	bridge = container_bridge(fake->uri);
+
+	if (bridge == NULL) {
+		fake_podman_stop(fake);
+		return;
+	}
+
+	/* Every container running: nothing stopped. */
+	g_assert_true(clawt_broker_find_stopped(bridge, fake->uri, up_ids,
+	                                        up_names, &stopped, &error));
+	g_assert_no_error(error);
+	g_assert_null(stopped);
+
+	/* An exited one is named. */
+	g_assert_true(clawt_broker_find_stopped(bridge, fake->uri, exit_ids,
+	                                        up_names, &stopped, &error));
+	g_assert_no_error(error);
+	g_assert_cmpstr(stopped, ==, "database");
+	g_clear_pointer(&stopped, g_free);
+
+	/* A 404 while podman answers its list: the container is gone. */
+	g_assert_true(clawt_broker_find_stopped(bridge, fake->uri, gone_ids,
+	                                        up_names, &stopped, &error));
+	g_assert_no_error(error);
+	g_assert_cmpstr(stopped, ==, "database");
+	g_clear_pointer(&stopped, g_free);
+
+	/* Never made: stopped, without asking. */
+	g_assert_true(clawt_broker_find_stopped(bridge, fake->uri, unmade_ids,
+	                                        up_names, &stopped, &error));
+	g_assert_cmpstr(stopped, ==, "database");
+	g_clear_pointer(&stopped, g_free);
+
+	/* No state at all is "did not say", not "stopped". */
+	g_assert_false(clawt_broker_find_stopped(bridge, fake->uri, blank_ids,
+	                                         up_names, &stopped, &error));
+	g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_PROTOCOL);
+	g_assert_nonnull(strstr(error->message, "gave no state"));
+	g_assert_null(stopped);
+	g_clear_error(&error);
+
+	fake_podman_stop(fake);
+
+	/*
+	 * No podman: not answered, and nothing is called stopped.  A socket
+	 * path inside a directory of its own, so nothing on the machine can
+	 * be listening there.
+	 */
+	empty_dir = g_dir_make_tmp("clawt-broker-nopodman-XXXXXX", NULL);
+	g_assert_nonnull(empty_dir);
+	nowhere = g_strdup_printf("unix://%s/no-podman.sock", empty_dir);
+	g_assert_false(clawt_broker_find_stopped(bridge, nowhere, up_ids,
+	                                         up_names, &stopped, &error));
+	g_assert_nonnull(error);
+	g_assert_null(stopped);
+	clawt_test_remove_tree(empty_dir);
+}
+
+static void
+test_container_states(
+	void
+){
+	g_assert_true(clawt_broker_container_is_up("running"));
+	g_assert_true(clawt_broker_container_is_up("paused"));
+	g_assert_true(clawt_broker_container_is_up("stopping"));
+	g_assert_false(clawt_broker_container_is_up("exited"));
+	g_assert_false(clawt_broker_container_is_up("stopped"));
+	g_assert_false(clawt_broker_container_is_up("created"));
+	g_assert_false(clawt_broker_container_is_up("dead"));
+	g_assert_false(clawt_broker_container_is_up(""));
+	g_assert_false(clawt_broker_container_is_up(NULL));
+}
+
 int
 main(
 	int   argc,
@@ -1125,6 +1480,9 @@ main(
 	g_test_add_func("/broker/daemon/off", test_daemon_off);
 	g_test_add_func("/broker/daemon/on-without-podman",
 	                test_daemon_on_without_podman);
+	g_test_add_func("/broker/logs/text", test_logs_print_the_text);
+	g_test_add_func("/broker/watch/inspect", test_watch_reads_inspect);
+	g_test_add_func("/broker/watch/states", test_container_states);
 
 	return g_test_run();
 }
