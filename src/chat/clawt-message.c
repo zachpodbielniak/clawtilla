@@ -31,6 +31,7 @@ struct _ClawtMessage {
     gint          depth;
     ClawtPriority priority;
     gboolean      invites_reply;
+	gboolean      by_hand;
 	gboolean      composed;
 	gboolean      one_way;
 	gboolean      acknowledged;
@@ -131,6 +132,7 @@ clawt_message_copy(ClawtMessage *self)
     copy->depth = self->depth;
     copy->priority = self->priority;
     copy->invites_reply = self->invites_reply;
+	copy->by_hand = self->by_hand;
 	copy->composed = self->composed;
 	copy->one_way = self->one_way;
 	copy->acknowledged = self->acknowledged;
@@ -292,6 +294,23 @@ clawt_message_set_invites_reply(ClawtMessage *self, gboolean invites)
 {
     g_return_if_fail(self != NULL);
     self->invites_reply = invites;
+}
+
+gboolean
+clawt_message_get_by_hand(
+	ClawtMessage *self
+){
+	g_return_val_if_fail(self != NULL, FALSE);
+	return self->by_hand;
+}
+
+void
+clawt_message_set_by_hand(
+	ClawtMessage *self,
+	gboolean      by_hand
+){
+	g_return_if_fail(self != NULL);
+	self->by_hand = by_hand;
 }
 
 gboolean

@@ -564,8 +564,11 @@ test_max_pending_range_and_default(void)
 /* The cap reaches the batch claim: one slot, so the second is refused. */
 static const gchar *
 run_one(const gchar *id, const gchar *agent, const gchar *prompt,
-        gpointer user_data, GError **error)
+        gboolean by_hand, gpointer user_data, GError **error)
 {
+    /* a trigger is never a person's action */
+    g_assert_false(by_hand);
+
 	guint *calls = user_data;
 
 	(*calls)++;

@@ -596,7 +596,11 @@ bind_row(LrgListView *view, LrgWidget *slot, GObject *item, guint position,
     if (room == NULL)
         return;
 
-    row = clawt_lrg_row(room->label, room->subtitle);
+    /*
+     * One line each: the list draws every row at one height, and a
+     * wrapping last-message preview grew past it and over the row below.
+     */
+    row = clawt_lrg_row_one_line(room->label, room->subtitle);
     clawt_lrg_row_add_suffix(row, clawt_lrg_label(room->count, "caption"));
 
     if (g_strcmp0(room->id, state.flow_room) == 0)
@@ -762,8 +766,14 @@ refresh_flow(ClawtLrgApp *app)
                       NULL, NULL);
 }
 
+/*
+ * LrgCheckbox::toggled carries the new state, so the app is the third
+ * argument.  This took two, read the boolean as the app, and the first
+ * click on "Include your own chats" crashed the client.
+ */
 static void
-on_include_user_toggled(LrgCheckbox *toggle, gpointer user_data)
+on_include_user_toggled(LrgCheckbox *toggle, gboolean active,
+                        gpointer user_data)
 {
     refresh_flow(user_data);
 }
@@ -1125,7 +1135,8 @@ build_list(ClawtLrgApp *app)
                      G_CALLBACK(on_include_user_toggled), app);
     clawt_lrg_add(column, state.include_user);
     g_object_unref(state.include_user);
-    clawt_lrg_take(column, clawt_lrg_label(
+    /* wraps: the list column is narrow, and a label ran under the divider */
+    clawt_lrg_take(column, clawt_lrg_paragraph(
         "Off by default: this page is for what the agents did without you",
         "caption"));
 

@@ -1676,45 +1676,22 @@ append_message(ClawtLrgApp *app, const gchar *sender, const gchar *body,
      * finished.  The label carries the whole of it here, as above, with
      * the explanation under it since there is no tooltip to put it in.
      */
-    if (interrupted) {
-        LrgWidget *cut = clawt_lrg_badge(clawt_message_interrupted_label(),
-                                         "warn");
-        LrgWidget *why = clawt_lrg_label(clawt_message_interrupted_tooltip(),
-                                         "caption");
-
-        lrg_widget_set_halign(cut, from_user ? LRG_ALIGN_END : LRG_ALIGN_START);
-        if (!from_user) {
-            LrgInsets pad = { px(app, CHAT_GUTTER), 0.0f, 0.0f, 0.0f };
-
-            lrg_widget_set_margin(cut, &pad);
-            lrg_widget_set_margin(why, &pad);
-        }
-        clawt_lrg_take(row, cut);
-        clawt_lrg_take(row, why);
-    }
+    if (interrupted)
+        clawt_lrg_take(row, clawt_lrg_message_mark(
+            clawt_message_interrupted_label(), "warn",
+            clawt_message_interrupted_tooltip(), from_user,
+            px(app, CHAT_GUTTER)));
 
     /*
      * Handed to the turn that was already running: a quiet badge with
      * its explanation, so the message does not read as one still
      * waiting for a turn of its own.
      */
-    if (steered != NULL) {
-        LrgWidget *mark = clawt_lrg_badge(clawt_message_steered_label(),
-                                          "neutral");
-        LrgWidget *how = clawt_lrg_label(clawt_message_steered_tooltip(steered),
-                                         "caption");
-
-        lrg_widget_set_halign(mark, from_user ? LRG_ALIGN_END
-                                              : LRG_ALIGN_START);
-        if (!from_user) {
-            LrgInsets pad = { px(app, CHAT_GUTTER), 0.0f, 0.0f, 0.0f };
-
-            lrg_widget_set_margin(mark, &pad);
-            lrg_widget_set_margin(how, &pad);
-        }
-        clawt_lrg_take(row, mark);
-        clawt_lrg_take(row, how);
-    }
+    if (steered != NULL)
+        clawt_lrg_take(row, clawt_lrg_message_mark(
+            clawt_message_steered_label(), "neutral",
+            clawt_message_steered_tooltip(steered), from_user,
+            px(app, CHAT_GUTTER)));
 
     attachment_previews_append(app, row, body, from_user);
     attach_message_menu(row, body);
@@ -2616,7 +2593,7 @@ draw_history(ClawtLrgApp *app, JsonNode *history, GPtrArray *steps,
         const gchar *sender = clawt_ipc_payload_string(message, "sender");
         const gchar *id = clawt_ipc_payload_string(message, "id");
         gint64 ts = clawt_ipc_payload_int(message, "ts", 0);
-        guint run = clawt_lrg_steps_before(steps, s_at, ts);
+        guint run = clawt_lrg_steps_before(steps, s_at, ts, id);
         guint asked = clawt_lrg_decisions_before(chat.decisions, d_at, ts);
 
         steps_append_sealed(app, steps, s_at, run);

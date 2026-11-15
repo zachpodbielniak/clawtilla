@@ -28,17 +28,19 @@ typedef struct {
     ClawtRoutineRunner *runner;
     GPtrArray          *started;   /* routine ids, in order */
     gboolean            refuse;
+    gint                by_hand;   /* the last run's, or -1 before one */
 } Fixture;
 
 static const gchar *
 on_run(const gchar *routine_id, const gchar *agent_id, const gchar *prompt,
-       gpointer user_data, GError **error)
+       gboolean by_hand, gpointer user_data, GError **error)
 {
     Fixture *fixture = user_data;
 
     (void)agent_id;
 
     g_assert_nonnull(prompt);
+    fixture->by_hand = by_hand ? 1 : 0;
 
     if (fixture->refuse) {
         g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
@@ -126,6 +128,13 @@ test_run_now_ignores_the_schedule(void)
     g_assert_no_error(error);
     g_assert_cmpuint(fixture.started->len, ==, 1);
     g_assert_cmpstr(g_ptr_array_index(fixture.started, 0), ==, "parked");
+
+    /*
+     * And it says it was a person's: the daemon exempts that from the
+     * loop guard's cycle detector and never files its refusal as an
+     * incident, so a second Run now inside cycle_seconds still runs.
+     */
+    g_assert_cmpint(fixture.by_hand, ==, 1);
 
     fixture_teardown(&fixture);
 }

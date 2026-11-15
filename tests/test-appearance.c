@@ -651,6 +651,100 @@ test_a_colour_that_is_not_one_is_refused(void)
     g_assert_null(clawt_color_ink(NULL));
 }
 
+/*
+ * One agent is one colour wherever it is drawn.  The GTK sidebar's face
+ * was hashed from the display name and the transcript's from the sender
+ * id, so the same agent was two colours side by side.  The tone is keyed
+ * on the id whenever there is one, the name only when there is not.
+ */
+static void
+test_an_agent_is_one_colour_everywhere(void)
+{
+    const gchar *ids[] = { "alpha", "beta", "gamma", "delta", "epsilon",
+                           "zeta", "clawtilla", NULL };
+    gboolean seen[CLAWT_AVATAR_TONES] = { FALSE };
+    guint distinct = 0;
+    guint i;
+
+    for (i = 0; ids[i] != NULL; i++) {
+        guint tone = clawt_avatar_tone(ids[i], "Somebody");
+
+        g_assert_cmpuint(tone, <, CLAWT_AVATAR_TONES);
+
+        /* the sidebar (with the name) and the transcript (without) */
+        g_assert_cmpuint(tone, ==, clawt_avatar_tone(ids[i], NULL));
+        g_assert_cmpuint(tone, ==, clawt_avatar_tone(ids[i], "Other name"));
+        g_assert_cmpstr(clawt_avatar_color(ids[i], "Alpha", NULL), ==,
+                        clawt_avatar_color(ids[i], ids[i], NULL));
+
+        if (!seen[tone]) {
+            seen[tone] = TRUE;
+            distinct++;
+        }
+    }
+
+    /* a palette, not one colour for everybody */
+    g_assert_cmpuint(distinct, >, 1);
+
+    /*
+     * And spread: unmixed djb2 modulo six put alpha, beta, delta and
+     * epsilon on one tone, so a fleet named the usual way was one colour.
+     */
+    g_assert_cmpuint(clawt_avatar_tone("alpha", NULL), !=,
+                     clawt_avatar_tone("beta", NULL));
+    g_assert_cmpuint(clawt_avatar_tone("alpha", NULL), !=,
+                     clawt_avatar_tone("gamma", NULL));
+    g_assert_cmpuint(clawt_avatar_tone("alpha", NULL), !=,
+                     clawt_avatar_tone("delta", NULL));
+    g_assert_cmpuint(clawt_avatar_tone("beta", NULL), !=,
+                     clawt_avatar_tone("gamma", NULL));
+    g_assert_cmpuint(clawt_avatar_tone("beta", NULL), !=,
+                     clawt_avatar_tone("delta", NULL));
+    g_assert_cmpuint(clawt_avatar_tone("gamma", NULL), !=,
+                     clawt_avatar_tone("delta", NULL));
+
+    /* no id: the name decides, and nothing at all is still a colour */
+    g_assert_cmpuint(clawt_avatar_tone(NULL, "Visitor"), ==,
+                     clawt_avatar_tone("", "Visitor"));
+    g_assert_cmpuint(clawt_avatar_tone(NULL, "Visitor"), ==,
+                     clawt_avatar_tone("Visitor", NULL));
+    g_assert_cmpuint(clawt_avatar_tone(NULL, NULL), <, CLAWT_AVATAR_TONES);
+}
+
+/*
+ * A configured colour wins when it is one, and every derived tone is a
+ * colour the initials can be read on -- clawt_color_ink() accepts each,
+ * which is also what lets a client splice it into a stylesheet.
+ */
+static void
+test_a_configured_colour_wins_and_every_tone_is_legible(void)
+{
+    guint i;
+
+    g_assert_cmpstr(clawt_avatar_color("alpha", "Alpha", "#89b4fa"), ==,
+                    "#89b4fa");
+
+    /* not a colour: the derived one, never the text that was typed */
+    g_assert_cmpstr(clawt_avatar_color("alpha", "Alpha",
+                                       "#ff00ff;color:red"), ==,
+                    clawt_avatar_tone_color(clawt_avatar_tone("alpha",
+                                                              NULL)));
+    g_assert_cmpstr(clawt_avatar_color("alpha", "Alpha", ""), ==,
+                    clawt_avatar_tone_color(clawt_avatar_tone("alpha",
+                                                              NULL)));
+
+    for (i = 0; i < CLAWT_AVATAR_TONES; i++) {
+        const gchar *color = clawt_avatar_tone_color(i);
+
+        g_assert_nonnull(clawt_color_ink(color));
+        g_assert_cmpstr(clawt_color_ink(color), ==, "#ffffff");
+    }
+
+    /* out of range wraps rather than reading past the table */
+    g_assert_cmpstr(clawt_avatar_tone_color(CLAWT_AVATAR_TONES), ==,
+                    clawt_avatar_tone_color(0));
+}
+
 
 /* ── The reading measurements ──────────────────────────────────────── */
 
@@ -1861,6 +1955,10 @@ main(int argc, char *argv[])
     g_test_add_func("/appearance/unknown-theme",
                     test_an_unknown_theme_falls_back);
     g_test_add_func("/appearance/avatar-ink", test_which_ink_is_legible);
+    g_test_add_func("/appearance/avatar-one-colour-everywhere",
+                    test_an_agent_is_one_colour_everywhere);
+    g_test_add_func("/appearance/avatar-configured-wins",
+                    test_a_configured_colour_wins_and_every_tone_is_legible);
     g_test_add_func("/appearance/avatar-ink-refuses",
                     test_a_colour_that_is_not_one_is_refused);
     g_test_add_func("/appearance/empty-file",

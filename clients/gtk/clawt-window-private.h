@@ -615,6 +615,12 @@ struct _ClawtWindow {
      * settings and every open incident, each with its Retry.
      */
     GtkListBox        *incident_list;
+
+    /*
+     * The line over both lists saying how far back they reach:
+     * clawt_held_since_caption(), from task.list's `since`.
+     */
+    GtkWidget         *tasks_since;
     GtkListBox        *activity_list;
 
     /* The Fleet page (gtk-fleet.c). */

@@ -226,7 +226,7 @@ refresh_incidents_once(ClawtWindow *self)
     gtk_list_box_append(self->incident_list, enabled);
 
     /* Walked from the library, never named here. */
-    to = adw_combo_row_new();
+    to = clawt_gtk_combo_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(to),
                                   "Who hears about them");
 
@@ -307,6 +307,22 @@ refresh_tasks_once(ClawtWindow *self)
     clawt_gtk_clear_list(self->task_list);
 
     reply = clawt_window_request(self, "task.list", NULL);
+
+    /*
+     * How far back the lists reach.  Both are held in memory, so straight
+     * after a restart they are empty, and an empty list read as nothing
+     * ever having been delegated or broken; the caption says what the
+     * lists cover and where the rest of the history is.
+     */
+    if (self->tasks_since != NULL) {
+        g_autofree gchar *since = clawt_held_since_caption(
+            (reply != NULL)
+                ? clawt_json_int(clawt_payload_of(reply), "since", 0) : 0,
+            g_get_real_time() / G_USEC_PER_SEC);
+
+        gtk_label_set_text(GTK_LABEL(self->tasks_since), since);
+        gtk_widget_set_visible(self->tasks_since, reply != NULL);
+    }
 
     if (reply == NULL) {
         GtkWidget *row = adw_action_row_new();
@@ -460,6 +476,17 @@ clawt_gtk_build_task_page(ClawtWindow *self)
     gtk_widget_set_margin_top(heading, 12);
     gtk_widget_set_margin_start(heading, 12);
     gtk_box_append(GTK_BOX(column), heading);
+
+    /* Filled on refresh, from task.list's `since`. */
+    self->tasks_since = gtk_label_new(NULL);
+    gtk_label_set_wrap(GTK_LABEL(self->tasks_since), TRUE);
+    gtk_label_set_xalign(GTK_LABEL(self->tasks_since), 0.0f);
+    gtk_widget_add_css_class(self->tasks_since, "caption");
+    gtk_widget_add_css_class(self->tasks_since, "dim-label");
+    gtk_widget_set_margin_start(self->tasks_since, 12);
+    gtk_widget_set_margin_end(self->tasks_since, 12);
+    gtk_widget_set_visible(self->tasks_since, FALSE);
+    gtk_box_append(GTK_BOX(column), self->tasks_since);
 
     self->incident_list = GTK_LIST_BOX(gtk_list_box_new());
     gtk_list_box_set_selection_mode(self->incident_list, GTK_SELECTION_NONE);

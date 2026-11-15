@@ -11,8 +11,11 @@ typedef struct {
 
 static const gchar *
 run_recipient(const gchar *id, const gchar *agent, const gchar *prompt,
-	gpointer user_data, GError **error)
+	gboolean by_hand, gpointer user_data, GError **error)
 {
+	/* a trigger is never a person's action */
+	g_assert_false(by_hand);
+
 	Runs *runs = user_data;
 	g_assert_cmpstr(id, ==, "ci");
 	g_assert_nonnull(prompt);

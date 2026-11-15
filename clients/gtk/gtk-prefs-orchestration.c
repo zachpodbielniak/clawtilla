@@ -324,7 +324,7 @@ clawt_gtk_build_orchestration_page(
 		"stays in the room marked \"acknowledged (no wake)\", and the "
 		"sender is told about it on its next turn. Off by default.");
 
-	self->settings_ack_model = adw_combo_row_new();
+	self->settings_ack_model = clawt_gtk_combo_row_new();
 	adw_preferences_row_set_title(ADW_PREFERENCES_ROW(self->settings_ack_model),
 				      "Model");
 	adw_action_row_set_subtitle(ADW_ACTION_ROW(self->settings_ack_model),

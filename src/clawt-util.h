@@ -128,6 +128,24 @@ gboolean clawt_copy_tree(const gchar  *source,
 gchar *clawt_generate_id(const gchar *prefix);
 
 /**
+ * clawt_id_get_time_ms:
+ * @id: (nullable): an identifier, ideally one clawt_generate_id() made
+ *
+ * The millisecond @id was generated in, read back out of its first ten
+ * characters (after a prefix's dash, when it has one).
+ *
+ * For ordering two things that were stamped at different resolutions.
+ * A #ClawtMessage carries its time in whole seconds, but its id carries
+ * the millisecond, so a turn step stamped in microseconds can still be
+ * put on the right side of a message from the same second -- which is
+ * where a fast agent's first step and the prompt that started it land.
+ *
+ * Returns: milliseconds since the epoch, or -1 when @id is not in that
+ *   form (an id somebody else chose, or %NULL)
+ */
+gint64 clawt_id_get_time_ms(const gchar *id);
+
+/**
  * clawt_redact_secrets:
  * @text: text that may contain credentials
  *
@@ -466,6 +484,84 @@ gboolean clawt_agent_id_is_reserved(const gchar *id);
  *   colour this accepts
  */
 const gchar *clawt_color_ink(const gchar *hex);
+
+/**
+ * CLAWT_AVATAR_TONES:
+ *
+ * How many derived avatar tones there are: clawt_avatar_tone() answers
+ * below this, and clawt_avatar_tone_color() has a colour for each.
+ */
+#define CLAWT_AVATAR_TONES (8)
+
+/**
+ * clawt_avatar_tone:
+ * @agent_id: (nullable): the agent the face is for
+ * @name: (nullable): its display name, for a face that is nobody's agent
+ *
+ * Which of the %CLAWT_AVATAR_TONES derived tones an avatar with no
+ * configured `agents.color` is drawn in.
+ *
+ * One function for every client and every place a client draws a face,
+ * keyed on the agent's id whenever there is one.  The GTK client let
+ * #AdwAvatar hash whatever text it was handed, and the sidebar handed it
+ * the display name while the transcript handed it the sender id -- so
+ * one agent was two colours on one screen.  The id is what every caller
+ * has; the name is only the fallback for a face that is not an agent's.
+ *
+ * Returns: a tone, below %CLAWT_AVATAR_TONES
+ */
+guint clawt_avatar_tone(const gchar *agent_id, const gchar *name);
+
+/**
+ * clawt_avatar_tone_color:
+ * @tone: a tone from clawt_avatar_tone()
+ *
+ * The colour a client that paints its own faces uses for @tone, as
+ * `#rrggbb`.  The web client draws the same tone from its stylesheet
+ * instead, so a palette recolours its faces with everything else; the
+ * tone, and so which agent shares a colour with which, is the same.
+ *
+ * Returns: (transfer none): the colour; a tone out of range wraps
+ */
+const gchar *clawt_avatar_tone_color(guint tone);
+
+/**
+ * clawt_avatar_color:
+ * @agent_id: (nullable): the agent the face is for
+ * @name: (nullable): its display name
+ * @configured: (nullable): its `agents.color`, as typed
+ *
+ * The colour to paint a face in: @configured when clawt_color_ink()
+ * accepts it, otherwise the derived tone's colour.  Every face a client
+ * paints goes through this, so a configured colour and a derived one
+ * are decided in one place.
+ *
+ * Returns: (transfer none): a `#rgb` or `#rrggbb` colour, never %NULL
+ */
+const gchar *clawt_avatar_color(const gchar *agent_id, const gchar *name,
+                                const gchar *configured);
+
+/**
+ * clawt_held_since_caption:
+ * @since: when the daemon started, as a Unix time; 0 or less when the
+ *   daemon did not say (one older than `since` on task.list)
+ * @now: the current time, as a Unix time
+ *
+ * The line every client puts over its Tasks and Problems lists, saying
+ * how far back they reach.
+ *
+ * Tasks are held in memory by design (docs/orchestration.org), and the
+ * incidents that describe them with them: an incident persisted past
+ * its task would be a row whose Retry has nothing to retry and that no
+ * task settling will ever resolve.  So a restart clears both lists, and
+ * an empty list straight after one looked like nothing had ever been
+ * delegated or broken.  This says what the list covers and where the
+ * history went instead -- the room transcripts, including each team's
+ * Problems to look at, which persist.
+ *
+ * Returns: (transfer full): the caption
+ */
+gchar *clawt_held_since_caption(gint64 since, gint64 now);
 
 /**
  * clawt_time_ago_label:

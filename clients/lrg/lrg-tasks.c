@@ -29,6 +29,9 @@ typedef struct {
     LrgWidget   *list;
     guint        seq;
 
+    /* how far back both lists reach: clawt_held_since_caption() */
+    LrgWidget   *since;
+
     /*
      * The "Problems to look at" section above the tasks, its own
      * request generation, and the two settings controls the Save button
@@ -474,6 +477,20 @@ on_tasks(ClawtLrgApp *app, JsonNode *reply, const GError *error,
 
     clawt_lrg_clear(tasks.list);
 
+    /*
+     * Held in memory, so the lists reach back only to the daemon's
+     * start; said every time, because an empty list after a restart
+     * otherwise reads as nothing having been delegated or broken.
+     */
+    if (tasks.since != NULL) {
+        g_autofree gchar *since = clawt_held_since_caption(
+            clawt_ipc_payload_int(clawt_ipc_reply_object(reply), "since", 0),
+            g_get_real_time() / G_USEC_PER_SEC);
+
+        clawt_lrg_paragraph_set_text(tasks.since, since);
+        lrg_widget_set_visible(tasks.since, reply != NULL);
+    }
+
     if (reply == NULL) {
         clawt_lrg_take(tasks.list,
                        clawt_lrg_empty_state(
@@ -522,6 +539,10 @@ build(ClawtLrgApp *app)
                  "going");
 
     tasks.app = app;
+    tasks.since = clawt_lrg_paragraph("", "muted");
+    lrg_widget_set_visible(tasks.since, FALSE);
+    clawt_lrg_add(clawt_lrg_page_body(page), tasks.since);
+    g_object_unref(tasks.since);
     tasks.incidents = clawt_lrg_vbox(8.0f);
     clawt_lrg_add(clawt_lrg_page_body(page), tasks.incidents);
     g_object_unref(tasks.incidents);

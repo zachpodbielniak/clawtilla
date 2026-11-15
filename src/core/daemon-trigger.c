@@ -115,7 +115,8 @@ results_started(JsonNode *results)
  */
 static const gchar *
 run_trigger(const gchar *trigger_id, const gchar *agent_id,
-            const gchar *prompt, gpointer user_data, GError **error)
+            const gchar *prompt, gboolean by_hand, gpointer user_data,
+            GError **error)
 {
     ClawtDaemon *self = user_data;
     ClawtTask *task;

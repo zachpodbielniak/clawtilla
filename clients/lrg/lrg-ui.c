@@ -117,6 +117,51 @@ clawt_lrg_paragraph(const gchar *text, const gchar *style_class)
     return LRG_WIDGET(label);
 }
 
+LrgWidget *
+clawt_lrg_one_line(const gchar *text, const gchar *style_class)
+{
+    LrgWidget *label = clawt_lrg_label(text, style_class);
+
+    /*
+     * Cut short rather than drawn past the slot's edge -- a skill tile's
+     * description ran out of its card, over the next tile -- and given
+     * the fill weight, so a box short of room takes it from this label
+     * first rather than from a neighbour that must stay whole.
+     */
+    lrg_label_set_ellipsize(LRG_LABEL(label), TRUE);
+    lrg_widget_set_fill_weight(label, 1.0f);
+
+    return label;
+}
+
+LrgWidget *
+clawt_lrg_message_mark(const gchar *label, const gchar *tone,
+                       const gchar *caption, gboolean from_user,
+                       gfloat gutter)
+{
+    LrgWidget *box = clawt_lrg_vbox(2.0f);
+    LrgWidget *mark = clawt_lrg_badge(label, tone);
+
+    lrg_widget_set_halign(mark, from_user ? LRG_ALIGN_END : LRG_ALIGN_START);
+    clawt_lrg_take(box, mark);
+
+    /*
+     * A paragraph, not a label: the explanation is a sentence, and a
+     * one-line label reports its whole width as its size -- the
+     * interrupted notice's ran off the right edge of the transcript.
+     */
+    if (caption != NULL && *caption != '\0')
+        clawt_lrg_take(box, clawt_lrg_paragraph(caption, "caption"));
+
+    if (!from_user) {
+        LrgInsets pad = { gutter, 0.0f, 0.0f, 0.0f };
+
+        lrg_widget_set_margin(box, &pad);
+    }
+
+    return box;
+}
+
 void
 clawt_lrg_paragraph_set_text(LrgWidget *paragraph, const gchar *text)
 {
@@ -364,8 +409,12 @@ clawt_lrg_empty_state(const gchar *title, const gchar *body)
 #define ROW_PREFIX_KEY "clawt-lrg-row-prefix"
 #define ROW_SUFFIX_KEY "clawt-lrg-row-suffix"
 
-LrgWidget *
-clawt_lrg_row(const gchar *title, const gchar *subtitle)
+/*
+ * The row both constructors build, around a subtitle widget the caller
+ * chose: a wrapping paragraph, or one cut-short line.
+ */
+static LrgWidget *
+row_new(LrgWidget *title, LrgWidget *subtitle)
 {
     LrgWidget *row = clawt_lrg_hbox(12.0f);
     LrgWidget *prefix = clawt_lrg_hbox(8.0f);
@@ -378,18 +427,10 @@ clawt_lrg_row(const gchar *title, const gchar *subtitle)
     lrg_widget_set_valign(suffix, LRG_ALIGN_CENTER);
     lrg_widget_set_fill_weight(text, 1.0f);
 
-    clawt_lrg_take(text, clawt_lrg_label(title, NULL));
+    clawt_lrg_take(text, title);
 
-    /*
-     * The subtitle wraps.  A one-line label reports its whole width as
-     * its natural size, so one long subtitle -- "will never run: '0 8 *
-     * * 1-5' is not a schedule: use manual, hourly, ..." -- widened the
-     * row, the page and the window's whole column past the right edge,
-     * taking the row's own buttons and the header's menu with it.  The
-     * same bug GTK had with wrapping labels, from the other side.
-     */
-    if (subtitle != NULL && *subtitle != '\0')
-        clawt_lrg_take(text, clawt_lrg_paragraph(subtitle, "muted"));
+    if (subtitle != NULL)
+        clawt_lrg_take(text, subtitle);
 
     clawt_lrg_add(row, prefix);
     clawt_lrg_add(row, text);
@@ -403,6 +444,36 @@ clawt_lrg_row(const gchar *title, const gchar *subtitle)
     g_object_unref(text);
 
     return row;
+}
+
+LrgWidget *
+clawt_lrg_row(const gchar *title, const gchar *subtitle)
+{
+    /*
+     * The subtitle wraps.  A one-line label reports its whole width as
+     * its natural size, so one long subtitle -- "will never run: '0 8 *
+     * * 1-5' is not a schedule: use manual, hourly, ..." -- widened the
+     * row, the page and the window's whole column past the right edge,
+     * taking the row's own buttons and the header's menu with it.  The
+     * same bug GTK had with wrapping labels, from the other side.
+     */
+    return row_new(clawt_lrg_label(title, NULL),
+                   (subtitle != NULL && *subtitle != '\0')
+                       ? clawt_lrg_paragraph(subtitle, "muted") : NULL);
+}
+
+LrgWidget *
+clawt_lrg_row_one_line(const gchar *title, const gchar *subtitle)
+{
+    /*
+     * For a list that draws every row at one height (LrgListView).  A
+     * wrapping subtitle there grew past the row it was given and drew
+     * over the next one -- the Flow page's conversation list, where the
+     * subtitle is the last thing said.  Each is one line, cut short.
+     */
+    return row_new(clawt_lrg_one_line(title, NULL),
+                   (subtitle != NULL && *subtitle != '\0')
+                       ? clawt_lrg_one_line(subtitle, "muted") : NULL);
 }
 
 LrgWidget *

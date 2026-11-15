@@ -937,7 +937,12 @@ pod_action(const gchar *action, GHashTable *params, GHashTable **out_result,
             return FALSE;
         }
 
-        task_id = clawt_routine_runner_run_now(self->routines, routine, error);
+        /*
+         * An automation is not a person: measured by every limit a
+         * scheduled run is, and its refusals are incidents as theirs are.
+         */
+        task_id = clawt_routine_runner_run_unscheduled(self->routines,
+                                                       routine, FALSE, error);
 
         if (task_id == NULL)
             return FALSE;
@@ -1175,9 +1180,16 @@ report_routine_refusal(
 	ClawtDaemon  *self,
 	const gchar  *routine_id,
 	const gchar  *agent_id,
+	gboolean      by_hand,
 	GError      **error
 ){
-	if (self->incidents == NULL)
+	/*
+	 * Not for a person's Run now: the refusal goes straight back to the
+	 * person who pressed it, as the reply to routine.run, and filing it
+	 * as well made one press two reports -- the second a "problem to
+	 * look at" about something they were already looking at.
+	 */
+	if (self->incidents == NULL || by_hand)
 		return;
 
 	clawt_incident_desk_raise(self->incidents, CLAWT_INCIDENT_ROUTINE_FAILED,
@@ -1211,7 +1223,13 @@ incident_routine_of(
 	return source->id;
 }
 
-/* Runs a routine again for a retry, through the runner's own run-now. */
+/*
+ * Runs a routine again for a retry, through the runner's own run-now --
+ * as a person's action, because the retry is bounded by the desk's own
+ * limits (an agent's retries are counted; the operator's have looked),
+ * and the run it repeats sent the very prompt the cycle detector would
+ * refuse inside its window.
+ */
 static gchar *
 incident_rerun(
 	const gchar  *routine_id,
@@ -1253,7 +1271,8 @@ incident_rerun(
  */
 static const gchar *
 run_routine(const gchar *routine_id, const gchar *agent_id,
-            const gchar *prompt, gpointer user_data, GError **error)
+            const gchar *prompt, gboolean by_hand, gpointer user_data,
+            GError **error)
 {
     ClawtDaemon *self = user_data;
     ClawtTask *task;
@@ -1268,7 +1287,8 @@ run_routine(const gchar *routine_id, const gchar *agent_id,
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
                     "routine '%s' names '%s', which is not an agent",
                     routine_id, agent_id);
-        report_routine_refusal(self, routine_id, agent_id, error);
+        report_routine_refusal(self, routine_id, agent_id, by_hand,
+                               error);
         return NULL;
     }
 
@@ -1302,7 +1322,8 @@ run_routine(const gchar *routine_id, const gchar *agent_id,
                         "routine '%s' is read-only, and '%s' runs a CLI whose own tools "
                         "clawtilla cannot refuse (only claude-code and claude-tmux take "
                         "the hook); it was not run", routine_id, agent_id);
-            report_routine_refusal(self, routine_id, agent_id, error);
+            report_routine_refusal(self, routine_id, agent_id, by_hand,
+                                   error);
             return NULL;
         }
     }
@@ -1323,7 +1344,8 @@ run_routine(const gchar *routine_id, const gchar *agent_id,
             g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
                         "routine '%s' is read-only and its room could not be made, so "
                         "it was not run", routine_id);
-            report_routine_refusal(self, routine_id, agent_id, error);
+            report_routine_refusal(self, routine_id, agent_id, by_hand,
+                                   error);
             return NULL;
         }
     }
@@ -1332,7 +1354,8 @@ run_routine(const gchar *routine_id, const gchar *agent_id,
                                      NULL, error);
 
     if (task == NULL) {
-        report_routine_refusal(self, routine_id, agent_id, error);
+        report_routine_refusal(self, routine_id, agent_id, by_hand,
+                               error);
         return NULL;
     }
 
@@ -1351,15 +1374,53 @@ run_routine(const gchar *routine_id, const gchar *agent_id,
      * With the routine's own model, when it names one: that turn only,
      * applied by libreclaw when the turn starts and put back after.
      */
-    if (clawt_mailbox_router_send_to_model(
-            self->router, sender, target, prompt, clawt_task_get_id(task),
-            routine_model(self, routine_id),
-            error) < 0) {
-        clawt_task_manager_fail(self->tasks, clawt_task_get_id(task),
-                                (error != NULL && *error != NULL)
-                                    ? (*error)->message
-                                    : "it could not be delivered");
-        return NULL;
+    {
+        g_autoptr(ClawtMessage) message = clawt_message_new(target, sender,
+                                                            prompt);
+        const gchar *why;
+
+        clawt_message_set_task_id(message, clawt_task_get_id(task));
+        clawt_message_set_model(message, routine_model(self, routine_id));
+
+        /*
+         * A person's Run now is a person's action: the loop guard's
+         * cycle detector does not measure it (clawt_message_set_by_hand()).
+         * The routine's prompt is the same text every run, so a second
+         * press inside orchestration.cycle_seconds was refused as a
+         * conversation going in circles.
+         */
+        clawt_message_set_by_hand(message, by_hand);
+
+        if (clawt_mailbox_router_send(self->router, message, error) < 0) {
+            why = (error != NULL && *error != NULL)
+                ? (*error)->message : "it could not be delivered";
+
+            /*
+             * A refusal is an answer, not a broken run.  The loop guard
+             * and the spending caps refuse on purpose and say why (both
+             * are CLAWT_ERROR_LOOP_LIMIT), and a person's Run now is
+             * refused to that person, who reads the answer as it comes
+             * back.  Failing the task filed each of those as an
+             * incident -- Run now pressed twice became a problem to
+             * look at.  Cancelled instead, by clawtilla, with the
+             * reason, so the task list still says what happened and
+             * nothing raises an incident.  A scheduled run that could
+             * not be delivered for any other reason still fails, which
+             * is what an incident is for.
+             */
+            if (by_hand ||
+                (error != NULL && *error != NULL &&
+                 g_error_matches(*error, CLAWT_ERROR,
+                                 CLAWT_ERROR_LOOP_LIMIT)))
+                clawt_task_manager_cancel(self->tasks,
+                                          clawt_task_get_id(task), why,
+                                          CLAWT_SYSTEM_SENDER);
+            else
+                clawt_task_manager_fail(self->tasks,
+                                        clawt_task_get_id(task), why);
+
+            return NULL;
+        }
     }
 
     clawt_event_bus_emit(self->bus, "routine.ran", routine_id);
@@ -6769,6 +6830,9 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
 
     if (self->running)
         return TRUE;
+
+    /* What the in-memory lists are "since"; see started_at. */
+    self->started_at = g_get_real_time() / G_USEC_PER_SEC;
 
     /*
      * Anything left from a previous start is released first.

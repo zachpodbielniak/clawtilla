@@ -705,6 +705,8 @@ clawt_web_stylesheet(void)
     ".avatar-tone-3{background:var(--bad-bg);color:var(--bad-fg)}"
     ".avatar-tone-4{background:var(--neutral-bg);color:var(--neutral-fg)}"
     ".avatar-tone-5{background:var(--surface-2);color:var(--ink-2)}"
+    ".avatar-tone-6{background:var(--info-fg);color:var(--surface)}"
+    ".avatar-tone-7{background:var(--good-fg);color:var(--surface)}"
     /*
      * Every body in a run indented to the same 36px -- avatar plus its
      * gap -- so the left edge of the text is unbroken down the run.

@@ -216,6 +216,42 @@ clawt_generate_id(const gchar *prefix)
     return g_strdup_printf("%s%s", timestamp, random_part);
 }
 
+gint64
+clawt_id_get_time_ms(const gchar *id)
+{
+    static const gchar alphabet[] = "0123456789abcdefghjkmnpqrstvwxyz";
+    const gchar *stamp;
+    gint64 ms = 0;
+    gint i;
+
+    if (id == NULL)
+        return -1;
+
+    /*
+     * After the prefix's dash, when there is one.  A prefix is a short
+     * word chosen by the caller and never contains a dash of its own in
+     * practice, but the last dash is used so that a prefix which did
+     * would still read the stamp rather than part of itself.
+     */
+    stamp = strrchr(id, '-');
+    stamp = (stamp != NULL) ? stamp + 1 : id;
+
+    /* Ten stamp characters and ten random ones, as generated above. */
+    if (strlen(stamp) != 20)
+        return -1;
+
+    for (i = 0; i < 10; i++) {
+        const gchar *at = strchr(alphabet, stamp[i]);
+
+        if (stamp[i] == '\0' || at == NULL)
+            return -1;
+
+        ms = (ms << 5) | (gint64)(at - alphabet);
+    }
+
+    return ms;
+}
+
 /*
  * Resolves a path as far as it exists.
  *
@@ -1058,6 +1094,109 @@ clawt_color_ink(const gchar *hex)
                  0.0722 * channel[2]) / 255.0;
 
     return (luminance > 0.55) ? "#000000" : "#ffffff";
+}
+
+/*
+ * The derived tones, mid-weight so white initials read on every one of
+ * them (each is below clawt_color_ink()'s boundary), and far enough
+ * apart in hue that two agents a tone apart are told apart at a glance.
+ */
+static const gchar *const avatar_tones[CLAWT_AVATAR_TONES] = {
+    "#3584e4",  /* blue */
+    "#26a269",  /* green */
+    "#c64600",  /* orange */
+    "#9141ac",  /* purple */
+    "#1f7f8f",  /* teal */
+    "#a51d2d",  /* red */
+    "#865e3c",  /* brown */
+    "#5e5c64"   /* slate */
+};
+
+guint
+clawt_avatar_tone(const gchar *agent_id, const gchar *name)
+{
+    const gchar *key;
+    guint32 hash;
+
+    /*
+     * The id first, whenever there is one: it is the one thing every
+     * caller holds, and the display name is not (a transcript knows a
+     * sender by id).  g_str_hash() is djb2, the same in every process
+     * and every client, which is the property that matters here.
+     */
+    key = (agent_id != NULL && *agent_id != '\0') ? agent_id : name;
+
+    if (key == NULL || *key == '\0')
+        return 0;
+
+    /*
+     * Mixed before the modulo.  djb2's low bits follow the last byte too
+     * closely: "alpha", "beta", "delta" and "epsilon" all landed on one
+     * tone of six, which is the opposite of what a tone is for.
+     */
+    hash = g_str_hash(key);
+    hash ^= hash >> 16;
+    hash *= 0x45d9f3bU;
+    hash ^= hash >> 16;
+    hash *= 0x45d9f3bU;
+    hash ^= hash >> 16;
+
+    return hash % CLAWT_AVATAR_TONES;
+}
+
+const gchar *
+clawt_avatar_tone_color(guint tone)
+{
+    return avatar_tones[tone % CLAWT_AVATAR_TONES];
+}
+
+const gchar *
+clawt_avatar_color(const gchar *agent_id, const gchar *name,
+                   const gchar *configured)
+{
+    /* clawt_color_ink() is also the validation of a typed colour */
+    if (clawt_color_ink(configured) != NULL)
+        return configured;
+
+    return clawt_avatar_tone_color(clawt_avatar_tone(agent_id, name));
+}
+
+gchar *
+clawt_held_since_caption(gint64 since, gint64 now)
+{
+    static const gchar tail[] =
+        "Tasks and problems are held in memory, so a daemon restart clears "
+        "this list; what the work said and produced stays in the room "
+        "transcripts, and each team's reports in its Problems to look at "
+        "room.";
+    g_autoptr(GDateTime) started = NULL;
+    g_autoptr(GDateTime) today = NULL;
+    g_autofree gchar *clock = NULL;
+
+    if (since <= 0)
+        return g_strdup_printf("Since the daemon last started. %s", tail);
+
+    started = g_date_time_new_from_unix_local(since);
+    today = g_date_time_new_from_unix_local(now > 0 ? now : since);
+
+    if (started == NULL || today == NULL)
+        return g_strdup_printf("Since the daemon last started. %s", tail);
+
+    clock = g_date_time_format(started, "%H:%M");
+
+    /* The day only when it is not today: "at 09:14" is the common case. */
+    if (g_date_time_get_year(started) == g_date_time_get_year(today) &&
+        g_date_time_get_day_of_year(started) ==
+            g_date_time_get_day_of_year(today))
+        return g_strdup_printf("Since the daemon started at %s. %s", clock,
+                               tail);
+
+    {
+        g_autofree gchar *day = g_date_time_format(started, "%-d %b");
+
+        return g_strdup_printf("Since the daemon started on %s at %s. %s",
+                               day, clock, tail);
+    }
 }
 
 gchar *

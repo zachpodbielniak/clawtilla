@@ -428,6 +428,18 @@ it up" delegates the work a second time, and then there are two of it.
 Tasks are held in memory only.  A daemon restart loses the list; what the
 work produced is in the room transcript and the event log.
 
+Incidents are held in memory with them, deliberately: an incident kept
+past its task would be a row whose Retry has nothing to re-queue and that
+no task settling will ever resolve.  What the clients do instead is say
+so.  ~task.list~ and ~incident.list~ carry ~since~, the daemon's start,
+and every client puts =clawt_held_since_caption()= over its Tasks and
+Problems lists -- "Since the daemon started at 09:14. Tasks and problems
+are held in memory, so a daemon restart clears this list; what the work
+said and produced stays in the room transcripts, and each team's reports
+in its Problems to look at room."  The CLI prints the same line on
+stderr above ~clawtilla task list~.  An empty list straight after a
+restart used to read as nothing ever having been delegated or broken.
+
 **** A task knows what it came out of
 
 Every task records a ~parent_id~ and a depth.  A chief's task that
@@ -2474,6 +2486,14 @@ wants a smaller one, or ~0~.
 The refusal names the number, so an agent that is repeating itself on
 purpose is told how long to wait rather than only that it may not.  A
 refusal that cannot be waited out is a refusal that gets retried.
+
+A person's explicit action is not measured at all.  A message marked by
+hand (=clawt_message_set_by_hand()=) -- a routine's Run now, an
+incident's Retry -- passes the cycle detector and is not recorded in its
+window.  A routine's prompt is identical on every run by construction,
+so a second Run now inside the window used to be refused as a loop, and
+the refusal became an incident (docs/routines.org, "Trying one before
+trusting it").  The other limits still apply to it.
 
 *** What happens when one is hit
 

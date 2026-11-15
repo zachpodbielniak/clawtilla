@@ -245,7 +245,7 @@ clawt_gtk_build_fleet_page(ClawtWindow *self)
     gtk_widget_set_margin_start(box, 12);
     gtk_widget_set_margin_end(box, 12);
 
-    self->fleet_period = adw_combo_row_new();
+    self->fleet_period = clawt_gtk_combo_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(self->fleet_period), "Period");
     adw_combo_row_set_model(ADW_COMBO_ROW(self->fleet_period), G_LIST_MODEL(periods));
     adw_combo_row_set_selected(ADW_COMBO_ROW(self->fleet_period),

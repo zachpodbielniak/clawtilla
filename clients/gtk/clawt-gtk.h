@@ -293,8 +293,10 @@ GdkTexture *clawt_gtk_avatar_preview_texture(ClawtClient *client,
  * did not, which is exactly the bug this replaces.
  *
  * Resolution order: @agent_id's picture when @has_avatar says there is
- * one and it decodes, then @color through clawt_color_ink(), then the
- * initials and colour #AdwAvatar derives from @name on its own.
+ * one and it decodes, then clawt_avatar_color() -- @color when
+ * clawt_color_ink() accepts it, otherwise the tone every client derives
+ * from @agent_id (or @name, without one).  Never #AdwAvatar's own colour,
+ * which hashes whatever text it was handed.
  *
  * Returns: (transfer full): a new, unparented #AdwAvatar
  */
@@ -304,5 +306,26 @@ GtkWidget *clawt_gtk_build_avatar(ClawtClient  *client,
                                   gboolean      has_avatar,
                                   const gchar  *color,
                                   gint          size);
+
+/**
+ * clawt_gtk_combo_row_new:
+ *
+ * An #AdwComboRow whose popover shows every choice whole.
+ *
+ * #AdwComboRow's own popover cuts a long choice short with an ellipsis,
+ * so "From whoever handed out the work" and the other sentences a
+ * setting's choices are written as read as "From whoever handed ..." in
+ * the very list that exists to tell them apart.  The popover's items
+ * wrap instead, at a measure wide enough for a short sentence on one
+ * line, and keep the checkmark on the selected one.  The row itself
+ * still ellipsizes its current value, which the subtitle explains.
+ *
+ * Every combo row in the client is made here, so the next one is too.
+ * The model may be a #GtkStringList or anything the row's expression
+ * can turn into a string.
+ *
+ * Returns: (transfer floating): a new #AdwComboRow
+ */
+GtkWidget *clawt_gtk_combo_row_new(void);
 
 G_END_DECLS

@@ -2473,6 +2473,36 @@ describe_sharing(ClawtAgent *self, GString *out)
         workspace, CLAWT_SHARED_WORKSPACES_ROOT);
 }
 
+const gchar *
+clawt_agent_computer_text_for_operator(const gchar  *computer_type,
+                                       const gchar  *detail,
+                                       const gchar **out_caption)
+{
+    if (out_caption != NULL)
+        *out_caption = NULL;
+
+    /*
+     * No computer: said to the operator.  Absent and "none" are the same
+     * answer -- a daemon older than the field, or an agent whose detail
+     * was never reported, has nothing better to offer.
+     */
+    if (computer_type == NULL || *computer_type == '\0' ||
+        g_strcmp0(computer_type, "none") == 0)
+        return "This agent has no computer, so it cannot run commands, "
+               "read files or reach a filesystem. Choose one under "
+               "Computer in its settings to give it somewhere to work.";
+
+    if (detail == NULL || *detail == '\0')
+        return NULL;
+
+    if (out_caption != NULL)
+        *out_caption = "What the agent itself is told about its computer, "
+                       "word for word -- the text that decides whether it "
+                       "goes looking for a tool it does not have.";
+
+    return detail;
+}
+
 gchar *
 clawt_agent_describe_computer(ClawtAgent *self)
 {

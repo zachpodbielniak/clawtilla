@@ -1797,6 +1797,22 @@ sidebar under the team, where the reports themselves can be read and the
 lead written to.  The same in GTK, web and lrg; see
 [[file:orchestration.org::*Incidents: broken runs reach the lead][Incidents]].
 
+Over both lists, in every client, a line saying how far back they reach:
+=clawt_held_since_caption()= from ~task.list~'s ~since~ ("Since the
+daemon started at 09:14. Tasks and problems are held in memory, so a
+daemon restart clears this list; ...").  Tasks are held in memory by
+design and incidents with them, and an empty Tasks page straight after a
+restart read as nothing ever having been delegated or broken.
+
+*The agent page speaks to the operator.*  What an agent is told about its
+computer (~computer_detail~) is written to the agent, and all three
+clients printed it as it was -- so an agent with none had a page saying
+"You have no computer" to the person reading it.
+=clawt_agent_computer_text_for_operator()= decides what the page says:
+the operator's sentence ("This agent has no computer, so it cannot run
+commands...") when there is none, and the agent's own words under a
+caption saying whose they are when there is one.
+
 A routine whose computer did not start =routines.max_start_failures= runs in a row (three by default) is turned off by the daemon, and its row says so in libclawt's words -- "turned off after 3 failed starts: <the computer's error>" (~clawt_routine_turned_off_note()~) -- with a *Turn back on* button beside it that sends ~routine.update~ with =enabled: true=.  The alerts panel gets the same news as an error (~routine.turned_off~, worded by ~clawt_routine_turned_off_alert()~).  The editor has the limit as *Turn off after failed starts*, with ~clawt_routine_start_failures_hint()~ under it; GTK, web and lrg draw all four the same way, and ~make parity~ declares them.  See [[file:routines.org::#max-start-failures][routines.org]].
 
 *** The Computer tab has five views
@@ -1923,6 +1939,32 @@ A colour goes through ~clawt_color_ink()~, which accepts only ~#rgb~ and
 ~#rrggbb~ and answers which of black or white is legible on it.  It is
 also the validation: nothing else checks that key, and it is spliced into
 a stylesheet.
+
+The derived colour is one library function for every client and every
+place a client draws a face: ~clawt_avatar_tone()~ picks one of
+~CLAWT_AVATAR_TONES~ (eight) keyed on the *agent's id*, and
+~clawt_avatar_color()~ answers the configured colour when there is one
+and that tone's colour (~clawt_avatar_tone_color()~) otherwise.  GTK and
+lrg paint it; the web client draws the same tone from its stylesheet
+(~.avatar-tone-N~), so a palette recolours its faces with everything
+else.  Two things had made one agent two colours:
+
+- GTK let ~AdwAvatar~ hash whatever text it was handed, and the sidebar
+  handed it the display name while the transcript handed it the sender
+  id.  The tint rule that should have overridden it was written for
+  ~avatar.<class>~, but ~AdwAvatar~ is a ~widget~ holding an ~avatar~
+  gizmo, which is the node carrying ~.colorN~ -- so the rule matched
+  nothing, and a configured ~agents.color~ never showed in GTK either.
+  It is ~.<class> > avatar~ now.
+- A transcript built every run header's face from *the page's* agent:
+  in a room every member was drawn as the room (web: the room id's tone),
+  and clawtilla's own notices wore the agent's picture.  The face is the
+  sender's -- its colour and picture from its sidebar row in GTK, its id's
+  tone without a picture in the web client.
+
+The tone is mixed before the modulo: djb2's low bits follow the last
+byte, and "alpha", "beta", "delta" and "epsilon" had all landed on one
+tone of six.
 
 **** The measure
 
@@ -2069,7 +2111,7 @@ Pressing an option sends the same ~decision.answer~ the inbox sends, with ~via: 
 
 The deadline is a clock time rather than "in 3h": a relative time in a transcript is wrong from the moment it is drawn, and nothing redraws a card whose decision has not changed.
 
-The card sits where it was asked: a room's decisions (~decision.list~ with ~room~, every state, oldest first) are merged into the history by ~clawt_decision_precedes()~ -- strictly before a message's second -- the same way turn steps are merged by ~clawt_turn_step_precedes()~. A question asked while a turn is running is drawn above the live step block, so the block stays the live edge.
+The card sits where it was asked: a room's decisions (~decision.list~ with ~room~, every state, oldest first) are merged into the history by ~clawt_decision_precedes()~ -- strictly before a message's second -- the same way turn steps are merged by ~clawt_turn_step_precedes_message()~ -- at or before the message's second, with a tie inside that second broken by the millisecond its id was made in (~clawt_id_get_time_ms()~): a step a fast agent took in the same second as the operator's prompt was drawn above the prompt. A question asked while a turn is running is drawn above the live step block, so the block stays the live edge.
 
 A double tap is refused twice over. The client stops it first -- GTK makes the options insensitive for the request's wait, the web form has ~hx-sync="this:drop"~ and disables its buttons, lrg draws "Answering…" in place of the buttons until the reply -- and the daemon refuses whatever still gets through, as it refuses a press on a card that was out of date: "Already settled: You answered "now" in the chat. Your press changed nothing; if you have changed your mind, say so in a message to chief." The refusal is shown (a toast in GTK and lrg, written into the card on the web) and the card is redrawn from the daemon's current record, so it stops offering buttons that would be refused again.
 
@@ -2666,6 +2708,29 @@ Chat is singled out not because it matters more but because it is the
 only page holding something a toast can destroy the use of: everything
 else a toast covers can be scrolled back to, while the composer holds
 text that has not been sent anywhere yet.
+
+*Over a dialog, the dialog's own overlay.*  libadwaita draws a dialog
+above the window's content, overlays included, so a toast raised while
+one was open -- "An agent needs an id.", a refusal explaining why
+nothing saved -- landed *under* the form that caused it and was gone by
+the time the form closed.  Every ~AdwDialog~ gets an ~AdwToastOverlay~
+round its content the moment it is presented (~notify::visible-dialog~
+on the window; the focus is put back where it was), and
+~clawt_window_toast()~ puts a toast there while that dialog is the
+visible one.  A preferences dialog has an overlay of its own and is
+given the toast directly; an alert dialog's content is its own, so a
+toast raised over one waits and is shown when it closes.
+
+*** Choices shown whole
+
+Every combo row is made by ~clawt_gtk_combo_row_new()~, whose popover
+items wrap at 48 characters instead of ellipsizing, with
+~AdwComboRow~'s checkmark on the selected one.  The choices are often
+sentences -- "From whoever handed out the work", "The team's lead (the
+chief of staff when it has none)" -- and the stock popover cut them to
+"From whoever handed ..." in the very list that exists to tell them
+apart.  The row itself still shortens the current value; its subtitle
+explains it.
 
 *** Following the live edge
 

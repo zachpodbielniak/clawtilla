@@ -321,6 +321,35 @@ ClawtDesktop *clawt_agent_get_desktop(ClawtAgent *self);
 gchar *clawt_agent_describe_computer(ClawtAgent *self);
 
 /**
+ * clawt_agent_computer_text_for_operator:
+ * @computer_type: (nullable): the agent's `computer` as agent.list and
+ *   agent.show report it -- "none" when it has none
+ * @detail: (nullable): agent.show's `computer_detail`, which is
+ *   clawt_agent_describe_computer(): written *to the agent*
+ * @out_caption: (out) (optional) (transfer none) (nullable): what the
+ *   returned text is, for the heading over it; %NULL when the text is
+ *   addressed to the operator and needs no introduction
+ *
+ * What an agent's page says about its computer, to the person reading
+ * it, in every client.
+ *
+ * The description an agent is given is in the second person -- "You have
+ * no computer. You cannot run commands..." -- and the clients printed it
+ * as it was, so the agent's page addressed the operator as the agent.
+ * For an agent with no computer that is the whole of what there is to
+ * say, so it is said to the operator instead.  For an agent with one the
+ * agent's own words are still worth showing as written (they decide
+ * whether it goes looking for a tool it does not have), and
+ * @out_caption says whose words they are.
+ *
+ * Returns: (transfer none) (nullable): the text to show, or %NULL when
+ *   there is nothing to show
+ */
+const gchar *clawt_agent_computer_text_for_operator(const gchar  *computer_type,
+                                                    const gchar  *detail,
+                                                    const gchar **out_caption);
+
+/**
  * clawt_agent_set_link:
  * @self: a #ClawtAgent
  * @link_: (transfer none) (nullable): the connection, or %NULL when it goes

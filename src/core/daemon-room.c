@@ -413,16 +413,21 @@ clawt_daemon_handle_room(
         if (room != NULL &&
             clawt_ipc_payload_boolean(payload, "live", FALSE)) {
             g_autoptr(GPtrArray) recent = clawt_room_get_history(room, 1);
-            gint64 since = (recent != NULL && recent->len > 0)
-                ? clawt_message_get_timestamp(g_ptr_array_index(recent, 0))
-                : 0;
+            ClawtMessage *last = (recent != NULL && recent->len > 0)
+                ? g_ptr_array_index(recent, 0) : NULL;
+            gint64 since = (last != NULL)
+                ? clawt_message_get_timestamp(last) : 0;
+            const gchar *since_id = (last != NULL)
+                ? clawt_message_get_id(last) : NULL;
             g_autoptr(GPtrArray) live = g_ptr_array_new();
             guint k;
 
             /*
-             * clawt_turn_step_precedes(), not a comparison written out
-             * here.  A step is stamped in microseconds and a message in
-             * seconds, so `step_ts > message_ts` is true of every step
+             * clawt_turn_step_precedes_message(), not a comparison
+             * written out here, and with the message's id so a step from
+             * the same second as it lands on the right side.  A step is
+             * stamped in microseconds and a message in seconds, so
+             * `step_ts > message_ts` is true of every step
              * ever taken -- the filter passed everything, and the web
              * client drew each turn twice: once interleaved through the
              * transcript and again as a live tail below it.
@@ -434,7 +439,7 @@ clawt_daemon_handle_room(
             for (k = 0; k < steps->len; k++) {
                 ClawtTurnStep *one = g_ptr_array_index(steps, k);
 
-                if (!clawt_turn_step_precedes(one, since))
+                if (!clawt_turn_step_precedes_message(one, since, since_id))
                     g_ptr_array_add(live, one);
             }
 

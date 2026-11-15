@@ -443,7 +443,8 @@ clawt_trigger_dispatch(ClawtTrigger *self, ClawtTriggerStore *store,
 
 		/* Continue after one recipient fails: the reservation suppresses
 		 * retries of successful siblings, and every outcome stays inspectable. */
-		task = run(id, recipients[i], prompt, user_data, &delivery_error);
+		task = run(id, recipients[i], prompt, FALSE, user_data,
+		           &delivery_error);
 		detail = g_strdup_printf("agent %s: %s", recipients[i],
 			delivery_error != NULL ? delivery_error->message :
 			(task != NULL ? "queued" : "could not start"));

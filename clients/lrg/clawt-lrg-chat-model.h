@@ -570,6 +570,8 @@ gboolean clawt_lrg_step_app_link(ClawtTurnStep  *step,
  * @steps: (element-type ClawtTurnStep): a room's steps, oldest first
  * @from: where the last stretch ended
  * @message_ts: the next message's timestamp
+ * @message_id: (nullable): the next message's id, which breaks a tie
+ *   inside one second (clawt_turn_step_precedes_message())
  *
  * Where the steps that happened before a message end, so a history
  * rebuilt from two fetches puts each stretch of tool calls between the
@@ -577,7 +579,8 @@ gboolean clawt_lrg_step_app_link(ClawtTurnStep  *step,
  *
  * Returns: the index of the first step that does not precede it
  */
-guint clawt_lrg_steps_before(GPtrArray *steps, guint from, gint64 message_ts);
+guint clawt_lrg_steps_before(GPtrArray *steps, guint from, gint64 message_ts,
+                             const gchar *message_id);
 
 /**
  * ClawtLrgRun:

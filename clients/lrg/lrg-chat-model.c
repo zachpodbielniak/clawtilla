@@ -1434,18 +1434,19 @@ clawt_lrg_step_app_link(ClawtTurnStep  *step,
 }
 
 guint
-clawt_lrg_steps_before(GPtrArray *steps, guint from, gint64 message_ts)
+clawt_lrg_steps_before(GPtrArray *steps, guint from, gint64 message_ts,
+                       const gchar *message_id)
 {
     guint run = from;
 
     /*
-     * clawt_turn_step_precedes(), because the two stamps are in
+     * clawt_turn_step_precedes_message(), because the two stamps are in
      * different units and doing it by hand is how every step ends up
-     * after every message.
+     * after every message -- and the id breaks a same-second tie.
      */
     while (steps != NULL && run < steps->len &&
-           clawt_turn_step_precedes(g_ptr_array_index(steps, run),
-                                    message_ts))
+           clawt_turn_step_precedes_message(g_ptr_array_index(steps, run),
+                                            message_ts, message_id))
         run++;
 
     return run;

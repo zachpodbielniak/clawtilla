@@ -262,6 +262,13 @@ clawt_lrg_avatar(ClawtLrgApp *app, const gchar *name, const gchar *agent_id,
     GrlColor ink = { 0xff, 0xff, 0xff, 0xff };
     LrgPartLook look;
 
+    /*
+     * The configured colour, or the tone every client derives from the
+     * agent's id (clawt_avatar_color()) -- never one grey for every
+     * agent without a colour, and never a colour of this client's own,
+     * so a face here matches the same agent's face in GTK.
+     */
+    color = clawt_avatar_color(agent_id, name, color);
     hex_color(color, &fill);
     hex_color(clawt_color_ink(color), &ink);
 

@@ -65,25 +65,134 @@ clawt_gtk_refresh_repeat(ClawtWindow *self, ClawtRefreshKind kind)
 
 /* ── Talking to the daemon ───────────────────────────────────────── */
 
+#define DIALOG_TOASTS "clawt-dialog-toasts"
+
+/*
+ * A dialog's own toast overlay, put round its content the moment it is
+ * presented.
+ *
+ * A toast on the window's overlay is drawn *under* a dialog -- the
+ * dialog host sits above the window's content -- so "Saved", or the
+ * refusal that explains why nothing saved, landed behind the very form
+ * that caused it and was gone by the time the form closed.  Wrapping at
+ * present time, from notify::visible-dialog, covers every dialog in the
+ * client without each of the forty builders knowing about toasts.
+ *
+ * An alert dialog's content is its own and a preferences dialog has a
+ * toast overlay already, so neither is touched.  The focus is put back
+ * where it was, because moving the content out of the dialog and back
+ * unsets it.
+ */
+static void
+wrap_dialog_toasts(AdwDialog *dialog)
+{
+    GtkWidget *child;
+    GtkWidget *overlay;
+    GtkWidget *focus;
+
+    if (dialog == NULL || ADW_IS_ALERT_DIALOG(dialog) ||
+        ADW_IS_PREFERENCES_DIALOG(dialog) ||
+        g_object_get_data(G_OBJECT(dialog), DIALOG_TOASTS) != NULL)
+        return;
+
+    child = adw_dialog_get_child(dialog);
+
+    if (child == NULL)
+        return;
+
+    if (ADW_IS_TOAST_OVERLAY(child)) {
+        g_object_set_data(G_OBJECT(dialog), DIALOG_TOASTS, child);
+        return;
+    }
+
+    focus = adw_dialog_get_focus(dialog);
+    if (focus != NULL)
+        g_object_ref(focus);
+
+    g_object_ref(child);
+    adw_dialog_set_child(dialog, NULL);
+    overlay = adw_toast_overlay_new();
+    adw_toast_overlay_set_child(ADW_TOAST_OVERLAY(overlay), child);
+    adw_dialog_set_child(dialog, overlay);
+    g_object_unref(child);
+
+    if (focus != NULL) {
+        if (gtk_widget_is_ancestor(focus, overlay))
+            adw_dialog_set_focus(dialog, focus);
+        g_object_unref(focus);
+    }
+
+    g_object_set_data(G_OBJECT(dialog), DIALOG_TOASTS, overlay);
+}
+
+static void
+on_visible_dialog(GObject *window, GParamSpec *pspec, gpointer user_data)
+{
+    wrap_dialog_toasts(adw_application_window_get_visible_dialog(
+        ADW_APPLICATION_WINDOW(window)));
+}
+
+/*
+ * A toast that has nowhere visible to go while an alert dialog is up,
+ * shown when it closes rather than under it.
+ */
+typedef struct {
+    ClawtWindow *window;
+    gchar       *text;
+} PendingToast;
+
+static void
+pending_toast_free(gpointer data)
+{
+    PendingToast *pending = data;
+
+    g_object_unref(pending->window);
+    g_free(pending->text);
+    g_free(pending);
+}
+
+static void
+pending_toast_closure_free(gpointer data, GClosure *closure)
+{
+    pending_toast_free(data);
+}
+
+/*
+ * From an idle rather than from ::closed itself, so the dialog is gone
+ * from the window by the time the toast asks what is visible -- and the
+ * toast lands on the window rather than being queued on the dialog again.
+ */
+static gboolean
+show_pending_toast(gpointer user_data)
+{
+    PendingToast *pending = user_data;
+
+    /* it was counted when it was raised; it has not been seen yet */
+    g_clear_pointer(&pending->window->last_toast, g_free);
+    clawt_window_toast(pending->window, pending->text);
+
+    return G_SOURCE_REMOVE;
+}
+
+static void
+on_dialog_closed_toast(AdwDialog *dialog, gpointer user_data)
+{
+    PendingToast *pending = user_data;
+    PendingToast *later = g_new0(PendingToast, 1);
+
+    later->window = g_object_ref(pending->window);
+    later->text = g_strdup(pending->text);
+    g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, show_pending_toast, later,
+                    pending_toast_free);
+}
+
 void
 clawt_window_toast(ClawtWindow *self, const gchar *text)
 {
     AdwToastOverlay *where;
+    AdwDialog *dialog;
 
     g_return_if_fail(CLAWT_IS_WINDOW(self));
-
-    /*
-     * Which overlay depends on what is on screen, so all 87 callers stay
-     * as they are.  Chat is the only page with something a toast must
-     * not cover: everything else it hides can be scrolled back to, while
-     * the composer holds text that has not been sent anywhere yet.
-     */
-    where = (clawt_gtk_current_page(self) == CLAWT_PAGE_CHAT &&
-             self->toasts != NULL)
-                ? self->toasts : self->page_toasts;
-
-    if (where == NULL)
-        return;
 
     /*
      * The same sentence twice while the first is still up is one
@@ -107,6 +216,59 @@ clawt_window_toast(ClawtWindow *self, const gchar *text)
         self->last_toast = g_strdup(text);
         self->last_toast_at = now;
     }
+
+    /*
+     * Over a dialog, the toast goes on the dialog: the window's own
+     * overlay is drawn beneath it.  An alert dialog has no overlay to
+     * take one, so the toast waits for it to close instead of being shown
+     * where nobody can see it.
+     */
+    dialog = adw_application_window_get_visible_dialog(
+        ADW_APPLICATION_WINDOW(self));
+
+    if (dialog != NULL) {
+        GtkWidget *own;
+
+        wrap_dialog_toasts(dialog);
+        own = g_object_get_data(G_OBJECT(dialog), DIALOG_TOASTS);
+
+        if (ADW_IS_PREFERENCES_DIALOG(dialog)) {
+            adw_preferences_dialog_add_toast(ADW_PREFERENCES_DIALOG(dialog),
+                                             adw_toast_new(text));
+            return;
+        }
+
+        if (own != NULL) {
+            adw_toast_overlay_add_toast(ADW_TOAST_OVERLAY(own),
+                                        adw_toast_new(text));
+            return;
+        }
+
+        {
+            PendingToast *pending = g_new0(PendingToast, 1);
+
+            pending->window = g_object_ref(self);
+            pending->text = g_strdup(text);
+            g_signal_connect_data(dialog, "closed",
+                                  G_CALLBACK(on_dialog_closed_toast),
+                                  pending, pending_toast_closure_free,
+                                  G_CONNECT_DEFAULT);
+        }
+        return;
+    }
+
+    /*
+     * Which overlay depends on what is on screen, so all 87 callers stay
+     * as they are.  Chat is the only page with something a toast must
+     * not cover: everything else it hides can be scrolled back to, while
+     * the composer holds text that has not been sent anywhere yet.
+     */
+    where = (clawt_gtk_current_page(self) == CLAWT_PAGE_CHAT &&
+             self->toasts != NULL)
+                ? self->toasts : self->page_toasts;
+
+    if (where == NULL)
+        return;
 
     adw_toast_overlay_add_toast(where, adw_toast_new(text));
 }
@@ -2162,7 +2324,7 @@ clawt_gtk_image_chooser_build(ImageChooser *chooser, ClawtWindow *window,
 
     chooser->window = window;
 
-    chooser->row = adw_combo_row_new();
+    chooser->row = clawt_gtk_combo_row_new();
     adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(chooser->row),
                                        FALSE);
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(chooser->row), "Image");
@@ -2321,7 +2483,7 @@ clawt_gtk_disk_chooser_build(ImageChooser *chooser, ClawtWindow *window,
 
     chooser->window = window;
 
-    chooser->row = adw_combo_row_new();
+    chooser->row = clawt_gtk_combo_row_new();
     adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(chooser->row),
                                        FALSE);
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(chooser->row),
@@ -2469,12 +2631,12 @@ model_chooser_build_full(ModelChooser *chooser, ClawtWindow *window,
 
     chooser->window = window;
 
-    chooser->provider_row = adw_combo_row_new();
+    chooser->provider_row = clawt_gtk_combo_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(chooser->provider_row),
                                   "Provider");
     chooser_add_row(group, chooser->provider_row);
 
-    chooser->model_row = adw_combo_row_new();
+    chooser->model_row = clawt_gtk_combo_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(chooser->model_row),
                                   "Model");
     chooser_add_row(group, chooser->model_row);
@@ -2992,7 +3154,7 @@ clawt_gtk_on_new_agent(GtkButton *button, gpointer user_data)
     {
         GtkStringList *choices = clawt_gtk_team_choices(self, NULL, &dialog->team_ids);
 
-        dialog->team_row = adw_combo_row_new();
+        dialog->team_row = clawt_gtk_combo_row_new();
         adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->team_row),
                                       "Team");
         adw_combo_row_set_model(ADW_COMBO_ROW(dialog->team_row),
@@ -3008,7 +3170,7 @@ clawt_gtk_on_new_agent(GtkButton *button, gpointer user_data)
      */
     clawt_gtk_model_chooser_build(&dialog->models, self, manual, NULL, NULL);
 
-    dialog->computer_row = adw_combo_row_new();
+    dialog->computer_row = clawt_gtk_combo_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->computer_row),
                                   "Computer");
     adw_combo_row_set_model(ADW_COMBO_ROW(dialog->computer_row),
@@ -3502,7 +3664,7 @@ on_import_agent(GtkButton *button, gpointer user_data)
         for (i = 0; i < clawt_import_mode_count(); i++)
             gtk_string_list_append(labels, clawt_import_mode_nth_label(i));
 
-        dialog->mode_row = adw_combo_row_new();
+        dialog->mode_row = clawt_gtk_combo_row_new();
         adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->mode_row),
                                       "How");
         adw_combo_row_set_model(ADW_COMBO_ROW(dialog->mode_row),
@@ -5358,7 +5520,7 @@ on_settings_activate(GSimpleAction *action, GVariant *parameter,
         }
     }
 
-    self->settings_catalog_row = adw_combo_row_new();
+    self->settings_catalog_row = clawt_gtk_combo_row_new();
     adw_preferences_row_set_title(
         ADW_PREFERENCES_ROW(self->settings_catalog_row), "Suggested");
     adw_combo_row_set_model(ADW_COMBO_ROW(self->settings_catalog_row),
@@ -6447,6 +6609,10 @@ static void
 clawt_window_init(ClawtWindow *self)
 {
     clawt_gtk_set_following(self, TRUE);
+
+    /* every dialog gets a toast overlay of its own; see wrap_dialog_toasts() */
+    g_signal_connect(self, "notify::visible-dialog",
+                     G_CALLBACK(on_visible_dialog), NULL);
     self->connections = g_ptr_array_new_with_free_func(
         (GDestroyNotify)clawt_connection_free);
     self->schema_rows = g_ptr_array_new_with_free_func(clawt_gtk_schema_row_free);

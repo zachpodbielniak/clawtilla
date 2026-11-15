@@ -279,7 +279,7 @@ review_model_row(
 	ClawtWindow *self,
 	JsonObject  *root
 ){
-	GtkWidget *row = adw_combo_row_new();
+	GtkWidget *row = clawt_gtk_combo_row_new();
 	g_autoptr(GtkStringList) labels = gtk_string_list_new(NULL);
 	GPtrArray *values = g_ptr_array_new_with_free_func(g_free);
 	const gchar *current = clawt_json_string(root, "model", "");

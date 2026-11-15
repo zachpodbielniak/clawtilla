@@ -770,7 +770,8 @@ build_prompt(ClawtRoutine *routine)
 }
 
 static const gchar *
-start_run(ClawtRoutineRunner *self, ClawtRoutine *routine, GError **error)
+start_run(ClawtRoutineRunner *self, ClawtRoutine *routine, gboolean by_hand,
+          GError **error)
 {
     g_autofree gchar *prompt = NULL;
     RunRecord *record;
@@ -813,7 +814,8 @@ start_run(ClawtRoutineRunner *self, ClawtRoutine *routine, GError **error)
     }
 
     prompt = build_prompt(routine);
-    task_id = self->run_func(id, agent, prompt, self->run_data, error);
+    task_id = self->run_func(id, agent, prompt, by_hand, self->run_data,
+                             error);
 
     if (task_id == NULL) {
         record->state = CLAWT_RUN_FAILED;
@@ -838,6 +840,16 @@ clawt_routine_runner_run_now(ClawtRoutineRunner  *self,
                              const gchar         *routine_id,
                              GError             **error)
 {
+    return clawt_routine_runner_run_unscheduled(self, routine_id, TRUE,
+                                                error);
+}
+
+const gchar *
+clawt_routine_runner_run_unscheduled(ClawtRoutineRunner  *self,
+                                     const gchar         *routine_id,
+                                     gboolean             by_hand,
+                                     GError             **error)
+{
     ClawtRoutine *routine;
 
     g_return_val_if_fail(CLAWT_IS_ROUTINE_RUNNER(self), NULL);
@@ -856,7 +868,7 @@ clawt_routine_runner_run_now(ClawtRoutineRunner  *self,
      * disabled routine by hand is the point: it is how somebody tries
      * one before trusting it with a schedule.
      */
-    return start_run(self, routine, error);
+    return start_run(self, routine, by_hand, error);
 }
 
 /*
@@ -915,7 +927,7 @@ on_jitter_elapsed(gpointer user_data)
     if (routine == NULL || !clawt_routine_get_boolean(routine, "enabled"))
         return G_SOURCE_REMOVE;
 
-    if (start_run(self, routine, &error) == NULL)
+    if (start_run(self, routine, FALSE, &error) == NULL)
         g_warning("routine '%s': %s", arm->id,
                   error != NULL ? error->message : "it did not start");
 
@@ -1011,7 +1023,7 @@ clawt_routine_runner_tick(ClawtRoutineRunner *self)
             continue;
         }
 
-        if (start_run(self, routine, &error) == NULL)
+        if (start_run(self, routine, FALSE, &error) == NULL)
             g_warning("routine '%s': %s", id,
                       error != NULL ? error->message : "it did not start");
     }
@@ -1133,7 +1145,7 @@ clawt_routine_runner_catch_up(ClawtRoutineRunner *self)
              * Once, however many were missed.  A laptop opened after a
              * long weekend should not deliver a stack of good mornings.
              */
-            if (start_run(self, routine, &error) == NULL)
+            if (start_run(self, routine, FALSE, &error) == NULL)
                 g_warning("routine '%s': %s", id,
                           error != NULL ? error->message
                                         : "it did not start");

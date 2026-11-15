@@ -332,6 +332,39 @@ clawt_turn_step_precedes(ClawtTurnStep *self, gint64 message_ts)
 }
 
 gboolean
+clawt_turn_step_precedes_message(ClawtTurnStep *self,
+                                 gint64         message_ts,
+                                 const gchar   *message_id)
+{
+    gint64 step_second;
+    gint64 message_ms;
+
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    /* No time at all sorts first, as in clawt_turn_step_precedes(). */
+    if (self->timestamp <= 0)
+        return TRUE;
+
+    step_second = self->timestamp / G_USEC_PER_SEC;
+
+    /* Different seconds need nothing finer. */
+    if (step_second != message_ts)
+        return step_second < message_ts;
+
+    /*
+     * The same second: the millisecond the message's id was made in,
+     * when it says, and only when it agrees with the stamp -- an id
+     * from somewhere else that happens to decode is not a clock.
+     */
+    message_ms = clawt_id_get_time_ms(message_id);
+
+    if (message_ms < 0 || message_ms / 1000 != message_ts)
+        return TRUE;
+
+    return self->timestamp / 1000 <= message_ms;
+}
+
+gboolean
 clawt_turn_step_is_call(ClawtTurnStep *self)
 {
     g_return_val_if_fail(self != NULL, FALSE);

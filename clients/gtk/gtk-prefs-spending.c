@@ -304,7 +304,7 @@ clawt_gtk_build_spending_page(
 
 	self->settings_spending_since = clawt_usage_period_since(
 		0, g_get_real_time() / G_USEC_PER_SEC);
-	self->settings_spending_period = adw_combo_row_new();
+	self->settings_spending_period = clawt_gtk_combo_row_new();
 	adw_preferences_row_set_title(
 		ADW_PREFERENCES_ROW(self->settings_spending_period), "Period");
 	adw_combo_row_set_model(ADW_COMBO_ROW(self->settings_spending_period),
@@ -317,7 +317,7 @@ clawt_gtk_build_spending_page(
 	for (i = 0; i < clawt_usage_group_count(); i++)
 		gtk_string_list_append(groupings, clawt_usage_group_label(i));
 
-	self->settings_spending_group = adw_combo_row_new();
+	self->settings_spending_group = clawt_gtk_combo_row_new();
 	adw_preferences_row_set_title(
 		ADW_PREFERENCES_ROW(self->settings_spending_group), "Group by");
 	adw_combo_row_set_model(ADW_COMBO_ROW(self->settings_spending_group),

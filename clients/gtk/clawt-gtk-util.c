@@ -314,10 +314,19 @@ avatar_tint_class(const gchar *color, const gchar *ink)
         while (g_hash_table_iter_next(&iter, &key, &value)) {
             g_auto(GStrv) pair = g_strsplit(value, " ", 2);
 
+            /*
+             * On the inner node.  #AdwAvatar is a `widget` holding an
+             * `avatar` gizmo, and the gizmo is what carries `.colorN`
+             * and paints the gradient -- so `avatar.<tint>`, the rule
+             * this used to write, matched no node at all, and every
+             * face (a configured colour included) was #AdwAvatar's own
+             * hash of whatever text it was handed.  Measured on
+             * libadwaita 1.9: widget.<tint> > avatar.color4.
+             */
             g_string_append_printf(
                 sheet,
-                "avatar.%s { background-image: none; background-color: %s; "
-                "color: %s; }\n",
+                ".%s > avatar { background-image: none; "
+                "background-color: %s; color: %s; }\n",
                 (const gchar *)key, pair[0], pair[1]);
         }
 
@@ -333,6 +342,138 @@ avatar_tint_class(const gchar *color, const gchar *ink)
     }
 
     return name;
+}
+
+/*
+ * The popover's items for clawt_gtk_combo_row_new().  A label that wraps
+ * and a checkmark, as #AdwComboRow's own item has, the checkmark kept in
+ * step with the row's selection while the popover is open.
+ */
+#define COMBO_ITEM_LABEL "clawt-combo-label"
+#define COMBO_ITEM_CHECK "clawt-combo-check"
+#define COMBO_ITEM_HANDLER "clawt-combo-handler"
+
+/* Whether the item at @item's position is the row's selection. */
+static void
+combo_item_sync_check(GtkListItem *item, AdwComboRow *row)
+{
+    GtkWidget *check = g_object_get_data(G_OBJECT(item), COMBO_ITEM_CHECK);
+
+    if (check == NULL)
+        return;
+
+    gtk_widget_set_opacity(
+        check, (adw_combo_row_get_selected(row) ==
+                gtk_list_item_get_position(item)) ? 1.0 : 0.0);
+}
+
+static void
+on_combo_row_selected(GObject *row, GParamSpec *pspec, gpointer user_data)
+{
+    combo_item_sync_check(GTK_LIST_ITEM(user_data), ADW_COMBO_ROW(row));
+}
+
+static void
+combo_item_setup(GtkSignalListItemFactory *factory, GObject *object,
+                 gpointer user_data)
+{
+    GtkListItem *item = GTK_LIST_ITEM(object);
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *label = gtk_label_new(NULL);
+    GtkWidget *check = gtk_image_new_from_icon_name("object-select-symbolic");
+
+    /*
+     * Wrapped rather than ellipsized, at a measure that keeps a short
+     * sentence on one line: the popover grows to the widest item up to
+     * that, and a longer one breaks over lines instead of losing its end.
+     */
+    gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+    gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
+    gtk_label_set_max_width_chars(GTK_LABEL(label), 48);
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+    gtk_widget_set_hexpand(label, TRUE);
+
+    /* Hidden by opacity, so a selection never changes an item's width. */
+    gtk_widget_set_opacity(check, 0.0);
+    gtk_widget_set_valign(check, GTK_ALIGN_CENTER);
+
+    gtk_box_append(GTK_BOX(box), label);
+    gtk_box_append(GTK_BOX(box), check);
+    gtk_list_item_set_child(item, box);
+
+    g_object_set_data(G_OBJECT(item), COMBO_ITEM_LABEL, label);
+    g_object_set_data(G_OBJECT(item), COMBO_ITEM_CHECK, check);
+}
+
+static void
+combo_item_bind(GtkSignalListItemFactory *factory, GObject *object,
+                gpointer user_data)
+{
+    GtkListItem *item = GTK_LIST_ITEM(object);
+    AdwComboRow *row = ADW_COMBO_ROW(user_data);
+    GtkWidget *label = g_object_get_data(G_OBJECT(item), COMBO_ITEM_LABEL);
+    GObject *choice = gtk_list_item_get_item(item);
+    g_autofree gchar *text = NULL;
+    gulong handler;
+
+    /*
+     * The string the row itself would show: a string list's own, or the
+     * row's expression evaluated on the item, which is how a model of
+     * objects names its choices.
+     */
+    if (GTK_IS_STRING_OBJECT(choice)) {
+        text = g_strdup(gtk_string_object_get_string(
+            GTK_STRING_OBJECT(choice)));
+    } else if (adw_combo_row_get_expression(row) != NULL) {
+        GValue value = G_VALUE_INIT;
+
+        if (gtk_expression_evaluate(adw_combo_row_get_expression(row),
+                                    choice, &value)) {
+            text = g_value_dup_string(&value);
+            g_value_unset(&value);
+        }
+    }
+
+    gtk_label_set_text(GTK_LABEL(label), text != NULL ? text : "");
+
+    combo_item_sync_check(item, row);
+    handler = g_signal_connect_object(row, "notify::selected",
+                                      G_CALLBACK(on_combo_row_selected),
+                                      item, 0);
+    g_object_set_data(G_OBJECT(item), COMBO_ITEM_HANDLER,
+                      GSIZE_TO_POINTER((gsize)handler));
+}
+
+static void
+combo_item_unbind(GtkSignalListItemFactory *factory, GObject *object,
+                  gpointer user_data)
+{
+    gulong handler = (gulong)GPOINTER_TO_SIZE(
+        g_object_get_data(object, COMBO_ITEM_HANDLER));
+
+    if (handler != 0)
+        g_signal_handler_disconnect(user_data, handler);
+
+    g_object_set_data(object, COMBO_ITEM_HANDLER, NULL);
+}
+
+GtkWidget *
+clawt_gtk_combo_row_new(void)
+{
+    GtkWidget *row = adw_combo_row_new();
+    g_autoptr(GtkListItemFactory) factory =
+        gtk_signal_list_item_factory_new();
+
+    /*
+     * The row is not reffed by its own factory's handlers: the row owns
+     * the factory, so the handlers cannot outlive it.
+     */
+    g_signal_connect(factory, "setup", G_CALLBACK(combo_item_setup), row);
+    g_signal_connect(factory, "bind", G_CALLBACK(combo_item_bind), row);
+    g_signal_connect(factory, "unbind", G_CALLBACK(combo_item_unbind), row);
+    adw_combo_row_set_list_factory(ADW_COMBO_ROW(row), factory);
+
+    return row;
 }
 
 GtkWidget *
@@ -361,11 +502,15 @@ clawt_gtk_build_avatar(
     }
 
     /*
-     * A colour somebody typed into a YAML file, so it is checked before
-     * it is spliced into a stylesheet -- clawt_color_ink() refuses
-     * anything that is not #rgb or #rrggbb, and answers which of black
-     * or white is legible on it. Nothing else validates this key.
+     * Always painted, never left to #AdwAvatar's own colour.  That one
+     * is a hash of whatever text the widget was handed, and the sidebar
+     * handed it the display name while the transcript handed it the
+     * sender id, so one agent was two colours.  clawt_avatar_color() is
+     * the configured colour when clawt_color_ink() accepts it -- the
+     * check before anything typed into YAML reaches a stylesheet -- and
+     * otherwise the tone every client derives from the agent's id.
      */
+    color = clawt_avatar_color(agent_id, name, color);
     ink = clawt_color_ink(color);
 
     if (ink != NULL) {

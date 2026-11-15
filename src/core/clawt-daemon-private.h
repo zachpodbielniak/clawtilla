@@ -61,6 +61,15 @@ struct _ClawtDaemon {
     GObject parent_instance;
 
     /*
+     * When this daemon last started, as a Unix time.  Tasks and incidents
+     * are held in memory, so their lists cover only this long; task.list
+     * and incident.list say so (`since`), and the clients say so in
+     * words (clawt_held_since_caption()) rather than letting an empty
+     * list after a restart read as nothing having happened.
+     */
+    gint64 started_at;
+
+    /*
      * Set by clawt_daemon_set_bind_addresses(), which replaces whatever
      * the config says about network listeners.  The flag is separate from
      * the list because "bind nothing" and "bind whatever is configured"
