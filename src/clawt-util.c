@@ -662,9 +662,16 @@ clawt_redact_secrets(const gchar *text)
         "auth", "credential", "bearer", "access[_-]?key", "private[_-]?key",
         NULL
     };
+    /*
+     * The two `sk-` shapes refuse a letter or digit before them: every
+     * task id is `task-` and twenty letters and digits, so an unanchored
+     * `sk-[A-Za-z0-9]{20,}` read each one as a key and turned it into
+     * "ta[REDACTED]" -- in every event detail, transcript and settle
+     * notice that named a task.
+     */
     static const gchar *standalone[] = {
-        "sk-ant-[A-Za-z0-9_-]{16,}",
-        "sk-[A-Za-z0-9]{20,}",
+        "(?<![A-Za-z0-9])sk-ant-[A-Za-z0-9_-]{16,}",
+        "(?<![A-Za-z0-9])sk-[A-Za-z0-9]{20,}",
         "gh[pousr]_[A-Za-z0-9]{20,}",
         "github_pat_[A-Za-z0-9_]{20,}",
         "gl(?:pat|rt|ptt|soat|feat|cbt|dr|ft|imt|oat|rt)-[A-Za-z0-9_-]{16,}",

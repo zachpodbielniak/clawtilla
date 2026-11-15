@@ -145,6 +145,25 @@ test_ordinary_text_is_untouched(void)
 }
 
 /*
+ * A task id is `task-` and twenty letters and digits, which an unanchored
+ * `sk-` pattern read as a key: every event detail, transcript line and
+ * settle notice naming a task said "ta[REDACTED]".  The key beside it in
+ * the same line is still caught.
+ */
+static void
+test_a_task_id_is_not_a_key(void)
+{
+    g_autofree gchar *id = clawt_generate_id("task");
+    g_autofree gchar *line = g_strdup_printf(
+        "Task %s is finished; it used sk-abcdefghijklmnopqrstuvwx", id);
+    g_autofree gchar *out = clawt_redact_secrets(line);
+
+    g_assert_nonnull(strstr(out, id));
+    g_assert_null(strstr(out, "sk-abcdefghijklmnopqrstuvwx"));
+    g_assert_nonnull(strstr(out, "[REDACTED]"));
+}
+
+/*
  * Best effort, and the docs say so.
  *
  * An opaque OAuth access token pasted on its own has no shape to
@@ -186,6 +205,8 @@ main(int argc, char *argv[])
                     test_ordinary_text_is_untouched);
     g_test_add_func("/redaction/opaque-token-gap",
                     test_a_bare_opaque_token_is_a_known_gap);
+    g_test_add_func("/redaction/task-id-is-not-a-key",
+                    test_a_task_id_is_not_a_key);
     g_test_add_func("/redaction/null", test_null_survives);
 
     return g_test_run();
