@@ -3573,7 +3573,7 @@ The GNOME half reads the extension's ~ListWindows~ on
 =/io/github/gnomemcp/DesktopAutomation=, which answers one string: a JSON
 array of windows, each with ~title~ (=win.get_title()=) and ~focused~
 (=win.has_focus()=).  That was checked against gnome-desktop-mcp's own
-source (=extension/.../dbus.js= and =windows.js= at =bf774a4=), and the
+source (~extension/.../dbus.js~ and ~windows.js~ at ~bf774a4~), and the
 parser is exercised with that shape in =tests/test-saved-steps.c=; it has
 not run against a live GNOME session here.  An older extension without
 the method makes the title unreadable, and saving refuses with that
