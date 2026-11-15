@@ -20,6 +20,7 @@
 
 #include <glib/gstdio.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "clawt-test-util.h"
 
@@ -29,6 +30,9 @@
 
 /* pid -> stat line, rewritten by each test as its processes "run". */
 static GHashTable *fake_proc;
+
+/* How many times the process table was listed: a walk of /proc. */
+static guint fake_list_calls;
 
 static gchar **
 fake_list(
@@ -40,6 +44,7 @@ fake_list(
 
 	(void)user_data;
 
+	fake_list_calls++;
 	g_hash_table_iter_init(&iter, fake_proc);
 
 	while (g_hash_table_iter_next(&iter, &key, NULL))
@@ -557,6 +562,56 @@ test_zero_percent_turns_the_check_off(
 	fixture_teardown(&fixture);
 }
 
+/*
+ * An embedded agent runs inside the daemon, so its process tree is the
+ * daemon's and cannot be measured: it is skipped -- /proc is never even
+ * walked for it -- and its silent turn is stopped on the ordinary
+ * budget however busy the machine is.  Through the daemon's own pid
+ * lookup (no fake), with an embedded runtime set on the agent.
+ */
+static void
+test_an_embedded_agent_is_skipped(
+	void
+){
+	Fixture fixture = { 0 };
+	ClawtTurnWatch *watch;
+	ClawtAgent *agent;
+	g_autoptr(ClawtEmbeddedRuntime) runtime = NULL;
+	gint64 ticks = 0;
+	gint i;
+
+	fixture_setup(&fixture,
+		"agents:\n"
+		"  - id: inproc\n"
+		"    runtime:\n"
+		"      turn_timeout_seconds: 30\n");
+	watch = fixture.daemon->turn_watch;
+	clawt_daemon_turn_set_pid_func(fixture.daemon, NULL);
+
+	agent = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+		"inproc");
+	runtime = clawt_embedded_runtime_new(clawt_agent_get_config(agent),
+		fixture.config_path, fixture.context);
+	clawt_agent_set_runtime(agent, CLAWT_AGENT_RUNTIME(runtime));
+
+	fake_reset();
+	fake_process(getpid(), 1, 0, 0);
+	fake_list_calls = 0;
+
+	clawt_daemon_turn_begin(fixture.daemon, "inproc", NULL);
+
+	for (i = 0; i < 8; i++) {
+		ticks += 500;
+		fake_process(getpid(), 1, ticks, ticks);
+		advance_and_sweep(&fixture, 5);
+	}
+
+	g_assert_false(clawt_turn_watch_is_watching(watch, "inproc"));
+	g_assert_cmpuint(fake_list_calls, ==, 0);
+
+	fixture_teardown(&fixture);
+}
+
 gint
 main(
 	gint   argc,
@@ -584,6 +639,8 @@ main(
 		test_the_busy_ceiling_is_reached);
 	g_test_add_func("/busy/daemon/zero-is-off",
 		test_zero_percent_turns_the_check_off);
+	g_test_add_func("/busy/daemon/embedded-is-skipped",
+		test_an_embedded_agent_is_skipped);
 
 	status = g_test_run();
 
