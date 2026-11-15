@@ -141,7 +141,7 @@ agent:chief,9,2,36,2210,0.310000
 
 *** Where the tags live
 
-=<state_dir>/agents/<id>/sessions/clawtilla-ledger.db=, table =turn_origin=, one row per =token_usage= row id: ~origin_kind~, ~origin_id~, ~sender~, ~task_id~, ~room~, ~provider~ (the agent's ~model.provider~ when it ran -- libreclaw's own ~provider~ column holds the model name) and ~model~ (what the delivery asked for, if anything).  The costs stay in libreclaw's table and are read through =lc_database_*=; only the tags are clawtilla's, joined on the row id when the ledger is read.
+=<state_dir>/agents/<id>/sessions/clawtilla-ledger.db=, table =turn_origin=, one row per =token_usage= row id: ~origin_kind~, ~origin_id~, ~sender~, ~task_id~, ~room~, ~provider~ (the agent's ~model.provider~ when it ran: libreclaw's own ~provider~ column has recorded the provider only since libreclaw v0.30.0, and rows written before that hold the model name, so the tag is what the ledger groups on) and ~model~ (what the delivery asked for, if anything).  The costs stay in libreclaw's table and are read through =lc_database_*=; only the tags are clawtilla's, joined on the row id when the ledger is read.
 
 Beside libreclaw's database, inside ~sessions/~, on purpose: =/reset= moves that directory aside and the new database numbers its rows from 1 again, so tags keyed on the old ids go with the rows they describe.  The table is created on the first tag and later columns are added one =ALTER TABLE= at a time, so an older file is brought up to date rather than refused.
 
