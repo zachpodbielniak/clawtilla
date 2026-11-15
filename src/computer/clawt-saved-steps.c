@@ -17,6 +17,109 @@
 /* How much typed text a step's description quotes. */
 #define DESCRIBE_TEXT_CHARS (40)
 
+/* ── How a list is checked ───────────────────────────────────────── */
+
+G_DEFINE_ENUM_TYPE(ClawtStepCheck, clawt_step_check,
+	G_DEFINE_ENUM_VALUE(CLAWT_STEP_CHECK_PICTURE_AND_TITLE,
+		"picture-and-title"),
+	G_DEFINE_ENUM_VALUE(CLAWT_STEP_CHECK_TITLE_ONLY, "title-only"))
+
+const gchar *
+clawt_step_check_label(
+	ClawtStepCheck check
+){
+	/* No default: -Wswitch names a check added without a word for it. */
+	switch (check) {
+	case CLAWT_STEP_CHECK_PICTURE_AND_TITLE:
+		return "Picture and title";
+	case CLAWT_STEP_CHECK_TITLE_ONLY:
+		return "Title only";
+	}
+
+	return "Picture and title";
+}
+
+ClawtStepCheck
+clawt_step_check_other(
+	ClawtStepCheck check
+){
+	switch (check) {
+	case CLAWT_STEP_CHECK_PICTURE_AND_TITLE:
+		return CLAWT_STEP_CHECK_TITLE_ONLY;
+	case CLAWT_STEP_CHECK_TITLE_ONLY:
+		return CLAWT_STEP_CHECK_PICTURE_AND_TITLE;
+	}
+
+	return CLAWT_STEP_CHECK_PICTURE_AND_TITLE;
+}
+
+gchar *
+clawt_step_check_describe(
+	ClawtStepCheck  check,
+	const gchar    *title
+){
+	g_autofree gchar *clipped = NULL;
+	g_autofree gchar *lower = g_ascii_strdown(clawt_step_check_label(check),
+		-1);
+
+	if (title == NULL)
+		return g_strdup("Saved before window titles were recorded, so it "
+			"cannot be replayed; save it again");
+
+	if (*title == '\0')
+		return g_strdup_printf("Checked by %s (no window focused)", lower);
+
+	clipped = clawt_clip_line(title, 60);
+
+	return g_strdup_printf("Checked by %s (\342\200\234%s\342\200\235)",
+		lower, clipped);
+}
+
+gboolean
+clawt_saved_steps_check_screen(
+	ClawtStepCheck   check,
+	const gchar     *saved_checkpoint,
+	const gchar     *saved_title,
+	const gchar     *hash,
+	const gchar     *title,
+	gchar          **why_not
+){
+	const gchar *why = NULL;
+	g_autofree gchar *built = NULL;
+
+	if (saved_title == NULL)
+		why = "these steps were saved before window titles were recorded; "
+			"save them again";
+	else if (title == NULL)
+		why = "which window has the focus could not be read, so the screen "
+			"could not be checked";
+	else if (check == CLAWT_STEP_CHECK_PICTURE_AND_TITLE &&
+		saved_checkpoint == NULL)
+		why = "these steps were saved with no picture of the screen; switch "
+			"them to title only";
+	else if (check == CLAWT_STEP_CHECK_PICTURE_AND_TITLE &&
+		g_strcmp0(hash, saved_checkpoint) != 0)
+		why = "the screen does not look the way it did when these steps "
+			"were saved, so nothing was sent; put it back as it was (the "
+			"same windows, nothing moved) and try again, or switch these "
+			"steps to title only if a clock on the screen is what changed";
+	else if (g_strcmp0(title, saved_title) != 0) {
+		g_autofree gchar *now = clawt_clip_line(title, 60);
+		g_autofree gchar *then = clawt_clip_line(saved_title, 60);
+
+		built = g_strdup_printf("the focused window is \342\200\234%s\342"
+			"\200\235, not \342\200\234%s\342\200\235 as when these "
+			"steps were saved, so nothing was sent; focus that window and "
+			"try again", now, then);
+		why = built;
+	}
+
+	if (why_not != NULL)
+		*why_not = (why != NULL) ? g_strdup(why) : NULL;
+
+	return why == NULL;
+}
+
 /* ── A run ───────────────────────────────────────────────────────── */
 
 G_DEFINE_BOXED_TYPE(ClawtStepRun, clawt_step_run, clawt_step_run_copy,
@@ -55,6 +158,7 @@ clawt_step_run_copy(
 	copy->why_not = g_strdup(self->why_not);
 	copy->checkpoint = g_strdup(self->checkpoint);
 	copy->finished_at = self->finished_at;
+	copy->title = g_strdup(self->title);
 
 	return copy;
 }
@@ -69,7 +173,36 @@ clawt_step_run_free(
 	g_clear_pointer(&self->events, g_ptr_array_unref);
 	g_free(self->why_not);
 	g_free(self->checkpoint);
+	g_free(self->title);
 	g_free(self);
+}
+
+gboolean
+clawt_step_run_can_save(
+	const ClawtStepRun  *self,
+	ClawtStepCheck       check,
+	const gchar        **why_not
+){
+	const gchar *why = NULL;
+
+	g_return_val_if_fail(self != NULL, FALSE);
+
+	if (!self->saveable)
+		why = (self->why_not != NULL) ? self->why_not : "it cannot be repeated";
+	else if (self->events->len == 0)
+		why = "it made no step";
+	else if (self->title == NULL)
+		why = "which window had the focus when it began could not be read, "
+			"so a replay would have nothing to check";
+	else if (check == CLAWT_STEP_CHECK_PICTURE_AND_TITLE &&
+		self->checkpoint == NULL)
+		why = "there was no picture of the screen from before its first "
+			"step; it can be saved as title only";
+
+	if (why_not != NULL)
+		*why_not = why;
+
+	return why == NULL;
 }
 
 static void
@@ -401,6 +534,8 @@ typedef struct {
 	gint          pointer_x;
 	gint          pointer_y;
 	ClawtStepRun *last;        /* nullable */
+	gchar        *title;       /* the last title read; nullable */
+	gint64        title_at;    /* when it was asked for, wall usec */
 } AgentRuns;
 
 static void
@@ -411,6 +546,7 @@ agent_runs_free(
 
 	clawt_step_run_free(runs->running);
 	clawt_step_run_free(runs->last);
+	g_free(runs->title);
 	g_free(runs);
 }
 
@@ -522,12 +658,17 @@ clawt_step_recorder_note_call(
 
 	run = runs->running;
 
+	/*
+	 * The checkpoint's two halves, taken at the first acting call: the
+	 * picture the daemon hashed, and the title read after the turn
+	 * began.  Neither missing refuses the run here -- which check a list
+	 * is saved with decides which it needs (clawt_step_run_can_save()).
+	 */
 	if (run->calls == 0) {
 		run->checkpoint = g_strdup(checkpoint);
 
-		if (checkpoint == NULL)
-			run_refuse(run, "there was no picture of the screen from before "
-				"its first step to check a replay against");
+		if (runs->title != NULL && runs->title_at >= runs->began)
+			run->title = g_strdup(runs->title);
 	}
 
 	run->calls++;
@@ -558,6 +699,26 @@ clawt_step_recorder_note_call(
 	}
 
 	g_ptr_array_add(run->events, event);
+}
+
+void
+clawt_step_recorder_note_title(
+	ClawtStepRecorder *self,
+	const gchar       *agent_id,
+	const gchar       *title,
+	gint64             asked_usec
+){
+	AgentRuns *runs;
+
+	g_return_if_fail(CLAWT_IS_STEP_RECORDER(self));
+
+	if (agent_id == NULL)
+		return;
+
+	runs = runs_for(self, agent_id);
+	g_free(runs->title);
+	runs->title = g_strdup(title);
+	runs->title_at = asked_usec;
 }
 
 gboolean
@@ -776,11 +937,13 @@ clawt_saved_steps_save(
 	const gchar         *agent_id,
 	const gchar         *name,
 	const ClawtStepRun  *run,
+	ClawtStepCheck       check,
 	GError             **error
 ){
 	g_autofree gchar *path = NULL;
 	g_autoptr(JsonNode) all = NULL;
 	g_autoptr(JsonBuilder) builder = json_builder_new();
+	const gchar *why = NULL;
 	JsonArray *saved;
 	gint existing;
 	guint i;
@@ -795,13 +958,9 @@ clawt_saved_steps_save(
 		return FALSE;
 	}
 
-	if (!run->saveable || run->checkpoint == NULL ||
-		run->events->len == 0) {
+	if (!clawt_step_run_can_save(run, check, &why)) {
 		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
-			"that turn's steps cannot be saved: %s",
-			run->why_not != NULL ? run->why_not
-				: run->events->len == 0 ? "it made no step"
-				: "there is no picture of the screen to start from");
+			"that turn's steps cannot be saved: %s", why);
 		return FALSE;
 	}
 
@@ -820,8 +979,16 @@ clawt_saved_steps_save(
 	json_builder_add_string_value(builder, name);
 	json_builder_set_member_name(builder, "created_at");
 	json_builder_add_int_value(builder, g_get_real_time() / G_USEC_PER_SEC);
-	json_builder_set_member_name(builder, "checkpoint");
-	json_builder_add_string_value(builder, run->checkpoint);
+	if (run->checkpoint != NULL) {
+		json_builder_set_member_name(builder, "checkpoint");
+		json_builder_add_string_value(builder, run->checkpoint);
+	}
+
+	json_builder_set_member_name(builder, "title");
+	json_builder_add_string_value(builder, run->title);
+	json_builder_set_member_name(builder, "check");
+	json_builder_add_string_value(builder,
+		clawt_enum_to_nick(CLAWT_TYPE_STEP_CHECK, (gint)check));
 	json_builder_set_member_name(builder, "steps");
 	json_builder_begin_array(builder);
 
@@ -858,13 +1025,62 @@ clawt_saved_steps_list(
 	return (path != NULL) ? read_all(path, error) : NULL;
 }
 
+/*
+ * A string member YAML may have handed back as something else: a title
+ * of digits reads back as a number, and "" as nothing at all.
+ */
+static gchar *
+entry_string(
+	JsonObject  *entry,
+	const gchar *key
+){
+	JsonNode *node;
+
+	if (!json_object_has_member(entry, key))
+		return NULL;
+
+	node = json_object_get_member(entry, key);
+
+	if (JSON_NODE_HOLDS_NULL(node))
+		return g_strdup("");
+
+	if (!JSON_NODE_HOLDS_VALUE(node))
+		return NULL;
+
+	switch (json_node_get_value_type(node)) {
+	case G_TYPE_STRING:
+		return g_strdup(json_node_get_string(node));
+	case G_TYPE_INT64:
+		return g_strdup_printf("%" G_GINT64_FORMAT, json_node_get_int(node));
+	default:
+		return NULL;
+	}
+}
+
+/* The check an entry is saved with; picture and title when unsaid. */
+static ClawtStepCheck
+entry_check(
+	JsonObject *entry
+){
+	g_autofree gchar *nick = entry_string(entry, "check");
+	gint value = CLAWT_STEP_CHECK_PICTURE_AND_TITLE;
+
+	if (nick == NULL ||
+		!clawt_enum_from_nick(CLAWT_TYPE_STEP_CHECK, nick, &value))
+		return CLAWT_STEP_CHECK_PICTURE_AND_TITLE;
+
+	return (ClawtStepCheck)value;
+}
+
 GPtrArray *
 clawt_saved_steps_get(
-	const gchar  *dir,
-	const gchar  *agent_id,
-	const gchar  *name,
-	gchar       **checkpoint,
-	GError      **error
+	const gchar     *dir,
+	const gchar     *agent_id,
+	const gchar     *name,
+	gchar          **checkpoint,
+	gchar          **title,
+	ClawtStepCheck  *check,
+	GError         **error
 ){
 	g_autoptr(JsonNode) all = clawt_saved_steps_list(dir, agent_id, error);
 	g_autoptr(GPtrArray) events = NULL;
@@ -874,8 +1090,10 @@ clawt_saved_steps_get(
 	guint i;
 
 	g_return_val_if_fail(checkpoint != NULL, NULL);
+	g_return_val_if_fail(title != NULL, NULL);
 
 	*checkpoint = NULL;
+	*title = NULL;
 
 	if (all == NULL)
 		return NULL;
@@ -910,17 +1128,75 @@ clawt_saved_steps_get(
 		g_ptr_array_add(events, event);
 	}
 
-	if (!json_object_has_member(entry, "checkpoint") || events->len == 0) {
+	if (events->len == 0) {
 		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFIG_PARSE,
-			"'%s' has no checkpoint or no steps, so it cannot be replayed",
-			name);
+			"'%s' has no steps, so it cannot be replayed", name);
 		return NULL;
 	}
 
-	*checkpoint = g_strdup(json_object_get_string_member(entry,
-		"checkpoint"));
+	/*
+	 * Whether these are enough to replay is
+	 * clawt_saved_steps_check_screen()'s to say, with the sentence: a
+	 * list saved before titles were recorded is read, listed and
+	 * refused there, not lost here.
+	 */
+	*checkpoint = entry_string(entry, "checkpoint");
+	*title = entry_string(entry, "title");
+
+	if (check != NULL)
+		*check = entry_check(entry);
 
 	return g_steal_pointer(&events);
+}
+
+gboolean
+clawt_saved_steps_set_check(
+	const gchar     *dir,
+	const gchar     *agent_id,
+	const gchar     *name,
+	ClawtStepCheck   check,
+	GError         **error
+){
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *checkpoint = NULL;
+	g_autoptr(JsonNode) all = NULL;
+	JsonObject *entry;
+	gint at;
+
+	g_return_val_if_fail(dir != NULL, FALSE);
+
+	path = file_for(dir, agent_id, error);
+	if (path == NULL)
+		return FALSE;
+
+	all = read_all(path, error);
+	if (all == NULL)
+		return FALSE;
+
+	at = index_of(json_node_get_array(all), name);
+
+	if (at < 0) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+			"%s has no saved steps called '%s'", agent_id,
+			name != NULL ? name : "");
+		return FALSE;
+	}
+
+	entry = json_array_get_object_element(json_node_get_array(all),
+		(guint)at);
+	checkpoint = entry_string(entry, "checkpoint");
+
+	if (check == CLAWT_STEP_CHECK_PICTURE_AND_TITLE && checkpoint == NULL) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+			"'%s' was saved with no picture of the screen, so it can only "
+			"be checked by its title", name);
+		return FALSE;
+	}
+
+	json_object_set_string_member(entry, "check",
+		clawt_enum_to_nick(CLAWT_TYPE_STEP_CHECK, (gint)check));
+
+	return write_all(dir, path, json_node_get_array(all), error);
 }
 
 gboolean

@@ -3495,16 +3495,45 @@ replayed is worse than none.
 =clawt_redact_secrets()= every log line goes through: steps are stored
 as typed, in =<state_dir>/saved-steps/<agent>.yaml= at 0600.
 
-*A checkpoint is required.*  When a turn begins on an agent with a
-screen the daemon asks the observer for a picture; the turn's first
+*A checkpoint is required, in two halves.*  When a turn begins on an
+agent with a screen the daemon asks the observer for a picture and --
+for a screen somebody is watching -- reads the title of the window that
+has the window manager's focus (=clawt_observable_focused_title()=, on
+the observer's worker thread through =clawt_observer_read_title_async()=:
+gowl's ~get_focused_client~, or the GNOME extension's ~ListWindows~ --
+the method behind gnome-desktop-mcp's ~list_windows~ -- in the session
+or the guest; both observing tools, so no new grant).  The turn's first
 acting call takes the SHA-256 of the last picture taken *after* the turn
-began (=clawt_screen_hash_bytes()=).  A turn with no such picture cannot
-be saved.  And the rule that nothing is captured unless somebody is
-looking still holds: the observer grabs only for a screen somebody is
-watching, so a turn is saveable only if its screen was being watched
-when it began -- which is the case worth saving anyway, since the
-person deciding to keep the steps saw them happen.  Nothing extra is
-grabbed for an agent nobody is looking at.
+began (=clawt_screen_hash_bytes()=) and the title read after it began
+(=clawt_step_recorder_note_title()=).  Both answers are read by one
+function, =clawt_screen_parse_focused_title()=, so the checkpoint is the
+same string whichever compositor wrote it; "" means no window had the
+focus, and an answer that cannot be read (not JSON, two focused windows)
+is no title at all.
+
+*How a list is checked is chosen per list* (=ClawtStepCheck=):
+
+| Check | A replay starts only when | Saveable when |
+|-------+----------------------------+---------------|
+| *Picture and title* (default) | a fresh picture hashes the same *and* the focused title matches | the turn has a picture and a title |
+| *Title only* | the focused title matches | the turn has a title |
+
+Title only exists for a screen with a ticking clock on it, which no
+picture can match twice; a turn with no picture is saved as title only,
+and switching such a list to picture and title is refused.  A turn whose
+title could not be read cannot be saved at all.  *Save* uses picture and
+title when there is a picture; each saved list's *Check: ...* button
+switches it (~steps.set_check~).  A list saved before titles were
+recorded (0.28 and older) is listed and refused at replay with a
+sentence asking for it to be saved again -- it has no title to match,
+and a list that matched on less than its check says would be a guess.
+
+The rule that nothing is captured unless somebody is looking still
+holds: the observer grabs only for a screen somebody is watching, and
+the title is read only for one, so a turn is saveable only if its screen
+was being watched when it began -- which is the case worth saving
+anyway, since the person deciding to keep the steps saw them happen.
+Nothing extra is grabbed or asked for an agent nobody is looking at.
 
 *Replay is input a person sends* -- ~computer.input~'s path,
 =clawt_observer_send_input_async()= -- *and only while that person holds
@@ -3514,25 +3543,38 @@ for as long as it is held, so the two never fight for the pointer.
 
 1. refuses an agent with no screen, a screen nobody is holding, and a
    second replay on the same screen;
-2. asks for a fresh picture and waits for one taken after it asked (up
-   to 15 s), then compares its hash with the checkpoint;
-3. *refuses, sending nothing*, when they differ -- exact on purpose: a
-   panel clock that moved is a different screen, and the refusal says so
-   rather than clicking on a guess.  In practice this means a guest or a
-   compositor without a ticking clock, or a screen put back exactly;
+2. for picture and title, asks for a fresh picture and waits for one
+   taken after it asked (up to 15 s); then, for either check, reads the
+   focused window's title, and compares both halves at once
+   (=clawt_saved_steps_check_screen()=);
+3. *refuses, sending nothing*, when the check fails, saying which half
+   differed -- exact on purpose: a panel clock that moved is a different
+   picture, and the refusal suggests title only rather than clicking on
+   a guess; a different focused window is named against the saved one;
+   a title that could not be read never matches;
 4. sends the steps one at a time, checking before each that the screen
    is still held -- releasing it is how a person says stop -- and
    publishes ~steps.replayed~ with how many were sent and why it stopped.
 
-What it deliberately does not do: no window-title checkpoint (neither
-backend's window list is read by the daemon today, and a title match
-would let a moved window take a click meant for its old position); no
+What it deliberately does not do: a title-only match does not check
+*where* the window is, so a window moved since the steps were saved
+takes clicks meant for its old position -- picture and title is the
+default for that reason, and title only is a choice made per list; no
 replay without the hold; no replay on a different computer (the list is
 per agent, and its screen is that agent's); no model at any point.
 
 In the clients it is the *Saved steps* section under the Screen view in
 GTK, web and lrg: the last turn's steps with Save and a name, or the
-reason it cannot be saved; each saved list with Replay and Delete.
+reason it cannot be saved; each saved list with how it is checked,
+Replay, a *Check: ...* switch and Delete.
+
+The GNOME half reads the extension's ~ListWindows~, expecting entries
+with ~title~ and ~focused~ (or ~has_focus~) as gnome-desktop-mcp's
+~list_windows~ reports them; it has been exercised against fakes in
+=tests/test-saved-steps.c= and not yet against a live GNOME session.  If
+the extension names the method differently, the title cannot be read,
+and saving refuses with that reason rather than saving a list that
+checks nothing.
 
 ** Adding a backend
 

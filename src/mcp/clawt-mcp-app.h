@@ -107,6 +107,19 @@ gchar *clawt_mcp_app_tool_resource(JsonObject *tool);
 gboolean clawt_mcp_app_tool_model_visible(JsonObject *tool);
 
 /**
+ * clawt_mcp_app_tool_app_visible:
+ * @tool: one tool definition
+ *
+ * Whether an app's view may call @tool: `_meta.ui.visibility` names
+ * `app`, or is absent (the extension's default is both).  A tool whose
+ * list leaves the app out is the model's alone, and an app's call of it
+ * is refused.
+ *
+ * Returns: %TRUE when an app may call it
+ */
+gboolean clawt_mcp_app_tool_app_visible(JsonObject *tool);
+
+/**
  * clawt_mcp_app_domain_ok:
  * @entry: one origin from a view's `_meta.ui.csp`
  * @websocket: whether `wss://` is allowed too (connect-src)
@@ -316,6 +329,21 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtMcpApps, clawt_mcp_apps_free)
 void clawt_mcp_apps_set_seen_func(ClawtMcpApps         *self,
                                   ClawtMcpAppsSeenFunc  func,
                                   gpointer              user_data);
+
+/**
+ * clawt_mcp_apps_set_app_caller: (skip)
+ * @self: the state
+ * @app_caller: %TRUE when the client on the other side is an app's view
+ *   calling its own server's tools, not the agent
+ *
+ * Turns the relay around for an app's own calls (`connector.app_call`):
+ * `tools/list` is passed whole and remembered by visibility, and a
+ * `tools/call` is refused unless the server listed that tool as visible
+ * to apps (clawt_mcp_app_tool_app_visible()) -- the model's own tools
+ * are never an app's to call.  No view is read for these calls.
+ */
+void clawt_mcp_apps_set_app_caller(ClawtMcpApps *self,
+                                   gboolean      app_caller);
 
 /**
  * clawt_mcp_apps_outbound: (skip)

@@ -93,6 +93,26 @@ JsonNode *clawt_web_app_call(ClawtWebApp *self,
                              JsonNode    *payload);
 
 /**
+ * clawt_web_app_request_timeout:
+ * @self: a #ClawtWebApp
+ * @kind: an IPC frame kind
+ * @payload: (nullable) (transfer full): the request payload
+ * @timeout_seconds: how long to wait for the answer
+ * @error: (out) (optional): return location for a #GError
+ *
+ * A request that may legitimately take minutes -- an MCP app's call,
+ * which can wait on a person's approval.  The wait iterates the loop, so
+ * the rest of the web client goes on answering meanwhile.
+ *
+ * Returns: (transfer full) (nullable): the reply, or %NULL
+ */
+JsonNode *clawt_web_app_request_timeout(ClawtWebApp  *self,
+                                        const gchar  *kind,
+                                        JsonNode     *payload,
+                                        gint          timeout_seconds,
+                                        GError      **error);
+
+/**
  * ClawtWebAlert:
  * @id: identifies the row for dismissal
  * @tier: how loudly to draw it, from clawt_alert_tier_for_event()

@@ -1128,6 +1128,44 @@ static const ClawtSchemaEntry schema[] = {
   "\n"
   "Two halves: `<state_dir>/OPERATOR.org`, which you write, and\nfleet-scope memories in the `operator` category, which agents record.\nBoth are written into a marked region of every agent's USER.org, so a\nchange reaches the whole fleet rather than only agents made afterwards.\nOff removes the region again.", "0.2.0" },
 
+{ "memories.review", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "A periodic review of each agent's memories by a small model, which\n"
+  "proposes merges, forgets and pins for a person to accept one at a\n"
+  "time. Off unless a model is named.", "0.29.0" },
+
+{ "memories.review.model", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  "", NULL,
+  "The model that reviews memories, as provider/model --\n"
+  "claude/claude-haiku-4-5-20251001, ollama/llama3.2. Empty turns the\n"
+  "review off, which is the default.\n"
+  "\n"
+  "Off by default because every pass is a model call nobody asked for,\n"
+  "billed to whoever set this. On, each agent's own memories are read\n"
+  "by the model at most once per interval, fenced as data, and what it\n"
+  "proposes -- merge two memories into one, forget one, pin or unpin\n"
+  "one -- is never applied. It is listed as a proposal in the Memory\n"
+  "review group of every client, and only a person accepting it changes\n"
+  "anything, through the same journaled store as every other change, so\n"
+  "an accepted proposal can be undone like any other.\n"
+  "\n"
+  "A provider ai-glib reaches over HTTP, with its key configured the way\n"
+  "ai_assist's is. The model has a hard limit of 60 seconds per pass; a\n"
+  "timeout, a failure and a reply that cannot be read propose nothing.",
+  "0.29.0" },
+
+{ "memories.review.interval_hours", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "24", NULL,
+  "How often each agent's memories are reviewed, in hours (1 to 720).\n"
+  "\n"
+  "A pass is skipped while the agent still has proposals nobody has\n"
+  "answered, so an unread list never grows by itself.", "0.29.0" },
+
+{ "memories.review.max_memories", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "60", NULL,
+  "How many of an agent's memories one pass reads at most, newest first\n"
+  "(5 to 500). This is the size of the request, so it is the cost of\n"
+  "one pass.", "0.29.0" },
+
 /* ── sentinel ────────────────────────────────────────────────────── */
 { "sentinel", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "What `clawtilla sentinel` looks for in the event log.\n"

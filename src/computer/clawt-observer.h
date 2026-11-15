@@ -302,6 +302,37 @@ gboolean clawt_observer_send_input_finish(ClawtObserver  *self,
                                           GError        **error);
 
 /**
+ * clawt_observer_read_title_async:
+ * @self: a #ClawtObserver
+ * @computer: (transfer none): the agent's computer
+ * @callback: (scope async): called with the title
+ * @user_data: data for @callback
+ *
+ * Reads the focused window's title (clawt_observable_focused_title()) on
+ * a worker thread -- the same wait as a frame grab -- and answers on the
+ * observer's context.  Unlike a frame it is not gated on somebody
+ * watching: it is one small question, asked only for a saved-steps
+ * checkpoint and a replay.
+ */
+void clawt_observer_read_title_async(ClawtObserver       *self,
+                                     ClawtComputer       *computer,
+                                     GAsyncReadyCallback  callback,
+                                     gpointer             user_data);
+
+/**
+ * clawt_observer_read_title_finish:
+ * @self: a #ClawtObserver
+ * @result: the #GAsyncResult
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Returns: (transfer full) (nullable): the title, "" when no window has
+ *   the focus, %NULL with @error set when the screen did not say
+ */
+gchar *clawt_observer_read_title_finish(ClawtObserver  *self,
+                                        GAsyncResult   *result,
+                                        GError        **error);
+
+/**
  * clawt_observer_drop_agent:
  * @self: a #ClawtObserver
  * @agent_id: which agent

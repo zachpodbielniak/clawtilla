@@ -11,7 +11,10 @@
  * with a name field and Save when the daemon says the turn can be
  * replayed exactly (`steps.last`, `steps.save`) and its reason when it
  * cannot; then every saved list with Replay and Delete (`steps.list`,
- * `steps.replay`, `steps.delete`).  Replay works only while you hold the
+ * `steps.replay`, `steps.delete`), each saying how it is checked --
+ * picture and title, or title only for a screen with a clock -- with one
+ * button switching it (`steps.set_check`; the daemon names the other
+ * check, so no client spells one).  Replay works only while you hold the
  * screen, which is also what keeps the agent off it -- the button says
  * so rather than failing.  The step lines are libclawt's
  * (clawt_saved_step_describe(), through the daemon), so the web client
@@ -81,6 +84,7 @@ on_list_action(
 	ClawtWindow *self = user_data;
 	const gchar *kind = g_object_get_data(G_OBJECT(button), "clawt-kind");
 	const gchar *name = g_object_get_data(G_OBJECT(button), "clawt-name");
+	const gchar *check = g_object_get_data(G_OBJECT(button), "clawt-check");
 	g_autoptr(JsonNode) reply = NULL;
 
 	if (self->selected_agent == NULL)
@@ -88,7 +92,7 @@ on_list_action(
 
 	reply = clawt_window_request(self, kind,
 		clawt_build_payload("agent", self->selected_agent, "name", name,
-			NULL));
+			"check", check, NULL));
 
 	if (reply != NULL && g_strcmp0(kind, "steps.replay") == 0)
 		clawt_window_toast(self, "Checking the screen against the saved "
@@ -152,9 +156,11 @@ clawt_gtk_refresh_saved_steps(
 		g_autofree gchar *line = steps_line(
 			json_object_get_array_member(run, "steps"));
 		gboolean saveable = clawt_json_boolean(run, "saveable", FALSE);
-		g_autofree gchar *said = g_strdup_printf("Its last turn: %s.%s%s",
-			line, saveable ? "" : " Cannot be saved: ",
-			saveable ? "" : clawt_json_string(run, "why_not", "unknown"));
+		g_autofree gchar *said = saveable
+			? g_strdup_printf("Its last turn: %s. Saved, it is checked by: "
+				"%s.", line, clawt_json_string(run, "check_label", "?"))
+			: g_strdup_printf("Its last turn: %s. Cannot be saved: %s",
+				line, clawt_json_string(run, "why_not", "unknown"));
 
 		gtk_label_set_text(GTK_LABEL(self->steps_last), said);
 		gtk_widget_set_sensitive(self->steps_save, saveable);
@@ -170,9 +176,12 @@ clawt_gtk_refresh_saved_steps(
 	for (i = 0; saved != NULL && i < json_array_get_length(saved); i++) {
 		JsonObject *entry = json_array_get_object_element(saved, i);
 		const gchar *name = clawt_json_string(entry, "name", "?");
-		g_autofree gchar *subtitle = steps_line(
+		g_autofree gchar *line = steps_line(
 			json_object_has_member(entry, "steps")
 				? json_object_get_array_member(entry, "steps") : NULL);
+		g_autofree gchar *subtitle = g_strdup_printf("%s\n%s", line,
+			clawt_json_string(entry, "check_line", ""));
+		const gchar *other = clawt_json_string(entry, "other_check", NULL);
 		GtkWidget *row = adw_action_row_new();
 
 		adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row), FALSE);
@@ -180,8 +189,26 @@ clawt_gtk_refresh_saved_steps(
 		adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
 		adw_action_row_add_suffix(ADW_ACTION_ROW(row), list_button(self,
 			"Replay", "steps.replay", name, "Run these steps again with no "
-			"model. Only while you hold the screen, and only when it looks "
-			"exactly as it did when they were saved."));
+			"model. Only while you hold the screen, and only when it matches "
+			"the way these steps are checked."));
+		/*
+		 * How it is checked, switched by one button the daemon names:
+		 * title only is for a screen with a clock, which no picture can
+		 * match twice.
+		 */
+		if (other != NULL) {
+			g_autofree gchar *label = g_strdup_printf("Check: %s",
+				clawt_json_string(entry, "other_check_label", other));
+			GtkWidget *check = list_button(self, label, "steps.set_check",
+				name, "Change what a replay compares before it sends "
+				"anything: the picture and the focused window's title, or "
+				"the title only.");
+
+			g_object_set_data_full(G_OBJECT(check), "clawt-check",
+				g_strdup(other), g_free);
+			adw_action_row_add_suffix(ADW_ACTION_ROW(row), check);
+		}
+
 		adw_action_row_add_suffix(ADW_ACTION_ROW(row), list_button(self,
 			"Delete", "steps.delete", name, "Forget these steps"));
 		gtk_list_box_append(GTK_LIST_BOX(self->steps_list), row);

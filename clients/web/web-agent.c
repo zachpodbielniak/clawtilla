@@ -1115,6 +1115,7 @@ clawt_web_agent_body(ClawtWebApp *app, const gchar *agent_id)
                     clawt_web_member_object(root, "egress"));
     add_waits_card(app, HTMX_ELEMENT(pad), agent_id);
     clawt_web_add_memory_review_card(app, HTMX_ELEMENT(pad), agent_id);
+    clawt_web_add_memory_proposals_card(app, HTMX_ELEMENT(pad), agent_id);
     add_avatar_card(HTMX_ELEMENT(pad), agent, agent_id);
 
     escaped = g_uri_escape_string(agent_id, NULL, FALSE);

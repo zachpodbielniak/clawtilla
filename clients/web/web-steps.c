@@ -60,6 +60,8 @@ clawt_web_add_saved_steps_card(
 		escaped);
 	g_autofree gchar *delete_url = g_strdup_printf("/a/%s/steps/delete",
 		escaped);
+	g_autofree gchar *check_url = g_strdup_printf("/a/%s/steps/check",
+		escaped);
 	JsonObject *run;
 	JsonArray *saved;
 	guint i;
@@ -81,9 +83,11 @@ clawt_web_add_saved_steps_card(
 		g_autofree gchar *line = steps_line(clawt_web_member_array(run,
 			"steps"));
 		gboolean saveable = clawt_web_member_bool(run, "saveable", FALSE);
-		g_autofree gchar *said = g_strdup_printf("Its last turn: %s.%s%s",
-			line, saveable ? "" : " Cannot be saved: ",
-			saveable ? "" : clawt_web_member(run, "why_not", "unknown"));
+		g_autofree gchar *said = saveable
+			? g_strdup_printf("Its last turn: %s. Saved, it is checked by: "
+				"%s.", line, clawt_web_member(run, "check_label", "?"))
+			: g_strdup_printf("Its last turn: %s. Cannot be saved: %s",
+				line, clawt_web_member(run, "why_not", "unknown"));
 
 		clawt_web_add(body, clawt_web_text(said, "small"));
 
@@ -114,12 +118,35 @@ clawt_web_add_saved_steps_card(
 			"default");
 		g_autoptr(HtmxButton) delete_button = clawt_web_button("Delete",
 			"danger");
+		const gchar *other = clawt_web_member(entry, "other_check", NULL);
 
 		htmx_element_add_class(HTMX_ELEMENT(row), "list-item");
 		htmx_element_add_class(HTMX_ELEMENT(label), "list-item-title");
 		htmx_node_set_text_content(HTMX_NODE(label), name);
 		htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(label));
 		clawt_web_add(row, clawt_web_text(line, "small muted"));
+		clawt_web_add(row, clawt_web_text(clawt_web_member(entry,
+			"check_line", ""), "small muted"));
+
+		/*
+		 * How it is checked, switched by one button the daemon names:
+		 * title only is for a screen with a clock on it.
+		 */
+		if (other != NULL) {
+			g_autoptr(HtmxForm) switch_form = clawt_web_form(check_url);
+			g_autofree gchar *switch_label = g_strdup_printf("Check: %s",
+				clawt_web_member(entry, "other_check_label", other));
+			g_autoptr(HtmxButton) switch_button = clawt_web_button(
+				switch_label, "default");
+
+			clawt_web_add(switch_form, clawt_web_hidden("name", name));
+			clawt_web_add(switch_form, clawt_web_hidden("check", other));
+			htmx_element_set_attribute(HTMX_ELEMENT(switch_button), "type",
+				"submit");
+			htmx_node_add_child(HTMX_NODE(switch_form),
+				HTMX_NODE(switch_button));
+			htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(switch_form));
+		}
 
 		clawt_web_add(replay, clawt_web_hidden("name", name));
 		htmx_element_set_attribute(HTMX_ELEMENT(replay_button), "type",
@@ -159,19 +186,26 @@ on_steps(
 			"with no model.";
 	} else if (g_strcmp0(verb, "replay") == 0) {
 		kind = "steps.replay";
-		done = "Checking the screen against the saved picture, then "
+		done = "Checking the screen against the saved checkpoint, then "
 			"replaying.";
 	} else if (g_strcmp0(verb, "delete") == 0) {
 		kind = "steps.delete";
 		done = "Deleted.";
+	} else if (g_strcmp0(verb, "check") == 0) {
+		kind = "steps.set_check";
+		done = "Changed how these steps are checked before a replay.";
 	} else {
 		return clawt_web_error_page(app, request, agent_id,
-			CLAWT_PAGE_COMPUTER, "save, replay or delete");
+			CLAWT_PAGE_COMPUTER, "save, replay, check or delete");
 	}
 
 	clawt_web_payload_set(payload, "agent", agent_id);
 	clawt_web_payload_set(payload, "name",
 		clawt_web_form_value(request, "name"));
+
+	if (clawt_web_form_value(request, "check") != NULL)
+		clawt_web_payload_set(payload, "check",
+			clawt_web_form_value(request, "check"));
 
 	reply = clawt_web_app_call(app, kind,
 		clawt_web_payload_take(g_steal_pointer(&payload)));
