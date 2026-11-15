@@ -687,7 +687,86 @@ gchar *clawt_broker_read_logs(ClawtPodBridge      *bridge,
 gboolean clawt_broker_container_is_up(const gchar *status);
 
 /**
- * clawt_broker_find_stopped:
+ * ClawtBrokerExit:
+ * @name: the container's name
+ * @status: podman's state for it (`exited`, `created`, `dead`, ...);
+ *   empty when it is gone or was never made
+ * @gone: whether podman no longer has the container
+ * @never_made: whether the container was never made at all
+ * @exit_known: whether the container module said how it ended
+ *   (podomation 1.0.3 and later return `exit_code` and `oom_killed`
+ *   from inspect)
+ * @exit_code: its main process's last exit status, when @exit_known
+ * @oom_killed: whether the kernel killed it for memory, when @exit_known
+ *
+ * A broker container the watch found down, and how it ended.
+ */
+typedef struct {
+    gchar    *name;
+    gchar    *status;
+    gboolean  gone;
+    gboolean  never_made;
+    gboolean  exit_known;
+    gint      exit_code;
+    gboolean  oom_killed;
+} ClawtBrokerExit;
+
+/**
+ * clawt_broker_exit_free: (skip)
+ * @self: (nullable): a #ClawtBrokerExit
+ */
+void clawt_broker_exit_free(ClawtBrokerExit *self);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtBrokerExit, clawt_broker_exit_free)
+
+/**
+ * clawt_broker_exit_is_failure: (skip)
+ * @ended: a #ClawtBrokerExit
+ *
+ * Whether @ended is a failure in `broker.restart: on-failure`'s sense: a
+ * container whose main process exited non-zero, or that the kernel
+ * killed for memory.  A clean exit, a container that never ran, one that
+ * is gone from podman and one whose exit the container module did not
+ * report are not.
+ *
+ * Returns: %TRUE for a non-zero exit or an OOM kill
+ */
+gboolean clawt_broker_exit_is_failure(const ClawtBrokerExit *ended);
+
+/**
+ * clawt_broker_exit_describe: (skip)
+ * @ended: a #ClawtBrokerExit
+ *
+ * How @ended ended, as a phrase that follows the container's name:
+ * `exited with code 3`, `was killed for running out of memory (exit code
+ * 137)`, `exited cleanly (exit code 0)`, `is gone from podman`, ...
+ *
+ * Returns: (transfer full): the phrase
+ */
+gchar *clawt_broker_exit_describe(const ClawtBrokerExit *ended);
+
+/**
+ * clawt_broker_should_restart: (skip)
+ * @policy: the `broker.restart` policy
+ * @ended: the container that stopped
+ * @reason: (out) (optional) (transfer full) (nullable): when it is not
+ *   restarted, a sentence for `broker.status`'s detail saying why; %NULL
+ *   when it is
+ *
+ * What the watch does with a container that stopped without being asked
+ * to.  `always` restarts it whatever the exit; `never` never does;
+ * `on-failure` restarts only what clawt_broker_exit_is_failure() calls a
+ * failure.  The ceiling of five restarts in ten minutes is the caller's,
+ * not this function's.
+ *
+ * Returns: %TRUE to start it again
+ */
+gboolean clawt_broker_should_restart(ClawtRestartPolicy     policy,
+                                     const ClawtBrokerExit *ended,
+                                     gchar                **reason);
+
+/**
+ * clawt_broker_find_stopped: (skip)
  * @bridge: the #ClawtPodBridge whose `container` module asks
  * @connection: (nullable): the podman connection, as `broker.connection`
  * @ids: (array zero-terminated=1): each container's podman id, in order;
@@ -695,15 +774,19 @@ gboolean clawt_broker_container_is_up(const gchar *status);
  * @names: (array zero-terminated=1): each container's name, in the same
  *   order as @ids
  * @stopped: (out) (transfer full) (nullable): the first container that
- *   is down, gone or was never made, or %NULL when every one is up
+ *   is down, gone or was never made, and how it ended; %NULL when every
+ *   one is up
  * @error: (out) (optional): why podman's answer could not be had
  *
  * What the watch asks podman, blocking: each container's inspect state,
- * through clawt_broker_container_is_up().  An inspect that fails is told
- * apart by asking for the container list: when podman answers that, the
- * container is gone; when it does not, podman did not answer, which is
- * not the gateway stopping.  An empty state -- podomation before 1.0.2,
- * or podman's own `unknown` -- is "did not say" too.
+ * through clawt_broker_container_is_up(), and for one that is down its
+ * `exit_code` and `oom_killed`.  An inspect that fails is told apart by
+ * asking for the container list: when podman answers that, the container
+ * is gone; when it does not, podman did not answer, which is not the
+ * gateway stopping.  An empty state -- podomation before 1.0.2, or
+ * podman's own `unknown` -- is "did not say" too.  A container module
+ * older than podomation 1.0.3 reports no exit, and @stopped says so in
+ * its `exit_known`.
  *
  * Returns: %FALSE when podman did not answer, with @error set
  */
@@ -711,7 +794,7 @@ gboolean clawt_broker_find_stopped(ClawtPodBridge      *bridge,
                                    const gchar         *connection,
                                    const gchar * const *ids,
                                    const gchar * const *names,
-                                   gchar              **stopped,
+                                   ClawtBrokerExit    **stopped,
                                    GError             **error);
 
 G_END_DECLS

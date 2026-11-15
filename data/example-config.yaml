@@ -2008,11 +2008,16 @@ broker:
 
   # What to do when a broker container stops without being asked to.
   #
-  # never leaves it stopped and says so; on-failure and always both
-  # start it again, since the container module's inspect does not say
-  # how a container ended. Five restarts within ten minutes stop the retries, so a
-  # gateway that cannot start is reported rather than restarted for
-  # ever.
+  # always starts it again however it ended. on-failure starts it again
+  # only when it exited non-zero or was killed for running out of
+  # memory; a clean exit, a container that never ran and one removed
+  # from podman are left down. never leaves it down whatever the exit.
+  # A container left down leaves the broker failed, and broker status
+  # says how it ended and why it was not restarted. on-failure needs
+  # podomation 1.0.3 or later, whose inspect reports the exit code;
+  # with an older one it cannot tell a failure and restarts nothing.
+  # Five restarts within ten minutes stop the retries, so a gateway
+  # that cannot start is reported rather than restarted for ever.
   # Values: never, on-failure, always
   restart: "always"
 
