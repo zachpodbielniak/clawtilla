@@ -10357,9 +10357,14 @@ print_device_usage(gboolean asked_for)
         "\n"
         "  list                  paired devices: id, name, when paired, when\n"
         "                        last seen -- never a token\n"
-        "  pair [--name NAME]    print a six-digit code another device trades\n"
+        "  pair [--name NAME] [--qr [--qr-light]]\n"
+        "                        print a six-digit code another device trades\n"
         "                        for a token of its own (five minutes, single\n"
-        "                        use, five wrong guesses and it is gone)\n"
+        "                        use, five wrong guesses and it is gone);\n"
+        "                        --qr also draws the pairing link as a QR code\n"
+        "                        for a phone to scan, and prints the link\n"
+        "                        itself; --qr-light draws it for a terminal\n"
+        "                        with a light background\n"
         "  revoke ID             stop that device's token working, and close\n"
         "                        whatever it has connected now (the owner\n"
         "                        only; a paired device may revoke itself,\n"
@@ -10376,6 +10381,9 @@ print_device_usage(gboolean asked_for)
         "Examples:\n"
         "  # On the machine running the fleet\n"
         "  clawtilla device pair --name phone\n"
+        "\n"
+        "  # The same, with a QR code for the phone's camera\n"
+        "  clawtilla device pair --name phone --qr\n"
         "\n"
         "  # On the device being paired, with the address and code it printed\n"
         "  clawtilla remote pair workstation 100.72.0.41 123456\n"
@@ -10419,6 +10427,9 @@ cmd_device(int argc, char *argv[])
 
     if (g_strcmp0(verb, "pair") == 0) {
         const gchar *name = NULL;
+        const gchar *uri;
+        gboolean qr = FALSE;
+        gboolean qr_light = FALSE;
         JsonObject *payload;
         JsonArray *addresses;
         gint arg;
@@ -10427,6 +10438,10 @@ cmd_device(int argc, char *argv[])
         for (arg = 3; arg < argc; arg++) {
             if (g_strcmp0(argv[arg], "--name") == 0 && arg + 1 < argc)
                 name = argv[++arg];
+            else if (g_strcmp0(argv[arg], "--qr") == 0)
+                qr = TRUE;
+            else if (g_strcmp0(argv[arg], "--qr-light") == 0)
+                qr = qr_light = TRUE;
             else {
                 g_printerr("clawtilla: unexpected argument '%s'\n",
                            argv[arg]);
@@ -10442,6 +10457,30 @@ cmd_device(int argc, char *argv[])
         payload = json_node_get_object(reply);
         addresses = json_object_has_member(payload, "addresses")
             ? json_object_get_array_member(payload, "addresses") : NULL;
+        uri = json_object_get_string_member_with_default(payload, "uri",
+                                                         NULL);
+
+        /*
+         * The QR code above the code, so the screen reads top to bottom
+         * in the order somebody uses it: scan, or else type.  The link
+         * is printed whether or not a code could be drawn -- a phone
+         * that cannot scan this terminal can still be sent the text.
+         */
+        if (qr && uri != NULL) {
+            g_autoptr(GError) qr_error = NULL;
+            g_autofree gchar *art = clawt_qr_render_terminal(uri, qr_light,
+                                                             &qr_error);
+
+            if (art != NULL)
+                g_print("%s\n", art);
+            else
+                g_print("No QR code: %s.\n\n", qr_error->message);
+
+            g_print("Pairing link:  %s\n", uri);
+        } else if (qr) {
+            g_print("No QR code: the daemon named no address another device "
+                    "could dial.\n\n");
+        }
 
         g_print("Pairing code:  %s\n",
                 json_object_get_string_member(payload, "display"));

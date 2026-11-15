@@ -1091,6 +1091,16 @@ clawt_web_stylesheet(void)
     ".pair-code.mono{font-size:2rem;font-weight:600;letter-spacing:.15em;"
       "margin:4px 0 8px}"
     ".pair-code.expired{opacity:.45;text-decoration:line-through}"
+    /*
+     * The pairing QR code at a fixed size: the SVG carries no width of its
+     * own, and a code stretched to a wide card is too large for a phone
+     * held at a normal distance to frame.  Its white is its own, not the
+     * theme's, because an inverted code is one many scanners refuse.
+     */
+    ".pair-qr{width:240px;max-width:100%;margin:4px 0 8px;line-height:0}"
+    ".pair-qr svg{width:100%;height:auto;display:block;border-radius:4px}"
+    ".pair-link{word-break:break-all;font-family:var(--mono);"
+      "font-size:var(--mono-size);color:var(--muted);user-select:all}"
     "kbd{font-family:var(--mono);font-size:11.5px;border:1px solid var(--line);"
       "border-radius:4px;background:var(--surface-2);padding:1px 5px}"
 

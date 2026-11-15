@@ -352,6 +352,13 @@ OpenMausBot has none of the structural withholding or cycle stalling that I coul
 - *Live run:* a throwaway fleet again (claude-code sonnet and grok-build, GTK on Xvfb): in both directions the chat showed one marked interim line, the short notice with its Flow link, and one report, and no summary followed.
 - *Version:* micro.
 
+** DONE P2 Pairing QR code for phones v0.34.3 :clients:security:
+- *Requested:* by the user on 2026-11-15, for the new Android client (=clawtilla-android-client=), so a phone pairs by scanning instead of typing a host, port and code.
+- *Done:* =device.pair= answers with ~uri~ (=clawtilla://pair?v=1&code=…&port=…&host=…&name=…=, built by =clawt_pair_uri_build_from_addresses()=; wildcard and loopback listeners are left out, and an address on another port than the first); =clawt_pair_uri_parse()=; an optional libqrencode encoder (=src/clawt-qr.c=, =QRENCODE=0= turns it off) drawn by =clawtilla device pair --qr= / =--qr-light=, the GTK and lrg Devices pages and the web client's devices page as inline SVG. Without libqrencode every client shows the link as text.
+- *Security:* the QR holds the short-lived single-use code and the addresses, never a token (see [[file:docs/security.org][security.org]]).
+- *Limit:* built and tested here without libqrencode; the QR drawing path compiles only where =qrencode-devel= is installed (Fedora: =qrencode-devel= to build, =qrencode-libs= at run time).
+- *Version:* micro.
+
 * Steering: words into a running turn
 
 Today a message for an agent whose turn is running waits in libreclaw's queue and becomes the next turn. Two costs follow. A delegator's correction ("stop, use the staging DB") arrives after the work it was meant to change has finished. And a peer's follow-up costs a whole extra turn that rereads everything.

@@ -797,6 +797,9 @@ test_daemon_pair_list_revoke(void)
                          json_object_get_array_member(payload, "addresses")),
                      ==, 0);
 
+    /* Nor a pairing link: a QR code nothing can dial is not drawn at all. */
+    g_assert_false(json_object_has_member(payload, "uri"));
+
     /* A client redeems it over the socket and becomes that device. */
     g_main_context_push_thread_default(fixture.context);
 

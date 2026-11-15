@@ -264,6 +264,58 @@ clawt_gtk_avatar_invalidate(const gchar *agent_id)
         g_hash_table_remove(avatar_absent, agent_id);
 }
 
+/* ── QR codes ────────────────────────────────────────────────────── */
+
+GdkTexture *
+clawt_gtk_qr_texture(const gchar *text, guint scale, GError **error)
+{
+    g_autoptr(GBytes) modules = NULL;
+    g_autoptr(GBytes) bytes = NULL;
+    const guint8 *dark;
+    guint8 *pixels;
+    guint size = 0;
+    gsize side;
+    gsize stride;
+    gsize x;
+    gsize y;
+
+    g_return_val_if_fail(text != NULL, NULL);
+    g_return_val_if_fail(scale > 0, NULL);
+
+    modules = clawt_qr_encode(text, &size, error);
+
+    if (modules == NULL)
+        return NULL;
+
+    dark = g_bytes_get_data(modules, NULL);
+    side = ((gsize)size + 2 * CLAWT_QR_QUIET_ZONE) * scale;
+    stride = side * 3;
+
+    /* white everywhere first, so the quiet zone costs nothing to draw */
+    pixels = g_malloc(stride * side);
+    memset(pixels, 0xff, stride * side);
+
+    for (y = 0; y < side; y++) {
+        gssize my = (gssize)(y / scale) - CLAWT_QR_QUIET_ZONE;
+
+        if (my < 0 || my >= (gssize)size)
+            continue;
+
+        for (x = 0; x < side; x++) {
+            gssize mx = (gssize)(x / scale) - CLAWT_QR_QUIET_ZONE;
+
+            if (mx >= 0 && mx < (gssize)size &&
+                dark[(gsize)my * size + (gsize)mx] != 0)
+                memset(pixels + y * stride + x * 3, 0x00, 3);
+        }
+    }
+
+    bytes = g_bytes_new_take(pixels, stride * side);
+
+    return gdk_memory_texture_new((gint)side, (gint)side, GDK_MEMORY_R8G8B8,
+                                  bytes, stride);
+}
+
 /*
  * A style class painting an avatar in one configured colour.
  *

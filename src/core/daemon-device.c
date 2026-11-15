@@ -159,7 +159,9 @@ handle_pair(ClawtDaemon *self, JsonNode *request, JsonObject *payload,
     g_autoptr(GError) error = NULL;
     g_autofree gchar *code = NULL;
     g_autofree gchar *display = NULL;
+    g_autofree gchar *uri = NULL;
     g_auto(GStrv) addresses = NULL;
+    const gchar *name = clawt_ipc_payload_string(payload, "name");
     gint64 now = now_seconds();
     gint64 expires_at = 0;
     gsize i;
@@ -167,15 +169,25 @@ handle_pair(ClawtDaemon *self, JsonNode *request, JsonObject *payload,
     if (device != NULL)
         return owner_only(request, device, "Pairing a new device");
 
-    code = clawt_device_store_begin_pairing(
-        self->devices, clawt_ipc_payload_string(payload, "name"), now,
-        &expires_at, &error);
+    code = clawt_device_store_begin_pairing(self->devices, name, now,
+                                            &expires_at, &error);
 
     if (code == NULL)
         return clawt_ipc_error_new(request, error->code, error->message);
 
     display = clawt_device_code_display(code);
     addresses = clawt_ipc_server_list_bound(self->ipc_server);
+
+    /*
+     * The same code and addresses as one link, so a client can draw it as
+     * a QR code for a phone to scan instead of somebody typing both.
+     * Built here rather than by each client, so the three graphical
+     * clients and the CLI cannot disagree about which addresses a phone
+     * should be told to dial.  Absent when no address is dialable from
+     * another machine: a QR code nobody can redeem is worse than none.
+     */
+    uri = clawt_pair_uri_build_from_addresses(
+        code, (const gchar * const *)addresses, name);
 
     /*
      * The code goes back to the owner who asked for it, and only to them.
@@ -205,9 +217,18 @@ handle_pair(ClawtDaemon *self, JsonNode *request, JsonObject *payload,
         json_builder_add_string_value(builder, addresses[i]);
 
     json_builder_end_array(builder);
+
+    if (uri != NULL) {
+        json_builder_set_member_name(builder, "uri");
+        json_builder_add_string_value(builder, uri);
+    }
+
     json_builder_end_object(builder);
 
     memset(code, 0, strlen(code));
+
+    if (uri != NULL)
+        memset(uri, 0, strlen(uri));
 
     return clawt_ipc_response_new(request, json_builder_get_root(builder));
 }

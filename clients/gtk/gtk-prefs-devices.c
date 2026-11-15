@@ -39,6 +39,14 @@ typedef struct {
 
 static PairDialog *pair_dialog;
 
+/*
+ * Pixels per QR module.  A pairing link with two addresses is a version
+ * 6 or 7 code, 49 to 53 modules with the quiet zone, so five pixels a
+ * module is about 260 -- as wide as the dialog's text, and large enough
+ * for a phone held at arm's length.
+ */
+#define PAIR_QR_SCALE (5)
+
 static void
 pair_dialog_stop_timer(PairDialog *pair)
 {
@@ -154,6 +162,45 @@ on_pair_new_device(GtkButton *button, gpointer user_data)
                      clawt_json_int(payload, "expires_in", 0);
 
     box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+
+    /*
+     * The pairing link as a QR code, above the code it carries, so a
+     * phone can scan instead of somebody typing an address and six
+     * digits.  Without libqrencode in this build the link itself, as
+     * selectable text, so it can still be copied across.  The daemon
+     * leaves `uri` out when no address is dialable, and then the body
+     * above already says why.
+     */
+    {
+        const gchar *uri = clawt_json_string(payload, "uri", NULL);
+        g_autoptr(GdkTexture) qr = NULL;
+
+        if (uri != NULL)
+            qr = clawt_gtk_qr_texture(uri, PAIR_QR_SCALE, NULL);
+
+        if (qr != NULL) {
+            GtkWidget *picture = gtk_picture_new_for_paintable(
+                GDK_PAINTABLE(qr));
+
+            /*
+             * Never shrunk: a scaled-down code is resampled, and the
+             * blurred module edges are what a camera fails on.
+             */
+            gtk_picture_set_can_shrink(GTK_PICTURE(picture), FALSE);
+            gtk_widget_set_halign(picture, GTK_ALIGN_CENTER);
+            gtk_widget_set_tooltip_text(picture, uri);
+            gtk_box_append(GTK_BOX(box), picture);
+        } else if (uri != NULL) {
+            GtkWidget *link = gtk_label_new(uri);
+
+            gtk_label_set_selectable(GTK_LABEL(link), TRUE);
+            gtk_label_set_wrap(GTK_LABEL(link), TRUE);
+            gtk_label_set_wrap_mode(GTK_LABEL(link), PANGO_WRAP_CHAR);
+            gtk_widget_add_css_class(link, "monospace");
+            gtk_widget_add_css_class(link, "caption");
+            gtk_box_append(GTK_BOX(box), link);
+        }
+    }
 
     {
         g_autofree gchar *display = clawt_device_code_display(

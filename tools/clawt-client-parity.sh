@@ -665,6 +665,12 @@ declare -A AFFORDANCES=(
     # client asks the library which button a row gets.
     ["revoke or sign out per row"]="clawt_device_row_action|clawt_device_row_action|clawt_device_row_action"
     ["a code on screen learns it was used"]="\"device.paired\"|/settings/devices/pair-status|\"device.paired\""
+    # The pairing link `device.pair` returns, drawn as a QR code for a
+    # phone to scan (or shown as text in a build without libqrencode).
+    # It arrives in a reply every client already requests, so layer 1
+    # cannot see whether a dialog draws it; the marker is each client's
+    # call into the library's encoder.
+    ["pairing QR code"]="clawt_gtk_qr_texture|clawt_qr_render_svg|clawt_qr_encode"
     #
     # model.fallbacks: the ordered editor, the badge on an agent running
     # on one, and the alert that says why in the daemon's own sentence.

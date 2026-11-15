@@ -32,6 +32,7 @@
 #include "clawt-error.h"
 #include "clawt-util.h"
 #include "clawt-backup.h"
+#include "clawt-qr.h"
 
 #include "config/clawt-config-schema.h"
 #include "config/clawt-appearance.h"
@@ -180,6 +181,7 @@
 #include "ipc/clawt-client.h"
 #include "ipc/clawt-connection.h"
 #include "ipc/clawt-device-store.h"
+#include "ipc/clawt-pair-uri.h"
 
 #include "agent/clawt-hold.h"
 #include "core/clawt-update.h"

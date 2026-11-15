@@ -273,6 +273,27 @@ GdkTexture *clawt_gtk_avatar_preview_texture(ClawtClient *client,
                                              const gchar *agent_id);
 
 /**
+ * clawt_gtk_qr_texture:
+ * @text: what the code should carry
+ * @scale: pixels per module
+ * @error: (out) (optional): return location for a #GError
+ *
+ * A QR code for @text, drawn from clawt_qr_encode()'s module matrix at
+ * @scale pixels a module with the quiet zone included, black on white.
+ *
+ * Drawn at the size it will be shown rather than at one pixel a module
+ * and scaled up: #GtkPicture filters linearly, and a blurred module edge
+ * is what makes a phone camera give up on a code shown on a screen.
+ *
+ * Returns: (transfer full) (nullable): the texture, or %NULL with the
+ *   library's error -- %CLAWT_ERROR_NOT_SUPPORTED in a build without
+ *   libqrencode
+ */
+GdkTexture *clawt_gtk_qr_texture(const gchar  *text,
+                                 guint         scale,
+                                 GError      **error);
+
+/**
  * clawt_gtk_build_avatar:
  * @client: the daemon connection
  * @name: the sender's name, for the derived initials and as the

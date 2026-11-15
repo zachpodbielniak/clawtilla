@@ -165,7 +165,7 @@ why each rule is the shape it is.
 
 | Kind | Who | Payload | Reply |
 |------+-----+---------+-------|
-| ~device.pair~ | owner | ~name~ (optional) | ~code~, ~display~ ("123 456"), ~expires_in~, ~expires_at~, ~addresses~ |
+| ~device.pair~ | owner | ~name~ (optional) | ~code~, ~display~ ("123 456"), ~expires_in~, ~expires_at~, ~addresses~, ~uri~ (when an address is dialable) |
 | ~device.pair_cancel~ | owner | | ~{}~ |
 | ~device.redeem~ | anyone, *before* ~control.hello~ | ~code~, ~name~ (optional) | ~version~, ~daemon~, ~id~, ~name~, ~token~ |
 | ~device.list~ | any authenticated client | | ~owner~, ~idle_days~, ~pairing_expires_in~, ~devices~ |
@@ -189,8 +189,9 @@ rate limit is ~LOOP_LIMIT~.
 ~expires_in~ is what a client counts down from, against its own clock.
 ~expires_at~ is the daemon's clock and is right only where the two agree.
 ~addresses~ is every network listener that actually bound, as
-~host:port~ -- empty when the daemon is on its unix socket alone, in
-which case no other device can reach it to redeem the code.
+~host:port~, or ~[address]:port~ for IPv6 -- empty when the daemon is
+on its unix socket alone, in which case no other device can reach it to
+redeem the code.
 
 Each entry of ~devices~ is ~id~, ~name~, ~created~ and ~last_seen~
 (seconds since the epoch), ~connected~ (a connection is open now) and
@@ -206,6 +207,42 @@ is refused with =PERMISSION_DENIED= before the id is looked up; the
 clients ask =clawt_device_row_action()= which button a row gets, so a
 paired device's list offers *Sign out this device* on its own row and
 nothing on the others.
+
+**** The pairing URI
+
+~uri~ (since 0.34.3) is the code and the addresses as one link, for a client to draw
+as a QR code that a phone scans instead of somebody typing both:
+
+#+begin_example
+clawtilla://pair?v=1&code=123456&port=8792&host=100.101.102.103&host=fd7a%3A115c%3Aa1e0%3A%3A1&name=phone
+#+end_example
+
+| Parameter | Meaning |
+|-----------+---------|
+| ~v~ | the format's version, ~1~; a reader refuses any other rather than guessing |
+| ~code~ | the six digits, no space or dash |
+| ~port~ | the port every ~host~ listens on (default 8792 when absent) |
+| ~host~ | an address to dial, repeated, in the daemon's order of preference; bare, so an IPv6 address has no brackets |
+| ~name~ | the ~name~ the code was asked for with; the daemon files the device under it, whatever ~device.redeem~ says, so a phone can show it as its own name; absent when none was given |
+
+Every value is percent-encoded with nothing reserved left bare, so an
+IPv6 address's colons travel as ~%3A~ and a name cannot break the query.
+A reader ignores parameters it does not know, so a later version can add
+one.  The phone redeems it exactly as a typed code: a fresh TCP
+connection to one ~host~ on ~port~, and ~device.redeem~ with ~code~ and
+~name~ as the first frame.
+
+The daemon builds it (~clawt_pair_uri_build_from_addresses()~) rather
+than each client, so every client agrees on what a phone is told to
+dial.  From ~addresses~ it leaves out a wildcard (~0.0.0.0~, ~::~) and a
+loopback address -- a phone dialling either reaches itself -- and any
+address on a port other than the first remaining one's, since the link
+has room for one port.  When nothing is left, ~uri~ is absent: a QR code
+nobody can redeem is not drawn at all.  ~clawt_pair_uri_parse()~ reads
+one back.
+
+The link carries nothing ~code~ and ~addresses~ did not already: the
+code is short-lived, single use and guess-limited, and never a token.
 
 *** attachment.*
 

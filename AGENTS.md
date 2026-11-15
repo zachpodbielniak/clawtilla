@@ -75,6 +75,7 @@ the second is what clawtilla adds:
 | `gudev-1.0` | `libgudev-devel` | podomation |
 | `gtk4` | `gtk4-devel` | GTK client |
 | `libadwaita-1` | `libadwaita-devel` | GTK client |
+| `libqrencode` | `qrencode-devel` (`qrencode-libs` at runtime) | pairing QR codes (optional; detected, `QRENCODE=0` to skip) |
 | `libvirt` | `libvirt-devel` | podomation's vm_virtmanager module |
 | `virsh`, `libvirtd` | `libvirt-daemon-kvm`, `libvirt-client` | VM computers (runtime) |
 | `qemu-system-x86_64` | `qemu-system-x86-core` (+ `qemu-system-aarch64-core` on Asahi) | VM computers (runtime) |
