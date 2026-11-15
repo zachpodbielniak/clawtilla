@@ -712,6 +712,16 @@ clawt_web_flow_body(ClawtWebApp *app, const gchar *agent_id)
             card = clawt_web_card(who, id);
         }
 
+        /*
+         * Where a cross-talk summary's "View in Flow" lands: the card
+         * carries the anchor libclawt derives from the room id.
+         */
+        {
+            g_autofree gchar *anchor = clawt_crosstalk_anchor(id);
+
+            htmx_element_set_attribute(HTMX_ELEMENT(card), "id", anchor);
+        }
+
         body = clawt_web_card_body(card);
 
         /*

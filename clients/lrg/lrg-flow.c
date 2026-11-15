@@ -1352,6 +1352,21 @@ event(ClawtLrgApp *app, ClawtEvent *event)
     }
 }
 
+/*
+ * A cross-talk summary's "View in Flow": the page is shown and the
+ * conversation asked for through the same path a click on its row
+ * takes, so it is drawn and kept selected exactly as one picked by hand.
+ */
+void
+clawt_lrg_flow_open(ClawtLrgApp *app, const gchar *room_id)
+{
+    if (room_id == NULL)
+        return;
+
+    clawt_lrg_show_page(app, CLAWT_PAGE_FLOW);
+    open_room(app, room_id, NULL);
+}
+
 static const ClawtLrgPage page_impl = { CLAWT_PAGE_FLOW, build, refresh,
                                         event };
 

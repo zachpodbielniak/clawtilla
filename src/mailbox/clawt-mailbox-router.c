@@ -411,6 +411,14 @@ record_in_room(ClawtMailboxRouter *self, ClawtRoom *room,
 			clawt_event_set_detail_int(event, "round",
 				(gint64)clawt_message_get_round(message));
 
+		/* A cross-talk summary's jump targets; see room.history. */
+		if (clawt_message_get_crosstalk_rooms(message) != NULL) {
+			clawt_event_set_detail(event, "crosstalk_room",
+				clawt_message_get_crosstalk_rooms(message));
+			clawt_event_set_detail(event, "crosstalk_message",
+				clawt_message_get_crosstalk_messages(message));
+		}
+
 		if (clawt_message_get_skipped(message) != NULL) {
 			clawt_event_set_detail(event, "skipped",
 				clawt_message_get_skipped(message));

@@ -280,6 +280,16 @@ declare -A AFFORDANCES=(
     ["steered messages"]="clawt_message_steered_label|clawt_message_steered_label|clawt_message_steered_label"
     ["explain an agent's steer level"]="clawt_steer_policy_explanation|clawt_steer_policy_explanation|clawt_steer_policy_explanation"
     #
+    # Cross-talk summaries (orchestration.crosstalk_summary): the
+    # daemon's note of an agent-to-agent exchange is drawn as one, with
+    # libclawt's badge and a "View in Flow" action per exchange that
+    # opens the conversation on the Flow page; and the per-agent setting
+    # is titled and explained in libclawt's words in every client.
+    #
+    ["cross-talk summary badge"]="clawt_crosstalk_mark_label|clawt_crosstalk_mark_label|clawt_crosstalk_mark_label"
+    ["cross-talk summary opens Flow"]="clawt_crosstalk_flow_label|clawt_crosstalk_flow_label|clawt_crosstalk_flow_label"
+    ["tell me about agent-to-agent conversations"]="clawt_crosstalk_summary_explanation|clawt_crosstalk_summary_explanation|clawt_crosstalk_summary_explanation"
+    #
     # A generic ACP agent (model.provider: acp): the command that is the
     # agent, named and explained in libclawt's words in all three.
     #

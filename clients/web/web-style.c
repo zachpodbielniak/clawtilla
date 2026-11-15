@@ -875,6 +875,14 @@ clawt_web_stylesheet(void)
     ".skip-note{margin:2px 0 0 var(--chat-gutter);font-size:.85em;"
       "color:var(--muted)}"
     /*
+     * A cross-talk summary: the daemon's note about a conversation
+     * between agents, boxed in the info tone, with its Flow links under.
+     */
+    ".msg-crosstalk .msg-body{border:1px solid var(--info-fg);"
+      "border-radius:8px;padding:6px 10px;background:var(--info-bg)}"
+    ".crosstalk-actions{margin:4px 0 0 var(--chat-gutter);display:flex;"
+      "flex-wrap:wrap;gap:12px;font-size:.85em}"
+    /*
      * Another agent's long request, folded to one line: a summary that
      * reads as a quiet card under the gutter, its marker drawn by us so
      * it is the same triangle in every browser.  Opened, the body is the

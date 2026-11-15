@@ -186,6 +186,56 @@ typedef enum {
 } ClawtSteerPolicy;
 
 /**
+ * ClawtCrosstalkSummary:
+ * @CLAWT_CROSSTALK_SUMMARY_CHIEF: only the chief of staff's conversation
+ *   with you is told -- the fleet default
+ * @CLAWT_CROSSTALK_SUMMARY_ON: this agent's conversation with you is told
+ * @CLAWT_CROSSTALK_SUMMARY_OFF: nothing is posted for this agent
+ *
+ * Whether an agent-to-agent exchange that ends is summarised into your
+ * direct conversation with the agent that took part
+ * (`orchestration.crosstalk_summary`, per agent `crosstalk_summary`,
+ * since 0.30.0).  Three values rather than a boolean because the
+ * default depends on who the agent is: a fleet key set to on cannot say
+ * "the chief only", and a per-agent boolean cannot say "whatever the
+ * fleet says".
+ */
+typedef enum {
+    CLAWT_CROSSTALK_SUMMARY_CHIEF = 0,
+    CLAWT_CROSSTALK_SUMMARY_ON,
+    CLAWT_CROSSTALK_SUMMARY_OFF
+} ClawtCrosstalkSummary;
+
+/**
+ * ClawtCrosstalkOutcome:
+ * @CLAWT_CROSSTALK_ANSWERED: somebody other than whoever reached out
+ *   answered
+ * @CLAWT_CROSSTALK_NO_REPLY: nobody answered -- a one-way message, or an
+ *   agent that never took the turn
+ * @CLAWT_CROSSTALK_SETTLED: a task the exchange carried completed
+ * @CLAWT_CROSSTALK_FAILED: a task the exchange carried failed
+ * @CLAWT_CROSSTALK_STALLED: a task the exchange carried was stopped by
+ *   clawtilla for not making progress
+ * @CLAWT_CROSSTALK_CANCELLED: a task the exchange carried was cancelled
+ * @CLAWT_CROSSTALK_REFUSED: a message in it was refused by a loop guard
+ * @CLAWT_CROSSTALK_WORKING: it went quiet with a task still running
+ *
+ * How a cross-talk exchange ended, as its summary says it.  Derived from
+ * the record (clawt_crosstalk_exchange_get_outcome()), never from what
+ * an agent claimed.
+ */
+typedef enum {
+    CLAWT_CROSSTALK_ANSWERED = 0,
+    CLAWT_CROSSTALK_NO_REPLY,
+    CLAWT_CROSSTALK_SETTLED,
+    CLAWT_CROSSTALK_FAILED,
+    CLAWT_CROSSTALK_STALLED,
+    CLAWT_CROSSTALK_CANCELLED,
+    CLAWT_CROSSTALK_REFUSED,
+    CLAWT_CROSSTALK_WORKING
+} ClawtCrosstalkOutcome;
+
+/**
  * ClawtNetAddressClass:
  * @CLAWT_NET_ADDRESS_PUBLIC: routable on the public internet
  * @CLAWT_NET_ADDRESS_LOOPBACK: this machine (127.0.0.0/8, ::1)
@@ -1181,6 +1231,8 @@ GType clawt_runtime_type_get_type(void) G_GNUC_CONST;
 GType clawt_runtime_confine_get_type(void) G_GNUC_CONST;
 GType clawt_runtime_network_get_type(void) G_GNUC_CONST;
 GType clawt_steer_policy_get_type(void) G_GNUC_CONST;
+GType clawt_crosstalk_summary_get_type(void) G_GNUC_CONST;
+GType clawt_crosstalk_outcome_get_type(void) G_GNUC_CONST;
 GType clawt_net_address_class_get_type(void) G_GNUC_CONST;
 GType clawt_team_role_get_type(void) G_GNUC_CONST;
 GType clawt_restart_policy_get_type(void) G_GNUC_CONST;
@@ -1224,6 +1276,8 @@ GType clawt_tool_directory_mode_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_RUNTIME_NETWORK  (clawt_runtime_network_get_type())
 #define CLAWT_TYPE_NET_ADDRESS_CLASS (clawt_net_address_class_get_type())
 #define CLAWT_TYPE_STEER_POLICY     (clawt_steer_policy_get_type())
+#define CLAWT_TYPE_CROSSTALK_SUMMARY (clawt_crosstalk_summary_get_type())
+#define CLAWT_TYPE_CROSSTALK_OUTCOME (clawt_crosstalk_outcome_get_type())
 #define CLAWT_TYPE_TEAM_ROLE        (clawt_team_role_get_type())
 #define CLAWT_TYPE_RESTART_POLICY   (clawt_restart_policy_get_type())
 #define CLAWT_TYPE_BROKER_TYPE      (clawt_broker_type_get_type())

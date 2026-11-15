@@ -1185,6 +1185,17 @@ clawt_lrg_agent_form(JsonObject *settings)
         } else if (g_strcmp0(key, "model.command") == 0) {
             field->label = g_strdup(clawt_model_catalog_acp_command_label());
             field->hint = g_strdup(clawt_model_catalog_acp_command_hint());
+        } else if (g_strcmp0(key, "crosstalk_summary") == 0) {
+            const gchar *current = string_or(settings, key, "");
+
+            /*
+             * Whether this agent's conversations with other agents and
+             * bots are summarised into your chat with it, in libclawt's
+             * words, as the other two clients title it.
+             */
+            field->label = g_strdup(clawt_crosstalk_summary_title());
+            field->hint = g_strdup(clawt_crosstalk_summary_explanation(
+                clawt_crosstalk_summary_from_nick(current)));
         } else if (g_strcmp0(key, "steer") == 0) {
             const gchar *current = string_or(settings, key, "");
 

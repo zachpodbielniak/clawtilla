@@ -628,6 +628,43 @@ orchestration:
   # exactly as max_hops withholds them, and one alert names the tree.
   tree_message_budget: 60
 
+  # Tell you about agent-to-agent conversations: chief, on or off.
+  #
+  # When an exchange between agents ends -- a message and its answer, a
+  # delegated task settling, a Grok bot reaching out and being answered,
+  # a group room's round -- a short summary of it is posted into your own
+  # conversation with the agent that took part: who reached out, what
+  # they asked, what the agent did (tool calls by kind, tasks it handed
+  # on, decisions it raised) and how it ended, with a link that opens the
+  # exchange in Flow. Without it, that conversation is only in Flow, and
+  # you have to go and look.
+  #
+  # chief, the default: only the chief of staff's conversation with you
+  # gets them. on: every agent's. off: none. Set per agent as
+  # `crosstalk_summary` to turn one agent on or off whatever this says.
+  #
+  # The summary is the daemon's note, built from the record and costing
+  # no model call: it is never delivered to the agent, never starts a
+  # turn, invites no reply and counts towards no hop, budget or incident.
+  # An exchange ends when nobody in it has a turn running or a message
+  # waiting there, no task it carries is still running, and it has been
+  # quiet for 15 seconds; exchanges ending within a few seconds of each
+  # other are posted as one note. Work a trigger or routine started is
+  # not cross-talk and is never summarised.
+  crosstalk_summary: "chief"
+
+  # # A small model that rewrites each cross-talk summary as one friendly
+  # # paragraph, as provider/model -- the same spelling as
+  # # orchestration.ack_check_model. Empty, the default, posts the summary
+  # # built from the record and asks no model anything.
+  # #
+  # # The model is given the record-built summary, fenced as data, and 10
+  # # seconds. Nothing waits on it: the note is posted when it answers. A
+  # # failure, a timeout, an empty reply or one longer than 1200
+  # # characters posts the record-built summary instead, so turning this on
+  # # can delay a note and never lose one.
+  # crosstalk_summary_model: ""
+
   # Defaults for every agent's mailbox.
   #
   # Each agent has a durable queue, so a message to a stopped agent waits

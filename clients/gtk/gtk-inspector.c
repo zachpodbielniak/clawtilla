@@ -1076,6 +1076,24 @@ on_save_agent(GtkButton *button, gpointer user_data)
                       adw_combo_row_get_selected(
                           ADW_COMBO_ROW(self->steer_row))));
 
+    /*
+     * Only when it was changed: the row shows what the agent resolves to,
+     * which may be the fleet's value, and writing that back on every
+     * save would pin the agent to it -- a later change of the fleet's
+     * orchestration.crosstalk_summary would then reach nobody.
+     */
+    if (self->crosstalk_row != NULL) {
+        guint chosen = adw_combo_row_get_selected(
+            ADW_COMBO_ROW(self->crosstalk_row));
+        guint shown = GPOINTER_TO_UINT(g_object_get_data(
+            G_OBJECT(self->crosstalk_row), "shown"));
+
+        if (chosen != shown)
+            ok &= clawt_gtk_apply_setting(self, "crosstalk_summary",
+                      clawt_crosstalk_summary_nick(
+                          (ClawtCrosstalkSummary)chosen));
+    }
+
     if (self->team_role_row != NULL) {
         static const gchar *const roles[] = { "member", "lead" };
 
@@ -1522,6 +1540,51 @@ on_steer_selected(GObject *row, GParamSpec *pspec, gpointer user_data)
     adw_action_row_set_subtitle(ADW_ACTION_ROW(row),
         clawt_steer_policy_explanation((ClawtSteerPolicy)
             adw_combo_row_get_selected(ADW_COMBO_ROW(row))));
+}
+
+/*
+ * crosstalk_summary's own explanation, under the row, following the
+ * choice -- libclawt's words, as the steer level's are.
+ */
+static void
+on_crosstalk_selected(GObject *row, GParamSpec *pspec, gpointer user_data)
+{
+    (void)pspec;
+    (void)user_data;
+
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(row),
+        clawt_crosstalk_summary_explanation((ClawtCrosstalkSummary)
+            adw_combo_row_get_selected(ADW_COMBO_ROW(row))));
+}
+
+/*
+ * crosstalk_summary: whether this agent's conversations with other
+ * agents and bots are summarised into your chat with it.  Walked from
+ * libclawt in order, so the row's position is the enumeration value;
+ * the value shown is remembered so a save writes it only when changed.
+ */
+static GtkWidget *
+crosstalk_row_new(const gchar *current)
+{
+    g_autoptr(GtkStringList) labels = gtk_string_list_new(NULL);
+    GtkWidget *row = adw_combo_row_new();
+    guint shown = (guint)clawt_crosstalk_summary_from_nick(current);
+    guint i;
+
+    for (i = 0; i < clawt_crosstalk_summary_count(); i++)
+        gtk_string_list_append(labels, clawt_crosstalk_summary_label(
+            (ClawtCrosstalkSummary)i));
+
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                  clawt_crosstalk_summary_title());
+    adw_combo_row_set_model(ADW_COMBO_ROW(row), G_LIST_MODEL(labels));
+    adw_combo_row_set_selected(ADW_COMBO_ROW(row), shown);
+    g_object_set_data(G_OBJECT(row), "shown", GUINT_TO_POINTER(shown));
+    on_crosstalk_selected(G_OBJECT(row), NULL, NULL);
+    g_signal_connect(row, "notify::selected",
+                     G_CALLBACK(on_crosstalk_selected), NULL);
+
+    return row;
 }
 
 /*
@@ -3830,6 +3893,11 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
     self->steer_row = steer_row_new(clawt_json_string(agent, "steer",
                                                       "delegator"));
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), self->steer_row);
+
+    self->crosstalk_row = crosstalk_row_new(
+        clawt_json_string(agent, "crosstalk_summary", "chief"));
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              self->crosstalk_row);
 
     self->chief_row = switch_row(
         "Chief of staff", "Hands work to the other agents",

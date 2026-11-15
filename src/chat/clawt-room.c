@@ -596,6 +596,16 @@ append_to_transcript(ClawtRoom     *self,
 			clawt_message_get_steered(message));
 	}
 
+	/* A cross-talk summary's jump targets, so a restart keeps the link. */
+	if (clawt_message_get_crosstalk_rooms(message) != NULL) {
+		json_builder_set_member_name(builder, "crosstalk_room");
+		json_builder_add_string_value(builder,
+			clawt_message_get_crosstalk_rooms(message));
+		json_builder_set_member_name(builder, "crosstalk_message");
+		json_builder_add_string_value(builder,
+			clawt_message_get_crosstalk_messages(message));
+	}
+
 	if (clawt_message_get_skipped(message) != NULL) {
 		json_builder_set_member_name(builder, "skipped");
 		json_builder_add_string_value(builder,

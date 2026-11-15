@@ -342,6 +342,9 @@ const ClawtLrgPage *clawt_lrg_triggers_page(void);   /* lrg-triggers.c */
 const ClawtLrgPage *clawt_lrg_tasks_page(void);      /* lrg-tasks.c */
 const ClawtLrgPage *clawt_lrg_decisions_page(void);  /* lrg-decisions.c */
 const ClawtLrgPage *clawt_lrg_flow_page(void);       /* lrg-flow.c */
+/* lrg-flow.c: opens one conversation on the Flow page -- what a
+ * cross-talk summary's "View in Flow" does. */
+void clawt_lrg_flow_open(ClawtLrgApp *app, const gchar *room_id);
 const ClawtLrgPage *clawt_lrg_activity_page(void);   /* lrg-activity.c */
 /* lrg-issues.c: the Activity page's Issues section (the sentinel's report). */
 void clawt_lrg_issues_build(ClawtLrgApp *app, LrgWidget *body);
