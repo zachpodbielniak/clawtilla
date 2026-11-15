@@ -62,6 +62,7 @@ SCOPE_B=(
 # here needs the reason beside it, or it is just the drift with a label.
 EXCEPTIONS=(
     "running"    # a flag: stop() lowers it, and it holds no memory
+    "started_at" # a timestamp: the next start overwrites it, and it holds no memory
 )
 
 # Comments are text too.  A member assigned in a comment, or a clear
