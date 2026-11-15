@@ -1102,8 +1102,18 @@ typedef void (*ClawtDaemonGrokSent)(ClawtGrokJob *job,
  * every two seconds with the wall clock; a test calls it with a time of
  * its choosing.  _set_provider() is a test's fake rewriting model,
  * winning over orchestration.crosstalk_summary_model.
+ * _set_channel_send() is a test's stand-in for posting a summary into
+ * the Matrix room a request came from (crosstalk_summary_to: source):
+ * answered at once, %FALSE with @error for a post that failed.
  */
 typedef struct _ClawtDaemonCrosstalk ClawtDaemonCrosstalk;
+
+typedef gboolean (*ClawtDaemonCrosstalkChannelSend)(const gchar  *agent_id,
+                                                    const gchar  *channel,
+                                                    const gchar  *room_id,
+                                                    const gchar  *text,
+                                                    gpointer      user_data,
+                                                    GError      **error);
 
 void clawt_daemon_crosstalk_setup(ClawtDaemon *self);
 void clawt_daemon_crosstalk_teardown(ClawtDaemon *self);
@@ -1111,6 +1121,9 @@ void clawt_daemon_crosstalk_tick(ClawtDaemon *self, gint64 now);
 void clawt_daemon_crosstalk_set_provider(ClawtDaemon *self,
                                          AiProvider  *provider);
 guint clawt_daemon_crosstalk_rewrites_pending(ClawtDaemon *self);
+void clawt_daemon_crosstalk_set_channel_send(ClawtDaemon *self,
+                                             ClawtDaemonCrosstalkChannelSend send,
+                                             gpointer user_data);
 ClawtCrosstalk *clawt_daemon_crosstalk_get_tracker(ClawtDaemon *self);
 
 void clawt_daemon_grok_start(ClawtDaemon *self);

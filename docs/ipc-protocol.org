@@ -336,6 +336,8 @@ everything refers to a team by it. ~team.remove~ answers with
 fleet grouped by team so a client can emit a header when the team
 changes rather than gathering the fleet itself.
 
+It carries ~crosstalk_summary_to~ (since 0.33.0), =source= or =chat=, resolved the same way.
+
 It carries ~crosstalk_summary~ too (since 0.30.0): =chief=, =on= or =off=,
 the agent's own value or, when it has none, the fleet's
 ~orchestration.crosstalk_summary~.  It is what an agent-settings control

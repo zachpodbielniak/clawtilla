@@ -207,6 +207,24 @@ typedef enum {
 } ClawtCrosstalkSummary;
 
 /**
+ * ClawtCrosstalkSummaryTo:
+ * @CLAWT_CROSSTALK_SUMMARY_TO_SOURCE: where the request came from -- a
+ *   Matrix room the agent was asked in, or a clawtilla room you are in
+ *   -- and your chat with the agent otherwise; the default
+ * @CLAWT_CROSSTALK_SUMMARY_TO_CHAT: always your chat with the agent
+ *
+ * Where a cross-talk summary is posted
+ * (`orchestration.crosstalk_summary_to`, per agent
+ * `crosstalk_summary_to`, since 0.33.0).  An exchange an agent started
+ * while answering someone in a Matrix room is that room's business: the
+ * person who asked is there, and may never open clawtilla.
+ */
+typedef enum {
+    CLAWT_CROSSTALK_SUMMARY_TO_SOURCE = 0,
+    CLAWT_CROSSTALK_SUMMARY_TO_CHAT
+} ClawtCrosstalkSummaryTo;
+
+/**
  * ClawtCrosstalkOutcome:
  * @CLAWT_CROSSTALK_ANSWERED: somebody other than whoever reached out
  *   answered
@@ -1232,6 +1250,7 @@ GType clawt_runtime_confine_get_type(void) G_GNUC_CONST;
 GType clawt_runtime_network_get_type(void) G_GNUC_CONST;
 GType clawt_steer_policy_get_type(void) G_GNUC_CONST;
 GType clawt_crosstalk_summary_get_type(void) G_GNUC_CONST;
+GType clawt_crosstalk_summary_to_get_type(void) G_GNUC_CONST;
 GType clawt_crosstalk_outcome_get_type(void) G_GNUC_CONST;
 GType clawt_net_address_class_get_type(void) G_GNUC_CONST;
 GType clawt_team_role_get_type(void) G_GNUC_CONST;
@@ -1277,6 +1296,7 @@ GType clawt_tool_directory_mode_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_NET_ADDRESS_CLASS (clawt_net_address_class_get_type())
 #define CLAWT_TYPE_STEER_POLICY     (clawt_steer_policy_get_type())
 #define CLAWT_TYPE_CROSSTALK_SUMMARY (clawt_crosstalk_summary_get_type())
+#define CLAWT_TYPE_CROSSTALK_SUMMARY_TO (clawt_crosstalk_summary_to_get_type())
 #define CLAWT_TYPE_CROSSTALK_OUTCOME (clawt_crosstalk_outcome_get_type())
 #define CLAWT_TYPE_TEAM_ROLE        (clawt_team_role_get_type())
 #define CLAWT_TYPE_RESTART_POLICY   (clawt_restart_policy_get_type())

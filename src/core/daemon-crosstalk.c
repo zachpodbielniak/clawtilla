@@ -11,7 +11,9 @@
  * only by going to look.  With `orchestration.crosstalk_summary` (chief
  * by default, per agent `crosstalk_summary`), each exchange that ends is
  * summarised into the operator's own conversation with every agent that
- * took part and has it on.
+ * took part and has it on -- or, with `crosstalk_summary_to: source` (the
+ * default, since 0.33.0), back where the request came from: the Matrix
+ * room or the clawtilla room whose turn began the exchange.
  *
  * The note is recorded, never sent: clawt_mailbox_router_record() puts
  * it in the room, the recall index and one `message` event, and queues
@@ -33,6 +35,8 @@
 
 #include <json-glib/json-glib.h>
 
+#include <string.h>
+
 /* How often ended exchanges are looked for. */
 #define CROSSTALK_TICK_SECONDS (2)
 
@@ -47,10 +51,23 @@
 
 #define CROSSTALK_LEDGER "crosstalk-summaries.json"
 
-/* Summaries ended for one conversation, waiting to be posted together. */
+/*
+ * Where a note goes.  Your chat with the agent unless the exchange came
+ * from somewhere else that should hear how it went (crosstalk_summary_to).
+ */
+typedef enum {
+	DEST_CHAT = 0,   /* your direct room with the agent */
+	DEST_ROOM,       /* a clawtilla room you are in: a group */
+	DEST_MATRIX      /* a room on the agent's Matrix channel */
+} Dest;
+
+/* Summaries ended for one destination, waiting to be posted together. */
 typedef struct {
 	GPtrArray *exchanges;   /* ClawtCrosstalkExchange* */
 	gint64     last_added;  /* microseconds */
+	gchar     *agent_id;
+	Dest       dest;
+	gchar     *target;      /* DEST_ROOM, DEST_MATRIX: the room */
 } Waiting;
 
 /* Where a room was last summarised up to. */
@@ -63,13 +80,17 @@ struct _ClawtDaemonCrosstalk {
 	ClawtCrosstalk *tracker;
 	GSource        *tick;
 	gulong          bus_handler;
-	GHashTable     *waiting;    /* agent id -> Waiting* */
+	GHashTable     *waiting;    /* agent + destination -> Waiting* */
 	GHashTable     *ledger;     /* room id -> Through* */
 	gchar          *ledger_path;
 	AiProvider     *provider;
 	gchar          *provider_spec;
 	AiProvider     *provider_override;
 	guint           rewrites;   /* in flight */
+
+	/* A test's stand-in for posting into a channel (Matrix). */
+	ClawtDaemonCrosstalkChannelSend channel_send;
+	gpointer                        channel_send_data;
 };
 
 static void
@@ -79,6 +100,8 @@ waiting_free(
 	Waiting *waiting = data;
 
 	g_ptr_array_unref(waiting->exchanges);
+	g_free(waiting->agent_id);
+	g_free(waiting->target);
 	g_free(waiting);
 }
 
@@ -405,6 +428,18 @@ on_bus_event(
 				clawt_message_get_body(message),
 				clawt_message_get_task_id(message),
 				clawt_message_get_round(message), now);
+
+			/*
+			 * Where the sender was asked, when it was answering
+			 * somebody else: a Matrix room's id, or a group's.  Only
+			 * held in memory -- a room's history keeps no request
+			 * context -- so an exchange replayed after a restart has
+			 * none, and its summary comes to the operator's chat.
+			 */
+			clawt_crosstalk_note_source(self->tracker, subject,
+				clawt_message_get_id(message),
+				clawt_message_get_sender_id(message),
+				clawt_message_get_request_room(message));
 		}
 		return;
 	}
@@ -571,6 +606,7 @@ static void
 record_note(
 	ClawtDaemon *daemon,
 	const gchar *agent_id,
+	const gchar *room_id,
 	const gchar *body,
 	const gchar *rooms,
 	const gchar *messages
@@ -584,7 +620,10 @@ record_note(
 		clawt_agent_manager_get(daemon->agents, agent_id) == NULL)
 		return;
 
-	room = clawt_room_manager_get_direct(daemon->rooms, "user", agent_id);
+	/* NULL: the operator's own conversation with the agent. */
+	room = room_id != NULL
+		? clawt_room_manager_get(daemon->rooms, room_id)
+		: clawt_room_manager_get_direct(daemon->rooms, "user", agent_id);
 
 	if (room == NULL)
 		return;
@@ -604,10 +643,289 @@ record_note(
 		          agent_id, error->message);
 }
 
+/* The agent's Matrix channel binding, or NULL. */
+static ClawtIntegrationBinding *
+matrix_binding(
+	ClawtDaemon  *daemon,
+	const gchar  *agent_id,
+	GPtrArray   **bindings
+){
+	ClawtAgent *agent;
+	ClawtAgentConfig *config;
+
+	*bindings = NULL;
+
+	if (daemon->config == NULL || daemon->agents == NULL)
+		return NULL;
+
+	agent = clawt_agent_manager_get(daemon->agents, agent_id);
+	config = agent != NULL ? clawt_agent_get_config(agent) : NULL;
+
+	if (config == NULL)
+		return NULL;
+
+	*bindings = clawt_integration_resolve_for_agent(daemon->config, config);
+
+	return clawt_integration_find_binding(*bindings, "matrix");
+}
+
+/*
+ * Whether @room_id is a room on @agent_id's Matrix channel: a Matrix
+ * room id, and one the binding listens in (an empty `rooms` is every
+ * room the account has joined).
+ */
+static gboolean
+matrix_takes(
+	ClawtDaemon *daemon,
+	const gchar *agent_id,
+	const gchar *room_id
+){
+	g_autoptr(GPtrArray) bindings = NULL;
+	ClawtIntegrationBinding *binding;
+	g_auto(GStrv) rooms = NULL;
+
+	if (room_id == NULL || room_id[0] != '!' || strchr(room_id, ':') == NULL)
+		return FALSE;
+
+	binding = matrix_binding(daemon, agent_id, &bindings);
+
+	if (binding == NULL)
+		return FALSE;
+
+	rooms = clawt_integration_binding_get_string_list(binding, "rooms");
+
+	return rooms == NULL || rooms[0] == NULL ||
+	       g_strv_contains((const gchar *const *)rooms, room_id);
+}
+
+/*
+ * Where @agent_id's summary of @exchange goes.  The source only for the
+ * agent whose turn began the exchange, and only when it is somewhere the
+ * operator, or the person who asked, will read: a clawtilla room the
+ * operator and the agent are both in, or a room on the agent's Matrix
+ * channel.  A routine's room, a task's, an incident's: the chat.
+ */
+static Dest
+destination_for(
+	ClawtDaemon            *daemon,
+	const gchar            *agent_id,
+	ClawtCrosstalkExchange *exchange,
+	gchar                 **target
+){
+	const gchar *source = clawt_crosstalk_exchange_get_source_room(exchange);
+	ClawtAgent *agent;
+	ClawtAgentConfig *config;
+	ClawtRoom *room;
+
+	*target = NULL;
+
+	if (source == NULL || daemon->agents == NULL ||
+		g_strcmp0(clawt_crosstalk_exchange_get_source_agent(exchange),
+		          agent_id) != 0)
+		return DEST_CHAT;
+
+	agent = clawt_agent_manager_get(daemon->agents, agent_id);
+	config = agent != NULL ? clawt_agent_get_config(agent) : NULL;
+
+	if (config == NULL ||
+		(ClawtCrosstalkSummaryTo)clawt_agent_config_get_enum(
+			config, "crosstalk_summary_to") == CLAWT_CROSSTALK_SUMMARY_TO_CHAT)
+		return DEST_CHAT;
+
+	room = daemon->rooms != NULL
+		? clawt_room_manager_get(daemon->rooms, source) : NULL;
+
+	if (room != NULL) {
+		g_auto(GStrv) members = room_members(room);
+
+		if (room == clawt_room_manager_get_direct(daemon->rooms, "user",
+		                                          agent_id) ||
+			members == NULL ||
+			!g_strv_contains((const gchar *const *)members, "user") ||
+			!g_strv_contains((const gchar *const *)members, agent_id))
+			return DEST_CHAT;
+
+		*target = g_strdup(source);
+		return DEST_ROOM;
+	}
+
+	if (matrix_takes(daemon, agent_id, source)) {
+		*target = g_strdup(source);
+		return DEST_MATRIX;
+	}
+
+	return DEST_CHAT;
+}
+
+/* A Matrix post that did not land comes to the chat, saying why. */
+static void
+matrix_fallback(
+	ClawtDaemon *daemon,
+	const gchar *agent_id,
+	const gchar *room_id,
+	const gchar *body,
+	const gchar *rooms,
+	const gchar *messages,
+	const gchar *why
+){
+	g_autofree gchar *note = g_strdup_printf(
+		"%s\n\n(This summary was for the Matrix room %s, where the request "
+		"came from, but posting it there failed: %s.)",
+		body, room_id, why != NULL ? why : "no reason given");
+
+	g_warning("crosstalk: the summary for %s could not be posted in Matrix "
+	          "room %s: %s; it is in the operator's chat instead",
+	          agent_id, room_id, why != NULL ? why : "no reason given");
+	record_note(daemon, agent_id, NULL, note, rooms, messages);
+}
+
+/* One Matrix post in flight. */
+typedef struct {
+	ClawtDaemon *daemon;   /* owned */
+	gchar       *agent_id;
+	gchar       *room_id;
+	gchar       *body;
+	gchar       *rooms;
+	gchar       *messages;
+} MatrixPost;
+
+static void
+matrix_post_free(
+	MatrixPost *post
+){
+	g_clear_object(&post->daemon);
+	g_free(post->agent_id);
+	g_free(post->room_id);
+	g_free(post->body);
+	g_free(post->rooms);
+	g_free(post->messages);
+	g_free(post);
+}
+
+static void
+on_matrix_posted(
+	GObject      *source,
+	GAsyncResult *result,
+	gpointer      data
+){
+	MatrixPost *post = data;
+	g_autoptr(GError) error = NULL;
+
+	(void)source;
+
+	if (!clawt_matrix_send_text_finish(result, &error) &&
+		post->daemon->crosstalk != NULL)
+		matrix_fallback(post->daemon, post->agent_id, post->room_id,
+		                post->body, post->rooms, post->messages,
+		                error != NULL ? error->message : NULL);
+
+	matrix_post_free(post);
+}
+
+/*
+ * Posts @body in @room_id from @agent_id's own Matrix account.  The
+ * homeserver keeps one copy of a retried post: the transaction id is
+ * made from the agent, the room and the exchanges' first messages.
+ */
+static void
+post_matrix(
+	ClawtDaemon *daemon,
+	const gchar *agent_id,
+	const gchar *room_id,
+	const gchar *body,
+	const gchar *rooms,
+	const gchar *messages
+){
+	ClawtDaemonCrosstalk *self = daemon->crosstalk;
+	g_autoptr(GPtrArray) bindings = NULL;
+	g_autoptr(ClawtSecretRef) ref = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *secrets_dir = NULL;
+	g_autofree gchar *token = NULL;
+	g_autofree gchar *seed = NULL;
+	ClawtIntegrationBinding *binding;
+	MatrixPost *post;
+
+	/* A test's stand-in answers at once. */
+	if (self->channel_send != NULL) {
+		if (!self->channel_send(agent_id, "matrix", room_id, body,
+		                        self->channel_send_data, &error))
+			matrix_fallback(daemon, agent_id, room_id, body, rooms, messages,
+			                error != NULL ? error->message : NULL);
+		return;
+	}
+
+	binding = matrix_binding(daemon, agent_id, &bindings);
+	ref = binding != NULL
+		? clawt_integration_binding_get_secret(binding, "access_token") : NULL;
+
+	if (ref == NULL) {
+		matrix_fallback(daemon, agent_id, room_id, body, rooms, messages,
+		                "the agent's Matrix channel has no access token");
+		return;
+	}
+
+	secrets_dir = clawt_config_get_path_value(daemon->config, "secrets.dir");
+	token = clawt_secret_ref_resolve(ref, secrets_dir,
+		(guint)clawt_config_get_int(daemon->config,
+		                            "secrets.command_timeout_seconds"),
+		&error);
+
+	if (token == NULL) {
+		matrix_fallback(daemon, agent_id, room_id, body, rooms, messages,
+		                error != NULL ? error->message : "no token");
+		return;
+	}
+
+	post = g_new0(MatrixPost, 1);
+	post->daemon = g_object_ref(daemon);
+	post->agent_id = g_strdup(agent_id);
+	post->room_id = g_strdup(room_id);
+	post->body = g_strdup(body);
+	post->rooms = g_strdup(rooms);
+	post->messages = g_strdup(messages);
+	seed = g_strdup_printf("crosstalk\n%s\n%s\n%s", agent_id, room_id,
+	                       messages != NULL ? messages : body);
+
+	/* Under the daemon's context, so the answer comes back on its loop. */
+	g_main_context_push_thread_default(daemon->main_context);
+	clawt_matrix_send_text_async(
+		clawt_integration_binding_get_string(binding, "homeserver"),
+		token, room_id, body, seed, NULL, on_matrix_posted, post);
+	g_main_context_pop_thread_default(daemon->main_context);
+	memset(token, 0, strlen(token));
+}
+
+/* The note, delivered where it was decided it goes. */
+static void
+deliver(
+	ClawtDaemon *daemon,
+	const gchar *agent_id,
+	Dest         dest,
+	const gchar *target,
+	const gchar *body,
+	const gchar *rooms,
+	const gchar *messages
+){
+	switch (dest) {
+	case DEST_CHAT:
+		record_note(daemon, agent_id, NULL, body, rooms, messages);
+		return;
+	case DEST_ROOM:
+		record_note(daemon, agent_id, target, body, rooms, messages);
+		return;
+	case DEST_MATRIX:
+		post_matrix(daemon, agent_id, target, body, rooms, messages);
+		return;
+	}
+}
+
 /* One rewrite waiting on the model. */
 typedef struct {
 	ClawtDaemon *daemon;   /* owned */
 	gchar       *agent_id;
+	Dest         dest;
+	gchar       *target;
 	gchar       *body;
 	gchar       *rooms;
 	gchar       *messages;
@@ -619,6 +937,7 @@ rewrite_job_free(
 ){
 	g_clear_object(&job->daemon);
 	g_free(job->agent_id);
+	g_free(job->target);
 	g_free(job->body);
 	g_free(job->rooms);
 	g_free(job->messages);
@@ -657,9 +976,8 @@ on_rewritten(
 		g_info("crosstalk: the summary for %s is posted as built (%s)",
 		       job->agent_id, error != NULL ? error->message : "no rewrite");
 
-	record_note(job->daemon, job->agent_id,
-	            rewrite != NULL ? rewrite : job->body, job->rooms,
-	            job->messages);
+	deliver(job->daemon, job->agent_id, job->dest, job->target,
+	        rewrite != NULL ? rewrite : job->body, job->rooms, job->messages);
 }
 
 /*
@@ -725,9 +1043,10 @@ rewrite_provider(
 static void
 post(
 	ClawtDaemon *daemon,
-	const gchar *agent_id,
-	GPtrArray   *exchanges
+	Waiting     *waiting
 ){
+	const gchar *agent_id = waiting->agent_id;
+	GPtrArray *exchanges = waiting->exchanges;
 	g_autofree gchar *body = clawt_crosstalk_compose(exchanges, agent_id);
 	g_autofree gchar *rooms = NULL;
 	g_autofree gchar *messages = NULL;
@@ -741,6 +1060,8 @@ post(
 
 		job->daemon = g_object_ref(daemon);
 		job->agent_id = g_strdup(agent_id);
+		job->dest = waiting->dest;
+		job->target = g_strdup(waiting->target);
 		job->body = g_steal_pointer(&body);
 		job->rooms = g_steal_pointer(&rooms);
 		job->messages = g_steal_pointer(&messages);
@@ -754,7 +1075,8 @@ post(
 		return;
 	}
 
-	record_note(daemon, agent_id, body, rooms, messages);
+	deliver(daemon, agent_id, waiting->dest, waiting->target, body, rooms,
+	        messages);
 }
 
 void
@@ -793,18 +1115,29 @@ clawt_daemon_crosstalk_tick(
 
 		for (p = 0; participants[p] != NULL; p++) {
 			Waiting *waiting;
+			g_autofree gchar *target = NULL;
+			g_autofree gchar *pile = NULL;
+			Dest dest;
 
 			if (!wants_summaries(daemon, participants[p]))
 				continue;
 
-			waiting = g_hash_table_lookup(self->waiting, participants[p]);
+			/* One pile per agent and destination: a burst that came
+			 * from Matrix and one from the chat are two notes. */
+			dest = destination_for(daemon, participants[p], exchange, &target);
+			pile = g_strdup_printf("%s\n%d\n%s", participants[p], (gint)dest,
+			                       target != NULL ? target : "");
+			waiting = g_hash_table_lookup(self->waiting, pile);
 
 			if (waiting == NULL) {
 				waiting = g_new0(Waiting, 1);
 				waiting->exchanges = g_ptr_array_new_with_free_func(
 					(GDestroyNotify)clawt_crosstalk_exchange_unref);
-				g_hash_table_insert(self->waiting,
-				                    g_strdup(participants[p]), waiting);
+				waiting->agent_id = g_strdup(participants[p]);
+				waiting->dest = dest;
+				waiting->target = g_steal_pointer(&target);
+				g_hash_table_insert(self->waiting, g_steal_pointer(&pile),
+				                    waiting);
 			}
 
 			g_ptr_array_add(waiting->exchanges,
@@ -838,12 +1171,18 @@ clawt_daemon_crosstalk_tick(
 	}
 
 	for (i = 0; i < due->len; i++) {
-		const gchar *agent_id = g_ptr_array_index(due, i);
-		Waiting *waiting = g_hash_table_lookup(self->waiting, agent_id);
-		g_autoptr(GPtrArray) exchanges = g_ptr_array_ref(waiting->exchanges);
+		const gchar *pile = g_ptr_array_index(due, i);
+		gpointer stolen_key = NULL;
+		gpointer stolen = NULL;
 
-		g_hash_table_remove(self->waiting, agent_id);
-		post(daemon, agent_id, exchanges);
+		/* Taken out of the table first: posting may add to it. */
+		if (!g_hash_table_steal_extended(self->waiting, pile, &stolen_key,
+		                                 &stolen))
+			continue;
+
+		g_free(stolen_key);
+		post(daemon, stolen);
+		waiting_free(stolen);
 	}
 }
 
@@ -948,6 +1287,21 @@ clawt_daemon_crosstalk_set_provider(
 
 	if (provider != NULL)
 		daemon->crosstalk->provider_override = g_object_ref(provider);
+}
+
+void
+clawt_daemon_crosstalk_set_channel_send(
+	ClawtDaemon                     *daemon,
+	ClawtDaemonCrosstalkChannelSend  send,
+	gpointer                         user_data
+){
+	g_return_if_fail(CLAWT_IS_DAEMON(daemon));
+
+	if (daemon->crosstalk == NULL)
+		return;
+
+	daemon->crosstalk->channel_send = send;
+	daemon->crosstalk->channel_send_data = user_data;
 }
 
 guint

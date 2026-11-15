@@ -251,6 +251,8 @@ are just rooms, so an agent reaches them without knowing they are
 bridged.  Its =TOOLS.org= says so, because an agent reasoning about
 "Matrix users" will otherwise misjudge who it is talking to.
 
+The daemon itself posts with the same account in one case: a cross-talk summary of an exchange the agent began while answering in one of these rooms goes back to that room (=crosstalk_summary_to=, [[file:orchestration.org][orchestration.org]]), as an ~m.notice~.
+
 Health check: a TCP connection to the homeserver.
 
 ** email

@@ -1603,7 +1603,9 @@ versions apart.
 - **Telling the operator about something is recording it, not sending it.**
   A cross-talk summary (`orchestration.crosstalk_summary`,
   `src/core/daemon-crosstalk.c`) goes through
-  `clawt_mailbox_router_record()` into the operator's room, so no mailbox,
+  `clawt_mailbox_router_record()` into the operator's room (or, with
+  `crosstalk_summary_to: source`, the group or Matrix room the request came
+  from -- a Matrix post is the one that leaves clawtilla), so no mailbox,
   turn, hop, guard, budget, incident or acknowledgement check ever sees it,
   and it lands in a room that is not cross-talk, so it is never summarised.
   An exchange ends on the record's own signals -- no turn running in the

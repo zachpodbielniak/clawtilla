@@ -513,6 +513,78 @@ test_rewrite_against_a_fake(void)
 	}
 }
 
+/*
+ * Where an exchange came from is its opening message's request context,
+ * from the agent that sent it: not an answer's (which echoes the
+ * asker's), not a later message's, and never the exchange's own room.
+ */
+static void
+test_the_source_is_the_opening_request(void)
+{
+	g_autoptr(ClawtCrosstalk) tracker = clawt_crosstalk_new();
+	g_autoptr(GPtrArray) ended = NULL;
+	ClawtCrosstalkExchange *exchange;
+	gint64 now = g_get_real_time();
+
+	clawt_crosstalk_note_message(tracker, "dm:alpha:beta", PAIR, "m1",
+	                             "alpha", "Is the deploy done?", NULL, 0, now);
+	/* the room itself is not a source */
+	clawt_crosstalk_note_source(tracker, "dm:alpha:beta", "m1", "alpha",
+	                            "dm:alpha:beta");
+	/* nor is anyone but the opener */
+	clawt_crosstalk_note_source(tracker, "dm:alpha:beta", "m1", "beta",
+	                            "!ops:example.org");
+	clawt_crosstalk_note_source(tracker, "dm:alpha:beta", "m1", "alpha",
+	                            "!ops:example.org");
+	clawt_crosstalk_note_message(tracker, "dm:alpha:beta", PAIR, "m2",
+	                             "beta", "Yes.", NULL, 0, now);
+	/* the answer echoes the asker's context; it does not move it */
+	clawt_crosstalk_note_source(tracker, "dm:alpha:beta", "m2", "beta",
+	                            "!elsewhere:example.org");
+
+	ended = clawt_crosstalk_collect(tracker,
+		now + (CLAWT_CROSSTALK_QUIET_SECONDS + 1) * SECOND, NULL, NULL);
+	g_assert_cmpuint(ended->len, ==, 1);
+	exchange = g_ptr_array_index(ended, 0);
+	g_assert_cmpstr(clawt_crosstalk_exchange_get_source_room(exchange), ==,
+	                "!ops:example.org");
+	g_assert_cmpstr(clawt_crosstalk_exchange_get_source_agent(exchange), ==,
+	                "alpha");
+
+	/* and an exchange nobody was asked for has none */
+	clawt_crosstalk_note_message(tracker, "dm:alpha:beta", PAIR, "m3",
+	                             "alpha", "Thanks.", NULL, 0, now);
+	g_clear_pointer(&ended, g_ptr_array_unref);
+	ended = clawt_crosstalk_collect(tracker,
+		now + (2 * CLAWT_CROSSTALK_QUIET_SECONDS + 2) * SECOND, NULL, NULL);
+	g_assert_cmpuint(ended->len, ==, 1);
+	g_assert_null(clawt_crosstalk_exchange_get_source_room(
+		g_ptr_array_index(ended, 0)));
+}
+
+/* The setting's words, and its stored values. */
+static void
+test_the_destination_setting(void)
+{
+	guint i;
+
+	g_assert_cmpuint(clawt_crosstalk_summary_to_count(), ==, 2);
+	for (i = 0; i < clawt_crosstalk_summary_to_count(); i++) {
+		ClawtCrosstalkSummaryTo to = (ClawtCrosstalkSummaryTo)i;
+
+		g_assert_cmpint(clawt_crosstalk_summary_to_from_nick(
+			clawt_crosstalk_summary_to_nick(to)), ==, to);
+		g_assert_cmpstr(clawt_crosstalk_summary_to_label(to), !=, "");
+		g_assert_cmpstr(clawt_crosstalk_summary_to_explanation(to), !=, "");
+	}
+	g_assert_cmpint(clawt_crosstalk_summary_to_from_nick(NULL), ==,
+	                CLAWT_CROSSTALK_SUMMARY_TO_SOURCE);
+	g_assert_cmpint(clawt_crosstalk_summary_to_from_nick("nowhere"), ==,
+	                CLAWT_CROSSTALK_SUMMARY_TO_SOURCE);
+	g_assert_cmpint(clawt_crosstalk_summary_to_from_nick("chat"), ==,
+	                CLAWT_CROSSTALK_SUMMARY_TO_CHAT);
+}
+
 /* ── The daemon ──────────────────────────────────────────────────── */
 
 typedef struct {
@@ -608,6 +680,85 @@ say(Fixture *fixture, const gchar *from, const gchar *to, const gchar *body,
 
 	return g_strdup(clawt_message_get_id(message));
 }
+
+/*
+ * @from asks @to something while answering somebody in @request_room --
+ * the request context deliver_for_tools() stamps on a message an agent
+ * sends from inside a turn.
+ */
+static gchar *
+ask_from(Fixture *fixture, const gchar *from, const gchar *to,
+         const gchar *body, const gchar *request_room)
+{
+	ClawtRoom *room = clawt_room_manager_get_direct(
+		clawt_daemon_get_rooms(fixture->daemon), from, to);
+	g_autoptr(ClawtMessage) message = clawt_message_new(
+		clawt_room_get_id(room), from, body);
+	g_autoptr(GError) error = NULL;
+
+	clawt_message_set_request_context(message, request_room, "user", NULL);
+	g_assert_true(clawt_mailbox_router_record(fixture->daemon->router,
+	                                          message, &error));
+	g_assert_no_error(error);
+
+	return g_strdup(clawt_message_get_id(message));
+}
+
+/* What a fake Matrix channel was asked to post, and whether it takes it. */
+typedef struct {
+	GPtrArray *posts;    /* "agent|channel|room|text" */
+	gboolean   fails;
+} FakeChannel;
+
+static gboolean
+fake_channel_send(const gchar *agent_id, const gchar *channel,
+                  const gchar *room_id, const gchar *text, gpointer user_data,
+                  GError **error)
+{
+	FakeChannel *fake = user_data;
+
+	g_ptr_array_add(fake->posts, g_strdup_printf("%s|%s|%s|%s", agent_id,
+	                                             channel, room_id, text));
+	if (fake->fails) {
+		g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_AUTH,
+		                    "M_FORBIDDEN: not in the room");
+		return FALSE;
+	}
+	return TRUE;
+}
+
+/* The cross-talk notes recorded in @room_id. */
+static guint
+notes_in(Fixture *fixture, const gchar *room_id)
+{
+	ClawtRoom *room = clawt_room_manager_get(
+		clawt_daemon_get_rooms(fixture->daemon), room_id);
+	g_autoptr(GPtrArray) history = NULL;
+	guint found = 0;
+	guint i;
+
+	g_assert_nonnull(room);
+	history = clawt_room_get_history(room, 0);
+	for (i = 0; i < history->len; i++) {
+		if (clawt_message_get_crosstalk_rooms(
+		        g_ptr_array_index(history, i)) != NULL)
+			found++;
+	}
+	return found;
+}
+
+/* The chief, with a Matrix channel that listens in one room. */
+#define MATRIX_FLEET \
+	"  - id: chief\n    chief_of_staff: true\n" \
+	"  - id: w1\n    crosstalk_summary: \"on\"\n  - id: w2\n"
+#define MATRIX_CHANNEL \
+	"integrations:\n" \
+	"  - name: home\n    type: matrix\n    scope: selected\n" \
+	"    agents: [chief]\n" \
+	"    homeserver: https://matrix.example.invalid\n" \
+	"    user_id: \"@chief:example.invalid\"\n" \
+	"    access_token: {env: CLAWT_TEST_MATRIX_TOKEN}\n" \
+	"    rooms: [\"!ops:example.invalid\"]\n"
 
 /* Ends what has gone quiet, then posts what has waited long enough. */
 static void
@@ -850,6 +1001,148 @@ test_daemon_group_round(void)
 		g_ptr_array_index(chief, 0)), "round 1 in crew"));
 
 	fixture_teardown(&fixture);
+}
+
+/*
+ * Asked in a Matrix room, told in that room: the chief reached out to
+ * w1 while answering somebody in !ops, so the chief's summary is posted
+ * there, from its own Matrix account, and not in the operator's chat.
+ * w1, told as well, is told in the operator's chat with it -- it was not
+ * asked in !ops.
+ */
+static void
+test_daemon_matrix_source(void)
+{
+	Fixture fixture = { 0 };
+	FakeChannel fake = { g_ptr_array_new_with_free_func(g_free), FALSE };
+	g_autoptr(GPtrArray) chief = NULL;
+	g_autoptr(GPtrArray) w1 = NULL;
+	const gchar *post;
+
+	fixture_setup(&fixture, MATRIX_FLEET, MATRIX_CHANNEL);
+	clawt_daemon_crosstalk_set_channel_send(fixture.daemon, fake_channel_send,
+	                                        &fake);
+
+	g_free(ask_from(&fixture, "chief", "w1", "Is the deploy done?",
+	                "!ops:example.invalid"));
+	g_free(say(&fixture, "w1", "chief", "Yes, at 14:02.", NULL));
+	tick_past(&fixture, CLAWT_CROSSTALK_QUIET_SECONDS + 1);
+
+	g_assert_cmpuint(fake.posts->len, ==, 1);
+	post = g_ptr_array_index(fake.posts, 0);
+	g_assert_true(g_str_has_prefix(post, "chief|matrix|!ops:example.invalid|"));
+	g_assert_nonnull(strstr(post, "\"Is the deploy done?\""));
+	g_assert_nonnull(strstr(post, "answered"));
+
+	chief = summaries_for(&fixture, "chief");
+	w1 = summaries_for(&fixture, "w1");
+	g_assert_cmpuint(chief->len, ==, 0);
+	g_assert_cmpuint(w1->len, ==, 1);
+
+	fixture_teardown(&fixture);
+	g_ptr_array_unref(fake.posts);
+}
+
+/* A Matrix post that fails comes to the chat, saying where and why. */
+static void
+test_daemon_matrix_failure_falls_back(void)
+{
+	Fixture fixture = { 0 };
+	FakeChannel fake = { g_ptr_array_new_with_free_func(g_free), TRUE };
+	g_autoptr(GPtrArray) chief = NULL;
+	const gchar *body;
+
+	fixture_setup(&fixture, MATRIX_FLEET, MATRIX_CHANNEL);
+	clawt_daemon_crosstalk_set_channel_send(fixture.daemon, fake_channel_send,
+	                                        &fake);
+
+	g_free(ask_from(&fixture, "chief", "w1", "Is the deploy done?",
+	                "!ops:example.invalid"));
+	g_free(say(&fixture, "w1", "chief", "Yes.", NULL));
+	g_test_expect_message(G_LOG_DOMAIN, G_LOG_LEVEL_WARNING,
+	                      "*could not be posted in Matrix room*");
+	tick_past(&fixture, CLAWT_CROSSTALK_QUIET_SECONDS + 1);
+	g_test_assert_expected_messages();
+
+	g_assert_cmpuint(fake.posts->len, ==, 1);
+	chief = summaries_for(&fixture, "chief");
+	g_assert_cmpuint(chief->len, ==, 1);
+	body = clawt_message_get_body(g_ptr_array_index(chief, 0));
+	g_assert_nonnull(strstr(body, "\"Is the deploy done?\""));
+	g_assert_nonnull(strstr(body, "for the Matrix room !ops:example.invalid"));
+	g_assert_nonnull(strstr(body, "M_FORBIDDEN: not in the room"));
+
+	fixture_teardown(&fixture);
+	g_ptr_array_unref(fake.posts);
+}
+
+/*
+ * The chat, whatever the source: `crosstalk_summary_to: chat`; a Matrix
+ * room the channel does not listen in; a source that is a room the
+ * operator is not in.  Nothing is posted to Matrix in any of them.
+ */
+static void
+test_daemon_chat_when_not_the_source(void)
+{
+	static const gchar *const sources[] = {
+		"!ops:example.invalid",     /* with crosstalk_summary_to: chat */
+		"!other:example.invalid",   /* not one of the channel's rooms */
+		"routine:nightly",          /* a room, but not one you are in */
+	};
+	guint i;
+
+	for (i = 0; i < G_N_ELEMENTS(sources); i++) {
+		Fixture fixture = { 0 };
+		FakeChannel fake = { g_ptr_array_new_with_free_func(g_free), FALSE };
+		g_autoptr(GPtrArray) chief = NULL;
+		g_autofree gchar *extra = g_strconcat(MATRIX_CHANNEL,
+			i == 0 ? "orchestration:\n  crosstalk_summary_to: chat\n" : "",
+			NULL);
+
+		fixture_setup(&fixture, MATRIX_FLEET, extra);
+		clawt_daemon_crosstalk_set_channel_send(fixture.daemon,
+		                                        fake_channel_send, &fake);
+
+		g_free(ask_from(&fixture, "chief", "w1", "Status?", sources[i]));
+		g_free(say(&fixture, "w1", "chief", "Fine.", NULL));
+		tick_past(&fixture, CLAWT_CROSSTALK_QUIET_SECONDS + 1);
+
+		g_assert_cmpuint(fake.posts->len, ==, 0);
+		chief = summaries_for(&fixture, "chief");
+		g_assert_cmpuint(chief->len, ==, 1);
+
+		fixture_teardown(&fixture);
+		g_ptr_array_unref(fake.posts);
+	}
+}
+
+/*
+ * Asked in a group the operator is in, told in that group: the chief
+ * reached out while answering the operator there.
+ */
+static void
+test_daemon_group_source(void)
+{
+	Fixture fixture = { 0 };
+	FakeChannel fake = { g_ptr_array_new_with_free_func(g_free), FALSE };
+	g_autoptr(GPtrArray) chief = NULL;
+
+	fixture_setup(&fixture, MATRIX_FLEET,
+	              "rooms:\n  - id: ops\n    members: [user, chief]\n");
+	clawt_daemon_crosstalk_set_channel_send(fixture.daemon, fake_channel_send,
+	                                        &fake);
+
+	g_free(ask_from(&fixture, "chief", "w1", "Is the deploy done?", "ops"));
+	g_free(say(&fixture, "w1", "chief", "Yes.", NULL));
+	tick_past(&fixture, CLAWT_CROSSTALK_QUIET_SECONDS + 1);
+
+	g_assert_cmpuint(notes_in(&fixture, "ops"), ==, 1);
+	chief = summaries_for(&fixture, "chief");
+	g_assert_cmpuint(chief->len, ==, 0);
+	g_assert_cmpuint(fake.posts->len, ==, 0);
+
+	fixture_teardown(&fixture);
+	g_ptr_array_unref(fake.posts);
 }
 
 /* Two exchanges ending together are one note with two targets. */
@@ -1106,6 +1399,9 @@ main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 
+	/* The fake Matrix channel's token: resolved when the daemon starts. */
+	g_setenv("CLAWT_TEST_MATRIX_TOKEN", "not-a-real-token", TRUE);
+
 	g_test_add_func("/crosstalk/room-counts", test_room_counts);
 	g_test_add_func("/crosstalk/setting", test_the_setting);
 	g_test_add_func("/crosstalk/targets-and-labels", test_targets_and_labels);
@@ -1129,6 +1425,15 @@ main(int argc, char **argv)
 	                test_daemon_per_agent_setting);
 	g_test_add_func("/crosstalk/daemon/fleet-on", test_daemon_fleet_on);
 	g_test_add_func("/crosstalk/daemon/grok", test_daemon_grok_exchange);
+	g_test_add_func("/crosstalk/source", test_the_source_is_the_opening_request);
+	g_test_add_func("/crosstalk/destination-setting",
+	                test_the_destination_setting);
+	g_test_add_func("/crosstalk/daemon/matrix-source", test_daemon_matrix_source);
+	g_test_add_func("/crosstalk/daemon/matrix-fallback",
+	                test_daemon_matrix_failure_falls_back);
+	g_test_add_func("/crosstalk/daemon/chat-when-not-the-source",
+	                test_daemon_chat_when_not_the_source);
+	g_test_add_func("/crosstalk/daemon/group-source", test_daemon_group_source);
 	g_test_add_func("/crosstalk/daemon/group-round", test_daemon_group_round);
 	g_test_add_func("/crosstalk/daemon/coalesce",
 	                test_daemon_coalesces_a_burst);

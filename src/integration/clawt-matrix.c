@@ -823,3 +823,166 @@ clawt_matrix_rooms_finish(GAsyncResult *result, GError **error)
 
     return g_task_propagate_pointer(G_TASK(result), error);
 }
+
+/* ── Sending ─────────────────────────────────────────────────────── */
+
+typedef struct {
+    GTask       *task;     /* owned until returned */
+    SoupMessage *message;  /* owned */
+} Sending;
+
+static void
+sending_free(Sending *sending)
+{
+    g_clear_object(&sending->message);
+    g_free(sending);
+}
+
+static void
+on_sent(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    Sending *sending = user_data;
+    GTask *task = sending->task;
+    g_autoptr(GBytes) body = NULL;
+    g_autoptr(GError) error = NULL;
+    guint status;
+
+    body = clawt_http_send_and_read_finish(SOUP_SESSION(source), result,
+                                           &error);
+
+    if (body == NULL) {
+        g_task_return_error(task, g_steal_pointer(&error));
+        g_object_unref(task);
+        return;
+    }
+
+    status = soup_message_get_status(sending->message);
+
+    if (!SOUP_STATUS_IS_SUCCESSFUL(status)) {
+        gsize size = 0;
+        const gchar *data = g_bytes_get_data(body, &size);
+        g_autofree gchar *text = g_strndup(data != NULL ? data : "", size);
+
+        set_matrix_error(&error, status, text);
+        g_task_return_error(task, g_steal_pointer(&error));
+        g_object_unref(task);
+        return;
+    }
+
+    g_task_return_boolean(task, TRUE);
+    g_object_unref(task);
+}
+
+void
+clawt_matrix_send_text_async(const gchar         *homeserver,
+                             const gchar         *access_token,
+                             const gchar         *room_id,
+                             const gchar         *text,
+                             const gchar         *txn_seed,
+                             GCancellable        *cancellable,
+                             GAsyncReadyCallback  callback,
+                             gpointer             user_data)
+{
+    GTask *task = g_task_new(NULL, cancellable, callback, user_data);
+    g_autofree gchar *base = NULL;
+    g_autofree gchar *escaped = NULL;
+    g_autofree gchar *digest = NULL;
+    g_autofree gchar *url = NULL;
+    g_autofree gchar *payload = NULL;
+    g_autofree gchar *bearer = NULL;
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autoptr(JsonGenerator) generator = json_generator_new();
+    g_autoptr(JsonNode) root = NULL;
+    g_autoptr(GBytes) bytes = NULL;
+    Sending *sending;
+    SoupMessage *message;
+
+    g_task_set_source_tag(task, clawt_matrix_send_text_async);
+
+    /* 1. What it needs: a server, a token, a room, something to say. */
+    base = clawt_matrix_base_url(homeserver);
+
+    if (base == NULL) {
+        g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                                "'%s' is not a homeserver address",
+                                homeserver != NULL ? homeserver : "");
+        g_object_unref(task);
+        return;
+    }
+
+    if (access_token == NULL || *access_token == '\0') {
+        g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_AUTH,
+                                "there is no access token to post with");
+        g_object_unref(task);
+        return;
+    }
+
+    if (room_id == NULL || *room_id != '!' || text == NULL) {
+        g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                                "'%s' is not a Matrix room id",
+                                room_id != NULL ? room_id : "");
+        g_object_unref(task);
+        return;
+    }
+
+    /*
+     * 2. The address.  The transaction id comes from the caller's seed,
+     *    not from chance: a retry of the same post is then the same
+     *    transaction, and the homeserver keeps one copy.
+     */
+    escaped = g_uri_escape_string(room_id, NULL, FALSE);
+    digest = g_compute_checksum_for_string(G_CHECKSUM_SHA256,
+                                           txn_seed != NULL ? txn_seed : text,
+                                           -1);
+    url = g_strdup_printf(
+        "%s/_matrix/client/v3/rooms/%s/send/m.room.message/clawt%.16s",
+        base, escaped, digest);
+
+    message = clawt_http_message_new("PUT", url,
+                                     CLAWT_HTTP_CARRIES_CREDENTIALS);
+
+    if (message == NULL) {
+        g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                                "that room id does not make a usable URL");
+        g_object_unref(task);
+        return;
+    }
+
+    /* 3. A plain text message, with the token in a header wiped after. */
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "msgtype");
+    json_builder_add_string_value(builder, "m.notice");
+    json_builder_set_member_name(builder, "body");
+    json_builder_add_string_value(builder, text);
+    json_builder_end_object(builder);
+    root = json_builder_get_root(builder);
+    json_generator_set_root(generator, root);
+    payload = json_generator_to_data(generator, NULL);
+
+    bearer = g_strconcat("Bearer ", access_token, NULL);
+    soup_message_headers_replace(soup_message_get_request_headers(message),
+                                 "Authorization", bearer);
+    memset(bearer, 0, strlen(bearer));
+
+    bytes = g_bytes_new(payload, strlen(payload));
+    soup_message_set_request_body_from_bytes(message, "application/json",
+                                             bytes);
+
+    sending = g_new0(Sending, 1);
+    sending->task = task;
+    sending->message = message;
+    g_task_set_task_data(task, sending, (GDestroyNotify)sending_free);
+
+    soup_session_send_and_read_async(matrix_session(), message,
+                                     G_PRIORITY_DEFAULT, cancellable,
+                                     on_sent, sending);
+}
+
+gboolean
+clawt_matrix_send_text_finish(GAsyncResult  *result,
+                              GError       **error)
+{
+    g_return_val_if_fail(g_task_is_valid(result, NULL), FALSE);
+
+    return g_task_propagate_boolean(G_TASK(result), error);
+}

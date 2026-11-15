@@ -794,6 +794,8 @@ The daemon's summary of an agent-to-agent exchange that ended -- a Grok bot reac
 
 The setting is in each client's agent settings as *Tell me about agent-to-agent conversations* (=clawt_crosstalk_summary_title()=), with the three choices walked from =clawt_crosstalk_summary_label()= in order and the current one explained under it in =clawt_crosstalk_summary_explanation()=: GTK a combo row in the agent's settings group, the web client a select in the agent's form, libregnum the form field with the explanation as its hint.  The value shown is the agent's resolved one (the agent member ~crosstalk_summary~), and GTK writes it back only when you changed it, so an agent left to follow the fleet keeps following it.  =make parity= checks the badge, the action and the explanation as three affordance rows.
 
+Beside it, *Where those summaries go* (=clawt_crosstalk_summary_to_title()=, since 0.33.0): back where the request came from -- a Matrix room, a group -- or always your chat (=clawt_crosstalk_summary_to_label()=, explained by =clawt_crosstalk_summary_to_explanation()=), from the agent member ~crosstalk_summary_to~, drawn and written back exactly as the first.  A fourth parity row checks the explanation.
+
 *** Consultations, a task's own room, and who a decision went to
 :PROPERTIES:
 :CUSTOM_ID: delegation-marks

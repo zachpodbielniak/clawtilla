@@ -1892,9 +1892,44 @@ An agent-to-agent conversation ended: chief and the Grok bot scout
 
 Exchanges that end within five seconds of each other for one conversation (=CLAWT_CROSSTALK_COALESCE_SECONDS=) are posted as one note -- "3 agent-to-agent conversations ended" -- with a numbered section each and a "View 1 in Flow", "View 2 in Flow" ... per section, rather than as a burst of notes.
 
+*** Where it goes: back to where the request came from
+
+An agent that reaches out to another agent or a Grok bot is usually doing it for somebody -- you in your chat, a person in a Matrix room, the people in a group.  The summary goes back to that place (~orchestration.crosstalk_summary_to~, per agent =crosstalk_summary_to=, since 0.33.0):
+
+| Value    | Where the note goes |
+|----------+---------------------|
+| =source= | the default: where the request came from, as below |
+| =chat=   | always your chat with the agent |
+
+#+begin_src yaml
+orchestration:
+  crosstalk_summary_to: source   # source | chat, the fleet default
+
+agents:
+  - id: chief
+    chief_of_staff: true
+    crosstalk_summary_to: chat   # this one always tells you in the chat
+#+end_src
+
+/Where the request came from/ is the request context of the exchange's opening message: the conversation whose turn the agent was in when it sent it (=clawt_message_get_request_room()=, which ~deliver_for_tools()~ stamps on everything an agent sends from inside a turn; ~clawt_crosstalk_note_source()~ reads it off the first message only, and only from the agent that sent it -- an answer echoes the asker's context, which is not where the answer came from).  Then:
+
+| The request came from | The note goes to |
+|-----------------------+------------------|
+| your chat with the agent | your chat (as before) |
+| a room on the agent's Matrix channel -- a =!room:server= id that its =matrix= integration listens in (an empty =rooms= is every room it has joined) | that Matrix room, posted from the agent's own Matrix account as an ~m.notice~ |
+| a clawtilla room you and the agent are both in -- a group | that room, recorded exactly as in your chat |
+| anywhere else: a routine's room, a task's, a room you are not in | your chat |
+| nowhere known: an exchange somebody else began, or one picked up after a restart | your chat |
+
+Only the agent whose turn began the exchange posts at the source.  Another agent in it that is told (=crosstalk_summary=) is told in your chat with it -- it was not asked in that Matrix room.  Notes for different destinations are separate notes: a burst that came from Matrix and one that came from your chat are not coalesced into one.
+
+*Matrix.*  The note is posted with ~clawt_matrix_send_text_async()~, using the homeserver and =access_token= of the agent's =matrix= integration, resolved when the note is posted.  It is an ~m.notice~ -- the message type bots use for reports, which clients draw apart and other bots do not answer -- and its transaction id is made from the agent, the room and the exchanges' first messages, so a retried post is one message.  A post that fails -- the token does not resolve, the account has left the room, the homeserver refuses -- is not lost: the note comes to your chat with a line naming the Matrix room and the reason, and the daemon log says the same.  The Flow links of a note are clawtilla's; in Matrix the note is text.
+
+*Why a request context and not the libreclaw channel.*  A turn on a Matrix message runs inside the agent's libreclaw on its Matrix channel, and clawtilla sees none of it -- no typing, no steps, no reply.  The one thing that crosses is the room: libreclaw gives each turn's tools =CLAWTILLA_ROOM_ID=, and every clawtilla tool call made in the turn carries it, so the message the agent sends to another agent is stamped with the Matrix room it was answering in.  That is what makes this possible, and also its limit: the request context is held in memory (a room's history does not keep it), so an exchange the daemon picks up again after a restart no longer knows where it came from, and its note comes to your chat.
+
 *** The note is the daemon's, and goes nowhere
 
-The summary is recorded with ~clawt_mailbox_router_record()~ into your direct room with the agent, from =clawtilla=, with =invites_reply= false and depth 0.  Recording puts it in the room, the recall index and one ~message~ event, and queues it into no mailbox, so:
+The summary is recorded with ~clawt_mailbox_router_record()~ into your direct room with the agent (or the group it came from, above), from =clawtilla=, with =invites_reply= false and depth 0.  Recording puts it in the room, the recall index and one ~message~ event, and queues it into no mailbox, so:
 
 - it never reaches the agent: no delivery, no turn, nothing in its session;
 - it is not a hop and passes no loop guard, so it cannot trip ~max_hops~ or a cycle check;

@@ -300,6 +300,9 @@ declare -A AFFORDANCES=(
     ["cross-talk summary badge"]="clawt_crosstalk_mark_label|clawt_crosstalk_mark_label|clawt_crosstalk_mark_label"
     ["cross-talk summary opens Flow"]="clawt_crosstalk_flow_label|clawt_crosstalk_flow_label|clawt_crosstalk_flow_label"
     ["tell me about agent-to-agent conversations"]="clawt_crosstalk_summary_explanation|clawt_crosstalk_summary_explanation|clawt_crosstalk_summary_explanation"
+    # Where those summaries go (crosstalk_summary_to): back to the Matrix
+    # room or group the request came from, or always the chat.
+    ["where cross-talk summaries go"]="clawt_crosstalk_summary_to_explanation|clawt_crosstalk_summary_to_explanation|clawt_crosstalk_summary_to_explanation"
     #
     # A generic ACP agent (model.provider: acp): the command that is the
     # agent, named and explained in libclawt's words in all three.

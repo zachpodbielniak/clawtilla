@@ -77,6 +77,76 @@ G_BEGIN_DECLS
 /* ── The setting ─────────────────────────────────────────────────── */
 
 /**
+ * clawt_crosstalk_summary_to_count:
+ *
+ * How many values #ClawtCrosstalkSummaryTo has, for a client walking
+ * them in order -- the position is the value.
+ *
+ * Returns: the count
+ *
+ * Since: 0.33.0
+ */
+guint clawt_crosstalk_summary_to_count(void);
+
+/**
+ * clawt_crosstalk_summary_to_nick:
+ * @setting: a #ClawtCrosstalkSummaryTo
+ *
+ * Returns: (transfer none): what is written in clawtilla.yaml for it
+ *
+ * Since: 0.33.0
+ */
+const gchar *clawt_crosstalk_summary_to_nick(ClawtCrosstalkSummaryTo setting);
+
+/**
+ * clawt_crosstalk_summary_to_from_nick:
+ * @nick: (nullable): a stored value
+ *
+ * Reads a stored value.  An empty or unknown one is
+ * %CLAWT_CROSSTALK_SUMMARY_TO_SOURCE, the schema's default.
+ *
+ * Returns: the setting
+ *
+ * Since: 0.33.0
+ */
+ClawtCrosstalkSummaryTo clawt_crosstalk_summary_to_from_nick(const gchar *nick);
+
+/**
+ * clawt_crosstalk_summary_to_title:
+ *
+ * The control's title in every client's agent settings.
+ *
+ * Returns: (transfer none): "Where those summaries go"
+ *
+ * Since: 0.33.0
+ */
+const gchar *clawt_crosstalk_summary_to_title(void);
+
+/**
+ * clawt_crosstalk_summary_to_label:
+ * @setting: a #ClawtCrosstalkSummaryTo
+ *
+ * How a client names one choice.
+ *
+ * Returns: (transfer none): the label
+ *
+ * Since: 0.33.0
+ */
+const gchar *clawt_crosstalk_summary_to_label(ClawtCrosstalkSummaryTo setting);
+
+/**
+ * clawt_crosstalk_summary_to_explanation:
+ * @setting: a #ClawtCrosstalkSummaryTo
+ *
+ * What one choice does, in the words every client shows under it.
+ *
+ * Returns: (transfer none): the explanation
+ *
+ * Since: 0.33.0
+ */
+const gchar *clawt_crosstalk_summary_to_explanation(ClawtCrosstalkSummaryTo setting);
+
+/**
  * clawt_crosstalk_summary_count:
  *
  * How many values #ClawtCrosstalkSummary has, for a client walking them
@@ -306,6 +376,34 @@ void clawt_crosstalk_exchange_unref(ClawtCrosstalkExchange *self);
  */
 const gchar *clawt_crosstalk_exchange_get_room_id(ClawtCrosstalkExchange *self);
 const gchar *clawt_crosstalk_exchange_get_initiator(ClawtCrosstalkExchange *self);
+
+/**
+ * clawt_crosstalk_exchange_get_source_room:
+ * @self: a #ClawtCrosstalkExchange
+ *
+ * The conversation whose turn began the exchange, when that is not the
+ * exchange's own room: the agent that opened it was answering somebody
+ * there (a Matrix room, a group) -- the request context
+ * (clawt_message_get_request_room()) of the exchange's first message.
+ *
+ * Returns: (transfer none) (nullable): the room, or %NULL
+ *
+ * Since: 0.33.0
+ */
+const gchar *clawt_crosstalk_exchange_get_source_room(ClawtCrosstalkExchange *self);
+
+/**
+ * clawt_crosstalk_exchange_get_source_agent:
+ * @self: a #ClawtCrosstalkExchange
+ *
+ * Whose turn in clawt_crosstalk_exchange_get_source_room() began the
+ * exchange -- the agent the summary of it goes back for.
+ *
+ * Returns: (transfer none) (nullable): the agent, or %NULL
+ *
+ * Since: 0.33.0
+ */
+const gchar *clawt_crosstalk_exchange_get_source_agent(ClawtCrosstalkExchange *self);
 const gchar *clawt_crosstalk_exchange_get_ask(ClawtCrosstalkExchange *self);
 const gchar *clawt_crosstalk_exchange_get_first_message_id(ClawtCrosstalkExchange *self);
 const gchar *clawt_crosstalk_exchange_get_last_message_id(ClawtCrosstalkExchange *self);
@@ -422,6 +520,28 @@ gboolean clawt_crosstalk_note_message(ClawtCrosstalk     *self,
                                       const gchar        *task_id,
                                       guint               round,
                                       gint64              now);
+
+/**
+ * clawt_crosstalk_note_source:
+ * @self: a #ClawtCrosstalk
+ * @room_id: (nullable): the exchange's room
+ * @message_id: (nullable): the message the request context came on
+ * @agent_id: (nullable): who sent it
+ * @source_room: (nullable): the room that sender's turn was in
+ *
+ * Where the exchange open in @room_id came from.  Taken only from the
+ * message that opened it, and only when @agent_id opened it and
+ * @source_room is another room: an answer echoes the asker's context,
+ * which is not where the answer came from.  Call it after
+ * clawt_crosstalk_note_message() for the same message.
+ *
+ * Since: 0.33.0
+ */
+void clawt_crosstalk_note_source(ClawtCrosstalk *self,
+                                 const gchar    *room_id,
+                                 const gchar    *message_id,
+                                 const gchar    *agent_id,
+                                 const gchar    *source_room);
 
 /**
  * clawt_crosstalk_note_activity:
