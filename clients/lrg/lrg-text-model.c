@@ -41,8 +41,15 @@ clawt_lrg_markdown_escape(const gchar *text)
 
     for (p = text; *p != '\0'; p++) {
         if (*p == '\n') {
-            /* a backslash before the newline is a hard line break */
-            g_string_append(out, "\\\n");
+            /*
+             * Each line its own paragraph, and a run of blank lines one
+             * break.  This wrote CommonMark's hard break, a backslash
+             * before the newline -- which LrgMarkdownLabel does not
+             * have: it drew the backslash and joined the lines, so a
+             * decision's question read "configuration.\ \ Its reason".
+             */
+            if (out->len > 0 && !g_str_has_suffix(out->str, "\n\n"))
+                g_string_append(out, "\n\n");
             continue;
         }
 

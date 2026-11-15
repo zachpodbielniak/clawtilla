@@ -1554,7 +1554,7 @@ clawt_gtk_inspector_sync_failover(ClawtWindow *self, JsonObject *agent);
  * The badge for an agent the listing says is on a fallback, or NULL.
  */
 GtkWidget *
-clawt_gtk_failover_badge(JsonObject *agent);
+clawt_gtk_failover_badge(JsonObject *agent, gboolean brief);
 
 const gchar *
 clawt_gtk_editor_command(void);

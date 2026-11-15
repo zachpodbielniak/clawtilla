@@ -863,6 +863,14 @@ as ~none~, ~mounts.mode~ as ~ro~.  The agent-level exceptions were the
 two with a shadow check of their own, ~computer.type~ and
 ~computer.host.confine~.
 
+An agent's own enums are checked the same way, and the warning names
+the agent: ~agents 'alpha': 'always' is not a value of 'steer'; using
+the default 'delegator'. It is one of: never, delegator, peers and all~.
+They used to load in silence -- the pass that checks the fleet's keys
+skips agent blocks -- so ~steer: always~ and ~computer.start: lazy~ ran
+as the defaults, and the agent's settings page showed the default as
+though somebody had chosen it.
+
 *An integer that is not a number still reads as zero*, and that one is
 not reported.  The generated reference in
 [[file:configuration-options.org][configuration-options.org]] lists the accepted values for every enum, and

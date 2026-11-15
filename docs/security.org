@@ -386,7 +386,10 @@ credentials:
   access token pasted on its own has no prefix, no key word and no header
   to recognise, and will not be caught.  It is a net over the places a
   credential is written by accident, never a reason to let one reach a
-  sink
+  sink.  A well-known prefix counts only where a token can start --
+  not inside a word: "sk-" and twenty characters is also the tail of
+  every task id (=task-01m7…=), and before that rule each daemon notice
+  naming a task reached its agent as "Task ta[REDACTED] failed"
 - a credential the integration's own type table declares --- a Matrix
   ~access_token~, an email ~password~ --- is *required* at the point the
   credential file would be written, whether the integration is an inline

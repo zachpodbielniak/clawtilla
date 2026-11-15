@@ -196,8 +196,8 @@ gchar *clawt_lrg_typing_activity(gboolean typing_now, const gchar *peer);
  * @can_interrupt: whether it offers Stop-this-turn
  * @standing: chief, lead or neither
  * @unread: messages in @dm_room nobody has read
- * @fallback: (nullable): "On fallback: codex-cli gpt-5.5" while it runs on
- *   one of its model.fallbacks, from clawt_failover_badge()
+ * @fallback: (nullable): "On fallback" while it runs on one of its
+ *   model.fallbacks, from clawt_failover_sidebar_badge()
  * @fallback_message: (nullable): the sentence saying why and until when
  *
  * One agent row, decided.
@@ -331,7 +331,7 @@ gchar *clawt_lrg_team_tally_text(guint running, guint total, guint busy);
 /* A room's name, or its members when nobody named it. */
 gchar *clawt_lrg_room_label(JsonObject *room);
 
-/* "3 members · answers when named" or "… · everyone answers". */
+/* clawt_room_sidebar_subtitle() for a room.list entry. */
 gchar *clawt_lrg_room_subtitle(JsonObject *room);
 
 /* "a:<id>" for an agent row, "r:<id>" for a room, NULL for anything else. */

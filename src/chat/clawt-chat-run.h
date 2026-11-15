@@ -121,6 +121,26 @@ gchar *clawt_chat_time_label(GDateTime *when);
 const gchar *clawt_chat_conversation_peer(const gchar * const *members,
                                           const gchar         *agent_id);
 
+/**
+ * clawt_chat_reply_ends_wait:
+ * @from: (nullable): who the message that arrived is from
+ * @agent: (nullable): the agent whose conversation is on screen, or
+ *   %NULL when a room is
+ *
+ * Whether a message arriving in the conversation on screen takes down
+ * "delivered -- waiting for a reply", which the composer raises when
+ * something is sent.  In an agent's conversation that is the agent's own
+ * answer.  In a room there is no one agent to wait for -- the clients
+ * compared the sender with a selected agent that a room leaves unset, so
+ * the line stayed under every answer for good -- and any member's answer
+ * ends it.  The operator's own messages and the daemon's notices never
+ * do.
+ *
+ * Returns: %TRUE when the waiting line should go
+ */
+gboolean clawt_chat_reply_ends_wait(const gchar *from,
+                                    const gchar *agent);
+
 G_END_DECLS
 
 #endif /* CLAWT_CHAT_RUN_H */

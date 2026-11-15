@@ -791,7 +791,14 @@ critical fired.
   `LrgMarkdownLabel` fed `clawt_lrg_markdown_escape()`d text, so a
   person's underscores are not italics and nothing they wrote becomes a
   link.  Model output goes through `clawt_lrg_markdown()`, whose links
-  open http, https and file only.
+  open http, https and file only.  LrgMarkdownLabel is a subset with no
+  hard line break: the escaper's CommonMark `\` + newline was drawn as a
+  backslash and the lines joined, so it makes each line a paragraph.
+- **`clawt_lrg_card()` and `clawt_lrg_take()` consume the child's
+  reference.**  Keep a pointer to a box you put in a card, but do not
+  unref it as well -- the inline decision card did, every room with a
+  question in it logged criticals from a freed container, and the
+  screenshot run segfaulted once the memory was reused.
 - **GLFW prefers Wayland whenever it finds a compositor.**  Unsetting
   `WAYLAND_DISPLAY` is not enough to land on Xvfb: libwayland then tries
   `wayland-0` in `XDG_RUNTIME_DIR` and finds the desktop's, so a

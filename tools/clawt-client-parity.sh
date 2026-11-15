@@ -285,6 +285,9 @@ declare -A AFFORDANCES=(
     #
     ["an acp agent's command"]="clawt_model_catalog_acp_command_hint|clawt_model_catalog_acp_command_hint|clawt_model_catalog_acp_command_hint"
     ["rebuild requests say what is lost"]="\"loses\"|\"loses\"|\"loses\""
+    # ...and say it once: the question is drawn without the loss
+    # paragraph each client draws on its own.
+    ["rebuild question without its loss"]="clawt_decision_question_text|clawt_decision_question_text|clawt_decision_question_text"
     ["ack-check model choices"]="clawt_ack_check_model_nth_value|clawt_ack_check_model_nth_value|clawt_ack_check_model_nth_value"
     #
     # Rounds in a group room and the budget per task tree: a divider
@@ -356,7 +359,10 @@ declare -A AFFORDANCES=(
     #
     ["rooms in the sidebar"]="room_row|room_row|room_row"
     ["making a room"]="clawt_gtk_on_new_room|on_new_room_submit|on_room_response"
-    ["a room says how it delivers"]="answers when named|answers when named|answers when named"
+    # The wording is libclawt's (clawt_room_sidebar_subtitle()), so the
+    # marker is the call: a client spelling its own line had "1 members"
+    # and promised answers in a "Problems to look at" room.
+    ["a room says how it delivers"]="clawt_room_sidebar_subtitle|clawt_room_sidebar_subtitle|clawt_room_sidebar_subtitle"
     #
     # Putting a room in a team's group.
     #

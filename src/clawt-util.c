@@ -741,7 +741,17 @@ clawt_redact_secrets(const gchar *text)
     }
 
     for (i = 0; standalone[i] != NULL; i++) {
-        g_autoptr(GRegex) regex = g_regex_new(standalone[i], 0, 0, NULL);
+        /*
+         * Only where a token can start: not in the middle of a word.
+         * Without the look-behind "sk-" plus twenty characters is found
+         * inside every task id -- "ta" + "sk-01m7eccee891gjaattmk" -- so
+         * each "Task task-... failed" notice reached the agent as "Task
+         * ta[REDACTED] failed", and the id it needed for
+         * clawtilla_task_retry was the one thing it could not read.
+         */
+        g_autofree gchar *anchored =
+            g_strconcat("(?<![A-Za-z0-9])", standalone[i], NULL);
+        g_autoptr(GRegex) regex = g_regex_new(anchored, 0, 0, NULL);
         gchar *replaced;
 
         if (regex == NULL)

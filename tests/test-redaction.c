@@ -162,6 +162,34 @@ test_a_bare_opaque_token_is_a_known_gap(void)
     g_assert_null(strstr(out, "REDACTED"));
 }
 
+/*
+ * A token's shape inside an ordinary word is not a token.
+ *
+ * Task ids are "task-" and twenty letters and digits, which ends in
+ * exactly the shape of an OpenAI key ("sk-" and twenty) -- so every
+ * daemon notice naming a task reached its agent as "ta[REDACTED]".
+ */
+static void
+test_a_task_id_is_not_a_key(void)
+{
+    g_autofree gchar *out = clawt_redact_secrets(
+        "[clawtilla] Task task-01m7eccee891gjaattmk failed. Retry it "
+        "with task_id task-01m7eccee891gjaattmk.");
+    g_autofree gchar *risk = clawt_redact_secrets(
+        "a risk-0123456789abcdefghij0123 row and a sinkghp_"
+        "0123456789abcdefghij0123 label");
+
+    g_assert_null(strstr(out, "REDACTED"));
+    g_assert_nonnull(strstr(out, "task-01m7eccee891gjaattmk failed"));
+    g_assert_null(strstr(risk, "REDACTED"));
+
+    /* and the real thing on its own, or after punctuation, still goes */
+    assert_redacted("key sk-0123456789abcdefghijABCD here",
+                    "sk-0123456789abcdefghijABCD");
+    assert_redacted("(ghp_0123456789abcdefghijABCD)",
+                    "ghp_0123456789abcdefghijABCD");
+}
+
 static void
 test_null_survives(void)
 {
@@ -186,6 +214,8 @@ main(int argc, char *argv[])
                     test_ordinary_text_is_untouched);
     g_test_add_func("/redaction/opaque-token-gap",
                     test_a_bare_opaque_token_is_a_known_gap);
+    g_test_add_func("/redaction/task-id-is-not-a-key",
+                    test_a_task_id_is_not_a_key);
     g_test_add_func("/redaction/null", test_null_survives);
 
     return g_test_run();

@@ -163,6 +163,32 @@ gchar *clawt_decision_default_text(ClawtDecision *self, GTimeZone *tz);
 gchar *clawt_decision_refusal_text(ClawtDecision *self);
 
 /**
+ * CLAWT_DECISION_LOSS_MARKER:
+ *
+ * Where a rebuild request's question says what a rebuild destroys.  The
+ * daemon writes the loss after it, and hands it to clients again on its
+ * own as the decision's `loses` member.
+ */
+#define CLAWT_DECISION_LOSS_MARKER "\n\nWhat a rebuild destroys: "
+
+/**
+ * clawt_decision_question_text:
+ * @question: (nullable): a decision's `question`
+ * @loses: (nullable): its `loses` member, when it has one
+ *
+ * The question to draw when the client draws what is lost on its own.
+ * A rebuild request's question ends with what a rebuild destroys, and
+ * every client also draws `loses` as a warning beside the options -- so
+ * drawing the whole question said the same paragraph twice, the second
+ * time in the card's heading.  With @loses %NULL or empty, or a question
+ * that does not carry the marker, the question is returned whole.
+ *
+ * Returns: (transfer full): the question, without the loss paragraph
+ */
+gchar *clawt_decision_question_text(const gchar *question,
+                                    const gchar *loses);
+
+/**
  * clawt_decision_precedes:
  * @self: a #ClawtDecision
  * @message_ts: a #ClawtMessage timestamp, in seconds

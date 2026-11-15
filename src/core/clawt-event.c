@@ -105,6 +105,17 @@ clawt_event_get_timestamp(ClawtEvent *self)
     return self->timestamp;
 }
 
+gint64
+clawt_event_happened_at(ClawtEvent *self, gint64 now)
+{
+    g_return_val_if_fail(self != NULL, now);
+
+    if (self->timestamp <= 0 || self->timestamp > now)
+        return now;
+
+    return self->timestamp;
+}
+
 void
 clawt_event_set_timestamp(ClawtEvent *self, gint64 timestamp)
 {

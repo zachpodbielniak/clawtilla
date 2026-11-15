@@ -702,10 +702,11 @@ failover_of(JsonObject *agent)
 }
 
 GtkWidget *
-clawt_gtk_failover_badge(JsonObject *agent)
+clawt_gtk_failover_badge(JsonObject *agent, gboolean brief)
 {
     JsonObject *failover = failover_of(agent);
-    g_autofree gchar *text = clawt_failover_badge(failover);
+    g_autofree gchar *text = brief ? clawt_failover_sidebar_badge(failover)
+                                   : clawt_failover_badge(failover);
     GtkWidget *badge;
 
     if (text == NULL)

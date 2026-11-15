@@ -558,9 +558,17 @@ refresh_decisions_once(ClawtWindow *self)
          * not derive from AdwActionRow, so set_subtitle would be a
          * runtime assertion -- the title carries the default instead.
          */
-        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
-                                      clawt_json_string(decision,
-                                                        "question", ""));
+        /*
+         * Without the loss paragraph when the row draws it on its own:
+         * the title used to carry it and the warning row said it again.
+         */
+        {
+            g_autofree gchar *asked = clawt_decision_question_text(
+                clawt_json_string(decision, "question", ""),
+                is_rebuild ? loses : NULL);
+
+            adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), asked);
+        }
 
         if (fallback != NULL) {
             g_autofree gchar *going = (reason != NULL && *reason != '\0')

@@ -1996,6 +1996,7 @@ append_message_chips(ClawtWindow *self, GtkWidget *into, const gchar *task,
         gtk_widget_add_css_class(button, "flat");
         gtk_widget_add_css_class(button, "caption");
         gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
+        gtk_widget_set_margin_start(button, 8);
         gtk_widget_set_tooltip_text(button, task);
         g_signal_connect(button, "clicked", G_CALLBACK(clawt_gtk_on_flow_task_clicked),
                          self);
@@ -2013,6 +2014,11 @@ append_message_chips(ClawtWindow *self, GtkWidget *into, const gchar *task,
 
         gtk_widget_add_css_class(chip, "caption");
         gtk_widget_add_css_class(chip, "dim-label");
+        /*
+         * Its own gap: an agent's header box has no spacing, so the
+         * chip ran into the time before it -- "20:22hop 2".
+         */
+        gtk_widget_set_margin_start(chip, 8);
         gtk_widget_set_tooltip_text(
             chip,
             "How far this is from the request that started it. "

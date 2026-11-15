@@ -3618,8 +3618,21 @@ warn_block_keys(ClawtConfig *self,
         gboolean scalar = (entry->type == CLAWT_SCHEMA_STRING) ||
                           (entry->type == CLAWT_SCHEMA_PATH) ||
                           (entry->type == CLAWT_SCHEMA_SECRET);
+        /*
+         * An agent's enum, checked as warn_unknown_keys() checks the
+         * fleet's.  That pass skips agent blocks, so `steer: always` and
+         * `computer.start: lazy` loaded in silence and ran as the
+         * default -- the agent's settings page then showed the default
+         * as though somebody had chosen it.  Agents only: a trigger's
+         * mode already says so where it is parsed.  And not the two an
+         * agent already refuses with a shadow and the reason
+         * (computer.type, computer.host.confine): the agent says it.
+         */
+        gboolean agent_enum = entry->type == CLAWT_SCHEMA_ENUM &&
+                              entry->enum_type != NULL &&
+                              g_strcmp0(section, "agents") == 0;
 
-        if (!inert && !scalar)
+        if (!inert && !scalar && !agent_enum)
             continue;
 
         if (prefix == NULL) {
@@ -3656,6 +3669,48 @@ warn_block_keys(ClawtConfig *self,
                 : g_strdup_printf("'%s' is set, and nothing in this build "
                                   "reads it; the value is accepted and has "
                                   "no effect", entry->key));
+            continue;
+        }
+
+        if (agent_enum && (g_strcmp0(path, "computer.type") == 0 ||
+                           g_strcmp0(path, "computer.host.confine") == 0))
+            continue;
+
+        if (agent_enum) {
+            const gchar *written =
+                (yaml_node_get_node_type(node) == YAML_NODE_SCALAR)
+                ? yaml_node_get_string(node) : NULL;
+            gint parsed = 0;
+
+            if (written != NULL &&
+                !clawt_enum_from_nick(entry->enum_type(), written, &parsed)) {
+                g_autofree gchar *allowed =
+                    clawt_enum_nick_list(entry->enum_type());
+                gchar *said = g_strdup_printf(
+                    "%s: '%s' is not a value of '%s'; using the default "
+                    "'%s'. It is one of: %s",
+                    (where != NULL) ? where : "an agent", written, path,
+                    (entry->default_value != NULL) ? entry->default_value
+                                                   : "",
+                    allowed);
+                guint w;
+
+                /*
+                 * Once: a fleet default and the agent's own key can
+                 * spell the same path inside an agent.
+                 */
+                for (w = 0; w < self->warnings->len; w++) {
+                    if (g_strcmp0(g_ptr_array_index(self->warnings, w),
+                                  said) == 0) {
+                        g_clear_pointer(&said, g_free);
+                        break;
+                    }
+                }
+
+                if (said != NULL)
+                    g_ptr_array_add(self->warnings, said);
+            }
+
             continue;
         }
 

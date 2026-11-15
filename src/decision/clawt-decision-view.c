@@ -389,6 +389,31 @@ clawt_decision_refusal_text(
 		agent != NULL ? agent : "the agent");
 }
 
+gchar *
+clawt_decision_question_text(
+	const gchar *question,
+	const gchar *loses
+){
+	const gchar *at;
+
+	if (question == NULL)
+		return g_strdup("");
+
+	if (loses == NULL || *loses == '\0')
+		return g_strdup(question);
+
+	/*
+	 * The last marker, as the daemon reads `loses` back: an agent's
+	 * reason is quoted above it and may contain the same words.
+	 */
+	at = g_strrstr(question, CLAWT_DECISION_LOSS_MARKER);
+
+	if (at == NULL)
+		return g_strdup(question);
+
+	return g_strndup(question, (gsize)(at - question));
+}
+
 gboolean
 clawt_decision_precedes(
 	ClawtDecision *self,

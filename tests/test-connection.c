@@ -1910,11 +1910,72 @@ test_subscribe_async_returns_before_it_has_subscribed(void)
 }
 
 
+/*
+ * Subscribe, then connect asynchronously: the subscription goes out.
+ *
+ * clawtilla-lrg starts exactly this way -- it records the intent and then
+ * calls clawt_client_connect_async() -- and only the reconnect path sent
+ * a remembered subscription.  So the window connected, drew what it
+ * fetched, and heard no event for the rest of its life unless the daemon
+ * restarted under it.
+ */
+static void
+on_async_connected(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    gboolean *done = user_data;
+
+    g_assert_true(clawt_client_connect_finish(CLAWT_CLIENT(source), result,
+                                              NULL));
+    *done = TRUE;
+}
+
+static gboolean
+flag_is_set(gpointer data)
+{
+    return *(gboolean *)data;
+}
+
+static gboolean
+fake_has_subscriber(gpointer data)
+{
+    return g_atomic_int_get(&((FakeDaemon *)data)->subscribes) >= 1;
+}
+
+static void
+test_subscribe_then_async_connect_subscribes(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-subcon-XXXXXX", NULL);
+    g_autofree gchar *path = g_build_filename(dir, "fake.sock", NULL);
+    g_autoptr(GMainContext) context = g_main_context_new();
+    g_autoptr(ClawtClient) client = NULL;
+    FakeDaemon *fake = fake_daemon_start_at(path, TRUE);
+    gboolean connected = FALSE;
+
+    client = clawt_client_new(path);
+
+    g_main_context_push_thread_default(context);
+
+    /* before any connection: this request fails, and is remembered */
+    clawt_client_subscribe_async(client, 0, NULL, NULL, NULL);
+    clawt_client_connect_async(client, NULL, on_async_connected, &connected);
+
+    g_assert_true(pump_until(context, flag_is_set, &connected, 15));
+    g_assert_true(pump_until(context, fake_has_subscriber, fake, 15));
+    g_assert_cmpint(g_atomic_int_get(&fake->subscribes), ==, 1);
+
+    disconnect_and_drain(client, context);
+    fake_daemon_stop(fake);
+    g_main_context_pop_thread_default(context);
+    clawt_test_remove_tree(dir);
+}
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
 
+    g_test_add_func("/connection/subscribe-then-async-connect-subscribes",
+                    test_subscribe_then_async_connect_subscribes);
     g_test_add_func("/connection/never-connected-still-gets-there",
                     test_a_client_that_never_connected_still_gets_there);
     g_test_add_func("/connection/start-reconnecting-needs-permission",
