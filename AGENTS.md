@@ -118,7 +118,7 @@ place when it is missing, older than its sources, or lacks a symbol in
 Browser sessions are opt-in too (`GSURF=1`, `GSURF_DIR` defaulting to
 `../gsurf`).  clawtilla links nothing from gsurf: a session is Xvfb plus
 a gsurf process driven over gsurf's control socket, because the daemon
-must never link GTK.  `make GSURF=1` refuses a gsurf older than 0.5.13
+must never link GTK.  `make GSURF=1` refuses a gsurf older than 0.5.14
 and builds `GSURF_DIR` when its binary is missing; building that needs
 `webkit2gtk4.1-devel` and `gtk3-devel`.  See `docs/browser.org`.
 

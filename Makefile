@@ -1112,8 +1112,9 @@ test-verbose: $(TEST_BINARIES) test-plugins plugins
 		"$$t" --verbose || exit 1; \
 	done
 
-# Tests that need real podman / libvirt / gowl.  Kept out of `make test`
-# so the default suite stays hermetic and runs anywhere.
+# Tests that need real podman / libvirt / gowl / gsurf.  Kept out of
+# `make test` so the default suite stays hermetic and runs anywhere.  The
+# shell tests run here too: test-browser-integration.sh is one of them.
 .PHONY: test-integration  ## Run the tests needing podman/libvirt/gowl (CLAWT_TEST_INTEGRATION=1)
 test-integration: $(TEST_BINARIES)
 	@echo "Running integration tests (CLAWT_TEST_INTEGRATION=1)..."
@@ -1121,6 +1122,10 @@ test-integration: $(TEST_BINARIES)
 	for t in $(TEST_BINARIES); do \
 		[ -x "$$t" ] || continue; \
 		CLAWT_TEST_INTEGRATION=1 "$$t" || fail=1; \
+	done; \
+	for s in $(wildcard $(TESTDIR)/test-*.sh); do \
+		echo "  --> $$(basename $$s)"; \
+		CLAWT_TEST_INTEGRATION=1 CLAWT_BUILD_DIR=$(OUTDIR) sh "$$s" || fail=1; \
 	done; \
 	[ $$fail -eq 0 ] || { echo "INTEGRATION TESTS FAILED"; exit 1; }; \
 	echo "All integration tests passed."

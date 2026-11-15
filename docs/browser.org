@@ -25,7 +25,7 @@ gsurf is *not* a dependency and clawtilla links nothing from it.  The daemon mus
 
 - defines =CLAWT_HAVE_GSURF=, which is what lets an agent have a browser at all;
 - records =GSURF_DIR='s build as a place to find the binary;
-- runs =tools/clawt-gsurf-check.sh=, which refuses a gsurf older than 0.5.13 (0.5.10 added ~page.click~, ~page.type~, ~page.key~ and the inline screenshot the tools are made of; 0.5.13 added ~page.fill_secret~ and the secret hold the vault fills through) and builds =GSURF_DIR= when its binary is missing.  A gsurf that is already built is never rebuilt: it is somebody's browser, built with their options.
+- runs =tools/clawt-gsurf-check.sh=, which refuses a gsurf older than 0.5.14 (0.5.10 added ~page.click~, ~page.type~, ~page.key~ and the inline screenshot the tools are made of; 0.5.13 added ~page.fill_secret~ and the secret hold the vault fills through; 0.5.14 answers ~page.type~ and ~page.fill_secret~ only once the page has every key -- see /Testing it/) and builds =GSURF_DIR= when its binary is missing.  A gsurf that is already built is never rebuilt: it is somebody's browser, built with their options.
 
 | Needs | Fedora package | For |
 |-------+----------------+-----|
@@ -36,7 +36,7 @@ An agent configured with a browser in a build without =GSURF=1= is disabled, wit
 
 *** Which gsurf runs
 
-Beside =clawtillad=, the install location, the =GSURF_DIR= build, then =PATH= -- and each candidate's =--version= is read, so one older than 0.5.13 is passed over.  The build comes before =PATH= on purpose: the first live run found a distribution gsurf 0.4.4 on =PATH= ahead of the 0.5.10 build, and an old gsurf has no ~control.name~, so it starts, opens its window, and the socket clawtilla waits for never appears under the name it asked for.  None found names every place looked at and why each was not used.
+Beside =clawtillad=, the install location, the =GSURF_DIR= build, then =PATH= -- and each candidate's =--version= is read, so one older than 0.5.14 is passed over.  The build comes before =PATH= on purpose: the first live run found a distribution gsurf 0.4.4 on =PATH= ahead of the 0.5.10 build, and an old gsurf has no ~control.name~, so it starts, opens its window, and the socket clawtilla waits for never appears under the name it asked for.  None found names every place looked at and why each was not used.
 
 ** Configuring it
 
@@ -77,7 +77,7 @@ A shared session's keys -- =home=, =allow_scripts=, =idle_minutes=, =width=, =he
 - *A private profile.*  =<state_dir>/browsers/agent.<id>/= or =shared.<id>/= holds its data, cache, cookies, downloads, generated ~gsurf.yaml~ and the two logs.  An agent and a shared session with the same id never share one.  The profile survives a stop, so a login does; the open page does not.
 - *No modules.*  gsurf runs with =--no-modules=: its modal module would take an agent's typed =j= as "scroll down".
 - *Its environment is the allowlist*, plus =DISPLAY=, =GDK_BACKEND=x11=, the profile's =XDG_*= directories and a =WAYLAND_DISPLAY= naming a socket that does not exist -- GTK finds =wayland-0= on its own, and a "headless" browser would open on your screen.  Building this exposed a bug in =clawt_build_child_environment()=: a name in both the allowlist and the extras was written twice and =getenv()= returned the allowlisted copy, so an agent's own =env:= could not override =XDG_CONFIG_HOME= either.  Extras now replace.
-- *It dies with the daemon* (=PR_SET_PDEATHSIG=), stops after =idle_minutes= without a call (checked on the daemon's one-minute tick), stops when its agent stops if it is the agent's own, and stops with the daemon.
+- *It dies with the daemon* (=PR_SET_PDEATHSIG=).  That signal follows the /thread/ that forked, not the process, and an agent's browser tool runs on a thread that ends with the call -- so until 0.32 an agent's browser was killed moments after it started, and its next call found a new one on =about:blank=.  Both children are now forked by one thread that lasts as long as the daemon.  A session stops after =idle_minutes= without a call (checked on the daemon's one-minute tick), stops when its agent stops if it is the agent's own, and stops with the daemon.
 - *One driver at a time on a shared session.*  Two agents clicking in one page undo each other's work and neither can tell, so a call from a second agent is refused, naming the first.  The claim is renewed by every call and lapses after two minutes without one (=CLAWT_BROWSER_DRIVER_LEASE_SECONDS=); =clawtilla_browser_release= gives it up sooner.  A person's click from the Computer page does not take the lease.
 
 ** The tools
@@ -181,6 +181,14 @@ The IPC verbs are in [[file:ipc-protocol.org][ipc-protocol.org]].
 =tests/test-browser.c= covers everything above gsurf's control socket with a fake transport (=clawt_browser_manager_set_transport()=): the session keys, the keys a shared session takes from its entry, the shadow reasons, the lease, which agents are offered which tools, and what each tool sends.  It cannot see a real X server or a real page.  Its =/browser/tools/secrets-never-seen= case walks the whole secret path against a fake gsurf that keeps a hold the way 0.5.13 does: the fill sends the value and the agent hears "Filled", the reference works once and only in its conversation, a page on another host is refused, a TOTP fill types the code for now, screenshots and HTML are refused until a navigation, a hold gsurf cannot be asked about stays on -- and the value, the seed and the code are in none of the tool results, the events or the log.  =tests/test-secret-vault.c= has the references on their own, RFC 6238's vectors for SHA1, SHA256 and SHA512, the seed formats, and which vault entries are offered.  gsurf's own =test-control-webkit= types into a real login form.
 
 =tests/test-browser-integration.sh= can, behind =CLAWT_TEST_INTEGRATION=1=: against a =GSURF=1= build it starts a daemon, opens a fixture page whose title only its script sets, takes a screenshot and checks it is a PNG, clicks the button and waits for the page to retitle itself, and stops the session.  It skips, saying why, when Xvfb or a =GSURF=1= daemon is missing.
+
+=tests/test-browser-live.c=, behind the same switch and a =GSURF=1= build, runs the agent's tools against a real gsurf and a login form served on 127.0.0.1 by the test itself: the same form under =localhost= is refused (the host is the one the real browser reports), a password fill is followed by gsurf itself refusing a screenshot, a one-time-code fill presses Enter, the form's server receives exactly the vault's password and a current TOTP code, the hold lifts on the next page, and nothing the agent read carries either.  It found three things the fakes could not:
+
+- *An open could answer for the wrong page.*  WebKit takes a moment to commit a session's first page, and meanwhile =about:blank= answers =readyState= "complete"; =browser open= said "Running -- about:blank" about one time in six.  =clawt_browser_navigate()= now waits for a different document (its =performance.timeOrigin=) or address.
+- *An agent's browser died after every call* (the forking thread, above).
+- *A secret could land in the next field.*  gsurf 0.5.13 answered a fill when the keys were handed to WebKit, which delivers them one at a time; the next fill's focus overtook them, and the form posted =pw=hunt= and =otp=er2-...925843=.  gsurf 0.5.14 answers only once the page has every key, and clawtilla requires it.
+
+=make test-integration= runs the shell tests (=tests/test-*.sh=) as well as the binaries; until 0.32 it ran only the binaries, so =test-browser-integration.sh= never ran there.
 
 ** Not done
 

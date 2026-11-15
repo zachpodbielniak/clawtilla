@@ -56,7 +56,7 @@ gboolean clawt_browser_build_available(void);
  *
  * The gsurf to run, best first: beside the running binary, the install
  * location, the `GSURF_DIR` build this binary was made against, then
- * `PATH`.  A candidate older than 0.5.13 is passed over.  None found
+ * `PATH`.  A candidate older than 0.5.14 is passed over.  None found
  * names every place that was looked in, and why each was not used.
  *
  * Returns: (transfer full) (nullable): an absolute path, or %NULL
@@ -390,6 +390,29 @@ GBytes *clawt_browser_screenshot(ClawtBrowser *self, GError **error);
  * Returns: %TRUE when the page finished loading in time
  */
 gboolean clawt_browser_wait_loaded(ClawtBrowser *self, guint timeout_seconds);
+
+/**
+ * clawt_browser_navigate:
+ * @self: a #ClawtBrowser
+ * @uri: the address to open
+ * @timeout_seconds: the longest to wait for the new page
+ * @loaded: (out) (optional): %TRUE when the new page finished loading in time
+ * @error: return location for a #GError
+ *
+ * Sends gsurf's `navigate` and waits until a *different* document has
+ * loaded.  clawt_browser_wait_loaded() alone returns early here: until
+ * the engine commits the new page, the old one (about:blank on a session's
+ * first page) still answers `complete`.  A new document is told by its
+ * `performance.timeOrigin`, so reopening the same address waits too.
+ * Blocks.
+ *
+ * Since: 0.32
+ *
+ * Returns: (transfer full) (nullable): gsurf's reply, or %NULL with @error
+ */
+JsonNode *clawt_browser_navigate(ClawtBrowser *self, const gchar *uri,
+                                 guint timeout_seconds, gboolean *loaded,
+                                 GError **error);
 
 /* ── What the clients draw ─────────────────────────────────────────── */
 

@@ -180,18 +180,10 @@ job_thread(GTask *task, gpointer source, gpointer data, GCancellable *cancellabl
         break;
 
     case JOB_OPEN: {
-        g_autoptr(JsonBuilder) params = json_builder_new();
-        g_autoptr(JsonNode) node = NULL;
-        g_autoptr(JsonNode) result = NULL;
+        g_autoptr(JsonNode) result = clawt_browser_navigate(job->browser, job->url, 20,
+                                                            NULL, &job->error);
 
-        json_builder_begin_object(params);
-        json_builder_set_member_name(params, "uri");
-        json_builder_add_string_value(params, job->url);
-        json_builder_end_object(params);
-        node = json_builder_get_root(params);
-        result = clawt_browser_call(job->browser, "navigate", node, 30, &job->error);
-        if (result != NULL)
-            clawt_browser_wait_loaded(job->browser, 20);
+        (void)result;
         break;
     }
 
