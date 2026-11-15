@@ -938,14 +938,70 @@ forward_one(HttpBridge *bridge, const gchar *line)
     deliver_stream(bridge, line, content_type, head, head_length, response);
 }
 
+/*
+ * The bridge's loop, over whatever streams and session it is handed:
+ * stdin, stdout and a session of its own in the relay process, a
+ * session pointed at a unix socket and memory streams in a test.
+ */
+static gint
+run_http_on(ClawtConnectorPlan        *plan,
+            const ClawtMcpRelayPolicy *policy,
+            SoupSession               *session,
+            gboolean                   gated,
+            GInputStream              *in,
+            GOutputStream             *out)
+{
+    HttpBridge bridge = { 0 };
+    g_autoptr(GDataInputStream) reader = NULL;
+
+    reader = g_data_input_stream_new(in);
+
+    g_buffered_input_stream_set_buffer_size(
+        G_BUFFERED_INPUT_STREAM(reader), RELAY_BUFFER_BYTES);
+
+    bridge.session = session;
+    bridge.plan = plan;
+    bridge.policy = policy;
+    bridge.out = out;
+    bridge.gated = gated;
+
+    for (;;) {
+        g_autofree gchar *line = NULL;
+        g_autofree gchar *to_server = NULL;
+        g_autofree gchar *to_client = NULL;
+
+        line = g_data_input_stream_read_line(reader, NULL, NULL, NULL);
+
+        if (line == NULL)
+            break;
+
+        /*
+         * The same decision the stdio relay makes, gate included.  This
+         * loop used to apply the permitted list and nothing else, so an
+         * action rule on a connector reached over HTTP was never asked.
+         */
+        clawt_mcp_relay_policy_outbound(policy, line, &to_server,
+                                        &to_client);
+
+        if (to_client != NULL)
+            write_line(out, to_client);
+
+        if (to_server != NULL)
+            forward_one(&bridge, to_server);
+    }
+
+    g_free(bridge.session_id);
+
+    return EXIT_SUCCESS;
+}
+
 static gint
 run_http(ClawtConnectorPlan *plan, const ClawtMcpRelayPolicy *policy)
 {
-    HttpBridge bridge = { 0 };
     g_autoptr(GInputStream) stdin_stream = NULL;
     g_autoptr(GOutputStream) stdout_stream = NULL;
-    g_autoptr(GDataInputStream) reader = NULL;
     g_autoptr(SoupSession) session = NULL;
+    gboolean gated = FALSE;
 
     /*
      * Synchronous throughout, which is right here and would not be in
@@ -973,50 +1029,15 @@ run_http(ClawtConnectorPlan *plan, const ClawtMcpRelayPolicy *policy)
                 g_simple_proxy_resolver_new(gate, NULL);
 
             soup_session_set_proxy_resolver(session, resolver);
-            bridge.gated = TRUE;
+            gated = TRUE;
         }
     }
 
     stdin_stream = g_unix_input_stream_new(STDIN_FILENO, FALSE);
     stdout_stream = g_unix_output_stream_new(STDOUT_FILENO, FALSE);
-    reader = g_data_input_stream_new(stdin_stream);
 
-    g_buffered_input_stream_set_buffer_size(
-        G_BUFFERED_INPUT_STREAM(reader), RELAY_BUFFER_BYTES);
-
-    bridge.session = session;
-    bridge.plan = plan;
-    bridge.policy = policy;
-    bridge.out = stdout_stream;
-
-    for (;;) {
-        g_autofree gchar *line = NULL;
-        g_autofree gchar *to_server = NULL;
-        g_autofree gchar *to_client = NULL;
-
-        line = g_data_input_stream_read_line(reader, NULL, NULL, NULL);
-
-        if (line == NULL)
-            break;
-
-        /*
-         * The same decision the stdio relay makes, gate included.  This
-         * loop used to apply the permitted list and nothing else, so an
-         * action rule on a connector reached over HTTP was never asked.
-         */
-        clawt_mcp_relay_policy_outbound(policy, line, &to_server,
-                                        &to_client);
-
-        if (to_client != NULL)
-            write_line(stdout_stream, to_client);
-
-        if (to_server != NULL)
-            forward_one(&bridge, to_server);
-    }
-
-    g_free(bridge.session_id);
-
-    return EXIT_SUCCESS;
+    return run_http_on(plan, policy, session, gated, stdin_stream,
+                       stdout_stream);
 }
 
 gint
@@ -1033,15 +1054,18 @@ clawt_connector_relay_run_gated(ClawtConnectorPlan *plan,
     return clawt_connector_relay_run_full(plan, gate, gate_data, NULL);
 }
 
-gint
-clawt_connector_relay_run_full(ClawtConnectorPlan *plan,
-                               ClawtMcpRelayGate   gate,
-                               gpointer            gate_data,
-                               ClawtMcpDirectory  *directory)
+/*
+ * The one policy both transports apply, from the plan.  Its own function
+ * so the stream-driven entry point below cannot build a different one.
+ */
+static void
+policy_from_plan(ClawtConnectorPlan  *plan,
+                 ClawtMcpRelayGate    gate,
+                 gpointer             gate_data,
+                 ClawtMcpDirectory   *directory,
+                 ClawtMcpRelayPolicy *policy)
 {
-    ClawtMcpRelayPolicy policy = { 0 };
-
-    g_return_val_if_fail(plan != NULL, EXIT_FAILURE);
+    memset(policy, 0, sizeof(*policy));
 
     /*
      * No tool list means no restriction, and it has to be said as a
@@ -1049,32 +1073,66 @@ clawt_connector_relay_run_full(ClawtConnectorPlan *plan,
      * nothing", which is the right default for a grant being enforced
      * and exactly wrong for a connector that simply was not narrowed.
      */
-    policy.permitted = plan->permitted;
-    policy.filter = (plan->permitted != NULL);
-    policy.hint = (plan->gateway != NULL) ? BROKER_REFUSAL_HINT
-                                          : CONNECTOR_REFUSAL_HINT;
-    policy.gate = gate;
-    policy.gate_data = gate_data;
-    policy.directory = directory;
+    policy->permitted = plan->permitted;
+    policy->filter = (plan->permitted != NULL);
+    policy->hint = (plan->gateway != NULL) ? BROKER_REFUSAL_HINT
+                                           : CONNECTOR_REFUSAL_HINT;
+    policy->gate = gate;
+    policy->gate_data = gate_data;
+    policy->directory = directory;
 
     /*
      * Several accounts on one service: the prefix is part of the one
      * policy both transports apply, outermost on both sides, so the
      * directory, the tool list and the gate all see the server's names.
      */
-    policy.accounts = plan->accounts;
-    policy.account_prefix = plan->account_prefix;
-    policy.account_siblings = plan->account_siblings;
-    policy.account_conflict = plan->account_conflict;
+    policy->accounts = plan->accounts;
+    policy->account_prefix = plan->account_prefix;
+    policy->account_siblings = plan->account_siblings;
+    policy->account_conflict = plan->account_conflict;
 
     /* The budget and apps, which the caller set up for this agent. */
-    policy.results = plan->results;
-    policy.apps = plan->apps;
+    policy->results = plan->results;
+    policy->apps = plan->apps;
+}
+
+gint
+clawt_connector_relay_run_full(ClawtConnectorPlan *plan,
+                               ClawtMcpRelayGate   gate,
+                               gpointer            gate_data,
+                               ClawtMcpDirectory  *directory)
+{
+    ClawtMcpRelayPolicy policy;
+
+    g_return_val_if_fail(plan != NULL, EXIT_FAILURE);
+
+    policy_from_plan(plan, gate, gate_data, directory, &policy);
 
     if (plan->url != NULL)
         return run_http(plan, &policy);
 
     return clawt_mcp_relay_run_policy(plan->argv, plan->envp, &policy);
+}
+
+gint
+clawt_connector_relay_run_http_on(ClawtConnectorPlan *plan,
+                                  ClawtMcpRelayGate   gate,
+                                  gpointer            gate_data,
+                                  ClawtMcpDirectory  *directory,
+                                  SoupSession        *session,
+                                  GInputStream       *in,
+                                  GOutputStream      *out)
+{
+    ClawtMcpRelayPolicy policy;
+
+    g_return_val_if_fail(plan != NULL && plan->url != NULL, EXIT_FAILURE);
+    g_return_val_if_fail(SOUP_IS_SESSION(session), EXIT_FAILURE);
+    g_return_val_if_fail(G_IS_INPUT_STREAM(in), EXIT_FAILURE);
+    g_return_val_if_fail(G_IS_OUTPUT_STREAM(out), EXIT_FAILURE);
+
+    policy_from_plan(plan, gate, gate_data, directory, &policy);
+
+    return run_http_on(plan, &policy, session, FALSE, in, out);
 }
 
 ClawtMcpDirectory *

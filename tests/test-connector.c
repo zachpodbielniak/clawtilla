@@ -17,6 +17,7 @@
 
 #include <clawtilla.h>
 
+#include <gio/gunixsocketaddress.h>
 #include <glib/gstdio.h>
 #include <json-glib/json-glib.h>
 #include <string.h>
@@ -395,6 +396,220 @@ test_a_reply_body_is_copied_whole(void)
     g_assert_cmpuint(strlen(text), ==, sizeof(reply) - 1);
     g_assert_cmpstr(nothing, ==, "");
     g_assert_cmpstr(null_body, ==, "");
+}
+
+/* ── A successful reply through the HTTP bridge ──────────────────── */
+
+typedef struct {
+    guint  requests;
+    guint  with_credential;
+    guint  with_session;
+    gchar *methods;
+} FakeMcpServer;
+
+/*
+ * A streamable-HTTP MCP server, as small as one gets: initialize answers
+ * JSON with a session id, the initialized notification gets 202 and
+ * nothing, and tools/list answers as an SSE stream -- both shapes a
+ * server may choose per request.
+ */
+static void
+mcp_handler(SoupServer        *server,
+            SoupServerMessage *message,
+            const char        *path,
+            GHashTable        *query,
+            gpointer           user_data)
+{
+    FakeMcpServer *seen = user_data;
+    SoupMessageHeaders *in = soup_server_message_get_request_headers(message);
+    SoupMessageHeaders *out = soup_server_message_get_response_headers(message);
+    g_autoptr(GBytes) body = soup_message_body_flatten(
+        soup_server_message_get_request_body(message));
+    g_autofree gchar *text = g_strndup(g_bytes_get_data(body, NULL),
+                                       g_bytes_get_size(body));
+    g_autoptr(JsonNode) node = json_from_string(text, NULL);
+    const gchar *method;
+    gchar *joined;
+
+    seen->requests++;
+
+    if (g_strcmp0(soup_message_headers_get_one(in, "Authorization"),
+                  "Bearer tk-relay") == 0)
+        seen->with_credential++;
+
+    if (g_strcmp0(soup_message_headers_get_one(in, "Mcp-Session-Id"),
+                  "s-42") == 0)
+        seen->with_session++;
+
+    g_assert_nonnull(node);
+    method = json_object_get_string_member_with_default(
+        json_node_get_object(node), "method", "?");
+    joined = g_strconcat(seen->methods != NULL ? seen->methods : "",
+                         method, " ", NULL);
+    g_free(seen->methods);
+    seen->methods = joined;
+
+    if (g_strcmp0(method, "initialize") == 0) {
+        static const gchar reply[] =
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+            "\"2025-06-18\",\"capabilities\":{},\"serverInfo\":"
+            "{\"name\":\"fake\",\"version\":\"1\"}}}";
+
+        soup_message_headers_replace(out, "Mcp-Session-Id", "s-42");
+        soup_server_message_set_status(message, 200, NULL);
+        soup_server_message_set_response(message, "application/json",
+                                         SOUP_MEMORY_STATIC, reply,
+                                         sizeof(reply) - 1);
+        return;
+    }
+
+    if (g_strcmp0(method, "tools/list") == 0) {
+        static const gchar reply[] =
+            "event: message\n"
+            "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":"
+            "[{\"name\":\"ping\",\"description\":\"Answers pong.\","
+            "\"inputSchema\":{\"type\":\"object\"}}]}}\n\n";
+
+        soup_server_message_set_status(message, 200, NULL);
+        soup_server_message_set_response(message, "text/event-stream",
+                                         SOUP_MEMORY_STATIC, reply,
+                                         sizeof(reply) - 1);
+        return;
+    }
+
+    soup_server_message_set_status(message, 202, NULL);
+}
+
+typedef struct {
+    ClawtConnectorPlan *plan;
+    GSocketAddress     *address;
+    GBytes             *input;
+    gchar              *output;
+    gint                status;
+    gint                done;
+} RelayRun;
+
+/*
+ * The relay is synchronous, so it runs here, off the thread whose loop
+ * serves the fake server -- with a context of its own pushed before the
+ * session is made, since a worker has no thread-default and the session
+ * would otherwise bind to the loop the main thread is running.
+ */
+static gpointer
+relay_thread(gpointer data)
+{
+    RelayRun *run = data;
+    g_autoptr(GMainContext) context = g_main_context_new();
+    g_autoptr(SoupSession) session = NULL;
+    g_autoptr(GInputStream) in = NULL;
+    g_autoptr(GOutputStream) out = NULL;
+
+    g_main_context_push_thread_default(context);
+
+    session = soup_session_new_with_options("remote-connectable",
+                                            run->address, NULL);
+    in = g_memory_input_stream_new_from_bytes(run->input);
+    out = g_memory_output_stream_new_resizable();
+
+    run->status = clawt_connector_relay_run_http_on(run->plan, NULL, NULL,
+                                                    NULL, session, in, out);
+
+    g_output_stream_write_all(out, "", 1, NULL, NULL, NULL);
+    g_output_stream_close(out, NULL, NULL);
+    run->output = g_memory_output_stream_steal_data(
+        G_MEMORY_OUTPUT_STREAM(out));
+
+    g_clear_object(&session);
+    g_main_context_pop_thread_default(context);
+
+    g_atomic_int_set(&run->done, 1);
+    g_main_context_wakeup(NULL);
+
+    return NULL;
+}
+
+static gboolean
+relay_watchdog(gpointer data)
+{
+    g_error("the HTTP bridge did not finish within 20 seconds");
+    return G_SOURCE_REMOVE;
+}
+
+/*
+ * forward_one()'s class of bug, end to end: every successful reply from
+ * every remote connector once arrived empty and was dropped, and only a
+ * real server showed it.  The bridge runs against a streamable-HTTP
+ * server on a unix socket, and the client must get both answers whole --
+ * the JSON one and the SSE one -- with the credential on every request,
+ * the session id carried back after initialize, and nothing written for
+ * the notification.
+ */
+static void
+test_the_http_bridge_relays_a_successful_reply(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-relay-XXXXXX", NULL);
+    g_autofree gchar *path = g_build_filename(dir, "mcp.sock", NULL);
+    g_autoptr(SoupServer) server = soup_server_new(NULL, NULL);
+    g_autoptr(GSocketAddress) address = g_unix_socket_address_new(path);
+    g_autoptr(GError) error = NULL;
+    g_auto(GStrv) lines = NULL;
+    static const gchar requests[] =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\","
+        "\"params\":{}}\n"
+        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n"
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n";
+    ClawtConnectorPlan *plan = g_new0(ClawtConnectorPlan, 1);
+    FakeMcpServer seen = { 0 };
+    RelayRun run = { 0 };
+    GThread *thread;
+    guint watchdog;
+
+    soup_server_add_handler(server, NULL, mcp_handler, &seen, NULL);
+    g_assert_true(soup_server_listen(server, address, 0, &error));
+    g_assert_no_error(error);
+
+    plan->name = g_strdup("fake");
+    plan->url = g_strdup("http://mcp.test/mcp");
+    plan->header_name = g_strdup("Authorization");
+    plan->header_value = g_strdup("Bearer tk-relay");
+
+    run.plan = plan;
+    run.address = address;
+    run.input = g_bytes_new_static(requests, strlen(requests));
+
+    thread = g_thread_new("relay", relay_thread, &run);
+    watchdog = g_timeout_add_seconds(20, relay_watchdog, NULL);
+
+    while (!g_atomic_int_get(&run.done))
+        g_main_context_iteration(NULL, TRUE);
+
+    g_thread_join(thread);
+    g_source_remove(watchdog);
+
+    g_assert_cmpint(run.status, ==, EXIT_SUCCESS);
+    g_assert_cmpstr(seen.methods, ==,
+                    "initialize notifications/initialized tools/list ");
+    g_assert_cmpuint(seen.requests, ==, 3);
+    g_assert_cmpuint(seen.with_credential, ==, 3);
+    g_assert_cmpuint(seen.with_session, ==, 2);
+
+    /* Two answers, whole, and nothing for the notification. */
+    lines = g_strsplit(g_strchomp(run.output), "\n", -1);
+    g_assert_cmpuint(g_strv_length(lines), ==, 2);
+    g_assert_nonnull(strstr(lines[0], "\"id\":1"));
+    g_assert_nonnull(strstr(lines[0], "\"serverInfo\""));
+    g_assert_nonnull(strstr(lines[1], "\"id\":2"));
+    g_assert_nonnull(strstr(lines[1], "\"ping\""));
+    g_assert_null(strstr(run.output, "tk-relay"));
+
+    soup_server_disconnect(server);
+    while (g_main_context_iteration(NULL, FALSE))
+        ;
+    g_bytes_unref(run.input);
+    g_free(run.output);
+    g_free(seen.methods);
+    clawt_connector_plan_free(plan);
+    clawt_test_remove_tree(dir);
 }
 
 /*
@@ -1350,6 +1565,8 @@ main(int argc, char *argv[])
                     test_the_current_token_file_is_found);
     g_test_add_func("/connector/relay-body-whole",
                     test_a_reply_body_is_copied_whole);
+    g_test_add_func("/connector/relay/http-bridge-success",
+                    test_the_http_bridge_relays_a_successful_reply);
     g_test_add_func("/connector/relay-failure-reply",
                     test_an_unreachable_server_still_answers_the_request);
 
