@@ -260,6 +260,10 @@ declare -A AFFORDANCES=(
     #
     ["spending group by"]="on_spending_group_changed|spending_tabs(\"Group by\"|clawt_lrg_form_add(form, \"Group by\""
     ["acknowledged answers"]="clawt_message_ack_label|clawt_message_ack_label|clawt_message_ack_label"
+    # A teammate's answer handed back to the conversation that asked
+    # (answer_from), and what a turn that asked ended with (waiting_on).
+    ["an answer handed back"]="clawt_message_answer_label|clawt_message_answer_label|clawt_message_answer_label"
+    ["waiting on a teammate"]="clawt_message_waiting_note|clawt_message_waiting_note|clawt_message_waiting_note"
     ["merged deliveries as sections"]="clawt_merge_split|clawt_merge_split|clawt_merge_split"
     #
     # Delegation modes: a consultation's question and answer are marked

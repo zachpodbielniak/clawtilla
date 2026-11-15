@@ -241,6 +241,60 @@ gboolean clawt_link_get_can_steer(ClawtLink *self);
 void clawt_link_set_can_steer(ClawtLink *self, gboolean can_steer);
 
 /**
+ * clawt_link_get_can_inject:
+ * @self: a #ClawtLink
+ *
+ * Whether the agent on this link runs a message in another channel's
+ * conversation when asked: its hello listed "inject" in `features`
+ * (libreclaw 0.30.4 and later).
+ *
+ * Returns: %TRUE if clawt_link_deliver_channel() may be used
+ *
+ * Since: 0.34.2
+ */
+gboolean clawt_link_get_can_inject(ClawtLink *self);
+
+/**
+ * clawt_link_set_can_inject:
+ * @self: a #ClawtLink
+ * @can_inject: what the agent said
+ *
+ * For tests standing in for an agent's hello.
+ *
+ * Since: 0.34.2
+ */
+void clawt_link_set_can_inject(ClawtLink *self, gboolean can_inject);
+
+/**
+ * clawt_link_deliver_channel:
+ * @self: a #ClawtLink
+ * @channel: the agent's channel the conversation is on, e.g. "matrix"
+ * @room_id: the room on that channel
+ * @session_peer: (nullable): who the conversation is with, as the agent's
+ *   runtime keyed its session
+ * @body: what to hand the agent
+ * @error: (nullable): return location for a #GError
+ *
+ * Starts a turn in a conversation the agent is having on *another*
+ * channel -- a Matrix room -- as the daemon, so the turn has that
+ * conversation behind it and its reply is posted there.  Used to hand
+ * back the answer to something the agent asked a teammate from that
+ * conversation.  Nothing of the turn comes back over the link: the
+ * daemon sees a Matrix turn no more than it ever did.
+ *
+ * Returns: %TRUE if the frame was written; %FALSE with
+ *   #CLAWT_ERROR_NOT_SUPPORTED when the agent cannot do this
+ *
+ * Since: 0.34.2
+ */
+gboolean clawt_link_deliver_channel(ClawtLink    *self,
+                                    const gchar  *channel,
+                                    const gchar  *room_id,
+                                    const gchar  *session_peer,
+                                    const gchar  *body,
+                                    GError      **error);
+
+/**
  * clawt_link_send_welcome:
  * @self: a #ClawtLink
  * @error: (out) (optional): return location for a #GError

@@ -1164,6 +1164,24 @@ clawt_daemon_handle_misc(
          * one path where the wait is not a round trip but an arbitrary
          * command.
          */
+        /*
+         * A call from a turn on one of the agent's own channels says so
+         * (since 0.34.2): remembered, so an answer to something asked
+         * from that conversation can be handed back into it.
+         */
+        {
+            const gchar *channel = clawt_ipc_payload_string(payload,
+                                                            "channel");
+            ClawtAgent *caller = (self->agents != NULL)
+                ? clawt_agent_manager_get(self->agents, agent_id) : NULL;
+
+            if (caller != NULL && channel != NULL &&
+                g_strcmp0(channel, "clawtilla") != 0)
+                clawt_agent_note_channel_room(caller,
+                    clawt_ipc_payload_string(payload, "room"), channel,
+                    clawt_ipc_payload_string(payload, "peer"));
+        }
+
         if (clawt_mcp_tools_call_defers(self->mcp_tools, agent_id, rpc)) {
             ClawtIpcPending *pending =
                 clawt_ipc_server_defer(self->ipc_server, request);

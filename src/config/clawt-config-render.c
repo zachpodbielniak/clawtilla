@@ -378,7 +378,8 @@ static void
 render_clawtilla_channel(GString          *out,
                          ClawtAgentConfig *agent,
                          const gchar      *link_socket,
-                         const gchar      *state_dir)
+                         const gchar      *state_dir,
+                         gboolean          has_matrix)
 {
     g_autofree gchar *token_file = g_build_filename(state_dir, "token", NULL);
 
@@ -429,6 +430,19 @@ render_clawtilla_channel(GString          *out,
     append_key_bool(out, 4, "steps_enabled",
                     clawt_agent_config_get_boolean(agent,
                                                    "runtime.stream_steps"));
+
+    /*
+     * Which of the agent's other channels the daemon may start a turn
+     * on (libreclaw 0.30.4).  Matrix, for an agent that has it: the
+     * answer to something it asked a teammate while answering in a
+     * Matrix room goes back into that conversation.  Without the line
+     * libreclaw refuses every such message.
+     */
+    if (has_matrix) {
+        gchar *channels[] = { (gchar *)"matrix", NULL };
+
+        append_string_list(out, 4, "inject_channels", channels);
+    }
 }
 
 /*
@@ -1417,11 +1431,13 @@ clawt_config_render_agent(ClawtConfig       *config,
         g_autoptr(GHashTable) blocks = NULL;
         g_autoptr(GHashTable) merged_keys = NULL;
 
-        render_clawtilla_channel(channels, agent, link_socket, state_dir);
-
     {
         g_autoptr(GPtrArray) bindings =
             clawt_integration_resolve_for_agent(config, agent);
+
+        render_clawtilla_channel(channels, agent, link_socket, state_dir,
+            clawt_integration_find_binding(bindings, "matrix") != NULL);
+
         g_autofree gchar *matrix_token =
             g_build_filename(state_dir, "credentials",
                              "matrix_credentials.json", NULL);

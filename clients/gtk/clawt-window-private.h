@@ -1200,7 +1200,12 @@ clawt_gtk_append_round_marks(ClawtWindow *self, gint64 round,
                              gboolean before);
 
 void
-clawt_gtk_mark_crosstalk(ClawtWindow *self, const gchar *rooms);
+clawt_gtk_mark_crosstalk(ClawtWindow *self, const gchar *rooms,
+                         const gchar *answer_from);
+
+/* The quiet line under what a turn that asked a teammate ended with. */
+void
+clawt_gtk_mark_waiting(ClawtWindow *self, const gchar *waiting_on);
 
 void
 clawt_gtk_attachment_free(Attachment *attachment);

@@ -876,6 +876,8 @@ clawt_web_stylesheet(void)
       "height:1px;background:var(--line);opacity:.6}"
     ".skip-note{margin:2px 0 0 var(--chat-gutter);font-size:.85em;"
       "color:var(--muted)}"
+    /* What a turn that asked a teammate ended with: there, and quiet. */
+    ".msg-interim .msg-body{opacity:.6}"
     /*
      * A cross-talk summary: the daemon's note about a conversation
      * between agents, boxed in the info tone, with its Flow links under.

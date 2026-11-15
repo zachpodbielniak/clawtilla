@@ -630,6 +630,19 @@ append_to_transcript(ClawtRoom     *self,
 			clawt_message_get_crosstalk_messages(message));
 	}
 
+	/* A handed-back answer and an interim line (since 0.34.2). */
+	if (clawt_message_get_answer_from(message) != NULL) {
+		json_builder_set_member_name(builder, "answer_from");
+		json_builder_add_string_value(builder,
+			clawt_message_get_answer_from(message));
+	}
+
+	if (clawt_message_get_waiting_on(message) != NULL) {
+		json_builder_set_member_name(builder, "waiting_on");
+		json_builder_add_string_value(builder,
+			clawt_message_get_waiting_on(message));
+	}
+
 	if (clawt_message_get_skipped(message) != NULL) {
 		json_builder_set_member_name(builder, "skipped");
 		json_builder_add_string_value(builder,

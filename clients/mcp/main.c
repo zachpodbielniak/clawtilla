@@ -199,6 +199,8 @@ typedef struct {
     gchar       *agent;
     gchar       *token;
     const gchar *room;   /* which conversation, from the environment */
+    const gchar *channel; /* which of the agent's channels it is on */
+    const gchar *peer;    /* and who it is with */
 } Bridge;
 
 /*
@@ -238,6 +240,23 @@ forward(Bridge *bridge, JsonNode *request, JsonNode *id)
     if (bridge->room != NULL) {
         json_builder_set_member_name(builder, "room");
         json_builder_add_string_value(builder, bridge->room);
+    }
+
+    /*
+     * And which channel that room is on and whose conversation it is,
+     * when the runtime says (libreclaw 0.30.4).  A room on the agent's
+     * Matrix channel is not one the daemon has, and these are what let
+     * it start a turn there later -- to hand back an answer to something
+     * asked from that conversation.
+     */
+    if (bridge->room != NULL && bridge->channel != NULL) {
+        json_builder_set_member_name(builder, "channel");
+        json_builder_add_string_value(builder, bridge->channel);
+
+        if (bridge->peer != NULL) {
+            json_builder_set_member_name(builder, "peer");
+            json_builder_add_string_value(builder, bridge->peer);
+        }
     }
 
     if (bridge->token != NULL) {
@@ -476,6 +495,14 @@ main(int argc, char *argv[])
 
     if (bridge.room != NULL && *bridge.room == '\0')
         bridge.room = NULL;
+
+    bridge.channel = g_getenv("CLAWTILLA_CHANNEL_ID");
+    bridge.peer = g_getenv("CLAWTILLA_SESSION_PEER");
+
+    if (bridge.channel != NULL && *bridge.channel == '\0')
+        bridge.channel = NULL;
+    if (bridge.peer != NULL && *bridge.peer == '\0')
+        bridge.peer = NULL;
 
     raw_in = g_unix_input_stream_new(STDIN_FILENO, FALSE);
     in = g_data_input_stream_new(raw_in);

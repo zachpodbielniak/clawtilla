@@ -173,6 +173,20 @@ clawt_steer_decide(
 		return decided(why, "a group room's turns follow its rounds", FALSE);
 
 	/*
+	 * The answer to a request this very turn made (since 0.34.2), at
+	 * every level but never.  The asker is told to end its turn and be
+	 * woken with the answer, but a turn that is still running when the
+	 * answer lands -- one that had more to do, or that waited -- is the
+	 * turn that wants it: handed over now it is used once, where queued
+	 * it would start a second turn whose whole content is something the
+	 * first has by then worked out or reported.  It is a notice of the
+	 * daemon's, so it has to be admitted ahead of the rule below.
+	 */
+	if (facts->handed_answer)
+		return decided(why,
+			"it answers a request the running turn made", TRUE);
+
+	/*
 	 * The daemon's notices and the results held for the end of a busy
 	 * turn are merged into one wake after it.  Handed to the turn one by
 	 * one they would be the five interruptions that merge exists to

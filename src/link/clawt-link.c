@@ -49,6 +49,7 @@ struct _ClawtLink {
     gboolean  reading;
     gint64    last_seen;
     gboolean  can_steer;   /* the hello listed "steer" in features */
+    gboolean  can_inject;  /* ... and "inject": another channel's session */
 
     ClawtLinkMcpHandler mcp_handler;
     gpointer            mcp_data;
@@ -168,6 +169,7 @@ handle_hello(ClawtLink *self, JsonObject *payload)
      * one chat.steered, and one that does not must never be asked.
      */
     self->can_steer = FALSE;
+    self->can_inject = FALSE;
     if (json_object_has_member(payload, "features")) {
         JsonNode *node = json_object_get_member(payload, "features");
 
@@ -182,6 +184,12 @@ handle_hello(ClawtLink *self, JsonObject *payload)
                     json_node_get_value_type(element) == G_TYPE_STRING &&
                     g_strcmp0(json_node_get_string(element), "steer") == 0)
                     self->can_steer = TRUE;
+
+                /* "inject": a message may name another channel (0.34.2). */
+                if (JSON_NODE_HOLDS_VALUE(element) &&
+                    json_node_get_value_type(element) == G_TYPE_STRING &&
+                    g_strcmp0(json_node_get_string(element), "inject") == 0)
+                    self->can_inject = TRUE;
             }
         }
     }
@@ -670,6 +678,64 @@ clawt_link_set_can_steer(ClawtLink *self, gboolean can_steer)
     g_return_if_fail(CLAWT_IS_LINK(self));
 
     self->can_steer = can_steer;
+}
+
+gboolean
+clawt_link_get_can_inject(ClawtLink *self)
+{
+    g_return_val_if_fail(CLAWT_IS_LINK(self), FALSE);
+
+    return self->can_inject;
+}
+
+void
+clawt_link_set_can_inject(ClawtLink *self, gboolean can_inject)
+{
+    g_return_if_fail(CLAWT_IS_LINK(self));
+
+    self->can_inject = can_inject;
+}
+
+gboolean
+clawt_link_deliver_channel(ClawtLink    *self,
+                           const gchar  *channel,
+                           const gchar  *room_id,
+                           const gchar  *session_peer,
+                           const gchar  *body,
+                           GError      **error)
+{
+    g_autoptr(JsonObject) payload = json_object_new();
+
+    g_return_val_if_fail(CLAWT_IS_LINK(self), FALSE);
+    g_return_val_if_fail(channel != NULL, FALSE);
+    g_return_val_if_fail(room_id != NULL, FALSE);
+    g_return_val_if_fail(body != NULL, FALSE);
+
+    /*
+     * Never to an agent that did not say it takes these: it would ignore
+     * `channel` and run the message on this link, in a session holding
+     * nothing of the conversation the message is for.
+     */
+    if (!self->can_inject) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                            "the agent's libreclaw cannot start a turn in "
+                            "another channel's conversation (needs 0.30.4)");
+        return FALSE;
+    }
+
+    json_object_set_string_member(payload, "channel", channel);
+    json_object_set_string_member(payload, "room_id", room_id);
+    json_object_set_string_member(payload, "sender", CLAWT_SYSTEM_SENDER);
+    json_object_set_string_member(payload, "body", body);
+
+    if (session_peer != NULL && *session_peer != '\0')
+        json_object_set_string_member(payload, "session_peer", session_peer);
+
+    /* What it quotes is a peer's text: no $OVERRIDE in it is ours. */
+    json_object_set_boolean_member(payload, "overrides", FALSE);
+
+    return send_frame(self, LC_BRIDGE_FRAME_CHAT_MESSAGE_IN, NULL, payload,
+                      error);
 }
 
 gboolean

@@ -212,6 +212,14 @@ load_room(ClawtRoomManager *self, ClawtRoom *room)
 						"crosstalk_message")
 					: NULL);
 
+		if (json_object_has_member(object, "answer_from"))
+			clawt_message_set_answer_from(message,
+				json_object_get_string_member(object, "answer_from"));
+
+		if (json_object_has_member(object, "waiting_on"))
+			clawt_message_set_waiting_on(message,
+				json_object_get_string_member(object, "waiting_on"));
+
 		if (json_object_has_member(object, "skipped"))
 			clawt_message_set_skipped(message,
 				json_object_get_string_member(object, "skipped"),

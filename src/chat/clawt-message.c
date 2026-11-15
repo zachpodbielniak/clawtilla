@@ -21,6 +21,9 @@ struct _ClawtMessage {
     gchar *task_id;
     gchar *parent_id;
     gchar *only_for;
+	gchar *delivered_body;
+	gchar *answer_from;
+	gchar *waiting_on;
 	gchar *reply_to;
 	gchar *request_room;
 	gchar *request_origin;
@@ -124,6 +127,9 @@ clawt_message_copy(ClawtMessage *self)
     copy->model = g_strdup(self->model);
     copy->parent_id = g_strdup(self->parent_id);
     copy->only_for = g_strdup(self->only_for);
+	copy->delivered_body = g_strdup(self->delivered_body);
+	copy->answer_from = g_strdup(self->answer_from);
+	copy->waiting_on = g_strdup(self->waiting_on);
 	copy->reply_to = g_strdup(self->reply_to);
 	copy->request_room = g_strdup(self->request_room);
 	copy->request_origin = g_strdup(self->request_origin);
@@ -168,6 +174,9 @@ clawt_message_free(ClawtMessage *self)
     g_free(self->model);
     g_free(self->parent_id);
     g_free(self->only_for);
+	g_free(self->delivered_body);
+	g_free(self->answer_from);
+	g_free(self->waiting_on);
 	g_free(self->reply_to);
 	g_free(self->request_room);
 	g_free(self->request_origin);
@@ -220,6 +229,9 @@ SETTER(sender_name, sender_name)
 SETTER(task_id, task_id)
 SETTER(parent_id, parent_id)
 SETTER(only_for, only_for)
+SETTER(delivered_body, delivered_body)
+SETTER(answer_from, answer_from)
+SETTER(waiting_on, waiting_on)
 SETTER(reply_to, reply_to)
 SETTER(model, model)
 
@@ -688,6 +700,52 @@ clawt_message_set_skipped(
 
 	self->skipped = g_strdup(skipped);
 	self->skip_reason = g_strdup(reason);
+}
+
+const gchar *
+clawt_message_get_delivered_body(ClawtMessage *self)
+{
+	g_return_val_if_fail(self != NULL, NULL);
+	return self->delivered_body;
+}
+
+const gchar *
+clawt_message_get_answer_from(ClawtMessage *self)
+{
+	g_return_val_if_fail(self != NULL, NULL);
+	return self->answer_from;
+}
+
+const gchar *
+clawt_message_get_waiting_on(ClawtMessage *self)
+{
+	g_return_val_if_fail(self != NULL, NULL);
+	return self->waiting_on;
+}
+
+gchar *
+clawt_message_answer_label(const gchar *answer_from)
+{
+	return g_strdup_printf("Answer from %s",
+		(answer_from != NULL && *answer_from != '\0') ? answer_from
+		                                               : "a teammate");
+}
+
+gchar *
+clawt_message_waiting_note(const gchar *waiting_on)
+{
+	return g_strdup_printf("Waiting on %s \xe2\x80\x94 the answer will "
+	                       "arrive here",
+		(waiting_on != NULL && *waiting_on != '\0') ? waiting_on
+		                                             : "a teammate");
+}
+
+const gchar *
+clawt_message_waiting_tooltip(void)
+{
+	return "This turn asked a teammate something and ended. The answer "
+	       "comes back to this conversation and starts the agent's next "
+	       "turn here.";
 }
 
 const gchar *

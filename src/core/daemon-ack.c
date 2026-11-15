@@ -132,10 +132,14 @@ ack_route(
 	if (job->daemon->router == NULL)
 		return;
 
-	if (clawt_mailbox_router_send(job->daemon->router, job->message,
-	                              &error) < 0)
+	/*
+	 * By the road every other answer takes: an answer that needed its
+	 * asker goes back to the conversation that asked, and the check
+	 * used to send it into the two agents' room instead.
+	 */
+	if (!clawt_daemon_route_answer(job->daemon, job->message, &error))
 		g_info("daemon: %s's message was not routed: %s", job->replier,
-		       error->message);
+		       error != NULL ? error->message : "no reason");
 }
 
 static void

@@ -39,6 +39,8 @@ G_BEGIN_DECLS
  * @link_can_steer: the agent's link said it answers steer requests
  * @turn_running: a turn is running in the delivery's own room
  * @group_room: the room has more than two members (rounds and threads)
+ * @handed_answer: the delivery is the daemon's notice handing back the
+ *   answer to a request the running turn made (since 0.34.2)
  * @person_room: the room is the agent's direct room with the operator
  * @sender: (nullable): who sent the delivery ("user" for the operator,
  *   %CLAWT_SYSTEM_SENDER for the daemon, otherwise an agent id)
@@ -66,6 +68,7 @@ typedef struct {
 	const gchar      *sender;
 	gboolean          sender_is_agent;
 	gboolean          is_result;
+	gboolean          handed_answer;
 	gboolean          consult;
 	const gchar      *task_id;
 	const gchar      *model;

@@ -81,6 +81,7 @@ struct _ClawtDaemonCrosstalk {
 	GSource        *tick;
 	gulong          bus_handler;
 	GHashTable     *waiting;    /* agent + destination -> Waiting* */
+	GHashTable     *handed;     /* "room\nagent": told by a hand-back */
 	GHashTable     *ledger;     /* room id -> Through* */
 	gchar          *ledger_path;
 	AiProvider     *provider;
@@ -1122,6 +1123,23 @@ clawt_daemon_crosstalk_tick(
 			if (!wants_summaries(daemon, participants[p]))
 				continue;
 
+			/*
+			 * Already told, and better: an answer handed back to the
+			 * conversation this agent asked from (since 0.34.2) put the
+			 * answer itself in front of whoever reads that room, with
+			 * its own link into Flow, and the agent's reply follows
+			 * it.  A summary of the same exchange would be the third
+			 * account of one answer.
+			 */
+			{
+				g_autofree gchar *told = g_strdup_printf("%s\n%s",
+					clawt_crosstalk_exchange_get_room_id(exchange),
+					participants[p]);
+
+				if (g_hash_table_remove(self->handed, told))
+					continue;
+			}
+
 			/* One pile per agent and destination: a burst that came
 			 * from Matrix and one from the chat are two notes. */
 			dest = destination_for(daemon, participants[p], exchange, &target);
@@ -1211,6 +1229,8 @@ clawt_daemon_crosstalk_setup(
 
 	self = g_new0(ClawtDaemonCrosstalk, 1);
 	self->tracker = clawt_crosstalk_new();
+	self->handed = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+	                                     NULL);
 	self->waiting = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
 	                                      waiting_free);
 	self->ledger = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
@@ -1265,12 +1285,39 @@ clawt_daemon_crosstalk_teardown(
 
 	g_clear_object(&self->tracker);
 	g_clear_pointer(&self->waiting, g_hash_table_unref);
+	g_clear_pointer(&self->handed, g_hash_table_unref);
 	g_clear_pointer(&self->ledger, g_hash_table_unref);
 	g_free(self->ledger_path);
 	g_clear_object(&self->provider);
 	g_free(self->provider_spec);
 	g_clear_object(&self->provider_override);
 	g_free(self);
+}
+
+gboolean
+clawt_daemon_agent_takes_matrix_room(
+	ClawtDaemon *self,
+	const gchar *agent_id,
+	const gchar *room_id
+){
+	g_return_val_if_fail(CLAWT_IS_DAEMON(self), FALSE);
+
+	return agent_id != NULL && matrix_takes(self, agent_id, room_id);
+}
+
+void
+clawt_daemon_crosstalk_note_handback(
+	ClawtDaemon *self,
+	const gchar *room_id,
+	const gchar *agent_id
+){
+	g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+	if (self->crosstalk == NULL || room_id == NULL || agent_id == NULL)
+		return;
+
+	g_hash_table_add(self->crosstalk->handed,
+	                 g_strdup_printf("%s\n%s", room_id, agent_id));
 }
 
 void

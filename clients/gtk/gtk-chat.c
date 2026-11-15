@@ -2184,9 +2184,11 @@ on_crosstalk_flow_clicked(GtkButton *button, gpointer user_data)
  * the row is the transcript's last child.
  */
 void
-clawt_gtk_mark_crosstalk(ClawtWindow *self, const gchar *rooms)
+clawt_gtk_mark_crosstalk(ClawtWindow *self, const gchar *rooms,
+                         const gchar *answer_from)
 {
     g_auto(GStrv) targets = clawt_crosstalk_split_targets(rooms);
+    g_autofree gchar *answer = NULL;
     GtkWidget *row;
     GtkWidget *actions;
     GtkWidget *chip;
@@ -2204,10 +2206,21 @@ clawt_gtk_mark_crosstalk(ClawtWindow *self, const gchar *rooms)
     gtk_widget_set_margin_start(actions, CHAT_GUTTER);
     gtk_widget_set_margin_top(actions, 4);
 
-    chip = gtk_label_new(clawt_crosstalk_mark_label());
+    /*
+     * A teammate's answer handed back to this conversation (`answer_from`,
+     * since 0.34.2) is not a summary: it says whose answer it is, and its
+     * button opens the exchange the answer came out of.
+     */
+    if (answer_from != NULL && *answer_from != '\0')
+        answer = clawt_message_answer_label(answer_from);
+
+    chip = gtk_label_new(answer != NULL ? answer
+                                        : clawt_crosstalk_mark_label());
     gtk_widget_add_css_class(chip, "caption-heading");
     gtk_widget_add_css_class(chip, "accent");
-    gtk_widget_set_tooltip_text(chip, clawt_crosstalk_mark_tooltip());
+
+    if (answer == NULL)
+        gtk_widget_set_tooltip_text(chip, clawt_crosstalk_mark_tooltip());
     gtk_widget_set_valign(chip, GTK_ALIGN_CENTER);
     gtk_box_append(GTK_BOX(actions), chip);
 
@@ -2226,6 +2239,47 @@ clawt_gtk_mark_crosstalk(ClawtWindow *self, const gchar *rooms)
     }
 
     gtk_box_append(GTK_BOX(row), actions);
+}
+
+/*
+ * What an agent wrote at the end of a turn that asked a teammate
+ * something (`waiting_on`, since 0.34.2).  An AI CLI cannot end a turn
+ * without writing, so every such turn leaves "I have asked, waiting" in
+ * the chat, and the answer that follows makes it old news.  Drawn
+ * quietly, with libclawt's line under it saying what is being waited
+ * for.  Called after the row is appended, as clawt_gtk_mark_crosstalk()
+ * is.
+ */
+void
+clawt_gtk_mark_waiting(ClawtWindow *self, const gchar *waiting_on)
+{
+    g_autofree gchar *note = NULL;
+    GtkWidget *row;
+    GtkWidget *label;
+
+    if (waiting_on == NULL || *waiting_on == '\0')
+        return;
+
+    row = gtk_widget_get_last_child(GTK_WIDGET(self->transcript));
+
+    if (row != NULL) {
+        gtk_widget_add_css_class(row, "clawt-interim");
+        gtk_widget_set_opacity(row, 0.6);
+    }
+
+    note = clawt_message_waiting_note(waiting_on);
+    label = gtk_label_new(note);
+    gtk_widget_add_css_class(label, "caption");
+    gtk_widget_add_css_class(label, "dim-label");
+    gtk_widget_add_css_class(label, "clawt-waiting-note");
+    gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+    gtk_widget_set_halign(label, GTK_ALIGN_START);
+    gtk_widget_set_tooltip_text(label, clawt_message_waiting_tooltip());
+    gtk_widget_set_margin_start(label, CHAT_ROW_MARGIN + CHAT_GUTTER);
+    gtk_widget_set_margin_end(label, CHAT_ROW_MARGIN);
+    gtk_widget_set_margin_top(label, 2);
+    gtk_box_append(self->transcript, label);
 }
 
 /* ── Folding a long request from another agent ─────────────────── */
@@ -4796,7 +4850,10 @@ clawt_gtk_load_history(ClawtWindow *self)
                                      clawt_json_int(message, "interrupted", 0) != 0,
                                      clawt_json_string(message, "steered", NULL));
             clawt_gtk_mark_crosstalk(self,
-                                     clawt_json_string(message, "crosstalk_room", NULL));
+                                     clawt_json_string(message, "crosstalk_room", NULL),
+                                     clawt_json_string(message, "answer_from", NULL));
+            clawt_gtk_mark_waiting(self,
+                                     clawt_json_string(message, "waiting_on", NULL));
             clawt_gtk_append_round_marks(self, 0,
                                      clawt_json_string(message, "skipped", NULL),
                                      clawt_json_string(message, "skip_reason", NULL),

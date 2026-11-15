@@ -1037,6 +1037,422 @@ test_the_daemon_wires_the_pair_budget(void)
 	fixture_teardown(&fixture);
 }
 
+/* ── What the room shows, and what is said once (0.34.2) ─────────── */
+
+#define SECOND ((gint64)G_USEC_PER_SEC)
+
+static GPtrArray *
+history_of(Fixture *fixture, const gchar *room_id)
+{
+	return clawt_room_get_history(
+		clawt_room_manager_get(fixture->daemon->rooms, room_id), 0);
+}
+
+/* The cross-talk summaries in @room_id: a Flow link, and not an answer. */
+static guint
+summaries_in(Fixture *fixture, const gchar *room_id)
+{
+	g_autoptr(GPtrArray) history = history_of(fixture, room_id);
+	guint found = 0;
+	guint i;
+
+	for (i = 0; i < history->len; i++) {
+		ClawtMessage *message = g_ptr_array_index(history, i);
+
+		found += clawt_message_get_crosstalk_rooms(message) != NULL &&
+		         clawt_message_get_answer_from(message) == NULL;
+	}
+
+	return found;
+}
+
+/* Ends what has gone quiet, then posts what has waited long enough. */
+static void
+tick_past(Fixture *fixture, gint64 seconds)
+{
+	gint64 now = g_get_real_time() + seconds * SECOND;
+
+	clawt_daemon_crosstalk_tick(fixture->daemon, now);
+	clawt_daemon_crosstalk_tick(fixture->daemon,
+		now + (CLAWT_CROSSTALK_COALESCE_SECONDS + 1) * SECOND);
+}
+
+/*
+ * The room keeps what a person reads, and the delivery carries the rest.
+ *
+ * The notice is a line in the operator's chat and the thing that starts
+ * the agent's turn.  The chat gets who answered, what they said and a
+ * link into Flow; the paragraph of tool advice travels only on the
+ * mailbox item.  And what the chief wrote when it asked is marked as
+ * the interim line it is.
+ */
+static void
+test_the_room_shows_the_answer_and_not_the_instructions(void)
+{
+	Fixture fixture = { 0 };
+	const gchar *chat;
+	const gchar *pair;
+	g_autoptr(GPtrArray) history = NULL;
+	g_autoptr(GPtrArray) said = NULL;
+	g_autoptr(GPtrArray) handed = NULL;
+	g_autofree gchar *label = NULL;
+	g_autofree gchar *note = NULL;
+	ClawtMessage *asked;
+	ClawtMessage *notice;
+
+	fixture_setup(&fixture, NULL);
+	connect_agent(&fixture, "chief");
+	connect_agent(&fixture, "worker");
+	chat = room_of(&fixture, "chief", "user");
+	pair = room_of(&fixture, "chief", "worker");
+
+	chief_asks_from_the_operators_chat(&fixture);
+	typing(&fixture, "worker", pair, TRUE);
+	closing_text(&fixture, "worker", pair, "Green as of ten minutes ago.");
+
+	history = history_of(&fixture, chat);
+	g_assert_cmpuint(history->len, ==, 2);
+
+	/* "I have asked the worker." -- waiting, and said to be. */
+	asked = g_ptr_array_index(history, 0);
+	g_assert_cmpstr(clawt_message_get_sender_id(asked), ==, "chief");
+	g_assert_cmpstr(clawt_message_get_waiting_on(asked), ==, "worker");
+
+	notice = g_ptr_array_index(history, 1);
+	g_assert_cmpstr(clawt_message_get_sender_id(notice), ==,
+	                CLAWT_SYSTEM_SENDER);
+	g_assert_cmpstr(clawt_message_get_body(notice), ==,
+	                "**worker answered:**\n\nGreen as of ten minutes ago.");
+	g_assert_cmpstr(clawt_message_get_answer_from(notice), ==, "worker");
+	g_assert_null(clawt_message_get_waiting_on(notice));
+
+	/* Its link opens the exchange, at the answer. */
+	said = history_of(&fixture, pair);
+	g_assert_cmpstr(clawt_message_get_crosstalk_rooms(notice), ==, pair);
+	g_assert_cmpstr(clawt_message_get_crosstalk_messages(notice), ==,
+	                clawt_message_get_id(g_ptr_array_index(said, 1)));
+
+	/* The agent is still told everything. */
+	handed = handed_to(&fixture, "chief");
+	g_assert_nonnull(strstr(clawt_mailbox_item_get_body(
+		only_in(handed, chat)), "pass turn_room"));
+
+	/* The words the three clients draw are libclawt's. */
+	label = clawt_message_answer_label("worker");
+	note = clawt_message_waiting_note("worker");
+	g_assert_cmpstr(label, ==, "Answer from worker");
+	g_assert_nonnull(strstr(note, "Waiting on worker"));
+
+	fixture_teardown(&fixture);
+}
+
+/*
+ * A handed-back answer is not summarised as well.
+ *
+ * The chief's chat already shows the worker's answer and then the
+ * chief's own reply; the cross-talk summary of the same exchange would
+ * be a third account of it.  With the hand-back off the summary is the
+ * only word the operator gets, and it still comes.
+ */
+static void
+test_a_handed_back_answer_is_not_summarised(void)
+{
+	Fixture fixture = { 0 };
+	const gchar *chat;
+	const gchar *pair;
+
+	fixture_setup(&fixture, NULL);
+	connect_agent(&fixture, "chief");
+	connect_agent(&fixture, "worker");
+	chat = room_of(&fixture, "chief", "user");
+	pair = room_of(&fixture, "chief", "worker");
+
+	chief_asks_from_the_operators_chat(&fixture);
+	typing(&fixture, "worker", pair, TRUE);
+	closing_text(&fixture, "worker", pair, "Green.");
+	typing(&fixture, "chief", chat, TRUE);
+	closing_text(&fixture, "chief", chat, "The build is green.");
+
+	tick_past(&fixture, 120);
+	g_assert_cmpuint(summaries_in(&fixture, chat), ==, 0);
+	fixture_teardown(&fixture);
+
+	memset(&fixture, 0, sizeof fixture);
+	fixture_setup(&fixture,
+		"orchestration:\n  answer_in_request_room: false\n");
+	connect_agent(&fixture, "chief");
+	connect_agent(&fixture, "worker");
+	chat = room_of(&fixture, "chief", "user");
+	pair = room_of(&fixture, "chief", "worker");
+
+	chief_asks_from_the_operators_chat(&fixture);
+	typing(&fixture, "worker", pair, TRUE);
+	closing_text(&fixture, "worker", pair, "Green.");
+	typing(&fixture, "chief", pair, TRUE);
+	closing_text(&fixture, "chief", pair, "Noted.");
+
+	tick_past(&fixture, 120);
+	g_assert_cmpuint(summaries_in(&fixture, chat), ==, 1);
+	fixture_teardown(&fixture);
+}
+
+/*
+ * A turn nobody asked for says a thing once.
+ *
+ * The answer's notice starts a turn in the operator's chat.  If the
+ * agent tells the operator with clawtilla_message_user and its CLI then
+ * writes "Already sent." on the way out, only the tool's message is
+ * delivered.  A turn that used no tool is heard, as every reply in the
+ * operator's chat is -- and so is a turn the operator *did* ask for,
+ * whatever tools it used.
+ */
+static void
+test_a_notice_turn_tells_the_operator_once(void)
+{
+	Fixture fixture = { 0 };
+	const gchar *chat;
+	const gchar *pair;
+	ClawtAgent *chief;
+	g_autoptr(GPtrArray) history = NULL;
+	g_autofree gchar *text = NULL;
+	gboolean is_error;
+	guint before;
+
+	fixture_setup(&fixture, NULL);
+	chief = connect_agent(&fixture, "chief");
+	connect_agent(&fixture, "worker");
+	chat = room_of(&fixture, "chief", "user");
+	pair = room_of(&fixture, "chief", "worker");
+
+	chief_asks_from_the_operators_chat(&fixture);
+	typing(&fixture, "worker", pair, TRUE);
+	closing_text(&fixture, "worker", pair, "Green.");
+
+	history = history_of(&fixture, chat);
+	before = history->len;
+	g_clear_pointer(&history, g_ptr_array_unref);
+
+	typing(&fixture, "chief", chat, TRUE);
+	text = call_tool(&fixture, "chief", chat, "clawtilla_message_user",
+		"{\"body\":\"The worker says the build is green.\"}", &is_error);
+	g_assert_false(is_error);
+	closing_text(&fixture, "chief", chat, "Already sent. Nothing else new.");
+
+	history = history_of(&fixture, chat);
+	g_assert_cmpuint(history->len, ==, before + 1);
+	g_assert_cmpstr(clawt_message_get_body(
+		g_ptr_array_index(history, history->len - 1)), ==,
+		"The worker says the build is green.");
+	g_clear_pointer(&history, g_ptr_array_unref);
+	g_clear_pointer(&text, g_free);
+
+	/* A turn the operator asked for is heard in full, tool or no tool. */
+	clawt_agent_deliver_turn(chief, chat, 0, TRUE, "user", NULL);
+	typing(&fixture, "chief", chat, TRUE);
+	text = call_tool(&fixture, "chief", chat, "clawtilla_message_user",
+		"{\"body\":\"Starting on it.\"}", &is_error);
+	g_assert_false(is_error);
+	closing_text(&fixture, "chief", chat, "Done: all three are fixed.");
+
+	history = history_of(&fixture, chat);
+	g_assert_cmpuint(history->len, ==, before + 3);
+	g_assert_cmpstr(clawt_message_get_body(
+		g_ptr_array_index(history, history->len - 1)), ==,
+		"Done: all three are fixed.");
+
+	/* It asked nobody, so nothing it wrote is an interim line. */
+	g_assert_null(clawt_message_get_waiting_on(
+		g_ptr_array_index(history, history->len - 1)));
+
+	fixture_teardown(&fixture);
+}
+
+/*
+ * The answer to a request the running turn made is handed to that turn.
+ *
+ * A daemon notice never steers -- five settle notices would be five
+ * interruptions -- but this one is what the turn is waiting for: an
+ * asker still running when its answer lands uses it once, where a
+ * queued copy would start a second turn about something the first has
+ * by then reported.  Every other rule still holds.
+ */
+static void
+test_a_handed_answer_steers_into_the_turn_that_asked(void)
+{
+	ClawtSteerFacts facts = { 0 };
+	const gchar *why = NULL;
+
+	facts.policy = CLAWT_STEER_DELEGATOR;
+	facts.link_can_steer = TRUE;
+	facts.turn_running = TRUE;
+	facts.person_room = TRUE;
+	facts.sender = CLAWT_SYSTEM_SENDER;
+	facts.turn_origin = "user";
+
+	/* Any other notice of the daemon's takes a turn of its own. */
+	g_assert_false(clawt_steer_decide(&facts, &why));
+	g_assert_nonnull(strstr(why, "notices take a turn"));
+
+	facts.handed_answer = TRUE;
+	g_assert_true(clawt_steer_decide(&facts, &why));
+	g_assert_nonnull(strstr(why, "request the running turn made"));
+
+	/* never is never; no turn, no steer; a group follows its rounds. */
+	facts.policy = CLAWT_STEER_NEVER;
+	g_assert_false(clawt_steer_decide(&facts, NULL));
+	facts.policy = CLAWT_STEER_DELEGATOR;
+
+	facts.turn_running = FALSE;
+	g_assert_false(clawt_steer_decide(&facts, NULL));
+	facts.turn_running = TRUE;
+
+	facts.link_can_steer = FALSE;
+	g_assert_false(clawt_steer_decide(&facts, NULL));
+	facts.link_can_steer = TRUE;
+
+	facts.group_room = TRUE;
+	g_assert_false(clawt_steer_decide(&facts, NULL));
+}
+
+/* ── Matrix: the answer goes back into the Matrix conversation ───── */
+
+#define MATRIX_CHIEF \
+	"integrations:\n" \
+	"  - name: home\n    type: matrix\n    scope: selected\n" \
+	"    agents: [chief]\n" \
+	"    homeserver: https://matrix.example.invalid\n" \
+	"    user_id: \"@chief:example.invalid\"\n" \
+	"    access_token: {env: CLAWT_TEST_MATRIX_TOKEN}\n" \
+	"    rooms: [\"!ops:example.invalid\"]\n"
+
+/* Everything written to @index's link since the last read. */
+static gchar *
+read_link(Fixture *fixture, guint index)
+{
+	GSocket *socket = g_ptr_array_index(fixture->sockets, index);
+	g_autoptr(GString) all = g_string_new(NULL);
+	gchar buffer[8192];
+	gssize got;
+
+	g_socket_set_blocking(socket, FALSE);
+
+	while ((got = g_socket_receive(socket, buffer, sizeof buffer, NULL,
+	                               NULL)) > 0)
+		g_string_append_len(all, buffer, got);
+
+	return g_string_free(g_steal_pointer(&all), FALSE);
+}
+
+/*
+ * An answer to something asked from a Matrix room starts a turn in that
+ * Matrix conversation.
+ *
+ * The chief was answering somebody in a room on its Matrix channel --
+ * a turn inside its libreclaw that the daemon never saw -- and asked
+ * the worker something.  Its runtime said which channel the room is on
+ * and whose conversation it is; so the worker's answer goes back over
+ * the link *for that conversation*, and nothing lands in the chief's
+ * mailbox or in the room the two agents share.  An agent whose runtime
+ * cannot do it, or a room nothing has named as Matrix, gets the answer
+ * the old way.
+ */
+static void
+test_the_answer_goes_back_into_the_matrix_conversation(void)
+{
+	Fixture fixture = { 0 };
+	const gchar *pair;
+	ClawtAgent *chief;
+	g_autoptr(GPtrArray) handed = NULL;
+	g_autoptr(GPtrArray) said = NULL;
+	g_autofree gchar *text = NULL;
+	g_autofree gchar *frames = NULL;
+	g_autofree gchar *channel = NULL;
+	g_autofree gchar *peer = NULL;
+	const gchar *frame;
+	gboolean is_error;
+
+	fixture_setup(&fixture, MATRIX_CHIEF);
+	chief = connect_agent(&fixture, "chief");
+	connect_agent(&fixture, "worker");
+	pair = room_of(&fixture, "chief", "worker");
+
+	/* What libreclaw 0.30.4 says: it can, and where this turn is. */
+	clawt_link_set_can_inject(clawt_agent_get_link(chief), TRUE);
+	clawt_agent_note_channel_room(chief, "!ops:example.invalid", "matrix",
+	                              "@zach:example.invalid");
+	g_assert_true(clawt_agent_get_channel_room(chief, "!ops:example.invalid",
+	                                           &channel, &peer));
+	g_assert_cmpstr(channel, ==, "matrix");
+	g_assert_cmpstr(peer, ==, "@zach:example.invalid");
+
+	typing(&fixture, "chief", "!ops:example.invalid", TRUE);
+	text = call_tool(&fixture, "chief", "!ops:example.invalid",
+		"clawtilla_message_agent",
+		"{\"agent_id\":\"worker\",\"body\":\"Is the build green?\"}",
+		&is_error);
+	g_assert_false(is_error);
+	typing(&fixture, "chief", "!ops:example.invalid", FALSE);
+
+	g_free(read_link(&fixture, 0));
+
+	typing(&fixture, "worker", pair, TRUE);
+	closing_text(&fixture, "worker", pair, "Green as of ten minutes ago.");
+
+	/* One frame to the chief, for its Matrix channel. */
+	frames = read_link(&fixture, 0);
+	frame = strstr(frames, "\"channel\":\"matrix\"");
+	g_assert_nonnull(frame);
+	g_assert_nonnull(strstr(frames, "\"room_id\":\"!ops:example.invalid\""));
+	g_assert_nonnull(strstr(frames,
+	                        "\"session_peer\":\"@zach:example.invalid\""));
+	g_assert_nonnull(strstr(frames, "Green as of ten minutes ago."));
+	g_assert_nonnull(strstr(frames, "posted in this room"));
+	g_assert_nonnull(strstr(frames, "\"overrides\":false"));
+
+	/* Nothing in its mailbox, and the answer on the record. */
+	handed = handed_to(&fixture, "chief");
+	g_assert_cmpuint(handed->len, ==, 0);
+	said = history_of(&fixture, pair);
+	g_assert_cmpuint(said->len, ==, 2);
+
+	fixture_teardown(&fixture);
+}
+
+/*
+ * The daemon tells an agent's libreclaw it may speak on its Matrix
+ * channel, and only an agent that has one.
+ */
+static void
+test_matrix_agents_may_be_handed_answers_there(void)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+		"integrations:\n"
+		"  - name: home\n    type: matrix\n    scope: selected\n"
+		"    agents: [alpha]\n"
+		"    homeserver: https://matrix.example.org\n"
+		"    user_id: \"@alpha:example.org\"\n"
+		"    access_token: {env: CLAWT_TEST_MATRIX_TOKEN}\n"
+		"agents:\n  - id: alpha\n  - id: beta\n", &error);
+	g_autofree gchar *alpha = NULL;
+	g_autofree gchar *beta = NULL;
+
+	g_assert_no_error(error);
+
+	alpha = clawt_config_render_agent(config,
+		clawt_config_get_agent(config, "alpha"), "/tmp/s.sock", "/tmp/state",
+		&error);
+	g_assert_no_error(error);
+	g_assert_nonnull(strstr(alpha, "inject_channels:"));
+	g_assert_nonnull(strstr(strstr(alpha, "inject_channels:"), "\"matrix\""));
+
+	beta = clawt_config_render_agent(config,
+		clawt_config_get_agent(config, "beta"), "/tmp/s.sock", "/tmp/state",
+		&error);
+	g_assert_no_error(error);
+	g_assert_null(strstr(beta, "inject_channels:"));
+}
+
 /* ── Matrix: the fleet's other accounts are named as bots ────────── */
 
 /*
@@ -1105,6 +1521,9 @@ main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 
+	/* What the test fleets' Matrix integrations resolve their token from. */
+	g_setenv("CLAWT_TEST_MATRIX_TOKEN", "syt_test_token", TRUE);
+
 	g_test_add_func("/request-answer/pair/a-round-is-a-turn",
 	                test_a_round_is_a_turn);
 	g_test_add_func("/request-answer/pair/the-budget-refuses",
@@ -1124,6 +1543,18 @@ main(int argc, char **argv)
 	g_test_add_func("/request-answer/daemon/pair-budget-is-wired",
 	                test_the_daemon_wires_the_pair_budget);
 
+	g_test_add_func("/request-answer/daemon/room-shows-the-answer",
+	                test_the_room_shows_the_answer_and_not_the_instructions);
+	g_test_add_func("/request-answer/daemon/handed-back-is-not-summarised",
+	                test_a_handed_back_answer_is_not_summarised);
+	g_test_add_func("/request-answer/daemon/notice-turn-tells-once",
+	                test_a_notice_turn_tells_the_operator_once);
+	g_test_add_func("/request-answer/steer/handed-answer",
+	                test_a_handed_answer_steers_into_the_turn_that_asked);
+	g_test_add_func("/request-answer/matrix/answer-into-the-conversation",
+	                test_the_answer_goes_back_into_the_matrix_conversation);
+	g_test_add_func("/request-answer/matrix/inject-channels-rendered",
+	                test_matrix_agents_may_be_handed_answers_there);
 	g_test_add_func("/request-answer/matrix/fleet-accounts-are-bot-users",
 	                test_the_fleets_matrix_accounts_are_bot_users);
 
