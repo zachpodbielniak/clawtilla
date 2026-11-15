@@ -55,6 +55,25 @@ PKG_DEPS = glib-2.0 gobject-2.0 gio-2.0 gio-unix-2.0 gmodule-2.0 libsoup-3.0 \
 PKG_CFLAGS := $(shell pkg-config --cflags $(PKG_DEPS))
 PKG_LIBS := $(shell pkg-config --libs $(PKG_DEPS))
 
+# libqrencode, for the QR code a phone scans to pair (src/clawt-qr.c).
+#
+# Optional, and deliberately kept out of PKG_DEPS: a module missing from
+# that list fails pkg-config for the whole list, and a build that cannot
+# draw a QR code is still a whole daemon -- every client falls back to
+# showing the pairing link as text.  Detected rather than requested, so a
+# host with the package gets the feature without anybody remembering a
+# flag; QRENCODE=0 turns it off on one that has it.  Fedora:
+# qrencode-devel to build, qrencode-libs at runtime.
+QRENCODE ?= $(shell pkg-config --exists libqrencode 2>/dev/null && echo 1 || echo 0)
+
+ifeq ($(QRENCODE),1)
+QRENCODE_CFLAGS := $(shell pkg-config --cflags libqrencode) -DCLAWT_HAVE_QRENCODE=1
+QRENCODE_LIBS   := $(shell pkg-config --libs libqrencode)
+else
+QRENCODE_CFLAGS :=
+QRENCODE_LIBS   :=
+endif
+
 # ── libreclaw (bundled under deps/libreclaw) ──────────────────────────
 #
 # liblc-1.0.a holds ONLY libreclaw's own objects, so a static link has to
@@ -200,7 +219,7 @@ LRG_SYS_LIBS = $(shell pkg-config --libs $(LRG_PKG_DEPS) 2>/dev/null) \
 # libreclaw's group without its yaml-glib (see above).
 LRG_LIBRECLAW_LIBS = $(filter-out $(LR_YAML_GLIB_DIR)/build/release/libyaml-glib-1.0.a,$(LIBRECLAW_LIBS))
 
-LRG_LDFLAGS = $(LDFLAGS_SAN) $(LRG_LIBRECLAW_LIBS) $(LRG_LIB) $(PKG_LIBS) $(LRG_SYS_LIBS) \
+LRG_LDFLAGS = $(LDFLAGS_SAN) $(LRG_LIBRECLAW_LIBS) $(LRG_LIB) $(PKG_LIBS) $(QRENCODE_LIBS) $(LRG_SYS_LIBS) \
               $(shell pkg-config --libs yaml-0.1)
 
 # Build directories
@@ -281,7 +300,7 @@ endif
 # We include <libreclaw.h>, which defines LC_INSIDE itself, so we do NOT
 # define LC_COMPILATION -- that macro is for building libreclaw, not for
 # consuming it.
-CFLAGS = $(CFLAGS_BASE) $(CFLAGS_OPT) $(CFLAGS_SAN) $(PKG_CFLAGS) \
+CFLAGS = $(CFLAGS_BASE) $(CFLAGS_OPT) $(CFLAGS_SAN) $(PKG_CFLAGS) $(QRENCODE_CFLAGS) \
          $(LIBRECLAW_CFLAGS) $(GSURF_CFLAGS) \
          -DCLAWT_COMPILATION \
          -DCLAWT_VERSION_MAJOR=$(VERSION_MAJOR) \
@@ -295,7 +314,7 @@ CFLAGS = $(CFLAGS_BASE) $(CFLAGS_OPT) $(CFLAGS_SAN) $(PKG_CFLAGS) \
          -DG_LOG_DOMAIN=\"Clawtilla\" \
          -I$(SRCDIR) -I$(OUTDIR)
 
-LDFLAGS = $(LDFLAGS_SAN) $(LIBRECLAW_LIBS) $(PKG_LIBS) -lm
+LDFLAGS = $(LDFLAGS_SAN) $(LIBRECLAW_LIBS) $(PKG_LIBS) $(QRENCODE_LIBS) -lm
 
 # Library names
 LIB_NAME = libclawt-1.0

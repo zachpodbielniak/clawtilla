@@ -79,6 +79,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/clawt-error.h \
 	$(SRCDIR)/clawt-util.h \
 	$(SRCDIR)/clawt-backup.h \
+	$(SRCDIR)/clawt-qr.h \
 	$(SRCDIR)/config/clawt-config-schema.h \
 	$(SRCDIR)/config/clawt-appearance.h \
 	$(SRCDIR)/config/clawt-secret-ref.h \
@@ -123,6 +124,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/ipc/clawt-client.h \
 	$(SRCDIR)/ipc/clawt-connection.h \
 	$(SRCDIR)/ipc/clawt-device-store.h \
+	$(SRCDIR)/ipc/clawt-pair-uri.h \
 	$(SRCDIR)/mailbox/clawt-mailbox-item.h \
 	$(SRCDIR)/memory/clawt-memory.h \
 	$(SRCDIR)/memory/clawt-memory-store.h \
@@ -254,6 +256,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/clawt-http.c \
 	$(SRCDIR)/clawt-net.c \
 	$(SRCDIR)/clawt-backup.c \
+	$(SRCDIR)/clawt-qr.c \
 	$(SRCDIR)/config/clawt-config-schema.c \
 	$(SRCDIR)/config/clawt-appearance.c \
 	$(SRCDIR)/config/clawt-schema-render.c \
@@ -335,6 +338,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/ipc/clawt-client.c \
 	$(SRCDIR)/ipc/clawt-connection.c \
 	$(SRCDIR)/ipc/clawt-device-store.c \
+	$(SRCDIR)/ipc/clawt-pair-uri.c \
 	$(SRCDIR)/memory/clawt-memory.c \
 	$(SRCDIR)/memory/clawt-memory-store.c \
 	$(SRCDIR)/memory/clawt-memory-journal.c \

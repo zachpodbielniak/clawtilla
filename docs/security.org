@@ -210,9 +210,24 @@ holds a token of its own.
 | Step | Where | What happens |
 |------+-------+--------------|
 | ~clawtilla device pair~ (or Settings, Devices, *Pair a new device*) | the owner | the daemon draws a six-digit code from ~/dev/urandom~, without modulo bias, good for five minutes |
-| *Pair with a code* (or ~clawtilla remote pair~) | the new device | the client connects and sends ~device.redeem~ with the code *instead of* ~control.hello~ |
+| *Pair with a code* (or ~clawtilla remote pair~, or scanning the QR code) | the new device | the client connects and sends ~device.redeem~ with the code *instead of* ~control.hello~ |
 | the daemon | | compares the code in constant time, spends it, draws a 256-bit token from ~/dev/urandom~, stores its SHA-256, and replies with the token -- the only reply that ever carries one |
 | the new device | | writes the token into its own ~connections.yaml~, mode 0600, and says an ordinary ~control.hello~ with it from then on |
+
+*** What the QR code carries
+
+The QR code a client draws for a phone (~--qr~, or *Pair a new device*)
+is the pairing link from ~device.pair~'s ~uri~: the same six-digit code
+and the same listening addresses the screen shows as text, a port and an
+optional device name -- nothing else.  It holds no token and no hash,
+and none could be added: the link is built from the code and
+~clawt_ipc_server_list_bound()~, and a token only ever exists in the
+~device.redeem~ reply to the device that redeemed the code.  So
+photographing the screen is worth exactly what reading the code over a
+shoulder is worth, and everything below still stops it: one code, five
+guesses, five minutes, single use, withdrawn when the dialog closes.
+The link is not written to any log; a refusal to parse one does not
+quote it, because it holds a live code.
 
 *** What stops a guessed code
 

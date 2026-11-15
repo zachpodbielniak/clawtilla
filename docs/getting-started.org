@@ -80,6 +80,7 @@ a dependency means adding a row there and a row here.
 | ~gobject-introspection-devel~ | ~libgirepository1.0-dev~ ~gobject-introspection~ | ~gobject-introspection~ | the ~.gir~ / ~.typelib~ step |
 | ~gtk4-devel~ | ~libgtk-4-dev~ | ~gtk4~ | the GTK client |
 | ~libadwaita-devel~ | ~libadwaita-1-dev~ | ~libadwaita~ | the GTK client |
+| ~qrencode-devel~ | ~libqrencode-dev~ | ~qrencode~ | QR codes for pairing a phone (optional) |
 
 Every one of those is needed to *build*, whether or not you will use what
 it is for: a package missing from ~PKG_DEPS~ makes ~pkg-config~ fail for
@@ -87,7 +88,12 @@ the whole list at once, which blanks ~PKG_CFLAGS~ and surfaces as a
 misleading ~glib.h: No such file or directory~.  The one exception is
 introspection, whose step is skipped with a message when it is absent;
 the GTK client is skipped the same way without libadwaita, because
-everything else here is headless and still useful.
+everything else here is headless and still useful.  libqrencode is
+optional too, and detected rather than requested: without it
+~config.mk~ leaves ~CLAWT_HAVE_QRENCODE~ undefined, everything still
+builds, and every client shows the pairing link as text where it would
+have drawn a QR code (~QRENCODE=0~ turns it off on a host that has it).
+At runtime the library is ~qrencode-libs~ on Fedora.
 
 Arch has no ~libpq~ package of its own; ~postgresql-libs~ carries it.
 
