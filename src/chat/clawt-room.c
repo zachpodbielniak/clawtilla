@@ -278,16 +278,40 @@ clawt_room_is_declared(const gchar *room_id)
      * has ever lived -- and a colon cannot appear in a declared id, so
      * the two sets cannot overlap.
      */
-    return !g_str_has_prefix(room_id, "dm:") &&
-           !g_str_has_prefix(room_id, "routine:") &&
-           !g_str_has_prefix(room_id, "trigger:") &&
-           !g_str_has_prefix(room_id, CLAWT_INCIDENT_ROOM_PREFIX);
+    /*
+     * Any colon, not a list of the prefixes known today.  A task's own
+     * room (`task:<id>`, delegation with `thread: new`) was missing from
+     * that list, so every one of them was a "declared" group room: it
+     * filled the sidebar as "alpha, gamma -- 2 members", offered Remove
+     * on a room that would come straight back, and counted in the
+     * rounds settings.  The next derived prefix would have done the same.
+     */
+    return strchr(room_id, ':') == NULL;
 }
 
 gboolean
 clawt_room_is_listed(const gchar *room_id)
 {
     return clawt_room_is_declared(room_id) || clawt_incident_room_is(room_id);
+}
+
+gchar *
+clawt_room_sidebar_subtitle(const gchar *room_id,
+                            guint        members,
+                            gboolean     require_mention)
+{
+    /*
+     * An incidents room's members are the desk that files and the lead
+     * it reports to; "1 members · everyone answers" described a room
+     * nobody answers in, with a plural on one.
+     */
+    if (clawt_incident_room_is(room_id))
+        return g_strdup("Broken runs, reported to the team's lead");
+
+    return g_strdup_printf("%u %s \302\267 %s", members,
+                           members == 1 ? "member" : "members",
+                           require_mention ? "answers when named"
+                                           : "everyone answers");
 }
 
 gchar *

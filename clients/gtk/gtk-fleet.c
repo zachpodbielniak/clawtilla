@@ -121,7 +121,7 @@ agent_row(ClawtWindow *self, JsonObject *agent, gint64 total, gint64 now,
      * bill, which is the question this page is read to answer.
      * usage.summary carries `failover` as agent.list does.
      */
-    fleet_fallback = clawt_gtk_failover_badge(agent);
+    fleet_fallback = clawt_gtk_failover_badge(agent, FALSE);
     if (fleet_fallback != NULL)
         adw_action_row_add_suffix(ADW_ACTION_ROW(row), fleet_fallback);
 

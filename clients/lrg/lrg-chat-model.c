@@ -367,7 +367,7 @@ clawt_lrg_agent_row_new(JsonObject *agent, GHashTable *unread,
      */
     if (json_object_has_member(agent, "failover") &&
         JSON_NODE_HOLDS_OBJECT(json_object_get_member(agent, "failover"))) {
-        row->fallback = clawt_failover_badge(
+        row->fallback = clawt_failover_sidebar_badge(
             json_object_get_object_member(agent, "failover"));
 
         if (row->fallback != NULL)
@@ -564,11 +564,9 @@ clawt_lrg_room_subtitle(JsonObject *room)
      * Whether being in it means answering everything: the thing somebody
      * needs to know about a room before they type in it.
      */
-    if (clawt_ipc_payload_boolean(room, "require_mention", FALSE))
-        return g_strdup_printf("%u members \302\267 answers when named",
-                               count);
-
-    return g_strdup_printf("%u members \302\267 everyone answers", count);
+    return clawt_room_sidebar_subtitle(
+        clawt_ipc_payload_string(room, "id"), count,
+        clawt_ipc_payload_boolean(room, "require_mention", FALSE));
 }
 
 typedef struct {

@@ -261,6 +261,21 @@ gboolean clawt_failover_is_active(JsonObject *failover);
 gchar *clawt_failover_badge(JsonObject *failover);
 
 /**
+ * clawt_failover_sidebar_badge:
+ * @failover: (nullable): an agent's `failover` object
+ *
+ * The badge for a sidebar row: "On fallback", without the model.  A row
+ * has an avatar, a name and a description to fit beside its badges, and
+ * "On fallback: claude-code haiku" took the width the description needed
+ * -- one word to a line in clawtilla-lrg, cut to "On fallb…" in GTK.
+ * Which backend, why and until when are on the agent's own page.
+ *
+ * Returns: (transfer full) (nullable): the text, or %NULL when the agent
+ *   is not on a fallback
+ */
+gchar *clawt_failover_sidebar_badge(JsonObject *failover);
+
+/**
  * clawt_failover_describe:
  * @agent: (nullable): the agent's name or id
  * @failover: (nullable): an agent's `failover` object

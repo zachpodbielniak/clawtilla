@@ -421,9 +421,9 @@ room_row(JsonObject *room, const gchar *selected_room, guint unread)
      * everything -- the second being what somebody needs to know about a
      * room before they type in it.
      */
-    meta_text = clawt_web_member_bool(room, "require_mention", FALSE)
-        ? g_strdup_printf("%u members \xc2\xb7 answers when named", count)
-        : g_strdup_printf("%u members \xc2\xb7 everyone answers", count);
+    meta_text = clawt_room_sidebar_subtitle(
+        id, count,
+        clawt_web_member_bool(room, "require_mention", FALSE));
 
     htmx_element_add_class(HTMX_ELEMENT(meta), "agent-meta");
     htmx_node_set_text_content(HTMX_NODE(meta), meta_text);

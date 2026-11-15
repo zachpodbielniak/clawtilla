@@ -185,8 +185,9 @@ void clawt_lrg_island_fold_activity(ClawtLrgIslandState *state,
  * @text with every character markdown gives a meaning backslash-escaped,
  * so a markdown label shows it exactly as written.  libregnum's plain
  * label draws one line; a wrapping paragraph of somebody's words is a
- * markdown label fed this.  Newlines are kept as hard breaks, because a
- * person's line break is part of what they wrote.
+ * markdown label fed this.  Each line becomes a paragraph of its own,
+ * because a person's line break is part of what they wrote and
+ * libregnum's markdown has no hard break to keep it with.
  *
  * Returns: (transfer full): escaped text; "" for %NULL
  */

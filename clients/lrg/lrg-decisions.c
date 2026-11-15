@@ -427,9 +427,16 @@ decision_card(JsonObject *decision, gint64 now_us)
         clawt_lrg_take(body, top);
     }
 
-    clawt_lrg_take(body, clawt_lrg_paragraph((question != NULL) ? question
-                                                                : "",
-                                             "heading"));
+    /*
+     * Without the loss paragraph when it is drawn on its own just
+     * below: the whole question said it twice.
+     */
+    {
+        g_autofree gchar *asked = clawt_decision_question_text(
+            question, (is_rebuild && proposal == NULL) ? loses : NULL);
+
+        clawt_lrg_take(body, clawt_lrg_paragraph(asked, "heading"));
+    }
 
     if (is_rebuild && loses != NULL) {
         g_autofree gchar *said = g_strdup_printf("What a rebuild destroys: %s",

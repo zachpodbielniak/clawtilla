@@ -663,15 +663,14 @@ clawt_redact_secrets(const gchar *text)
         NULL
     };
     /*
-     * The two `sk-` shapes refuse a letter or digit before them: every
-     * task id is `task-` and twenty letters and digits, so an unanchored
-     * `sk-[A-Za-z0-9]{20,}` read each one as a key and turned it into
-     * "ta[REDACTED]" -- in every event detail, transcript and settle
-     * notice that named a task.
+     * Each of these is matched only where a token can start (the loop
+     * below adds a look-behind): every task id is `task-` and twenty
+     * letters and digits, so an unanchored `sk-[A-Za-z0-9]{20,}` read
+     * each one as a key and turned it into "ta[REDACTED]".
      */
     static const gchar *standalone[] = {
-        "(?<![A-Za-z0-9])sk-ant-[A-Za-z0-9_-]{16,}",
-        "(?<![A-Za-z0-9])sk-[A-Za-z0-9]{20,}",
+        "sk-ant-[A-Za-z0-9_-]{16,}",
+        "sk-[A-Za-z0-9]{20,}",
         "gh[pousr]_[A-Za-z0-9]{20,}",
         "github_pat_[A-Za-z0-9_]{20,}",
         "gl(?:pat|rt|ptt|soat|feat|cbt|dr|ft|imt|oat|rt)-[A-Za-z0-9_-]{16,}",
@@ -748,7 +747,17 @@ clawt_redact_secrets(const gchar *text)
     }
 
     for (i = 0; standalone[i] != NULL; i++) {
-        g_autoptr(GRegex) regex = g_regex_new(standalone[i], 0, 0, NULL);
+        /*
+         * Only where a token can start: not in the middle of a word.
+         * Without the look-behind "sk-" plus twenty characters is found
+         * inside every task id -- "ta" + "sk-01m7eccee891gjaattmk" -- so
+         * each "Task task-... failed" notice reached the agent as "Task
+         * ta[REDACTED] failed", and the id it needed for
+         * clawtilla_task_retry was the one thing it could not read.
+         */
+        g_autofree gchar *anchored =
+            g_strconcat("(?<![A-Za-z0-9])", standalone[i], NULL);
+        g_autoptr(GRegex) regex = g_regex_new(anchored, 0, 0, NULL);
         gchar *replaced;
 
         if (regex == NULL)
