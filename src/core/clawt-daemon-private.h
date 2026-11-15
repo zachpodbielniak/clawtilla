@@ -143,6 +143,30 @@ struct _ClawtDaemon {
 	gchar      *ack_provider_spec;
 	AiProvider *ack_provider_override;
 
+	/*
+	 * The memory review (memories.review.*, daemon-memory-review.c): its
+	 * model, built on the first pass and rebuilt when the key changes;
+	 * a test's fake, which wins; the agent whose pass is in flight (one
+	 * at a time, fleet-wide); each agent's last failure, for the
+	 * clients; and the timer that looks for an agent that is due.  The
+	 * limit is 0 for CLAWT_MEMORY_REVIEW_TIMEOUT_MS, and set by tests.
+	 */
+	AiProvider *review_provider;
+	gchar      *review_provider_spec;
+	AiProvider *review_provider_override;
+	gchar      *review_running;
+
+	/*
+	 * An MCP app's own calls (connector.app_call, daemon-connector.c):
+	 * a test's stand-in for the relay's command line, and the limit (0
+	 * for CLAWT_MCP_APP_CALL_TIMEOUT_SECONDS).
+	 */
+	GStrv       app_call_command;
+	guint       app_call_timeout_seconds;
+	GHashTable *review_errors;
+	GSource    *review_tick;
+	guint       review_timeout_ms;
+
     ClawtExchange      *exchange;
 
     /*
@@ -1779,6 +1803,28 @@ gboolean clawt_daemon_ack_consider(ClawtDaemon  *self,
 
 /* A test's fake model; wins over orchestration.ack_check_model. */
 void clawt_daemon_ack_set_provider(ClawtDaemon *self, AiProvider *provider);
+
+/*
+ * The periodic memory review (daemon-memory-review.c).  Setup arms the
+ * timer and teardown removes it; the tick starts at most one pass, for
+ * an agent that is due; start runs one now (memory.review); the handler
+ * answers memory.proposals, memory.proposal_accept, _reject,
+ * memory.review and memory.review_set.  The provider is a test's fake
+ * and wins over memories.review.model.
+ */
+void      clawt_daemon_memory_review_setup(ClawtDaemon *self);
+void      clawt_daemon_memory_review_teardown(ClawtDaemon *self);
+void      clawt_daemon_memory_review_tick(ClawtDaemon *self);
+gboolean  clawt_daemon_memory_review_start(ClawtDaemon  *self,
+                                           const gchar  *agent_id,
+                                           GError      **error);
+void      clawt_daemon_memory_review_set_provider(ClawtDaemon *self,
+                                                  AiProvider  *provider);
+JsonNode *clawt_daemon_handle_memory_review(ClawtDaemon  *self,
+                                            const gchar  *kind,
+                                            JsonNode     *request,
+                                            JsonObject   *payload,
+                                            gboolean     *handled);
 
 /*
  * The message budget per task tree (daemon-tree.c).

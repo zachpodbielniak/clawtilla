@@ -3893,6 +3893,7 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
 
     build_waits(self);
     clawt_gtk_build_memory_review(self);
+    clawt_gtk_build_memory_proposals(self);
     build_agent_integrations(self);
 
     /*

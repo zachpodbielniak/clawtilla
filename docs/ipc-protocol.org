@@ -702,6 +702,36 @@ undone, ~CLAWT_ERROR_NOT_FOUND~ for one older than the journal keeps, and
 ~CLAWT_ERROR_PERMISSION_DENIED~ for a row in a shared database that this
 agent did not make.  Publishes ~memory.changed~.
 
+~memory.proposals~ (~agent~) → the periodic review's state and open
+proposals (~memories.review.*~): ~agent~, ~enabled~ (a JSON boolean: a
+model is named), ~model~ (the stored ~provider/model~, ~""~ for off),
+~model_label~ (=clawt_ack_check_model_label()=), ~interval_hours~,
+~last_run_at~ (unix seconds, 0 never), ~running~ (a pass for this agent
+is in flight), ~last_error~ when the last pass proposed nothing because
+it failed, timed out or answered something unreadable, and ~proposals~.
+Each proposal carries ~id~ (~p~ and sixteen hex digits), ~kind~
+(~merge~, ~forget~, ~pin~, ~unpin~), ~kind_label~
+(=clawt_memory_proposal_kind_label()=), ~line~
+(=clawt_memory_proposal_describe()=), ~content~ (a merge's text),
+~reason~ (the model's, clipped to one line), ~created_at~, and
+~memories~: each named memory's ~id~, its ~excerpt~ as it is now, and
+~present~ (a JSON boolean; false once it was forgotten since).
+
+~memory.proposal_accept~ (~agent~, ~id~) → ~accepted~.  Applies the
+proposal through the journaled store as ~operator~
+(=clawt_memory_proposal_apply()=) and takes it off the list; a proposal
+naming a memory that was forgotten since is refused with
+~CLAWT_ERROR_NOT_FOUND~ and stays listed, so it can be read and
+rejected.  ~memory.proposal_reject~ (~agent~, ~id~) → ~rejected~,
+changing nothing.  Both publish ~memory.changed~.
+
+~memory.review~ (~agent~) → ~started~: one pass now, refused while the
+review is off, while any pass is running, or for an agent with fewer
+than two memories.  ~memory.review_set~ (~model~ and/or
+~interval_hours~) → both as saved: the fleet's ~memories.review.model~
+(~provider/model~ or ~""~) and ~memories.review.interval_hours~ (1 to
+720), validated and saved like ~orchestration.set~.
+
 ~memory.recall~ (~query~, and optionally ~agent~, ~days~ and ~limit~) →
 ~hits~, ~full_text~ and ~indexed~.  This searches the *transcript*, not
 the memories: every message the fleet has routed, across every room and
@@ -937,21 +967,33 @@ Events, subject the agent: ~turn.no_reply~ (~room~, ~seconds~,
 *** steps.*
 
 Saved steps (see [[file:computers.org::#saved-steps][computers.org]]).  Each takes ~agent~; ~save~,
-~replay~ and ~delete~ take ~name~.
+~replay~, ~set_check~ and ~delete~ take ~name~.  A check is
+~picture-and-title~ or ~title-only~ (=ClawtStepCheck=).
 
 - ~steps.last~ → the agent's last turn that touched its screen, or an
-  empty object: ~finished_at~, ~calls~, ~saveable~ (a JSON boolean),
-  ~why_not~ and ~steps~ (one line per step, from
+  empty object: ~finished_at~, ~calls~, ~saveable~ (a JSON boolean:
+  savable at least as title only), ~why_not~, ~has_picture~ (a JSON
+  boolean), ~title~ (the focused window's when the turn began; absent
+  when it could not be read), ~check~ and ~check_label~ (what a Save
+  would use: picture and title when there is a picture, title only when
+  not) and ~steps~ (one line per step, from
   =clawt_saved_step_describe()=).
-- ~steps.save~ → ~saved~.  Refused, with the recorder's reason, for a
-  turn that cannot be saved; a name is letters, digits, spaces, ~-~,
-  ~_~ and ~.~.
-- ~steps.list~ → ~replaying~ and ~saved~ (~name~, ~created_at~, ~steps~).
+- ~steps.save~ (optional ~check~) → ~saved~ and ~check~.  Refused, with
+  the reason from =clawt_step_run_can_save()=, for a turn that cannot be
+  saved with that check; a name is letters, digits, spaces, ~-~, ~_~
+  and ~.~.
+- ~steps.list~ → ~replaying~ and ~saved~ (~name~, ~created_at~,
+  ~title~, ~check~, ~check_label~, ~check_line~ from
+  =clawt_step_check_describe()=, ~other_check~ and ~other_check_label~
+  when the list could be switched, and ~steps~).
+- ~steps.set_check~ (~check~) → ~check~.  Picture and title is refused
+  for a list saved with no picture.
 - ~steps.delete~ → ~deleted~.
-- ~steps.replay~ → ~started~, ~steps~; answered at once, and the end is
-  the ~steps.replayed~ event (~name~, ~ok~, ~done~, ~steps~, ~error~).
-  Refused for an agent with no screen, a screen not held, and a replay
-  already running.
+- ~steps.replay~ → ~started~, ~steps~, ~check~; answered at once, and
+  the end is the ~steps.replayed~ event (~name~, ~ok~, ~done~, ~steps~,
+  ~error~).  Refused for an agent with no screen, a screen not held, a
+  replay already running, a list saved before titles were recorded, and
+  one set to picture and title with no picture.
 
 ~computer.control~ takes ~arguments~ (the call's own object) beside
 ~tool~, which is what the steps are recorded from.  Events, subject the
@@ -1247,7 +1289,7 @@ itself -- never the credential); ~connector.begin~ and ~connector.await~;
 ~connector.key~; ~connector.refresh~; ~connector.revoke~;
 ~connector.registry_refresh~; ~connector.settings~;
 ~connector.tools_seen~; ~connector.result_trimmed~; ~connector.app~;
-~connector.app_get~.  Adding and removing a connector go through
+~connector.app_get~; ~connector.app_call~.  Adding and removing a connector go through
 ~integration.add~ and ~integration.remove~ like any other integration,
 and its ~directory~, ~max_result_bytes~ and ~show_apps~ are set with
 ~integration.update~ (an integer field takes a JSON number or a string
@@ -1334,6 +1376,7 @@ arrives from a file somebody edits by hand.
 | ~tool~    | the tool as the agent called it |
 | ~class~   | optional action class, when the caller knows better than the native table (the relays send ~external~ and ~desktop_input~) |
 | ~summary~ | the call, for a person asked to approve it |
+| ~origin~  | optional; ~app~ for a call an MCP app's view made (the app-call relay sends it): judged by the same rules, never marked as the agent's turn reaching outward |
 
 Reply: ~allowed~ (boolean) and, when refused, ~reason~. ~allow~ and ~deny~ answer at once; ~ask~, ~review~ and ~hand_back~ are deferred (see [[*Some replies arrive later][Some replies arrive later]]) until a person, a model or the inbox has answered -- up to ~policy.ask_timeout_seconds~. See [[file:security.org][security.org]], "Action policy".
 
@@ -1731,6 +1774,22 @@ under the agent named and nowhere else; an id that is not there is
 ~CLAWT_ERROR_NOT_FOUND~ whatever the reason.  The web client sets
 ~document~ verbatim; GTK and lrg ask it before opening ~url~, so a swept
 app is a toast rather than a browser on a missing page.
+
+*** connector.app_call
+
+Takes ~agent~, ~app~, ~tool~ (the server's own name) and optionally
+~arguments~ (an object, at most 256 KiB as JSON) and runs that tool for
+the app's view through =clawtilla connector relay <name> --agent <id>
+--app-call= (see [[file:connectors.org::*A view calling its own server's tools][connectors.org]]).  Deferred; the reply is ~result~, the
+~tools/call~ result object, which may itself say ~isError~ (the tool
+failed, or an action rule refused it).  Refused with
+~CLAWT_ERROR_NOT_FOUND~ for an app or connector that is not this agent's,
+~CLAWT_ERROR_PERMISSION_DENIED~ when *Show its apps in chat* is off or
+the tool is not visible to apps, ~CLAWT_ERROR_NOT_SUPPORTED~ for a
+confined agent, and ~CLAWT_ERROR_TIMEOUT~ past ten minutes.  Every call
+is recorded in the app's room as the app's (=clawt_mcp_app_call_note()=)
+and published as ~connector.app_called~ (subject the agent; ~app~,
+~connector~, ~tool~, ~ok~).
 
 A ~turn.step~ event and a ~room.steps~ element may carry ~app_id~,
 ~app_url~ and ~app_title~ (=CLAWT_STEP_MEMBER_APP=, =_APP_URL=,

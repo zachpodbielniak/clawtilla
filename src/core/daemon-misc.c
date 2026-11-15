@@ -1065,7 +1065,15 @@ clawt_daemon_handle_misc(
          * the direction that costs a rerun rather than a second email.
          * Not for a denial, which did nothing.
          */
-        if (mode != CLAWT_POLICY_DENY) {
+        /*
+         * An MCP app's own call (`origin: app`) is not the agent's turn
+         * reaching outward: the person pressed something in the app, and
+         * marking whichever turn happens to be running would make a
+         * restart refuse to rerun work the agent never did.
+         */
+        if (mode != CLAWT_POLICY_DENY &&
+            g_strcmp0(clawt_ipc_payload_string(payload, "origin"),
+                      "app") != 0) {
             g_autofree gchar *outward =
                 clawt_mcp_tools_relay_outward_label(tool, action);
             ClawtAgent *caller = clawt_agent_manager_get(self->agents, agent_id);

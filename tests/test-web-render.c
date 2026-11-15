@@ -2631,6 +2631,110 @@ test_the_app_host_bridge_checks_the_source(void)
     g_assert_nonnull(strstr(html, "f[i].contentWindow===src"));
     g_assert_nonnull(strstr(html, "ui/notifications/tool-result"));
     g_assert_nonnull(strstr(html, "not supported by clawtilla"));
+
+    /*
+     * A tools/call goes to the frame's own route, from this page and
+     * with this page's credentials -- never to an address the view named.
+     */
+    g_assert_nonnull(strstr(html, "m.method==='tools/call'"));
+    g_assert_nonnull(strstr(html, "getAttribute('data-app-call')"));
+    g_assert_nonnull(strstr(html, "credentials:'same-origin'"));
+}
+
+/* An opened app knows its own call route, and only for a real id. */
+static void
+test_an_app_frame_names_its_call_route(void)
+{
+    g_autoptr(JsonObject) app = app_reply(TRUE);
+    g_autoptr(HtmxElement) frame = clawt_web_app_frame(app);
+    g_autofree gchar *html = htmx_element_render(frame);
+    g_autofree gchar *route = attribute_value(html, "data-app-call");
+
+    g_assert_cmpstr(route, ==, "/a/oryx/app/a0123456789abcdef/call");
+
+    json_object_set_string_member(app, "id", "../../settings");
+    {
+        g_autoptr(HtmxElement) forged = clawt_web_app_frame(app);
+        g_autofree gchar *forged_html = htmx_element_render(forged);
+
+        g_assert_null(strstr(forged_html, "data-app-call"));
+    }
+}
+
+/*
+ * The bridge's half that runs in C: what a view's message becomes.  Only
+ * tools/call with a name and an id is a call; the two the extension
+ * defines and clawtilla decided against are refused by name.
+ */
+static void
+test_the_bridge_reads_a_views_message(void)
+{
+    g_autofree gchar *tool = NULL;
+    g_autofree gchar *refusal = NULL;
+    g_autoptr(JsonNode) arguments = NULL;
+    g_autoptr(JsonNode) id = NULL;
+    struct {
+        const gchar *body;
+        const gchar *says;
+    } refused[] = {
+        { "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"ui/message\","
+          "\"params\":{}}", "write into the conversation" },
+        { "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"ui/open-link\","
+          "\"params\":{\"url\":\"https://evil.example\"}}", "links" },
+        { "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"resources/read\"}",
+          "not supported" },
+        { "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\","
+          "\"params\":{\"name\":\"draw\"}}", "needs an id" },
+        { "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\","
+          "\"params\":{}}", "names a tool" },
+        { "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/call\","
+          "\"params\":{\"name\":\"draw\",\"arguments\":[1]}}",
+          "arguments are an object" },
+        { "not json at all", "not a JSON-RPC" },
+        { NULL, NULL }
+    };
+    guint i;
+
+    g_assert_true(clawt_web_app_bridge_parse(
+        "{\"jsonrpc\":\"2.0\",\"id\":\"c1\",\"method\":\"tools/call\","
+        "\"params\":{\"name\":\"save_view\",\"arguments\":{\"x\":1}}}",
+        &tool, &arguments, &id, &refusal));
+    g_assert_cmpstr(tool, ==, "save_view");
+    g_assert_null(refusal);
+    g_assert_cmpstr(json_node_get_string(id), ==, "c1");
+    g_assert_cmpint(json_object_get_int_member(json_node_get_object(arguments),
+                                               "x"), ==, 1);
+
+    for (i = 0; refused[i].body != NULL; i++) {
+        g_autofree gchar *t = NULL;
+        g_autofree gchar *r = NULL;
+        g_autoptr(JsonNode) a = NULL;
+        g_autoptr(JsonNode) n = NULL;
+
+        g_assert_false(clawt_web_app_bridge_parse(refused[i].body, &t, &a, &n,
+                                                  &r));
+        g_assert_null(t);
+        g_assert_nonnull(r);
+        g_assert_nonnull(strstr(r, "\"error\""));
+        g_assert_nonnull(strstr(r, refused[i].says));
+    }
+
+    /* The answer carries the view's own id back, result or error. */
+    {
+        g_autoptr(JsonObject) result = json_object_new();
+        g_autofree gchar *ok = NULL;
+        g_autofree gchar *failed = NULL;
+
+        json_object_set_boolean_member(result, "isError", FALSE);
+        ok = clawt_web_app_bridge_response(id, result, NULL);
+        failed = clawt_web_app_bridge_response(id, NULL, "not visible");
+
+        g_assert_nonnull(strstr(ok, "\"id\":\"c1\""));
+        g_assert_nonnull(strstr(ok, "\"result\":{\"isError\":false}"));
+        g_assert_nonnull(strstr(failed, "\"id\":\"c1\""));
+        g_assert_nonnull(strstr(failed, "not visible"));
+        g_assert_null(strstr(failed, "\"result\""));
+    }
 }
 
 int
@@ -2795,6 +2899,10 @@ main(int argc, char *argv[])
                     test_the_connector_forms_show_their_values);
     g_test_add_func("/web-render/app-host-bridge",
                     test_the_app_host_bridge_checks_the_source);
+    g_test_add_func("/web-render/app-call-route",
+                    test_an_app_frame_names_its_call_route);
+    g_test_add_func("/web-render/app-bridge-message",
+                    test_the_bridge_reads_a_views_message);
 
     return g_test_run();
 }

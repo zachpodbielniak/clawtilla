@@ -122,6 +122,9 @@ G_DECLARE_INTERFACE(ClawtObservable, clawt_observable, CLAWT, OBSERVABLE,
  * @observe_can_input: whether this screen accepts injected events
  * @observe_send_input: inject one
  * @observe_viewer_uri: a URI a real viewer can open, or %NULL
+ * @observe_geometry: the screen's own size, when it is known
+ * @observe_focused_title: the title of the window that has the window
+ *   manager's focus, "" when none has it
  *
  * What a backend with a screen implements.
  *
@@ -154,6 +157,9 @@ struct _ClawtObservableInterface {
     gboolean  (*observe_geometry)  (ClawtObservable  *self,
                                     guint            *width,
                                     guint            *height);
+
+    gchar *   (*observe_focused_title)(ClawtObservable  *self,
+                                       GError          **error);
 };
 
 /**
@@ -285,6 +291,27 @@ gchar *clawt_observable_viewer_uri(ClawtObservable *self);
 gboolean clawt_observable_geometry(ClawtObservable *self,
                                    guint           *width,
                                    guint           *height);
+
+/**
+ * clawt_observable_focused_title:
+ * @self: a #ClawtObservable
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The title of the window that has the window manager's focus -- the
+ * second half of a saved-steps checkpoint, beside the picture's hash.
+ *
+ * Asked of the same observing tools a frame is (gowl's
+ * `get_focused_client`, gnome-desktop-mcp's window list), so it costs no
+ * new grant.  "" means the screen answered and no window has the focus,
+ * which is a state a checkpoint can match; %NULL with @error set means
+ * it did not answer, which no checkpoint may match.  It may block, so it
+ * is called from #ClawtObserver's worker thread.  A backend that cannot
+ * say refuses, naming its type.
+ *
+ * Returns: (transfer full) (nullable): the title, or %NULL on an error
+ */
+gchar *clawt_observable_focused_title(ClawtObservable  *self,
+                                      GError          **error);
 
 /**
  * CLAWT_OBSERVE_MAX_FPS:

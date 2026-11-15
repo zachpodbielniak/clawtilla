@@ -53,6 +53,40 @@ hash_frame(
 
 /* ── Recording, from the gate and the turn's edges ───────────────── */
 
+/* One title read at a turn's start, waiting for its answer. */
+typedef struct {
+	ClawtDaemon *daemon;    /* owned */
+	gchar       *agent_id;
+	gint64       asked_at;  /* wall clock usec */
+} TitleRead;
+
+static void
+on_turn_title(
+	GObject      *source,
+	GAsyncResult *result,
+	gpointer      user_data
+){
+	TitleRead *read = user_data;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *title = NULL;
+
+	title = clawt_observer_read_title_finish(CLAWT_OBSERVER(source), result,
+		&error);
+
+	if (title == NULL)
+		g_debug("%s: the focused window's title was not read: %s",
+			read->agent_id, error != NULL ? error->message : "no reason");
+
+	/* NULL is kept too: an unread title must not leave an older one. */
+	if (read->daemon->step_recorder != NULL)
+		clawt_step_recorder_note_title(read->daemon->step_recorder,
+			read->agent_id, title, read->asked_at);
+
+	g_object_unref(read->daemon);
+	g_free(read->agent_id);
+	g_free(read);
+}
+
 void
 clawt_daemon_steps_turn_began(
 	ClawtDaemon *self,
@@ -80,8 +114,24 @@ clawt_daemon_steps_turn_began(
 	computer = (agent != NULL) ? clawt_agent_get_computer(agent) : NULL;
 
 	if (computer != NULL && CLAWT_IS_OBSERVABLE(computer) &&
-		self->observer != NULL)
+		self->observer != NULL) {
 		clawt_observer_refresh(self->observer, agent_id);
+
+		/*
+		 * The checkpoint's other half, the focused window's title, read
+		 * at the same moment and under the same rule: only for a screen
+		 * somebody is watching, so an unwatched agent costs nothing.
+		 */
+		if (clawt_observer_subscribers(self->observer, agent_id) > 0) {
+			TitleRead *read = g_new0(TitleRead, 1);
+
+			read->daemon = g_object_ref(self);
+			read->agent_id = g_strdup(agent_id);
+			read->asked_at = g_get_real_time();
+			clawt_observer_read_title_async(self->observer, computer,
+				on_turn_title, read);
+		}
+	}
 }
 
 void
@@ -146,6 +196,9 @@ typedef struct {
 	gchar       *agent_id;
 	gchar       *name;
 	gchar       *checkpoint;
+	gchar       *title;        /* the focused title it was saved with */
+	ClawtStepCheck check;
+	gchar       *hash;         /* the fresh picture's, when one was read */
 	GPtrArray   *events;
 	guint        next;
 	gint64       asked_at;     /* wall clock, when the picture was asked */
@@ -166,6 +219,8 @@ replay_free(
 	g_free(job->agent_id);
 	g_free(job->name);
 	g_free(job->checkpoint);
+	g_free(job->title);
+	g_free(job->hash);
 	g_clear_pointer(&job->events, g_ptr_array_unref);
 	g_free(job);
 }
@@ -204,6 +259,7 @@ replay_finish(
 }
 
 static void send_next(ReplayJob *job);
+static void check_title(ReplayJob *job);
 
 static void
 on_step_sent(
@@ -271,6 +327,63 @@ send_next(
 }
 
 /*
+ * The title, read now, then the whole checkpoint compared at once
+ * (clawt_saved_steps_check_screen()): nothing is sent unless the screen
+ * matches the way the list says it must.
+ */
+static void
+on_replay_title(
+	GObject      *source,
+	GAsyncResult *result,
+	gpointer      user_data
+){
+	ReplayJob *job = user_data;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *title = NULL;
+	g_autofree gchar *why = NULL;
+
+	title = clawt_observer_read_title_finish(CLAWT_OBSERVER(source), result,
+		&error);
+
+	if (title == NULL)
+		g_debug("%s: the focused window's title was not read: %s",
+			job->agent_id, error != NULL ? error->message : "no reason");
+
+	if (!clawt_saved_steps_check_screen(job->check, job->checkpoint,
+			job->title, job->hash, title, &why)) {
+		replay_finish(job, why);
+		return;
+	}
+
+	send_next(job);
+}
+
+static void
+check_title(
+	ReplayJob *job
+){
+	ClawtDaemon *self = job->daemon;
+	ClawtAgent *agent;
+	ClawtComputer *computer;
+
+	if (self->observer == NULL || self->agents == NULL) {
+		replay_finish(job, "the daemon stopped");
+		return;
+	}
+
+	agent = clawt_agent_manager_get(self->agents, job->agent_id);
+	computer = (agent != NULL) ? clawt_agent_get_computer(agent) : NULL;
+
+	if (computer == NULL || !CLAWT_IS_OBSERVABLE(computer)) {
+		replay_finish(job, "the agent no longer has a screen");
+		return;
+	}
+
+	clawt_observer_read_title_async(self->observer, computer,
+		on_replay_title, job);
+}
+
+/*
  * Waits for a picture taken after the replay asked, then compares it
  * with the checkpoint.  Polled rather than signalled: the observer has
  * no per-frame callback, and a quarter-second look at a stamp costs
@@ -311,15 +424,18 @@ on_frame_poll(
 	g_clear_pointer(&job->poll, g_source_unref);
 	hash = hash_frame(clawt_observer_get_frame_path(self->observer,
 		job->agent_id));
+	job->hash = g_steal_pointer(&hash);
 
-	if (g_strcmp0(hash, job->checkpoint) != 0) {
-		replay_finish(job, "the screen does not look the way it did when "
-			"these steps were saved, so nothing was sent; put it back as it "
-			"was (the same windows, nothing moved) and try again");
-		return G_SOURCE_REMOVE;
-	}
+	check_title(job);
 
-	send_next(job);
+	return G_SOURCE_REMOVE;
+}
+
+static gboolean
+on_title_only_start(
+	gpointer user_data
+){
+	check_title(user_data);
 
 	return G_SOURCE_REMOVE;
 }
@@ -335,7 +451,11 @@ start_replay(
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *dir = steps_dir(self);
 	g_autofree gchar *checkpoint = NULL;
+	g_autofree gchar *title = NULL;
+	g_autofree gchar *why = NULL;
 	g_autoptr(GPtrArray) events = NULL;
+	ClawtStepCheck check = CLAWT_STEP_CHECK_PICTURE_AND_TITLE;
+	guint steps_count;
 	ClawtAgent *agent = clawt_agent_manager_get(self->agents, agent_id);
 	ClawtComputer *computer = (agent != NULL)
 		? clawt_agent_get_computer(agent) : NULL;
@@ -362,34 +482,69 @@ start_replay(
 		return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
 			"a replay is already running on that screen");
 
-	events = clawt_saved_steps_get(dir, agent_id, name, &checkpoint, &error);
+	events = clawt_saved_steps_get(dir, agent_id, name, &checkpoint, &title,
+		&check, &error);
 
 	if (events == NULL)
 		return clawt_ipc_error_new(request, error->code, error->message);
+
+	/*
+	 * A list that could never match is refused here, before a picture
+	 * is asked for: saved before titles were recorded, or set to picture
+	 * and title with no picture.  The same function decides it later
+	 * against the screen, so the sentence is the same either way.
+	 */
+	if (title == NULL ||
+		(check == CLAWT_STEP_CHECK_PICTURE_AND_TITLE && checkpoint == NULL)) {
+		clawt_saved_steps_check_screen(check, checkpoint, title, NULL, "",
+			&why);
+		return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+			why);
+	}
 
 	job = g_new0(ReplayJob, 1);
 	job->daemon = g_object_ref(self);
 	job->agent_id = g_strdup(agent_id);
 	job->name = g_strdup(name);
 	job->checkpoint = g_steal_pointer(&checkpoint);
+	job->title = g_steal_pointer(&title);
+	job->check = check;
 	job->events = g_steal_pointer(&events);
 	job->asked_at = g_get_real_time();
 	job->gave_up_at = g_get_monotonic_time() + REPLAY_FRAME_WAIT_USEC;
+	steps_count = job->events->len;
 
 	g_hash_table_add(self->replays, g_strdup(agent_id));
 
-	/* A fresh picture first: nothing is sent until it matches. */
-	clawt_observer_refresh(self->observer, agent_id);
+	if (check == CLAWT_STEP_CHECK_TITLE_ONLY) {
+		/*
+		 * Title only: no picture to wait for -- a clock on the screen is
+		 * why this list was switched -- so straight to the title.  From
+		 * an idle on the daemon's context rather than from here, so the
+		 * reply to this request is not overtaken by the replay's end.
+		 */
+		GSource *idle = g_idle_source_new();
 
-	job->poll = g_timeout_source_new(REPLAY_FRAME_POLL_MS);
-	g_source_set_callback(job->poll, on_frame_poll, job, NULL);
-	g_source_attach(job->poll, self->main_context);
+		g_source_set_callback(idle, on_title_only_start, job, NULL);
+		g_source_attach(idle, self->main_context);
+		g_source_unref(idle);
+	} else {
+		/* A fresh picture first: nothing is sent until it matches. */
+		clawt_observer_refresh(self->observer, agent_id);
+
+		job->poll = g_timeout_source_new(REPLAY_FRAME_POLL_MS);
+		g_source_set_callback(job->poll, on_frame_poll, job, NULL);
+		g_source_attach(job->poll, self->main_context);
+	}
 
 	json_builder_begin_object(builder);
 	json_builder_set_member_name(builder, "started");
 	json_builder_add_boolean_value(builder, TRUE);
 	json_builder_set_member_name(builder, "steps");
-	json_builder_add_int_value(builder, (gint64)job->events->len);
+	json_builder_add_int_value(builder, (gint64)steps_count);
+	json_builder_set_member_name(builder, "check");
+	json_builder_add_string_value(builder,
+		clawt_enum_to_nick(CLAWT_TYPE_STEP_CHECK, (gint)check));
 	json_builder_end_object(builder);
 
 	return clawt_ipc_response_new(request, json_builder_get_root(builder));
@@ -437,6 +592,15 @@ add_steps(
 	}
 
 	json_builder_end_array(builder);
+}
+
+/* Picture and title when the run has a picture; title only when not. */
+static ClawtStepCheck
+default_check(
+	const ClawtStepRun *run
+){
+	return (run->checkpoint != NULL) ? CLAWT_STEP_CHECK_PICTURE_AND_TITLE
+	                                 : CLAWT_STEP_CHECK_TITLE_ONLY;
 }
 
 static void
@@ -493,15 +657,31 @@ clawt_daemon_handle_steps(
 		json_builder_begin_object(builder);
 
 		if (run != NULL) {
+			const gchar *why = NULL;
+			gboolean saveable = clawt_step_run_can_save(run,
+				CLAWT_STEP_CHECK_TITLE_ONLY, &why);
+			ClawtStepCheck check = default_check(run);
+
 			json_builder_set_member_name(builder, "finished_at");
 			json_builder_add_int_value(builder, run->finished_at);
 			json_builder_set_member_name(builder, "calls");
 			json_builder_add_int_value(builder, run->calls);
 			json_builder_set_member_name(builder, "saveable");
-			json_builder_add_boolean_value(builder,
-				run->saveable && run->checkpoint != NULL &&
-				run->events->len > 0);
-			clawt_daemon_add_string_member(builder, "why_not", run->why_not);
+			json_builder_add_boolean_value(builder, saveable);
+			clawt_daemon_add_string_member(builder, "why_not", why);
+
+			/*
+			 * The checkpoint's halves, and the check a Save would use:
+			 * picture and title when there is a picture, title only
+			 * when there is not.
+			 */
+			json_builder_set_member_name(builder, "has_picture");
+			json_builder_add_boolean_value(builder, run->checkpoint != NULL);
+			clawt_daemon_add_string_member(builder, "title", run->title);
+			clawt_daemon_add_string_member(builder, "check",
+				clawt_enum_to_nick(CLAWT_TYPE_STEP_CHECK, (gint)check));
+			clawt_daemon_add_string_member(builder, "check_label",
+				clawt_step_check_label(check));
 			add_steps(builder, run->events);
 		}
 
@@ -515,12 +695,22 @@ clawt_daemon_handle_steps(
 			? clawt_step_recorder_get_last(self->step_recorder, agent_id)
 			: NULL;
 
+		const gchar *nick = clawt_ipc_payload_string(payload, "check");
+		gint check = 0;
+
 		if (run == NULL)
 			return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
 				"that agent has not finished a turn on its screen since the "
 				"daemon started");
 
-		if (!clawt_saved_steps_save(dir, agent_id, name, run, &error))
+		if (nick == NULL)
+			check = (gint)default_check(run);
+		else if (!clawt_enum_from_nick(CLAWT_TYPE_STEP_CHECK, nick, &check))
+			return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+				"check is picture-and-title or title-only");
+
+		if (!clawt_saved_steps_save(dir, agent_id, name, run,
+				(ClawtStepCheck)check, &error))
 			return clawt_ipc_error_new(request, error->code, error->message);
 
 		publish_changed(self, agent_id);
@@ -528,6 +718,8 @@ clawt_daemon_handle_steps(
 		json_builder_begin_object(builder);
 		json_builder_set_member_name(builder, "saved");
 		json_builder_add_boolean_value(builder, TRUE);
+		clawt_daemon_add_string_member(builder, "check",
+			clawt_enum_to_nick(CLAWT_TYPE_STEP_CHECK, check));
 		json_builder_end_object(builder);
 		return clawt_ipc_response_new(request,
 			json_builder_get_root(builder));
@@ -556,13 +748,40 @@ clawt_daemon_handle_steps(
 			const gchar *entry_name = json_object_has_member(entry, "name")
 				? json_object_get_string_member(entry, "name") : NULL;
 			g_autofree gchar *checkpoint = NULL;
+			g_autofree gchar *title = NULL;
+			g_autofree gchar *line = NULL;
+			ClawtStepCheck check = CLAWT_STEP_CHECK_PICTURE_AND_TITLE;
+			ClawtStepCheck other;
 			g_autoptr(GPtrArray) events = clawt_saved_steps_get(dir,
-				agent_id, entry_name, &checkpoint, NULL);
+				agent_id, entry_name, &checkpoint, &title, &check, NULL);
+
+			other = clawt_step_check_other(check);
+			line = clawt_step_check_describe(check, title);
 
 			json_builder_begin_object(builder);
 			clawt_daemon_add_string_member(builder, "name", entry_name);
 			json_builder_set_member_name(builder, "created_at");
 			json_builder_add_int_value(builder, entry_int(entry, "created_at"));
+			clawt_daemon_add_string_member(builder, "title", title);
+			clawt_daemon_add_string_member(builder, "check",
+				clawt_enum_to_nick(CLAWT_TYPE_STEP_CHECK, (gint)check));
+			clawt_daemon_add_string_member(builder, "check_label",
+				clawt_step_check_label(check));
+			clawt_daemon_add_string_member(builder, "check_line", line);
+
+			/*
+			 * The one switch a client offers, named here so no client
+			 * spells a check of its own -- and offered only when it
+			 * could be taken: picture and title needs a picture.
+			 */
+			if (title != NULL &&
+				(other == CLAWT_STEP_CHECK_TITLE_ONLY || checkpoint != NULL)) {
+				clawt_daemon_add_string_member(builder, "other_check",
+					clawt_enum_to_nick(CLAWT_TYPE_STEP_CHECK, (gint)other));
+				clawt_daemon_add_string_member(builder, "other_check_label",
+					clawt_step_check_label(other));
+			}
+
 			add_steps(builder, events);
 			json_builder_end_object(builder);
 		}
@@ -590,6 +809,30 @@ clawt_daemon_handle_steps(
 	if (g_strcmp0(kind, "steps.replay") == 0)
 		return start_replay(self, request, agent_id, name);
 
+	/* How one saved list is checked: picture and title, or title only. */
+	if (g_strcmp0(kind, "steps.set_check") == 0) {
+		const gchar *nick = clawt_ipc_payload_string(payload, "check");
+		gint check = 0;
+
+		if (nick == NULL ||
+			!clawt_enum_from_nick(CLAWT_TYPE_STEP_CHECK, nick, &check))
+			return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+				"check is picture-and-title or title-only");
+
+		if (!clawt_saved_steps_set_check(dir, agent_id, name,
+				(ClawtStepCheck)check, &error))
+			return clawt_ipc_error_new(request, error->code, error->message);
+
+		publish_changed(self, agent_id);
+
+		json_builder_begin_object(builder);
+		clawt_daemon_add_string_member(builder, "check",
+			clawt_enum_to_nick(CLAWT_TYPE_STEP_CHECK, check));
+		json_builder_end_object(builder);
+		return clawt_ipc_response_new(request,
+			json_builder_get_root(builder));
+	}
+
 	return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
-		"steps.* is last, save, list, delete or replay");
+		"steps.* is last, save, list, delete, replay or set_check");
 }

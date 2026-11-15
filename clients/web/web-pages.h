@@ -347,6 +347,19 @@ void clawt_web_add_issues_card(ClawtWebApp *app, HtmxElement *parent,
  */
 void clawt_web_add_memory_review_card(ClawtWebApp *app, HtmxElement *parent,
                                       const gchar *agent_id);
+
+/**
+ * clawt_web_add_memory_proposals_card:
+ * @app: the app
+ * @parent: where the card goes
+ * @agent_id: whose memories
+ *
+ * The periodic review's card: the fleet's review model, Review now, and
+ * each proposal with Accept and Reject.
+ */
+void clawt_web_add_memory_proposals_card(ClawtWebApp *app,
+                                         HtmxElement *parent,
+                                         const gchar *agent_id);
 void clawt_web_register_extras(HtmxRouter *router, ClawtWebApp *app);
 
 /**

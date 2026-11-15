@@ -98,6 +98,10 @@ licence, send nothing, and exit 0.
 | ~sentinel [--output FILE] [--days N]~ | read the event log (read-only) for recurring trouble, as YAML; offline |
 | ~memory journal <agent>~ | every remember, forget and pin, and whether each can be undone |
 | ~memory undo <agent> <change> [--scope S]~ | take one change back; never adds words of its own |
+| ~memory proposals <agent>~ | what the periodic review suggests, with the memories each is about |
+| ~memory accept <agent> <proposal>~ | apply one suggestion through the journal, so ~memory undo~ can take it back |
+| ~memory reject <agent> <proposal>~ | drop one suggestion; nothing is changed |
+| ~memory review <agent>~ | run a review pass now (needs ~memories.review.model~) |
 | ~model~ | every provider and model, and which can run an agent |
 | ~image~ | container images clawtilla suggests, and your own |
 | ~image vm list/catalog/get/rm/cancel~ | disk images for VM agents |
@@ -666,7 +670,7 @@ The fleet allowlist, =egress.allow=, is on the *Shared folders* settings page un
 
 *** What an agent is waiting for
 
-The agent inspector has a *Memory review* group below *Waiting for*: the journal of every memory the agent remembered, forgot or pinned (~memory.journal~), newest first, each row titled with what happened and the start of the memory ("Forgot: The deploy key lives in vault"), the sentence saying who and when, and which shared database it was in when it was not the agent's own.  A row the daemon would undo has a button saying what the undo does -- *Archive it*, *Bring it back*, *Unpin it*, *Pin it again* (=clawt_memory_journal_undo_label()=) -- which sends ~memory.undo~; a row it would not has the reason instead (a later change to the same memory has to be undone first, it replaced an earlier version, it is already undone).  The list alone refills on ~memory.changed~.  The web client's agent page draws it as a card with an undo form per row, and the libregnum client's Overview as a section.  See [[file:agents.org::*Memory review: a journal and undo][agents.org]].
+The agent inspector has a *Memory review* group below *Waiting for*: the journal of every memory the agent remembered, forgot or pinned (~memory.journal~), newest first, each row titled with what happened and the start of the memory ("Forgot: The deploy key lives in vault"), the sentence saying who and when, and which shared database it was in when it was not the agent's own.  A row the daemon would undo has a button saying what the undo does -- *Archive it*, *Bring it back*, *Unpin it*, *Pin it again* (=clawt_memory_journal_undo_label()=) -- which sends ~memory.undo~; a row it would not has the reason instead (a later change to the same memory has to be undone first, it replaced an earlier version, it is already undone).  The list alone refills on ~memory.changed~.  The web client's agent page draws it as a card with an undo form per row, and the libregnum client's Overview as a section.  Below it, *Suggested by the review* lists what the periodic memory review (~memories.review.model~, off by default) proposes -- merge, forget, pin or unpin, with the memories each is about as they are now and the model's reason -- with *Accept* (applied through the journal, so it shows above with an Undo) and *Reject*, plus the fleet's model choice and *Review now*.  See [[file:agents.org::*Memory review: a journal and undo][agents.org]].
 
 The agent inspector has a *Waiting for* group, above the integrations: one row per pending wait the agent set with ~clawtilla_wait_until~, titled with the agent's own words for it, with the condition, a schedule line from ~clawt_wait_schedule_label()~ (~checked 4m ago · next check in 1m · expires in 23h~), what the last check saw, and a *Cancel* button.  Cancelling sends ~wait.cancel~, and the daemon tells the agent, which would otherwise go on believing it was waiting.  The list -- and only the list, never the form above it -- refills on every ~wait.changed~ event.  An agent that looks idle and is in fact waiting on a deploy is not one somebody should nudge, which is why it is on the agent's own view.  The web client's agent page draws the same list as a card with a Cancel form per row, and the libregnum client's Overview as a section.  How many an agent may have is ~max_waits~, in the agent's settings with the other fleet settings it may override.  See [[file:orchestration.org::*Waits: a condition checked by code][orchestration.org]].
 
@@ -1866,11 +1870,16 @@ arithmetic.
 last turn pressed on it (~steps.last~), one line per step, with a name
 field and *Save* when the daemon says the turn can be replayed exactly
 -- and the reason when it cannot (a call that is not a plain key, text,
-move, click or scroll; a secret typed; no picture from before the first
-step).  Each saved list has *Replay* and *Delete*.  Replay runs only
-while you hold the screen and only when a fresh picture of it hashes the
-same as the one taken before the steps were recorded; otherwise it
-sends nothing and says why.  See [[file:computers.org::#saved-steps][computers.org]].
+move, click or scroll; a secret typed; the focused window's title could
+not be read when the turn began).  Each saved list says how it is
+checked -- "Checked by picture and title (“Report — Editor”)" -- and has
+*Replay*, a *Check: Title only* (or *Check: Picture and title*) button
+that switches it (~steps.set_check~; the daemon names the other check),
+and *Delete*.  Replay runs only while you hold the screen and only when
+the focused window's title matches and, for picture and title, a fresh
+picture hashes the same as the one taken before the steps were
+recorded; otherwise it sends nothing and says which half differed.
+Title only is for a screen with a clock on it.  See [[file:computers.org::#saved-steps][computers.org]].
 
 *Open in a viewer* appears for a VM whose domain is running.  The GTK
 client spawns ~remote-viewer~ and names the package when it is missing;
@@ -2100,7 +2109,7 @@ A question with no options cannot be answered with a button; its card says so an
 
 Where the turn's tool calls are drawn, a status step that passes ~clawt_mcp_result_is_notice()~ -- "Result trimmed: forge's issues_list returned 2,104,332 bytes ..." -- is drawn in the warning colour, not dimmed, because somebody reading the conversation needs to know the agent saw part of a result before trusting what it concluded.  It is the daemon's step, recorded when a relay trims a result (~connector.result_trimmed~).
 
-A step that carries an MCP app (~clawt_turn_step_get_app_id()~) gets a button under it (=app_link_button=): =clawt_mcp_app_link_label()= of the app's title -- "Open Draw a diagram in the browser".  GTK has no HTML engine, so it does not draw the app; pressing the button asks the daemon for it (~connector.app_get~), which says if it has been swept, and opens the address the reply gives -- the web client's page for that app, built from ~connectors.apps_web_url~.  That is the recorded parity decision: the web client renders, GTK and lrg link out, and =make parity= checks each as an affordance row.  See "Apps in chat" in [[file:connectors.org][connectors.org]].
+A step that carries an MCP app (~clawt_turn_step_get_app_id()~) gets a button under it (=app_link_button=): =clawt_mcp_app_link_label()= of the app's title -- "Open Draw a diagram in the browser".  GTK has no HTML engine, so it does not draw the app; pressing the button asks the daemon for it (~connector.app_get~), which says if it has been swept, and opens the address the reply gives -- the web client's page for that app, built from ~connectors.apps_web_url~.  That is the recorded parity decision: the web client renders, GTK and lrg link out, and =make parity= checks each as an affordance row.  The same holds for a view calling its own server's tools (~connector.app_call~): only a drawn view can ask, so the call is made on the web client's page the link opens, and =make parity= records ~connector.app_call~ as an exception for GTK and lrg with that reason.  See "Apps in chat" in [[file:connectors.org][connectors.org]].
 
 *** Markdown
 

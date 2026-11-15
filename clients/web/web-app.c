@@ -294,6 +294,20 @@ clawt_web_app_request(ClawtWebApp  *self,
 }
 
 JsonNode *
+clawt_web_app_request_timeout(ClawtWebApp  *self,
+                              const gchar  *kind,
+                              JsonNode     *payload,
+                              gint          timeout_seconds,
+                              GError      **error)
+{
+    g_return_val_if_fail(CLAWT_IS_WEB_APP(self), NULL);
+    g_return_val_if_fail(kind != NULL, NULL);
+
+    return clawt_client_request_full(self->client, kind, payload,
+                                     timeout_seconds, error);
+}
+
+JsonNode *
 clawt_web_app_call(ClawtWebApp *self,
                    const gchar *kind,
                    JsonNode    *payload)

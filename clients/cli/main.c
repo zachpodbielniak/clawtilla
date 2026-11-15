@@ -2460,18 +2460,108 @@ cmd_memory(int argc, char *argv[])
 
     if (verb == NULL || target == NULL ||
         (g_strcmp0(verb, "list") != 0 && g_strcmp0(verb, "search") != 0 &&
-         g_strcmp0(verb, "journal") != 0 && g_strcmp0(verb, "undo") != 0)) {
+         g_strcmp0(verb, "journal") != 0 && g_strcmp0(verb, "undo") != 0 &&
+         g_strcmp0(verb, "proposals") != 0 &&
+         g_strcmp0(verb, "accept") != 0 && g_strcmp0(verb, "reject") != 0 &&
+         g_strcmp0(verb, "review") != 0)) {
         g_printerr("Usage: clawtilla memory list <agent> [--category C]\n");
         g_printerr("       clawtilla memory search <agent> <query>\n");
         g_printerr("       clawtilla memory journal <agent>\n");
         g_printerr("       clawtilla memory undo <agent> <change> "
                    "[--scope agent|team|fleet]\n");
+        g_printerr("       clawtilla memory proposals <agent>\n");
+        g_printerr("       clawtilla memory accept|reject <agent> "
+                   "<proposal>\n");
+        g_printerr("       clawtilla memory review <agent>\n");
         return EXIT_FAILURE;
     }
 
     client = connect_to_daemon();
     if (client == NULL)
         return EXIT_FAILURE;
+
+    /*
+     * The periodic review's proposals (memories.review.model): listed,
+     * and accepted or rejected one at a time.  Accepting is applied by
+     * the daemon through the journaled store, so `memory journal` shows
+     * it afterwards with an undo like any other change.
+     */
+    if (g_strcmp0(verb, "proposals") == 0) {
+        JsonObject *root;
+        JsonArray *rows;
+
+        reply = call(client, "memory.proposals",
+                     build_payload("agent", target, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        root = json_node_get_object(reply);
+        rows = json_object_get_array_member(root, "proposals");
+        g_print("Review: %s\n", member_or(root, "model_label", "Off"));
+
+        if (member_or(root, "last_error", NULL) != NULL)
+            g_print("Last pass: %s\n", member_or(root, "last_error", ""));
+
+        if (rows == NULL || json_array_get_length(rows) == 0) {
+            g_print("No proposals waiting.\n");
+            return EXIT_SUCCESS;
+        }
+
+        for (i = 0; i < json_array_get_length(rows); i++) {
+            JsonObject *row = json_array_get_object_element(rows, i);
+            JsonArray *about = json_object_get_array_member(row, "memories");
+            guint j;
+
+            g_print("%s  %s\n", member_or(row, "id", "?"),
+                    member_or(row, "line", ""));
+
+            if (member_or(row, "reason", NULL) != NULL)
+                g_print("    why: %s\n", member_or(row, "reason", ""));
+
+            if (member_or(row, "content", NULL) != NULL)
+                g_print("    into: %s\n", member_or(row, "content", ""));
+
+            for (j = 0; about != NULL && j < json_array_get_length(about);
+                 j++) {
+                JsonObject *memory = json_array_get_object_element(about, j);
+
+                g_print("    %s: %s\n", member_or(memory, "id", "?"),
+                        member_or(memory, "excerpt", "(gone)"));
+            }
+        }
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "accept") == 0 || g_strcmp0(verb, "reject") == 0) {
+        if (argc < 5) {
+            g_printerr("Usage: clawtilla memory %s <agent> <proposal>\n",
+                       verb);
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, g_strcmp0(verb, "accept") == 0
+                     ? "memory.proposal_accept" : "memory.proposal_reject",
+                     build_payload("agent", target, "id", argv[4], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print(g_strcmp0(verb, "accept") == 0
+                ? "Accepted; `clawtilla memory journal %s` can undo it.\n"
+                : "Rejected; nothing was changed for %s.\n", target);
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "review") == 0) {
+        reply = call(client, "memory.review",
+                     build_payload("agent", target, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Reviewing; `clawtilla memory proposals %s` lists what it "
+                "suggests.\n", target);
+        return EXIT_SUCCESS;
+    }
 
     /*
      * The review: every remember, forget and pin, and an undo per row.
@@ -6088,8 +6178,26 @@ connector_connect(ClawtClient *client, const gchar *name)
  * restart in progress, not a fleet without rules.
  */
 static gboolean
+relay_policy_gate_full(const gchar *agent_id, const gchar *tool,
+                       const gchar *klass, const gchar *origin,
+                       gchar **refusal);
+
+static gboolean
 relay_policy_gate(const gchar *agent_id, const gchar *tool, const gchar *klass,
                   gchar **refusal)
+{
+    return relay_policy_gate_full(agent_id, tool, klass, NULL, refusal);
+}
+
+/*
+ * As relay_policy_gate(), saying who is asking: `app` for a call an MCP
+ * app's view made, so the approval card says so and the daemon does not
+ * count it against a turn the agent is running.
+ */
+static gboolean
+relay_policy_gate_full(const gchar *agent_id, const gchar *tool,
+                       const gchar *klass, const gchar *origin,
+                       gchar **refusal)
 {
     g_autoptr(ClawtClient) client = connect_to_daemon();
     g_autoptr(JsonNode) reply = NULL;
@@ -6104,12 +6212,21 @@ relay_policy_gate(const gchar *agent_id, const gchar *tool, const gchar *klass,
      * is then left out -- and the call counts against every running turn
      * (docs/mailboxes.org, "A turn a restart cut short").
      */
-    reply = clawt_client_request_full(
-        client, "policy.check",
-        build_payload("agent", agent_id, "tool", tool, "class", klass,
-                      "summary", tool, "room", g_getenv("CLAWTILLA_ROOM_ID"),
-                      NULL),
-        3600, NULL);
+    {
+        g_autofree gchar *summary = (origin != NULL)
+            ? g_strdup_printf("%s, asked by an app in chat (not the model)",
+                              tool)
+            : g_strdup(tool);
+
+        reply = clawt_client_request_full(
+            client, "policy.check",
+            build_payload("agent", agent_id, "tool", tool, "class", klass,
+                          "summary", summary, "origin", origin,
+                          "room", (origin != NULL) ? NULL
+                                  : g_getenv("CLAWTILLA_ROOM_ID"),
+                          NULL),
+            3600, NULL);
+    }
     if (reply == NULL || !JSON_NODE_HOLDS_OBJECT(reply))
         return TRUE;
 
@@ -6130,6 +6247,18 @@ connector_policy_gate(const gchar *tool, JsonObject *arguments,
 
     *refusal = NULL;
     return relay_policy_gate(user_data, tool, "external", refusal);
+}
+
+/* The same rules for a call an MCP app's view made, said as the app's. */
+static gboolean
+connector_app_policy_gate(const gchar *tool, JsonObject *arguments,
+                          gchar **refusal, gpointer user_data)
+{
+    (void)arguments;
+
+    *refusal = NULL;
+    return relay_policy_gate_full(user_data, tool, "external", "app",
+                                  refusal);
 }
 
 /*
@@ -6332,7 +6461,7 @@ on_connector_catalogued(ClawtMcpDirectory *directory, gpointer user_data)
 }
 
 static gint
-connector_relay(const gchar *name, const gchar *agent_id)
+connector_relay(const gchar *name, const gchar *agent_id, gboolean app_call)
 {
     g_autoptr(ClawtConfig) config = NULL;
     g_autoptr(GPtrArray) catalog = NULL;
@@ -6350,6 +6479,12 @@ connector_relay(const gchar *name, const gchar *agent_id)
 
     if (name == NULL) {
         g_printerr("clawtilla: connector relay needs a name\n");
+        return EXIT_FAILURE;
+    }
+
+    /* An app's call is asked of an agent's rules, so it needs the agent. */
+    if (app_call && agent_id == NULL) {
+        g_printerr("clawtilla: connector relay --app-call needs --agent\n");
         return EXIT_FAILURE;
     }
 
@@ -6502,6 +6637,32 @@ connector_relay(const gchar *name, const gchar *agent_id)
      * several accounts it is named for this one, and so is every tool
      * name it shows.
      */
+    /*
+     * The relay the daemon starts for an MCP app's own call
+     * (connector.app_call): the same plan, credential, granted list and
+     * action rules -- through connector_app_policy_gate(), which says
+     * the app is asking -- with the server's own tool names (the app is
+     * the server's code and knows no account prefix), no directory in
+     * front, no result budget (the daemon bounds what it reads), and
+     * apps turned around so only tools visible to apps may be called.
+     */
+    if (app_call) {
+        if (!clawt_integration_binding_get_boolean(binding, "show_apps")) {
+            g_printerr("clawtilla: connector '%s' does not show its apps in "
+                       "chat\n", name);
+            return EXIT_FAILURE;
+        }
+
+        plan->accounts = FALSE;
+        g_clear_pointer(&plan->account_prefix, g_free);
+        plan->apps = clawt_mcp_apps_new(
+            name, plan->argv != NULL || url_is_loopback(plan->url));
+        clawt_mcp_apps_set_app_caller(plan->apps, TRUE);
+
+        return clawt_connector_relay_run_full(plan, connector_app_policy_gate,
+                                              (gpointer)agent_id, NULL);
+    }
+
     /*
      * The result budget: the connector's own, else the fleet's.  Whole
      * results are kept only for an agent -- a relay run by hand has
@@ -6772,9 +6933,20 @@ cmd_connector(int argc, char *argv[])
      * Before connecting to anything: the relay is started by an agent's
      * own CLI and speaks its own protocol on stdout.
      */
-    if (g_strcmp0(verb, "relay") == 0)
-        return connector_relay(name, (argc > 5 && g_strcmp0(argv[4], "--agent") == 0)
-                                         ? argv[5] : NULL);
+    if (g_strcmp0(verb, "relay") == 0) {
+        const gchar *agent_id = NULL;
+        gboolean app_call = FALSE;
+        gint arg;
+
+        for (arg = 4; arg < argc; arg++) {
+            if (g_strcmp0(argv[arg], "--agent") == 0 && arg + 1 < argc)
+                agent_id = argv[++arg];
+            else if (g_strcmp0(argv[arg], "--app-call") == 0)
+                app_call = TRUE;
+        }
+
+        return connector_relay(name, agent_id, app_call);
+    }
 
     client = connect_to_daemon();
 

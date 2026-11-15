@@ -190,9 +190,11 @@ A small host bridge in the page head speaks the MCP Apps protocol to the frame o
 | ~ui/initialize~                  | answers with the protocol version, ~hostInfo: clawtilla~, no capabilities, and the light or dark theme |
 | ~ui/notifications/initialized~   | sends ~ui/notifications/tool-input~ and ~ui/notifications/tool-result~ |
 | ~ui/notifications/size-changed~  | resizes the frame, between 120 and 1600 pixels                    |
+| ~tools/call~ with an id          | ~POST~s the message, from the page, to the frame's ~data-app-call~ route and posts the JSON-RPC answer back |
+| ~ui/message~, ~ui/open-link~     | a JSON-RPC error saying clawtilla does not do that (from the route) |
 | anything else that has an id     | a JSON-RPC error, -32601 "not supported by clawtilla"              |
 
-So a view shows what its tool returned and cannot call tools, send a message or open a link through clawtilla.
+~data-app-call~ is =/a/<agent>/app/<app>/call=, set only for an app id of the daemon's shape.  The route (=on_app_call()= in =web-chat.c=, registered with the chat routes) reads the message with =clawt_web_app_bridge_parse()=, asks ~connector.app_call~ with a limit longer than the daemon's own (so the daemon's sentence arrives rather than a timeout), and always answers 200 with one JSON-RPC response (=clawt_web_app_bridge_response()=) carrying the view's own id.  The same-origin check every write passes applies: the fetch is the page's, not the frame's.  So a view can call its own server's tools that it is allowed to -- see [[file:connectors.org::*A view calling its own server's tools][connectors.org]] -- and cannot write into the conversation or open a link.
 
 =/a/<agent>/app/<app>= is the same frame on a page of its own, in the ordinary page shell: what GTK and lrg open, since they cannot draw it.
 
@@ -278,14 +280,14 @@ answers with the page it did it on.
 | =/decisions/proposal=         | Approve, Reject or Edit a skill an agent proposed (~skill.proposal_resolve~); a refusal is shown as an error page, not swallowed by the redirect, since the proposal is still waiting |
 | =/activity/:agent/stop=, =/activity/:agent/steer=, =/f/activity= | the Activity page's actions and its polled panel |
 | =/a/:id/rescue= | the chat's first-reply rescue: Stop, or the same message again on another model (~turn.rescue~); before =/a/:id/:view= |
-| =/a/:id/steps/save=, =/a/:id/steps/replay=, =/a/:id/steps/delete= | the Screen view's saved steps (~steps.*~); before =/a/:id/:view= |
+| =/a/:id/steps/save=, =/a/:id/steps/replay=, =/a/:id/steps/check=, =/a/:id/steps/delete= | the Screen view's saved steps (~steps.*~; ~check~ is ~steps.set_check~); before =/a/:id/:view= |
 | =/issues/scan= | the Activity page's *Scan now*: ~sentinel.scan~, then back to the page |
 | =/fleet-usage/:agent/stop=, =/fleet-usage/stop-idle=, =/f/fleet-usage= | the Fleet page's actions and its polled panel (=?period== picks the window) |
 | =/a/:id/browser/open=, =/a/:id/browser/click=, =/a/:id/browser/stop=, =/a/:id/browser/frame=, =/f/a/:id/browser= | the Computer page's Browser view: its actions, its picture and its polled panel |
 | =/triggers/...=, =/f/triggers/:trigger/match= | the Triggers page's actions, and the fragment a trigger's "Check against the last delivery" swaps in under its condition lines |
 | =/r/:id=                      | a group room; also the open-room link, which redirects an agent or a direct room to its chat and answers a name nobody has with 404 and a sentence (see [[file:clients.org::#open-room-links][open-room links]]) |
 | =/a/:id/exchange=, =/f/a/:id/exchange= | the exchange between two agents (~?with=<peer>~), as a page and as the side panel's fragment; registered with the chat routes, ahead of =/a/:id/:view= |
-| =/a/:id/app/:app=, =/a/:id/app/:app/frame= | an MCP app shown in chat: its own page (what GTK and lrg link to) and the fragment the chat's *Open app* swaps in; registered with the chat routes, ahead of =/a/:id/:view= |
+| =/a/:id/app/:app=, =/a/:id/app/:app/frame=, =/a/:id/app/:app/call= | an MCP app shown in chat: its own page (what GTK and lrg link to), the fragment the chat's *Open app* swaps in, and its view's own ~tools/call~ (~POST~, JSON in and out); registered with the chat routes, ahead of =/a/:id/:view= |
 | =/manifest.webmanifest=       | the web app manifest, ~application/manifest+json~ |
 | =/events=                     | the SSE stream                          |
 | =/static=                     | the vendored scripts and the app icons  |
@@ -540,7 +542,7 @@ failure the rule exists to prevent, arrived at from the other direction.
 
 *** Memory review
 
-The agent page has a *Memory review* card below *Waiting for*, from ~memory.journal~: each journal row's action and excerpt, who and when, a badge naming the shared database for a team or fleet row, and either an undo form (labelled by =clawt_memory_journal_undo_label()=) posting to ~/a/:id/memory/undo~ -- registered by =clawt_web_register_review()= before the ~/a/:id/:view~ catch-all -- or the daemon's reason it cannot be undone.
+The agent page has a *Memory review* card below *Waiting for*, from ~memory.journal~: each journal row's action and excerpt, who and when, a badge naming the shared database for a team or fleet row, and either an undo form (labelled by =clawt_memory_journal_undo_label()=) posting to ~/a/:id/memory/undo~ -- registered by =clawt_web_register_review()= before the ~/a/:id/:view~ catch-all -- or the daemon's reason it cannot be undone.  Below it, *Suggested by the review* (=clawt_web_add_memory_proposals_card()=, ~memory.proposals~): the fleet's review model as a select posting ~memory.review_set~ to ~/a/:id/memory/review-model~, when the agent was last reviewed or why the last pass proposed nothing, a *Review now* form (~/a/:id/memory/review~), and each proposal with its memories, reason and merged text and an Accept/Reject form (~/a/:id/memory/proposal~); all registered by =clawt_web_register_review()=.  See [[file:agents.org::*The periodic review ("dream"): proposals, never changes][agents.org]].
 
 *** Waiting for
 

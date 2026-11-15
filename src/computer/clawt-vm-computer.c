@@ -2773,6 +2773,33 @@ vm_observe_geometry(ClawtObservable *observable, guint *width, guint *height)
     return TRUE;
 }
 
+/*
+ * The guest session's focused window, asked inside that session the way
+ * a frame is -- the extension's window list, as the account GDM logged
+ * in.
+ */
+static gchar *
+vm_observe_focused_title(ClawtObservable *observable, GError **error)
+{
+    ClawtVmComputer *self = CLAWT_VM_COMPUTER(observable);
+    g_auto(GStrv) tail = clawt_screen_gnome_windows_argv();
+    g_autofree gchar *reply = NULL;
+    g_autofree gchar *json = NULL;
+    gchar *title = NULL;
+
+    reply = vm_session_run(self, tail, error);
+
+    if (reply == NULL)
+        return NULL;
+
+    json = clawt_screen_parse_gdbus_string(reply);
+
+    if (!clawt_screen_parse_focused_title(json, &title, error))
+        return NULL;
+
+    return title;
+}
+
 static void
 vm_observable_init(ClawtObservableInterface *iface)
 {
@@ -2782,6 +2809,7 @@ vm_observable_init(ClawtObservableInterface *iface)
     iface->observe_send_input = vm_observe_send_input;
     iface->observe_viewer_uri = vm_observe_viewer_uri;
     iface->observe_geometry = vm_observe_geometry;
+    iface->observe_focused_title = vm_observe_focused_title;
 }
 
 /*
