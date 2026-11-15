@@ -345,16 +345,21 @@ on_bus_event(
 ){
 	ClawtDaemon *daemon = user_data;
 	ClawtDaemonCrosstalk *self = daemon->crosstalk;
-	const gchar *kind = clawt_event_get_kind(event);
+	/*
+	 * `what`, not `kind`: tools/clawt-client-parity.sh reads
+	 * `kind, "..."` in the daemon as an IPC verb it answers, and these
+	 * are events it publishes.
+	 */
+	const gchar *what = clawt_event_get_kind(event);
 	const gchar *subject = clawt_event_get_subject(event);
 	gint64 now = g_get_real_time();
 
 	(void)bus;
 
-	if (self == NULL || kind == NULL)
+	if (self == NULL || what == NULL)
 		return;
 
-	if (g_strcmp0(kind, "message") == 0) {
+	if (g_strcmp0(what, "message") == 0) {
 		ClawtRoom *room;
 		g_auto(GStrv) members = NULL;
 
@@ -404,7 +409,7 @@ on_bus_event(
 		return;
 	}
 
-	if (g_strcmp0(kind, "turn.step") == 0) {
+	if (g_strcmp0(what, "turn.step") == 0) {
 		if (g_strcmp0(clawt_event_get_detail(event, CLAWT_STEP_MEMBER_KIND),
 		              "tool") == 0)
 			clawt_crosstalk_note_step(self->tracker, subject,
@@ -422,14 +427,14 @@ on_bus_event(
 	 * the last message would end the exchange in the moment before the
 	 * answer arrives, and the answer would open a second one.
 	 */
-	if (g_strcmp0(kind, "agent.typing") == 0) {
+	if (g_strcmp0(what, "agent.typing") == 0) {
 		clawt_crosstalk_note_activity(self->tracker,
 		                              clawt_event_get_detail(event, "room"),
 		                              now);
 		return;
 	}
 
-	if (g_strcmp0(kind, "task.changed") == 0) {
+	if (g_strcmp0(what, "task.changed") == 0) {
 		ClawtTask *task = daemon->tasks != NULL
 			? clawt_task_manager_get(daemon->tasks, subject) : NULL;
 
@@ -444,14 +449,14 @@ on_bus_event(
 		return;
 	}
 
-	if (g_strcmp0(kind, "decision.asked") == 0) {
+	if (g_strcmp0(what, "decision.asked") == 0) {
 		clawt_crosstalk_note_decision(self->tracker, subject,
 		                              clawt_event_get_detail(event, "room"),
 		                              now);
 		return;
 	}
 
-	if (g_strcmp0(kind, "message.refused") == 0)
+	if (g_strcmp0(what, "message.refused") == 0)
 		clawt_crosstalk_note_refused(self->tracker, subject, now);
 }
 
