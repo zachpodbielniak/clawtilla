@@ -86,17 +86,21 @@ on_list_clicked(
 	ClawtLrgApp *app = user_data;
 	const gchar *kind = g_object_get_data(G_OBJECT(button), "clawt-kind");
 	const gchar *name = g_object_get_data(G_OBJECT(button), "clawt-name");
+	const gchar *check = g_object_get_data(G_OBJECT(button), "clawt-check");
 
 	if (app->agent_id == NULL)
 		return;
 
 	clawt_lrg_request(app, kind,
 	                  clawt_ipc_payload_new("agent", app->agent_id,
-	                                        "name", name, NULL),
+	                                        "name", name, "check", check,
+	                                        NULL),
 	                  CLAWT_LRG_REQUEST_NONE, on_done,
 	                  g_strcmp0(kind, "steps.replay") == 0
 	                      ? (gpointer)"Checking the screen against the saved "
-	                        "picture, then replaying."
+	                        "checkpoint, then replaying."
+	                      : g_strcmp0(kind, "steps.set_check") == 0
+	                      ? (gpointer)"Changed how these steps are checked."
 	                      : (gpointer)"Deleted.", NULL);
 }
 
@@ -140,9 +144,12 @@ on_last(
 			json_object_get_array_member(run, "steps"));
 		gboolean saveable = clawt_ipc_payload_boolean(run, "saveable", FALSE);
 		const gchar *why = clawt_ipc_payload_string(run, "why_not");
-		g_autofree gchar *said = g_strdup_printf("Its last turn: %s.%s%s",
-			line, saveable ? "" : " Cannot be saved: ",
-			saveable ? "" : (why != NULL ? why : "unknown"));
+		const gchar *check = clawt_ipc_payload_string(run, "check_label");
+		g_autofree gchar *said = saveable
+			? g_strdup_printf("Its last turn: %s. Saved, it is checked by: "
+				"%s.", line, check != NULL ? check : "?")
+			: g_strdup_printf("Its last turn: %s. Cannot be saved: %s",
+				line, why != NULL ? why : "unknown");
 
 		clawt_lrg_paragraph_set_text(steps.last, said);
 		lrg_widget_set_enabled(steps.save, saveable);
@@ -171,13 +178,35 @@ on_list(
 	for (i = 0; saved != NULL && i < json_array_get_length(saved); i++) {
 		JsonObject *entry = json_array_get_object_element(saved, i);
 		const gchar *name = clawt_ipc_payload_string(entry, "name");
-		g_autofree gchar *line = steps_line(
+		g_autofree gchar *steps_text = steps_line(
 			json_object_has_member(entry, "steps")
 				? json_object_get_array_member(entry, "steps") : NULL);
+		const gchar *check_line = clawt_ipc_payload_string(entry,
+			"check_line");
+		const gchar *other = clawt_ipc_payload_string(entry, "other_check");
+		g_autofree gchar *line = g_strdup_printf("%s \302\267 %s", steps_text,
+			check_line != NULL ? check_line : "");
 		LrgWidget *row = clawt_lrg_row(name != NULL ? name : "?", line);
 
 		clawt_lrg_row_add_suffix(row, list_button(app, "Replay", "flat",
 		                                          "steps.replay", name));
+		/*
+		 * How it is checked, switched by one button the daemon names:
+		 * title only is for a screen with a clock on it.
+		 */
+		if (other != NULL) {
+			const gchar *other_label = clawt_ipc_payload_string(entry,
+				"other_check_label");
+			g_autofree gchar *label = g_strdup_printf("Check: %s",
+				other_label != NULL ? other_label : other);
+			LrgWidget *check = list_button(app, label, "flat",
+			                               "steps.set_check", name);
+
+			g_object_set_data_full(G_OBJECT(check), "clawt-check",
+			                       g_strdup(other), g_free);
+			clawt_lrg_row_add_suffix(row, check);
+		}
+
 		clawt_lrg_row_add_suffix(row, list_button(app, "Delete", "danger",
 		                                          "steps.delete", name));
 		clawt_lrg_take(steps.list, row);

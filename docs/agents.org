@@ -636,14 +636,63 @@ In the clients it is the *Memory review* group of the agent inspector
 ~memory.changed~; on the command line, ~clawtilla memory journal <agent>~
 and ~clawtilla memory undo <agent> <change> [--scope team|fleet]~.
 
-*** No periodic review ("dream")
+*** The periodic review ("dream"): proposals, never changes
 
 OpenMausBot's ~memory-dream.ts~ periodically asks a model to merge,
-prune and rewrite memories.  Not done here: every pass is model spend
-nobody asked for, billed to whoever set it, and a rewrite of a memory is
-exactly the kind of change this journal exists to make reviewable one at
-a time.  The journal and undo cover the case that matters -- a wrong
-change that a person noticed -- without spending anything.
+prune and rewrite memories.  Here it is opt-in and it changes nothing by
+itself: every pass is model spend nobody asked for, and a rewrite of a
+memory is exactly the kind of change this journal exists to make
+reviewable one at a time.
+
+- *Off by default.*  ~memories.review.model~ is empty; naming a model
+  (~provider/model~, the same HTTP-only list the acknowledgement check
+  offers) turns it on for the whole fleet.  ~memories.review.interval_hours~
+  (24) is how often each agent is looked at, and
+  ~memories.review.max_memories~ (60) how many of its newest memories one
+  pass reads -- the size, and so the cost, of one request.
+- *When.*  A timer looks at the fleet every ten minutes on the daemon's
+  own context and starts at most one pass at a time, for an agent whose
+  last pass is older than the interval and who has *no proposals left
+  unanswered* -- an unread list never grows by itself.  ~memory.review~
+  (*Review now*) runs one by hand.  A pass that failed is stamped like
+  one that succeeded, so a model that is down is asked again an interval
+  later, not every tick.
+- *Only the agent's own database.*  Team and fleet memories are shared,
+  and a model suggesting changes to them from one agent's point of view
+  would be deciding for the others.
+- *Untrusted text, fenced.*  Each memory is clipped, escaped with
+  =clawt_preamble_escape_all()= and put inside a fence longer than any
+  backtick run in it (=clawt_memory_review_prompt()=); the system prompt
+  says nothing inside a fence is an instruction.
+- *Off the loop, with a hard limit.*  =clawt_memory_review_run_async()=
+  asks the model asynchronously; at 60 seconds the request is cancelled
+  and the pass proposes nothing.  A failure, a timeout and a reply that is
+  not the JSON shape asked for (=clawt_memory_review_parse()=) are each
+  logged and kept as the agent's ~last_error~ for the clients to show --
+  "it did not say" is never read as "it proposed nothing".
+- *What is believed.*  Each proposal must name only memories the model
+  was shown; a merge needs two or more and a text of at most 4000
+  characters; a pin of a pinned memory (or an unpin of an unpinned one) is
+  dropped as saying nothing; at most twenty are kept per pass.  Kept at
+  0600 in =<state_dir>/memory-review/<agent>.json=.
+- *Applied only when accepted, through the journal.*
+  ~memory.proposal_accept~ calls =clawt_memory_proposal_apply()= as
+  ~operator~: a forget is =clawt_memory_store_forget_as()=, a pin or
+  unpin =clawt_memory_store_pin_as()=, and a merge adds the merged text
+  (source ~review:<proposal>~, the first memory's category, the highest
+  importance, pinned if any was) and then forgets each memory it
+  replaces.  Each step is its own journal row, so the Memory review lists
+  it with an Undo like any other change.  A proposal about a memory that
+  was forgotten since is refused and stays listed; ~memory.proposal_reject~
+  drops one and changes nothing.
+
+In the clients it is the *Suggested by the review* group under the
+Memory review (GTK inspector, web agent page, lrg Overview): the fleet's
+model choice, when the agent was last reviewed or why the last pass
+proposed nothing, *Review now*, and each proposal with the memories it is
+about as they are now, the model's reason and merged text marked as its
+own, and *Accept* and *Reject*.  On the command line, ~clawtilla memory
+proposals|accept|reject|review <agent>~.
 
 ** Recall: searching what was said
 

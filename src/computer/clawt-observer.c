@@ -849,6 +849,74 @@ clawt_observer_send_input_finish(ClawtObserver  *self,
     return g_task_propagate_boolean(G_TASK(result), error);
 }
 
+/* ── The focused window's title, off the loop ───────────────────── */
+
+static void
+title_thread(GTask        *task,
+             gpointer      source_object,
+             gpointer      task_data,
+             GCancellable *cancellable)
+{
+    ClawtComputer *computer = task_data;
+    g_autoptr(GError) error = NULL;
+    gchar *title;
+
+    (void)source_object;
+    (void)cancellable;
+
+    title = clawt_observable_focused_title(CLAWT_OBSERVABLE(computer),
+                                           &error);
+
+    if (title == NULL) {
+        g_task_return_error(task, g_steal_pointer(&error));
+        return;
+    }
+
+    g_task_return_pointer(task, title, g_free);
+}
+
+void
+clawt_observer_read_title_async(ClawtObserver       *self,
+                                ClawtComputer       *computer,
+                                GAsyncReadyCallback  callback,
+                                gpointer             user_data)
+{
+    GTask *task;
+
+    g_return_if_fail(CLAWT_IS_OBSERVER(self));
+    g_return_if_fail(CLAWT_IS_COMPUTER(computer));
+
+    /* On the observer's context, for the reason send_input names one. */
+    if (self->context != NULL)
+        g_main_context_push_thread_default(self->context);
+
+    task = g_task_new(self, NULL, callback, user_data);
+    g_task_set_task_data(task, g_object_ref(computer), g_object_unref);
+
+    if (!CLAWT_IS_OBSERVABLE(computer))
+        g_task_return_new_error(task, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                                "%s has no screen", G_OBJECT_TYPE_NAME(
+                                    computer));
+    else
+        g_task_run_in_thread(task, title_thread);
+
+    g_object_unref(task);
+
+    if (self->context != NULL)
+        g_main_context_pop_thread_default(self->context);
+}
+
+gchar *
+clawt_observer_read_title_finish(ClawtObserver  *self,
+                                 GAsyncResult   *result,
+                                 GError        **error)
+{
+    g_return_val_if_fail(CLAWT_IS_OBSERVER(self), NULL);
+    g_return_val_if_fail(g_task_is_valid(result, self), NULL);
+
+    return g_task_propagate_pointer(G_TASK(result), error);
+}
+
 void
 clawt_observer_drop_agent(ClawtObserver *self, const gchar *agent_id)
 {

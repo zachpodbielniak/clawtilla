@@ -693,6 +693,45 @@ HtmxElement *clawt_web_app_card(const gchar *agent_id,
 HtmxElement *clawt_web_app_frame(JsonObject *app);
 
 /**
+ * clawt_web_app_bridge_parse:
+ * @body: (nullable): what the page's host bridge forwarded: the view's
+ *   own JSON-RPC message, as it was posted
+ * @tool: (out) (transfer full): the tool it asks for
+ * @arguments: (out) (transfer full) (nullable): its arguments object
+ * @id: (out) (transfer full) (nullable): the message's id, to answer with
+ * @refusal: (out) (transfer full) (nullable): when it is not a call the
+ *   host makes, the JSON-RPC answer refusing it
+ *
+ * Reads one message a view sent for its server.  Only `tools/call` with
+ * a name, an id and (optionally) an arguments object is a call;
+ * `ui/message` and `ui/open-link` -- a view writing into the
+ * conversation, or sending the person to an address it chose -- and
+ * anything else are refused, with the reason in @refusal.  Kept out of
+ * the page's script so it is tested without a browser.
+ *
+ * Returns: %TRUE for a call to make
+ */
+gboolean clawt_web_app_bridge_parse(const gchar  *body,
+                                    gchar       **tool,
+                                    JsonNode    **arguments,
+                                    JsonNode    **id,
+                                    gchar       **refusal);
+
+/**
+ * clawt_web_app_bridge_response:
+ * @id: (nullable): the view's message id
+ * @result: (nullable): the tool's result object
+ * @error: (nullable): why there is none
+ *
+ * The JSON-RPC answer the page's bridge posts back into the view.
+ *
+ * Returns: (transfer full): one JSON-RPC response
+ */
+gchar *clawt_web_app_bridge_response(JsonNode    *id,
+                                     JsonObject  *result,
+                                     const gchar *error);
+
+/**
  * clawt_web_budget_form:
  * @escaped: the connector's name, URI-escaped
  * @own: its own `max_result_bytes`, -1 when it sets none

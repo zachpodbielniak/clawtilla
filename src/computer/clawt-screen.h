@@ -159,6 +159,38 @@ GBytes *clawt_screen_decode_frame(const gchar *encoded, GError **error);
 GStrv clawt_screen_gnome_monitors_argv(void);
 
 /**
+ * clawt_screen_gnome_windows_argv:
+ *
+ * The `gdbus` command that lists the windows -- the method behind
+ * gnome-desktop-mcp's `list_windows` tool, whose entries carry `title`
+ * and `focused`.
+ *
+ * Returns: (transfer full) (array zero-terminated=1): the argv
+ */
+GStrv clawt_screen_gnome_windows_argv(void);
+
+/**
+ * clawt_screen_parse_focused_title:
+ * @json: (nullable): what the desktop answered: gowl's
+ *   `get_focused_client` object (or `null`), or a window list whose
+ *   focused entry says `focused` (or `has_focus`) is true
+ * @title: (out) (transfer full): the focused window's title, "" when
+ *   no window has the focus
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Reads the focused window's title out of either backend's answer.
+ * One function for both, so the checkpoint is the same string whichever
+ * compositor wrote it.  Anything else -- text that is not JSON, an entry
+ * whose title is not a string, two focused windows -- is an error: a
+ * checkpoint read wrongly is one a replay would then match wrongly.
+ *
+ * Returns: %TRUE when the answer said which window, or that none
+ */
+gboolean clawt_screen_parse_focused_title(const gchar  *json,
+                                          gchar       **title,
+                                          GError      **error);
+
+/**
  * clawt_screen_parse_gdbus_string:
  * @text: what `gdbus call` printed
  *

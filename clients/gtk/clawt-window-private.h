@@ -506,6 +506,14 @@ struct _ClawtWindow {
      */
     GtkListBox        *inspector_memory_review;
     /*
+     * The review's proposals under it (memories.review.model): the
+     * setting, Review now, and an Accept and a Reject per proposal.
+     * Weak, like the list above; the flag keeps a rebuild of the model
+     * choice from saving the value it is only displaying.
+     */
+    GtkListBox        *inspector_memory_proposals;
+    gboolean           inspector_review_loading;
+    /*
      * The Activity page's Issues (gtk-issues.c): the sentinel's report,
      * and the line above it saying how old it is.
      */
@@ -1492,6 +1500,12 @@ clawt_gtk_build_memory_review(ClawtWindow *self);
 
 void
 clawt_gtk_refresh_memory_review(ClawtWindow *self);
+
+/*
+ * The review's proposals under it, refilled with the Memory review.
+ */
+void
+clawt_gtk_build_memory_proposals(ClawtWindow *self);
 
 /*
  * The Activity page's Issues (gtk-issues.c): built under the running

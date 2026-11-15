@@ -666,4 +666,26 @@ gsize clawt_identity_notice_bytes(gsize limit);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtIdentitySize, clawt_identity_size_free)
 
+/**
+ * clawt_workspace_connector_relay_argv:
+ * @config: the fleet configuration
+ * @connector: the connector's integration name
+ * @agent_id: (nullable): the agent whose action rules each call is asked
+ *   of
+ * @daemon_socket: (nullable): the daemon's socket, for those questions
+ * @app_call: %TRUE for the relay that carries an MCP app's own calls
+ *   (`--app-call`), %FALSE for the agent's
+ *
+ * The connector relay's command line -- the one spelling, used for an
+ * agent's `.mcp.json` entry and for the relay the daemon starts when an
+ * app in chat calls its own server's tools.
+ *
+ * Returns: (transfer full) (array zero-terminated=1): the argv
+ */
+GStrv clawt_workspace_connector_relay_argv(ClawtConfig *config,
+                                           const gchar *connector,
+                                           const gchar *agent_id,
+                                           const gchar *daemon_socket,
+                                           gboolean     app_call);
+
 G_END_DECLS
