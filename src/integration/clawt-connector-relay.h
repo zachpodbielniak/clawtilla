@@ -35,6 +35,7 @@
 #endif
 
 #include <glib-object.h>
+#include <libsoup/soup.h>
 
 #include "integration/clawt-connector.h"
 #include "integration/clawt-integration.h"
@@ -232,6 +233,35 @@ gint clawt_connector_relay_run_full(ClawtConnectorPlan *plan,
                                     ClawtMcpRelayGate   gate,
                                     gpointer            gate_data,
                                     ClawtMcpDirectory  *directory);
+
+/**
+ * clawt_connector_relay_run_http_on: (skip)
+ * @plan: an HTTP plan (@plan's url set)
+ * @gate: (scope call) (nullable): asked once per tool call
+ * @gate_data: data for @gate
+ * @directory: (nullable): the tool directory, as for
+ *   clawt_connector_relay_run_full()
+ * @session: the session requests go out on
+ * @in: the client's messages, one per line
+ * @out: where the answers are written, one per line
+ *
+ * The HTTP bridge on streams and a session the caller supplies, with the
+ * policy clawt_connector_relay_run_full() builds from @plan.  The relay
+ * process uses stdin, stdout and a session of its own; this is for
+ * tests, which point @session's `remote-connectable` at a server on a
+ * unix socket so a successful reply runs the whole forwarding path with
+ * no network.  Synchronous, like the relay: run it off the thread whose
+ * context serves the server.
+ *
+ * Returns: the exit status the relay process would have
+ */
+gint clawt_connector_relay_run_http_on(ClawtConnectorPlan *plan,
+                                       ClawtMcpRelayGate   gate,
+                                       gpointer            gate_data,
+                                       ClawtMcpDirectory  *directory,
+                                       SoupSession        *session,
+                                       GInputStream       *in,
+                                       GOutputStream      *out);
 
 /**
  * clawt_connector_relay_body_text:

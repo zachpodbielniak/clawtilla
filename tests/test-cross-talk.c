@@ -522,6 +522,209 @@ test_a_persons_message_is_never_merged(void)
 }
 
 /*
+ * A result from @from queued straight into @agent_id's mailbox in
+ * @room_id, the shape the router stores an answer in.  Posted directly
+ * so each exclusion can be set on an otherwise identical item.
+ */
+static ClawtMailboxItem *
+result_item(const gchar *from, const gchar *agent_id, const gchar *room_id,
+            const gchar *body)
+{
+	ClawtMailboxItem *item = clawt_mailbox_item_new(from, agent_id, body);
+
+	clawt_mailbox_item_set_room(item, room_id);
+	clawt_mailbox_item_set_invites_reply(item, FALSE);
+	clawt_mailbox_item_set_depth(item, 1);
+
+	return item;
+}
+
+static void
+post_item(Fixture *fixture, const gchar *agent_id, ClawtMailboxItem *item)
+{
+	ClawtAgent *agent = clawt_agent_manager_get(fixture->agents, agent_id);
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *id = NULL;
+
+	id = clawt_mailbox_post(clawt_agent_get_mailbox(agent), item, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(id);
+	clawt_mailbox_item_free(item);
+}
+
+typedef enum {
+	EXCLUDE_QUESTION,
+	EXCLUDE_ONE_WAY,
+	EXCLUDE_MODEL
+} Exclusion;
+
+/*
+ * The item-level exclusions, each in the same position: an answer, the
+ * excluded item, two more answers.  The excluded item is never a part
+ * and ends the run -- so the first answer goes alone, the excluded item
+ * alone, and only the last two are merged: four items, three turns, one
+ * merged frame, in the order they were queued.  A person's message is
+ * test_a_persons_message_is_never_merged(); the mention room is below.
+ */
+static void
+test_the_item_exclusions_are_never_merged(void)
+{
+	static const gchar *const odd[] = {
+		"is this the right repo?", "fyi: deployed", "run this on opus"
+	};
+	guint kind;
+
+	for (kind = EXCLUDE_QUESTION; kind <= EXCLUDE_MODEL; kind++) {
+		Fixture fixture = { 0 };
+		g_autofree gchar *room = NULL;
+		g_autofree gchar *delivered = NULL;
+		ClawtMailboxItem *item;
+		const gchar *first;
+		const gchar *middle;
+		const gchar *last;
+
+		fixture_setup(&fixture, "agents:\n  - id: chief\n  - id: w1\n");
+		room = clawt_room_manager_direct_id("chief", "w1");
+		(void)clawt_room_manager_get_direct(fixture.rooms, "chief", "w1");
+
+		post_item(&fixture, "chief",
+			result_item("w1", "chief", room, "answer one"));
+
+		item = result_item("w1", "chief", room, odd[kind]);
+		if (kind == EXCLUDE_QUESTION)
+			clawt_mailbox_item_set_invites_reply(item, TRUE);
+		else if (kind == EXCLUDE_ONE_WAY)
+			clawt_mailbox_item_set_one_way(item, TRUE);
+		else
+			clawt_mailbox_item_set_model(item, "opus");
+		post_item(&fixture, "chief", item);
+
+		post_item(&fixture, "chief",
+			result_item("w1", "chief", room, "answer two"));
+		post_item(&fixture, "chief",
+			result_item("w1", "chief", room, "answer three"));
+
+		give_agent_a_link(&fixture, "chief");
+		g_assert_cmpuint(clawt_mailbox_router_drain(fixture.router, "chief"),
+		                 ==, 4);
+		delivered = read_all(&fixture, "chief");
+
+		g_assert_cmpuint(clawt_test_count_substrings(delivered,
+			"results for you arrived in room"), ==, 1);
+		g_assert_cmpuint(clawt_test_count_substrings(delivered, " of 2 "),
+		                 ==, 2);
+
+		first = strstr(delivered, "answer one");
+		middle = strstr(delivered, odd[kind]);
+		last = strstr(delivered, "answer three");
+		g_assert_nonnull(first);
+		g_assert_nonnull(middle);
+		g_assert_nonnull(last);
+		g_assert_true(first < middle && middle < last);
+
+		/* Neither neighbour was folded in with the excluded item. */
+		g_assert_null(strstr(delivered, " of 3 "));
+
+		fixture_teardown(&fixture);
+	}
+}
+
+/*
+ * A room that requires mentions builds each delivery's preamble from the
+ * room's catch-up, which a merge would repeat per part -- so nothing in
+ * it is merged.  The control is the same three answers in the same room
+ * with mentions off, which merge into one.
+ */
+static void
+test_a_mention_room_is_never_merged(void)
+{
+	gboolean mentions;
+
+	for (mentions = FALSE; mentions <= TRUE; mentions++) {
+		Fixture fixture = { 0 };
+		g_autoptr(GError) error = NULL;
+		g_autofree gchar *delivered = NULL;
+		ClawtRoom *room;
+		guint i;
+
+		fixture_setup(&fixture,
+			"agents:\n  - id: chief\n  - id: w1\n  - id: w2\n");
+		room = clawt_room_manager_create(fixture.rooms, "standup", NULL,
+		                                 &error);
+		g_assert_no_error(error);
+		clawt_room_add_member(room, "chief");
+		clawt_room_add_member(room, "w1");
+		clawt_room_add_member(room, "w2");
+		clawt_room_set_require_mention(room, mentions);
+
+		for (i = 0; i < 3; i++) {
+			g_autofree gchar *body = g_strdup_printf("standup answer %u", i);
+
+			post_item(&fixture, "chief",
+				result_item("w1", "chief", "standup", body));
+		}
+
+		give_agent_a_link(&fixture, "chief");
+		g_assert_cmpuint(clawt_mailbox_router_drain(fixture.router, "chief"),
+		                 ==, 3);
+		delivered = read_all(&fixture, "chief");
+
+		g_assert_cmpuint(clawt_test_count_substrings(delivered,
+			"results for you arrived in room"), ==, mentions ? 0 : 1);
+		g_assert_nonnull(strstr(delivered, "standup answer 2"));
+
+		fixture_teardown(&fixture);
+	}
+}
+
+/*
+ * One turn's input is bounded: twenty results waiting in one room are
+ * two turns, sixteen and then four, and nothing is left behind.
+ */
+static void
+test_a_merge_takes_at_most_sixteen_parts(void)
+{
+	Fixture fixture = { 0 };
+	g_autofree gchar *room = NULL;
+	g_autofree gchar *delivered = NULL;
+	g_autofree gchar *most = NULL;
+	g_autofree gchar *over = NULL;
+	ClawtAgent *chief;
+	guint i;
+
+	fixture_setup(&fixture, "agents:\n  - id: chief\n  - id: w1\n");
+	chief = clawt_agent_manager_get(fixture.agents, "chief");
+	room = clawt_room_manager_direct_id("chief", "w1");
+	(void)clawt_room_manager_get_direct(fixture.rooms, "chief", "w1");
+
+	for (i = 0; i < CLAWT_MERGE_MAX_PARTS + 4; i++) {
+		g_autofree gchar *body = g_strdup_printf("finding %u", i);
+
+		post_item(&fixture, "chief", result_item("w1", "chief", room, body));
+	}
+
+	give_agent_a_link(&fixture, "chief");
+	g_assert_cmpuint(clawt_mailbox_router_drain(fixture.router, "chief"), ==,
+	                 CLAWT_MERGE_MAX_PARTS + 4);
+	g_assert_cmpuint(clawt_mailbox_depth(clawt_agent_get_mailbox(chief)), ==,
+	                 0);
+	delivered = read_all(&fixture, "chief");
+
+	g_assert_cmpuint(clawt_test_count_substrings(delivered,
+		"results for you arrived in room"), ==, 2);
+
+	most = g_strdup_printf(" %u of %u ", CLAWT_MERGE_MAX_PARTS,
+	                       CLAWT_MERGE_MAX_PARTS);
+	over = g_strdup_printf(" of %u ", CLAWT_MERGE_MAX_PARTS + 1);
+	g_assert_nonnull(strstr(delivered, most));
+	g_assert_nonnull(strstr(delivered, " 4 of 4 "));
+	g_assert_null(strstr(delivered, over));
+	g_assert_nonnull(strstr(delivered, "finding 19"));
+
+	fixture_teardown(&fixture);
+}
+
+/*
  * The fold itself, in the safe direction on every field, including the
  * one the router's own rule never produces today: a part that may be
  * answered makes the whole turn answerable.
@@ -808,6 +1011,12 @@ main(int argc, char **argv)
 	                test_one_way_in_a_group_room_posts_nothing);
 	g_test_add_func("/cross-talk/merge-per-room-and-agent",
 	                test_results_merge_per_room_and_per_agent);
+	g_test_add_func("/cross-talk/item-exclusions-are-never-merged",
+	                test_the_item_exclusions_are_never_merged);
+	g_test_add_func("/cross-talk/a-mention-room-is-never-merged",
+	                test_a_mention_room_is_never_merged);
+	g_test_add_func("/cross-talk/merge-takes-at-most-sixteen",
+	                test_a_merge_takes_at_most_sixteen_parts);
 	g_test_add_func("/cross-talk/a-person-is-never-merged",
 	                test_a_persons_message_is_never_merged);
 	g_test_add_func("/cross-talk/the-fold-is-safe",

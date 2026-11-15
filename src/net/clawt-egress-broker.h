@@ -194,6 +194,24 @@ clawt_egress_broker_new(
 );
 
 /**
+ * clawt_egress_broker_set_session: (skip)
+ * @self: a #ClawtEgressBroker
+ * @session: the session upstream requests are sent on
+ *
+ * Replaces the session the broker would make at its first
+ * clawt_egress_broker_listen().  For tests, which point a session's
+ * `remote-connectable` at a server on a unix socket so the forwarding
+ * path -- a redirect refused rather than followed or passed back -- runs
+ * without a network.  Make @session under the broker's context; the
+ * daemon never calls this.
+ */
+void
+clawt_egress_broker_set_session(
+	ClawtEgressBroker *self,
+	SoupSession       *session
+);
+
+/**
  * clawt_egress_broker_listen:
  * @self: a #ClawtEgressBroker
  * @socket_path: the unix socket to serve on

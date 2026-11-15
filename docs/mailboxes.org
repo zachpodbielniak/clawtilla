@@ -310,7 +310,7 @@ record to the entry it was folded into, so it is closed with that turn.
 An item an open record names is kept from the acknowledged-item sweep,
 so it is still there to be handed back.
 
-*** Outward is marked when it succeeds
+*** Outward is marked when it succeeds, or when a relay lets it through
 
 A turn is marked when something it did reached outside the fleet
 (~clawt_agent_mark_outward()~), because repeating that is the harm a

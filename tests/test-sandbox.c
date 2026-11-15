@@ -778,6 +778,60 @@ test_hardlinked_deny_is_refused(void)
 }
 
 /*
+ * The walk of a denied directory is bounded, and the bound refuses: a
+ * directory at the limit is walked and passes, one entry more and the
+ * box is refused, naming the directory -- never checked halfway and let
+ * through.
+ */
+static void
+test_a_denied_directory_past_the_walk_limit_is_refused(void)
+{
+    Paths paths = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *base = NULL;
+    g_autofree gchar *extra = NULL;
+    guint i;
+
+    paths_setup(&paths);
+    base = g_path_get_dirname(paths.root);
+
+    for (i = 0; i < CLAWT_SANDBOX_LINK_WALK_LIMIT; i++) {
+        g_autofree gchar *name = g_strdup_printf("%s/f%05u",
+                                                 paths.secret_dir, i);
+
+        g_assert_true(g_file_set_contents(name, "", 0, NULL));
+    }
+
+    {
+        g_autoptr(ClawtSandbox) at_limit =
+            clawt_sandbox_new(CLAWT_CONFINE_BWRAP, paths.root);
+
+        clawt_sandbox_add_deny_path(at_limit, paths.secret_dir);
+        g_assert_true(clawt_sandbox_check_links(at_limit, &error));
+        g_assert_no_error(error);
+    }
+
+    extra = g_build_filename(paths.secret_dir, "one-more", NULL);
+    g_assert_true(g_file_set_contents(extra, "", 0, NULL));
+
+    {
+        g_autoptr(ClawtSandbox) over =
+            clawt_sandbox_new(CLAWT_CONFINE_BWRAP, paths.root);
+        g_autofree gchar *limit = g_strdup_printf(
+            "more than %d entries", CLAWT_SANDBOX_LINK_WALK_LIMIT);
+
+        clawt_sandbox_add_deny_path(over, paths.secret_dir);
+        g_assert_false(clawt_sandbox_check_links(over, &error));
+        g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_CONFINEMENT);
+        g_assert_nonnull(strstr(error->message, paths.secret_dir));
+        g_assert_nonnull(strstr(error->message, limit));
+    }
+
+    clawt_test_remove_tree(base);
+    paths_teardown(&paths);
+}
+
+/*
  * A denied directory is covered with a tmpfs, which hides names and not
  * inodes: a key inside it with a second name elsewhere is still there.
  * The directory is walked for exactly that.
@@ -1016,6 +1070,8 @@ main(int argc, char *argv[])
                     test_hardlinked_deny_is_refused);
     g_test_add_func("/sandbox/hardlink-deny-dir",
                     test_hardlink_inside_denied_directory_is_refused);
+    g_test_add_func("/sandbox/hardlink-walk-limit",
+                    test_a_denied_directory_past_the_walk_limit_is_refused);
     g_test_add_func("/sandbox/env-owned", test_bwrap_owns_tmpdir_home_and_xdg);
     g_test_add_func("/sandbox/env-other-modes",
                     test_other_modes_leave_the_environment);

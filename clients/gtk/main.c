@@ -150,14 +150,8 @@ static gint
 on_command_line(GApplication *app, GApplicationCommandLine *cmdline,
                 gpointer user_data)
 {
-    gchar *target = NULL;
-    GOptionEntry open_entries[] = {
-        { "open", 'o', 0, G_OPTION_ARG_STRING, NULL, NULL, NULL },
-        { NULL }
-    };
-    g_autoptr(GOptionContext) context = NULL;
+    g_autofree gchar *target = NULL;
     g_auto(GStrv) argv = NULL;
-    gint argc;
 
     (void)user_data;
 
@@ -166,20 +160,8 @@ on_command_line(GApplication *app, GApplicationCommandLine *cmdline,
         return EXIT_SUCCESS;
     }
 
-    argv = g_application_command_line_get_arguments(cmdline, &argc);
-    open_entries[0].arg_data = &target;
-    context = g_option_context_new(NULL);
-    g_option_context_set_help_enabled(context, FALSE);
-    g_option_context_set_ignore_unknown_options(context, TRUE);
-    g_option_context_add_main_entries(context, open_entries, NULL);
-
-    {
-        /* g_option_context_parse() rearranges the vector it is given */
-        gchar **work = argv;
-
-        if (!g_option_context_parse(context, &argc, &work, NULL))
-            g_clear_pointer(&target, g_free);
-    }
+    argv = g_application_command_line_get_arguments(cmdline, NULL);
+    target = clawt_open_target_from_argv((const gchar * const *)argv);
 
     if (target == NULL) {
         g_application_activate(app);
@@ -187,7 +169,6 @@ on_command_line(GApplication *app, GApplicationCommandLine *cmdline,
     }
 
     open_in_app(GTK_APPLICATION(app), target);
-    g_free(target);
 
     return EXIT_SUCCESS;
 }

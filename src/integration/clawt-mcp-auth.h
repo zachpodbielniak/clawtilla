@@ -528,6 +528,21 @@ clawt_mcp_auth_document_message_new(
 );
 
 /**
+ * clawt_mcp_auth_set_session: (skip)
+ * @session: (nullable): the session every discovery and registration
+ *   request goes out on, or %NULL for the process's own
+ *
+ * For tests, which point @session's `remote-connectable` at a server on
+ * a unix socket so the bounded read (%CLAWT_MCP_AUTH_MAX_DOCUMENT_BYTES)
+ * is exercised against a real body with no network.  The daemon never
+ * calls this.
+ */
+void
+clawt_mcp_auth_set_session(
+	SoupSession *session
+);
+
+/**
  * clawt_mcp_auth_discover_async:
  * @mcp_url: the MCP server's URL
  * @hint: (nullable): the `resource_metadata` a 401 named

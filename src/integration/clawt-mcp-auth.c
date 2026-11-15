@@ -1187,11 +1187,16 @@ clawt_mcp_auth_document_message_new(
 	return message;
 }
 
+static SoupSession *auth_session_override = NULL;
+
 static SoupSession *
 auth_session(
 	void
 ){
 	static SoupSession *session = NULL;
+
+	if (auth_session_override != NULL)
+		return auth_session_override;
 
 	if (session == NULL)
 		session = soup_session_new_with_options(
@@ -1199,6 +1204,15 @@ auth_session(
 			"timeout", DISCOVERY_TIMEOUT_SECONDS, NULL);
 
 	return session;
+}
+
+void
+clawt_mcp_auth_set_session(
+	SoupSession *session
+){
+	g_return_if_fail(session == NULL || SOUP_IS_SESSION(session));
+
+	g_set_object(&auth_session_override, session);
 }
 
 /*

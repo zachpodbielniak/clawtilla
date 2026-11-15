@@ -11394,6 +11394,87 @@ test_match_ignores_and_cap_drops(void)
 	fixture_teardown(&fixture);
 }
 
+/*
+ * The two other refusals a sender is told about.  A trigger whose own
+ * settings cannot be acted on (a filter that does not read, a post with
+ * no room) refuses every delivery with 503 and a *failed* receipt that does
+ * not take the delivery id, so the retry after the fix is run rather than
+ * answered "already had that one".  And more deliveries in a minute than
+ * the rate limit allows is 429 "slow down", recorded as refused --
+ * counted over everything that arrived, wanted or not, since a flood of
+ * ignored events is still a flood.
+ */
+static void
+test_trigger_refuses_misconfigured_and_too_fast(void)
+{
+	Fixture fixture = { 0 };
+	g_autoptr(GError) error = NULL;
+	g_autoptr(ClawtTriggerEvent) broken = NULL;
+	const gchar *detail = NULL;
+	const gchar *said = NULL;
+	guint before;
+	guint i;
+
+	fixture_setup(&fixture,
+		"agents:\n  - id: builder\n"
+		"triggers:\n"
+		"  - id: bad\n    agent: builder\n    enabled: true\n"
+		"    instructions: 'Go'\n"
+		"  - id: busy\n    agent: builder\n    enabled: true\n"
+		"    events: [deploy]\n    instructions: 'Go'\n");
+	g_assert_true(clawt_daemon_start(fixture.daemon, &error));
+	g_assert_no_error(error);
+	verify_trigger(&fixture, "bad");
+	verify_trigger(&fixture, "busy");
+	before = count_tasks(&fixture);
+
+	/*
+	 * Broken after load -- a post with no room to post into -- because a
+	 * fixture loaded broken warns at load, which a test treats as fatal.
+	 * The refusal reads the trigger as it is when the delivery arrives.
+	 */
+	clawt_trigger_set_string(clawt_config_get_trigger(
+		fixture.daemon->config, "bad"), "mode", "post");
+
+	broken = clawt_trigger_event_new(CLAWT_TRIGGER_PROVIDER_GENERIC, "push",
+	                                 "bad-1");
+	g_assert_cmpuint(clawt_daemon_trigger_deliver(fixture.daemon,
+		clawt_config_get_trigger(fixture.daemon->config, "bad"), broken,
+		&said), ==, 503);
+	g_assert_nonnull(strstr(said, "misconfigured"));
+	g_assert_cmpstr(newest_outcome(&fixture, "bad", &detail), ==, "failed");
+	g_assert_nonnull(strstr(detail, "cannot be used"));
+	g_assert_false(clawt_trigger_store_seen_delivery(
+		fixture.daemon->trigger_store, "bad", "bad-1"));
+	g_assert_cmpuint(count_tasks(&fixture), ==, before);
+
+	/* The limit's worth of unwanted events is taken, and answered 200. */
+	for (i = 0; i < 60; i++) {
+		g_autofree gchar *id = g_strdup_printf("flood-%u", i);
+		g_autoptr(ClawtTriggerEvent) event = clawt_trigger_event_new(
+			CLAWT_TRIGGER_PROVIDER_GENERIC, "push", id);
+
+		g_assert_cmpuint(deliver_event(&fixture, "busy", event), ==, 200);
+	}
+
+	/* The next, even a wanted one, is told to slow down. */
+	{
+		g_autoptr(ClawtTriggerEvent) wanted = clawt_trigger_event_new(
+			CLAWT_TRIGGER_PROVIDER_GENERIC, "deploy", "flood-wanted");
+
+		g_assert_cmpuint(clawt_daemon_trigger_deliver(fixture.daemon,
+			clawt_config_get_trigger(fixture.daemon->config, "busy"),
+			wanted, &said), ==, 429);
+		g_assert_cmpstr(said, ==, "slow down\n");
+		g_assert_cmpstr(newest_outcome(&fixture, "busy", &detail), ==,
+		                "refused");
+		g_assert_nonnull(strstr(detail, "rate limit"));
+		g_assert_cmpuint(count_tasks(&fixture), ==, before);
+	}
+
+	fixture_teardown(&fixture);
+}
+
 /* Refused where it arrives, before the file is written. */
 static void
 test_trigger_settings_refused_on_arrival(void)
@@ -12324,6 +12405,8 @@ main(int argc, char *argv[])
     g_test_add_func("/daemon/trigger/synthetic-fanout", test_synthetic_fanout);
     g_test_add_func("/daemon/trigger/post-mode", test_post_mode_spends_no_run);
     g_test_add_func("/daemon/trigger/match-and-cap", test_match_ignores_and_cap_drops);
+    g_test_add_func("/daemon/trigger/misconfigured-and-rate-limit",
+                    test_trigger_refuses_misconfigured_and_too_fast);
     g_test_add_func("/daemon/trigger/settings-refused", test_trigger_settings_refused_on_arrival);
     g_test_add_func("/daemon/trigger/match-test", test_match_test_checks_unsaved_rows);
     g_test_add_func("/daemon/trigger/not-listening",

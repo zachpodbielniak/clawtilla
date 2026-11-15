@@ -1124,6 +1124,57 @@ test_a_gated_agent_gets_no_url_wait(void)
 	daemon_teardown(&fixture);
 }
 
+/*
+ * The other half: a URL wait set while the agent was open, and the agent
+ * gated afterwards.  The daemon re-reads the agent's network at every
+ * look, so the next look ends the wait as impossible -- with the reason,
+ * told to the agent -- rather than fetching around the gate the agent is
+ * now behind.  No lookup is made: the refusal comes first.
+ */
+static void
+test_a_url_wait_ends_when_the_agent_is_gated(void)
+{
+	DaemonFixture fixture = { 0 };
+	g_autofree gchar *reply = NULL;
+	g_autofree gchar *id = NULL;
+	g_autoptr(GPtrArray) items = NULL;
+	ClawtAgent *kudu;
+	ClawtWait *wait;
+	gboolean is_error = TRUE;
+
+	daemon_setup(&fixture);
+
+	reply = call_tool(&fixture, "kudu", "clawtilla_wait_until",
+		"{\"label\":\"the page changes\",\"kind\":\"url\","
+		"\"url\":\"https://example.com/status\"}", &is_error);
+	g_assert_false(is_error);
+	id = id_from_reply(reply);
+	wait = clawt_wait_manager_get(fixture.daemon->waits, id);
+	g_assert_nonnull(wait);
+
+	kudu = clawt_agent_manager_get(clawt_daemon_get_agents(fixture.daemon),
+	                               "kudu");
+	g_assert_true(clawt_agent_config_set_string(clawt_agent_get_config(kudu),
+	                                            "runtime.network", "gated"));
+
+	clawt_wait_manager_tick(fixture.daemon->waits,
+	                        wait->next_check_at + SECOND);
+	g_assert_null(clawt_wait_manager_get(fixture.daemon->waits, id));
+
+	items = clawt_mailbox_list(clawt_agent_get_mailbox(kudu), NULL);
+	g_assert_cmpuint(items->len, ==, 1);
+	{
+		g_autofree gchar *body = clawt_mailbox_item_dup_delivered_body(
+			g_ptr_array_index(items, 0));
+
+		g_assert_true(g_str_has_prefix(body, "[clawtilla] "));
+		g_assert_nonnull(strstr(body, "the page changes"));
+		g_assert_nonnull(strstr(body, "egress gate"));
+	}
+
+	daemon_teardown(&fixture);
+}
+
 /* The tool refuses what it can, and the limit from the agent's config. */
 static void
 test_the_tool_refuses_with_sentences(void)
@@ -1240,6 +1291,8 @@ main(int argc, char *argv[])
 	g_test_add_func("/waits/address-policy", test_the_address_policy_table);
 	g_test_add_func("/waits/gated-agent-no-url-wait",
 	                test_a_gated_agent_gets_no_url_wait);
+	g_test_add_func("/waits/daemon/url-wait-ends-when-gated",
+	                test_a_url_wait_ends_when_the_agent_is_gated);
 	g_test_add_func("/waits/url-refusal",
 	                test_urls_are_refused_before_any_lookup);
 	g_test_add_func("/waits/expiry-clamp", test_expiry_is_clamped);

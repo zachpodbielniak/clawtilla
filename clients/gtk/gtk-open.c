@@ -139,9 +139,12 @@ clawt_window_open_target(ClawtWindow *self, const gchar *text)
 	 * starting, and the link would be lost.  A later --open replaces
 	 * an earlier one still waiting, which is what clicking twice means.
 	 */
-	if (self->client == NULL || !clawt_client_is_connected(self->client)) {
-		g_free(self->pending_open);
-		self->pending_open = g_steal_pointer(&target);
+	target = clawt_open_target_hold(&self->pending_open,
+					g_steal_pointer(&target),
+					self->client != NULL &&
+					clawt_client_is_connected(self->client));
+
+	if (target == NULL) {
 		gtk_window_present(GTK_WINDOW(self));
 		return;
 	}
