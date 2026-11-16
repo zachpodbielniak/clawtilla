@@ -36,6 +36,8 @@ static const SettingsPage settings_pages[] = {
       "What the work is for, where it lives, and what it may spend." },
     { "history",      "History",
       "Every version of the config, the persona files and the skills." },
+    { "pack",         "Export & import",
+      "The fleet as a directory, for another machine or as a template." },
     { "folders",      "Shared folders",
       "Directories every agent's computer gets." },
     { "spending",     "Spending",
@@ -327,6 +329,140 @@ images_content(ClawtWebApp *app)
     }
 
     return HTMX_ELEMENT(g_steal_pointer(&box));
+}
+
+/* ── Export & import ─────────────────────────────────────────────── */
+
+/*
+ * One form, three actions: export to the directory, preview what an
+ * import from it would do, and import.  @preview is the last preview's
+ * text, shown under the form.
+ */
+static HtmxElement *
+pack_content(const gchar *preview)
+{
+    g_autoptr(HtmxDiv) box = htmx_div_new();
+    g_autoptr(HtmxDiv) card = clawt_web_card("A fleet as a directory",
+        "Export writes the agents, teams, routines, triggers, projects, "
+        "persona files and skills -- never a secret or this machine's "
+        "paths. Import adds what is new and skips what exists unless told; "
+        "agents arrive held, skills disabled, and nothing that turns on a "
+        "dangerous setting comes in unless allowed.");
+    HtmxElement *body = clawt_web_card_body(card);
+    static const struct {
+        const gchar *action;
+        const gchar *label;
+    } forms[] = {
+        { "/settings/pack/export",  "Export" },
+        { "/settings/pack/preview", "Preview import" },
+        { "/settings/pack/import",  "Import" },
+    };
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS(forms); i++) {
+        g_autoptr(HtmxForm) form = clawt_web_form(forms[i].action);
+        g_autoptr(HtmxButton) go = clawt_web_button(forms[i].label,
+                                                    i == 2 ? "primary"
+                                                           : "default");
+
+        clawt_web_add(form, clawt_web_field("Directory", "dir", NULL,
+            "absolute path on the daemon's machine"));
+        if (i == 2) {
+            clawt_web_add(form, clawt_web_field("Resolutions", "resolutions",
+                NULL, "agent:scout=rename:scout2, team:crew=replace"));
+            clawt_web_add(form, clawt_web_switch_field(
+                "Allow dangerous settings", "allow_dangerous",
+                "Items that turn on host control, sudo, scripts ...", FALSE));
+        }
+        htmx_element_set_attribute(HTMX_ELEMENT(go), "type", "submit");
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(go));
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
+    }
+
+    if (preview != NULL) {
+        g_autoptr(HtmxElement) pre = HTMX_ELEMENT(htmx_pre_new());
+
+        htmx_element_add_class(pre, "console");
+        htmx_node_set_text_content(HTMX_NODE(pre), preview);
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(g_steal_pointer(&pre)));
+    }
+
+    htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
+
+    return HTMX_ELEMENT(g_steal_pointer(&box));
+}
+
+static HtmxResponse *
+on_pack_action(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(HtmxElement) content = NULL;
+    g_autofree gchar *failure = NULL;
+    g_autofree gchar *preview = NULL;
+    const gchar *path = htmx_request_get_path(request);
+    const gchar *resolutions = clawt_web_form_value(request, "resolutions");
+
+    (void)params;
+
+    clawt_web_payload_set(payload, "dir",
+                          clawt_web_form_value(request, "dir") != NULL
+                              ? clawt_web_form_value(request, "dir") : "");
+
+    if (g_str_has_suffix(path, "/export")) {
+        reply = clawt_web_app_call(app, "fleet.export",
+                                   clawt_web_payload_take(
+                                       g_steal_pointer(&payload)));
+    } else if (g_str_has_suffix(path, "/preview")) {
+        reply = clawt_web_app_call(app, "fleet.import_preview",
+                                   clawt_web_payload_take(
+                                       g_steal_pointer(&payload)));
+        if (reply != NULL) {
+            JsonObject *root = clawt_web_root(reply);
+            JsonArray *items = clawt_web_member_array(root, "items");
+            JsonArray *to_fill = clawt_web_member_array(root, "to_fill");
+            g_autoptr(GString) text = g_string_new(NULL);
+            guint i;
+
+            for (i = 0; items != NULL && i < json_array_get_length(items);
+                 i++) {
+                JsonObject *item = json_array_get_object_element(items, i);
+
+                g_string_append_printf(text, "%s %s: %s%s\n",
+                    clawt_web_member(item, "kind", ""),
+                    clawt_web_member(item, "id", ""),
+                    clawt_web_member_bool(item, "exists", FALSE)
+                        ? "exists" : "new",
+                    json_array_get_length(clawt_web_member_array(item,
+                        "dangerous")) > 0 ? " -- dangerous" : "");
+            }
+            for (i = 0; to_fill != NULL && i < json_array_get_length(to_fill);
+                 i++)
+                g_string_append_printf(text, "to fill: %s\n",
+                    json_array_get_string_element(to_fill, i));
+            preview = g_string_free(g_steal_pointer(&text), FALSE);
+        }
+    } else {
+        if (resolutions != NULL && *resolutions != '\0')
+            clawt_web_payload_set(payload, "resolutions", resolutions);
+        if (clawt_web_form_value(request, "allow_dangerous") != NULL)
+            clawt_web_payload_set(payload, "allow_dangerous", "true");
+        reply = clawt_web_app_call(app, "fleet.import",
+                                   clawt_web_payload_take(
+                                       g_steal_pointer(&payload)));
+    }
+
+    if (reply == NULL)
+        failure = g_strdup(clawt_web_app_last_error(app));
+
+    content = pack_content(preview);
+
+    return settings_response(app, request, "pack", content,
+        failure != NULL ? failure
+                        : (preview != NULL ? "Previewed; nothing changed."
+                                           : "Done."),
+        failure != NULL);
 }
 
 /* ── History ─────────────────────────────────────────────────────── */
@@ -3470,6 +3606,8 @@ on_settings_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
         content = projects_content(app);
     else if (g_strcmp0(slug, "history") == 0)
         content = history_content(app, NULL);
+    else if (g_strcmp0(slug, "pack") == 0)
+        content = pack_content(NULL);
     else if (g_strcmp0(slug, "folders") == 0)
         content = folders_content(app);
     else if (g_strcmp0(slug, "spending") == 0)
@@ -4427,6 +4565,9 @@ clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_post(router, "/settings/egress/remove", on_egress_allow, app);
     htmx_router_post(router, "/settings/folders/remove", on_folder_remove,
                      app);
+    htmx_router_post(router, "/settings/pack/export", on_pack_action, app);
+    htmx_router_post(router, "/settings/pack/preview", on_pack_action, app);
+    htmx_router_post(router, "/settings/pack/import", on_pack_action, app);
     htmx_router_get(router, "/settings/history/:revision", on_history_open,
                     app);
     htmx_router_post(router, "/settings/history/:revision/restore",

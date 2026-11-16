@@ -919,7 +919,7 @@ The operator profile (~operator.get~) in a monospace editor, with Save profile (
 ~memory.recall~, ~memory.list~, ~memory.search~, ~operator.get~, ~operator.set~.
 
 ** Settings
-One large dialog: the pages listed down the left (flat =clawt-tab= buttons, the shown one =clawt-tab-active=), the page on the right in an =LrgSwitcher= that crossfades between them, and a Close button. The pages are GTK's, in GTK's order -- Cloud images, Teams, Projects, History, Spending, Orchestration, Integrations, Connectors, Shared folders, Appearance, Devices -- and then Connections, which GTK keeps in a header menu and a separate dialog. =clawt_lrg_settings_pages()= returns them NULL-terminated; =clawt_lrg_open_settings(app, id)= opens the dialog on the page with that id (=NULL= is the first), or switches page when it is already open, so the connection banner's "Connections…" never stacks a second copy.
+One large dialog: the pages listed down the left (flat =clawt-tab= buttons, the shown one =clawt-tab-active=), the page on the right in an =LrgSwitcher= that crossfades between them, and a Close button. The pages are GTK's, in GTK's order -- Cloud images, Teams, Projects, History, Export & import, Spending, Orchestration, Integrations, Connectors, Shared folders, Appearance, Devices -- and then Connections, which GTK keeps in a header menu and a separate dialog. =clawt_lrg_settings_pages()= returns them NULL-terminated; =clawt_lrg_open_settings(app, id)= opens the dialog on the page with that id (=NULL= is the first), or switches page when it is already open, so the connection banner's "Connections…" never stacks a second copy.
 
 Opened with Ctrl+, (~win.settings~), from the ☰ menu, or on the Connections page from the banner and from "Connections…" in the menu.
 
@@ -936,6 +936,9 @@ Progress arrives as ~image.progress~ / ~image.finished~ events.  Settings pages 
 
 *** Teams
 ~team.list~ as rows: the name, "what it handles — N of M running, lead: X" (a blank description is said as "nothing will be sent here", since the chief of staff routes by it), a live badge while any member runs, and Edit…, which opens the team: Name and What it handles, Save changes (two ~team.set~ frames, reported once both land), and Remove this team (asked first, ~team.remove~, then a toast counting the agents still naming it). "Add a team" asks for an id (~team.create~). Fleet warnings (two leads, an undeclared team) are drawn under the list. Any change re-reads the fleet too, so the sidebar's team headings follow.
+
+*** Export & import
+A Directory entry, On import (resolutions) and the allow-dangerous switch, then Export (~fleet.export~), Preview import (~fleet.import_preview~, drawn monospaced under the buttons) and Import (~fleet.import~).  Since 0.42.0.
 
 *** History
 ~revision.list~ as rows: kind and subject, then "when, by whom -- note", and Open…, which asks ~revision.diff~ against now and shows it monospaced in a dialog whose primary is Restore this version (~revision.restore~, then a toast and a re-read).  Since 0.41.0.  The Skills page's detail has *Tests* beside Enable and Remove: ~skill.tests~ in a dialog, an agent to run them on, and Run them (~skill.test_run~).
@@ -1254,6 +1257,7 @@ A colour this client reads but the palette leaves out falls back to libadwaita's
 | ~lrg-settings-teams.c~ | Teams | ~gtk-prefs-teams.c~ |
 | ~lrg-settings-projects.c~ | Projects | ~gtk-prefs-projects.c~ |
 | ~lrg-settings-history.c~ | History | ~gtk-prefs-history.c~ |
+| ~lrg-settings-pack.c~ | Export & import | ~gtk-prefs-pack.c~ |
 | ~lrg-settings-spending.c~ | Spending | ~gtk-prefs-spending.c~ |
 | ~lrg-settings-orchestration.c~ | Orchestration: the acknowledgement check, the tree budget, rounds per room | ~gtk-prefs-orchestration.c~ |
 | ~lrg-settings-integrations.c~ | Integrations, Matrix sign-in | ~gtk-prefs-integrations.c~ |

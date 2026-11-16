@@ -411,8 +411,9 @@ The ~forge~ record type is owner-only in VENTURE, so an editor -- every agent ac
 - *Not done:* the plan's scratch agent per test run: a run uses a named agent that already has the skill, in a room of its own, rather than a temporary agent made for it.
 - *Version:* minor.
 
-** TODO P3 E: Fleet export and import :configuration:
-=FLEET.yaml= export with secrets stripped; an import preview that never widens permissions.
+** DONE P3 E: Fleet export and import v0.42.0 :configuration:
+- *Done:* =clawt-fleet-pack= -- a pack directory (=FLEET.yaml= with agents, teams, routines, triggers and projects; persona files; the library's skills and tests) with every secret and secret reference, an agent's ~workspace~ and the daemon section left out and listed in ~to_fill~; ~fleet.export~, ~fleet.import_preview~ (new or existing, dangerous settings) and ~fleet.import~ (skip by default for what exists, ~replace~, ~rename:<id>~; the merged config loaded before it is written, then reloaded as an edit and kept in the history; persona files before the scaffold and never over one; skills through the library's import, disabled); an item turning on a dangerous setting refuses the import unless ~allow_dangerous~; agents arrive held; Settings → Export & import in GTK, web and lrg; ~clawtilla fleet export|import~.
+- *Version:* minor.
 
 ** TODO P2 V0–V2: VENTURE enrichment :connectors:
 Upstream first (health ~features~, ~whoami~, ~Idempotency-Key~, ~ticket.external_ref~, external runs that count against ~agent_budget~, ~forge_repo/resolve~, webhook ~changes~); then the outbound mirror with one VENTURE account per agent, and the inbound reconcile, intake, review, costs and goal context.
@@ -716,7 +717,7 @@ OpenMausBot's =app_settings= (=docs/superpowers/specs/2026-11-12-app-settings-to
 - *Native phone apps*: the web client plus a manifest is the cheaper route. =packages/phone-protocol= is worth reading only if a native client ever happens.
 - *Voice and live calls*: cmacs already has transcription and speech synthesis. Bridge to those rather than copying ElevenLabs or Fish integrations.
 - *Meeting-notes bot, image generation, Netlify publishing, org library, announcements, feature flags*: no fit for a single-operator, FOSS-only fleet.
-- *Team-sharing packages and presets*: single user. Keep their rule that a preset can never widen permissions, should a package format ever exist.
+- *Team-sharing packages and presets*: single user, so no marketplace -- but a fleet pack exists since 0.42.0 as a single operator's migration and template tool (see [[file:docs/maintenance.org::#fleet-pack][fleet packs]]), and it keeps their rule: an import never widens permissions unasked.
 
 * To be decided
 

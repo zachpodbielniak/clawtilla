@@ -1473,6 +1473,13 @@ versions apart.
   touch them, and a client's Cancel is offered on them. A note on a task
   publishes `task.noted`, never `task.changed`, which settle notices and
   incidents hang off.
+- **A fleet pack never carries a secret, and never widens.** Export
+  strips by the schema's SECRET type *and* by credential-shaped names,
+  listing each in `to_fill`; a new key holding a credential needs one of
+  the two. Import refuses any item that turns on a DANGEROUS-flagged
+  setting unless `allow_dangerous`, holds agents, imports skills disabled,
+  and never overwrites a persona file. Mark a new dangerous key
+  `CLAWT_SCHEMA_FLAG_DANGEROUS` and the import guard covers it.
 - **Versions are caught at the write path, not the caller.** Config
   versions come from the observer `clawt_config_save()` calls, skill
   versions from the library's `skill-written` signal in its one write

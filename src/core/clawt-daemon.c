@@ -11049,6 +11049,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_team,
     clawt_daemon_handle_project,
     clawt_daemon_handle_revision,
+    clawt_daemon_handle_fleet,
     clawt_daemon_handle_room,
     clawt_daemon_handle_mailbox,
     clawt_daemon_handle_task,
