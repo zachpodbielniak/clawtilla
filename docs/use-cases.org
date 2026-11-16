@@ -12,7 +12,7 @@ The rest of ~docs/~ is organised by subsystem: mailboxes here, computers
 there, integrations somewhere else.  That is the right shape for looking
 something up and the wrong shape for the question people actually arrive
 with, which is /what do I do with this/.  This file answers that
-instead: fourteen scenarios, each one a thing somebody wanted, worked
+instead: sixteen scenarios, each one a thing somebody wanted, worked
 through from an empty fleet to the result.
 
 Every case is self-contained and every case has the same five parts ---
@@ -1447,6 +1447,118 @@ and they are listed in [[file:agents.org][agents.org]].  Read them before turnin
 on for a second agent.
 
 [[file:clients.org][clients.org]] carries the detail, including the component accessors and the frame-based route.
+
+** 15. A backlog of your own, worked in order and reviewed
+
+*** What you want
+
+To write work down before deciding who does it, to have one piece wait for another, to see what an agent changed in a repository before it counts, and to keep a project inside a monthly budget.
+
+*** The configuration
+
+#+begin_src yaml
+orchestration:
+  review_rounds: 3
+  checkout_keep_days: 14
+
+projects:
+  - id: shop
+    name: Shop
+    goal: Ship order tracking before the spring sale.
+    directory: /home/me/src/shop
+    review_by: operator
+    monthly_budget_usd: 40
+    budget_warn_percent: 80
+    budget_hard_stop: true
+#+end_src
+
+*** The commands
+
+#+begin_src bash
+# On the backlog, with nobody yet.
+clawtilla task create --project shop --title "Shipped date" \
+        "Add the orders.shipped_at column and its migration."
+clawtilla task list --state unassigned
+
+# Give it to builder; it gets a checkout of ~/src/shop of its own.
+clawtilla task assign task-01m0aa… builder
+
+# The next piece waits for the first, in its own checkout too.
+clawtilla task create --agent builder --repo ~/src/shop --project shop \
+        --after task-01m0aa… "Expose shipped_at in GET /orders."
+
+# Read what was changed, then decide.
+clawtilla task diff task-01m0aa…
+clawtilla task review task-01m0aa… accept
+clawtilla task review task-01m0ab… changes "Return it as ISO 8601."
+clawtilla project list
+#+end_src
+
+*** What you see
+
+The first task reads ~unassigned~ until it is assigned, then ~pending~ and ~running~. The second reads ~blocked~ with "waiting for task-01m0aa… to complete" until the first is accepted, and is then sent to builder by itself. Each goes to ~review~ when builder finishes, and the review is a decision in your inbox as well as on the task's page. ~clawtilla project list~ shows the month's spend against the 40 USD budget.
+
+*** What to watch out for
+
+*Only a completed blocker releases.* A blocker that fails holds the waiting task, and you are told once in its thread. Retry the blocker or ~clawtilla task unlink~ it.
+
+*Assigning moves a task off the backlog only.* A task already with somebody moves with a handoff.
+
+*A checkout needs a workspace the host can write.* An agent on an ssh host or on another podman connection is refused a task with ~repo~.
+
+*Hard stop refuses new work, not running work.* Work already handed over carries on; new tasks and releases in the project are refused with =LOOP_LIMIT= until the month turns or the budget is raised.
+
+More in [[file:tasks.org][tasks.org]].
+
+** 16. Work tracked in VENTURE
+
+*** What you want
+
+The fleet's work on VENTURE's ticket board beside everything else, each change made under the agent's own VENTURE account, and tickets assigned to an agent in VENTURE starting work by themselves.
+
+*** The configuration
+
+In VENTURE, one user per agent, each an editor member of the organization that holds the =forge_repo= for the repository; mint each token *after* its membership. Then, per agent:
+
+#+begin_src yaml
+integrations:
+  - name: venture-builder
+    type: connector
+    provider: venture
+    instance: https://venture.example
+    token_file: ~/.local/share/clawtilla/secrets/connectors/venture-builder.json
+    scope: selected
+    agents: [builder]
+    mirror_tasks: true
+    apply_writes: low_risk
+#+end_src
+
+*** The commands
+
+#+begin_src bash
+venturectl token mint name=clawtilla-builder user=builder-bot \
+    | clawtilla connector key venture-builder
+clawtilla task create --agent builder --repo ~/src/shop "Add a NOTES.txt."
+clawtilla task show task-01m0ac…
+#+end_src
+
+Then, in VENTURE, assign a =todo= ticket to builder's VENTURE user.
+
+*** What you see
+
+~clawtilla task show~ has a ~venture:~ line: ~synced~ with the ticket number, or ~queued~, ~skipped~ or ~dead~ with the reason. The ticket moves =todo= -> =in_progress= -> =done=, gets the result as an internal comment by builder's own token, the task branch as a link and the run's cost. Within a minute of assigning it, the ticket made in VENTURE is a task for builder; a person's comment on it reaches builder; cancelling it in VENTURE cancels the task.
+
+*** What to watch out for
+
+*No matching repository, no ticket.* A task with no checkout, or whose remotes VENTURE does not know as that agent's account, is skipped with the reason. Pin it with ~projects.venture_repo_id~ or add the =forge_repo=.
+
+*A token keeps the memberships it was minted with.* Add the membership first, then mint.
+
+*Intake lets anyone who can edit tickets there hand the agent work.* Turn ~mirror_intake~ off where that is more than you want.
+
+*VENTURE being down never stops an agent.* Writes wait in the outbox and drain when it is back.
+
+More in [[file:venture.org][venture.org]] and [[file:venture-setup.org][venture-setup.org]].
 
 * When something does not work
 

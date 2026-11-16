@@ -327,6 +327,20 @@ fold over one event stream plus typed commands. Keep it that way: it is
 what makes the GTK client, the web client and an in-process cmacs embed all
 the same program.
 
+## Tasks are written through to the store
+
+`tasks.db` (`ClawtTaskStore`, src/task/clawt-task-store.c) is the truth for
+tasks, their journal, notes, links and held deliveries. Every change to a task
+goes through `ClawtTaskManager`, which saves before it emits `task-changed`; a
+field set outside it (a delegation's room or model, a handoff's owner) is
+followed by `clawt_task_manager_save()`. Restored tasks are loaded before
+anything listens, so a restart emits nothing. Ask the state predicates
+(`clawt_task_state_is_finished()`, `_is_active()`, `_is_cancellable()`,
+`_is_retryable()`) instead of comparing states. The managed regions an agent's
+profile files get (`# BEGIN clawtilla ...`) are rendered only for what is on
+for that agent, are byte-capped, and are written only when their text changes.
+See docs/tasks.org.
+
 ## The VENTURE mirror observes; it never steers
 
 Task code knows nothing of VENTURE. `clawt_task_store_save()` and
