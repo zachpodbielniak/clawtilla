@@ -506,6 +506,37 @@ on_remove_checkout(GtkButton *button, gpointer user_data)
     adw_dialog_close(dialog->dialog);
 }
 
+/* The ticket's page, in the browser. */
+static void
+on_open_ticket(GtkButton *button, gpointer user_data)
+{
+    TaskDialog *dialog = user_data;
+    const gchar *url = g_object_get_data(G_OBJECT(button), "url");
+    g_autoptr(GtkUriLauncher) launcher = gtk_uri_launcher_new(url);
+
+    gtk_uri_launcher_launch(launcher, GTK_WINDOW(dialog->window), NULL, NULL,
+                            NULL);
+}
+
+/* The mirror's rows for this task queued again, the task looked at anew. */
+static void
+on_venture_retry(GtkButton *button, gpointer user_data)
+{
+    TaskDialog *dialog = user_data;
+    g_autoptr(JsonNode) reply = NULL;
+
+    (void)button;
+
+    reply = clawt_window_request(dialog->window, "task.venture_retry",
+                                 clawt_build_payload("task", dialog->task_id,
+                                                     NULL));
+    if (reply == NULL)
+        return;
+
+    clawt_window_toast(dialog->window, "Sending to VENTURE again");
+    adw_dialog_close(dialog->dialog);
+}
+
 /*
  * The operator's verdict on a result in review: Accept, or Request
  * changes with the comment box's text as the notes.
@@ -786,6 +817,62 @@ on_task_details(GtkButton *button, gpointer user_data)
         adw_preferences_group_add(ADW_PREFERENCES_GROUP(changes), line);
         adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
                                  ADW_PREFERENCES_GROUP(changes));
+    }
+
+    /*
+     * Its VENTURE ticket (0.44.0): the link when it is kept current, or
+     * why it is not -- and Retry when the mirror skipped it or gave up.
+     */
+    if (json_object_has_member(root, "venture")) {
+        JsonObject *venture = json_object_get_object_member(root, "venture");
+        const gchar *vstate = clawt_json_string(venture, "state", "");
+        const gchar *reason = clawt_json_string(venture, "reason", NULL);
+        GtkWidget *group = adw_preferences_group_new();
+        GtkWidget *line = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        g_autofree gchar *said = NULL;
+
+        if (g_strcmp0(vstate, "synced") == 0)
+            said = g_strdup_printf("Ticket #%" G_GINT64_FORMAT
+                                   ", kept current as the task moves.",
+                                   clawt_json_int(venture, "ticket", 0));
+        else if (g_strcmp0(vstate, "queued") == 0)
+            said = g_strdup_printf("Waiting to be sent%s%s",
+                                   reason != NULL ? ": " : ".",
+                                   reason != NULL ? reason : "");
+        else if (g_strcmp0(vstate, "skipped") == 0)
+            said = g_strdup_printf("Not mirrored: %s",
+                                   reason != NULL ? reason : "no reason given");
+        else
+            said = g_strdup_printf("The mirror gave up: %s",
+                                   reason != NULL ? reason : "no reason given");
+
+        adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group),
+                                        "VENTURE");
+        adw_preferences_group_set_description(ADW_PREFERENCES_GROUP(group),
+                                              said);
+
+        if (clawt_json_string(venture, "url", NULL) != NULL) {
+            GtkWidget *open = gtk_button_new_with_label("Open in VENTURE");
+
+            g_object_set_data_full(G_OBJECT(open), "url",
+                g_strdup(clawt_json_string(venture, "url", "")), g_free);
+            g_signal_connect(open, "clicked", G_CALLBACK(on_open_ticket),
+                             dialog);
+            gtk_box_append(GTK_BOX(line), open);
+        }
+
+        if (g_strcmp0(vstate, "dead") == 0 ||
+            g_strcmp0(vstate, "skipped") == 0) {
+            GtkWidget *retry = gtk_button_new_with_label("Retry");
+
+            g_signal_connect(retry, "clicked", G_CALLBACK(on_venture_retry),
+                             dialog);
+            gtk_box_append(GTK_BOX(line), retry);
+        }
+
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), line);
+        adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                                 ADW_PREFERENCES_GROUP(group));
     }
 
     /*

@@ -411,6 +411,11 @@ The ~forge~ record type is owner-only in VENTURE, so an editor -- every agent ac
 - *Not done:* the plan's scratch agent per test run: a run uses a named agent that already has the skill, in a room of its own, rather than a temporary agent made for it.
 - *Version:* minor.
 
+** DONE V1: Tasks mirrored as VENTURE tickets v0.44.0 :integrations:orchestration:
+- *Done:* ~mirror_tasks~ on a venture connector; =venture_outbox=, =venture_refs= and =venture_note_refs= in =tasks.db=, the outbox written in the same transaction as each task save and note (coalesced per task, notes in order); =ClawtVentureMirror= draining it in order, one request at a time, every write as the agent it is about (delegator files, assignee updates, author comments) after =whoami=; repositories from ~projects.venture_repo_id~ or each checkout remote through =forge_repo/resolve=, no match no ticket; ticket fields and the status map, subtasks under the parent's ticket (flattened below one level); write receipts so only changed fields are sent, with the version; =Idempotency-Key= and =external_ref= adoption on 409; stale versions re-read; status classes, backoff to 30 minutes, dead rows kept for Retry; ~task.show~'s ~venture~ and ~task.venture_retry~; the VENTURE section in GTK, web and lrg; ~clawtilla task venture-retry~; the TOOLS.org line; =docs/venture.org=.
+- *Not done (V2):* anything inbound -- ticket edits, intake, review through VENTURE; ticket links for branches and pull requests; external runs; a service account for operator tasks.
+- *Version:* minor.
+
 ** DONE VW2: VENTURE low-risk writes v0.43.0 :integrations:
 - *Done:* ~apply_writes: low_risk~ (=CLAWT_APPLY_WRITES_LOW_RISK=, appended) starts =venturectl mcp --apply-writes=low-risk=, where VENTURE 0.10.0 classes each write (money, people, access, credentials, outward actions and deletes stay staged); =clawt_connector_venturectl_has_low_risk()= asks the binary's ~--help~ (cached by path, size and time) and =clawt_connector_venture_apply_writes()= falls back to ~off~ with a warning on an older one, never to ~all~; the middle choice in every client's integration form; TOOLS.org says which writes still wait.
 - *Version:* minor (a new config value).

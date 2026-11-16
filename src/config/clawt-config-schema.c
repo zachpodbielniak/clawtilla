@@ -1581,6 +1581,16 @@ static const ClawtSchemaEntry schema[] = {
   "the spending caps refuse, with the reason. Work already handed over\n"
   "is not stopped.", "0.40.0" },
 
+{ "projects.venture_repo_id", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "0", NULL,
+  "The VENTURE repository (a `forge_repo` id) this project's tasks are\n"
+  "mirrored against.\n"
+  "\n"
+  "Only with a venture connector's `mirror_tasks` on. Without it, a\n"
+  "task's checkout remotes are matched against VENTURE's repositories;\n"
+  "with it, the project's tasks file there whatever their remotes say.\n"
+  "0 for none. See docs/venture.org.", "0.44.0" },
+
 { "teams", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Teams, so a fleet larger than a handful has a shape.\n"
   "\n"
@@ -2214,6 +2224,20 @@ static const ClawtSchemaEntry schema[] = {
   "Ignored when `args` is set on the integration: those are the\n"
   "server's arguments, as written. See docs/venture-setup.org, step 2.",
   "0.36.1" },
+
+{ "integrations.mirror_tasks", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "false", NULL,
+  "connector (venture): copy the covered agents' tasks into VENTURE\n"
+  "tickets.\n"
+  "\n"
+  "A task is mirrored only when this is on for an agent it involves and\n"
+  "its repository matches a VENTURE `forge_repo` -- a checkout remote\n"
+  "that /api/v1/forge_repo/resolve knows, or its project's\n"
+  "`venture_repo_id`. The delegator's account creates the ticket and\n"
+  "the assignee's keeps it current: status, assignee, results and\n"
+  "comments. Nothing on an agent's path waits on VENTURE: changes are\n"
+  "queued in tasks.db and sent behind. Needs VENTURE 0.10.0 or later.\n"
+  "See docs/venture.org.", "0.44.0" },
 
 { "integrations.poll_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "60", NULL,

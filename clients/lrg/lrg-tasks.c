@@ -640,6 +640,29 @@ on_remove_checkout_clicked(LrgButton *button, gpointer user_data)
 }
 
 static void
+on_venture_open_clicked(LrgButton *button, gpointer user_data)
+{
+    const gchar *url = g_object_get_data(G_OBJECT(button), "url");
+
+    (void)user_data;
+
+    clawt_lrg_open_uri(tasks.app, url);
+}
+
+static void
+on_venture_retry_clicked(LrgButton *button, gpointer user_data)
+{
+    const gchar *task_id = g_object_get_data(G_OBJECT(button), "task-id");
+
+    (void)user_data;
+
+    clawt_lrg_request(tasks.app, "task.venture_retry",
+                      clawt_ipc_payload_new("task", task_id, NULL),
+                      CLAWT_LRG_REQUEST_NONE, on_task_done,
+                      (gpointer)"Sending to VENTURE again", NULL);
+}
+
+static void
 on_review_clicked(LrgButton *button, gpointer user_data)
 {
     const gchar *task_id = g_object_get_data(G_OBJECT(button), "task-id");
@@ -855,6 +878,55 @@ on_task_shown(ClawtLrgApp *app, JsonNode *reply, const GError *error,
             clawt_lrg_take(line, task_button(
                 "Remove checkout", form->task_id,
                 G_CALLBACK(on_remove_checkout_clicked)));
+        clawt_lrg_take(content, line);
+    }
+
+    /*
+     * Its VENTURE ticket (0.44.0): the link when it is kept current, or
+     * why it is not -- and Retry when the mirror skipped it or gave up.
+     */
+    if (root != NULL && json_object_has_member(root, "venture")) {
+        JsonObject *venture = json_object_get_object_member(root, "venture");
+        const gchar *vstate = clawt_ipc_payload_string(venture, "state");
+        const gchar *reason = clawt_ipc_payload_string(venture, "reason");
+        const gchar *url = clawt_ipc_payload_string(venture, "url");
+        LrgWidget *line = clawt_lrg_hbox(8.0f);
+        g_autofree gchar *said = NULL;
+
+        if (g_strcmp0(vstate, "synced") == 0)
+            said = g_strdup_printf("Ticket #%" G_GINT64_FORMAT
+                                   ", kept current as the task moves.",
+                                   json_object_get_int_member_with_default(
+                                       venture, "ticket", 0));
+        else if (g_strcmp0(vstate, "queued") == 0)
+            said = g_strdup_printf("Waiting to be sent%s%s",
+                                   reason != NULL ? ": " : ".",
+                                   reason != NULL ? reason : "");
+        else if (g_strcmp0(vstate, "skipped") == 0)
+            said = g_strdup_printf("Not mirrored: %s",
+                                   reason != NULL ? reason : "no reason given");
+        else
+            said = g_strdup_printf("The mirror gave up: %s",
+                                   reason != NULL ? reason : "no reason given");
+
+        clawt_lrg_take(content, clawt_lrg_label("VENTURE", "heading"));
+        clawt_lrg_take(content, clawt_lrg_paragraph(said, "muted"));
+
+        if (url != NULL) {
+            LrgWidget *open = task_button("Open in VENTURE", form->task_id,
+                                          G_CALLBACK(on_venture_open_clicked));
+
+            g_object_set_data_full(G_OBJECT(open), "url", g_strdup(url),
+                                   g_free);
+            clawt_lrg_take(line, open);
+        }
+
+        if (g_strcmp0(vstate, "dead") == 0 ||
+            g_strcmp0(vstate, "skipped") == 0)
+            clawt_lrg_take(line, task_button(
+                "Retry", form->task_id,
+                G_CALLBACK(on_venture_retry_clicked)));
+
         clawt_lrg_take(content, line);
     }
 

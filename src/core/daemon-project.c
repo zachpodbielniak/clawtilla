@@ -317,6 +317,8 @@ add_project_object(
 	json_builder_add_int_value(builder, spec->budget_warn_percent);
 	json_builder_set_member_name(builder, "budget_hard_stop");
 	json_builder_add_boolean_value(builder, spec->budget_hard_stop);
+	json_builder_set_member_name(builder, "venture_repo_id");
+	json_builder_add_int_value(builder, spec->venture_repo_id);
 	json_builder_set_member_name(builder, "month_spend_usd");
 	json_builder_add_double_value(builder, (gdouble)micros / 1000000.0);
 	json_builder_set_member_name(builder, "stopped");
@@ -399,7 +401,7 @@ clawt_daemon_handle_project(
 			static const gchar *const fields[] = {
 				"name", "directory", "goal", "review_by", "agents",
 				"monthly_budget_usd", "budget_warn_percent",
-				"budget_hard_stop", NULL
+				"budget_hard_stop", "venture_repo_id", NULL
 			};
 			guint i;
 

@@ -7173,6 +7173,9 @@ project_from_node(YamlNode *entry)
     node = yaml_mapping_get_member(mapping, "budget_hard_stop");
     spec->budget_hard_stop = (node != NULL) && yaml_node_get_boolean(node);
 
+    node = yaml_mapping_get_member(mapping, "venture_repo_id");
+    spec->venture_repo_id = (node != NULL) ? MAX(yaml_node_get_int(node), 0) : 0;
+
     return spec;
 }
 
@@ -7330,6 +7333,17 @@ clawt_config_set_project_value(ClawtConfig  *self,
         }
 
         node = yaml_node_new_int(percent);
+    } else if (g_strcmp0(key, "venture_repo_id") == 0) {
+        gchar *end = NULL;
+        gint64 id = g_ascii_strtoll(value, &end, 10);
+
+        if (end == value || *end != '\0' || id < 0) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                        "venture_repo_id is a VENTURE forge_repo id, or 0");
+            return FALSE;
+        }
+
+        node = yaml_node_new_int(id);
     } else if (g_strcmp0(key, "budget_hard_stop") == 0) {
         node = yaml_node_new_boolean(g_ascii_strcasecmp(value, "true") == 0 ||
                                      g_ascii_strcasecmp(value, "yes") == 0 ||

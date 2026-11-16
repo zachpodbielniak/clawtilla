@@ -416,4 +416,236 @@ gboolean clawt_task_store_delete_incident(ClawtTaskStore  *self,
 GPtrArray *clawt_task_store_load_incidents(ClawtTaskStore  *self,
                                            GError         **error);
 
+/* ── The VENTURE mirror (0.44.0) ─────────────────────────────────── */
+
+/**
+ * ClawtVentureOutboxRow:
+ * @id: the row
+ * @task_id: the task it is about
+ * @kind: `sync` (the ticket should match the task) or `note` (one note
+ *   should become a comment)
+ * @note_id: the note, for `note`; 0 otherwise
+ * @attempts: failed sends so far
+ * @gen: the generation read; see clawt_task_store_outbox_finish()
+ *
+ * One thing the VENTURE mirror owes VENTURE.
+ */
+typedef struct {
+    gint64  id;
+    gchar  *task_id;
+    gchar  *kind;
+    gint64  note_id;
+    gint    attempts;
+    gint64  gen;
+} ClawtVentureOutboxRow;
+
+/**
+ * clawt_venture_outbox_row_free: (skip)
+ * @row: (nullable) (transfer full): a row
+ */
+void clawt_venture_outbox_row_free(ClawtVentureOutboxRow *row);
+
+/**
+ * ClawtVentureRef:
+ * @task_id: the task
+ * @instance: (nullable): the connector the ticket is on
+ * @ticket_id: the VENTURE ticket, or 0 when there is none
+ * @version: the ticket's version after the mirror's last write
+ * @snapshot: (nullable): the mirror-owned fields as the mirror last
+ *   wrote them, a JSON object -- its write receipt
+ * @state: `synced`, `skipped` (not mirrored, and @reason says why) or
+ *   `dead` (the mirror gave up; @reason says why)
+ * @reason: (nullable): why, for `skipped` and `dead`
+ * @url: (nullable): the ticket's page
+ * @updated_at: when the ref was last written
+ *
+ * What the mirror knows of one task in VENTURE.
+ */
+typedef struct {
+    gchar  *task_id;
+    gchar  *instance;
+    gint64  ticket_id;
+    gint64  version;
+    gchar  *snapshot;
+    gchar  *state;
+    gchar  *reason;
+    gchar  *url;
+    gint64  updated_at;
+} ClawtVentureRef;
+
+/**
+ * clawt_venture_ref_free: (skip)
+ * @ref: (nullable) (transfer full): a ref
+ */
+void clawt_venture_ref_free(ClawtVentureRef *ref);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtVentureRef, clawt_venture_ref_free)
+
+/**
+ * clawt_task_store_set_mirror:
+ * @self: a #ClawtTaskStore
+ * @mirror: whether the VENTURE mirror is on
+ *
+ * With the mirror on, every task save queues a coalesced `sync` row and
+ * every note a `note` row, each in the same transaction as the change.
+ */
+void clawt_task_store_set_mirror(ClawtTaskStore *self, gboolean mirror);
+
+/**
+ * clawt_task_store_get_mirror:
+ * @self: a #ClawtTaskStore
+ *
+ * Returns: whether outbox rows are being written
+ */
+gboolean clawt_task_store_get_mirror(ClawtTaskStore *self);
+
+/**
+ * clawt_task_store_outbox_due: (skip)
+ * @self: a #ClawtTaskStore
+ * @now: Unix time
+ * @limit: at most this many
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The rows to send now: the oldest queued row of each task, when due.
+ *
+ * Returns: (transfer full) (element-type ClawtVentureOutboxRow)
+ *   (nullable): the rows, or %NULL on error
+ */
+GPtrArray *clawt_task_store_outbox_due(ClawtTaskStore  *self,
+                                       gint64           now,
+                                       guint            limit,
+                                       GError         **error);
+
+/**
+ * clawt_task_store_outbox_finish:
+ * @self: a #ClawtTaskStore
+ * @id: the row
+ * @gen: the generation that was sent
+ *
+ * The row was sent.  It is deleted -- unless its generation moved on
+ * while it was in flight, when it is made due again for the newer
+ * change.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean clawt_task_store_outbox_finish(ClawtTaskStore *self, gint64 id,
+                                        gint64 gen);
+
+/**
+ * clawt_task_store_outbox_retry:
+ * @self: a #ClawtTaskStore
+ * @id: the row
+ * @attempts: failed sends now
+ * @next_at: when to try again, Unix time
+ * @why: (nullable): what went wrong
+ *
+ * Returns: %TRUE on success
+ */
+gboolean clawt_task_store_outbox_retry(ClawtTaskStore *self, gint64 id,
+                                       gint attempts, gint64 next_at,
+                                       const gchar *why);
+
+/**
+ * clawt_task_store_outbox_kill:
+ * @self: a #ClawtTaskStore
+ * @id: the row
+ * @why: what went wrong, for the operator
+ *
+ * The row is dead: kept, with @why, until the operator retries the task.
+ * The task's later rows wait behind it.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean clawt_task_store_outbox_kill(ClawtTaskStore *self, gint64 id,
+                                      const gchar *why);
+
+/**
+ * clawt_task_store_outbox_revive:
+ * @self: a #ClawtTaskStore
+ * @task_id: the task
+ *
+ * The operator's Retry: the task's dead rows are queued again, due now.
+ *
+ * Returns: how many were revived
+ */
+guint clawt_task_store_outbox_revive(ClawtTaskStore *self,
+                                     const gchar *task_id);
+
+/**
+ * clawt_task_store_outbox_state:
+ * @self: a #ClawtTaskStore
+ * @task_id: the task
+ * @queued: (out) (optional): rows still to send
+ * @dead: (out) (optional): rows given up on
+ * @last_error: (out) (optional) (transfer full) (nullable): the latest
+ *   error any of them records
+ */
+void clawt_task_store_outbox_state(ClawtTaskStore  *self,
+                                   const gchar     *task_id,
+                                   guint           *queued,
+                                   guint           *dead,
+                                   gchar          **last_error);
+
+/**
+ * clawt_task_store_venture_ref: (skip)
+ * @self: a #ClawtTaskStore
+ * @task_id: the task
+ *
+ * Returns: (transfer full) (nullable): what the mirror knows of it, or
+ *   %NULL when it has never looked
+ */
+ClawtVentureRef *clawt_task_store_venture_ref(ClawtTaskStore *self,
+                                              const gchar *task_id);
+
+/**
+ * clawt_task_store_put_venture_ref: (skip)
+ * @self: a #ClawtTaskStore
+ * @ref: the ref to keep, over any for the same task
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Returns: %TRUE when written
+ */
+gboolean clawt_task_store_put_venture_ref(ClawtTaskStore        *self,
+                                          const ClawtVentureRef *ref,
+                                          GError               **error);
+
+/**
+ * clawt_task_store_note:
+ * @self: a #ClawtTaskStore
+ * @note_id: the note
+ *
+ * One note, shaped as clawt_task_store_notes() shapes each, plus its
+ * `task_id`.
+ *
+ * Returns: (transfer full) (nullable): the note, or %NULL
+ */
+JsonNode *clawt_task_store_note(ClawtTaskStore *self, gint64 note_id);
+
+/**
+ * clawt_task_store_venture_comment:
+ * @self: a #ClawtTaskStore
+ * @note_id: the note
+ *
+ * Returns: the VENTURE comment the mirror made of it, or 0
+ */
+gint64 clawt_task_store_venture_comment(ClawtTaskStore *self,
+                                        gint64 note_id);
+
+/**
+ * clawt_task_store_put_venture_comment:
+ * @self: a #ClawtTaskStore
+ * @note_id: the note
+ * @task_id: its task
+ * @comment_id: the VENTURE comment made of it
+ *
+ * The mirror's receipt for a comment: what lets it recognise its own
+ * comment when it comes back.
+ *
+ * Returns: %TRUE when written
+ */
+gboolean clawt_task_store_put_venture_comment(ClawtTaskStore *self,
+                                              gint64 note_id,
+                                              const gchar *task_id,
+                                              gint64 comment_id);
+
 G_END_DECLS

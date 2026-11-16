@@ -1,0 +1,443 @@
+/*
+ * daemon-venture-mirror.c - The daemon's side of the VENTURE mirror
+ * Copyright (C) 2026
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * This file is part of clawtilla.
+ *
+ * Which agents mirror (a venture connector with `mirror_tasks` on, and a
+ * token), the one HTTP transport the mirror sends through, where a
+ * task's repository is, and the IPC that shows and retries it.  The
+ * rules -- who writes what, what a status means -- are the mirror's own,
+ * in clawt-venture-mirror.c.
+ */
+
+#include "clawtilla.h"
+#include "clawt-http.h"
+#include "core/clawt-daemon-private.h"
+#include "integration/clawt-connector.h"
+#include "clawt-git-remote.h"
+
+#include <libsoup/soup.h>
+#include <string.h>
+
+#define USER_AGENT "clawtilla/" CLAWT_VERSION_STRING
+#define MIRROR_TIMEOUT_SECONDS (20)
+#define MIRROR_INTERVAL_SECONDS (15)
+#define MIRROR_REMOTES_TTL_SECONDS (600)
+
+/* ── The transport ───────────────────────────────────────────────── */
+
+typedef struct {
+    ClawtDaemon *daemon;     /* not owned */
+    SoupSession *session;    /* owned */
+} MirrorTransport;
+
+typedef struct {
+    SoupMessage            *message;
+    ClawtVentureMirror     *mirror;    /* reffed */
+    ClawtVentureMirrorReply reply;
+    gpointer                reply_data;
+} MirrorRequest;
+
+static void
+mirror_transport_free(gpointer data)
+{
+    MirrorTransport *self = data;
+
+    if (self == NULL)
+        return;
+
+    g_clear_object(&self->session);
+    g_free(self);
+}
+
+static void
+on_mirror_answered(GObject *source, GAsyncResult *result, gpointer data)
+{
+    MirrorRequest *request = data;
+    g_autoptr(GBytes) body = NULL;
+    g_autofree gchar *text = NULL;
+    guint status;
+
+    body = soup_session_send_and_read_finish(SOUP_SESSION(source), result,
+                                             NULL);
+    status = (body != NULL) ? soup_message_get_status(request->message) : 0;
+
+    if (body != NULL) {
+        gsize length = 0;
+        const gchar *bytes = g_bytes_get_data(body, &length);
+
+        text = g_strndup(bytes != NULL ? bytes : "", length);
+    }
+
+    request->reply(status, text, request->reply_data);
+
+    g_object_unref(request->message);
+    g_object_unref(request->mirror);
+    g_free(request);
+}
+
+/*
+ * One request.  The token goes in the Authorization header and nowhere
+ * else; the context is pushed so the answer lands on the daemon's loop
+ * (the same reasoning as venture_send() in daemon-venture.c).
+ */
+static void
+mirror_send(ClawtVentureMirror     *mirror,
+            const gchar            *method,
+            const gchar            *url,
+            const gchar            *token,
+            const gchar            *idempotency_key,
+            const gchar            *body,
+            ClawtVentureMirrorReply reply,
+            gpointer                reply_data,
+            gpointer                user_data)
+{
+    MirrorTransport *transport = user_data;
+    SoupMessage *message;
+    MirrorRequest *request;
+    GMainContext *context;
+    g_autofree gchar *bearer = g_strconcat("Bearer ", token, NULL);
+
+    message = clawt_http_message_new(method, url,
+                                     CLAWT_HTTP_CARRIES_CREDENTIALS);
+
+    if (message == NULL) {
+        reply(400, "{\"message\":\"not a URL clawtilla can dial\"}",
+              reply_data);
+        return;
+    }
+
+    soup_message_headers_replace(soup_message_get_request_headers(message),
+                                 "Authorization", bearer);
+
+    if (idempotency_key != NULL)
+        soup_message_headers_replace(soup_message_get_request_headers(message),
+                                     "Idempotency-Key", idempotency_key);
+
+    if (body != NULL) {
+        g_autoptr(GBytes) bytes = g_bytes_new(body, strlen(body));
+
+        soup_message_set_request_body_from_bytes(message, "application/json",
+                                                 bytes);
+    }
+
+    request = g_new0(MirrorRequest, 1);
+    request->message = message;
+    request->mirror = g_object_ref(mirror);
+    request->reply = reply;
+    request->reply_data = reply_data;
+
+    context = transport->daemon->main_context;
+
+    if (context != NULL)
+        g_main_context_push_thread_default(context);
+
+    soup_session_send_and_read_async(transport->session, message,
+                                     G_PRIORITY_DEFAULT, NULL,
+                                     on_mirror_answered, request);
+
+    if (context != NULL)
+        g_main_context_pop_thread_default(context);
+}
+
+/* ── Where a task's work is ──────────────────────────────────────── */
+
+typedef struct {
+    gint64 at;
+    GStrv  urls;
+} CachedRemotes;
+
+static void
+cached_remotes_free(gpointer data)
+{
+    CachedRemotes *self = data;
+
+    g_strfreev(self->urls);
+    g_free(self);
+}
+
+/*
+ * The fetch URLs of a directory's remotes, origin first, remembered for
+ * ten minutes: a repository's remotes rarely change, and asking git on
+ * every task save would be a process per save.
+ */
+static GStrv
+remotes_of(ClawtDaemon *self, const gchar *directory)
+{
+    CachedRemotes *cached;
+    g_autoptr(GPtrArray) remotes = NULL;
+    GPtrArray *urls;
+    gint64 now = g_get_monotonic_time() / G_USEC_PER_SEC;
+    guint i;
+
+    if (directory == NULL || *directory == '\0')
+        return NULL;
+
+    if (self->mirror_remotes == NULL)
+        self->mirror_remotes = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                                     g_free,
+                                                     cached_remotes_free);
+
+    cached = g_hash_table_lookup(self->mirror_remotes, directory);
+
+    if (cached != NULL && now - cached->at < MIRROR_REMOTES_TTL_SECONDS)
+        return g_strdupv(cached->urls);
+
+    remotes = clawt_git_remotes_for_dir(directory, NULL);
+    urls = g_ptr_array_new();
+
+    for (i = 0; remotes != NULL && i < remotes->len; i++) {
+        ClawtGitRemote *remote = g_ptr_array_index(remotes, i);
+
+        g_ptr_array_add(urls, g_strdup(remote->url));
+    }
+
+    g_ptr_array_add(urls, NULL);
+
+    cached = g_new0(CachedRemotes, 1);
+    cached->at = now;
+    cached->urls = (GStrv)g_ptr_array_free(urls, FALSE);
+    g_hash_table_replace(self->mirror_remotes, g_strdup(directory), cached);
+
+    return g_strdupv(cached->urls);
+}
+
+static GStrv
+mirror_target(ClawtVentureMirror *mirror,
+              const gchar        *task_id,
+              gint64             *repo_id,
+              gpointer            user_data)
+{
+    ClawtDaemon *self = user_data;
+    g_autoptr(ClawtTask) task = NULL;
+    g_autoptr(ClawtProjectSpec) project = NULL;
+    const gchar *directory;
+
+    (void)mirror;
+    *repo_id = 0;
+
+    task = clawt_task_store_get(self->task_store, task_id);
+
+    if (task == NULL)
+        return NULL;
+
+    if (clawt_task_get_project(task) != NULL)
+        project = clawt_config_get_project(self->config,
+                                            clawt_task_get_project(task));
+
+    if (project != NULL)
+        *repo_id = project->venture_repo_id;
+
+    /* The checkout's repository, else the project's directory. */
+    directory = clawt_task_get_checkout_repo(task);
+
+    if (directory == NULL && project != NULL)
+        directory = project->directory;
+
+    return remotes_of(self, directory);
+}
+
+/* ── Which agents mirror ─────────────────────────────────────────── */
+
+void
+clawt_daemon_venture_mirror_sync(ClawtDaemon *self)
+{
+    GPtrArray *agents;
+    g_autoptr(GPtrArray) catalog = NULL;
+    g_autofree gchar *overlay_dir = NULL;
+    guint i;
+
+    g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+    if (self->venture_mirror == NULL || self->task_store == NULL)
+        return;
+
+    clawt_venture_mirror_clear_accounts(self->venture_mirror);
+
+    overlay_dir = clawt_config_get_path_value(self->config, "connectors.dir");
+    catalog = clawt_connector_catalog_load(overlay_dir, NULL);
+    agents = clawt_config_get_agents(self->config);
+
+    for (i = 0; agents != NULL && i < agents->len; i++) {
+        ClawtAgentConfig *agent = g_ptr_array_index(agents, i);
+        g_autoptr(GPtrArray) bindings =
+            clawt_integration_resolve_for_agent(self->config, agent);
+        guint b;
+
+        for (b = 0; bindings != NULL && b < bindings->len; b++) {
+            ClawtIntegrationBinding *binding = g_ptr_array_index(bindings, b);
+            const ClawtConnectorInfo *info;
+            g_autofree gchar *base = NULL;
+            g_autofree gchar *token = NULL;
+            const gchar *agent_id;
+
+            if (g_strcmp0(clawt_integration_binding_get_info(binding)->id,
+                          "connector") != 0 ||
+                !clawt_integration_binding_get_boolean(binding,
+                                                       "mirror_tasks"))
+                continue;
+
+            info = clawt_connector_catalog_find(
+                catalog,
+                clawt_integration_binding_get_string(binding, "provider"));
+
+            if (info == NULL || g_strcmp0(info->id, "venture") != 0)
+                continue;
+
+            agent_id = clawt_agent_config_get_id(agent);
+
+            /* The first venture connector of an agent's is its account. */
+            if (clawt_venture_mirror_has_account(self->venture_mirror,
+                                                 agent_id))
+                continue;
+
+            base = clawt_connector_resolve_url(
+                info, "",
+                clawt_integration_binding_get_string(binding, "instance"));
+            token = clawt_daemon_venture_token_for(binding);
+
+            if (base == NULL || token == NULL) {
+                g_message("venture mirror: %s's connector '%s' has no %s yet, "
+                          "so its tasks are not mirrored", agent_id,
+                          clawt_integration_binding_get_name(binding),
+                          base == NULL ? "server" : "credential");
+                continue;
+            }
+
+            while (g_str_has_suffix(base, "/"))
+                base[strlen(base) - 1] = '\0';
+
+            clawt_venture_mirror_set_account(
+                self->venture_mirror, agent_id,
+                clawt_integration_binding_get_name(binding), base, token);
+            memset(token, 0, strlen(token));
+        }
+    }
+
+    /*
+     * The outbox is written only while somebody mirrors: a fleet with no
+     * mirroring connector keeps no queue of changes nobody will send.
+     */
+    if (clawt_venture_mirror_account_count(self->venture_mirror) > 0) {
+        clawt_task_store_set_mirror(self->task_store, TRUE);
+        clawt_venture_mirror_start(self->venture_mirror,
+                                   MIRROR_INTERVAL_SECONDS);
+    } else {
+        clawt_task_store_set_mirror(self->task_store, FALSE);
+        clawt_venture_mirror_stop(self->venture_mirror);
+    }
+}
+
+/* ClawtTaskManager::task-changed: (task id, state). */
+static void
+on_task_changed_for_mirror(ClawtTaskManager *tasks, const gchar *task_id,
+                           gint state, gpointer user_data)
+{
+    ClawtDaemon *self = user_data;
+
+    (void)tasks;
+    (void)task_id;
+    (void)state;
+
+    if (self->venture_mirror != NULL &&
+        clawt_task_store_get_mirror(self->task_store))
+        clawt_venture_mirror_kick(self->venture_mirror);
+}
+
+void
+clawt_daemon_venture_mirror_start(ClawtDaemon *self)
+{
+    MirrorTransport *transport;
+
+    g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+    if (self->task_store == NULL || self->venture_mirror != NULL)
+        return;
+
+    self->venture_mirror = clawt_venture_mirror_new(self->task_store,
+                                                    self->main_context);
+
+    transport = g_new0(MirrorTransport, 1);
+    transport->daemon = self;
+    transport->session = soup_session_new_with_options(
+        "user-agent", USER_AGENT, "timeout", MIRROR_TIMEOUT_SECONDS, NULL);
+
+    clawt_venture_mirror_set_request_func(self->venture_mirror, mirror_send,
+                                          transport, mirror_transport_free);
+    clawt_venture_mirror_set_target_func(self->venture_mirror, mirror_target,
+                                         self, NULL);
+
+    if (self->tasks != NULL)
+        self->mirror_task_handler = g_signal_connect(
+            self->tasks, "task-changed",
+            G_CALLBACK(on_task_changed_for_mirror), self);
+
+    /* Accounts now, requests on the first tick -- never on startup. */
+    clawt_daemon_venture_mirror_sync(self);
+}
+
+void
+clawt_daemon_venture_mirror_stop(ClawtDaemon *self)
+{
+    g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+    if (self->mirror_task_handler != 0 && self->tasks != NULL)
+        g_signal_handler_disconnect(self->tasks, self->mirror_task_handler);
+    self->mirror_task_handler = 0;
+
+    if (self->venture_mirror != NULL)
+        clawt_venture_mirror_stop(self->venture_mirror);
+
+    g_clear_object(&self->venture_mirror);
+    g_clear_pointer(&self->mirror_remotes, g_hash_table_unref);
+}
+
+/* ── IPC ─────────────────────────────────────────────────────────── */
+
+JsonNode *
+clawt_daemon_venture_mirror_describe(ClawtDaemon *self, const gchar *task_id)
+{
+    g_return_val_if_fail(CLAWT_IS_DAEMON(self), NULL);
+
+    if (self->task_store == NULL || task_id == NULL)
+        return NULL;
+
+    return clawt_venture_mirror_describe(self->task_store, task_id);
+}
+
+guint
+clawt_daemon_venture_mirror_retry(ClawtDaemon *self, const gchar *task_id)
+{
+    guint revived;
+    g_autoptr(ClawtVentureRef) ref = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_DAEMON(self), 0);
+
+    if (self->task_store == NULL || task_id == NULL)
+        return 0;
+
+    revived = clawt_task_store_outbox_revive(self->task_store, task_id);
+
+    /*
+     * A task found unmatched, or whose ticket was lost, is looked at
+     * afresh: a retry is the operator saying something has changed.
+     */
+    ref = clawt_task_store_venture_ref(self->task_store, task_id);
+
+    if (ref == NULL || g_strcmp0(ref->state, "synced") != 0) {
+        g_autoptr(ClawtTask) task = clawt_task_store_get(self->task_store,
+                                                         task_id);
+
+        if (task != NULL && clawt_task_store_get_mirror(self->task_store) &&
+            clawt_task_store_save(self->task_store, task,
+                                  "VENTURE mirror retried", NULL))
+            revived++;
+    }
+
+    if (self->venture_mirror != NULL)
+        clawt_venture_mirror_kick(self->venture_mirror);
+
+    return revived;
+}

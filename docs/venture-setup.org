@@ -151,6 +151,10 @@ Then the handshake every trigger has: read the first captured delivery with =cla
 
 To catch up on business events (~invoice.paid~, ~deal.won~, ...) missed while the daemon was down, turn on =business_events= on the webhook and set =triggers.replay_connector: books= and =triggers.organization_id: <id>= on the trigger.  The replay token must belong to an organization *owner or administrator*, so it is usually not the agent's confined token.  Details: [[file:triggers.org::*Telling an agent that a VENTURE record changed][triggers.org]].
 
+* Step 4 (optional): mirror tasks as tickets (since 0.44.0)
+
+With ~mirror_tasks: true~ on an agent's connector, its tasks become VENTURE tickets and are kept current -- each write made as the agent it is about, from a queue in =tasks.db= so nothing waits on VENTURE.  A task is mirrored only when its repository is one VENTURE knows: a =forge_repo= its checkout's remote resolves to for that agent's account, or its project's ~venture_repo_id~.  Needs VENTURE 0.10.0.  Everything else is in [[file:venture.org][venture.org]].
+
 * Separate connections per agent
 
 One token is one actor.  VENTURE's audit trail records who made every change, and two agents holding one token are one name on every row they write: which of them filed something stops being answerable, and the two necessarily see the same organizations.  =clawtilla integration list= warns about a shared token for that reason.

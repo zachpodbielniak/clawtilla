@@ -143,6 +143,7 @@ All under [[file:docs/][docs/]], in org-mode:
 | [[file:docs/integrations.org][integrations.org]] | Matrix, mail, MCP servers, notifications; scoping them |
 | [[file:docs/connectors.org][connectors.org]] | connected accounts: the credential stays here, the tools go to the agents |
 | [[file:docs/venture-setup.org][venture-setup.org]] | connecting VENTURE step by step, one confined account per agent |
+| [[file:docs/venture.org][venture.org]] | tasks mirrored as VENTURE tickets: who writes what, the outbox, troubleshooting |
 | [[file:docs/routines.org][routines.org]] | standing work on a schedule, presets and cron |
 | [[file:docs/skills.org][skills.org]] | reusable procedures, where each CLI reads them, and why an import arrives switched off |
 | [[file:docs/research.org][research.org]] | web search, LQL queries and cited research through a libresearch server |

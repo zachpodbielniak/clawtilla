@@ -733,11 +733,17 @@ test_tools_org_says_whether_venture_writes_wait(void)
         /* the catalogue's venturectl here may be any age, so the
          * low_risk wording is checked against fakes below */
     };
+    /* and the mirror's line, only with mirror_tasks on (0.44.0) */
+    static const gchar *const mirror_lines[] = {
+        "", "    mirror_tasks: true\n", NULL
+    };
     gsize i;
 
-    for (i = 0; i < G_N_ELEMENTS(cases); i++) {
+    for (i = 0; i < 2 * G_N_ELEMENTS(cases); i++) {
         Fixture fixture = { 0 };
         g_autoptr(GError) error = NULL;
+        gsize c = i % G_N_ELEMENTS(cases);
+        gboolean mirrored = (i >= G_N_ELEMENTS(cases));
         g_autofree gchar *yaml = g_strdup_printf(
             "integrations:\n"
             "  - name: books\n"
@@ -745,8 +751,10 @@ test_tools_org_says_whether_venture_writes_wait(void)
             "    provider: venture\n"
             "    scope: all\n"
             "    apply_writes: \"%s\"\n"
+            "%s"
             "agents:\n"
-            "  - id: researcher\n", cases[i].level);
+            "  - id: researcher\n", cases[c].level,
+            mirror_lines[mirrored ? 1 : 0]);
         g_autofree gchar *text = NULL;
         ClawtAgentConfig *agent;
 
@@ -758,8 +766,10 @@ test_tools_org_says_whether_venture_writes_wait(void)
         g_assert_no_error(error);
 
         text = tools_org_of(&fixture, "researcher");
-        g_assert_nonnull(strstr(text, cases[i].says));
-        g_assert_null(strstr(text, cases[i].never));
+        g_assert_nonnull(strstr(text, cases[c].says));
+        g_assert_null(strstr(text, cases[c].never));
+        g_assert_true((strstr(text, "mirrored as VENTURE tickets") != NULL)
+                      == mirrored);
 
         fixture_teardown(&fixture);
     }

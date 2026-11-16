@@ -753,6 +753,7 @@ A task delegated with ~thread: new~ carries an *Open room* button and =clawt_tas
 |---|---|---|
 | listing | ~task.list~ | on show and on =task.*= |
 | Changes: Show changes, Remove checkout | ~task.diff~, ~task.checkout_remove~ | in Details for a task with a checkout; the diff opens in the read-only text dialog |
+| VENTURE: Open in VENTURE, Retry | ~task.show~'s ~venture~, ~task.venture_retry~ | in Details for a task the VENTURE mirror has looked at; Retry when it was skipped or given up on (0.44.0) |
 | Review: Accept, Request changes | ~task.review~ | in Details while the task is in ~review~; the notes are the comment box's text |
 | Waits for: Stop waiting, Wait for it | ~task.unlink~, ~task.link~ | in Details; a held card shows =clawt_task_waiting_caption()= |
 | New task / Assign… / Details and Comment | ~task.create~, ~task.assign~, ~task.show~ with ~journal~, ~task.comment~ | the operator's own tasks |

@@ -162,6 +162,7 @@
 #include "integration/clawt-connector-registry.h"
 #include "integration/clawt-venture.h"
 #include "integration/clawt-venture-bridge.h"
+#include "integration/clawt-venture-mirror.h"
 #include "integration/clawt-grok.h"
 #include "integration/clawt-grok-store.h"
 #include "integration/clawt-matrix.h"

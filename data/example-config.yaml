@@ -1445,6 +1445,15 @@ projects:
     # is not stopped.
     budget_hard_stop: false
 
+    # The VENTURE repository (a `forge_repo` id) this project's tasks are
+    # mirrored against.
+    #
+    # Only with a venture connector's `mirror_tasks` on. Without it, a
+    # task's checkout remotes are matched against VENTURE's repositories;
+    # with it, the project's tasks file there whatever their remotes say.
+    # 0 for none. See docs/venture.org.
+    venture_repo_id: 0
+
 # Teams, so a fleet larger than a handful has a shape.
 #
 # An agent names its team in agents.team, and its standing there in
@@ -2030,6 +2039,19 @@ integrations:
     # server's arguments, as written. See docs/venture-setup.org, step 2.
     # Values: off, all, low_risk
     apply_writes: "off"
+
+    # connector (venture): copy the covered agents' tasks into VENTURE
+    # tickets.
+    #
+    # A task is mirrored only when this is on for an agent it involves and
+    # its repository matches a VENTURE `forge_repo` -- a checkout remote
+    # that /api/v1/forge_repo/resolve knows, or its project's
+    # `venture_repo_id`. The delegator's account creates the ticket and
+    # the assignee's keeps it current: status, assignee, results and
+    # comments. Nothing on an agent's path waits on VENTURE: changes are
+    # queued in tasks.db and sent behind. Needs VENTURE 0.10.0 or later.
+    # See docs/venture.org.
+    mirror_tasks: false
 
     # How often a connector that has something to report is asked.
     #
