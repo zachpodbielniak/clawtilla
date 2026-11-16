@@ -171,6 +171,35 @@ ClawtApplyWrites
 clawt_connector_apply_writes(ClawtIntegrationBinding *binding);
 
 /**
+ * clawt_connector_venturectl_has_low_risk:
+ * @command: a path to `venturectl`, or a bare name to resolve
+ *
+ * Whether that `venturectl` understands `--apply-writes=low-risk`
+ * (VENTURE 0.10.0 and later), read from its `--help`.  Remembered per
+ * path, size and modification time, so asking again is cheap and an
+ * upgrade is noticed.
+ *
+ * Returns: %TRUE when it does; %FALSE when it does not, or cannot be
+ *   found or run
+ */
+gboolean
+clawt_connector_venturectl_has_low_risk(const gchar *command);
+
+/**
+ * clawt_connector_venture_apply_writes:
+ * @binding: a `venture` `connector` integration
+ *
+ * The level that actually reaches the server: the binding's
+ * `apply_writes`, except that `low_risk` against a `venturectl` too old
+ * to classify writes is %CLAWT_APPLY_WRITES_OFF -- never
+ * %CLAWT_APPLY_WRITES_ALL, so an old server only ever asks more often.
+ *
+ * Returns: the effective level
+ */
+ClawtApplyWrites
+clawt_connector_venture_apply_writes(ClawtIntegrationBinding *binding);
+
+/**
  * clawt_connector_plan_new: (skip)
  * @info: the connector from the catalogue
  * @binding: the integration as this agent has it

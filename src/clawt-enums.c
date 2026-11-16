@@ -2317,6 +2317,8 @@ clawt_apply_writes_get_type(void)
         static const GEnumValue values[] = {
             { CLAWT_APPLY_WRITES_OFF, "CLAWT_APPLY_WRITES_OFF", "off" },
             { CLAWT_APPLY_WRITES_ALL, "CLAWT_APPLY_WRITES_ALL", "all" },
+            { CLAWT_APPLY_WRITES_LOW_RISK, "CLAWT_APPLY_WRITES_LOW_RISK",
+              "low_risk" },
             { 0, NULL, NULL }
         };
         GType g_define_type_id =

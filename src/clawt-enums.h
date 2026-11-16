@@ -1263,19 +1263,22 @@ typedef enum {
  * ClawtApplyWrites:
  * @CLAWT_APPLY_WRITES_OFF: every write waits for approval (staged)
  * @CLAWT_APPLY_WRITES_ALL: every write applies at once
+ * @CLAWT_APPLY_WRITES_LOW_RISK: ordinary writes apply at once; anything
+ *   touching money, people, access, credentials, an outward action or a
+ *   delete still waits for approval (since 0.43.0)
  *
  * How freely an agent's writes through a connector land (since 0.36.1).
  * Read by the `venture` connector: `all` starts `venturectl mcp` with
- * `--apply-writes`.  %CLAWT_APPLY_WRITES_OFF is zero, so a connector
- * that says nothing keeps every write waiting for the operator -- the
- * behaviour it always had.  A level between the two, applying ordinary
- * writes and staging anything touching money, people, access or
- * deletion, waits on VENTURE classifying its writes and is appended
- * when it exists.
+ * `--apply-writes`, `low_risk` with `--apply-writes=low-risk` -- VENTURE
+ * classes each write itself (0.10.0 and later).  %CLAWT_APPLY_WRITES_OFF
+ * is zero, so a connector that says nothing keeps every write waiting
+ * for the operator -- the behaviour it always had.  Appended, not
+ * inserted, so a stored value keeps its meaning.
  */
 typedef enum {
     CLAWT_APPLY_WRITES_OFF = 0,
-    CLAWT_APPLY_WRITES_ALL
+    CLAWT_APPLY_WRITES_ALL,
+    CLAWT_APPLY_WRITES_LOW_RISK
 } ClawtApplyWrites;
 
 /**

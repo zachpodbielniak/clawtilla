@@ -17,6 +17,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <glib/gstdio.h>
 #include <unistd.h>
 
 #include <gio/gio.h>
@@ -173,6 +174,93 @@ clawt_connector_apply_writes(ClawtIntegrationBinding *binding)
     return (ClawtApplyWrites)value;
 }
 
+/*
+ * What each venturectl answered, by path: "<size>:<mtime>" -> TRUE/FALSE.
+ * Spawning `--help` is cheap, but the workspace renders asks on every
+ * change, and the answer only moves when the binary does.
+ */
+G_LOCK_DEFINE_STATIC(low_risk_probe);
+static GHashTable *low_risk_probe_cache = NULL;
+
+gboolean
+clawt_connector_venturectl_has_low_risk(const gchar *command)
+{
+    g_autofree gchar *resolved = NULL;
+    g_autofree gchar *key = NULL;
+    g_autofree gchar *out = NULL;
+    const gchar *argv[3];
+    GStatBuf st;
+    gint status = 0;
+    gboolean has = FALSE;
+    gpointer cached;
+
+    g_return_val_if_fail(command != NULL, FALSE);
+
+    resolved = clawt_connector_resolve_command(command, NULL);
+
+    if (resolved == NULL || g_stat(resolved, &st) != 0)
+        return FALSE;
+
+    key = g_strdup_printf("%s\n%" G_GINT64_FORMAT ":%" G_GINT64_FORMAT,
+                          resolved, (gint64)st.st_size, (gint64)st.st_mtime);
+
+    G_LOCK(low_risk_probe);
+    if (low_risk_probe_cache == NULL)
+        low_risk_probe_cache = g_hash_table_new_full(g_str_hash,
+                                                     g_str_equal, g_free,
+                                                     NULL);
+    cached = g_hash_table_lookup(low_risk_probe_cache, key);
+    G_UNLOCK(low_risk_probe);
+
+    if (cached != NULL)
+        return GPOINTER_TO_INT(cached) == 2;
+
+    /*
+     * `--help` lists the option with its value, `=low-risk`, from
+     * VENTURE 0.10.0 on.  An older venturectl has a bare
+     * `--apply-writes` and would refuse the value outright, so asking
+     * first is what keeps the tool server starting at all.
+     */
+    argv[0] = resolved;
+    argv[1] = "--help";
+    argv[2] = NULL;
+
+    if (g_spawn_sync(NULL, (gchar **)argv, NULL,
+                     G_SPAWN_STDERR_TO_DEV_NULL | G_SPAWN_CLOEXEC_PIPES,
+                     NULL, NULL, &out, NULL, &status, NULL) &&
+        out != NULL)
+        has = strstr(out, "low-risk") != NULL;
+
+    G_LOCK(low_risk_probe);
+    g_hash_table_replace(low_risk_probe_cache, g_steal_pointer(&key),
+                         GINT_TO_POINTER(has ? 2 : 1));
+    G_UNLOCK(low_risk_probe);
+
+    return has;
+}
+
+ClawtApplyWrites
+clawt_connector_venture_apply_writes(ClawtIntegrationBinding *binding)
+{
+    ClawtApplyWrites level;
+    const gchar *command;
+
+    g_return_val_if_fail(binding != NULL, CLAWT_APPLY_WRITES_OFF);
+
+    level = clawt_connector_apply_writes(binding);
+
+    if (level != CLAWT_APPLY_WRITES_LOW_RISK)
+        return level;
+
+    command = clawt_integration_binding_get_string(binding, "command");
+
+    if (!clawt_connector_venturectl_has_low_risk(
+            command != NULL ? command : "venturectl"))
+        return CLAWT_APPLY_WRITES_OFF;
+
+    return CLAWT_APPLY_WRITES_LOW_RISK;
+}
+
 ClawtConnectorPlan *
 clawt_connector_plan_new(const ClawtConnectorInfo *info,
                          ClawtIntegrationBinding  *binding,
@@ -250,23 +338,43 @@ clawt_connector_plan_new(const ClawtConnectorInfo *info,
              * `apply_writes: all` on a VENTURE connector is the server's
              * own switch, `venturectl mcp --apply-writes`: its writes
              * land at once instead of waiting in VENTURE's confirmation
-             * queue.  Only on the catalogue's arguments -- somebody who
-             * wrote `args:` wrote the whole command line, and adding to
-             * it would be second-guessing them.
+             * queue; `low_risk` is `--apply-writes=low-risk`, where
+             * VENTURE itself decides which writes still wait.  Only on
+             * the catalogue's arguments -- somebody who wrote `args:`
+             * wrote the whole command line, and adding to it would be
+             * second-guessing them.
              */
-            if (g_strcmp0(info->id, "venture") == 0 &&
-                clawt_connector_apply_writes(binding) ==
-                    CLAWT_APPLY_WRITES_ALL) {
-                GPtrArray *with = g_ptr_array_new();
-                gsize i;
+            if (g_strcmp0(info->id, "venture") == 0) {
+                ClawtApplyWrites asked = clawt_connector_apply_writes(binding);
+                ClawtApplyWrites level =
+                    clawt_connector_venture_apply_writes(binding);
+                const gchar *flag = NULL;
 
-                for (i = 0; args != NULL && args[i] != NULL; i++)
-                    g_ptr_array_add(with, g_strdup(args[i]));
+                if (level == CLAWT_APPLY_WRITES_ALL)
+                    flag = "--apply-writes";
+                else if (level == CLAWT_APPLY_WRITES_LOW_RISK)
+                    flag = "--apply-writes=low-risk";
+                else if (asked == CLAWT_APPLY_WRITES_LOW_RISK)
+                    /* Down to off, never up to all: an old server only
+                     * asks more often. */
+                    g_warning("connector '%s': apply_writes is low_risk, "
+                              "but this venturectl cannot classify writes "
+                              "(VENTURE 0.10.0 or later can); every write "
+                              "waits for approval until it is upgraded",
+                              plan->name);
 
-                g_ptr_array_add(with, g_strdup("--apply-writes"));
-                g_ptr_array_add(with, NULL);
-                g_strfreev(args);
-                args = (GStrv)g_ptr_array_free(with, FALSE);
+                if (flag != NULL) {
+                    GPtrArray *with = g_ptr_array_new();
+                    gsize i;
+
+                    for (i = 0; args != NULL && args[i] != NULL; i++)
+                        g_ptr_array_add(with, g_strdup(args[i]));
+
+                    g_ptr_array_add(with, g_strdup(flag));
+                    g_ptr_array_add(with, NULL);
+                    g_strfreev(args);
+                    args = (GStrv)g_ptr_array_free(with, FALSE);
+                }
             }
         }
 

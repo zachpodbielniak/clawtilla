@@ -462,7 +462,13 @@ reassuring.
 What the account can *do* is the other half, and for VENTURE it has a
 switch: ~apply_writes~ (since 0.36.1) is ~off~ by default, so every write
 an agent makes waits for the operator's approval; ~all~ lets them land
-at once.  Turning it on moves the whole of the review onto the account's
+at once.  ~low_risk~ (since 0.43.0) is between: VENTURE applies ordinary
+writes and still stages money, people, access, credentials, outward
+actions and every delete -- its classification, not clawtilla's, and an
+older VENTURE that cannot make it means ~off~, never ~all~.  What it lets
+through unreviewed is still the account's to limit: a ticket the agent
+should not touch is kept from it by memberships, not by the level.
+Turning on ~all~ moves the whole of the review onto the account's
 own limits -- its global role and its organization memberships
 (docs/venture-setup.org) -- so do it only for an account confined to
 what that agent should touch.  An unknown value is ~off~.

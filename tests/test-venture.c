@@ -303,6 +303,91 @@ test_apply_writes_reaches_the_server(void)
     }
 }
 
+
+/*
+ * Two stand-in venturectl binaries in a temporary directory: one whose
+ * --help lists `--apply-writes[=low-risk]` (VENTURE 0.10.0 on) and one
+ * with only the bare flag (older). @which is "new" or "old".
+ */
+static gchar *
+fake_venturectl(const gchar *dir, const gchar *which)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *script = NULL;
+    gchar *path = g_build_filename(dir, which, NULL);
+
+    script = g_strdup_printf(
+        "#!/bin/sh\n"
+        "echo 'Usage: venturectl [OPTION...] COMMAND'\n"
+        "echo '  --apply-writes%s   mcp only: let write tools apply'\n",
+        g_strcmp0(which, "new") == 0 ? "[=low-risk]" : "");
+
+    g_assert_true(g_file_set_contents(path, script, -1, &error));
+    g_assert_no_error(error);
+    g_assert_cmpint(g_chmod(path, 0755), ==, 0);
+
+    return path;
+}
+
+/*
+ * apply_writes: low_risk passes `--apply-writes=low-risk` to a
+ * venturectl that understands it, and against an older one falls back to
+ * staging everything -- never to the bare `--apply-writes`, which would
+ * let every write through.
+ */
+static void
+test_apply_writes_low_risk(void)
+{
+    g_autofree gchar *bins = g_dir_make_tmp("clawt-venturectl-XXXXXX", NULL);
+    g_autofree gchar *fresh = fake_venturectl(bins, "new");
+    g_autofree gchar *stale = fake_venturectl(bins, "old");
+    const gchar *commands[] = { fresh, stale };
+    gsize i;
+
+    g_assert_true(clawt_connector_venturectl_has_low_risk(fresh));
+    g_assert_false(clawt_connector_venturectl_has_low_risk(stale));
+    /* asked twice, answered the same from the cache */
+    g_assert_true(clawt_connector_venturectl_has_low_risk(fresh));
+
+    for (i = 0; i < G_N_ELEMENTS(commands); i++) {
+        PlanFixture fixture = { 0 };
+        const ClawtConnectorInfo *info = NULL;
+        g_autoptr(ClawtIntegrationBinding) binding = NULL;
+        g_autoptr(ClawtConnectorPlan) plan = NULL;
+        g_autoptr(GError) error = NULL;
+        g_autofree gchar *body = g_strdup_printf(
+            "    command: \"%s\"\n    apply_writes: low_risk\n", commands[i]);
+        gboolean is_new = (i == 0);
+
+        binding = build_venture_binding(&fixture, body, &info);
+
+        if (!is_new)
+            g_test_expect_message(G_LOG_DOMAIN, G_LOG_LEVEL_WARNING,
+                                  "*cannot classify writes*");
+
+        plan = clawt_connector_plan_new(info, binding, "vt_x", &error);
+        g_assert_no_error(error);
+        g_test_assert_expected_messages();
+
+        g_assert_cmpint(clawt_connector_apply_writes(binding), ==,
+                        CLAWT_APPLY_WRITES_LOW_RISK);
+        g_assert_cmpint(clawt_connector_venture_apply_writes(binding), ==,
+                        is_new ? CLAWT_APPLY_WRITES_LOW_RISK
+                               : CLAWT_APPLY_WRITES_OFF);
+        g_assert_cmpstr(plan->argv[0], ==, commands[i]);
+        g_assert_cmpstr(plan->argv[1], ==, "mcp");
+        g_assert_cmpint(g_strv_contains((const gchar *const *)plan->argv,
+                                        "--apply-writes=low-risk"), ==,
+                        is_new);
+        g_assert_false(g_strv_contains((const gchar *const *)plan->argv,
+                                       "--apply-writes"));
+
+        plan_fixture_teardown(&fixture);
+    }
+
+    clawt_test_remove_tree(bins);
+}
+
 /*
  * And the instance, which a stdio server has no other way to learn.
  *
@@ -1616,6 +1701,8 @@ main(int argc, char **argv)
                     test_the_token_is_in_the_environment_and_not_the_argv);
     g_test_add_func("/venture/plan/apply-writes",
                     test_apply_writes_reaches_the_server);
+    g_test_add_func("/venture/apply-writes-low-risk",
+                    test_apply_writes_low_risk);
     g_test_add_func("/venture/instance-reaches-the-server",
                     test_the_instance_reaches_the_server_environment);
 

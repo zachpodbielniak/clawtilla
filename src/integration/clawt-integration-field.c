@@ -26,13 +26,18 @@
 
 /* ── Choices ─────────────────────────────────────────────────────── */
 
-/* The spellings are ClawtApplyWrites' nicks, in its order. */
+/*
+ * The spellings are ClawtApplyWrites' nicks, shown from most careful to
+ * least -- not the enum's order, which only ever grows at the end.
+ */
 static const gchar *const apply_writes_levels[] = {
-    "off", "all", NULL
+    "off", "low_risk", "all", NULL
 };
 
 static const gchar *const apply_writes_labels[] = {
-    "Ask first", "Apply at once", NULL
+    "Ask first",
+    "Apply ordinary writes; ask for money, people, access and deletes",
+    "Apply at once", NULL
 };
 
 static const gchar *const notify_backends[] = {

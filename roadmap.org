@@ -411,6 +411,10 @@ The ~forge~ record type is owner-only in VENTURE, so an editor -- every agent ac
 - *Not done:* the plan's scratch agent per test run: a run uses a named agent that already has the skill, in a room of its own, rather than a temporary agent made for it.
 - *Version:* minor.
 
+** DONE VW2: VENTURE low-risk writes v0.43.0 :integrations:
+- *Done:* ~apply_writes: low_risk~ (=CLAWT_APPLY_WRITES_LOW_RISK=, appended) starts =venturectl mcp --apply-writes=low-risk=, where VENTURE 0.10.0 classes each write (money, people, access, credentials, outward actions and deletes stay staged); =clawt_connector_venturectl_has_low_risk()= asks the binary's ~--help~ (cached by path, size and time) and =clawt_connector_venture_apply_writes()= falls back to ~off~ with a warning on an older one, never to ~all~; the middle choice in every client's integration form; TOOLS.org says which writes still wait.
+- *Version:* minor (a new config value).
+
 ** DONE P3 E: Fleet export and import v0.42.0 :configuration:
 - *Done:* =clawt-fleet-pack= -- a pack directory (=FLEET.yaml= with agents, teams, routines, triggers and projects; persona files; the library's skills and tests) with every secret and secret reference, an agent's ~workspace~ and the daemon section left out and listed in ~to_fill~; ~fleet.export~, ~fleet.import_preview~ (new or existing, dangerous settings) and ~fleet.import~ (skip by default for what exists, ~replace~, ~rename:<id>~; the merged config loaded before it is written, then reloaded as an edit and kept in the history; persona files before the scaffold and never over one; skills through the library's import, disabled); an item turning on a dangerous setting refuses the import unless ~allow_dangerous~; agents arrive held; Settings → Export & import in GTK, web and lrg; ~clawtilla fleet export|import~.
 - *Version:* minor.

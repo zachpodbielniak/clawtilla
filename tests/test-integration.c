@@ -730,6 +730,8 @@ test_tools_org_says_whether_venture_writes_wait(void)
     } cases[] = {
         { "off", "held for the operator's", "apply at once" },
         { "all", "apply at once", "held for the operator's" },
+        /* the catalogue's venturectl here may be any age, so the
+         * low_risk wording is checked against fakes below */
     };
     gsize i;
 
@@ -761,6 +763,87 @@ test_tools_org_says_whether_venture_writes_wait(void)
 
         fixture_teardown(&fixture);
     }
+}
+
+
+/*
+ * Two stand-in venturectl binaries in a temporary directory: one whose
+ * --help lists `--apply-writes[=low-risk]` (VENTURE 0.10.0 on) and one
+ * with only the bare flag (older). @which is "new" or "old".
+ */
+static gchar *
+fake_venturectl(const gchar *dir, const gchar *which)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *script = NULL;
+    gchar *path = g_build_filename(dir, which, NULL);
+
+    script = g_strdup_printf(
+        "#!/bin/sh\n"
+        "echo 'Usage: venturectl [OPTION...] COMMAND'\n"
+        "echo '  --apply-writes%s   mcp only: let write tools apply'\n",
+        g_strcmp0(which, "new") == 0 ? "[=low-risk]" : "");
+
+    g_assert_true(g_file_set_contents(path, script, -1, &error));
+    g_assert_no_error(error);
+    g_assert_cmpint(g_chmod(path, 0755), ==, 0);
+
+    return path;
+}
+
+/*
+ * low_risk is described as it will behave: ordinary writes at once and
+ * the rest waiting, against a venturectl that classifies writes; and as
+ * plain staging against one that cannot, since that is what the server
+ * will then do.
+ */
+static void
+test_venture_low_risk_is_described(void)
+{
+    g_autofree gchar *bins = g_dir_make_tmp("clawt-venturectl-XXXXXX", NULL);
+    g_autofree gchar *fresh = fake_venturectl(bins, "new");
+    g_autofree gchar *stale = fake_venturectl(bins, "old");
+    const gchar *commands[] = { fresh, stale };
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(commands); i++) {
+        Fixture fixture = { 0 };
+        g_autoptr(GError) error = NULL;
+        g_autofree gchar *yaml = g_strdup_printf(
+            "integrations:\n"
+            "  - name: books\n"
+            "    type: connector\n"
+            "    provider: venture\n"
+            "    scope: all\n"
+            "    command: \"%s\"\n"
+            "    apply_writes: low_risk\n"
+            "agents:\n"
+            "  - id: researcher\n", commands[i]);
+        g_autofree gchar *text = NULL;
+        ClawtAgentConfig *agent;
+
+        fixture_setup(&fixture, yaml);
+        agent = agent_named(&fixture, "researcher");
+        g_assert_true(clawt_workspace_scaffold(agent, &error));
+        g_assert_true(clawt_workspace_update_tools_org(fixture.config, agent,
+                                                       &error));
+        g_assert_no_error(error);
+
+        text = tools_org_of(&fixture, "researcher");
+
+        if (i == 0) {
+            g_assert_nonnull(strstr(text, "ordinary writes to VENTURE apply"));
+            g_assert_nonnull(strstr(text, "every delete still waits"));
+        } else {
+            g_assert_nonnull(strstr(text, "held for the operator's"));
+            g_assert_null(strstr(text, "ordinary writes to VENTURE apply"));
+        }
+        g_assert_null(strstr(text, "nothing you\ncreate, change or delete"));
+
+        fixture_teardown(&fixture);
+    }
+
+    clawt_test_remove_tree(bins);
 }
 
 /*
@@ -1184,6 +1267,8 @@ main(int argc, char *argv[])
                     test_tools_org_is_rewritten_between_the_markers);
     g_test_add_func("/integration/tools-org-empty",
                     test_no_integrations_is_said_out_loud);
+    g_test_add_func("/integration/venture-low-risk-is-described",
+                    test_venture_low_risk_is_described);
     g_test_add_func("/integration/tools-org-no-markers",
                     test_missing_markers_are_appended);
     g_test_add_func("/integration/mcp-json",
