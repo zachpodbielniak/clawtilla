@@ -137,15 +137,23 @@ test_the_mirror_reads_what_venture_answers(void)
     expect("run-start", "id", "int");
     expect("run-finish", "state", "string");
 
-    /* a milestone, as the context line reads it */
+    /* a milestone and a goal, as the context line reads them */
     expect("milestone", "name", "string");
     expect("milestone", "status", "string");
+    expect("goal", "name", "string");
+    expect("goal", "current_value", "double");
+    expect("goal", "target_value", "double");
+    expect("goal", "unit", "string");
+
+    /* the pull request onto the branch's link (0.48.0) */
+    expect("ticket-link-update", "pull_request_number", "int");
+    expect("ticket-link-update", "pull_request_url", "string");
 }
 
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/venture-contract/the-mirror-reads-what-venture-answers",
                     test_the_mirror_reads_what_venture_answers);

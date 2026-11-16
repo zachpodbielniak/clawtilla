@@ -292,7 +292,7 @@ test_a_missing_directory_is_not_a_problem(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/automation/unparsable-pod-names-its-file",
                     test_a_pod_that_does_not_parse_is_a_problem_naming_the_file);

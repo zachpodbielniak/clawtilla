@@ -1633,7 +1633,7 @@ main(
 		integration_ready = TRUE;
 	}
 
-	g_test_init(&argc, &argv, NULL);
+	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
 	g_test_add_func("/sandbox-probe/real-boxes-hold", test_real_boxes_hold);
 	g_test_add_func("/sandbox-probe/mutations-fail-exactly-their-checks",

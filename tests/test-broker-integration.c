@@ -451,7 +451,7 @@ main(
 	int   argc,
 	char *argv[]
 ){
-	g_test_init(&argc, &argv, NULL);
+	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
 	g_test_add_func("/broker-integration/anythingmcp", test_anythingmcp);
 	g_test_add_func("/broker-integration/anythingmcp/on-failure",

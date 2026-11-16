@@ -672,7 +672,7 @@ test_explain_and_paths(void)
 int
 main(int argc, char *argv[])
 {
-	g_test_init(&argc, &argv, NULL);
+	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
 	g_test_add_func("/trigger-match/lookup", test_lookup_nested_arrays_and_missing);
 	g_test_add_func("/trigger-match/contains-ignores-case", test_contains_ignores_case);

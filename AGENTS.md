@@ -262,6 +262,10 @@ the tooling that reads it expects markdown.
 
 ### Tests stay hermetic
 
+Every test binary calls `g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS,
+NULL)`: each test case gets its own HOME and XDG directories, so nothing a
+test does can read or write the operator's. A new test file does the same.
+
 `make test` must pass with no network, no podman, no libvirt and no
 compositor running. Anything needing real infrastructure goes behind
 `CLAWT_TEST_INTEGRATION=1` and runs under `make test-integration`.

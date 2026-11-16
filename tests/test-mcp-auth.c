@@ -918,7 +918,7 @@ main(
 	int   argc,
 	char *argv[]
 ){
-	g_test_init(&argc, &argv, NULL);
+	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
 	g_test_add_func("/mcp-auth/challenge/quoted-or-bare",
 	                test_challenge_is_read_quoted_or_bare);

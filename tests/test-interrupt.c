@@ -632,7 +632,7 @@ test_a_zombie_is_not_counted_as_killed(void)
 int
 main(int argc, char **argv)
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/interrupt/a-leaf-has-none",
                     test_a_leaf_has_no_descendants);

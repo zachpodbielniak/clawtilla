@@ -801,7 +801,7 @@ test_agent_memories(void)
 gint
 main(gint argc, gchar **argv)
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/lrg/fleet/flow/rooms", test_flow_rooms);
     g_test_add_func("/lrg/fleet/flow/rooms-failure", test_flow_rooms_failure);

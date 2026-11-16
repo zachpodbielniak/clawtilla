@@ -869,7 +869,7 @@ main(
 	gint   argc,
 	gchar *argv[]
 ){
-	g_test_init(&argc, &argv, NULL);
+	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
 	g_test_add_func("/skill-proposal/new-lands-disabled", test_a_new_skill_lands_disabled);
 	g_test_add_func("/skill-proposal/approve-enables", test_approving_a_new_skill_enables_it);

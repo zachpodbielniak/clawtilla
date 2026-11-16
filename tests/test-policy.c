@@ -618,7 +618,7 @@ test_hook_settings_follow_rules(void)
 gint
 main(gint argc, gchar *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/policy/parse-rule", test_parse_rule);
     g_test_add_func("/policy/first-match-and-fallback", test_first_match_and_fallback);

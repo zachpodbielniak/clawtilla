@@ -735,7 +735,7 @@ test_stopping_disarms_a_pending_jitter(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/routine/run-now", test_run_now_ignores_the_schedule);
     g_test_add_func("/routine/run-absent",

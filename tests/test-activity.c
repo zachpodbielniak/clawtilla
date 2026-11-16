@@ -255,7 +255,7 @@ test_list_is_per_turn(void)
 gint
 main(gint argc, gchar *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/activity/elapsed-labels", test_elapsed_labels);
     g_test_add_func("/activity/stop-prompt", test_stop_prompt);

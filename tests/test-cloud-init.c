@@ -376,7 +376,7 @@ test_no_packages_means_no_block(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/cloud-init/mounts/guest-gets-fstab-entries",
                     test_the_guest_gets_fstab_entries_for_its_shares);

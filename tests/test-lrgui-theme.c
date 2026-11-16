@@ -142,7 +142,7 @@ main(int argc, char *argv[])
     config_home = g_dir_make_tmp("clawt-lrgui-theme-XXXXXX", NULL);
     g_setenv("XDG_CONFIG_HOME", config_home, TRUE);
 
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/lrgui/theme/every-combination-loads",
                     test_every_combination_loads);

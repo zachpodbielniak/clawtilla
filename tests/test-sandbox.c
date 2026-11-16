@@ -1032,7 +1032,7 @@ test_description_knows_the_agent_is_confined(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/sandbox/workspace-confines", test_workspace_confines_to_root);
     g_test_add_func("/sandbox/dotdot", test_dotdot_traversal_is_refused);

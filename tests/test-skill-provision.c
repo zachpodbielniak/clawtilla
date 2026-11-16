@@ -908,7 +908,7 @@ test_the_tools_org_region_does_not_duplicate(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/skill-provision/paths",
                     test_each_provider_gets_its_own_paths);

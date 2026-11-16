@@ -150,7 +150,7 @@ test_home_keyed_cli_is_shadow(void)
 gint
 main(gint argc, gchar *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/accounts/renders-and-round-trips", test_account_renders_and_round_trips);
     g_test_add_func("/accounts/expands-home", test_account_expands_home);

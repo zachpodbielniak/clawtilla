@@ -409,7 +409,7 @@ test_shortest_gap(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 	g_test_add_func("/cron/dst-gap", test_dst_gap);
 	g_test_add_func("/cron/dst-fold", test_dst_fold);
 	g_test_add_func("/cron/local-boundary", test_local_zone_and_fractional_boundary);

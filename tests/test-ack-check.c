@@ -654,7 +654,7 @@ test_the_orchestration_frames(void)
 int
 main(int argc, char **argv)
 {
-	g_test_init(&argc, &argv, NULL);
+	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
 	g_test_add_func("/ack-check/daemon/checked-answer-goes-back",
 	                test_a_checked_answer_still_goes_back_to_the_asking_room);

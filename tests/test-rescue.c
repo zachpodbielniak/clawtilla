@@ -637,7 +637,7 @@ main(
 	gint   argc,
 	gchar *argv[]
 ){
-	g_test_init(&argc, &argv, NULL);
+	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
 	g_test_add_func("/rescue/watch/once-per-room",
 		test_the_watch_offers_once_per_room);

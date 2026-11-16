@@ -209,7 +209,7 @@ test_a_trailing_operator_does_not_run_off_the_end(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/command-syntax/control-operators-refused",
                     test_control_operators_are_refused);

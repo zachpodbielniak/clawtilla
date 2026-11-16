@@ -874,7 +874,7 @@ test_notice(void)
 int
 main(int argc, char *argv[])
 {
-	g_test_init(&argc, &argv, NULL);
+	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
 	g_test_add_func("/mcp-result/budget-resolve", test_budget_resolve);
 	g_test_add_func("/mcp-result/cut-utf8", test_cut_utf8);

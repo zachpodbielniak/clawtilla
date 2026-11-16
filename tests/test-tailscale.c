@@ -135,7 +135,7 @@ test_any_address_found_is_bindable(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/tailscale/v4-range", test_the_v4_range_is_a_ten_bit_prefix);
     g_test_add_func("/tailscale/other-addresses",

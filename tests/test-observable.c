@@ -1430,7 +1430,7 @@ test_the_computer_sub_views_round_trip(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/observable/missing-vfunc-refuses",
                     test_a_missing_vfunc_refuses_and_names_the_type);

@@ -1286,7 +1286,7 @@ test_the_schedule_label(void)
 int
 main(int argc, char *argv[])
 {
-	g_test_init(&argc, &argv, NULL);
+	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
 	g_test_add_func("/waits/address-policy", test_the_address_policy_table);
 	g_test_add_func("/waits/gated-agent-no-url-wait",

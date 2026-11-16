@@ -950,7 +950,7 @@ test_link_without_the_feature(void)
 int
 main(int argc, char *argv[])
 {
-	g_test_init(&argc, &argv, NULL);
+	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
 	g_test_add_func("/steering/policy/levels", test_policy_levels);
 	g_test_add_func("/steering/policy/hard-rules", test_policy_hard_rules);

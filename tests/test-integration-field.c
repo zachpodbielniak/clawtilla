@@ -603,7 +603,7 @@ test_a_choice_has_a_default(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/integration-field/every-field-is-a-real-config-key",
                     test_every_field_is_a_real_config_key);

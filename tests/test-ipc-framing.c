@@ -233,7 +233,7 @@ test_a_long_but_legal_frame_still_arrives(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/ipc-framing/endless-frame-is-dropped",
                     test_an_endless_frame_is_dropped_before_it_is_buffered);

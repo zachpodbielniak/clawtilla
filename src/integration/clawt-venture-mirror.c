@@ -136,7 +136,8 @@ typedef enum {
     STEP_COMMENT_ADOPT,
     STEP_RUN_START,
     STEP_RUN_FINISH,
-    STEP_LINK
+    STEP_LINK,
+    STEP_PULL_REQUEST
 } Step;
 
 typedef struct {
@@ -156,6 +157,7 @@ typedef struct {
     gint64                 repo_id;
     gint64                 organization_id;
     guint                  conflicts;
+    gint64                 pull_request;
 } Job;
 
 static void job_next(Job *job);
@@ -849,6 +851,15 @@ step_run(Job *job)
         json_object_set_string_member(o, "cost", cost);
         if (*summary != '\0')
             json_object_set_string_member(o, "summary", summary);
+
+        {
+            gint64 number = 0;
+            g_autofree gchar *pr = clawt_venture_mirror_find_pull_request(
+                result, &number);
+
+            if (pr != NULL && number > 0)
+                json_object_set_int_member(o, "pull_request_number", number);
+        }
         if (branch != NULL)
             json_object_set_string_member(o, "branch", branch);
 
@@ -864,6 +875,94 @@ step_run(Job *job)
  * guard never reads it as an issue raised upstream.  `_link` in the
  * receipt is its id, or -1 when VENTURE would not have it.
  */
+gchar *
+clawt_venture_mirror_find_pull_request(const gchar *text, gint64 *number)
+{
+    g_autoptr(GRegex) regex = NULL;
+    g_autoptr(GMatchInfo) match = NULL;
+    g_autofree gchar *digits = NULL;
+    gchar *url;
+
+    if (number != NULL)
+        *number = 0;
+
+    if (text == NULL)
+        return NULL;
+
+    regex = g_regex_new("https?://[^\\s<>()\"'`]+?/"
+                        "(?:pull|pulls|-/merge_requests|merge_requests)/"
+                        "([0-9]+)", 0, 0, NULL);
+
+    if (regex == NULL || !g_regex_match(regex, text, 0, &match))
+        return NULL;
+
+    url = g_match_info_fetch(match, 0);
+    digits = g_match_info_fetch(match, 1);
+
+    if (number != NULL)
+        *number = g_ascii_strtoll(digits, NULL, 10);
+
+    return url;
+}
+
+/*
+ * The pull request on the branch's link (0.48.0): once the task's
+ * result names one, written onto the `ticket_link` -- number and URL --
+ * once.  `_pr` in the receipt is its number, or -1 when VENTURE would
+ * not take it.
+ */
+static gboolean
+step_pull_request(Job *job)
+{
+    gint64 link = receipt_int(job, "_link");
+    gint64 number = 0;
+    g_autofree gchar *url = NULL;
+    g_autofree gchar *path = NULL;
+    g_autoptr(JsonNode) node = NULL;
+    JsonObject *o;
+
+    if (link <= 0 || receipt_int(job, "_pr") != 0)
+        return FALSE;
+
+    url = clawt_venture_mirror_find_pull_request(
+        clawt_task_get_result(job->task), &number);
+
+    if (url == NULL || number <= 0)
+        return FALSE;
+
+    node = object_node_new();
+    o = json_node_get_object(node);
+    json_object_set_int_member(o, "pull_request_number", number);
+    json_object_set_string_member(o, "pull_request_url", url);
+
+    path = g_strdup_printf("/api/v1/ticket_link/%" G_GINT64_FORMAT, link);
+    job->pull_request = number;
+    job->step = STEP_PULL_REQUEST;
+    job_send(job, job->writer, "PATCH", path, NULL, node);
+    return TRUE;
+}
+
+static void
+on_pull_request(Job *job, guint status, const gchar *body)
+{
+    if (status == 0 || status == 429 || status >= 500) {
+        job_refused(job, status, body, "naming the task's pull request");
+        return;
+    }
+
+    if (status != 200) {
+        g_autofree gchar *message = answer_message(status, body);
+
+        g_message("venture mirror: task %s's pull request is not linked: %s",
+                  job->row->task_id, message);
+        receipt_mark(job, "_pr", -1);
+    } else {
+        receipt_mark(job, "_pr", job->pull_request);
+    }
+
+    step_run(job);
+}
+
 static void
 step_link(Job *job)
 {
@@ -873,7 +972,8 @@ step_link(Job *job)
     JsonObject *o;
 
     if (branch == NULL || repo <= 0 || receipt_int(job, "_link") != 0) {
-        step_run(job);
+        if (!step_pull_request(job))
+            step_run(job);
         return;
     }
 
@@ -911,7 +1011,8 @@ on_linked(Job *job, guint status, const gchar *body)
             ? json_object_get_int_member_with_default(o, "id", -1) : -1);
     }
 
-    step_run(job);
+    if (!step_pull_request(job))
+        step_run(job);
 }
 
 static void
@@ -1265,6 +1366,9 @@ on_answer(guint status, const gchar *body, gpointer data)
         break;
     case STEP_LINK:
         on_linked(job, status, body);
+        break;
+    case STEP_PULL_REQUEST:
+        on_pull_request(job, status, body);
         break;
     default:
         job_dead(job, "the mirror lost its place");

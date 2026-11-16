@@ -358,7 +358,7 @@ test_qr_unavailable_refuses(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/pair-uri/build/exact-bytes", test_build_exact_bytes);
     g_test_add_func("/pair-uri/build/normalises-code",

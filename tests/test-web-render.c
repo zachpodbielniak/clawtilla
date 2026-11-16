@@ -2740,7 +2740,7 @@ test_the_bridge_reads_a_views_message(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
     g_test_add_func("/web/navigation-result", test_navigation_result);
     g_test_add_func("/web/the-failover-badge", test_the_failover_badge);
     g_test_add_func("/web/the-fallback-editor", test_the_fallback_editor);

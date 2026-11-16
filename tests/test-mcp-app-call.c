@@ -642,7 +642,7 @@ main(
 	gint   argc,
 	gchar *argv[]
 ){
-	g_test_init(&argc, &argv, NULL);
+	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
 	g_test_add_func("/mcp-app-call/visibility", test_app_visibility);
 	g_test_add_func("/mcp-app-call/relay", test_the_relay_for_an_app);

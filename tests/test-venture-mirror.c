@@ -1217,6 +1217,85 @@ test_context_is_read_and_said(Fixture *fixture, gconstpointer data)
     g_assert_cmpuint(changed, ==, 1);
 }
 
+/* ── Pull requests (0.48.0) ──────────────────────────────────────── */
+
+/* Every forge's spelling of a pull or merge request, and what is not one. */
+static void
+test_finds_pull_requests(void)
+{
+    static const struct {
+        const gchar *text;
+        const gchar *url;
+        gint64       number;
+    } cases[] = {
+        { "Opened https://github.com/acme/site/pull/42 for review.",
+          "https://github.com/acme/site/pull/42", 42 },
+        { "PR: https://git.example.test/acme/site/pulls/7",
+          "https://git.example.test/acme/site/pulls/7", 7 },
+        { "MR (https://gitlab.com/acme/site/-/merge_requests/1234)",
+          "https://gitlab.com/acme/site/-/merge_requests/1234", 1234 },
+        { "Committed on clawtilla/x; no pull request opened.", NULL, 0 },
+        { "See https://github.com/acme/site/issues/9", NULL, 0 },
+        { NULL, NULL, 0 },
+    };
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(cases); i++) {
+        gint64 number = -1;
+        g_autofree gchar *url = clawt_venture_mirror_find_pull_request(
+            cases[i].text, &number);
+
+        g_assert_cmpstr(url, ==, cases[i].url);
+        g_assert_cmpint(number, ==, cases[i].number);
+    }
+}
+
+/*
+ * A task whose result names the pull request it opened: the branch's
+ * link gets its number and URL, and the run its number -- once.
+ */
+static void
+test_pull_request_is_linked(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = clawt_task_new("lead", "scout", "Fix it");
+    g_autoptr(JsonNode) patch = NULL;
+    g_autoptr(JsonNode) finish = NULL;
+    Sent *sent;
+
+    (void)data;
+    clawt_venture_mirror_set_cost_func(fixture->mirror, fake_cost, NULL, NULL);
+    clawt_task_set_checkout(task, "/srv/site", "/w/tasks/x", "clawtilla/x",
+                            "abc123", CLAWT_CHECKOUT_WORKTREE);
+    clawt_task_set_state(task, CLAWT_TASK_RUNNING);
+    g_assert_true(clawt_task_store_save(fixture->store, task, NULL, NULL));
+    drain(fixture);
+    g_assert_null(find_sent(fixture, "PATCH", "/api/v1/ticket_link/"));
+
+    clawt_task_set_result(task, "Done: https://forge.test/acme/site/pulls/12");
+    clawt_task_set_state(task, CLAWT_TASK_COMPLETED);
+    g_assert_true(clawt_task_store_save(fixture->store, task, NULL, NULL));
+    drain(fixture);
+
+    sent = find_sent(fixture, "PATCH", "/api/v1/ticket_link/90");
+    g_assert_nonnull(sent);
+    g_assert_cmpstr(sent->token, ==, "t-scout");
+    g_assert_cmpint(json_object_get_int_member(body_of(sent, &patch),
+                                               "pull_request_number"), ==, 12);
+    g_assert_cmpstr(json_object_get_string_member(
+        json_node_get_object(patch), "pull_request_url"), ==,
+        "https://forge.test/acme/site/pulls/12");
+
+    sent = find_sent(fixture, "PATCH", "/api/v1/runs/external/70");
+    g_assert_nonnull(sent);
+    g_assert_cmpint(json_object_get_int_member(body_of(sent, &finish),
+                                               "pull_request_number"), ==, 12);
+
+    g_assert_true(clawt_task_store_save(fixture->store, task, NULL, NULL));
+    drain(fixture);
+    g_assert_cmpuint(count_sent(fixture, "PATCH", "/api/v1/ticket_link/"),
+                     ==, 1);
+}
+
 #define ADD(name, fn) \
     g_test_add("/venture-mirror/" name, Fixture, NULL, fixture_setup, fn, \
                fixture_teardown)
@@ -1224,7 +1303,7 @@ test_context_is_read_and_said(Fixture *fixture, gconstpointer data)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     ADD("files-then-updates-as-each-agent",
         test_files_then_updates_as_each_agent);
@@ -1254,6 +1333,9 @@ main(int argc, char *argv[])
         test_service_account_files_what_no_agent_can);
     ADD("filed-under-milestone-and-goal", test_filed_under_milestone_and_goal);
     ADD("context-is-read-and-said", test_context_is_read_and_said);
+    ADD("pull-request-is-linked", test_pull_request_is_linked);
+    g_test_add_func("/venture-mirror/finds-pull-requests",
+                    test_finds_pull_requests);
 
     return g_test_run();
 }

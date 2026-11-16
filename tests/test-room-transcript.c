@@ -308,7 +308,7 @@ test_an_old_format_line_still_loads(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/transcript/secret-does-not-reach-the-file",
                     test_a_secret_does_not_reach_the_transcript);

@@ -342,7 +342,7 @@ test_the_command_reaches_the_session_account(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/desktop-relay/outbound/permitted",
                     test_a_permitted_call_goes_through);

@@ -813,7 +813,7 @@ test_hostile_bodies_are_stored_verbatim(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/mailbox/post-and-lease", test_post_and_lease);
     g_test_add_func("/mailbox/survives-reopen", test_survives_reopen);

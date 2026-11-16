@@ -250,6 +250,21 @@ gchar *clawt_venture_mirror_context_line(ClawtTaskStore *store,
                                          gint64          goal_id);
 
 /**
+ * clawt_venture_mirror_find_pull_request:
+ * @text: (nullable): what a task's assignee wrote -- its result
+ * @number: (out) (optional): the pull request's number
+ *
+ * The first pull or merge request URL in @text, as GitHub
+ * (`/pull/N`), Forgejo and Gitea (`/pulls/N`) and GitLab
+ * (`/-/merge_requests/N`) spell them (since 0.48.0).  clawtilla opens
+ * none itself: an agent that opened one says so, and this finds it.
+ *
+ * Returns: (transfer full) (nullable): the URL, or %NULL
+ */
+gchar *clawt_venture_mirror_find_pull_request(const gchar *text,
+                                              gint64      *number);
+
+/**
  * clawt_venture_mirror_new:
  * @store: the task store whose outbox is drained
  * @context: (nullable): the context the drain timer attaches to

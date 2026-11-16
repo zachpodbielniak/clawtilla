@@ -212,7 +212,7 @@ test_removing_what_is_not_there_is_an_error(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/vm-image/pick/newest",
                     test_picks_the_newest_matching_image);

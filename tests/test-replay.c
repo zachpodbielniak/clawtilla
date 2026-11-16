@@ -751,7 +751,7 @@ test_notice_is_marked_on_the_wire(void)
 int
 main(int argc, char *argv[])
 {
-	g_test_init(&argc, &argv, NULL);
+	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
 	g_test_add_func("/replay/outward-per-tool-class",
 		test_outward_per_tool_class);

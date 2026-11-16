@@ -1397,7 +1397,7 @@ test_the_mark_round_trips(void)
 int
 main(int argc, char **argv)
 {
-	g_test_init(&argc, &argv, NULL);
+	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
 	/* The fake Matrix channel's token: resolved when the daemon starts. */
 	g_setenv("CLAWT_TEST_MATRIX_TOKEN", "not-a-real-token", TRUE);

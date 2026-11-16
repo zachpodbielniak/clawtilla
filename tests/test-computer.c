@@ -5696,7 +5696,7 @@ main(int argc, char *argv[])
      */
     g_setenv("XDG_DATA_HOME", data_dir, TRUE);
 
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/computer/null/refuses", test_null_computer_refuses_clearly);
     g_test_add_func("/computer/mounts/relabel-of-anothers-files-refused",

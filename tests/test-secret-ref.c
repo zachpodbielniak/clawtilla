@@ -118,7 +118,7 @@ test_command_timeout_cleanup(void)
 int
 main(int argc, char **argv)
 {
-	g_test_init(&argc, &argv, NULL);
+	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 	g_test_add_func("/secret-ref/command/success", test_command_success);
 	g_test_add_data_func("/secret-ref/command/nonzero",
 		"bash -c 'printf demo; exit 1'", test_command_failure);

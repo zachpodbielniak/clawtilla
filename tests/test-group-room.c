@@ -1591,7 +1591,7 @@ main(int argc, char **argv)
      */
     g_setenv("XDG_DATA_HOME", data_dir, TRUE);
 
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/group/room/two-members-hold-at-once",
                     test_two_members_hold_one_room_at_once);

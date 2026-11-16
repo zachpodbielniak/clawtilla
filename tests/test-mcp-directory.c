@@ -917,7 +917,7 @@ test_two_accounts_and_a_directory(void)
 int
 main(int argc, char *argv[])
 {
-	g_test_init(&argc, &argv, NULL);
+	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
 	g_test_add_func("/mcp-directory/big-by-count", test_big_by_count);
 	g_test_add_func("/mcp-directory/big-by-chars", test_big_by_chars);

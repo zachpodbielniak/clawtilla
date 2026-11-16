@@ -311,7 +311,7 @@ test_an_explicit_type_is_not_rewritten(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/exchange/preparing-applies-the-cap",
                     test_preparing_applies_the_cap);

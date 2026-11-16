@@ -789,7 +789,7 @@ main(int argc, char *argv[])
     g_setenv("XDG_DATA_HOME", scratch, TRUE);
     g_setenv("XDG_CACHE_HOME", scratch, TRUE);
 
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add("/lrgui/widgets/every-page", Fixture, NULL, fixture_set_up,
                test_every_page_builds_and_lays_out, fixture_tear_down);

@@ -444,7 +444,7 @@ test_an_acp_agents_command_is_rendered(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/model-catalog/acp-is-an-agent",
                     test_acp_is_an_agent_with_its_own_default);

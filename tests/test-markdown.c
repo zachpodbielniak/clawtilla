@@ -779,7 +779,7 @@ test_html_plain_and_empty_input(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/markdown/inline", test_the_things_a_chat_actually_uses);
     g_test_add_func("/markdown/blocks", test_blocks_and_lists);

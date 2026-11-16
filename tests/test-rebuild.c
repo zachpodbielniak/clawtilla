@@ -557,7 +557,7 @@ test_decline_rebuilds_nothing(void)
 int
 main(int argc, char *argv[])
 {
-	g_test_init(&argc, &argv, NULL);
+	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
 	g_test_add_func("/rebuild/offered-only-with-a-machine",
 		test_offered_only_with_a_machine);

@@ -130,7 +130,7 @@ test_nonsense_is_refused(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, NULL);
+    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
     g_test_add_func("/bind-address/ipv4", test_ipv4_with_and_without_a_port);
     g_test_add_func("/bind-address/ipv6",

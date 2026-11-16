@@ -513,7 +513,7 @@ test_store(void)
 int
 main(int argc, char *argv[])
 {
-	g_test_init(&argc, &argv, NULL);
+	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
 	g_test_add_func("/mcp-app/tool-resource", test_tool_resource);
 	g_test_add_func("/mcp-app/visibility", test_visibility);

@@ -1519,7 +1519,7 @@ test_the_fleets_matrix_accounts_are_bot_users(void)
 int
 main(int argc, char **argv)
 {
-	g_test_init(&argc, &argv, NULL);
+	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
 
 	/* What the test fleets' Matrix integrations resolve their token from. */
 	g_setenv("CLAWT_TEST_MATRIX_TOKEN", "syt_test_token", TRUE);
