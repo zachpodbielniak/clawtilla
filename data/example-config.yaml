@@ -1454,6 +1454,19 @@ projects:
     # 0 for none. See docs/venture.org.
     venture_repo_id: 0
 
+    # The VENTURE milestone this project's mirrored tickets are filed under.
+    #
+    # Its name, due date and state are read once a day and shown in the
+    # project's agents' PROJECTS.org and each task's assignment. 0 for none.
+    # See docs/venture.org.
+    venture_milestone_id: 0
+
+    # The VENTURE goal this project's mirrored tickets count toward.
+    #
+    # Its name and progress (current against target) are read once a day
+    # and shown with the milestone. 0 for none. See docs/venture.org.
+    venture_goal_id: 0
+
 # Teams, so a fleet larger than a handful has a shape.
 #
 # An agent names its team in agents.team, and its standing there in
@@ -2052,6 +2065,15 @@ integrations:
     # queued in tasks.db and sent behind. Needs VENTURE 0.10.0 or later.
     # See docs/venture.org.
     mirror_tasks: false
+
+    # connector (venture), with mirror_tasks on: the operator's own VENTURE
+    # token, for the mirror's writes that no agent makes.
+    #
+    # Files the operator's own tasks, and tasks whose delegator and assignee
+    # have no VENTURE account, as this account. Keep it outside
+    # secrets.dir/connectors/ so no agent's box ever mounts it. See
+    # docs/venture.org.
+    service_token_file: null
 
     # connector (venture), with mirror_tasks on: a ticket assigned to this
     # agent's VENTURE user starts a task for it.

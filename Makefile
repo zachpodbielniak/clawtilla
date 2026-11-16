@@ -955,6 +955,21 @@ parity:
 adw-row-cast:
 	@bash $(TOOLSDIR)/clawt-adw-row-cast.sh
 
+# The VENTURE answers the task mirror reads, as VENTURE records them
+# (its tests/fixtures/api-contract/) against our copy in
+# tests/fixtures/venture/.  Optional: needs a VENTURE checkout beside
+# this one, or VENTURE_DIR.  A difference means one side changed the
+# contract -- copy theirs over ours once the mirror reads it.
+VENTURE_DIR ?= ../venture
+check-venture-contract:
+	@if [ ! -d "$(VENTURE_DIR)/tests/fixtures/api-contract" ]; then \
+		echo "check-venture-contract: no $(VENTURE_DIR)/tests/fixtures/api-contract; set VENTURE_DIR"; \
+		exit 1; \
+	fi
+	@diff -ru "$(VENTURE_DIR)/tests/fixtures/api-contract" \
+		"$(TESTDIR)/fixtures/venture" \
+		&& echo "check-venture-contract: OK, the same as $(VENTURE_DIR)"
+
 docs-check: $(GENCONFIG_BIN)
 	@LIBRECLAW_DEFAULTS="$(LIBRECLAW_DIR)/data/default-config.yaml" \
 		sh $(TOOLSDIR)/clawt-docs-check.sh

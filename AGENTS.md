@@ -330,7 +330,10 @@ own timer. Do not call the mirror from task, delegation or turn code, and do
 not make anything on an agent's path wait for it: a new thing to mirror is a
 new outbox row kind, written where the change is stored. Every write goes out
 as the agent it is about, with that agent's own token -- never borrow another
-agent's account to reach a repository it cannot see. See docs/venture.org.
+agent's account to reach a repository it cannot see. A new key the mirror
+reads is added to tests/test-venture-contract.c, and VENTURE's recorded
+shapes copied into tests/fixtures/venture/ (`make check-venture-contract`
+diffs them). See docs/venture.org.
 
 ## Shapes That Keep Recurring
 

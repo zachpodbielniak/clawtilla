@@ -1591,6 +1591,22 @@ static const ClawtSchemaEntry schema[] = {
   "with it, the project's tasks file there whatever their remotes say.\n"
   "0 for none. See docs/venture.org.", "0.44.0" },
 
+{ "projects.venture_milestone_id", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "0", NULL,
+  "The VENTURE milestone this project's mirrored tickets are filed under.\n"
+  "\n"
+  "Its name, due date and state are read once a day and shown in the\n"
+  "project's agents' PROJECTS.org and each task's assignment. 0 for none.\n"
+  "See docs/venture.org.", "0.46.0" },
+
+{ "projects.venture_goal_id", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "0", NULL,
+  "The VENTURE goal this project's mirrored tickets count toward.\n"
+  "\n"
+  "Its name and progress (current against target) are read once a day\n"
+  "and shown with the milestone. 0 for none. See docs/venture.org.",
+  "0.46.0" },
+
 { "teams", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Teams, so a fleet larger than a handful has a shape.\n"
   "\n"
@@ -2238,6 +2254,16 @@ static const ClawtSchemaEntry schema[] = {
   "comments. Nothing on an agent's path waits on VENTURE: changes are\n"
   "queued in tasks.db and sent behind. Needs VENTURE 0.10.0 or later.\n"
   "See docs/venture.org.", "0.44.0" },
+
+{ "integrations.service_token_file", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "connector (venture), with mirror_tasks on: the operator's own VENTURE\n"
+  "token, for the mirror's writes that no agent makes.\n"
+  "\n"
+  "Files the operator's own tasks, and tasks whose delegator and assignee\n"
+  "have no VENTURE account, as this account. Keep it outside\n"
+  "secrets.dir/connectors/ so no agent's box ever mounts it. See\n"
+  "docs/venture.org.", "0.46.0" },
 
 { "integrations.mirror_intake", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "true", NULL,

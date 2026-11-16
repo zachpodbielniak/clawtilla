@@ -7176,6 +7176,14 @@ project_from_node(YamlNode *entry)
     node = yaml_mapping_get_member(mapping, "venture_repo_id");
     spec->venture_repo_id = (node != NULL) ? MAX(yaml_node_get_int(node), 0) : 0;
 
+    node = yaml_mapping_get_member(mapping, "venture_milestone_id");
+    spec->venture_milestone_id = (node != NULL)
+        ? MAX(yaml_node_get_int(node), 0) : 0;
+
+    node = yaml_mapping_get_member(mapping, "venture_goal_id");
+    spec->venture_goal_id = (node != NULL)
+        ? MAX(yaml_node_get_int(node), 0) : 0;
+
     return spec;
 }
 
@@ -7333,13 +7341,15 @@ clawt_config_set_project_value(ClawtConfig  *self,
         }
 
         node = yaml_node_new_int(percent);
-    } else if (g_strcmp0(key, "venture_repo_id") == 0) {
+    } else if (g_strcmp0(key, "venture_repo_id") == 0 ||
+               g_strcmp0(key, "venture_milestone_id") == 0 ||
+               g_strcmp0(key, "venture_goal_id") == 0) {
         gchar *end = NULL;
         gint64 id = g_ascii_strtoll(value, &end, 10);
 
         if (end == value || *end != '\0' || id < 0) {
             g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
-                        "venture_repo_id is a VENTURE forge_repo id, or 0");
+                        "%s is a VENTURE record id, or 0", key);
             return FALSE;
         }
 

@@ -4500,6 +4500,87 @@ clawt_daemon_reload_skills(ClawtDaemon *self)
 }
 
     /*
+ * The `# BEGIN clawtilla projects` region of one agent's PROJECTS.org:
+ * what each of its projects is for, where it lives, who reviews it and
+ * what it may spend -- and, when the project names them, its VENTURE
+ * milestone and goal as the mirror last read them (0.46.0).  Not this
+ * month's spend: that changes every turn, and an identity file that
+ * changes every turn is a prompt that never settles.
+ */
+static void
+write_projects_region(ClawtDaemon      *self,
+                      const gchar      *agent_id,
+                      ClawtAgentConfig *config)
+{
+    g_autoptr(GPtrArray) projects = clawt_config_get_projects(self->config);
+    g_autoptr(GString) described = g_string_new(NULL);
+    g_autoptr(GError) projects_error = NULL;
+    guint p;
+
+    for (p = 0; p < projects->len; p++) {
+        ClawtProjectSpec *spec = g_ptr_array_index(projects, p);
+
+        if (!clawt_project_spec_has_agent(spec, agent_id))
+            continue;
+
+        g_string_append_printf(described, "* %s (~%s~)\n\n",
+            spec->name != NULL ? spec->name : spec->id, spec->id);
+        if (spec->goal != NULL)
+            g_string_append_printf(described, "- Goal :: %s\n",
+                                   spec->goal);
+        if (spec->directory != NULL)
+            g_string_append_printf(described,
+                "- Directory :: =%s= (pass it as ~repo~ to "
+                "~clawtilla_delegate~ for a checkout of its own)\n",
+                spec->directory);
+        if (spec->review_by != NULL)
+            g_string_append_printf(described, "- Reviewed by :: %s\n",
+                                   spec->review_by);
+        if (self->task_store != NULL &&
+            (spec->venture_milestone_id > 0 ||
+             spec->venture_goal_id > 0)) {
+            g_autofree gchar *line = clawt_venture_mirror_context_line(
+                self->task_store, spec->venture_milestone_id,
+                spec->venture_goal_id);
+
+            if (line != NULL)
+                g_string_append_printf(described, "- In VENTURE :: %s\n",
+                                       line);
+        }
+        if (spec->monthly_budget_usd > 0)
+            g_string_append_printf(described,
+                "- Budget :: $%.2f a month%s\n",
+                spec->monthly_budget_usd,
+                spec->budget_hard_stop
+                    ? "; new work is refused once it is spent" : "");
+        g_string_append_c(described, '\n');
+    }
+
+    if (!clawt_workspace_update_projects(config, described->str,
+                                         &projects_error))
+        g_warning("agent %s: %s", agent_id, projects_error->message);
+}
+
+void
+clawt_daemon_refresh_projects_regions(ClawtDaemon *self)
+{
+    GPtrArray *agents;
+    guint i;
+
+    g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+    agents = clawt_agent_manager_list(self->agents);
+
+    for (i = 0; agents != NULL && i < agents->len; i++) {
+        ClawtAgent *agent = g_ptr_array_index(agents, i);
+        ClawtAgentConfig *config = clawt_agent_get_config(agent);
+
+        if (!clawt_agent_config_is_shadow(config))
+            write_projects_region(self, clawt_agent_get_id(agent), config);
+    }
+}
+
+/*
  * Every region clawtilla owns in one agent's persona, brought up to date.
  *
  * One function, because the alternative was a list of them at each call
@@ -4601,50 +4682,8 @@ refresh_agent_regions(ClawtDaemon      *self,
      */
     clawt_daemon_revisions_record_persona(self, config, NULL, "edit");
 
-    /*
-     * ...the projects it works in, from `projects:` -- what each is for,
-     * where it lives, who reviews it and what it may spend.  Not this
-     * month's spend: that changes every turn, and an identity file that
-     * changes every turn is a prompt that never settles.
-     */
-    {
-        g_autoptr(GPtrArray) projects = clawt_config_get_projects(self->config);
-        g_autoptr(GString) described = g_string_new(NULL);
-        g_autoptr(GError) projects_error = NULL;
-        guint p;
-
-        for (p = 0; p < projects->len; p++) {
-            ClawtProjectSpec *spec = g_ptr_array_index(projects, p);
-
-            if (!clawt_project_spec_has_agent(spec, agent_id))
-                continue;
-
-            g_string_append_printf(described, "* %s (~%s~)\n\n",
-                spec->name != NULL ? spec->name : spec->id, spec->id);
-            if (spec->goal != NULL)
-                g_string_append_printf(described, "- Goal :: %s\n",
-                                       spec->goal);
-            if (spec->directory != NULL)
-                g_string_append_printf(described,
-                    "- Directory :: =%s= (pass it as ~repo~ to "
-                    "~clawtilla_delegate~ for a checkout of its own)\n",
-                    spec->directory);
-            if (spec->review_by != NULL)
-                g_string_append_printf(described, "- Reviewed by :: %s\n",
-                                       spec->review_by);
-            if (spec->monthly_budget_usd > 0)
-                g_string_append_printf(described,
-                    "- Budget :: $%.2f a month%s\n",
-                    spec->monthly_budget_usd,
-                    spec->budget_hard_stop
-                        ? "; new work is refused once it is spent" : "");
-            g_string_append_c(described, '\n');
-        }
-
-        if (!clawt_workspace_update_projects(config, described->str,
-                                             &projects_error))
-            g_warning("agent %s: %s", agent_id, projects_error->message);
-    }
+    /* ...the projects it works in. */
+    write_projects_region(self, agent_id, config);
 
     /*
      * ...and what the fleet knows about the person it works for.

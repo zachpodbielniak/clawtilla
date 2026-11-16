@@ -183,6 +183,70 @@ void clawt_venture_mirror_set_cost_func(ClawtVentureMirror        *self,
                                         GDestroyNotify             notify);
 
 /**
+ * ClawtVentureMirrorContextFunc:
+ * @mirror: the mirror
+ * @task_id: a task about to be filed
+ * @milestone_id: (out): its project's VENTURE milestone, or 0
+ * @goal_id: (out): its project's VENTURE goal, or 0
+ * @user_data: data passed to clawt_venture_mirror_set_context_func()
+ *
+ * The milestone and goal a new ticket is filed under (since 0.46.0).
+ */
+typedef void (*ClawtVentureMirrorContextFunc)(ClawtVentureMirror *mirror,
+                                              const gchar        *task_id,
+                                              gint64             *milestone_id,
+                                              gint64             *goal_id,
+                                              gpointer            user_data);
+
+/**
+ * clawt_venture_mirror_set_context_func:
+ * @self: a #ClawtVentureMirror
+ * @func: (scope notified) (nullable): a task's milestone and goal
+ * @user_data: data for @func
+ * @notify: (nullable): frees @user_data
+ */
+void clawt_venture_mirror_set_context_func(ClawtVentureMirror           *self,
+                                           ClawtVentureMirrorContextFunc func,
+                                           gpointer                      user_data,
+                                           GDestroyNotify                notify);
+
+/**
+ * clawt_venture_mirror_set_context_ids:
+ * @self: a #ClawtVentureMirror
+ * @milestones: (array length=n_milestones) (nullable): milestone ids
+ * @n_milestones: how many
+ * @goals: (array length=n_goals) (nullable): goal ids
+ * @n_goals: how many
+ *
+ * The milestones and goals whose name, due date and progress agents are
+ * told about (since 0.46.0).  The reverse poll reads them once a day --
+ * and at once when the set changes -- into ~tasks.db~, where
+ * clawt_venture_mirror_context_line() reads them without the network.
+ * ::context-changed says when what it read differs.
+ */
+void clawt_venture_mirror_set_context_ids(ClawtVentureMirror *self,
+                                          const gint64       *milestones,
+                                          guint               n_milestones,
+                                          const gint64       *goals,
+                                          guint               n_goals);
+
+/**
+ * clawt_venture_mirror_context_line:
+ * @store: the task store
+ * @milestone_id: a milestone, or 0
+ * @goal_id: a goal, or 0
+ *
+ * One line about them, from what the poll last read: "milestone *Beta*,
+ * due 2026-12-01 (open); goal *Ship 12 titles*: 4 of 12 titles".
+ *
+ * Returns: (transfer full) (nullable): the line, or %NULL when nothing
+ *   has been read yet
+ */
+gchar *clawt_venture_mirror_context_line(ClawtTaskStore *store,
+                                         gint64          milestone_id,
+                                         gint64          goal_id);
+
+/**
  * clawt_venture_mirror_new:
  * @store: the task store whose outbox is drained
  * @context: (nullable): the context the drain timer attaches to
