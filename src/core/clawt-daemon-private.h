@@ -92,6 +92,10 @@ struct _ClawtDaemon {
      */
     ClawtTaskStore     *task_store;
     GSource            *task_prune;
+    /* project id -> ProjectSpend, a minute's cache of the month's spend */
+    GHashTable         *project_spend;
+    /* "<project>:<YYYY-MM>" for each budget warning already given */
+    GHashTable         *project_warned;
     ClawtMailboxRouter *router;
     ClawtLoopGuard     *guard;
     ClawtUsage         *usage;
@@ -1439,6 +1443,36 @@ clawt_daemon_handle_image(
     JsonObject   *payload,
     gboolean     *handled
 );
+
+JsonNode *
+clawt_daemon_handle_project(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
+void clawt_daemon_project_remember_spend(ClawtDaemon *self,
+                                         const gchar *project_id,
+                                         gint64       micros,
+                                         gint64       now);
+gint64 clawt_daemon_project_spend(ClawtDaemon *self,
+                                  const gchar *project_id,
+                                  gint64       now);
+gboolean clawt_daemon_project_admit(ClawtDaemon  *self,
+                                    const gchar  *project_id,
+                                    GError      **error);
+gboolean clawt_daemon_project_place(ClawtDaemon  *self,
+                                    ClawtTask    *task,
+                                    const gchar  *named,
+                                    const gchar  *repository,
+                                    gboolean      review_given,
+                                    GError      **error);
+gboolean clawt_daemon_project_place_for_tools(ClawtTask    *task,
+                                              const gchar  *named,
+                                              gboolean      review_given,
+                                              gpointer      user_data,
+                                              GError      **error);
 
 JsonNode *
 clawt_daemon_handle_team(

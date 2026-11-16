@@ -470,6 +470,21 @@ clawt_daemon_handle_task(
         }
 
         /*
+         * Its project, named or matched by its repository; refused, with
+         * the task cancelled, when the project has stopped taking work.
+         */
+        if (!clawt_daemon_project_place(
+                self, task, clawt_ipc_payload_string(payload, "project"),
+                NULL, clawt_ipc_payload_string(payload, "review") != NULL,
+                &error)) {
+            clawt_task_manager_cancel(self->tasks, clawt_task_get_id(task),
+                                      error->message, "user");
+            return clawt_ipc_error_new(request, error->code, error->message);
+        }
+
+        clawt_task_manager_save(self->tasks, task, NULL);
+
+        /*
          * What it waits for: linked, and while any of it is unfinished
          * the task is held -- with an assignee, its delivery is kept to
          * be sent as the operator's when the last one completes; without,
@@ -1516,6 +1531,21 @@ clawt_daemon_tasks_release_ready(
 
 	if (open->len > 0)
 		return FALSE;
+
+	/*
+	 * A project that stopped taking work while this waited: the release
+	 * is new work, so it is refused as a delegation would be -- the task
+	 * fails with the reason, and its delivery goes with it.
+	 */
+	if (!clawt_daemon_project_admit(self, clawt_task_get_project(task),
+	                                &error)) {
+		g_autoptr(JsonNode) dropped = clawt_task_manager_take_delivery(
+			self->tasks, task_id);
+
+		clawt_task_manager_unblock(self->tasks, task_id);
+		clawt_task_manager_fail(self->tasks, task_id, error->message);
+		return TRUE;
+	}
 
 	held = clawt_task_manager_take_delivery(self->tasks, task_id);
 	clawt_task_manager_unblock(self->tasks, task_id);

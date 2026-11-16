@@ -29,6 +29,7 @@
 #include "core/clawt-daemon-private.h"
 
 #include <glib/gstdio.h>
+#include <sqlite3.h>
 #include <string.h>
 
 /* ── Helpers ─────────────────────────────────────────────────────── */
@@ -2111,6 +2112,199 @@ test_delegated_checkout(void)
 	daemon_teardown(&fixture);
 }
 
+/* ── Projects (C2) ───────────────────────────────────────────────── */
+
+/* A store written before `project` existed gains the column on open. */
+static void
+test_store_project_migration(void)
+{
+	g_autofree gchar *dir = g_dir_make_tmp("clawt-store-XXXXXX", NULL);
+	g_autofree gchar *path = g_build_filename(dir, "tasks.db", NULL);
+	g_autoptr(ClawtTaskStore) store = NULL;
+	g_autoptr(ClawtTask) task = clawt_task_new("user", "a", "work");
+	g_autoptr(GPtrArray) found = NULL;
+	g_autoptr(GError) error = NULL;
+	sqlite3 *db = NULL;
+
+	g_assert_cmpint(sqlite3_open(path, &db), ==, SQLITE_OK);
+	g_assert_cmpint(sqlite3_exec(db,
+		"CREATE TABLE tasks (id TEXT PRIMARY KEY, state INTEGER NOT NULL, "
+		"assignee TEXT, origin TEXT, parent_id TEXT, title TEXT, "
+		"created_at INTEGER NOT NULL, finished_at INTEGER NOT NULL "
+		"DEFAULT 0, data TEXT NOT NULL);", NULL, NULL, NULL), ==, SQLITE_OK);
+	sqlite3_close(db);
+
+	store = clawt_task_store_new(path, &error);
+	g_assert_no_error(error);
+
+	clawt_task_set_project(task, "site", "brief");
+	g_assert_true(clawt_task_store_save(store, task, NULL, &error));
+	g_assert_no_error(error);
+
+	found = clawt_task_store_project_tasks(store, "site", 0, &error);
+	g_assert_cmpuint(found->len, ==, 1);
+	g_clear_pointer(&found, g_ptr_array_unref);
+
+	/* only since, and only its own */
+	found = clawt_task_store_project_tasks(store, "site",
+		clawt_task_get_created_at(task) + 1, &error);
+	g_assert_cmpuint(found->len, ==, 0);
+	g_clear_pointer(&found, g_ptr_array_unref);
+	found = clawt_task_store_project_tasks(store, "other", 0, &error);
+	g_assert_cmpuint(found->len, ==, 0);
+
+	clawt_test_remove_tree(dir);
+}
+
+/*
+ * Operator tasks in projects: named, told the goal, on the wire; a
+ * project out of budget with a hard stop refuses new work and a held
+ * release; and the project.* frames, which rewrite PROJECTS.org.
+ */
+static void
+test_operator_projects(void)
+{
+	DaemonFixture fixture = { 0 };
+	g_autofree gchar *id = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *held = NULL;
+	g_autofree gchar *blocker = NULL;
+	gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+
+	daemon_setup(&fixture);
+
+	/* made over IPC, typed and saved */
+	{
+		g_autoptr(JsonNode) made = ask(&fixture, "project.create",
+			clawt_ipc_payload_new("project", "site", "goal",
+			                      "Ship the new site", "monthly_budget_usd",
+			                      "10", "budget_hard_stop", "true", NULL));
+		g_autoptr(JsonNode) bad = ask(&fixture, "project.create",
+			clawt_ipc_payload_new("project", "bad",
+			                      "monthly_budget_usd", "lots", NULL));
+		g_autoptr(JsonNode) listed = ask(&fixture, "project.list", NULL);
+		JsonArray *projects;
+
+		g_assert_false(clawt_ipc_frame_is_error(made));
+		g_assert_true(clawt_ipc_frame_is_error(bad));
+		projects = json_object_get_array_member(
+			clawt_ipc_frame_get_payload(listed), "projects");
+		g_assert_cmpuint(json_array_get_length(projects), ==, 1);
+		g_assert_false(json_object_get_boolean_member(
+			json_array_get_object_element(projects, 0), "stopped"));
+	}
+
+	/* PROJECTS.org now lists it */
+	{
+		g_autofree gchar *file = g_build_filename(fixture.dir, "agents",
+			"watcher", "PROJECTS.org", NULL);
+		g_autofree gchar *text = NULL;
+
+		g_assert_true(g_file_get_contents(file, &text, NULL, NULL));
+		g_assert_nonnull(strstr(text, "# BEGIN clawtilla projects"));
+		g_assert_nonnull(strstr(text, "Ship the new site"));
+	}
+
+	/* a task named into it: on the wire, and the assignee is told */
+	{
+		g_autoptr(JsonNode) made = ask(&fixture, "task.create",
+			clawt_ipc_payload_new("prompt", "Fix the header", "agent",
+			                      "watcher", "project", "site", NULL));
+		g_autoptr(JsonNode) unknown = ask(&fixture, "task.create",
+			clawt_ipc_payload_new("prompt", "x", "agent", "watcher",
+			                      "project", "ghost", NULL));
+		JsonObject *object;
+
+		g_assert_false(clawt_ipc_frame_is_error(made));
+		g_assert_true(clawt_ipc_frame_is_error(unknown));
+		object = json_object_get_object_member(
+			clawt_ipc_frame_get_payload(made), "task");
+		id = g_strdup(json_object_get_string_member(object, "id"));
+		g_assert_cmpstr(json_object_get_string_member(object, "project"), ==,
+		                "site");
+	}
+
+	body = queued_body(&fixture, "watcher", id);
+	g_assert_nonnull(strstr(body, "Its goal: Ship the new site"));
+	{
+		g_autofree gchar *contract = clawt_task_assignment_guidance(id);
+
+		g_assert_true(g_str_has_suffix(body, contract));
+	}
+
+	/* a held task in the project, waiting on another */
+	{
+		g_autoptr(JsonNode) first = ask(&fixture, "task.create",
+			clawt_ipc_payload_new("prompt", "Build", "agent", "watcher",
+			                      NULL));
+		g_autoptr(JsonNode) second = NULL;
+
+		blocker = g_strdup(json_object_get_string_member(
+			json_object_get_object_member(clawt_ipc_frame_get_payload(first),
+			                              "task"), "id"));
+		second = ask(&fixture, "task.create", clawt_ipc_payload_new(
+			"prompt", "Deploy", "agent", "watcher", "project", "site",
+			"after", blocker, NULL));
+		g_assert_false(clawt_ipc_frame_is_error(second));
+		held = g_strdup(json_object_get_string_member(
+			json_object_get_object_member(clawt_ipc_frame_get_payload(second),
+			                              "task"), "id"));
+	}
+
+	/* the budget is spent: new work refused, and the release fails */
+	clawt_daemon_project_remember_spend(fixture.daemon, "site", 11000000, now);
+	{
+		g_autoptr(JsonNode) refused = ask(&fixture, "task.create",
+			clawt_ipc_payload_new("prompt", "More", "agent", "watcher",
+			                      "project", "site", NULL));
+		g_autoptr(JsonNode) listed = ask(&fixture, "project.list", NULL);
+
+		g_assert_true(clawt_ipc_frame_is_error(refused));
+		g_assert_nonnull(strstr(json_object_get_string_member(
+			json_node_get_object(refused), "error"), "budget_hard_stop"));
+		g_assert_true(json_object_get_boolean_member(
+			json_array_get_object_element(json_object_get_array_member(
+				clawt_ipc_frame_get_payload(listed), "projects"), 0),
+			"stopped"));
+	}
+
+	clawt_task_manager_complete(fixture.daemon->tasks, blocker, "built");
+	{
+		ClawtTask *task = clawt_task_manager_get(fixture.daemon->tasks, held);
+
+		g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_FAILED);
+		g_assert_cmpuint(queued_for(&fixture, "watcher", held), ==, 0);
+	}
+
+	/* work outside the project is not held to its budget */
+	{
+		g_autoptr(JsonNode) free_work = ask(&fixture, "task.create",
+			clawt_ipc_payload_new("prompt", "Elsewhere", "agent", "watcher",
+			                      NULL));
+
+		g_assert_false(clawt_ipc_frame_is_error(free_work));
+	}
+
+	/* set and remove; PROJECTS.org loses the region */
+	{
+		g_autoptr(JsonNode) set = ask(&fixture, "project.set",
+			clawt_ipc_payload_new("project", "site", "key", "budget_hard_stop",
+			                      "value", "false", NULL));
+		g_autoptr(JsonNode) removed = ask(&fixture, "project.remove",
+			clawt_ipc_payload_new("project", "site", NULL));
+		g_autofree gchar *file = g_build_filename(fixture.dir, "agents",
+			"watcher", "PROJECTS.org", NULL);
+		g_autofree gchar *text = NULL;
+
+		g_assert_false(clawt_ipc_frame_is_error(set));
+		g_assert_false(clawt_ipc_frame_is_error(removed));
+		g_assert_true(g_file_get_contents(file, &text, NULL, NULL));
+		g_assert_null(strstr(text, "# BEGIN clawtilla projects"));
+	}
+
+	daemon_teardown(&fixture);
+}
+
 int
 main(
 	int   argc,
@@ -2176,6 +2370,9 @@ main(
 	                test_operator_checkouts);
 	g_test_add_func("/task-store/checkouts/delegated",
 	                test_delegated_checkout);
+	g_test_add_func("/task-store/projects/migration",
+	                test_store_project_migration);
+	g_test_add_func("/task-store/projects/operator", test_operator_projects);
 
 	return g_test_run();
 }

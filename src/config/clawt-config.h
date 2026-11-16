@@ -489,6 +489,57 @@ typedef struct {
 
 void clawt_team_spec_free(ClawtTeamSpec *self);
 
+/**
+ * ClawtProjectSpec:
+ * @id: the project id (`projects.id`)
+ * @name: (nullable): display name; the id when unset
+ * @directory: (nullable): its repository or directory, expanded
+ * @goal: (nullable): what it is for
+ * @review_by: (nullable): who reviews its work, as `agents.review_by`
+ * @agents: (array zero-terminated=1) (nullable): who works in it
+ * @monthly_budget_usd: its budget per calendar month; 0 for none
+ * @budget_warn_percent: where the operator is warned
+ * @budget_hard_stop: whether new work is refused past the budget
+ *
+ * One entry from the config's `projects:` list (since 0.40.0).
+ */
+typedef struct {
+    gchar    *id;
+    gchar    *name;
+    gchar    *directory;
+    gchar    *goal;
+    gchar    *review_by;
+    gchar   **agents;
+    gdouble   monthly_budget_usd;
+    gint      budget_warn_percent;
+    gboolean  budget_hard_stop;
+} ClawtProjectSpec;
+
+void clawt_project_spec_free(ClawtProjectSpec *self);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtProjectSpec, clawt_project_spec_free)
+
+/**
+ * clawt_project_spec_brief:
+ * @self: a #ClawtProjectSpec
+ *
+ * The sentence an assignee in the project is told: its name and goal.
+ *
+ * Returns: (transfer full): the sentence
+ */
+gchar *clawt_project_spec_brief(ClawtProjectSpec *self);
+
+/**
+ * clawt_project_spec_has_agent:
+ * @self: a #ClawtProjectSpec
+ * @agent_id: an agent id
+ *
+ * Returns: whether @agent_id works in it -- every agent does when its
+ *   `agents` list is empty
+ */
+gboolean clawt_project_spec_has_agent(ClawtProjectSpec *self,
+                                      const gchar      *agent_id);
+
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtTeamSpec, clawt_team_spec_free)
 
 /**
@@ -746,6 +797,69 @@ GPtrArray *clawt_config_get_teams(ClawtConfig *self);
  */
 ClawtTeamSpec *clawt_config_get_team(ClawtConfig *self,
                                      const gchar *team_id);
+
+/**
+ * clawt_config_get_projects:
+ * @self: a #ClawtConfig
+ *
+ * Returns: (transfer full) (element-type ClawtProjectSpec): the projects,
+ *   in the order they are written
+ */
+GPtrArray *clawt_config_get_projects(ClawtConfig *self);
+
+/**
+ * clawt_config_get_project: (skip)
+ * @self: a #ClawtConfig
+ * @project_id: (nullable): which project
+ *
+ * Returns: (transfer full) (nullable): the project, or %NULL
+ */
+ClawtProjectSpec *clawt_config_get_project(ClawtConfig *self,
+                                           const gchar *project_id);
+
+/**
+ * clawt_config_add_project:
+ * @self: a #ClawtConfig
+ * @project_id: the id for the new project
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Returns: %TRUE on success; a taken or unusable id is refused
+ */
+gboolean clawt_config_add_project(ClawtConfig  *self,
+                                  const gchar  *project_id,
+                                  GError      **error);
+
+/**
+ * clawt_config_set_project_value:
+ * @self: a #ClawtConfig
+ * @project_id: which project
+ * @key: the field, as it appears in the schema under `projects.`
+ * @value: (nullable): the new value, as text; %NULL or empty removes it
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Writes one project field, typed as the schema says: a number for the
+ * budget, a boolean for the hard stop, a list (comma-separated) for
+ * `agents`.  The id cannot be changed here.
+ *
+ * Returns: %TRUE when written
+ */
+gboolean clawt_config_set_project_value(ClawtConfig  *self,
+                                        const gchar  *project_id,
+                                        const gchar  *key,
+                                        const gchar  *value,
+                                        GError      **error);
+
+/**
+ * clawt_config_remove_project:
+ * @self: a #ClawtConfig
+ * @project_id: which project
+ *
+ * Tasks naming it keep the name, for their history; new work cannot.
+ *
+ * Returns: %TRUE when a project was removed
+ */
+gboolean clawt_config_remove_project(ClawtConfig *self,
+                                     const gchar *project_id);
 
 /**
  * clawt_config_add_team:

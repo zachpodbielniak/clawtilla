@@ -1401,6 +1401,19 @@ run_routine(const gchar *routine_id, const gchar *agent_id,
                 return NULL;
             }
 
+            /*
+             * Its project, by the directory; a project that has stopped
+             * taking work fails the run, as it refuses a delegation.
+             */
+            if (!clawt_daemon_project_place(self, task, NULL, directory,
+                                            FALSE, &checkout_error)) {
+                clawt_task_manager_fail(self->tasks, clawt_task_get_id(task),
+                                        checkout_error->message);
+                g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT,
+                                    checkout_error->message);
+                return NULL;
+            }
+
             clawt_task_manager_save(self->tasks, task, NULL);
             {
                 g_autofree gchar *where = clawt_task_checkout_guidance(task);
@@ -4576,6 +4589,51 @@ refresh_agent_regions(ClawtDaemon      *self,
     }
 
     /*
+     * ...the projects it works in, from `projects:` -- what each is for,
+     * where it lives, who reviews it and what it may spend.  Not this
+     * month's spend: that changes every turn, and an identity file that
+     * changes every turn is a prompt that never settles.
+     */
+    {
+        g_autoptr(GPtrArray) projects = clawt_config_get_projects(self->config);
+        g_autoptr(GString) described = g_string_new(NULL);
+        g_autoptr(GError) projects_error = NULL;
+        guint p;
+
+        for (p = 0; p < projects->len; p++) {
+            ClawtProjectSpec *spec = g_ptr_array_index(projects, p);
+
+            if (!clawt_project_spec_has_agent(spec, agent_id))
+                continue;
+
+            g_string_append_printf(described, "* %s (~%s~)\n\n",
+                spec->name != NULL ? spec->name : spec->id, spec->id);
+            if (spec->goal != NULL)
+                g_string_append_printf(described, "- Goal :: %s\n",
+                                       spec->goal);
+            if (spec->directory != NULL)
+                g_string_append_printf(described,
+                    "- Directory :: =%s= (pass it as ~repo~ to "
+                    "~clawtilla_delegate~ for a checkout of its own)\n",
+                    spec->directory);
+            if (spec->review_by != NULL)
+                g_string_append_printf(described, "- Reviewed by :: %s\n",
+                                       spec->review_by);
+            if (spec->monthly_budget_usd > 0)
+                g_string_append_printf(described,
+                    "- Budget :: $%.2f a month%s\n",
+                    spec->monthly_budget_usd,
+                    spec->budget_hard_stop
+                        ? "; new work is refused once it is spent" : "");
+            g_string_append_c(described, '\n');
+        }
+
+        if (!clawt_workspace_update_projects(config, described->str,
+                                             &projects_error))
+            g_warning("agent %s: %s", agent_id, projects_error->message);
+    }
+
+    /*
      * ...and what the fleet knows about the person it works for.
      *
      * Here rather than at agent creation, so an agent made on day
@@ -5863,6 +5921,8 @@ release_components(ClawtDaemon *self)
     g_clear_object(&self->task_sources);
     g_clear_object(&self->tasks);
     g_clear_object(&self->task_store);
+    g_clear_pointer(&self->project_spend, g_hash_table_unref);
+    g_clear_pointer(&self->project_warned, g_hash_table_unref);
     g_clear_object(&self->rooms);
     g_clear_object(&self->agents);
     clawt_daemon_egress_release(self);
@@ -7766,6 +7826,9 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      */
     clawt_mcp_tools_set_main_context(self->mcp_tools, self->main_context);
 
+    clawt_mcp_tools_set_project_func(self->mcp_tools,
+                                     clawt_daemon_project_place_for_tools,
+                                     self);
     clawt_mcp_tools_set_review_func(self->mcp_tools,
                                     clawt_daemon_review_for_tools, self);
     clawt_mcp_tools_set_deliver_reply_func(self->mcp_tools, deliver_for_tools,
@@ -9694,6 +9757,11 @@ clawt_daemon_add_task_object(JsonBuilder *builder, ClawtTask *task)
         json_builder_end_object(builder);
     }
 
+    if (clawt_task_get_project(task) != NULL) {
+        json_builder_set_member_name(builder, "project");
+        json_builder_add_string_value(builder, clawt_task_get_project(task));
+    }
+
     /* Who checks it, and how many times changes were asked for. */
     if (clawt_task_get_reviewer(task) != NULL) {
         json_builder_set_member_name(builder, "reviewer");
@@ -10955,6 +11023,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_broker,
     clawt_daemon_handle_image,
     clawt_daemon_handle_team,
+    clawt_daemon_handle_project,
     clawt_daemon_handle_room,
     clawt_daemon_handle_mailbox,
     clawt_daemon_handle_task,

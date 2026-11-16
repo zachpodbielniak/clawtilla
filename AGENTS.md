@@ -1473,6 +1473,15 @@ versions apart.
   touch them, and a client's Cancel is offered on them. A note on a task
   publishes `task.noted`, never `task.changed`, which settle notices and
   incidents hang off.
+- **A project is placed once, through `clawt_daemon_project_place()`.**
+  It resolves the project, stores its brief on the task (the contract
+  text must not change after the task is made), applies the project's
+  reviewer and asks `clawt_daemon_project_admit()`. Any new door that
+  makes or releases work in a project goes through admit too -- a hard
+  stop that one door skips is no stop. Spend comes from the usage ledgers
+  over `clawt_task_store_project_tasks()`, never from a second counter.
+  The PROJECTS.org region never carries live spend: an identity file
+  that changes every turn is a prompt that never settles.
 - **A checkout paragraph is part of the assignment contract.** Compose an
   assignment's closing text with `clawt_task_assignment_guidance_for()`
   whenever the task is in hand, never the bare

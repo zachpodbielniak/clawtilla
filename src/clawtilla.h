@@ -103,6 +103,7 @@
 #include "task/clawt-task.h"
 #include "task/clawt-task-store.h"
 #include "task/clawt-task-checkout.h"
+#include "task/clawt-project.h"
 #include "task/clawt-task-manager.h"
 #include "task/clawt-handoff.h"
 #include "task/clawt-handoff-store.h"

@@ -402,8 +402,9 @@ The ~forge~ record type is owner-only in VENTURE, so an editor -- every agent ac
 - *Done:* =clawt-git-remote= (=clawt_git_remote_canonical()=, remotes in order, origin first); =clawt-task-checkout= (worktree or hard-linked clone by the assignee's confinement and computer; none on ssh or remote podman); ~repo~ / ~base~ on ~clawtilla_delegate~ and ~task.create~; the checkout paragraph in the assignment contract; ~task.diff~ (deferred, bounded, untracked files, from the kept branch once removed); ~task.checkout_remove~ (refused while active or dirty unless forced; a clone's branch fetched back first); the hourly ~orchestration.checkout_keep_days~ sweep; ~routines.worktree~ and ~triggers.worktree~ made real; Changes in GTK, web and lrg Details; ~clawtilla task diff|checkout-remove~, ~create --repo --base~; TOOLS.org says how.
 - *Version:* minor.
 
-** TODO P2 C2: Projects and project budgets :orchestration:spending:
-~projects:~ with goal, reviewer and a monthly budget; matched by git remote; the goal in the assignment; a managed PROJECTS.org region.
+** DONE P2 C2: Projects and project budgets v0.40.0 :orchestration:spending:
+- *Done:* ~projects:~ (goal, directory, review_by, agents, monthly budget, warning, hard stop); =clawt_project_resolve()= (named, the parent's, by path or a shared git remote); ~project~ on ~clawtilla_delegate~ and ~task.create~; the name and goal in the assignment contract; the project's reviewer between the delegation's and the agent's; the month's spend from the usage ledgers over the indexed ~tasks.project~ column; one warning a month and a hard stop that refuses delegations, new tasks, worktree runs and held releases; the =PROJECTS.org= region above the agent's own text; ~project.list|create|set|remove~; Settings → Projects in GTK, web and lrg and a project label on task rows; ~clawtilla project~ and ~task create --project~.
+- *Version:* minor.
 
 ** TODO P2 D: Version history :configuration:skills:
 Revisions of the fleet config, persona files and skills with restore; saved skill test inputs run on a scratch agent.

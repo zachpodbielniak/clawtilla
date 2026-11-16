@@ -674,6 +674,35 @@ gchar *clawt_task_resolve_reviewer(ClawtConfig  *config,
 gchar *clawt_task_assignment_guidance_for(ClawtTask *task);
 
 /**
+ * clawt_task_get_project:
+ * @self: a #ClawtTask
+ *
+ * Returns: (transfer none) (nullable): the project it belongs to
+ *   (`projects.id`), since 0.40.0
+ */
+const gchar *clawt_task_get_project(ClawtTask *self);
+
+/**
+ * clawt_task_get_project_brief:
+ * @self: a #ClawtTask
+ *
+ * Returns: (transfer none) (nullable): what its assignee is told about
+ *   the project, as it was when the task was made
+ */
+const gchar *clawt_task_get_project_brief(ClawtTask *self);
+
+/**
+ * clawt_task_set_project:
+ * @self: a #ClawtTask
+ * @project: (nullable): a project id, or %NULL / empty for none
+ * @brief: (nullable): the sentence its assignee is told (the project's
+ *   name and goal); kept only with a project
+ */
+void clawt_task_set_project(ClawtTask   *self,
+                            const gchar *project,
+                            const gchar *brief);
+
+/**
  * clawt_task_set_checkout:
  * @self: a #ClawtTask
  * @repository: (nullable): the host path of the repository checked out

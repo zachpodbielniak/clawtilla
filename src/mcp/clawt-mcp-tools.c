@@ -237,7 +237,11 @@ static const ClawtParamInfo delegate_params[] = {
       FALSE },
     { "base",     "string",
       "With repo: the branch, tag or commit to start from. Its HEAD when "
-      "left out.", FALSE }
+      "left out.", FALSE },
+    { "project",  "string",
+      "The project this work is part of, by id (see PROJECTS.org). Left "
+      "out, it is your own task's project, or the one whose directory the "
+      "repo is.", FALSE }
 };
 
 static const ClawtParamInfo task_review_params[] = {
@@ -1409,6 +1413,8 @@ struct _ClawtMcpTools {
 
     ClawtMcpReviewFunc  review;
     gpointer            review_data;
+    ClawtMcpProjectFunc project;
+    gpointer            project_data;
     ClawtMcpDeliverFunc deliver;
 	ClawtMcpDeliverTurnFunc deliver_turn;
 	ClawtMcpDeliverReplyFunc deliver_reply;
@@ -3413,6 +3419,12 @@ clawt_mcp_tools_describe_for_agent(ClawtMcpTools *self, const gchar *agent_id)
             "work only there, commit on its branch, and do not push, merge\n"
             "or touch the repository itself unless asked.\n"
             "\n"
+            "Work can belong to a project (your PROJECTS.org lists the ones\n"
+            "you work in): pass ~project~ to ~clawtilla_delegate~, or leave\n"
+            "it out and the work takes your own task's project, or the one\n"
+            "whose directory the ~repo~ is. A project past its budget may\n"
+            "refuse new work; the refusal says so.\n"
+            "\n"
             "Some work is reviewed before it counts as done. If yours is,\n"
             "finishing a task sends it to its reviewer instead of marking\n"
             "it complete, and changes come back to you as a message with\n"
@@ -5294,6 +5306,17 @@ tool_task_review(ClawtMcpTools *self,
 }
 
 void
+clawt_mcp_tools_set_project_func(ClawtMcpTools       *self,
+                                 ClawtMcpProjectFunc  func,
+                                 gpointer             user_data)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    self->project = func;
+    self->project_data = user_data;
+}
+
+void
 clawt_mcp_tools_set_review_func(ClawtMcpTools       *self,
                                 ClawtMcpReviewFunc   func,
                                 gpointer             user_data)
@@ -5572,6 +5595,21 @@ tool_delegate(ClawtMcpTools *self,
                 return g_strdup_printf("Not delegated: %s.", error->message);
             }
         }
+    }
+
+    /*
+     * Its project: named, inherited, or matched by its repository -- and
+     * refused here, before anything is sent, if the project has spent
+     * its budget and stops there.
+     */
+    if (self->project != NULL &&
+        !self->project(task, argument_string(arguments, "project"),
+                       argument_string(arguments, "review") != NULL,
+                       self->project_data, &error)) {
+        clawt_task_manager_cancel(self->tasks, clawt_task_get_id(task),
+                                  error->message, agent_id);
+        *is_error = TRUE;
+        return g_strdup_printf("Not delegated: %s.", error->message);
     }
 
     /* Read by the daemon as it delivers the assignment. */

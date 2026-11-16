@@ -53,6 +53,14 @@ struct _ClawtTask {
     gchar             *checkout_guest;
 
     /*
+     * The project it belongs to (`projects.id`), and what the assignee
+     * was told about it -- name and goal, kept as they were when the task
+     * was made, so the assignment text it is recognised by never changes.
+     */
+    gchar             *project;
+    gchar             *project_brief;
+
+    /*
      * The room the work itself happens in, when the delegator asked for
      * `thread: new` -- a session of its own.  Distinct from `room`,
      * which is where the delegation was *made* and where the settle
@@ -193,6 +201,8 @@ clawt_task_copy(ClawtTask *self)
     copy->checkout_base = g_strdup(self->checkout_base);
     copy->checkout_mode = self->checkout_mode;
     copy->checkout_guest = g_strdup(self->checkout_guest);
+    copy->project = g_strdup(self->project);
+    copy->project_brief = g_strdup(self->project_brief);
     copy->review_round = self->review_round;
     copy->progress_note = g_strdup(self->progress_note);
     copy->cancelled_by = g_strdup(self->cancelled_by);
@@ -250,6 +260,8 @@ clawt_task_free(ClawtTask *self)
     g_free(self->checkout_branch);
     g_free(self->checkout_base);
     g_free(self->checkout_guest);
+    g_free(self->project);
+    g_free(self->project_brief);
     g_free(self->thread_room);
     g_free(self->progress_note);
     g_free(self->cancelled_by);
@@ -817,6 +829,8 @@ clawt_task_to_json(ClawtTask *self)
     add_string(builder, "title", self->title);
     add_string(builder, "reviewer", self->reviewer);
     add_int(builder, "review_round", self->review_round);
+    add_string(builder, "project", self->project);
+    add_string(builder, "project_brief", self->project_brief);
     if (self->checkout_mode != CLAWT_CHECKOUT_NONE) {
         add_string(builder, "checkout_repo", self->checkout_repo);
         add_string(builder, "checkout_path", self->checkout_path);
@@ -946,6 +960,8 @@ clawt_task_new_from_json(JsonNode *node, GError **error)
     self->checkout_branch = dup_member(object, "checkout_branch");
     self->checkout_base = dup_member(object, "checkout_base");
     self->checkout_guest = dup_member(object, "checkout_guest");
+    self->project = dup_member(object, "project");
+    self->project_brief = dup_member(object, "project_brief");
     {
         g_autofree gchar *mode = dup_member(object, "checkout_mode");
         gint value = CLAWT_CHECKOUT_NONE;
@@ -1234,5 +1250,39 @@ clawt_task_assignment_guidance_for(ClawtTask *task)
     checkout = clawt_task_checkout_guidance(task);
     contract = clawt_task_assignment_guidance(clawt_task_get_id(task));
 
+    /* The project first: what the work is for, then where, then how. */
+    if (task->project_brief != NULL)
+        return g_strconcat("\n\n[clawtilla] ", task->project_brief, checkout,
+                           contract, NULL);
+
     return g_strconcat(checkout, contract, NULL);
+}
+
+const gchar *
+clawt_task_get_project(ClawtTask *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+    return self->project;
+}
+
+const gchar *
+clawt_task_get_project_brief(ClawtTask *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+    return self->project_brief;
+}
+
+void
+clawt_task_set_project(ClawtTask   *self,
+                       const gchar *project,
+                       const gchar *brief)
+{
+    g_return_if_fail(self != NULL);
+
+    g_free(self->project);
+    g_free(self->project_brief);
+    self->project = (project != NULL && *project != '\0')
+        ? g_strdup(project) : NULL;
+    self->project_brief = (self->project != NULL && brief != NULL &&
+                           *brief != '\0') ? g_strdup(brief) : NULL;
 }

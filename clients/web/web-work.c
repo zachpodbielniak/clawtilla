@@ -630,6 +630,14 @@ clawt_web_tasks_body(ClawtWebApp *app, const gchar *agent_id)
             clawt_web_add(row, clawt_web_text(who, "list-item-sub"));
             clawt_web_add(row, clawt_web_text(prompt, "small muted"));
 
+            /* The project it belongs to. */
+            if (clawt_web_member(task, "project", NULL) != NULL) {
+                g_autofree gchar *chip = g_strdup_printf(
+                    "Project: %s", clawt_web_member(task, "project", ""));
+
+                clawt_web_add(row, clawt_web_text(chip, "small muted"));
+            }
+
             /* A held task says what it is waiting for. */
             {
                 JsonArray *waiting = clawt_web_member_array(task,

@@ -201,6 +201,19 @@ run_trigger(const gchar *trigger_id, const gchar *agent_id,
                 return NULL;
             }
 
+            /*
+             * Its project, by the directory; a project that has stopped
+             * taking work fails the run, as it refuses a delegation.
+             */
+            if (!clawt_daemon_project_place(self, task, NULL, directory,
+                                            FALSE, &checkout_error)) {
+                clawt_task_manager_fail(self->tasks, clawt_task_get_id(task),
+                                        checkout_error->message);
+                g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_LOOP_LIMIT,
+                                    checkout_error->message);
+                return NULL;
+            }
+
             clawt_task_manager_save(self->tasks, task, NULL);
             where = clawt_task_checkout_guidance(task);
             checkout_prompt = g_strconcat(g_strchug(where), "\n\n", prompt,

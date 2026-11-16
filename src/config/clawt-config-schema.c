@@ -1515,6 +1515,72 @@ static const ClawtSchemaEntry schema[] = {
   "delivery preamble names.", "0.2.0" },
 
 /* ── teams ───────────────────────────────────────────────────────── */
+{ "projects", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
+  "Projects: the pieces of work the fleet is pointed at.\n"
+  "\n"
+  "A task belongs to at most one project: the one its delegation or the\n"
+  "operator named, else its parent's, else the one whose directory its\n"
+  "checkout came from (by path, or by a shared git remote). Its assignee\n"
+  "is told the project's name and goal; the project's spend is summed\n"
+  "over its tasks each month, against an optional budget; and every\n"
+  "agent working in it finds it in PROJECTS.org. Optional: a fleet with\n"
+  "none works exactly as before.", "0.40.0" },
+
+{ "projects.id", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_REQUIRED, NULL, NULL,
+  "Identifier used to address the project: `project` on a delegation or\n"
+  "a new task, and the task lists' filter.", "0.40.0" },
+
+{ "projects.name", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Display name; the id when unset.", "0.40.0" },
+
+{ "projects.directory", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "The project's repository or directory, as a host path.\n"
+  "\n"
+  "A task whose checkout is of this directory -- or of any repository\n"
+  "sharing one of its git remotes, compared as host/owner/repo -- belongs\n"
+  "to this project without being told.", "0.40.0" },
+
+{ "projects.goal", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "What the project is for, in a sentence or two.\n"
+  "\n"
+  "Every assignment in the project starts with it, so the agent doing a\n"
+  "piece of work knows what the piece is for.", "0.40.0" },
+
+{ "projects.review_by", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL,
+  NULL,
+  "Who reviews work in this project, as agents.review_by spells it.\n"
+  "\n"
+  "Between a delegation's own `review` and the assignee's\n"
+  "agents.review_by: the project's rule beats the agent's habit.",
+  "0.40.0" },
+
+{ "projects.agents", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE, NULL,
+  NULL,
+  "The agents that work in this project, by id.\n"
+  "\n"
+  "Only decides whose PROJECTS.org lists it; empty lists it for every\n"
+  "agent. Anyone may still be given its work.", "0.40.0" },
+
+{ "projects.monthly_budget_usd", CLAWT_SCHEMA_DOUBLE, CLAWT_SCHEMA_FLAG_NONE,
+  "0", NULL,
+  "What the project may spend in a calendar month, in US dollars.\n"
+  "\n"
+  "Summed from every agent's usage ledger over the project's tasks\n"
+  "made this month. 0 means no budget: spend is still shown.", "0.40.0" },
+
+{ "projects.budget_warn_percent", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "80", NULL,
+  "At what share of monthly_budget_usd the operator is warned, once a\n"
+  "month.", "0.40.0" },
+
+{ "projects.budget_hard_stop", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "false", NULL,
+  "Refuse new work in the project once its monthly budget is spent.\n"
+  "\n"
+  "A delegation, a new task and a held task's release are refused, as\n"
+  "the spending caps refuse, with the reason. Work already handed over\n"
+  "is not stopped.", "0.40.0" },
+
 { "teams", CLAWT_SCHEMA_LIST_OF, CLAWT_SCHEMA_FLAG_COMMENTED, NULL, NULL,
   "Teams, so a fleet larger than a handful has a shape.\n"
   "\n"
