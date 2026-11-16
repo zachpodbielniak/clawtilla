@@ -212,7 +212,7 @@ test_an_empty_conversation_still_exports(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/export/markdown", test_markdown_needs_nothing_installed);
     g_test_add_func("/export/missing-pandoc-reported",

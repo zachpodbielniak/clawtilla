@@ -178,7 +178,7 @@ test_a_failed_start_is_not_a_restart(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/introspection/idle-has-no-label",
                     test_idle_has_no_label);

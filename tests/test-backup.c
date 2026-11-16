@@ -208,7 +208,7 @@ test_cli(void)
 int
 main(int argc, char **argv)
 {
-	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+	g_test_init(&argc, &argv, NULL);
 	g_test_add_func("/backup/roundtrip", test_roundtrip);
 	g_test_add_func("/backup/locked-symlink", test_locked_and_symlink);
 	g_test_add_func("/backup/hostile-manifest", test_hostile_manifest);

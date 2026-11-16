@@ -186,7 +186,7 @@ test_every_documented_nick_resolves(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/log-level/ceiling-permits-itself-and-above",
                     test_a_ceiling_permits_itself_and_everything_above);

@@ -1218,7 +1218,7 @@ test_inline_decision_follows_the_inbox(void)
 gint
 main(gint argc, gchar **argv)
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/lrg/chat/unread/rows", test_row_rooms);
     g_test_add_func("/lrg/chat/unread/two-rooms", test_unread_two_rooms);

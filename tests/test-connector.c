@@ -1542,7 +1542,7 @@ test_every_connector_state_has_a_label_and_a_tone(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/connector/builtin-catalogue",
                     test_the_builtin_catalogue_is_whole);

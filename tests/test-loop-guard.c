@@ -479,7 +479,7 @@ test_the_stall_signal_names_the_room_and_the_text(void)
 int
 main(int argc, char **argv)
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/loop-guard/an-alternating-pair-is-stopped",
                     test_an_alternating_pair_is_stopped_within_a_bound);

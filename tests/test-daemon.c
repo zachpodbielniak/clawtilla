@@ -12132,7 +12132,7 @@ main(int argc, char *argv[])
      */
     g_setenv("XDG_DATA_HOME", data_dir, TRUE);
 
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 	g_test_add_func("/daemon/routine/invalid-update-is-atomic", test_invalid_routine_update_is_atomic);
 	g_test_add_data_func("/daemon/usage/first-turn", GUINT_TO_POINTER(0), test_first_turn_usage_is_charged);
 	g_test_add_data_func("/daemon/usage/excludes-history", GUINT_TO_POINTER(1), test_first_turn_usage_is_charged);

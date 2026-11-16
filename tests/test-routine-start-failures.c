@@ -878,7 +878,7 @@ test_the_daemon_counts_starts_not_runs(void)
 int
 main(int argc, char *argv[])
 {
-	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+	g_test_init(&argc, &argv, NULL);
 
 	g_test_add_func("/routine-start/three-turn-it-off",
 	                test_three_failures_turn_it_off);

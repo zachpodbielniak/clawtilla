@@ -224,7 +224,7 @@ test_skill_test_verdict(void)
 int
 main(int argc, char **argv)
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/revisions/record-and-read", test_record_and_read);
     g_test_add_func("/revisions/skill-test-runs", test_skill_test_runs);

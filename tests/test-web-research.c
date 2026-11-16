@@ -600,7 +600,7 @@ test_tools_org_points_or_inlines(void)
 gint
 main(gint argc, gchar *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/web-research/tools-offered-with-a-server", test_tools_offered_with_a_server);
     g_test_add_func("/web-research/query-runs-deferred", test_query_runs_deferred);

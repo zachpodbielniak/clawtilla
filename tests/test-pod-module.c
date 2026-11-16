@@ -629,7 +629,7 @@ test_a_module_with_no_daemon_says_so(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/pod-module/event-names",
                     test_every_event_is_spelled_the_way_the_dsl_can_read_it);

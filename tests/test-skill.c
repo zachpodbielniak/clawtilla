@@ -783,7 +783,7 @@ test_an_extra_root_is_read_and_never_written(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/skill/found", test_a_skill_on_disk_is_found);
     g_test_add_func("/skill/missing-directory",

@@ -1981,7 +1981,7 @@ main(
 	int    argc,
 	char **argv
 ){
-	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+	g_test_init(&argc, &argv, NULL);
 
 	g_test_add_func("/egress/policy/table", test_address_table);
 	g_test_add_func("/egress/policy/words", test_address_class_words);

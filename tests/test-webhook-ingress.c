@@ -1020,7 +1020,7 @@ test_grok_routes_receive_the_whole_body(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 	g_test_add_func("/webhook/streaming-body-limit", test_streaming_body_limit);
 	g_test_add_func("/webhook/grok-routes-whole-body",
 		test_grok_routes_receive_the_whole_body);

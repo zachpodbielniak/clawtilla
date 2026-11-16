@@ -990,7 +990,7 @@ test_toast_text_names_a_refused_agent(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/client-rules/team-tally/counts-working",
                     test_the_tally_counts_what_is_working);

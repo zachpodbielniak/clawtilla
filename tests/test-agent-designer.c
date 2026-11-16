@@ -640,7 +640,7 @@ main(int argc, char *argv[])
 {
     test_root = g_dir_make_tmp("clawt-designer-XXXXXX", NULL);
 
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/designer/designs", test_designs_an_agent);
     g_test_add_func("/designer/commit", test_commit_creates_the_agent);

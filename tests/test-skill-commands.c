@@ -541,7 +541,7 @@ test_a_command_line_is_recognised(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/skill-commands/listed",
                     test_a_linked_skill_becomes_a_command);

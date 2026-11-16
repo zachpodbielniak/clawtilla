@@ -780,7 +780,7 @@ test_a_documented_inheritance_has_a_relation(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/schema/generated-files-match",
                     test_generated_files_match_schema);

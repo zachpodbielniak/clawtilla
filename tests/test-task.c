@@ -651,7 +651,7 @@ test_a_missing_parent_ends_the_walk(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/task/every-state-has-a-tone",
                     test_every_state_has_a_tone);

@@ -102,6 +102,7 @@ struct _ClawtVentureMirror {
     GArray                       *context_milestones;  /* gint64 */
     GArray                       *context_goals;       /* gint64 */
     gint64                        context_read_at;
+    gchar                        *started;   /* ISO time the mirror began */
 
     GQueue         *rows;           /* ClawtVentureOutboxRow, being drained */
     gboolean        busy;
@@ -1894,13 +1895,21 @@ poll_comments(PollJob *poll)
     gpointer ticket;
 
     /*
-     * Never read before: start from the newest comment, delivering
-     * nothing -- an account's first pass must not replay every comment
-     * ever written on its tickets.
+     * Never read before: start from the newest comment made before the
+     * mirror started, delivering nothing older -- an account's first
+     * pass must not replay every comment ever written on its tickets,
+     * and must not lose one made while the daemon was starting (the
+     * first pass is a minute away).
      */
     if (cursor == NULL) {
+        g_autofree gchar *before = g_uri_escape_string(
+            poll->mirror->started, NULL, FALSE);
+        g_autofree gchar *baseline = g_strdup_printf(
+            "/api/v1/ticket_comment?created_at__lt=%s&order=-id&limit=1",
+            before);
+
         poll->step = POLL_COMMENT_BASELINE;
-        poll_send(poll, "/api/v1/ticket_comment?order=-id&limit=1");
+        poll_send(poll, baseline);
         return;
     }
 
@@ -3044,6 +3053,7 @@ clawt_venture_mirror_finalize(GObject *object)
     if (self->context_notify != NULL)
         self->context_notify(self->context_data);
 
+    g_free(self->started);
     g_array_unref(self->context_milestones);
     g_array_unref(self->context_goals);
 
@@ -3085,6 +3095,7 @@ clawt_venture_mirror_init(ClawtVentureMirror *self)
                                                 g_free, NULL);
     self->rows = g_queue_new();
     self->context_milestones = g_array_new(FALSE, FALSE, sizeof(gint64));
+    self->started = iso_seconds_ago(0);
     self->context_goals = g_array_new(FALSE, FALSE, sizeof(gint64));
     self->intake_times = g_hash_table_new_full(g_str_hash, g_str_equal,
                                                g_free,

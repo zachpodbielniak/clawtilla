@@ -1684,7 +1684,7 @@ test_a_second_room_is_a_room_edge_and_not_an_agent_one(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/agent/starts-stopped", test_agent_starts_stopped);
     g_test_add_func("/agent/name-falls-back-to-id",

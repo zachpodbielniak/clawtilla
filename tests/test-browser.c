@@ -1070,7 +1070,7 @@ test_extras_replace_the_allowlist(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
     log_capture = g_string_new(NULL);
     g_log_set_writer_func(capture_writer, NULL, NULL);
 

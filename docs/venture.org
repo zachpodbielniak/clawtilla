@@ -171,6 +171,14 @@ On 2026-11-16 a throwaway VENTURE (0.10.2, a scratch database) and a throwaway t
 - a pending task survived the daemon's restart, then ran, and its ticket was kept current.
 - an agent whose connector says ~mirror_tasks: false~ had its task left alone -- "Not mirrored" with the reason and Retry on its page -- while the next agent's task, in the same repository, became ticket #1 with *Open in VENTURE* (the web client's task page, screenshotted headless).
 
+And again the same day, for review and for comments reaching a working agent, with the agent's work reviewed by the operator (~review_by: user~):
+
+- a person's VENTURE comment on a pending task -- "the secret word is ORCHID" -- reached the agent, whose result was =ORCHID=; the task went to review and its ticket to =review=;
+- setting that ticket to =done= in VENTURE accepted the task;
+- on a second task, moving its ticket out of review asked for changes ("round 1"); the agent did the work again, and the operator accepting it in clawtilla set the ticket =done=.
+
+That run found the one thing it was for: a comment made in the minute before the reverse poll's first pass was taken as history and not delivered.  Since 0.48.0 the first pass starts from the newest comment made before the mirror started.
+
 * Troubleshooting
 
 | Seen | Why, and what to do |

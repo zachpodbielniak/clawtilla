@@ -192,7 +192,7 @@ test_hook_follows_read_only_routine(void)
 gint
 main(gint argc, gchar *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     /*
      * The fixture's fleet holds a routine the daemon warns about at load,

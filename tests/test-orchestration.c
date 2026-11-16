@@ -739,7 +739,7 @@ test_task_listing_by_involvement(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/loop/hops", test_hop_limit_stops_a_growing_chain);
     g_test_add_func("/loop/cycle", test_cycle_detection_catches_alternating_replies);

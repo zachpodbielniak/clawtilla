@@ -1025,7 +1025,7 @@ test_row_action(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/devices/hash-is-sha256", test_hash_is_sha256_hex);
     g_test_add_func("/devices/secure-equals", test_secure_equals_contract);

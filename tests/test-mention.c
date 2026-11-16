@@ -418,7 +418,7 @@ test_candidates_ignore_case_because_the_at_form_does(void)
 int
 main(int argc, char **argv)
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/mention/at-form-is-word-bounded",
                     test_an_at_form_is_word_bounded);

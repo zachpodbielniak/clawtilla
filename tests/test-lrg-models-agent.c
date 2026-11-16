@@ -1204,7 +1204,7 @@ test_a_refused_save_does_not_lose_the_list(void)
 gint
 main(gint argc, gchar **argv)
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/lrg-agent/choices/null-terminated",
                     test_choices_are_null_terminated);

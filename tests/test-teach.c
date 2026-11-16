@@ -1314,7 +1314,7 @@ main(int argc, char *argv[])
 
     test_root = g_dir_make_tmp("clawt-teach-XXXXXX", NULL);
 
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/teach/steps-in-order", test_steps_are_kept_in_order);
     g_test_add_func("/teach/round-trip", test_a_trace_round_trips_through_disk);

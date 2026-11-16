@@ -411,7 +411,7 @@ test_a_secret_cannot_be_searched_for(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/transcript/across-rooms",
                     test_recall_reaches_across_rooms);

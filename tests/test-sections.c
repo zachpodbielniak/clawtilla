@@ -320,7 +320,7 @@ test_a_page_may_be_named_differently_from_its_section(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/sections/every-page-is-in-exactly-one-section",
                     test_every_page_is_in_exactly_one_section);

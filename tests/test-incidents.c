@@ -1029,7 +1029,7 @@ main(
 	int   argc,
 	char *argv[]
 ){
-	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+	g_test_init(&argc, &argv, NULL);
 
 	g_test_add_func("/incidents/failed-goes-to-the-lead",
 	                test_failed_task_goes_to_the_lead);

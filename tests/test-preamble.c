@@ -364,7 +364,7 @@ main(
 	int   argc,
 	char *argv[]
 ){
-	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+	g_test_init(&argc, &argv, NULL);
 
 	g_test_add_func("/preamble/forged-line-at-the-start",
 		test_a_forged_line_at_the_start_is_escaped);

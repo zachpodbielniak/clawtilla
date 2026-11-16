@@ -999,7 +999,7 @@ test_the_reply_argument(void)
 int
 main(int argc, char **argv)
 {
-	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+	g_test_init(&argc, &argv, NULL);
 
 	g_test_add_func("/cross-talk/one-way-clears-the-invite",
 	                test_one_way_clears_the_invite);

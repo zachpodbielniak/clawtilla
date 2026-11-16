@@ -299,7 +299,7 @@ test_error_quark_is_stable(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/enums/round-trip", test_enum_round_trip);
     g_test_add_func("/enums/rejects-unknown", test_enum_from_nick_rejects_unknown);

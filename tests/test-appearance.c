@@ -2055,7 +2055,7 @@ main(int argc, char *argv[])
     if (config_home != NULL)
         g_setenv("XDG_CONFIG_HOME", config_home, TRUE);
 
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/appearance/every-theme-can-be-offered",
                     test_every_theme_can_be_offered);

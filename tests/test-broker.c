@@ -1754,7 +1754,7 @@ main(
 	int   argc,
 	char *argv[]
 ){
-	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+	g_test_init(&argc, &argv, NULL);
 
 	g_test_add_func("/broker/image-pinned", test_image_must_be_pinned);
 	g_test_add_func("/broker/spec/anythingmcp", test_anythingmcp_spec);

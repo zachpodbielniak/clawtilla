@@ -2829,7 +2829,7 @@ test_an_inline_persona_measures_nothing(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/workspace/agent-maintains-its-own-files",
                     test_the_agent_is_told_to_maintain_its_own_files);

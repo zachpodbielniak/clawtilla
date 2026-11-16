@@ -1300,7 +1300,7 @@ test_room_payload(void)
 gint
 main(gint argc, gchar **argv)
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/lrg-settings/split-list", test_split_list);
     g_test_add_func("/lrg-settings/member-array-wrong-type",

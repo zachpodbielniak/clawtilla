@@ -542,7 +542,7 @@ test_block_scalars_are_read(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/skill-scan/name-plain", test_a_plain_name_is_accepted);
     g_test_add_func("/skill-scan/block-scalars", test_block_scalars_are_read);

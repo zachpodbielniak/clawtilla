@@ -330,7 +330,7 @@ test_set_refuses_at_arrival(void)
 gint
 main(gint argc, gchar *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     /* The shadowed fleet warns at load on purpose; criticals stay fatal. */
     g_log_set_always_fatal(G_LOG_FATAL_MASK | G_LOG_LEVEL_CRITICAL);

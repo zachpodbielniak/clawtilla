@@ -311,7 +311,7 @@ test_a_role_this_build_cannot_read_claims_nothing(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/team/chief-assigns-anywhere",
                     test_the_chief_may_assign_anywhere);

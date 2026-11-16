@@ -1354,7 +1354,7 @@ test_the_settings_frames(void)
 int
 main(int argc, char **argv)
 {
-	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+	g_test_init(&argc, &argv, NULL);
 
 	g_test_add_func("/room-rounds/chain-helpers", test_chain_helpers);
 	g_test_add_func("/room-rounds/many-rounds-never-reach-max-hops",

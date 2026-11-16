@@ -170,7 +170,7 @@ fake_send(ClawtVentureMirror     *mirror,
     } else if (g_str_has_prefix(path, "/api/v1/ticket?external_ref__like=")) {
         answer->body = g_strdup(fixture->changed != NULL ? fixture->changed
                                                          : "[]");
-    } else if (g_str_has_prefix(path, "/api/v1/ticket_comment?order=-id")) {
+    } else if (g_str_has_prefix(path, "/api/v1/ticket_comment?created_at__lt=")) {
         answer->body = g_strdup("{\"items\":[{\"id\":5}]}");
     } else if (g_str_has_prefix(path, "/api/v1/ticket_comment?ticket_id__in=")) {
         answer->body = g_strdup(fixture->comments != NULL ? fixture->comments
@@ -880,8 +880,9 @@ test_comments_come_back(Fixture *fixture, gconstpointer data)
         "[{\"id\":4,\"ticket_id\":1,\"author\":\"alice\",\"body\":\"old\"}]");
     poll(fixture);
     g_assert_cmpuint(fixture->inbound->len, ==, 0);
+    /* the baseline is what came before the mirror started */
     g_assert_nonnull(find_sent(fixture, "GET",
-                               "/api/v1/ticket_comment?order=-id"));
+                               "/api/v1/ticket_comment?created_at__lt="));
 
     g_free(fixture->comments);
     fixture->comments = g_strdup_printf(
@@ -1303,7 +1304,7 @@ test_pull_request_is_linked(Fixture *fixture, gconstpointer data)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     ADD("files-then-updates-as-each-agent",
         test_files_then_updates_as_each_agent);

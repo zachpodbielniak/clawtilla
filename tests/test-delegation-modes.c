@@ -1671,7 +1671,7 @@ test_daemon_decision_operator_first_and_unrouted(void)
 int
 main(int argc, char **argv)
 {
-	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+	g_test_init(&argc, &argv, NULL);
 
 	g_test_add_func("/delegation-modes/consult-role-and-label",
 		test_consult_role_and_label);

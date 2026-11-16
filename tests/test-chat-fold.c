@@ -590,7 +590,7 @@ main(
 	int   argc,
 	char *argv[]
 ){
-	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+	g_test_init(&argc, &argv, NULL);
 
 	g_test_add_func("/chat-fold/sender-is-agent", test_sender_is_agent);
 	g_test_add_func("/chat-fold/line-count", test_line_count);

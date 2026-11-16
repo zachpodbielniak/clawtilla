@@ -280,7 +280,7 @@ main(
 	int    argc,
 	char **argv
 ){
-	g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+	g_test_init(&argc, &argv, NULL);
 
 	g_test_add_func("/projects/config", test_config_projects);
 	g_test_add_func("/projects/resolve", test_resolve);

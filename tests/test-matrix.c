@@ -349,7 +349,7 @@ test_a_notice_is_posted(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/matrix/base-url", test_the_forms_people_type);
     g_test_add_func("/matrix/base-url-path", test_a_path_is_refused);

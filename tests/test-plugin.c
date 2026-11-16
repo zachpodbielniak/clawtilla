@@ -442,7 +442,7 @@ test_plugin_tools_obey_the_deny_list(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/plugin/loads-example", test_loads_the_example_plugin);
     g_test_add_func("/plugin/abi-mismatch", test_abi_mismatch_is_refused);

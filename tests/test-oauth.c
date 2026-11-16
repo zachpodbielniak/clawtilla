@@ -679,7 +679,7 @@ test_an_empty_access_token_is_refused(void)
 int
 main(int argc, char *argv[])
 {
-    g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
+    g_test_init(&argc, &argv, NULL);
 
     g_test_add_func("/oauth/token-parse", test_a_token_is_read);
     g_test_add_func("/oauth/token-expiry-absolute",
