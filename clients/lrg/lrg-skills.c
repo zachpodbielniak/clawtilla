@@ -245,6 +245,88 @@ on_remove_clicked(LrgButton *button, gpointer user_data)
                       on_remove_confirmed, g_strdup(name), g_free);
 }
 
+/* A skill's tests: their last runs, and Run on the agent named. */
+static gboolean
+on_tests_response(ClawtLrgApp *app, LrgDialog *dialog, gint response,
+                  gpointer user_data)
+{
+    LrgWidget *entry = g_object_get_data(G_OBJECT(dialog), "clawt-agent");
+    const gchar *agent = clawt_lrg_entry_text(entry);
+
+    (void)response;
+
+    clawt_lrg_request(app, "skill.test_run",
+                      clawt_ipc_payload_new("skill", user_data,
+                                            "agent", (agent != NULL &&
+                                                      *agent != '\0')
+                                                ? agent : NULL, NULL),
+                      CLAWT_LRG_REQUEST_NONE, on_changed, NULL, NULL);
+    clawt_lrg_toast(app, "Tests running; open Tests again for the verdicts.");
+    return TRUE;
+}
+
+static void
+on_tests_reply(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+               gpointer user_data)
+{
+    const gchar *name = user_data;
+    JsonArray *tests;
+    g_autoptr(GString) body = g_string_new(NULL);
+    LrgWidget *form;
+    LrgWidget *entry;
+    LrgDialog *dialog;
+    guint i;
+
+    (void)error;
+
+    if (reply == NULL)
+        return;
+
+    tests = json_object_get_array_member(json_node_get_object(reply),
+                                         "tests");
+
+    if (json_array_get_length(tests) == 0)
+        g_string_append(body, "No tests yet. Add tests/<name>.yaml beside "
+                              "the SKILL.md: input, and expect / reject.");
+
+    for (i = 0; i < json_array_get_length(tests); i++) {
+        JsonObject *test = json_array_get_object_element(tests, i);
+        JsonObject *last = json_object_has_member(test, "last")
+            ? json_object_get_object_member(test, "last") : NULL;
+
+        g_string_append_printf(body, "%s%s: %s%s%s", i > 0 ? "\n" : "",
+            clawt_ipc_payload_string(test, "name"),
+            last != NULL ? clawt_ipc_payload_string(last, "state")
+                         : "never run",
+            last != NULL ? " -- " : "",
+            (last != NULL && clawt_ipc_payload_string(last, "detail") != NULL)
+                ? clawt_ipc_payload_string(last, "detail") : "");
+    }
+
+    form = clawt_lrg_form_new();
+    entry = clawt_lrg_entry(NULL, "an agent with this skill");
+    clawt_lrg_form_add(form, "Run on", entry, NULL);
+
+    dialog = clawt_lrg_dialog(app, "Tests", body->str, form, "Run them",
+                              FALSE, on_tests_response, g_strdup(name),
+                              g_free);
+    g_object_set_data(G_OBJECT(dialog), "clawt-agent", entry);
+    g_object_unref(dialog);
+    g_object_unref(form);
+}
+
+static void
+on_tests_clicked(LrgButton *button, gpointer user_data)
+{
+    ClawtLrgApp *app = user_data;
+    const gchar *name = g_object_get_data(G_OBJECT(button), "skill");
+
+    clawt_lrg_request(app, "skill.tests",
+                      clawt_ipc_payload_new("skill", name, NULL),
+                      CLAWT_LRG_REQUEST_NONE, on_tests_reply, g_strdup(name),
+                      g_free);
+}
+
 static void
 draw_detail(ClawtLrgApp *app)
 {
@@ -296,6 +378,15 @@ draw_detail(ClawtLrgApp *app)
     g_object_set_data(G_OBJECT(toggle), "enable",
                       GINT_TO_POINTER(!enabled));
     clawt_lrg_take(buttons, toggle);
+
+    {
+        LrgWidget *tests = clawt_lrg_button("Tests", NULL,
+                                            G_CALLBACK(on_tests_clicked), app);
+
+        g_object_set_data_full(G_OBJECT(tests), "skill",
+                               g_strdup(state.selected), g_free);
+        clawt_lrg_take(buttons, tests);
+    }
 
     remove = clawt_lrg_button("Remove", "danger",
                               G_CALLBACK(on_remove_clicked), app);

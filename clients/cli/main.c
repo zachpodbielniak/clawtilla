@@ -3311,6 +3311,104 @@ cmd_account(int argc, char *argv[])
  * `create` takes key=value pairs after the id, so a project can be made
  * whole in one line.
  */
+/*
+ * Version history: every saved version of the config, the persona files
+ * and the skills; compare any two, or one with now, and put one back.
+ */
+static gint
+cmd_history(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *verb = (argc > 2) ? argv[2] : "list";
+
+    if (g_strcmp0(verb, "help") == 0 || g_strcmp0(verb, "--help") == 0 ||
+        g_strcmp0(verb, "-h") == 0) {
+        g_print("Usage: clawtilla history [list] [config|persona|skill] "
+                "[SUBJECT]\n"
+                "       clawtilla history show <id>\n"
+                "       clawtilla history diff <id> [<newer id>]\n"
+                "       clawtilla history restore <id>\n\n"
+                "Subjects: `config`; `<agent>/<file>` for a persona file;\n"
+                "a skill's name. A diff against one id compares it with "
+                "now.\n"
+                "Restoring is a save, so it becomes the newest version.\n\n"
+                "Examples:\n"
+                "  clawtilla history persona scout/SOUL.org\n"
+                "  clawtilla history diff 41\n"
+                "  clawtilla history restore 41\n");
+        return EXIT_SUCCESS;
+    }
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    if (g_strcmp0(verb, "show") == 0 && argc > 3) {
+        reply = call(client, "revision.show",
+                     build_payload("id", argv[3], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        g_print("%s", member_or(json_node_get_object(reply), "text", ""));
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "diff") == 0 && argc > 3) {
+        reply = call(client, "revision.diff",
+                     build_payload("from", argv[3],
+                                   "to", argc > 4 ? argv[4] : NULL, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        g_print("%s", member_or(json_node_get_object(reply), "diff", ""));
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "restore") == 0 && argc > 3) {
+        reply = call(client, "revision.restore",
+                     build_payload("id", argv[3], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+        g_print("Restored revision %s; it is the newest version now.\n",
+                argv[3]);
+        return EXIT_SUCCESS;
+    }
+
+    /* list, with an optional kind and subject */
+    {
+        gint first = (g_strcmp0(verb, "list") == 0) ? 3 : 2;
+        const gchar *kind = (argc > first) ? argv[first] : NULL;
+        const gchar *subject = (argc > first + 1) ? argv[first + 1] : NULL;
+        JsonArray *revisions;
+        guint i;
+
+        reply = call(client, "revision.list",
+                     build_payload("kind", kind, "subject", subject, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        revisions = json_object_get_array_member(json_node_get_object(reply),
+                                                 "revisions");
+        if (json_array_get_length(revisions) == 0)
+            g_print("No versions kept yet.\n");
+
+        for (i = 0; i < json_array_get_length(revisions); i++) {
+            JsonObject *revision = json_array_get_object_element(revisions,
+                                                                 i);
+            g_autoptr(GDateTime) at = g_date_time_new_from_unix_local(
+                json_object_get_int_member(revision, "at"));
+            g_autofree gchar *when = g_date_time_format(at, "%F %R");
+
+            g_print("%6" G_GINT64_FORMAT "  %s  %-8s %-28s %-10s %s\n",
+                    json_object_get_int_member(revision, "id"), when,
+                    member_or(revision, "kind", ""),
+                    member_or(revision, "subject", ""),
+                    member_or(revision, "author", ""),
+                    member_or(revision, "note", ""));
+        }
+        return EXIT_SUCCESS;
+    }
+}
+
 static gint
 cmd_project(int argc, char *argv[])
 {
@@ -8394,6 +8492,9 @@ print_skill_usage(gboolean asked_for)
         "  proposals                  skills agents have proposed, waiting\n"
         "  approve <proposal>         apply one: enable it, or write the update\n"
         "  reject <proposal> [why]    discard one; the agent is told why\n"
+        "  tests <name>               its saved tests, and how each last ran\n"
+        "  test <name> [test] [--agent AGENT]\n"
+        "                             run them (or one) on an agent with it\n"
         "\n"
         "An imported skill lands disabled and its scripts are left behind.\n"
         "Read it, then enable it: what a skill says goes into a model's\n"
@@ -8405,7 +8506,8 @@ print_skill_usage(gboolean asked_for)
         "  clawtilla skill enable release\n"
         "  clawtilla skill assign release team:engineering\n"
         "  clawtilla skill proposals\n"
-        "  clawtilla skill reject skill-proposal-1f0c... \"too specific to one repo\"\n";
+        "  clawtilla skill reject skill-proposal-1f0c... \"too specific to one repo\"\n"
+        "  clawtilla skill test release --agent builder\n";
 
     print_usage_text(text, asked_for);
 }
@@ -8460,6 +8562,73 @@ cmd_skill(int argc, char *argv[])
     client = connect_to_daemon();
     if (client == NULL)
         return EXIT_FAILURE;
+
+    /* A skill's saved tests, and each one's last run. */
+    if (g_strcmp0(verb, "tests") == 0 && name != NULL) {
+        JsonObject *object;
+        JsonArray *tests;
+        JsonArray *problems;
+
+        reply = call(client, "skill.tests",
+                     build_payload("skill", name, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        object = json_node_get_object(reply);
+        tests = json_object_get_array_member(object, "tests");
+        problems = json_object_get_array_member(object, "problems");
+
+        if (json_array_get_length(tests) == 0)
+            g_print("%s has no tests. Add tests/<name>.yaml beside its "
+                    "SKILL.md: input, and expect / reject.\n", name);
+
+        for (i = 0; i < json_array_get_length(tests); i++) {
+            JsonObject *test = json_array_get_object_element(tests, i);
+            JsonObject *last = json_object_has_member(test, "last")
+                ? json_object_get_object_member(test, "last") : NULL;
+
+            g_print("%-20s %-8s %s\n", member_or(test, "name", ""),
+                    last != NULL ? member_or(last, "state", "") : "never",
+                    last != NULL ? member_or(last, "detail", "") : "");
+        }
+
+        for (i = 0; i < json_array_get_length(problems); i++)
+            g_print("problem: %s\n",
+                    json_array_get_string_element(problems, i));
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "test") == 0 && name != NULL) {
+        const gchar *test = NULL;
+        const gchar *agent = NULL;
+        JsonArray *runs;
+        gint arg;
+
+        for (arg = 4; arg < argc; arg++) {
+            if (g_strcmp0(argv[arg], "--agent") == 0 && arg + 1 < argc)
+                agent = argv[++arg];
+            else if (test == NULL)
+                test = argv[arg];
+        }
+
+        reply = call(client, "skill.test_run",
+                     build_payload("skill", name, "test", test,
+                                   "agent", agent, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        runs = json_object_get_array_member(json_node_get_object(reply),
+                                            "runs");
+        for (i = 0; i < json_array_get_length(runs); i++) {
+            JsonObject *run = json_array_get_object_element(runs, i);
+
+            g_print("%s: running as %s on %s\n", member_or(run, "test", ""),
+                    member_or(run, "task", ""), member_or(run, "agent", ""));
+        }
+        g_print("`clawtilla skill tests %s` shows the verdicts once they "
+                "finish.\n", name);
+        return EXIT_SUCCESS;
+    }
 
     if (g_strcmp0(verb, "list") == 0) {
         JsonObject *object;
@@ -11322,6 +11491,8 @@ static const ClawtVerb verbs[] = {
       cmd_team },
     { "project", "<verb>",   "Projects: what work is for and may spend",
       cmd_project },
+    { "history", "<verb>",   "Every version of the config, personas and skills",
+      cmd_history },
     { "account", "<verb>",   "Separate logins for an agent CLI",
       cmd_account },
     { "policy-hook", "--agent ID --token-file PATH", "Claude Code's PreToolUse hook (run by the daemon's settings)",

@@ -447,6 +447,18 @@ clawt_room_manager_get_trigger(ClawtRoomManager *self,
     return get_owned_room(self, "trigger", trigger_id, agent_id);
 }
 
+ClawtRoom *
+clawt_room_manager_get_skill_test(ClawtRoomManager *self,
+                                  const gchar      *skill,
+                                  const gchar      *agent_id)
+{
+    g_return_val_if_fail(CLAWT_IS_ROOM_MANAGER(self), NULL);
+    g_return_val_if_fail(skill != NULL, NULL);
+    g_return_val_if_fail(agent_id != NULL, NULL);
+
+    return get_owned_room(self, "skill-test", skill, agent_id);
+}
+
 gchar *
 clawt_room_manager_task_room_id(const gchar *task_id)
 {

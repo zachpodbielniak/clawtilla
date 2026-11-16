@@ -4062,6 +4062,10 @@ clawt_config_to_string(ClawtConfig *self)
     return yaml_generator_to_data(generator, NULL, NULL);
 }
 
+/* The one observer of saves: the daemon's revision history. */
+static ClawtConfigSaveObserver save_observer = NULL;
+static gpointer save_observer_data = NULL;
+
 gboolean
 clawt_config_save(ClawtConfig *self, GError **error)
 {
@@ -4087,7 +4091,21 @@ clawt_config_save(ClawtConfig *self, GError **error)
      * environment variables that say a good deal about the setup, and a
      * config nobody else can read costs nothing.
      */
-    return clawt_write_file_atomic(self->path, text, -1, 0600, TRUE, error);
+    if (!clawt_write_file_atomic(self->path, text, -1, 0600, TRUE, error))
+        return FALSE;
+
+    if (save_observer != NULL)
+        save_observer(self, text, save_observer_data);
+
+    return TRUE;
+}
+
+void
+clawt_config_set_save_observer(ClawtConfigSaveObserver func,
+                               gpointer                user_data)
+{
+    save_observer = func;
+    save_observer_data = user_data;
 }
 
 const gchar *

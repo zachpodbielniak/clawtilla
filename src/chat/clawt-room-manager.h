@@ -177,6 +177,22 @@ ClawtRoom *clawt_room_manager_get_trigger(ClawtRoomManager *self,
                                           const gchar      *agent_id);
 
 /**
+ * clawt_room_manager_get_skill_test:
+ * @self: a #ClawtRoomManager
+ * @skill: which skill is under test
+ * @agent_id: who runs the test
+ *
+ * The room a skill's tests run in: `skill-test:<skill>`, a session of
+ * its own, so a test neither inherits the operator's conversation nor
+ * leaves its input in it (since 0.41.0).
+ *
+ * Returns: (transfer none): the room
+ */
+ClawtRoom *clawt_room_manager_get_skill_test(ClawtRoomManager *self,
+                                             const gchar      *skill,
+                                             const gchar      *agent_id);
+
+/**
  * clawt_room_manager_task_room_id:
  * @task_id: a task id
  *

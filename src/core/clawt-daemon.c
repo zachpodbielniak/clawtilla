@@ -2034,6 +2034,10 @@ on_task_changed(ClawtTaskManager *manager,
      * order is what keeps a delegator's owed follow-up from being
      * refused.
      */
+    /* a skill test's run, checked against its expectations */
+    if (task != NULL && clawt_task_is_finished(task))
+        clawt_daemon_skill_tests_settled(self, task);
+
     if (task != NULL && clawt_task_is_finished(task)) {
         clawt_daemon_tree_settled(self, task);
         send_settle_notice(self, task, state);
@@ -4490,6 +4494,9 @@ clawt_daemon_reload_skills(ClawtDaemon *self)
      */
     if (self->mcp_tools != NULL)
         clawt_mcp_tools_set_skill_library(self->mcp_tools, self->skills);
+
+    /* the new library's writes are kept as versions too */
+    clawt_daemon_revisions_watch_skills(self);
 }
 
     /*
@@ -4587,6 +4594,12 @@ refresh_agent_regions(ClawtDaemon      *self,
                           region_error->message);
         }
     }
+
+    /*
+     * ...the persona files as they now stand, for their history: a file
+     * the agent or a person edited since the last time is a version.
+     */
+    clawt_daemon_revisions_record_persona(self, config, NULL, "edit");
 
     /*
      * ...the projects it works in, from `projects:` -- what each is for,
@@ -5920,6 +5933,7 @@ release_components(ClawtDaemon *self)
     g_clear_object(&self->usage);
     g_clear_object(&self->task_sources);
     g_clear_object(&self->tasks);
+    clawt_daemon_revisions_teardown(self);
     g_clear_object(&self->task_store);
     g_clear_pointer(&self->project_spend, g_hash_table_unref);
     g_clear_pointer(&self->project_warned, g_hash_table_unref);
@@ -7699,6 +7713,7 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      * reported, settled or raised a second time.
      */
     clawt_daemon_tasks_setup(self);
+    clawt_daemon_revisions_setup(self);
 	{
 		GPtrArray *loaded = clawt_agent_manager_list(self->agents);
 		guint index;
@@ -8472,6 +8487,15 @@ clawt_daemon_reload_internal(ClawtDaemon *self, GPtrArray *refusals,
 
     if (reloaded == NULL)
         return FALSE;
+
+    /*
+     * The file as it is being taken up: a hand edit made outside the
+     * daemon becomes a version here, since no save of ours saw it.
+     */
+    clawt_daemon_revisions_record_file(self, "config", "config",
+                                       self->config_path,
+                                       self->revision_author != NULL
+                                           ? self->revision_author : "edit");
 
     /*
      * Dropped rather than rebuilt here: connectors.dir may itself have
@@ -11024,6 +11048,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_image,
     clawt_daemon_handle_team,
     clawt_daemon_handle_project,
+    clawt_daemon_handle_revision,
     clawt_daemon_handle_room,
     clawt_daemon_handle_mailbox,
     clawt_daemon_handle_task,
@@ -11037,6 +11062,7 @@ static const ClawtDaemonFamilyFunc family_handlers[] = {
     clawt_daemon_handle_trigger,
     clawt_daemon_handle_grok,
     clawt_daemon_handle_config,
+    clawt_daemon_handle_skill_tests,
     clawt_daemon_handle_skill,
     clawt_daemon_handle_skill_proposal,
     clawt_daemon_handle_teach,

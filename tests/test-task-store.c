@@ -2305,6 +2305,286 @@ test_operator_projects(void)
 	daemon_teardown(&fixture);
 }
 
+/* ── Version history and skill tests (D) ─────────────────────────── */
+
+/* The newest revision id of @kind / @subject, over IPC. */
+static gint64
+newest_revision(
+	DaemonFixture *fixture,
+	const gchar   *kind,
+	const gchar   *subject
+){
+	g_autoptr(JsonNode) listed = ask(fixture, "revision.list",
+		clawt_ipc_payload_new("kind", kind, "subject", subject, NULL));
+	JsonArray *rows = json_object_get_array_member(
+		clawt_ipc_frame_get_payload(listed), "revisions");
+
+	if (json_array_get_length(rows) == 0)
+		return 0;
+
+	return json_object_get_int_member(json_array_get_object_element(rows, 0),
+	                                  "id");
+}
+
+static guint
+revision_count(
+	DaemonFixture *fixture,
+	const gchar   *kind,
+	const gchar   *subject
+){
+	g_autoptr(JsonNode) listed = ask(fixture, "revision.list",
+		clawt_ipc_payload_new("kind", kind, "subject", subject, NULL));
+
+	return json_array_get_length(json_object_get_array_member(
+		clawt_ipc_frame_get_payload(listed), "revisions"));
+}
+
+/*
+ * What is kept and put back: the config (a save, then a restore that
+ * reloads), a persona file (written, compared with now, restored), and
+ * a skill written through the library.
+ */
+static void
+test_history(void)
+{
+	DaemonFixture fixture = { 0 };
+	g_autofree gchar *baseline = NULL;
+	g_autofree gchar *soul = NULL;
+	gint64 config_before;
+	gint64 soul_before;
+
+	daemon_setup(&fixture);
+
+	/* baselines, on start */
+	config_before = newest_revision(&fixture, "config", "config");
+	g_assert_cmpint(config_before, >, 0);
+	soul_before = newest_revision(&fixture, "persona", "watcher/SOUL.org");
+	g_assert_cmpint(soul_before, >, 0);
+
+	/* a save through any door is a version */
+	{
+		g_autoptr(JsonNode) made = ask(&fixture, "project.create",
+			clawt_ipc_payload_new("project", "site", NULL));
+
+		g_assert_false(clawt_ipc_frame_is_error(made));
+		g_assert_cmpint(newest_revision(&fixture, "config", "config"), >,
+		                config_before);
+	}
+
+	/* a persona file written by the operator; compared with now */
+	{
+		g_autoptr(JsonNode) written = ask(&fixture, "agent.file_write",
+			clawt_ipc_payload_new("agent", "watcher", "name", "SOUL.org",
+			                      "content", "* Who\nA careful watcher.\n",
+			                      NULL));
+		g_autofree gchar *from = g_strdup_printf("%" G_GINT64_FORMAT,
+		                                         soul_before);
+		g_autoptr(JsonNode) diff = ask(&fixture, "revision.diff",
+			clawt_ipc_payload_new("from", from, NULL));
+		g_autoptr(JsonNode) shown = ask(&fixture, "revision.show",
+			clawt_ipc_payload_new("id", from, NULL));
+
+		g_assert_false(clawt_ipc_frame_is_error(written));
+		g_assert_cmpint(newest_revision(&fixture, "persona",
+		                                "watcher/SOUL.org"), >, soul_before);
+		g_assert_nonnull(strstr(json_object_get_string_member(
+			clawt_ipc_frame_get_payload(diff), "diff"),
+			"+A careful watcher."));
+		baseline = g_strdup(json_object_get_string_member(
+			clawt_ipc_frame_get_payload(shown), "text"));
+	}
+
+	/* restored: the file is back, and the restore is the newest version */
+	{
+		g_autofree gchar *id = g_strdup_printf("%" G_GINT64_FORMAT,
+		                                       soul_before);
+		g_autoptr(JsonNode) restored = ask(&fixture, "revision.restore",
+			clawt_ipc_payload_new("id", id, NULL));
+		g_autofree gchar *path = g_build_filename(fixture.dir, "agents",
+		                                          "watcher", "SOUL.org", NULL);
+		g_autoptr(JsonNode) listed = ask(&fixture, "revision.list",
+			clawt_ipc_payload_new("kind", "persona", "subject",
+			                      "watcher/SOUL.org", NULL));
+		JsonObject *top;
+
+		g_assert_false(clawt_ipc_frame_is_error(restored));
+		g_assert_true(g_file_get_contents(path, &soul, NULL, NULL));
+		g_assert_cmpstr(soul, ==, baseline);
+		top = json_array_get_object_element(json_object_get_array_member(
+			clawt_ipc_frame_get_payload(listed), "revisions"), 0);
+		g_assert_nonnull(strstr(json_object_get_string_member(top, "note"),
+		                        "restored from"));
+	}
+
+	/* the config put back as it was, and taken up: the project is gone */
+	{
+		g_autofree gchar *id = g_strdup_printf("%" G_GINT64_FORMAT,
+		                                       config_before);
+		g_autoptr(JsonNode) restored = ask(&fixture, "revision.restore",
+			clawt_ipc_payload_new("id", id, NULL));
+		g_autoptr(ClawtProjectSpec) gone = NULL;
+
+		g_assert_false(clawt_ipc_frame_is_error(restored));
+		gone = clawt_config_get_project(fixture.daemon->config, "site");
+		g_assert_null(gone);
+	}
+
+	/* nothing to restore */
+	{
+		g_autoptr(JsonNode) missing = ask(&fixture, "revision.restore",
+			clawt_ipc_payload_new("id", "99999", NULL));
+
+		g_assert_true(clawt_ipc_frame_is_error(missing));
+	}
+
+	daemon_teardown(&fixture);
+}
+
+/*
+ * A skill's history and its tests: written through the library (kept),
+ * edited (kept again), tested on an agent that has it (a task in a room
+ * of its own, checked when it ends) and refused on one that does not.
+ */
+static void
+test_skill_history_and_tests(void)
+{
+	DaemonFixture fixture = { 0 };
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *yaml = NULL;
+	g_autofree gchar *tests_dir = NULL;
+	g_autofree gchar *pass_task = NULL;
+	g_autofree gchar *fail_task = NULL;
+	ClawtTask *task;
+
+	fixture.dir = g_dir_make_tmp("clawt-skilltest-XXXXXX", NULL);
+	fixture.config = g_build_filename(fixture.dir, "config.yaml", NULL);
+	yaml = g_strdup_printf(
+		"daemon:\n  tailscale: false\n  state_dir: \"%s/state\"\n"
+		"  socket: \"%s/d.sock\"\n  automation_dir: \"%s/pods\"\n"
+		"defaults:\n  workspace_root: \"%s/agents\"\n"
+		"skills:\n  enabled: true\n  dir: \"%s/skills\"\n"
+		"agents:\n"
+		"  - id: tester\n    skills: [release]\n"
+		"    model:\n      provider: claude-code\n"
+		"    runtime:\n      autostart: false\n"
+		"  - id: other\n"
+		"    model:\n      provider: claude-code\n"
+		"    runtime:\n      autostart: false\n",
+		fixture.dir, fixture.dir, fixture.dir, fixture.dir, fixture.dir);
+	g_assert_true(g_file_set_contents(fixture.config, yaml, -1, &error));
+
+	/* written by hand before the start, so the agent's skill exists */
+	{
+		g_autofree gchar *skill_dir = g_build_filename(fixture.dir, "skills",
+		                                               "release", NULL);
+		g_autofree gchar *skill_md = g_build_filename(skill_dir, "SKILL.md",
+		                                              NULL);
+
+		g_assert_cmpint(g_mkdir_with_parents(skill_dir, 0700), ==, 0);
+		g_assert_true(g_file_set_contents(skill_md,
+			"---\nname: release\n"
+			"description: Use this when writing release notes\n---\n"
+			"Write a ## Fixes section.\n", -1, NULL));
+	}
+
+	daemon_start(&fixture);
+
+	/* its baseline, as it was found */
+	g_assert_cmpuint(revision_count(&fixture, "skill", "release"), ==, 1);
+
+	g_assert_nonnull(clawt_skill_library_replace(fixture.daemon->skills,
+		"release", "Use this when writing release notes",
+		"Write a ## Fixes section, then a ## Features one.\n", &error));
+	g_assert_cmpuint(revision_count(&fixture, "skill", "release"), ==, 2);
+
+	/* two saved tests */
+	tests_dir = g_build_filename(fixture.dir, "skills", "release", "tests",
+	                             NULL);
+	g_assert_cmpint(g_mkdir_with_parents(tests_dir, 0700), ==, 0);
+	{
+		g_autofree gchar *a = g_build_filename(tests_dir, "a-basic.yaml",
+		                                       NULL);
+		g_autofree gchar *b = g_build_filename(tests_dir, "b-strict.yaml",
+		                                       NULL);
+		g_autofree gchar *bad = g_build_filename(tests_dir, "c-bad.yaml",
+		                                         NULL);
+
+		g_assert_true(g_file_set_contents(a,
+			"input: \"Notes for 1.2\"\nexpect: [\"## Fixes\"]\n", -1, NULL));
+		g_assert_true(g_file_set_contents(b,
+			"input: \"Notes for 1.3\"\nexpect: \"## Features\"\n"
+			"reject: [TODO]\n", -1, NULL));
+		g_assert_true(g_file_set_contents(bad, "expect: [x]\n", -1, NULL));
+	}
+
+	/* an agent without the skill, or none named, is refused */
+	{
+		g_autoptr(JsonNode) wrong = ask(&fixture, "skill.test_run",
+			clawt_ipc_payload_new("skill", "release", "agent", "other",
+			                      NULL));
+		g_autoptr(JsonNode) nobody = ask(&fixture, "skill.test_run",
+			clawt_ipc_payload_new("skill", "release", NULL));
+
+		g_assert_true(clawt_ipc_frame_is_error(wrong));
+		g_assert_true(clawt_ipc_frame_is_error(nobody));
+	}
+
+	/* run both on the agent that has it */
+	{
+		g_autoptr(JsonNode) ran = ask(&fixture, "skill.test_run",
+			clawt_ipc_payload_new("skill", "release", "agent", "tester",
+			                      NULL));
+		JsonArray *runs;
+
+		g_assert_false(clawt_ipc_frame_is_error(ran));
+		runs = json_object_get_array_member(clawt_ipc_frame_get_payload(ran),
+		                                    "runs");
+		g_assert_cmpuint(json_array_get_length(runs), ==, 2);
+		pass_task = g_strdup(json_object_get_string_member(
+			json_array_get_object_element(runs, 0), "task"));
+		fail_task = g_strdup(json_object_get_string_member(
+			json_array_get_object_element(runs, 1), "task"));
+	}
+
+	/* in a room of its own, not the operator's */
+	task = clawt_task_manager_get(fixture.daemon->tasks, pass_task);
+	g_assert_cmpuint(queued_for(&fixture, "tester", pass_task), ==, 1);
+	{
+		g_autofree gchar *body = queued_body(&fixture, "tester", pass_task);
+
+		g_assert_nonnull(strstr(body, "test a-basic of your skill release"));
+	}
+
+	clawt_task_manager_complete(fixture.daemon->tasks, pass_task,
+	                            "## Fixes\n- a bug");
+	clawt_task_manager_complete(fixture.daemon->tasks, fail_task,
+	                            "## Fixes only. TODO features");
+	(void)task;
+
+	{
+		g_autoptr(JsonNode) listed = ask(&fixture, "skill.tests",
+			clawt_ipc_payload_new("skill", "release", NULL));
+		JsonObject *payload = clawt_ipc_frame_get_payload(listed);
+		JsonArray *tests = json_object_get_array_member(payload, "tests");
+		JsonObject *first = json_object_get_object_member(
+			json_array_get_object_element(tests, 0), "last");
+		JsonObject *second = json_object_get_object_member(
+			json_array_get_object_element(tests, 1), "last");
+
+		g_assert_cmpuint(json_array_get_length(tests), ==, 2);
+		g_assert_cmpuint(json_array_get_length(json_object_get_array_member(
+			payload, "problems")), ==, 1);
+		g_assert_cmpstr(json_object_get_string_member(first, "state"), ==,
+		                "passed");
+		g_assert_cmpstr(json_object_get_string_member(second, "state"), ==,
+		                "failed");
+		g_assert_cmpint(json_object_get_int_member(first, "revision"), ==,
+		                newest_revision(&fixture, "skill", "release"));
+	}
+
+	daemon_teardown(&fixture);
+}
+
 int
 main(
 	int   argc,
@@ -2373,6 +2653,9 @@ main(
 	g_test_add_func("/task-store/projects/migration",
 	                test_store_project_migration);
 	g_test_add_func("/task-store/projects/operator", test_operator_projects);
+	g_test_add_func("/task-store/history/config-and-persona", test_history);
+	g_test_add_func("/task-store/history/skills-and-tests",
+	                test_skill_history_and_tests);
 
 	return g_test_run();
 }

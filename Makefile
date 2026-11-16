@@ -261,6 +261,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/clawt-qr.c \
 	$(SRCDIR)/config/clawt-config-schema.c \
 	$(SRCDIR)/config/clawt-appearance.c \
+	$(SRCDIR)/config/clawt-revisions.c \
 	$(SRCDIR)/config/clawt-schema-render.c \
 	$(SRCDIR)/config/clawt-secret-ref.c \
 	$(SRCDIR)/core/clawt-event.c \
@@ -290,6 +291,8 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-mailbox.c \
 	$(SRCDIR)/core/daemon-task.c \
 	$(SRCDIR)/core/daemon-project.c \
+	$(SRCDIR)/core/daemon-revisions.c \
+	$(SRCDIR)/core/daemon-skill-tests.c \
 	$(SRCDIR)/core/daemon-computer.c \
 	$(SRCDIR)/core/daemon-screen.c \
 	$(SRCDIR)/core/daemon-design.c \
