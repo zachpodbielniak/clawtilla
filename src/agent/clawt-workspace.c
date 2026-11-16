@@ -2202,13 +2202,24 @@ describe_integration(GString *out, ClawtIntegrationBinding *binding,
          * server's arguments agree.
          */
         if (g_strcmp0(provider, "venture") == 0) {
-            if (clawt_connector_apply_writes(binding) ==
-                CLAWT_APPLY_WRITES_ALL)
+            ClawtApplyWrites level =
+                clawt_connector_venture_apply_writes(binding);
+
+            if (level == CLAWT_APPLY_WRITES_ALL)
                 g_string_append(out,
                     "Your writes to VENTURE apply at once: nothing you\n"
                     "create, change or delete waits for approval, and\n"
                     "every change is recorded as your own account. Be as\n"
                     "careful as a person with your access would be.\n\n");
+            else if (level == CLAWT_APPLY_WRITES_LOW_RISK)
+                g_string_append(out,
+                    "Your ordinary writes to VENTURE apply at once --\n"
+                    "tickets, comments, worklogs, links, notes -- recorded\n"
+                    "as your own account. Anything touching money, people,\n"
+                    "access or credentials, anything sent outward, and\n"
+                    "every delete still waits for the operator's approval:\n"
+                    "that answer says it is waiting, so say what you\n"
+                    "proposed rather than assuming it is done.\n\n");
             else
                 g_string_append(out,
                     "Your writes to VENTURE are held for the operator's\n"

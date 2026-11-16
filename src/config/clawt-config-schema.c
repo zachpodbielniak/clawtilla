@@ -2202,11 +2202,18 @@ static const ClawtSchemaEntry schema[] = {
   "starts `venturectl mcp --apply-writes`, so every write lands at once,\n"
   "unreviewed, as the agent's own VENTURE account -- opt in only for an\n"
   "account whose memberships already limit what it can reach. With one\n"
-  "connector per agent this is per agent. A level in between, applying\n"
-  "ordinary writes and staging anything touching money, people, access\n"
-  "or deletion, arrives once VENTURE classifies its writes. Ignored when\n"
-  "`args` is set on the integration: those are the server's arguments,\n"
-  "as written. See docs/venture-setup.org, step 2.", "0.36.1" },
+  "connector per agent this is per agent.\n"
+  "\n"
+  "`low_risk` (since 0.43.0) starts `venturectl mcp\n"
+  "--apply-writes=low-risk`: ordinary writes -- tickets, comments,\n"
+  "worklogs, links -- land at once, and VENTURE still stages anything\n"
+  "touching money, people, access or credentials, anything sent outward,\n"
+  "and every delete. It needs VENTURE 0.10.0 or later; against an older\n"
+  "venturectl it falls back to `off` with a warning, never to `all`.\n"
+  "\n"
+  "Ignored when `args` is set on the integration: those are the\n"
+  "server's arguments, as written. See docs/venture-setup.org, step 2.",
+  "0.36.1" },
 
 { "integrations.poll_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "60", NULL,

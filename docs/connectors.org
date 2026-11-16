@@ -454,7 +454,7 @@ integrations:
 
 ** Staged writes land in the decision inbox
 
-Unless the connector says ~apply_writes: all~ (since 0.36.1), which starts =venturectl mcp --apply-writes= and lets the agent's writes land at once, unreviewed; see [[file:venture-setup.org::*Letting an agent write without approval (since 0.36.1)][venture-setup.org]].  ~off~, the default, is everything below.
+Unless the connector says ~apply_writes: all~ (since 0.36.1), which starts =venturectl mcp --apply-writes= and lets the agent's writes land at once, unreviewed; see [[file:venture-setup.org::*Letting an agent write without approval (since 0.36.1)][venture-setup.org]].  ~off~, the default, is everything below.  ~low_risk~ (since 0.43.0) is everything below for the writes VENTURE classes as high risk -- money, people, access, credentials, outward actions, deletes -- while the rest land at once.
 
 =venturectl mcp= stages its writes by default: =venture_create=,
 =venture_update= and =venture_delete= send the change with =?stage=1=,
