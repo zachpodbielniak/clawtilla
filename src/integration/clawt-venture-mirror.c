@@ -1509,7 +1509,8 @@ typedef enum {
     POLL_CHANGES,
     POLL_COMMENT_BASELINE,
     POLL_COMMENTS,
-    POLL_INTAKE
+    POLL_INTAKE,
+    POLL_INTAKE_WHO
 } PollStep;
 
 /*
@@ -1528,6 +1529,8 @@ typedef struct {
     GHashTable         *seen;        /* "base#id#version" acted on */
     GHashTable         *live;        /* ticket id text -> task id */
     GPtrArray          *context;     /* "milestone:<id>"/"goal:<id>" left */
+    GPtrArray          *intake;      /* JsonNode tickets to take in */
+    gboolean            asking;      /* first, every unknown account's whoami */
     gboolean            context_changed;
 } PollJob;
 
@@ -1546,6 +1549,8 @@ poll_free(PollJob *poll)
     g_hash_table_unref(poll->live);
     if (poll->context != NULL)
         g_ptr_array_unref(poll->context);
+    if (poll->intake != NULL)
+        g_ptr_array_unref(poll->intake);
     g_object_unref(poll->mirror);
     g_free(poll);
 }
@@ -1970,6 +1975,147 @@ poll_intake(PollJob *poll)
     poll_send(poll, path);
 }
 
+/* One ticket taken in, as from @from_agent or from the operator. */
+static void
+intake_one(PollJob *poll, JsonObject *t, const gchar *from_agent)
+{
+    ClawtVentureMirror *self = poll->mirror;
+    gint64 ticket = json_object_get_int_member_with_default(t, "id", 0);
+    g_autofree gchar *task_id = NULL;
+    g_autofree gchar *url = g_strdup_printf("%s/tickets/%" G_GINT64_FORMAT,
+                                            poll->account->base, ticket);
+
+    task_id = self->inbound.intake(
+        self->inbound_data, poll->account->agent_id, ticket,
+        json_object_get_string_member_with_default(t, "title", ""),
+        json_object_get_string_member_with_default(t, "description", ""),
+        url, from_agent);
+
+    if (task_id == NULL)
+        return;
+
+    /*
+     * The ref now, before anything else can run: it is what makes the
+     * outbox update this ticket rather than file another, and what makes
+     * the next pass leave it alone.  Its receipt is the ticket as it
+     * stands, without a reference -- so the first update writes the
+     * reference and the status the task is in.
+     */
+    {
+        g_autoptr(JsonNode) snap = object_node_new();
+        JsonObject *so = json_node_get_object(snap);
+        g_autofree gchar *text = NULL;
+        ClawtVentureRef ref = { 0 };
+
+        json_object_set_string_member(so, "title",
+            json_object_get_string_member_with_default(t, "title", ""));
+        json_object_set_string_member(so, "status", "todo");
+        json_object_set_string_member(so, "assignee", poll->account->user);
+        text = json_to_string(snap, FALSE);
+
+        ref.task_id = task_id;
+        ref.instance = poll->account->instance;
+        ref.ticket_id = ticket;
+        ref.version = json_object_get_int_member_with_default(t, "version", 1);
+        ref.snapshot = text;
+        ref.state = (gchar *)"synced";
+        ref.url = url;
+        clawt_task_store_put_venture_ref(self->store, &ref, NULL);
+    }
+}
+
+/*
+ * Who set a ticket's assignee, from its timeline: the newest change
+ * that made it this account's user, or -- assigned when it was made --
+ * whoever made it.  The fleet agent whose own account that is, or NULL
+ * for a person (or anything VENTURE did not say).
+ */
+static const gchar *
+assigning_agent(PollJob *poll, const gchar *body)
+{
+    g_autoptr(JsonNode) holder = NULL;
+    JsonArray *rows = answer_array(body, &holder);
+    const gchar *actor = NULL;
+    GHashTableIter it;
+    gpointer value;
+    guint i;
+
+    for (i = 0; rows != NULL && actor == NULL &&
+                i < json_array_get_length(rows); i++) {
+        JsonObject *row = json_array_get_object_element(rows, i);
+        JsonNode *changes = json_object_get_member(row, "changes");
+        const gchar *action = json_object_get_string_member_with_default(
+            row, "action", "");
+
+        if (changes != NULL && JSON_NODE_HOLDS_OBJECT(changes) &&
+            json_object_has_member(json_node_get_object(changes),
+                                   "assignee")) {
+            JsonNode *to_node = json_object_get_member(
+                json_node_get_object(changes), "assignee");
+            JsonObject *to = JSON_NODE_HOLDS_OBJECT(to_node)
+                ? json_node_get_object(to_node) : NULL;
+
+            if (to != NULL &&
+                g_strcmp0(json_object_get_string_member_with_default(
+                              to, "to", NULL), poll->account->user) == 0)
+                actor = json_object_get_string_member_with_default(
+                    row, "actor", NULL);
+        } else if (g_strcmp0(action, "create") == 0) {
+            actor = json_object_get_string_member_with_default(row, "actor",
+                                                               NULL);
+        }
+    }
+
+    if (actor == NULL)
+        return NULL;
+
+    g_hash_table_iter_init(&it, poll->mirror->accounts);
+    while (g_hash_table_iter_next(&it, NULL, &value)) {
+        Account *account = value;
+
+        /* the operator's own account is the operator, not an agent */
+        if (account->known && g_strcmp0(account->agent_id, "user") != 0 &&
+            (g_strcmp0(actor, account->actor) == 0 ||
+             g_strcmp0(actor, account->user) == 0))
+            return account->agent_id;
+    }
+
+    return NULL;
+}
+
+/* The next queued ticket: who assigned it, then take it in. */
+static void
+poll_intake_next(PollJob *poll)
+{
+    JsonObject *t;
+    g_autofree gchar *path = NULL;
+
+    if (poll->intake == NULL || poll->intake->len == 0) {
+        poll_next_account(poll);
+        return;
+    }
+
+    t = json_node_get_object(g_ptr_array_index(poll->intake, 0));
+    path = g_strdup_printf("/api/v1/activity/ticket/%" G_GINT64_FORMAT,
+                           json_object_get_int_member_with_default(t, "id", 0));
+    poll->step = POLL_INTAKE_WHO;
+    poll_send(poll, path);
+}
+
+static void
+on_poll_intake_who(PollJob *poll, guint status, const gchar *body)
+{
+    g_autoptr(JsonNode) ticket = g_ptr_array_steal_index(poll->intake, 0);
+
+    /*
+     * A timeline VENTURE would not give is a person's assignment: the
+     * work still arrives, from the operator, as it did before 0.47.0.
+     */
+    intake_one(poll, json_node_get_object(ticket),
+               status == 200 ? assigning_agent(poll, body) : NULL);
+    poll_intake_next(poll);
+}
+
 static void
 on_poll_intake(PollJob *poll, guint status, const gchar *body)
 {
@@ -1984,13 +2130,13 @@ on_poll_intake(PollJob *poll, guint status, const gchar *body)
     }
 
     rows = answer_array(body, &holder);
+    poll->intake = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)json_node_unref);
 
     for (i = 0; rows != NULL && i < json_array_get_length(rows); i++) {
         JsonObject *t = json_array_get_object_element(rows, i);
         gint64 ticket = json_object_get_int_member_with_default(t, "id", 0);
         g_autofree gchar *known = NULL;
-        g_autofree gchar *task_id = NULL;
-        g_autofree gchar *url = NULL;
         const gchar *ext = json_object_get_string_member_with_default(
             t, "external_ref", "");
 
@@ -2011,50 +2157,11 @@ on_poll_intake(PollJob *poll, guint status, const gchar *body)
             break;
         }
 
-        url = g_strdup_printf("%s/tickets/%" G_GINT64_FORMAT,
-                              poll->account->base, ticket);
-        task_id = self->inbound.intake(
-            self->inbound_data, poll->account->agent_id, ticket,
-            json_object_get_string_member_with_default(t, "title", ""),
-            json_object_get_string_member_with_default(t, "description", ""),
-            url);
-
-        if (task_id == NULL)
-            continue;
-
-        /*
-         * The ref now, before anything else can run: it is what makes
-         * the outbox update this ticket rather than file another, and
-         * what makes the next pass leave it alone.  Its receipt is the
-         * ticket as it stands, without a reference -- so the first update
-         * writes the reference and the status the task is in.
-         */
-        {
-            g_autoptr(JsonNode) snap = object_node_new();
-            JsonObject *so = json_node_get_object(snap);
-            g_autofree gchar *text = NULL;
-            ClawtVentureRef ref = { 0 };
-
-            json_object_set_string_member(so, "title",
-                json_object_get_string_member_with_default(t, "title", ""));
-            json_object_set_string_member(so, "status", "todo");
-            json_object_set_string_member(so, "assignee",
-                poll->account->user);
-            text = json_to_string(snap, FALSE);
-
-            ref.task_id = task_id;
-            ref.instance = poll->account->instance;
-            ref.ticket_id = ticket;
-            ref.version = json_object_get_int_member_with_default(t,
-                                                                  "version", 1);
-            ref.snapshot = text;
-            ref.state = (gchar *)"synced";
-            ref.url = url;
-            clawt_task_store_put_venture_ref(self->store, &ref, NULL);
-        }
+        g_ptr_array_add(poll->intake, json_node_copy(
+            json_array_get_element(rows, i)));
     }
 
-    poll_next_account(poll);
+    poll_intake_next(poll);
 }
 
 /* An account the outbox has not needed yet still has to say who it is. */
@@ -2066,7 +2173,11 @@ on_poll_whoami(PollJob *poll, guint status, const gchar *body)
     JsonObject *user;
     Account *account = poll->account;
 
+    /* Not known this pass: left out of it, asked again on the next. */
     if (status != 200) {
+        account->known = FALSE;
+        g_hash_table_add(poll->seen, g_strconcat("unknown#",
+                                                 account->agent_id, NULL));
         poll_next_account(poll);
         return;
     }
@@ -2085,8 +2196,7 @@ on_poll_whoami(PollJob *poll, guint status, const gchar *body)
         : NULL);
     account->known = TRUE;
 
-    poll->step = POLL_CHANGES;
-    poll_next_step(poll);
+    poll_next_account(poll);
 }
 
 static void
@@ -2113,6 +2223,9 @@ on_poll_answer(guint status, const gchar *body, gpointer data)
     case POLL_INTAKE:
         on_poll_intake(poll, status, body);
         break;
+    case POLL_INTAKE_WHO:
+        on_poll_intake_who(poll, status, body);
+        break;
     }
 }
 
@@ -2136,6 +2249,9 @@ poll_next_step(PollJob *poll)
     case POLL_INTAKE:
         poll_intake(poll);
         break;
+    case POLL_INTAKE_WHO:
+        poll_intake_next(poll);
+        break;
     }
 }
 
@@ -2143,15 +2259,40 @@ poll_next_step(PollJob *poll)
 static void
 poll_next_account(PollJob *poll)
 {
+    guint i;
+
+    /*
+     * First every account says who it is, before any is read for: an
+     * intake must know which agent's account assigned a ticket, whatever
+     * order the accounts come in.
+     */
+    if (poll->asking) {
+        for (i = 0; i < poll->agents->len; i++) {
+            const gchar *agent = g_ptr_array_index(poll->agents, i);
+            g_autofree gchar *failed = g_strconcat("unknown#", agent, NULL);
+
+            poll->account = g_hash_table_lookup(poll->mirror->accounts, agent);
+
+            if (poll->account != NULL && !poll->account->known &&
+                !g_hash_table_contains(poll->seen, failed)) {
+                poll->step = POLL_WHOAMI;
+                poll_next_step(poll);
+                return;
+            }
+        }
+
+        poll->asking = FALSE;
+    }
+
     while (poll->index < poll->agents->len) {
         const gchar *agent = g_ptr_array_index(poll->agents, poll->index++);
 
         poll->account = g_hash_table_lookup(poll->mirror->accounts, agent);
 
-        if (poll->account == NULL)
+        if (poll->account == NULL || !poll->account->known)
             continue;
 
-        poll->step = poll->account->known ? POLL_CHANGES : POLL_WHOAMI;
+        poll->step = POLL_CHANGES;
         poll_next_step(poll);
         return;
     }
@@ -2160,6 +2301,13 @@ poll_next_account(PollJob *poll)
         return;
 
     poll_end(poll);
+}
+
+/* g_ptr_array_sort() hands over pointers to the elements. */
+static gint
+compare_names(gconstpointer a, gconstpointer b)
+{
+    return g_strcmp0(*(const gchar *const *)a, *(const gchar *const *)b);
 }
 
 static void
@@ -2182,7 +2330,8 @@ poll_begin(ClawtVentureMirror *self)
     while (g_hash_table_iter_next(&it, &agent, NULL))
         g_ptr_array_add(poll->agents, g_strdup(agent));
 
-    g_ptr_array_sort(poll->agents, (GCompareFunc)g_strcmp0);
+    g_ptr_array_sort(poll->agents, compare_names);
+    poll->asking = TRUE;
 
     poll_next_account(poll);
 }

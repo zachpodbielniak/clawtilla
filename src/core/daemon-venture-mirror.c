@@ -316,7 +316,8 @@ inbound_comment(gpointer data, const gchar *task_id, const gchar *who,
  */
 static gchar *
 inbound_intake(gpointer data, const gchar *agent_id, gint64 ticket,
-               const gchar *title, const gchar *description, const gchar *url)
+               const gchar *title, const gchar *description, const gchar *url,
+               const gchar *from_agent)
 {
     ClawtDaemon *self = data;
     g_autoptr(GError) error = NULL;
@@ -337,8 +338,21 @@ inbound_intake(gpointer data, const gchar *agent_id, gint64 ticket,
         "Do the work it describes; clawtilla keeps the ticket current as "
         "this task moves.", ticket, url, fenced);
 
-    task = clawt_task_manager_create(self->tasks, "user", agent_id, body,
-                                     NULL, &error);
+    /*
+     * An agent that assigned the ticket through its own VENTURE tools
+     * delegated it: the task is from that agent, and goes through the
+     * router as its message -- so the pair budget and the hop limit hold
+     * it exactly as clawtilla_delegate would (0.47.0).  From `user` it
+     * would also renew the pair's count, which is how two agents could
+     * hand each other work through VENTURE for ever.
+     */
+    if (from_agent != NULL &&
+        clawt_agent_manager_get(self->agents, from_agent) == NULL)
+        from_agent = NULL;
+
+    task = clawt_task_manager_create(self->tasks,
+                                     from_agent != NULL ? from_agent : "user",
+                                     agent_id, body, NULL, &error);
 
     if (task == NULL) {
         g_message("venture mirror: ticket #%" G_GINT64_FORMAT " was not taken "
@@ -350,7 +364,26 @@ inbound_intake(gpointer data, const gchar *agent_id, gint64 ticket,
     clawt_task_set_title(task, named);
     clawt_task_manager_save(self->tasks, task, NULL);
 
-    if (!clawt_daemon_deliver_operator_task(self, task, &error)) {
+    if (from_agent != NULL) {
+        g_autofree gchar *guidance = clawt_task_assignment_guidance_for(task);
+        g_autofree gchar *sent = g_strconcat(clawt_task_get_prompt(task),
+                                             guidance, NULL);
+
+        if (clawt_mailbox_router_send_to(self->router, from_agent, agent_id,
+                                         sent, clawt_task_get_id(task), 0,
+                                         &error) < 0) {
+            g_autofree gchar *reason = g_strdup_printf(
+                "%s handed it over through VENTURE and the loop limits "
+                "refused it: %s", from_agent, error->message);
+
+            clawt_task_manager_fail(self->tasks, clawt_task_get_id(task),
+                                    reason);
+            g_message("venture mirror: ticket #%" G_GINT64_FORMAT ": %s",
+                      ticket, reason);
+            /* Linked anyway, so the next pass does not take it in again. */
+            return g_strdup(clawt_task_get_id(task));
+        }
+    } else if (!clawt_daemon_deliver_operator_task(self, task, &error)) {
         g_message("venture mirror: ticket #%" G_GINT64_FORMAT " could not be "
                   "handed to %s: %s", ticket, agent_id, error->message);
         return NULL;
