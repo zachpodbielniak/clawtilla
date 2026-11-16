@@ -833,7 +833,7 @@ A pack imported from elsewhere is configuration written by somebody else.  It ne
 
 ** Task checkouts
 
-A task given a repository (~repo~ on ~clawtilla_delegate~ or ~task.create~, or ~worktree: true~ on a routine or trigger) gets a checkout made by the *daemon*, as the daemon's user, in its assignee's workspace (see [[file:orchestration.org][orchestration.org]], "Work in a checkout of its own").  What that means:
+A task given a repository (~repo~ on ~clawtilla_delegate~ or ~task.create~, or ~worktree: true~ on a routine or trigger) gets a checkout made by the *daemon*, as the daemon's user, in its assignee's workspace (see [[file:tasks.org][tasks.org]], "Work in a checkout of its own").  What that means:
 
 - *It widens what a confined assignee can read.*  An agent confined by bwrap sees only its workspace and its mounts; a clone made into its workspace brings the whole repository -- its history included -- inside.  The delegator chooses the repository, and any agent that may delegate can name any git repository the daemon's user can read.  Grant delegation (~clawtilla_delegate~) to agents you would trust to choose what another agent reads, and keep repositories that hold secrets out of reach of the daemon's user, or out of git.
 - *Git runs with nothing interactive.*  No terminal prompt, no pager, ~safe.directory~ set for the one directory it works in -- never for every directory -- and the repository's own hooks run as they would for you (=post-checkout= on a worktree): a checkout of a repository is as trusted as the repository.

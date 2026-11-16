@@ -139,6 +139,7 @@ All under [[file:docs/][docs/]], in org-mode:
 | [[file:docs/mailboxes.org][mailboxes.org]] | queue semantics and how to unstick one |
 | [[file:docs/computers.org][computers.org]] | host, container, distrobox, VM, desktop, mounts |
 | [[file:docs/orchestration.org][orchestration.org]] | rooms, tasks, chief-of-staff, loop safety |
+| [[file:docs/tasks.org][tasks.org]] | the work model: states, the store, backlog, blockers, review, checkouts, projects |
 | [[file:docs/spending.org][spending.org]] | what the fleet costs, and the budget that reads it |
 | [[file:docs/integrations.org][integrations.org]] | Matrix, mail, MCP servers, notifications; scoping them |
 | [[file:docs/connectors.org][connectors.org]] | connected accounts: the credential stays here, the tools go to the agents |

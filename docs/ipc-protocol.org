@@ -963,7 +963,7 @@ A client offers the choices by walking ~clawt_ack_check_model_count()~
 
 ~task.list~, ~task.show~, ~task.cancel~, ~task.retry~.
 
-Tasks and incidents are kept in ~tasks.db~ across restarts (since 0.35.0; docs/orchestration.org, "Tasks are kept, and survive a restart").
+Tasks and incidents are kept in ~tasks.db~ across restarts (since 0.35.0; docs/tasks.org, "Tasks are kept, and survive a restart").
 
 ~task.list~ with no options is the live set: every task that has not finished and those that finished in the last day, oldest first.  With ~history: true~ it is every task the store still holds, *newest* first, one page: ~limit~ (default 100, at most 1000), ~before~ (a Unix time; only tasks created before it -- pass the last task's ~created_at~ for the next page), ~state~ (a task state nickname; anything else is =INVALID_ARGUMENT=) and ~agent~ (the assignee).
 

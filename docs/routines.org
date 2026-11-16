@@ -323,7 +323,7 @@ routines:
 
 *=worktree= is machinery (since 0.39.0).*  With it, =directory= must be a git repository on the *host*, and each run gets a checkout of its own: clawtilla makes it before the run is delivered, in the agent's workspace at =tasks/<task>= on the branch =clawtilla/<task>= -- a =git worktree= for an agent whose tools run on the host unconfined, a hard-linked local clone for one confined by bwrap or working in a container, VM or distrobox -- and appends a genuine =[clawtilla]= paragraph saying where it is and how to work in it.  A run whose checkout cannot be made fails, with the reason: running in place is exactly what the routine said not to do.  An agent on an ssh host or a remote podman connection cannot use one.
 
-Worth turning on for a routine that changes files: it keeps a scheduled run from landing on top of whatever you had checked out at the time.  The run's Changes (every client's task Details, ~clawtilla task diff~) show what it did.  The checkout is removed ~orchestration.checkout_keep_days~ after the run finished, with its branch kept in the repository -- and never while it holds uncommitted work.  See [[file:orchestration.org][orchestration.org]], "Work in a checkout of its own".
+Worth turning on for a routine that changes files: it keeps a scheduled run from landing on top of whatever you had checked out at the time.  The run's Changes (every client's task Details, ~clawtilla task diff~) show what it did.  The checkout is removed ~orchestration.checkout_keep_days~ after the run finished, with its branch kept in the repository -- and never while it holds uncommitted work.  See [[file:tasks.org][tasks.org]], "Work in a checkout of its own".
 
 ** A model of its own
 
