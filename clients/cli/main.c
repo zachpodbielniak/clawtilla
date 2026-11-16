@@ -6283,6 +6283,8 @@ print_connector_usage(gboolean asked_for)
 "  --command <cmd>         an MCP server of your own\n"
 "  --url <url>             an HTTP MCP server of your own\n"
 "  --tools <a,b>           narrow the agent to these tools only\n"
+"  --apply-writes <off|all>  VENTURE: let the agent's writes land without\n"
+"                          approval (default off: they wait for you)\n"
 "\n"
 "Examples:\n"
 "  clawtilla connector catalog\n"

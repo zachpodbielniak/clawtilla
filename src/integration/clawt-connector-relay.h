@@ -158,6 +158,19 @@ typedef struct {
 gchar *clawt_connector_resolve_command(const gchar *command, GError **error);
 
 /**
+ * clawt_connector_apply_writes:
+ * @binding: a `connector` integration
+ *
+ * The binding's `apply_writes`, read the one way every caller reads it:
+ * a missing or unknown spelling is %CLAWT_APPLY_WRITES_OFF, so a typo
+ * never lets an agent's writes through unreviewed.
+ *
+ * Returns: the level
+ */
+ClawtApplyWrites
+clawt_connector_apply_writes(ClawtIntegrationBinding *binding);
+
+/**
  * clawt_connector_plan_new: (skip)
  * @info: the connector from the catalogue
  * @binding: the integration as this agent has it

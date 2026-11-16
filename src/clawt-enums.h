@@ -1259,6 +1259,25 @@ typedef enum {
     CLAWT_TOOL_DIRECTORY_NEVER
 } ClawtToolDirectoryMode;
 
+/**
+ * ClawtApplyWrites:
+ * @CLAWT_APPLY_WRITES_OFF: every write waits for approval (staged)
+ * @CLAWT_APPLY_WRITES_ALL: every write applies at once
+ *
+ * How freely an agent's writes through a connector land (since 0.36.1).
+ * Read by the `venture` connector: `all` starts `venturectl mcp` with
+ * `--apply-writes`.  %CLAWT_APPLY_WRITES_OFF is zero, so a connector
+ * that says nothing keeps every write waiting for the operator -- the
+ * behaviour it always had.  A level between the two, applying ordinary
+ * writes and staging anything touching money, people, access or
+ * deletion, waits on VENTURE classifying its writes and is appended
+ * when it exists.
+ */
+typedef enum {
+    CLAWT_APPLY_WRITES_OFF = 0,
+    CLAWT_APPLY_WRITES_ALL
+} ClawtApplyWrites;
+
 /* GType registration */
 GType clawt_agent_state_get_type(void) G_GNUC_CONST;
 GType clawt_agent_caps_get_type(void) G_GNUC_CONST;
@@ -1304,6 +1323,8 @@ GType clawt_guest_flavour_get_type(void) G_GNUC_CONST;
 GType clawt_connector_auth_get_type(void) G_GNUC_CONST;
 GType clawt_credential_placement_get_type(void) G_GNUC_CONST;
 GType clawt_tool_directory_mode_get_type(void) G_GNUC_CONST;
+#define CLAWT_TYPE_APPLY_WRITES (clawt_apply_writes_get_type())
+GType clawt_apply_writes_get_type(void) G_GNUC_CONST;
 
 #define CLAWT_TYPE_AGENT_STATE      (clawt_agent_state_get_type())
 #define CLAWT_TYPE_AGENT_CAPS       (clawt_agent_caps_get_type())

@@ -2195,6 +2195,29 @@ describe_integration(GString *out, ClawtIntegrationBinding *binding,
                 "The account is ~%s~.\n\n", account);
 
         /*
+         * Whether what it writes waits for somebody.  An agent that
+         * believes its writes are reviewed is careless with them; one
+         * that believes they are not asks for approval it does not
+         * need.  Read the way the relay reads it, so the file and the
+         * server's arguments agree.
+         */
+        if (g_strcmp0(provider, "venture") == 0) {
+            if (clawt_connector_apply_writes(binding) ==
+                CLAWT_APPLY_WRITES_ALL)
+                g_string_append(out,
+                    "Your writes to VENTURE apply at once: nothing you\n"
+                    "create, change or delete waits for approval, and\n"
+                    "every change is recorded as your own account. Be as\n"
+                    "careful as a person with your access would be.\n\n");
+            else
+                g_string_append(out,
+                    "Your writes to VENTURE are held for the operator's\n"
+                    "approval: a create, update or delete answers that it\n"
+                    "is waiting, and lands only once approved. Say what\n"
+                    "you proposed rather than assuming it is done.\n\n");
+        }
+
+        /*
          * Said here because it is the one thing about the tool names an
          * agent cannot work out from the list: the same tool exists once
          * per account, and the prefix is the choice of account.  Worked

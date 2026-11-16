@@ -717,6 +717,53 @@ test_tools_org_is_rewritten_between_the_markers(void)
 }
 
 /*
+ * A VENTURE connector tells the agent whether its writes wait for the
+ * operator, and the two levels say opposite things.
+ */
+static void
+test_tools_org_says_whether_venture_writes_wait(void)
+{
+    static const struct {
+        const gchar *level;
+        const gchar *says;
+        const gchar *never;
+    } cases[] = {
+        { "off", "held for the operator's", "apply at once" },
+        { "all", "apply at once", "held for the operator's" },
+    };
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(cases); i++) {
+        Fixture fixture = { 0 };
+        g_autoptr(GError) error = NULL;
+        g_autofree gchar *yaml = g_strdup_printf(
+            "integrations:\n"
+            "  - name: books\n"
+            "    type: connector\n"
+            "    provider: venture\n"
+            "    scope: all\n"
+            "    apply_writes: \"%s\"\n"
+            "agents:\n"
+            "  - id: researcher\n", cases[i].level);
+        g_autofree gchar *text = NULL;
+        ClawtAgentConfig *agent;
+
+        fixture_setup(&fixture, yaml);
+        agent = agent_named(&fixture, "researcher");
+        g_assert_true(clawt_workspace_scaffold(agent, &error));
+        g_assert_true(clawt_workspace_update_tools_org(fixture.config, agent,
+                                                       &error));
+        g_assert_no_error(error);
+
+        text = tools_org_of(&fixture, "researcher");
+        g_assert_nonnull(strstr(text, cases[i].says));
+        g_assert_null(strstr(text, cases[i].never));
+
+        fixture_teardown(&fixture);
+    }
+}
+
+/*
  * An agent with nothing is told so, rather than being left with a blank
  * section: an agent that suspects it has an unlisted way of reaching the
  * world will go looking for one.
@@ -1131,6 +1178,8 @@ main(int argc, char *argv[])
                     test_add_set_and_remove_round_trip);
     g_test_add_func("/integration/clearing-an-override",
                     test_clearing_an_override_leaves_nothing_behind);
+    g_test_add_func("/integration/tools-org-venture-writes",
+                    test_tools_org_says_whether_venture_writes_wait);
     g_test_add_func("/integration/tools-org",
                     test_tools_org_is_rewritten_between_the_markers);
     g_test_add_func("/integration/tools-org-empty",
