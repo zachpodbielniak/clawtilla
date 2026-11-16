@@ -404,6 +404,62 @@ mirror_cost(ClawtVentureMirror *mirror, const gchar *task_id,
     return (gint64)GPOINTER_TO_SIZE(value);
 }
 
+/* A task's project's VENTURE milestone and goal (0.46.0). */
+static void
+mirror_context(ClawtVentureMirror *mirror, const gchar *task_id,
+               gint64 *milestone_id, gint64 *goal_id, gpointer user_data)
+{
+    ClawtDaemon *self = user_data;
+    g_autoptr(ClawtTask) task = NULL;
+    g_autoptr(ClawtProjectSpec) project = NULL;
+
+    (void)mirror;
+    *milestone_id = 0;
+    *goal_id = 0;
+
+    task = clawt_task_store_get(self->task_store, task_id);
+
+    if (task != NULL && clawt_task_get_project(task) != NULL)
+        project = clawt_config_get_project(self->config,
+                                           clawt_task_get_project(task));
+
+    if (project != NULL) {
+        *milestone_id = project->venture_milestone_id;
+        *goal_id = project->venture_goal_id;
+    }
+}
+
+/* What the poll read changed: the PROJECTS.org regions show it. */
+static void
+on_mirror_context_changed(ClawtVentureMirror *mirror, gpointer user_data)
+{
+    (void)mirror;
+    clawt_daemon_refresh_projects_regions(CLAWT_DAEMON(user_data));
+}
+
+/* Every project's milestone and goal, for the poll to read. */
+static void
+mirror_sync_context(ClawtDaemon *self)
+{
+    g_autoptr(GPtrArray) projects = clawt_config_get_projects(self->config);
+    g_autoptr(GArray) milestones = g_array_new(FALSE, FALSE, sizeof(gint64));
+    g_autoptr(GArray) goals = g_array_new(FALSE, FALSE, sizeof(gint64));
+    guint i;
+
+    for (i = 0; projects != NULL && i < projects->len; i++) {
+        ClawtProjectSpec *spec = g_ptr_array_index(projects, i);
+
+        if (spec->venture_milestone_id > 0)
+            g_array_append_val(milestones, spec->venture_milestone_id);
+        if (spec->venture_goal_id > 0)
+            g_array_append_val(goals, spec->venture_goal_id);
+    }
+
+    clawt_venture_mirror_set_context_ids(self->venture_mirror,
+        (const gint64 *)(gpointer)milestones->data, milestones->len,
+        (const gint64 *)(gpointer)goals->data, goals->len);
+}
+
 /* ── Which agents mirror ─────────────────────────────────────────── */
 
 void
@@ -482,6 +538,32 @@ clawt_daemon_venture_mirror_sync(ClawtDaemon *self)
                 clawt_integration_binding_get_boolean(binding,
                                                       "mirror_intake"));
             memset(token, 0, strlen(token));
+
+            /*
+             * The operator's own account, once: the first mirroring
+             * connector that names one.  Read here and nowhere near an
+             * agent -- it is the operator's, not the agent's.
+             */
+            if (!clawt_venture_mirror_has_account(self->venture_mirror,
+                                                  "user") &&
+                clawt_integration_binding_get_string(binding,
+                    "service_token_file") != NULL) {
+                g_autofree gchar *path = clawt_expand_path(
+                    clawt_integration_binding_get_string(binding,
+                                                         "service_token_file"));
+                g_autoptr(ClawtOauthToken) service =
+                    clawt_oauth_token_load(path, NULL);
+
+                if (service != NULL && service->access_token != NULL)
+                    clawt_venture_mirror_set_account(
+                        self->venture_mirror, "user",
+                        clawt_integration_binding_get_name(binding), base,
+                        service->access_token);
+                else
+                    g_message("venture mirror: the operator's token file %s "
+                              "could not be read; the operator's tasks are "
+                              "written as their assignee", path);
+            }
         }
     }
 
@@ -490,6 +572,7 @@ clawt_daemon_venture_mirror_sync(ClawtDaemon *self)
      * mirroring connector keeps no queue of changes nobody will send.
      */
     if (clawt_venture_mirror_account_count(self->venture_mirror) > 0) {
+        mirror_sync_context(self);
         clawt_task_store_set_mirror(self->task_store, TRUE);
         clawt_venture_mirror_set_inbound(self->venture_mirror, &inbound, self,
                                          TRUE);
@@ -541,6 +624,10 @@ clawt_daemon_venture_mirror_start(ClawtDaemon *self)
                                          self, NULL);
     clawt_venture_mirror_set_cost_func(self->venture_mirror, mirror_cost,
                                        self, NULL);
+    clawt_venture_mirror_set_context_func(self->venture_mirror,
+                                          mirror_context, self, NULL);
+    g_signal_connect(self->venture_mirror, "context-changed",
+                     G_CALLBACK(on_mirror_context_changed), self);
 
     if (self->tasks != NULL)
         self->mirror_task_handler = g_signal_connect(

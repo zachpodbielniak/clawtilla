@@ -1113,6 +1113,9 @@ gint64   clawt_daemon_task_comment(ClawtDaemon *self, const gchar *task_id,
 gboolean clawt_daemon_deliver_operator_task(ClawtDaemon *self,
                                             ClawtTask *task, GError **error);
 
+/* Every agent's PROJECTS.org region written again (clawt-daemon.c). */
+void clawt_daemon_refresh_projects_regions(ClawtDaemon *self);
+
 /* The token file a connector binding names, read; NULL without one. */
 gchar *clawt_daemon_venture_token_for(ClawtIntegrationBinding *binding);
 

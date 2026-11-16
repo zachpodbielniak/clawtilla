@@ -280,6 +280,14 @@ static const ClawtIntegrationField fields[] = {
       NULL,
       CLAWT_FIELD_BOOLEAN, NULL, NULL, NULL, NULL, FALSE },
 
+    { "connector", "service_token_file", "Operator's token file (VENTURE)",
+      "With tasks mirrored: a token file for the operator's own VENTURE "
+      "account, which files the operator's tasks and any task no agent "
+      "involved has an account for. Keep it out of the connectors "
+      "directory, so no agent's box mounts it.",
+      "~/.config/clawtilla/venture-operator.json",
+      CLAWT_FIELD_TEXT, NULL, NULL, NULL, NULL, FALSE },
+
     { "connector", "mirror_intake", "Take tickets assigned to the agent (VENTURE)",
       "With tasks mirrored: a todo ticket assigned to the agent's VENTURE "
       "user starts a task for it, ten an hour at most. Anyone who can edit "

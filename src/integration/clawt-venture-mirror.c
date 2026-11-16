@@ -95,6 +95,14 @@ struct _ClawtVentureMirror {
     gpointer                      cost_data;
     GDestroyNotify                cost_notify;
 
+    /* Milestones and goals (0.46.0). */
+    ClawtVentureMirrorContextFunc context_fn;
+    gpointer                      context_data;
+    GDestroyNotify                context_notify;
+    GArray                       *context_milestones;  /* gint64 */
+    GArray                       *context_goals;       /* gint64 */
+    gint64                        context_read_at;
+
     GQueue         *rows;           /* ClawtVentureOutboxRow, being drained */
     gboolean        busy;
     gboolean        warned_no_transport;
@@ -111,6 +119,9 @@ struct _ClawtVentureMirror {
 
 G_DEFINE_FINAL_TYPE(ClawtVentureMirror, clawt_venture_mirror, G_TYPE_OBJECT)
 
+enum { SIGNAL_CONTEXT_CHANGED, N_SIGNALS };
+static guint mirror_signals[N_SIGNALS];
+
 /* ── One job: one outbox row being sent ──────────────────────────── */
 
 typedef enum {
@@ -124,7 +135,8 @@ typedef enum {
     STEP_COMMENT,
     STEP_COMMENT_ADOPT,
     STEP_RUN_START,
-    STEP_RUN_FINISH
+    STEP_RUN_FINISH,
+    STEP_LINK
 } Step;
 
 typedef struct {
@@ -445,6 +457,7 @@ description_of(ClawtTask *task)
 /* ── The steps ───────────────────────────────────────────────────── */
 
 static void step_run(Job *job);
+static void step_link(Job *job);
 
 /* One bookkeeping key in the ticket's receipt (`_run`, `_run_done`). */
 static void
@@ -566,6 +579,20 @@ step_create(Job *job)
     }
 
     json_object_set_string_member(o, "issue_type", issue_type);
+
+    /* Its project's milestone and goal, when it names them (0.46.0). */
+    if (job->mirror->context_fn != NULL) {
+        gint64 milestone = 0;
+        gint64 goal = 0;
+
+        job->mirror->context_fn(job->mirror, clawt_task_get_id(job->task),
+                                &milestone, &goal, job->mirror->context_data);
+        if (milestone > 0)
+            json_object_set_int_member(o, "milestone_id", milestone);
+        if (goal > 0)
+            json_object_set_int_member(o, "goal_id", goal);
+    }
+
     json_node_take_object(node, o);
 
     job->step = STEP_CREATE;
@@ -605,6 +632,9 @@ remember(Job *job, gint64 ticket, gint64 version, JsonObject *written,
     }
 
     if (created != NULL) {
+        json_object_set_int_member(so, "_repo",
+            json_object_get_int_member_with_default(created, "repo_id",
+                                                    job->repo_id));
         json_object_set_string_member(so, "issue_type",
             json_object_get_string_member_with_default(created, "issue_type",
                                                        "task"));
@@ -675,7 +705,7 @@ step_update(Job *job)
             job->step = STEP_COMMENT;
             job_next(job);
         } else {
-            step_run(job);
+            step_link(job);
         }
         return;
     }
@@ -825,6 +855,63 @@ step_run(Job *job)
         job->step = STEP_RUN_FINISH;
         job_send(job, job->writer, "PATCH", path, NULL, node);
     }
+}
+
+/*
+ * The task's branch on the ticket (0.46.0): one `ticket_link`, made by
+ * the assignee once the task has a checkout, against the repository the
+ * ticket was filed for -- origin `venture`, so VENTURE's own forge loop
+ * guard never reads it as an issue raised upstream.  `_link` in the
+ * receipt is its id, or -1 when VENTURE would not have it.
+ */
+static void
+step_link(Job *job)
+{
+    const gchar *branch = clawt_task_get_checkout_branch(job->task);
+    gint64 repo = receipt_int(job, "_repo");
+    g_autoptr(JsonNode) node = NULL;
+    JsonObject *o;
+
+    if (branch == NULL || repo <= 0 || receipt_int(job, "_link") != 0) {
+        step_run(job);
+        return;
+    }
+
+    node = object_node_new();
+    o = json_node_get_object(node);
+    json_object_set_int_member(o, "ticket_id", job->ref->ticket_id);
+    json_object_set_int_member(o, "repo_id", repo);
+    json_object_set_string_member(o, "branch", branch);
+    json_object_set_string_member(o, "origin", "venture");
+
+    job->step = STEP_LINK;
+    job_send(job, job->writer, "POST", "/api/v1/ticket_link", NULL, node);
+}
+
+static void
+on_linked(Job *job, guint status, const gchar *body)
+{
+    g_autoptr(JsonNode) holder = NULL;
+    JsonObject *o;
+
+    if (status == 0 || status == 429 || status >= 500) {
+        job_refused(job, status, body, "linking the task's branch");
+        return;
+    }
+
+    if (status != 200 && status != 201) {
+        g_autofree gchar *message = answer_message(status, body);
+
+        g_message("venture mirror: task %s's branch is not linked: %s",
+                  job->row->task_id, message);
+        receipt_mark(job, "_link", -1);
+    } else {
+        o = answer_object(body, &holder);
+        receipt_mark(job, "_link", (o != NULL)
+            ? json_object_get_int_member_with_default(o, "id", -1) : -1);
+    }
+
+    step_run(job);
 }
 
 static void
@@ -996,7 +1083,7 @@ on_created(Job *job, guint status, const gchar *body)
         return;
     }
 
-    step_run(job);
+    step_link(job);
 }
 
 static void
@@ -1082,7 +1169,7 @@ on_updated(Job *job, guint status, const gchar *body)
         return;
     }
 
-    step_run(job);
+    step_link(job);
 }
 
 static void
@@ -1176,6 +1263,9 @@ on_answer(guint status, const gchar *body, gpointer data)
     case STEP_RUN_FINISH:
         on_run_finished(job, status, body);
         break;
+    case STEP_LINK:
+        on_linked(job, status, body);
+        break;
     default:
         job_dead(job, "the mirror lost its place");
         break;
@@ -1249,6 +1339,17 @@ job_begin(ClawtVentureMirror *self, ClawtVentureOutboxRow *row)
         job->creator = job->writer;
     if (job->writer == NULL)
         job->writer = job->creator;
+
+    /*
+     * Neither has an account: the service account, when the operator
+     * gave one (`service_token_file`, 0.46.0), files and keeps it.  It
+     * is the operator's own -- the same account files the operator's
+     * own tasks, through `user` above.
+     */
+    if (job->creator == NULL) {
+        job->creator = g_hash_table_lookup(self->accounts, "user");
+        job->writer = job->creator;
+    }
 
     /*
      * One ticket lives on one server.  Two agents whose connectors point
@@ -1403,6 +1504,7 @@ on_kick(gpointer data)
 #define CLAWT_VENTURE_MIRROR_OVERLAP        (120)
 
 typedef enum {
+    POLL_CONTEXT,
     POLL_WHOAMI,
     POLL_CHANGES,
     POLL_COMMENT_BASELINE,
@@ -1425,10 +1527,15 @@ typedef struct {
     gchar              *started;     /* ISO time this pass began */
     GHashTable         *seen;        /* "base#id#version" acted on */
     GHashTable         *live;        /* ticket id text -> task id */
+    GPtrArray          *context;     /* "milestone:<id>"/"goal:<id>" left */
+    gboolean            context_changed;
 } PollJob;
 
 static void poll_next_account(PollJob *poll);
 static void poll_next_step(PollJob *poll);
+static void poll_context_next(PollJob *poll);
+static void on_poll_context(PollJob *poll, guint status, const gchar *body);
+static gboolean poll_context_begin(PollJob *poll);
 
 static void
 poll_free(PollJob *poll)
@@ -1437,6 +1544,8 @@ poll_free(PollJob *poll)
     g_free(poll->started);
     g_hash_table_unref(poll->seen);
     g_hash_table_unref(poll->live);
+    if (poll->context != NULL)
+        g_ptr_array_unref(poll->context);
     g_object_unref(poll->mirror);
     g_free(poll);
 }
@@ -1445,6 +1554,9 @@ static void
 poll_end(PollJob *poll)
 {
     ClawtVentureMirror *self = poll->mirror;
+
+    if (poll->context_changed)
+        g_signal_emit(self, mirror_signals[SIGNAL_CONTEXT_CHANGED], 0);
 
     poll_free(poll);
     self->busy = FALSE;
@@ -1983,6 +2095,9 @@ on_poll_answer(guint status, const gchar *body, gpointer data)
     PollJob *poll = data;
 
     switch (poll->step) {
+    case POLL_CONTEXT:
+        on_poll_context(poll, status, body);
+        break;
     case POLL_WHOAMI:
         on_poll_whoami(poll, status, body);
         break;
@@ -2005,6 +2120,9 @@ static void
 poll_next_step(PollJob *poll)
 {
     switch (poll->step) {
+    case POLL_CONTEXT:
+        poll_context_next(poll);
+        break;
     case POLL_WHOAMI:
         poll_send(poll, "/api/v1/whoami");
         break;
@@ -2037,6 +2155,9 @@ poll_next_account(PollJob *poll)
         poll_next_step(poll);
         return;
     }
+
+    if (poll->context == NULL && poll_context_begin(poll))
+        return;
 
     poll_end(poll);
 }
@@ -2108,6 +2229,251 @@ clawt_venture_mirror_set_inbound(ClawtVentureMirror              *self,
         g_source_set_callback(self->poll_timer, on_poll_tick, self, NULL);
         g_source_attach(self->poll_timer, self->context);
     }
+}
+
+/* ── Milestones and goals (0.46.0) ──────────────────────────────── */
+
+#define CLAWT_VENTURE_MIRROR_CONTEXT_SECONDS (86400)
+
+/* The fields of each kind worth telling an agent. */
+static const gchar *const milestone_keys[] = {
+    "name", "due_on", "status", NULL
+};
+static const gchar *const goal_keys[] = {
+    "name", "current_value", "target_value", "unit", "due_on", NULL
+};
+
+static void
+poll_context_next(PollJob *poll)
+{
+    g_autofree gchar *item = NULL;
+    g_autofree gchar *path = NULL;
+    gchar *colon;
+
+    if (poll->context == NULL || poll->context->len == 0) {
+        poll->mirror->context_read_at = now_seconds();
+        poll_end(poll);
+        return;
+    }
+
+    item = g_ptr_array_steal_index(poll->context, 0);
+    colon = strchr(item, ':');
+    *colon = '\0';
+    path = g_strdup_printf("/api/v1/%s/%s", item, colon + 1);
+    *colon = ':';
+
+    poll->step = POLL_CONTEXT;
+    g_ptr_array_insert(poll->context, 0, g_steal_pointer(&item));
+    poll_send(poll, path);
+}
+
+static void
+on_poll_context(PollJob *poll, guint status, const gchar *body)
+{
+    g_autofree gchar *item = g_ptr_array_steal_index(poll->context, 0);
+    g_autofree gchar *key = g_strconcat("context|", item, NULL);
+    g_autoptr(JsonNode) holder = NULL;
+    g_autoptr(JsonNode) kept = object_node_new();
+    g_autofree gchar *text = NULL;
+    g_autofree gchar *was = NULL;
+    JsonObject *o;
+    const gchar *const *keys = g_str_has_prefix(item, "milestone:")
+        ? milestone_keys : goal_keys;
+    guint i;
+
+    if (status != 200) {
+        poll_context_next(poll);
+        return;
+    }
+
+    o = answer_object(body, &holder);
+
+    for (i = 0; o != NULL && keys[i] != NULL; i++) {
+        JsonNode *v = json_object_get_member(o, keys[i]);
+
+        if (v != NULL && !JSON_NODE_HOLDS_NULL(v))
+            json_object_set_member(json_node_get_object(kept), keys[i],
+                                   json_node_copy(v));
+    }
+
+    text = json_to_string(kept, FALSE);
+    was = clawt_task_store_venture_cursor(poll->mirror->store, key);
+
+    if (g_strcmp0(was, text) != 0) {
+        clawt_task_store_put_venture_cursor(poll->mirror->store, key, text);
+        poll->context_changed = TRUE;
+    }
+
+    poll_context_next(poll);
+}
+
+/*
+ * At the end of a pass, once a day or when the set changed: each
+ * milestone and goal read with the first account that knows who it is.
+ */
+static gboolean
+poll_context_begin(PollJob *poll)
+{
+    ClawtVentureMirror *self = poll->mirror;
+    GHashTableIter it;
+    gpointer value;
+    guint i;
+
+    if (self->context_milestones->len + self->context_goals->len == 0 ||
+        now_seconds() - self->context_read_at <
+            CLAWT_VENTURE_MIRROR_CONTEXT_SECONDS)
+        return FALSE;
+
+    poll->account = NULL;
+    g_hash_table_iter_init(&it, self->accounts);
+    while (poll->account == NULL && g_hash_table_iter_next(&it, NULL, &value)) {
+        if (((Account *)value)->known)
+            poll->account = value;
+    }
+
+    if (poll->account == NULL)
+        return FALSE;
+
+    poll->context = g_ptr_array_new_with_free_func(g_free);
+
+    for (i = 0; i < self->context_milestones->len; i++)
+        g_ptr_array_add(poll->context, g_strdup_printf(
+            "milestone:%" G_GINT64_FORMAT,
+            g_array_index(self->context_milestones, gint64, i)));
+
+    for (i = 0; i < self->context_goals->len; i++)
+        g_ptr_array_add(poll->context, g_strdup_printf(
+            "goal:%" G_GINT64_FORMAT,
+            g_array_index(self->context_goals, gint64, i)));
+
+    poll_context_next(poll);
+    return TRUE;
+}
+
+static gchar *
+number_text(JsonObject *o, const gchar *key)
+{
+    JsonNode *v = json_object_get_member(o, key);
+
+    if (v == NULL || !JSON_NODE_HOLDS_VALUE(v))
+        return NULL;
+
+    if (json_node_get_value_type(v) == G_TYPE_STRING)
+        return g_strdup(json_node_get_string(v));
+
+    return g_strdup_printf("%g", json_node_get_double(v));
+}
+
+gchar *
+clawt_venture_mirror_context_line(ClawtTaskStore *store,
+                                  gint64          milestone_id,
+                                  gint64          goal_id)
+{
+    g_autoptr(GString) line = g_string_new(NULL);
+
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(store), NULL);
+
+    if (milestone_id > 0) {
+        g_autofree gchar *key = g_strdup_printf(
+            "context|milestone:%" G_GINT64_FORMAT, milestone_id);
+        g_autofree gchar *text = clawt_task_store_venture_cursor(store, key);
+        g_autoptr(JsonNode) node = (text != NULL)
+            ? json_from_string(text, NULL) : NULL;
+
+        if (node != NULL && JSON_NODE_HOLDS_OBJECT(node)) {
+            JsonObject *o = json_node_get_object(node);
+            const gchar *due = json_object_get_string_member_with_default(
+                o, "due_on", NULL);
+            const gchar *status = json_object_get_string_member_with_default(
+                o, "status", NULL);
+
+            g_string_append_printf(line, "milestone *%s*",
+                json_object_get_string_member_with_default(o, "name", "?"));
+            if (due != NULL)
+                g_string_append_printf(line, ", due %.10s", due);
+            if (status != NULL)
+                g_string_append_printf(line, " (%s)", status);
+        }
+    }
+
+    if (goal_id > 0) {
+        g_autofree gchar *key = g_strdup_printf(
+            "context|goal:%" G_GINT64_FORMAT, goal_id);
+        g_autofree gchar *text = clawt_task_store_venture_cursor(store, key);
+        g_autoptr(JsonNode) node = (text != NULL)
+            ? json_from_string(text, NULL) : NULL;
+
+        if (node != NULL && JSON_NODE_HOLDS_OBJECT(node)) {
+            JsonObject *o = json_node_get_object(node);
+            g_autofree gchar *current = number_text(o, "current_value");
+            g_autofree gchar *target = number_text(o, "target_value");
+            const gchar *unit = json_object_get_string_member_with_default(
+                o, "unit", "");
+
+            g_string_append_printf(line, "%sgoal *%s*",
+                line->len > 0 ? "; " : "",
+                json_object_get_string_member_with_default(o, "name", "?"));
+            if (current != NULL && target != NULL)
+                g_string_append_printf(line, ": %s of %s%s%s", current,
+                                       target, *unit != '\0' ? " " : "",
+                                       unit);
+        }
+    }
+
+    if (line->len == 0)
+        return NULL;
+
+    return g_string_free(g_steal_pointer(&line), FALSE);
+}
+
+void
+clawt_venture_mirror_set_context_func(ClawtVentureMirror           *self,
+                                      ClawtVentureMirrorContextFunc func,
+                                      gpointer                      user_data,
+                                      GDestroyNotify                notify)
+{
+    g_return_if_fail(CLAWT_IS_VENTURE_MIRROR(self));
+
+    if (self->context_notify != NULL)
+        self->context_notify(self->context_data);
+
+    self->context_fn = func;
+    self->context_data = user_data;
+    self->context_notify = notify;
+}
+
+void
+clawt_venture_mirror_set_context_ids(ClawtVentureMirror *self,
+                                     const gint64       *milestones,
+                                     guint               n_milestones,
+                                     const gint64       *goals,
+                                     guint               n_goals)
+{
+    gboolean same;
+
+    g_return_if_fail(CLAWT_IS_VENTURE_MIRROR(self));
+
+    same = self->context_milestones->len == n_milestones &&
+           self->context_goals->len == n_goals &&
+           (n_milestones == 0 ||
+            memcmp(self->context_milestones->data, milestones,
+                   n_milestones * sizeof(gint64)) == 0) &&
+           (n_goals == 0 ||
+            memcmp(self->context_goals->data, goals,
+                   n_goals * sizeof(gint64)) == 0);
+
+    if (same)
+        return;
+
+    g_array_set_size(self->context_milestones, 0);
+    g_array_set_size(self->context_goals, 0);
+    if (n_milestones > 0)
+        g_array_append_vals(self->context_milestones, milestones, n_milestones);
+    if (n_goals > 0)
+        g_array_append_vals(self->context_goals, goals, n_goals);
+
+    /* A new set is read on the next pass, not tomorrow. */
+    self->context_read_at = 0;
 }
 
 /* ── Public ──────────────────────────────────────────────────────── */
@@ -2422,6 +2788,11 @@ clawt_venture_mirror_finalize(GObject *object)
         self->target_notify(self->target_data);
     if (self->cost_notify != NULL)
         self->cost_notify(self->cost_data);
+    if (self->context_notify != NULL)
+        self->context_notify(self->context_data);
+
+    g_array_unref(self->context_milestones);
+    g_array_unref(self->context_goals);
 
     g_queue_free_full(self->rows,
                       (GDestroyNotify)clawt_venture_outbox_row_free);
@@ -2438,6 +2809,18 @@ static void
 clawt_venture_mirror_class_init(ClawtVentureMirrorClass *klass)
 {
     G_OBJECT_CLASS(klass)->finalize = clawt_venture_mirror_finalize;
+
+    /**
+     * ClawtVentureMirror::context-changed:
+     * @self: the mirror
+     *
+     * A milestone's or goal's name, due date or progress, as the poll
+     * read it, differs from before: whatever shows them may redraw.
+     */
+    mirror_signals[SIGNAL_CONTEXT_CHANGED] =
+        g_signal_new("context-changed", CLAWT_TYPE_VENTURE_MIRROR,
+                     G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
+                     G_TYPE_NONE, 0);
 }
 
 static void
@@ -2448,6 +2831,8 @@ clawt_venture_mirror_init(ClawtVentureMirror *self)
     self->last_progress = g_hash_table_new_full(g_str_hash, g_str_equal,
                                                 g_free, NULL);
     self->rows = g_queue_new();
+    self->context_milestones = g_array_new(FALSE, FALSE, sizeof(gint64));
+    self->context_goals = g_array_new(FALSE, FALSE, sizeof(gint64));
     self->intake_times = g_hash_table_new_full(g_str_hash, g_str_equal,
                                                g_free,
                                                (GDestroyNotify)g_array_unref);

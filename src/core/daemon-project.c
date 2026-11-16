@@ -249,6 +249,25 @@ clawt_daemon_project_place(
 		return FALSE;
 
 	brief = clawt_project_spec_brief(spec);
+
+	/*
+	 * Its VENTURE milestone and goal, as the mirror last read them --
+	 * from tasks.db, never the network: placing a task waits on nothing.
+	 */
+	if (self->task_store != NULL &&
+	    (spec->venture_milestone_id > 0 || spec->venture_goal_id > 0)) {
+		g_autofree gchar *line = clawt_venture_mirror_context_line(
+			self->task_store, spec->venture_milestone_id,
+			spec->venture_goal_id);
+
+		if (line != NULL) {
+			gchar *more = g_strdup_printf("%s In VENTURE: %s.", brief, line);
+
+			g_free(brief);
+			brief = more;
+		}
+	}
+
 	clawt_task_set_project(task, spec->id, brief);
 
 	/*
@@ -319,6 +338,10 @@ add_project_object(
 	json_builder_add_boolean_value(builder, spec->budget_hard_stop);
 	json_builder_set_member_name(builder, "venture_repo_id");
 	json_builder_add_int_value(builder, spec->venture_repo_id);
+	json_builder_set_member_name(builder, "venture_milestone_id");
+	json_builder_add_int_value(builder, spec->venture_milestone_id);
+	json_builder_set_member_name(builder, "venture_goal_id");
+	json_builder_add_int_value(builder, spec->venture_goal_id);
 	json_builder_set_member_name(builder, "month_spend_usd");
 	json_builder_add_double_value(builder, (gdouble)micros / 1000000.0);
 	json_builder_set_member_name(builder, "stopped");
@@ -401,7 +424,8 @@ clawt_daemon_handle_project(
 			static const gchar *const fields[] = {
 				"name", "directory", "goal", "review_by", "agents",
 				"monthly_budget_usd", "budget_warn_percent",
-				"budget_hard_stop", "venture_repo_id", NULL
+				"budget_hard_stop", "venture_repo_id",
+				"venture_milestone_id", "venture_goal_id", NULL
 			};
 			guint i;
 

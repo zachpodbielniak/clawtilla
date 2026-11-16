@@ -136,6 +136,16 @@ fake_send(ClawtVentureMirror     *mirror,
                 "{\"id\":%" G_GINT64_FORMAT ",\"version\":1,"
                 "\"issue_type\":\"task\"}", ++fixture->next_ticket);
         }
+    } else if (g_strcmp0(path, "/api/v1/ticket_link") == 0) {
+        answer->status = 201;
+        answer->body = g_strdup("{\"id\":90}");
+    } else if (g_strcmp0(path, "/api/v1/milestone/5") == 0) {
+        answer->body = g_strdup("{\"id\":5,\"name\":\"Beta\","
+                                "\"due_on\":\"2026-12-01\",\"status\":\"open\"}");
+    } else if (g_strcmp0(path, "/api/v1/goal/6") == 0) {
+        answer->body = g_strdup("{\"id\":6,\"name\":\"Ship titles\","
+                                "\"current_value\":4,\"target_value\":12,"
+                                "\"unit\":\"titles\"}");
     } else if (g_strcmp0(path, "/api/v1/runs/external") == 0) {
         if (fixture->budget_refuses) {
             answer->status = 409;
@@ -1047,6 +1057,147 @@ test_no_runs_without_cost(Fixture *fixture, gconstpointer data)
     g_assert_null(find_sent(fixture, "POST", "/api/v1/runs/external"));
 }
 
+/* ── Links, the operator's account, milestones and goals (0.46.0) ── */
+
+static void
+fake_context(ClawtVentureMirror *mirror, const gchar *task_id,
+             gint64 *milestone_id, gint64 *goal_id, gpointer data)
+{
+    (void)mirror;
+    (void)task_id;
+    (void)data;
+    *milestone_id = 5;
+    *goal_id = 6;
+}
+
+/*
+ * A task with a checkout puts its branch on the ticket, once, as the
+ * assignee, against the repository the ticket was filed for.
+ */
+static void
+test_branch_is_linked_once(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = clawt_task_new("lead", "scout", "Fix it");
+    g_autoptr(JsonNode) link = NULL;
+    Sent *sent;
+    JsonObject *o;
+
+    (void)data;
+    clawt_task_set_checkout(task, "/srv/site", "/w/tasks/x", "clawtilla/x",
+                            "abc123", CLAWT_CHECKOUT_WORKTREE);
+    g_assert_true(clawt_task_store_save(fixture->store, task, NULL, NULL));
+    drain(fixture);
+
+    sent = find_sent(fixture, "POST", "/api/v1/ticket_link");
+    g_assert_nonnull(sent);
+    g_assert_cmpstr(sent->token, ==, "t-scout");
+    o = body_of(sent, &link);
+    g_assert_cmpstr(json_object_get_string_member(o, "branch"), ==,
+                    "clawtilla/x");
+    g_assert_cmpstr(json_object_get_string_member(o, "origin"), ==, "venture");
+    g_assert_cmpint(json_object_get_int_member(o, "repo_id"), ==, 7);
+
+    clawt_task_set_state(task, CLAWT_TASK_RUNNING);
+    g_assert_true(clawt_task_store_save(fixture->store, task, NULL, NULL));
+    drain(fixture);
+    g_assert_cmpuint(count_sent(fixture, "POST", "/api/v1/ticket_link"), ==, 1);
+}
+
+/*
+ * The operator's own account files the operator's tasks, and any task
+ * whose agents have no account -- which without it are not mirrored.
+ */
+static void
+test_service_account_files_what_no_agent_can(Fixture *fixture,
+                                             gconstpointer data)
+{
+    g_autoptr(ClawtTask) theirs = NULL;
+    g_autoptr(ClawtTask) nobodys = NULL;
+    guint i;
+    guint by_service = 0;
+
+    (void)data;
+    clawt_venture_mirror_set_account(fixture->mirror, "user", "books",
+                                     "http://v.test", "t-svc");
+
+    theirs = save_task(fixture, "user", "scout", CLAWT_TASK_PENDING);
+    nobodys = save_task(fixture, "user", "nobody", CLAWT_TASK_PENDING);
+    drain(fixture);
+
+    for (i = 0; i < fixture->sent->len; i++) {
+        Sent *sent = g_ptr_array_index(fixture->sent, i);
+
+        if (g_strcmp0(sent->method, "POST") == 0 &&
+            g_strcmp0(sent->url, "/api/v1/ticket") == 0) {
+            g_assert_cmpstr(sent->token, ==, "t-svc");
+            by_service++;
+        }
+    }
+
+    g_assert_cmpuint(by_service, ==, 2);
+}
+
+/* A new ticket is filed under its project's milestone and goal. */
+static void
+test_filed_under_milestone_and_goal(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = NULL;
+    g_autoptr(JsonNode) create = NULL;
+    JsonObject *o;
+
+    (void)data;
+    clawt_venture_mirror_set_context_func(fixture->mirror, fake_context,
+                                          NULL, NULL);
+    task = save_task(fixture, "lead", "scout", CLAWT_TASK_PENDING);
+    drain(fixture);
+
+    o = body_of(find_sent(fixture, "POST", "/api/v1/ticket"), &create);
+    g_assert_cmpint(json_object_get_int_member(o, "milestone_id"), ==, 5);
+    g_assert_cmpint(json_object_get_int_member(o, "goal_id"), ==, 6);
+}
+
+static void
+on_context_changed(ClawtVentureMirror *mirror, gpointer data)
+{
+    (void)mirror;
+    (*(guint *)data)++;
+}
+
+/*
+ * The milestone and goal are read once a day into tasks.db, said once
+ * when they changed, and shown as one line.
+ */
+static void
+test_context_is_read_and_said(Fixture *fixture, gconstpointer data)
+{
+    const gint64 milestones[] = { 5 };
+    const gint64 goals[] = { 6 };
+    g_autofree gchar *line = NULL;
+    guint changed = 0;
+
+    (void)data;
+    g_signal_connect(fixture->mirror, "context-changed",
+                     G_CALLBACK(on_context_changed), &changed);
+    clawt_venture_mirror_set_inbound(fixture->mirror, &recorder, fixture,
+                                     FALSE);
+    clawt_venture_mirror_set_context_ids(fixture->mirror, milestones, 1,
+                                         goals, 1);
+
+    poll(fixture);
+    g_assert_cmpuint(changed, ==, 1);
+    g_assert_nonnull(find_sent(fixture, "GET", "/api/v1/milestone/5"));
+    g_assert_nonnull(find_sent(fixture, "GET", "/api/v1/goal/6"));
+
+    line = clawt_venture_mirror_context_line(fixture->store, 5, 6);
+    g_assert_cmpstr(line, ==, "milestone *Beta*, due 2026-12-01 (open); "
+                    "goal *Ship titles*: 4 of 12 titles");
+
+    /* within the day: not read again */
+    poll(fixture);
+    g_assert_cmpuint(count_sent(fixture, "GET", "/api/v1/milestone/5"), ==, 1);
+    g_assert_cmpuint(changed, ==, 1);
+}
+
 #define ADD(name, fn) \
     g_test_add("/venture-mirror/" name, Fixture, NULL, fixture_setup, fn, \
                fixture_teardown)
@@ -1079,6 +1230,11 @@ main(int argc, char *argv[])
     ADD("a-run-is-opened-and-closed", test_a_run_is_opened_and_closed);
     ADD("a-refused-run-is-not-retried", test_a_refused_run_is_not_retried);
     ADD("no-runs-without-cost", test_no_runs_without_cost);
+    ADD("branch-is-linked-once", test_branch_is_linked_once);
+    ADD("service-account-files-what-no-agent-can",
+        test_service_account_files_what_no_agent_can);
+    ADD("filed-under-milestone-and-goal", test_filed_under_milestone_and_goal);
+    ADD("context-is-read-and-said", test_context_is_read_and_said);
 
     return g_test_run();
 }

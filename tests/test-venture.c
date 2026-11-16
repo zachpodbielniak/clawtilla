@@ -1288,6 +1288,42 @@ test_mirror_tasks_gives_the_agent_an_account(void)
 }
 
 /*
+ * A project's VENTURE milestone and goal, as the mirror last read them,
+ * are in its agents' PROJECTS.org -- and in a task's project brief.
+ */
+static void
+test_venture_context_reaches_projects_org(void)
+{
+    DaemonFixture fixture = { 0 };
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *text = NULL;
+
+    fixture.integration_extra = "    mirror_tasks: true\n";
+    fixture.extra_yaml = "projects:\n"
+                         "  - id: site\n"
+                         "    agents: [bookkeeper]\n"
+                         "    venture_milestone_id: 5\n"
+                         "    venture_goal_id: 6\n";
+    daemon_fixture_setup(&fixture);
+
+    clawt_task_store_put_venture_cursor(fixture.daemon->task_store,
+        "context|milestone:5",
+        "{\"name\":\"Beta\",\"due_on\":\"2026-12-01\",\"status\":\"open\"}");
+    clawt_task_store_put_venture_cursor(fixture.daemon->task_store,
+        "context|goal:6",
+        "{\"name\":\"Ship\",\"current_value\":4,\"target_value\":12}");
+    clawt_daemon_refresh_projects_regions(fixture.daemon);
+
+    path = g_build_filename(fixture.dir, "agents", "bookkeeper",
+                            "PROJECTS.org", NULL);
+    g_assert_true(g_file_get_contents(path, &text, NULL, NULL));
+    g_assert_nonnull(strstr(text, "- In VENTURE :: milestone *Beta*, due "
+                                  "2026-12-01 (open); goal *Ship*: 4 of 12"));
+
+    daemon_fixture_teardown(&fixture);
+}
+
+/*
  * And `decision.answer` reaches it.
  *
  * Answering a staged change is not a verb of its own -- it is the same
@@ -1749,6 +1785,8 @@ main(int argc, char **argv)
                     test_apply_writes_reaches_the_server);
     g_test_add_func("/venture/mirror-tasks-gives-the-agent-an-account",
                     test_mirror_tasks_gives_the_agent_an_account);
+    g_test_add_func("/venture/context-reaches-projects-org",
+                    test_venture_context_reaches_projects_org);
     g_test_add_func("/venture/apply-writes-low-risk",
                     test_apply_writes_low_risk);
     g_test_add_func("/venture/instance-reaches-the-server",
