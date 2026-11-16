@@ -116,8 +116,13 @@ test_the_mirror_reads_what_venture_answers(void)
     expect("ticket-list", "records.title", "string");
     expect("ticket-list", "records.description", "string");
 
-    /* an update: the version after it */
+    /* an update: the version after it; and a re-read after a stale one */
     expect("ticket-update", "version", "int");
+    expect("ticket", "version", "int");
+
+    /* a project's pinned repository: its organization */
+    expect("forge-repo", "id", "int");
+    expect("forge-repo", "organization_id", "int");
 
     /* comments: made, and read back -- author is what tells whose */
     expect("ticket-comment-create", "id", "int");
