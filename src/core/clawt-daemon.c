@@ -1280,6 +1280,7 @@ run_routine(const gchar *routine_id, const gchar *agent_id,
     const gchar *sender = "user";
     const gchar *target = agent_id;
     gboolean read_only = FALSE;
+    g_autofree gchar *checkout_prompt = NULL;
     /* Taken first, so an edit saved while this runs is after it. */
     gint64 run_at_us = g_get_real_time();
 
@@ -1369,6 +1370,46 @@ run_routine(const gchar *routine_id, const gchar *agent_id,
     /* before delivery: the ledger asks about the first turn it causes */
     clawt_daemon_note_task_source(self, clawt_task_get_id(task),
                                   CLAWT_USAGE_ORIGIN_ROUTINE, routine_id);
+
+    /*
+     * `worktree: true`: the run's own checkout of `directory`, made here
+     * rather than asked of the agent, so a scheduled run cannot land on
+     * whatever is checked out in the directory itself.  If it cannot be
+     * made the run fails -- running in place is exactly what the routine
+     * said not to do.
+     */
+    {
+        ClawtRoutine *routine = routine_by_id(self, routine_id);
+        const gchar *directory = (routine != NULL)
+            ? clawt_routine_get_string(routine, "directory") : NULL;
+
+        if (routine != NULL && directory != NULL && *directory != '\0' &&
+            clawt_routine_get_boolean(routine, "worktree")) {
+            g_autoptr(GError) checkout_error = NULL;
+
+            if (!clawt_task_checkout_open(task,
+                    clawt_config_get_agent(self->config, agent_id),
+                    directory, NULL, &checkout_error)) {
+                g_autofree gchar *why = g_strdup_printf(
+                    "its checkout of %s could not be made: %s", directory,
+                    checkout_error->message);
+
+                clawt_task_manager_fail(self->tasks, clawt_task_get_id(task),
+                                        why);
+                g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                                    why);
+                return NULL;
+            }
+
+            clawt_task_manager_save(self->tasks, task, NULL);
+            {
+                g_autofree gchar *where = clawt_task_checkout_guidance(task);
+
+                checkout_prompt = g_strconcat(prompt, where, NULL);
+            }
+            prompt = checkout_prompt;
+        }
+    }
 
     /*
      * With the routine's own model, when it names one: that turn only,
@@ -4078,7 +4119,17 @@ deliver_for_tools(const gchar *from_agent, const gchar *target,
 	 * cannot let a forgery through.
 	 */
 	if (assignment != NULL) {
-		g_autofree gchar *guidance = clawt_task_assignment_guidance(task_id);
+		g_autofree gchar *guidance =
+			clawt_task_assignment_guidance_for(assignment);
+
+		/*
+		 * The whole closing text, checkout and all; or the bare contract
+		 * from a caller that composed without the task in hand.
+		 */
+		if (!g_str_has_suffix(body, guidance)) {
+			g_free(guidance);
+			guidance = clawt_task_assignment_guidance(task_id);
+		}
 
 		if (g_str_has_suffix(body, guidance)) {
 			g_autofree gchar *work = g_strndup(body,
@@ -9616,6 +9667,31 @@ clawt_daemon_add_task_object(JsonBuilder *builder, ClawtTask *task)
                                               g_ptr_array_index(open, i));
             json_builder_end_array(builder);
         }
+    }
+
+    /*
+     * Its checkout: where, on which branch, from which commit, and
+     * whether it is still there (the branch outlives it).
+     */
+    if (clawt_task_get_checkout_mode(task) != CLAWT_CHECKOUT_NONE) {
+        json_builder_set_member_name(builder, "checkout");
+        json_builder_begin_object(builder);
+        clawt_daemon_add_string_member(builder, "repo",
+                                       clawt_task_get_checkout_repo(task));
+        clawt_daemon_add_string_member(builder, "path",
+                                       clawt_task_get_checkout_path(task));
+        clawt_daemon_add_string_member(builder, "branch",
+                                       clawt_task_get_checkout_branch(task));
+        clawt_daemon_add_string_member(builder, "base",
+                                       clawt_task_get_checkout_base(task));
+        clawt_daemon_add_string_member(builder, "mode",
+            clawt_enum_to_nick(CLAWT_TYPE_CHECKOUT_MODE,
+                               clawt_task_get_checkout_mode(task)));
+        json_builder_set_member_name(builder, "present");
+        json_builder_add_boolean_value(builder,
+            g_file_test(clawt_task_get_checkout_path(task),
+                        G_FILE_TEST_IS_DIR));
+        json_builder_end_object(builder);
     }
 
     /* Who checks it, and how many times changes were asked for. */

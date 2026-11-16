@@ -1278,6 +1278,24 @@ typedef enum {
     CLAWT_APPLY_WRITES_ALL
 } ClawtApplyWrites;
 
+/**
+ * ClawtCheckoutMode:
+ * @CLAWT_CHECKOUT_NONE: no checkout
+ * @CLAWT_CHECKOUT_WORKTREE: a `git worktree` of the repository, for an
+ *   agent whose tools run on the host unconfined
+ * @CLAWT_CHECKOUT_CLONE: a hard-linked local clone, for one confined by
+ *   bwrap or working in a container, VM or distrobox
+ *
+ * How a task's checkout was made (since 0.39.0).  A clone is
+ * self-contained, so a sandbox that binds only the workspace can use it;
+ * a worktree's `.git` points back into the repository.
+ */
+typedef enum {
+    CLAWT_CHECKOUT_NONE = 0,
+    CLAWT_CHECKOUT_WORKTREE,
+    CLAWT_CHECKOUT_CLONE
+} ClawtCheckoutMode;
+
 /* GType registration */
 GType clawt_agent_state_get_type(void) G_GNUC_CONST;
 GType clawt_agent_caps_get_type(void) G_GNUC_CONST;
@@ -1325,6 +1343,8 @@ GType clawt_credential_placement_get_type(void) G_GNUC_CONST;
 GType clawt_tool_directory_mode_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_APPLY_WRITES (clawt_apply_writes_get_type())
 GType clawt_apply_writes_get_type(void) G_GNUC_CONST;
+#define CLAWT_TYPE_CHECKOUT_MODE (clawt_checkout_mode_get_type())
+GType clawt_checkout_mode_get_type(void) G_GNUC_CONST;
 
 #define CLAWT_TYPE_AGENT_STATE      (clawt_agent_state_get_type())
 #define CLAWT_TYPE_AGENT_CAPS       (clawt_agent_caps_get_type())

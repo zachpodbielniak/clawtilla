@@ -114,6 +114,7 @@ typedef struct {
     GtkTextView *prompt;
     GtkWidget   *agent_row;
     GtkWidget   *after_row;
+    GtkWidget   *repo_row;
     GStrv        agent_ids;
     gboolean     with_nobody;
     GtkTextView *comment;
@@ -261,6 +262,7 @@ on_new_task_create(GtkButton *button, gpointer user_data)
     const gchar *title = gtk_editable_get_text(GTK_EDITABLE(dialog->title_row));
     const gchar *agent = task_dialog_agent(dialog);
     const gchar *after = gtk_editable_get_text(GTK_EDITABLE(dialog->after_row));
+    const gchar *repo = gtk_editable_get_text(GTK_EDITABLE(dialog->repo_row));
     g_autoptr(JsonNode) reply = NULL;
     g_autofree gchar *said = NULL;
 
@@ -277,6 +279,7 @@ on_new_task_create(GtkButton *button, gpointer user_data)
                                      "title", (*title != '\0') ? title : NULL,
                                      "agent", agent,
                                      "after", (*after != '\0') ? after : NULL,
+                                     "repo", (*repo != '\0') ? repo : NULL,
                                      NULL));
 
     if (reply == NULL)
@@ -319,6 +322,8 @@ on_new_task(GtkButton *button, gpointer user_data)
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(who),
                               task_agent_row(dialog, TRUE));
     dialog->after_row = clawt_gtk_add_entry(who, "Wait for (task ids)", "");
+    dialog->repo_row = clawt_gtk_add_entry(
+        who, "Repository (absolute host path, for a checkout of its own)", "");
 
     gtk_widget_add_css_class(create, "suggested-action");
     gtk_widget_set_margin_top(create, 12);
@@ -409,6 +414,95 @@ on_comment_send(GtkButton *button, gpointer user_data)
                                           "delivered", FALSE)
                        ? "Noted, and the assignee has it"
                        : "Noted on the task");
+    adw_dialog_close(dialog->dialog);
+}
+
+/*
+ * What the task's checkout changed: the diff in a dialog of its own,
+ * monospaced, with the untracked files and a note when it was cut short.
+ */
+static void
+on_show_changes(GtkButton *button, gpointer user_data)
+{
+    TaskDialog *dialog = user_data;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GString) text = g_string_new(NULL);
+    JsonObject *object;
+    JsonArray *untracked;
+    AdwDialog *view;
+    GtkWidget *scroll;
+    GtkWidget *body;
+    GtkWidget *toolbar;
+    guint i;
+
+    (void)button;
+
+    reply = clawt_window_request(dialog->window, "task.diff",
+                                 clawt_build_payload("task", dialog->task_id,
+                                                     NULL));
+    if (reply == NULL)
+        return;
+
+    object = clawt_payload_of(reply);
+    g_string_append(text, clawt_json_string(object, "diff", ""));
+
+    untracked = json_object_has_member(object, "untracked")
+        ? json_object_get_array_member(object, "untracked") : NULL;
+    for (i = 0; untracked != NULL && i < json_array_get_length(untracked); i++)
+        g_string_append_printf(text, "new, not yet added: %s\n",
+                               json_array_get_string_element(untracked, i));
+
+    if (text->len == 0)
+        g_string_append(text, "No changes yet.\n");
+
+    if (json_object_get_boolean_member_with_default(object, "truncated",
+                                                    FALSE))
+        g_string_append(text, "\n(cut short: read the rest in the "
+                              "checkout)\n");
+
+    body = gtk_text_view_new();
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(body), FALSE);
+    gtk_text_view_set_monospace(GTK_TEXT_VIEW(body), TRUE);
+    gtk_text_view_set_left_margin(GTK_TEXT_VIEW(body), 8);
+    gtk_text_view_set_top_margin(GTK_TEXT_VIEW(body), 8);
+    gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(body)),
+                             text->str, -1);
+
+    scroll = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), body);
+    gtk_widget_set_vexpand(scroll, TRUE);
+
+    toolbar = adw_toolbar_view_new();
+    adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar),
+                                 adw_header_bar_new());
+    adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(toolbar), scroll);
+
+    view = adw_dialog_new();
+    adw_dialog_set_title(view, "Changes");
+    adw_dialog_set_content_width(view, 900);
+    adw_dialog_set_content_height(view, 700);
+    adw_dialog_set_child(view, toolbar);
+    adw_dialog_present(view, GTK_WIDGET(dialog->window));
+}
+
+/* The checkout taken away, its branch kept in the repository. */
+static void
+on_remove_checkout(GtkButton *button, gpointer user_data)
+{
+    TaskDialog *dialog = user_data;
+    g_autoptr(JsonNode) reply = NULL;
+
+    (void)button;
+
+    reply = clawt_window_request(dialog->window, "task.checkout_remove",
+                                 clawt_build_payload("task", dialog->task_id,
+                                                     NULL));
+    if (reply == NULL)
+        return;
+
+    clawt_window_toast(dialog->window,
+                       "Checkout removed; its branch is kept");
+    clawt_gtk_refresh_tasks(dialog->window);
     adw_dialog_close(dialog->dialog);
 }
 
@@ -652,6 +746,47 @@ on_task_details(GtkButton *button, gpointer user_data)
     gtk_widget_set_margin_top(send, 6);
     g_signal_connect(send, "clicked", G_CALLBACK(on_comment_send), dialog);
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(say), send);
+
+    /*
+     * Its checkout: where, on which branch, and what changed -- the diff
+     * works after removal too, from the branch the repository kept.
+     */
+    if (json_object_has_member(task, "checkout")) {
+        JsonObject *checkout = json_object_get_object_member(task, "checkout");
+        GtkWidget *changes = adw_preferences_group_new();
+        GtkWidget *line = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        GtkWidget *show = gtk_button_new_with_label("Show changes");
+        gboolean present = json_object_get_boolean_member_with_default(
+            checkout, "present", FALSE);
+        g_autofree gchar *where = g_strdup_printf(
+            "Branch %s of %s, from %.12s.\n%s",
+            clawt_json_string(checkout, "branch", ""),
+            clawt_json_string(checkout, "repo", ""),
+            clawt_json_string(checkout, "base", ""),
+            present ? clawt_json_string(checkout, "path", "")
+                    : "The checkout was removed; the branch is kept.");
+
+        adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(changes),
+                                        "Changes");
+        adw_preferences_group_set_description(ADW_PREFERENCES_GROUP(changes),
+                                              where);
+        g_signal_connect(show, "clicked", G_CALLBACK(on_show_changes),
+                         dialog);
+        gtk_box_append(GTK_BOX(line), show);
+
+        if (present) {
+            GtkWidget *remove = gtk_button_new_with_label("Remove checkout");
+
+            gtk_widget_add_css_class(remove, "destructive-action");
+            g_signal_connect(remove, "clicked",
+                             G_CALLBACK(on_remove_checkout), dialog);
+            gtk_box_append(GTK_BOX(line), remove);
+        }
+
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(changes), line);
+        adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                                 ADW_PREFERENCES_GROUP(changes));
+    }
 
     /*
      * Who reviews it, and -- while a result is waiting -- the operator's

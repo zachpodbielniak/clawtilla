@@ -2118,7 +2118,7 @@ clawt_incident_desk_retry(
 	 * The retrier's words are an agent's, and this text reaches the
 	 * assignee from its delegator's sender, so they are escaped.
 	 */
-	guidance = clawt_task_assignment_guidance(clawt_task_get_id(task));
+	guidance = clawt_task_assignment_guidance_for(task);
 	escaped_why = clawt_preamble_escape(why);
 	sender = retry_sender(self, task);
 

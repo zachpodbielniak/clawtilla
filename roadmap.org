@@ -398,8 +398,9 @@ The ~forge~ record type is owner-only in VENTURE, so an editor -- every agent ac
 - *Done:* ~agents.review_by~ and ~orchestration.review_rounds~; ~review~ on ~clawtilla_delegate~ and ~task.create~; =clawt_task_resolve_reviewer()= (resolved once; never the assignee); finishing a reviewed task goes to ~review~ with a ~review-requested~ signal; an agent reviewer is told and answers with ~clawtilla_task_review~; the operator answers in the inbox (~review-<task>~), with ~task.review~, or from Accept / Request changes in every client's Details; changes go back with the notes, bounded by ~review_rounds~ then the operator decides; accept by the delegator replaces the settle notice; the tree budget renews per round; TOOLS.org says who reviews the agent.
 - *Version:* minor.
 
-** TODO P2 C1: Task checkouts and diffs :orchestration:clients:
-A git worktree or self-contained clone per task in the agent's host workspace; ~task.diff~ and a Changes view; ~routines.worktree~ made real.
+** DONE P2 C1: Task checkouts and diffs v0.39.0 :orchestration:clients:
+- *Done:* =clawt-git-remote= (=clawt_git_remote_canonical()=, remotes in order, origin first); =clawt-task-checkout= (worktree or hard-linked clone by the assignee's confinement and computer; none on ssh or remote podman); ~repo~ / ~base~ on ~clawtilla_delegate~ and ~task.create~; the checkout paragraph in the assignment contract; ~task.diff~ (deferred, bounded, untracked files, from the kept branch once removed); ~task.checkout_remove~ (refused while active or dirty unless forced; a clone's branch fetched back first); the hourly ~orchestration.checkout_keep_days~ sweep; ~routines.worktree~ and ~triggers.worktree~ made real; Changes in GTK, web and lrg Details; ~clawtilla task diff|checkout-remove~, ~create --repo --base~; TOOLS.org says how.
+- *Version:* minor.
 
 ** TODO P2 C2: Projects and project budgets :orchestration:spending:
 ~projects:~ with goal, reviewer and a monthly budget; matched by git remote; the goal in the assignment; a managed PROJECTS.org region.

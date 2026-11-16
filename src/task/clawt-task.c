@@ -41,6 +41,18 @@ struct _ClawtTask {
     guint  review_round;
 
     /*
+     * The task's own checkout, when it named a repository: the host path
+     * of the repository, of the checkout, its branch, the commit it
+     * started from (diffs are taken against it) and how it was made.
+     */
+    gchar             *checkout_repo;
+    gchar             *checkout_path;
+    gchar             *checkout_branch;
+    gchar             *checkout_base;
+    ClawtCheckoutMode  checkout_mode;
+    gchar             *checkout_guest;
+
+    /*
      * The room the work itself happens in, when the delegator asked for
      * `thread: new` -- a session of its own.  Distinct from `room`,
      * which is where the delegation was *made* and where the settle
@@ -175,6 +187,12 @@ clawt_task_copy(ClawtTask *self)
     copy->session_key = g_strdup(self->session_key);
     copy->title = g_strdup(self->title);
     copy->reviewer = g_strdup(self->reviewer);
+    copy->checkout_repo = g_strdup(self->checkout_repo);
+    copy->checkout_path = g_strdup(self->checkout_path);
+    copy->checkout_branch = g_strdup(self->checkout_branch);
+    copy->checkout_base = g_strdup(self->checkout_base);
+    copy->checkout_mode = self->checkout_mode;
+    copy->checkout_guest = g_strdup(self->checkout_guest);
     copy->review_round = self->review_round;
     copy->progress_note = g_strdup(self->progress_note);
     copy->cancelled_by = g_strdup(self->cancelled_by);
@@ -227,6 +245,11 @@ clawt_task_free(ClawtTask *self)
     g_free(self->session_key);
     g_free(self->title);
     g_free(self->reviewer);
+    g_free(self->checkout_repo);
+    g_free(self->checkout_path);
+    g_free(self->checkout_branch);
+    g_free(self->checkout_base);
+    g_free(self->checkout_guest);
     g_free(self->thread_room);
     g_free(self->progress_note);
     g_free(self->cancelled_by);
@@ -794,6 +817,16 @@ clawt_task_to_json(ClawtTask *self)
     add_string(builder, "title", self->title);
     add_string(builder, "reviewer", self->reviewer);
     add_int(builder, "review_round", self->review_round);
+    if (self->checkout_mode != CLAWT_CHECKOUT_NONE) {
+        add_string(builder, "checkout_repo", self->checkout_repo);
+        add_string(builder, "checkout_path", self->checkout_path);
+        add_string(builder, "checkout_branch", self->checkout_branch);
+        add_string(builder, "checkout_base", self->checkout_base);
+        add_string(builder, "checkout_guest", self->checkout_guest);
+        add_string(builder, "checkout_mode",
+                   clawt_enum_to_nick(CLAWT_TYPE_CHECKOUT_MODE,
+                                      self->checkout_mode));
+    }
     add_string(builder, "thread_room", self->thread_room);
     add_string(builder, "progress_note", self->progress_note);
     add_string(builder, "cancelled_by", self->cancelled_by);
@@ -908,6 +941,19 @@ clawt_task_new_from_json(JsonNode *node, GError **error)
     self->session_key = dup_member(object, "session_key");
     self->title = dup_member(object, "title");
     self->reviewer = dup_member(object, "reviewer");
+    self->checkout_repo = dup_member(object, "checkout_repo");
+    self->checkout_path = dup_member(object, "checkout_path");
+    self->checkout_branch = dup_member(object, "checkout_branch");
+    self->checkout_base = dup_member(object, "checkout_base");
+    self->checkout_guest = dup_member(object, "checkout_guest");
+    {
+        g_autofree gchar *mode = dup_member(object, "checkout_mode");
+        gint value = CLAWT_CHECKOUT_NONE;
+
+        if (mode != NULL &&
+            clawt_enum_from_nick(CLAWT_TYPE_CHECKOUT_MODE, mode, &value))
+            self->checkout_mode = (ClawtCheckoutMode)value;
+    }
     self->review_round = (guint)MAX(int_member(object, "review_round"), 0);
     self->thread_room = dup_member(object, "thread_room");
     self->progress_note = dup_member(object, "progress_note");
@@ -1096,4 +1142,97 @@ clawt_task_resolve_reviewer(ClawtConfig  *config,
         return g_strdup("user");
 
     return g_strdup(who);
+}
+
+void
+clawt_task_set_checkout(ClawtTask         *self,
+                        const gchar       *repository,
+                        const gchar       *path,
+                        const gchar       *branch,
+                        const gchar       *base,
+                        ClawtCheckoutMode  mode)
+{
+    g_return_if_fail(self != NULL);
+
+    g_free(self->checkout_repo);
+    g_free(self->checkout_path);
+    g_free(self->checkout_branch);
+    g_free(self->checkout_base);
+    self->checkout_repo = g_strdup(repository);
+    self->checkout_path = g_strdup(path);
+    self->checkout_branch = g_strdup(branch);
+    self->checkout_base = g_strdup(base);
+    self->checkout_mode = (path != NULL) ? mode : CLAWT_CHECKOUT_NONE;
+}
+
+ClawtCheckoutMode
+clawt_task_get_checkout_mode(ClawtTask *self)
+{
+    g_return_val_if_fail(self != NULL, CLAWT_CHECKOUT_NONE);
+    return self->checkout_mode;
+}
+
+const gchar *
+clawt_task_get_checkout_repo(ClawtTask *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+    return self->checkout_repo;
+}
+
+const gchar *
+clawt_task_get_checkout_path(ClawtTask *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+    return self->checkout_path;
+}
+
+const gchar *
+clawt_task_get_checkout_branch(ClawtTask *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+    return self->checkout_branch;
+}
+
+const gchar *
+clawt_task_get_checkout_base(ClawtTask *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+    return self->checkout_base;
+}
+
+const gchar *
+clawt_task_get_checkout_guest(ClawtTask *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+    return self->checkout_guest;
+}
+
+void
+clawt_task_set_checkout_guest(ClawtTask *self, const gchar *guest)
+{
+    g_return_if_fail(self != NULL);
+
+    g_free(self->checkout_guest);
+    self->checkout_guest = g_strdup(guest);
+}
+
+gchar *
+clawt_task_assignment_guidance_for(ClawtTask *task)
+{
+    g_autofree gchar *checkout = NULL;
+    g_autofree gchar *contract = NULL;
+
+    g_return_val_if_fail(task != NULL, NULL);
+
+    /*
+     * The checkout first, the contract last: the contract is what the
+     * daemon recognises the assignment by, as a suffix, and both are
+     * functions of the stored task -- so the text composed when it was
+     * sent and the text matched when it is delivered are the same, held
+     * or not, restarted or not.
+     */
+    checkout = clawt_task_checkout_guidance(task);
+    contract = clawt_task_assignment_guidance(clawt_task_get_id(task));
+
+    return g_strconcat(checkout, contract, NULL);
 }

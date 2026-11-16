@@ -228,7 +228,16 @@ static const ClawtParamInfo delegate_params[] = {
       "Who checks the result before it counts as done: delegator (you), "
       "lead, operator, an agent id, or none. Leave it out for the "
       "assignee's own setting. The reviewer accepts it or sends it back "
-      "with notes.", FALSE }
+      "with notes.", FALSE },
+    { "repo",     "string",
+      "A git repository to work in, by its absolute path on the host. The "
+      "assignee gets a checkout of its own, on a branch of its own, and "
+      "what it changed can be read as a diff -- use this for any work "
+      "that changes code rather than naming a directory in the task.",
+      FALSE },
+    { "base",     "string",
+      "With repo: the branch, tag or commit to start from. Its HEAD when "
+      "left out.", FALSE }
 };
 
 static const ClawtParamInfo task_review_params[] = {
@@ -3396,6 +3405,14 @@ clawt_mcp_tools_describe_for_agent(ClawtMcpTools *self, const gchar *agent_id)
             "wait and delegate later, and do not poll. If one fails you are\n"
             "told, and ~clawtilla_task_link~ changes what it waits for.\n"
             "\n"
+            "Work that changes code goes in a checkout of its own. Give\n"
+            "~clawtilla_delegate~ a ~repo~ (the repository's absolute path\n"
+            "on the host, and a ~base~ ref if not its HEAD) and the assignee\n"
+            "gets a checkout on a branch of its own, and the operator can\n"
+            "read what changed as a diff. If an assignment names a checkout,\n"
+            "work only there, commit on its branch, and do not push, merge\n"
+            "or touch the repository itself unless asked.\n"
+            "\n"
             "Some work is reviewed before it counts as done. If yours is,\n"
             "finishing a task sends it to its reviewer instead of marking\n"
             "it complete, and changes come back to you as a message with\n"
@@ -5533,6 +5550,30 @@ tool_delegate(ClawtMcpTools *self,
         clawt_task_set_reviewer(task, reviewer);
     }
 
+    /*
+     * A checkout of its own, when the work names a repository: made now,
+     * in the assignee's workspace, so the assignment can say where it is.
+     * A repository that cannot be checked out refuses the delegation
+     * rather than sending the work off to land on top of somebody else's.
+     */
+    {
+        const gchar *repo = argument_string(arguments, "repo");
+
+        if (repo != NULL && *repo != '\0') {
+            ClawtAgent *to = clawt_agent_manager_get(self->agents, assignee);
+
+            if (!clawt_task_checkout_open(task,
+                    to != NULL ? clawt_agent_get_config(to) : NULL, repo,
+                    argument_string(arguments, "base"), &error)) {
+                clawt_task_manager_cancel(self->tasks,
+                                          clawt_task_get_id(task),
+                                          error->message, agent_id);
+                *is_error = TRUE;
+                return g_strdup_printf("Not delegated: %s.", error->message);
+            }
+        }
+    }
+
     /* Read by the daemon as it delivers the assignment. */
     clawt_task_set_consult(task, consult);
 
@@ -5599,7 +5640,7 @@ tool_delegate(ClawtMcpTools *self,
 
         if (open->len > 0) {
             g_autofree gchar *guidance =
-                clawt_task_assignment_guidance(clawt_task_get_id(task));
+                clawt_task_assignment_guidance_for(task);
             g_autofree gchar *delivered = g_strconcat(work, guidance, NULL);
             g_autoptr(JsonNode) held = clawt_task_build_held_delivery(
                 "tool", agent_id, target, delivered,
@@ -5648,7 +5689,7 @@ tool_delegate(ClawtMcpTools *self,
      */
     {
         g_autofree gchar *guidance =
-            clawt_task_assignment_guidance(clawt_task_get_id(task));
+            clawt_task_assignment_guidance_for(task);
         g_autofree gchar *delivered = g_strconcat(work, guidance, NULL);
 
         if (!dispatch_delivery(self, agent_id, target, delivered,

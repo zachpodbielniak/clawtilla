@@ -1494,6 +1494,12 @@ gboolean clawt_daemon_tasks_release_ready(ClawtDaemon *self,
                                           const gchar *task_id);
 void clawt_daemon_tasks_blocker_settled(ClawtDaemon *self, ClawtTask *task);
 void clawt_daemon_tasks_review_requested(ClawtDaemon *self, ClawtTask *task);
+gboolean clawt_daemon_tasks_remove_checkout(ClawtDaemon  *self,
+                                            ClawtTask    *task,
+                                            gboolean      force,
+                                            const gchar  *who,
+                                            GError      **error);
+void clawt_daemon_tasks_sweep_checkouts(ClawtDaemon *self, gint64 now);
 void clawt_daemon_tasks_on_review_requested(ClawtTaskManager *manager,
                                             const gchar      *task_id,
                                             gpointer          user_data);
