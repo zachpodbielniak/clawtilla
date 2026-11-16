@@ -262,6 +262,13 @@ the tooling that reads it expects markdown.
 
 ### Tests stay hermetic
 
+A test that reaches anything resolved from HOME or the XDG directories --
+the skill library's `~/.agents/skills`, `~/.claude`, a config default -- runs
+with `G_TEST_OPTION_ISOLATE_DIRS` (test-venture does), so it never reads or
+writes the operator's own. Not every binary: isolation moves XDG_RUNTIME_DIR
+(ssh control sockets then outgrow the kernel's 107 bytes) and XDG_DATA_DIRS
+(GSettings schemas vanish), which six other tests rely on.
+
 `make test` must pass with no network, no podman, no libvirt and no
 compositor running. Anything needing real infrastructure goes behind
 `CLAWT_TEST_INTEGRATION=1` and runs under `make test-integration`.

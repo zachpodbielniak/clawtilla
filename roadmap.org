@@ -411,6 +411,10 @@ The ~forge~ record type is owner-only in VENTURE, so an editor -- every agent ac
 - *Not done:* the plan's scratch agent per test run: a run uses a named agent that already has the skill, in a room of its own, rather than a temporary agent made for it.
 - *Version:* minor.
 
+** DONE V5: Pull requests on tickets; tests that never read the operator's home v0.48.0 :integrations:testing:
+- *Done:* =clawt_venture_mirror_find_pull_request()= finds a pull or merge request URL (GitHub, Forgejo/Gitea, GitLab) in a task's result; the branch's =ticket_link= is given its number and URL once, and the run its number.  VENTURE 0.10.5 records the link update and the goal in the contract.  test-venture runs with =G_TEST_OPTION_ISOLATE_DIRS=: it had read the operator's =~/.agents/skills= and failed outside the gate (not every binary -- isolation moves the runtime and data dirs six others rely on).  A comment made between the daemon's start and the reverse poll's first pass is delivered: the first pass starts from the newest comment made before the mirror started, not the newest of all.
+- *Version:* minor.
+
 ** DONE V4: VENTURE intake held to the loop limits v0.47.0 :integrations:orchestration:
 - *Done:* intake reads each ticket's timeline for who assigned it; another fleet agent's own account makes it a delegation from that agent, sent through the router as its message, so the pair budget and hop limit apply (a refusal fails the task, linked so it is not taken in again); a person's stays the operator's.  Every account answers =whoami= before a pass reads anything, in name order (=g_ptr_array_sort()= had been comparing pointers).  VENTURE 0.10.4 records the timeline's shape in the contract.
 - *Version:* minor.

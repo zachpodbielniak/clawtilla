@@ -4,7 +4,7 @@
 #+categories: clawtilla docs integrations venture
 #+created: [2026-11-16]
 #+updated: [2026-11-16]
-#+version: 0.47.0
+#+version: 0.48.0
 
 * What it is
 
@@ -72,7 +72,7 @@ The ticket's =assignee= is the assignee's VENTURE username, learned from =GET /a
 | =external_ref= | =clawtilla:<host>:<task id>= |
 | =milestone_id=, =goal_id= | its project's ~venture_milestone_id~ and ~venture_goal_id~ (since 0.46.0) |
 
-*The branch* (since 0.46.0): a task with a checkout gets one =ticket_link= on its ticket, written by the assignee: the matched repository, the task's branch, and =origin= =venture= -- so VENTURE's forge loop guard never reads it as an issue raised upstream.  Pull requests are not linked: clawtilla does not open them, and does not know their numbers.
+*The branch* (since 0.46.0): a task with a checkout gets one =ticket_link= on its ticket, written by the assignee: the matched repository, the task's branch, and =origin= =venture= -- so VENTURE's forge loop guard never reads it as an issue raised upstream.  *The pull request* (since 0.48.0): clawtilla opens none itself, but an agent may, and says so.  When a task with a linked branch has a result naming a pull or merge request -- =…/pull/N= (GitHub), =…/pulls/N= (Forgejo, Gitea), =…/-/merge_requests/N= (GitLab) -- the link gets its number and URL, once, and the task's run its number.
 
 | Task state | Ticket status |
 |------------+---------------|
@@ -158,7 +158,7 @@ An agent whose connector mirrors is told so in the integrations section of its =
 
 * The contract with VENTURE (since 0.46.0)
 
-What the mirror reads of each VENTURE answer is a contract, recorded on VENTURE's side: its =tests/fixtures/api-contract/= holds the shape -- every key, its type -- of each answer (=whoami=, repository resolve, a ticket filed, listed and updated, comments made and listed, the branch link, a run opened and closed, a milestone), and VENTURE's tests fail when one stops matching.  clawtilla keeps a copy in =tests/fixtures/venture/=, and =tests/test-venture-contract.c= checks every key the mirror reads is in it with the type it reads it as.  =make check-venture-contract= (with VENTURE checked out beside clawtilla, or =VENTURE_DIR=) diffs the two copies.
+What the mirror reads of each VENTURE answer is a contract, recorded on VENTURE's side: its =tests/fixtures/api-contract/= holds the shape -- every key, its type -- of each answer (=whoami=, repository resolve, a ticket filed, listed and updated, its timeline, comments made and listed, the branch link made and given its pull request, a run opened and closed, a milestone, a goal), and VENTURE's tests fail when one stops matching.  clawtilla keeps a copy in =tests/fixtures/venture/=, and =tests/test-venture-contract.c= checks every key the mirror reads is in it with the type it reads it as.  =make check-venture-contract= (with VENTURE checked out beside clawtilla, or =VENTURE_DIR=) diffs the two copies.
 
 * Seen working
 
@@ -170,6 +170,14 @@ On 2026-11-16 a throwaway VENTURE (0.10.2, a scratch database) and a throwaway t
 - with VENTURE stopped, the next task still ran and completed -- its ticket showed queued, "VENTURE did not answer" -- and when VENTURE came back the outbox drained by itself;
 - a pending task survived the daemon's restart, then ran, and its ticket was kept current.
 - an agent whose connector says ~mirror_tasks: false~ had its task left alone -- "Not mirrored" with the reason and Retry on its page -- while the next agent's task, in the same repository, became ticket #1 with *Open in VENTURE* (the web client's task page, screenshotted headless).
+
+And again the same day, for review and for comments reaching a working agent, with the agent's work reviewed by the operator (~review_by: user~):
+
+- a person's VENTURE comment on a pending task -- "the secret word is ORCHID" -- reached the agent, whose result was =ORCHID=; the task went to review and its ticket to =review=;
+- setting that ticket to =done= in VENTURE accepted the task;
+- on a second task, moving its ticket out of review asked for changes ("round 1"); the agent did the work again, and the operator accepting it in clawtilla set the ticket =done=.
+
+That run found the one thing it was for: a comment made in the minute before the reverse poll's first pass was taken as history and not delivered.  Since 0.48.0 the first pass starts from the newest comment made before the mirror started.
 
 * Troubleshooting
 
@@ -186,5 +194,5 @@ On 2026-11-16 a throwaway VENTURE (0.10.2, a scratch database) and a throwaway t
 
 * Limits, for now
 
-- Pull requests are not linked: clawtilla does not open them.
+- A pull request is found only in the task's result: one an agent opened and did not mention is not linked.
 - A ticket assigned in VENTURE under a milestone the project does not name is not described to the agent; only the project's own are.
