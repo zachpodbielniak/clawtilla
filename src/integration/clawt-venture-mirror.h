@@ -101,6 +101,88 @@ typedef GStrv (*ClawtVentureMirrorTargetFunc)(ClawtVentureMirror *mirror,
                                               gpointer            user_data);
 
 /**
+ * ClawtVentureMirrorInbound: (skip)
+ * @cancel: a person cancelled the task's ticket: cancel the task
+ * @review: the ticket left review -- @accept for `done`, otherwise
+ *   changes were asked for, with @notes
+ * @comment: somebody other than the mirror and the assignee commented
+ * @intake: a ticket assigned to @agent_id's VENTURE user, still `todo`
+ *   and from no system: start a task for it, and return its id (or
+ *   %NULL when it was refused)
+ *
+ * What the mirror asks the daemon to do with changes made in VENTURE
+ * (since 0.45.0).  @who is the VENTURE actor or author, as VENTURE spelt
+ * it; @title, @description and @text are people's text -- data, never
+ * instructions -- and the daemon fences them before an agent reads them.
+ */
+typedef struct {
+    void      (*cancel)(gpointer data, const gchar *task_id, const gchar *who);
+    void      (*review)(gpointer data, const gchar *task_id, gboolean accept,
+                        const gchar *notes, const gchar *who);
+    void      (*comment)(gpointer data, const gchar *task_id, const gchar *who,
+                         const gchar *text);
+    gchar    *(*intake)(gpointer data, const gchar *agent_id, gint64 ticket,
+                        const gchar *title, const gchar *description,
+                        const gchar *url);
+} ClawtVentureMirrorInbound;
+
+/**
+ * clawt_venture_mirror_set_inbound: (skip)
+ * @self: a #ClawtVentureMirror
+ * @inbound: (nullable): what to do with changes made in VENTURE; copied
+ * @data: passed to each of @inbound's functions
+ * @intake: whether tickets assigned to an agent start tasks
+ *
+ * Turns the reverse direction on: a poll every minute reads the
+ * mirrored tickets that changed, the comments on those still going and,
+ * with @intake, each account's new tickets.  %NULL turns it off.
+ */
+void clawt_venture_mirror_set_inbound(ClawtVentureMirror              *self,
+                                      const ClawtVentureMirrorInbound *inbound,
+                                      gpointer                         data,
+                                      gboolean                         intake);
+
+/**
+ * clawt_venture_mirror_poll:
+ * @self: a #ClawtVentureMirror
+ *
+ * Reads VENTURE now, if nothing is in flight -- the timer's work, and a
+ * webhook's wake-up.
+ */
+void clawt_venture_mirror_poll(ClawtVentureMirror *self);
+
+/**
+ * ClawtVentureMirrorCostFunc:
+ * @mirror: the mirror
+ * @task_id: a finished task
+ * @user_data: data passed to clawt_venture_mirror_set_cost_func()
+ *
+ * What a task cost, every agent's turns on it together.
+ *
+ * Returns: micro-dollars
+ */
+typedef gint64 (*ClawtVentureMirrorCostFunc)(ClawtVentureMirror *mirror,
+                                             const gchar        *task_id,
+                                             gpointer            user_data);
+
+/**
+ * clawt_venture_mirror_set_cost_func:
+ * @self: a #ClawtVentureMirror
+ * @func: (scope notified) (nullable): what a task cost
+ * @user_data: data for @func
+ * @notify: (nullable): frees @user_data
+ *
+ * With one, a mirrored task that ran is recorded in VENTURE as an
+ * external run (since 0.45.0): opened when it starts, closed with its
+ * state, cost and branch when it finishes -- so VENTURE's agent budgets,
+ * Runs page and delivery report count the fleet's work.
+ */
+void clawt_venture_mirror_set_cost_func(ClawtVentureMirror        *self,
+                                        ClawtVentureMirrorCostFunc func,
+                                        gpointer                   user_data,
+                                        GDestroyNotify             notify);
+
+/**
  * clawt_venture_mirror_new:
  * @store: the task store whose outbox is drained
  * @context: (nullable): the context the drain timer attaches to
@@ -166,6 +248,16 @@ void clawt_venture_mirror_clear_accounts(ClawtVentureMirror *self);
  */
 gboolean clawt_venture_mirror_has_account(ClawtVentureMirror *self,
                                           const gchar        *agent_id);
+
+/**
+ * clawt_venture_mirror_set_account_intake:
+ * @self: a #ClawtVentureMirror
+ * @agent_id: an agent with an account
+ * @intake: whether tickets assigned to its VENTURE user start tasks
+ */
+void clawt_venture_mirror_set_account_intake(ClawtVentureMirror *self,
+                                             const gchar        *agent_id,
+                                             gboolean            intake);
 
 /**
  * clawt_venture_mirror_account_count:

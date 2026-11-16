@@ -53,6 +53,13 @@ typedef struct {
     guint           create_conflicts;   /* answer this many POST ticket 409 */
     guint           patch_conflicts;    /* and this many PATCH 409 */
     guint           unavailable;        /* and this many anything 503 */
+
+    /* the reverse direction: what VENTURE answers, and what was done */
+    gchar          *changed;            /* GET ticket?external_ref__like */
+    gchar          *comments;           /* GET ticket_comment?ticket_id__in */
+    gchar          *assigned;           /* GET ticket?assignee=scout-bot */
+    GPtrArray      *inbound;            /* "cancel <task>", ... */
+    gboolean        budget_refuses;     /* POST runs/external answers 409 */
 } Fixture;
 
 typedef struct {
@@ -129,6 +136,28 @@ fake_send(ClawtVentureMirror     *mirror,
                 "{\"id\":%" G_GINT64_FORMAT ",\"version\":1,"
                 "\"issue_type\":\"task\"}", ++fixture->next_ticket);
         }
+    } else if (g_strcmp0(path, "/api/v1/runs/external") == 0) {
+        if (fixture->budget_refuses) {
+            answer->status = 409;
+            answer->body = g_strdup("{\"message\":\"budget Fleet is spent\"}");
+        } else {
+            answer->status = 201;
+            answer->body = g_strdup("{\"id\":70}");
+        }
+    } else if (g_str_has_prefix(path, "/api/v1/runs/external/")) {
+        answer->body = g_strdup("{\"id\":70}");
+    } else if (g_str_has_prefix(path, "/api/v1/ticket?external_ref__like=")) {
+        answer->body = g_strdup(fixture->changed != NULL ? fixture->changed
+                                                         : "[]");
+    } else if (g_str_has_prefix(path, "/api/v1/ticket_comment?order=-id")) {
+        answer->body = g_strdup("{\"items\":[{\"id\":5}]}");
+    } else if (g_str_has_prefix(path, "/api/v1/ticket_comment?ticket_id__in=")) {
+        answer->body = g_strdup(fixture->comments != NULL ? fixture->comments
+                                                          : "[]");
+    } else if (g_str_has_prefix(path, "/api/v1/ticket?assignee=")) {
+        answer->body = g_strdup(strstr(path, "assignee=scout-bot") != NULL &&
+                                fixture->assigned != NULL
+                                    ? fixture->assigned : "[]");
     } else if (g_strcmp0(method, "GET") == 0 &&
                g_str_has_prefix(path, "/api/v1/ticket?external_ref=")) {
         answer->body = g_strdup("{\"items\":[{\"id\":42,\"version\":5,"
@@ -183,6 +212,7 @@ fixture_setup(Fixture *fixture, gconstpointer data)
     clawt_task_store_set_mirror(fixture->store, TRUE);
 
     fixture->sent = g_ptr_array_new_with_free_func(sent_free);
+    fixture->inbound = g_ptr_array_new_with_free_func(g_free);
     fixture->remote = g_strdup("git@forge.test:acme/known.git");
 
     fixture->mirror = clawt_venture_mirror_new(fixture->store, NULL);
@@ -204,7 +234,11 @@ fixture_teardown(Fixture *fixture, gconstpointer data)
     g_clear_object(&fixture->mirror);
     g_clear_object(&fixture->store);
     g_ptr_array_unref(fixture->sent);
+    g_ptr_array_unref(fixture->inbound);
     g_free(fixture->remote);
+    g_free(fixture->changed);
+    g_free(fixture->comments);
+    g_free(fixture->assigned);
     clawt_test_remove_tree(fixture->dir);
     g_free(fixture->dir);
 }
@@ -661,6 +695,358 @@ test_no_outbox_without_mirror(Fixture *fixture, gconstpointer data)
     g_assert_cmpuint(due->len, ==, 0);
 }
 
+/* ── The reverse direction (0.45.0) ──────────────────────────────── */
+
+static void
+rec_cancel(gpointer data, const gchar *task_id, const gchar *who)
+{
+    Fixture *fixture = data;
+
+    (void)who;
+    g_ptr_array_add(fixture->inbound, g_strdup_printf("cancel %s", task_id));
+}
+
+static void
+rec_review(gpointer data, const gchar *task_id, gboolean accept,
+           const gchar *notes, const gchar *who)
+{
+    Fixture *fixture = data;
+
+    (void)notes;
+    (void)who;
+    g_ptr_array_add(fixture->inbound, g_strdup_printf(
+        "%s %s", accept ? "accept" : "changes", task_id));
+}
+
+static void
+rec_comment(gpointer data, const gchar *task_id, const gchar *who,
+            const gchar *text)
+{
+    Fixture *fixture = data;
+
+    g_ptr_array_add(fixture->inbound, g_strdup_printf(
+        "comment %s %s: %s", task_id, who, text));
+}
+
+static gchar *
+rec_intake(gpointer data, const gchar *agent_id, gint64 ticket,
+           const gchar *title, const gchar *description, const gchar *url)
+{
+    Fixture *fixture = data;
+    g_autoptr(ClawtTask) task = save_task(fixture, "user", agent_id,
+                                          CLAWT_TASK_PENDING);
+
+    (void)description;
+    (void)url;
+    g_ptr_array_add(fixture->inbound, g_strdup_printf(
+        "intake %" G_GINT64_FORMAT " %s %s", ticket, agent_id, title));
+
+    return g_strdup(clawt_task_get_id(task));
+}
+
+static const ClawtVentureMirrorInbound recorder = {
+    rec_cancel, rec_review, rec_comment, rec_intake
+};
+
+static gboolean
+inbound_has(Fixture *fixture, const gchar *line)
+{
+    guint i;
+
+    for (i = 0; i < fixture->inbound->len; i++) {
+        if (g_strcmp0(g_ptr_array_index(fixture->inbound, i), line) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+static void
+poll(Fixture *fixture)
+{
+    clawt_venture_mirror_poll(fixture->mirror);
+    drain(fixture);
+}
+
+/* A ticket JSON as VENTURE lists it, for one of this host's tasks. */
+static gchar *
+changed_ticket(const gchar *task_id, gint64 version, const gchar *status)
+{
+    return g_strdup_printf(
+        "[{\"id\":1,\"version\":%" G_GINT64_FORMAT ",\"status\":\"%s\","
+        "\"external_ref\":\"clawtilla:%s:%s\","
+        "\"updated_at\":\"2026-11-16T10:00:00Z\"}]",
+        version, status, g_get_host_name(), task_id);
+}
+
+/*
+ * A person cancels the ticket: the task is cancelled, once.  The mirror's
+ * own write -- no newer than its receipt -- is not read back as anybody's.
+ */
+static void
+test_cancel_in_venture_cancels_once(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = save_task(fixture, "lead", "scout",
+                                          CLAWT_TASK_RUNNING);
+    const gchar *id = clawt_task_get_id(task);
+
+    (void)data;
+    clawt_venture_mirror_set_inbound(fixture->mirror, &recorder, fixture,
+                                     FALSE);
+    drain(fixture);
+
+    /* its own write, version 1: nothing */
+    fixture->changed = changed_ticket(id, 1, "cancelled");
+    poll(fixture);
+    g_assert_cmpuint(fixture->inbound->len, ==, 0);
+
+    /* a person's, version 2: cancelled */
+    g_free(fixture->changed);
+    fixture->changed = changed_ticket(id, 2, "cancelled");
+    poll(fixture);
+    {
+        g_autofree gchar *line = g_strdup_printf("cancel %s", id);
+
+        g_assert_true(inbound_has(fixture, line));
+    }
+    g_assert_cmpuint(fixture->inbound->len, ==, 1);
+
+    /* read again: not again */
+    poll(fixture);
+    g_assert_cmpuint(fixture->inbound->len, ==, 1);
+}
+
+/* Review has two doors: done on the ticket accepts the task in review. */
+static void
+test_done_in_venture_accepts_review(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = save_task(fixture, "lead", "scout",
+                                          CLAWT_TASK_REVIEW);
+    g_autofree gchar *line = g_strdup_printf("accept %s",
+                                             clawt_task_get_id(task));
+
+    (void)data;
+    clawt_venture_mirror_set_inbound(fixture->mirror, &recorder, fixture,
+                                     FALSE);
+    drain(fixture);
+
+    fixture->changed = changed_ticket(clawt_task_get_id(task), 2, "done");
+    poll(fixture);
+    g_assert_true(inbound_has(fixture, line));
+}
+
+/*
+ * Comments: none on the first pass (a baseline, not a replay); then a
+ * person's is delivered, and the mirror's own and the assignee's own
+ * are not.
+ */
+static void
+test_comments_come_back(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = save_task(fixture, "lead", "scout",
+                                          CLAWT_TASK_RUNNING);
+    g_autofree gchar *line = NULL;
+
+    (void)data;
+    clawt_venture_mirror_set_inbound(fixture->mirror, &recorder, fixture,
+                                     FALSE);
+    drain(fixture);
+
+    fixture->comments = g_strdup(
+        "[{\"id\":4,\"ticket_id\":1,\"author\":\"alice\",\"body\":\"old\"}]");
+    poll(fixture);
+    g_assert_cmpuint(fixture->inbound->len, ==, 0);
+    g_assert_nonnull(find_sent(fixture, "GET",
+                               "/api/v1/ticket_comment?order=-id"));
+
+    g_free(fixture->comments);
+    fixture->comments = g_strdup_printf(
+        "[{\"id\":6,\"ticket_id\":1,\"author\":\"alice\",\"body\":\"why?\"},"
+        " {\"id\":7,\"ticket_id\":1,\"author\":\"API token #t-scout\","
+        "  \"body\":\"mine\",\"external_ref\":\"clawtilla:%s:note:3\"},"
+        " {\"id\":8,\"ticket_id\":1,\"author\":\"scout-bot\",\"body\":\"me\"}]",
+        g_get_host_name());
+    poll(fixture);
+
+    line = g_strdup_printf("comment %s alice: why?", clawt_task_get_id(task));
+    g_assert_true(inbound_has(fixture, line));
+    g_assert_cmpuint(fixture->inbound->len, ==, 1);
+    g_assert_nonnull(find_sent(fixture, "GET",
+        "/api/v1/ticket_comment?ticket_id__in=1&id__gt=5"));
+}
+
+/*
+ * A todo ticket assigned to an agent's VENTURE user, from no other
+ * system, becomes a task once; the outbox then writes its reference.
+ */
+static void
+test_intake_once_then_referenced(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(JsonNode) patch = NULL;
+    Sent *sent;
+
+    (void)data;
+    clawt_venture_mirror_set_inbound(fixture->mirror, &recorder, fixture,
+                                     TRUE);
+    clawt_venture_mirror_set_account_intake(fixture->mirror, "scout", TRUE);
+    fixture->assigned = g_strdup(
+        "[{\"id\":30,\"version\":3,\"title\":\"Do X\",\"description\":\"d\","
+        "  \"status\":\"todo\",\"external_ref\":\"\"},"
+        " {\"id\":31,\"version\":1,\"title\":\"Theirs\",\"status\":\"todo\","
+        "  \"external_ref\":\"jira:ABC-1\"}]");
+
+    poll(fixture);
+    g_assert_true(inbound_has(fixture, "intake 30 scout Do X"));
+    g_assert_cmpuint(fixture->inbound->len, ==, 1);
+
+    /* the outbox brings the ticket up to the task, reference first */
+    sent = find_sent(fixture, "PATCH", "/api/v1/ticket/30");
+    g_assert_nonnull(sent);
+    g_assert_cmpstr(sent->token, ==, "t-scout");
+    g_assert_nonnull(g_strrstr(json_object_get_string_member(
+        body_of(sent, &patch), "external_ref"), "clawtilla:"));
+    g_assert_cmpint(json_object_get_int_member(json_node_get_object(patch),
+                                               "version"), ==, 3);
+    g_assert_null(find_sent(fixture, "POST", "/api/v1/ticket"));
+
+    /* the same ticket on the next pass: not again */
+    poll(fixture);
+    g_assert_cmpuint(fixture->inbound->len, ==, 1);
+}
+
+/* Without intake on for the account, nothing is taken in. */
+static void
+test_no_intake_without_the_switch(Fixture *fixture, gconstpointer data)
+{
+    (void)data;
+    clawt_venture_mirror_set_inbound(fixture->mirror, &recorder, fixture,
+                                     TRUE);
+    fixture->assigned = g_strdup(
+        "[{\"id\":30,\"version\":1,\"title\":\"Do X\",\"status\":\"todo\"}]");
+
+    poll(fixture);
+    g_assert_cmpuint(fixture->inbound->len, ==, 0);
+    g_assert_null(find_sent(fixture, "GET", "/api/v1/ticket?assignee="));
+}
+
+/* A note that came from VENTURE is never mirrored back as a comment. */
+static void
+test_venture_notes_not_echoed(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = save_task(fixture, "lead", "scout",
+                                          CLAWT_TASK_RUNNING);
+
+    (void)data;
+    drain(fixture);
+    clawt_task_store_add_note(fixture->store, clawt_task_get_id(task),
+                              "venture:alice", "comment", "why?", NULL);
+    drain(fixture);
+    g_assert_null(find_sent(fixture, "POST", "/api/v1/ticket_comment"));
+}
+
+/* ── External runs (0.45.0) ──────────────────────────────────────── */
+
+static gint64
+fake_cost(ClawtVentureMirror *mirror, const gchar *task_id, gpointer data)
+{
+    (void)mirror;
+    (void)task_id;
+    (void)data;
+
+    return 420000;   /* $0.42 */
+}
+
+/*
+ * A task that ran is one VENTURE run: opened by the assignee once it
+ * started, closed with its state, cost (with its currency) and branch
+ * once it finished -- and only once each.
+ */
+static void
+test_a_run_is_opened_and_closed(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = save_task(fixture, "lead", "scout",
+                                          CLAWT_TASK_PENDING);
+    g_autoptr(JsonNode) start = NULL;
+    g_autoptr(JsonNode) finish = NULL;
+    Sent *sent;
+
+    (void)data;
+    clawt_venture_mirror_set_cost_func(fixture->mirror, fake_cost, NULL, NULL);
+
+    drain(fixture);
+    g_assert_null(find_sent(fixture, "POST", "/api/v1/runs/external"));
+
+    clawt_task_set_state(task, CLAWT_TASK_RUNNING);
+    g_assert_true(clawt_task_store_save(fixture->store, task, NULL, NULL));
+    drain(fixture);
+
+    sent = find_sent(fixture, "POST", "/api/v1/runs/external");
+    g_assert_nonnull(sent);
+    g_assert_cmpstr(sent->token, ==, "t-scout");
+    g_assert_cmpint(json_object_get_int_member(body_of(sent, &start),
+                                               "ticket_id"), ==, 1);
+
+    clawt_task_set_result(task, "Fixed.");
+    clawt_task_set_state(task, CLAWT_TASK_COMPLETED);
+    g_assert_true(clawt_task_store_save(fixture->store, task, NULL, NULL));
+    drain(fixture);
+
+    sent = find_sent(fixture, "PATCH", "/api/v1/runs/external/70");
+    g_assert_nonnull(sent);
+    g_assert_cmpstr(json_object_get_string_member(body_of(sent, &finish),
+                                                  "state"), ==, "succeeded");
+    g_assert_cmpstr(json_object_get_string_member(
+        json_node_get_object(finish), "cost"), ==, "0.420000 USD");
+
+    /* saved again: neither is sent again */
+    g_assert_true(clawt_task_store_save(fixture->store, task, NULL, NULL));
+    drain(fixture);
+    g_assert_cmpuint(count_sent(fixture, "POST", "/api/v1/runs/external"),
+                     ==, 1);
+    g_assert_cmpuint(count_sent(fixture, "PATCH", "/api/v1/runs/external/"),
+                     ==, 1);
+}
+
+/*
+ * A budget that says no is said once and not asked again; the ticket
+ * itself is still kept current.
+ */
+static void
+test_a_refused_run_is_not_retried(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = save_task(fixture, "lead", "scout",
+                                          CLAWT_TASK_RUNNING);
+
+    (void)data;
+    fixture->budget_refuses = TRUE;
+    clawt_venture_mirror_set_cost_func(fixture->mirror, fake_cost, NULL, NULL);
+    drain(fixture);
+    g_assert_cmpuint(count_sent(fixture, "POST", "/api/v1/runs/external"),
+                     ==, 1);
+
+    clawt_task_set_state(task, CLAWT_TASK_COMPLETED);
+    g_assert_true(clawt_task_store_save(fixture->store, task, NULL, NULL));
+    drain(fixture);
+
+    g_assert_cmpuint(count_sent(fixture, "POST", "/api/v1/runs/external"),
+                     ==, 1);
+    g_assert_null(find_sent(fixture, "PATCH", "/api/v1/runs/external/"));
+    g_assert_nonnull(find_sent(fixture, "PATCH", "/api/v1/ticket/1"));
+}
+
+/* Without a cost function, no runs at all. */
+static void
+test_no_runs_without_cost(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = save_task(fixture, "lead", "scout",
+                                          CLAWT_TASK_RUNNING);
+
+    (void)data;
+    (void)task;
+    drain(fixture);
+    g_assert_null(find_sent(fixture, "POST", "/api/v1/runs/external"));
+}
+
 #define ADD(name, fn) \
     g_test_add("/venture-mirror/" name, Fixture, NULL, fixture_setup, fn, \
                fixture_teardown)
@@ -684,6 +1070,15 @@ main(int argc, char *argv[])
         test_outbox_coalesces_and_keeps_late_changes);
     ADD("no-outbox-without-mirror", test_no_outbox_without_mirror);
     g_test_add_func("/venture-mirror/status-map", test_status_map);
+    ADD("cancel-in-venture-cancels-once", test_cancel_in_venture_cancels_once);
+    ADD("done-in-venture-accepts-review", test_done_in_venture_accepts_review);
+    ADD("comments-come-back", test_comments_come_back);
+    ADD("intake-once-then-referenced", test_intake_once_then_referenced);
+    ADD("no-intake-without-the-switch", test_no_intake_without_the_switch);
+    ADD("venture-notes-not-echoed", test_venture_notes_not_echoed);
+    ADD("a-run-is-opened-and-closed", test_a_run_is_opened_and_closed);
+    ADD("a-refused-run-is-not-retried", test_a_refused_run_is_not_retried);
+    ADD("no-runs-without-cost", test_no_runs_without_cost);
 
     return g_test_run();
 }

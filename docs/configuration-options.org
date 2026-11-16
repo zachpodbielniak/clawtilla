@@ -3104,6 +3104,21 @@ comments. Nothing on an agent's path waits on VENTURE: changes are
 queued in tasks.db and sent behind. Needs VENTURE 0.10.0 or later.
 See docs/venture.org.
 
+*** =integrations.mirror_intake=
+
+- Type :: boolean
+- Default :: =true=
+- Since :: 0.45.0
+
+connector (venture), with mirror_tasks on: a ticket assigned to this
+agent's VENTURE user starts a task for it.
+
+Only an internal ticket still `todo` and carrying no other system's
+reference, at most ten an hour per agent; its text reaches the agent
+fenced, as data. Anyone who can edit tickets in that VENTURE
+organization can then hand this agent work: turn it off where that is
+more than you want. See docs/venture.org.
+
 *** =integrations.poll_seconds=
 
 - Type :: integer

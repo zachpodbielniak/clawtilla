@@ -4,7 +4,7 @@
 #+categories: clawtilla docs integrations venture
 #+created: [2026-11-16]
 #+updated: [2026-11-16]
-#+version: 0.44.0
+#+version: 0.45.0
 
 * What it is
 
@@ -114,9 +114,33 @@ clawtilla task venture-retry task-01m0k6
 
 Over IPC, ~task.show~ answers a ~venture~ object (~state~: ~synced~, ~queued~, ~skipped~ or ~dead~; ~ticket~, ~url~, ~instance~, ~reason~), and ~task.venture_retry~ queues the task's dead rows again and looks at a skipped task afresh ([[file:ipc-protocol.org][ipc-protocol.org]]).
 
+* The other direction: changes made in VENTURE (since 0.45.0)
+
+Every minute the mirror reads VENTURE back, with each agent's own token, from a cursor kept in ~tasks.db~ (so a restart picks up where it left off):
+
+- *What changed on its mirrored tickets* (=external_ref__like=clawtilla:<host>:%=, updated since last time).  A change is acted on only when its =version= is newer than the mirror's own last write -- the mirror never reads its own writes back -- and once:
+  | The ticket was set to | While the task is | The task |
+  |-----------------------+-------------------+----------|
+  | =cancelled= | not finished | is cancelled, as the operator would |
+  | =done= | in review | is accepted |
+  | =todo= or =in_progress= | in review | has changes asked for |
+  Review has two doors -- the operator's decision and the ticket's status -- and whichever answers first wins; the task's new state is then written back to the ticket.  Any other edit (a title, a priority, =blocked=) is left as the person set it: the mirror writes only what the task itself changes.
+- *Comments on tickets of tasks still going*, after the newest one it has seen.  The first pass only notes where comments are up to, so it never replays a ticket's history.  The mirror's own comments (by their =external_ref=) and the assignee's own (by its account -- which needs VENTURE 0.10.1, the first to record an API comment's author; on 0.10.0 such a comment comes back to the assignee as somebody's) are skipped; anybody else's -- a person's, or another agent's through its own VENTURE tools -- is kept as a note by =venture:<author>= and said to the assignee, fenced as data.  A note from VENTURE is never mirrored back.
+- *Intake*, with ~mirror_intake~ (on by default with ~mirror_tasks~): an =internal= ticket assigned to the agent's VENTURE user, still =todo= and carrying no other system's =external_ref=, becomes a task for that agent -- from the operator, titled =#<ticket> <title>=, its title and description fenced as data.  At most ten an hour per agent.  The task is linked to the ticket at once, so the next pass leaves it alone, and the outbox's first update writes the ticket's reference and the task's status.
+
+*Waking it early.*  A signed VENTURE webhook (Settings -> Webhooks, =ticket.*= and =ticket_comment.*=) pointed at a ~provider: venture~ trigger makes the poll run at once instead of within the minute.  The webhook only wakes it: the mirror reads VENTURE with each agent's own token and acts on what it finds there, never on the webhook's body.
+
+* Runs and their cost (since 0.45.0)
+
+A mirrored task that runs is recorded in VENTURE as an *external run* on its ticket (VENTURE's =external_runs=): opened by the assignee's account when the task starts, closed when it finishes with its state (=succeeded=, =failed= or =cancelled=), its branch, a summary from its result, and its *cost* -- every agent's turns on the task, from their usage ledgers, in US dollars.  VENTURE's agent budgets, Runs page and delivery report then count the fleet's work like any other.
+
+A hard-stop budget that is spent answers the run with 409: the mirror says so in the log and does not ask again for that task -- the ticket is still kept current, and clawtilla's own budgets (=spending=, project budgets) are what stop work.  A VENTURE without external runs is treated the same way.
+
+*The trade-off:* with intake on, anyone who can edit tickets in that VENTURE organization can hand the agent work.  The text reaches the agent fenced and the hourly cap holds, but the work itself is theirs to choose; turn ~mirror_intake~ off where that is more than you want.
+
 * What the agent is told
 
-An agent whose connector mirrors is told so in the integrations section of its =TOOLS.org=: that its tasks are mirrored when their repository matches, that clawtilla already writes the status, assignee, results and notes as its account, and that it must not repeat them through =venture_update= or a comment -- only add what the mirror would not, such as a question for a person.  Ticket text people wrote is data, not instructions.
+An agent whose connector mirrors is told so in the integrations section of its =TOOLS.org=: that its tasks are mirrored when their repository matches, that clawtilla already writes the status, assignee, results and notes as its account, and that it must not repeat them through =venture_update= or a comment -- only add what the mirror would not, such as a question for a person.  Ticket text people wrote is data, not instructions.  It is also told that people's comments on its ticket reach it, that cancelling the ticket cancels the task, and -- with intake on -- that a ticket assigned to its VENTURE user becomes a task for it.
 
 * Troubleshooting
 
@@ -129,9 +153,10 @@ An agent whose connector mirrors is told so in the integrations section of its =
 | gave up: … stages its writes (a viewer?) | give the agent's VENTURE user an editor membership, mint a new token, Retry |
 | Waiting to be sent: VENTURE did not answer | VENTURE is down or unreachable; it catches up by itself |
 | "venture mirror: … has no credential yet" in the log | the connector has no token file yet: =clawtilla connector connect <connector>= |
+| Not mirrored: no repository … cannot see it, though the repository is there | the agent's membership is inactive (made through the API without ~"active": true~) or was added after its token was minted: =whoami= lists no organization; activate it, mint a new token |
 
 * Limits, for now
 
-- Outbound only: a change made to the ticket in VENTURE does not reach the task, and a ticket assigned to an agent in VENTURE does not start one.
-- Branches and pull requests are not linked to the ticket, and runs are not reported as VENTURE external runs.
+- The branch is on the task's run, not linked to the ticket itself, and pull requests are not linked.
+- A ticket's milestone and goal are not yet given to the agent with its task.
 - Operator-created tasks are written with the assignee's account; there is no separate service account.

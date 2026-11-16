@@ -2053,6 +2053,16 @@ integrations:
     # See docs/venture.org.
     mirror_tasks: false
 
+    # connector (venture), with mirror_tasks on: a ticket assigned to this
+    # agent's VENTURE user starts a task for it.
+    #
+    # Only an internal ticket still `todo` and carrying no other system's
+    # reference, at most ten an hour per agent; its text reaches the agent
+    # fenced, as data. Anyone who can edit tickets in that VENTURE
+    # organization can then hand this agent work: turn it off where that is
+    # more than you want. See docs/venture.org.
+    mirror_intake: true
+
     # How often a connector that has something to report is asked.
     #
     # Polling, because the other end is another process with its own

@@ -43,6 +43,7 @@ typedef struct {
     gchar   *user;     /* whoami's username, once known */
     gchar   *actor;    /* whoami's actor, e.g. "API token #12" */
     gboolean known;
+    gboolean intake;   /* its new tickets start tasks (0.45.0) */
 } Account;
 
 static void
@@ -90,9 +91,22 @@ struct _ClawtVentureMirror {
     gpointer                      target_data;
     GDestroyNotify                target_notify;
 
+    ClawtVentureMirrorCostFunc    cost;
+    gpointer                      cost_data;
+    GDestroyNotify                cost_notify;
+
     GQueue         *rows;           /* ClawtVentureOutboxRow, being drained */
     gboolean        busy;
     gboolean        warned_no_transport;
+
+    /* The reverse direction (0.45.0). */
+    ClawtVentureMirrorInbound inbound;
+    gpointer                  inbound_data;
+    gboolean                  inbound_on;
+    gboolean                  intake;
+    gboolean                  poll_wanted;
+    GSource                  *poll_timer;
+    GHashTable               *intake_times;  /* agent -> GArray of gint64 */
 };
 
 G_DEFINE_FINAL_TYPE(ClawtVentureMirror, clawt_venture_mirror, G_TYPE_OBJECT)
@@ -108,7 +122,9 @@ typedef enum {
     STEP_UPDATE,
     STEP_REFRESH,
     STEP_COMMENT,
-    STEP_COMMENT_ADOPT
+    STEP_COMMENT_ADOPT,
+    STEP_RUN_START,
+    STEP_RUN_FINISH
 } Step;
 
 typedef struct {
@@ -132,6 +148,7 @@ typedef struct {
 
 static void job_next(Job *job);
 static void drain_one(ClawtVentureMirror *self);
+static void poll_begin(ClawtVentureMirror *self);
 
 static void
 job_free(Job *job)
@@ -400,6 +417,17 @@ desired_fields(Job *job)
     json_object_set_string_member(o, "assignee",
         (owner != NULL && owner->user != NULL) ? owner->user : "");
 
+    /*
+     * Its reference: on a ticket the mirror filed it is there from the
+     * start; on one that came in from VENTURE (intake) the first update
+     * writes it, which is what stops the next poll taking it in again.
+     */
+    {
+        g_autofree gchar *ref = task_ref_text(clawt_task_get_id(job->task));
+
+        json_object_set_string_member(o, "external_ref", ref);
+    }
+
     return o;
 }
 
@@ -415,6 +443,42 @@ description_of(ClawtTask *task)
 }
 
 /* ── The steps ───────────────────────────────────────────────────── */
+
+static void step_run(Job *job);
+
+/* One bookkeeping key in the ticket's receipt (`_run`, `_run_done`). */
+static void
+receipt_mark(Job *job, const gchar *key, gint64 value)
+{
+    g_autoptr(JsonNode) snap = (job->ref->snapshot != NULL)
+        ? json_from_string(job->ref->snapshot, NULL) : NULL;
+    g_autofree gchar *text = NULL;
+
+    if (snap == NULL || !JSON_NODE_HOLDS_OBJECT(snap)) {
+        g_clear_pointer(&snap, json_node_unref);
+        snap = object_node_new();
+    }
+
+    json_object_set_int_member(json_node_get_object(snap), key, value);
+    text = json_to_string(snap, FALSE);
+
+    g_free(job->ref->snapshot);
+    job->ref->snapshot = g_steal_pointer(&text);
+    clawt_task_store_put_venture_ref(job->mirror->store, job->ref, NULL);
+}
+
+static gint64
+receipt_int(Job *job, const gchar *key)
+{
+    g_autoptr(JsonNode) snap = (job->ref->snapshot != NULL)
+        ? json_from_string(job->ref->snapshot, NULL) : NULL;
+
+    if (snap == NULL || !JSON_NODE_HOLDS_OBJECT(snap))
+        return 0;
+
+    return json_object_get_int_member_with_default(json_node_get_object(snap),
+                                                    key, 0);
+}
 
 static void
 step_whoami(Job *job, Account *account)
@@ -611,7 +675,7 @@ step_update(Job *job)
             job->step = STEP_COMMENT;
             job_next(job);
         } else {
-            job_done(job);
+            step_run(job);
         }
         return;
     }
@@ -692,6 +756,128 @@ job_next(Job *job)
     }
 
     step_update(job);
+}
+
+/*
+ * The task's run in VENTURE (0.45.0): opened once it has started, closed
+ * once it has finished.  `_run` in the receipt is the run's id, or -1
+ * when VENTURE would not have it (no such feature, or a budget said no)
+ * -- asked once, never in a loop.
+ */
+static void
+step_run(Job *job)
+{
+    ClawtVentureMirror *self = job->mirror;
+    gint64 run = receipt_int(job, "_run");
+    g_autoptr(JsonNode) node = NULL;
+    JsonObject *o;
+    const gchar *branch = clawt_task_get_checkout_branch(job->task);
+
+    if (self->cost == NULL || run < 0 ||
+        clawt_task_get_started_at(job->task) <= 0) {
+        job_done(job);
+        return;
+    }
+
+    node = object_node_new();
+    o = json_node_get_object(node);
+
+    if (run == 0) {
+        json_object_set_int_member(o, "ticket_id", job->ref->ticket_id);
+        json_object_set_string_member(o, "provider", "clawtilla");
+        if (branch != NULL)
+            json_object_set_string_member(o, "branch", branch);
+
+        job->step = STEP_RUN_START;
+        job_send(job, job->writer, "POST", "/api/v1/runs/external", NULL,
+                 node);
+        return;
+    }
+
+    if (!clawt_task_is_finished(job->task) || receipt_int(job, "_run_done")) {
+        job_done(job);
+        return;
+    }
+
+    {
+        ClawtTaskState state = clawt_task_get_state(job->task);
+        gint64 micros = self->cost(self, clawt_task_get_id(job->task),
+                                   self->cost_data);
+        g_autofree gchar *cost = g_strdup_printf("%" G_GINT64_FORMAT ".%06"
+                                                 G_GINT64_FORMAT " USD",
+                                                 micros / 1000000,
+                                                 micros % 1000000);
+        g_autofree gchar *path = g_strdup_printf(
+            "/api/v1/runs/external/%" G_GINT64_FORMAT, run);
+        const gchar *result = clawt_task_get_result(job->task);
+        g_autofree gchar *summary = g_strndup(result != NULL ? result : "",
+                                              500);
+
+        json_object_set_string_member(o, "state",
+            state == CLAWT_TASK_COMPLETED ? "succeeded"
+            : state == CLAWT_TASK_CANCELLED ? "cancelled" : "failed");
+        json_object_set_string_member(o, "cost", cost);
+        if (*summary != '\0')
+            json_object_set_string_member(o, "summary", summary);
+        if (branch != NULL)
+            json_object_set_string_member(o, "branch", branch);
+
+        job->step = STEP_RUN_FINISH;
+        job_send(job, job->writer, "PATCH", path, NULL, node);
+    }
+}
+
+static void
+on_run_started(Job *job, guint status, const gchar *body)
+{
+    g_autoptr(JsonNode) holder = NULL;
+    JsonObject *o;
+
+    if (status == 0 || status == 429 || status >= 500) {
+        job_refused(job, status, body, "opening the task's run");
+        return;
+    }
+
+    if (status != 200 && status != 201) {
+        g_autofree gchar *message = answer_message(status, body);
+
+        /*
+         * A 409 is a hard-stop budget saying no; a 404 a VENTURE without
+         * external runs.  Either way not this task's to retry: said once,
+         * and the rest of the mirror carries on.
+         */
+        g_message("venture mirror: task %s is not recorded as a VENTURE "
+                  "run: %s", job->row->task_id, message);
+        receipt_mark(job, "_run", -1);
+        job_done(job);
+        return;
+    }
+
+    o = answer_object(body, &holder);
+    receipt_mark(job, "_run", (o != NULL)
+        ? json_object_get_int_member_with_default(o, "id", -1) : -1);
+
+    step_run(job);
+}
+
+static void
+on_run_finished(Job *job, guint status, const gchar *body)
+{
+    if (status == 0 || status == 429 || status >= 500) {
+        job_refused(job, status, body, "closing the task's run");
+        return;
+    }
+
+    /* 409 is a run already closed: as good as done. */
+    if (status != 200 && status != 409) {
+        g_autofree gchar *message = answer_message(status, body);
+
+        g_message("venture mirror: task %s's run was not closed: %s",
+                  job->row->task_id, message);
+    }
+
+    receipt_mark(job, "_run_done", 1);
+    job_done(job);
 }
 
 /* ── Answers ─────────────────────────────────────────────────────── */
@@ -810,7 +996,7 @@ on_created(Job *job, guint status, const gchar *body)
         return;
     }
 
-    job_done(job);
+    step_run(job);
 }
 
 static void
@@ -896,7 +1082,7 @@ on_updated(Job *job, guint status, const gchar *body)
         return;
     }
 
-    job_done(job);
+    step_run(job);
 }
 
 static void
@@ -983,6 +1169,12 @@ on_answer(guint status, const gchar *body, gpointer data)
     case STEP_COMMENT:
     case STEP_COMMENT_ADOPT:
         on_commented(job, status, body);
+        break;
+    case STEP_RUN_START:
+        on_run_started(job, status, body);
+        break;
+    case STEP_RUN_FINISH:
+        on_run_finished(job, status, body);
         break;
     default:
         job_dead(job, "the mirror lost its place");
@@ -1091,6 +1283,8 @@ job_begin(ClawtVentureMirror *self, ClawtVentureOutboxRow *row)
 
         if (job->note == NULL ||
             clawt_task_store_venture_comment(self->store, row->note_id) > 0 ||
+            g_str_has_prefix(json_object_get_string_member_with_default(
+                json_node_get_object(job->note), "author", ""), "venture:") ||
             (job->ref != NULL && g_strcmp0(job->ref->state, "skipped") == 0) ||
             !note_wanted(self, job)) {
             job_done(job);
@@ -1156,6 +1350,14 @@ drain(ClawtVentureMirror *self)
         return;
     }
 
+    /* Between batches, never inside one: a pass and a send share the
+     * refs, and must not interleave. */
+    if (self->poll_wanted && self->request != NULL &&
+        g_hash_table_size(self->accounts) > 0) {
+        poll_begin(self);
+        return;
+    }
+
     if (self->request == NULL) {
         if (!self->warned_no_transport)
             g_warning("venture mirror: no transport installed; the outbox "
@@ -1193,6 +1395,721 @@ on_kick(gpointer data)
     return G_SOURCE_REMOVE;
 }
 
+/* ── The reverse direction: reading VENTURE back (0.45.0) ───────── */
+
+#define CLAWT_VENTURE_MIRROR_POLL_SECONDS   (60)
+#define CLAWT_VENTURE_MIRROR_POLL_LIMIT     (100)
+#define CLAWT_VENTURE_MIRROR_INTAKE_PER_HOUR (10)
+#define CLAWT_VENTURE_MIRROR_OVERLAP        (120)
+
+typedef enum {
+    POLL_WHOAMI,
+    POLL_CHANGES,
+    POLL_COMMENT_BASELINE,
+    POLL_COMMENTS,
+    POLL_INTAKE
+} PollStep;
+
+/*
+ * One pass over every account: what changed on its mirrored tickets,
+ * the comments on those still going, and its new tickets.  Accounts on
+ * the same server see the same tickets, so each (server, ticket,
+ * version) is acted on once a pass.
+ */
+typedef struct {
+    ClawtVentureMirror *mirror;      /* reffed */
+    GPtrArray          *agents;      /* agent ids still to read */
+    guint               index;
+    Account            *account;     /* not owned */
+    PollStep            step;
+    gchar              *started;     /* ISO time this pass began */
+    GHashTable         *seen;        /* "base#id#version" acted on */
+    GHashTable         *live;        /* ticket id text -> task id */
+} PollJob;
+
+static void poll_next_account(PollJob *poll);
+static void poll_next_step(PollJob *poll);
+
+static void
+poll_free(PollJob *poll)
+{
+    g_ptr_array_unref(poll->agents);
+    g_free(poll->started);
+    g_hash_table_unref(poll->seen);
+    g_hash_table_unref(poll->live);
+    g_object_unref(poll->mirror);
+    g_free(poll);
+}
+
+static void
+poll_end(PollJob *poll)
+{
+    ClawtVentureMirror *self = poll->mirror;
+
+    poll_free(poll);
+    self->busy = FALSE;
+    clawt_venture_mirror_kick(self);
+}
+
+static gchar *
+iso_seconds_ago(gint64 seconds)
+{
+    g_autoptr(GDateTime) now = g_date_time_new_now_utc();
+    g_autoptr(GDateTime) then = g_date_time_add_seconds(now,
+                                                        -(gdouble)seconds);
+
+    return g_date_time_format(then, "%Y-%m-%dT%H:%M:%SZ");
+}
+
+static gchar *
+cursor_key(Account *account, const gchar *what)
+{
+    return g_strdup_printf("%s|%s|%s", account->base, account->agent_id, what);
+}
+
+/* The records of a list answer, or NULL. */
+static JsonArray *
+answer_array(const gchar *body, JsonNode **holder)
+{
+    *holder = (body != NULL) ? json_from_string(body, NULL) : NULL;
+
+    if (*holder == NULL)
+        return NULL;
+
+    if (JSON_NODE_HOLDS_ARRAY(*holder))
+        return json_node_get_array(*holder);
+
+    if (JSON_NODE_HOLDS_OBJECT(*holder)) {
+        JsonObject *o = json_node_get_object(*holder);
+        static const gchar *const keys[] = { "items", "data", "records", NULL };
+        guint i;
+
+        for (i = 0; keys[i] != NULL; i++) {
+            if (json_object_has_member(o, keys[i]) &&
+                JSON_NODE_HOLDS_ARRAY(json_object_get_member(o, keys[i])))
+                return json_object_get_array_member(o, keys[i]);
+        }
+    }
+
+    return NULL;
+}
+
+static void on_poll_answer(guint status, const gchar *body, gpointer data);
+
+static void
+poll_send(PollJob *poll, const gchar *path)
+{
+    ClawtVentureMirror *self = poll->mirror;
+    g_autofree gchar *url = g_strconcat(poll->account->base, path, NULL);
+
+    self->request(self, "GET", url, poll->account->token, NULL, NULL,
+                  on_poll_answer, poll, self->request_data);
+}
+
+/* What changed on this account's mirrored tickets since last time. */
+static void
+poll_changes(PollJob *poll)
+{
+    g_autofree gchar *key = cursor_key(poll->account, "changes");
+    g_autofree gchar *since = clawt_task_store_venture_cursor(
+        poll->mirror->store, key);
+    g_autofree gchar *like = g_strdup_printf("clawtilla:%s:%%",
+                                             g_get_host_name());
+    g_autofree gchar *like_q = g_uri_escape_string(like, NULL, FALSE);
+    g_autofree gchar *since_q = NULL;
+    g_autofree gchar *path = NULL;
+
+    /* A first pass looks back a day: what changed while nobody read. */
+    if (since == NULL)
+        since = iso_seconds_ago(86400);
+
+    since_q = g_uri_escape_string(since, NULL, FALSE);
+    path = g_strdup_printf("/api/v1/ticket?external_ref__like=%s"
+                           "&updated_at__gte=%s&order=updated_at&limit=%d",
+                           like_q, since_q, CLAWT_VENTURE_MIRROR_POLL_LIMIT);
+
+    poll->step = POLL_CHANGES;
+    poll_send(poll, path);
+}
+
+/* One changed ticket: act on a status a person set, once. */
+static void
+poll_apply_ticket(PollJob *poll, JsonObject *ticket)
+{
+    ClawtVentureMirror *self = poll->mirror;
+    const gchar *ext = json_object_get_string_member_with_default(
+        ticket, "external_ref", "");
+    g_autofree gchar *prefix = g_strdup_printf("clawtilla:%s:",
+                                               g_get_host_name());
+    g_autofree gchar *seen = NULL;
+    g_autoptr(ClawtVentureRef) ref = NULL;
+    g_autoptr(ClawtTask) task = NULL;
+    g_autoptr(JsonNode) snap = NULL;
+    const gchar *task_id;
+    const gchar *status;
+    const gchar *was = NULL;
+    gint64 version = json_object_get_int_member_with_default(ticket,
+                                                             "version", 0);
+
+    if (!g_str_has_prefix(ext, prefix))
+        return;
+
+    task_id = ext + strlen(prefix);
+
+    if (g_str_has_prefix(task_id, "note:"))
+        return;
+
+    seen = g_strdup_printf("%s#%" G_GINT64_FORMAT "#%" G_GINT64_FORMAT,
+                           poll->account->base,
+                           json_object_get_int_member_with_default(ticket,
+                                                                   "id", 0),
+                           version);
+
+    if (!g_hash_table_add(poll->seen, g_steal_pointer(&seen)))
+        return;
+
+    ref = clawt_task_store_venture_ref(self->store, task_id);
+
+    /* Not newer than the mirror's own last write: nothing a person did. */
+    if (ref == NULL || ref->ticket_id == 0 || version <= ref->version)
+        return;
+
+    task = clawt_task_store_get(self->store, task_id);
+
+    if (task == NULL)
+        return;
+
+    snap = (ref->snapshot != NULL) ? json_from_string(ref->snapshot, NULL)
+                                   : NULL;
+    if (snap != NULL && JSON_NODE_HOLDS_OBJECT(snap))
+        was = json_object_get_string_member_with_default(
+            json_node_get_object(snap), "status", NULL);
+
+    status = json_object_get_string_member_with_default(ticket, "status", "");
+
+    /*
+     * The version is taken either way, so the next write to the ticket
+     * carries it; the receipt is left alone, so a field the mirror does
+     * not act on stays as the person set it until the task itself moves.
+     */
+    ref->version = version;
+    clawt_task_store_put_venture_ref(self->store, ref, NULL);
+
+    if (g_strcmp0(status, was) == 0 || self->inbound_on == FALSE)
+        return;
+
+    if (g_strcmp0(status, "cancelled") == 0 &&
+        !clawt_task_is_finished(task)) {
+        if (self->inbound.cancel != NULL)
+            self->inbound.cancel(self->inbound_data, task_id, "VENTURE");
+    } else if (clawt_task_get_state(task) == CLAWT_TASK_REVIEW &&
+               (g_strcmp0(status, "done") == 0 ||
+                g_strcmp0(status, "in_progress") == 0 ||
+                g_strcmp0(status, "todo") == 0)) {
+        /*
+         * Review has two doors: the operator's decision and the
+         * ticket's status.  Whichever answers first wins; the task's
+         * next state is then written back to the ticket by the outbox.
+         */
+        if (self->inbound.review != NULL)
+            self->inbound.review(self->inbound_data, task_id,
+                                 g_strcmp0(status, "done") == 0,
+                                 "Changes were asked for in VENTURE, by "
+                                 "moving the ticket out of review.",
+                                 "VENTURE");
+    }
+}
+
+static void
+on_poll_changes(PollJob *poll, guint status, const gchar *body)
+{
+    g_autoptr(JsonNode) holder = NULL;
+    JsonArray *rows;
+    g_autofree gchar *key = cursor_key(poll->account, "changes");
+    const gchar *last = NULL;
+    guint i;
+
+    if (status != 200) {
+        poll_next_account(poll);
+        return;
+    }
+
+    rows = answer_array(body, &holder);
+
+    for (i = 0; rows != NULL && i < json_array_get_length(rows); i++) {
+        JsonObject *ticket = json_array_get_object_element(rows, i);
+
+        poll_apply_ticket(poll, ticket);
+        last = json_object_get_string_member_with_default(ticket,
+                                                          "updated_at", last);
+    }
+
+    /*
+     * A full page leaves more: carry on from its last row.  Otherwise
+     * from just before this pass began -- the overlap covers a clock
+     * that disagrees by a minute, and an (id, version) is acted on once.
+     */
+    if (rows != NULL && json_array_get_length(rows) >=
+                        CLAWT_VENTURE_MIRROR_POLL_LIMIT && last != NULL)
+        clawt_task_store_put_venture_cursor(poll->mirror->store, key, last);
+    else
+        clawt_task_store_put_venture_cursor(poll->mirror->store, key,
+                                            poll->started);
+
+    poll->step = POLL_COMMENTS;
+    poll_next_step(poll);
+}
+
+/* The comments on this account's tickets still going, after the cursor. */
+static void
+poll_comments(PollJob *poll)
+{
+    g_autofree gchar *key = cursor_key(poll->account, "comments");
+    g_autofree gchar *cursor = clawt_task_store_venture_cursor(
+        poll->mirror->store, key);
+    g_autoptr(GString) ids = g_string_new(NULL);
+    g_autofree gchar *path = NULL;
+    GHashTableIter it;
+    gpointer ticket;
+
+    /*
+     * Never read before: start from the newest comment, delivering
+     * nothing -- an account's first pass must not replay every comment
+     * ever written on its tickets.
+     */
+    if (cursor == NULL) {
+        poll->step = POLL_COMMENT_BASELINE;
+        poll_send(poll, "/api/v1/ticket_comment?order=-id&limit=1");
+        return;
+    }
+
+    g_hash_table_iter_init(&it, poll->live);
+    while (g_hash_table_iter_next(&it, &ticket, NULL))
+        g_string_append_printf(ids, "%s%s", ids->len > 0 ? "," : "",
+                               (const gchar *)ticket);
+
+    if (ids->len == 0) {
+        poll->step = POLL_INTAKE;
+        poll_next_step(poll);
+        return;
+    }
+
+    path = g_strdup_printf("/api/v1/ticket_comment?ticket_id__in=%s"
+                           "&id__gt=%s&order=id&limit=%d", ids->str, cursor,
+                           CLAWT_VENTURE_MIRROR_POLL_LIMIT);
+    poll->step = POLL_COMMENTS;
+    poll_send(poll, path);
+}
+
+static void
+on_poll_comment_baseline(PollJob *poll, guint status, const gchar *body)
+{
+    g_autoptr(JsonNode) holder = NULL;
+    g_autofree gchar *key = cursor_key(poll->account, "comments");
+    JsonArray *rows;
+    gint64 newest = 0;
+
+    if (status != 200) {
+        poll_next_account(poll);
+        return;
+    }
+
+    rows = answer_array(body, &holder);
+
+    if (rows != NULL && json_array_get_length(rows) > 0)
+        newest = json_object_get_int_member_with_default(
+            json_array_get_object_element(rows, 0), "id", 0);
+
+    {
+        g_autofree gchar *value = g_strdup_printf("%" G_GINT64_FORMAT, newest);
+
+        clawt_task_store_put_venture_cursor(poll->mirror->store, key, value);
+    }
+
+    poll->step = POLL_INTAKE;
+    poll_next_step(poll);
+}
+
+/*
+ * Whether @author is the task's own assignee: an assignee hears its own
+ * work already, and its own comment through its own VENTURE tools must
+ * not come back to it as somebody else's.
+ */
+static gboolean
+is_assignees_own(ClawtVentureMirror *self, const gchar *task_id,
+                 const gchar *author)
+{
+    g_autoptr(ClawtTask) task = clawt_task_store_get(self->store, task_id);
+    Account *owner;
+
+    if (task == NULL || clawt_task_get_assignee(task) == NULL)
+        return FALSE;
+
+    owner = g_hash_table_lookup(self->accounts, clawt_task_get_assignee(task));
+
+    return owner != NULL && author != NULL &&
+           (g_strcmp0(author, owner->user) == 0 ||
+            g_strcmp0(author, owner->actor) == 0);
+}
+
+static void
+on_poll_comments(PollJob *poll, guint status, const gchar *body)
+{
+    ClawtVentureMirror *self = poll->mirror;
+    g_autoptr(JsonNode) holder = NULL;
+    g_autofree gchar *key = cursor_key(poll->account, "comments");
+    JsonArray *rows;
+    gint64 newest = 0;
+    guint i;
+
+    if (status != 200) {
+        poll_next_account(poll);
+        return;
+    }
+
+    rows = answer_array(body, &holder);
+
+    for (i = 0; rows != NULL && i < json_array_get_length(rows); i++) {
+        JsonObject *c = json_array_get_object_element(rows, i);
+        gint64 id = json_object_get_int_member_with_default(c, "id", 0);
+        g_autofree gchar *ticket = g_strdup_printf("%" G_GINT64_FORMAT,
+            json_object_get_int_member_with_default(c, "ticket_id", 0));
+        const gchar *task_id = g_hash_table_lookup(poll->live, ticket);
+        const gchar *author = json_object_get_string_member_with_default(
+            c, "author", NULL);
+        g_autofree gchar *seen = g_strdup_printf("%s#c%" G_GINT64_FORMAT,
+                                                 poll->account->base, id);
+
+        newest = MAX(newest, id);
+
+        /* Once a pass, whichever account read it. */
+        if (!g_hash_table_add(poll->seen, g_steal_pointer(&seen)))
+            continue;
+
+        /* The mirror's own, by its reference; the assignee's own. */
+        if (task_id == NULL ||
+            g_str_has_prefix(json_object_get_string_member_with_default(
+                c, "external_ref", ""), "clawtilla:") ||
+            is_assignees_own(self, task_id, author))
+            continue;
+
+        if (self->inbound_on && self->inbound.comment != NULL)
+            self->inbound.comment(self->inbound_data, task_id,
+                                  author != NULL ? author : "somebody",
+                                  json_object_get_string_member_with_default(
+                                      c, "body", ""));
+    }
+
+    if (newest > 0) {
+        g_autofree gchar *value = g_strdup_printf("%" G_GINT64_FORMAT, newest);
+
+        clawt_task_store_put_venture_cursor(self->store, key, value);
+    }
+
+    poll->step = POLL_INTAKE;
+    poll_next_step(poll);
+}
+
+/* Whether @agent_id may take one more ticket this hour. */
+static gboolean
+intake_allowed(ClawtVentureMirror *self, const gchar *agent_id)
+{
+    GArray *times = g_hash_table_lookup(self->intake_times, agent_id);
+    gint64 now = now_seconds();
+    guint i;
+
+    if (times == NULL) {
+        times = g_array_new(FALSE, FALSE, sizeof(gint64));
+        g_hash_table_insert(self->intake_times, g_strdup(agent_id), times);
+    }
+
+    for (i = 0; i < times->len; ) {
+        if (now - g_array_index(times, gint64, i) >= 3600)
+            g_array_remove_index(times, i);
+        else
+            i++;
+    }
+
+    if (times->len >= CLAWT_VENTURE_MIRROR_INTAKE_PER_HOUR)
+        return FALSE;
+
+    g_array_append_val(times, now);
+    return TRUE;
+}
+
+/* This account's tickets, assigned to its user and not yet started. */
+static void
+poll_intake(PollJob *poll)
+{
+    g_autofree gchar *user = NULL;
+    g_autofree gchar *path = NULL;
+
+    if (!poll->mirror->intake || !poll->account->intake ||
+        !poll->mirror->inbound_on ||
+        poll->mirror->inbound.intake == NULL || poll->account->user == NULL) {
+        poll_next_account(poll);
+        return;
+    }
+
+    user = g_uri_escape_string(poll->account->user, NULL, FALSE);
+    path = g_strdup_printf("/api/v1/ticket?assignee=%s&status=todo"
+                           "&kind=internal&order=id&limit=10", user);
+    poll->step = POLL_INTAKE;
+    poll_send(poll, path);
+}
+
+static void
+on_poll_intake(PollJob *poll, guint status, const gchar *body)
+{
+    ClawtVentureMirror *self = poll->mirror;
+    g_autoptr(JsonNode) holder = NULL;
+    JsonArray *rows;
+    guint i;
+
+    if (status != 200) {
+        poll_next_account(poll);
+        return;
+    }
+
+    rows = answer_array(body, &holder);
+
+    for (i = 0; rows != NULL && i < json_array_get_length(rows); i++) {
+        JsonObject *t = json_array_get_object_element(rows, i);
+        gint64 ticket = json_object_get_int_member_with_default(t, "id", 0);
+        g_autofree gchar *known = NULL;
+        g_autofree gchar *task_id = NULL;
+        g_autofree gchar *url = NULL;
+        const gchar *ext = json_object_get_string_member_with_default(
+            t, "external_ref", "");
+
+        /* From another system, or already ours: not intake. */
+        if (ticket <= 0 || (ext != NULL && *ext != '\0'))
+            continue;
+
+        known = clawt_task_store_venture_task_for_ticket(self->store, ticket);
+
+        if (known != NULL)
+            continue;
+
+        if (!intake_allowed(self, poll->account->agent_id)) {
+            g_message("venture mirror: %s already took %d tickets this hour; "
+                      "ticket #%" G_GINT64_FORMAT " waits for the next",
+                      poll->account->agent_id,
+                      CLAWT_VENTURE_MIRROR_INTAKE_PER_HOUR, ticket);
+            break;
+        }
+
+        url = g_strdup_printf("%s/tickets/%" G_GINT64_FORMAT,
+                              poll->account->base, ticket);
+        task_id = self->inbound.intake(
+            self->inbound_data, poll->account->agent_id, ticket,
+            json_object_get_string_member_with_default(t, "title", ""),
+            json_object_get_string_member_with_default(t, "description", ""),
+            url);
+
+        if (task_id == NULL)
+            continue;
+
+        /*
+         * The ref now, before anything else can run: it is what makes
+         * the outbox update this ticket rather than file another, and
+         * what makes the next pass leave it alone.  Its receipt is the
+         * ticket as it stands, without a reference -- so the first update
+         * writes the reference and the status the task is in.
+         */
+        {
+            g_autoptr(JsonNode) snap = object_node_new();
+            JsonObject *so = json_node_get_object(snap);
+            g_autofree gchar *text = NULL;
+            ClawtVentureRef ref = { 0 };
+
+            json_object_set_string_member(so, "title",
+                json_object_get_string_member_with_default(t, "title", ""));
+            json_object_set_string_member(so, "status", "todo");
+            json_object_set_string_member(so, "assignee",
+                poll->account->user);
+            text = json_to_string(snap, FALSE);
+
+            ref.task_id = task_id;
+            ref.instance = poll->account->instance;
+            ref.ticket_id = ticket;
+            ref.version = json_object_get_int_member_with_default(t,
+                                                                  "version", 1);
+            ref.snapshot = text;
+            ref.state = (gchar *)"synced";
+            ref.url = url;
+            clawt_task_store_put_venture_ref(self->store, &ref, NULL);
+        }
+    }
+
+    poll_next_account(poll);
+}
+
+/* An account the outbox has not needed yet still has to say who it is. */
+static void
+on_poll_whoami(PollJob *poll, guint status, const gchar *body)
+{
+    g_autoptr(JsonNode) holder = NULL;
+    JsonObject *o;
+    JsonObject *user;
+    Account *account = poll->account;
+
+    if (status != 200) {
+        poll_next_account(poll);
+        return;
+    }
+
+    o = answer_object(body, &holder);
+    user = (o != NULL && json_object_has_member(o, "user") &&
+            JSON_NODE_HOLDS_OBJECT(json_object_get_member(o, "user")))
+        ? json_object_get_object_member(o, "user") : NULL;
+
+    g_free(account->actor);
+    account->actor = g_strdup(o != NULL
+        ? json_object_get_string_member_with_default(o, "actor", NULL) : NULL);
+    g_free(account->user);
+    account->user = g_strdup(user != NULL
+        ? json_object_get_string_member_with_default(user, "username", NULL)
+        : NULL);
+    account->known = TRUE;
+
+    poll->step = POLL_CHANGES;
+    poll_next_step(poll);
+}
+
+static void
+on_poll_answer(guint status, const gchar *body, gpointer data)
+{
+    PollJob *poll = data;
+
+    switch (poll->step) {
+    case POLL_WHOAMI:
+        on_poll_whoami(poll, status, body);
+        break;
+    case POLL_CHANGES:
+        on_poll_changes(poll, status, body);
+        break;
+    case POLL_COMMENT_BASELINE:
+        on_poll_comment_baseline(poll, status, body);
+        break;
+    case POLL_COMMENTS:
+        on_poll_comments(poll, status, body);
+        break;
+    case POLL_INTAKE:
+        on_poll_intake(poll, status, body);
+        break;
+    }
+}
+
+static void
+poll_next_step(PollJob *poll)
+{
+    switch (poll->step) {
+    case POLL_WHOAMI:
+        poll_send(poll, "/api/v1/whoami");
+        break;
+    case POLL_CHANGES:
+        poll_changes(poll);
+        break;
+    case POLL_COMMENT_BASELINE:
+    case POLL_COMMENTS:
+        poll_comments(poll);
+        break;
+    case POLL_INTAKE:
+        poll_intake(poll);
+        break;
+    }
+}
+
+/* The next account with a known user, or the end of the pass. */
+static void
+poll_next_account(PollJob *poll)
+{
+    while (poll->index < poll->agents->len) {
+        const gchar *agent = g_ptr_array_index(poll->agents, poll->index++);
+
+        poll->account = g_hash_table_lookup(poll->mirror->accounts, agent);
+
+        if (poll->account == NULL)
+            continue;
+
+        poll->step = poll->account->known ? POLL_CHANGES : POLL_WHOAMI;
+        poll_next_step(poll);
+        return;
+    }
+
+    poll_end(poll);
+}
+
+static void
+poll_begin(ClawtVentureMirror *self)
+{
+    PollJob *poll = g_new0(PollJob, 1);
+    GHashTableIter it;
+    gpointer agent;
+
+    self->busy = TRUE;
+    self->poll_wanted = FALSE;
+
+    poll->mirror = g_object_ref(self);
+    poll->agents = g_ptr_array_new_with_free_func(g_free);
+    poll->started = iso_seconds_ago(CLAWT_VENTURE_MIRROR_OVERLAP);
+    poll->seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    poll->live = clawt_task_store_venture_live_tickets(self->store);
+
+    g_hash_table_iter_init(&it, self->accounts);
+    while (g_hash_table_iter_next(&it, &agent, NULL))
+        g_ptr_array_add(poll->agents, g_strdup(agent));
+
+    g_ptr_array_sort(poll->agents, (GCompareFunc)g_strcmp0);
+
+    poll_next_account(poll);
+}
+
+static gboolean
+on_poll_tick(gpointer data)
+{
+    clawt_venture_mirror_poll(CLAWT_VENTURE_MIRROR(data));
+    return G_SOURCE_CONTINUE;
+}
+
+void
+clawt_venture_mirror_poll(ClawtVentureMirror *self)
+{
+    g_return_if_fail(CLAWT_IS_VENTURE_MIRROR(self));
+
+    if (!self->inbound_on || self->request == NULL)
+        return;
+
+    self->poll_wanted = TRUE;
+    clawt_venture_mirror_kick(self);
+}
+
+void
+clawt_venture_mirror_set_inbound(ClawtVentureMirror              *self,
+                                 const ClawtVentureMirrorInbound *inbound,
+                                 gpointer                         data,
+                                 gboolean                         intake)
+{
+    g_return_if_fail(CLAWT_IS_VENTURE_MIRROR(self));
+
+    if (inbound != NULL)
+        self->inbound = *inbound;
+    else
+        memset(&self->inbound, 0, sizeof(self->inbound));
+
+    self->inbound_data = data;
+    self->inbound_on = (inbound != NULL);
+    self->intake = intake;
+
+    if (self->inbound_on && self->poll_timer == NULL && self->timer != NULL) {
+        self->poll_timer = g_timeout_source_new_seconds(
+            CLAWT_VENTURE_MIRROR_POLL_SECONDS);
+        g_source_set_callback(self->poll_timer, on_poll_tick, self, NULL);
+        g_source_attach(self->poll_timer, self->context);
+    }
+}
+
 /* ── Public ──────────────────────────────────────────────────────── */
 
 ClawtVentureMirror *
@@ -1223,6 +2140,22 @@ clawt_venture_mirror_set_request_func(ClawtVentureMirror           *self,
     self->request = func;
     self->request_data = user_data;
     self->request_notify = notify;
+}
+
+void
+clawt_venture_mirror_set_cost_func(ClawtVentureMirror        *self,
+                                   ClawtVentureMirrorCostFunc func,
+                                   gpointer                   user_data,
+                                   GDestroyNotify             notify)
+{
+    g_return_if_fail(CLAWT_IS_VENTURE_MIRROR(self));
+
+    if (self->cost_notify != NULL)
+        self->cost_notify(self->cost_data);
+
+    self->cost = func;
+    self->cost_data = user_data;
+    self->cost_notify = notify;
 }
 
 void
@@ -1309,6 +2242,22 @@ clawt_venture_mirror_has_account(ClawtVentureMirror *self,
            g_hash_table_contains(self->accounts, agent_id);
 }
 
+void
+clawt_venture_mirror_set_account_intake(ClawtVentureMirror *self,
+                                        const gchar        *agent_id,
+                                        gboolean            intake)
+{
+    Account *account;
+
+    g_return_if_fail(CLAWT_IS_VENTURE_MIRROR(self));
+
+    account = (agent_id != NULL)
+        ? g_hash_table_lookup(self->accounts, agent_id) : NULL;
+
+    if (account != NULL)
+        account->intake = intake;
+}
+
 guint
 clawt_venture_mirror_account_count(ClawtVentureMirror *self)
 {
@@ -1342,6 +2291,13 @@ clawt_venture_mirror_start(ClawtVentureMirror *self, guint interval_seconds)
     self->timer = g_timeout_source_new_seconds(MAX(interval_seconds, 1));
     g_source_set_callback(self->timer, on_tick, self, NULL);
     g_source_attach(self->timer, self->context);
+
+    if (self->inbound_on && self->poll_timer == NULL) {
+        self->poll_timer = g_timeout_source_new_seconds(
+            CLAWT_VENTURE_MIRROR_POLL_SECONDS);
+        g_source_set_callback(self->poll_timer, on_poll_tick, self, NULL);
+        g_source_attach(self->poll_timer, self->context);
+    }
 }
 
 void
@@ -1357,6 +2313,11 @@ clawt_venture_mirror_stop(ClawtVentureMirror *self)
     if (self->kick != NULL) {
         g_source_destroy(self->kick);
         g_clear_pointer(&self->kick, g_source_unref);
+    }
+
+    if (self->poll_timer != NULL) {
+        g_source_destroy(self->poll_timer);
+        g_clear_pointer(&self->poll_timer, g_source_unref);
     }
 }
 
@@ -1459,11 +2420,14 @@ clawt_venture_mirror_finalize(GObject *object)
         self->request_notify(self->request_data);
     if (self->target_notify != NULL)
         self->target_notify(self->target_data);
+    if (self->cost_notify != NULL)
+        self->cost_notify(self->cost_data);
 
     g_queue_free_full(self->rows,
                       (GDestroyNotify)clawt_venture_outbox_row_free);
     g_hash_table_unref(self->accounts);
     g_hash_table_unref(self->last_progress);
+    g_hash_table_unref(self->intake_times);
     g_clear_object(&self->store);
     g_clear_pointer(&self->context, g_main_context_unref);
 
@@ -1484,4 +2448,7 @@ clawt_venture_mirror_init(ClawtVentureMirror *self)
     self->last_progress = g_hash_table_new_full(g_str_hash, g_str_equal,
                                                 g_free, NULL);
     self->rows = g_queue_new();
+    self->intake_times = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                               g_free,
+                                               (GDestroyNotify)g_array_unref);
 }

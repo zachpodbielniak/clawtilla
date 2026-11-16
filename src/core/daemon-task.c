@@ -127,8 +127,8 @@ add_incident_object(
  * A send that is refused fails the task, so it is not left `pending`
  * with nobody told -- which reads as work in progress nobody is doing.
  */
-static gboolean
-deliver_operator_task(
+gboolean
+clawt_daemon_deliver_operator_task(
 	ClawtDaemon  *self,
 	ClawtTask    *task,
 	GError      **error
@@ -147,6 +147,74 @@ deliver_operator_task(
 	clawt_task_manager_fail(self->tasks, clawt_task_get_id(task),
 	                        "it could not be handed to its assignee");
 	return FALSE;
+}
+
+static void publish_note(ClawtDaemon *self, ClawtTask *task,
+                         const gchar *author);
+
+/*
+ * A comment on a task: kept as a note by @author and, while the task is
+ * with its assignee, said to it in the conversation the work is in.  The
+ * router does what it does with any message for a busy agent -- steers
+ * it into the running turn when steering is on, or queues it for the
+ * next -- so a comment never starts a turn of its own on a busy agent.
+ * A backlog, blocked or finished task only keeps it.
+ *
+ * @said is how the assignee hears it, when that is not the operator's
+ * plain words (a VENTURE comment is fenced); %NULL for the operator's.
+ */
+gint64
+clawt_daemon_task_comment(
+	ClawtDaemon  *self,
+	const gchar  *task_id,
+	const gchar  *author,
+	const gchar  *said,
+	const gchar  *text,
+	gboolean     *told,
+	GError      **error
+){
+	ClawtTask *task;
+	gint64 note_id;
+
+	if (told != NULL)
+		*told = FALSE;
+
+	note_id = clawt_task_manager_add_note(self->tasks, task_id, author,
+	                                      CLAWT_TASK_NOTE_COMMENT, text, error);
+
+	if (note_id == 0)
+		return 0;
+
+	task = clawt_task_manager_get(self->tasks, task_id);
+
+	if (task != NULL &&
+	    clawt_task_state_is_active(clawt_task_get_state(task)) &&
+	    clawt_task_get_assignee(task) != NULL) {
+		g_autofree gchar *body = (said != NULL) ? g_strdup(said)
+			: g_strdup_printf("The operator commented on task %s (%s):\n\n%s",
+			                  task_id, clawt_task_get_title(task), text);
+		const gchar *target = clawt_task_get_thread_room(task) != NULL
+			? clawt_task_get_thread_room(task)
+			: clawt_task_get_assignee(task);
+		g_autoptr(GError) send_error = NULL;
+		gboolean sent;
+
+		sent = clawt_mailbox_router_send_to(self->router, "user", target,
+		                                    body, task_id, 0,
+		                                    &send_error) >= 0;
+
+		if (!sent)
+			g_warning("task %s: the comment was kept but not delivered: "
+			          "%s", task_id, send_error->message);
+
+		if (told != NULL)
+			*told = sent;
+	}
+
+	if (task != NULL)
+		publish_note(self, task, author);
+
+	return note_id;
 }
 
 /*
@@ -567,7 +635,7 @@ clawt_daemon_handle_task(
                                                error->message);
             }
         } else if (agent != NULL &&
-                   !deliver_operator_task(self, task, &error)) {
+                   !clawt_daemon_deliver_operator_task(self, task, &error)) {
             /* With an assignee it goes to them now; without, it waits. */
             return clawt_ipc_error_new(request, error->code, error->message);
         }
@@ -688,7 +756,7 @@ clawt_daemon_handle_task(
 
         task = clawt_task_manager_get(self->tasks, task_id);
 
-        if (!deliver_operator_task(self, task, &error))
+        if (!clawt_daemon_deliver_operator_task(self, task, &error))
             return clawt_ipc_error_new(request, error->code, error->message);
 
         json_builder_begin_object(builder);
@@ -704,52 +772,17 @@ clawt_daemon_handle_task(
         const gchar *text = clawt_ipc_payload_string(payload, "text");
         g_autoptr(GError) error = NULL;
         gboolean told = FALSE;
-        ClawtTask *task;
         gint64 note_id;
 
         if (task_id == NULL || text == NULL || *text == '\0')
             return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
                                        "which task, and what to say?");
 
-        note_id = clawt_task_manager_add_note(self->tasks, task_id, "user",
-                                              CLAWT_TASK_NOTE_COMMENT, text,
-                                              &error);
+        note_id = clawt_daemon_task_comment(self, task_id, "user", NULL, text,
+                                            &told, &error);
 
         if (note_id == 0)
             return clawt_ipc_error_new(request, error->code, error->message);
-
-        task = clawt_task_manager_get(self->tasks, task_id);
-
-        /*
-         * A task with its assignee also hears it, as a message from the
-         * operator in the conversation the work is in.  The router then
-         * does what it does with any message for a busy agent -- steers
-         * it into the running turn when steering is on, or queues it for
-         * the next -- so a comment never starts a turn of its own on a
-         * busy agent.  A backlog, blocked or finished task only keeps it.
-         */
-        if (task != NULL &&
-            clawt_task_state_is_active(clawt_task_get_state(task)) &&
-            clawt_task_get_assignee(task) != NULL) {
-            g_autofree gchar *body = g_strdup_printf(
-                "The operator commented on task %s (%s):\n\n%s",
-                task_id, clawt_task_get_title(task), text);
-            const gchar *target = clawt_task_get_thread_room(task) != NULL
-                ? clawt_task_get_thread_room(task)
-                : clawt_task_get_assignee(task);
-            g_autoptr(GError) send_error = NULL;
-
-            told = clawt_mailbox_router_send_to(self->router, "user", target,
-                                                body, task_id, 0,
-                                                &send_error) >= 0;
-
-            if (!told)
-                g_warning("task %s: the comment was kept but not delivered: "
-                          "%s", task_id, send_error->message);
-        }
-
-        if (task != NULL)
-            publish_note(self, task, "user");
 
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "note");

@@ -2239,6 +2239,17 @@ static const ClawtSchemaEntry schema[] = {
   "queued in tasks.db and sent behind. Needs VENTURE 0.10.0 or later.\n"
   "See docs/venture.org.", "0.44.0" },
 
+{ "integrations.mirror_intake", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "true", NULL,
+  "connector (venture), with mirror_tasks on: a ticket assigned to this\n"
+  "agent's VENTURE user starts a task for it.\n"
+  "\n"
+  "Only an internal ticket still `todo` and carrying no other system's\n"
+  "reference, at most ten an hour per agent; its text reaches the agent\n"
+  "fenced, as data. Anyone who can edit tickets in that VENTURE\n"
+  "organization can then hand this agent work: turn it off where that is\n"
+  "more than you want. See docs/venture.org.", "0.45.0" },
+
 { "integrations.poll_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "60", NULL,
   "How often a connector that has something to report is asked.\n"

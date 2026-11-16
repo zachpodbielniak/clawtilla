@@ -1104,6 +1104,15 @@ void clawt_daemon_venture_start(ClawtDaemon *self);
 void clawt_daemon_venture_stop(ClawtDaemon *self);
 void clawt_daemon_venture_sync(ClawtDaemon *self);
 
+/* A comment kept on a task and said to its assignee (daemon-task.c). */
+gint64   clawt_daemon_task_comment(ClawtDaemon *self, const gchar *task_id,
+                                   const gchar *author, const gchar *said,
+                                   const gchar *text, gboolean *told,
+                                   GError **error);
+/* An operator-style task handed to its assignee; fails it if refused. */
+gboolean clawt_daemon_deliver_operator_task(ClawtDaemon *self,
+                                            ClawtTask *task, GError **error);
+
 /* The token file a connector binding names, read; NULL without one. */
 gchar *clawt_daemon_venture_token_for(ClawtIntegrationBinding *binding);
 
