@@ -986,6 +986,10 @@ A task object carries ~retries~ and ~retried_by~ once it has been retried, and n
 
 ~task.create~ also takes ~after~ (since 0.37.0): task ids, comma- or space-separated, that the new task waits for.  While any of them has not completed it is ~blocked~; with an ~agent~, its delivery is kept and sent as the operator's when the last one completes.
 
+~task.create~ takes ~review~ (since 0.38.0): ~lead~, ~delegator~ (the operator), ~operator~, an agent id or ~none~; without it the assignee's ~agents.review_by~ applies.  A spelling that names nobody, or names the assignee, is =NOT_FOUND= / =INVALID_ARGUMENT= and makes no task.
+
+~task.review~ (since 0.38.0) takes ~task~, ~verdict~ (~accept~ or ~changes~) and ~notes~ (required for ~changes~): the operator's verdict on a task in ~review~, whoever its reviewer is.  It answers ~said~ (what happened, in a sentence) and ~task~.  A task not in review is =INVALID_ARGUMENT=.  A task object carries ~reviewer~ and ~review_round~ when it has a reviewer.
+
 ~task.link~ and ~task.unlink~ (since 0.37.0) take ~task~ and ~after~ (one task id).  Linking holds a task on the backlog or adds to what a held task waits for; any other state is =INVALID_ARGUMENT=, as are a self-link and a link that would close a cycle.  Unlinking the last blocker releases the task.  Both answer ~task~.  A task object carries ~after~ and ~waiting_on~ (arrays of task ids) when it waits for anything.
 
 ~task.comment~ (since 0.36.0) takes ~task~ and ~text~ and adds an operator comment to the task's thread.  It answers ~note~ (the note's id) and ~delivered~ (a JSON boolean: whether the assignee was sent it -- true only for a ~pending~ or ~running~ task).  It publishes ~task.noted~ (subject the task id, details ~author~ and ~agent~), not ~task.changed~.

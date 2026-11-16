@@ -1377,6 +1377,21 @@ fills two years. A handoff that has not run yet is never pruned
 however old it is: it is undrained rather than finished. 0 keeps
 receipts until the count alone drops them.
 
+*** =orchestration.review_rounds=
+
+- Type :: integer
+- Default :: =3=
+- Since :: 0.38.0
+
+How many times a reviewer may send a task back for changes before the
+operator decides.
+
+Reviewed work goes back and forth between its assignee and its
+reviewer (agents.review_by); past this many rounds of changes the task
+stays in review and the verdict becomes the operator's, as a decision
+in the inbox, rather than the two going round again. 0 removes the
+limit.
+
 *** =orchestration.task_retention_days=
 
 - Type :: integer
@@ -3985,6 +4000,25 @@ Set by dragging a row in the clients rather than written by hand,
 though there is nothing wrong with writing it. Agents sharing a
 number keep the order they appear in this file, so leaving them all
 at 0 changes nothing.
+
+*** =agents.review_by=
+
+- Type :: string
+- Default :: unset
+- Since :: 0.38.0
+
+Who checks this agent's work before it counts as done.
+
+`lead` (its team's lead, or the chief of staff when the team has
+none), `delegator` (whoever handed it the task), `operator` (you,
+from the decision inbox or any client's task page), an agent id, or
+empty for no review. When the agent finishes a task it goes to
+`review` with the result instead of `completed`, and only an accept
+completes it; asking for changes sends it back with the notes, and
+after orchestration.review_rounds of that the operator decides. A
+delegation's own `review:` and an operator task's `review` override
+this. The reviewer is never the agent itself: a setting that would
+make it so means no review.
 
 *** =agents.team=
 

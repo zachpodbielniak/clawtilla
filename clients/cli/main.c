@@ -163,6 +163,7 @@ static const gchar *usage_tail =
     "  clawtilla task comment task-01m0k5 \"use the staging DB\"\n"
     "  clawtilla task create --agent scout --after task-01m0k5 \"Ship it\"\n"
     "  clawtilla task unlink task-01m0k6 task-01m0k5      # stop waiting\n"
+    "  clawtilla task review task-01m0k6 changes \"add a test\"\n"
     "  clawtilla task incidents            # broken runs, and who was told\n"
     "  clawtilla task retry task-01m0k5    # send a failed run round again\n"
     "\n"
@@ -4788,7 +4789,8 @@ cmd_task(int argc, char *argv[])
         for (arg = 3; arg < argc; arg++) {
             if ((g_strcmp0(argv[arg], "--agent") == 0 ||
                  g_strcmp0(argv[arg], "--title") == 0 ||
-                 g_strcmp0(argv[arg], "--after") == 0) && arg + 1 < argc) {
+                 g_strcmp0(argv[arg], "--after") == 0 ||
+                 g_strcmp0(argv[arg], "--review") == 0) && arg + 1 < argc) {
                 json_builder_set_member_name(builder, argv[arg] + 2);
                 json_builder_add_string_value(builder, argv[arg + 1]);
                 arg++;
@@ -4802,7 +4804,9 @@ cmd_task(int argc, char *argv[])
 
         if (prompt == NULL) {
             g_printerr("Usage: clawtilla task create [--agent AGENT] "
-                       "[--title TITLE] [--after TASK,TASK] <what to do>\n"
+                       "[--title TITLE] [--after TASK,TASK] "
+                       "[--review lead|delegator|operator|AGENT|none] "
+                       "<what to do>\n"
                        "Without --agent the task goes on the backlog; "
                        "assign it later with `clawtilla task assign`.\n");
             return EXIT_FAILURE;
@@ -4843,6 +4847,27 @@ cmd_task(int argc, char *argv[])
             return EXIT_FAILURE;
 
         g_print("Assigned %s to %s.\n", argv[3], argv[4]);
+        return EXIT_SUCCESS;
+    }
+
+    /* The operator's verdict on a result in review. */
+    if (g_strcmp0(verb, "review") == 0) {
+        if (argc < 5 || (g_strcmp0(argv[4], "accept") != 0 &&
+                         g_strcmp0(argv[4], "changes") != 0) ||
+            (g_strcmp0(argv[4], "changes") == 0 && argc < 6)) {
+            g_printerr("Usage: clawtilla task review <task-id> accept\n"
+                       "       clawtilla task review <task-id> changes "
+                       "\"<what to change>\"\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "task.review",
+                     build_payload("task", argv[3], "verdict", argv[4],
+                                   "notes", argc > 5 ? argv[5] : NULL, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("%s\n", member_or(json_node_get_object(reply), "said", ""));
         return EXIT_SUCCESS;
     }
 
@@ -11082,7 +11107,7 @@ static const ClawtVerb verbs[] = {
       cmd_account },
     { "policy-hook", "--agent ID --token-file PATH", "Claude Code's PreToolUse hook (run by the daemon's settings)",
       cmd_policy_hook },
-    { "task",    "<verb>",   "Tasks: list, show, create, assign, comment, link, unlink, cancel, retry, incidents",
+    { "task",    "<verb>",   "Tasks: list, show, create, assign, comment, link, unlink, review, cancel, retry, incidents",
       cmd_task },
     { "decision", "<verb>",  "Answer what an agent has asked you",
       cmd_decision },

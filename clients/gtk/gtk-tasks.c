@@ -412,6 +412,41 @@ on_comment_send(GtkButton *button, gpointer user_data)
     adw_dialog_close(dialog->dialog);
 }
 
+/*
+ * The operator's verdict on a result in review: Accept, or Request
+ * changes with the comment box's text as the notes.
+ */
+static void
+on_review_verdict(GtkButton *button, gpointer user_data)
+{
+    TaskDialog *dialog = user_data;
+    const gchar *verdict = g_object_get_data(G_OBJECT(button), "verdict");
+    g_autofree gchar *notes = text_view_text(dialog->comment);
+    g_autoptr(JsonNode) reply = NULL;
+
+    if (g_strcmp0(verdict, "changes") == 0 && *notes == '\0') {
+        clawt_window_toast(dialog->window,
+                           "Write what to change in the comment box first");
+        return;
+    }
+
+    reply = clawt_window_request(dialog->window, "task.review",
+                                 clawt_build_payload(
+                                     "task", dialog->task_id,
+                                     "verdict", verdict,
+                                     "notes", (*notes != '\0') ? notes : NULL,
+                                     NULL));
+
+    if (reply == NULL)
+        return;
+
+    clawt_window_toast(dialog->window,
+                       clawt_json_string(clawt_payload_of(reply), "said",
+                                         "Done"));
+    clawt_gtk_refresh_tasks(dialog->window);
+    adw_dialog_close(dialog->dialog);
+}
+
 static void
 on_link(GtkButton *button, gpointer user_data)
 {
@@ -617,6 +652,47 @@ on_task_details(GtkButton *button, gpointer user_data)
     gtk_widget_set_margin_top(send, 6);
     g_signal_connect(send, "clicked", G_CALLBACK(on_comment_send), dialog);
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(say), send);
+
+    /*
+     * Who reviews it, and -- while a result is waiting -- the operator's
+     * two answers.  The operator may decide whoever the reviewer is.
+     */
+    if (clawt_json_string(task, "reviewer", NULL) != NULL) {
+        GtkWidget *review = adw_preferences_group_new();
+        g_autofree gchar *who_reviews = g_strdup_printf(
+            "Reviewed by %s%s",
+            g_strcmp0(clawt_json_string(task, "reviewer", ""), "user") == 0
+                ? "you" : clawt_json_string(task, "reviewer", ""),
+            clawt_json_int(task, "review_round", 0) > 0
+                ? "; changes asked for before" : "");
+
+        adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(review),
+                                        "Review");
+        adw_preferences_group_set_description(ADW_PREFERENCES_GROUP(review),
+                                              who_reviews);
+
+        if (g_strcmp0(clawt_json_string(task, "state", ""), "review") == 0) {
+            GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+            GtkWidget *accept = gtk_button_new_with_label("Accept");
+            GtkWidget *changes = gtk_button_new_with_label(
+                "Request changes (from the comment box)");
+
+            gtk_widget_add_css_class(accept, "suggested-action");
+            g_object_set_data(G_OBJECT(accept), "verdict", (gpointer)"accept");
+            g_object_set_data(G_OBJECT(changes), "verdict",
+                              (gpointer)"changes");
+            g_signal_connect(accept, "clicked",
+                             G_CALLBACK(on_review_verdict), dialog);
+            g_signal_connect(changes, "clicked",
+                             G_CALLBACK(on_review_verdict), dialog);
+            gtk_box_append(GTK_BOX(row), accept);
+            gtk_box_append(GTK_BOX(row), changes);
+            adw_preferences_group_add(ADW_PREFERENCES_GROUP(review), row);
+        }
+
+        adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                                 ADW_PREFERENCES_GROUP(review));
+    }
 
     history = adw_preferences_group_new();
     adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(history), "History");

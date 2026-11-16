@@ -1699,6 +1699,14 @@ settle_notice_target(ClawtDaemon *self, ClawtTask *task, gint state)
         g_strcmp0(origin, clawt_task_get_assignee(task)) == 0)
         return NULL;
 
+    /*
+     * Reviewed by its own delegator: the accept was theirs, so a notice
+     * saying it is done would be news to nobody.
+     */
+    if (state == CLAWT_TASK_COMPLETED &&
+        g_strcmp0(clawt_task_get_reviewer(task), origin) == 0)
+        return NULL;
+
     if (state == CLAWT_TASK_CANCELLED &&
         g_strcmp0(clawt_task_get_cancelled_by(task), origin) == 0)
         return NULL;
@@ -7645,6 +7653,8 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
                      G_CALLBACK(on_task_changed), self);
     g_signal_connect(self->tasks, "blockers-changed",
                      G_CALLBACK(clawt_daemon_tasks_on_blockers_changed), self);
+    g_signal_connect(self->tasks, "review-requested",
+                     G_CALLBACK(clawt_daemon_tasks_on_review_requested), self);
 
     self->router = clawt_mailbox_router_new(self->agents, self->rooms,
                                             self->guard);
@@ -7705,6 +7715,8 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      */
     clawt_mcp_tools_set_main_context(self->mcp_tools, self->main_context);
 
+    clawt_mcp_tools_set_review_func(self->mcp_tools,
+                                    clawt_daemon_review_for_tools, self);
     clawt_mcp_tools_set_deliver_reply_func(self->mcp_tools, deliver_for_tools,
                                      self, NULL);
 
@@ -9604,6 +9616,15 @@ clawt_daemon_add_task_object(JsonBuilder *builder, ClawtTask *task)
                                               g_ptr_array_index(open, i));
             json_builder_end_array(builder);
         }
+    }
+
+    /* Who checks it, and how many times changes were asked for. */
+    if (clawt_task_get_reviewer(task) != NULL) {
+        json_builder_set_member_name(builder, "reviewer");
+        json_builder_add_string_value(builder, clawt_task_get_reviewer(task));
+        json_builder_set_member_name(builder, "review_round");
+        json_builder_add_int_value(builder,
+                                   clawt_task_get_review_round(task));
     }
 
     if (clawt_task_get_cancelled_by(task) != NULL) {

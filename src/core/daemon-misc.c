@@ -369,7 +369,8 @@ clawt_daemon_handle_misc(
          */
         if (proposal == NULL &&
             !clawt_daemon_rebuild_settle(self, settled, "answered") &&
-            !clawt_daemon_policy_settle(self, settled, "answered"))
+            !clawt_daemon_policy_settle(self, settled, "answered") &&
+            !clawt_daemon_review_settle(self, settled, "answered"))
             clawt_daemon_deliver_decision_answer(self, settled);
 
         /*

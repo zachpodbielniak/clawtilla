@@ -966,6 +966,38 @@ void clawt_mcp_tools_set_observer(ClawtMcpTools            *self,
                                   GDestroyNotify            notify);
 
 /**
+ * ClawtMcpReviewFunc:
+ * @reviewer: the agent giving the verdict
+ * @task_id: the task in review
+ * @accept: whether it accepts the result
+ * @notes: (nullable): what to change
+ * @user_data: what the setter was given
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Records a review verdict and does what follows from it -- telling the
+ * assignee what to change, or whoever is waiting that it is done.
+ *
+ * Returns: (transfer full) (nullable): what to tell @reviewer, or %NULL
+ *   with @error set when refused
+ */
+typedef gchar *(*ClawtMcpReviewFunc)(const gchar  *reviewer,
+                                     const gchar  *task_id,
+                                     gboolean      accept,
+                                     const gchar  *notes,
+                                     gpointer      user_data,
+                                     GError      **error);
+
+/**
+ * clawt_mcp_tools_set_review_func:
+ * @self: a #ClawtMcpTools
+ * @func: (nullable) (scope notified): what clawtilla_task_review calls
+ * @user_data: passed to @func
+ */
+void clawt_mcp_tools_set_review_func(ClawtMcpTools      *self,
+                                     ClawtMcpReviewFunc  func,
+                                     gpointer            user_data);
+
+/**
  * clawt_mcp_tools_deliver_held:
  * @self: a #ClawtMcpTools
  * @from_agent: who delegated it

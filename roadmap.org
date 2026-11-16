@@ -394,8 +394,9 @@ The ~forge~ record type is owner-only in VENTURE, so an editor -- every agent ac
 - *Done:* ~task_links~ and ~held_deliveries~ in ~tasks.db~; =clawt_task_manager_link()= / =_unlink()= (self, cycles and ended tasks refused), =_waiting_on()= (only ~completed~ releases), =_block()= / =_unblock()=, ~blockers-changed~; ~after~ on ~clawtilla_delegate~ and ~task.create~; ~clawtilla_task_link~ (add, or remove which may hand over now); ~task.link~ / ~task.unlink~; a held delivery released as it would have been sent, through the delegation path as the delegator or as the operator's message, on completion, on unlink, and after a restart; a blocker that fails or is cancelled tells the delegator once (a notice, or a thread note for the operator) and keeps holding; ~after~ / ~waiting_on~ on the wire and =clawt_task_waiting_caption()= in every client, *Waits for* in Details, ~clawtilla task link|unlink~ and ~create --after~; TOOLS.org says how to wait.
 - *Version:* minor.
 
-** TODO P1 B2: Review stages :orchestration:
-~review_by~; REVIEW on completion; ~clawtilla_task_review~ and an operator decision; bounded review rounds.
+** DONE P1 B2: Review stages v0.38.0 :orchestration:
+- *Done:* ~agents.review_by~ and ~orchestration.review_rounds~; ~review~ on ~clawtilla_delegate~ and ~task.create~; =clawt_task_resolve_reviewer()= (resolved once; never the assignee); finishing a reviewed task goes to ~review~ with a ~review-requested~ signal; an agent reviewer is told and answers with ~clawtilla_task_review~; the operator answers in the inbox (~review-<task>~), with ~task.review~, or from Accept / Request changes in every client's Details; changes go back with the notes, bounded by ~review_rounds~ then the operator decides; accept by the delegator replaces the settle notice; the tree budget renews per round; TOOLS.org says who reviews the agent.
+- *Version:* minor.
 
 ** TODO P2 C1: Task checkouts and diffs :orchestration:clients:
 A git worktree or self-contained clone per task in the agent's host workspace; ~task.diff~ and a Changes view; ~routines.worktree~ made real.

@@ -535,6 +535,49 @@ JsonNode *clawt_task_manager_notes(ClawtTaskManager  *self,
                                    GError           **error);
 
 /**
+ * ClawtTaskReviewOutcome:
+ * @CLAWT_TASK_REVIEW_REFUSED: no verdict was recorded; see the error
+ * @CLAWT_TASK_REVIEW_ACCEPTED: the task is completed
+ * @CLAWT_TASK_REVIEW_CHANGES: the task is back with its assignee
+ * @CLAWT_TASK_REVIEW_ESCALATED: changes were asked for once too often;
+ *   the task stays in review, now with the operator
+ *
+ * What a review verdict did (since 0.38.0).
+ */
+typedef enum {
+    CLAWT_TASK_REVIEW_REFUSED = 0,
+    CLAWT_TASK_REVIEW_ACCEPTED,
+    CLAWT_TASK_REVIEW_CHANGES,
+    CLAWT_TASK_REVIEW_ESCALATED
+} ClawtTaskReviewOutcome;
+
+/**
+ * clawt_task_manager_review:
+ * @self: a #ClawtTaskManager
+ * @task_id: a task in review
+ * @who: the reviewer, or `user` -- the operator may always decide
+ * @accept: %TRUE to accept the result, %FALSE to ask for changes
+ * @notes: (nullable): what to change (required when asking for changes)
+ * @max_rounds: how many times changes may be asked for before the
+ *   operator decides; 0 for no limit
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Records a verdict on a result in review.  Accepting completes the task.
+ * Asking for changes sends it back to its assignee as `pending` with the
+ * notes in its thread; the @max_rounds'th time hands the decision to the
+ * operator instead.  Handing the notes to the assignee is the caller's.
+ *
+ * Returns: what happened
+ */
+ClawtTaskReviewOutcome clawt_task_manager_review(ClawtTaskManager  *self,
+                                                 const gchar       *task_id,
+                                                 const gchar       *who,
+                                                 gboolean           accept,
+                                                 const gchar       *notes,
+                                                 guint              max_rounds,
+                                                 GError           **error);
+
+/**
  * clawt_task_manager_link:
  * @self: a #ClawtTaskManager
  * @task_id: the task that is to wait

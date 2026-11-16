@@ -571,6 +571,34 @@ static LrgWidget *task_button(const gchar *label, const gchar *task_id,
                               GCallback callback);
 
 static void
+on_review_clicked(LrgButton *button, gpointer user_data)
+{
+    const gchar *task_id = g_object_get_data(G_OBJECT(button), "task-id");
+    const gchar *verdict = g_object_get_data(G_OBJECT(button), "verdict");
+    LrgWidget *editor = g_object_get_data(G_OBJECT(button), "editor");
+    g_autofree gchar *notes = (editor != NULL)
+        ? clawt_lrg_editor_text(editor) : NULL;
+
+    (void)user_data;
+
+    if (g_strcmp0(verdict, "changes") == 0 &&
+        (notes == NULL || *g_strstrip(notes) == '\0')) {
+        clawt_lrg_toast(tasks.app,
+                        "Write what to change in the comment box first");
+        return;
+    }
+
+    clawt_lrg_request(tasks.app, "task.review",
+                      clawt_ipc_payload_new("task", task_id,
+                                            "verdict", verdict,
+                                            "notes", notes, NULL),
+                      CLAWT_LRG_REQUEST_NONE, on_task_done,
+                      g_strcmp0(verdict, "accept") == 0
+                          ? (gpointer)"Accepted"
+                          : (gpointer)"Sent back with your notes", NULL);
+}
+
+static void
 on_link_clicked(LrgButton *button, gpointer user_data)
 {
     const gchar *task_id = g_object_get_data(G_OBJECT(button), "task-id");
@@ -731,6 +759,34 @@ on_task_shown(ClawtLrgApp *app, JsonNode *reply, const GError *error,
         "Kept on the task. While it is with its assignee they hear it too, "
         "in the conversation the work is in.", "muted"));
     clawt_lrg_take(content, form->comment);
+
+    /* Who reviews it, and the operator's two answers while it waits. */
+    if (clawt_ipc_payload_string(task, "reviewer") != NULL) {
+        g_autofree gchar *reviewed = g_strdup_printf(
+            "Reviewed by %s",
+            g_strcmp0(clawt_ipc_payload_string(task, "reviewer"), "user") == 0
+                ? "you" : clawt_ipc_payload_string(task, "reviewer"));
+
+        clawt_lrg_take(content, clawt_lrg_label("Review", "heading"));
+        clawt_lrg_take(content, clawt_lrg_paragraph(reviewed, "muted"));
+
+        if (g_strcmp0(clawt_ipc_payload_string(task, "state"), "review") == 0) {
+            LrgWidget *line = clawt_lrg_hbox(8.0f);
+            LrgWidget *accept = task_button("Accept", form->task_id,
+                                            G_CALLBACK(on_review_clicked));
+            LrgWidget *changes = task_button(
+                "Request changes (from the comment box)", form->task_id,
+                G_CALLBACK(on_review_clicked));
+
+            g_object_set_data(G_OBJECT(accept), "verdict", (gpointer)"accept");
+            g_object_set_data(G_OBJECT(changes), "verdict",
+                              (gpointer)"changes");
+            g_object_set_data(G_OBJECT(changes), "editor", form->comment);
+            clawt_lrg_take(line, accept);
+            clawt_lrg_take(line, changes);
+            clawt_lrg_take(content, line);
+        }
+    }
 
     clawt_lrg_take(content, clawt_lrg_label("History", "heading"));
     rows = json_object_has_member(root, "journal")

@@ -393,6 +393,40 @@ clawt_daemon_handle_task(
         }
 
         /*
+         * Who reviews it: the operator's `review`, else the assignee's
+         * agents.review_by.  The delegator here is the operator, so
+         * `delegator` is the operator too.
+         */
+        if (agent != NULL) {
+            const gchar *spec = clawt_ipc_payload_string(payload, "review");
+            g_autofree gchar *reviewer = NULL;
+
+            if (spec == NULL) {
+                ClawtAgentConfig *to = clawt_config_get_agent(self->config,
+                                                              agent);
+
+                spec = (to != NULL)
+                    ? clawt_agent_config_get_string(to, "review_by") : NULL;
+            }
+
+            reviewer = clawt_task_resolve_reviewer(self->config, spec, "user",
+                                                   agent, &error);
+
+            if (error != NULL) {
+                clawt_task_manager_cancel(self->tasks,
+                                          clawt_task_get_id(task),
+                                          error->message, "user");
+                return clawt_ipc_error_new(request, error->code,
+                                           error->message);
+            }
+
+            if (reviewer != NULL) {
+                clawt_task_set_reviewer(task, reviewer);
+                clawt_task_manager_save(self->tasks, task, NULL);
+            }
+        }
+
+        /*
          * What it waits for: linked, and while any of it is unfinished
          * the task is held -- with an assignee, its delivery is kept to
          * be sent as the operator's when the last one completes; without,
@@ -478,6 +512,41 @@ clawt_daemon_handle_task(
         }
 
         json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "task");
+        clawt_daemon_add_task_object(builder,
+                                     clawt_task_manager_get(self->tasks,
+                                                            task_id));
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    /*
+     * The operator's verdict on a result in review -- theirs to give
+     * whoever the reviewer is.  The same as answering the inbox's
+     * decision, or an agent reviewer's clawtilla_task_review.
+     */
+    if (g_strcmp0(kind, "task.review") == 0) {
+        const gchar *task_id = clawt_ipc_payload_string(payload, "task");
+        const gchar *verdict = clawt_ipc_payload_string(payload, "verdict");
+        g_autoptr(GError) error = NULL;
+        g_autofree gchar *said = NULL;
+
+        if (task_id == NULL ||
+            (g_strcmp0(verdict, "accept") != 0 &&
+             g_strcmp0(verdict, "changes") != 0))
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "which task, and accept or changes?");
+
+        said = clawt_daemon_tasks_review(
+            self, "user", task_id, g_strcmp0(verdict, "accept") == 0,
+            clawt_ipc_payload_string(payload, "notes"), &error);
+
+        if (said == NULL)
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        json_builder_begin_object(builder);
+        clawt_daemon_add_string_member(builder, "said", said);
         json_builder_set_member_name(builder, "task");
         clawt_daemon_add_task_object(builder,
                                      clawt_task_manager_get(self->tasks,
@@ -1326,4 +1395,279 @@ clawt_daemon_tasks_on_blockers_changed(
 
 	/* A blocker taken away may be the last: release if nothing holds it. */
 	clawt_daemon_tasks_release_ready(user_data, task_id);
+}
+
+/* ── Review ──────────────────────────────────────────────────────── */
+
+#define REVIEW_DECISION_PREFIX "review-"
+
+/*
+ * A system notice to @to about @task, in the conversation the work is
+ * in: the task's own room, the one it was delegated from, or the direct
+ * room between @to and @other.  Daemon-composed, depth 0, invites no
+ * reply, for @to alone.
+ */
+static void
+notice_about_task(
+	ClawtDaemon *self,
+	ClawtTask   *task,
+	const gchar *to,
+	const gchar *other,
+	const gchar *body
+){
+	g_autoptr(ClawtMessage) message = NULL;
+	g_autoptr(GError) error = NULL;
+	ClawtRoom *room = NULL;
+
+	if (self->router == NULL || to == NULL)
+		return;
+
+	if (clawt_task_get_thread_room(task) != NULL)
+		room = clawt_room_manager_get(self->rooms,
+		                              clawt_task_get_thread_room(task));
+	if (room == NULL && clawt_task_get_room(task) != NULL)
+		room = clawt_room_manager_get(self->rooms, clawt_task_get_room(task));
+	if (room != NULL && !clawt_room_has_member(room, to))
+		room = NULL;
+	if (room == NULL && other != NULL)
+		room = clawt_room_manager_get_direct(self->rooms, to, other);
+	if (room == NULL)
+		return;
+
+	message = clawt_message_new(clawt_room_get_id(room), CLAWT_SYSTEM_SENDER,
+	                            body);
+	clawt_message_set_task_id(message, clawt_task_get_id(task));
+	clawt_message_set_depth(message, 0);
+	clawt_message_set_invites_reply(message, FALSE);
+	clawt_message_set_only_for(message, to);
+
+	if (clawt_mailbox_router_send(self->router, message, &error) < 0)
+		g_warning("task %s: could not tell %s: %s", clawt_task_get_id(task),
+		          to, error != NULL ? error->message : "unknown");
+}
+
+static gchar *
+review_decision_id(const gchar *task_id)
+{
+	return g_strconcat(REVIEW_DECISION_PREFIX, task_id, NULL);
+}
+
+/*
+ * A result is waiting for its reviewer.  An agent reviewer is told, with
+ * the result and how to answer; the operator gets a decision in the
+ * inbox (answer `accept`, or write what to change), and the task's page
+ * has the same two buttons.  The tree's budget renews, as on a settle:
+ * a review round is owed work, not a runaway.
+ */
+void
+clawt_daemon_tasks_review_requested(
+	ClawtDaemon *self,
+	ClawtTask   *task
+){
+	const gchar *reviewer;
+	g_autofree gchar *result = NULL;
+	g_autofree gchar *title = NULL;
+
+	g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+	reviewer = clawt_task_get_reviewer(task);
+
+	if (reviewer == NULL)
+		return;
+
+	clawt_daemon_tree_settled(self, task);
+
+	result = clawt_preamble_escape(clawt_task_get_result(task));
+	title = clawt_preamble_escape(clawt_task_get_title(task));
+
+	if (g_strcmp0(reviewer, "user") == 0) {
+		g_autofree gchar *id = review_decision_id(clawt_task_get_id(task));
+		g_autofree gchar *question = NULL;
+		g_autoptr(ClawtDecision) decision = NULL;
+		g_autofree gchar *stored = NULL;
+		static const gchar *const options[] = { "accept", NULL };
+
+		if (self->decisions == NULL)
+			return;
+
+		/* One open decision per task; a second round replaces the first. */
+		clawt_decision_store_delete(self->decisions, id, NULL);
+
+		question = g_strdup_printf(
+			"Review task %s (%s), finished by %s%s. Answer accept, or write "
+			"what to change and it goes back to them.\n\nThe result:\n%s",
+			clawt_task_get_id(task), clawt_task_get_title(task),
+			clawt_task_get_assignee(task) != NULL
+				? clawt_task_get_assignee(task) : "its assignee",
+			clawt_task_get_review_round(task) > 0 ? " again" : "",
+			clawt_task_get_result(task) != NULL
+				? clawt_task_get_result(task) : "(nothing written)");
+		decision = clawt_decision_new(id, clawt_task_get_assignee(task),
+		                              question);
+		clawt_decision_set_options(decision, options);
+		clawt_decision_set_task(decision, clawt_task_get_id(task));
+		clawt_decision_set_default(decision, "accept",
+			"nothing happens until somebody answers; the task waits in "
+			"review");
+		stored = clawt_decision_store_post(self->decisions, decision, NULL);
+
+		if (stored != NULL)
+			clawt_daemon_publish_decision_asked(self, decision);
+
+		return;
+	}
+
+	{
+		g_autofree gchar *body = g_strdup_printf(
+			"[clawtilla] Task %s (%s) is finished by %s and waiting for your "
+			"review%s.\n\nThe result:\n%s\n\nGive your verdict with "
+			"clawtilla_task_review: accept: true if it is right, or accept: "
+			"false with notes saying exactly what to change -- it goes back "
+			"to them with your notes.",
+			clawt_task_get_id(task), title,
+			clawt_task_get_assignee(task) != NULL
+				? clawt_task_get_assignee(task) : "its assignee",
+			clawt_task_get_review_round(task) > 0 ? " again" : "",
+			result != NULL ? result : "(nothing written)");
+
+		notice_about_task(self, task, reviewer,
+		                  clawt_task_get_assignee(task), body);
+	}
+}
+
+void
+clawt_daemon_tasks_on_review_requested(
+	ClawtTaskManager *manager,
+	const gchar      *task_id,
+	gpointer          user_data
+){
+	ClawtDaemon *self = user_data;
+	ClawtTask *task = clawt_task_manager_get(manager, task_id);
+
+	if (task != NULL)
+		clawt_daemon_tasks_review_requested(self, task);
+}
+
+/*
+ * A verdict, from whichever door: the reviewer's tool, a client, the
+ * decision inbox.  Changes go back to the assignee with the notes; an
+ * accept completes the task, and the usual settle notice tells its
+ * delegator -- unless the delegator was the reviewer, who knows.
+ */
+gchar *
+clawt_daemon_tasks_review(
+	ClawtDaemon  *self,
+	const gchar  *who,
+	const gchar  *task_id,
+	gboolean      accept,
+	const gchar  *notes,
+	GError      **error
+){
+	ClawtTaskReviewOutcome outcome;
+	ClawtTask *task;
+	gint64 rounds;
+
+	g_return_val_if_fail(CLAWT_IS_DAEMON(self), NULL);
+
+	rounds = clawt_config_get_int(self->config, "orchestration.review_rounds");
+	outcome = clawt_task_manager_review(self->tasks, task_id, who, accept,
+	                                    notes, (guint)MAX(rounds, 0), error);
+
+	if (outcome == CLAWT_TASK_REVIEW_REFUSED)
+		return NULL;
+
+	task = clawt_task_manager_get(self->tasks, task_id);
+
+	/* The other door closes: a verdict given here settles the inbox's. */
+	if (self->decisions != NULL && outcome != CLAWT_TASK_REVIEW_ESCALATED) {
+		g_autofree gchar *id = review_decision_id(task_id);
+
+		clawt_decision_store_dismiss(self->decisions, id, NULL);
+	}
+
+	clawt_daemon_tree_settled(self, task);
+
+	switch (outcome) {
+	case CLAWT_TASK_REVIEW_ACCEPTED:
+		return g_strdup_printf("Accepted. Task %s is done.", task_id);
+
+	case CLAWT_TASK_REVIEW_CHANGES: {
+		g_autofree gchar *said = clawt_preamble_escape(notes);
+		g_autofree gchar *body = g_strdup_printf(
+			"[clawtilla] %s asked for changes to task %s (%s), round %u:"
+			"\n\n%s\n\nMake them, then finish the task again "
+			"(clawtilla_task_complete) -- it goes back for review.",
+			g_strcmp0(who, "user") == 0 ? "The operator" : who, task_id,
+			clawt_task_get_title(task), clawt_task_get_review_round(task),
+			said);
+
+		notice_about_task(self, task, clawt_task_get_assignee(task),
+		                  g_strcmp0(who, "user") == 0
+		                      ? clawt_task_get_origin(task) : who, body);
+		return g_strdup_printf("Sent back to %s with your notes; you will "
+		                       "be asked again when it is finished.",
+		                       clawt_task_get_assignee(task));
+	}
+
+	case CLAWT_TASK_REVIEW_ESCALATED:
+		return g_strdup_printf(
+			"Changes have been asked for %u times, so task %s is now the "
+			"operator's to decide. Nothing more is needed from you.",
+			clawt_task_get_review_round(task), task_id);
+
+	case CLAWT_TASK_REVIEW_REFUSED:
+		break;
+	}
+
+	return NULL;
+}
+
+/* The decision inbox's door: `accept`, or anything else as the notes. */
+gboolean
+clawt_daemon_review_settle(
+	ClawtDaemon   *self,
+	ClawtDecision *decision,
+	const gchar   *how
+){
+	const gchar *id;
+	const gchar *answer;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *said = NULL;
+
+	g_return_val_if_fail(CLAWT_IS_DAEMON(self), FALSE);
+
+	if (decision == NULL ||
+	    !g_str_has_prefix(clawt_decision_get_id(decision),
+	                      REVIEW_DECISION_PREFIX))
+		return FALSE;
+
+	if (g_strcmp0(how, "answered") != 0)
+		return TRUE;
+
+	id = clawt_decision_get_id(decision) + strlen(REVIEW_DECISION_PREFIX);
+	answer = clawt_decision_get_answer(decision);
+
+	said = clawt_daemon_tasks_review(
+		self, "user", id,
+		g_ascii_strcasecmp(answer != NULL ? answer : "", "accept") == 0,
+		answer, &error);
+
+	if (said == NULL)
+		g_warning("review %s: %s", id, error->message);
+
+	return TRUE;
+}
+
+/* clawtilla_task_review's hook. */
+gchar *
+clawt_daemon_review_for_tools(
+	const gchar  *reviewer,
+	const gchar  *task_id,
+	gboolean      accept,
+	const gchar  *notes,
+	gpointer      user_data,
+	GError      **error
+){
+	return clawt_daemon_tasks_review(user_data, reviewer, task_id, accept,
+	                                 notes, error);
 }

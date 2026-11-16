@@ -13,6 +13,7 @@
 enum {
     SIGNAL_TASK_CHANGED,
     SIGNAL_BLOCKERS_CHANGED,
+    SIGNAL_REVIEW_REQUESTED,
     N_SIGNALS
 };
 
@@ -633,9 +634,28 @@ clawt_task_manager_complete(ClawtTaskManager *self,
         return FALSE;
 
     clawt_task_set_result(task, result);
-    clawt_task_set_state(task, CLAWT_TASK_COMPLETED);
     note(self, task, clawt_task_get_assignee(task), CLAWT_TASK_NOTE_RESULT,
          result);
+
+    /*
+     * Reviewed work is not done when its assignee says so: it goes to
+     * its reviewer with the result, and only an accept completes it.
+     */
+    if (clawt_task_get_reviewer(task) != NULL) {
+        g_autofree gchar *what = g_strdup_printf(
+            "finished by %s; with %s for review",
+            clawt_task_get_assignee(task) != NULL
+                ? clawt_task_get_assignee(task) : "its assignee",
+            g_strcmp0(clawt_task_get_reviewer(task), "user") == 0
+                ? "the operator" : clawt_task_get_reviewer(task));
+
+        clawt_task_set_state(task, CLAWT_TASK_REVIEW);
+        emit_changed(self, task, what);
+        g_signal_emit(self, signals[SIGNAL_REVIEW_REQUESTED], 0, task_id);
+        return TRUE;
+    }
+
+    clawt_task_set_state(task, CLAWT_TASK_COMPLETED);
     emit_changed(self, task, NULL);
 
     return TRUE;
@@ -1203,6 +1223,95 @@ clawt_task_manager_notes(ClawtTaskManager  *self,
     return clawt_task_store_notes(self->store, task_id, error);
 }
 
+/* ── Review ──────────────────────────────────────────────────────── */
+
+ClawtTaskReviewOutcome
+clawt_task_manager_review(ClawtTaskManager  *self,
+                          const gchar       *task_id,
+                          const gchar       *who,
+                          gboolean           accept,
+                          const gchar       *notes,
+                          guint              max_rounds,
+                          GError           **error)
+{
+    ClawtTask *task;
+    g_autofree gchar *what = NULL;
+    guint round;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self),
+                         CLAWT_TASK_REVIEW_REFUSED);
+    g_return_val_if_fail(who != NULL, CLAWT_TASK_REVIEW_REFUSED);
+
+    task = clawt_task_manager_get(self, task_id);
+
+    if (task == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "there is no task %s", task_id != NULL ? task_id : "");
+        return CLAWT_TASK_REVIEW_REFUSED;
+    }
+
+    if (clawt_task_get_state(task) != CLAWT_TASK_REVIEW) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "task %s is %s, not in review: there is no result "
+                    "waiting for a verdict", task_id,
+                    clawt_enum_to_nick(CLAWT_TYPE_TASK_STATE,
+                                       clawt_task_get_state(task)));
+        return CLAWT_TASK_REVIEW_REFUSED;
+    }
+
+    /*
+     * The reviewer's verdict, or the operator's, who may always step in.
+     * Never the assignee's: reviewing your own work is not a review.
+     */
+    if (g_strcmp0(who, clawt_task_get_reviewer(task)) != 0 &&
+        g_strcmp0(who, "user") != 0) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED,
+                    "task %s is %s's to review, not %s's", task_id,
+                    clawt_task_get_reviewer(task), who);
+        return CLAWT_TASK_REVIEW_REFUSED;
+    }
+
+    if (accept) {
+        what = g_strdup_printf("accepted by %s", who);
+        note(self, task, who, CLAWT_TASK_NOTE_REVIEW,
+             (notes != NULL && *notes != '\0') ? notes : "accepted");
+        clawt_task_set_state(task, CLAWT_TASK_COMPLETED);
+        emit_changed(self, task, what);
+        return CLAWT_TASK_REVIEW_ACCEPTED;
+    }
+
+    if (notes == NULL || *notes == '\0') {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "asking for changes needs notes saying what to "
+                            "change");
+        return CLAWT_TASK_REVIEW_REFUSED;
+    }
+
+    round = clawt_task_get_review_round(task) + 1;
+    clawt_task_set_review_round(task, round);
+    note(self, task, who, CLAWT_TASK_NOTE_REVIEW, notes);
+
+    /*
+     * Bounded like every other back-and-forth: past the limit a person
+     * decides, rather than an agent and its reviewer going round again.
+     */
+    if (max_rounds > 0 && round >= max_rounds &&
+        g_strcmp0(clawt_task_get_reviewer(task), "user") != 0) {
+        clawt_task_set_reviewer(task, "user");
+        what = g_strdup_printf("changes asked for %u times; now with the "
+                               "operator to decide", round);
+        emit_changed(self, task, what);
+        g_signal_emit(self, signals[SIGNAL_REVIEW_REQUESTED], 0, task_id);
+        return CLAWT_TASK_REVIEW_ESCALATED;
+    }
+
+    what = g_strdup_printf("changes requested by %s (round %u)", who, round);
+    clawt_task_set_state(task, CLAWT_TASK_PENDING);
+    emit_changed(self, task, what);
+
+    return CLAWT_TASK_REVIEW_CHANGES;
+}
+
 /* ── Blockers ────────────────────────────────────────────────────── */
 
 static gboolean
@@ -1642,6 +1751,21 @@ clawt_task_manager_class_init(ClawtTaskManagerClass *klass)
      */
     signals[SIGNAL_BLOCKERS_CHANGED] =
         g_signal_new("blockers-changed", CLAWT_TYPE_TASK_MANAGER,
+                     G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
+                     G_TYPE_NONE, 1, G_TYPE_STRING);
+
+    /**
+     * ClawtTaskManager::review-requested:
+     * @self: the manager
+     * @task_id: the task whose result is now with its reviewer
+     *
+     * A result went to a reviewer: its assignee finished it, or changes
+     * were asked for so often that the operator now decides.  Its own
+     * signal, so the reviewer is asked once per result rather than on
+     * every change made while the task sits in review.  Since 0.38.0.
+     */
+    signals[SIGNAL_REVIEW_REQUESTED] =
+        g_signal_new("review-requested", CLAWT_TYPE_TASK_MANAGER,
                      G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
                      G_TYPE_NONE, 1, G_TYPE_STRING);
 }
