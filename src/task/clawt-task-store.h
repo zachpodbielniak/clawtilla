@@ -252,6 +252,103 @@ JsonNode *clawt_task_store_notes(ClawtTaskStore  *self,
                                  GError         **error);
 
 /**
+ * clawt_task_store_add_link:
+ * @self: a #ClawtTaskStore
+ * @blocker: the task that must finish first
+ * @blocked: the task that waits for it
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Records that @blocked waits for @blocker.  Adding a link that exists is
+ * not an error.  Whether the link would make a cycle is the manager's
+ * question (clawt_task_manager_link()); the store keeps what it is told.
+ *
+ * Returns: %TRUE when the link is there
+ */
+gboolean clawt_task_store_add_link(ClawtTaskStore  *self,
+                                   const gchar     *blocker,
+                                   const gchar     *blocked,
+                                   GError         **error);
+
+/**
+ * clawt_task_store_remove_link:
+ * @self: a #ClawtTaskStore
+ * @blocker: the task that was to finish first
+ * @blocked: the task that waited for it
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Returns: %TRUE when there is no longer such a link
+ */
+gboolean clawt_task_store_remove_link(ClawtTaskStore  *self,
+                                      const gchar     *blocker,
+                                      const gchar     *blocked,
+                                      GError         **error);
+
+/**
+ * clawt_task_store_blockers_of:
+ * @self: a #ClawtTaskStore
+ * @task_id: a task
+ *
+ * Returns: (transfer full) (element-type utf8): the ids of the tasks
+ *   @task_id waits for, in the order they were linked
+ */
+GPtrArray *clawt_task_store_blockers_of(ClawtTaskStore *self,
+                                        const gchar    *task_id);
+
+/**
+ * clawt_task_store_blocked_by:
+ * @self: a #ClawtTaskStore
+ * @task_id: a task
+ *
+ * Returns: (transfer full) (element-type utf8): the ids of the tasks
+ *   waiting for @task_id
+ */
+GPtrArray *clawt_task_store_blocked_by(ClawtTaskStore *self,
+                                       const gchar    *task_id);
+
+/**
+ * clawt_task_store_hold_delivery:
+ * @self: a #ClawtTaskStore
+ * @task_id: a blocked task
+ * @delivery: everything needed to hand the work over later, as the
+ *   caller wrote it
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Keeps the delivery a blocked task will be handed over with, so it
+ * survives a restart while it waits.  One per task; holding again
+ * replaces it.
+ *
+ * Returns: %TRUE when kept
+ */
+gboolean clawt_task_store_hold_delivery(ClawtTaskStore  *self,
+                                        const gchar     *task_id,
+                                        JsonNode        *delivery,
+                                        GError         **error);
+
+/**
+ * clawt_task_store_take_delivery:
+ * @self: a #ClawtTaskStore
+ * @task_id: a blocked task
+ *
+ * Takes the held delivery out of the store: it is deleted as it is read,
+ * because a delivery released twice is work done twice.
+ *
+ * Returns: (transfer full) (nullable): the delivery, or %NULL when none
+ *   is held
+ */
+JsonNode *clawt_task_store_take_delivery(ClawtTaskStore *self,
+                                         const gchar    *task_id);
+
+/**
+ * clawt_task_store_has_delivery:
+ * @self: a #ClawtTaskStore
+ * @task_id: a task
+ *
+ * Returns: %TRUE when a delivery is held for @task_id
+ */
+gboolean clawt_task_store_has_delivery(ClawtTaskStore *self,
+                                       const gchar    *task_id);
+
+/**
  * clawt_task_store_save_incident:
  * @self: a #ClawtTaskStore
  * @incident_id: the incident's id

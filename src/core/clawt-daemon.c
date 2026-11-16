@@ -1975,6 +1975,9 @@ on_task_changed(ClawtTaskManager *manager,
     if (task != NULL && clawt_task_is_finished(task)) {
         clawt_daemon_tree_settled(self, task);
         send_settle_notice(self, task, state);
+
+        /* What was waiting for it: released, or told why it still waits. */
+        clawt_daemon_tasks_blocker_settled(self, task);
     }
 
     if (state != CLAWT_TASK_COMPLETED)
@@ -7640,6 +7643,8 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
                      G_CALLBACK(on_agent_state_changed), self);
     g_signal_connect(self->tasks, "task-changed",
                      G_CALLBACK(on_task_changed), self);
+    g_signal_connect(self->tasks, "blockers-changed",
+                     G_CALLBACK(clawt_daemon_tasks_on_blockers_changed), self);
 
     self->router = clawt_mailbox_router_new(self->agents, self->rooms,
                                             self->guard);
@@ -9498,6 +9503,28 @@ clawt_daemon_add_agent_object(JsonBuilder *builder, ClawtAgent *agent)
     json_builder_end_object(builder);
 }
 
+/*
+ * The task manager the wire object reads blockers from.  The function
+ * that writes a task object takes no daemon -- six call sites, all with
+ * one in hand, none needing to say so -- so the running daemon's manager
+ * is kept here, weakly: it clears itself when the manager goes.
+ */
+static ClawtTaskManager *task_manager_for_wire = NULL;
+
+void
+clawt_daemon_set_wire_tasks(ClawtTaskManager *tasks)
+{
+    if (task_manager_for_wire != NULL)
+        g_object_remove_weak_pointer(G_OBJECT(task_manager_for_wire),
+                                     (gpointer *)&task_manager_for_wire);
+
+    task_manager_for_wire = tasks;
+
+    if (tasks != NULL)
+        g_object_add_weak_pointer(G_OBJECT(tasks),
+                                  (gpointer *)&task_manager_for_wire);
+}
+
 void
 clawt_daemon_add_task_object(JsonBuilder *builder, ClawtTask *task)
 {
@@ -9549,6 +9576,34 @@ clawt_daemon_add_task_object(JsonBuilder *builder, ClawtTask *task)
     if (clawt_task_get_room(task) != NULL) {
         json_builder_set_member_name(builder, "room");
         json_builder_add_string_value(builder, clawt_task_get_room(task));
+    }
+
+    /*
+     * What it waits for, and which of that still holds it: a task held
+     * for its blockers says for what.  Only when there is any.
+     */
+    if (task_manager_for_wire != NULL) {
+        g_autoptr(GPtrArray) after = clawt_task_manager_blockers(
+            task_manager_for_wire, clawt_task_get_id(task));
+        g_autoptr(GPtrArray) open = clawt_task_manager_waiting_on(
+            task_manager_for_wire, clawt_task_get_id(task));
+        guint i;
+
+        if (after->len > 0) {
+            json_builder_set_member_name(builder, "after");
+            json_builder_begin_array(builder);
+            for (i = 0; i < after->len; i++)
+                json_builder_add_string_value(builder,
+                                              g_ptr_array_index(after, i));
+            json_builder_end_array(builder);
+
+            json_builder_set_member_name(builder, "waiting_on");
+            json_builder_begin_array(builder);
+            for (i = 0; i < open->len; i++)
+                json_builder_add_string_value(builder,
+                                              g_ptr_array_index(open, i));
+            json_builder_end_array(builder);
+        }
     }
 
     if (clawt_task_get_cancelled_by(task) != NULL) {

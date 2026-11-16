@@ -949,3 +949,52 @@ clawt_task_new_from_json(JsonNode *node, GError **error)
 
     return self;
 }
+
+JsonNode *
+clawt_task_build_held_delivery(const gchar *via,
+                             const gchar *from,
+                             const gchar *target,
+                             const gchar *body,
+                             gint         depth,
+                             gint         priority,
+                             const gchar *turn_room)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+
+    g_return_val_if_fail(via != NULL && from != NULL, NULL);
+    g_return_val_if_fail(target != NULL && body != NULL, NULL);
+
+    json_builder_begin_object(builder);
+    add_string(builder, "via", via);
+    add_string(builder, "from", from);
+    add_string(builder, "target", target);
+    add_string(builder, "body", body);
+    add_int(builder, "depth", depth);
+    add_int(builder, "priority", priority);
+    add_string(builder, "turn_room", turn_room);
+    json_builder_end_object(builder);
+
+    return json_builder_get_root(builder);
+}
+
+gchar *
+clawt_task_waiting_caption(JsonArray *waiting_on)
+{
+    g_autoptr(GString) out = g_string_new("waiting for ");
+    guint n = (waiting_on != NULL) ? json_array_get_length(waiting_on) : 0;
+    guint i;
+
+    if (n == 0)
+        return g_strdup("");
+
+    /* Three named, the rest counted: a row is one line. */
+    for (i = 0; i < n && i < 3; i++)
+        g_string_append_printf(out, "%s%s", i > 0 ? ", " : "",
+                               json_array_get_string_element(waiting_on, i));
+
+    if (n > 3)
+        g_string_append_printf(out, " and %u more", n - 3);
+
+    g_string_append(out, " to complete");
+    return g_string_free(g_steal_pointer(&out), FALSE);
+}

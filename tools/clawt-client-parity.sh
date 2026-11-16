@@ -220,6 +220,7 @@ declare -A AFFORDANCES=(
     ["new task"]="on_new_task_create|/tasks/new|on_new_task_response"
     ["assign from the backlog"]="on_assign_confirm|/tasks/%s/assign|on_assign_response"
     ["task thread and comment"]="on_comment_send|/tasks/%s/comment|on_comment_response"
+    ["task waits for"]="on_unlink|/tasks/%s/unlink|on_unlink_clicked"
     ["task history"]="\"journal\", \"true\"|clawt_web_payload_set_bool(payload, \"journal\", TRUE)|\"journal\", \"true\""
     #
     # Per-agent computer settings that apply to some computer types only.

@@ -113,6 +113,7 @@ typedef struct {
     GtkWidget   *title_row;
     GtkTextView *prompt;
     GtkWidget   *agent_row;
+    GtkWidget   *after_row;
     GStrv        agent_ids;
     gboolean     with_nobody;
     GtkTextView *comment;
@@ -259,6 +260,7 @@ on_new_task_create(GtkButton *button, gpointer user_data)
     g_autofree gchar *prompt = text_view_text(dialog->prompt);
     const gchar *title = gtk_editable_get_text(GTK_EDITABLE(dialog->title_row));
     const gchar *agent = task_dialog_agent(dialog);
+    const gchar *after = gtk_editable_get_text(GTK_EDITABLE(dialog->after_row));
     g_autoptr(JsonNode) reply = NULL;
     g_autofree gchar *said = NULL;
 
@@ -273,7 +275,9 @@ on_new_task_create(GtkButton *button, gpointer user_data)
                                  clawt_build_payload(
                                      "prompt", prompt,
                                      "title", (*title != '\0') ? title : NULL,
-                                     "agent", agent, NULL));
+                                     "agent", agent,
+                                     "after", (*after != '\0') ? after : NULL,
+                                     NULL));
 
     if (reply == NULL)
         return;
@@ -314,6 +318,7 @@ on_new_task(GtkButton *button, gpointer user_data)
     adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(who), "Who");
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(who),
                               task_agent_row(dialog, TRUE));
+    dialog->after_row = clawt_gtk_add_entry(who, "Wait for (task ids)", "");
 
     gtk_widget_add_css_class(create, "suggested-action");
     gtk_widget_set_margin_top(create, 12);
@@ -404,6 +409,49 @@ on_comment_send(GtkButton *button, gpointer user_data)
                                           "delivered", FALSE)
                        ? "Noted, and the assignee has it"
                        : "Noted on the task");
+    adw_dialog_close(dialog->dialog);
+}
+
+static void
+on_link(GtkButton *button, gpointer user_data)
+{
+    TaskDialog *dialog = user_data;
+    const gchar *blocker = gtk_editable_get_text(GTK_EDITABLE(dialog->after_row));
+    g_autoptr(JsonNode) reply = NULL;
+
+    (void)button;
+
+    if (*blocker == '\0')
+        return;
+
+    reply = clawt_window_request(dialog->window, "task.link",
+                                 clawt_build_payload("task", dialog->task_id,
+                                                     "after", blocker, NULL));
+
+    if (reply == NULL)
+        return;
+
+    clawt_window_toast(dialog->window, "It waits for that task now");
+    clawt_gtk_refresh_tasks(dialog->window);
+    adw_dialog_close(dialog->dialog);
+}
+
+static void
+on_unlink(GtkButton *button, gpointer user_data)
+{
+    TaskDialog *dialog = user_data;
+    const gchar *blocker = g_object_get_data(G_OBJECT(button), "blocker");
+    g_autoptr(JsonNode) reply = NULL;
+
+    reply = clawt_window_request(dialog->window, "task.unlink",
+                                 clawt_build_payload("task", dialog->task_id,
+                                                     "after", blocker, NULL));
+
+    if (reply == NULL)
+        return;
+
+    clawt_window_toast(dialog->window, "No longer waits for it");
+    clawt_gtk_refresh_tasks(dialog->window);
     adw_dialog_close(dialog->dialog);
 }
 
@@ -508,6 +556,53 @@ on_task_details(GtkButton *button, gpointer user_data)
     if (rows == NULL || json_array_get_length(rows) == 0)
         adw_preferences_group_set_description(
             ADW_PREFERENCES_GROUP(thread), "Nothing said about it yet.");
+
+    /*
+     * What it waits for, each with a way to stop waiting -- the last one
+     * taken away hands the work over now -- and, for a task on the
+     * backlog or already waiting, a way to add one.
+     */
+    {
+        GtkWidget *waits = adw_preferences_group_new();
+        JsonArray *after = json_object_has_member(task, "after")
+            ? json_object_get_array_member(task, "after") : NULL;
+        const gchar *state = clawt_json_string(task, "state", "");
+        guint w;
+
+        adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(waits),
+                                        "Waits for");
+
+        for (w = 0; after != NULL && w < json_array_get_length(after); w++) {
+            const gchar *blocker = json_array_get_string_element(after, w);
+            GtkWidget *row = adw_action_row_new();
+            GtkWidget *stop = gtk_button_new_with_label("Stop waiting");
+
+            clawt_gtk_set_row_text(row, blocker, NULL);
+            g_object_set_data_full(G_OBJECT(stop), "blocker",
+                                   g_strdup(blocker), g_free);
+            g_signal_connect(stop, "clicked", G_CALLBACK(on_unlink), dialog);
+            gtk_widget_set_valign(stop, GTK_ALIGN_CENTER);
+            adw_action_row_add_suffix(ADW_ACTION_ROW(row), stop);
+            adw_preferences_group_add(ADW_PREFERENCES_GROUP(waits), row);
+        }
+
+        if (g_strcmp0(state, "unassigned") == 0 ||
+            g_strcmp0(state, "blocked") == 0) {
+            GtkWidget *add = gtk_button_new_with_label("Wait for it");
+
+            dialog->after_row = clawt_gtk_add_entry(waits, "Task id", "");
+            g_signal_connect(add, "clicked", G_CALLBACK(on_link), dialog);
+            gtk_widget_set_margin_top(add, 6);
+            adw_preferences_group_add(ADW_PREFERENCES_GROUP(waits), add);
+        } else if (after == NULL) {
+            adw_preferences_group_set_description(
+                ADW_PREFERENCES_GROUP(waits),
+                "Nothing. Only a task on the backlog can be made to wait.");
+        }
+
+        adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                                 ADW_PREFERENCES_GROUP(waits));
+    }
 
     say = adw_preferences_group_new();
     adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(say), "Comment");
@@ -867,7 +962,15 @@ refresh_tasks_once(ClawtWindow *self)
              * that reads `completed` and nothing else cannot distinguish
              * a reported result from a turn that simply stopped.
              */
-            if (clawt_json_string(task, "progress_note", NULL) != NULL)
+            /* A held task says what it is waiting for. */
+            if (json_object_has_member(task, "waiting_on") &&
+                json_array_get_length(json_object_get_array_member(
+                    task, "waiting_on")) > 0) {
+                g_autofree gchar *waits = clawt_task_waiting_caption(
+                    json_object_get_array_member(task, "waiting_on"));
+
+                adw_action_row_set_subtitle(ADW_ACTION_ROW(row), waits);
+            } else if (clawt_json_string(task, "progress_note", NULL) != NULL)
                 adw_action_row_set_subtitle(
                     ADW_ACTION_ROW(row),
                     clawt_json_string(task, "progress_note", ""));

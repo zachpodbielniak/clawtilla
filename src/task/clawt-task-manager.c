@@ -12,6 +12,7 @@
 
 enum {
     SIGNAL_TASK_CHANGED,
+    SIGNAL_BLOCKERS_CHANGED,
     N_SIGNALS
 };
 
@@ -1202,6 +1203,277 @@ clawt_task_manager_notes(ClawtTaskManager  *self,
     return clawt_task_store_notes(self->store, task_id, error);
 }
 
+/* ── Blockers ────────────────────────────────────────────────────── */
+
+static gboolean
+need_store(ClawtTaskManager *self, GError **error)
+{
+    if (self->store != NULL)
+        return TRUE;
+
+    g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                        "blockers are kept in the task store, and this "
+                        "daemon has none");
+    return FALSE;
+}
+
+/*
+ * Whether @target is among @from's blockers, directly or further back.
+ * Bounded like every other walk here: a store edited by hand could hold
+ * a loop the link check never saw, and a hang is worse than a refusal.
+ */
+static gboolean
+reaches(ClawtTaskManager *self, const gchar *from, const gchar *target)
+{
+    g_autoptr(GPtrArray) queue = g_ptr_array_new_with_free_func(g_free);
+    g_autoptr(GHashTable) seen = g_hash_table_new_full(g_str_hash,
+                                                       g_str_equal, g_free,
+                                                       NULL);
+    guint i;
+
+    g_ptr_array_add(queue, g_strdup(from));
+
+    for (i = 0; i < queue->len && i < 4096; i++) {
+        const gchar *at = g_ptr_array_index(queue, i);
+        g_autoptr(GPtrArray) blockers = NULL;
+        guint b;
+
+        if (g_strcmp0(at, target) == 0)
+            return TRUE;
+
+        if (!g_hash_table_add(seen, g_strdup(at)))
+            continue;
+
+        blockers = clawt_task_store_blockers_of(self->store, at);
+
+        for (b = 0; b < blockers->len; b++)
+            g_ptr_array_add(queue, g_strdup(g_ptr_array_index(blockers, b)));
+    }
+
+    return FALSE;
+}
+
+gboolean
+clawt_task_manager_link(ClawtTaskManager  *self,
+                        const gchar       *task_id,
+                        const gchar       *blocker_id,
+                        GError           **error)
+{
+    ClawtTask *task;
+    ClawtTask *blocker;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), FALSE);
+
+    if (!need_store(self, error))
+        return FALSE;
+
+    task = clawt_task_manager_get(self, task_id);
+    blocker = clawt_task_manager_get(self, blocker_id);
+
+    if (task == NULL || blocker == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "there is no task %s",
+                    task == NULL ? (task_id != NULL ? task_id : "")
+                                 : blocker_id);
+        return FALSE;
+    }
+
+    if (g_strcmp0(task_id, blocker_id) == 0) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "a task cannot wait for itself");
+        return FALSE;
+    }
+
+    if (clawt_task_is_finished(task)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "task %s has already ended; there is nothing left for "
+                    "it to wait for", task_id);
+        return FALSE;
+    }
+
+    /*
+     * A cycle would hold both tasks for ever, and nothing would say so:
+     * each is waiting, and waiting is a state nobody checks on.
+     */
+    if (reaches(self, blocker_id, task_id)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "task %s already waits, directly or further back, for "
+                    "task %s; making it wait the other way round would "
+                    "hold both for ever", blocker_id, task_id);
+        return FALSE;
+    }
+
+    if (!clawt_task_store_add_link(self->store, blocker_id, task_id, error))
+        return FALSE;
+
+    {
+        g_autofree gchar *what = g_strdup_printf("waits for %s", blocker_id);
+
+        persist(self, task, what);
+    }
+
+    g_signal_emit(self, signals[SIGNAL_BLOCKERS_CHANGED], 0, task_id);
+    return TRUE;
+}
+
+gboolean
+clawt_task_manager_unlink(ClawtTaskManager  *self,
+                          const gchar       *task_id,
+                          const gchar       *blocker_id,
+                          GError           **error)
+{
+    ClawtTask *task;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), FALSE);
+
+    if (!need_store(self, error))
+        return FALSE;
+
+    task = clawt_task_manager_get(self, task_id);
+
+    if (task == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "there is no task %s", task_id != NULL ? task_id : "");
+        return FALSE;
+    }
+
+    if (!clawt_task_store_remove_link(self->store, blocker_id, task_id,
+                                      error))
+        return FALSE;
+
+    {
+        g_autofree gchar *what = g_strdup_printf("no longer waits for %s",
+                                                 blocker_id);
+
+        persist(self, task, what);
+    }
+
+    g_signal_emit(self, signals[SIGNAL_BLOCKERS_CHANGED], 0, task_id);
+    return TRUE;
+}
+
+GPtrArray *
+clawt_task_manager_blockers(ClawtTaskManager *self, const gchar *task_id)
+{
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), NULL);
+
+    if (self->store == NULL || task_id == NULL)
+        return g_ptr_array_new_with_free_func(g_free);
+
+    return clawt_task_store_blockers_of(self->store, task_id);
+}
+
+GPtrArray *
+clawt_task_manager_dependents(ClawtTaskManager *self, const gchar *task_id)
+{
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), NULL);
+
+    if (self->store == NULL || task_id == NULL)
+        return g_ptr_array_new_with_free_func(g_free);
+
+    return clawt_task_store_blocked_by(self->store, task_id);
+}
+
+GPtrArray *
+clawt_task_manager_waiting_on(ClawtTaskManager *self, const gchar *task_id)
+{
+    g_autoptr(GPtrArray) blockers = NULL;
+    GPtrArray *open = g_ptr_array_new_with_free_func(g_free);
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), open);
+
+    blockers = clawt_task_manager_blockers(self, task_id);
+
+    /*
+     * Only `completed` releases.  A blocker that failed or was cancelled
+     * still holds the task: its work was meant to come first, and it did
+     * not happen.  One that is gone altogether -- pruned long after it
+     * finished -- holds nothing.
+     */
+    for (i = 0; i < blockers->len; i++) {
+        const gchar *id = g_ptr_array_index(blockers, i);
+        ClawtTask *blocker = clawt_task_manager_get(self, id);
+
+        if (blocker != NULL &&
+            clawt_task_get_state(blocker) != CLAWT_TASK_COMPLETED)
+            g_ptr_array_add(open, g_strdup(id));
+    }
+
+    return open;
+}
+
+gboolean
+clawt_task_manager_block(ClawtTaskManager *self, const gchar *task_id)
+{
+    ClawtTask *task;
+    ClawtTaskState state;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), FALSE);
+
+    task = clawt_task_manager_get(self, task_id);
+
+    if (task == NULL)
+        return FALSE;
+
+    state = clawt_task_get_state(task);
+
+    if (state != CLAWT_TASK_PENDING && state != CLAWT_TASK_UNASSIGNED)
+        return FALSE;
+
+    clawt_task_set_state(task, CLAWT_TASK_BLOCKED);
+    emit_changed(self, task, "held until the tasks it waits for complete");
+
+    return TRUE;
+}
+
+gboolean
+clawt_task_manager_unblock(ClawtTaskManager *self, const gchar *task_id)
+{
+    ClawtTask *task;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), FALSE);
+
+    task = clawt_task_manager_get(self, task_id);
+
+    if (task == NULL || clawt_task_get_state(task) != CLAWT_TASK_BLOCKED)
+        return FALSE;
+
+    /* Back to the backlog if nobody had it yet, to its assignee if so. */
+    clawt_task_set_state(task, clawt_task_get_assignee(task) != NULL
+                                   ? CLAWT_TASK_PENDING
+                                   : CLAWT_TASK_UNASSIGNED);
+    emit_changed(self, task, "released: everything it waited for completed");
+
+    return TRUE;
+}
+
+gboolean
+clawt_task_manager_hold_delivery(ClawtTaskManager  *self,
+                                 const gchar       *task_id,
+                                 JsonNode          *delivery,
+                                 GError           **error)
+{
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), FALSE);
+
+    if (!need_store(self, error))
+        return FALSE;
+
+    return clawt_task_store_hold_delivery(self->store, task_id, delivery,
+                                          error);
+}
+
+JsonNode *
+clawt_task_manager_take_delivery(ClawtTaskManager *self, const gchar *task_id)
+{
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), NULL);
+
+    if (self->store == NULL)
+        return NULL;
+
+    return clawt_task_store_take_delivery(self->store, task_id);
+}
+
 guint
 clawt_task_manager_orphan_agent_tasks(ClawtTaskManager *self,
                                       const gchar      *agent_id)
@@ -1358,6 +1630,20 @@ clawt_task_manager_class_init(ClawtTaskManagerClass *klass)
         g_signal_new("task-changed", CLAWT_TYPE_TASK_MANAGER,
                      G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
                      G_TYPE_NONE, 2, G_TYPE_STRING, G_TYPE_INT);
+
+    /**
+     * ClawtTaskManager::blockers-changed:
+     * @self: the manager
+     * @task_id: the task whose blockers were added to or taken away
+     *
+     * A link was added or removed (clawt_task_manager_link(),
+     * clawt_task_manager_unlink()).  Its own signal, because a blocker
+     * removed can make a held task ready without any task changing state.
+     */
+    signals[SIGNAL_BLOCKERS_CHANGED] =
+        g_signal_new("blockers-changed", CLAWT_TYPE_TASK_MANAGER,
+                     G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
+                     G_TYPE_NONE, 1, G_TYPE_STRING);
 }
 
 static void
