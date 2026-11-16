@@ -237,6 +237,54 @@ clawt_lrg_app_wake(ClawtLrgApp *app)
 
 /* ── Appearance ───────────────────────────────────────────────────── */
 
+/*
+ * appearance.yaml, read once.  Its own step because the window needs one
+ * answer from it -- whether to draw buttons -- before the window exists,
+ * and the rest of the appearance is applied only after.
+ */
+static void
+load_appearance_once(ClawtLrgApp *app)
+{
+    g_autoptr(GError) error = NULL;
+
+    if (app->appearance != NULL)
+        return;
+
+    app->appearance = clawt_appearance_load(NULL, &error);
+
+    if (app->appearance == NULL) {
+        g_warning("%s: appearance.yaml: %s", CLAWT_LRG_BIN_NAME,
+                  error->message);
+        app->appearance = clawt_appearance_new();
+    }
+}
+
+/*
+ * Whether the window has a title bar with buttons.
+ *
+ * GLFW asks the compositor for a decorated window by default -- libdecor's
+ * frame on a Wayland compositor without server-side decorations, the
+ * window manager's frame on X11.  Under a tiling window manager both are
+ * clutter, so `window_buttons` (see #ClawtWindowButtons) makes the window
+ * undecorated there.  This changes the live window, which is what lets
+ * the settings page preview it; before the window exists it does
+ * nothing, and clawt_lrg_app_run() sets the creation flag instead.
+ */
+static void
+apply_window_buttons(ClawtLrgApp *app)
+{
+    gboolean shown = clawt_window_buttons_shown(
+        clawt_appearance_get_window_buttons(app->appearance), NULL);
+
+    if (!IsWindowReady())
+        return;
+
+    if (shown && IsWindowState(FLAG_WINDOW_UNDECORATED))
+        ClearWindowState(FLAG_WINDOW_UNDECORATED);
+    else if (!shown && !IsWindowState(FLAG_WINDOW_UNDECORATED))
+        SetWindowState(FLAG_WINDOW_UNDECORATED);
+}
+
 void
 clawt_lrg_app_apply_appearance(ClawtLrgApp *app, ClawtAppearance *appearance)
 {
@@ -250,17 +298,11 @@ clawt_lrg_app_apply_appearance(ClawtLrgApp *app, ClawtAppearance *appearance)
     if (appearance != NULL && appearance != app->appearance) {
         g_clear_pointer(&app->appearance, clawt_appearance_free);
         app->appearance = clawt_appearance_copy(appearance);
-    } else if (app->appearance == NULL) {
-        app->appearance = clawt_appearance_load(NULL, &error);
-
-        if (app->appearance == NULL) {
-            g_warning("%s: appearance.yaml: %s", CLAWT_LRG_BIN_NAME,
-                      error->message);
-            app->appearance = clawt_appearance_new();
-        }
-
-        g_clear_error(&error);
+    } else {
+        load_appearance_once(app);
     }
+
+    apply_window_buttons(app);
 
     if (IsWindowReady()) {
         Vector2 dpi = GetWindowScaleDPI();
@@ -788,8 +830,21 @@ clawt_lrg_app_run(ClawtLrgApp *app, const gchar *self_test_page)
     g_return_val_if_fail(app != NULL, 1);
 
     if (self_test_page == NULL) {
-        SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT |
-                       FLAG_WINDOW_HIGHDPI | FLAG_VSYNC_HINT);
+        guint flags = FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT |
+                      FLAG_WINDOW_HIGHDPI | FLAG_VSYNC_HINT;
+
+        /*
+         * Undecorated from the first frame under a tiling window manager,
+         * rather than decorated and then stripped once the appearance is
+         * applied -- which would flash a title bar on every start.
+         */
+        load_appearance_once(app);
+
+        if (!clawt_window_buttons_shown(
+                clawt_appearance_get_window_buttons(app->appearance), NULL))
+            flags |= FLAG_WINDOW_UNDECORATED;
+
+        SetConfigFlags(flags);
         SetTraceLogLevel(LOG_WARNING);
         window = grl_window_new(1360, 860, "clawtilla");
         /*

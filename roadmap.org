@@ -359,6 +359,12 @@ OpenMausBot has none of the structural withholding or cycle stalling that I coul
 - *Limit:* built and tested here without libqrencode; the QR drawing path compiles only where =qrencode-devel= is installed (Fedora: =qrencode-devel= to build, =qrencode-libs= at run time).
 - *Version:* micro.
 
+** DONE P3 No window buttons under a tiling window manager v0.34.5 :clients:
+- *Requested:* by the user on 2026-11-15: under gowl / =cmacs --gowl= and other tiling window managers, the GTK and lrg clients should not draw minimize, maximize and close, since those sessions close windows from the keyboard.
+- *Done:* ~window_buttons~ (auto, show, hide) in ~appearance.yaml~ and =ClawtWindowButtons=; =clawt_window_manager_tiling()= reads the compositor sockets (~GOWL_SOCKET~, ~SWAYSOCK~, ~HYPRLAND_INSTANCE_SIGNATURE~, ~NIRI_SOCKET~, ~I3SOCK~) and then the desktop names; GTK sets ~gtk-decoration-layout~ for the display, lrg creates its window undecorated and toggles it live; a Window row on both Appearance pages names what it found. The web client is exempt in =make parity= with the reason.
+- *Limit:* the GTK path was checked on Xvfb with a faked ~GOWL_SOCKET~, not inside a real gowl session; the lrg path was not run against a real compositor.
+- *Version:* micro.
+
 * Steering: words into a running turn
 
 Today a message for an agent whose turn is running waits in libreclaw's queue and becomes the next turn. Two costs follow. A delegator's correction ("stop, use the staging DB") arrives after the work it was meant to change has finished. And a peer's follow-up costs a whole extra turn that rereads everything.

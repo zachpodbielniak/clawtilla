@@ -59,6 +59,13 @@ struct _ClawtAppearance {
     gboolean   sidebar_collapsed;
 
     /*
+     * Whether the window draws its own minimize, maximize and close
+     * buttons.  Zero is "automatic": hidden under a tiling window
+     * manager, shown elsewhere.
+     */
+    ClawtWindowButtons window_buttons;
+
+    /*
      * Set only when the chosen scheme came from a file, because a
      * palette on disk has no ClawtTheme value.  The built-in schemes go
      * on `theme` as they always did, so nothing about how a choice is
@@ -110,6 +117,7 @@ clawt_appearance_copy(ClawtAppearance *self)
     copy->run_spacing = self->run_spacing;
     copy->hide_descriptions = self->hide_descriptions;
     copy->sidebar_collapsed = self->sidebar_collapsed;
+    copy->window_buttons = self->window_buttons;
     copy->palette = g_strdup(self->palette);
     copy->lrg_motion = self->lrg_motion;
     copy->lrg_material = self->lrg_material;
@@ -1713,6 +1721,23 @@ clawt_appearance_parse(const gchar *text, GError **error)
                   g_strcmp0(value, "1") == 0);
 
     /*
+     * An unknown spelling is "automatic", said once on stderr, for the
+     * same reason as the lrg keys below: a typo must neither cost the
+     * client nor quietly pick one of the other two.
+     */
+    value = member_string(mapping, "window_buttons");
+
+    if (value != NULL) {
+        ClawtWindowButtons buttons = CLAWT_WINDOW_BUTTONS_AUTO;
+
+        if (!clawt_window_buttons_from_nick(value, &buttons))
+            g_warning("appearance: window_buttons '%s' is not one of "
+                      "auto, show, hide; using auto", value);
+
+        clawt_appearance_set_window_buttons(self, buttons);
+    }
+
+    /*
      * clawtilla-lrg's keys.  A nick this build does not know is the
      * shipped value, said once on stderr: a hand-edited preference must
      * not cost somebody their client, and must not silently become a
@@ -1875,6 +1900,16 @@ clawt_appearance_to_data(ClawtAppearance *self)
         "# then opens it over the page rather than beside it.\n");
     g_string_append_printf(out, "sidebar_collapsed: %s\n",
                            self->sidebar_collapsed ? "true" : "false");
+
+    g_string_append(out,
+        "\n"
+        "# The minimize, maximize and close buttons of clawtilla-gtk and\n"
+        "# clawtilla-lrg. auto hides them under a tiling window manager\n"
+        "# (gowl, cmacs --gowl, sway, Hyprland, niri, river, i3, ...),\n"
+        "# which closes windows from the keyboard; show and hide say so\n"
+        "# outright. The web client has no window of its own.\n");
+    g_string_append_printf(out, "window_buttons: %s\n",
+                           clawt_window_buttons_nick(self->window_buttons));
 
     g_string_append(out,
         "\n"
@@ -2524,4 +2559,208 @@ clawt_palette_color(const gchar *css, const gchar *name, gdouble rgba[4])
 
     memcpy(rgba, out, sizeof(out));
     return TRUE;
+}
+
+/* ── Window buttons ───────────────────────────────────────────────── */
+
+static const LrgChoice window_buttons_table[] = {
+    { CLAWT_WINDOW_BUTTONS_AUTO, "auto", "Automatic (hidden when tiling)" },
+    { CLAWT_WINDOW_BUTTONS_SHOW, "show", "Always" },
+    { CLAWT_WINDOW_BUTTONS_HIDE, "hide", "Never" }
+};
+
+guint
+clawt_window_buttons_count(void)
+{
+    return G_N_ELEMENTS(window_buttons_table);
+}
+
+ClawtWindowButtons
+clawt_window_buttons_nth(guint n)
+{
+    g_return_val_if_fail(n < G_N_ELEMENTS(window_buttons_table),
+                         CLAWT_WINDOW_BUTTONS_AUTO);
+
+    return (ClawtWindowButtons)window_buttons_table[n].value;
+}
+
+const gchar *
+clawt_window_buttons_nick(ClawtWindowButtons buttons)
+{
+    const LrgChoice *c = lrg_choice_find(
+        window_buttons_table, G_N_ELEMENTS(window_buttons_table),
+        (gint)buttons);
+
+    return (c != NULL) ? c->nick : "auto";
+}
+
+const gchar *
+clawt_window_buttons_label(ClawtWindowButtons buttons)
+{
+    const LrgChoice *c = lrg_choice_find(
+        window_buttons_table, G_N_ELEMENTS(window_buttons_table),
+        (gint)buttons);
+
+    return (c != NULL) ? c->label : window_buttons_table[0].label;
+}
+
+gboolean
+clawt_window_buttons_from_nick(const gchar *nick, ClawtWindowButtons *out)
+{
+    gint value;
+
+    g_return_val_if_fail(out != NULL, FALSE);
+
+    if (!lrg_choice_from_nick(window_buttons_table,
+                              G_N_ELEMENTS(window_buttons_table), nick,
+                              &value))
+        return FALSE;
+
+    *out = (ClawtWindowButtons)value;
+    return TRUE;
+}
+
+ClawtWindowButtons
+clawt_appearance_get_window_buttons(ClawtAppearance *self)
+{
+    g_return_val_if_fail(self != NULL, CLAWT_WINDOW_BUTTONS_AUTO);
+
+    return self->window_buttons;
+}
+
+void
+clawt_appearance_set_window_buttons(ClawtAppearance   *self,
+                                    ClawtWindowButtons buttons)
+{
+    g_return_if_fail(self != NULL);
+
+    if (lrg_choice_find(window_buttons_table,
+                        G_N_ELEMENTS(window_buttons_table),
+                        (gint)buttons) == NULL)
+        buttons = CLAWT_WINDOW_BUTTONS_AUTO;
+
+    self->window_buttons = buttons;
+}
+
+/*
+ * The variables a tiling compositor sets for the processes it starts,
+ * and the name each one stands for.  Read before the desktop names: see
+ * clawt_window_manager_tiling() for why a nested session needs that.
+ */
+static const struct {
+    const gchar *variable;
+    const gchar *name;
+} tiling_sockets[] = {
+    { "GOWL_SOCKET",                  "gowl" },
+    { "SWAYSOCK",                     "sway" },
+    { "HYPRLAND_INSTANCE_SIGNATURE",  "Hyprland" },
+    { "NIRI_SOCKET",                  "niri" },
+    { "I3SOCK",                       "i3" }
+};
+
+/*
+ * Desktop names that are tiling window managers, as they appear in
+ * XDG_CURRENT_DESKTOP, XDG_SESSION_DESKTOP or DESKTOP_SESSION.  Compared
+ * case-insensitively, so "Hyprland" and "hyprland" are one entry.
+ *
+ * Names are read in the order the session lists them, which is what
+ * makes gowl's own session work: its desktop entry declares
+ * "gowl:wlroots:GNOME", GNOME last for software that only knows a fixed
+ * set of desktops, and gowl is found before GNOME is looked at.
+ *
+ * Only managers that tile by default.  GNOME, KDE and COSMIC can tile
+ * but float unless asked, and a window there that lost its close button
+ * would have no other way to close with the mouse.
+ */
+static const gchar * const tiling_names[] = {
+    "gowl", "sway", "swayfx", "hyprland", "niri", "river", "dwl", "mango",
+    "miracle-wm", "i3", "dwm", "qtile", "bspwm", "awesome", "xmonad",
+    "herbstluftwm", "leftwm", "spectrwm", "ratpoison", "stumpwm", "exwm",
+    "notion", "wmii", "instantwm", "cagebreak"
+};
+
+/*
+ * One variable out of @envp, or out of this process's environment when
+ * @envp is NULL.  An empty value counts as unset: an exported but blank
+ * SWAYSOCK says nothing about the session.
+ */
+static const gchar *
+tiling_getenv(const gchar * const *envp, const gchar *variable)
+{
+    const gchar *value;
+
+    value = (envp != NULL)
+        ? g_environ_getenv((gchar **)envp, variable)
+        : g_getenv(variable);
+
+    return (value != NULL && *value != '\0') ? value : NULL;
+}
+
+/*
+ * The entry of tiling_names[] that @value names, or NULL.  @value may be
+ * a colon-separated list, as XDG_CURRENT_DESKTOP is ("sway:wlroots").
+ */
+static const gchar *
+tiling_name_in(const gchar *value)
+{
+    g_auto(GStrv) parts = NULL;
+    guint i;
+    gsize n;
+
+    if (value == NULL)
+        return NULL;
+
+    parts = g_strsplit(value, ":", -1);
+
+    for (i = 0; parts[i] != NULL; i++) {
+        g_strstrip(parts[i]);
+
+        for (n = 0; n < G_N_ELEMENTS(tiling_names); n++) {
+            if (g_ascii_strcasecmp(parts[i], tiling_names[n]) == 0)
+                return tiling_names[n];
+        }
+    }
+
+    return NULL;
+}
+
+const gchar *
+clawt_window_manager_tiling(const gchar * const *envp)
+{
+    static const gchar * const desktop_variables[] = {
+        "XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP", "DESKTOP_SESSION"
+    };
+    gsize i;
+
+    /* The compositor's own socket: set by it alone, inherited by all. */
+    for (i = 0; i < G_N_ELEMENTS(tiling_sockets); i++) {
+        if (tiling_getenv(envp, tiling_sockets[i].variable) != NULL)
+            return tiling_sockets[i].name;
+    }
+
+    /* Then what the session calls itself. */
+    for (i = 0; i < G_N_ELEMENTS(desktop_variables); i++) {
+        const gchar *name = tiling_name_in(
+            tiling_getenv(envp, desktop_variables[i]));
+
+        if (name != NULL)
+            return name;
+    }
+
+    return NULL;
+}
+
+gboolean
+clawt_window_buttons_shown(ClawtWindowButtons buttons,
+                           const gchar * const *envp)
+{
+    switch (buttons) {
+    case CLAWT_WINDOW_BUTTONS_SHOW:
+        return TRUE;
+    case CLAWT_WINDOW_BUTTONS_HIDE:
+        return FALSE;
+    case CLAWT_WINDOW_BUTTONS_AUTO:
+    default:
+        return clawt_window_manager_tiling(envp) == NULL;
+    }
 }

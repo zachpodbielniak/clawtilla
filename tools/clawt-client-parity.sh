@@ -1093,6 +1093,16 @@ report_missing () {
 }
 
 #
+# Choice enumerations the web client is allowed not to walk, each with
+# the reason.  Same rule as the maps above: a decision, not a to-do.
+# GTK and clawtilla-lrg are still compared with each other for these.
+#
+# shellcheck disable=SC2034
+declare -A WEB_MAY_NOT_WALK=(
+    ["clawt_window_buttons"]="minimize, maximize and close belong to a desktop window; the web client's window is the browser's, and it draws none to hide"
+)
+
+#
 # Kinds clawtilla-lrg is allowed to lack, each with the reason.  Same rule
 # as the two maps above: a decision, not a to-do.
 #
@@ -1382,6 +1392,11 @@ main () {
 
         for client in "${CLIENT_NAMES[@]}"
         do
+            if [[ "${client}" == web && -n "${WEB_MAY_NOT_WALK[${family}]:-}" ]]
+            then
+                continue
+            fi
+
             if walks_enumeration "${CODE_FILE[${client}]}" "${family}"
             then
                 walked="${walked:+${walked}, }clawtilla-${client}"

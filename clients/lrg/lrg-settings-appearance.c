@@ -672,6 +672,57 @@ static const gchar *background_nick_at(guint n)
 static const gchar *background_label_at(guint n)
 { return clawt_lrg_background_label(clawt_lrg_background_nth(n)); }
 
+/* ── The window ──────────────────────────────────────────────────── */
+
+static void
+on_window_buttons_changed(LrgComboBox *combo, gpointer user_data)
+{
+    ClawtWindowButtons buttons = CLAWT_WINDOW_BUTTONS_AUTO;
+
+    clawt_window_buttons_from_nick(clawt_lrg_combo_id(LRG_WIDGET(combo)),
+                                   &buttons);
+    clawt_appearance_set_window_buttons(looks.edited, buttons);
+    changed();
+}
+
+static const gchar *window_buttons_nick_at(guint n)
+{ return clawt_window_buttons_nick(clawt_window_buttons_nth(n)); }
+static const gchar *window_buttons_label_at(guint n)
+{ return clawt_window_buttons_label(clawt_window_buttons_nth(n)); }
+
+/*
+ * The title bar and its minimize, maximize and close buttons.  The hint
+ * names what "automatic" found, so the card answers why the buttons are
+ * gone without the reader knowing which variables a compositor sets.
+ */
+static LrgWidget *
+build_window_card(void)
+{
+    LrgWidget *body;
+    LrgWidget *card = group_card(
+        "Window",
+        "Shared with clawtilla-gtk through appearance.yaml.",
+        &body);
+    LrgWidget *form = clawt_lrg_form_new();
+    const gchar *tiling = clawt_window_manager_tiling(NULL);
+    g_autofree gchar *hint = (tiling != NULL)
+        ? g_strdup_printf("Minimize, maximize and close. Automatic hides "
+                          "them here: this session is tiled by %s.", tiling)
+        : g_strdup("Minimize, maximize and close. Automatic hides them "
+                   "under a tiling window manager such as gowl or sway.");
+
+    clawt_lrg_form_add(form, "Window buttons", lrg_choice(
+        clawt_window_buttons_count(), window_buttons_nick_at,
+        window_buttons_label_at,
+        clawt_window_buttons_nick(
+            clawt_appearance_get_window_buttons(looks.edited)),
+        G_CALLBACK(on_window_buttons_changed)),
+        hint);
+
+    clawt_lrg_take(body, form);
+    return card;
+}
+
 static LrgWidget *
 build_lrg_card(void)
 {
@@ -853,7 +904,8 @@ build(ClawtLrgApp *app)
             build_font_card(0),
             build_font_card(1),
             build_reading_card(),
-            build_agent_list_card(app)
+            build_agent_list_card(app),
+            build_window_card()
         };
         guint i;
 
