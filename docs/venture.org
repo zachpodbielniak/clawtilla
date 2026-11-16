@@ -10,7 +10,7 @@
 
 With a VENTURE connector's ~mirror_tasks~ on (since 0.44.0), clawtilla copies the tasks of the agents that connector covers into VENTURE tickets and keeps them current: status, assignee, title, results and notes. VENTURE then shows the fleet's work beside everything else it tracks -- on the ticket board, against the repository, in the activity log under each agent's own account.
 
-VENTURE is never required. With no mirroring connector nothing here runs, and with one, nothing an agent does waits on VENTURE: every change is queued in =tasks.db= and sent behind, so a VENTURE that is down only means the queue grows until it is back.
+VENTURE is never required. With no mirroring connector nothing here runs, and with one, nothing an agent does waits on VENTURE: every change is queued in ~tasks.db~ and sent behind, so a VENTURE that is down only means the queue grows until it is back.
 
 It needs VENTURE 0.10.0 or later (=whoami=, =external_ref=, =Idempotency-Key=, =forge_repo/resolve=). Setting up VENTURE's side -- one account per agent, forges and repositories -- is VENTURE's =docs/clawtilla.org=; the connector itself is [[file:venture-setup.org][venture-setup.org]].
 
@@ -85,7 +85,7 @@ The ticket's =assignee= is the assignee's VENTURE username, learned from =GET /a
 
 * The outbox
 
-Every task save and every note queues a row in =tasks.db='s =venture_outbox=, in the same transaction as the change itself.  A task's saves coalesce into one row; its notes are a row each, in order.  The mirror drains it every 15 seconds and at once after a change, one request at a time, a task's rows strictly in order.
+Every task save and every note queues a row in ~tasks.db~'s =venture_outbox=, in the same transaction as the change itself.  A task's saves coalesce into one row; its notes are a row each, in order.  The mirror drains it every 15 seconds and at once after a change, one request at a time, a task's rows strictly in order.
 
 | VENTURE answers | The mirror |
 |-----------------+------------|
