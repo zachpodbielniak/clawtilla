@@ -1,0 +1,203 @@
+#+title: VENTURE setup
+#+description: Connecting a clawtilla fleet to VENTURE: connector, staged writes, triggers, and one confined account per agent
+#+authors: Zach Podbielniak
+#+categories: software documentation
+#+created: [2026-11-15 Sun]
+#+updated: [2026-11-15 Sun]
+#+version: 0.1.0
+
+* VENTURE setup
+
+This is the walkthrough: what to run on each side to give an agent VENTURE's tools, how the writes it proposes reach you, how VENTURE tells an agent something changed, and how to give every agent an account of its own so each one sees only the businesses it should. The reference material lives elsewhere and is linked from each step: [[file:connectors.org][connectors.org]] for the connector and the decision bridge, [[file:triggers.org][triggers.org]] for webhooks.
+
+There are three pieces, and only the first is required:
+
+| Step | What it gives you                                  | VENTURE side                    | clawtilla side                          |
+|------+----------------------------------------------------+---------------------------------+-----------------------------------------|
+|    1 | The agent can read and propose writes in VENTURE   | an account and a token          | =connector add=, =connector key=        |
+|    2 | Proposed writes reach you as decisions             | nothing                         | nothing (on by default)                 |
+|    3 | VENTURE tells the agent when a record changes      | =venturectl create webhook=     | =trigger add=                           |
+
+Everything below assumes VENTURE 0.9.1 or newer, which is the first version where an administrator can mint a token *for another account* (=venturectl token mint user===). On an older server, sign in as the agent's account and mint the token from its own =/account/tokens= page instead.
+
+** Before you start
+
+- =venturectl= must be on the daemon's =PATH=.  clawtilla runs =venturectl mcp= as the connector's tool server; it does not speak to VENTURE itself.
+- You need an administrator's token for the VENTURE-side commands below, in =VENTURE_TOKEN=, with =VENTURE_SERVER= pointing at the instance.  Mint it once from *Your account → API tokens* (=/account/tokens=) and keep it in =~/.bashrc-secrets=.
+- Know which organizations (VENTURE's entities) each agent should reach.  =venturectl list organization= shows them and their ids.
+
+* Step 1: the connector
+
+** On VENTURE: an account and a token for the agent
+
+A VENTURE token has no scope of its own.  It carries the global role of the account it belongs to and a snapshot of that account's organization memberships at the moment it was minted, and every request is checked against both.  So the way to confine an agent is to give it an *account* that may do only what the agent should, and mint the token for that account.
+
+#+begin_src bash
+# The agent's account: a global editor (reads and writes business data,
+# administers nothing) that belongs to one organization only.
+venturectl create user username=books-bot role=editor active=true
+venturectl list user username=books-bot                  # note its id
+venturectl create organization_membership \
+    user_id=<books-bot id> organization_id=<side business id> \
+    role=finance active=true
+
+# Its token. Only the secret is printed on stdout.
+venturectl token mint name=clawtilla-bookkeeper user=books-bot \
+    expires_in_days=365
+#+end_src
+
+- *Global role:* =editor= or =viewer=.  Never =admin= or =owner=: those keep unrestricted access to every organization whatever their memberships say.
+- *Membership role:* what the account may do inside that organization -- =viewer=, =editor=, =finance=, =sales=, =support=, =accountant=, =admin=, =owner=.  =finance= is the usual one for a bookkeeping agent.
+- *Expiry:* because an administrator mints it, the token may last up to 3650 days, or omit =expires_in_days= for none.  A token the agent's account mints for itself is limited to 90.
+- *Order matters:* a membership granted *after* minting does not widen an existing token.  Add the memberships first; if you change them later, mint a new token.
+
+** On clawtilla: the connector, and who gets it
+
+#+begin_src bash
+clawtilla connector add books --provider venture \
+    --instance http://127.0.0.1:8747 \
+    --scope selected --agents bookkeeper
+clawtilla connector key books        # paste the vk_... token; echo is off
+clawtilla integration check
+#+end_src
+
+- =--scope= *defaults to* =none=, so without =--scope= / =--agents= the connector exists and no agent has its tools.
+- =--instance= can be left out when VENTURE is on the same machine at the default =http://localhost:8747=.
+- =connector key= reads the token from standard input, never an argument, so it is not in your shell history or the process table.  You can pipe the mint straight into it: =venturectl token mint name=clawtilla-bookkeeper user=books-bot | clawtilla connector key books=.
+- =integration check= turns red with "this VENTURE server does not stage writes" against a server too old to hold writes back (see step 2).
+
+The agent now has the nineteen =venture_*= tools ([[file:connectors.org::*The tools are generated from VENTURE's own schema][the list]]), and VENTURE answers every call as =books-bot=: records in other organizations are simply not there (lists omit them, a direct read is a 404).
+
+* Step 2: staged writes become decisions
+
+Nothing to configure.  =venturectl mcp= stages every create, update and delete by default: VENTURE validates the change, holds it, and answers =202= with a confirmation.  clawtilla polls VENTURE's confirmation queue while a =venture= connector is bound and raises each pending change as an ordinary decision:
+
+#+begin_src bash
+clawtilla decision list
+clawtilla decision answer venture-books-<id> approve
+#+end_src
+
+| Key                           | Default | What it does                            |
+|-------------------------------+---------+-----------------------------------------|
+| =integrations.confirm_writes= | =true=  | whether clawtilla polls the queue       |
+| =integrations.poll_seconds=   | =60=    | how long between polls                  |
+
+A card nobody answers is dropped by VENTURE when its confirmation TTL runs out (an hour by default), which is the same as rejecting it.  Details: [[file:connectors.org::*Staged writes land in the decision inbox][connectors.org]].
+
+* Step 3 (optional): tell the agent when a record changes
+
+** On clawtilla: the trigger
+
+#+begin_src bash
+clawtilla trigger add ticket-watch bookkeeper provider=venture \
+    events=ticket.created,ticket.updated \
+    ignore_actors="API token #<id>" \
+    instructions="{{actor}} changed {{kind}} {{number}}: {{title}}.
+                  Read it with venture_get and triage it."
+#+end_src
+
+It prints an *Endpoint* and a *Secret*.  =ignore_actors= names the VENTURE actor the agent's own writes appear as, so the agent updating a ticket does not wake itself up again; VENTURE names token traffic =API token #N=, where N is the id =token mint= printed.
+
+** On VENTURE: the webhook
+
+Webhooks are owner-only in VENTURE.  The secret is required: an unsigned VENTURE delivery is refused with a 401.
+
+#+begin_src bash
+venturectl create webhook name=clawtilla-bookkeeper \
+    url=http://<daemon host>:8788/hooks/<endpoint> \
+    events='ticket.*' secret=<secret>
+venturectl webhooks                  # its id
+venturectl webhook test <id>
+#+end_src
+
+Then the handshake every trigger has: read the first captured delivery with =clawtilla trigger capture ticket-watch= and switch the trigger on.
+
+To catch up on business events (=invoice.paid=, =deal.won=, ...) missed while the daemon was down, turn on =business_events= on the webhook and set =triggers.replay_connector: books= and =triggers.organization_id: <id>= on the trigger.  The replay token must belong to an organization *owner or administrator*, so it is usually not the agent's confined token.  Details: [[file:triggers.org::*Telling an agent that a VENTURE record changed][triggers.org]].
+
+* Separate connections per agent
+
+One token is one actor.  VENTURE's audit trail records who made every change, and two agents holding one token are one name on every row they write: which of them filed something stops being answerable, and the two necessarily see the same organizations.  =clawtilla integration list= warns about a shared token for that reason.
+
+So every agent gets three things of its own:
+
+1. A VENTURE *account*, with memberships in only the organizations that agent should reach.
+2. A *token* minted for that account.
+3. A *credential* on the clawtilla side that only that agent is given.
+
+There are two ways to arrange the third.
+
+** One connector per agent (recommended)
+
+Each agent gets its own connector.  Everything is done with the CLI, and each connector has its own token file, health check and row in every client.
+
+#+begin_src bash
+# VENTURE: one account per agent, each in its own organizations.
+venturectl create user username=books-bot role=editor active=true
+venturectl create user username=sales-bot role=editor active=true
+venturectl create organization_membership user_id=<books-bot> \
+    organization_id=<bakery> role=finance active=true
+venturectl create organization_membership user_id=<sales-bot> \
+    organization_id=<bakery> role=sales active=true
+venturectl create organization_membership user_id=<sales-bot> \
+    organization_id=<consulting> role=sales active=true
+
+# clawtilla: one connector per agent, each scoped to that agent only.
+clawtilla connector add books-bookkeeper --provider venture \
+    --account bookkeeper --scope selected --agents bookkeeper
+clawtilla connector add books-sales --provider venture \
+    --account sales --scope selected --agents sales
+
+# The tokens, straight from one into the other.
+venturectl token mint name=clawtilla-bookkeeper user=books-bot \
+    | clawtilla connector key books-bookkeeper
+venturectl token mint name=clawtilla-sales user=sales-bot \
+    | clawtilla connector key books-sales
+
+clawtilla integration check
+#+end_src
+
+- =--account= is the label for a second account on the same service; it is required, and must be unique, once there is more than one =venture= connector.
+- Because each agent holds *one* venture connector, its tools keep their plain names (=venture_list=, =venture_create=, ...).  An agent given *two* would see them prefixed with each account's label (=bookkeeper_venture_list=) so it has to say which account it means -- see [[file:connectors.org::*Several accounts on one service][Several accounts on one service]].
+- The staged-write bridge raises each connector's cards for the agent that holds it, so the decision says which agent proposed the change.
+
+** One shared instance with =per_agent= token files
+
+A single integration entry in the config, covering several agents, with a token file each.  It keeps the instance URL and the connector's settings in one place, at the cost of writing the token files yourself: =clawtilla connector key= writes the integration's one token file and has no per-agent form.
+
+#+begin_src yaml
+integrations:
+  - name: books
+    type: connector
+    provider: venture
+    scope: selected
+    agents: [bookkeeper, sales]
+    instance: "http://127.0.0.1:8747"
+    per_agent:
+      bookkeeper:
+        token_file: "~/.clawtilla/secrets/connector-books-bookkeeper.json"
+      sales:
+        token_file: "~/.clawtilla/secrets/connector-books-sales.json"
+#+end_src
+
+Each token file is JSON holding the token as =access_token=, mode 0600:
+
+#+begin_src bash
+umask 077
+venturectl token mint name=clawtilla-bookkeeper user=books-bot \
+    | yq -n -o=json '.access_token = load_str("/dev/stdin")' \
+    > ~/.clawtilla/secrets/connector-books-bookkeeper.json
+#+end_src
+
+Leave out =per_agent= and both agents share the instance's one token -- the case =clawtilla integration list= warns about.
+
+** Checking it worked
+
+- =clawtilla integration list= shows each connector green, and no shared-token warning.
+- Ask each agent to list organizations (=venture_list= with =type: organization=): each should see only its own.
+- In VENTURE, each agent's writes are attributed to its own =API token #N=, and *Your account → API tokens* shows each token's description, "Minted by <you> for books-bot".
+
+** Rotating and revoking
+
+- *Rotate:* mint a new token for the account and pipe it into =clawtilla connector key <name>= (or rewrite its =per_agent= file), then revoke the old one at =/account/tokens=.
+- *Cut one agent off:* revoke its token, or deactivate its VENTURE account, which rejects every token it holds.  The other agents are untouched.
+- *Change what an agent reaches:* change its account's memberships, then mint a fresh token.  Removing a membership takes effect on existing tokens immediately; adding one does not.

@@ -401,6 +401,7 @@ loginctl enable-linger $USER
 - [[file:computers.org][computers.org]] -- containers, VMs, host access and what each confinement mode actually prevents
 - [[file:integrations.org][integrations.org]] -- Matrix, mail, MCP servers, notifications, and scoping them
 - [[file:connectors.org][connectors.org]] -- connected accounts: agents get the tools, the credential stays here
+- [[file:venture-setup.org][venture-setup.org]] -- connecting VENTURE, step by step, with one confined account per agent
 - [[file:routines.org][routines.org]] -- standing work on a schedule
 - [[file:skills.org][skills.org]] -- reusable procedures, and why an imported one arrives disabled
 - [[file:research.org][research.org]] -- web search, LQL and cited research through a libresearch server
