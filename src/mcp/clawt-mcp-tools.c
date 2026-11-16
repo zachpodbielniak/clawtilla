@@ -219,7 +219,22 @@ static const ClawtParamInfo delegate_params[] = {
       "Which of your conversations this call is part of, from the "
       "[clawtilla] line on the message you are handling. Only "
       "needed when you are working in more than one at once; it is "
-      "not where the tool acts.", FALSE }
+      "not where the tool acts.", FALSE },
+    { "after",    "string",
+      "Task ids this work must wait for, separated by commas. It is held "
+      "and handed over by itself once every one of them has completed -- "
+      "say so here rather than waiting and delegating later.", FALSE }
+};
+
+static const ClawtParamInfo task_link_params[] = {
+    { "task_id", "string", "A task you delegated that is still waiting "
+                           "(blocked).", TRUE },
+    { "after",   "string", "Task ids to add to what it waits for, or with "
+                           "remove, to take away. Separated by commas.",
+      TRUE },
+    { "remove",  "boolean", "Take these off what it waits for instead of "
+                            "adding them. Taking the last one away hands "
+                            "the work over now.", FALSE }
 };
 
 /*
@@ -834,6 +849,13 @@ static const ToolDefinition tools[] = {
          "conversation of its own; mode: consult asks for an answer "
          "rather than work.",
          NEEDS_ASSIGNMENT, delegate_params, CLAWT_ACTION_MESSAGE),
+
+    TOOL("clawtilla_task_link",
+         "Change what a task you delegated is waiting for. A task given "
+         "after: is held until those tasks complete, and handed over by "
+         "itself then; add more to wait for, or remove one -- removing the "
+         "last hands the work over now. Only for a task still waiting.",
+         NEEDS_ASSIGNMENT, task_link_params, CLAWT_ACTION_MESSAGE),
 
     HOP_TOOL("clawtilla_handoff",
          "Give a task you own to somebody else, and stop owning it. Use "
@@ -3316,6 +3338,12 @@ clawt_mcp_tools_describe_for_agent(ClawtMcpTools *self, const gchar *agent_id)
             "left to carry it on, it is failed with that reason and can be\n"
             "retried; one you were waiting on reports back as usual.\n"
             "\n"
+            "A delegation can wait for other tasks: pass their ids as\n"
+            "~after~ to ~clawtilla_delegate~ and it is held, then handed\n"
+            "over by itself once every one of them has completed -- do not\n"
+            "wait and delegate later, and do not poll. If one fails you are\n"
+            "told, and ~clawtilla_task_link~ changes what it waits for.\n"
+            "\n"
             "The operator can comment on a task you have. A comment reaches\n"
             "you as a message from them while you work on it, and\n"
             "~clawtilla_task_status~ shows the latest -- read them before\n"
@@ -5113,6 +5141,125 @@ tool_message_agent(ClawtMcpTools *self,
                            one_way ? "" : ANSWER_COMES_TO_YOU);
 }
 
+/*
+ * Task ids from a comma- or space-separated string, with empties
+ * dropped.  NULL for none.
+ */
+static GStrv
+split_task_ids(const gchar *text)
+{
+    g_auto(GStrv) parts = NULL;
+    GPtrArray *ids;
+    guint i;
+
+    if (text == NULL || *text == '\0')
+        return NULL;
+
+    parts = g_strsplit_set(text, ", \t\n", -1);
+    ids = g_ptr_array_new();
+
+    for (i = 0; parts[i] != NULL; i++)
+        if (*parts[i] != '\0')
+            g_ptr_array_add(ids, g_strdup(parts[i]));
+
+    g_ptr_array_add(ids, NULL);
+    return (GStrv)g_ptr_array_free(ids, FALSE);
+}
+
+gboolean
+clawt_mcp_tools_deliver_held(ClawtMcpTools *self,
+                             const gchar   *from_agent,
+                             const gchar   *target,
+                             const gchar   *body,
+                             const gchar   *task_id,
+                             gint           depth,
+                             ClawtPriority  priority,
+                             const gchar   *turn_room,
+                             GError       **error)
+{
+    g_return_val_if_fail(CLAWT_IS_MCP_TOOLS(self), FALSE);
+
+    return dispatch_delivery(self, from_agent, target, body, task_id, depth,
+                             priority, turn_room, 0, error);
+}
+
+static gchar *
+tool_task_link(ClawtMcpTools *self,
+               const gchar   *agent_id,
+               JsonObject    *arguments,
+               gboolean      *is_error)
+{
+    const gchar *task_id = argument_string(arguments, "task_id");
+    gboolean remove = argument_boolean(arguments, "remove", FALSE);
+    g_auto(GStrv) after = split_task_ids(argument_string(arguments, "after"));
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GPtrArray) open = NULL;
+    ClawtTask *task;
+    guint i;
+
+    task = (self->tasks != NULL && task_id != NULL)
+           ? clawt_task_manager_get(self->tasks, task_id) : NULL;
+
+    if (task == NULL || after == NULL || after[0] == NULL) {
+        *is_error = TRUE;
+        return g_strdup("Name a task you delegated (task_id) and the task "
+                        "ids it should wait for (after).");
+    }
+
+    /* Yours, and still waiting: work already handed over cannot be held. */
+    if (g_strcmp0(clawt_task_get_origin(task), agent_id) != 0) {
+        *is_error = TRUE;
+        return g_strdup_printf("Task %s is not one you delegated.", task_id);
+    }
+
+    if (clawt_task_get_state(task) != CLAWT_TASK_BLOCKED) {
+        *is_error = TRUE;
+        return g_strdup_printf(
+            "Task %s is %s, not waiting: its work has already been handed "
+            "over. To hold new work until something finishes, delegate it "
+            "with after:.", task_id,
+            clawt_enum_to_nick(CLAWT_TYPE_TASK_STATE,
+                               clawt_task_get_state(task)));
+    }
+
+    for (i = 0; after[i] != NULL; i++) {
+        gboolean ok = remove
+            ? clawt_task_manager_unlink(self->tasks, task_id, after[i], &error)
+            : clawt_task_manager_link(self->tasks, task_id, after[i], &error);
+
+        if (!ok) {
+            *is_error = TRUE;
+            return g_strdup_printf("Stopped at %s: %s.", after[i],
+                                   error->message);
+        }
+    }
+
+    /*
+     * Asked again after the change: removing the last blocker has
+     * already handed the work over by the time this returns.
+     */
+    task = clawt_task_manager_get(self->tasks, task_id);
+    open = clawt_task_manager_waiting_on(self->tasks, task_id);
+
+    if (task != NULL && clawt_task_get_state(task) != CLAWT_TASK_BLOCKED)
+        return g_strdup_printf("Task %s waits for nothing now, and has been "
+                               "handed to %s.", task_id,
+                               clawt_task_get_assignee(task));
+
+    {
+        g_autoptr(GString) out = g_string_new(NULL);
+
+        g_string_append_printf(out, "Task %s now waits for ", task_id);
+
+        for (i = 0; i < open->len; i++)
+            g_string_append_printf(out, "%s%s", i > 0 ? ", " : "",
+                                   (const gchar *)g_ptr_array_index(open, i));
+
+        g_string_append(out, ".");
+        return g_string_free(g_steal_pointer(&out), FALSE);
+    }
+}
+
 static gchar *
 tool_delegate(ClawtMcpTools *self,
               const gchar   *agent_id,
@@ -5126,10 +5273,12 @@ tool_delegate(ClawtMcpTools *self,
     const gchar *thread = argument_string(arguments, "thread");
     const gchar *mode = argument_string(arguments, "mode");
     g_autoptr(GError) error = NULL;
+    g_auto(GStrv) after = NULL;
     gboolean own_thread = FALSE;
     gboolean consult = FALSE;
     const gchar *target;
     ClawtTask *task;
+    guint i;
 
     if (assignee == NULL || work == NULL) {
         *is_error = TRUE;
@@ -5172,6 +5321,28 @@ tool_delegate(ClawtMcpTools *self,
         return g_strdup_printf("There is no agent called '%s'. Use "
                                "clawtilla_list_agents to see who is here.",
                                assignee);
+    }
+
+    /*
+     * What it waits for, checked before anything is made: an id that
+     * names no task is refused by name, rather than a task created that
+     * waits for nothing and goes at once.
+     */
+    after = split_task_ids(argument_string(arguments, "after"));
+
+    for (i = 0; after != NULL && after[i] != NULL; i++) {
+        if (clawt_task_manager_get(self->tasks, after[i]) == NULL) {
+            *is_error = TRUE;
+            return g_strdup_printf("There is no task %s to wait for. "
+                                   "Nothing was delegated.", after[i]);
+        }
+    }
+
+    if (after != NULL && after[0] != NULL &&
+        clawt_task_manager_get_store(self->tasks) == NULL) {
+        *is_error = TRUE;
+        return g_strdup("after: needs the task store, and this daemon has "
+                        "none. Nothing was delegated.");
     }
 
     /*
@@ -5265,6 +5436,72 @@ tool_delegate(ClawtMcpTools *self,
      * restores a task with no room to report back to and no model.
      */
     clawt_task_manager_save(self->tasks, task, NULL);
+
+    /*
+     * Waiting for other work: linked, and if any of it has not completed
+     * the delivery is kept rather than sent -- everything it would have
+     * been sent with, so the daemon hands it over later exactly as this
+     * call would have, as this agent, at this hop depth, into the same
+     * conversation.  It goes by itself when the last blocker completes.
+     */
+    if (after != NULL && after[0] != NULL) {
+        g_autoptr(GPtrArray) open = NULL;
+
+        for (i = 0; after[i] != NULL; i++) {
+            if (!clawt_task_manager_link(self->tasks, clawt_task_get_id(task),
+                                         after[i], &error)) {
+                clawt_task_manager_cancel(self->tasks, clawt_task_get_id(task),
+                                          "it could not wait as asked",
+                                          agent_id);
+                *is_error = TRUE;
+                return g_strdup_printf("Not delegated: %s.", error->message);
+            }
+        }
+
+        open = clawt_task_manager_waiting_on(self->tasks,
+                                             clawt_task_get_id(task));
+
+        if (open->len > 0) {
+            g_autofree gchar *guidance =
+                clawt_task_assignment_guidance(clawt_task_get_id(task));
+            g_autofree gchar *delivered = g_strconcat(work, guidance, NULL);
+            g_autoptr(JsonNode) held = clawt_task_build_held_delivery(
+                "tool", agent_id, target, delivered,
+                outbound_depth(self, agent_id, turn_room),
+                CLAWT_PRIORITY_NORMAL, turn_room);
+            g_autoptr(GString) out = g_string_new(NULL);
+
+            if (!clawt_task_manager_hold_delivery(self->tasks,
+                                                  clawt_task_get_id(task),
+                                                  held, &error)) {
+                clawt_task_manager_fail(self->tasks, clawt_task_get_id(task),
+                                        error->message);
+                *is_error = TRUE;
+                return g_strdup_printf("Not delegated: %s.", error->message);
+            }
+
+            clawt_task_manager_block(self->tasks, clawt_task_get_id(task));
+
+            g_string_append_printf(out,
+                "Delegated to %s as task %s, held until ", assignee,
+                clawt_task_get_id(task));
+
+            for (i = 0; i < open->len; i++)
+                g_string_append_printf(out, "%s%s", i > 0 ? ", " : "",
+                                       (const gchar *)g_ptr_array_index(open,
+                                                                        i));
+
+            g_string_append(out,
+                (open->len == 1) ? " completes" : " have all completed");
+            g_string_append(out,
+                ". It is handed over by itself then -- do not wait for it or "
+                "delegate it again. If one of them fails or is cancelled "
+                "you will be told here, and the task keeps waiting until "
+                "you retry it, cancel the task, or take the wait away with "
+                "clawtilla_task_link.");
+            return g_string_free(g_steal_pointer(&out), FALSE);
+        }
+    }
 
     /*
      * The delivered text carries the contract; the task's own prompt
@@ -9807,6 +10044,8 @@ tools_call(ClawtMcpTools *self,
         text = tool_delegate(self, agent_id, turn_room, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_handoff") == 0)
         text = tool_handoff(self, agent_id, turn_room, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_task_link") == 0)
+        text = tool_task_link(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_task_retry") == 0)
         text = tool_task_retry(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_trigger_list") == 0)

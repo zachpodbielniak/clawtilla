@@ -161,6 +161,8 @@ static const gchar *usage_tail =
     "  clawtilla task create --agent scout --title \"Fix export\" \"...\"\n"
     "  clawtilla task assign task-01m0k5 scout\n"
     "  clawtilla task comment task-01m0k5 \"use the staging DB\"\n"
+    "  clawtilla task create --agent scout --after task-01m0k5 \"Ship it\"\n"
+    "  clawtilla task unlink task-01m0k6 task-01m0k5      # stop waiting\n"
     "  clawtilla task incidents            # broken runs, and who was told\n"
     "  clawtilla task retry task-01m0k5    # send a failed run round again\n"
     "\n"
@@ -4680,6 +4682,20 @@ cmd_task(int argc, char *argv[])
             g_print("under:    %s\n",
                     json_object_get_string_member(task, "parent"));
 
+        /* What it waits for, and which of that still holds it. */
+        if (json_object_has_member(task, "after")) {
+            JsonArray *after = json_object_get_array_member(task, "after");
+            g_autofree gchar *waiting = clawt_task_waiting_caption(
+                json_object_get_array_member(task, "waiting_on"));
+            guint w;
+
+            g_print("after:    ");
+            for (w = 0; w < json_array_get_length(after); w++)
+                g_print("%s%s", w > 0 ? ", " : "",
+                        json_array_get_string_element(after, w));
+            g_print("%s%s\n", *waiting != '\0' ? "  -- " : "", waiting);
+        }
+
         /* The room it runs in, when it has one of its own. */
         if (json_object_has_member(task, "thread_room"))
             g_print("room:     %s  (clawtilla room history %s)\n",
@@ -4771,7 +4787,8 @@ cmd_task(int argc, char *argv[])
 
         for (arg = 3; arg < argc; arg++) {
             if ((g_strcmp0(argv[arg], "--agent") == 0 ||
-                 g_strcmp0(argv[arg], "--title") == 0) && arg + 1 < argc) {
+                 g_strcmp0(argv[arg], "--title") == 0 ||
+                 g_strcmp0(argv[arg], "--after") == 0) && arg + 1 < argc) {
                 json_builder_set_member_name(builder, argv[arg] + 2);
                 json_builder_add_string_value(builder, argv[arg + 1]);
                 arg++;
@@ -4785,7 +4802,7 @@ cmd_task(int argc, char *argv[])
 
         if (prompt == NULL) {
             g_printerr("Usage: clawtilla task create [--agent AGENT] "
-                       "[--title TITLE] <what to do>\n"
+                       "[--title TITLE] [--after TASK,TASK] <what to do>\n"
                        "Without --agent the task goes on the backlog; "
                        "assign it later with `clawtilla task assign`.\n");
             return EXIT_FAILURE;
@@ -4826,6 +4843,26 @@ cmd_task(int argc, char *argv[])
             return EXIT_FAILURE;
 
         g_print("Assigned %s to %s.\n", argv[3], argv[4]);
+        return EXIT_SUCCESS;
+    }
+
+    /* What a task waits for: added to, or taken away from. */
+    if (g_strcmp0(verb, "link") == 0 || g_strcmp0(verb, "unlink") == 0) {
+        gboolean linking = g_strcmp0(verb, "link") == 0;
+
+        if (argc < 5) {
+            g_printerr("Usage: clawtilla task %s <task-id> <task it waits "
+                       "for>\n", verb);
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, linking ? "task.link" : "task.unlink",
+                     build_payload("task", argv[3], "after", argv[4], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print(linking ? "%s now waits for %s.\n"
+                        : "%s no longer waits for %s.\n", argv[3], argv[4]);
         return EXIT_SUCCESS;
     }
 
@@ -11045,7 +11082,7 @@ static const ClawtVerb verbs[] = {
       cmd_account },
     { "policy-hook", "--agent ID --token-file PATH", "Claude Code's PreToolUse hook (run by the daemon's settings)",
       cmd_policy_hook },
-    { "task",    "<verb>",   "Tasks: list, show, create, assign, comment, cancel, retry, incidents",
+    { "task",    "<verb>",   "Tasks: list, show, create, assign, comment, link, unlink, cancel, retry, incidents",
       cmd_task },
     { "decision", "<verb>",  "Answer what an agent has asked you",
       cmd_decision },

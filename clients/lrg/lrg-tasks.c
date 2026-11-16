@@ -373,6 +373,7 @@ typedef struct {
     LrgWidget *title;
     LrgWidget *prompt;
     LrgWidget *agent;
+    LrgWidget *after;
     LrgWidget *comment;
 } TaskForm;
 
@@ -442,6 +443,7 @@ on_new_task_response(ClawtLrgApp *app, LrgDialog *dialog, gint response,
     g_autofree gchar *prompt = clawt_lrg_editor_text(form->prompt);
     const gchar *title = clawt_lrg_entry_text(form->title);
     const gchar *agent = clawt_lrg_combo_id(form->agent);
+    const gchar *after = clawt_lrg_entry_text(form->after);
 
     (void)dialog;
     (void)response;
@@ -459,7 +461,9 @@ on_new_task_response(ClawtLrgApp *app, LrgDialog *dialog, gint response,
                           "prompt", prompt,
                           "title", (title != NULL && *title != '\0')
                               ? title : NULL,
-                          "agent", agent, NULL),
+                          "agent", agent,
+                          "after", (after != NULL && *after != '\0')
+                              ? after : NULL, NULL),
                       CLAWT_LRG_REQUEST_NONE, on_task_done,
                       (agent != NULL)
                           ? (gpointer)"Created, and handed over"
@@ -490,6 +494,9 @@ on_new_task_clicked(LrgButton *button, gpointer user_data)
                        "Write it so it stands alone: the agent reads this "
                        "and nothing else about why it is wanted.");
     clawt_lrg_form_add(content, "Who does it", form->agent, NULL);
+    form->after = clawt_lrg_entry(NULL, "task-01m..., task-01m...");
+    clawt_lrg_form_add(content, "Wait for (task ids)", form->after,
+                       "Held until these complete, then handed over.");
 
     g_object_unref(clawt_lrg_dialog(tasks.app, "New task", NULL, content,
                                     "Create", FALSE, on_new_task_response,
@@ -558,6 +565,44 @@ on_comment_response(ClawtLrgApp *app, LrgDialog *dialog, gint response,
                       CLAWT_LRG_REQUEST_NONE, on_task_done,
                       (gpointer)"Noted on the task", NULL);
     return TRUE;
+}
+
+static LrgWidget *task_button(const gchar *label, const gchar *task_id,
+                              GCallback callback);
+
+static void
+on_link_clicked(LrgButton *button, gpointer user_data)
+{
+    const gchar *task_id = g_object_get_data(G_OBJECT(button), "task-id");
+    LrgWidget *entry = g_object_get_data(G_OBJECT(button), "entry");
+    const gchar *blocker = (entry != NULL) ? clawt_lrg_entry_text(entry)
+                                           : NULL;
+
+    (void)user_data;
+
+    if (blocker == NULL || *blocker == '\0')
+        return;
+
+    clawt_lrg_request(tasks.app, "task.link",
+                      clawt_ipc_payload_new("task", task_id, "after", blocker,
+                                            NULL),
+                      CLAWT_LRG_REQUEST_NONE, on_task_done,
+                      (gpointer)"It waits for that task now", NULL);
+}
+
+static void
+on_unlink_clicked(LrgButton *button, gpointer user_data)
+{
+    const gchar *task_id = g_object_get_data(G_OBJECT(button), "task-id");
+    const gchar *blocker = g_object_get_data(G_OBJECT(button), "blocker");
+
+    (void)user_data;
+
+    clawt_lrg_request(tasks.app, "task.unlink",
+                      clawt_ipc_payload_new("task", task_id, "after", blocker,
+                                            NULL),
+                      CLAWT_LRG_REQUEST_NONE, on_task_done,
+                      (gpointer)"No longer waits for it", NULL);
 }
 
 /* One line of a thread or a history: who or what, when, the text. */
@@ -637,6 +682,48 @@ on_task_shown(ClawtLrgApp *app, JsonNode *reply, const GError *error,
     if (rows == NULL || json_array_get_length(rows) == 0)
         clawt_lrg_take(content, clawt_lrg_paragraph(
             "Nothing said about it yet.", "muted"));
+
+    /*
+     * What it waits for, each with Stop waiting, and for a backlog or
+     * held task an id to add.
+     */
+    {
+        JsonArray *after = json_object_has_member(task, "after")
+            ? json_object_get_array_member(task, "after") : NULL;
+        const gchar *state = clawt_ipc_payload_string(task, "state");
+        guint w;
+
+        clawt_lrg_take(content, clawt_lrg_label("Waits for", "heading"));
+
+        for (w = 0; after != NULL && w < json_array_get_length(after); w++) {
+            const gchar *blocker = json_array_get_string_element(after, w);
+            LrgWidget *row = clawt_lrg_row(blocker, NULL);
+            LrgWidget *stop = task_button("Stop waiting", form->task_id,
+                                          G_CALLBACK(on_unlink_clicked));
+
+            g_object_set_data_full(G_OBJECT(stop), "blocker",
+                                   g_strdup(blocker), g_free);
+            clawt_lrg_row_add_suffix(row, stop);
+            clawt_lrg_take(content, row);
+        }
+
+        if (g_strcmp0(state, "unassigned") == 0 ||
+            g_strcmp0(state, "blocked") == 0) {
+            LrgWidget *line = clawt_lrg_hbox(8.0f);
+            LrgWidget *entry = clawt_lrg_entry(NULL, "task id");
+            LrgWidget *add = task_button("Wait for it", form->task_id,
+                                         G_CALLBACK(on_link_clicked));
+
+            g_object_set_data(G_OBJECT(add), "entry", entry);
+            clawt_lrg_take(line, entry);
+            clawt_lrg_take(line, add);
+            clawt_lrg_take(content, line);
+        } else if (after == NULL) {
+            clawt_lrg_take(content, clawt_lrg_paragraph(
+                "Nothing. Only a task on the backlog can be made to wait.",
+                "muted"));
+        }
+    }
 
     form->comment = clawt_lrg_editor("", NULL);
     clawt_lrg_take(content, clawt_lrg_label("Comment", "heading"));
@@ -812,6 +899,16 @@ task_card(JsonObject *task, guint depth)
      * row that reads `completed` and nothing else cannot tell a reported
      * result from a turn that simply stopped.
      */
+    /* A held task says what it is waiting for. */
+    if (json_object_has_member(task, "waiting_on") &&
+        json_array_get_length(json_object_get_array_member(task,
+                                                           "waiting_on")) > 0) {
+        g_autofree gchar *waits = clawt_task_waiting_caption(
+            json_object_get_array_member(task, "waiting_on"));
+
+        clawt_lrg_take(body, clawt_lrg_paragraph(waits, "caption"));
+    }
+
     if (note != NULL)
         clawt_lrg_take(body, clawt_lrg_paragraph(note, "caption"));
 

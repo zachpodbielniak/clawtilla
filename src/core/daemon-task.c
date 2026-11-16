@@ -175,6 +175,43 @@ publish_note(
 	clawt_event_bus_publish(self->bus, event);
 }
 
+/*
+ * Links @task to every id in @after (comma- or space-separated) and, if
+ * any of them has not completed, holds it.  Nothing to do for no ids.
+ */
+static gboolean
+link_after(
+	ClawtDaemon  *self,
+	ClawtTask    *task,
+	const gchar  *after,
+	GError      **error
+){
+	g_auto(GStrv) ids = NULL;
+	g_autoptr(GPtrArray) open = NULL;
+	guint i;
+
+	if (after == NULL || *after == '\0')
+		return TRUE;
+
+	ids = g_strsplit_set(after, ", \t\n", -1);
+
+	for (i = 0; ids[i] != NULL; i++) {
+		if (*ids[i] == '\0')
+			continue;
+
+		if (!clawt_task_manager_link(self->tasks, clawt_task_get_id(task),
+		                             ids[i], error))
+			return FALSE;
+	}
+
+	open = clawt_task_manager_waiting_on(self->tasks, clawt_task_get_id(task));
+
+	if (open->len > 0)
+		clawt_task_manager_block(self->tasks, clawt_task_get_id(task));
+
+	return TRUE;
+}
+
 JsonNode *
 clawt_daemon_handle_task(
     ClawtDaemon  *self,
@@ -355,13 +392,96 @@ clawt_daemon_handle_task(
             clawt_task_manager_save(self->tasks, task, NULL);
         }
 
-        /* With an assignee it goes to them now; without, it waits. */
-        if (agent != NULL && !deliver_operator_task(self, task, &error))
+        /*
+         * What it waits for: linked, and while any of it is unfinished
+         * the task is held -- with an assignee, its delivery is kept to
+         * be sent as the operator's when the last one completes; without,
+         * it goes back to the backlog then.
+         */
+        if (!link_after(self, task,
+                        clawt_ipc_payload_string(payload, "after"), &error)) {
+            clawt_task_manager_cancel(self->tasks, clawt_task_get_id(task),
+                                      "it could not wait as asked", "user");
             return clawt_ipc_error_new(request, error->code, error->message);
+        }
+
+        if (clawt_task_get_state(task) == CLAWT_TASK_BLOCKED) {
+            if (agent != NULL) {
+                g_autofree gchar *guidance = clawt_task_assignment_guidance(
+                    clawt_task_get_id(task));
+                g_autofree gchar *body = g_strconcat(
+                    clawt_task_get_prompt(task), guidance, NULL);
+                g_autoptr(JsonNode) held = clawt_task_build_held_delivery(
+                    "router", "user", agent, body, 0, CLAWT_PRIORITY_NORMAL,
+                    NULL);
+
+                if (!clawt_task_manager_hold_delivery(
+                        self->tasks, clawt_task_get_id(task), held, &error))
+                    return clawt_ipc_error_new(request, error->code,
+                                               error->message);
+            }
+        } else if (agent != NULL &&
+                   !deliver_operator_task(self, task, &error)) {
+            /* With an assignee it goes to them now; without, it waits. */
+            return clawt_ipc_error_new(request, error->code, error->message);
+        }
 
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "task");
         clawt_daemon_add_task_object(builder, task);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    /*
+     * The operator changing what a task waits for.  Linking holds a
+     * backlog task or adds to a held one; work already with its
+     * assignee cannot be held back.  Unlinking may release it, which the
+     * manager's blockers-changed does.
+     */
+    if (g_strcmp0(kind, "task.link") == 0 ||
+        g_strcmp0(kind, "task.unlink") == 0) {
+        const gchar *task_id = clawt_ipc_payload_string(payload, "task");
+        const gchar *blocker = clawt_ipc_payload_string(payload, "after");
+        gboolean linking = g_strcmp0(kind, "task.link") == 0;
+        g_autoptr(GError) error = NULL;
+        ClawtTask *task;
+
+        if (task_id == NULL || blocker == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "which task, and which task should "
+                                       "it wait for? (task, after)");
+
+        task = clawt_task_manager_get(self->tasks, task_id);
+
+        if (task == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "no such task");
+
+        if (linking) {
+            ClawtTaskState state = clawt_task_get_state(task);
+
+            if (state != CLAWT_TASK_UNASSIGNED && state != CLAWT_TASK_BLOCKED)
+                return clawt_ipc_error_new(
+                    request, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "only a task on the backlog, or one already waiting, "
+                    "can be made to wait: this one's work has been handed "
+                    "over");
+
+            if (!link_after(self, task, blocker, &error))
+                return clawt_ipc_error_new(request, error->code,
+                                           error->message);
+        } else if (!clawt_task_manager_unlink(self->tasks, task_id, blocker,
+                                              &error)) {
+            return clawt_ipc_error_new(request, error->code, error->message);
+        }
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "task");
+        clawt_daemon_add_task_object(builder,
+                                     clawt_task_manager_get(self->tasks,
+                                                            task_id));
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
@@ -657,6 +777,7 @@ clawt_daemon_tasks_setup(
 	}
 
 	clawt_task_manager_set_store(self->tasks, self->task_store);
+	clawt_daemon_set_wire_tasks(self->tasks);
 
 	loaded = clawt_task_manager_load(
 		self->tasks, now - CLAWT_DAEMON_TASK_LIVE_SECONDS, &error);
@@ -872,6 +993,17 @@ clawt_daemon_tasks_reconcile(
 	seed_task_spend(self, live);
 
 	/*
+	 * A held task whose blockers all completed while nobody was
+	 * listening -- the daemon stopped between the two -- goes now.
+	 */
+	for (i = 0; i < live->len; i++) {
+		ClawtTask *task = g_ptr_array_index(live, i);
+
+		if (clawt_task_get_state(task) == CLAWT_TASK_BLOCKED)
+			clawt_daemon_tasks_release_ready(self, clawt_task_get_id(task));
+	}
+
+	/*
 	 * Decided first and failed after, because failing a task emits and
 	 * a handler could change what the rest of the walk would see.
 	 */
@@ -984,4 +1116,214 @@ clawt_daemon_tasks_stop(
 		g_source_destroy(self->task_prune);
 		g_clear_pointer(&self->task_prune, g_source_unref);
 	}
+}
+
+/* ── Blockers ────────────────────────────────────────────────────── */
+
+/*
+ * Hands a held task over, now that nothing holds it.
+ *
+ * Its delivery was kept exactly as it would have been sent, so it goes
+ * the same way: a delegation through the delegation path, as the
+ * delegator, at its hop depth, into the same conversation; an operator's
+ * task as a message from `user`.  A send that is refused fails the task,
+ * so its delegator's settle notice says why rather than leaving it
+ * pending with nobody told.
+ */
+gboolean
+clawt_daemon_tasks_release_ready(
+	ClawtDaemon *self,
+	const gchar *task_id
+){
+	g_autoptr(GPtrArray) open = NULL;
+	g_autoptr(JsonNode) held = NULL;
+	g_autoptr(GError) error = NULL;
+	JsonObject *delivery;
+	ClawtTask *task;
+	gboolean sent = FALSE;
+
+	g_return_val_if_fail(CLAWT_IS_DAEMON(self), FALSE);
+
+	task = clawt_task_manager_get(self->tasks, task_id);
+
+	if (task == NULL || clawt_task_get_state(task) != CLAWT_TASK_BLOCKED)
+		return FALSE;
+
+	open = clawt_task_manager_waiting_on(self->tasks, task_id);
+
+	if (open->len > 0)
+		return FALSE;
+
+	held = clawt_task_manager_take_delivery(self->tasks, task_id);
+	clawt_task_manager_unblock(self->tasks, task_id);
+
+	/* Nothing to hand over: an operator's backlog task goes back there. */
+	if (held == NULL || !JSON_NODE_HOLDS_OBJECT(held))
+		return TRUE;
+
+	delivery = json_node_get_object(held);
+
+	if (g_strcmp0(json_object_get_string_member_with_default(delivery, "via",
+	                                                         ""), "tool") == 0
+	    && self->mcp_tools != NULL) {
+		sent = clawt_mcp_tools_deliver_held(
+			self->mcp_tools,
+			json_object_get_string_member_with_default(delivery, "from", ""),
+			json_object_get_string_member_with_default(delivery, "target", ""),
+			json_object_get_string_member_with_default(delivery, "body", ""),
+			task_id,
+			(gint)json_object_get_int_member_with_default(delivery, "depth", 0),
+			(ClawtPriority)json_object_get_int_member_with_default(
+				delivery, "priority", CLAWT_PRIORITY_NORMAL),
+			json_object_get_string_member_with_default(delivery, "turn_room",
+			                                           NULL),
+			&error);
+	} else if (self->router != NULL) {
+		sent = clawt_mailbox_router_send_to(
+			self->router,
+			json_object_get_string_member_with_default(delivery, "from", "user"),
+			json_object_get_string_member_with_default(delivery, "target", ""),
+			json_object_get_string_member_with_default(delivery, "body", ""),
+			task_id,
+			(gint)json_object_get_int_member_with_default(delivery, "depth", 0),
+			&error) >= 0;
+	}
+
+	if (!sent) {
+		g_autofree gchar *why = g_strdup_printf(
+			"everything it waited for completed, but it could not be handed "
+			"over: %s", error != NULL ? error->message : "no way to send it");
+
+		clawt_task_manager_fail(self->tasks, task_id, why);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/*
+ * One notice to whoever is waiting on @dependent: a task it waits for
+ * ended without completing, so it will not start by itself.  To the
+ * delegating agent as a system notice in the conversation it delegated
+ * from; for the operator's own task, a note in its thread, which every
+ * client shows.
+ */
+static void
+tell_blocker_ended(
+	ClawtDaemon *self,
+	ClawtTask   *dependent,
+	ClawtTask   *blocker
+){
+	const gchar *origin = clawt_task_get_origin(dependent);
+	const gchar *how = clawt_enum_to_nick(CLAWT_TYPE_TASK_STATE,
+	                                      clawt_task_get_state(blocker));
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *title = clawt_preamble_escape(
+		clawt_task_get_title(dependent));
+	g_autofree gchar *blocker_title = clawt_preamble_escape(
+		clawt_task_get_title(blocker));
+
+	body = g_strdup_printf(
+		"[clawtilla] Task %s (%s) is waiting for task %s (%s), which %s. "
+		"It will not be handed over until that one completes. Retry it "
+		"(clawtilla_task_retry), cancel the waiting task "
+		"(clawtilla_task_cancel), or stop waiting for it "
+		"(clawtilla_task_link with remove: true), which hands the work "
+		"over now if nothing else holds it.",
+		clawt_task_get_id(dependent), title, clawt_task_get_id(blocker),
+		blocker_title,
+		g_strcmp0(how, "cancelled") == 0 ? "was cancelled" :
+		g_strcmp0(how, "stalled") == 0 ? "stalled" : "failed");
+
+	if (origin == NULL || g_strcmp0(origin, "user") == 0 ||
+	    clawt_agent_manager_get(self->agents, origin) == NULL) {
+		clawt_task_manager_add_note(self->tasks, clawt_task_get_id(dependent),
+		                            NULL, "blocker", body, NULL);
+		publish_note(self, dependent, NULL);
+		return;
+	}
+
+	{
+		ClawtRoom *room = NULL;
+		g_autoptr(ClawtMessage) message = NULL;
+		g_autoptr(GError) error = NULL;
+
+		if (clawt_task_get_room(dependent) != NULL)
+			room = clawt_room_manager_get(self->rooms,
+			                              clawt_task_get_room(dependent));
+		if (room == NULL && clawt_task_get_assignee(dependent) != NULL)
+			room = clawt_room_manager_get_direct(
+				self->rooms, origin, clawt_task_get_assignee(dependent));
+		if (room == NULL || self->router == NULL)
+			return;
+
+		message = clawt_message_new(clawt_room_get_id(room),
+		                            CLAWT_SYSTEM_SENDER, body);
+		clawt_message_set_task_id(message, clawt_task_get_id(dependent));
+		clawt_message_set_depth(message, 0);
+		clawt_message_set_invites_reply(message, FALSE);
+		clawt_message_set_only_for(message, origin);
+
+		if (clawt_mailbox_router_send(self->router, message, &error) < 0)
+			g_warning("task %s: could not say that %s ended: %s",
+			          clawt_task_get_id(dependent),
+			          clawt_task_get_id(blocker),
+			          error != NULL ? error->message : "unknown");
+	}
+}
+
+void
+clawt_daemon_tasks_blocker_settled(
+	ClawtDaemon *self,
+	ClawtTask   *task
+){
+	g_autoptr(GPtrArray) dependents = NULL;
+	gboolean completed;
+	guint i;
+
+	g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+	if (task == NULL)
+		return;
+
+	/*
+	 * A task that ended while still held -- cancelled, say -- drops the
+	 * delivery it was waiting to send: nothing will ever release it.
+	 */
+	{
+		g_autoptr(JsonNode) dropped = clawt_task_manager_take_delivery(
+			self->tasks, clawt_task_get_id(task));
+
+		(void)dropped;
+	}
+
+	dependents = clawt_task_manager_dependents(self->tasks,
+	                                           clawt_task_get_id(task));
+	completed = clawt_task_get_state(task) == CLAWT_TASK_COMPLETED;
+
+	for (i = 0; i < dependents->len; i++) {
+		const gchar *id = g_ptr_array_index(dependents, i);
+		ClawtTask *dependent = clawt_task_manager_get(self->tasks, id);
+
+		if (dependent == NULL ||
+		    clawt_task_get_state(dependent) != CLAWT_TASK_BLOCKED)
+			continue;
+
+		if (completed)
+			clawt_daemon_tasks_release_ready(self, id);
+		else
+			tell_blocker_ended(self, dependent, task);
+	}
+}
+
+void
+clawt_daemon_tasks_on_blockers_changed(
+	ClawtTaskManager *manager,
+	const gchar      *task_id,
+	gpointer          user_data
+){
+	(void)manager;
+
+	/* A blocker taken away may be the last: release if nothing holds it. */
+	clawt_daemon_tasks_release_ready(user_data, task_id);
 }

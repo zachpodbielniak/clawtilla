@@ -1485,10 +1485,17 @@ clawt_daemon_handle_task(
 #define CLAWT_DAEMON_TASK_LIVE_SECONDS (24 * 60 * 60)
 
 void clawt_daemon_tasks_setup(ClawtDaemon *self);
+void clawt_daemon_set_wire_tasks(ClawtTaskManager *tasks);
 void clawt_daemon_tasks_restore_incidents(ClawtDaemon *self);
 guint clawt_daemon_tasks_reconcile(ClawtDaemon *self);
 void clawt_daemon_tasks_start_pruning(ClawtDaemon *self);
 void clawt_daemon_tasks_stop(ClawtDaemon *self);
+gboolean clawt_daemon_tasks_release_ready(ClawtDaemon *self,
+                                          const gchar *task_id);
+void clawt_daemon_tasks_blocker_settled(ClawtDaemon *self, ClawtTask *task);
+void clawt_daemon_tasks_on_blockers_changed(ClawtTaskManager *manager,
+                                            const gchar      *task_id,
+                                            gpointer          user_data);
 
 JsonNode *
 clawt_daemon_handle_computer(

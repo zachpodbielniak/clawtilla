@@ -496,6 +496,8 @@ add_new_task_form(ClawtWebApp *app, HtmxDiv *pad)
         "Write it so it stands alone: the agent reads this and nothing else "
         "about why it is wanted.", "small muted"));
     clawt_web_add(form, agent_select(app, "Who does it", TRUE));
+    clawt_web_add(form, clawt_web_field("Wait for (task ids)", "after", NULL,
+                                        "task-01m..., task-01m..."));
     add_submit(form, "Create");
 
     htmx_node_add_child(HTMX_NODE(details), HTMX_NODE(summary));
@@ -624,6 +626,19 @@ clawt_web_tasks_body(ClawtWebApp *app, const gchar *agent_id)
 
             clawt_web_add(row, clawt_web_text(who, "list-item-sub"));
             clawt_web_add(row, clawt_web_text(prompt, "small muted"));
+
+            /* A held task says what it is waiting for. */
+            {
+                JsonArray *waiting = clawt_web_member_array(task,
+                                                            "waiting_on");
+
+                if (waiting != NULL && json_array_get_length(waiting) > 0) {
+                    g_autofree gchar *caption =
+                        clawt_task_waiting_caption(waiting);
+
+                    clawt_web_add(row, clawt_web_notice(caption, "warn"));
+                }
+            }
 
             /* Off the backlog: who does it, and the work goes to them. */
             if (g_strcmp0(state, "unassigned") == 0) {
@@ -1172,8 +1187,12 @@ on_task_new(HtmxRequest *request, GHashTable *params, gpointer user_data)
     const gchar *prompt = clawt_web_form_value(request, "prompt");
     const gchar *title = clawt_web_form_value(request, "title");
     const gchar *agent = clawt_web_form_value(request, "agent");
+    const gchar *after = clawt_web_form_value(request, "after");
 
     (void)params;
+
+    if (after != NULL && *after != '\0')
+        clawt_web_payload_set(payload, "after", after);
 
     if (prompt != NULL && *prompt != '\0')
         clawt_web_payload_set(payload, "prompt", prompt);
@@ -1310,6 +1329,47 @@ task_page_body(ClawtWebApp *app, const gchar *id, const gchar *notice)
         }
     }
 
+    /*
+     * What it waits for: each with Stop waiting, and for a backlog or
+     * held task a form to add one.
+     */
+    {
+        JsonArray *after = clawt_web_member_array(task, "after");
+        const gchar *state = clawt_web_member(task, "state", "");
+        g_autofree gchar *escaped = g_uri_escape_string(id, NULL, FALSE);
+        guint w;
+
+        clawt_web_add(pad, clawt_web_section_title("Waits for"));
+
+        for (w = 0; after != NULL && w < json_array_get_length(after); w++) {
+            const gchar *blocker = json_array_get_string_element(after, w);
+            g_autofree gchar *action = g_strdup_printf("/tasks/%s/unlink",
+                                                       escaped);
+            g_autoptr(HtmxForm) form = clawt_web_form(action);
+
+            clawt_web_add(form, clawt_web_text(blocker, "list-item-title"));
+            clawt_web_add(form, clawt_web_hidden("after", blocker));
+            add_submit(form, "Stop waiting");
+            htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(form));
+        }
+
+        if (g_strcmp0(state, "unassigned") == 0 ||
+            g_strcmp0(state, "blocked") == 0) {
+            g_autofree gchar *action = g_strdup_printf("/tasks/%s/link",
+                                                       escaped);
+            g_autoptr(HtmxForm) form = clawt_web_form(action);
+
+            clawt_web_add(form, clawt_web_field("Task id", "after", NULL,
+                                                "task-01m..."));
+            add_submit(form, "Wait for it");
+            htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(form));
+        } else if (after == NULL) {
+            clawt_web_add(pad, clawt_web_text(
+                "Nothing. Only a task on the backlog can be made to wait.",
+                "small muted"));
+        }
+    }
+
     clawt_web_add(pad, clawt_web_section_title("Thread"));
     rows = clawt_web_member_array(root, "notes");
 
@@ -1392,6 +1452,45 @@ on_task_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
     g_autofree gchar *id = clawt_web_param(params, "task");
 
     return task_page(user_data, request, id, NULL);
+}
+
+/* task.link and task.unlink from a task's page; the kind is the data. */
+static HtmxResponse *
+task_link_from(ClawtWebApp *app, HtmxRequest *request, GHashTable *params,
+               const gchar *kind)
+{
+    g_autofree gchar *id = clawt_web_param(params, "task");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *after = clawt_web_form_value(request, "after");
+
+    clawt_web_payload_set(payload, "task", id);
+
+    if (after != NULL && *after != '\0')
+        clawt_web_payload_set(payload, "after", after);
+
+    reply = clawt_web_app_call(app, kind,
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        return task_page(app, request, id, clawt_web_app_last_error(app));
+
+    return task_page(app, request, id,
+                     g_strcmp0(kind, "task.link") == 0
+                         ? "It waits for that task now."
+                         : "No longer waits for it.");
+}
+
+static HtmxResponse *
+on_task_link(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    return task_link_from(user_data, request, params, "task.link");
+}
+
+static HtmxResponse *
+on_task_unlink(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    return task_link_from(user_data, request, params, "task.unlink");
 }
 
 static HtmxResponse *
@@ -1526,6 +1625,8 @@ clawt_web_register_work(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_get(router, "/tasks/:task", on_task_page, app);
     htmx_router_post(router, "/tasks/:task/assign", on_task_assign, app);
     htmx_router_post(router, "/tasks/:task/comment", on_task_comment, app);
+    htmx_router_post(router, "/tasks/:task/link", on_task_link, app);
+    htmx_router_post(router, "/tasks/:task/unlink", on_task_unlink, app);
     htmx_router_post(router, "/tasks/:task/cancel", on_task_cancel, app);
     htmx_router_post(router, "/tasks/:task/retry", on_task_retry, app);
     htmx_router_post(router, "/incidents/:incident/retry", on_incident_retry,

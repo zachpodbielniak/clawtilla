@@ -390,8 +390,9 @@ The ~forge~ record type is owner-only in VENTURE, so an editor -- every agent ac
 ** TODO P2 VW2: A low-risk level between the two :connectors:
 ~apply_writes: off | low_risk | all~ on a venture connector: ~all~ runs ~venturectl mcp --apply-writes~ now; ~low_risk~ waits for VENTURE to classify writes (money, people and access, deletes and irreversible outward actions stay staged) and add ~--apply-writes=low-risk~. Requested 2026-11-15.
 
-** TODO P1 B1: Blockers :orchestration:
-~after:~ on ~clawtilla_delegate~, ~clawtilla_task_link~; a held delivery released as the delegator's own when every blocker completes.
+** DONE P1 B1: Blockers v0.37.0 :orchestration:
+- *Done:* ~task_links~ and ~held_deliveries~ in ~tasks.db~; =clawt_task_manager_link()= / =_unlink()= (self, cycles and ended tasks refused), =_waiting_on()= (only ~completed~ releases), =_block()= / =_unblock()=, ~blockers-changed~; ~after~ on ~clawtilla_delegate~ and ~task.create~; ~clawtilla_task_link~ (add, or remove which may hand over now); ~task.link~ / ~task.unlink~; a held delivery released as it would have been sent, through the delegation path as the delegator or as the operator's message, on completion, on unlink, and after a restart; a blocker that fails or is cancelled tells the delegator once (a notice, or a thread note for the operator) and keeps holding; ~after~ / ~waiting_on~ on the wire and =clawt_task_waiting_caption()= in every client, *Waits for* in Details, ~clawtilla task link|unlink~ and ~create --after~; TOOLS.org says how to wait.
+- *Version:* minor.
 
 ** TODO P1 B2: Review stages :orchestration:
 ~review_by~; REVIEW on completion; ~clawtilla_task_review~ and an operator decision; bounded review rounds.

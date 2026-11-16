@@ -966,6 +966,35 @@ void clawt_mcp_tools_set_observer(ClawtMcpTools            *self,
                                   GDestroyNotify            notify);
 
 /**
+ * clawt_mcp_tools_deliver_held:
+ * @self: a #ClawtMcpTools
+ * @from_agent: who delegated it
+ * @target: the assignee, or the task's own room
+ * @body: the work with its contract, as delegation built it
+ * @task_id: the task it carries
+ * @depth: the hop depth it was delegated at
+ * @priority: its priority
+ * @turn_room: (nullable): the conversation it was delegated from
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Hands over a delegation that was held for its blockers, through the
+ * same delivery path clawtilla_delegate uses, so it arrives exactly as
+ * it would have: from the delegator, at its hop depth, into the same
+ * conversation, with the task contract on it.
+ *
+ * Returns: %TRUE when delivered
+ */
+gboolean clawt_mcp_tools_deliver_held(ClawtMcpTools *self,
+                                      const gchar   *from_agent,
+                                      const gchar   *target,
+                                      const gchar   *body,
+                                      const gchar   *task_id,
+                                      gint           depth,
+                                      ClawtPriority  priority,
+                                      const gchar   *turn_room,
+                                      GError       **error);
+
+/**
  * clawt_mcp_tools_set_incident_desk:
  * @self: a #ClawtMcpTools
  * @desk: (nullable): where broken runs are filed and retried

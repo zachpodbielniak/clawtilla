@@ -1257,6 +1257,309 @@ test_operator_tasks(void)
 	daemon_teardown(&fixture);
 }
 
+/* ── Blockers (B1) ───────────────────────────────────────────────── */
+
+/* Links: no self, no cycle, nothing to wait for once ended; what holds. */
+static void
+test_links_and_what_holds(
+	StoreFixture  *fixture,
+	gconstpointer  data
+){
+	g_autoptr(ClawtTaskManager) manager = clawt_task_manager_new();
+	g_autoptr(GPtrArray) open = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *a = NULL;
+	g_autofree gchar *b = NULL;
+	g_autofree gchar *c = NULL;
+	ClawtTask *task;
+
+	(void)data;
+
+	clawt_task_manager_set_store(manager, fixture->store);
+	a = g_strdup(clawt_task_get_id(clawt_task_manager_create(
+		manager, "chief", "scout", "first", NULL, NULL)));
+	b = g_strdup(clawt_task_get_id(clawt_task_manager_create(
+		manager, "chief", "builder", "second", NULL, NULL)));
+	c = g_strdup(clawt_task_get_id(clawt_task_manager_create(
+		manager, "chief", "builder", "third", NULL, NULL)));
+
+	g_assert_true(clawt_task_manager_link(manager, b, a, &error));
+	g_assert_no_error(error);
+	g_assert_true(clawt_task_manager_link(manager, c, b, &error));
+
+	/* a cycle, directly or further back, is refused by name */
+	g_assert_false(clawt_task_manager_link(manager, a, c, &error));
+	g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+	g_assert_false(clawt_task_manager_link(manager, a, a, &error));
+	g_clear_error(&error);
+	g_assert_false(clawt_task_manager_link(manager, a, "task-none", &error));
+	g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND);
+	g_clear_error(&error);
+
+	/* held until completed: a failure still holds */
+	open = clawt_task_manager_waiting_on(manager, b);
+	g_assert_cmpuint(open->len, ==, 1);
+	g_clear_pointer(&open, g_ptr_array_unref);
+
+	clawt_task_manager_fail(manager, a, "broke");
+	open = clawt_task_manager_waiting_on(manager, b);
+	g_assert_cmpuint(open->len, ==, 1);
+	g_clear_pointer(&open, g_ptr_array_unref);
+
+	clawt_task_manager_retry(manager, a, "user", NULL);
+	clawt_task_manager_complete(manager, a, "done");
+	open = clawt_task_manager_waiting_on(manager, b);
+	g_assert_cmpuint(open->len, ==, 0);
+	g_clear_pointer(&open, g_ptr_array_unref);
+
+	/* a finished task waits for nothing new */
+	g_assert_false(clawt_task_manager_link(manager, a, c, &error));
+	g_clear_error(&error);
+
+	/* block and unblock: back to pending with an assignee */
+	g_assert_true(clawt_task_manager_block(manager, c));
+	task = clawt_task_manager_get(manager, c);
+	g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_BLOCKED);
+	g_assert_true(clawt_task_manager_unblock(manager, c));
+	g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_PENDING);
+	g_assert_false(clawt_task_manager_unblock(manager, c));
+
+	/* a held delivery is taken once */
+	{
+		g_autoptr(JsonNode) held = clawt_task_build_held_delivery(
+			"router", "user", "builder", "do it", 0, 0, NULL);
+		g_autoptr(JsonNode) first = NULL;
+		g_autoptr(JsonNode) second = NULL;
+
+		g_assert_true(clawt_task_manager_hold_delivery(manager, c, held,
+		                                               NULL));
+		first = clawt_task_manager_take_delivery(manager, c);
+		second = clawt_task_manager_take_delivery(manager, c);
+		g_assert_nonnull(first);
+		g_assert_null(second);
+	}
+
+	/* unlinking takes it away */
+	g_assert_true(clawt_task_manager_unlink(manager, c, b, NULL));
+	{
+		g_autoptr(GPtrArray) left = clawt_task_manager_blockers(manager, c);
+
+		g_assert_cmpuint(left->len, ==, 0);
+	}
+}
+
+/* The operator's task held for a blocker, then released, then failed. */
+static void
+test_operator_blockers(void)
+{
+	DaemonFixture fixture = { 0 };
+	g_autoptr(JsonNode) first = NULL;
+	g_autoptr(JsonNode) held = NULL;
+	g_autoptr(JsonNode) backlog = NULL;
+	g_autoptr(JsonNode) linked = NULL;
+	g_autoptr(JsonNode) refused = NULL;
+	g_autofree gchar *blocker = NULL;
+	g_autofree gchar *waiter = NULL;
+	g_autofree gchar *later = NULL;
+	ClawtTask *task;
+
+	daemon_setup(&fixture);
+
+	first = ask(&fixture, "task.create", clawt_ipc_payload_new(
+		"prompt", "Build it", "agent", "watcher", NULL));
+	blocker = g_strdup(json_object_get_string_member(
+		json_object_get_object_member(clawt_ipc_frame_get_payload(first),
+		                              "task"), "id"));
+
+	held = ask(&fixture, "task.create", clawt_ipc_payload_new(
+		"prompt", "Ship it", "agent", "watcher", "after", blocker, NULL));
+	g_assert_false(clawt_ipc_frame_is_error(held));
+	waiter = g_strdup(json_object_get_string_member(
+		json_object_get_object_member(clawt_ipc_frame_get_payload(held),
+		                              "task"), "id"));
+
+	task = clawt_task_manager_get(fixture.daemon->tasks, waiter);
+	g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_BLOCKED);
+	g_assert_cmpuint(queued_for(&fixture, "watcher", waiter), ==, 0);
+
+	/* the wire says what holds it */
+	{
+		g_autoptr(JsonNode) shown = ask(&fixture, "task.show",
+			clawt_ipc_payload_new("task", waiter, NULL));
+		JsonObject *object = json_object_get_object_member(
+			clawt_ipc_frame_get_payload(shown), "task");
+
+		g_assert_cmpuint(json_array_get_length(json_object_get_array_member(
+			object, "waiting_on")), ==, 1);
+	}
+
+	/* a restart keeps it held */
+	daemon_stop(&fixture);
+	daemon_start(&fixture);
+	task = clawt_task_manager_get(fixture.daemon->tasks, waiter);
+	g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_BLOCKED);
+
+	/* the blocker completes: it is handed over, as the operator's */
+	clawt_task_manager_complete(fixture.daemon->tasks, blocker, "built");
+	task = clawt_task_manager_get(fixture.daemon->tasks, waiter);
+	g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_PENDING);
+	g_assert_cmpuint(queued_for(&fixture, "watcher", waiter), ==, 1);
+
+	/* work already handed over cannot be held back */
+	refused = ask(&fixture, "task.link", clawt_ipc_payload_new(
+		"task", waiter, "after", blocker, NULL));
+	g_assert_true(clawt_ipc_frame_is_error(refused));
+
+	/* a backlog task waits; its blocker failing leaves a note */
+	backlog = ask(&fixture, "task.create", clawt_ipc_payload_new(
+		"prompt", "Someday", NULL));
+	later = g_strdup(json_object_get_string_member(
+		json_object_get_object_member(clawt_ipc_frame_get_payload(backlog),
+		                              "task"), "id"));
+	linked = ask(&fixture, "task.link", clawt_ipc_payload_new(
+		"task", later, "after", waiter, NULL));
+	g_assert_false(clawt_ipc_frame_is_error(linked));
+	task = clawt_task_manager_get(fixture.daemon->tasks, later);
+	g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_BLOCKED);
+
+	clawt_task_manager_fail(fixture.daemon->tasks, waiter, "it broke");
+	{
+		g_autoptr(JsonNode) notes = clawt_task_manager_notes(
+			fixture.daemon->tasks, later, NULL);
+
+		g_assert_cmpuint(json_array_get_length(json_node_get_array(notes)),
+		                 ==, 1);
+		g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_BLOCKED);
+	}
+
+	/* taking the wait away sends it back to the backlog */
+	{
+		g_autoptr(JsonNode) unlinked = ask(&fixture, "task.unlink",
+			clawt_ipc_payload_new("task", later, "after", waiter, NULL));
+
+		g_assert_false(clawt_ipc_frame_is_error(unlinked));
+		g_assert_cmpint(clawt_task_get_state(task), ==,
+		                CLAWT_TASK_UNASSIGNED);
+	}
+
+	daemon_teardown(&fixture);
+}
+
+/* A tool call, as an agent: the same, plus who is told, and remove. */
+static gchar *
+call_as(
+	DaemonFixture *fixture,
+	const gchar   *agent,
+	const gchar   *tool,
+	const gchar   *arguments,
+	gboolean      *is_error
+){
+	g_autoptr(JsonParser) parser = json_parser_new();
+	g_autoptr(JsonNode) response = NULL;
+	g_autofree gchar *request = g_strdup_printf(
+		"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
+		"\"params\":{\"name\":\"%s\",\"arguments\":%s}}", tool, arguments);
+	JsonObject *result;
+
+	g_assert_true(json_parser_load_from_data(parser, request, -1, NULL));
+	response = clawt_mcp_tools_call(fixture->daemon->mcp_tools, agent, NULL,
+	                                json_parser_get_root(parser));
+	result = json_object_get_object_member(json_node_get_object(response),
+	                                       "result");
+	*is_error = json_object_get_boolean_member(result, "isError");
+
+	return g_strdup(json_object_get_string_member(
+		json_array_get_object_element(
+			json_object_get_array_member(result, "content"), 0), "text"));
+}
+
+static void
+test_delegation_waits(void)
+{
+	DaemonFixture fixture = { 0 };
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *yaml = NULL;
+	g_autofree gchar *reply = NULL;
+	g_autofree gchar *args = NULL;
+	g_autofree gchar *blocker = NULL;
+	g_autofree gchar *waiter = NULL;
+	gboolean is_error = TRUE;
+	ClawtTask *task;
+	GPtrArray *all;
+	guint i;
+
+	fixture.dir = g_dir_make_tmp("clawt-blockers-XXXXXX", NULL);
+	fixture.config = g_build_filename(fixture.dir, "config.yaml", NULL);
+	yaml = g_strdup_printf(
+		"daemon:\n  tailscale: false\n  state_dir: \"%s/state\"\n"
+		"  socket: \"%s/d.sock\"\n  automation_dir: \"%s/pods\"\n"
+		"defaults:\n  workspace_root: \"%s/agents\"\n"
+		"agents:\n"
+		"  - id: chief\n    chief_of_staff: true\n"
+		"    model:\n      provider: claude-code\n"
+		"    runtime:\n      autostart: false\n"
+		"  - id: watcher\n"
+		"    model:\n      provider: claude-code\n"
+		"    runtime:\n      autostart: false\n",
+		fixture.dir, fixture.dir, fixture.dir, fixture.dir);
+	g_assert_true(g_file_set_contents(fixture.config, yaml, -1, &error));
+	daemon_start(&fixture);
+
+	blocker = g_strdup(clawt_task_get_id(clawt_task_manager_create(
+		fixture.daemon->tasks, "user", "watcher", "build", NULL, NULL)));
+
+	/* an unknown id refuses, and makes nothing */
+	reply = call_as(&fixture, "chief", "clawtilla_delegate",
+		"{\"agent_id\":\"watcher\",\"task\":\"ship\","
+		"\"after\":\"task-none\"}", &is_error);
+	g_assert_true(is_error);
+	g_assert_nonnull(strstr(reply, "Nothing was delegated"));
+	g_clear_pointer(&reply, g_free);
+
+	args = g_strdup_printf("{\"agent_id\":\"watcher\",\"task\":\"ship it\","
+	                       "\"after\":\"%s\"}", blocker);
+	reply = call_as(&fixture, "chief", "clawtilla_delegate", args, &is_error);
+	g_assert_false(is_error);
+	g_assert_nonnull(strstr(reply, "held until"));
+
+	/* the held task is the chief's newest */
+	all = clawt_task_manager_list(fixture.daemon->tasks, "watcher", TRUE);
+	for (i = 0; i < all->len; i++) {
+		task = g_ptr_array_index(all, i);
+		if (clawt_task_get_state(task) == CLAWT_TASK_BLOCKED)
+			waiter = g_strdup(clawt_task_get_id(task));
+	}
+	g_ptr_array_unref(all);
+	g_assert_nonnull(waiter);
+	g_assert_cmpuint(queued_for(&fixture, "watcher", waiter), ==, 0);
+
+	/* the blocker is cancelled: the chief is told, the task still waits */
+	clawt_task_manager_cancel(fixture.daemon->tasks, blocker, "no", "user");
+	task = clawt_task_manager_get(fixture.daemon->tasks, waiter);
+	g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_BLOCKED);
+	g_assert_cmpuint(queued_for(&fixture, "chief", waiter), ==, 1);
+
+	/* and stops waiting with the tool, which hands it over now */
+	g_clear_pointer(&reply, g_free);
+	g_clear_pointer(&args, g_free);
+	args = g_strdup_printf("{\"task_id\":\"%s\",\"after\":\"%s\","
+	                       "\"remove\":true}", waiter, blocker);
+	reply = call_as(&fixture, "chief", "clawtilla_task_link", args, &is_error);
+	g_assert_false(is_error);
+	g_assert_nonnull(strstr(reply, "handed to watcher"));
+	g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_PENDING);
+	g_assert_cmpuint(queued_for(&fixture, "watcher", waiter), ==, 1);
+
+	/* not on somebody else's task */
+	g_clear_pointer(&reply, g_free);
+	reply = call_as(&fixture, "watcher", "clawtilla_task_link", args,
+	                &is_error);
+	g_assert_true(is_error);
+
+	daemon_teardown(&fixture);
+}
+
 int
 main(
 	int   argc,
@@ -1308,6 +1611,11 @@ main(
 	           store_setup, test_progress_and_results_are_noted,
 	           store_teardown);
 	g_test_add_func("/task-store/daemon/operator-tasks", test_operator_tasks);
+	g_test_add("/task-store/blockers/links", StoreFixture, NULL, store_setup,
+	           test_links_and_what_holds, store_teardown);
+	g_test_add_func("/task-store/blockers/operator", test_operator_blockers);
+	g_test_add_func("/task-store/blockers/delegation",
+	                test_delegation_waits);
 
 	return g_test_run();
 }

@@ -569,6 +569,42 @@ JsonNode  *clawt_task_to_json(ClawtTask *self);
  */
 ClawtTask *clawt_task_new_from_json(JsonNode *node, GError **error);
 
+/**
+ * clawt_task_build_held_delivery:
+ * @via: `tool` (handed over through the delegation path) or `router`
+ *   (sent as a message, as the operator's are)
+ * @from: who it is from
+ * @target: the assignee or the task's own room
+ * @body: the work with its contract
+ * @depth: the hop depth it carries
+ * @priority: a #ClawtPriority
+ * @turn_room: (nullable): the conversation it was delegated from
+ *
+ * The record a blocked task's delivery is kept as until its blockers
+ * complete (clawt_task_manager_hold_delivery()): everything the daemon
+ * needs to hand it over later exactly as it would have been then.
+ *
+ * Returns: (transfer full): an object node
+ */
+JsonNode *clawt_task_build_held_delivery(const gchar *via,
+                                       const gchar *from,
+                                       const gchar *target,
+                                       const gchar *body,
+                                       gint         depth,
+                                       gint         priority,
+                                       const gchar *turn_room);
+
+/**
+ * clawt_task_waiting_caption:
+ * @waiting_on: (nullable): a task object's `waiting_on` array
+ *
+ * The line a held task's row shows, in every client's words: "waiting
+ * for task-a, task-b to complete", three named and the rest counted.
+ *
+ * Returns: (transfer full): the caption, empty when nothing holds it
+ */
+gchar *clawt_task_waiting_caption(JsonArray *waiting_on);
+
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtTask, clawt_task_free)
 
 G_END_DECLS

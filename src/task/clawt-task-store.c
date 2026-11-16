@@ -51,6 +51,17 @@ static const gchar *SCHEMA_SQL =
     "  body TEXT NOT NULL"
     ");"
     "CREATE INDEX IF NOT EXISTS task_notes_task ON task_notes(task_id, id);"
+    "CREATE TABLE IF NOT EXISTS task_links ("
+    "  blocker TEXT NOT NULL,"
+    "  blocked TEXT NOT NULL,"
+    "  created_at INTEGER NOT NULL,"
+    "  PRIMARY KEY (blocker, blocked)"
+    ");"
+    "CREATE INDEX IF NOT EXISTS task_links_blocked ON task_links(blocked);"
+    "CREATE TABLE IF NOT EXISTS held_deliveries ("
+    "  task_id TEXT PRIMARY KEY,"
+    "  data TEXT NOT NULL"
+    ");"
     "CREATE TABLE IF NOT EXISTS incidents ("
     "  id TEXT PRIMARY KEY,"
     "  opened_at INTEGER NOT NULL,"
@@ -495,6 +506,22 @@ clawt_task_store_prune(ClawtTaskStore  *self,
 
     g_clear_pointer(&stmt, sqlite3_finalize);
 
+    /* Links and held deliveries that name a task about to go. */
+    if (sqlite3_prepare_v2(self->db,
+            "DELETE FROM task_links WHERE blocker IN ("
+            "  SELECT id FROM tasks WHERE finished_at > 0 AND finished_at < ?)"
+            " OR blocked IN ("
+            "  SELECT id FROM tasks WHERE finished_at > 0 AND finished_at < ?)",
+            -1, &stmt, NULL) != SQLITE_OK ||
+        (sqlite3_bind_int64(stmt, 1, finished_before),
+         sqlite3_bind_int64(stmt, 2, finished_before),
+         sqlite3_step(stmt) != SQLITE_DONE)) {
+        set_sqlite_error(error, self->db, "pruning task links");
+        goto fail;
+    }
+
+    g_clear_pointer(&stmt, sqlite3_finalize);
+
     if (sqlite3_prepare_v2(self->db,
             "DELETE FROM tasks WHERE finished_at > 0 AND finished_at < ?",
             -1, &stmt, NULL) != SQLITE_OK ||
@@ -607,6 +634,178 @@ clawt_task_store_notes(ClawtTaskStore  *self,
     json_builder_end_array(builder);
 
     return json_builder_get_root(builder);
+}
+
+/* One statement with up to two text parameters and no rows wanted. */
+static gboolean
+run_text2(ClawtTaskStore *self, const gchar *sql, const gchar *a,
+          const gchar *b, GError **error)
+{
+    sqlite3_stmt *stmt = NULL;
+    gboolean ok;
+
+    if (sqlite3_prepare_v2(self->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        set_sqlite_error(error, self->db, sql);
+        return FALSE;
+    }
+
+    sqlite3_bind_text(stmt, 1, a, -1, SQLITE_TRANSIENT);
+
+    if (b != NULL)
+        sqlite3_bind_text(stmt, 2, b, -1, SQLITE_TRANSIENT);
+
+    ok = sqlite3_step(stmt) == SQLITE_DONE;
+
+    if (!ok)
+        set_sqlite_error(error, self->db, sql);
+
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
+/* Every value of column 0 a one-parameter query yields. */
+static GPtrArray *
+ids_for(ClawtTaskStore *self, const gchar *sql, const gchar *value)
+{
+    GPtrArray *out = g_ptr_array_new_with_free_func(g_free);
+    sqlite3_stmt *stmt = NULL;
+
+    if (sqlite3_prepare_v2(self->db, sql, -1, &stmt, NULL) != SQLITE_OK)
+        return out;
+
+    sqlite3_bind_text(stmt, 1, value, -1, SQLITE_TRANSIENT);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW)
+        g_ptr_array_add(out, g_strdup(
+            (const gchar *)sqlite3_column_text(stmt, 0)));
+
+    sqlite3_finalize(stmt);
+    return out;
+}
+
+gboolean
+clawt_task_store_add_link(ClawtTaskStore  *self,
+                          const gchar     *blocker,
+                          const gchar     *blocked,
+                          GError         **error)
+{
+    sqlite3_stmt *stmt = NULL;
+    gboolean ok;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), FALSE);
+    g_return_val_if_fail(blocker != NULL && blocked != NULL, FALSE);
+
+    if (sqlite3_prepare_v2(self->db,
+            "INSERT OR IGNORE INTO task_links (blocker, blocked, created_at) "
+            "VALUES (?, ?, ?)", -1, &stmt, NULL) != SQLITE_OK) {
+        set_sqlite_error(error, self->db, "preparing a task link");
+        return FALSE;
+    }
+
+    sqlite3_bind_text(stmt, 1, blocker, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, blocked, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 3, now_seconds());
+    ok = sqlite3_step(stmt) == SQLITE_DONE;
+
+    if (!ok)
+        set_sqlite_error(error, self->db, "adding a task link");
+
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
+gboolean
+clawt_task_store_remove_link(ClawtTaskStore  *self,
+                             const gchar     *blocker,
+                             const gchar     *blocked,
+                             GError         **error)
+{
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), FALSE);
+
+    return run_text2(self,
+                     "DELETE FROM task_links WHERE blocker = ? AND blocked = ?",
+                     blocker, blocked, error);
+}
+
+GPtrArray *
+clawt_task_store_blockers_of(ClawtTaskStore *self, const gchar *task_id)
+{
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), NULL);
+
+    return ids_for(self,
+                   "SELECT blocker FROM task_links WHERE blocked = ? "
+                   "ORDER BY created_at, rowid", task_id);
+}
+
+GPtrArray *
+clawt_task_store_blocked_by(ClawtTaskStore *self, const gchar *task_id)
+{
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), NULL);
+
+    return ids_for(self,
+                   "SELECT blocked FROM task_links WHERE blocker = ? "
+                   "ORDER BY created_at, rowid", task_id);
+}
+
+gboolean
+clawt_task_store_hold_delivery(ClawtTaskStore  *self,
+                               const gchar     *task_id,
+                               JsonNode        *delivery,
+                               GError         **error)
+{
+    g_autofree gchar *text = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), FALSE);
+    g_return_val_if_fail(task_id != NULL && delivery != NULL, FALSE);
+
+    text = json_to_string(delivery, FALSE);
+
+    return run_text2(self,
+                     "INSERT OR REPLACE INTO held_deliveries (task_id, data) "
+                     "VALUES (?, ?)", task_id, text, error);
+}
+
+JsonNode *
+clawt_task_store_take_delivery(ClawtTaskStore *self, const gchar *task_id)
+{
+    sqlite3_stmt *stmt = NULL;
+    JsonNode *node = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), NULL);
+
+    if (task_id == NULL ||
+        sqlite3_prepare_v2(self->db,
+            "SELECT data FROM held_deliveries WHERE task_id = ?", -1, &stmt,
+            NULL) != SQLITE_OK)
+        return NULL;
+
+    sqlite3_bind_text(stmt, 1, task_id, -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+        node = json_from_string((const gchar *)sqlite3_column_text(stmt, 0),
+                                NULL);
+
+    sqlite3_finalize(stmt);
+
+    /* Taken, not read: a delivery released twice is work done twice. */
+    if (node != NULL)
+        run_text2(self, "DELETE FROM held_deliveries WHERE task_id = ?",
+                  task_id, NULL, NULL);
+
+    return node;
+}
+
+gboolean
+clawt_task_store_has_delivery(ClawtTaskStore *self, const gchar *task_id)
+{
+    g_autoptr(GPtrArray) found = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), FALSE);
+
+    found = ids_for(self,
+                    "SELECT task_id FROM held_deliveries WHERE task_id = ?",
+                    task_id);
+    return found->len > 0;
 }
 
 gboolean

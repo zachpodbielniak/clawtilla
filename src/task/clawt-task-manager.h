@@ -534,4 +534,131 @@ JsonNode *clawt_task_manager_notes(ClawtTaskManager  *self,
                                    const gchar       *task_id,
                                    GError           **error);
 
+/**
+ * clawt_task_manager_link:
+ * @self: a #ClawtTaskManager
+ * @task_id: the task that is to wait
+ * @blocker_id: the task it waits for
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Makes @task_id wait for @blocker_id to complete.  Refused for a task
+ * that has ended, for a task waiting for itself, and for a link that
+ * would close a cycle -- each with the reason.  Linking does not change
+ * the task's state: the caller decides whether it is held now
+ * (clawt_task_manager_block()).  Emits ::blockers-changed.  Needs a
+ * store.
+ *
+ * Returns: %TRUE when linked
+ */
+gboolean clawt_task_manager_link(ClawtTaskManager  *self,
+                                 const gchar       *task_id,
+                                 const gchar       *blocker_id,
+                                 GError           **error);
+
+/**
+ * clawt_task_manager_unlink:
+ * @self: a #ClawtTaskManager
+ * @task_id: the task that waited
+ * @blocker_id: the task it no longer waits for
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Emits ::blockers-changed, which is what lets a held task go once the
+ * last thing it waited for is taken away.  Needs a store.
+ *
+ * Returns: %TRUE when there is no longer such a link
+ */
+gboolean clawt_task_manager_unlink(ClawtTaskManager  *self,
+                                   const gchar       *task_id,
+                                   const gchar       *blocker_id,
+                                   GError           **error);
+
+/**
+ * clawt_task_manager_blockers:
+ * @self: a #ClawtTaskManager
+ * @task_id: a task
+ *
+ * Returns: (transfer full) (element-type utf8): every task @task_id
+ *   waits for, finished or not; empty without a store
+ */
+GPtrArray *clawt_task_manager_blockers(ClawtTaskManager *self,
+                                       const gchar      *task_id);
+
+/**
+ * clawt_task_manager_dependents:
+ * @self: a #ClawtTaskManager
+ * @task_id: a task
+ *
+ * Returns: (transfer full) (element-type utf8): every task waiting for
+ *   @task_id; empty without a store
+ */
+GPtrArray *clawt_task_manager_dependents(ClawtTaskManager *self,
+                                         const gchar      *task_id);
+
+/**
+ * clawt_task_manager_waiting_on:
+ * @self: a #ClawtTaskManager
+ * @task_id: a task
+ *
+ * The blockers that still hold @task_id: every one that has not
+ * completed.  A blocker that failed or was cancelled still holds it --
+ * its work was meant to come first -- and one pruned long ago holds
+ * nothing.
+ *
+ * Returns: (transfer full) (element-type utf8): their ids, empty when
+ *   the task may go
+ */
+GPtrArray *clawt_task_manager_waiting_on(ClawtTaskManager *self,
+                                         const gchar      *task_id);
+
+/**
+ * clawt_task_manager_block:
+ * @self: a #ClawtTaskManager
+ * @task_id: a pending or unassigned task
+ *
+ * Holds the task as %CLAWT_TASK_BLOCKED until its blockers complete.
+ *
+ * Returns: %TRUE when it is now blocked
+ */
+gboolean clawt_task_manager_block(ClawtTaskManager *self,
+                                  const gchar      *task_id);
+
+/**
+ * clawt_task_manager_unblock:
+ * @self: a #ClawtTaskManager
+ * @task_id: a blocked task
+ *
+ * Lets a blocked task go: to `pending` when it has an assignee, back to
+ * the backlog when it does not.  Handing the work over is the caller's
+ * (the held delivery, clawt_task_manager_take_delivery()).
+ *
+ * Returns: %TRUE when it was blocked and is not now
+ */
+gboolean clawt_task_manager_unblock(ClawtTaskManager *self,
+                                    const gchar      *task_id);
+
+/**
+ * clawt_task_manager_hold_delivery:
+ * @self: a #ClawtTaskManager
+ * @task_id: a blocked task
+ * @delivery: what the daemon needs to hand it over later
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Returns: %TRUE when kept (clawt_task_store_hold_delivery())
+ */
+gboolean clawt_task_manager_hold_delivery(ClawtTaskManager  *self,
+                                          const gchar       *task_id,
+                                          JsonNode          *delivery,
+                                          GError           **error);
+
+/**
+ * clawt_task_manager_take_delivery:
+ * @self: a #ClawtTaskManager
+ * @task_id: a blocked task
+ *
+ * Returns: (transfer full) (nullable): the held delivery, removed as it
+ *   is taken (clawt_task_store_take_delivery())
+ */
+JsonNode *clawt_task_manager_take_delivery(ClawtTaskManager *self,
+                                           const gchar      *task_id);
+
 G_END_DECLS
