@@ -938,9 +938,10 @@ test_task_list_explains_pending(void)
 }
 
 /*
- * An empty list is not "nothing was delegated".  Tasks are held in
- * memory, so a restart clears them -- the same shape as an empty
- * mailbox for a running agent, and it has to say which it is.
+ * An empty list is not "nothing was delegated".  It is the live set --
+ * open tasks and the last day's -- and it has to say so, and that an
+ * older task is still answerable by id: the same shape as an empty
+ * mailbox for a running agent.
  */
 static void
 test_an_empty_task_list_says_why(void)
@@ -957,8 +958,8 @@ test_an_empty_task_list_says_why(void)
     text = response_text(response, &is_error);
 
     g_assert_false(is_error);
-    g_assert_nonnull(strstr(text, "held in memory"));
-    g_assert_nonnull(strstr(text, "event log"));
+    g_assert_nonnull(strstr(text, "finished in the last day"));
+    g_assert_nonnull(strstr(text, "clawtilla_task_status"));
 
     fixture_teardown(&fixture);
 }

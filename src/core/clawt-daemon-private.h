@@ -61,11 +61,10 @@ struct _ClawtDaemon {
     GObject parent_instance;
 
     /*
-     * When this daemon last started, as a Unix time.  Tasks and incidents
-     * are held in memory, so their lists cover only this long; task.list
-     * and incident.list say so (`since`), and the clients say so in
-     * words (clawt_held_since_caption()) rather than letting an empty
-     * list after a restart read as nothing having happened.
+     * When this daemon last started, as a Unix time.  task.list and
+     * incident.list still carry it (`since`): a daemon whose task store
+     * would not open holds its lists in memory only, and then this is how
+     * far back they reach (clawt_task_list_caption()).
      */
     gint64 started_at;
 
@@ -86,6 +85,13 @@ struct _ClawtDaemon {
     ClawtAgentManager  *agents;
     ClawtRoomManager   *rooms;
     ClawtTaskManager   *tasks;
+
+    /*
+     * tasks.db: every task and incident, written as they change.  NULL
+     * when it would not open, and then both are in memory only.
+     */
+    ClawtTaskStore     *task_store;
+    GSource            *task_prune;
     ClawtMailboxRouter *router;
     ClawtLoopGuard     *guard;
     ClawtUsage         *usage;
@@ -1469,6 +1475,20 @@ clawt_daemon_handle_task(
     JsonObject   *payload,
     gboolean     *handled
 );
+
+/* ── Defined in daemon-task.c: the task store ─────────────────────── */
+
+/*
+ * How long a finished task stays in the live set, in seconds: on every
+ * client's Tasks list and in memory.  Older ones are in the history.
+ */
+#define CLAWT_DAEMON_TASK_LIVE_SECONDS (24 * 60 * 60)
+
+void clawt_daemon_tasks_setup(ClawtDaemon *self);
+void clawt_daemon_tasks_restore_incidents(ClawtDaemon *self);
+guint clawt_daemon_tasks_reconcile(ClawtDaemon *self);
+void clawt_daemon_tasks_start_pruning(ClawtDaemon *self);
+void clawt_daemon_tasks_stop(ClawtDaemon *self);
 
 JsonNode *
 clawt_daemon_handle_computer(

@@ -1162,6 +1162,35 @@ clawt_avatar_color(const gchar *agent_id, const gchar *name,
 }
 
 gchar *
+clawt_task_list_caption(gint64   since,
+                        gboolean kept,
+                        gint64   retention_days,
+                        gint64   now)
+{
+    g_autofree gchar *how_long = NULL;
+
+    /*
+     * A daemon with no task store -- one older than tasks.db, or one
+     * whose file would not open -- still empties these lists on a
+     * restart, and saying otherwise would be the lie this caption was
+     * written to stop.
+     */
+    if (!kept)
+        return clawt_held_since_caption(since, now);
+
+    how_long = retention_days > 0
+        ? g_strdup_printf("for %" G_GINT64_FORMAT " day%s", retention_days,
+                          retention_days == 1 ? "" : "s")
+        : g_strdup("with no age limit");
+
+    return g_strdup_printf(
+        "Tasks still open, and those that finished in the last day. Every "
+        "task is kept %s with a record of what happened to it, across "
+        "restarts; older ones are in the history (clawtilla task list "
+        "--history).", how_long);
+}
+
+gchar *
 clawt_held_since_caption(gint64 since, gint64 now)
 {
     static const gchar tail[] =

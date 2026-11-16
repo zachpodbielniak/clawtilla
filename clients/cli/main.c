@@ -155,6 +155,8 @@ static const gchar *usage_tail =
     "  # Hand work to a chief-of-staff and watch it delegate\n"
     "  clawtilla send chief-of-staff \"summarize this week's commits\"\n"
     "  clawtilla task list\n"
+    "  clawtilla task list --history --state failed   # kept across restarts\n"
+    "  clawtilla task show task-01m0k5 --journal       # what happened to it\n"
     "  clawtilla task incidents            # broken runs, and who was told\n"
     "  clawtilla task retry task-01m0k5    # send a failed run round again\n"
     "\n"
@@ -4511,10 +4513,49 @@ cmd_task(int argc, char *argv[])
         return EXIT_FAILURE;
 
     if (g_strcmp0(verb, "list") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
         JsonArray *tasks;
+        gboolean history = FALSE;
+        gint arg;
         guint i;
 
-        reply = call(client, "task.list", NULL);
+        /*
+         * --history reads every task the daemon still keeps, newest
+         * first, a page at a time; the rest narrow it.  Without it the
+         * list is the live one, as every client shows.
+         */
+        json_builder_begin_object(builder);
+
+        for (arg = 3; arg < argc; arg++) {
+            const gchar *opt = argv[arg];
+            const gchar *value = (arg + 1 < argc) ? argv[arg + 1] : NULL;
+
+            if (g_strcmp0(opt, "--history") == 0) {
+                history = TRUE;
+                json_builder_set_member_name(builder, "history");
+                json_builder_add_boolean_value(builder, TRUE);
+            } else if ((g_strcmp0(opt, "--state") == 0 ||
+                        g_strcmp0(opt, "--agent") == 0) && value != NULL) {
+                json_builder_set_member_name(builder, opt + 2);
+                json_builder_add_string_value(builder, value);
+                arg++;
+            } else if ((g_strcmp0(opt, "--before") == 0 ||
+                        g_strcmp0(opt, "--limit") == 0) && value != NULL) {
+                json_builder_set_member_name(builder, opt + 2);
+                json_builder_add_int_value(builder,
+                                           g_ascii_strtoll(value, NULL, 10));
+                arg++;
+            } else {
+                g_printerr("Usage: clawtilla task list [--history] "
+                           "[--state STATE] [--agent AGENT] [--before UNIX] "
+                           "[--limit N]\n");
+                return EXIT_FAILURE;
+            }
+        }
+
+        json_builder_end_object(builder);
+
+        reply = call(client, "task.list", json_builder_get_root(builder));
         if (reply == NULL)
             return EXIT_FAILURE;
 
@@ -4522,15 +4563,18 @@ cmd_task(int argc, char *argv[])
                                              "tasks");
 
         /*
-         * How far back the list reaches, on stderr so a script reading
-         * the table is unaffected: tasks are held in memory, and "No
-         * tasks." straight after a restart is not "nothing happened".
+         * What the list covers, on stderr so a script reading the table
+         * is unaffected: the open tasks and the last day's, or every
+         * task when --history asked for them.
          */
-        {
+        if (!history) {
             JsonObject *root = json_node_get_object(reply);
-            g_autofree gchar *since = clawt_held_since_caption(
-                json_object_has_member(root, "since")
-                    ? json_object_get_int_member(root, "since") : 0,
+            g_autofree gchar *since = clawt_task_list_caption(
+                json_object_get_int_member_with_default(root, "since", 0),
+                json_object_get_boolean_member_with_default(root, "kept",
+                                                            FALSE),
+                json_object_get_int_member_with_default(root,
+                                                        "retention_days", 0),
                 g_get_real_time() / G_USEC_PER_SEC);
 
             g_printerr("%s\n", since);
@@ -4541,18 +4585,39 @@ cmd_task(int argc, char *argv[])
             return EXIT_SUCCESS;
         }
 
-        g_print("%-26s %-12s %-12s %-10s %s\n", "ID", "FROM", "TO", "STATE",
-                "WORK");
+        g_print("%-26s %-16s %-12s %-12s %-10s %s\n", "ID", "CREATED",
+                "FROM", "TO", "STATE", "WORK");
 
         for (i = 0; i < json_array_get_length(tasks); i++) {
             JsonObject *task = json_array_get_object_element(tasks, i);
+            gint64 created = json_object_get_int_member_with_default(
+                task, "created_at", 0);
+            g_autoptr(GDateTime) when = created > 0
+                ? g_date_time_new_from_unix_local(created) : NULL;
+            g_autofree gchar *stamp = when != NULL
+                ? g_date_time_format(when, "%Y-%m-%d %H:%M") : g_strdup("-");
 
-            g_print("%-26s %-12s %-12s %-10s %s\n",
-                    member_or(task, "id", "?"),
+            /* The title rather than the whole prompt: one line a row. */
+            g_print("%-26s %-16s %-12s %-12s %-10s %s\n",
+                    member_or(task, "id", "?"), stamp,
                     member_or(task, "origin", "?"),
                     member_or(task, "assignee", "?"),
                     member_or(task, "state", "?"),
-                    member_or(task, "prompt", ""));
+                    member_or(task, "title", member_or(task, "prompt", "")));
+        }
+
+        /*
+         * The next page's cursor, when this one was full: the oldest
+         * task's created_at, which --before takes.
+         */
+        if (history && json_array_get_length(tasks) > 0) {
+            JsonObject *last = json_array_get_object_element(
+                tasks, json_array_get_length(tasks) - 1);
+
+            g_printerr("Older: clawtilla task list --history --before %"
+                       G_GINT64_FORMAT "\n",
+                       json_object_get_int_member_with_default(
+                           last, "created_at", 0));
         }
 
         return EXIT_SUCCESS;
@@ -4561,13 +4626,27 @@ cmd_task(int argc, char *argv[])
     if (g_strcmp0(verb, "show") == 0) {
         JsonObject *task;
 
+        gboolean journal = FALSE;
+
         if (argc < 4) {
-            g_printerr("Usage: clawtilla task show <task-id>\n");
+            g_printerr("Usage: clawtilla task show <task-id> [--journal]\n");
             return EXIT_FAILURE;
         }
 
-        reply = call(client, "task.show",
-                     build_payload("task", argv[3], NULL));
+        journal = (argc > 4 && g_strcmp0(argv[4], "--journal") == 0);
+
+        {
+            g_autoptr(JsonBuilder) builder = json_builder_new();
+
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "task");
+            json_builder_add_string_value(builder, argv[3]);
+            json_builder_set_member_name(builder, "journal");
+            json_builder_add_boolean_value(builder, journal);
+            json_builder_end_object(builder);
+
+            reply = call(client, "task.show", json_builder_get_root(builder));
+        }
         if (reply == NULL)
             return EXIT_FAILURE;
 
@@ -4575,6 +4654,7 @@ cmd_task(int argc, char *argv[])
                                              "task");
 
         g_print("id:       %s\n", member_or(task, "id", "?"));
+        g_print("title:    %s\n", member_or(task, "title", ""));
         g_print("from:     %s\n", member_or(task, "origin", "?"));
         g_print("to:       %s\n", member_or(task, "assignee", "?"));
         g_print("state:    %s\n", member_or(task, "state", "?"));
@@ -4616,6 +4696,32 @@ cmd_task(int argc, char *argv[])
             g_print("note:     nobody reported this finished; the result "
                     "is the last thing %s wrote before its turn ended\n",
                     member_or(task, "assignee", "the assignee"));
+
+        /* What happened to it, oldest first. */
+        if (journal) {
+            JsonObject *root = json_node_get_object(reply);
+            JsonArray *rows = json_object_has_member(root, "journal")
+                ? json_object_get_array_member(root, "journal") : NULL;
+            guint r;
+
+            g_print("\nhistory:\n");
+
+            if (rows == NULL || json_array_get_length(rows) == 0)
+                g_print("  (none kept)\n");
+
+            for (r = 0; rows != NULL && r < json_array_get_length(rows); r++) {
+                JsonObject *row = json_array_get_object_element(rows, r);
+                g_autoptr(GDateTime) when = g_date_time_new_from_unix_local(
+                    json_object_get_int_member_with_default(row, "at", 0));
+                g_autofree gchar *stamp = when != NULL
+                    ? g_date_time_format(when, "%Y-%m-%d %H:%M:%S")
+                    : g_strdup("?");
+
+                g_print("  %s  %-10s %s\n", stamp,
+                        member_or(row, "state", "?"),
+                        member_or(row, "what", ""));
+            }
+        }
 
         return EXIT_SUCCESS;
     }

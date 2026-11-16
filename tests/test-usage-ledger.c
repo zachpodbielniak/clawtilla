@@ -957,9 +957,9 @@ test_daemon_tags_each_origin_from_turn_state(void)
 /*
  * A run that spans a restart is still its routine's bill.
  *
- * Tasks live in memory, so the next daemon knows neither the routine's
- * task nor the child it handed on -- but a mailbox item carries a task
- * id across the restart and the turn it starts is described by it.
+ * The next daemon restores both tasks from its task store, but the store
+ * records the task and not which run made it; a mailbox item carries a
+ * task id across the restart and the turn it starts is described by it.
  * Before, the map from task to run was a hash table on the daemon, and
  * both turns came back `task:<id>`.
  */
@@ -1005,7 +1005,9 @@ test_daemon_keeps_a_run_across_a_restart(void)
 	fixture.daemon = clawt_daemon_new(fixture.config_path, fixture.context);
 	g_assert_true(clawt_daemon_start(fixture.daemon, &error));
 	g_assert_no_error(error);
-	g_assert_null(clawt_task_manager_get(fixture.daemon->tasks, routine_task));
+	/* Kept across the restart, which is not what labels it. */
+	g_assert_nonnull(clawt_task_manager_get(fixture.daemon->tasks,
+	                                        routine_task));
 
 	chief = clawt_agent_manager_get(fixture.daemon->agents, "chief");
 	clawt_agent_deliver_turn(chief, "dm:chief:user", 0, TRUE, "user",

@@ -542,22 +542,43 @@ const gchar *clawt_avatar_color(const gchar *agent_id, const gchar *name,
                                 const gchar *configured);
 
 /**
+ * clawt_task_list_caption:
+ * @since: when the daemon started, as task.list's `since` says
+ * @kept: task.list's `kept`: whether the daemon keeps tasks on disk
+ * @retention_days: task.list's `retention_days`, 0 for no limit
+ * @now: the current time, as a Unix time
+ *
+ * The line every client puts over its Tasks and Problems lists, saying
+ * what they cover.
+ *
+ * With a task store (@kept), the live lists are the tasks still open and
+ * those that finished in the last day, and everything is kept across a
+ * restart for @retention_days; the caption says so and where the rest
+ * is.  Without one -- a daemon older than the store, or one whose
+ * tasks.db would not open -- it is clawt_held_since_caption()'s sentence,
+ * because then a restart really does clear the lists.
+ *
+ * Returns: (transfer full): one sentence or two
+ */
+gchar *clawt_task_list_caption(gint64   since,
+                               gboolean kept,
+                               gint64   retention_days,
+                               gint64   now);
+
+/**
  * clawt_held_since_caption:
  * @since: when the daemon started, as a Unix time; 0 or less when the
  *   daemon did not say (one older than `since` on task.list)
  * @now: the current time, as a Unix time
  *
- * The line every client puts over its Tasks and Problems lists, saying
- * how far back they reach.
- *
- * Tasks are held in memory by design (docs/orchestration.org), and the
- * incidents that describe them with them: an incident persisted past
- * its task would be a row whose Retry has nothing to retry and that no
- * task settling will ever resolve.  So a restart clears both lists, and
- * an empty list straight after one looked like nothing had ever been
- * delegated or broken.  This says what the list covers and where the
- * history went instead -- the room transcripts, including each team's
- * Problems to look at, which persist.
+ * The caption for a daemon that holds its tasks in memory only -- one
+ * older than the task store, or one whose tasks.db would not open --
+ * where a restart clears the Tasks and Problems lists.  An empty list
+ * straight after one looked like nothing had ever been delegated or
+ * broken; this says what the list covers and where the history went
+ * instead: the room transcripts, including each team's Problems to look
+ * at, which persist.  clawt_task_list_caption() picks between this and
+ * the sentence for a daemon that keeps them.
  *
  * Returns: (transfer full): the caption
  */

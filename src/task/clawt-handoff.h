@@ -21,9 +21,9 @@
  *   queues and answers at once, and #ClawtDaemon drains the queue from
  *   clawt_daemon_turn_settle().
  *
- *   **It leaves a durable receipt.**  #ClawtTaskManager is in memory, so
- *   a task handed over just before a restart is a task nothing can
- *   answer questions about afterwards -- and "I do not know" from
+ *   **It leaves a durable receipt.**  The task itself is kept by
+ *   #ClawtTaskStore, but the store records where a task is, not each
+ *   move it made and how the move went -- and "I do not know" from
  *   clawtilla_task_status reads to an agent as "it never happened",
  *   which is how you get two of everything.  #ClawtHandoffStore keeps a
  *   terminal receipt per handoff for orchestration.handoff_receipt_days.

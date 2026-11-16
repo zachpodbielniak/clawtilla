@@ -17,6 +17,7 @@
 
 #include "clawt-types.h"
 #include "task/clawt-task.h"
+#include "task/clawt-task-store.h"
 
 G_BEGIN_DECLS
 
@@ -28,9 +29,10 @@ G_DECLARE_FINAL_TYPE(ClawtTaskManager, clawt_task_manager,
 /**
  * clawt_task_manager_new:
  *
- * Tasks live in memory: they are work in flight, and work in flight does
- * not survive the daemon that was doing it.  What did happen is in the
- * event log.
+ * Live tasks are served from memory.  Give the manager a store
+ * (clawt_task_manager_set_store()) and every change is also written
+ * there, the live set is restored from it on start, and older tasks are
+ * read back from it on demand; without one, a restart forgets them.
  *
  * Returns: (transfer full): a new #ClawtTaskManager
  */
@@ -61,6 +63,12 @@ ClawtTask *clawt_task_manager_create(ClawtTaskManager  *self,
  * clawt_task_manager_get:
  * @self: a #ClawtTaskManager
  * @task_id: a task id
+ *
+ * The live set first, then any task read back from the store earlier,
+ * then the store itself: a task that finished long ago is still
+ * answerable (its result, its reason), without reappearing in a live
+ * listing.  A borrowed pointer stays valid until the next
+ * clawt_task_manager_forget_finished().
  *
  * Returns: (transfer none) (nullable): the task, or %NULL
  */
@@ -357,5 +365,112 @@ guint clawt_task_manager_orphan_agent_tasks(ClawtTaskManager *self,
  */
 void clawt_task_manager_set_max_depth(ClawtTaskManager *self,
                                       guint             max_depth);
+
+/**
+ * clawt_task_manager_set_store:
+ * @self: a #ClawtTaskManager
+ * @store: (nullable): where to write every change, or %NULL for memory
+ *   only
+ *
+ * From here on every transition is written to @store before
+ * ::task-changed is emitted, with a journal row naming what happened.
+ * A save that fails is logged and survived: the transition stands.
+ */
+void clawt_task_manager_set_store(ClawtTaskManager *self,
+                                  ClawtTaskStore   *store);
+
+/**
+ * clawt_task_manager_get_store:
+ * @self: a #ClawtTaskManager
+ *
+ * Returns: (transfer none) (nullable): the store, or %NULL
+ */
+ClawtTaskStore *clawt_task_manager_get_store(ClawtTaskManager *self);
+
+/**
+ * clawt_task_manager_load:
+ * @self: a #ClawtTaskManager
+ * @finished_since: also load tasks that finished at or after this Unix
+ *   time
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Restores the live set from the store: every task that has not finished
+ * and the ones that finished since @finished_since, in creation order.
+ *
+ * Silent: nothing is emitted, because nothing changed.  Called by a
+ * starting daemon before anything listens, so a restored task does not
+ * send its settle notice, raise its incident or wake its delegator a
+ * second time.  Tasks already in memory are left as they are.
+ *
+ * Returns: how many tasks were restored
+ */
+guint clawt_task_manager_load(ClawtTaskManager  *self,
+                              gint64             finished_since,
+                              GError           **error);
+
+/**
+ * clawt_task_manager_save:
+ * @self: a #ClawtTaskManager
+ * @task: a task this manager holds
+ * @what: (nullable): what happened, for the task's journal
+ *
+ * Writes @task to the store after a change made outside the manager --
+ * a field set with clawt_task_set_*() straight after creation, or an
+ * owner change from a handoff.  Every transition the manager makes
+ * itself is already saved; this is for the rest, which would otherwise
+ * be lost to a restart.  A parent set after creation is also refiled in
+ * the children index here, which the cancel cascade and
+ * clawt_task_manager_count_unfinished_children() read.
+ */
+void clawt_task_manager_save(ClawtTaskManager *self,
+                             ClawtTask        *task,
+                             const gchar      *what);
+
+/**
+ * clawt_task_manager_forget_finished:
+ * @self: a #ClawtTaskManager
+ * @finished_before: drop tasks that finished before this Unix time
+ *
+ * Takes finished tasks out of memory.  They stay in the store, so
+ * clawt_task_manager_get() still answers for them and
+ * clawt_task_manager_list_history() still lists them; they only leave
+ * the live listings.  A finished task with a child still running stays.
+ * Does nothing without a store, where forgetting would lose the task.
+ *
+ * Returns: how many were dropped from memory
+ */
+guint clawt_task_manager_forget_finished(ClawtTaskManager *self,
+                                         gint64            finished_before);
+
+/**
+ * clawt_task_manager_list_history:
+ * @self: a #ClawtTaskManager
+ * @query: (nullable): what to narrow to
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Every task, finished or not, newest first and one page at a time
+ * (clawt_task_store_list()).  From memory when there is no store.
+ *
+ * Returns: (transfer full) (element-type ClawtTask) (nullable): copies of
+ *   the tasks, or %NULL on error
+ */
+GPtrArray *clawt_task_manager_list_history(ClawtTaskManager     *self,
+                                           const ClawtTaskQuery *query,
+                                           GError              **error);
+
+/**
+ * clawt_task_manager_journal:
+ * @self: a #ClawtTaskManager
+ * @task_id: which task
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The task's history from the store (clawt_task_store_journal()).
+ *
+ * Returns: (transfer full) (nullable): an array node, or %NULL on error or
+ *   without a store
+ */
+JsonNode *clawt_task_manager_journal(ClawtTaskManager  *self,
+                                     const gchar       *task_id,
+                                     GError           **error);
 
 G_END_DECLS

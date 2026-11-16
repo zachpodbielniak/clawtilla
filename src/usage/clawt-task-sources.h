@@ -23,9 +23,10 @@ G_BEGIN_DECLS
  * CLAWT_TASK_SOURCES_MAX_AGE_SECONDS:
  *
  * How long an entry for a task this daemon no longer knows is kept: a
- * week.  Tasks live in memory, so after a restart every entry describes
- * a task nobody can ask about -- and a turn about one of them can still
- * arrive, from a mailbox item that outlived the daemon.  A week covers a
+ * week.  A task can leave the manager -- pruned after the retention
+ * window, or never restored because the task store would not open --
+ * while a turn about it can still arrive, from a mailbox item that
+ * outlived it.  A week covers a
  * stopped agent and a long weekend without letting a five-minute
  * routine's entries grow for ever.
  */

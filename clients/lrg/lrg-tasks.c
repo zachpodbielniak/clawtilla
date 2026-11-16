@@ -29,7 +29,7 @@ typedef struct {
     LrgWidget   *list;
     guint        seq;
 
-    /* how far back both lists reach: clawt_held_since_caption() */
+    /* what both lists cover: clawt_task_list_caption() */
     LrgWidget   *since;
 
     /*
@@ -478,13 +478,16 @@ on_tasks(ClawtLrgApp *app, JsonNode *reply, const GError *error,
     clawt_lrg_clear(tasks.list);
 
     /*
-     * Held in memory, so the lists reach back only to the daemon's
-     * start; said every time, because an empty list after a restart
-     * otherwise reads as nothing having been delegated or broken.
+     * What the lists cover, in the library's words: the open tasks and
+     * the last day's, kept across restarts -- or everything since the
+     * daemon started, from one with no task store.
      */
     if (tasks.since != NULL) {
-        g_autofree gchar *since = clawt_held_since_caption(
-            clawt_ipc_payload_int(clawt_ipc_reply_object(reply), "since", 0),
+        JsonObject *root = clawt_ipc_reply_object(reply);
+        g_autofree gchar *since = clawt_task_list_caption(
+            clawt_ipc_payload_int(root, "since", 0),
+            clawt_ipc_payload_boolean(root, "kept", FALSE),
+            clawt_ipc_payload_int(root, "retention_days", 0),
             g_get_real_time() / G_USEC_PER_SEC);
 
         clawt_lrg_paragraph_set_text(tasks.since, since);

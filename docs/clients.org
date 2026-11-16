@@ -1871,12 +1871,13 @@ sidebar under the team, where the reports themselves can be read and the
 lead written to.  The same in GTK, web and lrg; see
 [[file:orchestration.org::*Incidents: broken runs reach the lead][Incidents]].
 
-Over both lists, in every client, a line saying how far back they reach:
-=clawt_held_since_caption()= from ~task.list~'s ~since~ ("Since the
-daemon started at 09:14. Tasks and problems are held in memory, so a
-daemon restart clears this list; ...").  Tasks are held in memory by
-design and incidents with them, and an empty Tasks page straight after a
-restart read as nothing ever having been delegated or broken.
+Over both lists, in every client, a line saying what they cover:
+=clawt_task_list_caption()= from ~task.list~'s ~kept~, ~retention_days~
+and ~since~ ("Tasks still open, and those that finished in the last day.
+Every task is kept for 180 days with a record of what happened to it,
+across restarts; older ones are in the history (clawtilla task list
+--history).").  A daemon with no task store gets the older in-memory
+sentence instead, because there a restart really does clear the lists.
 
 *The agent page speaks to the operator.*  What an agent is told about its
 computer (~computer_detail~) is written to the agent, and all three

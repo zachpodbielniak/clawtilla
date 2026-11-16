@@ -541,6 +541,12 @@ struct _ClawtIncidentDesk {
 	ClawtTaskManager           *tasks;
 	ClawtEventBus              *bus;
 
+	/*
+	 * Where every incident is written as it changes, and read back from
+	 * when the daemon starts.  NULL keeps the desk in memory only.
+	 */
+	ClawtTaskStore             *store;
+
 	gulong                      task_handler;
 	guint                       quiet;
 
@@ -556,6 +562,272 @@ G_DEFINE_FINAL_TYPE(ClawtIncidentDesk, clawt_incident_desk, G_TYPE_OBJECT)
 static void on_task_changed(ClawtTaskManager *manager, const gchar *task_id,
                             gint state, gpointer user_data);
 
+/* ── On disk ─────────────────────────────────────────────────────── */
+
+/*
+ * Every field, by name.  As for tasks, the member names are a file
+ * format: never renamed, and one added later reads as its zero value
+ * from an incident saved before it existed.
+ */
+static JsonNode *
+incident_to_json(
+	ClawtIncident *incident
+){
+	g_autoptr(JsonBuilder) builder = json_builder_new();
+	guint i;
+
+#define ADD_STRING(name)                                            \
+	if (incident->name != NULL) {                                   \
+		json_builder_set_member_name(builder, #name);               \
+		json_builder_add_string_value(builder, incident->name);     \
+	}
+#define ADD_INT(name)                                               \
+	json_builder_set_member_name(builder, #name);                   \
+	json_builder_add_int_value(builder, (gint64)incident->name);
+#define ADD_BOOL(name)                                              \
+	json_builder_set_member_name(builder, #name);                   \
+	json_builder_add_boolean_value(builder, incident->name);
+
+	json_builder_begin_object(builder);
+
+	ADD_STRING(id)
+	ADD_STRING(key)
+	ADD_STRING(agent)
+	ADD_STRING(team)
+	ADD_STRING(room)
+	ADD_STRING(run_room)
+	ADD_STRING(task_id)
+	ADD_STRING(routine_id)
+	ADD_STRING(origin)
+	ADD_STRING(reason)
+	ADD_STRING(recipient)
+	ADD_STRING(note)
+	ADD_STRING(retried_by)
+	ADD_INT(occurrences)
+	ADD_INT(retries)
+	ADD_INT(agent_retries)
+	ADD_INT(opened_at)
+	ADD_INT(updated_at)
+	ADD_INT(delivered_at)
+	ADD_INT(reported_at)
+	ADD_BOOL(queued)
+	ADD_BOOL(resolved)
+	ADD_BOOL(retried_since_report)
+
+#undef ADD_STRING
+#undef ADD_INT
+#undef ADD_BOOL
+
+	json_builder_set_member_name(builder, "kind");
+	json_builder_add_string_value(builder,
+		clawt_enum_to_nick(CLAWT_TYPE_INCIDENT_KIND, incident->kind));
+
+	json_builder_set_member_name(builder, "log_lines");
+	json_builder_begin_array(builder);
+
+	for (i = 0; incident->log_lines != NULL &&
+	            incident->log_lines[i] != NULL; i++)
+		json_builder_add_string_value(builder, incident->log_lines[i]);
+
+	json_builder_end_array(builder);
+	json_builder_end_object(builder);
+
+	return json_builder_get_root(builder);
+}
+
+static ClawtIncident *
+incident_from_json(
+	JsonNode *node
+){
+	JsonObject *object;
+	ClawtIncident *incident;
+	JsonArray *lines;
+	gint kind = CLAWT_INCIDENT_FAILED;
+	guint i;
+
+	if (node == NULL || !JSON_NODE_HOLDS_OBJECT(node))
+		return NULL;
+
+	object = json_node_get_object(node);
+
+	if (json_object_get_string_member_with_default(object, "id", NULL) == NULL)
+		return NULL;
+
+	incident = g_new0(ClawtIncident, 1);
+	incident->ref_count = 1;
+
+#define GET_STRING(name)                                                  \
+	incident->name = g_strdup(json_object_get_string_member_with_default( \
+		object, #name, NULL));
+#define GET_INT(name)                                                     \
+	incident->name = json_object_get_int_member_with_default(object,      \
+	                                                          #name, 0);
+#define GET_BOOL(name)                                                    \
+	incident->name = json_object_get_boolean_member_with_default(object,  \
+	                                                              #name,  \
+	                                                              FALSE);
+
+	GET_STRING(id)
+	GET_STRING(key)
+	GET_STRING(agent)
+	GET_STRING(team)
+	GET_STRING(room)
+	GET_STRING(run_room)
+	GET_STRING(task_id)
+	GET_STRING(routine_id)
+	GET_STRING(origin)
+	GET_STRING(reason)
+	GET_STRING(recipient)
+	GET_STRING(note)
+	GET_STRING(retried_by)
+	GET_INT(occurrences)
+	GET_INT(retries)
+	GET_INT(agent_retries)
+	GET_INT(opened_at)
+	GET_INT(updated_at)
+	GET_INT(delivered_at)
+	GET_INT(reported_at)
+	GET_BOOL(queued)
+	GET_BOOL(resolved)
+	GET_BOOL(retried_since_report)
+
+#undef GET_STRING
+#undef GET_INT
+#undef GET_BOOL
+
+	if (!clawt_enum_from_nick(CLAWT_TYPE_INCIDENT_KIND,
+	                          json_object_get_string_member_with_default(
+	                              object, "kind", NULL), &kind))
+		kind = CLAWT_INCIDENT_FAILED;
+
+	incident->kind = (ClawtIncidentKind)kind;
+
+	lines = json_object_has_member(object, "log_lines")
+		? json_object_get_array_member(object, "log_lines") : NULL;
+
+	if (lines != NULL) {
+		GPtrArray *strv = g_ptr_array_new();
+
+		for (i = 0; i < json_array_get_length(lines); i++)
+			g_ptr_array_add(strv, g_strdup(
+				json_array_get_string_element(lines, i)));
+
+		g_ptr_array_add(strv, NULL);
+		incident->log_lines = (GStrv)g_ptr_array_free(strv, FALSE);
+	}
+
+	return incident;
+}
+
+/*
+ * Every change an incident goes through is published, so this is where
+ * it is written: one place, rather than one per field that changes.
+ * The opened time is in microseconds on the struct; the store orders by
+ * it as given.
+ */
+static void
+persist(
+	ClawtIncidentDesk *self,
+	ClawtIncident     *incident
+){
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) error = NULL;
+
+	if (self->store == NULL)
+		return;
+
+	node = incident_to_json(incident);
+
+	if (!clawt_task_store_save_incident(self->store, incident->id,
+	                                    incident->opened_at, node, &error))
+		g_warning("incident %s: could not save it: %s", incident->id,
+		          error->message);
+}
+
+static void
+forget(
+	ClawtIncidentDesk *self,
+	ClawtIncident     *incident
+){
+	g_autoptr(GError) error = NULL;
+
+	if (self->store == NULL)
+		return;
+
+	if (!clawt_task_store_delete_incident(self->store, incident->id, &error))
+		g_warning("incident %s: could not remove it: %s", incident->id,
+		          error->message);
+}
+
+void
+clawt_incident_desk_set_store(
+	ClawtIncidentDesk *self,
+	ClawtTaskStore    *store
+){
+	g_return_if_fail(CLAWT_IS_INCIDENT_DESK(self));
+	g_return_if_fail(store == NULL || CLAWT_IS_TASK_STORE(store));
+
+	g_set_object(&self->store, store);
+}
+
+guint
+clawt_incident_desk_restore(
+	ClawtIncidentDesk *self
+){
+	g_autoptr(GPtrArray) nodes = NULL;
+	g_autoptr(GError) error = NULL;
+	guint restored = 0;
+	guint i;
+
+	g_return_val_if_fail(CLAWT_IS_INCIDENT_DESK(self), 0);
+
+	if (self->store == NULL)
+		return 0;
+
+	nodes = clawt_task_store_load_incidents(self->store, &error);
+
+	if (nodes == NULL) {
+		g_warning("incidents: could not read them back: %s", error->message);
+		return 0;
+	}
+
+	/*
+	 * As they were, without publishing or flushing: a restored incident
+	 * that was already reported must not be reported again, and one that
+	 * was still queued waits for the next flush like any other.  The
+	 * log lines are the ones captured when it happened -- re-capturing
+	 * now would quote whatever the agent logged since.
+	 */
+	for (i = 0; i < nodes->len; i++) {
+		ClawtIncident *incident = incident_from_json(
+			g_ptr_array_index(nodes, i));
+		guint k;
+		gboolean known = FALSE;
+
+		if (incident == NULL)
+			continue;
+
+		for (k = 0; k < self->incidents->len; k++) {
+			ClawtIncident *have = g_ptr_array_index(self->incidents, k);
+
+			if (g_strcmp0(have->id, incident->id) == 0) {
+				known = TRUE;
+				break;
+			}
+		}
+
+		if (known) {
+			clawt_incident_unref(incident);
+			continue;
+		}
+
+		g_ptr_array_add(self->incidents, incident);
+		restored++;
+	}
+
+	return restored;
+}
+
 static void
 publish(
 	ClawtIncidentDesk *self,
@@ -563,6 +835,8 @@ publish(
 	ClawtIncident     *incident
 ){
 	g_autoptr(ClawtEvent) event = NULL;
+
+	persist(self, incident);
 
 	if (self->bus == NULL)
 		return;
@@ -736,9 +1010,9 @@ find_open(
 }
 
 /*
- * Bounded, oldest resolved first and then oldest of all.  Incidents are
- * held in memory like the tasks they describe; the room's transcript is
- * the durable record of what was reported.
+ * Bounded, oldest resolved first and then oldest of all.  What is
+ * dropped here leaves the store too: the bound is on the record, not
+ * only on what is in memory.
  */
 static void
 prune(
@@ -750,14 +1024,18 @@ prune(
 	            i < self->incidents->len; ) {
 		ClawtIncident *incident = g_ptr_array_index(self->incidents, i);
 
-		if (incident->resolved)
+		if (incident->resolved) {
+			forget(self, incident);
 			g_ptr_array_remove_index(self->incidents, i);
-		else
+		} else {
 			i++;
+		}
 	}
 
-	while (self->incidents->len > INCIDENT_KEEP)
+	while (self->incidents->len > INCIDENT_KEEP) {
+		forget(self, g_ptr_array_index(self->incidents, 0));
 		g_ptr_array_remove_index(self->incidents, 0);
+	}
 }
 
 /*
@@ -1934,6 +2212,7 @@ clawt_incident_desk_dispose(
 	}
 
 	g_clear_object(&self->bus);
+	g_clear_object(&self->store);
 	g_clear_object(&self->tasks);
 	g_clear_object(&self->router);
 	g_clear_object(&self->rooms);

@@ -457,6 +457,28 @@ gint64 clawt_usage_drain_tagged(ClawtUsage           *self,
 				gpointer              user_data);
 
 /**
+ * clawt_usage_task_spend:
+ * @db_path: an agent's libreclaw database (clawt_usage_database_path())
+ * @task_ids: (element-type utf8 utf8): the tasks to total, as a set
+ * @spend: (element-type utf8 gint64): where each task's cost in
+ *   micro-dollars is added, keyed by task id; tasks this agent spent
+ *   nothing on are left out
+ * @error: (out) (optional): return location for a #GError
+ *
+ * What this agent's turns tagged with each of @task_ids cost, read from
+ * its ledger and its database.  How a restarted daemon learns what a task
+ * has already spent, so `orchestration.task_budget_usd` keeps counting
+ * from where it was rather than from zero.  An agent that has never run
+ * has nothing to add and is not an error.
+ *
+ * Returns: %TRUE unless a file that exists could not be read
+ */
+gboolean clawt_usage_task_spend(const gchar  *db_path,
+                                GHashTable   *task_ids,
+                                GHashTable   *spend,
+                                GError      **error);
+
+/**
  * clawt_usage_forget:
  * @self: a #ClawtUsage
  * @agent_id: an agent id

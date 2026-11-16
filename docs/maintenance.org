@@ -16,6 +16,7 @@
   agents.sock                     agents dial in here
   routines.yaml                   run state for the schedules; never in config.yaml
   decisions.db                    the decision inbox
+  tasks.db                        every task, its journal, and the incidents
   daemon.lock                     one daemon per state directory; see below
   .git/ .gitignore                daemon.git; the ignore block is clawtilla's
   agents/<id>/                    also the workspace, unless agents.workspace moves it
@@ -173,6 +174,9 @@ Worth keeping:
   and are as irreplaceable as the config
 - ~agents/*/mailbox.db~ -- undelivered messages
 - ~agents/*/memory.db~ -- what each agent has remembered
+- ~tasks.db~ -- every task and what happened to it, and the problem
+  reports about them; kept across restarts for
+  ~orchestration.task_retention_days~
 - ~transcripts/~ -- what was said, as each room currently holds it
 - ~events/~ -- the append-only record the transcripts are a view of, and
   the only copy of anything a transcript loses

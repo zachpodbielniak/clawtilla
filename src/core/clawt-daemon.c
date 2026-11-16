@@ -3181,10 +3181,12 @@ on_link_message(ClawtLinkServer *server, const gchar *agent_id,
      * falls through to the closed-exchange rule below rather than
      * arriving twice -- once as itself and once quoted in the notice.
      *
-     * An id naming no task still routes.  Tasks live in memory, so
-     * after a daemon restart the choice is between a swallowed result
-     * -- silent, and the work is lost -- and one delivered
-     * acknowledgement, which costs a turn.  The cheap mistake wins.
+     * An id naming no task still routes.  Tasks are kept across a
+     * restart, but one can be pruned (orchestration.task_retention_days)
+     * or its store may not have opened, and then the choice is between
+     * a swallowed result -- silent, and the work is lost -- and one
+     * delivered acknowledgement, which costs a turn.  The cheap mistake
+     * wins.
      *
      * And never for the operator's own room, whatever else is true. A
      * person waiting on an answer must not be met with silence because
@@ -5668,6 +5670,8 @@ release_components(ClawtDaemon *self)
         g_clear_pointer(&self->connector_refresh, g_source_unref);
     }
 
+    clawt_daemon_tasks_stop(self);
+
     autostart_cancel(self);
     sweep_cancel(self);
 
@@ -5792,6 +5796,7 @@ release_components(ClawtDaemon *self)
     g_clear_object(&self->usage);
     g_clear_object(&self->task_sources);
     g_clear_object(&self->tasks);
+    g_clear_object(&self->task_store);
     g_clear_object(&self->rooms);
     g_clear_object(&self->agents);
     clawt_daemon_egress_release(self);
@@ -7561,6 +7566,13 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
 
         self->task_sources = clawt_task_sources_new(sources_path);
     }
+
+    /*
+     * Before anything connects to ::task-changed: the tasks the last
+     * daemon left are restored without a word, so none of them is
+     * reported, settled or raised a second time.
+     */
+    clawt_daemon_tasks_setup(self);
 	{
 		GPtrArray *loaded = clawt_agent_manager_list(self->agents);
 		guint index;
@@ -7700,6 +7712,7 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
                                           incident_routine_of,
                                           incident_rerun, self);
     clawt_mcp_tools_set_incident_desk(self->mcp_tools, self->incidents);
+    clawt_daemon_tasks_restore_incidents(self);
 
     /*
      * After the tools exist, because reload_skills() hands them the
@@ -8125,6 +8138,14 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
      */
     clawt_daemon_turns_recover_all(self);
 
+    /*
+     * After turn recovery, which turns a cut-short turn into a queued
+     * item or an interrupted notice: only then can a restored task with
+     * nothing carrying it be told apart from one that is waiting.
+     */
+    clawt_daemon_tasks_reconcile(self);
+    clawt_daemon_tasks_start_pruning(self);
+
     autostart_schedule(self);
 
     /*
@@ -8214,6 +8235,8 @@ clawt_daemon_stop(ClawtDaemon *self)
         g_source_destroy(self->connector_refresh);
         g_clear_pointer(&self->connector_refresh, g_source_unref);
     }
+
+    clawt_daemon_tasks_stop(self);
 
     if (self->agents != NULL)
         clawt_agent_manager_stop_all(self->agents);
@@ -9492,6 +9515,40 @@ clawt_daemon_add_task_object(JsonBuilder *builder, ClawtTask *task)
 
     json_builder_set_member_name(builder, "prompt");
     json_builder_add_string_value(builder, clawt_task_get_prompt(task));
+
+    /* What a list shows instead of a page of prompt. */
+    json_builder_set_member_name(builder, "title");
+    json_builder_add_string_value(builder, clawt_task_get_title(task));
+
+    /*
+     * When, which a list that now outlives restarts needs: "failed" from
+     * five minutes ago and from last month are different questions.
+     * started_at and finished_at only once they happened.
+     */
+    json_builder_set_member_name(builder, "created_at");
+    json_builder_add_int_value(builder, clawt_task_get_created_at(task));
+
+    if (clawt_task_get_started_at(task) > 0) {
+        json_builder_set_member_name(builder, "started_at");
+        json_builder_add_int_value(builder, clawt_task_get_started_at(task));
+    }
+
+    if (clawt_task_get_finished_at(task) > 0) {
+        json_builder_set_member_name(builder, "finished_at");
+        json_builder_add_int_value(builder, clawt_task_get_finished_at(task));
+    }
+
+    /* The conversation it was delegated from, where its notice goes. */
+    if (clawt_task_get_room(task) != NULL) {
+        json_builder_set_member_name(builder, "room");
+        json_builder_add_string_value(builder, clawt_task_get_room(task));
+    }
+
+    if (clawt_task_get_cancelled_by(task) != NULL) {
+        json_builder_set_member_name(builder, "cancelled_by");
+        json_builder_add_string_value(builder,
+                                      clawt_task_get_cancelled_by(task));
+    }
 
     if (clawt_task_get_result(task) != NULL) {
         json_builder_set_member_name(builder, "result");

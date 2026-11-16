@@ -28,6 +28,7 @@
 #endif
 
 #include <glib-object.h>
+#include <json-glib/json-glib.h>
 
 #include "clawt-enums.h"
 #include "clawt-types.h"
@@ -213,6 +214,52 @@ gint64         clawt_task_get_created_at(ClawtTask *self);
 gint64         clawt_task_get_finished_at(ClawtTask *self);
 
 /**
+ * clawt_task_get_started_at:
+ * @self: a #ClawtTask
+ *
+ * When the task first went to `running`, as a Unix time.  Stamped once:
+ * a retry is a second attempt at the same task, not a new start.
+ *
+ * Returns: the time, or 0 when it has never run
+ */
+gint64         clawt_task_get_started_at(ClawtTask *self);
+
+/**
+ * clawt_task_get_title:
+ * @self: a #ClawtTask
+ *
+ * What the task is called in a list: the title it was given, or the
+ * first line of its prompt that says anything, cut on a character
+ * boundary (clawt_task_title_from_prompt()).
+ *
+ * Returns: (transfer none): the title, never %NULL
+ */
+const gchar   *clawt_task_get_title(ClawtTask *self);
+
+/**
+ * clawt_task_set_title:
+ * @self: a #ClawtTask
+ * @title: (nullable): the title, or %NULL / empty to derive one again
+ *
+ * Gives the task a title of its own.  Cut to the same length as a
+ * derived one.
+ */
+void           clawt_task_set_title(ClawtTask *self, const gchar *title);
+
+/**
+ * clawt_task_title_from_prompt:
+ * @prompt: (nullable): what the task asks for
+ *
+ * The title a task without one is shown with: the first line of @prompt
+ * that is not blank, with leading markdown markers (`#`, `*`, `-`, `>`)
+ * and surrounding space removed, cut to 120 bytes on a character
+ * boundary.
+ *
+ * Returns: (transfer full): the title, empty when @prompt says nothing
+ */
+gchar         *clawt_task_title_from_prompt(const gchar *prompt);
+
+/**
  * clawt_task_assignment_guidance:
  * @task_id: the task being delivered
  *
@@ -347,6 +394,18 @@ gboolean clawt_task_take_completion_hold(ClawtTask *self);
  *
  * Returns: %TRUE if nothing reported this task complete
  */
+/**
+ * clawt_task_get_holds_completion:
+ * @self: a #ClawtTask
+ *
+ * Whether the assignee said its turn is over and the work is not, and
+ * that has not yet been spent by a turn ending.  Read, not taken: this
+ * is clawt_task_take_completion_hold()'s question without its effect.
+ *
+ * Returns: %TRUE when a hold is armed
+ */
+gboolean clawt_task_get_holds_completion(ClawtTask *self);
+
 gboolean clawt_task_get_result_inferred(ClawtTask *self);
 
 /**
@@ -429,6 +488,39 @@ const gchar *clawt_task_consult_label(void);
  * Returns: %TRUE for a failed or stalled task
  */
 gboolean clawt_task_state_is_retryable(ClawtTaskState state);
+
+/**
+ * clawt_task_to_json:
+ * @self: a #ClawtTask
+ *
+ * Every field of the task, as the task store keeps it.  The member names
+ * are a file format: they are never renamed, and a member added later
+ * reads as its zero value from a task saved before it existed.  The
+ * state is written by nickname, so the file survives the enum being
+ * reordered.
+ *
+ * This is not the IPC task object, which is shaped for a client and
+ * leaves fields out; clawt_daemon_add_task_object() builds that.
+ *
+ * Returns: (transfer full): an object node
+ */
+JsonNode  *clawt_task_to_json(ClawtTask *self);
+
+/**
+ * clawt_task_new_from_json:
+ * @node: what clawt_task_to_json() wrote
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The task @node describes, with every field restored, including the
+ * owner history, the completion hold and the retry count.
+ *
+ * A node with no id or no prompt is refused.  A state this build does
+ * not know is read as `failed`, with a warning: restoring it as
+ * `pending` would be work that runs again.
+ *
+ * Returns: (transfer full) (nullable): the task, or %NULL on error
+ */
+ClawtTask *clawt_task_new_from_json(JsonNode *node, GError **error);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtTask, clawt_task_free)
 

@@ -3295,6 +3295,29 @@ clawt_mcp_tools_describe_for_agent(ClawtMcpTools *self, const gchar *agent_id)
         append_roster(self, out, agent_id);
 
     /*
+     * That tasks are kept.  Only when they are -- a daemon whose store
+     * would not open still forgets them on a restart, and telling an
+     * agent otherwise would have it trust an id that no longer answers.
+     * Written into the region rather than the template because the
+     * template reaches only agents scaffolded after it changed.
+     */
+    if (self->tasks != NULL &&
+        clawt_task_manager_get_store(self->tasks) != NULL &&
+        clawt_mcp_tools_is_permitted(self, agent_id, "clawtilla_task_status"))
+        g_string_append(out,
+            "* Tasks are kept\n"
+            "\n"
+            "Every task is kept across a daemon restart, with a record of\n"
+            "what happened to it, so a task id you were given yesterday still\n"
+            "answers ~clawtilla_task_status~ and ~clawtilla_task_result~ --\n"
+            "do not delegate the same work again because you cannot see it in\n"
+            "~clawtilla_task_list~, which lists open tasks and the last day's.\n"
+            "If the daemon restarts while a task is running and nothing is\n"
+            "left to carry it on, it is failed with that reason and can be\n"
+            "retried; one you were waiting on reports back as usual.\n"
+            "\n");
+
+    /*
      * Says it is the list, because for a while it was not the only one.
      *
      * TOOLS.org was scaffolded with hand-written tables of the
@@ -5232,6 +5255,13 @@ tool_delegate(ClawtMcpTools *self,
     }
 
     /*
+     * Everything set above was set on the task directly, after the
+     * manager had already saved it as created: written now, or a restart
+     * restores a task with no room to report back to and no model.
+     */
+    clawt_task_manager_save(self->tasks, task, NULL);
+
+    /*
      * The delivered text carries the contract; the task's own prompt
      * stays the bare work.  In the body rather than the drain preamble,
      * because the router cannot tell an assignment from any other
@@ -5411,9 +5441,10 @@ tool_handoff(ClawtMcpTools *self,
     if (task == NULL) {
         *is_error = TRUE;
         return g_strdup_printf(
-            "There is no task %s. Tasks are held in memory, so one from "
-            "before clawtilla last restarted is gone -- clawtilla_task_list "
-            "is what still exists.", task_id);
+            "There is no task %s. It may have been removed after the "
+            "retention window (orchestration.task_retention_days), or the "
+            "id is mistyped -- clawtilla_task_list is what exists now.",
+            task_id);
     }
 
     if (clawt_task_is_finished(task)) {
@@ -5665,8 +5696,8 @@ tool_task_list(ClawtMcpTools *self, const gchar *agent_id,
 
     if (delegated_n == 0 && assigned_n == 0 && below_n == 0) {
         /*
-         * An empty list here is not "nothing was delegated" -- tasks are
-         * held in memory, so a daemon restart clears them, and saying so
+         * An empty list here is not "nothing was ever delegated": it is
+         * the live set -- open tasks and the last day's -- and saying so
          * is the difference between reporting a fact and reporting a
          * gap.  The same shape as clawtilla_mailbox_list being empty for
          * a running agent.
@@ -5676,15 +5707,14 @@ tool_task_list(ClawtMcpTools *self, const gchar *agent_id,
                 "No %stasks between you and %s, and nothing below one of "
                 "yours that %s is on either side of. This does not cover "
                 "tasks %s has with somebody else in a chain you did not "
-                "start. Tasks are also held in memory, so any from before "
-                "the daemon last restarted are gone -- what happened is in "
-                "the event log, not here.",
+                "start, nor ones that finished more than a day ago -- ask "
+                "for one of those by id with clawtilla_task_status.",
                 include_finished ? "" : "live ", peer, peer, peer);
 
         return g_strdup_printf(
-            "No %stasks. Tasks are held in memory, so any from before "
-            "the daemon last restarted are gone -- what happened is in the "
-            "event log, not here.",
+            "No %stasks. This lists open tasks and those that finished in "
+            "the last day; an older one is still answerable by id with "
+            "clawtilla_task_status.",
             include_finished ? "" : "live ");
     }
 
@@ -5733,8 +5763,9 @@ tool_task_list(ClawtMcpTools *self, const gchar *agent_id,
 /*
  * What has happened to a task's ownership, from the durable receipts.
  *
- * #ClawtTaskManager is in memory and says so, so after a restart the
- * only record that a task ever moved is here.  An agent that reads
+ * The task store keeps where a task is now, and these receipts keep each
+ * move and how it went -- and they outlive the task when it is pruned.
+ * An agent that reads
  * silence as "it never happened" hands the same work over again, and
  * then there are two of it -- which is the one mistake ownership
  * transfer exists to prevent.
@@ -5884,8 +5915,9 @@ tool_task_status(ClawtMcpTools *self, const gchar *agent_id,
 
         {
             g_autofree gchar *intro = g_strdup_printf(
-                "Task %s is no longer in memory -- tasks do not survive a "
-                "restart -- but this is what became of it:\n", task_id);
+                "Task %s is no longer kept -- it was removed after the "
+                "retention window -- but this is what became of it:\n",
+                task_id);
 
             g_string_prepend(out, intro);
         }

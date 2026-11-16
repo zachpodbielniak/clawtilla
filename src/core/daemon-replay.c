@@ -151,9 +151,12 @@ veto_settled_task(
 		ClawtTask *task = task_id != NULL
 			? clawt_task_manager_get(self->tasks, task_id) : NULL;
 
-		if (task != NULL &&
-			clawt_task_get_state(task) != CLAWT_TASK_PENDING &&
-			clawt_task_get_state(task) != CLAWT_TASK_RUNNING)
+		/*
+		 * Finished, by the type's own definition rather than a list of
+		 * states written here: tasks survive a restart now, so this
+		 * sees every state a stored task can be in.
+		 */
+		if (task != NULL && clawt_task_is_finished(task))
 			return "the task it was working on had already ended";
 	}
 

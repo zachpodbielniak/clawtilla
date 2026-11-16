@@ -17,6 +17,8 @@
  * with a table we do not own.
  */
 
+#include <sqlite3.h>
+
 #include "clawtilla.h"
 
 #include <glib/gstdio.h>
@@ -804,4 +806,106 @@ clawt_usage_init(ClawtUsage *self)
 {
     self->watermarks = g_hash_table_new_full(g_str_hash, g_str_equal,
                                              g_free, agent_watermark_free);
+}
+
+gboolean
+clawt_usage_task_spend(const gchar  *db_path,
+                       GHashTable   *task_ids,
+                       GHashTable   *spend,
+                       GError      **error)
+{
+    g_autofree gchar *ledger_path = NULL;
+    g_autoptr(GHashTable) usage_task = NULL;
+    g_autoptr(GPtrArray) rows = NULL;
+    g_autoptr(LcDatabase) db = NULL;
+    sqlite3 *ledger = NULL;
+    sqlite3_stmt *stmt = NULL;
+    guint i;
+
+    g_return_val_if_fail(db_path != NULL, FALSE);
+    g_return_val_if_fail(task_ids != NULL, FALSE);
+    g_return_val_if_fail(spend != NULL, FALSE);
+
+    if (g_hash_table_size(task_ids) == 0)
+        return TRUE;
+
+    ledger_path = clawt_usage_ledger_path_beside(db_path);
+
+    if (!g_file_test(ledger_path, G_FILE_TEST_EXISTS) ||
+        !g_file_test(db_path, G_FILE_TEST_EXISTS))
+        return TRUE;
+
+    /*
+     * Which turns were about which of the tasks: the ledger's tags.  Read
+     * only, so asking never creates a file or takes a write lock the
+     * running agent might want.
+     */
+    if (sqlite3_open_v2(ledger_path, &ledger, SQLITE_OPEN_READONLY,
+                        NULL) != SQLITE_OK) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                    "opening %s: %s", ledger_path, sqlite3_errmsg(ledger));
+        sqlite3_close(ledger);
+        return FALSE;
+    }
+
+    sqlite3_busy_timeout(ledger, 2000);
+    usage_task = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free,
+                                       g_free);
+
+    /* A ledger from before the task column has nothing tagged: not a fault. */
+    if (sqlite3_prepare_v2(ledger,
+            "SELECT usage_id, task_id FROM turn_origin "
+            "WHERE task_id IS NOT NULL", -1, &stmt, NULL) == SQLITE_OK) {
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            const gchar *task_id = (const gchar *)sqlite3_column_text(stmt, 1);
+            gint64 *key;
+
+            if (task_id == NULL || !g_hash_table_contains(task_ids, task_id))
+                continue;
+
+            key = g_new(gint64, 1);
+            *key = sqlite3_column_int64(stmt, 0);
+            g_hash_table_insert(usage_task, key, g_strdup(task_id));
+        }
+
+        sqlite3_finalize(stmt);
+    }
+
+    sqlite3_close(ledger);
+
+    if (g_hash_table_size(usage_task) == 0)
+        return TRUE;
+
+    /* And what those turns cost: the agent's own rows. */
+    db = open_agent_database(db_path, error);
+
+    if (db == NULL)
+        return error == NULL || *error == NULL;
+
+    rows = lc_database_query_token_usage(db, NULL, NULL, 0, 0, error);
+
+    if (rows == NULL)
+        return FALSE;
+
+    for (i = 0; i < rows->len; i++) {
+        LcDbTokenUsage *row = g_ptr_array_index(rows, i);
+        const gchar *task_id;
+        gint64 total;
+
+        /* -1 is unknown, never a refund: an unpriced turn adds nothing. */
+        if (row->cost_usd_micros <= 0)
+            continue;
+
+        task_id = g_hash_table_lookup(usage_task, &row->id);
+
+        if (task_id == NULL)
+            continue;
+
+        total = GPOINTER_TO_SIZE(g_hash_table_lookup(spend, task_id));
+        total += row->cost_usd_micros;
+        g_hash_table_insert(spend, g_strdup(task_id),
+                            GSIZE_TO_POINTER((gsize)total));
+    }
+
+    return TRUE;
 }
