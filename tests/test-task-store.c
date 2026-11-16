@@ -99,6 +99,8 @@ full_task(void)
 	clawt_task_set_consult(task, TRUE);
 	clawt_task_set_depth(task, 2);
 	clawt_task_set_title(task, "Export bug");
+	clawt_task_set_reviewer(task, "chief");
+	clawt_task_set_review_round(task, 2);
 	clawt_task_set_result_inferred(task, TRUE);
 	clawt_task_hold_completion(task);
 	clawt_task_transfer_owner(task, "builder");
@@ -155,6 +157,8 @@ test_json_round_trip_keeps_every_field(void)
 	g_assert_cmpstr(clawt_task_get_cancelled_by(back), ==, "user");
 	g_assert_cmpstr(clawt_task_get_thread_room(back), ==, "task:x");
 	g_assert_cmpstr(clawt_task_get_title(back), ==, "Export bug");
+	g_assert_cmpstr(clawt_task_get_reviewer(back), ==, "chief");
+	g_assert_cmpuint(clawt_task_get_review_round(back), ==, 2);
 	g_assert_cmpstr(clawt_task_get_session_key(back), ==,
 	                clawt_task_get_session_key(task));
 	g_assert_true(clawt_task_get_consult(back));
@@ -1560,6 +1564,271 @@ test_delegation_waits(void)
 	daemon_teardown(&fixture);
 }
 
+/* ── Review (B2) ─────────────────────────────────────────────────── */
+
+/* Who a review spelling names, and what it refuses. */
+static void
+test_reviewer_resolution(void)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+		"teams:\n  - id: build\n"
+		"agents:\n"
+		"  - id: chief\n    chief_of_staff: true\n"
+		"  - id: lead\n    team: build\n    team_role: lead\n"
+		"  - id: hand\n    team: build\n", &error);
+	gchar *who;
+
+	g_assert_no_error(error);
+
+	g_assert_null(clawt_task_resolve_reviewer(config, NULL, "chief", "hand",
+	                                          NULL));
+	g_assert_null(clawt_task_resolve_reviewer(config, "none", "chief", "hand",
+	                                          NULL));
+
+	who = clawt_task_resolve_reviewer(config, "operator", "chief", "hand",
+	                                  NULL);
+	g_assert_cmpstr(who, ==, "user");
+	g_free(who);
+
+	who = clawt_task_resolve_reviewer(config, "delegator", "chief", "hand",
+	                                  NULL);
+	g_assert_cmpstr(who, ==, "chief");
+	g_free(who);
+
+	who = clawt_task_resolve_reviewer(config, "lead", "chief", "hand", NULL);
+	g_assert_cmpstr(who, ==, "lead");
+	g_free(who);
+
+	/* the operator delegated it: the operator reviews it */
+	who = clawt_task_resolve_reviewer(config, "delegator", "user", "hand",
+	                                  NULL);
+	g_assert_cmpstr(who, ==, "user");
+	g_free(who);
+
+	/* landing on the assignee by role means no review, quietly */
+	g_assert_null(clawt_task_resolve_reviewer(config, "delegator", "hand",
+	                                          "hand", &error));
+	g_assert_no_error(error);
+
+	/* naming the assignee or nobody outright is refused */
+	g_assert_null(clawt_task_resolve_reviewer(config, "hand", "chief", "hand",
+	                                          &error));
+	g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+	g_assert_null(clawt_task_resolve_reviewer(config, "ghost", "chief",
+	                                          "hand", &error));
+	g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND);
+}
+
+/* The verdicts, the rounds and the escalation, in the manager. */
+static void
+test_review_rounds(void)
+{
+	g_autoptr(ClawtTaskManager) tasks = clawt_task_manager_new();
+	g_autoptr(GError) error = NULL;
+	ClawtTask *task = clawt_task_manager_create(tasks, "chief", "hand",
+	                                            "build it", NULL, NULL);
+	const gchar *id = clawt_task_get_id(task);
+
+	clawt_task_set_reviewer(task, "chief");
+
+	g_assert_true(clawt_task_manager_complete(tasks, id, "built"));
+	g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_REVIEW);
+	g_assert_cmpstr(clawt_task_get_result(task), ==, "built");
+
+	/* nobody else's verdict, and changes need notes */
+	g_assert_cmpint(clawt_task_manager_review(tasks, id, "hand", TRUE, NULL,
+	                                          2, &error), ==,
+	                CLAWT_TASK_REVIEW_REFUSED);
+	g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	g_assert_cmpint(clawt_task_manager_review(tasks, id, "chief", FALSE, "",
+	                                          2, &error), ==,
+	                CLAWT_TASK_REVIEW_REFUSED);
+	g_clear_error(&error);
+
+	/* round one: back to its assignee */
+	g_assert_cmpint(clawt_task_manager_review(tasks, id, "chief", FALSE,
+	                                          "add a test", 2, &error), ==,
+	                CLAWT_TASK_REVIEW_CHANGES);
+	g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_PENDING);
+	g_assert_cmpuint(clawt_task_get_review_round(task), ==, 1);
+
+	/* round two is the limit: the operator decides now */
+	g_assert_true(clawt_task_manager_complete(tasks, id, "built, tested"));
+	g_assert_cmpint(clawt_task_manager_review(tasks, id, "chief", FALSE,
+	                                          "and docs", 2, &error), ==,
+	                CLAWT_TASK_REVIEW_ESCALATED);
+	g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_REVIEW);
+	g_assert_cmpstr(clawt_task_get_reviewer(task), ==, "user");
+
+	/* and only an accept completes it */
+	g_assert_cmpint(clawt_task_manager_review(tasks, id, "user", TRUE, NULL,
+	                                          2, &error), ==,
+	                CLAWT_TASK_REVIEW_ACCEPTED);
+	g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_COMPLETED);
+}
+
+/* How many items in @agent's mailbox carry @task_id and say @needle. */
+static guint
+said_to(
+	DaemonFixture *fixture,
+	const gchar   *agent,
+	const gchar   *task_id,
+	const gchar   *needle
+){
+	ClawtAgent *found = clawt_agent_manager_get(fixture->daemon->agents,
+	                                            agent);
+	ClawtMailboxFilter filter = { -1, 0, TRUE };
+	g_autoptr(GPtrArray) items = clawt_mailbox_list(
+		clawt_agent_get_mailbox(found), &filter);
+	guint n = 0;
+	guint i;
+
+	for (i = 0; items != NULL && i < items->len; i++) {
+		ClawtMailboxItem *item = g_ptr_array_index(items, i);
+
+		if (g_strcmp0(clawt_mailbox_item_get_task_id(item), task_id) == 0 &&
+		    strstr(clawt_mailbox_item_get_body(item), needle) != NULL)
+			n++;
+	}
+
+	return n;
+}
+
+/*
+ * A delegation reviewed by its delegator, end to end through the tools;
+ * then an operator review through the inbox and the IPC frame.
+ */
+static void
+test_review_end_to_end(void)
+{
+	DaemonFixture fixture = { 0 };
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *yaml = NULL;
+	g_autofree gchar *reply = NULL;
+	g_autofree gchar *args = NULL;
+	g_autofree gchar *id = NULL;
+	g_autofree gchar *op_id = NULL;
+	gboolean is_error = TRUE;
+	ClawtTask *task;
+
+	fixture.dir = g_dir_make_tmp("clawt-review-XXXXXX", NULL);
+	fixture.config = g_build_filename(fixture.dir, "config.yaml", NULL);
+	yaml = g_strdup_printf(
+		"daemon:\n  tailscale: false\n  state_dir: \"%s/state\"\n"
+		"  socket: \"%s/d.sock\"\n  automation_dir: \"%s/pods\"\n"
+		"defaults:\n  workspace_root: \"%s/agents\"\n"
+		"agents:\n"
+		"  - id: chief\n    chief_of_staff: true\n"
+		"    model:\n      provider: claude-code\n"
+		"    runtime:\n      autostart: false\n"
+		"  - id: watcher\n    review_by: operator\n"
+		"    model:\n      provider: claude-code\n"
+		"    runtime:\n      autostart: false\n",
+		fixture.dir, fixture.dir, fixture.dir, fixture.dir);
+	g_assert_true(g_file_set_contents(fixture.config, yaml, -1, &error));
+	daemon_start(&fixture);
+
+	reply = call_as(&fixture, "chief", "clawtilla_delegate",
+		"{\"agent_id\":\"watcher\",\"task\":\"write it\","
+		"\"review\":\"delegator\"}", &is_error);
+	g_assert_false(is_error);
+	{
+		GPtrArray *all = clawt_task_manager_list(fixture.daemon->tasks,
+		                                         "watcher", TRUE);
+
+		id = g_strdup(clawt_task_get_id(g_ptr_array_index(all, 0)));
+		g_ptr_array_unref(all);
+	}
+	task = clawt_task_manager_get(fixture.daemon->tasks, id);
+	g_assert_cmpstr(clawt_task_get_reviewer(task), ==, "chief");
+
+	/* finished: to the chief for review, not done */
+	clawt_task_manager_complete(fixture.daemon->tasks, id, "written");
+	g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_REVIEW);
+	g_assert_cmpuint(said_to(&fixture, "chief", id, "waiting for your "
+	                         "review"), ==, 1);
+
+	/* a comment while it waits does not ask the reviewer again */
+	{
+		g_autoptr(JsonNode) commented = ask(&fixture, "task.comment",
+			clawt_ipc_payload_new("task", id, "text", "looks close", NULL));
+
+		g_assert_false(clawt_ipc_frame_is_error(commented));
+		g_assert_cmpuint(said_to(&fixture, "chief", id, "waiting for your "
+		                         "review"), ==, 1);
+	}
+
+	/* the assignee cannot review it; the chief sends it back */
+	g_clear_pointer(&reply, g_free);
+	args = g_strdup_printf("{\"task_id\":\"%s\",\"accept\":true}", id);
+	reply = call_as(&fixture, "watcher", "clawtilla_task_review", args,
+	                &is_error);
+	g_assert_true(is_error);
+
+	g_clear_pointer(&reply, g_free);
+	g_clear_pointer(&args, g_free);
+	args = g_strdup_printf("{\"task_id\":\"%s\",\"accept\":false,"
+	                       "\"notes\":\"add a test\"}", id);
+	reply = call_as(&fixture, "chief", "clawtilla_task_review", args,
+	                &is_error);
+	g_assert_false(is_error);
+	g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_PENDING);
+	g_assert_cmpuint(said_to(&fixture, "watcher", id, "add a test"), ==, 1);
+
+	/* again, and accepted: no settle notice to the chief, who accepted */
+	clawt_task_manager_complete(fixture.daemon->tasks, id, "written, tested");
+	g_clear_pointer(&reply, g_free);
+	g_clear_pointer(&args, g_free);
+	args = g_strdup_printf("{\"task_id\":\"%s\",\"accept\":true}", id);
+	reply = call_as(&fixture, "chief", "clawtilla_task_review", args,
+	                &is_error);
+	g_assert_false(is_error);
+	g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_COMPLETED);
+	g_assert_cmpuint(said_to(&fixture, "chief", id, "You delegated it"), ==, 0);
+
+	/* the operator's review, from watcher's own review_by */
+	{
+		g_autoptr(JsonNode) made = ask(&fixture, "task.create",
+			clawt_ipc_payload_new("prompt", "Check it", "agent", "watcher",
+			                      NULL));
+		g_autoptr(JsonNode) answered = NULL;
+		g_autoptr(JsonNode) accepted = NULL;
+		g_autofree gchar *decision = NULL;
+		g_autoptr(ClawtDecision) open = NULL;
+
+		op_id = g_strdup(json_object_get_string_member(
+			json_object_get_object_member(clawt_ipc_frame_get_payload(made),
+			                              "task"), "id"));
+		clawt_task_manager_complete(fixture.daemon->tasks, op_id, "checked");
+		task = clawt_task_manager_get(fixture.daemon->tasks, op_id);
+		g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_REVIEW);
+
+		decision = g_strconcat("review-", op_id, NULL);
+		open = clawt_decision_store_get(fixture.daemon->decisions, decision);
+		g_assert_nonnull(open);
+
+		/* anything but accept in the inbox is the notes */
+		answered = ask(&fixture, "decision.answer", clawt_ipc_payload_new(
+			"decision", decision, "answer", "check the edge cases", NULL));
+		g_assert_false(clawt_ipc_frame_is_error(answered));
+		g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_PENDING);
+		g_assert_cmpuint(said_to(&fixture, "watcher", op_id,
+		                         "check the edge cases"), ==, 1);
+
+		/* finished again; accepted from a client this time */
+		clawt_task_manager_complete(fixture.daemon->tasks, op_id, "done");
+		accepted = ask(&fixture, "task.review", clawt_ipc_payload_new(
+			"task", op_id, "verdict", "accept", NULL));
+		g_assert_false(clawt_ipc_frame_is_error(accepted));
+		g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_COMPLETED);
+	}
+
+	daemon_teardown(&fixture);
+}
+
 int
 main(
 	int   argc,
@@ -1616,6 +1885,11 @@ main(
 	g_test_add_func("/task-store/blockers/operator", test_operator_blockers);
 	g_test_add_func("/task-store/blockers/delegation",
 	                test_delegation_waits);
+	g_test_add_func("/task-store/review/resolution",
+	                test_reviewer_resolution);
+	g_test_add_func("/task-store/review/rounds", test_review_rounds);
+	g_test_add_func("/task-store/review/end-to-end",
+	                test_review_end_to_end);
 
 	return g_test_run();
 }

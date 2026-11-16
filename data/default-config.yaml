@@ -844,6 +844,16 @@ orchestration:
   # # receipts until the count alone drops them.
   # handoff_receipt_days: 2
 
+  # # How many times a reviewer may send a task back for changes before the
+  # # operator decides.
+  # #
+  # # Reviewed work goes back and forth between its assignee and its
+  # # reviewer (agents.review_by); past this many rounds of changes the task
+  # # stays in review and the verdict becomes the operator's, as a decision
+  # # in the inbox, rather than the two going round again. 0 removes the
+  # # limit.
+  # review_rounds: 3
+
   # # How long a finished task is kept, in days.
   # #
   # # Every task is written to tasks.db in the state directory as it

@@ -924,6 +924,16 @@ orchestration:
   # receipts until the count alone drops them.
   handoff_receipt_days: 2
 
+  # How many times a reviewer may send a task back for changes before the
+  # operator decides.
+  #
+  # Reviewed work goes back and forth between its assignee and its
+  # reviewer (agents.review_by); past this many rounds of changes the task
+  # stays in review and the verdict becomes the operator's, as a decision
+  # in the inbox, rather than the two going round again. 0 removes the
+  # limit.
+  review_rounds: 3
+
   # How long a finished task is kept, in days.
   #
   # Every task is written to tasks.db in the state directory as it
@@ -2623,6 +2633,20 @@ agents:
     # number keep the order they appear in this file, so leaving them all
     # at 0 changes nothing.
     order: 0
+
+    # Who checks this agent's work before it counts as done.
+    #
+    # `lead` (its team's lead, or the chief of staff when the team has
+    # none), `delegator` (whoever handed it the task), `operator` (you,
+    # from the decision inbox or any client's task page), an agent id, or
+    # empty for no review. When the agent finishes a task it goes to
+    # `review` with the result instead of `completed`, and only an accept
+    # completes it; asking for changes sends it back with the notes, and
+    # after orchestration.review_rounds of that the operator decides. A
+    # delegation's own `review:` and an operator task's `review` override
+    # this. The reviewer is never the agent itself: a setting that would
+    # make it so means no review.
+    review_by: null
 
     # Which team this agent belongs to, by teams.id.
     #

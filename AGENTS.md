@@ -1473,6 +1473,15 @@ versions apart.
   touch them, and a client's Cancel is offered on them. A note on a task
   publishes `task.noted`, never `task.changed`, which settle notices and
   incidents hang off.
+- **Ask a reviewer on `review-requested`, never on the `review` state.**
+  A task sits in `review` through comments and other changes, and each
+  one emits `task-changed`; the manager emits `review-requested` once per
+  result (finished, or escalated to the operator). Every verdict goes
+  through `clawt_daemon_tasks_review()`, whichever door it came from (the
+  tool, `task.review`, the inbox's `review-<task>` decision), so the other
+  doors close and the assignee is told the same way. A reviewer is
+  resolved once, at creation, by `clawt_task_resolve_reviewer()`, and is
+  never the assignee.
 - **A stored question with an in-memory asker outlives the asker.** A policy
   ask is a decision on disk and a waiting call in the daemon's memory, so
   an interrupted turn, a stopped agent or a restarted daemon left the

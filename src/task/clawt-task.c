@@ -32,6 +32,15 @@ struct _ClawtTask {
     gchar *title;
 
     /*
+     * Who checks the result before it counts as done: an agent id, or
+     * `user` for the operator.  NULL for no review.  Resolved when the
+     * task is made, so "the delegator" or "the lead" means the one there
+     * was then.  review_round counts the times changes were asked for.
+     */
+    gchar *reviewer;
+    guint  review_round;
+
+    /*
      * The room the work itself happens in, when the delegator asked for
      * `thread: new` -- a session of its own.  Distinct from `room`,
      * which is where the delegation was *made* and where the settle
@@ -165,6 +174,8 @@ clawt_task_copy(ClawtTask *self)
     copy->consult = self->consult;
     copy->session_key = g_strdup(self->session_key);
     copy->title = g_strdup(self->title);
+    copy->reviewer = g_strdup(self->reviewer);
+    copy->review_round = self->review_round;
     copy->progress_note = g_strdup(self->progress_note);
     copy->cancelled_by = g_strdup(self->cancelled_by);
     copy->retried_by = g_strdup(self->retried_by);
@@ -215,6 +226,7 @@ clawt_task_free(ClawtTask *self)
     g_free(self->model);
     g_free(self->session_key);
     g_free(self->title);
+    g_free(self->reviewer);
     g_free(self->thread_room);
     g_free(self->progress_note);
     g_free(self->cancelled_by);
@@ -780,6 +792,8 @@ clawt_task_to_json(ClawtTask *self)
     add_string(builder, "model", self->model);
     add_string(builder, "session_key", self->session_key);
     add_string(builder, "title", self->title);
+    add_string(builder, "reviewer", self->reviewer);
+    add_int(builder, "review_round", self->review_round);
     add_string(builder, "thread_room", self->thread_room);
     add_string(builder, "progress_note", self->progress_note);
     add_string(builder, "cancelled_by", self->cancelled_by);
@@ -893,6 +907,8 @@ clawt_task_new_from_json(JsonNode *node, GError **error)
     self->model = dup_member(object, "model");
     self->session_key = dup_member(object, "session_key");
     self->title = dup_member(object, "title");
+    self->reviewer = dup_member(object, "reviewer");
+    self->review_round = (guint)MAX(int_member(object, "review_round"), 0);
     self->thread_room = dup_member(object, "thread_room");
     self->progress_note = dup_member(object, "progress_note");
     self->cancelled_by = dup_member(object, "cancelled_by");
@@ -997,4 +1013,87 @@ clawt_task_waiting_caption(JsonArray *waiting_on)
 
     g_string_append(out, " to complete");
     return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+const gchar *
+clawt_task_get_reviewer(ClawtTask *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+    return self->reviewer;
+}
+
+void
+clawt_task_set_reviewer(ClawtTask *self, const gchar *reviewer)
+{
+    g_return_if_fail(self != NULL);
+
+    g_free(self->reviewer);
+    self->reviewer = (reviewer != NULL && *reviewer != '\0')
+        ? g_strdup(reviewer) : NULL;
+}
+
+guint
+clawt_task_get_review_round(ClawtTask *self)
+{
+    g_return_val_if_fail(self != NULL, 0);
+    return self->review_round;
+}
+
+void
+clawt_task_set_review_round(ClawtTask *self, guint round)
+{
+    g_return_if_fail(self != NULL);
+    self->review_round = round;
+}
+
+gchar *
+clawt_task_resolve_reviewer(ClawtConfig  *config,
+                            const gchar  *spec,
+                            const gchar  *origin,
+                            const gchar  *assignee,
+                            GError      **error)
+{
+    const gchar *who = NULL;
+
+    if (spec == NULL || *spec == '\0' || g_strcmp0(spec, "none") == 0)
+        return NULL;
+
+    if (g_strcmp0(spec, "operator") == 0 || g_strcmp0(spec, "user") == 0)
+        return g_strdup("user");
+
+    if (g_strcmp0(spec, "delegator") == 0) {
+        who = origin;
+    } else if (g_strcmp0(spec, "lead") == 0) {
+        /* The rule the incident desk uses: the lead, else the chief. */
+        if (config != NULL && assignee != NULL)
+            who = clawt_incident_resolve_recipient(config, assignee,
+                                                   CLAWT_INCIDENT_TO_LEAD,
+                                                   NULL);
+    } else {
+        if (config != NULL && clawt_config_get_agent(config, spec) == NULL) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                        "there is no agent called '%s' to review it", spec);
+            return NULL;
+        }
+
+        who = spec;
+    }
+
+    /*
+     * Nobody reviews their own work.  For a spelling like `lead` that is
+     * the fleet's shape rather than a mistake (a lead's own task), so it
+     * means no review; an agent named outright is refused.
+     */
+    if (who == NULL || g_strcmp0(who, assignee) == 0) {
+        if (who != NULL && g_strcmp0(who, spec) == 0)
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                        "%s cannot review its own work", who);
+        return NULL;
+    }
+
+    /* The operator delegated it: the operator reviews it. */
+    if (g_strcmp0(who, "user") == 0)
+        return g_strdup("user");
+
+    return g_strdup(who);
 }

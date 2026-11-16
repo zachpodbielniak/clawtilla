@@ -1493,6 +1493,25 @@ void clawt_daemon_tasks_stop(ClawtDaemon *self);
 gboolean clawt_daemon_tasks_release_ready(ClawtDaemon *self,
                                           const gchar *task_id);
 void clawt_daemon_tasks_blocker_settled(ClawtDaemon *self, ClawtTask *task);
+void clawt_daemon_tasks_review_requested(ClawtDaemon *self, ClawtTask *task);
+void clawt_daemon_tasks_on_review_requested(ClawtTaskManager *manager,
+                                            const gchar      *task_id,
+                                            gpointer          user_data);
+gchar *clawt_daemon_tasks_review(ClawtDaemon  *self,
+                                 const gchar  *who,
+                                 const gchar  *task_id,
+                                 gboolean      accept,
+                                 const gchar  *notes,
+                                 GError      **error);
+gboolean clawt_daemon_review_settle(ClawtDaemon   *self,
+                                    ClawtDecision *decision,
+                                    const gchar   *how);
+gchar *clawt_daemon_review_for_tools(const gchar  *reviewer,
+                                     const gchar  *task_id,
+                                     gboolean      accept,
+                                     const gchar  *notes,
+                                     gpointer      user_data,
+                                     GError      **error);
 void clawt_daemon_tasks_on_blockers_changed(ClawtTaskManager *manager,
                                             const gchar      *task_id,
                                             gpointer          user_data);

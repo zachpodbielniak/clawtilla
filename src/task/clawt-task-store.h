@@ -212,6 +212,13 @@ guint clawt_task_store_prune(ClawtTaskStore  *self,
 #define CLAWT_TASK_NOTE_RESULT "result"
 
 /**
+ * CLAWT_TASK_NOTE_REVIEW:
+ *
+ * A reviewer's verdict on a result: an accept, or the changes asked for.
+ */
+#define CLAWT_TASK_NOTE_REVIEW "review"
+
+/**
  * clawt_task_store_add_note:
  * @self: a #ClawtTaskStore
  * @task_id: which task

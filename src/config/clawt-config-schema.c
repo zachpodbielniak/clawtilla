@@ -1042,6 +1042,17 @@ static const ClawtSchemaEntry schema[] = {
   "however old it is: it is undrained rather than finished. 0 keeps\n"
   "receipts until the count alone drops them.", "0.2.0" },
 
+{ "orchestration.review_rounds", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_COMMENTED, "3", NULL,
+  "How many times a reviewer may send a task back for changes before the\n"
+  "operator decides.\n"
+  "\n"
+  "Reviewed work goes back and forth between its assignee and its\n"
+  "reviewer (agents.review_by); past this many rounds of changes the task\n"
+  "stays in review and the verdict becomes the operator's, as a decision\n"
+  "in the inbox, rather than the two going round again. 0 removes the\n"
+  "limit.", "0.38.0" },
+
 { "orchestration.task_retention_days", CLAWT_SCHEMA_INT,
   CLAWT_SCHEMA_FLAG_COMMENTED, "180", NULL,
   "How long a finished task is kept, in days.\n"
@@ -2867,6 +2878,20 @@ static const ClawtSchemaEntry schema[] = {
   "number keep the order they appear in this file, so leaving them all\n"
   "at 0 changes nothing.",
   "0.1.0" },
+
+{ "agents.review_by", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
+  "Who checks this agent's work before it counts as done.\n"
+  "\n"
+  "`lead` (its team's lead, or the chief of staff when the team has\n"
+  "none), `delegator` (whoever handed it the task), `operator` (you,\n"
+  "from the decision inbox or any client's task page), an agent id, or\n"
+  "empty for no review. When the agent finishes a task it goes to\n"
+  "`review` with the result instead of `completed`, and only an accept\n"
+  "completes it; asking for changes sends it back with the notes, and\n"
+  "after orchestration.review_rounds of that the operator decides. A\n"
+  "delegation's own `review:` and an operator task's `review` override\n"
+  "this. The reviewer is never the agent itself: a setting that would\n"
+  "make it so means no review.", "0.38.0" },
 
 { "agents.team", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE, NULL, NULL,
   "Which team this agent belongs to, by teams.id.\n"

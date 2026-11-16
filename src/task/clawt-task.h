@@ -605,6 +605,62 @@ JsonNode *clawt_task_build_held_delivery(const gchar *via,
  */
 gchar *clawt_task_waiting_caption(JsonArray *waiting_on);
 
+/**
+ * clawt_task_get_reviewer:
+ * @self: a #ClawtTask
+ *
+ * Who checks the result before the task counts as done: an agent id, or
+ * `user` for the operator (since 0.38.0).
+ *
+ * Returns: (transfer none) (nullable): the reviewer, or %NULL for none
+ */
+const gchar *clawt_task_get_reviewer(ClawtTask *self);
+
+/**
+ * clawt_task_set_reviewer:
+ * @self: a #ClawtTask
+ * @reviewer: (nullable): an agent id, `user`, or %NULL / empty for none
+ */
+void clawt_task_set_reviewer(ClawtTask *self, const gchar *reviewer);
+
+/**
+ * clawt_task_get_review_round:
+ * @self: a #ClawtTask
+ *
+ * Returns: how many times changes have been asked for
+ */
+guint clawt_task_get_review_round(ClawtTask *self);
+
+/**
+ * clawt_task_set_review_round:
+ * @self: a #ClawtTask
+ * @round: the count
+ */
+void clawt_task_set_review_round(ClawtTask *self, guint round);
+
+/**
+ * clawt_task_resolve_reviewer:
+ * @config: (nullable): the fleet, for `lead` and to check an agent id
+ * @spec: (nullable): `lead`, `delegator`, `operator`, an agent id, or
+ *   empty / `none` for no review
+ * @origin: (nullable): who delegated the task
+ * @assignee: (nullable): who does it
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Who reviews a task, resolved once when it is made: an agent id, `user`
+ * for the operator, or %NULL for no review.  Nobody reviews their own
+ * work: `lead` or `delegator` landing on the assignee means no review,
+ * and naming the assignee outright is an error, as is an unknown id.
+ *
+ * Returns: (transfer full) (nullable): the reviewer, or %NULL (with
+ *   @error set only when @spec was refused)
+ */
+gchar *clawt_task_resolve_reviewer(ClawtConfig  *config,
+                                   const gchar  *spec,
+                                   const gchar  *origin,
+                                   const gchar  *assignee,
+                                   GError      **error);
+
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtTask, clawt_task_free)
 
 G_END_DECLS

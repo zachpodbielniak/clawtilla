@@ -1409,6 +1409,35 @@ task_page_body(ClawtWebApp *app, const gchar *id, const gchar *notice)
         htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(form));
     }
 
+    /* Who reviews it, and the operator's two answers while it waits. */
+    if (clawt_web_member(task, "reviewer", NULL) != NULL) {
+        g_autofree gchar *who = g_strdup_printf(
+            "Reviewed by %s.",
+            g_strcmp0(clawt_web_member(task, "reviewer", ""), "user") == 0
+                ? "you" : clawt_web_member(task, "reviewer", ""));
+
+        clawt_web_add(pad, clawt_web_section_title("Review"));
+        clawt_web_add(pad, clawt_web_text(who, "small muted"));
+
+        if (g_strcmp0(clawt_web_member(task, "state", ""), "review") == 0) {
+            g_autofree gchar *escaped = g_uri_escape_string(id, NULL, FALSE);
+            g_autofree gchar *action = g_strdup_printf("/tasks/%s/review",
+                                                       escaped);
+            g_autoptr(HtmxForm) accept = clawt_web_form(action);
+            g_autoptr(HtmxForm) changes = clawt_web_form(action);
+
+            clawt_web_add(accept, clawt_web_hidden("verdict", "accept"));
+            add_submit(accept, "Accept");
+            htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(accept));
+
+            clawt_web_add(changes, clawt_web_hidden("verdict", "changes"));
+            clawt_web_add(changes, clawt_web_textarea_field(
+                "What to change", "notes", NULL, 3));
+            add_submit(changes, "Request changes");
+            htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(changes));
+        }
+    }
+
     clawt_web_add(pad, clawt_web_section_title("History"));
     rows = clawt_web_member_array(root, "journal");
 
@@ -1479,6 +1508,33 @@ task_link_from(ClawtWebApp *app, HtmxRequest *request, GHashTable *params,
                      g_strcmp0(kind, "task.link") == 0
                          ? "It waits for that task now."
                          : "No longer waits for it.");
+}
+
+static HtmxResponse *
+on_task_review(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *id = clawt_web_param(params, "task");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *verdict = clawt_web_form_value(request, "verdict");
+    const gchar *notes = clawt_web_form_value(request, "notes");
+
+    clawt_web_payload_set(payload, "task", id);
+
+    if (verdict != NULL)
+        clawt_web_payload_set(payload, "verdict", verdict);
+    if (notes != NULL && *notes != '\0')
+        clawt_web_payload_set(payload, "notes", notes);
+
+    reply = clawt_web_app_call(app, "task.review",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        return task_page(app, request, id, clawt_web_app_last_error(app));
+
+    return task_page(app, request, id,
+                     clawt_web_member(clawt_web_root(reply), "said", "Done."));
 }
 
 static HtmxResponse *
@@ -1626,6 +1682,7 @@ clawt_web_register_work(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_post(router, "/tasks/:task/assign", on_task_assign, app);
     htmx_router_post(router, "/tasks/:task/comment", on_task_comment, app);
     htmx_router_post(router, "/tasks/:task/link", on_task_link, app);
+    htmx_router_post(router, "/tasks/:task/review", on_task_review, app);
     htmx_router_post(router, "/tasks/:task/unlink", on_task_unlink, app);
     htmx_router_post(router, "/tasks/:task/cancel", on_task_cancel, app);
     htmx_router_post(router, "/tasks/:task/retry", on_task_retry, app);

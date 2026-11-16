@@ -223,7 +223,20 @@ static const ClawtParamInfo delegate_params[] = {
     { "after",    "string",
       "Task ids this work must wait for, separated by commas. It is held "
       "and handed over by itself once every one of them has completed -- "
-      "say so here rather than waiting and delegating later.", FALSE }
+      "say so here rather than waiting and delegating later.", FALSE },
+    { "review",   "string",
+      "Who checks the result before it counts as done: delegator (you), "
+      "lead, operator, an agent id, or none. Leave it out for the "
+      "assignee's own setting. The reviewer accepts it or sends it back "
+      "with notes.", FALSE }
+};
+
+static const ClawtParamInfo task_review_params[] = {
+    { "task_id", "string", "A task in review that is yours to review.", TRUE },
+    { "accept",  "boolean", "true to accept the result; false (with notes) "
+                            "to send it back for changes.", TRUE },
+    { "notes",   "string", "What to change -- required when not accepting. "
+                           "The assignee reads exactly this.", FALSE }
 };
 
 static const ClawtParamInfo task_link_params[] = {
@@ -850,6 +863,14 @@ static const ToolDefinition tools[] = {
          "rather than work.",
          NEEDS_ASSIGNMENT, delegate_params, CLAWT_ACTION_MESSAGE),
 
+    TOOL("clawtilla_task_review",
+         "Give your verdict on a result you were asked to review. Accept "
+         "it and the task is done -- whoever delegated it is told -- or "
+         "send it back with notes saying exactly what to change, and its "
+         "assignee picks it up again. Only for a task in review that is "
+         "yours to review.",
+         NEEDS_NOTHING, task_review_params, CLAWT_ACTION_MESSAGE),
+
     TOOL("clawtilla_task_link",
          "Change what a task you delegated is waiting for. A task given "
          "after: is held until those tasks complete, and handed over by "
@@ -1377,6 +1398,8 @@ struct _ClawtMcpTools {
 
     GPtrArray *tool_providers;  /* GObject*, unowned */
 
+    ClawtMcpReviewFunc  review;
+    gpointer            review_data;
     ClawtMcpDeliverFunc deliver;
 	ClawtMcpDeliverTurnFunc deliver_turn;
 	ClawtMcpDeliverReplyFunc deliver_reply;
@@ -3317,6 +3340,35 @@ clawt_mcp_tools_describe_for_agent(ClawtMcpTools *self, const gchar *agent_id)
         append_roster(self, out, agent_id);
 
     /*
+     * Who reviews this agent's work, named, so finishing a task does not
+     * read as the end of it when it is not.
+     */
+    {
+        ClawtAgent *me = (self->agents != NULL)
+                         ? clawt_agent_manager_get(self->agents, agent_id)
+                         : NULL;
+        const gchar *spec = (me != NULL)
+            ? clawt_agent_config_get_string(clawt_agent_get_config(me),
+                                            "review_by")
+            : NULL;
+        g_autofree gchar *reviewer = clawt_task_resolve_reviewer(
+            clawt_agent_manager_get_config(self->agents), spec, NULL,
+            agent_id, NULL);
+
+        if (reviewer != NULL)
+            g_string_append_printf(out,
+                "* Your work is reviewed\n\n"
+                "Tasks you finish go to %s for review before they count as\n"
+                "done.\n\n",
+                g_strcmp0(reviewer, "user") == 0 ? "the operator" : reviewer);
+        else if (g_strcmp0(spec, "delegator") == 0)
+            g_string_append(out,
+                "* Your work is reviewed\n\n"
+                "Tasks you finish go back to whoever delegated them, for\n"
+                "review, before they count as done.\n\n");
+    }
+
+    /*
      * That tasks are kept.  Only when they are -- a daemon whose store
      * would not open still forgets them on a restart, and telling an
      * agent otherwise would have it trust an id that no longer answers.
@@ -3343,6 +3395,13 @@ clawt_mcp_tools_describe_for_agent(ClawtMcpTools *self, const gchar *agent_id)
             "over by itself once every one of them has completed -- do not\n"
             "wait and delegate later, and do not poll. If one fails you are\n"
             "told, and ~clawtilla_task_link~ changes what it waits for.\n"
+            "\n"
+            "Some work is reviewed before it counts as done. If yours is,\n"
+            "finishing a task sends it to its reviewer instead of marking\n"
+            "it complete, and changes come back to you as a message with\n"
+            "the notes -- make them and finish the task again. If you are\n"
+            "asked to review, answer with ~clawtilla_task_review~; never\n"
+            "accept your own work.\n"
             "\n"
             "The operator can comment on a task you have. A comment reaches\n"
             "you as a message from them while you work on it, and\n"
@@ -5183,6 +5242,51 @@ clawt_mcp_tools_deliver_held(ClawtMcpTools *self,
                              priority, turn_room, 0, error);
 }
 
+/* A verdict through the review hook, which the daemon supplies. */
+static gchar *
+tool_task_review(ClawtMcpTools *self,
+                 const gchar   *agent_id,
+                 JsonObject    *arguments,
+                 gboolean      *is_error)
+{
+    const gchar *task_id = argument_string(arguments, "task_id");
+    gboolean accept = argument_boolean(arguments, "accept", FALSE);
+    const gchar *notes = argument_string(arguments, "notes");
+    g_autoptr(GError) error = NULL;
+    gchar *said;
+
+    if (task_id == NULL) {
+        *is_error = TRUE;
+        return g_strdup("Name the task in review (task_id).");
+    }
+
+    if (self->review == NULL) {
+        *is_error = TRUE;
+        return g_strdup("Reviewing is not available here.");
+    }
+
+    said = self->review(agent_id, task_id, accept, notes, self->review_data,
+                        &error);
+
+    if (said == NULL) {
+        *is_error = TRUE;
+        return g_strdup_printf("No verdict recorded: %s.", error->message);
+    }
+
+    return said;
+}
+
+void
+clawt_mcp_tools_set_review_func(ClawtMcpTools       *self,
+                                ClawtMcpReviewFunc   func,
+                                gpointer             user_data)
+{
+    g_return_if_fail(CLAWT_IS_MCP_TOOLS(self));
+
+    self->review = func;
+    self->review_data = user_data;
+}
+
 static gchar *
 tool_task_link(ClawtMcpTools *self,
                const gchar   *agent_id,
@@ -5396,6 +5500,38 @@ tool_delegate(ClawtMcpTools *self,
      * you.
      */
     clawt_task_set_room(task, turn_room);
+
+    /*
+     * Who reviews it: the call's own `review`, else the assignee's
+     * agents.review_by.  A spelling naming nobody or the assignee itself
+     * was refused before anything was sent.
+     */
+    {
+        g_autofree gchar *reviewer = NULL;
+        const gchar *spec = argument_string(arguments, "review");
+        ClawtConfig *fleet = clawt_agent_manager_get_config(self->agents);
+
+        if (spec == NULL) {
+            ClawtAgent *to = clawt_agent_manager_get(self->agents, assignee);
+
+            spec = (to != NULL)
+                ? clawt_agent_config_get_string(clawt_agent_get_config(to),
+                                                "review_by")
+                : NULL;
+        }
+
+        reviewer = clawt_task_resolve_reviewer(fleet, spec, agent_id,
+                                               assignee, &error);
+
+        if (error != NULL) {
+            clawt_task_manager_cancel(self->tasks, clawt_task_get_id(task),
+                                      error->message, agent_id);
+            *is_error = TRUE;
+            return g_strdup_printf("Not delegated: %s.", error->message);
+        }
+
+        clawt_task_set_reviewer(task, reviewer);
+    }
 
     /* Read by the daemon as it delivers the assignment. */
     clawt_task_set_consult(task, consult);
@@ -10046,6 +10182,8 @@ tools_call(ClawtMcpTools *self,
         text = tool_handoff(self, agent_id, turn_room, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_task_link") == 0)
         text = tool_task_link(self, agent_id, arguments, &is_error);
+    else if (g_strcmp0(tool_name, "clawtilla_task_review") == 0)
+        text = tool_task_review(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_task_retry") == 0)
         text = tool_task_retry(self, agent_id, arguments, &is_error);
     else if (g_strcmp0(tool_name, "clawtilla_trigger_list") == 0)
