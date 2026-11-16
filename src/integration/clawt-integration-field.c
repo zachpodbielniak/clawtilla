@@ -263,7 +263,11 @@ static const ClawtIntegrationField fields[] = {
      */
     { "connector", "apply_writes", "Writes without approval (VENTURE)",
       "Ask first holds every change the agent makes for your approval. "
-      "Apply at once lets it change VENTURE freely, as its own account.",
+      "The middle level applies ordinary writes (tickets, comments, "
+      "worklogs) and still asks for anything touching money, people, "
+      "access, credentials, outward sends or deletes -- VENTURE 0.10.0 "
+      "or later. Apply at once lets it change VENTURE freely, as its own "
+      "account.",
       NULL,
       CLAWT_FIELD_CHOICE, apply_writes_levels, apply_writes_labels,
       NULL, NULL, FALSE },
