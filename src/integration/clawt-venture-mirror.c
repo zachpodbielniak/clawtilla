@@ -147,6 +147,16 @@ job_free(Job *job)
 
 /* ── Small helpers ───────────────────────────────────────────────── */
 
+/* A node holding a new, empty object -- and the only reference to it. */
+static JsonNode *
+object_node_new(void)
+{
+    JsonNode *node = json_node_new(JSON_NODE_OBJECT);
+
+    json_node_take_object(node, json_object_new());
+    return node;
+}
+
 static gint64
 now_seconds(void)
 {
@@ -514,7 +524,7 @@ remember(Job *job, gint64 ticket, gint64 version, JsonObject *written,
 
     if (snap == NULL || !JSON_NODE_HOLDS_OBJECT(snap)) {
         g_clear_pointer(&snap, json_node_unref);
-        snap = json_node_init_object(json_node_alloc(), json_object_new());
+        snap = object_node_new();
     }
 
     so = json_node_get_object(snap);
