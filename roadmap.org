@@ -382,7 +382,12 @@ Six gaps a single-operator fleet should close, in phases, each working without V
 ** TODO P1 V0.9: Editors can see VENTURE forges, without their secrets :connectors:upstream:
 The ~forge~ record type is owner-only in VENTURE, so an editor -- every agent account -- cannot see the forges, cannot add a ~forge_repo~ in the Build section, and repository matching cannot read the clone base. Fix upstream first, as its own release: read access to the non-secret forge fields for editors and viewers, ~forge_repo~ writes for editors, the forge itself and its credentials still owner/admin-only, no credential in any payload. Requested 2026-11-15.
 
-** TODO P2 VW: How freely agents may write to VENTURE :connectors:
+** DONE P2 VW1: Agents may write to VENTURE without approval v0.36.1 :connectors:
+- *Requested:* by the user on 2026-11-15.
+- *Done:* ~apply_writes: off | all~ on a connector (=ClawtApplyWrites=, =clawt_connector_apply_writes()=, an unknown value is ~off~); ~all~ on a ~venture~ connector adds ~--apply-writes~ to =venturectl mcp= unless ~args:~ is set; *Writes without approval (VENTURE)* in the integration form of every client; ~connector add --apply-writes~; each agent's TOOLS.org says whether its writes wait; docs/venture-setup.org, connectors.org, security.org.
+- *Version:* micro.
+
+** TODO P2 VW2: A low-risk level between the two :connectors:
 ~apply_writes: off | low_risk | all~ on a venture connector: ~all~ runs ~venturectl mcp --apply-writes~ now; ~low_risk~ waits for VENTURE to classify writes (money, people and access, deletes and irreversible outward actions stay staged) and add ~--apply-writes=low-risk~. Requested 2026-11-15.
 
 ** TODO P1 B1: Blockers :orchestration:

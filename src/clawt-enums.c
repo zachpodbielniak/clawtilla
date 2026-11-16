@@ -2307,3 +2307,21 @@ clawt_page_from_nick(const gchar *nick)
 
     return CLAWT_PAGE_CHAT;
 }
+
+GType
+clawt_apply_writes_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_APPLY_WRITES_OFF, "CLAWT_APPLY_WRITES_OFF", "off" },
+            { CLAWT_APPLY_WRITES_ALL, "CLAWT_APPLY_WRITES_ALL", "all" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id =
+            g_enum_register_static("ClawtApplyWrites", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}

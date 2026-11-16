@@ -26,6 +26,15 @@
 
 /* ── Choices ─────────────────────────────────────────────────────── */
 
+/* The spellings are ClawtApplyWrites' nicks, in its order. */
+static const gchar *const apply_writes_levels[] = {
+    "off", "all", NULL
+};
+
+static const gchar *const apply_writes_labels[] = {
+    "Ask first", "Apply at once", NULL
+};
+
 static const gchar *const notify_backends[] = {
     "desktop", "ntfy", "gotify", "matrix", "command", "apprise", NULL
 };
@@ -240,6 +249,19 @@ static const ClawtIntegrationField fields[] = {
       "own list.",
       "repo, read:org",
       CLAWT_FIELD_TEXT, NULL, NULL, NULL, NULL, FALSE },
+
+    /*
+     * Only VENTURE stages writes today, so only it reads this; the
+     * label says so rather than the form hiding it, because a form that
+     * grows a field when the provider is typed is a form nobody can
+     * predict.
+     */
+    { "connector", "apply_writes", "Writes without approval (VENTURE)",
+      "Ask first holds every change the agent makes for your approval. "
+      "Apply at once lets it change VENTURE freely, as its own account.",
+      NULL,
+      CLAWT_FIELD_CHOICE, apply_writes_levels, apply_writes_labels,
+      NULL, NULL, FALSE },
 
     { "connector", "tools", "Tools",
       "Which of the connector's tools agents may call. Empty means all "

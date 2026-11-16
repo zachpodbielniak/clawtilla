@@ -2102,6 +2102,22 @@ static const ClawtSchemaEntry schema[] = {
   "Turning it off leaves the changes in VENTURE for somebody to find in\n"
   "its own web interface.", "0.2.0" },
 
+{ "integrations.apply_writes", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "off", clawt_apply_writes_get_type,
+  "connector (venture): whether the agent's writes wait for approval.\n"
+  "\n"
+  "`off` keeps every create, update and delete the agent makes in\n"
+  "VENTURE staged: VENTURE holds it, and with confirm_writes on it\n"
+  "reaches the operator's decision inbox to approve or reject. `all`\n"
+  "starts `venturectl mcp --apply-writes`, so every write lands at once,\n"
+  "unreviewed, as the agent's own VENTURE account -- opt in only for an\n"
+  "account whose memberships already limit what it can reach. With one\n"
+  "connector per agent this is per agent. A level in between, applying\n"
+  "ordinary writes and staging anything touching money, people, access\n"
+  "or deletion, arrives once VENTURE classifies its writes. Ignored when\n"
+  "`args` is set on the integration: those are the server's arguments,\n"
+  "as written. See docs/venture-setup.org, step 2.", "0.36.1" },
+
 { "integrations.poll_seconds", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
   "60", NULL,
   "How often a connector that has something to report is asked.\n"

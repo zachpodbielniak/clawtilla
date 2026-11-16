@@ -258,6 +258,52 @@ test_the_token_is_in_the_environment_and_not_the_argv(void)
 }
 
 /*
+ * apply_writes: the default and `off` keep venturectl staging, `all`
+ * adds --apply-writes, a typo is `off`, and an `args:` somebody wrote
+ * is left exactly as written.
+ */
+static void
+test_apply_writes_reaches_the_server(void)
+{
+    static const struct {
+        const gchar *body;
+        gboolean     applies;
+        ClawtApplyWrites level;
+    } cases[] = {
+        { "", FALSE, CLAWT_APPLY_WRITES_OFF },
+        { "    apply_writes: \"off\"\n", FALSE, CLAWT_APPLY_WRITES_OFF },
+        { "    apply_writes: all\n", TRUE, CLAWT_APPLY_WRITES_ALL },
+        { "    apply_writes: everything\n", FALSE, CLAWT_APPLY_WRITES_OFF },
+        { "    apply_writes: all\n    args: [mcp]\n", FALSE,
+          CLAWT_APPLY_WRITES_ALL },
+    };
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(cases); i++) {
+        PlanFixture fixture = { 0 };
+        const ClawtConnectorInfo *info = NULL;
+        g_autoptr(ClawtIntegrationBinding) binding = NULL;
+        g_autoptr(ClawtConnectorPlan) plan = NULL;
+        g_autoptr(GError) error = NULL;
+
+        /* an unknown level is read as off, never as all */
+        binding = build_venture_binding(&fixture, cases[i].body, &info);
+
+        plan = clawt_connector_plan_new(info, binding, "vt_x", &error);
+        g_assert_no_error(error);
+
+        g_assert_cmpint(clawt_connector_apply_writes(binding), ==,
+                        cases[i].level);
+        g_assert_cmpstr(plan->argv[1], ==, "mcp");
+        g_assert_cmpint(strv_contains_substring(plan->argv,
+                                                "--apply-writes"), ==,
+                        cases[i].applies);
+
+        plan_fixture_teardown(&fixture);
+    }
+}
+
+/*
  * And the instance, which a stdio server has no other way to learn.
  *
  * Without it `venturectl mcp` falls back to its own default of
@@ -1568,6 +1614,8 @@ main(int argc, char **argv)
 
     g_test_add_func("/venture/token-not-in-argv",
                     test_the_token_is_in_the_environment_and_not_the_argv);
+    g_test_add_func("/venture/plan/apply-writes",
+                    test_apply_writes_reaches_the_server);
     g_test_add_func("/venture/instance-reaches-the-server",
                     test_the_instance_reaches_the_server_environment);
 

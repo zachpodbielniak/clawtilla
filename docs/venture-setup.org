@@ -84,6 +84,29 @@ clawtilla decision answer venture-books-<id> approve
 
 A card nobody answers is dropped by VENTURE when its confirmation TTL runs out (an hour by default), which is the same as rejecting it.  Details: [[file:connectors.org::*Staged writes land in the decision inbox][connectors.org]].
 
+** Letting an agent write without approval (since 0.36.1)
+
+When an agent's account is confined enough that you trust what it writes, turn the queue off for that connector: ~apply_writes: all~ starts =venturectl mcp --apply-writes=, and every create, update and delete it makes lands at once, recorded as its own account.
+
+#+begin_src bash
+clawtilla connector add books-bookkeeper --provider venture \
+    --account bookkeeper --scope selected --agents bookkeeper \
+    --apply-writes all
+#+end_src
+
+Or set it on an existing connector in the config (~apply_writes: all~ on the integration), or in any client's integration form as *Writes without approval (VENTURE)*: *Ask first* or *Apply at once*.
+
+| Value | What the agent's writes do |
+|-------+-------------------------------------------------------------------|
+| ~off~ (default) | wait in VENTURE's confirmation queue for your approval |
+| ~all~ | apply at once, unreviewed |
+
+- With one connector per agent this is per agent: a bookkeeper can write freely while a sales agent still asks.
+- The agent is told which it has, in the integrations section of its TOOLS.org, so it neither waits on approval it does not need nor assumes a change landed that is still waiting.
+- An unknown value is read as ~off~: a typo never lets writes through unreviewed.
+- ~args:~ set on the integration wins: those are the server's arguments as you wrote them, and clawtilla adds nothing.
+- A level in between -- ordinary writes apply, anything touching money, people, access or deletion still waits -- needs VENTURE to classify its writes first; it is on the roadmap.
+
 * Step 3 (optional): tell the agent when a record changes
 
 ** On clawtilla: the trigger

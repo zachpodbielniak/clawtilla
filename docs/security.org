@@ -459,6 +459,14 @@ service's tools without handing them the token.  What that is worth
 depends on where the agent runs, and it is worth being exact rather than
 reassuring.
 
+What the account can *do* is the other half, and for VENTURE it has a
+switch: ~apply_writes~ (since 0.36.1) is ~off~ by default, so every write
+an agent makes waits for the operator's approval; ~all~ lets them land
+at once.  Turning it on moves the whole of the review onto the account's
+own limits -- its global role and its organization memberships
+(docs/venture-setup.org) -- so do it only for an account confined to
+what that agent should touch.  An unknown value is ~off~.
+
 For a *container or VM agent* the boundary is real.  The token file lives
 under ~secrets.dir~ on the host at 0600, and the relay that reads it runs
 on the host.  The agent can call the tools and cannot reach the

@@ -152,6 +152,27 @@ clawt_connector_plan_free(ClawtConnectorPlan *self)
     g_free(self);
 }
 
+ClawtApplyWrites
+clawt_connector_apply_writes(ClawtIntegrationBinding *binding)
+{
+    const gchar *nick;
+    gint value = CLAWT_APPLY_WRITES_OFF;
+
+    g_return_val_if_fail(binding != NULL, CLAWT_APPLY_WRITES_OFF);
+
+    nick = clawt_integration_binding_get_string(binding, "apply_writes");
+
+    /*
+     * Anything not recognised is `off`: a typo must never be the thing
+     * that lets an agent write unreviewed.
+     */
+    if (nick == NULL ||
+        !clawt_enum_from_nick(CLAWT_TYPE_APPLY_WRITES, nick, &value))
+        return CLAWT_APPLY_WRITES_OFF;
+
+    return (ClawtApplyWrites)value;
+}
+
 ClawtConnectorPlan *
 clawt_connector_plan_new(const ClawtConnectorInfo *info,
                          ClawtIntegrationBinding  *binding,
@@ -224,6 +245,29 @@ clawt_connector_plan_new(const ClawtConnectorInfo *info,
         if (args == NULL || args[0] == NULL) {
             g_strfreev(args);
             args = g_strdupv((GStrv)info->server_args);
+
+            /*
+             * `apply_writes: all` on a VENTURE connector is the server's
+             * own switch, `venturectl mcp --apply-writes`: its writes
+             * land at once instead of waiting in VENTURE's confirmation
+             * queue.  Only on the catalogue's arguments -- somebody who
+             * wrote `args:` wrote the whole command line, and adding to
+             * it would be second-guessing them.
+             */
+            if (g_strcmp0(info->id, "venture") == 0 &&
+                clawt_connector_apply_writes(binding) ==
+                    CLAWT_APPLY_WRITES_ALL) {
+                GPtrArray *with = g_ptr_array_new();
+                gsize i;
+
+                for (i = 0; args != NULL && args[i] != NULL; i++)
+                    g_ptr_array_add(with, g_strdup(args[i]));
+
+                g_ptr_array_add(with, g_strdup("--apply-writes"));
+                g_ptr_array_add(with, NULL);
+                g_strfreev(args);
+                args = (GStrv)g_ptr_array_free(with, FALSE);
+            }
         }
 
         if (args != NULL) {
