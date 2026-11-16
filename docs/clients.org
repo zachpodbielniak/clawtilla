@@ -1584,6 +1584,36 @@ waiting to be read= stand in place of the description while they apply,
 and a list that stopped saying which agents are working would answer a
 different question from the one the setting was turned off to answer.
 
+*** Window buttons under a tiling window manager
+
+A tiling window manager places and closes windows from the keyboard, and its users turn title bars off for that reason. Minimize sends the window nowhere they can see it, maximize fills a tile the window already fills, and close is a keybinding away. So the GTK and libregnum clients hide their minimize, maximize and close buttons when they find one, and draw them everywhere else.
+
+The choice is ~window_buttons~ in ~appearance.yaml~, under *Appearance → Window → Window buttons* in both clients, and it applies at once:
+
+#+begin_src yaml
+window_buttons: auto   # auto (the default), show or hide
+#+end_src
+
+- ~auto~ :: hidden under a tiling window manager, shown otherwise.
+- ~show~ :: always drawn, for somebody who likes them under sway too.
+- ~hide~ :: never drawn, for a floating desktop with its own way to close windows.
+
+An unknown spelling is ~auto~, with a warning on stderr. The web client has no window of its own (the browser draws it) and ignores the key; ~make parity~ records that as a reason rather than a gap.
+
+**** How a tiling session is found
+
+~clawt_window_manager_tiling()~ reads the environment the window manager hands to the processes it starts, and returns the window manager's name or nothing. The row's subtitle names what it found ("this session is tiled by gowl"), so the setting explains itself when the buttons are gone.
+
+1. The compositors' own IPC variables, first: ~GOWL_SOCKET~ (gowl standalone, and ~cmacs --gowl~, which sets it from cmacs-gowl.el when it opens the socket), ~SWAYSOCK~, ~HYPRLAND_INSTANCE_SIGNATURE~, ~NIRI_SOCKET~ and ~I3SOCK~. Only the compositor sets these, and every process it starts inherits them. They go first because of a nested session: gowl running inside GNOME passes GNOME's ~XDG_CURRENT_DESKTOP~ on, but the windows it starts are tiled by gowl. An exported but empty variable counts as unset.
+2. Then every name in ~XDG_CURRENT_DESKTOP~ (colon-separated), ~XDG_SESSION_DESKTOP~ and ~DESKTOP_SESSION~, case-insensitively, against a fixed list: gowl, sway, swayfx, Hyprland, niri, river, dwl, mango, miracle-wm, i3, dwm, qtile, bspwm, awesome, xmonad, herbstluftwm, leftwm, spectrwm, ratpoison, stumpwm, EXWM, notion, wmii, instantwm and cagebreak. gowl's own session entry declares ~gowl:wlroots:GNOME~ (GNOME last, for software that knows only a fixed set of desktops), and gowl is matched from it.
+
+GNOME, KDE and COSMIC are not on the list. They can tile, but their windows float unless asked, and a floating window without a close button has no other way to be closed with the mouse. A person who tiles there sets ~hide~.
+
+**** What each client changes
+
+- GTK :: ~gtk-decoration-layout~ on the display's ~GtkSettings~, set to ~:~ (nothing either side of the colon) when hidden and reset when shown, in ~clawt_gtk_apply_window_buttons()~. One setting reaches every header bar the client builds, in every page and dialog, because each bar's window controls already read it; a header bar added later cannot forget. Reset rather than written when shown, so the desktop's own layout applies (GNOME's ~appmenu:close~, or a left-handed one). It is the line a tiling user would have put in ~settings.ini~ by hand.
+- libregnum :: the window is created with ~FLAG_WINDOW_UNDECORATED~ when hidden, so no title bar appears for the first frame and then goes, and the settings page changes the live window with ~SetWindowState()~ / ~ClearWindowState()~. Undecorated drops the whole frame GLFW asked for: libdecor's on a Wayland compositor without server-side decorations, and the window manager's on X11.
+
 *** Alerts
 
 A collapsible panel on the right of the GTK client, bound to a bell in

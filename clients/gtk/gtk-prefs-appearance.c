@@ -203,6 +203,37 @@ static const gchar CLAWT_STRUCTURE_CSS[] =
     "}\n";
 
 /*
+ * Whether this display's header bars draw minimize, maximize and close.
+ *
+ * Through `gtk-decoration-layout` rather than per header bar: this client
+ * builds more than a dozen of them, in every page and dialog, and the
+ * setting is what each one's window controls already read -- so one
+ * write reaches all of them, and a header bar added later cannot forget.
+ * It is also the setting a tiling user would have put in settings.ini
+ * by hand, which is what this does for them.
+ *
+ * An empty layout either side of the colon draws no buttons.  Shown is a
+ * reset rather than a write: the desktop's own layout (GNOME's
+ * "appmenu:close", or a left-handed one) is what applies then, not one
+ * this client made up.
+ */
+void
+clawt_gtk_apply_window_buttons(GdkDisplay *display, ClawtWindowButtons buttons)
+{
+    GtkSettings *settings;
+
+    if (display == NULL)
+        return;
+
+    settings = gtk_settings_get_for_display(display);
+
+    if (clawt_window_buttons_shown(buttons, NULL))
+        gtk_settings_reset_property(settings, "gtk-decoration-layout");
+    else
+        g_object_set(settings, "gtk-decoration-layout", ":", NULL);
+}
+
+/*
  * Applies fonts and colour scheme.
  *
  * Called on startup and on every change in the settings dialog, so the
@@ -239,6 +270,9 @@ clawt_gtk_apply_appearance(ClawtAppearance *appearance)
             adw_style_manager_set_color_scheme(style,
                                                ADW_COLOR_SCHEME_FORCE_LIGHT);
     }
+
+    clawt_gtk_apply_window_buttons(
+        display, clawt_appearance_get_window_buttons(appearance));
 
     g_free(appearance_code_font);
     appearance_code_font =
@@ -888,6 +922,78 @@ build_fleet_list_group(ClawtWindow *self)
     return group;
 }
 
+/*
+ * Picking whether the window draws its buttons.  Applied at once like
+ * every other row here -- the header bars change under the dialog.
+ */
+static void
+on_window_buttons_selected(GObject *row, GParamSpec *spec,
+                           gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+
+    (void)spec;
+
+    clawt_appearance_set_window_buttons(
+        self->appearance,
+        clawt_window_buttons_nth(
+            adw_combo_row_get_selected(ADW_COMBO_ROW(row))));
+
+    appearance_changed(self);
+}
+
+/*
+ * The window's own minimize, maximize and close buttons.
+ *
+ * The subtitle names what "automatic" found, so the row answers the
+ * question it raises -- why are my buttons gone? -- without the reader
+ * having to know which variables a tiling compositor sets.
+ */
+static GtkWidget *
+build_window_group(ClawtWindow *self)
+{
+    GtkWidget *group = adw_preferences_group_new();
+    GtkWidget *row = clawt_gtk_combo_row_new();
+    g_autoptr(GtkStringList) names = gtk_string_list_new(NULL);
+    g_autofree gchar *subtitle = NULL;
+    const gchar *tiling = clawt_window_manager_tiling(NULL);
+    ClawtWindowButtons current =
+        clawt_appearance_get_window_buttons(self->appearance);
+    guint selected = 0;
+    guint n;
+
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group), "Window");
+
+    for (n = 0; n < clawt_window_buttons_count(); n++) {
+        gtk_string_list_append(
+            names, clawt_window_buttons_label(clawt_window_buttons_nth(n)));
+
+        if (clawt_window_buttons_nth(n) == current)
+            selected = n;
+    }
+
+    subtitle = (tiling != NULL)
+        ? g_strdup_printf("Minimize, maximize and close. Automatic hides "
+                          "them here: this session is tiled by %s.", tiling)
+        : g_strdup("Minimize, maximize and close. Automatic hides them "
+                   "under a tiling window manager such as gowl or sway.");
+
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
+                                  "Window buttons");
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
+    adw_combo_row_set_model(ADW_COMBO_ROW(row),
+                            G_LIST_MODEL(g_object_ref(names)));
+    adw_combo_row_set_selected(ADW_COMBO_ROW(row), selected);
+
+    /* Connected after the initial selection, or opening the page saves. */
+    g_signal_connect(row, "notify::selected",
+                     G_CALLBACK(on_window_buttons_selected), self);
+
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), row);
+
+    return group;
+}
+
 GtkWidget *
 clawt_gtk_build_appearance_page(ClawtWindow *self)
 {
@@ -963,6 +1069,9 @@ clawt_gtk_build_appearance_page(ClawtWindow *self)
 
     adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
                              ADW_PREFERENCES_GROUP(build_fleet_list_group(self)));
+
+    adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                             ADW_PREFERENCES_GROUP(build_window_group(self)));
 
     return page;
 }

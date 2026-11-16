@@ -764,6 +764,133 @@ gboolean clawt_appearance_get_sidebar_collapsed(ClawtAppearance *self);
 void     clawt_appearance_set_sidebar_collapsed(ClawtAppearance *self,
                                                 gboolean         collapsed);
 
+/* ── Window buttons ───────────────────────────────────────────────── */
+
+/**
+ * ClawtWindowButtons:
+ * @CLAWT_WINDOW_BUTTONS_AUTO: hidden under a tiling window manager,
+ *   shown everywhere else
+ * @CLAWT_WINDOW_BUTTONS_SHOW: always drawn
+ * @CLAWT_WINDOW_BUTTONS_HIDE: never drawn
+ *
+ * Whether clawtilla-gtk and clawtilla-lrg draw the minimize, maximize
+ * and close buttons, as `window_buttons` in `appearance.yaml`.
+ *
+ * A tiling window manager -- gowl (standalone or `cmacs --gowl`), sway,
+ * Hyprland, niri, river, i3 and the rest -- places and closes windows
+ * from the keyboard, and its users turn title bars off for exactly that
+ * reason.  Buttons that minimize into nothing and maximize into the tile
+ * the window already fills are clutter there, so the default hides them
+ * when clawt_window_manager_tiling() finds one.  The web client draws no
+ * window of its own and ignores the key.
+ */
+typedef enum {
+    CLAWT_WINDOW_BUTTONS_AUTO = 0,
+    CLAWT_WINDOW_BUTTONS_SHOW,
+    CLAWT_WINDOW_BUTTONS_HIDE
+} ClawtWindowButtons;
+
+/**
+ * clawt_window_buttons_count:
+ *
+ * Returns: how many #ClawtWindowButtons values there are
+ */
+guint clawt_window_buttons_count(void);
+
+/**
+ * clawt_window_buttons_nth:
+ * @n: an index below clawt_window_buttons_count()
+ *
+ * Returns: the @n'th value, in drawing order
+ */
+ClawtWindowButtons clawt_window_buttons_nth(guint n);
+
+/**
+ * clawt_window_buttons_nick:
+ * @buttons: a #ClawtWindowButtons
+ *
+ * Returns: (transfer none): the spelling written to appearance.yaml
+ */
+const gchar *clawt_window_buttons_nick(ClawtWindowButtons buttons);
+
+/**
+ * clawt_window_buttons_label:
+ * @buttons: a #ClawtWindowButtons
+ *
+ * Returns: (transfer none): the name a person is shown
+ */
+const gchar *clawt_window_buttons_label(ClawtWindowButtons buttons);
+
+/**
+ * clawt_window_buttons_from_nick:
+ * @nick: (nullable): a spelling, case-insensitive
+ * @out: (out): the value
+ *
+ * Returns: %TRUE if @nick names a value; @out is then set
+ */
+gboolean clawt_window_buttons_from_nick(const gchar        *nick,
+                                        ClawtWindowButtons *out);
+
+/**
+ * clawt_appearance_get_window_buttons:
+ * @self: a #ClawtAppearance
+ *
+ * Returns: the chosen #ClawtWindowButtons; %CLAWT_WINDOW_BUTTONS_AUTO
+ *   when the file does not say
+ */
+ClawtWindowButtons clawt_appearance_get_window_buttons(ClawtAppearance *self);
+
+/**
+ * clawt_appearance_set_window_buttons:
+ * @self: a #ClawtAppearance
+ * @buttons: a #ClawtWindowButtons; an unknown value is
+ *   %CLAWT_WINDOW_BUTTONS_AUTO
+ *
+ * See #ClawtWindowButtons.
+ */
+void clawt_appearance_set_window_buttons(ClawtAppearance   *self,
+                                         ClawtWindowButtons buttons);
+
+/**
+ * clawt_window_manager_tiling:
+ * @envp: (nullable) (array zero-terminated=1): an environment to read,
+ *   or %NULL for this process's own
+ *
+ * Which tiling window manager this session runs under, if any.
+ *
+ * The compositors' own IPC variables are read first, because they are
+ * set only by the compositor and reach every process it starts:
+ * `GOWL_SOCKET` (gowl, and `cmacs --gowl`, which sets it from
+ * cmacs-gowl.el), `SWAYSOCK`, `HYPRLAND_INSTANCE_SIGNATURE`,
+ * `NIRI_SOCKET` and `I3SOCK`.  That order matters for a nested session:
+ * gowl running inside GNOME passes on GNOME's `XDG_CURRENT_DESKTOP`,
+ * yet the windows it starts are tiled by gowl.
+ *
+ * Then every name in `XDG_CURRENT_DESKTOP` (colon-separated),
+ * `XDG_SESSION_DESKTOP` and `DESKTOP_SESSION`, case-insensitively,
+ * against a list of tiling window managers.  A desktop that merely
+ * offers tiling as an option (GNOME, KDE, COSMIC) is not on it: their
+ * windows float by default and keep their buttons.
+ *
+ * Returns: (transfer none) (nullable): the window manager's name, or
+ *   %NULL when none was found
+ */
+const gchar *clawt_window_manager_tiling(const gchar * const *envp);
+
+/**
+ * clawt_window_buttons_shown:
+ * @buttons: the chosen #ClawtWindowButtons
+ * @envp: (nullable) (array zero-terminated=1): an environment to read,
+ *   or %NULL for this process's own
+ *
+ * Resolves %CLAWT_WINDOW_BUTTONS_AUTO against
+ * clawt_window_manager_tiling(); the other two values answer themselves.
+ *
+ * Returns: %TRUE when the window should draw its buttons
+ */
+gboolean clawt_window_buttons_shown(ClawtWindowButtons  buttons,
+                                    const gchar * const *envp);
+
 /**
  * clawt_appearance_to_css:
  * @self: a #ClawtAppearance

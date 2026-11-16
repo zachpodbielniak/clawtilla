@@ -1611,6 +1611,9 @@ clawt_gtk_refresh_mailbox(ClawtWindow *self);
 void
 clawt_gtk_apply_appearance(ClawtAppearance *appearance);
 
+void
+clawt_gtk_apply_window_buttons(GdkDisplay *display, ClawtWindowButtons buttons);
+
 GtkWidget *
 clawt_gtk_build_appearance_page(ClawtWindow *self);
 

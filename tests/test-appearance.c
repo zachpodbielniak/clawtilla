@@ -1898,6 +1898,140 @@ test_palette_color_reads_every_required_colour_of_mocha(void)
     clawt_appearance_free(appearance);
 }
 
+/*
+ * window_buttons: absent is automatic, each value survives a save and a
+ * copy, and a typo is automatic -- never quietly one of the other two.
+ */
+static void
+test_window_buttons_round_trip(void)
+{
+    g_autoptr(ClawtAppearance) appearance = clawt_appearance_new();
+    g_autoptr(ClawtAppearance) absent = NULL;
+    g_autoptr(ClawtAppearance) typo = NULL;
+    guint n;
+
+    g_assert_cmpint(clawt_appearance_get_window_buttons(appearance), ==,
+                    CLAWT_WINDOW_BUTTONS_AUTO);
+    g_assert_cmpuint(clawt_window_buttons_count(), ==, 3);
+
+    for (n = 0; n < clawt_window_buttons_count(); n++) {
+        ClawtWindowButtons value = clawt_window_buttons_nth(n);
+        g_autoptr(ClawtAppearance) back = NULL;
+        g_autoptr(ClawtAppearance) copy = NULL;
+        g_autofree gchar *data = NULL;
+        g_autofree gchar *line = NULL;
+
+        clawt_appearance_set_window_buttons(appearance, value);
+        data = clawt_appearance_to_data(appearance);
+        line = g_strdup_printf("window_buttons: %s\n",
+                               clawt_window_buttons_nick(value));
+        g_assert_nonnull(strstr(data, line));
+
+        back = clawt_appearance_parse(data, NULL);
+        g_assert_nonnull(back);
+        g_assert_cmpint(clawt_appearance_get_window_buttons(back), ==, value);
+
+        copy = clawt_appearance_copy(appearance);
+        g_assert_cmpint(clawt_appearance_get_window_buttons(copy), ==, value);
+    }
+
+    /* case-insensitive, like every other nick in the file */
+    {
+        g_autoptr(ClawtAppearance) upper =
+            clawt_appearance_parse("window_buttons: HIDE\n", NULL);
+
+        g_assert_cmpint(clawt_appearance_get_window_buttons(upper), ==,
+                        CLAWT_WINDOW_BUTTONS_HIDE);
+    }
+
+    absent = clawt_appearance_parse("theme: catppuccin-mocha\n", NULL);
+    g_assert_cmpint(clawt_appearance_get_window_buttons(absent), ==,
+                    CLAWT_WINDOW_BUTTONS_AUTO);
+
+    /* the typo is named on stderr, once */
+    g_test_expect_message("Clawtilla", G_LOG_LEVEL_WARNING,
+                          "*window_buttons 'hdie'*");
+    typo = clawt_appearance_parse("window_buttons: hdie\n", NULL);
+    g_test_assert_expected_messages();
+
+    g_assert_nonnull(typo);
+    g_assert_cmpint(clawt_appearance_get_window_buttons(typo), ==,
+                    CLAWT_WINDOW_BUTTONS_AUTO);
+
+    /* an out-of-range value through the setter is automatic too */
+    clawt_appearance_set_window_buttons(appearance, (ClawtWindowButtons)42);
+    g_assert_cmpint(clawt_appearance_get_window_buttons(appearance), ==,
+                    CLAWT_WINDOW_BUTTONS_AUTO);
+}
+
+/*
+ * What counts as a tiling session.  Each case is an environment of its
+ * own, so nothing here depends on the session the tests run in.
+ */
+static void
+test_window_manager_tiling(void)
+{
+    static const struct {
+        const gchar *env[4];
+        const gchar *expected;
+    } cases[] = {
+        /* gowl standalone and cmacs --gowl both export the socket */
+        { { "GOWL_SOCKET=/run/user/1000/gowl.sock", NULL }, "gowl" },
+        /* gowl's own session entry, GNOME last as a fallback name */
+        { { "XDG_CURRENT_DESKTOP=gowl:wlroots:GNOME", NULL }, "gowl" },
+        /* nested in GNOME: the socket outranks the inherited desktop */
+        { { "XDG_CURRENT_DESKTOP=GNOME",
+            "GOWL_SOCKET=/run/user/1000/gowl.sock", NULL }, "gowl" },
+        { { "SWAYSOCK=/run/user/1000/sway-ipc.sock", NULL }, "sway" },
+        { { "HYPRLAND_INSTANCE_SIGNATURE=abc", NULL }, "Hyprland" },
+        { { "NIRI_SOCKET=/run/user/1000/niri.sock", NULL }, "niri" },
+        { { "I3SOCK=/run/user/1000/i3/ipc", NULL }, "i3" },
+        { { "XDG_CURRENT_DESKTOP=Hyprland", NULL }, "hyprland" },
+        { { "XDG_CURRENT_DESKTOP=river", NULL }, "river" },
+        { { "XDG_SESSION_DESKTOP=qtile", NULL }, "qtile" },
+        { { "DESKTOP_SESSION=bspwm", NULL }, "bspwm" },
+        /* floating desktops keep their buttons */
+        { { "XDG_CURRENT_DESKTOP=GNOME", NULL }, NULL },
+        { { "XDG_CURRENT_DESKTOP=KDE", "DESKTOP_SESSION=plasma", NULL },
+          NULL },
+        { { "XDG_CURRENT_DESKTOP=COSMIC", NULL }, NULL },
+        { { "XDG_CURRENT_DESKTOP=wlroots", NULL }, NULL },
+        /* an exported but empty socket says nothing */
+        { { "SWAYSOCK=", "XDG_CURRENT_DESKTOP=GNOME", NULL }, NULL },
+        { { NULL }, NULL }
+    };
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(cases); i++) {
+        const gchar *found = clawt_window_manager_tiling(cases[i].env);
+
+        g_assert_cmpstr(found, ==, cases[i].expected);
+    }
+}
+
+/*
+ * show and hide answer themselves; auto asks the session.
+ */
+static void
+test_window_buttons_shown(void)
+{
+    static const gchar * const tiled[] = {
+        "GOWL_SOCKET=/run/user/1000/gowl.sock", NULL
+    };
+    static const gchar * const floating[] = {
+        "XDG_CURRENT_DESKTOP=GNOME", NULL
+    };
+
+    g_assert_false(clawt_window_buttons_shown(CLAWT_WINDOW_BUTTONS_AUTO,
+                                              tiled));
+    g_assert_true(clawt_window_buttons_shown(CLAWT_WINDOW_BUTTONS_AUTO,
+                                             floating));
+    g_assert_true(clawt_window_buttons_shown(CLAWT_WINDOW_BUTTONS_SHOW,
+                                             tiled));
+    g_assert_false(clawt_window_buttons_shown(CLAWT_WINDOW_BUTTONS_HIDE,
+                                              floating));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -2031,6 +2165,12 @@ main(int argc, char *argv[])
                     test_descriptions_emit_no_css);
     g_test_add_func("/appearance/sidebar-collapsed-round-trip",
                     test_sidebar_collapsed_round_trip);
+    g_test_add_func("/appearance/window-buttons/round-trip",
+                    test_window_buttons_round_trip);
+    g_test_add_func("/appearance/window-buttons/tiling-session",
+                    test_window_manager_tiling);
+    g_test_add_func("/appearance/window-buttons/shown",
+                    test_window_buttons_shown);
 
     g_test_add_func("/appearance/lrg/defaults", test_lrg_keys_default_to_zero);
     g_test_add_func("/appearance/lrg/round-trip", test_lrg_keys_round_trip);
