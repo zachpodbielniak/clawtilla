@@ -280,6 +280,13 @@ static const ClawtIntegrationField fields[] = {
       NULL,
       CLAWT_FIELD_BOOLEAN, NULL, NULL, NULL, NULL, FALSE },
 
+    { "connector", "mirror_intake", "Take tickets assigned to the agent (VENTURE)",
+      "With tasks mirrored: a todo ticket assigned to the agent's VENTURE "
+      "user starts a task for it, ten an hour at most. Anyone who can edit "
+      "tickets there can then hand it work.",
+      NULL,
+      CLAWT_FIELD_BOOLEAN, NULL, NULL, NULL, NULL, FALSE },
+
     { "connector", "tools", "Tools",
       "Which of the connector's tools agents may call. Empty means all "
       "of them.",

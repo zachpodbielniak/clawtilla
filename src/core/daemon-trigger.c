@@ -565,6 +565,21 @@ clawt_daemon_trigger_deliver(ClawtDaemon        *self,
     }
 
     /*
+     * A VENTURE ticket or comment changed: the task mirror reads VENTURE
+     * back now rather than at its next minute (0.45.0).  Only a wake-up
+     * -- the mirror reads with each agent's own token and acts on what it
+     * finds, never on what the webhook says -- and the trigger runs as
+     * configured as well.
+     */
+    if (clawt_trigger_event_get_provider(event) ==
+            CLAWT_TRIGGER_PROVIDER_VENTURE &&
+        g_str_has_prefix(clawt_trigger_event_get_name(event) != NULL
+                             ? clawt_trigger_event_get_name(event) : "",
+                         "ticket") &&
+        self->venture_mirror != NULL)
+        clawt_venture_mirror_poll(self->venture_mirror);
+
+    /*
      * A trigger whose own configuration cannot be acted on -- a match
      * filter that does not read, a post with no room -- refuses rather
      * than acting on a filter or a destination it does not have.  503 and

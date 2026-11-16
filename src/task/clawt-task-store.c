@@ -108,6 +108,11 @@ static const gchar *SCHEMA_SQL =
     "  note_id INTEGER PRIMARY KEY,"
     "  task_id TEXT NOT NULL,"
     "  comment_id INTEGER NOT NULL"
+    ");"
+    /* Where the reverse poll got to, per account (0.45.0). */
+    "CREATE TABLE IF NOT EXISTS venture_cursors ("
+    "  key TEXT PRIMARY KEY,"
+    "  value TEXT NOT NULL"
     ");";
 
 struct _ClawtTaskStore {
@@ -1419,6 +1424,96 @@ clawt_task_store_put_venture_ref(ClawtTaskStore        *self,
 
     sqlite3_finalize(stmt);
     return ok;
+}
+
+gchar *
+clawt_task_store_venture_cursor(ClawtTaskStore *self, const gchar *key)
+{
+    sqlite3_stmt *stmt = NULL;
+    gchar *value = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), NULL);
+
+    if (sqlite3_prepare_v2(self->db,
+            "SELECT value FROM venture_cursors WHERE key = ?",
+            -1, &stmt, NULL) != SQLITE_OK)
+        return NULL;
+
+    sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+        value = g_strdup((const gchar *)sqlite3_column_text(stmt, 0));
+
+    sqlite3_finalize(stmt);
+    return value;
+}
+
+void
+clawt_task_store_put_venture_cursor(ClawtTaskStore *self, const gchar *key,
+                                    const gchar *value)
+{
+    sqlite3_stmt *stmt = NULL;
+
+    g_return_if_fail(CLAWT_IS_TASK_STORE(self));
+
+    if (sqlite3_prepare_v2(self->db,
+            "INSERT OR REPLACE INTO venture_cursors (key, value) "
+            "VALUES (?, ?)", -1, &stmt, NULL) != SQLITE_OK)
+        return;
+
+    sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, value, -1, SQLITE_TRANSIENT);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+}
+
+GHashTable *
+clawt_task_store_venture_live_tickets(ClawtTaskStore *self)
+{
+    sqlite3_stmt *stmt = NULL;
+    GHashTable *live = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                             g_free, g_free);
+
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), live);
+
+    /* Mirrored tasks still going: the tickets whose comments matter. */
+    if (sqlite3_prepare_v2(self->db,
+            "SELECT r.ticket_id, r.task_id FROM venture_refs r "
+            "JOIN tasks t ON t.id = r.task_id "
+            "WHERE r.ticket_id > 0 AND r.state = 'synced' "
+            "  AND t.finished_at = 0", -1, &stmt, NULL) != SQLITE_OK)
+        return live;
+
+    while (sqlite3_step(stmt) == SQLITE_ROW)
+        g_hash_table_replace(live,
+            g_strdup_printf("%" G_GINT64_FORMAT, (gint64)sqlite3_column_int64(stmt, 0)),
+            g_strdup((const gchar *)sqlite3_column_text(stmt, 1)));
+
+    sqlite3_finalize(stmt);
+    return live;
+}
+
+gchar *
+clawt_task_store_venture_task_for_ticket(ClawtTaskStore *self,
+                                         gint64          ticket_id)
+{
+    sqlite3_stmt *stmt = NULL;
+    gchar *task_id = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), NULL);
+
+    if (sqlite3_prepare_v2(self->db,
+            "SELECT task_id FROM venture_refs WHERE ticket_id = ? LIMIT 1",
+            -1, &stmt, NULL) != SQLITE_OK)
+        return NULL;
+
+    sqlite3_bind_int64(stmt, 1, ticket_id);
+
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+        task_id = g_strdup((const gchar *)sqlite3_column_text(stmt, 0));
+
+    sqlite3_finalize(stmt);
+    return task_id;
 }
 
 JsonNode *

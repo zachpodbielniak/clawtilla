@@ -610,6 +610,48 @@ gboolean clawt_task_store_put_venture_ref(ClawtTaskStore        *self,
                                           GError               **error);
 
 /**
+ * clawt_task_store_venture_cursor:
+ * @self: a #ClawtTaskStore
+ * @key: which cursor
+ *
+ * Returns: (transfer full) (nullable): where the VENTURE poll got to
+ */
+gchar *clawt_task_store_venture_cursor(ClawtTaskStore *self,
+                                       const gchar    *key);
+
+/**
+ * clawt_task_store_put_venture_cursor:
+ * @self: a #ClawtTaskStore
+ * @key: which cursor
+ * @value: where it got to
+ */
+void clawt_task_store_put_venture_cursor(ClawtTaskStore *self,
+                                         const gchar    *key,
+                                         const gchar    *value);
+
+/**
+ * clawt_task_store_venture_live_tickets:
+ * @self: a #ClawtTaskStore
+ *
+ * The tickets of mirrored tasks that have not finished: ticket id (as
+ * decimal text) to task id.  Whose comments the mirror reads back.
+ *
+ * Returns: (transfer full) (element-type utf8 utf8): the map, empty for
+ *   none
+ */
+GHashTable *clawt_task_store_venture_live_tickets(ClawtTaskStore *self);
+
+/**
+ * clawt_task_store_venture_task_for_ticket:
+ * @self: a #ClawtTaskStore
+ * @ticket_id: a VENTURE ticket
+ *
+ * Returns: (transfer full) (nullable): the task mirrored as it, or %NULL
+ */
+gchar *clawt_task_store_venture_task_for_ticket(ClawtTaskStore *self,
+                                                gint64          ticket_id);
+
+/**
  * clawt_task_store_note:
  * @self: a #ClawtTaskStore
  * @note_id: the note
