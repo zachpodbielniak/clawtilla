@@ -264,8 +264,9 @@ static void
 inbound_cancel(gpointer data, const gchar *task_id, const gchar *who)
 {
     ClawtDaemon *self = data;
-    g_autofree gchar *reason = g_strdup_printf(
-        "cancelled in VENTURE (%s)", who);
+    g_autofree gchar *reason = (who == NULL || g_strcmp0(who, "VENTURE") == 0)
+        ? g_strdup("cancelled in VENTURE")
+        : g_strdup_printf("cancelled in VENTURE by %s", who);
 
     if (clawt_task_manager_cancel(self->tasks, task_id, reason, "user") > 0)
         g_message("venture mirror: task %s %s", task_id, reason);

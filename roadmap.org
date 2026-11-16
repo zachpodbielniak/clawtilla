@@ -413,6 +413,7 @@ The ~forge~ record type is owner-only in VENTURE, so an editor -- every agent ac
 
 ** DONE V3: Branches, the operator's account, milestones and goals v0.46.0 :integrations:orchestration:
 - *Done:* a =ticket_link= per task with a checkout (the matched repository, its branch, origin =venture=), once; ~service_token_file~ on a mirroring connector, the operator's own account for the operator's tasks and for tasks no involved agent has an account for; ~projects.venture_milestone_id~ / ~venture_goal_id~ set on new tickets, read once a day by the reverse poll into ~tasks.db~ (=context-changed=), shown in =PROJECTS.org= (=write_projects_region()=, =clawt_daemon_refresh_projects_regions()=) and in the project brief of each task's assignment, never fetched on an agent's path.
+- *Also:* the contract with VENTURE checked from both sides (VENTURE 0.10.2's =tests/fixtures/api-contract/=, our =tests/fixtures/venture/= and =tests/test-venture-contract.c=, =make check-venture-contract=); and run end to end against a throwaway VENTURE and a throwaway two-agent fleet (outbound, intake, comments, cancel, VENTURE down and back, a daemon restart) -- see "Seen working" in =docs/venture.org=.
 - *Not done:* pull requests (clawtilla does not open them).
 - *Version:* minor.
 

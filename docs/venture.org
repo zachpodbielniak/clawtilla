@@ -158,6 +158,16 @@ An agent whose connector mirrors is told so in the integrations section of its =
 
 What the mirror reads of each VENTURE answer is a contract, recorded on VENTURE's side: its =tests/fixtures/api-contract/= holds the shape -- every key, its type -- of each answer (=whoami=, repository resolve, a ticket filed, listed and updated, comments made and listed, the branch link, a run opened and closed, a milestone), and VENTURE's tests fail when one stops matching.  clawtilla keeps a copy in =tests/fixtures/venture/=, and =tests/test-venture-contract.c= checks every key the mirror reads is in it with the type it reads it as.  =make check-venture-contract= (with VENTURE checked out beside clawtilla, or =VENTURE_DIR=) diffs the two copies.
 
+* Seen working
+
+On 2026-11-16 a throwaway VENTURE (0.10.2, a scratch database) and a throwaway two-agent fleet (claude-code, sonnet) were run against each other, with a temporary repository whose remote VENTURE knew:
+
+- an operator task became ticket #1 assigned to the agent's VENTURE user, moved =todo= -> =in_progress= -> =done= as the agent's own account, got the result as an internal comment by =API token #3=, the task branch as a =ticket_link= (origin =venture=), and an external run with its real cost (0.241634 USD);
+- two tickets assigned to the agent's user in VENTURE became tasks within a minute (intake), each given its reference by the first update;
+- a person's comment on one reached the task's thread as =venture:API token #1=, and cancelling that ticket cancelled the task;
+- with VENTURE stopped, the next task still ran and completed -- its ticket showed queued, "VENTURE did not answer" -- and when VENTURE came back the outbox drained by itself;
+- a pending task survived the daemon's restart, then ran, and its ticket was kept current.
+
 * Troubleshooting
 
 | Seen | Why, and what to do |
