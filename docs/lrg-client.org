@@ -752,7 +752,7 @@ A task delegated with ~thread: new~ carries an *Open room* button and =clawt_tas
 | listing | ~task.list~ | on show and on =task.*= |
 | Cancel (pending or running only) | ~task.cancel~ | asks first, because cancelling cascades to everything the task handed on; toasts how many were cancelled |
 | Retry (failed or stalled only, =clawt_task_state_is_retryable()=) | ~task.retry~ with ~task~ | re-queues it for its assignee; toasts which |
-| Since when | ~task.list~'s ~since~ | first on the page: =clawt_held_since_caption()=, how far back both lists reach (tasks and incidents are held in memory) |
+| What it covers | ~task.list~'s ~kept~, ~retention_days~, ~since~ | first on the page: =clawt_task_list_caption()=, the live set and how long tasks are kept |
 | Problems to look at | ~incident.list~ | above the tree, on show and on =task.*= or =incident.*=: the two settings and a card per open incident -- whose run, its kind, what it said, who was told |
 | Retry on an incident (when ~retryable~) | ~task.retry~ with ~incident~ | a routine is run again, a task re-queued |
 | Report broken runs / Who hears about them, Save | ~incident.configure~ | the recipients walked from =clawt_incident_recipient_count()= / =_nth()= |

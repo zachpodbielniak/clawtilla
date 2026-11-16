@@ -25,6 +25,13 @@ struct _ClawtTask {
     gchar *session_key;
 
     /*
+     * What the task is called in a list.  Given by whoever created it,
+     * or derived from the prompt's first line when they did not: a list
+     * of prompts is unreadable, and a prompt is often a page long.
+     */
+    gchar *title;
+
+    /*
      * The room the work itself happens in, when the delegator asked for
      * `thread: new` -- a session of its own.  Distinct from `room`,
      * which is where the delegation was *made* and where the settle
@@ -70,6 +77,7 @@ struct _ClawtTask {
     ClawtTaskState state;
     gint           depth;
     gint64         created_at;
+    gint64         started_at;
     gint64         finished_at;
 };
 
@@ -156,6 +164,7 @@ clawt_task_copy(ClawtTask *self)
     copy->thread_room = g_strdup(self->thread_room);
     copy->consult = self->consult;
     copy->session_key = g_strdup(self->session_key);
+    copy->title = g_strdup(self->title);
     copy->progress_note = g_strdup(self->progress_note);
     copy->cancelled_by = g_strdup(self->cancelled_by);
     copy->retried_by = g_strdup(self->retried_by);
@@ -180,6 +189,7 @@ clawt_task_copy(ClawtTask *self)
     copy->state = self->state;
     copy->depth = self->depth;
     copy->created_at = self->created_at;
+    copy->started_at = self->started_at;
     copy->finished_at = self->finished_at;
 
     return copy;
@@ -204,6 +214,7 @@ clawt_task_free(ClawtTask *self)
     g_free(self->reason);
     g_free(self->model);
     g_free(self->session_key);
+    g_free(self->title);
     g_free(self->thread_room);
     g_free(self->progress_note);
     g_free(self->cancelled_by);
@@ -337,6 +348,14 @@ clawt_task_take_completion_hold(ClawtTask *self)
 }
 
 gboolean
+clawt_task_get_holds_completion(ClawtTask *self)
+{
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    return self->holds_completion;
+}
+
+gboolean
 clawt_task_get_result_inferred(ClawtTask *self)
 {
     g_return_val_if_fail(self != NULL, FALSE);
@@ -380,12 +399,105 @@ clawt_task_get_finished_at(ClawtTask *self)
     return self->finished_at;
 }
 
+gint64
+clawt_task_get_started_at(ClawtTask *self)
+{
+    g_return_val_if_fail(self != NULL, 0);
+    return self->started_at;
+}
+
+/*
+ * The longest a title may be, in bytes, cut on a character boundary.
+ * Enough for a sentence; a list row that wraps is a list nobody scans.
+ */
+#define CLAWT_TASK_TITLE_MAX (120)
+
+gchar *
+clawt_task_title_from_prompt(const gchar *prompt)
+{
+    const gchar *start;
+    const gchar *end;
+    g_autofree gchar *line = NULL;
+
+    if (prompt == NULL)
+        return g_strdup("");
+
+    /*
+     * The first line that says anything.  A prompt that opens with a
+     * blank line or a lone heading marker would otherwise be titled with
+     * nothing, which reads as a task with no work in it.
+     */
+    start = prompt;
+
+    while (*start != '\0') {
+        const gchar *p = start;
+
+        while (*p == ' ' || *p == '\t' || *p == '#' || *p == '*' ||
+               *p == '-' || *p == '>')
+            p++;
+
+        end = strchr(p, '\n');
+
+        if (end == NULL)
+            end = p + strlen(p);
+
+        if (end > p) {
+            line = g_strndup(p, (gsize)(end - p));
+            break;
+        }
+
+        if (*end == '\0')
+            break;
+
+        start = end + 1;
+    }
+
+    if (line == NULL)
+        return g_strdup("");
+
+    g_strstrip(line);
+
+    return clawt_utf8_truncate(line, CLAWT_TASK_TITLE_MAX, FALSE);
+}
+
+const gchar *
+clawt_task_get_title(ClawtTask *self)
+{
+    g_return_val_if_fail(self != NULL, NULL);
+
+    /*
+     * Derived on first read rather than at creation, so a task built
+     * from JSON written before titles existed gets one too.
+     */
+    if (self->title == NULL)
+        self->title = clawt_task_title_from_prompt(self->prompt);
+
+    return self->title;
+}
+
+void
+clawt_task_set_title(ClawtTask *self, const gchar *title)
+{
+    g_return_if_fail(self != NULL);
+
+    g_free(self->title);
+    self->title = (title != NULL && *title != '\0')
+        ? clawt_utf8_truncate(title, CLAWT_TASK_TITLE_MAX, FALSE) : NULL;
+}
+
 void
 clawt_task_set_state(ClawtTask *self, ClawtTaskState state)
 {
     g_return_if_fail(self != NULL);
 
     self->state = state;
+
+    /*
+     * When somebody first picked it up.  Once: a retry is the same task
+     * on its second attempt, and the first start is when it began.
+     */
+    if (state == CLAWT_TASK_RUNNING && self->started_at == 0)
+        self->started_at = g_get_real_time() / G_USEC_PER_SEC;
 
     /*
      * Stamped once, when the task reaches a state it will not leave.  A
@@ -538,4 +650,228 @@ clawt_task_state_is_retryable(ClawtTaskState state)
     }
 
     return FALSE;
+}
+
+/* ── Saving and restoring ────────────────────────────────────────── */
+
+/*
+ * Every field, by name.  The member names are the store's on-disk
+ * format, so they are spelled once here and never renamed: a field
+ * added later is a new member, and a task saved before it existed reads
+ * it as absent -- the zero value, which every field is written to mean
+ * "never set".
+ */
+static void
+add_string(JsonBuilder *builder, const gchar *name, const gchar *value)
+{
+    if (value == NULL)
+        return;
+
+    json_builder_set_member_name(builder, name);
+    json_builder_add_string_value(builder, value);
+}
+
+static void
+add_int(JsonBuilder *builder, const gchar *name, gint64 value)
+{
+    json_builder_set_member_name(builder, name);
+    json_builder_add_int_value(builder, value);
+}
+
+static void
+add_bool(JsonBuilder *builder, const gchar *name, gboolean value)
+{
+    json_builder_set_member_name(builder, name);
+    json_builder_add_boolean_value(builder, value);
+}
+
+JsonNode *
+clawt_task_to_json(ClawtTask *self)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    guint i;
+
+    g_return_val_if_fail(self != NULL, NULL);
+
+    json_builder_begin_object(builder);
+
+    add_string(builder, "id", self->id);
+    add_string(builder, "origin", self->origin);
+    add_string(builder, "assignee", self->assignee);
+    add_string(builder, "prompt", self->prompt);
+    add_string(builder, "result", self->result);
+    add_string(builder, "room", self->room);
+    add_string(builder, "parent_id", self->parent_id);
+    add_string(builder, "reason", self->reason);
+    add_string(builder, "model", self->model);
+    add_string(builder, "session_key", self->session_key);
+    add_string(builder, "title", self->title);
+    add_string(builder, "thread_room", self->thread_room);
+    add_string(builder, "progress_note", self->progress_note);
+    add_string(builder, "cancelled_by", self->cancelled_by);
+    add_string(builder, "retried_by", self->retried_by);
+
+    add_bool(builder, "consult", self->consult);
+    add_bool(builder, "holds_completion", self->holds_completion);
+    add_bool(builder, "result_inferred", self->result_inferred);
+
+    add_int(builder, "retries", self->retries);
+    add_int(builder, "depth", self->depth);
+    add_int(builder, "created_at", self->created_at);
+    add_int(builder, "started_at", self->started_at);
+    add_int(builder, "finished_at", self->finished_at);
+
+    /* By nickname, so the file survives the enum being reordered. */
+    json_builder_set_member_name(builder, "state");
+    json_builder_add_string_value(builder,
+        clawt_enum_to_nick(CLAWT_TYPE_TASK_STATE, self->state));
+
+    json_builder_set_member_name(builder, "owners");
+    json_builder_begin_array(builder);
+
+    for (i = 0; self->owners != NULL && i < self->owners->len; i++)
+        json_builder_add_string_value(builder,
+                                      g_ptr_array_index(self->owners, i));
+
+    json_builder_end_array(builder);
+    json_builder_end_object(builder);
+
+    return json_builder_get_root(builder);
+}
+
+static gchar *
+dup_member(JsonObject *object, const gchar *name)
+{
+    JsonNode *node = json_object_get_member(object, name);
+
+    if (node == NULL || !JSON_NODE_HOLDS_VALUE(node) ||
+        json_node_get_value_type(node) != G_TYPE_STRING)
+        return NULL;
+
+    return g_strdup(json_node_get_string(node));
+}
+
+static gint64
+int_member(JsonObject *object, const gchar *name)
+{
+    JsonNode *node = json_object_get_member(object, name);
+
+    if (node == NULL || !JSON_NODE_HOLDS_VALUE(node))
+        return 0;
+
+    return json_node_get_int(node);
+}
+
+static gboolean
+bool_member(JsonObject *object, const gchar *name)
+{
+    JsonNode *node = json_object_get_member(object, name);
+
+    if (node == NULL || !JSON_NODE_HOLDS_VALUE(node) ||
+        json_node_get_value_type(node) != G_TYPE_BOOLEAN)
+        return FALSE;
+
+    return json_node_get_boolean(node);
+}
+
+ClawtTask *
+clawt_task_new_from_json(JsonNode *node, GError **error)
+{
+    JsonObject *object;
+    ClawtTask *self;
+    g_autofree gchar *state = NULL;
+    gint state_value = CLAWT_TASK_FAILED;
+    JsonArray *owners;
+    guint i;
+
+    if (node == NULL || !JSON_NODE_HOLDS_OBJECT(node)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "a saved task is not a JSON object");
+        return NULL;
+    }
+
+    object = json_node_get_object(node);
+
+    /*
+     * The two fields without which there is no task: a row with no id
+     * cannot be found again, and one with no prompt says nothing about
+     * what was asked.  Refused rather than repaired, so the caller can
+     * name the row and skip it.
+     */
+    if (!json_object_has_member(object, "id") ||
+        !json_object_has_member(object, "prompt")) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "a saved task has no id or no prompt");
+        return NULL;
+    }
+
+    self = g_new0(ClawtTask, 1);
+    self->ref_count = 1;
+
+    self->id = dup_member(object, "id");
+    self->origin = dup_member(object, "origin");
+    self->assignee = dup_member(object, "assignee");
+    self->prompt = dup_member(object, "prompt");
+    self->result = dup_member(object, "result");
+    self->room = dup_member(object, "room");
+    self->parent_id = dup_member(object, "parent_id");
+    self->reason = dup_member(object, "reason");
+    self->model = dup_member(object, "model");
+    self->session_key = dup_member(object, "session_key");
+    self->title = dup_member(object, "title");
+    self->thread_room = dup_member(object, "thread_room");
+    self->progress_note = dup_member(object, "progress_note");
+    self->cancelled_by = dup_member(object, "cancelled_by");
+    self->retried_by = dup_member(object, "retried_by");
+
+    self->consult = bool_member(object, "consult");
+    self->holds_completion = bool_member(object, "holds_completion");
+    self->result_inferred = bool_member(object, "result_inferred");
+
+    self->retries = (guint)MAX(int_member(object, "retries"), 0);
+    self->depth = (gint)int_member(object, "depth");
+    self->created_at = int_member(object, "created_at");
+    self->started_at = int_member(object, "started_at");
+    self->finished_at = int_member(object, "finished_at");
+
+    /*
+     * A state this build does not know is read as failed, said once:
+     * a task restored as "pending" from a nickname nobody recognises
+     * would be work that runs again.  Failed is the state a person can
+     * look at and retry.
+     */
+    state = dup_member(object, "state");
+
+    if (state == NULL ||
+        !clawt_enum_from_nick(CLAWT_TYPE_TASK_STATE, state, &state_value)) {
+        g_warning("task %s: saved state '%s' is not one this build knows; "
+                  "reading it as failed", self->id,
+                  state != NULL ? state : "(none)");
+        state_value = CLAWT_TASK_FAILED;
+    }
+
+    self->state = (ClawtTaskState)state_value;
+
+    if (self->session_key == NULL)
+        self->session_key = g_strdup_printf("clawtilla-task-%s", self->id);
+
+    self->owners = g_ptr_array_new_with_free_func(g_free);
+    owners = json_object_has_member(object, "owners")
+        ? json_object_get_array_member(object, "owners") : NULL;
+
+    for (i = 0; owners != NULL && i < json_array_get_length(owners); i++) {
+        const gchar *owner = json_array_get_string_element(owners, i);
+
+        if (owner != NULL)
+            g_ptr_array_add(self->owners, g_strdup(owner));
+    }
+
+    /* The history's last entry is the assignee, by the type's own rule. */
+    if (self->assignee != NULL &&
+        (self->owners->len == 0 ||
+         g_strcmp0(g_ptr_array_index(self->owners, self->owners->len - 1),
+                   self->assignee) != 0))
+        g_ptr_array_add(self->owners, g_strdup(self->assignee));
+
+    return self;
 }

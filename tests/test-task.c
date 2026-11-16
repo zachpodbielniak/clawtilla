@@ -505,8 +505,11 @@ test_a_delegator_sees_what_its_work_turned_into(void)
 
 /*
  * A parent id naming a task that is not there stops the walk rather
- * than the daemon.  Tasks are in memory and a restart clears them, so a
- * dangling parent is an ordinary state and not a corruption.
+ * than the daemon.  A parent can be pruned after its retention window
+ * while a child it handed on lives on, so a dangling parent is an
+ * ordinary state and not a corruption.  The parent is set after
+ * creation here, so the change is saved through the manager, which is
+ * what keeps its children index right.
  */
 static void
 test_a_missing_parent_ends_the_walk(void)
@@ -518,6 +521,7 @@ test_a_missing_parent_ends_the_walk(void)
     orphan = clawt_task_manager_create(tasks, "kudu", "mamba", "a detail",
                                        NULL, NULL);
     clawt_task_set_parent_id(orphan, "task-that-went-away");
+    clawt_task_manager_save(tasks, orphan, NULL);
 
     below = clawt_task_manager_list_descendants(tasks, "chief", FALSE);
 

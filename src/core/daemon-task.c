@@ -138,21 +138,72 @@ clawt_daemon_handle_task(
     /* ── tasks ── */
     if (g_strcmp0(kind, "task.list") == 0) {
         g_autoptr(GPtrArray) tasks = NULL;
+        gboolean history = clawt_ipc_payload_boolean(payload, "history",
+                                                     FALSE);
         guint i;
 
-        tasks = clawt_task_manager_list(
-            self->tasks, clawt_ipc_payload_string(payload, "agent"),
-            clawt_ipc_payload_boolean(payload, "all", TRUE));
+        /*
+         * Two lists.  Without `history`, the live set from memory: every
+         * task that has not finished and those that finished in the last
+         * day, which is what a Tasks page shows.  With it, every task the
+         * store still holds, newest first and a page at a time -- `before`
+         * is the paging cursor, the created_at of the last task of the
+         * previous page.
+         */
+        if (history) {
+            g_autoptr(GError) error = NULL;
+            ClawtTaskQuery query = { NULL, -1, 0, 0 };
+            const gchar *state = clawt_ipc_payload_string(payload, "state");
+            gint value;
+
+            query.assignee = clawt_ipc_payload_string(payload, "agent");
+            query.before = clawt_ipc_payload_int(payload, "before", 0);
+            query.limit = (guint)CLAMP(
+                clawt_ipc_payload_int(payload, "limit",
+                                      CLAWT_TASK_STORE_PAGE), 1, 1000);
+
+            if (state != NULL) {
+                if (!clawt_enum_from_nick(CLAWT_TYPE_TASK_STATE, state,
+                                          &value))
+                    return clawt_ipc_error_new(
+                        request, CLAWT_ERROR_INVALID_ARGUMENT,
+                        "state must be a task state, such as failed");
+
+                query.state = value;
+            }
+
+            tasks = clawt_task_manager_list_history(self->tasks, &query,
+                                                    &error);
+
+            if (tasks == NULL)
+                return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                           error->message);
+        } else {
+            tasks = clawt_task_manager_list(
+                self->tasks, clawt_ipc_payload_string(payload, "agent"),
+                clawt_ipc_payload_boolean(payload, "all", TRUE));
+
+            /*
+             * Borrowed from the manager (the array frees nothing), where
+             * the history branch's are copies the array owns: either way
+             * the array is all there is to free.
+             */
+        }
 
         json_builder_begin_object(builder);
 
         /*
-         * Tasks are held in memory: the list is everything since this
-         * daemon started, and saying when is what keeps an empty list
-         * after a restart from reading as "nothing was ever delegated".
+         * When this daemon started, kept for clients that still print
+         * it; and how far back the list reaches now that tasks are kept,
+         * which is what clawt_task_list_caption() says.
          */
         json_builder_set_member_name(builder, "since");
         json_builder_add_int_value(builder, self->started_at);
+        json_builder_set_member_name(builder, "kept");
+        json_builder_add_boolean_value(builder, self->task_store != NULL);
+        json_builder_set_member_name(builder, "retention_days");
+        json_builder_add_int_value(builder, clawt_config_get_int(
+            self->config, "orchestration.task_retention_days"));
 
         json_builder_set_member_name(builder, "tasks");
         json_builder_begin_array(builder);
@@ -179,6 +230,22 @@ clawt_daemon_handle_task(
         json_builder_begin_object(builder);
         json_builder_set_member_name(builder, "task");
         clawt_daemon_add_task_object(builder, task);
+
+        /*
+         * Its history, when asked for: every state it was left in and
+         * what moved it there.  Absent without a store rather than an
+         * error -- the task itself is still worth answering with.
+         */
+        if (clawt_ipc_payload_boolean(payload, "journal", FALSE)) {
+            JsonNode *journal = clawt_task_manager_journal(
+                self->tasks, task_id, NULL);
+
+            if (journal != NULL) {
+                json_builder_set_member_name(builder, "journal");
+                json_builder_add_value(builder, journal);
+            }
+        }
+
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
@@ -269,7 +336,7 @@ clawt_daemon_handle_task(
                 clawt_config_get_enum(self->config,
                                       "orchestration.incidents.to")));
 
-        /* Held in memory like the tasks they describe; see task.list. */
+        /* Kept with the tasks they describe; see task.list. */
         json_builder_set_member_name(builder, "since");
         json_builder_add_int_value(builder, self->started_at);
 
@@ -345,4 +412,358 @@ clawt_daemon_handle_task(
 
     *handled = FALSE;
     return NULL;
+}
+
+/* ── The task store ──────────────────────────────────────────────── */
+
+/*
+ * Opens tasks.db and restores the live set into the manager.
+ *
+ * Called straight after the manager is built and before anything
+ * connects to ::task-changed, which is what keeps the restore silent: a
+ * task read back must not send its settle notice, raise its incident or
+ * reach a client as news.  A store that will not open is said once and
+ * survived -- the daemon runs as it always did, in memory -- because a
+ * damaged file must not cost the operator their fleet.
+ */
+void
+clawt_daemon_tasks_setup(
+	ClawtDaemon *self
+){
+	g_autofree gchar *path = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+	guint loaded;
+
+	g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+	path = g_build_filename(self->state_dir, "tasks.db", NULL);
+	self->task_store = clawt_task_store_new(path, &error);
+
+	if (self->task_store == NULL) {
+		g_warning("tasks: %s: %s; tasks and incidents are held in memory "
+		          "only until it opens", path,
+		          error != NULL ? error->message : "unknown error");
+		return;
+	}
+
+	clawt_task_manager_set_store(self->tasks, self->task_store);
+
+	loaded = clawt_task_manager_load(
+		self->tasks, now - CLAWT_DAEMON_TASK_LIVE_SECONDS, &error);
+
+	if (error != NULL)
+		g_warning("tasks: could not read back the live tasks: %s",
+		          error->message);
+	else if (loaded > 0)
+		g_message("tasks: %u restored from %s", loaded, path);
+
+	/*
+	 * A task with a room of its own (`thread: new`) points at a room the
+	 * room manager holds in memory: made again here, with the same two
+	 * members, and it reads its transcript back as it is inserted.
+	 * Without this the task would name a room nothing can open, and its
+	 * assignee's next message would go nowhere.
+	 */
+	if (loaded > 0 && self->rooms != NULL) {
+		g_autoptr(GPtrArray) live = clawt_task_manager_list(self->tasks, NULL,
+		                                                    TRUE);
+		guint i;
+
+		for (i = 0; i < live->len; i++) {
+			ClawtTask *task = g_ptr_array_index(live, i);
+
+			if (clawt_task_get_thread_room(task) == NULL ||
+			    clawt_task_get_origin(task) == NULL ||
+			    clawt_task_get_assignee(task) == NULL)
+				continue;
+
+			clawt_room_manager_get_task(self->rooms, clawt_task_get_id(task),
+			                            clawt_task_get_origin(task),
+			                            clawt_task_get_assignee(task));
+		}
+	}
+}
+
+/*
+ * The incidents the last daemon left, as it left them.  After the desk
+ * exists and before anything can raise one, so a restored incident and
+ * a new one for the same run are one incident counting up.
+ */
+void
+clawt_daemon_tasks_restore_incidents(
+	ClawtDaemon *self
+){
+	guint restored;
+
+	g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+	if (self->incidents == NULL || self->task_store == NULL)
+		return;
+
+	clawt_incident_desk_set_store(self->incidents, self->task_store);
+	restored = clawt_incident_desk_restore(self->incidents);
+
+	if (restored > 0)
+		g_message("tasks: %u incident%s restored", restored,
+		          restored == 1 ? "" : "s");
+}
+
+/*
+ * Whether anything is still carrying @task forward after a restart.
+ *
+ * A task that has not finished is alive when any of these holds, and
+ * each is something that will move it without anybody's help:
+ *
+ *   - its assignee armed a completion hold (it said it is not done);
+ *   - a task it handed on has not finished (the child's settle notice
+ *     wakes it);
+ *   - its assignee's mailbox holds a pending or leased item for it,
+ *     which includes a turn the restart cut short and turn recovery
+ *     handed back;
+ *   - its assignee has a wait pending (the wait's ending wakes it);
+ *   - a handoff of it is still queued.
+ *
+ * Read after turn recovery, so a cut-short turn has already become a
+ * queued item or an interrupted notice.
+ */
+static gboolean
+task_is_carried(
+	ClawtDaemon *self,
+	ClawtTask   *task
+){
+	const gchar *task_id = clawt_task_get_id(task);
+	const gchar *assignee = clawt_task_get_assignee(task);
+	ClawtAgent *agent;
+	ClawtMailbox *mailbox;
+
+	if (clawt_task_get_holds_completion(task))
+		return TRUE;
+
+	if (clawt_task_manager_count_unfinished_children(self->tasks,
+	                                                 task_id) > 0)
+		return TRUE;
+
+	if (self->handoffs != NULL) {
+		g_autoptr(GPtrArray) moves =
+			clawt_handoff_store_for_task(self->handoffs, task_id);
+		guint i;
+
+		for (i = 0; moves != NULL && i < moves->len; i++)
+			if (clawt_handoff_get_state(g_ptr_array_index(moves, i)) ==
+			    CLAWT_HANDOFF_QUEUED)
+				return TRUE;
+	}
+
+	if (assignee == NULL)
+		return FALSE;
+
+	if (self->waits != NULL &&
+	    clawt_wait_manager_count(self->waits, assignee) > 0)
+		return TRUE;
+
+	agent = clawt_agent_manager_get(self->agents, assignee);
+	mailbox = agent != NULL ? clawt_agent_get_mailbox(agent) : NULL;
+
+	if (mailbox != NULL) {
+		ClawtMailboxFilter filter = { -1, 0, TRUE };
+		g_autoptr(GPtrArray) items = clawt_mailbox_list(mailbox, &filter);
+		guint i;
+
+		for (i = 0; items != NULL && i < items->len; i++) {
+			ClawtMailboxItem *item = g_ptr_array_index(items, i);
+			ClawtMailboxState state = clawt_mailbox_item_get_state(item);
+
+			if ((state == CLAWT_MAILBOX_PENDING ||
+			     state == CLAWT_MAILBOX_LEASED) &&
+			    g_strcmp0(clawt_mailbox_item_get_task_id(item),
+			              task_id) == 0)
+				return TRUE;
+		}
+	}
+
+	return FALSE;
+}
+
+/*
+ * Seeds the loop guard with what each restored task has already cost,
+ * so orchestration.task_budget_usd keeps counting where it left off:
+ * a budget that reset on every restart would be a budget a crash loop
+ * never meets.
+ */
+static void
+seed_task_spend(
+	ClawtDaemon *self,
+	GPtrArray   *live
+){
+	g_autoptr(GHashTable) ids = NULL;
+	g_autoptr(GHashTable) spend = NULL;
+	GHashTableIter iter;
+	gpointer key;
+	gpointer value;
+	GPtrArray *agents;
+	guint i;
+
+	if (self->guard == NULL || live == NULL || live->len == 0)
+		return;
+
+	ids = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	spend = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+
+	for (i = 0; i < live->len; i++)
+		g_hash_table_add(ids, g_strdup(clawt_task_get_id(
+			g_ptr_array_index(live, i))));
+
+	/* transfer none: the manager's own list */
+	agents = clawt_agent_manager_list(self->agents);
+
+	for (i = 0; agents != NULL && i < agents->len; i++) {
+		const gchar *agent_id = clawt_agent_get_id(
+			g_ptr_array_index(agents, i));
+		g_autofree gchar *state_dir = clawt_config_agent_state_dir(
+			self->config, agent_id);
+		g_autofree gchar *db_path = NULL;
+		g_autoptr(GError) error = NULL;
+
+		if (state_dir == NULL)
+			continue;
+
+		db_path = clawt_usage_database_path(state_dir);
+
+		if (!clawt_usage_task_spend(db_path, ids, spend, &error))
+			g_warning("%s: could not read what its tasks spent: %s",
+			          agent_id, error != NULL ? error->message : "unknown");
+	}
+
+	g_hash_table_iter_init(&iter, spend);
+
+	while (g_hash_table_iter_next(&iter, &key, &value)) {
+		gint64 micros = (gint64)GPOINTER_TO_SIZE(value);
+
+		if (micros > 0)
+			clawt_loop_guard_record_spend(self->guard, key,
+			                              (gdouble)micros / 1000000.0);
+	}
+}
+
+guint
+clawt_daemon_tasks_reconcile(
+	ClawtDaemon *self
+){
+	g_autoptr(GPtrArray) live = NULL;
+	g_autoptr(GPtrArray) orphans = NULL;
+	guint i;
+
+	g_return_val_if_fail(CLAWT_IS_DAEMON(self), 0);
+
+	if (self->task_store == NULL)
+		return 0;
+
+	live = clawt_task_manager_list(self->tasks, NULL, FALSE);
+	seed_task_spend(self, live);
+
+	/*
+	 * Decided first and failed after, because failing a task emits and
+	 * a handler could change what the rest of the walk would see.
+	 */
+	orphans = g_ptr_array_new_with_free_func(g_free);
+
+	for (i = 0; i < live->len; i++) {
+		ClawtTask *task = g_ptr_array_index(live, i);
+
+		if (!task_is_carried(self, task))
+			g_ptr_array_add(orphans, g_strdup(clawt_task_get_id(task)));
+	}
+
+	/*
+	 * Failed rather than stalled: nothing stopped it on a limit, the
+	 * daemon went away under it -- the same answer an agent crash gets,
+	 * and the one a delegator knows to retry.  Quietly, as far as the
+	 * incident desk goes, as when an agent's tasks are orphaned: one
+	 * restart is not a dozen problem reports.  The settle notices still
+	 * go, each to the room it was asked from, and the router folds a
+	 * delegator's several into one turn.
+	 */
+	if (orphans->len > 0 && self->incidents != NULL)
+		clawt_incident_desk_quiet_begin(self->incidents);
+
+	for (i = 0; i < orphans->len; i++)
+		clawt_task_manager_fail(self->tasks, g_ptr_array_index(orphans, i),
+		                        "the daemon restarted while this ran, and "
+		                        "nothing was left to carry it on: no turn, "
+		                        "queued message, wait, handoff or unfinished "
+		                        "task of its own. Retry it to run it again.");
+
+	if (orphans->len > 0 && self->incidents != NULL)
+		clawt_incident_desk_quiet_end(self->incidents);
+
+	if (orphans->len > 0)
+		g_message("tasks: %u left with nothing carrying them on after the "
+		          "restart, and failed so their delegators know",
+		          orphans->len);
+
+	return orphans->len;
+}
+
+/*
+ * Moves finished tasks out of memory after a day, and out of the store
+ * after the retention window.  Hourly: neither is urgent, and a task
+ * that finished a minute ago belongs on everybody's list.
+ */
+static gboolean
+on_task_prune_tick(
+	gpointer user_data
+){
+	ClawtDaemon *self = user_data;
+	gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+	gint64 days;
+
+	clawt_task_manager_forget_finished(self->tasks,
+	                                   now - CLAWT_DAEMON_TASK_LIVE_SECONDS);
+
+	days = clawt_config_get_int(self->config,
+	                            "orchestration.task_retention_days");
+
+	if (self->task_store != NULL && days > 0) {
+		g_autoptr(GError) error = NULL;
+		guint removed = clawt_task_store_prune(
+			self->task_store, now - days * 24 * 60 * 60, &error);
+
+		if (error != NULL)
+			g_warning("tasks: could not prune old tasks: %s",
+			          error->message);
+		else if (removed > 0)
+			g_message("tasks: removed %u finished more than %"
+			          G_GINT64_FORMAT " days ago", removed, days);
+	}
+
+	return G_SOURCE_CONTINUE;
+}
+
+void
+clawt_daemon_tasks_start_pruning(
+	ClawtDaemon *self
+){
+	g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+	if (self->task_prune != NULL)
+		return;
+
+	on_task_prune_tick(self);
+
+	/* On the daemon's own context; see clawt_timeout_add_seconds(). */
+	self->task_prune = clawt_timeout_add_seconds(60 * 60, on_task_prune_tick,
+	                                              self);
+}
+
+void
+clawt_daemon_tasks_stop(
+	ClawtDaemon *self
+){
+	g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+	if (self->task_prune != NULL) {
+		g_source_destroy(self->task_prune);
+		g_clear_pointer(&self->task_prune, g_source_unref);
+	}
 }

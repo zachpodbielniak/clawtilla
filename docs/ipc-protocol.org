@@ -963,7 +963,20 @@ A client offers the choices by walking ~clawt_ack_check_model_count()~
 
 ~task.list~, ~task.show~, ~task.cancel~, ~task.retry~.
 
-~task.list~ and ~incident.list~ both answer ~since~ (since 0.29.0): when this daemon started, as a Unix time.  Tasks are held in memory and incidents with them, so both lists reach back only that far; every client words it through =clawt_held_since_caption()= ("Since the daemon started at 09:14. Tasks and problems are held in memory, so a daemon restart clears this list; ...") rather than letting an empty list after a restart read as nothing having happened.  A reply without it (an older daemon) is "Since the daemon last started".
+Tasks and incidents are kept in ~tasks.db~ across restarts (since 0.35.0; docs/orchestration.org, "Tasks are kept, and survive a restart").
+
+~task.list~ with no options is the live set: every task that has not finished and those that finished in the last day, oldest first.  With ~history: true~ it is every task the store still holds, *newest* first, one page: ~limit~ (default 100, at most 1000), ~before~ (a Unix time; only tasks created before it -- pass the last task's ~created_at~ for the next page), ~state~ (a task state nickname; anything else is =INVALID_ARGUMENT=) and ~agent~ (the assignee).
+
+Both forms answer:
+- ~since~ (since 0.29.0): when this daemon started, as a Unix time.  ~incident.list~ carries it too.
+- ~kept~ (since 0.35.0): whether this daemon keeps tasks on disk.  False for a daemon whose ~tasks.db~ would not open, which then holds them in memory only.
+- ~retention_days~ (since 0.35.0): ~orchestration.task_retention_days~.
+
+Every client words the three through =clawt_task_list_caption()=: with ~kept~, "Tasks still open, and those that finished in the last day. Every task is kept for 180 days ...", and without it the older in-memory sentence (=clawt_held_since_caption()=).  A reply without ~kept~ (an older daemon) is read as false.
+
+~task.show~ takes ~task~ and, optionally, ~journal: true~, which adds ~journal~: the task's history, oldest first, each entry ~at~ (Unix time), ~state~ (nickname) and, when one was recorded, ~what~.  It answers for a task that has left the live set too, read back from the store.
+
+A task object carries (since 0.35.0) ~title~ (the given title or the first line of the prompt), ~created_at~, ~started_at~ and ~finished_at~ (Unix times; the last two only once they happened), ~room~ (the conversation it was delegated from) and ~cancelled_by~.
 
 A task object carries ~retries~ and ~retried_by~ once it has been retried, and not before.
 

@@ -309,15 +309,17 @@ refresh_tasks_once(ClawtWindow *self)
     reply = clawt_window_request(self, "task.list", NULL);
 
     /*
-     * How far back the lists reach.  Both are held in memory, so straight
-     * after a restart they are empty, and an empty list read as nothing
-     * ever having been delegated or broken; the caption says what the
-     * lists cover and where the rest of the history is.
+     * What the lists cover: the open tasks and the last day's, kept
+     * across restarts for the retention window -- or, from a daemon with
+     * no task store, everything since it started.  The library says
+     * which, in the words the other clients use.
      */
     if (self->tasks_since != NULL) {
-        g_autofree gchar *since = clawt_held_since_caption(
-            (reply != NULL)
-                ? clawt_json_int(clawt_payload_of(reply), "since", 0) : 0,
+        JsonObject *root = (reply != NULL) ? clawt_payload_of(reply) : NULL;
+        g_autofree gchar *since = clawt_task_list_caption(
+            (root != NULL) ? clawt_json_int(root, "since", 0) : 0,
+            (root != NULL) ? clawt_json_boolean(root, "kept", FALSE) : FALSE,
+            (root != NULL) ? clawt_json_int(root, "retention_days", 0) : 0,
             g_get_real_time() / G_USEC_PER_SEC);
 
         gtk_label_set_text(GTK_LABEL(self->tasks_since), since);

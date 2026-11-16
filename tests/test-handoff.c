@@ -1141,7 +1141,7 @@ test_task_status_answers_from_a_receipt(void)
                        "{\"task_id\":\"task-gone\"}", &is_error);
 
     g_assert_false(is_error);
-    g_assert_nonnull(strstr(answer, "no longer in memory"));
+    g_assert_nonnull(strstr(answer, "no longer kept"));
     g_assert_nonnull(strstr(answer, "chief -> worker"));
     g_assert_nonnull(strstr(answer, "now belongs to worker"));
 

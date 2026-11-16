@@ -18,6 +18,7 @@ Every item follows the rules in =AGENTS.md=: config keys go into =src/config/cla
 - OpenMausBot (=~/source/public/OpenMausBot=), from =164e5d7= (2026-08-29) to =a6cd67c78= (2026-11-14): 9,634 commits, 8,127 files.
 - Commit hashes and paths under "Prior art" are OpenMausBot's. Paths under "Today" are clawtilla's.
 - Items marked *unverified* rest on a reader's report and were not re-checked against clawtilla's source.
+- Paperclip (=~/source/public/paperclip=), read 2026-11-15 at =49a2b7b245=: the gaps under "Work tracking". The plan, with the VENTURE integration, is in the operator's plan file; each phase lands here as it ships.
 
 ** Priority key
 
@@ -364,6 +365,39 @@ OpenMausBot has none of the structural withholding or cycle stalling that I coul
 - *Done:* ~window_buttons~ (auto, show, hide) in ~appearance.yaml~ and =ClawtWindowButtons=; =clawt_window_manager_tiling()= reads the compositor sockets (~GOWL_SOCKET~, ~SWAYSOCK~, ~HYPRLAND_INSTANCE_SIGNATURE~, ~NIRI_SOCKET~, ~I3SOCK~) and then the desktop names; GTK sets ~gtk-decoration-layout~ for the display, lrg creates its window undecorated and toggles it live; a Window row on both Appearance pages names what it found. The web client is exempt in =make parity= with the reason.
 - *Limit:* the GTK path was checked on Xvfb with a faked ~GOWL_SOCKET~, not inside a real gowl session; the lrg path was not run against a real compositor.
 - *Version:* micro.
+
+* Work tracking (from Paperclip, with VENTURE as an optional enrichment)
+
+Six gaps a single-operator fleet should close, in phases, each working without VENTURE; a bound VENTURE connector with ~mirror_tasks~ on (one VENTURE account per agent) adds tickets, repository matching by git remote, runs and budgets on top. VENTURE changes land in =../venture= first, from an up-to-date checkout.
+
+** DONE P1 A1: Tasks and incidents survive a restart v0.35.0 :orchestration:
+- *Requested:* by the user on 2026-11-15, the first phase of the Paperclip gap plan.
+- *Done:* =ClawtTaskStore= (=tasks.db=: each task whole as JSON plus indexed columns, a journal of what happened, the incidents); =ClawtTaskManager= writes every transition through, restores the live set silently on start, forgets finished work from memory after a day while still answering for it by id, and keeps a children index; =tool_delegate= and handoffs save what they set directly; incidents are written as published and restored without a second report; a restart fails only the tasks nothing is carrying (=clawt_daemon_tasks_reconcile()=), and gives task rooms back; per-task spend is read back from the usage ledgers; ~orchestration.task_retention_days~; ~task.list~ ~history~/~before~/~state~/~limit~, ~kept~ and ~retention_days~; ~task.show~ ~journal~; the task object gains ~title~, ~created_at~, ~started_at~, ~finished_at~, ~room~, ~cancelled_by~; =clawt_task_list_caption()= in all three clients and the CLI; ~clawtilla task list --history~, ~task show --journal~; a "Tasks are kept" paragraph in each agent's TOOLS.org region.
+- *Version:* minor (config key, IPC members).
+
+** TODO P1 A2: States and the operator task manager :orchestration:clients:
+UNASSIGNED, BLOCKED and REVIEW with library predicates; ~task.create~, ~task.assign~, ~task.comment~; task notes; New task, backlog, assign, comment and a detail view with the journal in GTK, web and lrg.
+
+** TODO P1 B1: Blockers :orchestration:
+~after:~ on ~clawtilla_delegate~, ~clawtilla_task_link~; a held delivery released as the delegator's own when every blocker completes.
+
+** TODO P1 B2: Review stages :orchestration:
+~review_by~; REVIEW on completion; ~clawtilla_task_review~ and an operator decision; bounded review rounds.
+
+** TODO P2 C1: Task checkouts and diffs :orchestration:clients:
+A git worktree or self-contained clone per task in the agent's host workspace; ~task.diff~ and a Changes view; ~routines.worktree~ made real.
+
+** TODO P2 C2: Projects and project budgets :orchestration:spending:
+~projects:~ with goal, reviewer and a monthly budget; matched by git remote; the goal in the assignment; a managed PROJECTS.org region.
+
+** TODO P2 D: Version history :configuration:skills:
+Revisions of the fleet config, persona files and skills with restore; saved skill test inputs run on a scratch agent.
+
+** TODO P3 E: Fleet export and import :configuration:
+=FLEET.yaml= export with secrets stripped; an import preview that never widens permissions.
+
+** TODO P2 V0–V2: VENTURE enrichment :connectors:
+Upstream first (health ~features~, ~whoami~, ~Idempotency-Key~, ~ticket.external_ref~, external runs that count against ~agent_budget~, ~forge_repo/resolve~, webhook ~changes~); then the outbound mirror with one VENTURE account per agent, and the inbound reconcile, intake, review, costs and goal context.
 
 * Steering: words into a running turn
 

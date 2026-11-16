@@ -1032,15 +1032,30 @@ static const ClawtSchemaEntry schema[] = {
   CLAWT_SCHEMA_FLAG_COMMENTED, "2", NULL,
   "How long a finished handoff's receipt is kept.\n"
   "\n"
-  "Tasks live in memory and do not survive a restart, so the receipt is\n"
-  "the only thing that lets an agent ask what became of work it handed\n"
-  "over before the daemon was restarted underneath it.\n"
+  "A receipt says how one handoff went: queued, delivered, refused. The\n"
+  "task itself is kept for orchestration.task_retention_days; this is\n"
+  "the record of the move.\n"
   "\n"
   "A count bounds the file as well as this age, because a fleet that\n"
   "passes work around all day fills two days faster than a quiet one\n"
   "fills two years. A handoff that has not run yet is never pruned\n"
   "however old it is: it is undrained rather than finished. 0 keeps\n"
   "receipts until the count alone drops them.", "0.2.0" },
+
+{ "orchestration.task_retention_days", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_COMMENTED, "180", NULL,
+  "How long a finished task is kept, in days.\n"
+  "\n"
+  "Every task is written to tasks.db in the state directory as it\n"
+  "changes, with a journal of what happened to it, so a daemon restart\n"
+  "keeps the list, a delegator can still ask what became of its work,\n"
+  "and a parent still knows its children. A task that has finished is\n"
+  "removed once it is older than this, with its journal; one that has\n"
+  "not finished is never removed however old it is, because somebody\n"
+  "may still be waiting on it. The clients' Tasks lists show the tasks\n"
+  "that have not finished and those that finished in the last day; the\n"
+  "rest are in the history (task.list with history: true, or\n"
+  "`clawtilla task list --history`). 0 keeps every task.", "0.35.0" },
 
 { "orchestration.max_waits_per_agent", CLAWT_SCHEMA_INT,
   CLAWT_SCHEMA_FLAG_PER_AGENT, "10", NULL,

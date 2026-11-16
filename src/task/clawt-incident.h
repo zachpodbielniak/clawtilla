@@ -506,6 +506,32 @@ void clawt_incident_desk_set_event_bus(ClawtIncidentDesk *self,
                                        ClawtEventBus     *bus);
 
 /**
+ * clawt_incident_desk_set_store:
+ * @self: a #ClawtIncidentDesk
+ * @store: (nullable): where incidents are written, or %NULL for memory
+ *   only
+ *
+ * From here on every change to an incident is written to @store as it
+ * is published, and an incident pruned from the desk is removed from it.
+ */
+void clawt_incident_desk_set_store(ClawtIncidentDesk *self,
+                                   ClawtTaskStore    *store);
+
+/**
+ * clawt_incident_desk_restore:
+ * @self: a #ClawtIncidentDesk
+ *
+ * Reads back every incident the store holds, as it was left: resolved
+ * or open, reported or still queued, with the log lines captured when
+ * it happened.  Nothing is published or flushed, so a restart does not
+ * report an incident a second time.  Incidents the desk already holds
+ * are left alone.
+ *
+ * Returns: how many were restored
+ */
+guint clawt_incident_desk_restore(ClawtIncidentDesk *self);
+
+/**
  * clawt_incident_desk_set_routine_hooks:
  * @self: a #ClawtIncidentDesk
  * @routine_of: (nullable) (scope forever): which routine a task is a run of

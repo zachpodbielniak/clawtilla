@@ -232,8 +232,9 @@ run_one(ClawtDaemon *self, ClawtHandoff *handoff)
     if (task == NULL) {
         g_autofree gchar *verdict = g_strdup_printf(
             "Handing task %s to %s was dropped: the task is no longer being "
-            "tracked. Tasks are held in memory, so a restart between the "
-            "handoff and this point loses them.", task_id, to);
+            "tracked -- it was removed after the retention window, or the "
+            "task store could not be read when the daemon started.",
+            task_id, to);
 
         settle(self, handoff, CLAWT_HANDOFF_DROPPED, verdict);
         return TRUE;
@@ -400,7 +401,11 @@ run_one(ClawtDaemon *self, ClawtHandoff *handoff)
      * hear about it, since the mailbox is durable and survives them
      * being stopped.
      */
-    clawt_task_transfer_owner(task, to);
+    if (clawt_task_transfer_owner(task, to)) {
+        g_autofree gchar *what = g_strdup_printf("handed over to %s", to);
+
+        clawt_task_manager_save(self->tasks, task, what);
+    }
 
     {
 		/* The giver's reason, quoted in a note a room's catch-up shows. */

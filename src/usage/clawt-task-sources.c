@@ -11,10 +11,10 @@
  * creates it, and held that in a hash table -- so a run that spanned a
  * restart lost the answer, and its remaining turns were tagged
  * `task:<id>`: still counted, charged to nobody anybody would look for.
- * Tasks themselves live in memory by design, but the turns about one do
- * not: a mailbox item carries its task id across a restart and is
- * delivered by the next daemon.  So the mapping is kept in a file of its
- * own, written when it changes.
+ * Tasks are kept across a restart by their own store, which records the
+ * task and not which run made it; and a mailbox item carries its task id
+ * across a restart and is delivered by the next daemon.  So the mapping
+ * is kept in a file of its own, written when it changes.
  *
  * The file is one line per entry, tab-separated: task id, origin kind
  * nick, routine or trigger id, unix seconds noted.  Plain text because

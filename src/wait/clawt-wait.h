@@ -379,7 +379,8 @@ clawt_wait_decide_file(
  * A settled task meets the wait however it settled -- the notice says
  * which.  A task clawtilla no longer knows can never settle in its
  * sight, so it ends the wait rather than leaving it to expire in a week:
- * tasks are held in memory, and a daemon restart forgets them.
+ * a task is gone once it is pruned, or when the task store could not be
+ * read back after a restart.
  *
  * Returns: the verdict
  */

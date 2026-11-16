@@ -112,7 +112,7 @@ venturectl webhook test <id>
 
 Then the handshake every trigger has: read the first captured delivery with =clawtilla trigger capture ticket-watch= and switch the trigger on.
 
-To catch up on business events (=invoice.paid=, =deal.won=, ...) missed while the daemon was down, turn on =business_events= on the webhook and set =triggers.replay_connector: books= and =triggers.organization_id: <id>= on the trigger.  The replay token must belong to an organization *owner or administrator*, so it is usually not the agent's confined token.  Details: [[file:triggers.org::*Telling an agent that a VENTURE record changed][triggers.org]].
+To catch up on business events (~invoice.paid~, ~deal.won~, ...) missed while the daemon was down, turn on =business_events= on the webhook and set =triggers.replay_connector: books= and =triggers.organization_id: <id>= on the trigger.  The replay token must belong to an organization *owner or administrator*, so it is usually not the agent's confined token.  Details: [[file:triggers.org::*Telling an agent that a VENTURE record changed][triggers.org]].
 
 * Separate connections per agent
 

@@ -456,15 +456,16 @@ clawt_web_tasks_body(ClawtWebApp *app, const gchar *agent_id)
     }
 
     /*
-     * How far back the two lists below reach.  Tasks and incidents are
-     * held in memory, so an empty list straight after a daemon restart
-     * read as nothing ever having been delegated or broken; the library
-     * says what they cover and where the history went, in the words the
-     * other clients use.
+     * What the two lists below cover, in the library's words: the open
+     * tasks and the last day's, kept across restarts -- or everything
+     * since the daemon started, from one with no task store.
      */
     if (reply != NULL) {
-        g_autofree gchar *since = clawt_held_since_caption(
-            clawt_web_member_int(clawt_web_root(reply), "since", 0),
+        JsonObject *root = clawt_web_root(reply);
+        g_autofree gchar *since = clawt_task_list_caption(
+            clawt_web_member_int(root, "since", 0),
+            clawt_web_member_bool(root, "kept", FALSE),
+            clawt_web_member_int(root, "retention_days", 0),
             g_get_real_time() / G_USEC_PER_SEC);
 
         clawt_web_add(pad, clawt_web_text(since, "small muted"));

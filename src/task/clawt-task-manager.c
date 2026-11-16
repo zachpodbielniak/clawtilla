@@ -31,6 +31,31 @@ struct _ClawtTaskManager {
      * as soon as the task ends.
      */
     GHashTable *guards;   /* task_id -> ProgressGuard (owned) */
+
+    /*
+     * Where every change is written, and where anything no longer in
+     * memory is read back from.  NULL in a manager built without one --
+     * the unit tests, and a daemon whose store would not open -- which
+     * then behaves exactly as it always did, in memory only.
+     */
+    ClawtTaskStore *store;
+
+    /*
+     * Tasks read back from the store on demand: finished long enough ago
+     * to have left the live set, and asked about again (a result, a
+     * status).  Kept apart from `tasks` so they never appear in a live
+     * listing, and owned here so a borrowed pointer handed out by
+     * clawt_task_manager_get() stays valid until the next forget.
+     */
+    GHashTable *cold;     /* task_id -> ClawtTask (owned) */
+
+    /*
+     * Each task's children, by parent id.  The cancel cascade and the
+     * unfinished-children count walked every task for every node, which
+     * was fine for a list a restart emptied and is not for one that
+     * persists.
+     */
+    GHashTable *children; /* parent_id -> GPtrArray of child ids (owned) */
 };
 
 /*
@@ -74,11 +99,321 @@ clawt_task_manager_set_max_depth(ClawtTaskManager *self, guint max_depth)
     self->max_depth = max_depth;
 }
 
+/*
+ * Writes @task through to the store.  A failure is said and survived:
+ * the task is still right in memory, and refusing the transition because
+ * the disk would not take it would turn a full disk into stuck work.
+ */
 static void
-emit_changed(ClawtTaskManager *self, ClawtTask *task)
+persist(ClawtTaskManager *self, ClawtTask *task, const gchar *what)
 {
+    g_autoptr(GError) error = NULL;
+
+    if (self->store == NULL)
+        return;
+
+    if (!clawt_task_store_save(self->store, task, what, &error))
+        g_warning("task %s: could not save it: %s", clawt_task_get_id(task),
+                  error->message);
+}
+
+/*
+ * Saved before the signal, so a handler that reads the task back from
+ * the store -- a client asking for its history -- sees the change it is
+ * being told about.
+ */
+static void
+emit_changed(ClawtTaskManager *self, ClawtTask *task, const gchar *what)
+{
+    persist(self, task, what);
+
     g_signal_emit(self, signals[SIGNAL_TASK_CHANGED], 0,
                   clawt_task_get_id(task), clawt_task_get_state(task));
+}
+
+/* Records @task as one of its parent's children. */
+static void
+index_child(ClawtTaskManager *self, ClawtTask *task)
+{
+    const gchar *parent_id = clawt_task_get_parent_id(task);
+    GPtrArray *kids;
+
+    if (parent_id == NULL)
+        return;
+
+    kids = g_hash_table_lookup(self->children, parent_id);
+
+    if (kids == NULL) {
+        kids = g_ptr_array_new_with_free_func(g_free);
+        g_hash_table_insert(self->children, g_strdup(parent_id), kids);
+    }
+
+    g_ptr_array_add(kids, g_strdup(clawt_task_get_id(task)));
+}
+
+/* Takes ownership of @task and adds it to the live set, in order. */
+static void
+adopt(ClawtTaskManager *self, ClawtTask *task)
+{
+    g_hash_table_insert(self->tasks, g_strdup(clawt_task_get_id(task)), task);
+    g_ptr_array_add(self->order, (gpointer)clawt_task_get_id(task));
+    index_child(self, task);
+}
+
+void
+clawt_task_manager_set_store(ClawtTaskManager *self, ClawtTaskStore *store)
+{
+    g_return_if_fail(CLAWT_IS_TASK_MANAGER(self));
+    g_return_if_fail(store == NULL || CLAWT_IS_TASK_STORE(store));
+
+    g_set_object(&self->store, store);
+}
+
+ClawtTaskStore *
+clawt_task_manager_get_store(ClawtTaskManager *self)
+{
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), NULL);
+
+    return self->store;
+}
+
+guint
+clawt_task_manager_load(ClawtTaskManager  *self,
+                        gint64             finished_since,
+                        GError           **error)
+{
+    g_autoptr(GPtrArray) tasks = NULL;
+    guint loaded = 0;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), 0);
+
+    if (self->store == NULL)
+        return 0;
+
+    tasks = clawt_task_store_load_live(self->store, finished_since, error);
+
+    if (tasks == NULL)
+        return 0;
+
+    /*
+     * Silently: no ::task-changed, because nothing changed.  A restored
+     * task that emitted would send its settle notice again, raise its
+     * incident again and wake its delegator for news it already had.
+     */
+    for (i = 0; i < tasks->len; i++) {
+        ClawtTask *task = g_ptr_array_index(tasks, i);
+
+        if (g_hash_table_contains(self->tasks, clawt_task_get_id(task)))
+            continue;
+
+        adopt(self, clawt_task_copy(task));
+        loaded++;
+    }
+
+    return loaded;
+}
+
+/*
+ * Whether @task is filed under @parent_id in the children index.
+ */
+static gboolean
+indexed_under(ClawtTaskManager *self, ClawtTask *task, const gchar *parent_id)
+{
+    GPtrArray *kids;
+    guint i;
+
+    if (parent_id == NULL)
+        return TRUE;
+
+    kids = g_hash_table_lookup(self->children, parent_id);
+
+    for (i = 0; kids != NULL && i < kids->len; i++)
+        if (g_strcmp0(g_ptr_array_index(kids, i),
+                      clawt_task_get_id(task)) == 0)
+            return TRUE;
+
+    return FALSE;
+}
+
+/*
+ * Files @task under its current parent and nowhere else.  Only a parent
+ * set after creation needs this, which is rare, so a walk over every
+ * list is the right cost.
+ */
+static void
+reindex_child(ClawtTaskManager *self, ClawtTask *task)
+{
+    GHashTableIter iter;
+    gpointer value;
+
+    if (indexed_under(self, task, clawt_task_get_parent_id(task)))
+        return;
+
+    g_hash_table_iter_init(&iter, self->children);
+
+    while (g_hash_table_iter_next(&iter, NULL, &value)) {
+        GPtrArray *kids = value;
+        guint i;
+
+        for (i = 0; i < kids->len; i++) {
+            if (g_strcmp0(g_ptr_array_index(kids, i),
+                          clawt_task_get_id(task)) == 0) {
+                g_ptr_array_remove_index(kids, i);
+                break;
+            }
+        }
+    }
+
+    index_child(self, task);
+}
+
+void
+clawt_task_manager_save(ClawtTaskManager *self,
+                        ClawtTask        *task,
+                        const gchar      *what)
+{
+    g_return_if_fail(CLAWT_IS_TASK_MANAGER(self));
+    g_return_if_fail(task != NULL);
+
+    /* A parent set after creation moves it in the children index. */
+    if (g_hash_table_lookup(self->tasks, clawt_task_get_id(task)) == task)
+        reindex_child(self, task);
+
+    persist(self, task, what);
+}
+
+guint
+clawt_task_manager_forget_finished(ClawtTaskManager *self,
+                                   gint64            finished_before)
+{
+    g_autoptr(GPtrArray) gone = NULL;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), 0);
+
+    /*
+     * Only with a store to read them back from.  Without one, forgetting
+     * a task would lose it, which is the opposite of what this is for.
+     */
+    if (self->store == NULL)
+        return 0;
+
+    gone = g_ptr_array_new_with_free_func(g_free);
+
+    for (i = 0; i < self->order->len; i++) {
+        ClawtTask *task = g_hash_table_lookup(self->tasks,
+                                              g_ptr_array_index(self->order, i));
+
+        if (task == NULL || !clawt_task_is_finished(task))
+            continue;
+
+        if (clawt_task_get_finished_at(task) >= finished_before)
+            continue;
+
+        /*
+         * A finished task with a child still running stays: the child's
+         * settle notice and the ancestor walks read it.
+         */
+        if (clawt_task_manager_count_unfinished_children(
+                self, clawt_task_get_id(task)) > 0)
+            continue;
+
+        g_ptr_array_add(gone, g_strdup(clawt_task_get_id(task)));
+    }
+
+    for (i = 0; i < gone->len; i++) {
+        const gchar *task_id = g_ptr_array_index(gone, i);
+        ClawtTask *task = g_hash_table_lookup(self->tasks, task_id);
+        const gchar *parent_id = clawt_task_get_parent_id(task);
+        GPtrArray *kids = parent_id != NULL
+            ? g_hash_table_lookup(self->children, parent_id) : NULL;
+        guint k;
+
+        /* The order array borrows the id the hash owns: drop it first. */
+        g_ptr_array_remove(self->order, (gpointer)clawt_task_get_id(task));
+
+        for (k = 0; kids != NULL && k < kids->len; k++) {
+            if (g_strcmp0(g_ptr_array_index(kids, k), task_id) == 0) {
+                g_ptr_array_remove_index(kids, k);
+                break;
+            }
+        }
+
+        if (kids != NULL && kids->len == 0)
+            g_hash_table_remove(self->children, parent_id);
+
+        g_hash_table_remove(self->guards, task_id);
+        g_hash_table_remove(self->tasks, task_id);
+    }
+
+    /* Whatever was read back on demand goes too; it is all on disk. */
+    g_hash_table_remove_all(self->cold);
+
+    return gone->len;
+}
+
+GPtrArray *
+clawt_task_manager_list_history(ClawtTaskManager  *self,
+                                const ClawtTaskQuery *query,
+                                GError           **error)
+{
+    GPtrArray *out;
+    guint limit;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), NULL);
+
+    if (self->store != NULL)
+        return clawt_task_store_list(self->store, query, error);
+
+    /*
+     * No store: the same answer from memory, which is everything there
+     * is, so the caller does not need two code paths.
+     */
+    out = g_ptr_array_new_with_free_func((GDestroyNotify)clawt_task_free);
+    limit = (query != NULL && query->limit > 0) ? query->limit
+                                                : CLAWT_TASK_STORE_PAGE;
+
+    for (i = self->order->len; i > 0 && out->len < limit; i--) {
+        ClawtTask *task = g_hash_table_lookup(self->tasks,
+                                              g_ptr_array_index(self->order,
+                                                                i - 1));
+
+        if (task == NULL)
+            continue;
+        if (query != NULL && query->assignee != NULL &&
+            g_strcmp0(clawt_task_get_assignee(task), query->assignee) != 0)
+            continue;
+        if (query != NULL && query->state >= 0 &&
+            (gint)clawt_task_get_state(task) != query->state)
+            continue;
+        if (query != NULL && query->before > 0 &&
+            clawt_task_get_created_at(task) >= query->before)
+            continue;
+
+        g_ptr_array_add(out, clawt_task_copy(task));
+    }
+
+    return out;
+}
+
+JsonNode *
+clawt_task_manager_journal(ClawtTaskManager  *self,
+                           const gchar       *task_id,
+                           GError           **error)
+{
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), NULL);
+    g_return_val_if_fail(task_id != NULL, NULL);
+
+    if (self->store == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "there is no task store, so task %s has no history "
+                    "beyond its current state", task_id);
+        return NULL;
+    }
+
+    return clawt_task_store_journal(self->store, task_id, error);
 }
 
 ClawtTask *
@@ -96,7 +431,7 @@ clawt_task_manager_create(ClawtTaskManager  *self,
     g_return_val_if_fail(prompt != NULL, NULL);
 
     if (parent_id != NULL) {
-        ClawtTask *parent = g_hash_table_lookup(self->tasks, parent_id);
+        ClawtTask *parent = clawt_task_manager_get(self, parent_id);
 
         if (parent != NULL)
             depth = clawt_task_get_depth(parent) + 1;
@@ -119,10 +454,16 @@ clawt_task_manager_create(ClawtTaskManager  *self,
     clawt_task_set_depth(task, depth);
     clawt_task_set_parent_id(task, parent_id);
 
-    g_hash_table_insert(self->tasks, g_strdup(clawt_task_get_id(task)), task);
-    g_ptr_array_add(self->order, (gpointer)clawt_task_get_id(task));
+    adopt(self, task);
 
-    emit_changed(self, task);
+    {
+        g_autofree gchar *what = g_strdup_printf(
+            "created by %s for %s",
+            origin_agent != NULL ? origin_agent : "nobody",
+            assignee != NULL ? assignee : "nobody");
+
+        emit_changed(self, task, what);
+    }
 
     return task;
 }
@@ -130,12 +471,35 @@ clawt_task_manager_create(ClawtTaskManager  *self,
 ClawtTask *
 clawt_task_manager_get(ClawtTaskManager *self, const gchar *task_id)
 {
+    ClawtTask *task;
+
     g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), NULL);
 
     if (task_id == NULL)
         return NULL;
 
-    return g_hash_table_lookup(self->tasks, task_id);
+    task = g_hash_table_lookup(self->tasks, task_id);
+
+    if (task != NULL)
+        return task;
+
+    task = g_hash_table_lookup(self->cold, task_id);
+
+    if (task != NULL || self->store == NULL)
+        return task;
+
+    /*
+     * A task that left the live set is still answerable: its result, its
+     * reason, who cancelled it.  Read back once and kept in the cold set,
+     * which is never listed, so asking about an old task does not put it
+     * back on anybody's Tasks page.
+     */
+    task = clawt_task_store_get(self->store, task_id);
+
+    if (task != NULL)
+        g_hash_table_insert(self->cold, g_strdup(task_id), task);
+
+    return task;
 }
 
 /*
@@ -210,7 +574,7 @@ clawt_task_manager_start(ClawtTaskManager *self, const gchar *task_id)
         return FALSE;
 
     clawt_task_set_state(task, CLAWT_TASK_RUNNING);
-    emit_changed(self, task);
+    emit_changed(self, task, NULL);
 
     return TRUE;
 }
@@ -235,7 +599,7 @@ clawt_task_manager_complete(ClawtTaskManager *self,
 
     clawt_task_set_result(task, result);
     clawt_task_set_state(task, CLAWT_TASK_COMPLETED);
-    emit_changed(self, task);
+    emit_changed(self, task, NULL);
 
     return TRUE;
 }
@@ -261,15 +625,16 @@ clawt_task_manager_count_unfinished_children(ClawtTaskManager *self,
     if (task_id == NULL)
         return 0;
 
-    for (i = 0; i < self->order->len; i++) {
-        const gchar *child_id = g_ptr_array_index(self->order, i);
-        ClawtTask *child = g_hash_table_lookup(self->tasks, child_id);
+    {
+        GPtrArray *kids = g_hash_table_lookup(self->children, task_id);
 
-        if (child == NULL || clawt_task_is_finished(child))
-            continue;
+        for (i = 0; kids != NULL && i < kids->len; i++) {
+            ClawtTask *child = g_hash_table_lookup(
+                self->tasks, g_ptr_array_index(kids, i));
 
-        if (g_strcmp0(clawt_task_get_parent_id(child), task_id) == 0)
-            unfinished++;
+            if (child != NULL && !clawt_task_is_finished(child))
+                unfinished++;
+        }
     }
 
     return unfinished;
@@ -292,7 +657,7 @@ has_ancestor_from(ClawtTaskManager *self,
     guint steps;
 
     for (steps = 0; walk != NULL && steps < 1024; steps++) {
-        ClawtTask *parent = g_hash_table_lookup(self->tasks, walk);
+        ClawtTask *parent = clawt_task_manager_get(self, walk);
 
         if (parent == NULL)
             return FALSE;
@@ -389,7 +754,7 @@ clawt_task_manager_note_progress(ClawtTaskManager *self,
     if (clawt_task_get_state(task) == CLAWT_TASK_PENDING)
         clawt_task_set_state(task, CLAWT_TASK_RUNNING);
 
-    emit_changed(self, task);
+    emit_changed(self, task, "progress noted");
 
     return TRUE;
 }
@@ -467,7 +832,7 @@ clawt_task_manager_complete_on_turn_end(ClawtTaskManager  *self,
          * Replacing the first with the second is a strictly worse answer
          * for the delegator reading it.
          */
-        emit_changed(self, task);
+        emit_changed(self, task, NULL);
 
         return FALSE;
     }
@@ -486,7 +851,7 @@ clawt_task_manager_complete_on_turn_end(ClawtTaskManager  *self,
          * the turn is the freshest thing anybody knows about it.
          */
         clawt_task_set_progress_note(task, result);
-        emit_changed(self, task);
+        emit_changed(self, task, NULL);
 
         return FALSE;
     }
@@ -519,7 +884,7 @@ clawt_task_manager_fail(ClawtTaskManager *self,
 
     clawt_task_set_reason(task, reason);
     clawt_task_set_state(task, CLAWT_TASK_FAILED);
-    emit_changed(self, task);
+    emit_changed(self, task, reason);
 
     return TRUE;
 }
@@ -539,8 +904,8 @@ clawt_task_manager_retry(ClawtTaskManager  *self,
 
     if (task == NULL) {
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
-                    "there is no task %s; tasks are held in memory, so one "
-                    "from before clawtilla last restarted is gone",
+                    "there is no task %s; it may have been removed after "
+                    "tasks.retention_days, or the id is mistyped",
                     task_id != NULL ? task_id : "(none)");
         return FALSE;
     }
@@ -586,7 +951,13 @@ clawt_task_manager_retry(ClawtTaskManager  *self,
     }
 
     clawt_task_reopen(task, who);
-    emit_changed(self, task);
+
+    {
+        g_autofree gchar *what = g_strdup_printf("retried by %s",
+                                                 who != NULL ? who : "nobody");
+
+        emit_changed(self, task, what);
+    }
 
     return TRUE;
 }
@@ -613,7 +984,7 @@ clawt_task_manager_stall(ClawtTaskManager *self,
 
     clawt_task_set_reason(task, reason);
     clawt_task_set_state(task, CLAWT_TASK_STALLED);
-    emit_changed(self, task);
+    emit_changed(self, task, reason);
 
     return TRUE;
 }
@@ -645,7 +1016,15 @@ clawt_task_manager_cancel(ClawtTaskManager *self,
          */
         clawt_task_set_cancelled_by(task, who);
         clawt_task_set_state(task, CLAWT_TASK_CANCELLED);
-        emit_changed(self, task);
+
+        {
+            g_autofree gchar *what = g_strdup_printf(
+                "cancelled by %s%s%s", who != NULL ? who : "nobody",
+                reason != NULL ? ": " : "", reason != NULL ? reason : "");
+
+            emit_changed(self, task, what);
+        }
+
         cancelled++;
     }
 
@@ -654,15 +1033,16 @@ clawt_task_manager_cancel(ClawtTaskManager *self,
      * children running and reporting into a task nobody is waiting for --
      * which is the runaway cancellation exists to stop.
      */
-    for (i = 0; i < self->order->len; i++) {
-        const gchar *child_id = g_ptr_array_index(self->order, i);
-        ClawtTask *child = g_hash_table_lookup(self->tasks, child_id);
+    {
+        GPtrArray *indexed = g_hash_table_lookup(self->children, task_id);
+        g_autoptr(GPtrArray) kids = g_ptr_array_new_with_free_func(g_free);
 
-        if (child == NULL)
-            continue;
-
-        if (g_strcmp0(clawt_task_get_parent_id(child), task_id) != 0)
-            continue;
+        /*
+         * Copied first: cancelling a child emits, and a handler that
+         * creates a task would grow the array being walked.
+         */
+        for (i = 0; indexed != NULL && i < indexed->len; i++)
+            g_ptr_array_add(kids, g_strdup(g_ptr_array_index(indexed, i)));
 
         /*
          * The original canceller, all the way down.  A cascade-cancelled
@@ -671,7 +1051,9 @@ clawt_task_manager_cancel(ClawtTaskManager *self,
          * waiting, so the notice logic needs to see that somebody
          * *else* ended this one.
          */
-        cancelled += clawt_task_manager_cancel(self, child_id, reason, who);
+        for (i = 0; i < kids->len; i++)
+            cancelled += clawt_task_manager_cancel(
+                self, g_ptr_array_index(kids, i), reason, who);
     }
 
     return cancelled;
@@ -807,7 +1189,10 @@ clawt_task_manager_finalize(GObject *object)
 
     g_clear_pointer(&self->order, g_ptr_array_unref);
     g_clear_pointer(&self->guards, g_hash_table_unref);
+    g_clear_pointer(&self->children, g_hash_table_unref);
+    g_clear_pointer(&self->cold, g_hash_table_unref);
     g_clear_pointer(&self->tasks, g_hash_table_unref);
+    g_clear_object(&self->store);
 
     G_OBJECT_CLASS(clawt_task_manager_parent_class)->finalize(object);
 }
@@ -840,4 +1225,8 @@ clawt_task_manager_init(ClawtTaskManager *self)
     self->max_depth = 8;
     self->guards = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                          progress_guard_free);
+    self->cold = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                       (GDestroyNotify)clawt_task_free);
+    self->children = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                           (GDestroyNotify)g_ptr_array_unref);
 }

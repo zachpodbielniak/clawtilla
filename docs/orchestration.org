@@ -425,20 +425,38 @@ straight to ~completed~, and ~clawtilla_task_list~ carried a paragraph
 apologising for the column.  A chief reading ~pending~ as "nobody picked
 it up" delegates the work a second time, and then there are two of it.
 
-Tasks are held in memory only.  A daemon restart loses the list; what the
-work produced is in the room transcript and the event log.
+**** Tasks are kept, and survive a restart (since 0.35.0)
 
-Incidents are held in memory with them, deliberately: an incident kept
-past its task would be a row whose Retry has nothing to re-queue and that
-no task settling will ever resolve.  What the clients do instead is say
-so.  ~task.list~ and ~incident.list~ carry ~since~, the daemon's start,
-and every client puts =clawt_held_since_caption()= over its Tasks and
-Problems lists -- "Since the daemon started at 09:14. Tasks and problems
-are held in memory, so a daemon restart clears this list; what the work
-said and produced stays in the room transcripts, and each team's reports
-in its Problems to look at room."  The CLI prints the same line on
-stderr above ~clawtilla task list~.  An empty list straight after a
-restart used to read as nothing ever having been delegated or broken.
+Every task is written to ~tasks.db~ in the state directory as it changes, by =ClawtTaskStore=.  A restart used to forget them all: a delegator could no longer ask what became of its work, a parent forgot the children it was waiting on, and the operator's Tasks list came back empty.
+
+- *What is stored.* Each task whole, as =clawt_task_to_json()= writes it: every field, including the owner history, the completion hold, the retry count, the title, and when it was created, first started and finished. A few columns beside it (state, assignee, parent, created and finished times) are what lists filter and page on. A field added to a task later needs no migration: it is one more JSON member, read as its zero value from older rows.
+- *The journal.* Every change also leaves a row in the task's history: when, the state it was left in, and what happened ("created by chief for scout", "retried by user", "cancelled by user: ...", "handed over to builder", or the failure reason). A save that changes nothing the state machine cares about, such as a model set right after creation, adds no row. ~task.show~ with ~journal: true~ returns it; ~clawtilla task show <id> --journal~ prints it.
+- *Write-through.* =ClawtTaskManager= saves every transition before it emits ~task-changed~. A field set straight after creation by =tool_delegate= (room, model, consult, thread room), and an owner change from a handoff, are saved explicitly with =clawt_task_manager_save()=. A save that fails is logged and survived: the transition stands, because refusing work over a full disk would be worse than losing its history.
+- *The live set and the history.* Memory holds what is live: every task that has not finished, and those that finished in the last day. That is what ~task.list~ returns and what every client's Tasks list shows. Older finished tasks leave memory on an hourly tick but stay in the store. They are still answerable by id (=clawt_task_manager_get()= reads them back without putting them on the live list), and ~task.list~ with ~history: true~ lists everything newest first, a page at a time (~before~ is the cursor, with ~state~, ~agent~ and ~limit~ to narrow it). On the command line that is ~clawtilla task list --history [--state failed] [--agent scout] [--before UNIX]~.
+- *Retention.* A finished task is removed once it is older than ~orchestration.task_retention_days~ (180 by default, 0 keeps everything), with its journal. A task that has not finished is never removed, however old.
+- *Spend.* What a task has already cost is read back on start from the agents' usage ledgers (the ~task_id~ tags on their turns), so ~orchestration.task_budget_usd~ keeps counting where it left off instead of resetting on every restart.
+
+***** What a restart does with tasks that had not finished
+
+They are restored silently: before anything listens to ~task-changed~, so a restored task sends no settle notice, raises no incident and reaches no client as news. A task with a room of its own (~thread: new~) gets its room back, transcript included.
+
+Then, after turn recovery has turned every turn the restart cut short into either a queued item or an interrupted notice, each unfinished task is checked once for something still carrying it forward. A task is carried when any of these holds:
+
+- its assignee armed a completion hold (~clawtilla_task_progress~: "not done yet");
+- a task it handed on has not finished, so the child's settle notice will wake it;
+- its assignee's mailbox holds a pending or leased item for it, which includes a cut-short turn handed back;
+- its assignee has a wait pending;
+- a handoff of it is still queued.
+
+A task with none of these is failed with "the daemon restarted while this ran, and nothing was left to carry it on ... Retry it to run it again." Failed, not stalled: nothing stopped it on a limit, the daemon went away under it, which is the answer an agent crash gets too, and a failed task is retryable. Its delegator gets the usual settle notice (a delegator with several gets them folded into one turn by the router). The incident desk is kept quiet for this pass, as it is when an agent's tasks are orphaned: one restart is not a dozen problem reports.
+
+***** Incidents are kept with them
+
+Incidents are written to the same file as they change, and restored as they were left: open or resolved, reported or still queued, with the log lines captured when the run broke. Nothing is published or flushed on restore, so a restart never reports an incident a second time, and a new failure of the same run counts up on the restored incident instead of opening another. The desk's bound (=INCIDENT_KEEP=) applies to the file too.
+
+***** What the lists say about themselves
+
+~task.list~ carries ~kept~ (whether this daemon has a task store), ~retention_days~, and still ~since~, the daemon's start. Every client and the CLI put =clawt_task_list_caption()= over the Tasks and Problems lists: "Tasks still open, and those that finished in the last day. Every task is kept for 180 days with a record of what happened to it, across restarts; older ones are in the history (clawtilla task list --history)."  A daemon whose ~tasks.db~ would not open keeps working in memory, says so once in its log, and its lists carry the old caption instead (=clawt_held_since_caption()=): "Since the daemon started at 09:14. Tasks and problems are held in memory, so a daemon restart clears this list; ...".  Saying "kept" when they are not would be the lie that caption was written to stop.
 
 **** A task knows what it came out of
 
@@ -778,9 +796,10 @@ The empty case now says what it looked at and what it did not.
 
 **** An empty list is not "nothing happened"
 
-Tasks are held in memory, so a daemon restart clears them.  The empty
-case says so, and points at the event log, rather than returning nothing
-and letting an agent conclude that work it remembers delegating was never
+The list is the live set: open tasks and those that finished in the last
+day.  The empty case says so, and that an older task is still answerable
+by id with ~clawtilla_task_status~, rather than returning nothing and
+letting an agent conclude that work it remembers delegating was never
 delegated.  The same shape as ~clawtilla_mailbox_list~ being empty for a
 running agent.
 
@@ -832,11 +851,11 @@ What changes, and what does not:
 - *The settle notice still goes back to the conversation that
   delegated* (~clawt_task_get_room()~), because that is where somebody
   is waiting.  The assignee's answer is recorded in the task's room.
-- *Its lifetime is the task's.*  Like the routine and trigger rooms it
-  is held in memory and gone at the next daemon start -- as the task
-  itself is, since tasks are held in memory -- and its transcript stays
-  on disk under the room's name.  Nothing archives or deletes it
-  earlier: a finished task's room is where its result came from.
+- *Its lifetime is the task's.*  The room manager holds it in memory,
+  like the routine and trigger rooms, and the task store brings it back:
+  a restarted daemon makes the room again for every live task that has
+  one, and it reads its transcript back from disk.  Nothing archives or
+  deletes it: a finished task's room is where its result came from.
 - An unknown value of ~thread~ is refused before anything is made; it
   would otherwise put the work somewhere the caller did not ask for.
 
@@ -1391,9 +1410,10 @@ turns of a live thread were "nothing to send" in three phrasings, one
 model call each.  A threaded closing text is delivered when it is the
 assignee's, because their report must arrive whatever the room's flag
 says, and judged like any other reply when it is not.  An id naming no
-task routes --- tasks live in memory, so after a daemon restart the
-choice is between a swallowed result and one delivered acknowledgement,
-and the acknowledgement is the cheap mistake.
+task routes --- a task can be pruned after its retention window, or its
+store may not have opened, and then the choice is between a swallowed
+result and one delivered acknowledgement, and the acknowledgement is the
+cheap mistake.
 
 The agent is told which of the two it is holding, because the rule is
 useless as a secret: an agent whose closing text goes nowhere has to

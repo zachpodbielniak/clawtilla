@@ -1448,6 +1448,21 @@ versions apart.
   clears its typing set too, and those open records are the whole point.
   A stop somebody asked for (`agent.stop`, an approved rebuild) abandons
   its turns first, so its own state change has nothing left to rerun.
+- **Tasks and incidents are stored; change one through the manager or
+  save it.** `ClawtTaskManager` writes every transition to `tasks.db`
+  (`ClawtTaskStore`) before it emits `task-changed`. A field set on a task
+  directly with `clawt_task_set_*()` -- as `tool_delegate` does right after
+  `create`, or a handoff's `clawt_task_transfer_owner()` -- is lost to the
+  next restart unless the caller follows it with
+  `clawt_task_manager_save()`, which also refiles a changed parent in the
+  children index. A new `ClawtTask` field goes in `clawt_task_to_json()`
+  and `clawt_task_new_from_json()` and nowhere else on disk; a new incident
+  field in `incident_to_json()`/`incident_from_json()`. Restoring is
+  silent (no signal, no flush) and happens before anything connects; a
+  restart then fails only the tasks nothing is carrying
+  (`clawt_daemon_tasks_reconcile()`). Never word a task or incident list as
+  "held in memory" again unless the store is absent:
+  `clawt_task_list_caption()` decides.
 - **A stored question with an in-memory asker outlives the asker.** A policy
   ask is a decision on disk and a waiting call in the daemon's memory, so
   an interrupted turn, a stopped agent or a restarted daemon left the
