@@ -1798,6 +1798,10 @@ send_settle_notice(ClawtDaemon *self, ClawtTask *task, gint state)
     switch ((ClawtTaskState)state) {
     case CLAWT_TASK_PENDING:
     case CLAWT_TASK_RUNNING:
+    case CLAWT_TASK_UNASSIGNED:
+    case CLAWT_TASK_BLOCKED:
+    case CLAWT_TASK_REVIEW:
+        /* not settled: a delegator hears when it ends, not before */
         return;
 
     case CLAWT_TASK_COMPLETED:
@@ -9505,8 +9509,11 @@ clawt_daemon_add_task_object(JsonBuilder *builder, ClawtTask *task)
     json_builder_set_member_name(builder, "origin");
     json_builder_add_string_value(builder, clawt_task_get_origin(task));
 
-    json_builder_set_member_name(builder, "assignee");
-    json_builder_add_string_value(builder, clawt_task_get_assignee(task));
+    /* Absent on a backlog task, which has nobody yet. */
+    if (clawt_task_get_assignee(task) != NULL) {
+        json_builder_set_member_name(builder, "assignee");
+        json_builder_add_string_value(builder, clawt_task_get_assignee(task));
+    }
 
     json_builder_set_member_name(builder, "state");
     json_builder_add_string_value(

@@ -1256,9 +1256,13 @@ clawt_lrg_task_title(JsonObject *task)
     const gchar *origin = clawt_ipc_payload_string(task, "origin");
     const gchar *assignee = clawt_ipc_payload_string(task, "assignee");
 
+    /* A backlog task has nobody yet, and says so rather than "-> ?". */
+    if (assignee == NULL)
+        return g_strdup_printf("%s \302\267 on the backlog",
+                               (origin != NULL) ? origin : "?");
+
     return g_strdup_printf("%s \342\206\222 %s",
-                           (origin != NULL) ? origin : "?",
-                           (assignee != NULL) ? assignee : "?");
+                           (origin != NULL) ? origin : "?", assignee);
 }
 
 const gchar *
@@ -1276,26 +1280,8 @@ clawt_lrg_task_tone(const gchar *state)
 gboolean
 clawt_lrg_task_cancellable(const gchar *state)
 {
-    gint value = 0;
-
-    if (state == NULL ||
-        !clawt_enum_from_nick(CLAWT_TYPE_TASK_STATE, state, &value))
-        return FALSE;
-
-    /* No `default:` -- a state added later is decided, not defaulted. */
-    switch ((ClawtTaskState)value) {
-    case CLAWT_TASK_PENDING:
-    case CLAWT_TASK_RUNNING:
-        return TRUE;
-
-    case CLAWT_TASK_COMPLETED:
-    case CLAWT_TASK_FAILED:
-    case CLAWT_TASK_CANCELLED:
-    case CLAWT_TASK_STALLED:
-        return FALSE;
-    }
-
-    return FALSE;
+    /* The library's answer, which every client and the daemon share. */
+    return clawt_task_state_nick_is_cancellable(state);
 }
 
 const gchar *

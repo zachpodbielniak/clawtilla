@@ -157,6 +157,10 @@ static const gchar *usage_tail =
     "  clawtilla task list\n"
     "  clawtilla task list --history --state failed   # kept across restarts\n"
     "  clawtilla task show task-01m0k5 --journal       # what happened to it\n"
+    "  clawtilla task create \"Write the release notes\"    # on the backlog\n"
+    "  clawtilla task create --agent scout --title \"Fix export\" \"...\"\n"
+    "  clawtilla task assign task-01m0k5 scout\n"
+    "  clawtilla task comment task-01m0k5 \"use the staging DB\"\n"
     "  clawtilla task incidents            # broken runs, and who was told\n"
     "  clawtilla task retry task-01m0k5    # send a failed run round again\n"
     "\n"
@@ -4601,7 +4605,7 @@ cmd_task(int argc, char *argv[])
             g_print("%-26s %-16s %-12s %-12s %-10s %s\n",
                     member_or(task, "id", "?"), stamp,
                     member_or(task, "origin", "?"),
-                    member_or(task, "assignee", "?"),
+                    member_or(task, "assignee", "(backlog)"),
                     member_or(task, "state", "?"),
                     member_or(task, "title", member_or(task, "prompt", "")));
         }
@@ -4697,6 +4701,32 @@ cmd_task(int argc, char *argv[])
                     "is the last thing %s wrote before its turn ended\n",
                     member_or(task, "assignee", "the assignee"));
 
+        /* What was said about it, oldest first. */
+        {
+            JsonObject *root = json_node_get_object(reply);
+            JsonArray *notes = json_object_has_member(root, "notes")
+                ? json_object_get_array_member(root, "notes") : NULL;
+            guint n;
+
+            for (n = 0; notes != NULL && n < json_array_get_length(notes);
+                 n++) {
+                JsonObject *row = json_array_get_object_element(notes, n);
+                g_autoptr(GDateTime) when = g_date_time_new_from_unix_local(
+                    json_object_get_int_member_with_default(row, "at", 0));
+                g_autofree gchar *stamp = when != NULL
+                    ? g_date_time_format(when, "%Y-%m-%d %H:%M")
+                    : g_strdup("?");
+
+                if (n == 0)
+                    g_print("\nthread:\n");
+
+                g_print("  %s  %-8s %s: %s\n", stamp,
+                        member_or(row, "kind", "?"),
+                        member_or(row, "author", "clawtilla"),
+                        member_or(row, "body", ""));
+            }
+        }
+
         /* What happened to it, oldest first. */
         if (journal) {
             JsonObject *root = json_node_get_object(reply);
@@ -4722,6 +4752,104 @@ cmd_task(int argc, char *argv[])
                         member_or(row, "what", ""));
             }
         }
+
+        return EXIT_SUCCESS;
+    }
+
+    /*
+     * The operator's own tasks: one written down with nobody on it yet
+     * (the backlog), or handed straight to an agent; assigned later; and
+     * commented on, which the assignee hears if it has the work.
+     */
+    if (g_strcmp0(verb, "create") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        const gchar *prompt = NULL;
+        JsonObject *task;
+        gint arg;
+
+        json_builder_begin_object(builder);
+
+        for (arg = 3; arg < argc; arg++) {
+            if ((g_strcmp0(argv[arg], "--agent") == 0 ||
+                 g_strcmp0(argv[arg], "--title") == 0) && arg + 1 < argc) {
+                json_builder_set_member_name(builder, argv[arg] + 2);
+                json_builder_add_string_value(builder, argv[arg + 1]);
+                arg++;
+            } else if (prompt == NULL && !g_str_has_prefix(argv[arg], "--")) {
+                prompt = argv[arg];
+            } else {
+                prompt = NULL;
+                break;
+            }
+        }
+
+        if (prompt == NULL) {
+            g_printerr("Usage: clawtilla task create [--agent AGENT] "
+                       "[--title TITLE] <what to do>\n"
+                       "Without --agent the task goes on the backlog; "
+                       "assign it later with `clawtilla task assign`.\n");
+            return EXIT_FAILURE;
+        }
+
+        json_builder_set_member_name(builder, "prompt");
+        json_builder_add_string_value(builder, prompt);
+        json_builder_end_object(builder);
+
+        reply = call(client, "task.create", json_builder_get_root(builder));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        task = json_object_get_object_member(json_node_get_object(reply),
+                                             "task");
+
+        if (json_object_has_member(task, "assignee"))
+            g_print("Created %s and handed it to %s.\n",
+                    member_or(task, "id", "?"),
+                    member_or(task, "assignee", "?"));
+        else
+            g_print("Created %s on the backlog. Assign it with "
+                    "`clawtilla task assign %s <agent>`.\n",
+                    member_or(task, "id", "?"), member_or(task, "id", "?"));
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "assign") == 0) {
+        if (argc < 5) {
+            g_printerr("Usage: clawtilla task assign <task-id> <agent>\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "task.assign",
+                     build_payload("task", argv[3], "agent", argv[4], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Assigned %s to %s.\n", argv[3], argv[4]);
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "comment") == 0) {
+        JsonObject *root;
+
+        if (argc < 5) {
+            g_printerr("Usage: clawtilla task comment <task-id> <text>\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "task.comment",
+                     build_payload("task", argv[3], "text", argv[4], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        root = json_node_get_object(reply);
+
+        if (json_object_get_boolean_member_with_default(root, "delivered",
+                                                        FALSE))
+            g_print("Noted on %s, and its assignee has it.\n", argv[3]);
+        else
+            g_print("Noted on %s. Nobody is working on it right now, so "
+                    "it is kept with the task rather than sent.\n", argv[3]);
 
         return EXIT_SUCCESS;
     }
@@ -10915,7 +11043,7 @@ static const ClawtVerb verbs[] = {
       cmd_account },
     { "policy-hook", "--agent ID --token-file PATH", "Claude Code's PreToolUse hook (run by the daemon's settings)",
       cmd_policy_hook },
-    { "task",    "<verb>",   "Inspect delegated tasks (list, show, cancel, retry, incidents)",
+    { "task",    "<verb>",   "Tasks: list, show, create, assign, comment, cancel, retry, incidents",
       cmd_task },
     { "decision", "<verb>",  "Answer what an agent has asked you",
       cmd_decision },

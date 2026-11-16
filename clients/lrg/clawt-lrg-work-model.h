@@ -603,9 +603,10 @@ const gchar *clawt_lrg_task_tone(const gchar *state);
  * clawt_lrg_task_cancellable:
  * @state: (nullable): a task state nick
  *
- * Cancel is offered only while a task is going, because cancelling a
- * finished one is not a refusal the daemon needs to explain -- it is a
- * button that should not have been there.
+ * Cancel is offered while a task has not ended -- going, blocked, in
+ * review or on the backlog -- because cancelling a finished one is not a
+ * refusal the daemon needs to explain, it is a button that should not
+ * have been there.  clawt_task_state_nick_is_cancellable().
  *
  * Returns: whether to offer Cancel
  */

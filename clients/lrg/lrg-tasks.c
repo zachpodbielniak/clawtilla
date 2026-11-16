@@ -20,6 +20,7 @@
 
 #include "clawt-lrg.h"
 #include "clawt-lrg-work-model.h"
+#include "clawt-lrg-settings-model.h"
 
 /* how far each level of delegation is indented */
 #define TASK_INDENT (28.0f)
@@ -361,6 +362,356 @@ refresh_incidents(ClawtLrgApp *app, ClawtLrgRequestFlags flags)
                       GUINT_TO_POINTER(tasks.incident_seq), NULL);
 }
 
+/* ── The operator's own tasks ────────────────────────────────────── */
+
+/*
+ * What the three dialogs read back: the controls, and the task they are
+ * about.  Freed with the dialog.
+ */
+typedef struct {
+    gchar     *task_id;
+    LrgWidget *title;
+    LrgWidget *prompt;
+    LrgWidget *agent;
+    LrgWidget *comment;
+} TaskForm;
+
+static void
+task_form_free(gpointer data)
+{
+    TaskForm *form = data;
+
+    g_free(form->task_id);
+    g_free(form);
+}
+
+/*
+ * The agent picker, from the fleet as the window last read it.  With
+ * @with_nobody the first choice is the backlog.
+ */
+static LrgWidget *
+agent_combo(ClawtLrgApp *app, gboolean with_nobody)
+{
+    JsonArray *agents = clawt_lrg_settings_member_array(
+        clawt_ipc_reply_object(app->agents), "agents");
+    g_autoptr(GPtrArray) ids = g_ptr_array_new_with_free_func(g_free);
+    g_autoptr(GPtrArray) labels = g_ptr_array_new_with_free_func(g_free);
+    guint i;
+
+    if (with_nobody) {
+        g_ptr_array_add(ids, g_strdup(""));
+        g_ptr_array_add(labels, g_strdup("Nobody yet (the backlog)"));
+    }
+
+    for (i = 0; agents != NULL && i < json_array_get_length(agents); i++) {
+        JsonObject *agent = json_array_get_object_element(agents, i);
+        const gchar *id = clawt_ipc_payload_string(agent, "id");
+        const gchar *name = clawt_ipc_payload_string(agent, "name");
+
+        if (id == NULL)
+            continue;
+
+        g_ptr_array_add(ids, g_strdup(id));
+        g_ptr_array_add(labels, g_strdup(name != NULL ? name : id));
+    }
+
+    g_ptr_array_add(ids, NULL);
+    g_ptr_array_add(labels, NULL);
+
+    return clawt_lrg_combo((const gchar *const *)ids->pdata,
+                           (const gchar *const *)labels->pdata,
+                           with_nobody ? "" : NULL);
+}
+
+static void
+on_task_done(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+             gpointer user_data)
+{
+    if (reply == NULL)
+        return;
+
+    clawt_lrg_toast(app, user_data);
+    refresh_list(app, CLAWT_LRG_QUIET);
+}
+
+static gboolean
+on_new_task_response(ClawtLrgApp *app, LrgDialog *dialog, gint response,
+                     gpointer user_data)
+{
+    TaskForm *form = user_data;
+    g_autofree gchar *prompt = clawt_lrg_editor_text(form->prompt);
+    const gchar *title = clawt_lrg_entry_text(form->title);
+    const gchar *agent = clawt_lrg_combo_id(form->agent);
+
+    (void)dialog;
+    (void)response;
+
+    if (prompt == NULL || *g_strstrip(prompt) == '\0') {
+        clawt_lrg_toast(app, "Say what the task is first");
+        return FALSE;
+    }
+
+    if (agent != NULL && *agent == '\0')
+        agent = NULL;
+
+    clawt_lrg_request(app, "task.create",
+                      clawt_ipc_payload_new(
+                          "prompt", prompt,
+                          "title", (title != NULL && *title != '\0')
+                              ? title : NULL,
+                          "agent", agent, NULL),
+                      CLAWT_LRG_REQUEST_NONE, on_task_done,
+                      (agent != NULL)
+                          ? (gpointer)"Created, and handed over"
+                          : (gpointer)"On the backlog -- assign it when you "
+                                      "know who",
+                      NULL);
+    return TRUE;
+}
+
+/*
+ * A task the operator writes down: what, optionally a title, and who --
+ * or nobody yet, which puts it on the backlog.
+ */
+static void
+on_new_task_clicked(LrgButton *button, gpointer user_data)
+{
+    TaskForm *form = g_new0(TaskForm, 1);
+    LrgWidget *content = clawt_lrg_form_new();
+
+    (void)button;
+    (void)user_data;
+
+    form->title = clawt_lrg_entry(NULL, "Fix the export");
+    form->prompt = clawt_lrg_editor("", NULL);
+    form->agent = agent_combo(tasks.app, TRUE);
+    clawt_lrg_form_add(content, "Title (optional)", form->title, NULL);
+    clawt_lrg_form_add(content, "What to do", form->prompt,
+                       "Write it so it stands alone: the agent reads this "
+                       "and nothing else about why it is wanted.");
+    clawt_lrg_form_add(content, "Who does it", form->agent, NULL);
+
+    g_object_unref(clawt_lrg_dialog(tasks.app, "New task", NULL, content,
+                                    "Create", FALSE, on_new_task_response,
+                                    form, task_form_free));
+    g_object_unref(content);
+}
+
+static gboolean
+on_assign_response(ClawtLrgApp *app, LrgDialog *dialog, gint response,
+                   gpointer user_data)
+{
+    TaskForm *form = user_data;
+    const gchar *agent = clawt_lrg_combo_id(form->agent);
+
+    (void)dialog;
+    (void)response;
+
+    if (agent == NULL || *agent == '\0')
+        return FALSE;
+
+    clawt_lrg_request(app, "task.assign",
+                      clawt_ipc_payload_new("task", form->task_id,
+                                            "agent", agent, NULL),
+                      CLAWT_LRG_REQUEST_NONE, on_task_done,
+                      (gpointer)"Assigned", NULL);
+    return TRUE;
+}
+
+/* Takes a task off the backlog: pick who does it. */
+static void
+on_assign_clicked(LrgButton *button, gpointer user_data)
+{
+    TaskForm *form = g_new0(TaskForm, 1);
+    LrgWidget *content = clawt_lrg_form_new();
+
+    (void)user_data;
+
+    form->task_id = g_strdup(g_object_get_data(G_OBJECT(button), "task-id"));
+    form->agent = agent_combo(tasks.app, FALSE);
+    clawt_lrg_form_add(content, "Who does it", form->agent,
+                       "The work goes to them now, from you, with the "
+                       "task's id.");
+
+    g_object_unref(clawt_lrg_dialog(tasks.app, "Assign", NULL, content,
+                                    "Assign", FALSE, on_assign_response,
+                                    form, task_form_free));
+    g_object_unref(content);
+}
+
+static gboolean
+on_comment_response(ClawtLrgApp *app, LrgDialog *dialog, gint response,
+                    gpointer user_data)
+{
+    TaskForm *form = user_data;
+    g_autofree gchar *text = clawt_lrg_editor_text(form->comment);
+
+    (void)dialog;
+    (void)response;
+
+    if (text == NULL || *g_strstrip(text) == '\0')
+        return TRUE;
+
+    clawt_lrg_request(app, "task.comment",
+                      clawt_ipc_payload_new("task", form->task_id,
+                                            "text", text, NULL),
+                      CLAWT_LRG_REQUEST_NONE, on_task_done,
+                      (gpointer)"Noted on the task", NULL);
+    return TRUE;
+}
+
+/* One line of a thread or a history: who or what, when, the text. */
+static LrgWidget *
+dated_line(const gchar *title, gint64 at, const gchar *body)
+{
+    LrgWidget *box = clawt_lrg_vbox(2.0f);
+    g_autoptr(GDateTime) when = (at > 0)
+        ? g_date_time_new_from_unix_local(at) : NULL;
+    g_autofree gchar *stamp = (when != NULL)
+        ? g_date_time_format(when, "%-d %b %H:%M") : g_strdup("");
+    g_autofree gchar *heading = g_strdup_printf("%s \302\267 %s", title,
+                                                stamp);
+
+    clawt_lrg_take(box, clawt_lrg_label(heading, "caption"));
+
+    if (body != NULL && *body != '\0')
+        clawt_lrg_take(box, clawt_lrg_paragraph(body, NULL));
+
+    return box;
+}
+
+/*
+ * Everything known about one task -- what was asked, its thread, its
+ * history -- and a box to comment in, the dialog's primary action.
+ */
+static void
+on_task_shown(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+              gpointer user_data)
+{
+    JsonObject *root = clawt_ipc_reply_object(reply);
+    JsonObject *task = (root != NULL && json_object_has_member(root, "task"))
+        ? json_object_get_object_member(root, "task") : NULL;
+    TaskForm *form;
+    LrgWidget *content;
+    JsonArray *rows;
+    g_autofree gchar *who = NULL;
+    guint i;
+
+    if (task == NULL)
+        return;
+
+    form = g_new0(TaskForm, 1);
+    form->task_id = g_strdup(user_data);
+    content = clawt_lrg_vbox(10.0f);
+    who = clawt_lrg_task_title(task);
+
+    clawt_lrg_take(content, clawt_lrg_badge(
+        clawt_ipc_payload_string(task, "state"),
+        clawt_lrg_task_tone(clawt_ipc_payload_string(task, "state"))));
+    clawt_lrg_take(content, clawt_lrg_paragraph(who, "muted"));
+    clawt_lrg_take(content, clawt_lrg_paragraph(
+        clawt_ipc_payload_string(task, "prompt"), NULL));
+
+    if (clawt_ipc_payload_string(task, "result") != NULL)
+        clawt_lrg_take(content, dated_line(
+            "Result", clawt_ipc_payload_int(task, "finished_at", 0),
+            clawt_ipc_payload_string(task, "result")));
+
+    clawt_lrg_take(content, clawt_lrg_label("Thread", "heading"));
+    rows = json_object_has_member(root, "notes")
+        ? json_object_get_array_member(root, "notes") : NULL;
+
+    for (i = 0; rows != NULL && i < json_array_get_length(rows); i++) {
+        JsonObject *note = json_array_get_object_element(rows, i);
+        g_autofree gchar *title = g_strdup_printf(
+            "%s (%s)",
+            clawt_ipc_payload_string(note, "author") != NULL
+                ? clawt_ipc_payload_string(note, "author") : "clawtilla",
+            clawt_ipc_payload_string(note, "kind"));
+
+        clawt_lrg_take(content, dated_line(
+            title, clawt_ipc_payload_int(note, "at", 0),
+            clawt_ipc_payload_string(note, "body")));
+    }
+
+    if (rows == NULL || json_array_get_length(rows) == 0)
+        clawt_lrg_take(content, clawt_lrg_paragraph(
+            "Nothing said about it yet.", "muted"));
+
+    form->comment = clawt_lrg_editor("", NULL);
+    clawt_lrg_take(content, clawt_lrg_label("Comment", "heading"));
+    clawt_lrg_take(content, clawt_lrg_paragraph(
+        "Kept on the task. While it is with its assignee they hear it too, "
+        "in the conversation the work is in.", "muted"));
+    clawt_lrg_take(content, form->comment);
+
+    clawt_lrg_take(content, clawt_lrg_label("History", "heading"));
+    rows = json_object_has_member(root, "journal")
+        ? json_object_get_array_member(root, "journal") : NULL;
+
+    for (i = 0; rows != NULL && i < json_array_get_length(rows); i++) {
+        JsonObject *entry = json_array_get_object_element(rows, i);
+
+        clawt_lrg_take(content, dated_line(
+            clawt_ipc_payload_string(entry, "state"),
+            clawt_ipc_payload_int(entry, "at", 0),
+            clawt_ipc_payload_string(entry, "what")));
+    }
+
+    /*
+     * In a scroller: a task's thread and history are as long as the work
+     * was, and a dialog taller than the window cannot be read or closed.
+     */
+    {
+        LrgScrollBox *scroll = lrg_scroll_box_new();
+
+        lrg_scroll_box_set_hscroll(scroll, FALSE);
+        lrg_scroll_box_set_vscroll(scroll, TRUE);
+        lrg_scroll_box_set_kinetic(scroll, TRUE);
+        lrg_scroll_box_set_child(scroll, content);
+        g_object_unref(content);
+        lrg_widget_set_min_size(LRG_WIDGET(scroll),
+                                560.0f * (gfloat)app->scale,
+                                520.0f * (gfloat)app->scale);
+
+        g_object_unref(clawt_lrg_dialog(
+            app, clawt_ipc_payload_string(task, "title") != NULL
+                     ? clawt_ipc_payload_string(task, "title")
+                     : form->task_id,
+            NULL, LRG_WIDGET(scroll), "Comment", FALSE, on_comment_response,
+            form, task_form_free));
+        g_object_unref(scroll);
+    }
+}
+
+static void
+on_details_clicked(LrgButton *button, gpointer user_data)
+{
+    const gchar *id = g_object_get_data(G_OBJECT(button), "task-id");
+
+    (void)user_data;
+
+    if (id == NULL)
+        return;
+
+    clawt_lrg_request(tasks.app, "task.show",
+                      clawt_ipc_payload_new("task", id, "journal", "true",
+                                            NULL),
+                      CLAWT_LRG_REQUEST_NONE, on_task_shown, g_strdup(id),
+                      g_free);
+}
+
+/* A card button carrying its task's id. */
+static LrgWidget *
+task_button(const gchar *label, const gchar *task_id, GCallback callback)
+{
+    LrgWidget *button = clawt_lrg_button(label, "flat", callback, NULL);
+
+    g_object_set_data_full(G_OBJECT(button), "task-id", g_strdup(task_id),
+                           g_free);
+    return button;
+}
+
 static LrgWidget *
 task_card(JsonObject *task, guint depth)
 {
@@ -370,7 +721,11 @@ task_card(JsonObject *task, guint depth)
     const gchar *note = clawt_lrg_task_note(task);
     g_autofree gchar *title = clawt_lrg_task_title(task);
     LrgWidget *body = clawt_lrg_vbox(6.0f);
-    LrgWidget *row = clawt_lrg_row(title, NULL);
+    /* the task's title, with who it is between underneath */
+    LrgWidget *row = clawt_lrg_row(
+        clawt_ipc_payload_string(task, "title") != NULL
+            ? clawt_ipc_payload_string(task, "title") : title,
+        title);
     LrgWidget *card;
     LrgInsets indent = { TASK_INDENT * (gfloat)depth, 0.0f, 0.0f, 0.0f };
     g_autofree gchar *note_room = NULL;
@@ -409,6 +764,17 @@ task_card(JsonObject *task, guint depth)
             note_room = g_steal_pointer(&summary);
         }
     }
+
+    /* Off the backlog: pick who does it. */
+    if (g_strcmp0(state, "unassigned") == 0)
+        clawt_lrg_row_add_suffix(row, task_button(
+            "Assign\342\200\246", clawt_ipc_payload_string(task, "id"),
+            G_CALLBACK(on_assign_clicked)));
+
+    /* Its thread, history and a box to comment in. */
+    clawt_lrg_row_add_suffix(row, task_button(
+        "Details", clawt_ipc_payload_string(task, "id"),
+        G_CALLBACK(on_details_clicked)));
 
     if (clawt_lrg_task_cancellable(state)) {
         LrgWidget *cancel = clawt_lrg_button("Cancel", "flat",
@@ -549,6 +915,15 @@ build(ClawtLrgApp *app)
     tasks.incidents = clawt_lrg_vbox(8.0f);
     clawt_lrg_add(clawt_lrg_page_body(page), tasks.incidents);
     g_object_unref(tasks.incidents);
+    /* The way to write a task down, above the list. */
+    {
+        LrgWidget *add = clawt_lrg_button("New task", "primary",
+                                          G_CALLBACK(on_new_task_clicked),
+                                          NULL);
+
+        clawt_lrg_take(clawt_lrg_page_body(page), add);
+    }
+
     tasks.list = clawt_lrg_vbox(8.0f);
     clawt_lrg_add(clawt_lrg_page_body(page), tasks.list);
     g_object_unref(tasks.list);

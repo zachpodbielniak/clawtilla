@@ -548,10 +548,7 @@ clawt_task_is_finished(ClawtTask *self)
 {
     g_return_val_if_fail(self != NULL, TRUE);
 
-    return self->state == CLAWT_TASK_COMPLETED ||
-           self->state == CLAWT_TASK_FAILED ||
-           self->state == CLAWT_TASK_CANCELLED ||
-           self->state == CLAWT_TASK_STALLED;
+    return clawt_task_state_is_finished(self->state);
 }
 
 const gchar *
@@ -579,9 +576,14 @@ clawt_task_state_tone(ClawtTaskState state)
         return "warn";
 
     case CLAWT_TASK_RUNNING:
+    case CLAWT_TASK_REVIEW:
         return "info";
 
+    case CLAWT_TASK_BLOCKED:
+        return "warn";
+
     case CLAWT_TASK_PENDING:
+    case CLAWT_TASK_UNASSIGNED:
         return "neutral";
     }
 
@@ -646,10 +648,82 @@ clawt_task_state_is_retryable(ClawtTaskState state)
     case CLAWT_TASK_RUNNING:
     case CLAWT_TASK_COMPLETED:
     case CLAWT_TASK_CANCELLED:
+    case CLAWT_TASK_UNASSIGNED:
+    case CLAWT_TASK_BLOCKED:
+    case CLAWT_TASK_REVIEW:
         return FALSE;
     }
 
     return FALSE;
+}
+
+gboolean
+clawt_task_state_is_finished(ClawtTaskState state)
+{
+    /* Every state named, no default: -Wswitch catches the next one. */
+    switch (state) {
+    case CLAWT_TASK_COMPLETED:
+    case CLAWT_TASK_FAILED:
+    case CLAWT_TASK_CANCELLED:
+    case CLAWT_TASK_STALLED:
+        return TRUE;
+
+    case CLAWT_TASK_PENDING:
+    case CLAWT_TASK_RUNNING:
+    case CLAWT_TASK_UNASSIGNED:
+    case CLAWT_TASK_BLOCKED:
+    case CLAWT_TASK_REVIEW:
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+gboolean
+clawt_task_state_is_active(ClawtTaskState state)
+{
+    /*
+     * Handed to its assignee and theirs to move: the states a turn can
+     * be working on.  Not the three that wait on somebody else -- a
+     * backlog item, a task held for its blockers, a result being
+     * checked -- which no turn timeout, crash or idle continuation is
+     * about.
+     */
+    switch (state) {
+    case CLAWT_TASK_PENDING:
+    case CLAWT_TASK_RUNNING:
+        return TRUE;
+
+    case CLAWT_TASK_COMPLETED:
+    case CLAWT_TASK_FAILED:
+    case CLAWT_TASK_CANCELLED:
+    case CLAWT_TASK_STALLED:
+    case CLAWT_TASK_UNASSIGNED:
+    case CLAWT_TASK_BLOCKED:
+    case CLAWT_TASK_REVIEW:
+        return FALSE;
+    }
+
+    return FALSE;
+}
+
+gboolean
+clawt_task_state_is_cancellable(ClawtTaskState state)
+{
+    /* Anything that has not ended: there is still something to stop. */
+    return !clawt_task_state_is_finished(state);
+}
+
+gboolean
+clawt_task_state_nick_is_cancellable(const gchar *nick)
+{
+    gint value;
+
+    if (nick == NULL ||
+        !clawt_enum_from_nick(CLAWT_TYPE_TASK_STATE, nick, &value))
+        return FALSE;
+
+    return clawt_task_state_is_cancellable((ClawtTaskState)value);
 }
 
 /* ── Saving and restoring ────────────────────────────────────────── */

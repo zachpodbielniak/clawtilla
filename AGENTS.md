@@ -1463,6 +1463,16 @@ versions apart.
   (`clawt_daemon_tasks_reconcile()`). Never word a task or incident list as
   "held in memory" again unless the store is absent:
   `clawt_task_list_caption()` decides.
+- **Ask the task-state predicates; never compare states.**
+  `clawt_task_state_is_finished()`, `_is_active()`, `_is_cancellable()`,
+  `_is_retryable()` and `clawt_task_state_nick_is_cancellable()` classify
+  every `ClawtTaskState`; a switch over the enum names every value with no
+  `default:`. `unassigned`, `blocked` and `review` (0.36.0) are not finished
+  and not active: nothing that watches an assignee's work (turn timeouts,
+  crash handling, orphaning, the idle guard, the restart reconcile) may
+  touch them, and a client's Cancel is offered on them. A note on a task
+  publishes `task.noted`, never `task.changed`, which settle notices and
+  incidents hang off.
 - **A stored question with an in-memory asker outlives the asker.** A policy
   ask is a decision on disk and a waiting call in the daemon's memory, so
   an interrupted turn, a stopped agent or a restarted daemon left the

@@ -3315,6 +3315,11 @@ clawt_mcp_tools_describe_for_agent(ClawtMcpTools *self, const gchar *agent_id)
             "If the daemon restarts while a task is running and nothing is\n"
             "left to carry it on, it is failed with that reason and can be\n"
             "retried; one you were waiting on reports back as usual.\n"
+            "\n"
+            "The operator can comment on a task you have. A comment reaches\n"
+            "you as a message from them while you work on it, and\n"
+            "~clawtilla_task_status~ shows the latest -- read them before\n"
+            "you report a result.\n"
             "\n");
 
     /*
@@ -5991,11 +5996,48 @@ tool_task_status(ClawtMcpTools *self, const gchar *agent_id,
                              "clawtilla_task_complete -- the result is "
                              "whatever they last wrote.");
 
+    /*
+     * The comments on it -- above all the operator's, which is how a
+     * person steers work they did not delegate themselves.  The last few
+     * only: progress and results are already above, so a long thread
+     * does not crowd out the state it is a footnote to.
+     */
+    {
+        g_autoptr(JsonNode) notes = clawt_task_manager_notes(self->tasks,
+                                                             task_id, NULL);
+        JsonArray *rows = (notes != NULL) ? json_node_get_array(notes) : NULL;
+        guint total = (rows != NULL) ? json_array_get_length(rows) : 0;
+        guint shown = 0;
+        guint n;
+
+        for (n = total; n > 0 && shown < 5; n--) {
+            JsonObject *row = json_array_get_object_element(rows, n - 1);
+
+            if (g_strcmp0(json_object_get_string_member_with_default(
+                              row, "kind", NULL),
+                          CLAWT_TASK_NOTE_COMMENT) != 0)
+                continue;
+
+            if (shown == 0)
+                g_string_append(out, "\nComments, newest first:");
+
+            g_string_append_printf(out, "\n- %s: %s",
+                g_strcmp0(json_object_get_string_member_with_default(
+                              row, "author", NULL), "user") == 0
+                    ? "the operator"
+                    : json_object_get_string_member_with_default(
+                          row, "author", "somebody"),
+                json_object_get_string_member_with_default(row, "body", ""));
+            shown++;
+        }
+    }
+
     append_handoff_history(self, out, task_id);
 
 	/*
-	 * The reason, the progress note and the handoff receipts are agents'
-	 * words; none of this is a notice, so none of it may read as one.
+	 * The reason, the progress note, the comments and the handoff
+	 * receipts are people's and agents' words; none of this is a
+	 * notice, so none of it may read as one.
 	 */
     return clawt_preamble_escape(out->str);
 }

@@ -213,6 +213,15 @@ declare -A AFFORDANCES=(
     #
     ["sidebar collapses"]="clawt_appearance_set_sidebar_collapsed|nav-toggle|clawt_lrg_window_toggle_sidebar"
     #
+    # The operator's own tasks (since 0.36.0): writing one down, for an
+    # agent or for the backlog; assigning one off the backlog; and a
+    # task's page -- its thread, its history and a box to comment in.
+    #
+    ["new task"]="on_new_task_create|/tasks/new|on_new_task_response"
+    ["assign from the backlog"]="on_assign_confirm|/tasks/%s/assign|on_assign_response"
+    ["task thread and comment"]="on_comment_send|/tasks/%s/comment|on_comment_response"
+    ["task history"]="\"journal\", \"true\"|clawt_web_payload_set_bool(payload, \"journal\", TRUE)|\"journal\", \"true\""
+    #
     # Per-agent computer settings that apply to some computer types only.
     # Each client draws the row from the agent member the daemon reports
     # for exactly those types, so the member name is the marker: a client

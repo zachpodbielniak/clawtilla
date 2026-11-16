@@ -42,6 +42,15 @@ static const gchar *SCHEMA_SQL =
     "  what TEXT"
     ");"
     "CREATE INDEX IF NOT EXISTS task_journal_task ON task_journal(task_id, id);"
+    "CREATE TABLE IF NOT EXISTS task_notes ("
+    "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "  task_id TEXT NOT NULL,"
+    "  at INTEGER NOT NULL,"
+    "  author TEXT,"
+    "  kind TEXT NOT NULL,"
+    "  body TEXT NOT NULL"
+    ");"
+    "CREATE INDEX IF NOT EXISTS task_notes_task ON task_notes(task_id, id);"
     "CREATE TABLE IF NOT EXISTS incidents ("
     "  id TEXT PRIMARY KEY,"
     "  opened_at INTEGER NOT NULL,"
@@ -461,7 +470,7 @@ clawt_task_store_prune(ClawtTaskStore  *self,
     if (!exec(self, "BEGIN IMMEDIATE", error))
         return 0;
 
-    /* The journals first, while the rows that name them still exist. */
+    /* The journals and notes first, while the rows that name them exist. */
     if (sqlite3_prepare_v2(self->db,
             "DELETE FROM task_journal WHERE task_id IN ("
             "  SELECT id FROM tasks WHERE finished_at > 0 "
@@ -469,6 +478,18 @@ clawt_task_store_prune(ClawtTaskStore  *self,
         (sqlite3_bind_int64(stmt, 1, finished_before),
          sqlite3_step(stmt) != SQLITE_DONE)) {
         set_sqlite_error(error, self->db, "pruning task journals");
+        goto fail;
+    }
+
+    g_clear_pointer(&stmt, sqlite3_finalize);
+
+    if (sqlite3_prepare_v2(self->db,
+            "DELETE FROM task_notes WHERE task_id IN ("
+            "  SELECT id FROM tasks WHERE finished_at > 0 "
+            "  AND finished_at < ?)", -1, &stmt, NULL) != SQLITE_OK ||
+        (sqlite3_bind_int64(stmt, 1, finished_before),
+         sqlite3_step(stmt) != SQLITE_DONE)) {
+        set_sqlite_error(error, self->db, "pruning task notes");
         goto fail;
     }
 
@@ -495,6 +516,97 @@ fail:
     g_clear_pointer(&stmt, sqlite3_finalize);
     sqlite3_exec(self->db, "ROLLBACK", NULL, NULL, NULL);
     return 0;
+}
+
+gint64
+clawt_task_store_add_note(ClawtTaskStore  *self,
+                          const gchar     *task_id,
+                          const gchar     *author,
+                          const gchar     *kind,
+                          const gchar     *body,
+                          GError         **error)
+{
+    sqlite3_stmt *stmt = NULL;
+    gint64 id = 0;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), 0);
+    g_return_val_if_fail(task_id != NULL, 0);
+    g_return_val_if_fail(kind != NULL, 0);
+    g_return_val_if_fail(body != NULL, 0);
+
+    if (sqlite3_prepare_v2(self->db,
+            "INSERT INTO task_notes (task_id, at, author, kind, body) "
+            "VALUES (?, ?, ?, ?, ?)", -1, &stmt, NULL) != SQLITE_OK) {
+        set_sqlite_error(error, self->db, "preparing a task note");
+        return 0;
+    }
+
+    sqlite3_bind_text(stmt, 1, task_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, now_seconds());
+    sqlite3_bind_text(stmt, 3, author, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, kind, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, body, -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(stmt) == SQLITE_DONE)
+        id = sqlite3_last_insert_rowid(self->db);
+    else
+        set_sqlite_error(error, self->db, "adding a task note");
+
+    sqlite3_finalize(stmt);
+    return id;
+}
+
+JsonNode *
+clawt_task_store_notes(ClawtTaskStore  *self,
+                       const gchar     *task_id,
+                       GError         **error)
+{
+    g_autoptr(JsonBuilder) builder = NULL;
+    sqlite3_stmt *stmt = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), NULL);
+    g_return_val_if_fail(task_id != NULL, NULL);
+
+    if (sqlite3_prepare_v2(self->db,
+            "SELECT id, at, author, kind, body FROM task_notes "
+            "WHERE task_id = ? ORDER BY id ASC", -1, &stmt,
+            NULL) != SQLITE_OK) {
+        set_sqlite_error(error, self->db, "reading a task's notes");
+        return NULL;
+    }
+
+    sqlite3_bind_text(stmt, 1, task_id, -1, SQLITE_TRANSIENT);
+
+    builder = json_builder_new();
+    json_builder_begin_array(builder);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const gchar *author = (const gchar *)sqlite3_column_text(stmt, 2);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "id");
+        json_builder_add_int_value(builder, sqlite3_column_int64(stmt, 0));
+        json_builder_set_member_name(builder, "at");
+        json_builder_add_int_value(builder, sqlite3_column_int64(stmt, 1));
+
+        if (author != NULL) {
+            json_builder_set_member_name(builder, "author");
+            json_builder_add_string_value(builder, author);
+        }
+
+        json_builder_set_member_name(builder, "kind");
+        json_builder_add_string_value(builder,
+            (const gchar *)sqlite3_column_text(stmt, 3));
+        json_builder_set_member_name(builder, "body");
+        json_builder_add_string_value(builder,
+            (const gchar *)sqlite3_column_text(stmt, 4));
+        json_builder_end_object(builder);
+    }
+
+    sqlite3_finalize(stmt);
+    json_builder_end_array(builder);
+
+    return json_builder_get_root(builder);
 }
 
 gboolean

@@ -754,7 +754,8 @@ test_task_title_and_note(void)
     g_autofree gchar *unknown = clawt_lrg_task_title(object_of(plain));
 
     g_assert_cmpstr(title, ==, "chief \342\206\222 kudu");
-    g_assert_cmpstr(unknown, ==, "? \342\206\222 ?");
+    /* no assignee member is a backlog task (since 0.36.0) */
+    g_assert_cmpstr(unknown, ==, "? \302\267 on the backlog");
     g_assert_cmpstr(clawt_lrg_task_note(object_of(progress)), ==, "halfway");
     g_assert_nonnull(strstr(clawt_lrg_task_note(object_of(inferred)),
                             "nobody reported this finished"));

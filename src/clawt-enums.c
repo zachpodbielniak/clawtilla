@@ -1031,6 +1031,9 @@ clawt_task_state_get_type(void)
             { CLAWT_TASK_FAILED, "CLAWT_TASK_FAILED", "failed" },
             { CLAWT_TASK_CANCELLED, "CLAWT_TASK_CANCELLED", "cancelled" },
             { CLAWT_TASK_STALLED, "CLAWT_TASK_STALLED", "stalled" },
+            { CLAWT_TASK_UNASSIGNED, "CLAWT_TASK_UNASSIGNED", "unassigned" },
+            { CLAWT_TASK_BLOCKED, "CLAWT_TASK_BLOCKED", "blocked" },
+            { CLAWT_TASK_REVIEW, "CLAWT_TASK_REVIEW", "review" },
             { 0, NULL, NULL }
         };
         GType g_define_type_id = g_enum_register_static("ClawtTaskState", values);

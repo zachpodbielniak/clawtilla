@@ -1806,6 +1806,9 @@ on_task_changed(
 
 	case CLAWT_TASK_PENDING:
 	case CLAWT_TASK_RUNNING:
+	case CLAWT_TASK_UNASSIGNED:
+	case CLAWT_TASK_BLOCKED:
+	case CLAWT_TASK_REVIEW:
 		break;
 	}
 }

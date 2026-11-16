@@ -121,6 +121,60 @@ add_incident_object(
 	json_builder_end_object(builder);
 }
 
+/*
+ * Hands an operator's task to its assignee: the work and the task
+ * contract, from `user`, into the conversation the two already share.
+ * A send that is refused fails the task, so it is not left `pending`
+ * with nobody told -- which reads as work in progress nobody is doing.
+ */
+static gboolean
+deliver_operator_task(
+	ClawtDaemon  *self,
+	ClawtTask    *task,
+	GError      **error
+){
+	g_autofree gchar *guidance = NULL;
+	g_autofree gchar *body = NULL;
+
+	guidance = clawt_task_assignment_guidance(clawt_task_get_id(task));
+	body = g_strconcat(clawt_task_get_prompt(task), guidance, NULL);
+
+	if (clawt_mailbox_router_send_to(self->router, "user",
+	                                 clawt_task_get_assignee(task), body,
+	                                 clawt_task_get_id(task), 0, error) >= 0)
+		return TRUE;
+
+	clawt_task_manager_fail(self->tasks, clawt_task_get_id(task),
+	                        "it could not be handed to its assignee");
+	return FALSE;
+}
+
+/*
+ * Tells the clients a task's thread grew.  Its own event rather than
+ * ::task-changed, which settle notices and incidents hang off: a note on
+ * a finished task must not send its delegator the result a second time.
+ */
+static void
+publish_note(
+	ClawtDaemon *self,
+	ClawtTask   *task,
+	const gchar *author
+){
+	g_autoptr(ClawtEvent) event = NULL;
+
+	if (self->bus == NULL)
+		return;
+
+	event = clawt_event_new("task.noted", clawt_task_get_id(task));
+
+	if (author != NULL)
+		clawt_event_set_detail(event, "author", author);
+	if (clawt_task_get_assignee(task) != NULL)
+		clawt_event_set_detail(event, "agent", clawt_task_get_assignee(task));
+
+	clawt_event_bus_publish(self->bus, event);
+}
+
 JsonNode *
 clawt_daemon_handle_task(
     ClawtDaemon  *self,
@@ -232,6 +286,21 @@ clawt_daemon_handle_task(
         clawt_daemon_add_task_object(builder, task);
 
         /*
+         * Its thread: what was said about it -- comments, progress,
+         * results.  Always, because it is short and it is what a person
+         * opening a task wants to read; absent without a store.
+         */
+        {
+            JsonNode *notes = clawt_task_manager_notes(self->tasks, task_id,
+                                                       NULL);
+
+            if (notes != NULL) {
+                json_builder_set_member_name(builder, "notes");
+                json_builder_add_value(builder, notes);
+            }
+        }
+
+        /*
          * Its history, when asked for: every state it was left in and
          * what moved it there.  Absent without a store rather than an
          * error -- the task itself is still worth answering with.
@@ -246,6 +315,146 @@ clawt_daemon_handle_task(
             }
         }
 
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    /*
+     * The operator's own tasks.  "user" throughout, because the clients
+     * are the operator's hands: the assignee is told the work came from
+     * them, and a result goes back to them rather than to an agent.
+     */
+    if (g_strcmp0(kind, "task.create") == 0) {
+        const gchar *prompt = clawt_ipc_payload_string(payload, "prompt");
+        const gchar *title = clawt_ipc_payload_string(payload, "title");
+        const gchar *agent = clawt_ipc_payload_string(payload, "agent");
+        g_autoptr(GError) error = NULL;
+        ClawtTask *task;
+
+        if (prompt == NULL || *prompt == '\0')
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "what is the task? (prompt)");
+
+        if (agent != NULL && *agent == '\0')
+            agent = NULL;
+
+        if (agent != NULL &&
+            clawt_agent_manager_get(self->agents, agent) == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "there is no agent by that name");
+
+        task = clawt_task_manager_create(self->tasks, "user", agent, prompt,
+                                         NULL, &error);
+
+        if (task == NULL)
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        if (title != NULL && *title != '\0') {
+            clawt_task_set_title(task, title);
+            clawt_task_manager_save(self->tasks, task, NULL);
+        }
+
+        /* With an assignee it goes to them now; without, it waits. */
+        if (agent != NULL && !deliver_operator_task(self, task, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "task");
+        clawt_daemon_add_task_object(builder, task);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "task.assign") == 0) {
+        const gchar *task_id = clawt_ipc_payload_string(payload, "task");
+        const gchar *agent = clawt_ipc_payload_string(payload, "agent");
+        g_autoptr(GError) error = NULL;
+        ClawtTask *task;
+
+        if (task_id == NULL || agent == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "which task, and to whom?");
+
+        if (clawt_agent_manager_get(self->agents, agent) == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "there is no agent by that name");
+
+        if (!clawt_task_manager_assign(self->tasks, task_id, agent, "user",
+                                       &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        task = clawt_task_manager_get(self->tasks, task_id);
+
+        if (!deliver_operator_task(self, task, &error))
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "task");
+        clawt_daemon_add_task_object(builder, task);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    if (g_strcmp0(kind, "task.comment") == 0) {
+        const gchar *task_id = clawt_ipc_payload_string(payload, "task");
+        const gchar *text = clawt_ipc_payload_string(payload, "text");
+        g_autoptr(GError) error = NULL;
+        gboolean told = FALSE;
+        ClawtTask *task;
+        gint64 note_id;
+
+        if (task_id == NULL || text == NULL || *text == '\0')
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "which task, and what to say?");
+
+        note_id = clawt_task_manager_add_note(self->tasks, task_id, "user",
+                                              CLAWT_TASK_NOTE_COMMENT, text,
+                                              &error);
+
+        if (note_id == 0)
+            return clawt_ipc_error_new(request, error->code, error->message);
+
+        task = clawt_task_manager_get(self->tasks, task_id);
+
+        /*
+         * A task with its assignee also hears it, as a message from the
+         * operator in the conversation the work is in.  The router then
+         * does what it does with any message for a busy agent -- steers
+         * it into the running turn when steering is on, or queues it for
+         * the next -- so a comment never starts a turn of its own on a
+         * busy agent.  A backlog, blocked or finished task only keeps it.
+         */
+        if (task != NULL &&
+            clawt_task_state_is_active(clawt_task_get_state(task)) &&
+            clawt_task_get_assignee(task) != NULL) {
+            g_autofree gchar *body = g_strdup_printf(
+                "The operator commented on task %s (%s):\n\n%s",
+                task_id, clawt_task_get_title(task), text);
+            const gchar *target = clawt_task_get_thread_room(task) != NULL
+                ? clawt_task_get_thread_room(task)
+                : clawt_task_get_assignee(task);
+            g_autoptr(GError) send_error = NULL;
+
+            told = clawt_mailbox_router_send_to(self->router, "user", target,
+                                                body, task_id, 0,
+                                                &send_error) >= 0;
+
+            if (!told)
+                g_warning("task %s: the comment was kept but not delivered: "
+                          "%s", task_id, send_error->message);
+        }
+
+        if (task != NULL)
+            publish_note(self, task, "user");
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "note");
+        json_builder_add_int_value(builder, note_id);
+        json_builder_set_member_name(builder, "delivered");
+        json_builder_add_boolean_value(builder, told);
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
@@ -670,6 +879,15 @@ clawt_daemon_tasks_reconcile(
 
 	for (i = 0; i < live->len; i++) {
 		ClawtTask *task = g_ptr_array_index(live, i);
+
+		/*
+		 * Only what was with an assignee.  A backlog item, a task held
+		 * for its blockers and one in review were waiting on somebody
+		 * other than an agent's turn, and a restart changes nothing
+		 * about that.
+		 */
+		if (!clawt_task_state_is_active(clawt_task_get_state(task)))
+			continue;
 
 		if (!task_is_carried(self, task))
 			g_ptr_array_add(orphans, g_strdup(clawt_task_get_id(task)));
