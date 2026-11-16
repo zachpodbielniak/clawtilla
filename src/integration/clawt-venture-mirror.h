@@ -108,7 +108,10 @@ typedef GStrv (*ClawtVentureMirrorTargetFunc)(ClawtVentureMirror *mirror,
  * @comment: somebody other than the mirror and the assignee commented
  * @intake: a ticket assigned to @agent_id's VENTURE user, still `todo`
  *   and from no system: start a task for it, and return its id (or
- *   %NULL when it was refused)
+ *   %NULL when it was refused).  @from_agent is the fleet agent whose
+ *   own VENTURE account assigned it, or %NULL for a person (since
+ *   0.47.0): an agent handing another work through VENTURE is a
+ *   delegation, held to the same loop limits as one through clawtilla
  *
  * What the mirror asks the daemon to do with changes made in VENTURE
  * (since 0.45.0).  @who is the VENTURE actor or author, as VENTURE spelt
@@ -123,7 +126,7 @@ typedef struct {
                          const gchar *text);
     gchar    *(*intake)(gpointer data, const gchar *agent_id, gint64 ticket,
                         const gchar *title, const gchar *description,
-                        const gchar *url);
+                        const gchar *url, const gchar *from_agent);
 } ClawtVentureMirrorInbound;
 
 /**

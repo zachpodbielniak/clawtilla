@@ -136,6 +136,17 @@ fake_send(ClawtVentureMirror     *mirror,
                 "{\"id\":%" G_GINT64_FORMAT ",\"version\":1,"
                 "\"issue_type\":\"task\"}", ++fixture->next_ticket);
         }
+    } else if (g_strcmp0(path, "/api/v1/activity/ticket/30") == 0) {
+        answer->body = g_strdup(
+            "[{\"kind\":\"change\",\"action\":\"update\","
+            "\"actor\":\"API token #t-lead\",\"changes\":{\"assignee\":"
+            "{\"from\":null,\"to\":\"scout-bot\"}}},"
+            " {\"kind\":\"change\",\"action\":\"create\","
+            "\"actor\":\"alice\",\"changes\":null}]");
+    } else if (g_str_has_prefix(path, "/api/v1/activity/ticket/")) {
+        answer->body = g_strdup(
+            "[{\"kind\":\"change\",\"action\":\"create\","
+            "\"actor\":\"alice\",\"changes\":null}]");
     } else if (g_strcmp0(path, "/api/v1/ticket_link") == 0) {
         answer->status = 201;
         answer->body = g_strdup("{\"id\":90}");
@@ -740,7 +751,8 @@ rec_comment(gpointer data, const gchar *task_id, const gchar *who,
 
 static gchar *
 rec_intake(gpointer data, const gchar *agent_id, gint64 ticket,
-           const gchar *title, const gchar *description, const gchar *url)
+           const gchar *title, const gchar *description, const gchar *url,
+           const gchar *from_agent)
 {
     Fixture *fixture = data;
     g_autoptr(ClawtTask) task = save_task(fixture, "user", agent_id,
@@ -749,7 +761,9 @@ rec_intake(gpointer data, const gchar *agent_id, gint64 ticket,
     (void)description;
     (void)url;
     g_ptr_array_add(fixture->inbound, g_strdup_printf(
-        "intake %" G_GINT64_FORMAT " %s %s", ticket, agent_id, title));
+        "intake %" G_GINT64_FORMAT " %s %s%s%s", ticket, agent_id, title,
+        from_agent != NULL ? " from " : "",
+        from_agent != NULL ? from_agent : ""));
 
     return g_strdup(clawt_task_get_id(task));
 }
@@ -903,11 +917,16 @@ test_intake_once_then_referenced(Fixture *fixture, gconstpointer data)
         "[{\"id\":30,\"version\":3,\"title\":\"Do X\",\"description\":\"d\","
         "  \"status\":\"todo\",\"external_ref\":\"\"},"
         " {\"id\":31,\"version\":1,\"title\":\"Theirs\",\"status\":\"todo\","
-        "  \"external_ref\":\"jira:ABC-1\"}]");
+        "  \"external_ref\":\"jira:ABC-1\"},"
+        " {\"id\":32,\"version\":1,\"title\":\"From a person\","
+        "  \"status\":\"todo\"}]");
 
     poll(fixture);
-    g_assert_true(inbound_has(fixture, "intake 30 scout Do X"));
-    g_assert_cmpuint(fixture->inbound->len, ==, 1);
+    /* lead's own account assigned it: a delegation from lead */
+    g_assert_true(inbound_has(fixture, "intake 30 scout Do X from lead"));
+    /* a person's assignment: from the operator */
+    g_assert_true(inbound_has(fixture, "intake 32 scout From a person"));
+    g_assert_cmpuint(fixture->inbound->len, ==, 2);
 
     /* the outbox brings the ticket up to the task, reference first */
     sent = find_sent(fixture, "PATCH", "/api/v1/ticket/30");
@@ -919,9 +938,9 @@ test_intake_once_then_referenced(Fixture *fixture, gconstpointer data)
                                                "version"), ==, 3);
     g_assert_null(find_sent(fixture, "POST", "/api/v1/ticket"));
 
-    /* the same ticket on the next pass: not again */
+    /* the same tickets on the next pass: not again */
     poll(fixture);
-    g_assert_cmpuint(fixture->inbound->len, ==, 1);
+    g_assert_cmpuint(fixture->inbound->len, ==, 2);
 }
 
 /* Without intake on for the account, nothing is taken in. */

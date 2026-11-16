@@ -127,6 +127,11 @@ test_the_mirror_reads_what_venture_answers(void)
     expect("ticket-comment-list", "records.body", "string");
     expect("ticket-comment-list", "records.external_ref", "string");
 
+    /* the timeline intake reads: who set the assignee (0.47.0) */
+    expect("ticket-activity", "action", "string");
+    expect("ticket-activity", "actor", "string");
+    expect("ticket-activity", "changes.assignee.to", "string");
+
     /* the branch link and the run */
     expect("ticket-link-create", "id", "int");
     expect("run-start", "id", "int");
