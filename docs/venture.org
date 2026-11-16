@@ -200,6 +200,8 @@ And again the same day, for review and for comments reaching a working agent, wi
 
 That run found the one thing it was for: a comment made in the minute before the reverse poll's first pass was taken as history and not delivered.  Since 0.48.0 the first pass starts from the newest comment made before the mirror started.
 
+The whole list once more against the released clawtilla 0.49.0 and VENTURE 0.10.6, scripted with a check per step: intake, a comment made the moment the daemon was up reaching the agent (it answered with the comment's word), an agent's task completed with its ticket done, result comment by its own token, branch linked and run costed, the opt-in switch off leaving a task unmirrored, done in VENTURE accepting a reviewed task, cancel in VENTURE, VENTURE down and back with the outbox draining, a pending task surviving a daemon restart, and both task pages screenshotted.
+
 * Troubleshooting
 
 | Seen | Why, and what to do |
