@@ -1053,6 +1053,14 @@ task_card(JsonObject *task, guint depth)
      * row that reads `completed` and nothing else cannot tell a reported
      * result from a turn that simply stopped.
      */
+    /* The project it belongs to. */
+    if (clawt_ipc_payload_string(task, "project") != NULL) {
+        g_autofree gchar *chip = g_strdup_printf(
+            "Project: %s", clawt_ipc_payload_string(task, "project"));
+
+        clawt_lrg_take(body, clawt_lrg_paragraph(chip, "muted"));
+    }
+
     /* A held task says what it is waiting for. */
     if (json_object_has_member(task, "waiting_on") &&
         json_array_get_length(json_object_get_array_member(task,

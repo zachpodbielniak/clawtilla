@@ -220,6 +220,7 @@ declare -A AFFORDANCES=(
     ["new task"]="on_new_task_create|/tasks/new|on_new_task_response"
     ["assign from the backlog"]="on_assign_confirm|/tasks/%s/assign|on_assign_response"
     ["task thread and comment"]="on_comment_send|/tasks/%s/comment|on_comment_response"
+    ["projects page"]="clawt_gtk_build_projects_page|/settings/projects/add|clawt_lrg_settings_projects_page"
     ["task changes"]="on_show_changes|/tasks/%s/changes|on_changes_clicked"
     ["remove a checkout"]="on_remove_checkout|/tasks/%s/checkout_remove|on_remove_checkout_clicked"
     ["review a result"]="on_review_verdict|/tasks/%s/review|on_review_clicked"

@@ -90,6 +90,28 @@ now_seconds(void)
     return g_get_real_time() / G_USEC_PER_SEC;
 }
 
+/* Whether @table has @column, from its own description. */
+static gboolean
+has_column(ClawtTaskStore *self, const gchar *table, const gchar *column)
+{
+    g_autofree gchar *sql = g_strdup_printf("PRAGMA table_info(%s)", table);
+    sqlite3_stmt *stmt = NULL;
+    gboolean found = FALSE;
+
+    if (sqlite3_prepare_v2(self->db, sql, -1, &stmt, NULL) != SQLITE_OK)
+        return FALSE;
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        if (g_strcmp0((const gchar *)sqlite3_column_text(stmt, 1),
+                      column) == 0)
+            found = TRUE;
+    }
+
+    sqlite3_finalize(stmt);
+
+    return found;
+}
+
 ClawtTaskStore *
 clawt_task_store_new(const gchar *path, GError **error)
 {
@@ -124,6 +146,23 @@ clawt_task_store_new(const gchar *path, GError **error)
         set_sqlite_error(error, self->db, "creating the task store's tables");
         return NULL;
     }
+
+    /*
+     * Columns added after the table first shipped: a store written by an
+     * older daemon gets them now, empty, and is filled in as its tasks
+     * are next saved.  `project` (0.40.0) is what a project's month of
+     * spend is summed over.
+     */
+    if (!has_column(self, "tasks", "project") &&
+        sqlite3_exec(self->db, "ALTER TABLE tasks ADD COLUMN project TEXT;",
+                     NULL, NULL, NULL) != SQLITE_OK) {
+        set_sqlite_error(error, self->db, "adding tasks.project");
+        return NULL;
+    }
+
+    sqlite3_exec(self->db,
+                 "CREATE INDEX IF NOT EXISTS tasks_project "
+                 "ON tasks(project, created_at);", NULL, NULL, NULL);
 
     return (ClawtTaskStore *)g_steal_pointer(&self);
 }
@@ -205,12 +244,13 @@ clawt_task_store_save(ClawtTaskStore  *self,
 
     if (sqlite3_prepare_v2(self->db,
             "INSERT INTO tasks (id, state, assignee, origin, parent_id, "
-            "  title, created_at, finished_at, data) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "  title, created_at, finished_at, data, project) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(id) DO UPDATE SET state = excluded.state, "
             "  assignee = excluded.assignee, origin = excluded.origin, "
             "  parent_id = excluded.parent_id, title = excluded.title, "
-            "  finished_at = excluded.finished_at, data = excluded.data",
+            "  finished_at = excluded.finished_at, data = excluded.data, "
+            "  project = excluded.project",
             -1, &stmt, NULL) != SQLITE_OK) {
         set_sqlite_error(error, self->db, "preparing a task save");
         goto out;
@@ -229,6 +269,8 @@ clawt_task_store_save(ClawtTaskStore  *self,
     sqlite3_bind_int64(stmt, 7, clawt_task_get_created_at(task));
     sqlite3_bind_int64(stmt, 8, clawt_task_get_finished_at(task));
     sqlite3_bind_text(stmt, 9, data, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 10, clawt_task_get_project(task), -1,
+                      SQLITE_TRANSIENT);
 
     if (sqlite3_step(stmt) != SQLITE_DONE) {
         set_sqlite_error(error, self->db, "saving a task");
@@ -413,6 +455,35 @@ clawt_task_store_list(ClawtTaskStore        *self,
     limit = (query != NULL && query->limit > 0) ? query->limit
                                                 : CLAWT_TASK_STORE_PAGE;
     sqlite3_bind_int(stmt, bind, (gint)limit);
+
+    tasks = collect_tasks(stmt);
+    sqlite3_finalize(stmt);
+
+    return tasks;
+}
+
+GPtrArray *
+clawt_task_store_project_tasks(ClawtTaskStore  *self,
+                               const gchar     *project,
+                               gint64           since,
+                               GError         **error)
+{
+    sqlite3_stmt *stmt = NULL;
+    GPtrArray *tasks;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), NULL);
+    g_return_val_if_fail(project != NULL, NULL);
+
+    if (sqlite3_prepare_v2(self->db,
+            "SELECT id, data FROM tasks WHERE project = ? AND created_at >= ? "
+            "ORDER BY created_at",
+            -1, &stmt, NULL) != SQLITE_OK) {
+        set_sqlite_error(error, self->db, "listing a project's tasks");
+        return NULL;
+    }
+
+    sqlite3_bind_text(stmt, 1, project, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, since);
 
     tasks = collect_tasks(stmt);
     sqlite3_finalize(stmt);

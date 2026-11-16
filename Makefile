@@ -289,6 +289,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/core/daemon-activity.c \
 	$(SRCDIR)/core/daemon-mailbox.c \
 	$(SRCDIR)/core/daemon-task.c \
+	$(SRCDIR)/core/daemon-project.c \
 	$(SRCDIR)/core/daemon-computer.c \
 	$(SRCDIR)/core/daemon-screen.c \
 	$(SRCDIR)/core/daemon-design.c \
@@ -429,6 +430,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/task/clawt-handoff-store.c \
 	$(SRCDIR)/task/clawt-task-store.c \
 	$(SRCDIR)/task/clawt-task-checkout.c \
+	$(SRCDIR)/task/clawt-project.c \
 	$(SRCDIR)/task/clawt-routine-runner.c \
 	$(SRCDIR)/task/clawt-incident.c \
 	$(SRCDIR)/wait/clawt-wait.c \

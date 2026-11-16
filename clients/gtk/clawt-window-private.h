@@ -323,6 +323,7 @@ struct _ClawtWindow {
     GtkWidget         *settings_images;
     GtkWidget         *settings_integrations;
     GtkWidget         *settings_teams;
+    GtkWidget         *settings_projects;
     GtkWidget         *settings_folders;
     GtkWidget         *settings_egress;       /* egress.allow, a list */
     GtkWidget         *settings_egress_entry; /* the entry it adds from */
@@ -1679,6 +1680,14 @@ clawt_gtk_build_orchestration_page(ClawtWindow *self);
 
 void
 clawt_gtk_refresh_settings_orchestration(ClawtWindow *self);
+
+/* ── Defined in gtk-prefs-projects.c: the projects page ──────────── */
+
+GtkWidget *
+clawt_gtk_build_projects_page(ClawtWindow *self);
+
+void
+clawt_gtk_refresh_settings_projects(ClawtWindow *self);
 
 /* ── Defined in gtk-prefs-teams.c: the teams page ────────────────── */
 

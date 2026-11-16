@@ -3084,3 +3084,110 @@ clawt_workspace_adopt(ClawtImportMode   mode,
     }
     }
 }
+
+/*
+ * The projects region of PROJECTS.org (since 0.40.0).
+ *
+ * PROJECTS.org is the agent's own: it keeps it current.  The region is
+ * clawtilla's and sits *above* that text -- when the markers are not
+ * there yet it goes after the file's #+ header lines rather than at the
+ * end, so the projects the operator declared come before the agent's
+ * notes about them.
+ */
+static const gchar PROJECTS_BEGIN[] =
+    "# BEGIN clawtilla projects -- rewritten on every start";
+static const gchar PROJECTS_END[] =
+    "# END clawtilla projects";
+
+/* The most the region may hold; the identity files have a ceiling. */
+#define PROJECTS_REGION_MAX (4 * 1024)
+
+gboolean
+clawt_workspace_update_projects(ClawtAgentConfig *agent,
+                                const gchar      *described,
+                                GError          **error)
+{
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *existing = NULL;
+    g_autofree gchar *section = NULL;
+    g_autofree gchar *updated = NULL;
+    const gchar *begin;
+    const gchar *end;
+
+    g_return_val_if_fail(agent != NULL, FALSE);
+
+    if (described == NULL || *described == '\0') {
+        section = g_strdup("");
+    } else {
+        g_autofree gchar *body = g_strdup(described);
+
+        /* Cut on a line, and say so, rather than spill past the cap. */
+        if (strlen(body) > PROJECTS_REGION_MAX) {
+            gchar *cut = g_strrstr_len(body, PROJECTS_REGION_MAX, "\n");
+
+            if (cut != NULL)
+                cut[1] = '\0';
+            else
+                body[PROJECTS_REGION_MAX] = '\0';
+        }
+
+        section = g_strdup_printf(
+            "%s\n"
+            "\n"
+            "The projects the operator has declared that you work in. This\n"
+            "region is clawtilla's; keep your own notes below it.\n"
+            "\n"
+            "%s"
+            "%s\n",
+            PROJECTS_BEGIN, body, PROJECTS_END);
+    }
+
+    path = clawt_workspace_file_path(agent, "PROJECTS.org");
+
+    if (path == NULL || !g_file_get_contents(path, &existing, NULL, NULL))
+        return TRUE;
+
+    begin = strstr(existing, PROJECTS_BEGIN);
+    end = (begin != NULL) ? strstr(begin, PROJECTS_END) : NULL;
+
+    if (begin != NULL && end != NULL) {
+        g_autofree gchar *head = g_strndup(existing, begin - existing);
+        const gchar *tail = end + strlen(PROJECTS_END);
+
+        if (*tail == '\n')
+            tail++;
+        /* An emptied region takes the blank line it was given with it. */
+        if (*section == '\0' && *tail == '\n')
+            tail++;
+
+        updated = g_strconcat(head, section, tail, NULL);
+    } else if (*section == '\0') {
+        return TRUE;
+    } else {
+        /* After the header lines: `#+title:` and its kind, if any. */
+        const gchar *at = existing;
+
+        while (g_str_has_prefix(at, "#+")) {
+            const gchar *newline = strchr(at, '\n');
+
+            if (newline == NULL) {
+                at += strlen(at);
+                break;
+            }
+            at = newline + 1;
+        }
+
+        {
+            g_autofree gchar *head = g_strndup(existing, at - existing);
+            gboolean needs_gap = (at != existing && *at != '\n');
+
+            updated = g_strconcat(head, needs_gap ? "\n" : "", section,
+                                  "\n", at, NULL);
+        }
+    }
+
+    if (g_strcmp0(existing, updated) == 0)
+        return TRUE;
+
+    return clawt_write_file_atomic(path, updated, -1, 0600, FALSE, error);
+}

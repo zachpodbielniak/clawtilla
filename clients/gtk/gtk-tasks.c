@@ -1173,6 +1173,17 @@ refresh_tasks_once(ClawtWindow *self)
              * that reads `completed` and nothing else cannot distinguish
              * a reported result from a turn that simply stopped.
              */
+            /* The project it belongs to, as a quiet label on the row. */
+            if (clawt_json_string(task, "project", NULL) != NULL) {
+                GtkWidget *chip = gtk_label_new(
+                    clawt_json_string(task, "project", ""));
+
+                gtk_widget_add_css_class(chip, "dim-label");
+                gtk_widget_add_css_class(chip, "caption");
+                gtk_widget_set_tooltip_text(chip, "Project");
+                adw_action_row_add_suffix(ADW_ACTION_ROW(row), chip);
+            }
+
             /* A held task says what it is waiting for. */
             if (json_object_has_member(task, "waiting_on") &&
                 json_array_get_length(json_object_get_array_member(

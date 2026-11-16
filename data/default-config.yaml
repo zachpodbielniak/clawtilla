@@ -1193,6 +1193,17 @@ skills:
 # # so there is one mechanism rather than two.
 # rooms: []
 
+# # Projects: the pieces of work the fleet is pointed at.
+# #
+# # A task belongs to at most one project: the one its delegation or the
+# # operator named, else its parent's, else the one whose directory its
+# # checkout came from (by path, or by a shared git remote). Its assignee
+# # is told the project's name and goal; the project's spend is summed
+# # over its tasks each month, against an optional budget; and every
+# # agent working in it finds it in PROJECTS.org. Optional: a fleet with
+# # none works exactly as before.
+# projects: []
+
 # # Teams, so a fleet larger than a handful has a shape.
 # #
 # # An agent names its team in agents.team, and its standing there in

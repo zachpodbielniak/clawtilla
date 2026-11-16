@@ -168,6 +168,23 @@ GPtrArray *clawt_task_store_list(ClawtTaskStore        *self,
  * Returns: (transfer full) (nullable): an array node, empty for a task
  *   with no history, or %NULL on error
  */
+/**
+ * clawt_task_store_project_tasks:
+ * @self: a #ClawtTaskStore
+ * @project: a project id (`projects.id`)
+ * @since: only tasks created at or after this Unix time
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Every task of @project made since @since, oldest first, without a page
+ * limit: what a project's month of spend is summed over (since 0.40.0).
+ *
+ * Returns: (transfer full) (element-type ClawtTask) (nullable): the tasks
+ */
+GPtrArray *clawt_task_store_project_tasks(ClawtTaskStore  *self,
+                                          const gchar     *project,
+                                          gint64           since,
+                                          GError         **error);
+
 JsonNode *clawt_task_store_journal(ClawtTaskStore  *self,
                                    const gchar     *task_id,
                                    GError         **error);

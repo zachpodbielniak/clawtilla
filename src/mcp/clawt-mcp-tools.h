@@ -966,6 +966,35 @@ void clawt_mcp_tools_set_observer(ClawtMcpTools            *self,
                                   GDestroyNotify            notify);
 
 /**
+ * ClawtMcpProjectFunc:
+ * @task: the task just made, its checkout if any already on it
+ * @named: (nullable): the project the delegation asked for
+ * @review_given: whether the delegation named its own reviewer
+ * @user_data: what the setter was given
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Places the task in its project: which one, what its assignee is told,
+ * the project's reviewer, and whether the project may take new work.
+ *
+ * Returns: %FALSE with @error set when the work is refused
+ */
+typedef gboolean (*ClawtMcpProjectFunc)(ClawtTask    *task,
+                                        const gchar  *named,
+                                        gboolean      review_given,
+                                        gpointer      user_data,
+                                        GError      **error);
+
+/**
+ * clawt_mcp_tools_set_project_func:
+ * @self: a #ClawtMcpTools
+ * @func: (nullable) (scope notified): what clawtilla_delegate calls
+ * @user_data: passed to @func
+ */
+void clawt_mcp_tools_set_project_func(ClawtMcpTools       *self,
+                                      ClawtMcpProjectFunc  func,
+                                      gpointer             user_data);
+
+/**
  * ClawtMcpReviewFunc:
  * @reviewer: the agent giving the verdict
  * @task_id: the task in review

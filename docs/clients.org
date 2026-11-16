@@ -780,6 +780,10 @@ who this agent may hand work to.  Moving one agent is quicker from the
 sidebar's right-click menu; the editor is where the *role* is set, and
 where a team is changed as part of a wider edit.
 
+*** Projects
+
+The Projects page in Settings (since 0.40.0) lists the projects with what each spent this calendar month against its budget, and *stopped* once a hard stop has been reached.  Adding one asks for an id; each project opens to its name, goal, directory, reviewer, agents, monthly budget, warning percentage and *Refuse new work once the budget is spent*, and to removing it.  A task's row shows its project.  See [[file:orchestration.org][orchestration.org]], "Projects".
+
 *** Spending
 
 The Spending page has two selectors -- *Period* (all time, today, the last 7 or 30 days) and *Group by* (Agent, Model, Origin, Day) -- and one row per group with what it cost, how many turns it took and how many of those have no recorded price, then a fleet total.  Origin says what started the work: ~operator~, ~agent:<id>~, ~routine:<id>~, ~trigger:<id>~, ~task:<id>~, ~channel:<name>~ or ~untagged~.  When any turn in the period is unpriced a sentence under the list says how many, and that they are not in the total -- unknown, not free.

@@ -7054,3 +7054,322 @@ clawt_config_remove_trigger(ClawtConfig *self, const gchar *id)
 
     return FALSE;
 }
+
+/* ── Projects ────────────────────────────────────────────────────── */
+
+void
+clawt_project_spec_free(ClawtProjectSpec *self)
+{
+    if (self == NULL)
+        return;
+
+    g_free(self->id);
+    g_free(self->name);
+    g_free(self->directory);
+    g_free(self->goal);
+    g_free(self->review_by);
+    g_strfreev(self->agents);
+    g_free(self);
+}
+
+gchar *
+clawt_project_spec_brief(ClawtProjectSpec *self)
+{
+    const gchar *name;
+
+    g_return_val_if_fail(self != NULL, NULL);
+
+    name = (self->name != NULL && *self->name != '\0') ? self->name
+                                                       : self->id;
+
+    if (self->goal != NULL && *self->goal != '\0')
+        return g_strdup_printf("This task is part of the project %s (%s). "
+                               "Its goal: %s", name, self->id, self->goal);
+
+    return g_strdup_printf("This task is part of the project %s (%s).",
+                           name, self->id);
+}
+
+gboolean
+clawt_project_spec_has_agent(ClawtProjectSpec *self, const gchar *agent_id)
+{
+    g_return_val_if_fail(self != NULL, FALSE);
+
+    if (self->agents == NULL || self->agents[0] == NULL)
+        return TRUE;
+
+    return agent_id != NULL &&
+           g_strv_contains((const gchar * const *)self->agents, agent_id);
+}
+
+static YamlNode *
+project_node(ClawtConfig *self, const gchar *project_id)
+{
+    YamlNode *projects = node_at_path(self->root, "projects", FALSE);
+    YamlSequence *sequence;
+    guint i;
+
+    if (project_id == NULL || projects == NULL ||
+        yaml_node_get_node_type(projects) != YAML_NODE_SEQUENCE)
+        return NULL;
+
+    sequence = yaml_node_get_sequence(projects);
+
+    for (i = 0; i < yaml_sequence_get_length(sequence); i++) {
+        YamlNode *element = yaml_sequence_get_element(sequence, i);
+
+        if (yaml_node_get_node_type(element) == YAML_NODE_MAPPING &&
+            g_strcmp0(member_string(yaml_node_get_mapping(element), "id"),
+                      project_id) == 0)
+            return element;
+    }
+
+    return NULL;
+}
+
+/* One entry as a spec, the schema's defaults filled in. */
+static ClawtProjectSpec *
+project_from_node(YamlNode *entry)
+{
+    YamlMapping *mapping = yaml_node_get_mapping(entry);
+    ClawtProjectSpec *spec = g_new0(ClawtProjectSpec, 1);
+    const gchar *directory = member_string(mapping, "directory");
+    YamlNode *node;
+
+    spec->id = g_strdup(member_string(mapping, "id"));
+    spec->name = g_strdup(member_string(mapping, "name"));
+    spec->directory = (directory != NULL) ? clawt_expand_path(directory)
+                                          : NULL;
+    spec->goal = g_strdup(member_string(mapping, "goal"));
+    spec->review_by = g_strdup(member_string(mapping, "review_by"));
+    spec->agents = node_to_strv(yaml_mapping_get_member(mapping, "agents"));
+
+    node = yaml_mapping_get_member(mapping, "monthly_budget_usd");
+    spec->monthly_budget_usd = (node != NULL)
+        ? MAX(yaml_node_get_double(node), 0.0) : 0.0;
+
+    node = yaml_mapping_get_member(mapping, "budget_warn_percent");
+    spec->budget_warn_percent = (node != NULL)
+        ? (gint)CLAMP(yaml_node_get_int(node), 1, 100) : 80;
+
+    node = yaml_mapping_get_member(mapping, "budget_hard_stop");
+    spec->budget_hard_stop = (node != NULL) && yaml_node_get_boolean(node);
+
+    return spec;
+}
+
+GPtrArray *
+clawt_config_get_projects(ClawtConfig *self)
+{
+    GPtrArray *out;
+    YamlNode *projects;
+    YamlSequence *sequence;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), NULL);
+
+    out = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)clawt_project_spec_free);
+    projects = node_at_path(self->root, "projects", FALSE);
+
+    if (projects == NULL ||
+        yaml_node_get_node_type(projects) != YAML_NODE_SEQUENCE)
+        return out;
+
+    sequence = yaml_node_get_sequence(projects);
+
+    for (i = 0; i < yaml_sequence_get_length(sequence); i++) {
+        YamlNode *entry = yaml_sequence_get_element(sequence, i);
+
+        if (entry == NULL ||
+            yaml_node_get_node_type(entry) != YAML_NODE_MAPPING)
+            continue;
+
+        /* Unaddressable, so skipped, as a team without an id is. */
+        if (member_string(yaml_node_get_mapping(entry), "id") == NULL) {
+            g_warning("projects[%u]: no id, so this project is ignored", i);
+            continue;
+        }
+
+        g_ptr_array_add(out, project_from_node(entry));
+    }
+
+    return out;
+}
+
+ClawtProjectSpec *
+clawt_config_get_project(ClawtConfig *self, const gchar *project_id)
+{
+    YamlNode *entry;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), NULL);
+
+    entry = project_node(self, project_id);
+
+    return (entry != NULL) ? project_from_node(entry) : NULL;
+}
+
+gboolean
+clawt_config_add_project(ClawtConfig  *self,
+                         const gchar  *project_id,
+                         GError      **error)
+{
+    YamlNode *projects;
+    g_autoptr(YamlNode) entry = NULL;
+    g_autoptr(YamlNode) id_node = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);
+
+    if (!clawt_is_valid_id(project_id)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "'%s' is not a usable project id: ids may hold only "
+                    "lowercase letters, digits, '-' and '_', and must not "
+                    "start with punctuation",
+                    project_id != NULL ? project_id : "");
+        return FALSE;
+    }
+
+    if (project_node(self, project_id) != NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_ALREADY_EXISTS,
+                    "a project called '%s' already exists", project_id);
+        return FALSE;
+    }
+
+    projects = node_at_path(self->root, "projects", FALSE);
+
+    if (projects == NULL ||
+        yaml_node_get_node_type(projects) != YAML_NODE_SEQUENCE) {
+        g_autoptr(YamlNode) fresh = yaml_node_new_sequence(NULL);
+
+        yaml_mapping_set_member(yaml_node_get_mapping(self->root),
+                                "projects", fresh);
+        projects = node_at_path(self->root, "projects", FALSE);
+        apply_schema_comment(projects, "projects");
+    }
+
+    entry = yaml_node_new_mapping(NULL);
+    id_node = yaml_node_new_string(project_id);
+    yaml_mapping_set_member(yaml_node_get_mapping(entry), "id", id_node);
+    yaml_sequence_add_element(yaml_node_get_sequence(projects), entry);
+
+    return TRUE;
+}
+
+gboolean
+clawt_config_set_project_value(ClawtConfig  *self,
+                               const gchar  *project_id,
+                               const gchar  *key,
+                               const gchar  *value,
+                               GError      **error)
+{
+    YamlNode *entry;
+    g_autoptr(YamlNode) node = NULL;
+    g_autofree gchar *schema_key = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);
+    g_return_val_if_fail(key != NULL, FALSE);
+
+    entry = project_node(self, project_id);
+
+    if (entry == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "there is no project called '%s'",
+                    project_id != NULL ? project_id : "");
+        return FALSE;
+    }
+
+    /* Tasks name a project by its id; renaming is not a field edit. */
+    if (g_strcmp0(key, "id") == 0) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "a project's id cannot be changed");
+        return FALSE;
+    }
+
+    if (value == NULL || *value == '\0') {
+        yaml_mapping_remove_member(yaml_node_get_mapping(entry), key);
+        return TRUE;
+    }
+
+    /* Typed as the schema says, so the file reads as it would by hand. */
+    if (g_strcmp0(key, "monthly_budget_usd") == 0) {
+        gchar *end = NULL;
+        gdouble amount = g_ascii_strtod(value, &end);
+
+        if (end == value || *end != '\0' || amount < 0) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                        "'%s' is not an amount of dollars", value);
+            return FALSE;
+        }
+
+        node = yaml_node_new_double(amount);
+    } else if (g_strcmp0(key, "budget_warn_percent") == 0) {
+        gint64 percent = g_ascii_strtoll(value, NULL, 10);
+
+        if (percent < 1 || percent > 100) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                        "budget_warn_percent is a percentage, 1 to 100");
+            return FALSE;
+        }
+
+        node = yaml_node_new_int(percent);
+    } else if (g_strcmp0(key, "budget_hard_stop") == 0) {
+        node = yaml_node_new_boolean(g_ascii_strcasecmp(value, "true") == 0 ||
+                                     g_ascii_strcasecmp(value, "yes") == 0 ||
+                                     g_strcmp0(value, "1") == 0);
+    } else if (g_strcmp0(key, "agents") == 0) {
+        g_auto(GStrv) ids = g_strsplit_set(value, ", ", -1);
+        guint i;
+
+        node = yaml_node_new_sequence(NULL);
+        for (i = 0; ids[i] != NULL; i++) {
+            if (*ids[i] != '\0')
+                yaml_sequence_add_string_element(yaml_node_get_sequence(node),
+                                                 ids[i]);
+        }
+    } else if (g_strcmp0(key, "name") == 0 || g_strcmp0(key, "directory") == 0 ||
+               g_strcmp0(key, "goal") == 0 || g_strcmp0(key, "review_by") == 0) {
+        node = yaml_node_new_string(value);
+    } else {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "projects have no field '%s'", key);
+        return FALSE;
+    }
+
+    yaml_mapping_set_member(yaml_node_get_mapping(entry), key, node);
+    schema_key = g_strdup_printf("projects.%s", key);
+    apply_schema_comment(yaml_mapping_get_member(yaml_node_get_mapping(entry),
+                                                 key), schema_key);
+
+    return TRUE;
+}
+
+gboolean
+clawt_config_remove_project(ClawtConfig *self, const gchar *project_id)
+{
+    YamlNode *projects;
+    YamlSequence *sequence;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);
+
+    projects = node_at_path(self->root, "projects", FALSE);
+
+    if (project_id == NULL || projects == NULL ||
+        yaml_node_get_node_type(projects) != YAML_NODE_SEQUENCE)
+        return FALSE;
+
+    sequence = yaml_node_get_sequence(projects);
+
+    for (i = 0; i < yaml_sequence_get_length(sequence); i++) {
+        YamlNode *element = yaml_sequence_get_element(sequence, i);
+
+        if (yaml_node_get_node_type(element) == YAML_NODE_MAPPING &&
+            g_strcmp0(member_string(yaml_node_get_mapping(element), "id"),
+                      project_id) == 0) {
+            yaml_sequence_remove_element(sequence, i);
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}

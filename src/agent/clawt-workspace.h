@@ -688,4 +688,21 @@ GStrv clawt_workspace_connector_relay_argv(ClawtConfig *config,
                                            const gchar *daemon_socket,
                                            gboolean     app_call);
 
+/**
+ * clawt_workspace_update_projects:
+ * @agent: an agent's configuration
+ * @described: (nullable): the projects it works in, as org text; %NULL or
+ *   empty removes the region
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Writes the `# BEGIN clawtilla projects` region of PROJECTS.org, above
+ * the agent's own text and capped at 4 KiB; the file is written only when
+ * the text changed (since 0.40.0).
+ *
+ * Returns: %TRUE unless the file could not be written
+ */
+gboolean clawt_workspace_update_projects(ClawtAgentConfig *agent,
+                                         const gchar      *described,
+                                         GError          **error);
+
 G_END_DECLS

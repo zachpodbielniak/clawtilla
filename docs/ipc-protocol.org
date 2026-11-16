@@ -988,6 +988,10 @@ A task object carries ~retries~ and ~retried_by~ once it has been retried, and n
 
 ~task.create~ takes ~review~ (since 0.38.0): ~lead~, ~delegator~ (the operator), ~operator~, an agent id or ~none~; without it the assignee's ~agents.review_by~ applies.  A spelling that names nobody, or names the assignee, is =NOT_FOUND= / =INVALID_ARGUMENT= and makes no task.
 
+~project.list~ (since 0.40.0) answers ~projects~: each with ~id~, ~name~, ~directory~, ~goal~, ~review_by~, ~agents~, ~monthly_budget_usd~, ~budget_warn_percent~, ~budget_hard_stop~, ~month_spend_usd~ (its tasks made this calendar month) and ~stopped~ (a hard stop that has been reached).  ~project.create~ takes ~project~ (the id) and any of those fields, as strings; ~project.set~ takes ~project~, ~key~ and ~value~ (empty removes the key; a bad number is =INVALID_ARGUMENT=; the id cannot be changed); ~project.remove~ takes ~project~.  All three save the config, rewrite every agent's =PROJECTS.org= region, publish ~project.changed~ and answer ~project~ with any render refusals.
+
+~task.create~ takes ~project~ (since 0.40.0): an id, or left out for the one the task's repository matches.  An unknown one is =NOT_FOUND=; a project whose ~budget_hard_stop~ has been reached is =LOOP_LIMIT=; either way no task is made.  A task object carries ~project~ when it has one.
+
 ~task.create~ takes ~repo~ and ~base~ (since 0.39.0): an absolute host path to a git repository, and the ref to start from (its =HEAD= when left out).  The task gets a checkout of its own in its assignee's workspace; without an ~agent~ that is =INVALID_ARGUMENT=, and a path or ref that cannot be checked out refuses the task with git's words.  A task object then carries ~checkout~: ~repo~, ~path~, ~branch~, ~base~, ~mode~ (~worktree~ or ~clone~) and ~present~.
 
 ~task.diff~ (since 0.39.0) takes ~task~ and answers later (deferred): ~diff~ (=git diff= against the base, committed and uncommitted together), ~untracked~ (new files, by name), ~truncated~ (cut at 512 KiB) and ~from_branch~ (the checkout is gone, so this is the branch the repository kept).  A task without a checkout is =NOT_FOUND=.

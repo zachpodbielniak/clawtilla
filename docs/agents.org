@@ -156,7 +156,11 @@ word.
 
 This is not exotic.  The scaffolding actively encourages the growth: the
 generated =AGENTS.org= tells the agent to keep =PROJECTS.org= current as
-it works, and =PROJECTS.org= is an identity file.  Any long-lived agent
+it works, and =PROJECTS.org= is an identity file.  (Since 0.40.0 its top
+holds a =# BEGIN clawtilla projects= region listing the declared projects
+the agent works in; that region is clawtilla's, capped at 4 KiB, and the
+rest of the file stays the agent's -- see [[file:orchestration.org][orchestration.org]],
+"Projects".)  Any long-lived agent
 that follows its own instructions grows toward the ceiling.
 
 It is also silent right up to it.  An agent at 130,000 bytes behaves

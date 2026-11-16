@@ -32,6 +32,8 @@ static const SettingsPage settings_pages[] = {
       "no image defines, starts, and boots nothing." },
     { "teams",        "Teams",
       "Who may hand work to whom." },
+    { "projects",     "Projects",
+      "What the work is for, where it lives, and what it may spend." },
     { "folders",      "Shared folders",
       "Directories every agent's computer gets." },
     { "spending",     "Spending",
@@ -323,6 +325,232 @@ images_content(ClawtWebApp *app)
     }
 
     return HTMX_ELEMENT(g_steal_pointer(&box));
+}
+
+/* ── Projects ────────────────────────────────────────────────────── */
+
+/* The text fields a project's card edits, by key, label and hint. */
+static const struct {
+    const gchar *key;
+    const gchar *label;
+    const gchar *hint;
+} project_fields[] = {
+    { "name",                "Name",       NULL },
+    { "goal",                "Goal",       "Every assignment in it starts with this" },
+    { "directory",           "Directory",  "Absolute host path of its repository" },
+    { "review_by",           "Reviewed by", "lead, delegator, operator or an agent" },
+    { "agents",              "Agents",     "Comma-separated; empty for every agent" },
+    { "monthly_budget_usd",  "Monthly budget (USD)", "0 for none" },
+    { "budget_warn_percent", "Warn at percent", "80" },
+};
+
+static gchar *
+project_field_text(JsonObject *project, const gchar *key)
+{
+    JsonNode *node;
+
+    if (!json_object_has_member(project, key))
+        return g_strdup("");
+
+    node = json_object_get_member(project, key);
+
+    if (JSON_NODE_HOLDS_ARRAY(node)) {
+        JsonArray *items = json_node_get_array(node);
+        g_autoptr(GString) out = g_string_new(NULL);
+        guint i;
+
+        for (i = 0; i < json_array_get_length(items); i++)
+            g_string_append_printf(out, "%s%s", i > 0 ? ", " : "",
+                                   json_array_get_string_element(items, i));
+        return g_string_free(g_steal_pointer(&out), FALSE);
+    }
+
+    if (json_node_get_value_type(node) == G_TYPE_DOUBLE)
+        return g_strdup_printf("%g", json_node_get_double(node));
+    if (json_node_get_value_type(node) == G_TYPE_INT64)
+        return g_strdup_printf("%" G_GINT64_FORMAT, json_node_get_int(node));
+    if (json_node_get_value_type(node) == G_TYPE_STRING)
+        return g_strdup(json_node_get_string(node));
+
+    return g_strdup("");
+}
+
+static HtmxElement *
+projects_content(ClawtWebApp *app)
+{
+    g_autoptr(HtmxDiv) box = htmx_div_new();
+    g_autoptr(JsonNode) reply = clawt_web_app_call(app, "project.list", NULL);
+    JsonArray *projects = clawt_web_member_array(clawt_web_root(reply),
+                                                 "projects");
+    guint i;
+
+    if (projects == NULL || json_array_get_length(projects) == 0)
+        clawt_web_add(box, clawt_web_empty(
+            "No projects",
+            "A fleet works without them. A project tells each piece of work "
+            "what it is for, and keeps a monthly budget on it."));
+
+    for (i = 0; projects != NULL && i < json_array_get_length(projects); i++) {
+        JsonObject *project = json_array_get_object_element(projects, i);
+        const gchar *id = clawt_web_member(project, "id", "?");
+        g_autofree gchar *escaped = g_uri_escape_string(id, NULL, FALSE);
+        g_autofree gchar *action = g_strdup_printf(
+            "/settings/projects/%s/save", escaped);
+        g_autofree gchar *remove = g_strdup_printf(
+            "/settings/projects/%s/remove", escaped);
+        g_autofree gchar *confirm = g_strdup_printf(
+            "Remove the project %s? Its tasks keep its name.", id);
+        gdouble budget = json_object_get_double_member_with_default(
+            project, "monthly_budget_usd", 0);
+        gdouble spent = json_object_get_double_member_with_default(
+            project, "month_spend_usd", 0);
+        g_autofree gchar *money = (budget > 0)
+            ? g_strdup_printf("$%.2f of $%.2f this month%s", spent, budget,
+                              json_object_get_boolean_member_with_default(
+                                  project, "stopped", FALSE)
+                                  ? " · stopped" : "")
+            : g_strdup_printf("$%.2f this month · no budget", spent);
+        g_autoptr(HtmxDiv) card = clawt_web_card(
+            clawt_web_member(project, "name", id), money);
+        HtmxElement *body = clawt_web_card_body(card);
+        g_autoptr(HtmxForm) form = clawt_web_form(action);
+        guint f;
+
+        for (f = 0; f < G_N_ELEMENTS(project_fields); f++) {
+            g_autofree gchar *value = project_field_text(
+                project, project_fields[f].key);
+
+            clawt_web_add(form, clawt_web_field(project_fields[f].label,
+                                                project_fields[f].key, value,
+                                                project_fields[f].hint));
+        }
+
+        clawt_web_add(form, clawt_web_switch_field(
+            "Stop at the budget", "budget_hard_stop",
+            "Refuse new work in it once the month's budget is spent",
+            json_object_get_boolean_member_with_default(
+                project, "budget_hard_stop", FALSE)));
+
+        {
+            g_autoptr(HtmxDiv) row = htmx_div_new();
+            g_autoptr(HtmxButton) save = clawt_web_button("Save", "primary");
+
+            htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
+            htmx_element_set_attribute(HTMX_ELEMENT(save), "type", "submit");
+            htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(save));
+            clawt_web_add(row, clawt_web_post_button("Remove", remove,
+                                                     "danger", confirm));
+            htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(row));
+        }
+
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
+        htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
+    }
+
+    {
+        g_autoptr(HtmxDiv) card = clawt_web_card("New project", NULL);
+        HtmxElement *body = clawt_web_card_body(card);
+        g_autoptr(HtmxForm) form = clawt_web_form("/settings/projects/add");
+        g_autoptr(HtmxDiv) row = htmx_div_new();
+        g_autoptr(HtmxButton) add = clawt_web_button("Create", "primary");
+
+        clawt_web_add(form, clawt_web_field("Id", "project", NULL, "website"));
+        clawt_web_add(form, clawt_web_field("Goal", "goal", NULL, NULL));
+        clawt_web_add(form, clawt_web_field("Directory", "directory", NULL,
+                                            "/home/you/src/website"));
+        htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
+        htmx_element_set_attribute(HTMX_ELEMENT(add), "type", "submit");
+        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(add));
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(row));
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(form));
+        htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
+    }
+
+    return HTMX_ELEMENT(g_steal_pointer(&box));
+}
+
+static HtmxResponse *
+on_project_add(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    static const gchar *const keys[] = { "project", "goal", "directory" };
+    guint i;
+
+    (void)params;
+
+    for (i = 0; i < G_N_ELEMENTS(keys); i++) {
+        const gchar *value = clawt_web_form_value(request, keys[i]);
+
+        if (value != NULL && *value != '\0')
+            clawt_web_payload_set(payload, keys[i], value);
+    }
+
+    reply = clawt_web_app_call(app, "project.create",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL) {
+        g_autofree gchar *failure = g_strdup(clawt_web_app_last_error(app));
+        g_autoptr(HtmxElement) content = projects_content(app);
+
+        return settings_response(app, request, "projects", content, failure,
+                                 TRUE);
+    }
+
+    {
+        g_autoptr(HtmxElement) content = projects_content(app);
+
+        return settings_response(app, request, "projects", content,
+                                 "Project created.", FALSE);
+    }
+}
+
+static HtmxResponse *
+on_project_save(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *id = clawt_web_param(params, "project");
+    g_autoptr(HtmxElement) content = NULL;
+    guint i;
+
+    /*
+     * Every field, then the switch: a checkbox that is off is simply
+     * absent from the form, so absent means false here.
+     */
+    for (i = 0; i <= G_N_ELEMENTS(project_fields); i++) {
+        const gchar *key = (i < G_N_ELEMENTS(project_fields))
+            ? project_fields[i].key : "budget_hard_stop";
+        const gchar *value = clawt_web_form_value(request, key);
+        g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+        g_autoptr(JsonNode) reply = NULL;
+
+        if (i == G_N_ELEMENTS(project_fields))
+            value = (value != NULL) ? "true" : "false";
+        else if (value == NULL)
+            continue;
+
+        clawt_web_payload_set(payload, "project", id);
+        clawt_web_payload_set(payload, "key", key);
+        clawt_web_payload_set(payload, "value", value);
+        reply = clawt_web_app_call(app, "project.set",
+                                   clawt_web_payload_take(
+                                       g_steal_pointer(&payload)));
+
+        if (reply == NULL) {
+            g_autofree gchar *failure =
+                g_strdup(clawt_web_app_last_error(app));
+
+            content = projects_content(app);
+            return settings_response(app, request, "projects", content,
+                                     failure, TRUE);
+        }
+    }
+
+    content = projects_content(app);
+
+    return settings_response(app, request, "projects", content, "Saved.",
+                             FALSE);
 }
 
 /* ── Teams ───────────────────────────────────────────────────────── */
@@ -3114,6 +3342,8 @@ on_settings_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
         content = images_content(app);
     else if (g_strcmp0(slug, "teams") == 0)
         content = teams_content(app);
+    else if (g_strcmp0(slug, "projects") == 0)
+        content = projects_content(app);
     else if (g_strcmp0(slug, "folders") == 0)
         content = folders_content(app);
     else if (g_strcmp0(slug, "spending") == 0)
@@ -3176,6 +3406,8 @@ on_settings_action(HtmxRequest *request, GHashTable *params,
         content = images_content(action->app);
     else if (g_strcmp0(action->page, "teams") == 0)
         content = teams_content(action->app);
+    else if (g_strcmp0(action->page, "projects") == 0)
+        content = projects_content(action->app);
     else if (g_strcmp0(action->page, "integrations") == 0)
         content = integrations_content(action->app);
     else
@@ -4069,6 +4301,14 @@ clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_post(router, "/settings/egress/remove", on_egress_allow, app);
     htmx_router_post(router, "/settings/folders/remove", on_folder_remove,
                      app);
+    htmx_router_post(router, "/settings/projects/add", on_project_add, app);
+    htmx_router_post(router, "/settings/projects/:project/save",
+                     on_project_save, app);
+    htmx_router_post(router, "/settings/projects/:project/remove",
+                     on_settings_action,
+                     settings_action_new(app, "project.remove", "project",
+                                         "project", "projects",
+                                         "Project removed."));
     htmx_router_post(router, "/settings/teams/add", on_team_add, app);
     htmx_router_post(router, "/settings/teams/:team/save", on_team_save, app);
     htmx_router_post(router, "/settings/teams/:team/remove",

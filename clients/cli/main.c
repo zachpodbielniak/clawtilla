@@ -3306,6 +3306,148 @@ cmd_account(int argc, char *argv[])
     return EXIT_FAILURE;
 }
 
+/*
+ * Projects: what work is for, where it lives, and what it may spend.
+ * `create` takes key=value pairs after the id, so a project can be made
+ * whole in one line.
+ */
+static gint
+cmd_project(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *verb = (argc > 2) ? argv[2] : NULL;
+
+    if (verb == NULL) {
+        g_printerr("Usage: clawtilla project <list|create|set|rm> "
+                   "[ARGS...]\n\n"
+                   "  list                        projects, and what each "
+                   "spent this month\n"
+                   "  create <id> [KEY=VALUE...]  add one: name, directory, "
+                   "goal, review_by,\n"
+                   "                              agents, monthly_budget_usd,"
+                   " budget_warn_percent,\n"
+                   "                              budget_hard_stop\n"
+                   "  set <id> <key> <value>      change one field ("
+                   "\"\" removes it)\n"
+                   "  rm <id>                     remove it; its tasks keep "
+                   "the name\n\n"
+                   "Examples:\n"
+                   "  clawtilla project create site directory=~/src/site "
+                   "goal=\"Ship the new site\"\n"
+                   "  clawtilla project set site monthly_budget_usd 40\n"
+                   "  clawtilla task create --agent builder --project site "
+                   "\"fix the header\"\n");
+        return EXIT_FAILURE;
+    }
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    if (g_strcmp0(verb, "list") == 0) {
+        JsonArray *projects;
+        guint i;
+
+        reply = call(client, "project.list", NULL);
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        projects = json_object_get_array_member(json_node_get_object(reply),
+                                                "projects");
+        if (json_array_get_length(projects) == 0) {
+            g_print("No projects. Add one with `clawtilla project create`."
+                    "\n");
+            return EXIT_SUCCESS;
+        }
+
+        for (i = 0; i < json_array_get_length(projects); i++) {
+            JsonObject *project = json_array_get_object_element(projects, i);
+            gdouble budget = json_object_get_double_member_with_default(
+                project, "monthly_budget_usd", 0);
+            g_autofree gchar *of = (budget > 0)
+                ? g_strdup_printf(" of $%.2f", budget) : g_strdup("");
+
+            g_print("%-16s $%.2f this month%s%s  %s\n",
+                    member_or(project, "id", ""),
+                    json_object_get_double_member_with_default(
+                        project, "month_spend_usd", 0),
+                    of,
+                    json_object_get_boolean_member_with_default(
+                        project, "stopped", FALSE) ? " (stopped)" : "",
+                    member_or(project, "goal", ""));
+        }
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "create") == 0 && argc > 3) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+        gint arg;
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "project");
+        json_builder_add_string_value(builder, argv[3]);
+
+        for (arg = 4; arg < argc; arg++) {
+            const gchar *equals = strchr(argv[arg], '=');
+            g_autofree gchar *key = NULL;
+
+            if (equals == NULL) {
+                g_printerr("clawtilla: '%s' is not key=value\n", argv[arg]);
+                return EXIT_FAILURE;
+            }
+
+            key = g_strndup(argv[arg], equals - argv[arg]);
+            json_builder_set_member_name(builder, key);
+
+            /* A directory is the daemon's to resolve: made absolute here. */
+            if (g_strcmp0(key, "directory") == 0) {
+                g_autofree gchar *expanded = clawt_expand_path(equals + 1);
+                g_autofree gchar *absolute =
+                    g_canonicalize_filename(expanded, NULL);
+
+                json_builder_add_string_value(builder, absolute);
+            } else {
+                json_builder_add_string_value(builder, equals + 1);
+            }
+        }
+
+        json_builder_end_object(builder);
+        reply = call(client, "project.create", json_builder_get_root(builder));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Added project %s.\n", argv[3]);
+        return report_refusals(reply) ? EXIT_FAILURE : EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "set") == 0 && argc > 5) {
+        reply = call(client, "project.set",
+                     build_payload("project", argv[3], "key", argv[4],
+                                   "value", argv[5], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Set %s on %s.\n", argv[4], argv[3]);
+        return report_refusals(reply) ? EXIT_FAILURE : EXIT_SUCCESS;
+    }
+
+    if ((g_strcmp0(verb, "rm") == 0 || g_strcmp0(verb, "remove") == 0) &&
+        argc > 3) {
+        reply = call(client, "project.remove",
+                     build_payload("project", argv[3], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Removed project %s.\n", argv[3]);
+        return report_refusals(reply) ? EXIT_FAILURE : EXIT_SUCCESS;
+    }
+
+    g_printerr("clawtilla: unknown or incomplete project command '%s'\n",
+               verb);
+    return EXIT_FAILURE;
+}
+
 static gint
 cmd_team(int argc, char *argv[])
 {
@@ -4794,7 +4936,8 @@ cmd_task(int argc, char *argv[])
                  g_strcmp0(argv[arg], "--after") == 0 ||
                  g_strcmp0(argv[arg], "--review") == 0 ||
                  g_strcmp0(argv[arg], "--repo") == 0 ||
-                 g_strcmp0(argv[arg], "--base") == 0) && arg + 1 < argc) {
+                 g_strcmp0(argv[arg], "--base") == 0 ||
+                 g_strcmp0(argv[arg], "--project") == 0) && arg + 1 < argc) {
                 json_builder_set_member_name(builder, argv[arg] + 2);
 
                 /*
@@ -4823,7 +4966,8 @@ cmd_task(int argc, char *argv[])
             g_printerr("Usage: clawtilla task create [--agent AGENT] "
                        "[--title TITLE] [--after TASK,TASK] "
                        "[--review lead|delegator|operator|AGENT|none] "
-                       "[--repo DIR [--base REF]] <what to do>\n"
+                       "[--repo DIR [--base REF]] [--project ID] "
+                       "<what to do>\n"
                        "Without --agent the task goes on the backlog; "
                        "assign it later with `clawtilla task assign`.\n");
             return EXIT_FAILURE;
@@ -11176,6 +11320,8 @@ static const ClawtVerb verbs[] = {
       cmd_room },
     { "team",    "<verb>",   "Manage teams and who is on them",
       cmd_team },
+    { "project", "<verb>",   "Projects: what work is for and may spend",
+      cmd_project },
     { "account", "<verb>",   "Separate logins for an agent CLI",
       cmd_account },
     { "policy-hook", "--agent ID --token-file PATH", "Claude Code's PreToolUse hook (run by the daemon's settings)",
