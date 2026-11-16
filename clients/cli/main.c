@@ -3311,6 +3311,195 @@ cmd_account(int argc, char *argv[])
  * `create` takes key=value pairs after the id, so a project can be made
  * whole in one line.
  */
+/* Prints a preview's items: what is new, what exists, what is dangerous. */
+static void
+print_fleet_preview(JsonObject *preview)
+{
+    JsonArray *items = json_object_get_array_member(preview, "items");
+    JsonArray *to_fill = json_object_get_array_member(preview, "to_fill");
+    guint i;
+
+    for (i = 0; i < json_array_get_length(items); i++) {
+        JsonObject *item = json_array_get_object_element(items, i);
+        JsonArray *dangerous = json_object_get_array_member(item,
+                                                            "dangerous");
+        g_autoptr(GString) flags = g_string_new(NULL);
+        guint d;
+
+        for (d = 0; d < json_array_get_length(dangerous); d++)
+            g_string_append_printf(flags, "%s%s", d > 0 ? ", " : "",
+                                   json_array_get_string_element(dangerous,
+                                                                 d));
+
+        g_print("%-8s %-24s %-8s %s%s\n", member_or(item, "kind", ""),
+                member_or(item, "id", ""),
+                json_object_get_boolean_member(item, "exists")
+                    ? "exists" : "new",
+                flags->len > 0 ? "dangerous: " : "", flags->str);
+    }
+
+    if (json_array_get_length(to_fill) > 0)
+        g_print("\nTo fill in after the import:\n");
+    for (i = 0; i < json_array_get_length(to_fill); i++)
+        g_print("  %s\n", json_array_get_string_element(to_fill, i));
+}
+
+/*
+ * A fleet as a directory: export one, or take one in -- previewed first,
+ * each collision skipped unless told to replace or rename it.
+ */
+static gint
+cmd_fleet(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *verb = (argc > 2) ? argv[2] : NULL;
+    g_autofree gchar *dir = NULL;
+
+    if (verb == NULL || argc < 4 || g_strcmp0(verb, "help") == 0) {
+        g_print("Usage: clawtilla fleet export <dir>\n"
+                "       clawtilla fleet import <dir> [--preview] "
+                "[--skip KIND:ID] [--replace KIND:ID]\n"
+                "                              [--rename KIND:ID=NEWID] "
+                "[--allow-dangerous]\n\n"
+                "A pack holds the agents, teams, routines, triggers and "
+                "projects,\neach agent's persona files and the library's "
+                "skills. Secrets and\nthis machine's paths are left out "
+                "and listed as to fill in.\n"
+                "An import adds what is new and skips what exists unless "
+                "told;\nagents arrive held, skills disabled, and nothing "
+                "that turns on\na dangerous setting comes in without "
+                "--allow-dangerous.\n\n"
+                "Examples:\n"
+                "  clawtilla fleet export ~/fleet-pack\n"
+                "  clawtilla fleet import ~/fleet-pack --preview\n"
+                "  clawtilla fleet import ~/fleet-pack --rename "
+                "agent:scout=scout2\n");
+        return (verb == NULL || argc < 4) ? EXIT_FAILURE : EXIT_SUCCESS;
+    }
+
+    /* The daemon resolves paths from its own directory: made absolute. */
+    {
+        g_autofree gchar *expanded = clawt_expand_path(argv[3]);
+
+        dir = g_canonicalize_filename(expanded, NULL);
+    }
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    if (g_strcmp0(verb, "export") == 0) {
+        JsonObject *report;
+        JsonArray *to_fill;
+        guint i;
+
+        reply = call(client, "fleet.export", build_payload("dir", dir, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        report = json_node_get_object(reply);
+        g_print("Exported to %s: %" G_GINT64_FORMAT " agents, %"
+                G_GINT64_FORMAT " teams, %" G_GINT64_FORMAT " routines, %"
+                G_GINT64_FORMAT " triggers, %" G_GINT64_FORMAT
+                " projects, %" G_GINT64_FORMAT " skills.\n", dir,
+                json_object_get_int_member(report, "agents"),
+                json_object_get_int_member(report, "teams"),
+                json_object_get_int_member(report, "routines"),
+                json_object_get_int_member(report, "triggers"),
+                json_object_get_int_member(report, "projects"),
+                json_object_get_int_member(report, "skills"));
+
+        to_fill = json_object_get_array_member(report, "to_fill");
+        if (json_array_get_length(to_fill) > 0)
+            g_print("Left out, to fill in where it is imported:\n");
+        for (i = 0; i < json_array_get_length(to_fill); i++)
+            g_print("  %s\n", json_array_get_string_element(to_fill, i));
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "import") == 0) {
+        g_autoptr(GString) resolutions = g_string_new(NULL);
+        gboolean preview = FALSE;
+        gboolean dangerous = FALSE;
+        gint arg;
+
+        for (arg = 4; arg < argc; arg++) {
+            const gchar *what = NULL;
+
+            if (g_strcmp0(argv[arg], "--preview") == 0) {
+                preview = TRUE;
+                continue;
+            }
+            if (g_strcmp0(argv[arg], "--allow-dangerous") == 0) {
+                dangerous = TRUE;
+                continue;
+            }
+            if (arg + 1 >= argc) {
+                g_printerr("clawtilla: %s needs a value\n", argv[arg]);
+                return EXIT_FAILURE;
+            }
+
+            if (g_strcmp0(argv[arg], "--skip") == 0)
+                what = "skip";
+            else if (g_strcmp0(argv[arg], "--replace") == 0)
+                what = "replace";
+
+            if (what != NULL) {
+                g_string_append_printf(resolutions, "%s%s=%s",
+                                       resolutions->len > 0 ? "," : "",
+                                       argv[++arg], what);
+            } else if (g_strcmp0(argv[arg], "--rename") == 0) {
+                g_auto(GStrv) halves = g_strsplit(argv[++arg], "=", 2);
+
+                if (g_strv_length(halves) != 2) {
+                    g_printerr("clawtilla: --rename takes KIND:ID=NEWID\n");
+                    return EXIT_FAILURE;
+                }
+                g_string_append_printf(resolutions, "%s%s=rename:%s",
+                                       resolutions->len > 0 ? "," : "",
+                                       halves[0], halves[1]);
+            } else {
+                g_printerr("clawtilla: unknown option %s\n", argv[arg]);
+                return EXIT_FAILURE;
+            }
+        }
+
+        if (preview) {
+            reply = call(client, "fleet.import_preview",
+                         build_payload("dir", dir, NULL));
+            if (reply == NULL)
+                return EXIT_FAILURE;
+            print_fleet_preview(json_node_get_object(reply));
+            return EXIT_SUCCESS;
+        }
+
+        reply = call(client, "fleet.import",
+                     build_payload("dir", dir,
+                                   "resolutions", resolutions->len > 0
+                                       ? resolutions->str : NULL,
+                                   "allow_dangerous",
+                                   dangerous ? "true" : NULL, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        {
+            JsonArray *taken = json_object_get_array_member(
+                json_node_get_object(reply), "taken");
+            guint i;
+
+            g_print("Taken in (agents are held: start them when they are "
+                    "ready; skills are disabled until read):\n");
+            for (i = 0; i < json_array_get_length(taken); i++)
+                g_print("  %s\n", json_array_get_string_element(taken, i));
+        }
+        return EXIT_SUCCESS;
+    }
+
+    g_printerr("clawtilla: unknown fleet command '%s'\n", verb);
+    return EXIT_FAILURE;
+}
+
 /*
  * Version history: every saved version of the config, the persona files
  * and the skills; compare any two, or one with now, and put one back.
@@ -11493,6 +11682,8 @@ static const ClawtVerb verbs[] = {
       cmd_project },
     { "history", "<verb>",   "Every version of the config, personas and skills",
       cmd_history },
+    { "fleet",   "<verb>",   "Export a fleet as a pack, or import one",
+      cmd_fleet },
     { "account", "<verb>",   "Separate logins for an agent CLI",
       cmd_account },
     { "policy-hook", "--agent ID --token-file PATH", "Claude Code's PreToolUse hook (run by the daemon's settings)",

@@ -670,6 +670,20 @@ warnings rather than the verdict.
    Validation is a question for a running daemon rather than a check on
    a file, so there is nothing to run before it.
 
+*** A fleet pack instead (since 0.42.0)
+:PROPERTIES:
+:CUSTOM_ID: fleet-pack
+:END:
+
+The backup moves a whole machine's fleet, history and all.  To move *the fleet* -- or to start a new one from a fleet that works -- export a pack instead: a directory holding =FLEET.yaml= (the agents, teams, routines, triggers and projects as configured), each agent's persona files (=agents/<id>/*.org=) and the library's own skills (=skills/<name>/SKILL.md= with their tests).
+
+- *What never travels.* A secret's reference or value (any key the schema types as a secret, and any key named like one: ~token~, ~password~, ~api_key~, ~*_token~ ...), an agent's ~workspace~ (a path on this machine), the ~daemon~ section, and every credential file.  Each key left out is listed in the manifest's ~to_fill~ and in the export's answer, as =agent scout: integrations.matrix.access_token=.
+- *Exporting.* ~fleet.export~ (Settings → *Export & import*, ~clawtilla fleet export DIR~) into a directory that does not exist yet or is empty; never on top of anything.
+- *Previewing.* ~fleet.import_preview~ (*Preview import*, ~clawtilla fleet import DIR --preview~): each item, whether it already exists, and which dangerous settings it turns on; then what is to fill in.
+- *Importing.* ~fleet.import~ (*Import*, ~clawtilla fleet import DIR~).  A new item is added; one that exists is *skipped* unless told ~replace~ or ~rename:<new id>~ (~--replace agent:scout~, ~--rename agent:scout=scout2~).  The merged config is loaded before anything is written -- a pack that would not load changes nothing -- then written and reloaded as a hand edit would be, so the import is a version in the [[#version-history][history]] (author ~import~).  Persona files go into each new agent's workspace before the reload scaffolds it, and never over a file already there.  Skills come in through the library's own import: disabled and markdown-only, with their tests.
+- *It never widens what agents may do.*  An item that turns on a setting the schema marks dangerous (host control, sudo, desktop spawning, browser scripts, a ~host~ computer ...) refuses the *whole* import, naming each, unless ~allow_dangerous~ (~--allow-dangerous~, a switch in the clients) -- or the item is skipped.  Agents arrive *held* (~runtime.autostart: false~): nothing runs until you start it.
+- *Afterwards.* Fill in the ~to_fill~ list (secrets, a workspace if the default is wrong), read and enable the skills, start the agents.
+
 ** Rotating a credential
 
 *** The daemon's bearer token

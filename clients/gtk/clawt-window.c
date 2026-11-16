@@ -5573,6 +5573,9 @@ on_settings_activate(GSimpleAction *action, GVariant *parameter,
                                    clawt_gtk_build_history_page(self)));
     adw_preferences_dialog_add(ADW_PREFERENCES_DIALOG(dialog),
                                ADW_PREFERENCES_PAGE(
+                                   clawt_gtk_build_pack_page(self)));
+    adw_preferences_dialog_add(ADW_PREFERENCES_DIALOG(dialog),
+                               ADW_PREFERENCES_PAGE(
                                    clawt_gtk_build_spending_page(self)));
     adw_preferences_dialog_add(ADW_PREFERENCES_DIALOG(dialog),
                                ADW_PREFERENCES_PAGE(

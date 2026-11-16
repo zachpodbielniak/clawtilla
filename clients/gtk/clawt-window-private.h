@@ -1682,6 +1682,11 @@ clawt_gtk_build_orchestration_page(ClawtWindow *self);
 void
 clawt_gtk_refresh_settings_orchestration(ClawtWindow *self);
 
+/* ── Defined in gtk-prefs-pack.c: export and import a fleet ──────── */
+
+GtkWidget *
+clawt_gtk_build_pack_page(ClawtWindow *self);
+
 /* ── Defined in gtk-prefs-history.c: the history page ────────────── */
 
 GtkWidget *

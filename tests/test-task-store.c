@@ -2585,6 +2585,231 @@ test_skill_history_and_tests(void)
 	daemon_teardown(&fixture);
 }
 
+/* ── Fleet export / import (E) ───────────────────────────────────── */
+
+/* A fixture whose config is @agents_yaml under a stock daemon section. */
+static void
+fleet_start(
+	DaemonFixture *fixture,
+	const gchar   *body
+){
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *yaml = NULL;
+
+	fixture->dir = g_dir_make_tmp("clawt-fleet-XXXXXX", NULL);
+	fixture->config = g_build_filename(fixture->dir, "config.yaml", NULL);
+	yaml = g_strdup_printf(
+		"daemon:\n  tailscale: false\n  state_dir: \"%s/state\"\n"
+		"  socket: \"%s/d.sock\"\n  automation_dir: \"%s/pods\"\n"
+		"defaults:\n  workspace_root: \"%s/agents\"\n%s",
+		fixture->dir, fixture->dir, fixture->dir, fixture->dir, body);
+	g_assert_true(g_file_set_contents(fixture->config, yaml, -1, &error));
+	daemon_start(fixture);
+}
+
+/*
+ * Out of one fleet and into another: what travels and what does not, the
+ * preview, collisions skipped by default, a rename, the dangerous item
+ * refused until allowed, agents arriving held, persona files in place.
+ */
+static void
+test_fleet_pack_round_trip(void)
+{
+	DaemonFixture from = { 0 };
+	DaemonFixture into = { 0 };
+	g_autofree gchar *pack_root = NULL;
+	g_autofree gchar *pack = NULL;
+	g_autofree gchar *manifest = NULL;
+
+	fleet_start(&from,
+		"teams:\n  - id: crew\n    description: does the work\n"
+		"projects:\n  - id: site\n    goal: ship it\n"
+		"agents:\n"
+		"  - id: scout\n    team: crew\n"
+		"    model:\n      provider: claude-code\n"
+		"    runtime:\n      autostart: true\n"
+		"    integrations:\n      matrix:\n        enabled: false\n"
+		"        access_token: {env: SCOUT_TOKEN}\n"
+		"  - id: risky\n"
+		"    model:\n      provider: claude-code\n"
+		"    runtime:\n      autostart: false\n"
+		"    browser:\n      allow_scripts: true\n");
+
+	/* a persona the agent wrote for itself */
+	{
+		g_autofree gchar *soul = g_build_filename(from.dir, "agents", "scout",
+		                                          "SOUL.org", NULL);
+
+		g_assert_true(g_file_set_contents(soul, "* Scout\nLooks first.\n",
+		                                  -1, NULL));
+	}
+
+	pack_root = g_dir_make_tmp("clawt-pack-XXXXXX", NULL);
+	pack = g_build_filename(pack_root, "pack", NULL);
+	{
+		g_autoptr(JsonNode) exported = ask(&from, "fleet.export",
+			clawt_ipc_payload_new("dir", pack, NULL));
+		g_autoptr(JsonNode) again = ask(&from, "fleet.export",
+			clawt_ipc_payload_new("dir", pack, NULL));
+		g_autoptr(JsonNode) relative = ask(&from, "fleet.export",
+			clawt_ipc_payload_new("dir", "pack", NULL));
+		JsonObject *report;
+		JsonArray *to_fill;
+		gboolean token_listed = FALSE;
+		guint i;
+
+		g_assert_false(clawt_ipc_frame_is_error(exported));
+		g_assert_true(clawt_ipc_frame_is_error(again));
+		g_assert_true(clawt_ipc_frame_is_error(relative));
+		report = clawt_ipc_frame_get_payload(exported);
+		g_assert_cmpint(json_object_get_int_member(report, "agents"), ==, 2);
+		g_assert_cmpint(json_object_get_int_member(report, "teams"), ==, 1);
+		g_assert_cmpint(json_object_get_int_member(report, "projects"), ==, 1);
+
+		to_fill = json_object_get_array_member(report, "to_fill");
+		for (i = 0; i < json_array_get_length(to_fill); i++) {
+			if (strstr(json_array_get_string_element(to_fill, i),
+			           "agent scout: integrations.matrix.access_token"))
+				token_listed = TRUE;
+		}
+		g_assert_true(token_listed);
+	}
+
+	/* the secret's reference never travels */
+	{
+		g_autofree gchar *path = g_build_filename(pack, "FLEET.yaml", NULL);
+		g_autofree gchar *soul = g_build_filename(pack, "agents", "scout",
+		                                          "SOUL.org", NULL);
+
+		g_assert_true(g_file_get_contents(path, &manifest, NULL, NULL));
+		g_assert_null(strstr(manifest, "SCOUT_TOKEN"));
+		g_assert_null(strstr(manifest, "state_dir"));
+		g_assert_nonnull(strstr(manifest, "clawtilla-fleet"));
+		g_assert_true(g_file_test(soul, G_FILE_TEST_IS_REGULAR));
+	}
+
+	/* the same fleet, previewed: everything already exists */
+	{
+		g_autoptr(JsonNode) preview = ask(&from, "fleet.import_preview",
+			clawt_ipc_payload_new("dir", pack, NULL));
+		JsonArray *items = json_object_get_array_member(
+			clawt_ipc_frame_get_payload(preview), "items");
+		guint i;
+
+		for (i = 0; i < json_array_get_length(items); i++)
+			g_assert_true(json_object_get_boolean_member(
+				json_array_get_object_element(items, i), "exists"));
+	}
+
+	daemon_teardown(&from);
+
+	/* a second fleet that already has a scout, and nothing else */
+	fleet_start(&into,
+		"agents:\n"
+		"  - id: scout\n"
+		"    model:\n      provider: claude-code\n"
+		"    runtime:\n      autostart: false\n");
+
+	/* previewed: scout exists, risky is dangerous, the rest is new */
+	{
+		g_autoptr(JsonNode) preview = ask(&into, "fleet.import_preview",
+			clawt_ipc_payload_new("dir", pack, NULL));
+		JsonArray *items = json_object_get_array_member(
+			clawt_ipc_frame_get_payload(preview), "items");
+		guint i;
+
+		for (i = 0; i < json_array_get_length(items); i++) {
+			JsonObject *item = json_array_get_object_element(items, i);
+			const gchar *id = json_object_get_string_member(item, "id");
+			JsonArray *dangerous = json_object_get_array_member(item,
+			                                                    "dangerous");
+
+			g_assert_cmpint(json_object_get_boolean_member(item, "exists"),
+			                ==, g_strcmp0(id, "scout") == 0);
+			g_assert_cmpuint(json_array_get_length(dangerous), ==,
+			                 g_strcmp0(id, "risky") == 0 ? 1 : 0);
+		}
+	}
+
+	/* the dangerous one refuses the whole import, and nothing changes */
+	{
+		g_autoptr(JsonNode) refused = ask(&into, "fleet.import",
+			clawt_ipc_payload_new("dir", pack, NULL));
+
+		g_assert_true(clawt_ipc_frame_is_error(refused));
+		g_assert_nonnull(strstr(json_object_get_string_member(
+			json_node_get_object(refused), "error"),
+			"browser.allow_scripts"));
+		g_assert_null(clawt_config_get_agent(into.daemon->config, "risky"));
+	}
+
+	/* risky skipped, the pack's scout taken in as scout2 */
+	{
+		g_autoptr(JsonNode) taken = ask(&into, "fleet.import",
+			clawt_ipc_payload_new("dir", pack, "resolutions",
+			                      "agent:risky=skip,agent:scout=rename:scout2",
+			                      NULL));
+		ClawtAgentConfig *scout2;
+		g_autoptr(ClawtTeamSpec) crew = NULL;
+		g_autofree gchar *soul = NULL;
+		g_autofree gchar *text = NULL;
+
+		g_assert_false(clawt_ipc_frame_is_error(taken));
+		g_assert_cmpuint(json_array_get_length(json_object_get_array_member(
+			clawt_ipc_frame_get_payload(taken), "taken")), ==, 3);
+
+		scout2 = clawt_config_get_agent(into.daemon->config, "scout2");
+		g_assert_nonnull(scout2);
+		g_assert_false(clawt_agent_config_get_boolean(scout2,
+		                                              "runtime.autostart"));
+		crew = clawt_config_get_team(into.daemon->config, "crew");
+		g_assert_nonnull(crew);
+		g_assert_null(clawt_config_get_agent(into.daemon->config, "risky"));
+
+		/* its own persona, not the template */
+		soul = g_build_filename(into.dir, "agents", "scout2", "SOUL.org",
+		                        NULL);
+		g_assert_true(g_file_get_contents(soul, &text, NULL, NULL));
+		g_assert_cmpstr(text, ==, "* Scout\nLooks first.\n");
+
+		/* and the import is a version in the history */
+		{
+			g_autoptr(JsonNode) history = ask(&into, "revision.list",
+				clawt_ipc_payload_new("kind", "config", NULL));
+
+			g_assert_cmpstr(json_object_get_string_member(
+				json_array_get_object_element(json_object_get_array_member(
+					clawt_ipc_frame_get_payload(history), "revisions"), 0),
+				"author"), ==, "import");
+		}
+	}
+
+	/* again, with nothing said: what exists is skipped, nothing is added */
+	{
+		g_autoptr(JsonNode) again = ask(&into, "fleet.import",
+			clawt_ipc_payload_new("dir", pack, "resolutions",
+			                      "agent:risky=skip", NULL));
+
+		g_assert_false(clawt_ipc_frame_is_error(again));
+		g_assert_cmpuint(json_array_get_length(json_object_get_array_member(
+			clawt_ipc_frame_get_payload(again), "taken")), ==, 0);
+	}
+
+	/* allowed: risky comes in, held */
+	{
+		g_autoptr(JsonNode) allowed = ask(&into, "fleet.import",
+			clawt_ipc_payload_new("dir", pack, "allow_dangerous", "true",
+			                      NULL));
+
+		g_assert_false(clawt_ipc_frame_is_error(allowed));
+		g_assert_nonnull(clawt_config_get_agent(into.daemon->config,
+		                                        "risky"));
+	}
+
+	daemon_teardown(&into);
+	clawt_test_remove_tree(pack_root);
+}
+
 int
 main(
 	int   argc,
@@ -2656,6 +2881,8 @@ main(
 	g_test_add_func("/task-store/history/config-and-persona", test_history);
 	g_test_add_func("/task-store/history/skills-and-tests",
 	                test_skill_history_and_tests);
+	g_test_add_func("/task-store/fleet/round-trip",
+	                test_fleet_pack_round_trip);
 
 	return g_test_run();
 }

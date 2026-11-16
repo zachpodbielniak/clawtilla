@@ -1457,6 +1457,11 @@ clawt_daemon_handle_revision(
     JsonObject   *payload,
     gboolean     *handled
 );
+JsonNode *clawt_daemon_handle_fleet(ClawtDaemon  *self,
+                                    const gchar  *kind,
+                                    JsonNode     *request,
+                                    JsonObject   *payload,
+                                    gboolean     *handled);
 JsonNode *clawt_daemon_handle_skill_tests(ClawtDaemon  *self,
                                           const gchar  *kind,
                                           JsonNode     *request,

@@ -780,6 +780,10 @@ who this agent may hand work to.  Moving one agent is quicker from the
 sidebar's right-click menu; the editor is where the *role* is set, and
 where a team is changed as part of a wider edit.
 
+*** Export & import
+
+The Export & import page in Settings (since 0.42.0) takes a directory on the daemon's machine and offers *Export*, *Preview import* -- each item, new or existing, and any dangerous setting it would turn on, then what is to fill in -- and *Import*, with resolutions (=agent:scout=rename:scout2=, =team:crew=replace=) and *Allow dangerous settings*.  See [[file:maintenance.org::#fleet-pack][fleet packs]].
+
 *** History
 
 The History page in Settings (since 0.41.0) lists every kept version of the config, the persona files and the skills, newest first, with when, who and why.  Opening one shows its diff against how the thing reads now, and *Restore this version*, which puts it back as the newest version.  See [[file:maintenance.org::#version-history][version history]].
