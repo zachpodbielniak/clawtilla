@@ -80,6 +80,124 @@ test_the_tones_are_the_ones_intended(void)
     g_assert_cmpstr(clawt_task_state_tone(CLAWT_TASK_STALLED), ==, "warn");
     g_assert_cmpstr(clawt_task_state_tone(CLAWT_TASK_RUNNING), ==, "info");
     g_assert_cmpstr(clawt_task_state_tone(CLAWT_TASK_PENDING), ==, "neutral");
+    g_assert_cmpstr(clawt_task_state_tone(CLAWT_TASK_UNASSIGNED), ==,
+                    "neutral");
+    g_assert_cmpstr(clawt_task_state_tone(CLAWT_TASK_BLOCKED), ==, "warn");
+    g_assert_cmpstr(clawt_task_state_tone(CLAWT_TASK_REVIEW), ==, "info");
+}
+
+/*
+ * Every state, classified by every predicate, in one table: a state
+ * added later fails here until somebody decides what it is, rather than
+ * being defaulted by whichever comparison it happens to meet first.
+ */
+static void
+test_every_state_is_classified(void)
+{
+    static const struct {
+        ClawtTaskState state;
+        gboolean       finished;
+        gboolean       active;
+        gboolean       cancellable;
+        gboolean       retryable;
+    } table[] = {
+        { CLAWT_TASK_PENDING,    FALSE, TRUE,  TRUE,  FALSE },
+        { CLAWT_TASK_RUNNING,    FALSE, TRUE,  TRUE,  FALSE },
+        { CLAWT_TASK_COMPLETED,  TRUE,  FALSE, FALSE, FALSE },
+        { CLAWT_TASK_FAILED,     TRUE,  FALSE, FALSE, TRUE  },
+        { CLAWT_TASK_CANCELLED,  TRUE,  FALSE, FALSE, FALSE },
+        { CLAWT_TASK_STALLED,    TRUE,  FALSE, FALSE, TRUE  },
+        { CLAWT_TASK_UNASSIGNED, FALSE, FALSE, TRUE,  FALSE },
+        { CLAWT_TASK_BLOCKED,    FALSE, FALSE, TRUE,  FALSE },
+        { CLAWT_TASK_REVIEW,     FALSE, FALSE, TRUE,  FALSE },
+    };
+    g_autoptr(GEnumClass) states = g_type_class_ref(CLAWT_TYPE_TASK_STATE);
+    guint i;
+
+    g_assert_cmpuint(states->n_values, ==, G_N_ELEMENTS(table));
+
+    for (i = 0; i < G_N_ELEMENTS(table); i++) {
+        const gchar *nick = clawt_enum_to_nick(CLAWT_TYPE_TASK_STATE,
+                                               table[i].state);
+
+        g_assert_cmpint(clawt_task_state_is_finished(table[i].state), ==,
+                        table[i].finished);
+        g_assert_cmpint(clawt_task_state_is_active(table[i].state), ==,
+                        table[i].active);
+        g_assert_cmpint(clawt_task_state_is_cancellable(table[i].state), ==,
+                        table[i].cancellable);
+        g_assert_cmpint(clawt_task_state_is_retryable(table[i].state), ==,
+                        table[i].retryable);
+        g_assert_cmpint(clawt_task_state_nick_is_cancellable(nick), ==,
+                        table[i].cancellable);
+    }
+
+    g_assert_false(clawt_task_state_nick_is_cancellable("pondering"));
+    g_assert_false(clawt_task_state_nick_is_cancellable(NULL));
+}
+
+/*
+ * The backlog: a task with no assignee waits there, is assigned only
+ * from there, and nothing that watches work with its assignee touches
+ * it -- completion, progress, a crashed agent.
+ */
+static void
+test_the_backlog(void)
+{
+    g_autoptr(ClawtTaskManager) tasks = clawt_task_manager_new();
+    g_autoptr(GError) error = NULL;
+    ClawtTask *task;
+    const gchar *id;
+
+    task = clawt_task_manager_create(tasks, "user", NULL, "write it down",
+                                     NULL, &error);
+    g_assert_no_error(error);
+    id = clawt_task_get_id(task);
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_UNASSIGNED);
+    g_assert_null(clawt_task_get_assignee(task));
+
+    g_assert_false(clawt_task_manager_complete(tasks, id, "done"));
+    g_assert_false(clawt_task_manager_note_progress(tasks, id, "hm"));
+    g_assert_cmpuint(clawt_task_manager_orphan_agent_tasks(tasks, "scout"),
+                     ==, 0);
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_UNASSIGNED);
+
+    g_assert_true(clawt_task_manager_assign(tasks, id, "scout", "user",
+                                            &error));
+    g_assert_no_error(error);
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_PENDING);
+    g_assert_cmpstr(clawt_task_get_assignee(task), ==, "scout");
+    g_assert_cmpuint(clawt_task_get_owner_history(task)->len, ==, 1);
+
+    /* only from the backlog */
+    g_assert_false(clawt_task_manager_assign(tasks, id, "builder", "user",
+                                             &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT);
+    g_clear_error(&error);
+    g_assert_false(clawt_task_manager_assign(tasks, "task-none", "builder",
+                                             "user", &error));
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND);
+
+    /* with its assignee now, so completion reaches it */
+    g_assert_true(clawt_task_manager_complete(tasks, id, "done"));
+}
+
+/* A task in review is not its assignee's to finish again. */
+static void
+test_review_refuses_completion(void)
+{
+    g_autoptr(ClawtTaskManager) tasks = clawt_task_manager_new();
+    ClawtTask *task = clawt_task_manager_create(tasks, "chief", "scout",
+                                                "check", NULL, NULL);
+    gchar *held = NULL;
+
+    clawt_task_set_state(task, CLAWT_TASK_REVIEW);
+    g_assert_false(clawt_task_manager_complete(tasks,
+                                               clawt_task_get_id(task), "x"));
+    g_assert_false(clawt_task_manager_complete_on_turn_end(
+        tasks, clawt_task_get_id(task), "scout", "x", &held));
+    g_free(held);
+    g_assert_cmpint(clawt_task_get_state(task), ==, CLAWT_TASK_REVIEW);
 }
 
 /*
@@ -537,6 +655,11 @@ main(int argc, char *argv[])
 
     g_test_add_func("/task/every-state-has-a-tone",
                     test_every_state_has_a_tone);
+    g_test_add_func("/task/every-state-is-classified",
+                    test_every_state_is_classified);
+    g_test_add_func("/task/backlog", test_the_backlog);
+    g_test_add_func("/task/review-refuses-completion",
+                    test_review_refuses_completion);
     g_test_add_func("/task/tones-are-the-ones-intended",
                     test_the_tones_are_the_ones_intended);
     g_test_add_func("/task/finished-never-reads-as-pending",

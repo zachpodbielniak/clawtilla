@@ -490,6 +490,53 @@ const gchar *clawt_task_consult_label(void);
 gboolean clawt_task_state_is_retryable(ClawtTaskState state);
 
 /**
+ * clawt_task_state_is_finished:
+ * @state: a #ClawtTaskState
+ *
+ * Whether @state is one a task does not leave on its own: completed,
+ * failed, cancelled or stalled.  clawt_task_is_finished() asks this.
+ *
+ * Returns: %TRUE for a terminal state
+ */
+gboolean clawt_task_state_is_finished(ClawtTaskState state);
+
+/**
+ * clawt_task_state_is_active:
+ * @state: a #ClawtTaskState
+ *
+ * Whether the task is with its assignee: `pending` or `running`.  What a
+ * turn timeout, an agent crash, orphaning or the idle-continuation guard
+ * is about.  An unassigned, blocked or in-review task is waiting on
+ * somebody other than its assignee and is none of those things' concern.
+ *
+ * Returns: %TRUE for pending and running
+ */
+gboolean clawt_task_state_is_active(ClawtTaskState state);
+
+/**
+ * clawt_task_state_is_cancellable:
+ * @state: a #ClawtTaskState
+ *
+ * Whether a Cancel can do anything: every state that has not finished.
+ * The one answer for the daemon and every client's button, so a blocked
+ * or in-review task is not left without one.
+ *
+ * Returns: %TRUE when there is something to stop
+ */
+gboolean clawt_task_state_is_cancellable(ClawtTaskState state);
+
+/**
+ * clawt_task_state_nick_is_cancellable:
+ * @nick: (nullable): a state as the wire spells it, e.g. `blocked`
+ *
+ * clawt_task_state_is_cancellable() for a client holding the wire's
+ * nickname.  An unknown nickname is not cancellable.
+ *
+ * Returns: %TRUE when a Cancel button belongs on the row
+ */
+gboolean clawt_task_state_nick_is_cancellable(const gchar *nick);
+
+/**
  * clawt_task_to_json:
  * @self: a #ClawtTask
  *

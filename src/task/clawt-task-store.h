@@ -189,6 +189,69 @@ guint clawt_task_store_prune(ClawtTaskStore  *self,
                              GError         **error);
 
 /**
+ * CLAWT_TASK_NOTE_COMMENT:
+ *
+ * A note somebody wrote on a task: the operator, or an agent asked to.
+ */
+#define CLAWT_TASK_NOTE_COMMENT "comment"
+
+/**
+ * CLAWT_TASK_NOTE_PROGRESS:
+ *
+ * The assignee's word on work it has not finished
+ * (clawtilla_task_progress).
+ */
+#define CLAWT_TASK_NOTE_PROGRESS "progress"
+
+/**
+ * CLAWT_TASK_NOTE_RESULT:
+ *
+ * What a task finished with.  One per attempt: a retried task that
+ * finishes again adds another.
+ */
+#define CLAWT_TASK_NOTE_RESULT "result"
+
+/**
+ * clawt_task_store_add_note:
+ * @self: a #ClawtTaskStore
+ * @task_id: which task
+ * @author: (nullable): who wrote it -- an agent id, `user` for the
+ *   operator, or %NULL for clawtilla itself
+ * @kind: what it is, one of the CLAWT_TASK_NOTE_* spellings or a later
+ *   one; the store keeps whatever it is given
+ * @body: the text
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Adds a note to a task's thread.  Notes are what was *said* about a
+ * task, where the journal is what *happened* to it: a comment, each
+ * progress report, each result.  Kept and pruned with the task.
+ *
+ * Returns: the note's id, or 0 on error
+ */
+gint64 clawt_task_store_add_note(ClawtTaskStore  *self,
+                                 const gchar     *task_id,
+                                 const gchar     *author,
+                                 const gchar     *kind,
+                                 const gchar     *body,
+                                 GError         **error);
+
+/**
+ * clawt_task_store_notes:
+ * @self: a #ClawtTaskStore
+ * @task_id: which task
+ * @error: (out) (optional): return location for a #GError
+ *
+ * A task's notes, oldest first: an array of objects with `id`, `at`
+ * (Unix time), `author` (absent for clawtilla's own), `kind` and `body`.
+ *
+ * Returns: (transfer full) (nullable): an array node, empty when there
+ *   are none, or %NULL on error
+ */
+JsonNode *clawt_task_store_notes(ClawtTaskStore  *self,
+                                 const gchar     *task_id,
+                                 GError         **error);
+
+/**
  * clawt_task_store_save_incident:
  * @self: a #ClawtTaskStore
  * @incident_id: the incident's id

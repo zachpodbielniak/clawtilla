@@ -743,6 +743,8 @@ Grouped as GTK's: What it does (name, description, instructions with the placeho
 ** Tasks
 The Work section's task list, drawn as a tree: each task under the one that delegated it (the =parent= member), as nested cards indented by depth with a ↳ marker. Nested cards rather than an =LrgTreeView= because a task row is several lines of varying height, which the tree view's fixed rows cannot hold. A task whose parent is not in the listing is a root, and a cycle is broken rather than followed.
 
+A *New task* button above the tree opens a dialog: title, what to do (an editor), and who does it, with *Nobody yet (the backlog)* first (~task.create~).  Each card's row is the task's title, with =clawt_lrg_task_title()= ("origin → assignee", or "origin · on the backlog") underneath; a backlog card has *Assign…* (a dialog with the agent combo, ~task.assign~), and every card has *Details*, which asks ~task.show~ with ~journal~ and opens a scrolling dialog with the prompt, the result, the thread, the history and a comment editor whose primary button is *Comment* (~task.comment~).
+
 Each card shows "origin → assignee", a state badge toned by =clawt_task_state_tone()= (an unknown state stays neutral), the prompt, the freshest note (the assignee's =progress_note=, or the caveat that nobody reported the task finished when =result_inferred= is true), and the reason it ended. A running task's card shimmers (=clawt-busy=).
 
 A task delegated with ~thread: new~ carries an *Open room* button and =clawt_task_thread_summary()='s line: the button selects ~thread_room~ in the chat (=clawt_lrg_select_room()=), because the work is not in the conversation the two agents share.  A consulted task (~consult~) carries an info badge reading =clawt_task_consult_label()=.
@@ -750,7 +752,8 @@ A task delegated with ~thread: new~ carries an *Open room* button and =clawt_tas
 | Control | Frame | Notes |
 |---|---|---|
 | listing | ~task.list~ | on show and on =task.*= |
-| Cancel (pending or running only) | ~task.cancel~ | asks first, because cancelling cascades to everything the task handed on; toasts how many were cancelled |
+| New task / Assign… / Details and Comment | ~task.create~, ~task.assign~, ~task.show~ with ~journal~, ~task.comment~ | the operator's own tasks |
+| Cancel (anything not ended, =clawt_task_state_nick_is_cancellable()=) | ~task.cancel~ | asks first, because cancelling cascades to everything the task handed on; toasts how many were cancelled |
 | Retry (failed or stalled only, =clawt_task_state_is_retryable()=) | ~task.retry~ with ~task~ | re-queues it for its assignee; toasts which |
 | What it covers | ~task.list~'s ~kept~, ~retention_days~, ~since~ | first on the page: =clawt_task_list_caption()=, the live set and how long tasks are kept |
 | Problems to look at | ~incident.list~ | above the tree, on show and on =task.*= or =incident.*=: the two settings and a card per open incident -- whose run, its kind, what it said, who was told |

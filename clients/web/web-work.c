@@ -416,6 +416,93 @@ add_incidents_section(ClawtWebApp *app, HtmxDiv *pad)
     htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(card));
 }
 
+/* ── The operator's own tasks ────────────────────────────────────── */
+
+/*
+ * The agent ids and names for a picker, from agent.list.  With
+ * @with_nobody the first choice is the backlog: the point of writing a
+ * task down before knowing who should do it.
+ */
+static void
+agent_choices(ClawtWebApp *app, gboolean with_nobody, GPtrArray *values,
+              GPtrArray *labels)
+{
+    g_autoptr(JsonNode) reply = clawt_web_app_call(app, "agent.list", NULL);
+    JsonArray *agents = clawt_web_member_array(clawt_web_root(reply),
+                                               "agents");
+    guint i;
+
+    if (with_nobody) {
+        g_ptr_array_add(values, g_strdup(""));
+        g_ptr_array_add(labels, g_strdup("Nobody yet (the backlog)"));
+    }
+
+    for (i = 0; agents != NULL && i < json_array_get_length(agents); i++) {
+        JsonObject *agent = json_array_get_object_element(agents, i);
+        const gchar *id = clawt_web_member(agent, "id", "");
+
+        g_ptr_array_add(values, g_strdup(id));
+        g_ptr_array_add(labels, g_strdup(clawt_web_member(agent, "name", id)));
+    }
+
+    g_ptr_array_add(values, NULL);
+    g_ptr_array_add(labels, NULL);
+}
+
+static HtmxDiv *
+agent_select(ClawtWebApp *app, const gchar *label, gboolean with_nobody)
+{
+    g_autoptr(GPtrArray) values = g_ptr_array_new_with_free_func(g_free);
+    g_autoptr(GPtrArray) labels = g_ptr_array_new_with_free_func(g_free);
+
+    agent_choices(app, with_nobody, values, labels);
+
+    return clawt_web_select_field(label, "agent",
+                                  (const gchar *const *)values->pdata,
+                                  (const gchar *const *)labels->pdata, "");
+}
+
+/* A submit button in a form row. */
+static void
+add_submit(HtmxForm *form, const gchar *label)
+{
+    g_autoptr(HtmxDiv) row = htmx_div_new();
+    g_autoptr(HtmxButton) button = clawt_web_button(label, "primary");
+
+    htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
+    htmx_element_set_attribute(HTMX_ELEMENT(button), "type", "submit");
+    htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(button));
+    htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(row));
+}
+
+/*
+ * A task the operator writes down: what, optionally a title, and who --
+ * or nobody yet, which puts it on the backlog.  Folded away until
+ * opened, so the list stays the first thing on the page.
+ */
+static void
+add_new_task_form(ClawtWebApp *app, HtmxDiv *pad)
+{
+    g_autoptr(HtmxElement) details = HTMX_ELEMENT(htmx_details_new());
+    g_autoptr(HtmxElement) summary = HTMX_ELEMENT(htmx_summary_new());
+    g_autoptr(HtmxForm) form = clawt_web_form("/tasks/new");
+
+    htmx_node_set_text_content(HTMX_NODE(summary), "New task");
+    clawt_web_add(form, clawt_web_field("Title (optional)", "title", NULL,
+                                        "Fix the export"));
+    clawt_web_add(form, clawt_web_textarea_field("What to do", "prompt",
+                                                 NULL, 5));
+    clawt_web_add(form, clawt_web_text(
+        "Write it so it stands alone: the agent reads this and nothing else "
+        "about why it is wanted.", "small muted"));
+    clawt_web_add(form, agent_select(app, "Who does it", TRUE));
+    add_submit(form, "Create");
+
+    htmx_node_add_child(HTMX_NODE(details), HTMX_NODE(summary));
+    htmx_node_add_child(HTMX_NODE(details), HTMX_NODE(form));
+    htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(details));
+}
+
 HtmxElement *
 clawt_web_tasks_body(ClawtWebApp *app, const gchar *agent_id)
 {
@@ -472,6 +559,7 @@ clawt_web_tasks_body(ClawtWebApp *app, const gchar *agent_id)
     }
 
     add_incidents_section(app, pad);
+    add_new_task_form(app, pad);
 
     tasks = clawt_web_member_array(clawt_web_root(reply), "tasks");
 
@@ -494,9 +582,14 @@ clawt_web_tasks_body(ClawtWebApp *app, const gchar *agent_id)
             const gchar *state = clawt_web_member(task, "state", "?");
             g_autoptr(HtmxDiv) row = htmx_div_new();
             g_autoptr(HtmxDiv) head = htmx_div_new();
-            g_autofree gchar *who = g_strdup_printf(
-                "%s → %s", clawt_web_member(task, "origin", "?"),
-                clawt_web_member(task, "assignee", "?"));
+            g_autofree gchar *who = clawt_web_member(task, "assignee", NULL)
+                ? g_strdup_printf("%s → %s",
+                                  clawt_web_member(task, "origin", "?"),
+                                  clawt_web_member(task, "assignee", "?"))
+                : g_strdup_printf("%s · on the backlog",
+                                  clawt_web_member(task, "origin", "?"));
+            g_autofree gchar *escaped_id = g_uri_escape_string(id, NULL,
+                                                               FALSE);
             g_autofree gchar *prompt = clawt_web_one_line(
                 clawt_web_member(task, "prompt", ""), 200);
 
@@ -506,9 +599,22 @@ clawt_web_tasks_body(ClawtWebApp *app, const gchar *agent_id)
             {
                 g_autoptr(HtmxSpan) label = htmx_span_new();
 
+                /*
+                 * The title, linking to the task's page -- its thread,
+                 * history and a box to comment in.  Who it is between
+                 * goes underneath; the prompt is on that page whole.
+                 */
+                g_autofree gchar *href = g_strdup_printf("/tasks/%s",
+                                                         escaped_id);
+                HtmxA *link = htmx_a_new_with_href(href);
+
                 htmx_element_add_class(HTMX_ELEMENT(label),
                                        "list-item-title");
-                htmx_node_set_text_content(HTMX_NODE(label), who);
+                htmx_node_set_text_content(
+                    HTMX_NODE(link),
+                    clawt_web_member(task, "title",
+                                     clawt_web_member(task, "prompt", "")));
+                htmx_node_add_child(HTMX_NODE(label), HTMX_NODE(link));
                 htmx_node_add_child(HTMX_NODE(head), HTMX_NODE(label));
             }
 
@@ -516,7 +622,19 @@ clawt_web_tasks_body(ClawtWebApp *app, const gchar *agent_id)
             clawt_web_add(head, clawt_web_badge(id, "neutral"));
             htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(head));
 
-            clawt_web_add(row, clawt_web_text(prompt, "list-item-sub"));
+            clawt_web_add(row, clawt_web_text(who, "list-item-sub"));
+            clawt_web_add(row, clawt_web_text(prompt, "small muted"));
+
+            /* Off the backlog: who does it, and the work goes to them. */
+            if (g_strcmp0(state, "unassigned") == 0) {
+                g_autofree gchar *action = g_strdup_printf("/tasks/%s/assign",
+                                                           escaped_id);
+                g_autoptr(HtmxForm) form = clawt_web_form(action);
+
+                clawt_web_add(form, agent_select(app, "Assign to", FALSE));
+                add_submit(form, "Assign");
+                htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(form));
+            }
 
             if (clawt_web_member(task, "result", NULL) != NULL) {
                 g_autoptr(HtmxElement) pre = HTMX_ELEMENT(htmx_pre_new());
@@ -587,8 +705,8 @@ clawt_web_tasks_body(ClawtWebApp *app, const gchar *agent_id)
                 }
             }
 
-            if (g_strcmp0(state, "running") == 0 ||
-                g_strcmp0(state, "pending") == 0) {
+            /* Anything not ended, from the library: blocked and in review too. */
+            if (clawt_task_state_nick_is_cancellable(state)) {
                 g_autoptr(HtmxDiv) actions = htmx_div_new();
                 g_autofree gchar *escaped = g_uri_escape_string(id, NULL,
                                                                 FALSE);
@@ -1044,6 +1162,264 @@ on_task_cancel(HtmxRequest *request, GHashTable *params, gpointer user_data)
                                   "Cancelled.");
 }
 
+static HtmxResponse *
+on_task_new(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *first = clawt_web_first_agent(app);
+    const gchar *prompt = clawt_web_form_value(request, "prompt");
+    const gchar *title = clawt_web_form_value(request, "title");
+    const gchar *agent = clawt_web_form_value(request, "agent");
+
+    (void)params;
+
+    if (prompt != NULL && *prompt != '\0')
+        clawt_web_payload_set(payload, "prompt", prompt);
+    if (title != NULL && *title != '\0')
+        clawt_web_payload_set(payload, "title", title);
+    if (agent != NULL && *agent != '\0')
+        clawt_web_payload_set(payload, "agent", agent);
+
+    reply = clawt_web_app_call(app, "task.create",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        return clawt_web_error_page(app, request, first, CLAWT_PAGE_TASKS,
+                                    clawt_web_app_last_error(app));
+
+    return clawt_web_after_action(
+        app, request, first, CLAWT_PAGE_TASKS,
+        (agent != NULL && *agent != '\0')
+            ? "Created, and handed over."
+            : "Created on the backlog. Assign it when you know who.");
+}
+
+static HtmxResponse *
+on_task_assign(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *id = clawt_web_param(params, "task");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *first = clawt_web_first_agent(app);
+    const gchar *agent = clawt_web_form_value(request, "agent");
+
+    clawt_web_payload_set(payload, "task", id);
+
+    if (agent != NULL && *agent != '\0')
+        clawt_web_payload_set(payload, "agent", agent);
+
+    reply = clawt_web_app_call(app, "task.assign",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        return clawt_web_error_page(app, request, first, CLAWT_PAGE_TASKS,
+                                    clawt_web_app_last_error(app));
+
+    return clawt_web_after_action(app, request, first, CLAWT_PAGE_TASKS,
+                                  "Assigned.");
+}
+
+/* One line of a thread or a history: who or what, when, the text. */
+static void
+add_dated_line(HtmxDiv *list, const gchar *title, gint64 at,
+               const gchar *body)
+{
+    g_autoptr(HtmxDiv) row = htmx_div_new();
+    g_autoptr(GDateTime) when = (at > 0)
+        ? g_date_time_new_from_unix_local(at) : NULL;
+    g_autofree gchar *stamp = (when != NULL)
+        ? g_date_time_format(when, "%-d %b %H:%M") : g_strdup("");
+    g_autofree gchar *heading = g_strdup_printf("%s · %s", title, stamp);
+
+    htmx_element_add_class(HTMX_ELEMENT(row), "list-item");
+    clawt_web_add(row, clawt_web_text(heading, "list-item-title"));
+
+    if (body != NULL && *body != '\0') {
+        g_autoptr(HtmxElement) pre = HTMX_ELEMENT(htmx_pre_new());
+
+        htmx_element_add_class(pre, "console");
+        htmx_node_set_text_content(HTMX_NODE(pre), body);
+        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(pre));
+    }
+
+    htmx_node_add_child(HTMX_NODE(list), HTMX_NODE(row));
+}
+
+/* A task's page body: what was asked, its thread, a comment box, history. */
+static HtmxDiv *
+task_page_body(ClawtWebApp *app, const gchar *id, const gchar *notice)
+{
+    g_autoptr(HtmxDiv) pad = htmx_div_new();
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    JsonObject *root;
+    JsonObject *task;
+    JsonArray *rows;
+    guint i;
+
+    htmx_element_add_class(HTMX_ELEMENT(pad), "view-pad");
+
+    clawt_web_payload_set(payload, "task", id);
+    clawt_web_payload_set_bool(payload, "journal", TRUE);
+    reply = clawt_web_app_call(app, "task.show",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+    root = clawt_web_root(reply);
+    task = (root != NULL && json_object_has_member(root, "task"))
+        ? json_object_get_object_member(root, "task") : NULL;
+
+    if (task == NULL) {
+        clawt_web_add(pad, clawt_web_section_title("Task"));
+        clawt_web_add(pad, clawt_web_empty("No such task",
+            "It may have been removed after the retention window."));
+        return (HtmxDiv *)g_steal_pointer(&pad);
+    }
+
+    clawt_web_add(pad, clawt_web_section_title(
+        clawt_web_member(task, "title", id)));
+
+    if (notice != NULL)
+        clawt_web_add(pad, clawt_web_notice(notice, "info"));
+
+    {
+        const gchar *state = clawt_web_member(task, "state", "?");
+        g_autofree gchar *who = clawt_web_member(task, "assignee", NULL)
+            ? g_strdup_printf("%s → %s", clawt_web_member(task, "origin", "?"),
+                              clawt_web_member(task, "assignee", "?"))
+            : g_strdup_printf("%s · on the backlog",
+                              clawt_web_member(task, "origin", "?"));
+        g_autoptr(HtmxElement) pre = HTMX_ELEMENT(htmx_pre_new());
+
+        clawt_web_add(pad, clawt_web_badge(state, task_tone(state)));
+        clawt_web_add(pad, clawt_web_text(who, "lede"));
+        htmx_element_add_class(pre, "console");
+        htmx_node_set_text_content(HTMX_NODE(pre),
+                                   clawt_web_member(task, "prompt", ""));
+        htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(pre));
+
+        if (clawt_web_member(task, "result", NULL) != NULL) {
+            g_autoptr(HtmxDiv) result = htmx_div_new();
+
+            htmx_element_add_class(HTMX_ELEMENT(result), "list");
+            add_dated_line(result, "Result",
+                           clawt_web_member_int(task, "finished_at", 0),
+                           clawt_web_member(task, "result", ""));
+            htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(result));
+        }
+    }
+
+    clawt_web_add(pad, clawt_web_section_title("Thread"));
+    rows = clawt_web_member_array(root, "notes");
+
+    if (rows == NULL || json_array_get_length(rows) == 0) {
+        clawt_web_add(pad, clawt_web_text("Nothing said about it yet.",
+                                          "small muted"));
+    } else {
+        g_autoptr(HtmxDiv) list = htmx_div_new();
+
+        htmx_element_add_class(HTMX_ELEMENT(list), "list");
+
+        for (i = 0; i < json_array_get_length(rows); i++) {
+            JsonObject *note = json_array_get_object_element(rows, i);
+            g_autofree gchar *title = g_strdup_printf(
+                "%s (%s)", clawt_web_member(note, "author", "clawtilla"),
+                clawt_web_member(note, "kind", "note"));
+
+            add_dated_line(list, title, clawt_web_member_int(note, "at", 0),
+                           clawt_web_member(note, "body", ""));
+        }
+
+        htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(list));
+    }
+
+    {
+        g_autofree gchar *escaped = g_uri_escape_string(id, NULL, FALSE);
+        g_autofree gchar *action = g_strdup_printf("/tasks/%s/comment",
+                                                   escaped);
+        g_autoptr(HtmxForm) form = clawt_web_form(action);
+
+        clawt_web_add(form, clawt_web_textarea_field("Comment", "text", NULL,
+                                                     3));
+        clawt_web_add(form, clawt_web_text(
+            "Kept on the task. While it is with its assignee they hear it "
+            "too, in the conversation the work is in.", "small muted"));
+        add_submit(form, "Comment");
+        htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(form));
+    }
+
+    clawt_web_add(pad, clawt_web_section_title("History"));
+    rows = clawt_web_member_array(root, "journal");
+
+    {
+        g_autoptr(HtmxDiv) list = htmx_div_new();
+
+        htmx_element_add_class(HTMX_ELEMENT(list), "list");
+
+        for (i = 0; rows != NULL && i < json_array_get_length(rows); i++) {
+            JsonObject *entry = json_array_get_object_element(rows, i);
+
+            add_dated_line(list, clawt_web_member(entry, "state", "?"),
+                           clawt_web_member_int(entry, "at", 0),
+                           clawt_web_member(entry, "what", ""));
+        }
+
+        htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(list));
+    }
+
+    return (HtmxDiv *)g_steal_pointer(&pad);
+}
+
+static HtmxResponse *
+task_page(ClawtWebApp *app, HtmxRequest *request, const gchar *id,
+          const gchar *notice)
+{
+    g_autoptr(HtmxElement) view = HTMX_ELEMENT(htmx_main_new());
+    g_autoptr(HtmxDiv) body = task_page_body(app, id, notice);
+    g_autofree gchar *html = NULL;
+
+    htmx_element_add_class(view, "view");
+    htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(body));
+    html = clawt_web_page(app, NULL, CLAWT_PAGE_TASKS, view, request);
+
+    return clawt_web_html_response(html);
+}
+
+static HtmxResponse *
+on_task_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    g_autofree gchar *id = clawt_web_param(params, "task");
+
+    return task_page(user_data, request, id, NULL);
+}
+
+static HtmxResponse *
+on_task_comment(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *id = clawt_web_param(params, "task");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    const gchar *text = clawt_web_form_value(request, "text");
+
+    clawt_web_payload_set(payload, "task", id);
+
+    if (text != NULL && *text != '\0')
+        clawt_web_payload_set(payload, "text", text);
+
+    reply = clawt_web_app_call(app, "task.comment",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        return task_page(app, request, id, clawt_web_app_last_error(app));
+
+    return task_page(app, request, id,
+                     clawt_web_schema_flag(clawt_web_root(reply), "delivered")
+                         ? "Noted, and the assignee has it."
+                         : "Noted on the task.");
+}
+
 /*
  * The operator's Retry, for a task row (`task`) or an incident row
  * (`incident`) -- the route's parameter name is the payload's key.
@@ -1146,6 +1522,10 @@ clawt_web_register_work(HtmxRouter *router, ClawtWebApp *app)
                      routine_action_new(app, "routine.run", "Run."));
     htmx_router_post(router, "/routines/:routine/remove", on_routine_action,
                      routine_action_new(app, "routine.remove", "Removed."));
+    htmx_router_post(router, "/tasks/new", on_task_new, app);
+    htmx_router_get(router, "/tasks/:task", on_task_page, app);
+    htmx_router_post(router, "/tasks/:task/assign", on_task_assign, app);
+    htmx_router_post(router, "/tasks/:task/comment", on_task_comment, app);
     htmx_router_post(router, "/tasks/:task/cancel", on_task_cancel, app);
     htmx_router_post(router, "/tasks/:task/retry", on_task_retry, app);
     htmx_router_post(router, "/incidents/:incident/retry", on_incident_retry,

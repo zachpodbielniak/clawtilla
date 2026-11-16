@@ -98,6 +98,473 @@ retry_button(ClawtWindow *self, const gchar *key, const gchar *id)
     return retry;
 }
 
+/* ── The operator's own tasks ────────────────────────────────────── */
+
+/*
+ * One struct for the three dialogs this page opens -- a new task,
+ * assigning one off the backlog, and a task's details -- since each is a
+ * handful of the same widgets and a window to answer to.  Freed with the
+ * dialog.
+ */
+typedef struct {
+    ClawtWindow *window;
+    AdwDialog   *dialog;
+    gchar       *task_id;
+    GtkWidget   *title_row;
+    GtkTextView *prompt;
+    GtkWidget   *agent_row;
+    GStrv        agent_ids;
+    gboolean     with_nobody;
+    GtkTextView *comment;
+} TaskDialog;
+
+static void
+task_dialog_free(gpointer data)
+{
+    TaskDialog *dialog = data;
+
+    g_free(dialog->task_id);
+    g_strfreev(dialog->agent_ids);
+    g_free(dialog);
+}
+
+static TaskDialog *
+task_dialog_new(ClawtWindow *self, const gchar *title, const gchar *task_id)
+{
+    TaskDialog *dialog = g_new0(TaskDialog, 1);
+
+    dialog->window = self;
+    dialog->dialog = adw_dialog_new();
+    dialog->task_id = g_strdup(task_id);
+    adw_dialog_set_title(dialog->dialog, title);
+    adw_dialog_set_content_width(dialog->dialog, 560);
+    g_object_set_data_full(G_OBJECT(dialog->dialog), "dialog", dialog,
+                           task_dialog_free);
+
+    return dialog;
+}
+
+/* Puts @page in the dialog under a header bar and shows it. */
+static void
+task_dialog_present(TaskDialog *dialog, GtkWidget *page)
+{
+    GtkWidget *toolbar = adw_toolbar_view_new();
+
+    adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar),
+                                 adw_header_bar_new());
+    adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(toolbar), page);
+    adw_dialog_set_child(dialog->dialog, toolbar);
+    adw_dialog_present(dialog->dialog, GTK_WIDGET(dialog->window));
+}
+
+/*
+ * The agent picker, read from agent.list when the dialog opens.  With
+ * @with_nobody the first choice is "Nobody yet": the backlog, which is
+ * the point of writing a task down before knowing who should do it.
+ */
+static GtkWidget *
+task_agent_row(TaskDialog *dialog, gboolean with_nobody)
+{
+    GtkStringList *labels = gtk_string_list_new(NULL);
+    g_autoptr(GPtrArray) ids = g_ptr_array_new();
+    g_autoptr(JsonNode) agents = NULL;
+    guint i;
+
+    dialog->with_nobody = with_nobody;
+
+    if (with_nobody) {
+        gtk_string_list_append(labels, "Nobody yet (the backlog)");
+        g_ptr_array_add(ids, g_strdup(""));
+    }
+
+    agents = clawt_window_request(dialog->window, "agent.list", NULL);
+
+    if (agents != NULL) {
+        JsonArray *array = json_object_get_array_member(
+            clawt_payload_of(agents), "agents");
+
+        for (i = 0; array != NULL && i < json_array_get_length(array); i++) {
+            JsonObject *agent = json_array_get_object_element(array, i);
+            const gchar *id = clawt_json_string(agent, "id", "");
+
+            gtk_string_list_append(labels,
+                                   clawt_json_string(agent, "name", id));
+            g_ptr_array_add(ids, g_strdup(id));
+        }
+    }
+
+    g_ptr_array_add(ids, NULL);
+    dialog->agent_ids = (GStrv)g_ptr_array_free(g_steal_pointer(&ids), FALSE);
+
+    dialog->agent_row = clawt_gtk_combo_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->agent_row),
+                                  "Who does it");
+    adw_combo_row_set_model(ADW_COMBO_ROW(dialog->agent_row),
+                            G_LIST_MODEL(labels));
+
+    return dialog->agent_row;
+}
+
+/* The chosen agent's id, or NULL for "nobody yet". */
+static const gchar *
+task_dialog_agent(TaskDialog *dialog)
+{
+    guint selected = adw_combo_row_get_selected(ADW_COMBO_ROW(dialog->agent_row));
+
+    if (dialog->agent_ids == NULL ||
+        selected >= g_strv_length(dialog->agent_ids))
+        return NULL;
+
+    return (*dialog->agent_ids[selected] != '\0')
+        ? dialog->agent_ids[selected] : NULL;
+}
+
+static gchar *
+text_view_text(GtkTextView *view)
+{
+    GtkTextBuffer *buffer = gtk_text_view_get_buffer(view);
+    GtkTextIter start;
+    GtkTextIter end;
+
+    gtk_text_buffer_get_bounds(buffer, &start, &end);
+    return g_strstrip(gtk_text_buffer_get_text(buffer, &start, &end, FALSE));
+}
+
+/* A framed, wrapping text view, for a prompt or a comment. */
+static GtkWidget *
+framed_text_view(GtkTextView **out, gint height)
+{
+    GtkWidget *scroll = gtk_scrolled_window_new();
+    GtkTextView *view = GTK_TEXT_VIEW(gtk_text_view_new());
+
+    gtk_text_view_set_wrap_mode(view, GTK_WRAP_WORD_CHAR);
+    gtk_text_view_set_top_margin(view, 8);
+    gtk_text_view_set_bottom_margin(view, 8);
+    gtk_text_view_set_left_margin(view, 8);
+    gtk_text_view_set_right_margin(view, 8);
+    gtk_widget_set_size_request(GTK_WIDGET(view), -1, height);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll),
+                                  GTK_WIDGET(view));
+    gtk_widget_add_css_class(scroll, "card");
+    gtk_widget_set_margin_top(scroll, 6);
+
+    *out = view;
+    return scroll;
+}
+
+static void
+on_new_task_create(GtkButton *button, gpointer user_data)
+{
+    TaskDialog *dialog = user_data;
+    g_autofree gchar *prompt = text_view_text(dialog->prompt);
+    const gchar *title = gtk_editable_get_text(GTK_EDITABLE(dialog->title_row));
+    const gchar *agent = task_dialog_agent(dialog);
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *said = NULL;
+
+    (void)button;
+
+    if (*prompt == '\0') {
+        clawt_window_toast(dialog->window, "Say what the task is first");
+        return;
+    }
+
+    reply = clawt_window_request(dialog->window, "task.create",
+                                 clawt_build_payload(
+                                     "prompt", prompt,
+                                     "title", (*title != '\0') ? title : NULL,
+                                     "agent", agent, NULL));
+
+    if (reply == NULL)
+        return;
+
+    said = (agent != NULL)
+        ? g_strdup_printf("Handed to %s", agent)
+        : g_strdup("On the backlog -- assign it when you know who");
+    clawt_window_toast(dialog->window, said);
+    clawt_gtk_refresh_tasks(dialog->window);
+    adw_dialog_close(dialog->dialog);
+}
+
+/*
+ * A task the operator writes down: what it is, optionally a title, and
+ * who does it -- or nobody yet, which puts it on the backlog.
+ */
+static void
+on_new_task(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    TaskDialog *dialog = task_dialog_new(self, "New task", NULL);
+    GtkWidget *page = adw_preferences_page_new();
+    GtkWidget *what = adw_preferences_group_new();
+    GtkWidget *who = adw_preferences_group_new();
+    GtkWidget *create = gtk_button_new_with_label("Create");
+
+    (void)button;
+
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(what), "What");
+    adw_preferences_group_set_description(
+        ADW_PREFERENCES_GROUP(what),
+        "Write it so it stands alone: the agent reads this and nothing "
+        "else about why it is wanted.");
+    dialog->title_row = clawt_gtk_add_entry(what, "Title (optional)", "");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(what),
+                              framed_text_view(&dialog->prompt, 160));
+
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(who), "Who");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(who),
+                              task_agent_row(dialog, TRUE));
+
+    gtk_widget_add_css_class(create, "suggested-action");
+    gtk_widget_set_margin_top(create, 12);
+    g_signal_connect(create, "clicked", G_CALLBACK(on_new_task_create), dialog);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(who), create);
+
+    adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                             ADW_PREFERENCES_GROUP(what));
+    adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                             ADW_PREFERENCES_GROUP(who));
+    task_dialog_present(dialog, page);
+}
+
+static void
+on_assign_confirm(GtkButton *button, gpointer user_data)
+{
+    TaskDialog *dialog = user_data;
+    const gchar *agent = task_dialog_agent(dialog);
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *said = NULL;
+
+    (void)button;
+
+    if (agent == NULL)
+        return;
+
+    reply = clawt_window_request(dialog->window, "task.assign",
+                                 clawt_build_payload("task", dialog->task_id,
+                                                     "agent", agent, NULL));
+
+    if (reply == NULL)
+        return;
+
+    said = g_strdup_printf("Handed to %s", agent);
+    clawt_window_toast(dialog->window, said);
+    clawt_gtk_refresh_tasks(dialog->window);
+    adw_dialog_close(dialog->dialog);
+}
+
+/* Takes a task off the backlog: pick who does it. */
+static void
+on_task_assign(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *task_id = g_object_get_data(G_OBJECT(button), "task-id");
+    TaskDialog *dialog = task_dialog_new(self, "Assign", task_id);
+    GtkWidget *page = adw_preferences_page_new();
+    GtkWidget *group = adw_preferences_group_new();
+    GtkWidget *assign = gtk_button_new_with_label("Assign");
+
+    adw_preferences_group_set_description(
+        ADW_PREFERENCES_GROUP(group),
+        "The work goes to them now, from you, with the task's id.");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                              task_agent_row(dialog, FALSE));
+
+    gtk_widget_add_css_class(assign, "suggested-action");
+    gtk_widget_set_margin_top(assign, 12);
+    g_signal_connect(assign, "clicked", G_CALLBACK(on_assign_confirm), dialog);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), assign);
+
+    adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                             ADW_PREFERENCES_GROUP(group));
+    task_dialog_present(dialog, page);
+}
+
+static void
+on_comment_send(GtkButton *button, gpointer user_data)
+{
+    TaskDialog *dialog = user_data;
+    g_autofree gchar *text = text_view_text(dialog->comment);
+    g_autoptr(JsonNode) reply = NULL;
+
+    (void)button;
+
+    if (*text == '\0')
+        return;
+
+    reply = clawt_window_request(dialog->window, "task.comment",
+                                 clawt_build_payload("task", dialog->task_id,
+                                                     "text", text, NULL));
+
+    if (reply == NULL)
+        return;
+
+    clawt_window_toast(dialog->window,
+                       clawt_json_boolean(clawt_payload_of(reply),
+                                          "delivered", FALSE)
+                       ? "Noted, and the assignee has it"
+                       : "Noted on the task");
+    adw_dialog_close(dialog->dialog);
+}
+
+/* One line of a thread or a history: who or what, when, and the text. */
+static GtkWidget *
+dated_row(const gchar *title, gint64 at, const gchar *body)
+{
+    GtkWidget *row = adw_action_row_new();
+    g_autoptr(GDateTime) when = (at > 0)
+        ? g_date_time_new_from_unix_local(at) : NULL;
+    g_autofree gchar *stamp = (when != NULL)
+        ? g_date_time_format(when, "%-d %b %H:%M") : g_strdup("");
+    g_autofree gchar *heading = g_strdup_printf("%s · %s", title, stamp);
+
+    clawt_gtk_set_row_text(row, heading, body != NULL ? body : "");
+    adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(row), 0);
+
+    return row;
+}
+
+/*
+ * Everything known about one task: what was asked, its thread (comments,
+ * progress, results), its history, and a box to comment in.
+ */
+static void
+on_task_details(GtkButton *button, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *task_id = g_object_get_data(G_OBJECT(button), "task-id");
+    g_autoptr(JsonNode) reply = NULL;
+    JsonObject *root;
+    JsonObject *task;
+    JsonArray *rows;
+    TaskDialog *dialog;
+    GtkWidget *page;
+    GtkWidget *about;
+    GtkWidget *thread;
+    GtkWidget *history;
+    GtkWidget *say;
+    GtkWidget *send;
+    GtkWidget *prompt;
+    g_autofree gchar *who = NULL;
+    guint i;
+
+    reply = clawt_window_request(self, "task.show",
+                                 clawt_build_payload("task", task_id,
+                                                     "journal", "true", NULL));
+
+    if (reply == NULL)
+        return;
+
+    root = clawt_payload_of(reply);
+    task = json_object_get_object_member(root, "task");
+    dialog = task_dialog_new(self, clawt_json_string(task, "title", task_id),
+                             task_id);
+    adw_dialog_set_content_height(dialog->dialog, 720);
+    page = adw_preferences_page_new();
+
+    about = adw_preferences_group_new();
+    who = clawt_json_string(task, "assignee", NULL) != NULL
+        ? g_strdup_printf("%s → %s", clawt_json_string(task, "origin", "?"),
+                          clawt_json_string(task, "assignee", "?"))
+        : g_strdup_printf("%s · on the backlog",
+                          clawt_json_string(task, "origin", "?"));
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(about),
+                                    clawt_json_string(task, "state", "?"));
+    adw_preferences_group_set_description(ADW_PREFERENCES_GROUP(about), who);
+
+    prompt = gtk_label_new(clawt_json_string(task, "prompt", ""));
+    gtk_label_set_wrap(GTK_LABEL(prompt), TRUE);
+    gtk_label_set_selectable(GTK_LABEL(prompt), TRUE);
+    /* selectable, not focused: a focused label opens fully selected */
+    gtk_widget_set_focusable(prompt, FALSE);
+    gtk_label_set_xalign(GTK_LABEL(prompt), 0.0f);
+    gtk_widget_add_css_class(prompt, "card");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(about), prompt);
+
+    if (clawt_json_string(task, "result", NULL) != NULL)
+        adw_preferences_group_add(
+            ADW_PREFERENCES_GROUP(about),
+            dated_row("Result", clawt_json_int(task, "finished_at", 0),
+                      clawt_json_string(task, "result", "")));
+
+    thread = adw_preferences_group_new();
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(thread), "Thread");
+    rows = json_object_has_member(root, "notes")
+        ? json_object_get_array_member(root, "notes") : NULL;
+
+    for (i = 0; rows != NULL && i < json_array_get_length(rows); i++) {
+        JsonObject *note = json_array_get_object_element(rows, i);
+        g_autofree gchar *title = g_strdup_printf(
+            "%s (%s)", clawt_json_string(note, "author", "clawtilla"),
+            clawt_json_string(note, "kind", "note"));
+
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(thread),
+                                  dated_row(title,
+                                            clawt_json_int(note, "at", 0),
+                                            clawt_json_string(note, "body",
+                                                              "")));
+    }
+
+    if (rows == NULL || json_array_get_length(rows) == 0)
+        adw_preferences_group_set_description(
+            ADW_PREFERENCES_GROUP(thread), "Nothing said about it yet.");
+
+    say = adw_preferences_group_new();
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(say), "Comment");
+    adw_preferences_group_set_description(
+        ADW_PREFERENCES_GROUP(say),
+        "Kept on the task. While it is with its assignee they hear it too, "
+        "in the conversation the work is in.");
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(say),
+                              framed_text_view(&dialog->comment, 80));
+    send = gtk_button_new_with_label("Comment");
+    gtk_widget_add_css_class(send, "suggested-action");
+    gtk_widget_set_margin_top(send, 6);
+    g_signal_connect(send, "clicked", G_CALLBACK(on_comment_send), dialog);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(say), send);
+
+    history = adw_preferences_group_new();
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(history), "History");
+    rows = json_object_has_member(root, "journal")
+        ? json_object_get_array_member(root, "journal") : NULL;
+
+    for (i = 0; rows != NULL && i < json_array_get_length(rows); i++) {
+        JsonObject *entry = json_array_get_object_element(rows, i);
+
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(history),
+                                  dated_row(clawt_json_string(entry, "state",
+                                                              "?"),
+                                            clawt_json_int(entry, "at", 0),
+                                            clawt_json_string(entry, "what",
+                                                              "")));
+    }
+
+    adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                             ADW_PREFERENCES_GROUP(about));
+    adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                             ADW_PREFERENCES_GROUP(thread));
+    adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                             ADW_PREFERENCES_GROUP(say));
+    adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                             ADW_PREFERENCES_GROUP(history));
+    task_dialog_present(dialog, page);
+}
+
+/* A row button carrying its task's id. */
+static GtkWidget *
+task_button(ClawtWindow *self, const gchar *label, const gchar *task_id,
+            GCallback callback)
+{
+    GtkWidget *button = gtk_button_new_with_label(label);
+
+    g_object_set_data_full(G_OBJECT(button), "task-id", g_strdup(task_id),
+                           g_free);
+    g_signal_connect(button, "clicked", callback, self);
+    gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
+
+    return button;
+}
+
 /* Saves one incident setting; the refresh that follows redraws both. */
 static void
 configure_incidents(ClawtWindow *self, const gchar *member, JsonNode *value)
@@ -350,11 +817,24 @@ refresh_tasks_once(ClawtWindow *self)
         GtkWidget *row = adw_action_row_new();
         g_autofree gchar *title = NULL;
 
-        title = g_strdup_printf("%s → %s",
-                                clawt_json_string(task, "origin", "?"),
-                                clawt_json_string(task, "assignee", "?"));
+        /*
+         * The task's title (given, or the prompt's first line), with who
+         * it is between underneath -- the prompt itself is a page long,
+         * and Details shows it whole.  A backlog task says it is one.
+         */
+        title = clawt_json_string(task, "assignee", NULL) != NULL
+            ? g_strdup_printf("%s → %s",
+                              clawt_json_string(task, "origin", "?"),
+                              clawt_json_string(task, "assignee", "?"))
+            : g_strdup_printf("%s · on the backlog",
+                              clawt_json_string(task, "origin", "?"));
 
-        clawt_gtk_set_row_text(row, title, clawt_json_string(task, "prompt", ""));
+        clawt_gtk_set_row_text(row,
+                               clawt_json_string(task, "title",
+                                                 clawt_json_string(task,
+                                                                   "prompt",
+                                                                   "")),
+                               title);
 
         {
             const gchar *state = clawt_json_string(task, "state", "");
@@ -426,8 +906,23 @@ refresh_tasks_once(ClawtWindow *self)
                 }
             }
 
-            if (g_strcmp0(state, "running") == 0 ||
-                g_strcmp0(state, "pending") == 0) {
+            /* Off the backlog: pick who does it. */
+            if (g_strcmp0(state, "unassigned") == 0)
+                adw_action_row_add_suffix(
+                    ADW_ACTION_ROW(row),
+                    task_button(self, "Assign…",
+                                clawt_json_string(task, "id", ""),
+                                G_CALLBACK(on_task_assign)));
+
+            /* Its thread, history and a box to comment in. */
+            adw_action_row_add_suffix(
+                ADW_ACTION_ROW(row),
+                task_button(self, "Details",
+                            clawt_json_string(task, "id", ""),
+                            G_CALLBACK(on_task_details)));
+
+            /* Anything not ended, from the library: blocked and in review too. */
+            if (clawt_task_state_nick_is_cancellable(state)) {
                 GtkWidget *cancel = gtk_button_new_with_label("Cancel");
 
                 g_object_set_data_full(
@@ -497,6 +992,28 @@ clawt_gtk_build_task_page(ClawtWindow *self)
     gtk_widget_set_margin_start(GTK_WIDGET(self->incident_list), 12);
     gtk_widget_set_margin_end(GTK_WIDGET(self->incident_list), 12);
     gtk_box_append(GTK_BOX(column), GTK_WIDGET(self->incident_list));
+
+    /* The tasks' own heading, with the way to add one. */
+    {
+        GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        GtkWidget *label = gtk_label_new("Tasks");
+        GtkWidget *add = gtk_button_new_with_label("New task");
+
+        gtk_widget_add_css_class(label, "heading");
+        gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+        gtk_widget_set_hexpand(label, TRUE);
+        gtk_box_append(GTK_BOX(bar), label);
+
+        gtk_widget_set_tooltip_text(add, "Write a task down for an agent, "
+                                         "or for the backlog");
+        g_signal_connect(add, "clicked", G_CALLBACK(on_new_task), self);
+        gtk_box_append(GTK_BOX(bar), add);
+
+        gtk_widget_set_margin_top(bar, 18);
+        gtk_widget_set_margin_start(bar, 12);
+        gtk_widget_set_margin_end(bar, 12);
+        gtk_box_append(GTK_BOX(column), bar);
+    }
 
     self->task_list = GTK_LIST_BOX(gtk_list_box_new());
     gtk_list_box_set_selection_mode(self->task_list, GTK_SELECTION_NONE);

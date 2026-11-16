@@ -620,18 +620,8 @@ static gboolean
 state_is_finished(
 	gint state
 ){
-	switch ((ClawtTaskState)state) {
-	case CLAWT_TASK_PENDING:
-	case CLAWT_TASK_RUNNING:
-		return FALSE;
-	case CLAWT_TASK_COMPLETED:
-	case CLAWT_TASK_FAILED:
-	case CLAWT_TASK_CANCELLED:
-	case CLAWT_TASK_STALLED:
-		return TRUE;
-	}
-
-	return FALSE;
+	/* The library's definition, so a state added later is classified once. */
+	return clawt_task_state_is_finished((ClawtTaskState)state);
 }
 
 GStrv
@@ -698,6 +688,10 @@ decide_outcome(
 		switch ((ClawtTaskState)(GPOINTER_TO_INT(value) - 1)) {
 		case CLAWT_TASK_PENDING:
 		case CLAWT_TASK_RUNNING:
+		case CLAWT_TASK_UNASSIGNED:
+		case CLAWT_TASK_BLOCKED:
+		case CLAWT_TASK_REVIEW:
+			/* not ended: the exchange is still waiting on it */
 			running = TRUE;
 			break;
 		case CLAWT_TASK_COMPLETED:
@@ -1307,6 +1301,12 @@ task_state_words(
 		return "cancelled";
 	case CLAWT_TASK_STALLED:
 		return "stalled";
+	case CLAWT_TASK_UNASSIGNED:
+		return "unassigned";
+	case CLAWT_TASK_BLOCKED:
+		return "blocked";
+	case CLAWT_TASK_REVIEW:
+		return "in review";
 	}
 
 	return "unknown";

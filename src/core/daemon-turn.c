@@ -237,7 +237,12 @@ stop_expired_turn(ClawtDaemon      *self,
         for (i = 0; tasks != NULL && i < tasks->len; i++) {
             ClawtTask *task = g_ptr_array_index(tasks, i);
 
-            if (clawt_task_is_finished(task))
+            /*
+             * Only what was with its assignee: a task waiting on its
+             * blockers, its reviewer or an owner was not part of the
+             * turn that ran out.
+             */
+            if (!clawt_task_state_is_active(clawt_task_get_state(task)))
                 continue;
 
             clawt_task_manager_stall(self->tasks,
@@ -732,7 +737,8 @@ on_guard_stalled(ClawtLoopGuard *guard,
             for (j = 0; tasks != NULL && j < tasks->len; j++) {
                 ClawtTask *task = g_ptr_array_index(tasks, j);
 
-                if (clawt_task_is_finished(task))
+                /* as above: only what was with its assignee */
+                if (!clawt_task_state_is_active(clawt_task_get_state(task)))
                     continue;
 
                 clawt_task_manager_stall(self->tasks,

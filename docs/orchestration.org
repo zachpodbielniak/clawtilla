@@ -396,10 +396,26 @@ a state and a result.
 clawtilla task list
 clawtilla task show task-01m0k5…
 clawtilla task cancel task-01m0k5…
+clawtilla task create "Write the release notes"        # the backlog
+clawtilla task create --agent scout "Check the export"  # straight to scout
+clawtilla task assign task-01m0k5… scout
+clawtilla task comment task-01m0k5… "use the staging DB"
 #+end_src
 
 States: ~pending~ → ~running~ → ~completed~ / ~failed~ / ~cancelled~ /
-~stalled~.  There is no ~orphaned~ state: stopping an agent moves its
+~stalled~, and three that wait on somebody other than the assignee (since
+0.36.0): ~unassigned~ (on the operator's backlog), ~blocked~ (held until
+other tasks finish) and ~review~ (finished by its assignee, being
+checked).  They were appended to the enum, so a stored or wire value
+means what it always did.  Code asks the library rather than comparing
+states: =clawt_task_state_is_finished()= (completed, failed, cancelled,
+stalled), =clawt_task_state_is_active()= (pending and running -- what a
+turn timeout, an agent crash, the idle guard and the restart reconcile
+are about), =clawt_task_state_is_cancellable()= (anything not finished,
+which is where every client's Cancel button comes from) and
+=clawt_task_state_is_retryable()= (failed and stalled).  A task in
+~review~ is not its assignee's to finish again: =complete= and the
+turn-end inference refuse it.  There is no ~orphaned~ state: stopping an agent moves its
 tasks to ~failed~ with the reason "the agent handling this stopped before
 finishing", rather than leaving them assigned to nobody and looking like
 work in progress for ever.
@@ -453,6 +469,16 @@ A task with none of these is failed with "the daemon restarted while this ran, a
 ***** Incidents are kept with them
 
 Incidents are written to the same file as they change, and restored as they were left: open or resolved, reported or still queued, with the log lines captured when the run broke. Nothing is published or flushed on restore, so a restart never reports an incident a second time, and a new failure of the same run counts up on the restored incident instead of opening another. The desk's bound (=INCIDENT_KEEP=) applies to the file too.
+
+***** The operator's own tasks, and a task's thread (since 0.36.0)
+
+Tasks are not only what agents delegate.  The operator writes one down from any client (*New task*) or ~clawtilla task create~: what to do, optionally a title, and who does it -- or nobody yet, which puts it on the *backlog* as ~unassigned~.  A backlog task waits there; nothing that watches work with an assignee (a turn timeout, a crash, the restart reconcile) treats it as with anybody.  *Assign* (~task.assign~, ~clawtilla task assign~) takes it off the backlog and only off the backlog: a task somebody already has moves with a handoff, which tells the one losing it.
+
+A task given to an agent this way, at creation or by assigning it, is sent as the operator's (=user=), with the task contract (=clawt_task_assignment_guidance()=) and the task's id on the delivery, into the conversation the two already share.  A send that is refused fails the task, so it is not left ~pending~ with nobody told.
+
+Every task has a *thread*, kept in ~tasks.db~ beside the journal: notes, each with an author, a kind and a time.  The journal is what /happened/ to a task; the thread is what was /said/ about it.  The manager adds the assignee's progress reports (~progress~) and each result (~result~) itself; the operator adds *comments* (~task.comment~, the *Comment* box on a task's page, ~clawtilla task comment~).  A comment on a task that is with its assignee is also sent to them, from =user=, into the task's own room when it has one and the conversation the work is in otherwise -- the router then steers it into a running turn or queues it, as any message for a busy agent, so a comment never starts a turn of its own.  A comment on a backlog, blocked or finished task is only kept.  ~task.show~ carries the thread as ~notes~, and ~clawtilla_task_status~ shows the last five comments to an agent asking, the operator's named as "the operator".  A note emits ~task.noted~, not ~task.changed~: the settle notice and the incident desk hang off the latter, and a comment on a finished task must not send its delegator the result again.
+
+Every client's task row shows the task's title with who it is between underneath ("user · on the backlog" for one with nobody), an *Assign…* control on backlog rows, and *Details*: the prompt, the result, the thread, a box to comment in, and the history.
 
 ***** What the lists say about themselves
 

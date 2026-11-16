@@ -42,12 +42,14 @@ ClawtTaskManager *clawt_task_manager_new(void);
  * clawt_task_manager_create:
  * @self: a #ClawtTaskManager
  * @origin_agent: who delegated it
- * @assignee: who is to do it
+ * @assignee: (nullable): who is to do it, or %NULL for the backlog
  * @prompt: what to do
  * @parent_id: (nullable): the task this one was spawned from
  * @error: (out) (optional): return location for a #GError
  *
- * Creates a task, inheriting depth from its parent.
+ * Creates a task, inheriting depth from its parent.  With a %NULL
+ * @assignee the task goes on the operator's backlog as
+ * %CLAWT_TASK_UNASSIGNED until clawt_task_manager_assign() gives it one.
  *
  * Returns: (transfer none) (nullable): the task, or %NULL if it would be
  *   too deep
@@ -154,7 +156,7 @@ guint clawt_task_manager_count_unfinished_children(ClawtTaskManager *self,
  * clawt_task_manager_note_progress:
  * @self: a #ClawtTaskManager
  * @task_id: a task id
- * @note: (nullable): what the assignee wants the delegator to know
+ * @progress: (nullable): what the assignee wants the delegator to know
  *
  * Records progress without ending the task, and holds off the
  * turn-end inference for one turn.
@@ -169,7 +171,7 @@ guint clawt_task_manager_count_unfinished_children(ClawtTaskManager *self,
  */
 gboolean clawt_task_manager_note_progress(ClawtTaskManager *self,
                                           const gchar      *task_id,
-                                          const gchar      *note);
+                                          const gchar      *progress);
 
 /**
  * clawt_task_manager_complete_on_turn_end:
@@ -472,5 +474,64 @@ GPtrArray *clawt_task_manager_list_history(ClawtTaskManager     *self,
 JsonNode *clawt_task_manager_journal(ClawtTaskManager  *self,
                                      const gchar       *task_id,
                                      GError           **error);
+
+/**
+ * clawt_task_manager_assign:
+ * @self: a #ClawtTaskManager
+ * @task_id: an unassigned task
+ * @assignee: who gets it
+ * @who: (nullable): who assigned it, for the journal
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Takes a task off the backlog: gives it @assignee and makes it
+ * `pending`.  Delivering the work is the caller's -- the daemon sends it
+ * as the operator's.  Only an `unassigned` task is assigned this way; one
+ * somebody already has moves with a handoff.
+ *
+ * Returns: %TRUE when assigned
+ */
+gboolean clawt_task_manager_assign(ClawtTaskManager  *self,
+                                   const gchar       *task_id,
+                                   const gchar       *assignee,
+                                   const gchar       *who,
+                                   GError           **error);
+
+/**
+ * clawt_task_manager_add_note:
+ * @self: a #ClawtTaskManager
+ * @task_id: which task
+ * @author: (nullable): who wrote it, `user` for the operator
+ * @kind: a CLAWT_TASK_NOTE_* spelling
+ * @body: the text, not empty
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Adds a note to the task's thread (clawt_task_store_add_note()).  The
+ * manager adds the progress and result notes itself as they happen;
+ * this is for everything else, a comment above all.  Emits nothing: a
+ * note changes no state, and ::task-changed is what settle notices and
+ * incidents hang off.
+ *
+ * Returns: the note's id, or 0 on error (no such task, empty text, or no
+ *   store)
+ */
+gint64 clawt_task_manager_add_note(ClawtTaskManager  *self,
+                                   const gchar       *task_id,
+                                   const gchar       *author,
+                                   const gchar       *kind,
+                                   const gchar       *body,
+                                   GError           **error);
+
+/**
+ * clawt_task_manager_notes:
+ * @self: a #ClawtTaskManager
+ * @task_id: which task
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Returns: (transfer full) (nullable): the notes, as
+ *   clawt_task_store_notes() gives them, or %NULL without a store
+ */
+JsonNode *clawt_task_manager_notes(ClawtTaskManager  *self,
+                                   const gchar       *task_id,
+                                   GError           **error);
 
 G_END_DECLS

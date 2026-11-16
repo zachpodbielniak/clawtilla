@@ -1032,6 +1032,231 @@ test_incidents_are_restored_without_a_second_report(void)
 	daemon_teardown(&fixture);
 }
 
+/* ── The operator's own tasks (A2) ───────────────────────────────── */
+
+/* Notes are kept, in order, and pruned with their task. */
+static void
+test_notes_are_kept_and_pruned(
+	StoreFixture  *fixture,
+	gconstpointer  data
+){
+	gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+	g_autofree gchar *old = save_aged(fixture->store, "a",
+		CLAWT_TASK_COMPLETED, now - 400 * 86400, now - 399 * 86400);
+	g_autoptr(JsonNode) notes = NULL;
+	JsonArray *rows;
+
+	(void)data;
+
+	g_assert_cmpint(clawt_task_store_add_note(fixture->store, old, "user",
+	                                          CLAWT_TASK_NOTE_COMMENT,
+	                                          "first", NULL), >, 0);
+	g_assert_cmpint(clawt_task_store_add_note(fixture->store, old, NULL,
+	                                          CLAWT_TASK_NOTE_RESULT,
+	                                          "second", NULL), >, 0);
+
+	notes = clawt_task_store_notes(fixture->store, old, NULL);
+	rows = json_node_get_array(notes);
+	g_assert_cmpuint(json_array_get_length(rows), ==, 2);
+	g_assert_cmpstr(json_object_get_string_member(
+		json_array_get_object_element(rows, 0), "author"), ==, "user");
+	g_assert_false(json_object_has_member(
+		json_array_get_object_element(rows, 1), "author"));
+
+	g_assert_cmpuint(clawt_task_store_prune(fixture->store,
+	                                        now - 180 * 86400, NULL), ==, 1);
+	g_clear_pointer(&notes, json_node_unref);
+	notes = clawt_task_store_notes(fixture->store, old, NULL);
+	g_assert_cmpuint(json_array_get_length(json_node_get_array(notes)), ==,
+	                 0);
+}
+
+/* The manager writes progress and results into the thread itself. */
+static void
+test_progress_and_results_are_noted(
+	StoreFixture  *fixture,
+	gconstpointer  data
+){
+	g_autoptr(ClawtTaskManager) manager = clawt_task_manager_new();
+	g_autoptr(JsonNode) notes = NULL;
+	g_autofree gchar *id = NULL;
+	JsonArray *rows;
+	ClawtTask *task;
+
+	(void)data;
+
+	clawt_task_manager_set_store(manager, fixture->store);
+	task = clawt_task_manager_create(manager, "chief", "scout", "look",
+	                                 NULL, NULL);
+	id = g_strdup(clawt_task_get_id(task));
+	clawt_task_manager_note_progress(manager, id, "halfway");
+	clawt_task_manager_complete(manager, id, "found it");
+
+	notes = clawt_task_manager_notes(manager, id, NULL);
+	rows = json_node_get_array(notes);
+	g_assert_cmpuint(json_array_get_length(rows), ==, 2);
+	g_assert_cmpstr(json_object_get_string_member(
+		json_array_get_object_element(rows, 0), "kind"), ==, "progress");
+	g_assert_cmpstr(json_object_get_string_member(
+		json_array_get_object_element(rows, 1), "kind"), ==, "result");
+	g_assert_cmpstr(json_object_get_string_member(
+		json_array_get_object_element(rows, 1), "author"), ==, "scout");
+
+	/* an empty note is refused, an unknown task too */
+	g_assert_cmpint(clawt_task_manager_add_note(manager, id, "user",
+	                                            "comment", "", NULL), ==, 0);
+	g_assert_cmpint(clawt_task_manager_add_note(manager, "task-none", "user",
+	                                            "comment", "x", NULL), ==, 0);
+}
+
+/* How many queued items in @agent's mailbox carry @task_id. */
+static guint
+queued_for(
+	DaemonFixture *fixture,
+	const gchar   *agent,
+	const gchar   *task_id
+){
+	ClawtAgent *found = clawt_agent_manager_get(fixture->daemon->agents,
+	                                            agent);
+	ClawtMailboxFilter filter = { -1, 0, TRUE };
+	g_autoptr(GPtrArray) items = clawt_mailbox_list(
+		clawt_agent_get_mailbox(found), &filter);
+	guint n = 0;
+	guint i;
+
+	for (i = 0; items != NULL && i < items->len; i++)
+		if (g_strcmp0(clawt_mailbox_item_get_task_id(
+		                  g_ptr_array_index(items, i)), task_id) == 0)
+			n++;
+
+	return n;
+}
+
+/*
+ * task.create, task.assign and task.comment end to end: the backlog,
+ * the handover from "user" with the task's id on it, the comment kept
+ * and heard, and the backlog surviving a restart untouched.
+ */
+static void
+test_operator_tasks(void)
+{
+	DaemonFixture fixture = { 0 };
+	g_autoptr(JsonNode) created = NULL;
+	g_autoptr(JsonNode) ghost = NULL;
+	g_autoptr(JsonNode) direct = NULL;
+	g_autoptr(JsonNode) assigned = NULL;
+	g_autoptr(JsonNode) again = NULL;
+	g_autoptr(JsonNode) comment = NULL;
+	g_autoptr(JsonNode) backlog_comment = NULL;
+	g_autoptr(JsonNode) shown = NULL;
+	g_autofree gchar *backlog_id = NULL;
+	g_autofree gchar *direct_id = NULL;
+	g_autofree gchar *stays_id = NULL;
+	JsonObject *task;
+	ClawtTask *kept;
+
+	daemon_setup(&fixture);
+
+	/* the backlog */
+	created = ask(&fixture, "task.create", clawt_ipc_payload_new(
+		"prompt", "Write the release notes", "title", "Notes", NULL));
+	g_assert_false(clawt_ipc_frame_is_error(created));
+	task = json_object_get_object_member(
+		clawt_ipc_frame_get_payload(created), "task");
+	backlog_id = g_strdup(json_object_get_string_member(task, "id"));
+	g_assert_cmpstr(json_object_get_string_member(task, "state"), ==,
+	                "unassigned");
+	g_assert_cmpstr(json_object_get_string_member(task, "title"), ==,
+	                "Notes");
+	g_assert_false(json_object_has_member(task, "assignee"));
+
+	ghost = ask(&fixture, "task.create", clawt_ipc_payload_new(
+		"prompt", "x", "agent", "ghost", NULL));
+	g_assert_true(clawt_ipc_frame_is_error(ghost));
+
+	/* straight to an agent: pending, and in its mailbox with the id */
+	direct = ask(&fixture, "task.create", clawt_ipc_payload_new(
+		"prompt", "Check the build", "agent", "watcher", NULL));
+	g_assert_false(clawt_ipc_frame_is_error(direct));
+	direct_id = g_strdup(json_object_get_string_member(
+		json_object_get_object_member(clawt_ipc_frame_get_payload(direct),
+		                              "task"), "id"));
+	g_assert_cmpuint(queued_for(&fixture, "watcher", direct_id), ==, 1);
+
+	/* assigned off the backlog, and delivered */
+	assigned = ask(&fixture, "task.assign", clawt_ipc_payload_new(
+		"task", backlog_id, "agent", "watcher", NULL));
+	g_assert_false(clawt_ipc_frame_is_error(assigned));
+	g_assert_cmpstr(json_object_get_string_member(
+		json_object_get_object_member(
+			clawt_ipc_frame_get_payload(assigned), "task"), "state"), ==,
+		"pending");
+	g_assert_cmpuint(queued_for(&fixture, "watcher", backlog_id), ==, 1);
+
+	again = ask(&fixture, "task.assign", clawt_ipc_payload_new(
+		"task", backlog_id, "agent", "watcher", NULL));
+	g_assert_true(clawt_ipc_frame_is_error(again));
+
+	/* a comment on work with its assignee is kept and heard */
+	comment = ask(&fixture, "task.comment", clawt_ipc_payload_new(
+		"task", direct_id, "text", "use the staging DB", NULL));
+	g_assert_false(clawt_ipc_frame_is_error(comment));
+	g_assert_true(clawt_ipc_payload_boolean(
+		clawt_ipc_frame_get_payload(comment), "delivered", FALSE));
+	g_assert_cmpuint(queued_for(&fixture, "watcher", direct_id), ==, 2);
+
+	shown = ask(&fixture, "task.show", clawt_ipc_payload_new(
+		"task", direct_id, NULL));
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(
+		clawt_ipc_frame_get_payload(shown), "notes")), ==, 1);
+
+	/* and an agent asking about it sees the operator's word */
+	{
+		g_autoptr(JsonParser) parser = json_parser_new();
+		g_autoptr(JsonNode) response = NULL;
+		g_autofree gchar *request = g_strdup_printf(
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
+			"\"params\":{\"name\":\"clawtilla_task_status\","
+			"\"arguments\":{\"task_id\":\"%s\"}}}", direct_id);
+		JsonObject *result;
+		const gchar *text;
+
+		g_assert_true(json_parser_load_from_data(parser, request, -1, NULL));
+		response = clawt_mcp_tools_call(fixture.daemon->mcp_tools, "watcher",
+		                                NULL, json_parser_get_root(parser));
+		result = json_object_get_object_member(
+			json_node_get_object(response), "result");
+		text = json_object_get_string_member(json_array_get_object_element(
+			json_object_get_array_member(result, "content"), 0), "text");
+		g_assert_false(json_object_get_boolean_member(result, "isError"));
+		g_assert_nonnull(strstr(text, "the operator: use the staging DB"));
+	}
+
+	/* a backlog task keeps a comment and tells nobody */
+	{
+		g_autoptr(JsonNode) more = ask(&fixture, "task.create",
+			clawt_ipc_payload_new("prompt", "Someday", NULL));
+
+		stays_id = g_strdup(json_object_get_string_member(
+			json_object_get_object_member(
+				clawt_ipc_frame_get_payload(more), "task"), "id"));
+	}
+
+	backlog_comment = ask(&fixture, "task.comment", clawt_ipc_payload_new(
+		"task", stays_id, "text", "when there is time", NULL));
+	g_assert_false(clawt_ipc_payload_boolean(
+		clawt_ipc_frame_get_payload(backlog_comment), "delivered", TRUE));
+
+	/* a restart leaves the backlog as it was */
+	daemon_stop(&fixture);
+	daemon_start(&fixture);
+	kept = clawt_task_manager_get(fixture.daemon->tasks, stays_id);
+	g_assert_nonnull(kept);
+	g_assert_cmpint(clawt_task_get_state(kept), ==, CLAWT_TASK_UNASSIGNED);
+
+	daemon_teardown(&fixture);
+}
+
 int
 main(
 	int   argc,
@@ -1076,6 +1301,13 @@ main(
 	g_test_add_func("/task-store/daemon/no-store-no-promise",
 	                test_no_store_no_promise);
 	g_test_add_func("/task-store/caption", test_the_list_caption);
+
+	g_test_add("/task-store/notes/kept-and-pruned", StoreFixture, NULL,
+	           store_setup, test_notes_are_kept_and_pruned, store_teardown);
+	g_test_add("/task-store/notes/progress-and-results", StoreFixture, NULL,
+	           store_setup, test_progress_and_results_are_noted,
+	           store_teardown);
+	g_test_add_func("/task-store/daemon/operator-tasks", test_operator_tasks);
 
 	return g_test_run();
 }

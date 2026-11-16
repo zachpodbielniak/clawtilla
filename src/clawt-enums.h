@@ -819,8 +819,22 @@ typedef enum {
  * @CLAWT_TASK_FAILED: finished with an error
  * @CLAWT_TASK_CANCELLED: cancelled before finishing
  * @CLAWT_TASK_STALLED: stopped because it was going in circles
+ * @CLAWT_TASK_UNASSIGNED: on the operator's backlog, with nobody to do it
+ *   yet (since 0.36.0)
+ * @CLAWT_TASK_BLOCKED: waiting for other tasks to finish before it is
+ *   handed to its assignee (since 0.36.0)
+ * @CLAWT_TASK_REVIEW: its assignee finished it and somebody is checking
+ *   the result (since 0.36.0)
  *
  * State of a delegated #ClawtTask.
+ *
+ * The last three were appended rather than placed beside the states
+ * they resemble, so a stored or wire value means what it always did.
+ * None of them is terminal: an unassigned task waits for an owner, a
+ * blocked one for its blockers, and one in review for a verdict.  Ask
+ * the predicates -- clawt_task_state_is_active(),
+ * clawt_task_state_is_cancellable() -- rather than comparing states, so
+ * a state added later is classified in one place.
  *
  * CLAWT_TASK_STALLED is terminal like the three before it, and is its own
  * answer rather than a flavour of failed: work that a limit stopped is
@@ -834,7 +848,10 @@ typedef enum {
     CLAWT_TASK_COMPLETED,
     CLAWT_TASK_FAILED,
     CLAWT_TASK_CANCELLED,
-    CLAWT_TASK_STALLED
+    CLAWT_TASK_STALLED,
+    CLAWT_TASK_UNASSIGNED,
+    CLAWT_TASK_BLOCKED,
+    CLAWT_TASK_REVIEW
 } ClawtTaskState;
 
 /**

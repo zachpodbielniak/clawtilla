@@ -980,6 +980,16 @@ A task object carries (since 0.35.0) ~title~ (the given title or the first line 
 
 A task object carries ~retries~ and ~retried_by~ once it has been retried, and not before.
 
+~task.create~ (since 0.36.0) takes ~prompt~ (required), ~title~ and ~agent~.  Without ~agent~ the task goes on the backlog as ~unassigned~; with one it is created ~pending~ and sent to that agent as the operator's.  An unknown agent is =NOT_FOUND=; no prompt is =INVALID_ARGUMENT=.  It answers ~task~, the task object.
+
+~task.assign~ (since 0.36.0) takes ~task~ and ~agent~: an ~unassigned~ task becomes ~pending~ with that assignee and is sent to them.  Any other state is =INVALID_ARGUMENT= (a task somebody has moves with a handoff).  It answers ~task~.
+
+~task.comment~ (since 0.36.0) takes ~task~ and ~text~ and adds an operator comment to the task's thread.  It answers ~note~ (the note's id) and ~delivered~ (a JSON boolean: whether the assignee was sent it -- true only for a ~pending~ or ~running~ task).  It publishes ~task.noted~ (subject the task id, details ~author~ and ~agent~), not ~task.changed~.
+
+~task.show~ also carries ~notes~ (since 0.36.0): the thread, oldest first, each ~id~, ~at~, ~kind~ (~comment~, ~progress~, ~result~), ~body~ and, unless clawtilla wrote it, ~author~.
+
+A task's ~state~ may also be ~unassigned~, ~blocked~ or ~review~ (since 0.36.0); a client classifies a state with =clawt_task_state_nick_is_cancellable()= and the other predicates rather than by name.  A backlog task has no ~assignee~ member.
+
 ~task.retry~ takes ~task~ (a task id) *or* ~incident~ (an incident id), and an optional ~reason~ the assignee sees with the work.  It is the operator's Retry: a ~failed~ or ~stalled~ task is re-queued for its assignee with its original work and ~retried_by: "user"~; a routine's run is run again.  It answers ~task~ (the task now carrying the work -- the same id for a re-queue, the new run's for a routine) and ~rerun~ (a JSON boolean, true for a routine).  Any other task state is =INVALID_ARGUMENT= with the reason, as is an incident whose agent could not start (its work is still queued); an unknown id is =NOT_FOUND=.  See docs/orchestration.org, "Incidents: broken runs reach the lead".
 
 *** incident.*

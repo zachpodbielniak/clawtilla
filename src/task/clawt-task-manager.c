@@ -160,6 +160,26 @@ adopt(ClawtTaskManager *self, ClawtTask *task)
     index_child(self, task);
 }
 
+/*
+ * A note in the task's thread, when there is a store to keep it in.
+ * Quietly nothing without one: the progress note and the result are
+ * still on the task itself, as they always were.
+ */
+static void
+note(ClawtTaskManager *self, ClawtTask *task, const gchar *author,
+     const gchar *kind, const gchar *body)
+{
+    g_autoptr(GError) error = NULL;
+
+    if (self->store == NULL || body == NULL || *body == '\0')
+        return;
+
+    if (clawt_task_store_add_note(self->store, clawt_task_get_id(task),
+                                  author, kind, body, &error) == 0)
+        g_warning("task %s: could not keep a note: %s",
+                  clawt_task_get_id(task), error->message);
+}
+
 void
 clawt_task_manager_set_store(ClawtTaskManager *self, ClawtTaskStore *store)
 {
@@ -454,13 +474,24 @@ clawt_task_manager_create(ClawtTaskManager  *self,
     clawt_task_set_depth(task, depth);
     clawt_task_set_parent_id(task, parent_id);
 
+    /*
+     * No assignee is the operator's backlog: a task somebody wrote down
+     * and nobody has yet.  It waits there until clawt_task_manager_assign()
+     * gives it one, and nothing that watches pending work -- a turn
+     * timeout, a crash, a restart -- treats it as with anybody.
+     */
+    if (assignee == NULL)
+        clawt_task_set_state(task, CLAWT_TASK_UNASSIGNED);
+
     adopt(self, task);
 
     {
-        g_autofree gchar *what = g_strdup_printf(
-            "created by %s for %s",
-            origin_agent != NULL ? origin_agent : "nobody",
-            assignee != NULL ? assignee : "nobody");
+        g_autofree gchar *what = assignee != NULL
+            ? g_strdup_printf("created by %s for %s",
+                              origin_agent != NULL ? origin_agent : "nobody",
+                              assignee)
+            : g_strdup_printf("put on the backlog by %s",
+                              origin_agent != NULL ? origin_agent : "nobody");
 
         emit_changed(self, task, what);
     }
@@ -592,13 +623,18 @@ clawt_task_manager_complete(ClawtTaskManager *self,
     /*
      * A task that already ended stays ended.  A late result arriving after
      * a cancellation must not quietly un-cancel it -- somebody stopped that
-     * work on purpose.
+     * work on purpose.  And one that is not with its assignee -- on the
+     * backlog, held for its blockers, or being reviewed -- is not the
+     * assignee's to finish: a turn ending there must not overwrite a
+     * result somebody is checking.
      */
-    if (clawt_task_is_finished(task))
+    if (!clawt_task_state_is_active(clawt_task_get_state(task)))
         return FALSE;
 
     clawt_task_set_result(task, result);
     clawt_task_set_state(task, CLAWT_TASK_COMPLETED);
+    note(self, task, clawt_task_get_assignee(task), CLAWT_TASK_NOTE_RESULT,
+         result);
     emit_changed(self, task, NULL);
 
     return TRUE;
@@ -741,15 +777,18 @@ clawt_task_manager_list_descendants(ClawtTaskManager *self,
 gboolean
 clawt_task_manager_note_progress(ClawtTaskManager *self,
                                  const gchar      *task_id,
-                                 const gchar      *note)
+                                 const gchar      *progress)
 {
     ClawtTask *task = clawt_task_manager_get(self, task_id);
 
-    if (task == NULL || clawt_task_is_finished(task))
+    /* Progress is the assignee's to report, on work it has. */
+    if (task == NULL || !clawt_task_state_is_active(clawt_task_get_state(task)))
         return FALSE;
 
-    clawt_task_set_progress_note(task, note);
+    clawt_task_set_progress_note(task, progress);
     clawt_task_hold_completion(task);
+    note(self, task, clawt_task_get_assignee(task), CLAWT_TASK_NOTE_PROGRESS,
+         progress);
 
     if (clawt_task_get_state(task) == CLAWT_TASK_PENDING)
         clawt_task_set_state(task, CLAWT_TASK_RUNNING);
@@ -798,7 +837,7 @@ clawt_task_manager_complete_on_turn_end(ClawtTaskManager  *self,
 
     task = clawt_task_manager_get(self, task_id);
 
-    if (task == NULL || clawt_task_is_finished(task))
+    if (task == NULL || !clawt_task_state_is_active(clawt_task_get_state(task)))
         return FALSE;
 
     /*
@@ -923,10 +962,13 @@ clawt_task_manager_retry(ClawtTaskManager  *self,
 
     case CLAWT_TASK_PENDING:
     case CLAWT_TASK_RUNNING:
+    case CLAWT_TASK_UNASSIGNED:
+    case CLAWT_TASK_BLOCKED:
+    case CLAWT_TASK_REVIEW:
         g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
-                    "task %s is %s, not failed or stalled: it is still "
-                    "waiting for or being worked on by %s, so there is "
-                    "nothing to retry yet", task_id,
+                    "task %s is %s, not failed or stalled: it has not "
+                    "ended -- %s has it, or it is waiting on somebody -- so "
+                    "there is nothing to retry yet", task_id,
                     clawt_enum_to_nick(CLAWT_TYPE_TASK_STATE, state),
                     clawt_task_get_assignee(task) != NULL
                         ? clawt_task_get_assignee(task) : "its assignee");
@@ -1059,6 +1101,107 @@ clawt_task_manager_cancel(ClawtTaskManager *self,
     return cancelled;
 }
 
+gboolean
+clawt_task_manager_assign(ClawtTaskManager  *self,
+                          const gchar       *task_id,
+                          const gchar       *assignee,
+                          const gchar       *who,
+                          GError           **error)
+{
+    ClawtTask *task;
+    g_autofree gchar *what = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), FALSE);
+    g_return_val_if_fail(assignee != NULL, FALSE);
+
+    task = clawt_task_manager_get(self, task_id);
+
+    if (task == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "there is no task %s", task_id != NULL ? task_id : "");
+        return FALSE;
+    }
+
+    /*
+     * Only from the backlog.  A task somebody already has is moved with
+     * a handoff, which tells the one losing it; assigning over the top
+     * would leave an agent working on something that is no longer its.
+     */
+    if (clawt_task_get_state(task) != CLAWT_TASK_UNASSIGNED) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "task %s is %s, not on the backlog: only an unassigned "
+                    "task is assigned this way", task_id,
+                    clawt_enum_to_nick(CLAWT_TYPE_TASK_STATE,
+                                       clawt_task_get_state(task)));
+        return FALSE;
+    }
+
+    clawt_task_transfer_owner(task, assignee);
+    clawt_task_set_state(task, CLAWT_TASK_PENDING);
+
+    what = g_strdup_printf("assigned to %s by %s", assignee,
+                           who != NULL ? who : "nobody");
+    emit_changed(self, task, what);
+
+    return TRUE;
+}
+
+gint64
+clawt_task_manager_add_note(ClawtTaskManager  *self,
+                            const gchar       *task_id,
+                            const gchar       *author,
+                            const gchar       *kind,
+                            const gchar       *body,
+                            GError           **error)
+{
+    ClawtTask *task;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), 0);
+    g_return_val_if_fail(kind != NULL, 0);
+
+    task = clawt_task_manager_get(self, task_id);
+
+    if (task == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "there is no task %s", task_id != NULL ? task_id : "");
+        return 0;
+    }
+
+    if (body == NULL || *body == '\0') {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                            "a note needs some text");
+        return 0;
+    }
+
+    if (self->store == NULL) {
+        g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_SUPPORTED,
+                            "notes are kept in the task store, and this "
+                            "daemon has none");
+        return 0;
+    }
+
+    return clawt_task_store_add_note(self->store, task_id, author, kind,
+                                     body, error);
+}
+
+JsonNode *
+clawt_task_manager_notes(ClawtTaskManager  *self,
+                         const gchar       *task_id,
+                         GError           **error)
+{
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), NULL);
+    g_return_val_if_fail(task_id != NULL, NULL);
+
+    if (self->store == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "there is no task store, so task %s has no notes",
+                    task_id);
+        return NULL;
+    }
+
+    return clawt_task_store_notes(self->store, task_id, error);
+}
+
 guint
 clawt_task_manager_orphan_agent_tasks(ClawtTaskManager *self,
                                       const gchar      *agent_id)
@@ -1073,7 +1216,9 @@ clawt_task_manager_orphan_agent_tasks(ClawtTaskManager *self,
         const gchar *task_id = g_ptr_array_index(self->order, i);
         ClawtTask *task = g_hash_table_lookup(self->tasks, task_id);
 
-        if (task == NULL || clawt_task_is_finished(task))
+        /* Only what it had: a blocked or in-review task is not lost with it. */
+        if (task == NULL ||
+            !clawt_task_state_is_active(clawt_task_get_state(task)))
             continue;
 
         if (g_strcmp0(clawt_task_get_assignee(task), agent_id) != 0)
@@ -1113,7 +1258,8 @@ clawt_task_manager_note_continuation(
 
 	task = g_hash_table_lookup(self->tasks, task_id);
 
-	if (task == NULL || clawt_task_is_finished(task)) {
+	if (task == NULL ||
+	    !clawt_task_state_is_active(clawt_task_get_state(task))) {
 		g_hash_table_remove(self->guards, task_id);
 		return FALSE;
 	}
