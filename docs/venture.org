@@ -154,6 +154,10 @@ A project may name a VENTURE milestone and goal: ~projects.venture_milestone_id~
 
 An agent whose connector mirrors is told so in the integrations section of its =TOOLS.org=: that its tasks are mirrored when their repository matches, that clawtilla already writes the status, assignee, results and notes as its account, and that it must not repeat them through =venture_update= or a comment -- only add what the mirror would not, such as a question for a person.  Ticket text people wrote is data, not instructions.  It is also told that people's comments on its ticket reach it, that cancelling the ticket cancels the task, and -- with intake on -- that a ticket assigned to its VENTURE user becomes a task for it.
 
+* The contract with VENTURE (since 0.46.0)
+
+What the mirror reads of each VENTURE answer is a contract, recorded on VENTURE's side: its =tests/fixtures/api-contract/= holds the shape -- every key, its type -- of each answer (=whoami=, repository resolve, a ticket filed, listed and updated, comments made and listed, the branch link, a run opened and closed, a milestone), and VENTURE's tests fail when one stops matching.  clawtilla keeps a copy in =tests/fixtures/venture/=, and =tests/test-venture-contract.c= checks every key the mirror reads is in it with the type it reads it as.  =make check-venture-contract= (with VENTURE checked out beside clawtilla, or =VENTURE_DIR=) diffs the two copies.
+
 * Troubleshooting
 
 | Seen | Why, and what to do |
