@@ -164,6 +164,8 @@ static const gchar *usage_tail =
     "  clawtilla task create --agent scout --after task-01m0k5 \"Ship it\"\n"
     "  clawtilla task unlink task-01m0k6 task-01m0k5      # stop waiting\n"
     "  clawtilla task review task-01m0k6 changes \"add a test\"\n"
+    "  clawtilla task create --agent builder --repo . \"fix the build\"\n"
+    "  clawtilla task diff task-01m0k6                    # what it changed\n"
     "  clawtilla task incidents            # broken runs, and who was told\n"
     "  clawtilla task retry task-01m0k5    # send a failed run round again\n"
     "\n"
@@ -4790,9 +4792,24 @@ cmd_task(int argc, char *argv[])
             if ((g_strcmp0(argv[arg], "--agent") == 0 ||
                  g_strcmp0(argv[arg], "--title") == 0 ||
                  g_strcmp0(argv[arg], "--after") == 0 ||
-                 g_strcmp0(argv[arg], "--review") == 0) && arg + 1 < argc) {
+                 g_strcmp0(argv[arg], "--review") == 0 ||
+                 g_strcmp0(argv[arg], "--repo") == 0 ||
+                 g_strcmp0(argv[arg], "--base") == 0) && arg + 1 < argc) {
                 json_builder_set_member_name(builder, argv[arg] + 2);
-                json_builder_add_string_value(builder, argv[arg + 1]);
+
+                /*
+                 * A repository is a host path the daemon resolves, from
+                 * its own working directory: made absolute here, from
+                 * the one the person typed it in.
+                 */
+                if (g_strcmp0(argv[arg], "--repo") == 0) {
+                    g_autofree gchar *absolute =
+                        g_canonicalize_filename(argv[arg + 1], NULL);
+
+                    json_builder_add_string_value(builder, absolute);
+                } else {
+                    json_builder_add_string_value(builder, argv[arg + 1]);
+                }
                 arg++;
             } else if (prompt == NULL && !g_str_has_prefix(argv[arg], "--")) {
                 prompt = argv[arg];
@@ -4806,7 +4823,7 @@ cmd_task(int argc, char *argv[])
             g_printerr("Usage: clawtilla task create [--agent AGENT] "
                        "[--title TITLE] [--after TASK,TASK] "
                        "[--review lead|delegator|operator|AGENT|none] "
-                       "<what to do>\n"
+                       "[--repo DIR [--base REF]] <what to do>\n"
                        "Without --agent the task goes on the backlog; "
                        "assign it later with `clawtilla task assign`.\n");
             return EXIT_FAILURE;
@@ -4847,6 +4864,62 @@ cmd_task(int argc, char *argv[])
             return EXIT_FAILURE;
 
         g_print("Assigned %s to %s.\n", argv[3], argv[4]);
+        return EXIT_SUCCESS;
+    }
+
+    /*
+     * What a task's checkout changed, as git prints it; or the checkout
+     * taken away, its branch kept.
+     */
+    if (g_strcmp0(verb, "diff") == 0) {
+        JsonArray *untracked;
+        guint i;
+
+        if (argc < 4) {
+            g_printerr("Usage: clawtilla task diff <task-id>\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "task.diff",
+                     build_payload("task", argv[3], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("%s", member_or(json_node_get_object(reply), "diff", ""));
+
+        untracked = json_object_has_member(json_node_get_object(reply),
+                                           "untracked")
+            ? json_object_get_array_member(json_node_get_object(reply),
+                                           "untracked")
+            : NULL;
+        for (i = 0; untracked != NULL && i < json_array_get_length(untracked);
+             i++)
+            g_print("new, not yet added: %s\n",
+                    json_array_get_string_element(untracked, i));
+
+        if (json_object_get_boolean_member_with_default(
+                json_node_get_object(reply), "truncated", FALSE))
+            g_printerr("(cut short: the diff is larger than clawtilla "
+                       "returns; read the rest in the checkout)\n");
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "checkout-remove") == 0) {
+        gboolean force = (argc > 4 && g_strcmp0(argv[4], "--force") == 0);
+
+        if (argc < 4) {
+            g_printerr("Usage: clawtilla task checkout-remove <task-id> "
+                       "[--force]\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "task.checkout_remove",
+                     build_payload("task", argv[3],
+                                   "force", force ? "true" : NULL, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Removed; its branch is kept in the repository.\n");
         return EXIT_SUCCESS;
     }
 
@@ -11107,7 +11180,7 @@ static const ClawtVerb verbs[] = {
       cmd_account },
     { "policy-hook", "--agent ID --token-file PATH", "Claude Code's PreToolUse hook (run by the daemon's settings)",
       cmd_policy_hook },
-    { "task",    "<verb>",   "Tasks: list, show, create, assign, comment, link, unlink, review, cancel, retry, incidents",
+    { "task",    "<verb>",   "Tasks: list, show, create, assign, comment, link, unlink, review, diff, checkout-remove, cancel, retry, incidents",
       cmd_task },
     { "decision", "<verb>",  "Answer what an agent has asked you",
       cmd_decision },

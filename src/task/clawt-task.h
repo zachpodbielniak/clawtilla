@@ -661,6 +661,95 @@ gchar *clawt_task_resolve_reviewer(ClawtConfig  *config,
                                    const gchar  *assignee,
                                    GError      **error);
 
+/**
+ * clawt_task_assignment_guidance_for:
+ * @task: the task being assigned
+ *
+ * clawt_task_assignment_guidance() with what else the assignee must know
+ * from the start: today, its checkout (clawt_task_checkout_guidance()).
+ * Since 0.39.0.
+ *
+ * Returns: (transfer full): the closing text of the assignment
+ */
+gchar *clawt_task_assignment_guidance_for(ClawtTask *task);
+
+/**
+ * clawt_task_set_checkout:
+ * @self: a #ClawtTask
+ * @repository: (nullable): the host path of the repository checked out
+ * @path: (nullable): the host path of the checkout; %NULL clears it
+ * @branch: (nullable): the checkout's branch
+ * @base: (nullable): the commit it started from
+ * @mode: how it was made
+ *
+ * Records the task's own checkout (since 0.39.0).  A task with none has
+ * %CLAWT_CHECKOUT_NONE.
+ */
+void clawt_task_set_checkout(ClawtTask         *self,
+                             const gchar       *repository,
+                             const gchar       *path,
+                             const gchar       *branch,
+                             const gchar       *base,
+                             ClawtCheckoutMode  mode);
+
+/**
+ * clawt_task_get_checkout_mode:
+ * @self: a #ClawtTask
+ *
+ * Returns: how its checkout was made, or %CLAWT_CHECKOUT_NONE
+ */
+ClawtCheckoutMode clawt_task_get_checkout_mode(ClawtTask *self);
+
+/**
+ * clawt_task_get_checkout_repo:
+ * @self: a #ClawtTask
+ *
+ * Returns: (transfer none) (nullable): the repository checked out
+ */
+const gchar *clawt_task_get_checkout_repo(ClawtTask *self);
+
+/**
+ * clawt_task_get_checkout_path:
+ * @self: a #ClawtTask
+ *
+ * Returns: (transfer none) (nullable): the checkout, a host path
+ */
+const gchar *clawt_task_get_checkout_path(ClawtTask *self);
+
+/**
+ * clawt_task_get_checkout_branch:
+ * @self: a #ClawtTask
+ *
+ * Returns: (transfer none) (nullable): the checkout's branch
+ */
+const gchar *clawt_task_get_checkout_branch(ClawtTask *self);
+
+/**
+ * clawt_task_get_checkout_base:
+ * @self: a #ClawtTask
+ *
+ * Returns: (transfer none) (nullable): the commit the work started from
+ */
+const gchar *clawt_task_get_checkout_base(ClawtTask *self);
+
+/**
+ * clawt_task_get_checkout_guest:
+ * @self: a #ClawtTask
+ *
+ * The checkout as the agent's computer sees it, when that differs from
+ * the host path (a container's or VM's workspace mount).
+ *
+ * Returns: (transfer none) (nullable): the path inside, or %NULL
+ */
+const gchar *clawt_task_get_checkout_guest(ClawtTask *self);
+
+/**
+ * clawt_task_set_checkout_guest:
+ * @self: a #ClawtTask
+ * @guest: (nullable): the checkout's path inside the agent's computer
+ */
+void clawt_task_set_checkout_guest(ClawtTask *self, const gchar *guest);
+
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtTask, clawt_task_free)
 
 G_END_DECLS

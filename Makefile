@@ -254,6 +254,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/clawt-enums.c \
 	$(SRCDIR)/clawt-error.c \
 	$(SRCDIR)/clawt-util.c \
+	$(SRCDIR)/clawt-git-remote.c \
 	$(SRCDIR)/clawt-http.c \
 	$(SRCDIR)/clawt-net.c \
 	$(SRCDIR)/clawt-backup.c \
@@ -427,6 +428,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/task/clawt-handoff.c \
 	$(SRCDIR)/task/clawt-handoff-store.c \
 	$(SRCDIR)/task/clawt-task-store.c \
+	$(SRCDIR)/task/clawt-task-checkout.c \
 	$(SRCDIR)/task/clawt-routine-runner.c \
 	$(SRCDIR)/task/clawt-incident.c \
 	$(SRCDIR)/wait/clawt-wait.c \

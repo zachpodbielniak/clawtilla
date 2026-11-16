@@ -121,6 +121,7 @@ run_trigger(const gchar *trigger_id, const gchar *agent_id,
     ClawtDaemon *self = user_data;
     ClawtTask *task;
     g_autofree gchar *room_id = NULL;
+    g_autofree gchar *checkout_prompt = NULL;
     const gchar *sender = "user";
     const gchar *target = agent_id;
 
@@ -168,6 +169,45 @@ run_trigger(const gchar *trigger_id, const gchar *agent_id,
     /* before delivery: the ledger asks about the first turn it causes */
     clawt_daemon_note_task_source(self, clawt_task_get_id(task),
                                   CLAWT_USAGE_ORIGIN_TRIGGER, trigger_id);
+
+    /*
+     * `worktree: true`: the run's own checkout of `directory`, as for a
+     * routine.  Put first, not last: a trigger's prompt ends with the
+     * caller's fenced payload, and a genuine [clawtilla] line after it
+     * would read as part of what the caller wrote.
+     */
+    {
+        ClawtTrigger *trigger = clawt_config_get_trigger(self->config,
+                                                         trigger_id);
+        const gchar *directory = (trigger != NULL)
+            ? clawt_trigger_get_string(trigger, "directory") : NULL;
+
+        if (trigger != NULL && directory != NULL && *directory != '\0' &&
+            clawt_trigger_get_boolean(trigger, "worktree")) {
+            g_autoptr(GError) checkout_error = NULL;
+            g_autofree gchar *where = NULL;
+
+            if (!clawt_task_checkout_open(task,
+                    clawt_config_get_agent(self->config, agent_id),
+                    directory, NULL, &checkout_error)) {
+                g_autofree gchar *why = g_strdup_printf(
+                    "its checkout of %s could not be made: %s", directory,
+                    checkout_error->message);
+
+                clawt_task_manager_fail(self->tasks, clawt_task_get_id(task),
+                                        why);
+                g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                                    why);
+                return NULL;
+            }
+
+            clawt_task_manager_save(self->tasks, task, NULL);
+            where = clawt_task_checkout_guidance(task);
+            checkout_prompt = g_strconcat(g_strchug(where), "\n\n", prompt,
+                                          NULL);
+            prompt = checkout_prompt;
+        }
+    }
 
     if (clawt_mailbox_router_send_to(self->router, sender, target, prompt,
                                      clawt_task_get_id(task), 0, error) < 0) {

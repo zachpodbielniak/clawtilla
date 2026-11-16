@@ -854,6 +854,18 @@ orchestration:
   # # limit.
   # review_rounds: 3
 
+  # # How long a finished task's checkout is kept, in days.
+  # #
+  # # A task given a repository (`repo` on clawtilla_delegate or a new task)
+  # # works in a checkout of its own under its assignee's workspace, at
+  # # tasks/<task>, on the branch clawtilla/<task>. Once the task has been
+  # # finished this long the checkout is removed and its branch kept: a
+  # # worktree's branch is in the repository already, and a clone's is
+  # # fetched back into it first. A checkout with uncommitted changes is
+  # # never removed this way -- that is the operator's call, from the
+  # # task's Changes. 0 keeps every checkout.
+  # checkout_keep_days: 14
+
   # # How long a finished task is kept, in days.
   # #
   # # Every task is written to tasks.db in the state directory as it

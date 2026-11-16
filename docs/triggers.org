@@ -739,12 +739,7 @@ triggers:
     isolate: true
 #+end_src
 
-=triggers.directory= and =triggers.worktree= are *instructions to the
-agent, not actions clawtilla takes* -- exactly as in a routine.  They
-become sentences appended to the prompt; there is no =chdir= and
-clawtilla never creates a git worktree.  See
-[[file:routines.org][routines.org]], which explains why that
-distinction matters when one is not obeyed.
+=triggers.directory= is an *instruction to the agent* -- a sentence in the prompt, exactly as in a routine; there is no =chdir=.  =triggers.worktree= is machinery since 0.39.0: clawtilla makes the run a checkout of its own, as a routine's (see [[file:routines.org][routines.org]] and [[file:orchestration.org][orchestration.org]], "Work in a checkout of its own"), and the paragraph saying where it is goes *first* in the prompt -- above the payload's fence, so nothing the caller wrote can pass for it.  A run whose checkout cannot be made fails.
 
 =triggers.worktree= is worth turning on for any trigger that fires on a
 push.  Several pushes can land while the first run is still going, and

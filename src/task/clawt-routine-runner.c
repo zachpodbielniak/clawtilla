@@ -757,11 +757,13 @@ build_prompt(ClawtRoutine *routine)
             "finding, with what you would do as the default -- and change nothing.\n");
 
     if (directory != NULL && *directory != '\0') {
+        /*
+         * A worktree routine is told where its checkout is by the daemon,
+         * which makes it for the run (clawt_task_checkout_guidance()):
+         * the path is only known once the run is a task.
+         */
         if (clawt_routine_get_boolean(routine, "worktree"))
-            g_string_append_printf(out,
-                "\nWork in a fresh git worktree of %s, created for this "
-                "run. Do not touch whatever is checked out in %s itself.\n",
-                directory, directory);
+            ;
         else
             g_string_append_printf(out, "\nWork in %s.\n", directory);
     }

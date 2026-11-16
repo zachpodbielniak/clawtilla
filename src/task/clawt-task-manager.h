@@ -461,6 +461,22 @@ GPtrArray *clawt_task_manager_list_history(ClawtTaskManager     *self,
                                            GError              **error);
 
 /**
+ * clawt_task_manager_record:
+ * @self: a #ClawtTaskManager
+ * @task_id: which task
+ * @what: what happened, for its history
+ *
+ * Saves the task and adds @what to its journal, without a state change
+ * and so without `task-changed` -- for something done to a task's
+ * surroundings, such as its checkout being removed (since 0.39.0).
+ *
+ * Returns: %TRUE if there is such a task
+ */
+gboolean clawt_task_manager_record(ClawtTaskManager *self,
+                                   const gchar      *task_id,
+                                   const gchar      *what);
+
+/**
  * clawt_task_manager_journal:
  * @self: a #ClawtTaskManager
  * @task_id: which task

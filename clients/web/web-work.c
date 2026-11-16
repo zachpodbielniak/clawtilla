@@ -498,6 +498,9 @@ add_new_task_form(ClawtWebApp *app, HtmxDiv *pad)
     clawt_web_add(form, agent_select(app, "Who does it", TRUE));
     clawt_web_add(form, clawt_web_field("Wait for (task ids)", "after", NULL,
                                         "task-01m..., task-01m..."));
+    clawt_web_add(form, clawt_web_field(
+        "Repository (absolute host path, for a checkout of its own)", "repo",
+        NULL, "/home/you/src/project"));
     add_submit(form, "Create");
 
     htmx_node_add_child(HTMX_NODE(details), HTMX_NODE(summary));
@@ -1188,11 +1191,14 @@ on_task_new(HtmxRequest *request, GHashTable *params, gpointer user_data)
     const gchar *title = clawt_web_form_value(request, "title");
     const gchar *agent = clawt_web_form_value(request, "agent");
     const gchar *after = clawt_web_form_value(request, "after");
+    const gchar *repo = clawt_web_form_value(request, "repo");
 
     (void)params;
 
     if (after != NULL && *after != '\0')
         clawt_web_payload_set(payload, "after", after);
+    if (repo != NULL && *repo != '\0')
+        clawt_web_payload_set(payload, "repo", repo);
 
     if (prompt != NULL && *prompt != '\0')
         clawt_web_payload_set(payload, "prompt", prompt);
@@ -1409,6 +1415,40 @@ task_page_body(ClawtWebApp *app, const gchar *id, const gchar *notice)
         htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(form));
     }
 
+    /*
+     * Its checkout: where, on which branch, and what changed -- the diff
+     * works after removal too, from the branch the repository kept.
+     */
+    if (json_object_has_member(task, "checkout")) {
+        JsonObject *checkout = json_object_get_object_member(task, "checkout");
+        gboolean present = json_object_get_boolean_member_with_default(
+            checkout, "present", FALSE);
+        g_autofree gchar *escaped = g_uri_escape_string(id, NULL, FALSE);
+        g_autofree gchar *href = g_strdup_printf("/tasks/%s/changes", escaped);
+        g_autofree gchar *where = g_strdup_printf(
+            "Branch %s of %s, from %.12s. %s",
+            clawt_web_member(checkout, "branch", ""),
+            clawt_web_member(checkout, "repo", ""),
+            clawt_web_member(checkout, "base", ""),
+            present ? clawt_web_member(checkout, "path", "")
+                    : "The checkout was removed; the branch is kept.");
+        HtmxA *link = htmx_a_new_with_href(href);
+
+        clawt_web_add(pad, clawt_web_section_title("Changes"));
+        clawt_web_add(pad, clawt_web_text(where, "small muted"));
+        htmx_node_set_text_content(HTMX_NODE(link), "Show changes");
+        htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(link));
+
+        if (present) {
+            g_autofree gchar *action = g_strdup_printf(
+                "/tasks/%s/checkout_remove", escaped);
+            g_autoptr(HtmxForm) remove = clawt_web_form(action);
+
+            add_submit(remove, "Remove checkout");
+            htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(remove));
+        }
+    }
+
     /* Who reviews it, and the operator's two answers while it waits. */
     if (clawt_web_member(task, "reviewer", NULL) != NULL) {
         g_autofree gchar *who = g_strdup_printf(
@@ -1508,6 +1548,84 @@ task_link_from(ClawtWebApp *app, HtmxRequest *request, GHashTable *params,
                      g_strcmp0(kind, "task.link") == 0
                          ? "It waits for that task now."
                          : "No longer waits for it.");
+}
+
+/* The diff of a task's checkout, on a page of its own. */
+static HtmxResponse *
+on_task_changes(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *id = clawt_web_param(params, "task");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(HtmxElement) view = HTMX_ELEMENT(htmx_main_new());
+    g_autoptr(HtmxDiv) pad = htmx_div_new();
+    g_autoptr(HtmxElement) pre = HTMX_ELEMENT(htmx_pre_new());
+    g_autoptr(GString) text = g_string_new(NULL);
+    g_autofree gchar *escaped = g_uri_escape_string(id, NULL, FALSE);
+    g_autofree gchar *back_href = g_strdup_printf("/tasks/%s", escaped);
+    g_autofree gchar *html = NULL;
+    HtmxA *back = htmx_a_new_with_href(back_href);
+    JsonObject *root;
+
+    clawt_web_payload_set(payload, "task", id);
+    reply = clawt_web_app_call(app, "task.diff",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        return task_page(app, request, id, clawt_web_app_last_error(app));
+
+    root = clawt_web_root(reply);
+    g_string_append(text, clawt_web_member(root, "diff", ""));
+
+    {
+        JsonArray *untracked = clawt_web_member_array(root, "untracked");
+        guint i;
+
+        for (i = 0; untracked != NULL &&
+                    i < json_array_get_length(untracked); i++)
+            g_string_append_printf(text, "new, not yet added: %s\n",
+                                   json_array_get_string_element(untracked,
+                                                                 i));
+    }
+
+    if (text->len == 0)
+        g_string_append(text, "No changes yet.\n");
+
+    if (json_object_get_boolean_member_with_default(root, "truncated", FALSE))
+        g_string_append(text, "\n(cut short: read the rest in the "
+                              "checkout)\n");
+
+    htmx_element_add_class(view, "view");
+    htmx_element_add_class(HTMX_ELEMENT(pad), "view-pad");
+    htmx_node_set_text_content(HTMX_NODE(back), "Back to the task");
+    htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(back));
+    clawt_web_add(pad, clawt_web_section_title("Changes"));
+    htmx_element_add_class(pre, "console");
+    htmx_node_set_text_content(HTMX_NODE(pre), text->str);
+    htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(g_steal_pointer(&pre)));
+    htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(g_steal_pointer(&pad)));
+    html = clawt_web_page(app, NULL, CLAWT_PAGE_TASKS, view, request);
+
+    return clawt_web_html_response(html);
+}
+
+static HtmxResponse *
+on_task_checkout_remove(HtmxRequest *request, GHashTable *params,
+                        gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *id = clawt_web_param(params, "task");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+
+    clawt_web_payload_set(payload, "task", id);
+    reply = clawt_web_app_call(app, "task.checkout_remove",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    return task_page(app, request, id,
+                     reply == NULL ? clawt_web_app_last_error(app)
+                                   : "Checkout removed; its branch is kept.");
 }
 
 static HtmxResponse *
@@ -1683,6 +1801,9 @@ clawt_web_register_work(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_post(router, "/tasks/:task/comment", on_task_comment, app);
     htmx_router_post(router, "/tasks/:task/link", on_task_link, app);
     htmx_router_post(router, "/tasks/:task/review", on_task_review, app);
+    htmx_router_get(router, "/tasks/:task/changes", on_task_changes, app);
+    htmx_router_post(router, "/tasks/:task/checkout_remove",
+                     on_task_checkout_remove, app);
     htmx_router_post(router, "/tasks/:task/unlink", on_task_unlink, app);
     htmx_router_post(router, "/tasks/:task/cancel", on_task_cancel, app);
     htmx_router_post(router, "/tasks/:task/retry", on_task_retry, app);

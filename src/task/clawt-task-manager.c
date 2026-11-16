@@ -1786,3 +1786,24 @@ clawt_task_manager_init(ClawtTaskManager *self)
     self->children = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                            (GDestroyNotify)g_ptr_array_unref);
 }
+
+gboolean
+clawt_task_manager_record(ClawtTaskManager *self,
+                          const gchar      *task_id,
+                          const gchar      *what)
+{
+    ClawtTask *task;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_MANAGER(self), FALSE);
+    g_return_val_if_fail(what != NULL, FALSE);
+
+    task = clawt_task_manager_get(self, task_id);
+
+    if (task == NULL)
+        return FALSE;
+
+    /* Saved and journalled; no state changed, so no signal. */
+    persist(self, task, what);
+
+    return TRUE;
+}

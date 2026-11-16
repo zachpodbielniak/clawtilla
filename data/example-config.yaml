@@ -934,6 +934,18 @@ orchestration:
   # limit.
   review_rounds: 3
 
+  # How long a finished task's checkout is kept, in days.
+  #
+  # A task given a repository (`repo` on clawtilla_delegate or a new task)
+  # works in a checkout of its own under its assignee's workspace, at
+  # tasks/<task>, on the branch clawtilla/<task>. Once the task has been
+  # finished this long the checkout is removed and its branch kept: a
+  # worktree's branch is in the repository already, and a clone's is
+  # fetched back into it first. A checkout with uncommitted changes is
+  # never removed this way -- that is the operator's call, from the
+  # task's Changes. 0 keeps every checkout.
+  checkout_keep_days: 14
+
   # How long a finished task is kept, in days.
   #
   # Every task is written to tasks.db in the state directory as it
@@ -2316,12 +2328,16 @@ routines:
     # path inside it and not on the host.
     directory: null
 
-    # Run in a fresh git worktree of `directory` rather than in it.
+    # Run in a fresh checkout of `directory` rather than in it.
     #
     # For a routine that changes files: it keeps a scheduled run from
-    # landing on top of whatever you had checked out at the time. The
-    # worktree is left behind deliberately -- throwing away work because a
-    # schedule fired is not recoverable.
+    # landing on top of whatever you had checked out at the time. Since
+    # 0.39.0 clawtilla makes the checkout itself, for each run, in the
+    # agent's workspace at tasks/<task> on the branch clawtilla/<task> (a
+    # git worktree, or a local clone for a confined or containerised agent),
+    # and tells the agent where it is; the run fails if it cannot be made.
+    # The run's Changes show what it did, and the checkout is removed after
+    # orchestration.checkout_keep_days with its branch kept.
     worktree: false
 
     # Give this routine a conversation of its own.
@@ -2584,7 +2600,12 @@ triggers:
     # Where the run should work, if somewhere particular.
     directory: null
 
-    # Ask the agent to work in a git worktree of its own.
+    # Run in a fresh checkout of `directory` rather than in it.
+    #
+    # Since 0.39.0 clawtilla makes the checkout for each run, as for
+    # routines.worktree: in the agent's workspace at tasks/<task>, on the
+    # branch clawtilla/<task>, and tells the agent where it is above the
+    # trigger's payload. The run fails if it cannot be made.
     worktree: false
 
     # Give the run a conversation of its own rather than the agent's.

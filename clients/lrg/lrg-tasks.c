@@ -374,6 +374,7 @@ typedef struct {
     LrgWidget *prompt;
     LrgWidget *agent;
     LrgWidget *after;
+    LrgWidget *repo;
     LrgWidget *comment;
 } TaskForm;
 
@@ -444,6 +445,7 @@ on_new_task_response(ClawtLrgApp *app, LrgDialog *dialog, gint response,
     const gchar *title = clawt_lrg_entry_text(form->title);
     const gchar *agent = clawt_lrg_combo_id(form->agent);
     const gchar *after = clawt_lrg_entry_text(form->after);
+    const gchar *repo = clawt_lrg_entry_text(form->repo);
 
     (void)dialog;
     (void)response;
@@ -463,7 +465,9 @@ on_new_task_response(ClawtLrgApp *app, LrgDialog *dialog, gint response,
                               ? title : NULL,
                           "agent", agent,
                           "after", (after != NULL && *after != '\0')
-                              ? after : NULL, NULL),
+                              ? after : NULL,
+                          "repo", (repo != NULL && *repo != '\0')
+                              ? repo : NULL, NULL),
                       CLAWT_LRG_REQUEST_NONE, on_task_done,
                       (agent != NULL)
                           ? (gpointer)"Created, and handed over"
@@ -497,6 +501,10 @@ on_new_task_clicked(LrgButton *button, gpointer user_data)
     form->after = clawt_lrg_entry(NULL, "task-01m..., task-01m...");
     clawt_lrg_form_add(content, "Wait for (task ids)", form->after,
                        "Held until these complete, then handed over.");
+    form->repo = clawt_lrg_entry(NULL, "/home/you/src/project");
+    clawt_lrg_form_add(content,
+                       "Repository (absolute host path, for a checkout of "
+                       "its own)", form->repo, NULL);
 
     g_object_unref(clawt_lrg_dialog(tasks.app, "New task", NULL, content,
                                     "Create", FALSE, on_new_task_response,
@@ -569,6 +577,67 @@ on_comment_response(ClawtLrgApp *app, LrgDialog *dialog, gint response,
 
 static LrgWidget *task_button(const gchar *label, const gchar *task_id,
                               GCallback callback);
+
+/* The diff arrives: shown in the read-only, copyable text dialog. */
+static void
+on_diff_reply(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+              gpointer user_data)
+{
+    g_autoptr(GString) text = g_string_new(NULL);
+    JsonObject *object;
+    JsonArray *untracked;
+    guint i;
+
+    (void)error;
+    (void)user_data;
+
+    if (reply == NULL)
+        return;
+
+    object = json_node_get_object(reply);
+    g_string_append(text, clawt_ipc_payload_string(object, "diff") != NULL
+                              ? clawt_ipc_payload_string(object, "diff") : "");
+
+    untracked = json_object_has_member(object, "untracked")
+        ? json_object_get_array_member(object, "untracked") : NULL;
+    for (i = 0; untracked != NULL && i < json_array_get_length(untracked); i++)
+        g_string_append_printf(text, "new, not yet added: %s\n",
+                               json_array_get_string_element(untracked, i));
+
+    if (text->len == 0)
+        g_string_append(text, "No changes yet.\n");
+
+    clawt_lrg_show_text(app, "Changes",
+        json_object_get_boolean_member_with_default(object, "truncated",
+                                                    FALSE)
+            ? "Cut short: read the rest in the checkout."
+            : "What the task's checkout changed.", text->str);
+}
+
+static void
+on_changes_clicked(LrgButton *button, gpointer user_data)
+{
+    const gchar *task_id = g_object_get_data(G_OBJECT(button), "task-id");
+
+    (void)user_data;
+
+    clawt_lrg_request(tasks.app, "task.diff",
+                      clawt_ipc_payload_new("task", task_id, NULL),
+                      CLAWT_LRG_REQUEST_NONE, on_diff_reply, NULL, NULL);
+}
+
+static void
+on_remove_checkout_clicked(LrgButton *button, gpointer user_data)
+{
+    const gchar *task_id = g_object_get_data(G_OBJECT(button), "task-id");
+
+    (void)user_data;
+
+    clawt_lrg_request(tasks.app, "task.checkout_remove",
+                      clawt_ipc_payload_new("task", task_id, NULL),
+                      CLAWT_LRG_REQUEST_NONE, on_task_done,
+                      (gpointer)"Checkout removed; its branch is kept", NULL);
+}
 
 static void
 on_review_clicked(LrgButton *button, gpointer user_data)
@@ -759,6 +828,35 @@ on_task_shown(ClawtLrgApp *app, JsonNode *reply, const GError *error,
         "Kept on the task. While it is with its assignee they hear it too, "
         "in the conversation the work is in.", "muted"));
     clawt_lrg_take(content, form->comment);
+
+    /*
+     * Its checkout: where, on which branch, and what changed -- the diff
+     * works after removal too, from the branch the repository kept.
+     */
+    if (json_object_has_member(task, "checkout")) {
+        JsonObject *checkout = json_object_get_object_member(task, "checkout");
+        gboolean present = json_object_get_boolean_member_with_default(
+            checkout, "present", FALSE);
+        g_autofree gchar *where = g_strdup_printf(
+            "Branch %s of %s, from %.12s. %s",
+            clawt_ipc_payload_string(checkout, "branch"),
+            clawt_ipc_payload_string(checkout, "repo"),
+            clawt_ipc_payload_string(checkout, "base") != NULL
+                ? clawt_ipc_payload_string(checkout, "base") : "",
+            present ? clawt_ipc_payload_string(checkout, "path")
+                    : "The checkout was removed; the branch is kept.");
+        LrgWidget *line = clawt_lrg_hbox(8.0f);
+
+        clawt_lrg_take(content, clawt_lrg_label("Changes", "heading"));
+        clawt_lrg_take(content, clawt_lrg_paragraph(where, "muted"));
+        clawt_lrg_take(line, task_button("Show changes", form->task_id,
+                                         G_CALLBACK(on_changes_clicked)));
+        if (present)
+            clawt_lrg_take(line, task_button(
+                "Remove checkout", form->task_id,
+                G_CALLBACK(on_remove_checkout_clicked)));
+        clawt_lrg_take(content, line);
+    }
 
     /* Who reviews it, and the operator's two answers while it waits. */
     if (clawt_ipc_payload_string(task, "reviewer") != NULL) {

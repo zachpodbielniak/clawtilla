@@ -1473,6 +1473,17 @@ versions apart.
   touch them, and a client's Cancel is offered on them. A note on a task
   publishes `task.noted`, never `task.changed`, which settle notices and
   incidents hang off.
+- **A checkout paragraph is part of the assignment contract.** Compose an
+  assignment's closing text with `clawt_task_assignment_guidance_for()`
+  whenever the task is in hand, never the bare
+  `clawt_task_assignment_guidance()`: the daemon recognises an assignment
+  by that exact suffix (trying the full one, then the bare), and the
+  checkout fields it reads are stored on the task, so the text matches
+  across a hold and a restart. Git for checkouts goes through
+  `clawt-task-checkout.c` (non-interactive, one `safe.directory`), and
+  removal through `clawt_daemon_tasks_remove_checkout()`, which refuses
+  active and dirty checkouts and keeps the branch. A trigger's checkout
+  paragraph goes above its payload fence, never after it.
 - **Ask a reviewer on `review-requested`, never on the `review` state.**
   A task sits in `review` through comments and other changes, and each
   one emits `task-changed`; the manager emits `review-requested` once per

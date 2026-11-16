@@ -1871,6 +1871,8 @@ sidebar under the team, where the reports themselves can be read and the
 lead written to.  The same in GTK, web and lrg; see
 [[file:orchestration.org::*Incidents: broken runs reach the lead][Incidents]].
 
+*New task* has *Repository*: an absolute host path, for a checkout of its own.  A task with a checkout has a *Changes* section in Details -- its branch, repository and base, *Show changes* (~task.diff~, shown monospaced with new files listed) and, while the checkout is there, *Remove checkout* (~task.checkout_remove~).  Since 0.39.0.
+
 A task with a reviewer has a *Review* section in Details naming who reviews it; while it is in ~review~, *Accept* and *Request changes* (the notes are the comment box's text) send ~task.review~.  Since 0.38.0.
 
 A held task's row says what it waits for (=clawt_task_waiting_caption()=); *New task* has *Wait for (task ids)*; and Details has a *Waits for* section -- each blocker with *Stop waiting* (~task.unlink~), and for a backlog or held task an id to add (~task.link~).  Since 0.37.0.

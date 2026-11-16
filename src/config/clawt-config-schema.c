@@ -1053,6 +1053,19 @@ static const ClawtSchemaEntry schema[] = {
   "in the inbox, rather than the two going round again. 0 removes the\n"
   "limit.", "0.38.0" },
 
+{ "orchestration.checkout_keep_days", CLAWT_SCHEMA_INT,
+  CLAWT_SCHEMA_FLAG_COMMENTED, "14", NULL,
+  "How long a finished task's checkout is kept, in days.\n"
+  "\n"
+  "A task given a repository (`repo` on clawtilla_delegate or a new task)\n"
+  "works in a checkout of its own under its assignee's workspace, at\n"
+  "tasks/<task>, on the branch clawtilla/<task>. Once the task has been\n"
+  "finished this long the checkout is removed and its branch kept: a\n"
+  "worktree's branch is in the repository already, and a clone's is\n"
+  "fetched back into it first. A checkout with uncommitted changes is\n"
+  "never removed this way -- that is the operator's call, from the\n"
+  "task's Changes. 0 keeps every checkout.", "0.39.0" },
+
 { "orchestration.task_retention_days", CLAWT_SCHEMA_INT,
   CLAWT_SCHEMA_FLAG_COMMENTED, "180", NULL,
   "How long a finished task is kept, in days.\n"
@@ -2530,12 +2543,16 @@ static const ClawtSchemaEntry schema[] = {
 
 { "routines.worktree", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "false", NULL,
-  "Run in a fresh git worktree of `directory` rather than in it.\n"
+  "Run in a fresh checkout of `directory` rather than in it.\n"
   "\n"
   "For a routine that changes files: it keeps a scheduled run from\n"
-  "landing on top of whatever you had checked out at the time. The\n"
-  "worktree is left behind deliberately -- throwing away work because a\n"
-  "schedule fired is not recoverable.", "0.2.0" },
+  "landing on top of whatever you had checked out at the time. Since\n"
+  "0.39.0 clawtilla makes the checkout itself, for each run, in the\n"
+  "agent's workspace at tasks/<task> on the branch clawtilla/<task> (a\n"
+  "git worktree, or a local clone for a confined or containerised agent),\n"
+  "and tells the agent where it is; the run fails if it cannot be made.\n"
+  "The run's Changes show what it did, and the checkout is removed after\n"
+  "orchestration.checkout_keep_days with its branch kept.", "0.2.0" },
 
 { "routines.isolate", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "false", NULL,
@@ -2825,7 +2842,12 @@ static const ClawtSchemaEntry schema[] = {
 
 { "triggers.worktree", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "false", NULL,
-  "Ask the agent to work in a git worktree of its own.", "0.2.0" },
+  "Run in a fresh checkout of `directory` rather than in it.\n"
+  "\n"
+  "Since 0.39.0 clawtilla makes the checkout for each run, as for\n"
+  "routines.worktree: in the agent's workspace at tasks/<task>, on the\n"
+  "branch clawtilla/<task>, and tells the agent where it is above the\n"
+  "trigger's payload. The run fails if it cannot be made.", "0.2.0" },
 
 { "triggers.isolate", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
   "false", NULL,

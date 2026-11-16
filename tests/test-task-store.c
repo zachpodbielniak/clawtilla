@@ -1829,6 +1829,288 @@ test_review_end_to_end(void)
 	daemon_teardown(&fixture);
 }
 
+/* ── Checkouts (C1) ──────────────────────────────────────────────── */
+
+/* A one-commit repository under @dir, made without the user's config. */
+static gchar *
+checkout_repository(
+	const gchar *dir
+){
+	gchar *repo = g_build_filename(dir, "src", "proj", NULL);
+	g_autofree gchar *command = g_strdup_printf(
+		"sh -c 'cd \"%s\" && export GIT_CONFIG_GLOBAL=/dev/null "
+		"GIT_CONFIG_NOSYSTEM=1 && git -c init.defaultBranch=main init -q && "
+		"echo one > README && git add README && git -c user.name=t "
+		"-c user.email=t@example.org -c commit.gpgsign=false commit -q "
+		"-m first'", repo);
+	gint status = 1;
+
+	g_assert_cmpint(g_mkdir_with_parents(repo, 0700), ==, 0);
+	g_assert_true(g_spawn_command_line_sync(command, NULL, NULL, &status,
+	                                        NULL));
+	g_assert_cmpint(status, ==, 0);
+
+	return repo;
+}
+
+/* The text of @agent's queued item for @task_id, or NULL. */
+static gchar *
+queued_body(
+	DaemonFixture *fixture,
+	const gchar   *agent,
+	const gchar   *task_id
+){
+	ClawtAgent *found = clawt_agent_manager_get(fixture->daemon->agents,
+	                                            agent);
+	ClawtMailboxFilter filter = { -1, 0, TRUE };
+	g_autoptr(GPtrArray) items = clawt_mailbox_list(
+		clawt_agent_get_mailbox(found), &filter);
+	guint i;
+
+	for (i = 0; items != NULL && i < items->len; i++) {
+		ClawtMailboxItem *item = g_ptr_array_index(items, i);
+
+		if (g_strcmp0(clawt_mailbox_item_get_task_id(item), task_id) == 0)
+			return g_strdup(clawt_mailbox_item_get_body(item));
+	}
+
+	return NULL;
+}
+
+/*
+ * An operator's task with a repository, end to end: the checkout in the
+ * assignee's workspace, the assignment saying where with the contract
+ * still last, the wire object, removal refused while the work is under
+ * way and done once it is not, and the hourly sweep.
+ */
+static void
+test_operator_checkouts(void)
+{
+	DaemonFixture fixture = { 0 };
+	g_autofree gchar *git = g_find_program_in_path("git");
+	g_autofree gchar *repo = NULL;
+	g_autofree gchar *id = NULL;
+	g_autofree gchar *later = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *path = NULL;
+	ClawtTask *task;
+
+	if (git == NULL) {
+		g_test_skip("git is not installed");
+		return;
+	}
+
+	daemon_setup(&fixture);
+	repo = checkout_repository(fixture.dir);
+
+	/* a repository without an assignee, or that is not one, refuses */
+	{
+		g_autoptr(JsonNode) backlog = ask(&fixture, "task.create",
+			clawt_ipc_payload_new("prompt", "Fix it", "repo", repo, NULL));
+		g_autoptr(JsonNode) missing = ask(&fixture, "task.create",
+			clawt_ipc_payload_new("prompt", "Fix it", "agent", "watcher",
+			                      "repo", "/nowhere/at/all", NULL));
+
+		g_assert_true(clawt_ipc_frame_is_error(backlog));
+		g_assert_true(clawt_ipc_frame_is_error(missing));
+	}
+
+	{
+		g_autoptr(JsonNode) made = ask(&fixture, "task.create",
+			clawt_ipc_payload_new("prompt", "Fix the build", "agent",
+			                      "watcher", "repo", repo, NULL));
+		JsonObject *object;
+		JsonObject *checkout;
+
+		g_assert_false(clawt_ipc_frame_is_error(made));
+		object = json_object_get_object_member(
+			clawt_ipc_frame_get_payload(made), "task");
+		id = g_strdup(json_object_get_string_member(object, "id"));
+		checkout = json_object_get_object_member(object, "checkout");
+		g_assert_nonnull(checkout);
+		g_assert_cmpstr(json_object_get_string_member(checkout, "mode"), ==,
+		                "worktree");
+		g_assert_true(json_object_get_boolean_member(checkout, "present"));
+		path = g_strdup(json_object_get_string_member(checkout, "path"));
+	}
+
+	g_assert_true(g_str_has_suffix(path, id + 5));
+	g_assert_nonnull(strstr(path, "/agents/watcher/tasks/"));
+	g_assert_true(g_file_test(path, G_FILE_TEST_IS_DIR));
+
+	/* the assignment says where, and the contract still ends it */
+	body = queued_body(&fixture, "watcher", id);
+	g_assert_nonnull(body);
+	g_assert_nonnull(strstr(body, path));
+	{
+		g_autofree gchar *contract = clawt_task_assignment_guidance(id);
+
+		g_assert_true(g_str_has_suffix(body, contract));
+	}
+
+	/* not while it is being worked on */
+	{
+		g_autoptr(JsonNode) early = ask(&fixture, "task.checkout_remove",
+			clawt_ipc_payload_new("task", id, NULL));
+
+		g_assert_true(clawt_ipc_frame_is_error(early));
+		g_assert_true(g_file_test(path, G_FILE_TEST_IS_DIR));
+	}
+
+	/* a restart keeps it */
+	daemon_stop(&fixture);
+	daemon_start(&fixture);
+	task = clawt_task_manager_get(fixture.daemon->tasks, id);
+	g_assert_cmpstr(clawt_task_get_checkout_path(task), ==, path);
+
+	/* finished, then removed: gone, branch kept, said in its history */
+	clawt_task_manager_complete(fixture.daemon->tasks, id, "fixed");
+	{
+		g_autoptr(JsonNode) removed = ask(&fixture, "task.checkout_remove",
+			clawt_ipc_payload_new("task", id, NULL));
+		g_autoptr(JsonNode) journal = clawt_task_manager_journal(
+			fixture.daemon->tasks, id, NULL);
+		JsonArray *rows = json_node_get_array(journal);
+		gboolean said = FALSE;
+		guint i;
+
+		g_assert_false(clawt_ipc_frame_is_error(removed));
+		g_assert_false(g_file_test(path, G_FILE_TEST_EXISTS));
+		g_assert_false(json_object_get_boolean_member(
+			json_object_get_object_member(
+				json_object_get_object_member(
+					clawt_ipc_frame_get_payload(removed), "task"),
+				"checkout"), "present"));
+
+		for (i = 0; i < json_array_get_length(rows); i++) {
+			JsonObject *row = json_array_get_object_element(rows, i);
+
+			if (json_object_has_member(row, "what") &&
+			    strstr(json_object_get_string_member(row, "what"),
+			           "checkout removed") != NULL)
+				said = TRUE;
+		}
+		g_assert_true(said);
+	}
+
+	/* the sweep: clean and old is removed; dirty is kept */
+	{
+		g_autoptr(JsonNode) made = ask(&fixture, "task.create",
+			clawt_ipc_payload_new("prompt", "Tidy", "agent", "watcher",
+			                      "repo", repo, NULL));
+		g_autofree gchar *dirty_file = NULL;
+		const gchar *kept;
+
+		later = g_strdup(json_object_get_string_member(
+			json_object_get_object_member(clawt_ipc_frame_get_payload(made),
+			                              "task"), "id"));
+		task = clawt_task_manager_get(fixture.daemon->tasks, later);
+		kept = clawt_task_get_checkout_path(task);
+		clawt_task_manager_complete(fixture.daemon->tasks, later, "tidied");
+
+		/* not old enough */
+		clawt_daemon_tasks_sweep_checkouts(fixture.daemon,
+		                                   g_get_real_time() / G_USEC_PER_SEC);
+		g_assert_true(g_file_test(kept, G_FILE_TEST_IS_DIR));
+
+		/* old, but dirty */
+		dirty_file = g_build_filename(kept, "SCRATCH", NULL);
+		g_assert_true(g_file_set_contents(dirty_file, "x\n", -1, NULL));
+		clawt_daemon_tasks_sweep_checkouts(fixture.daemon,
+			g_get_real_time() / G_USEC_PER_SEC + 30 * 24 * 60 * 60);
+		g_assert_true(g_file_test(kept, G_FILE_TEST_IS_DIR));
+
+		/* old and clean */
+		g_assert_cmpint(g_remove(dirty_file), ==, 0);
+		clawt_daemon_tasks_sweep_checkouts(fixture.daemon,
+			g_get_real_time() / G_USEC_PER_SEC + 30 * 24 * 60 * 60);
+		g_assert_false(g_file_test(kept, G_FILE_TEST_EXISTS));
+	}
+
+	daemon_teardown(&fixture);
+}
+
+/* The agent's door: `repo` on clawtilla_delegate. */
+static void
+test_delegated_checkout(void)
+{
+	DaemonFixture fixture = { 0 };
+	g_autofree gchar *git = g_find_program_in_path("git");
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *yaml = NULL;
+	g_autofree gchar *repo = NULL;
+	g_autofree gchar *args = NULL;
+	g_autofree gchar *reply = NULL;
+	gboolean is_error = TRUE;
+	GPtrArray *all;
+	ClawtTask *task;
+
+	if (git == NULL) {
+		g_test_skip("git is not installed");
+		return;
+	}
+
+	fixture.dir = g_dir_make_tmp("clawt-checkout-XXXXXX", NULL);
+	fixture.config = g_build_filename(fixture.dir, "config.yaml", NULL);
+	yaml = g_strdup_printf(
+		"daemon:\n  tailscale: false\n  state_dir: \"%s/state\"\n"
+		"  socket: \"%s/d.sock\"\n  automation_dir: \"%s/pods\"\n"
+		"defaults:\n  workspace_root: \"%s/agents\"\n"
+		"agents:\n"
+		"  - id: chief\n    chief_of_staff: true\n"
+		"    model:\n      provider: claude-code\n"
+		"    runtime:\n      autostart: false\n"
+		"  - id: boxed\n"
+		"    model:\n      provider: claude-code\n"
+		"    runtime:\n      autostart: false\n      confine: bwrap\n",
+		fixture.dir, fixture.dir, fixture.dir, fixture.dir);
+	g_assert_true(g_file_set_contents(fixture.config, yaml, -1, &error));
+	daemon_start(&fixture);
+	repo = checkout_repository(fixture.dir);
+
+	/* not a repository: nothing is delegated */
+	reply = call_as(&fixture, "chief", "clawtilla_delegate",
+		"{\"agent_id\":\"boxed\",\"task\":\"fix\","
+		"\"repo\":\"/nowhere/at/all\"}", &is_error);
+	g_assert_true(is_error);
+	g_assert_nonnull(strstr(reply, "Not delegated"));
+	g_clear_pointer(&reply, g_free);
+
+	/* a confined assignee gets a clone, which its sandbox can follow */
+	args = g_strdup_printf("{\"agent_id\":\"boxed\",\"task\":\"fix it\","
+	                       "\"repo\":\"%s\",\"base\":\"main\"}", repo);
+	reply = call_as(&fixture, "chief", "clawtilla_delegate", args, &is_error);
+	g_assert_false(is_error);
+
+	all = clawt_task_manager_list(fixture.daemon->tasks, "boxed", TRUE);
+	task = NULL;
+	{
+		guint i;
+
+		for (i = 0; i < all->len; i++) {
+			ClawtTask *candidate = g_ptr_array_index(all, i);
+
+			if (clawt_task_get_checkout_mode(candidate) != CLAWT_CHECKOUT_NONE)
+				task = candidate;
+		}
+	}
+	g_ptr_array_unref(all);
+	g_assert_nonnull(task);
+	g_assert_cmpint(clawt_task_get_checkout_mode(task), ==,
+	                CLAWT_CHECKOUT_CLONE);
+	g_assert_true(g_file_test(clawt_task_get_checkout_path(task),
+	                          G_FILE_TEST_IS_DIR));
+	{
+		g_autofree gchar *dotgit = g_build_filename(
+			clawt_task_get_checkout_path(task), ".git", NULL);
+
+		/* a directory of its own, not a worktree's pointer file */
+		g_assert_true(g_file_test(dotgit, G_FILE_TEST_IS_DIR));
+	}
+
+	daemon_teardown(&fixture);
+}
+
 int
 main(
 	int   argc,
@@ -1890,6 +2172,10 @@ main(
 	g_test_add_func("/task-store/review/rounds", test_review_rounds);
 	g_test_add_func("/task-store/review/end-to-end",
 	                test_review_end_to_end);
+	g_test_add_func("/task-store/checkouts/operator",
+	                test_operator_checkouts);
+	g_test_add_func("/task-store/checkouts/delegated",
+	                test_delegated_checkout);
 
 	return g_test_run();
 }

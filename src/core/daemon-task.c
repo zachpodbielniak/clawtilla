@@ -136,7 +136,7 @@ deliver_operator_task(
 	g_autofree gchar *guidance = NULL;
 	g_autofree gchar *body = NULL;
 
-	guidance = clawt_task_assignment_guidance(clawt_task_get_id(task));
+	guidance = clawt_task_assignment_guidance_for(task);
 	body = g_strconcat(clawt_task_get_prompt(task), guidance, NULL);
 
 	if (clawt_mailbox_router_send_to(self->router, "user",
@@ -211,6 +211,11 @@ link_after(
 
 	return TRUE;
 }
+
+static JsonNode *handle_checkout_request(ClawtDaemon *self,
+                                         const gchar *kind,
+                                         JsonNode    *request,
+                                         JsonObject  *payload);
 
 JsonNode *
 clawt_daemon_handle_task(
@@ -307,6 +312,10 @@ clawt_daemon_handle_task(
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
+
+    if (g_strcmp0(kind, "task.diff") == 0 ||
+        g_strcmp0(kind, "task.checkout_remove") == 0)
+        return handle_checkout_request(self, kind, request, payload);
 
     if (g_strcmp0(kind, "task.show") == 0) {
         const gchar *task_id = clawt_ipc_payload_string(payload, "task");
@@ -427,6 +436,40 @@ clawt_daemon_handle_task(
         }
 
         /*
+         * A checkout of its own, when the operator named a repository.
+         * Only with an assignee: the checkout lives in its workspace, and
+         * a backlog task has none yet -- so that is refused, not put off.
+         */
+        {
+            const gchar *repo = clawt_ipc_payload_string(payload, "repo");
+
+            if (repo != NULL && *repo != '\0' && agent == NULL) {
+                clawt_task_manager_cancel(self->tasks,
+                                          clawt_task_get_id(task),
+                                          "a checkout needs an assignee",
+                                          "user");
+                return clawt_ipc_error_new(request,
+                    CLAWT_ERROR_INVALID_ARGUMENT,
+                    "a repository needs an agent to check it out for; "
+                    "assign the task, or leave the repository out");
+            }
+
+            if (repo != NULL && *repo != '\0' &&
+                !clawt_task_checkout_open(task,
+                    clawt_config_get_agent(self->config, agent), repo,
+                    clawt_ipc_payload_string(payload, "base"), &error)) {
+                clawt_task_manager_cancel(self->tasks,
+                                          clawt_task_get_id(task),
+                                          error->message, "user");
+                return clawt_ipc_error_new(request, error->code,
+                                           error->message);
+            }
+
+            if (repo != NULL && *repo != '\0')
+                clawt_task_manager_save(self->tasks, task, NULL);
+        }
+
+        /*
          * What it waits for: linked, and while any of it is unfinished
          * the task is held -- with an assignee, its delivery is kept to
          * be sent as the operator's when the last one completes; without,
@@ -441,8 +484,8 @@ clawt_daemon_handle_task(
 
         if (clawt_task_get_state(task) == CLAWT_TASK_BLOCKED) {
             if (agent != NULL) {
-                g_autofree gchar *guidance = clawt_task_assignment_guidance(
-                    clawt_task_get_id(task));
+                g_autofree gchar *guidance =
+                    clawt_task_assignment_guidance_for(task);
                 g_autofree gchar *body = g_strconcat(
                     clawt_task_get_prompt(task), guidance, NULL);
                 g_autoptr(JsonNode) held = clawt_task_build_held_delivery(
@@ -1129,6 +1172,255 @@ clawt_daemon_tasks_reconcile(
  * after the retention window.  Hourly: neither is urgent, and a task
  * that finished a minute ago belongs on everybody's list.
  */
+/* ── Checkouts ───────────────────────────────────────────────────── */
+
+/* The largest diff answered; the rest is cut at a line, and said so. */
+#define CLAWT_DAEMON_DIFF_MAX_BYTES (512 * 1024)
+
+/*
+ * Removes a task's checkout, keeping its branch, and says so in its
+ * history.  Refused for work still under way, and -- unless @force --
+ * for a checkout with uncommitted changes, which would go with it.
+ */
+gboolean
+clawt_daemon_tasks_remove_checkout(
+	ClawtDaemon  *self,
+	ClawtTask    *task,
+	gboolean      force,
+	const gchar  *who,
+	GError      **error
+){
+	ClawtAgentConfig *config;
+	g_autofree gchar *root = NULL;
+	g_autofree gchar *what = NULL;
+	const gchar *path;
+
+	g_return_val_if_fail(CLAWT_IS_DAEMON(self), FALSE);
+
+	path = clawt_task_get_checkout_path(task);
+
+	if (clawt_task_get_checkout_mode(task) == CLAWT_CHECKOUT_NONE ||
+	    path == NULL) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+		            "task %s has no checkout", clawt_task_get_id(task));
+		return FALSE;
+	}
+
+	if (clawt_task_state_is_active(clawt_task_get_state(task))) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+		            "task %s is still being worked on in it; cancel it "
+		            "or wait for it to finish", clawt_task_get_id(task));
+		return FALSE;
+	}
+
+	if (!force && g_file_test(path, G_FILE_TEST_IS_DIR) &&
+	    clawt_task_checkout_is_dirty(path)) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+		            "the checkout of task %s has uncommitted changes, "
+		            "which removing it would lose; remove it with force "
+		            "to do so anyway", clawt_task_get_id(task));
+		return FALSE;
+	}
+
+	config = clawt_config_get_agent(self->config,
+	                                clawt_task_get_assignee(task));
+	root = (config != NULL) ? clawt_task_checkout_root_for(config) : NULL;
+
+	if (root == NULL) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+		            "%s, whose workspace holds the checkout, is no longer "
+		            "configured; remove %s by hand",
+		            clawt_task_get_assignee(task), path);
+		return FALSE;
+	}
+
+	if (!clawt_task_checkout_remove(clawt_task_get_checkout_repo(task),
+	                                root, path,
+	                                clawt_task_get_checkout_branch(task),
+	                                clawt_task_get_checkout_mode(task),
+	                                error))
+		return FALSE;
+
+	what = g_strdup_printf("checkout removed by %s; branch %s kept in %s",
+	                       who, clawt_task_get_checkout_branch(task),
+	                       clawt_task_get_checkout_repo(task));
+	clawt_task_manager_record(self->tasks, clawt_task_get_id(task), what);
+
+	return TRUE;
+}
+
+/*
+ * The hourly sweep: every agent's tasks/ directory, each checkout whose
+ * task finished more than checkout_keep_days ago, removed if clean.  A
+ * directory whose task is unknown -- pruned, or never one of ours -- is
+ * left alone: there is no record of which repository to give its branch
+ * back to.
+ */
+void
+clawt_daemon_tasks_sweep_checkouts(
+	ClawtDaemon *self,
+	gint64       now
+){
+	GPtrArray *agents;
+	gint64 days;
+	guint i;
+
+	days = clawt_config_get_int(self->config,
+	                            "orchestration.checkout_keep_days");
+
+	if (days <= 0 || self->tasks == NULL)
+		return;
+
+	agents = clawt_config_get_agents(self->config);
+
+	for (i = 0; agents != NULL && i < agents->len; i++) {
+		ClawtAgentConfig *config = g_ptr_array_index(agents, i);
+		g_autofree gchar *root = clawt_task_checkout_root_for(config);
+		g_autoptr(GDir) dir = NULL;
+		const gchar *name;
+
+		if (root == NULL ||
+		    (dir = g_dir_open(root, 0, NULL)) == NULL)
+			continue;
+
+		while ((name = g_dir_read_name(dir)) != NULL) {
+			g_autofree gchar *id = g_strconcat("task-", name, NULL);
+			g_autoptr(GError) error = NULL;
+			ClawtTask *task = clawt_task_manager_get(self->tasks, id);
+
+			if (task == NULL ||
+			    clawt_task_get_checkout_mode(task) == CLAWT_CHECKOUT_NONE ||
+			    !clawt_task_is_finished(task) ||
+			    clawt_task_get_finished_at(task) > now - days * 24 * 60 * 60)
+				continue;
+
+			if (!clawt_daemon_tasks_remove_checkout(self, task, FALSE,
+			                                        "clawtilla", &error))
+				g_message("tasks: kept the checkout of %s: %s", id,
+				          error->message);
+		}
+	}
+}
+
+typedef struct {
+	ClawtIpcPending *pending;
+	gchar           *task_id;
+	gboolean         from_branch;
+} DiffJob;
+
+static void
+on_diffed(
+	GObject      *source,
+	GAsyncResult *result,
+	gpointer      user_data
+){
+	DiffJob *job = user_data;
+	g_autoptr(GError) error = NULL;
+	g_auto(GStrv) untracked = NULL;
+	gboolean truncated = FALSE;
+	g_autofree gchar *diff = clawt_task_checkout_diff_finish(
+		result, &truncated, &untracked, &error);
+	JsonNode *request = clawt_ipc_pending_get_request(job->pending);
+
+	(void)source;
+
+	if (diff == NULL) {
+		clawt_ipc_pending_respond(job->pending,
+			clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+			                    error->message));
+	} else {
+		g_autoptr(JsonBuilder) builder = json_builder_new();
+		guint i;
+
+		json_builder_begin_object(builder);
+		clawt_daemon_add_string_member(builder, "task", job->task_id);
+		clawt_daemon_add_string_member(builder, "diff", diff);
+		json_builder_set_member_name(builder, "truncated");
+		json_builder_add_boolean_value(builder, truncated);
+		json_builder_set_member_name(builder, "from_branch");
+		json_builder_add_boolean_value(builder, job->from_branch);
+		json_builder_set_member_name(builder, "untracked");
+		json_builder_begin_array(builder);
+		for (i = 0; untracked != NULL && untracked[i] != NULL; i++)
+			json_builder_add_string_value(builder, untracked[i]);
+		json_builder_end_array(builder);
+		json_builder_end_object(builder);
+
+		clawt_ipc_pending_respond(job->pending,
+			clawt_ipc_response_new(request, json_builder_get_root(builder)));
+	}
+
+	g_free(job->task_id);
+	g_free(job);
+}
+
+/* task.diff and task.checkout_remove. */
+static JsonNode *
+handle_checkout_request(
+	ClawtDaemon *self,
+	const gchar *kind,
+	JsonNode    *request,
+	JsonObject  *payload
+){
+	const gchar *task_id = clawt_ipc_payload_string(payload, "task");
+	ClawtTask *task = clawt_task_manager_get(self->tasks, task_id);
+
+	if (task == NULL)
+		return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+		                           "no such task");
+
+	if (clawt_task_get_checkout_mode(task) == CLAWT_CHECKOUT_NONE)
+		return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+		                           "this task has no checkout: it was not "
+		                           "given a repository");
+
+	if (g_strcmp0(kind, "task.diff") == 0) {
+		DiffJob *job = g_new0(DiffJob, 1);
+		const gchar *path = clawt_task_get_checkout_path(task);
+
+		/*
+		 * The checkout as it stands, uncommitted work included; or, once
+		 * it has been removed, the branch it left in the repository.
+		 */
+		job->from_branch = !g_file_test(path, G_FILE_TEST_IS_DIR);
+		job->task_id = g_strdup(task_id);
+		job->pending = clawt_ipc_server_defer(self->ipc_server, request);
+
+		if (job->pending == NULL) {
+			g_free(job->task_id);
+			g_free(job);
+			return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+			                           "this request cannot be answered "
+			                           "later");
+		}
+
+		clawt_task_checkout_diff_async(
+			job->from_branch ? clawt_task_get_checkout_repo(task) : path,
+			clawt_task_get_checkout_base(task),
+			job->from_branch ? clawt_task_get_checkout_branch(task) : NULL,
+			CLAWT_DAEMON_DIFF_MAX_BYTES, NULL, on_diffed, job);
+
+		return NULL;
+	}
+
+	{
+		g_autoptr(GError) error = NULL;
+		g_autoptr(JsonBuilder) builder = json_builder_new();
+
+		if (!clawt_daemon_tasks_remove_checkout(
+		        self, task, clawt_ipc_payload_boolean(payload, "force", FALSE),
+		        "user", &error))
+			return clawt_ipc_error_new(request, error->code, error->message);
+
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "task");
+		clawt_daemon_add_task_object(builder, task);
+		json_builder_end_object(builder);
+
+		return clawt_ipc_response_new(request, json_builder_get_root(builder));
+	}
+}
+
 static gboolean
 on_task_prune_tick(
 	gpointer user_data
@@ -1139,6 +1431,8 @@ on_task_prune_tick(
 
 	clawt_task_manager_forget_finished(self->tasks,
 	                                   now - CLAWT_DAEMON_TASK_LIVE_SECONDS);
+
+	clawt_daemon_tasks_sweep_checkouts(self, now);
 
 	days = clawt_config_get_int(self->config,
 	                            "orchestration.task_retention_days");

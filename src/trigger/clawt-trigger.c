@@ -303,11 +303,13 @@ clawt_trigger_build_prompt(ClawtTrigger *self, ClawtTriggerEvent *event)
     directory = clawt_trigger_get_string(self, "directory");
 
     if (directory != NULL && *directory != '\0') {
+        /*
+         * A worktree trigger is told where its checkout is by the daemon,
+         * which makes it for the run and puts the paragraph first -- above
+         * the fence, where nothing the caller wrote can be mistaken for it.
+         */
         if (clawt_trigger_get_boolean(self, "worktree"))
-            g_string_append_printf(out,
-                "\nWork in a fresh git worktree of %s, created for this "
-                "run. Do not touch whatever is checked out in %s itself.\n",
-                directory, directory);
+            ;
         else
             g_string_append_printf(out, "\nWork in %s.\n", directory);
     }

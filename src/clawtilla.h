@@ -31,6 +31,7 @@
 #include "clawt-enums.h"
 #include "clawt-error.h"
 #include "clawt-util.h"
+#include "clawt-git-remote.h"
 #include "clawt-backup.h"
 #include "clawt-qr.h"
 
@@ -101,6 +102,7 @@
 #include "task/clawt-cron.h"
 #include "task/clawt-task.h"
 #include "task/clawt-task-store.h"
+#include "task/clawt-task-checkout.h"
 #include "task/clawt-task-manager.h"
 #include "task/clawt-handoff.h"
 #include "task/clawt-handoff-store.h"
