@@ -104,6 +104,93 @@ on_remove_confirmed(AdwAlertDialog *dialog, const gchar *response,
     clawt_gtk_refresh_skills(action->window);
 }
 
+/*
+ * A skill's saved tests: each with how it last ran, an agent to run them
+ * on, and Run, which hands each input to that agent as a task of its own.
+ */
+static void
+on_tests_response(AdwAlertDialog *dialog, const gchar *response,
+                  gpointer user_data)
+{
+    SkillAction *action = user_data;
+    GtkWidget *entry = g_object_get_data(G_OBJECT(dialog), "clawt-agent");
+    const gchar *agent = gtk_editable_get_text(GTK_EDITABLE(entry));
+    g_autoptr(JsonNode) reply = NULL;
+
+    if (g_strcmp0(response, "run") != 0)
+        return;
+
+    reply = clawt_window_request(action->window, "skill.test_run",
+                                 clawt_build_payload(
+                                     "skill", action->name,
+                                     "agent", *agent != '\0' ? agent : NULL,
+                                     NULL));
+    if (reply == NULL)
+        return;
+
+    clawt_window_toast(action->window,
+                       "Tests running; open Tests again for the verdicts.");
+}
+
+static void
+on_tests_clicked(GtkButton *button, gpointer user_data)
+{
+    SkillAction *action = user_data;
+    SkillAction *owned;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GString) body = g_string_new(NULL);
+    JsonArray *tests;
+    AdwDialog *dialog;
+    GtkWidget *entry;
+    guint i;
+
+    (void)button;
+
+    reply = clawt_window_request(action->window, "skill.tests",
+                                 clawt_build_payload("skill", action->name,
+                                                     NULL));
+    if (reply == NULL)
+        return;
+
+    tests = json_object_get_array_member(clawt_payload_of(reply), "tests");
+
+    if (json_array_get_length(tests) == 0)
+        g_string_append(body, "No tests yet. Add tests/<name>.yaml beside "
+                              "the SKILL.md: input, and what the answer must "
+                              "(expect) and must not (reject) say.");
+
+    for (i = 0; i < json_array_get_length(tests); i++) {
+        JsonObject *test = json_array_get_object_element(tests, i);
+        JsonObject *last = json_object_has_member(test, "last")
+            ? json_object_get_object_member(test, "last") : NULL;
+
+        g_string_append_printf(body, "%s%s: %s%s%s", i > 0 ? "\n" : "",
+            clawt_json_string(test, "name", ""),
+            last != NULL ? clawt_json_string(last, "state", "") : "never run",
+            last != NULL ? " -- " : "",
+            last != NULL ? clawt_json_string(last, "detail", "") : "");
+    }
+
+    dialog = adw_alert_dialog_new("Tests", body->str);
+    entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(entry),
+                                   "Agent to run them on (one with the skill)");
+    adw_alert_dialog_set_extra_child(ADW_ALERT_DIALOG(dialog), entry);
+    adw_alert_dialog_add_responses(ADW_ALERT_DIALOG(dialog),
+                                   "close", "Close", "run", "Run them", NULL);
+    adw_alert_dialog_set_response_appearance(ADW_ALERT_DIALOG(dialog), "run",
+                                             ADW_RESPONSE_SUGGESTED);
+    g_object_set_data(G_OBJECT(dialog), "clawt-agent", entry);
+
+    /* its own copy, for the reason the remove dialog gives */
+    owned = g_new0(SkillAction, 1);
+    owned->window = action->window;
+    owned->name = g_strdup(action->name);
+    g_signal_connect_data(dialog, "response", G_CALLBACK(on_tests_response),
+                          owned, skill_action_free, 0);
+    adw_dialog_present(dialog, GTK_WIDGET(action->window));
+}
+
 static void
 on_remove_clicked(GtkButton *button, gpointer user_data)
 {
@@ -264,6 +351,17 @@ skill_group(ClawtWindow *self, JsonObject *skill)
     g_signal_connect_data(toggle, "clicked", G_CALLBACK(on_enable_clicked),
                           action, skill_action_free, 0);
     gtk_box_append(GTK_BOX(buttons), toggle);
+
+    {
+        GtkWidget *tests = gtk_button_new_with_label("Tests");
+
+        action = g_new0(SkillAction, 1);
+        action->window = self;
+        action->name = g_strdup(name);
+        g_signal_connect_data(tests, "clicked", G_CALLBACK(on_tests_clicked),
+                              action, skill_action_free, 0);
+        gtk_box_append(GTK_BOX(buttons), tests);
+    }
 
     remove = gtk_button_new_with_label("Remove");
     gtk_widget_add_css_class(remove, "destructive-action");

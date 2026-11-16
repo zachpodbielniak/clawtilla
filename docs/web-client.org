@@ -110,7 +110,7 @@ The same seven the GTK client's view switcher has, in the same order.
 | Activity | every running turn, to stop or steer ([[file:clients.org::#activity-tab][the Activity tab]]) |
 | Fleet    | cost per agent, the last fourteen days, idle agents to stop ([[file:clients.org::#fleet-tab][the Fleet tab]]) |
 
-And the settings pages: fleet, VM images, teams, projects, shared folders,
+And the settings pages: fleet, VM images, teams, projects, history, shared folders,
 spending, orchestration, integrations, connectors, appearance, connections
 and devices.
 

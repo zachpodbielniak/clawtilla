@@ -92,6 +92,11 @@ struct _ClawtDaemon {
      */
     ClawtTaskStore     *task_store;
     GSource            *task_prune;
+    /* every version of the config, the persona files and the skills */
+    ClawtRevisions     *revisions;
+    /* who and why for the save being made now (a restore), else NULL */
+    const gchar        *revision_author;
+    const gchar        *revision_note;
     /* project id -> ProjectSpend, a minute's cache of the month's spend */
     GHashTable         *project_spend;
     /* "<project>:<YYYY-MM>" for each budget warning already given */
@@ -1443,6 +1448,36 @@ clawt_daemon_handle_image(
     JsonObject   *payload,
     gboolean     *handled
 );
+
+JsonNode *
+clawt_daemon_handle_revision(
+    ClawtDaemon  *self,
+    const gchar  *kind,
+    JsonNode     *request,
+    JsonObject   *payload,
+    gboolean     *handled
+);
+JsonNode *clawt_daemon_handle_skill_tests(ClawtDaemon  *self,
+                                          const gchar  *kind,
+                                          JsonNode     *request,
+                                          JsonObject   *payload,
+                                          gboolean     *handled);
+void clawt_daemon_skill_tests_settled(ClawtDaemon *self, ClawtTask *task);
+gchar *clawt_daemon_skill_test_verdict(const gchar         *result,
+                                       const gchar * const *expect,
+                                       const gchar * const *reject);
+void clawt_daemon_revisions_setup(ClawtDaemon *self);
+void clawt_daemon_revisions_teardown(ClawtDaemon *self);
+void clawt_daemon_revisions_watch_skills(ClawtDaemon *self);
+void clawt_daemon_revisions_record_file(ClawtDaemon *self,
+                                        const gchar *kind,
+                                        const gchar *subject,
+                                        const gchar *path,
+                                        const gchar *author);
+void clawt_daemon_revisions_record_persona(ClawtDaemon      *self,
+                                           ClawtAgentConfig *agent,
+                                           const gchar      *only,
+                                           const gchar      *author);
 
 JsonNode *
 clawt_daemon_handle_project(

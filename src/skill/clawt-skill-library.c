@@ -87,6 +87,7 @@ enum {
     SIGNAL_CHANGED,
     SIGNAL_SKILL_ADDED,
     SIGNAL_SKILL_REMOVED,
+    SIGNAL_SKILL_WRITTEN,
     N_SIGNALS
 };
 
@@ -681,8 +682,6 @@ library_write(ClawtSkillLibrary  *self,
     g_autofree gchar *file = NULL;
     g_autofree gchar *text = NULL;
 
-    (void)self;
-
     if (!clawt_ensure_dir(directory, 0700, error))
         return FALSE;
 
@@ -692,7 +691,13 @@ library_write(ClawtSkillLibrary  *self,
     file = g_build_filename(directory, "SKILL.md", NULL);
     text = clawt_skill_render(skill);
 
-    return clawt_write_file_atomic(file, text, -1, 0600, FALSE, error);
+    if (!clawt_write_file_atomic(file, text, -1, 0600, FALSE, error))
+        return FALSE;
+
+    g_signal_emit(self, signals[SIGNAL_SKILL_WRITTEN], 0,
+                  clawt_skill_get_name(skill), text);
+
+    return TRUE;
 }
 
 /*
@@ -1339,6 +1344,20 @@ clawt_skill_library_class_init(ClawtSkillLibraryClass *klass)
     signals[SIGNAL_SKILL_REMOVED] = g_signal_new(
         "skill-removed", CLAWT_TYPE_SKILL_LIBRARY, G_SIGNAL_RUN_LAST, 0, NULL,
         NULL, NULL, G_TYPE_NONE, 1, G_TYPE_STRING);
+
+    /**
+     * ClawtSkillLibrary::skill-written:
+     * @self: the library
+     * @name: the skill's name
+     * @text: the SKILL.md it wrote
+     *
+     * The library wrote a skill: created, taught, replaced -- whoever
+     * asked.  One write path, so one signal for the history (since
+     * 0.41.0).
+     */
+    signals[SIGNAL_SKILL_WRITTEN] = g_signal_new(
+        "skill-written", CLAWT_TYPE_SKILL_LIBRARY, G_SIGNAL_RUN_LAST, 0, NULL,
+        NULL, NULL, G_TYPE_NONE, 2, G_TYPE_STRING, G_TYPE_STRING);
 }
 
 static void

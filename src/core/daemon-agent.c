@@ -475,6 +475,9 @@ clawt_daemon_handle_agent(
                 return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
                                            error->message);
 
+            /* the version the operator just saved, for its history */
+            clawt_daemon_revisions_record_persona(self, config, name, "user");
+
             clawt_event_bus_emit(self->bus, "agent.changed", agent_id);
 
             json_builder_begin_object(builder);

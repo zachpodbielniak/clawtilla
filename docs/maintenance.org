@@ -17,6 +17,7 @@
   routines.yaml                   run state for the schedules; never in config.yaml
   decisions.db                    the decision inbox
   tasks.db                        every task, its journal, and the incidents
+  revisions.db                    every version of the config, personas, skills
   daemon.lock                     one daemon per state directory; see below
   .git/ .gitignore                daemon.git; the ignore block is clawtilla's
   agents/<id>/                    also the workspace, unless agents.workspace moves it
@@ -749,6 +750,21 @@ Nothing to rotate here -- change whatever the reference points at and
 restart the agent.  Resolved values are written to per-agent credential
 files with no ~.bak~, precisely so a rotation does not leave the retired
 secret in a second copy beside it.
+
+** Version history
+:PROPERTIES:
+:CUSTOM_ID: version-history
+:END:
+
+Since 0.41.0 ~revisions.db~ keeps every version of what shapes the fleet, so a change is never a one-way door:
+
+- *What is kept.* The config (~config.yaml~) on every =clawt_config_save()= -- every door that saves goes through it -- and on every reload, which is how a hand edit made outside the daemon becomes a version; each agent's persona files (the =.org= files, not the generated loaders) when the operator writes one (~agent.file_write~) and whenever the agent's workspace is rendered (start, reload, an agent change), which catches an edit an agent made to its own files; and every skill's =SKILL.md= each time the library writes it, whoever asked -- an edit, a taught skill, an accepted proposal (the library's ~skill-written~ signal).  A text identical to the newest kept for the same thing is not kept again.
+- *Subjects.* ~config~; ~persona~ as =<agent>/<file>= (=scout/SOUL.org=); ~skill~ by name.
+- *Reading it.* ~revision.list~ (filtered by ~kind~ and ~subject~; newest first, without the text), ~revision.show~ (one whole), ~revision.diff~ (a unified diff of one against another of the same thing, or against how it reads now); Settings → *History* in every client; ~clawtilla history~.
+- *Putting one back.* ~revision.restore~ (*Restore this version*, ~clawtilla history restore~) writes it through the path an edit would take: the config is parsed first -- a version this build would refuse does not replace one that loads -- then written and reloaded; a persona file is written; a skill is replaced through the library, which parses it first.  The restore is a save, so it is kept as the newest version, with the note "restored from revision N": nothing is lost by trying one.
+- *Secrets.* The config holds secrets only by reference; its text is passed through the redaction the error path uses before it is kept, so a literal that slipped in is not copied here.  A text over 2 MiB is refused rather than cut.
+- *Pruning.* The newest 200 versions of each thing are kept; older ones go on start.
+- *Backups.* ~revisions.db~ is in the state directory and goes into a backup with everything else there.
 
 ** Pruning what accumulates
 

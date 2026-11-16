@@ -1473,6 +1473,14 @@ versions apart.
   touch them, and a client's Cancel is offered on them. A note on a task
   publishes `task.noted`, never `task.changed`, which settle notices and
   incidents hang off.
+- **Versions are caught at the write path, not the caller.** Config
+  versions come from the observer `clawt_config_save()` calls, skill
+  versions from the library's `skill-written` signal in its one write
+  path; a new way to save either is kept without touching the history.
+  Persona files have no single writer (agents edit their own), so they
+  are recorded at `agent.file_write` and on every render. A restore goes
+  back through the edit path (config parsed, written, reloaded; skills
+  through `clawt_skill_library_replace()`), never a raw file write.
 - **A project is placed once, through `clawt_daemon_project_place()`.**
   It resolves the project, stores its brief on the task (the contract
   text must not change after the task is made), applies the project's

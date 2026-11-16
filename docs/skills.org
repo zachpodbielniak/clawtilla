@@ -451,6 +451,25 @@ See [[file:configuration-options.org][the option reference]] for
 typo in the path leaves an empty directory for somebody to puzzle over a
 week later.
 
+** Tests
+:PROPERTIES:
+:CUSTOM_ID: tests
+:END:
+
+A skill changes -- edited, taught, a proposal accepted -- and nothing said whether it still does its job.  Since 0.41.0 a skill can carry tests: =tests/<name>.yaml= beside its =SKILL.md=, each an input to hand an agent that has the skill and what its answer must and must not say:
+
+#+begin_src yaml
+input: "Write the release notes for 1.2 from this changelog: ..."
+agent: scout              # optional; the run can name one instead
+expect: ["## Fixes"]      # each must appear, ignoring case
+reject: [TODO]            # none may appear
+#+end_src
+
+- *Running them.* ~skill.test_run~ (*Tests* → *Run them* on the Skills page in every client, ~clawtilla skill test <name> [test] --agent AGENT~) hands each input to the agent as a task of its own, from ~skill-test~, in a room of its own (=skill-test:<skill>=), so it neither inherits the operator's conversation nor leaves its input there.  The agent must have the skill in effect -- assigned and enabled -- or the run is refused: a test of a skill the agent does not have tests nothing.
+- *The verdict.* When the task ends its result is checked: *passed* when every ~expect~ appears and no ~reject~ does, *failed* with the first that did not hold, *error* when the run itself failed, was cancelled or stalled.  Each run is recorded against the skill's revision it ran with (see [[file:maintenance.org::#version-history][version history]]), so "it passed" always says *which* text passed.
+- *Reading them.* ~skill.tests~ (*Tests*, ~clawtilla skill tests <name>~): each test with its last run, and any test file that does not parse or has no input as a problem rather than silently skipped.
+- *What it is not.* The run is a real turn on a real agent, with its tools and its spending caps -- it is not sandboxed from them -- and the check is textual.  It catches a skill that stopped producing what it is for; it does not judge whether the answer is good.
+
 ** Teaching one instead of writing it
 
 A procedure you already do is often easier to demonstrate than to

@@ -34,6 +34,8 @@ static const SettingsPage settings_pages[] = {
       "Who may hand work to whom." },
     { "projects",     "Projects",
       "What the work is for, where it lives, and what it may spend." },
+    { "history",      "History",
+      "Every version of the config, the persona files and the skills." },
     { "folders",      "Shared folders",
       "Directories every agent's computer gets." },
     { "spending",     "Spending",
@@ -325,6 +327,128 @@ images_content(ClawtWebApp *app)
     }
 
     return HTMX_ELEMENT(g_steal_pointer(&box));
+}
+
+/* ── History ─────────────────────────────────────────────────────── */
+
+/*
+ * Every kept version, newest first; one of them opened (@open, a
+ * revision id) shows its diff against now and a Restore form above the
+ * list.
+ */
+static HtmxElement *
+history_content(ClawtWebApp *app, const gchar *open)
+{
+    g_autoptr(HtmxDiv) box = htmx_div_new();
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    JsonArray *revisions;
+    guint i;
+
+    if (open != NULL) {
+        g_autoptr(ClawtWebPayload) ask = clawt_web_payload_new();
+        g_autoptr(JsonNode) diff = NULL;
+        g_autofree gchar *title = g_strdup_printf("Revision %s against now",
+                                                  open);
+        g_autoptr(HtmxDiv) card = clawt_web_card(title, NULL);
+        HtmxElement *body = clawt_web_card_body(card);
+        g_autoptr(HtmxElement) pre = HTMX_ELEMENT(htmx_pre_new());
+        g_autofree gchar *action = g_strdup_printf(
+            "/settings/history/%s/restore", open);
+
+        clawt_web_payload_set(ask, "from", open);
+        diff = clawt_web_app_call(app, "revision.diff",
+                                  clawt_web_payload_take(
+                                      g_steal_pointer(&ask)));
+
+        htmx_element_add_class(pre, "console");
+        htmx_node_set_text_content(HTMX_NODE(pre),
+            diff == NULL ? clawt_web_app_last_error(app)
+                         : (*clawt_web_member(clawt_web_root(diff), "diff",
+                                              "") != '\0'
+                                ? clawt_web_member(clawt_web_root(diff),
+                                                   "diff", "")
+                                : "This version is how it reads now."));
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(g_steal_pointer(&pre)));
+        clawt_web_add(body, clawt_web_post_button("Restore this version",
+            action, "primary",
+            "Put this version back? It becomes the newest version; nothing "
+            "is lost."));
+        htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(card));
+    }
+
+    clawt_web_payload_set(payload, "limit", "100");
+    reply = clawt_web_app_call(app, "revision.list",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+    revisions = clawt_web_member_array(clawt_web_root(reply), "revisions");
+
+    if (revisions == NULL || json_array_get_length(revisions) == 0)
+        clawt_web_add(box, clawt_web_empty("No versions kept yet",
+            "The config, each persona file and each skill are kept every "
+            "time they change."));
+
+    for (i = 0; revisions != NULL && i < json_array_get_length(revisions);
+         i++) {
+        JsonObject *revision = json_array_get_object_element(revisions, i);
+        gint64 id = json_object_get_int_member(revision, "id");
+        g_autoptr(GDateTime) at = g_date_time_new_from_unix_local(
+            json_object_get_int_member(revision, "at"));
+        g_autofree gchar *when = g_date_time_format(at, "%F %R");
+        g_autofree gchar *href = g_strdup_printf("/settings/history/%"
+                                                 G_GINT64_FORMAT, id);
+        g_autofree gchar *label = g_strdup_printf(
+            "%s %s -- %s, by %s%s%s",
+            clawt_web_member(revision, "kind", ""),
+            clawt_web_member(revision, "subject", ""), when,
+            clawt_web_member(revision, "author", "clawtilla"),
+            clawt_web_member(revision, "note", NULL) != NULL ? " -- " : "",
+            clawt_web_member(revision, "note", ""));
+        g_autoptr(HtmxDiv) row = htmx_div_new();
+        HtmxA *link = htmx_a_new_with_href(href);
+
+        htmx_node_set_text_content(HTMX_NODE(link), label);
+        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(link));
+        htmx_node_add_child(HTMX_NODE(box), HTMX_NODE(row));
+    }
+
+    return HTMX_ELEMENT(g_steal_pointer(&box));
+}
+
+static HtmxResponse *
+on_history_open(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *id = clawt_web_param(params, "revision");
+    g_autoptr(HtmxElement) content = history_content(app, id);
+
+    return settings_response(app, request, "history", content, NULL, FALSE);
+}
+
+static HtmxResponse *
+on_history_restore(HtmxRequest *request, GHashTable *params,
+                   gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *id = clawt_web_param(params, "revision");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *failure = NULL;
+    g_autoptr(HtmxElement) content = NULL;
+
+    clawt_web_payload_set(payload, "id", id);
+    reply = clawt_web_app_call(app, "revision.restore",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    if (reply == NULL)
+        failure = g_strdup(clawt_web_app_last_error(app));
+
+    content = history_content(app, NULL);
+
+    return settings_response(app, request, "history", content,
+                             failure != NULL ? failure
+                                             : "Restored; it is the newest "
+                                               "version now.",
+                             failure != NULL);
 }
 
 /* ── Projects ────────────────────────────────────────────────────── */
@@ -3344,6 +3468,8 @@ on_settings_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
         content = teams_content(app);
     else if (g_strcmp0(slug, "projects") == 0)
         content = projects_content(app);
+    else if (g_strcmp0(slug, "history") == 0)
+        content = history_content(app, NULL);
     else if (g_strcmp0(slug, "folders") == 0)
         content = folders_content(app);
     else if (g_strcmp0(slug, "spending") == 0)
@@ -4301,6 +4427,10 @@ clawt_web_register_settings(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_post(router, "/settings/egress/remove", on_egress_allow, app);
     htmx_router_post(router, "/settings/folders/remove", on_folder_remove,
                      app);
+    htmx_router_get(router, "/settings/history/:revision", on_history_open,
+                    app);
+    htmx_router_post(router, "/settings/history/:revision/restore",
+                     on_history_restore, app);
     htmx_router_post(router, "/settings/projects/add", on_project_add, app);
     htmx_router_post(router, "/settings/projects/:project/save",
                      on_project_save, app);

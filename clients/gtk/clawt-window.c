@@ -5389,6 +5389,7 @@ on_settings_closed(AdwDialog *dialog, gpointer user_data)
     self->settings_integrations = NULL;
     self->settings_teams = NULL;
     self->settings_projects = NULL;
+    self->settings_history = NULL;
     self->settings_spending = NULL;
     self->settings_spending_period = NULL;
     self->settings_spending_group = NULL;
@@ -5569,6 +5570,9 @@ on_settings_activate(GSimpleAction *action, GVariant *parameter,
                                    clawt_gtk_build_projects_page(self)));
     adw_preferences_dialog_add(ADW_PREFERENCES_DIALOG(dialog),
                                ADW_PREFERENCES_PAGE(
+                                   clawt_gtk_build_history_page(self)));
+    adw_preferences_dialog_add(ADW_PREFERENCES_DIALOG(dialog),
+                               ADW_PREFERENCES_PAGE(
                                    clawt_gtk_build_spending_page(self)));
     adw_preferences_dialog_add(ADW_PREFERENCES_DIALOG(dialog),
                                ADW_PREFERENCES_PAGE(
@@ -5595,6 +5599,7 @@ on_settings_activate(GSimpleAction *action, GVariant *parameter,
     refresh_settings_images(self);
     clawt_gtk_refresh_settings_teams(self);
     clawt_gtk_refresh_settings_projects(self);
+    clawt_gtk_refresh_settings_history(self);
     clawt_gtk_refresh_settings_folders(self);
     clawt_gtk_refresh_settings_spending(self);
     clawt_gtk_refresh_settings_orchestration(self);

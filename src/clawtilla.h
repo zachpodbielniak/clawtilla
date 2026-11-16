@@ -35,6 +35,7 @@
 #include "clawt-backup.h"
 #include "clawt-qr.h"
 
+#include "config/clawt-revisions.h"
 #include "config/clawt-config-schema.h"
 #include "config/clawt-appearance.h"
 #include "config/clawt-secret-ref.h"

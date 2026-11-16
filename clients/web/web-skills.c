@@ -106,6 +106,15 @@ add_skill_card(HtmxElement *parent, JsonObject *skill)
         enabled ? "Disable" : "Enable", action,
         enabled ? "default" : "primary", NULL));
 
+    /* Its saved tests, and running them. */
+    {
+        g_autofree gchar *tests = g_strdup_printf("/skills/%s/tests", escaped);
+        HtmxA *link = htmx_a_new_with_href(tests);
+
+        htmx_node_set_text_content(HTMX_NODE(link), "Tests");
+        htmx_node_add_child(HTMX_NODE(body), HTMX_NODE(link));
+    }
+
     g_free(action);
     action = g_strdup_printf("/skills/%s/remove", escaped);
 
@@ -683,6 +692,102 @@ on_remove(HtmxRequest *request, GHashTable *params, gpointer user_data)
                                   "Removed.");
 }
 
+/*
+ * A skill's tests: each with how it last ran, and a form to run them on
+ * an agent that has the skill.
+ */
+static HtmxResponse *
+tests_page(ClawtWebApp *app, HtmxRequest *request, const gchar *name,
+           const gchar *notice)
+{
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(HtmxElement) view = HTMX_ELEMENT(htmx_main_new());
+    g_autoptr(HtmxDiv) pad = htmx_div_new();
+    g_autofree gchar *escaped = g_uri_escape_string(name, NULL, FALSE);
+    g_autofree gchar *action = g_strdup_printf("/skills/%s/tests/run",
+                                               escaped);
+    g_autofree gchar *heading = g_strdup_printf("Tests of %s", name);
+    g_autofree gchar *html = NULL;
+    g_autoptr(HtmxForm) form = clawt_web_form(action);
+    JsonArray *tests;
+    guint i;
+
+    htmx_element_add_class(view, "view");
+    htmx_element_add_class(HTMX_ELEMENT(pad), "view-pad");
+    clawt_web_add(pad, clawt_web_section_title(heading));
+
+    if (notice != NULL)
+        clawt_web_add(pad, clawt_web_text(notice, "lede"));
+
+    clawt_web_payload_set(payload, "skill", name);
+    reply = clawt_web_app_call(app, "skill.tests",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+    tests = clawt_web_member_array(clawt_web_root(reply), "tests");
+
+    if (tests == NULL || json_array_get_length(tests) == 0)
+        clawt_web_add(pad, clawt_web_empty("No tests yet",
+            "Add tests/<name>.yaml beside the SKILL.md: input, and what the "
+            "answer must (expect) and must not (reject) say."));
+
+    for (i = 0; tests != NULL && i < json_array_get_length(tests); i++) {
+        JsonObject *test = json_array_get_object_element(tests, i);
+        JsonObject *last = json_object_has_member(test, "last")
+            ? json_object_get_object_member(test, "last") : NULL;
+
+        clawt_web_add(pad, clawt_web_row(clawt_web_member(test, "name", ""),
+            last != NULL ? clawt_web_member(last, "state", "") : "never run"));
+        if (last != NULL && clawt_web_member(last, "detail", NULL) != NULL)
+            clawt_web_add(pad, clawt_web_text(clawt_web_member(last, "detail",
+                                                               ""),
+                                              "small muted"));
+    }
+
+    clawt_web_add(form, clawt_web_field("Agent", "agent", NULL,
+                                        "one that has this skill"));
+    {
+        g_autoptr(HtmxButton) run = clawt_web_button("Run them", "primary");
+
+        htmx_element_set_attribute(HTMX_ELEMENT(run), "type", "submit");
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(run));
+    }
+    htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(form));
+    htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(g_steal_pointer(&pad)));
+    html = clawt_web_page(app, NULL, CLAWT_PAGE_SKILLS, view, request);
+
+    return clawt_web_html_response(html);
+}
+
+static HtmxResponse *
+on_tests(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    g_autofree gchar *name = clawt_web_param(params, "skill");
+
+    return tests_page(user_data, request, name, NULL);
+}
+
+static HtmxResponse *
+on_tests_run(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *name = clawt_web_param(params, "skill");
+    const gchar *agent = clawt_web_form_value(request, "agent");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+
+    clawt_web_payload_set(payload, "skill", name);
+    if (agent != NULL && *agent != '\0')
+        clawt_web_payload_set(payload, "agent", agent);
+
+    reply = clawt_web_app_call(app, "skill.test_run",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    return tests_page(app, request, name,
+                      reply == NULL ? clawt_web_app_last_error(app)
+                                    : "Running; reload for the verdicts once "
+                                      "they finish.");
+}
+
 static HtmxResponse *
 on_reload(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
@@ -943,6 +1048,8 @@ clawt_web_register_skills(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_post(router, "/skills/:skill/disable", on_enable,
                      enable_action_new(app, FALSE));
     htmx_router_post(router, "/skills/:skill/remove", on_remove, app);
+    htmx_router_get(router, "/skills/:skill/tests", on_tests, app);
+    htmx_router_post(router, "/skills/:skill/tests/run", on_tests_run, app);
 
     htmx_router_post(router, "/teach/start", on_teach_start, app);
     htmx_router_post(router, "/teach/:id/steps", on_teach_steps, app);

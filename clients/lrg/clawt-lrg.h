@@ -376,6 +376,7 @@ const ClawtLrgSettingsPage *const *clawt_lrg_settings_pages(void);
 const ClawtLrgSettingsPage *clawt_lrg_settings_images_page(void);       /* lrg-settings-images.c */
 const ClawtLrgSettingsPage *clawt_lrg_settings_teams_page(void);        /* lrg-settings-teams.c */
 const ClawtLrgSettingsPage *clawt_lrg_settings_projects_page(void);     /* lrg-settings-projects.c */
+const ClawtLrgSettingsPage *clawt_lrg_settings_history_page(void);      /* lrg-settings-history.c */
 const ClawtLrgSettingsPage *clawt_lrg_settings_spending_page(void);     /* lrg-settings-spending.c */
 const ClawtLrgSettingsPage *clawt_lrg_settings_orchestration_page(void); /* lrg-settings-orchestration.c */
 const ClawtLrgSettingsPage *clawt_lrg_settings_integrations_page(void); /* lrg-settings-integrations.c */

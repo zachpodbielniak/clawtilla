@@ -780,6 +780,12 @@ who this agent may hand work to.  Moving one agent is quicker from the
 sidebar's right-click menu; the editor is where the *role* is set, and
 where a team is changed as part of a wider edit.
 
+*** History
+
+The History page in Settings (since 0.41.0) lists every kept version of the config, the persona files and the skills, newest first, with when, who and why.  Opening one shows its diff against how the thing reads now, and *Restore this version*, which puts it back as the newest version.  See [[file:maintenance.org::#version-history][version history]].
+
+Each skill on the Skills page has *Tests*: its saved tests with how each last ran, and *Run them* on a named agent.  See [[file:skills.org::#tests][skill tests]].
+
 *** Projects
 
 The Projects page in Settings (since 0.40.0) lists the projects with what each spent this calendar month against its budget, and *stopped* once a hard stop has been reached.  Adding one asks for an id; each project opens to its name, goal, directory, reviewer, agents, monthly budget, warning percentage and *Refuse new work once the budget is spent*, and to removing it.  A task's row shows its project.  See [[file:orchestration.org][orchestration.org]], "Projects".

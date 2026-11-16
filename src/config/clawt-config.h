@@ -110,6 +110,30 @@ gboolean clawt_config_save(ClawtConfig  *self,
 gchar *clawt_config_to_string(ClawtConfig *self);
 
 /**
+ * ClawtConfigSaveObserver:
+ * @config: the config just saved
+ * @text: what was written
+ * @user_data: what the setter was given
+ *
+ * Called after every successful clawt_config_save() (since 0.41.0).
+ */
+typedef void (*ClawtConfigSaveObserver)(ClawtConfig *config,
+                                        const gchar *text,
+                                        gpointer     user_data);
+
+/**
+ * clawt_config_set_save_observer:
+ * @func: (nullable) (scope forever): what to call; %NULL for nothing
+ * @user_data: passed to @func
+ *
+ * One observer for the process: the daemon's history of config saves.
+ * Every save goes through clawt_config_save(), whichever part of the
+ * daemon asked for it, so this is where a version is caught.
+ */
+void clawt_config_set_save_observer(ClawtConfigSaveObserver func,
+                                    gpointer                user_data);
+
+/**
  * clawt_config_get_path:
  * @self: a #ClawtConfig
  *
