@@ -1004,6 +1004,8 @@ A task object carries ~retries~ and ~retried_by~ once it has been retried, and n
 
 ~task.checkout_remove~ (since 0.39.0) takes ~task~ and ~force~: removes the checkout and keeps its branch.  =INVALID_ARGUMENT= while the task is pending or running, and without ~force~ while the checkout has uncommitted changes.  It answers ~task~.
 
+With the VENTURE mirror on (since 0.44.0), ~task.show~ also answers ~venture~ once the mirror has looked at the task: ~state~ (~synced~, ~queued~, ~skipped~ or ~dead~), and as known ~ticket~ (its id), ~url~ (its page), ~instance~ (the connector) and ~reason~ (why it was skipped or given up on, or the last error while queued).  ~task.venture_retry~ takes ~task~: the task's given-up rows are queued again and a skipped task is looked at afresh; it answers ~task~ and ~queued~ (rows queued).  =NOT_FOUND= for no such task, =INVALID_ARGUMENT= when no venture connector has ~mirror_tasks~ on.  See [[file:venture.org][venture.org]].
+
 ~task.review~ (since 0.38.0) takes ~task~, ~verdict~ (~accept~ or ~changes~) and ~notes~ (required for ~changes~): the operator's verdict on a task in ~review~, whoever its reviewer is.  It answers ~said~ (what happened, in a sentence) and ~task~.  A task not in review is =INVALID_ARGUMENT=.  A task object carries ~reviewer~ and ~review_round~ when it has a reviewer.
 
 ~task.link~ and ~task.unlink~ (since 0.37.0) take ~task~ and ~after~ (one task id).  Linking holds a task on the backlog or adds to what a held task waits for; any other state is =INVALID_ARGUMENT=, as are a self-link and a link that would close a cycle.  Unlinking the last blocker releases the task.  Both answer ~task~.  A task object carries ~after~ and ~waiting_on~ (arrays of task ids) when it waits for anything.

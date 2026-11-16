@@ -248,8 +248,8 @@ venture_send(ClawtVentureBridge *bridge, const gchar *method,
  * Read from the 0600 file the path in the config names, never from the
  * config itself -- which is a file people keep in git.
  */
-static gchar *
-venture_token_for(ClawtIntegrationBinding *binding)
+gchar *
+clawt_daemon_venture_token_for(ClawtIntegrationBinding *binding)
 {
     const gchar *token_file =
         clawt_integration_binding_get_string(binding, "token_file");
@@ -279,6 +279,10 @@ clawt_daemon_venture_sync(ClawtDaemon *self)
 
     if (self->venture == NULL)
         return;
+
+    /* The task mirror reads the same connectors, so it follows the same
+     * reloads. */
+    clawt_daemon_venture_mirror_sync(self);
 
     clawt_venture_bridge_stop(self->venture);
     clawt_venture_bridge_clear_sources(self->venture);
@@ -351,7 +355,7 @@ clawt_daemon_venture_sync(ClawtDaemon *self)
             if (base == NULL)
                 continue;
 
-            token = venture_token_for(binding);
+            token = clawt_daemon_venture_token_for(binding);
 
             if (token == NULL) {
                 /*
@@ -833,7 +837,7 @@ clawt_daemon_venture_replay_tick(ClawtDaemon *self)
                   info, "",
                   clawt_integration_binding_get_string(binding, "instance"))
             : NULL;
-        token = venture_token_for(binding);
+        token = clawt_daemon_venture_token_for(binding);
 
         if (base == NULL || token == NULL) {
             g_autofree gchar *message = g_strdup_printf(
@@ -973,6 +977,7 @@ clawt_daemon_venture_start(ClawtDaemon *self)
      * brings the daemon up, or every test fixture reaches for a server
      * that is not there.
      */
+    clawt_daemon_venture_mirror_start(self);
     clawt_daemon_venture_sync(self);
 
     venture_replay_start(self);
@@ -984,6 +989,7 @@ clawt_daemon_venture_stop(ClawtDaemon *self)
     g_return_if_fail(CLAWT_IS_DAEMON(self));
 
     venture_replay_stop(self);
+    clawt_daemon_venture_mirror_stop(self);
 
     if (self->venture == NULL)
         return;

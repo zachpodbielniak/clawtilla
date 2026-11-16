@@ -454,6 +454,8 @@ integrations:
 
 ** Staged writes land in the decision inbox
 
+A venture connector can also mirror its agents' tasks as tickets: ~mirror_tasks~ (since 0.44.0), see [[file:venture.org][venture.org]].
+
 Unless the connector says ~apply_writes: all~ (since 0.36.1), which starts =venturectl mcp --apply-writes= and lets the agent's writes land at once, unreviewed; see [[file:venture-setup.org::*Letting an agent write without approval (since 0.36.1)][venture-setup.org]].  ~off~, the default, is everything below.  ~low_risk~ (since 0.43.0) is everything below for the writes VENTURE classes as high risk -- money, people, access, credentials, outward actions, deletes -- while the rest land at once.
 
 =venturectl mcp= stages its writes by default: =venture_create=,

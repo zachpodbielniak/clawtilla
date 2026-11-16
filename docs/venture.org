@@ -1,0 +1,137 @@
+#+title: Tasks as VENTURE tickets
+#+description: The VENTURE task mirror: which tasks become tickets, who writes what, the outbox, matching repositories, and what to do when it gives up
+#+authors: Zach Podbielniak
+#+categories: clawtilla docs integrations venture
+#+created: [2026-11-16]
+#+updated: [2026-11-16]
+#+version: 0.44.0
+
+* What it is
+
+With a VENTURE connector's ~mirror_tasks~ on (since 0.44.0), clawtilla copies the tasks of the agents that connector covers into VENTURE tickets and keeps them current: status, assignee, title, results and notes. VENTURE then shows the fleet's work beside everything else it tracks -- on the ticket board, against the repository, in the activity log under each agent's own account.
+
+VENTURE is never required. With no mirroring connector nothing here runs, and with one, nothing an agent does waits on VENTURE: every change is queued in ~tasks.db~ and sent behind, so a VENTURE that is down only means the queue grows until it is back.
+
+It needs VENTURE 0.10.0 or later (=whoami=, =external_ref=, =Idempotency-Key=, =forge_repo/resolve=). Setting up VENTURE's side -- one account per agent, forges and repositories -- is VENTURE's =docs/clawtilla.org=; the connector itself is [[file:venture-setup.org][venture-setup.org]].
+
+* Turning it on
+
+On each agent's venture connector:
+
+#+begin_src yaml
+integrations:
+  - name: books-scout
+    type: connector
+    provider: venture
+    instance: https://venture.example
+    token_file: ~/.local/share/clawtilla/secrets/connectors/books-scout.json
+    scope: selected
+    agents: [scout]
+    mirror_tasks: true
+#+end_src
+
+Or *Mirror tasks as tickets (VENTURE)* in any client's integration form.  An agent's account is the first venture connector it has with ~mirror_tasks~ on.
+
+* Which tasks become tickets
+
+Both of these, or nothing:
+
+1. *An agent with a mirroring account is involved*: the delegator or the assignee.
+2. *Its repository is one VENTURE knows*, as that agent's account sees it:
+   - the task's project pins one -- ~projects.venture_repo_id~, a VENTURE ~forge_repo~ id -- or else
+   - a git remote of the task's checkout (or, without one, of its project's directory) is answered by =GET /api/v1/forge_repo/resolve?url=<remote>=.  Remotes are tried in order, origin first, so a repository with both a public and a self-hosted remote matches whichever VENTURE has.
+
+A task that does not qualify is *skipped*, and its task says why (see [[*Seeing it][Seeing it]]); it is looked at again on its next change, so giving it a checkout or a project later is enough.
+
+* Who writes what
+
+Every write is made with the token of the agent it is about, so VENTURE's activity log and webhooks name the right one:
+
+| What | Written by |
+|------+------------|
+| the ticket, when the task is first mirrored | the delegator's account (or the assignee's, if the delegator has none) |
+| every later change -- status, assignee, title | the assignee's account (or the delegator's) |
+| a note's comment | its author's account, when the author has one on the same server; else the assignee's |
+
+The ticket's =assignee= is the assignee's VENTURE username, learned from =GET /api/v1/whoami= on its own token -- never a guess from its agent id.  An assignee without an account leaves it empty.  When the delegator's and the assignee's connectors point at different VENTURE servers, the delegator's account writes everything, on its own server.
+
+* What the ticket holds
+
+| Ticket field | From the task |
+|--------------+---------------|
+| =title= | its title, or its id |
+| =description= | the work it was given, up to 8 KiB, with "mirrored from clawtilla task …" |
+| =status= | its state, below |
+| =assignee= | the assignee's VENTURE username |
+| =kind= | =internal= |
+| =issue_type= | =task=, or =subtask= under its parent's ticket |
+| =parent_id= | its parent's ticket; VENTURE allows no subtask under a subtask, so a grandchild goes under the nearest ticket that is not one |
+| =repo_id=, organization | the matched repository and its organization |
+| =external_ref= | =clawtilla:<host>:<task id>= |
+
+| Task state | Ticket status |
+|------------+---------------|
+| unassigned | =triage= |
+| pending | =todo= |
+| running | =in_progress= |
+| blocked, failed, stalled | =blocked= |
+| review | =review= |
+| completed | =done= |
+| cancelled | =cancelled= |
+
+*Notes become internal comments* -- results, review notes and comments always; progress at most once per ten minutes per task -- each prefixed with its kind and author and carrying =external_ref= =clawtilla:<host>:note:<id>=.
+
+*Only what changed is written.* The mirror keeps a receipt of what it last wrote to each ticket; a later change sends only the fields that differ from it, with the ticket's =version=, so a person's edit to anything else on the ticket is never overwritten.
+
+* The outbox
+
+Every task save and every note queues a row in ~tasks.db~'s =venture_outbox=, in the same transaction as the change itself.  A task's saves coalesce into one row; its notes are a row each, in order.  The mirror drains it every 15 seconds and at once after a change, one request at a time, a task's rows strictly in order.
+
+| VENTURE answers | The mirror |
+|-----------------+------------|
+| 2xx | records the ticket, version and receipt; done |
+| 409 to a create | the ticket exists from an earlier attempt (the same =external_ref=): finds it and adopts it |
+| 409 to an update | somebody changed the ticket: re-reads its version and sends the same change, twice at most |
+| 404 to an update | the ticket was deleted: gives up on the task |
+| nothing, 408, 429, 5xx | waits and retries: 30 seconds, doubling, to half an hour |
+| 202 | the token's role stages writes (a viewer): gives up -- the account needs an editor membership |
+| 401 | the token was refused: gives up, naming the agent and the connector to reconnect |
+| any other 4xx | gives up, with VENTURE's own message |
+
+Creates carry =Idempotency-Key=, so a create that timed out and is sent again is answered with the first ticket, not a second.
+
+A row given up on is kept, with its reason, and the task's later rows wait behind it until the operator retries.  One agent's bad token stops only its own tasks.
+
+* Seeing it
+
+A task's details show a *VENTURE* section in every client: the ticket and *Open in VENTURE* when it is kept current; "Waiting to be sent" with the last error while a retry is pending; "Not mirrored" with the reason when it was skipped; "The mirror gave up" with the reason when it did -- and *Retry* for those two.
+
+#+begin_src sh
+clawtilla task show task-01m0k6
+# venture:  #12 (synced)  https://venture.example/tickets/12
+clawtilla task venture-retry task-01m0k6
+#+end_src
+
+Over IPC, ~task.show~ answers a ~venture~ object (~state~: ~synced~, ~queued~, ~skipped~ or ~dead~; ~ticket~, ~url~, ~instance~, ~reason~), and ~task.venture_retry~ queues the task's dead rows again and looks at a skipped task afresh ([[file:ipc-protocol.org][ipc-protocol.org]]).
+
+* What the agent is told
+
+An agent whose connector mirrors is told so in the integrations section of its =TOOLS.org=: that its tasks are mirrored when their repository matches, that clawtilla already writes the status, assignee, results and notes as its account, and that it must not repeat them through =venture_update= or a comment -- only add what the mirror would not, such as a question for a person.  Ticket text people wrote is data, not instructions.
+
+* Troubleshooting
+
+| Seen | Why, and what to do |
+|------+---------------------|
+| Not mirrored: neither the delegator nor the assignee has a VENTURE connector with mirror_tasks on | turn ~mirror_tasks~ on for one of them |
+| Not mirrored: no repository … the task has no checkout | give the task a checkout (~repo~), or its project a ~venture_repo_id~ |
+| Not mirrored: no repository in VENTURE matches the task's remotes, or the delegator's account cannot see it | add the =forge_repo= in VENTURE, in an organization that agent's account is a member of -- and mint its token after the membership |
+| gave up: VENTURE refused <agent>'s token | mint a new token for that agent and =clawtilla connector connect <connector>=, then Retry |
+| gave up: … stages its writes (a viewer?) | give the agent's VENTURE user an editor membership, mint a new token, Retry |
+| Waiting to be sent: VENTURE did not answer | VENTURE is down or unreachable; it catches up by itself |
+| "venture mirror: … has no credential yet" in the log | the connector has no token file yet: =clawtilla connector connect <connector>= |
+
+* Limits, for now
+
+- Outbound only: a change made to the ticket in VENTURE does not reach the task, and a ticket assigned to an agent in VENTURE does not start one.
+- Branches and pull requests are not linked to the ticket, and runs are not reported as VENTURE external runs.
+- Operator-created tasks are written with the assignee's account; there is no separate service account.

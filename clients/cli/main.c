@@ -166,6 +166,7 @@ static const gchar *usage_tail =
     "  clawtilla task review task-01m0k6 changes \"add a test\"\n"
     "  clawtilla task create --agent builder --repo . \"fix the build\"\n"
     "  clawtilla task diff task-01m0k6                    # what it changed\n"
+    "  clawtilla task venture-retry task-01m0k6           # send it to VENTURE again\n"
     "  clawtilla task incidents            # broken runs, and who was told\n"
     "  clawtilla task retry task-01m0k5    # send a failed run round again\n"
     "\n"
@@ -5149,6 +5150,29 @@ cmd_task(int argc, char *argv[])
                     "is the last thing %s wrote before its turn ended\n",
                     member_or(task, "assignee", "the assignee"));
 
+        /* Its VENTURE ticket, when the mirror has looked at it. */
+        {
+            JsonObject *root = json_node_get_object(reply);
+
+            if (json_object_has_member(root, "venture")) {
+                JsonObject *v = json_object_get_object_member(root, "venture");
+                const gchar *vstate = member_or(v, "state", "?");
+
+                if (json_object_has_member(v, "ticket"))
+                    g_print("venture:  #%" G_GINT64_FORMAT " (%s)  %s\n",
+                            json_object_get_int_member(v, "ticket"), vstate,
+                            member_or(v, "url", ""));
+                else
+                    g_print("venture:  %s\n", vstate);
+
+                if (json_object_has_member(v, "reason"))
+                    g_print("          %s%s\n", member_or(v, "reason", ""),
+                            (g_strcmp0(vstate, "dead") == 0 ||
+                             g_strcmp0(vstate, "skipped") == 0)
+                                ? "  (clawtilla task venture-retry)" : "");
+            }
+        }
+
         /* What was said about it, oldest first. */
         {
             JsonObject *root = json_node_get_object(reply);
@@ -5351,6 +5375,22 @@ cmd_task(int argc, char *argv[])
             return EXIT_FAILURE;
 
         g_print("Removed; its branch is kept in the repository.\n");
+        return EXIT_SUCCESS;
+    }
+
+    /* The VENTURE mirror's Retry, for a task it skipped or gave up on. */
+    if (g_strcmp0(verb, "venture-retry") == 0) {
+        if (argc < 4) {
+            g_printerr("Usage: clawtilla task venture-retry <task-id>\n");
+            return EXIT_FAILURE;
+        }
+
+        reply = call(client, "task.venture_retry",
+                     build_payload("task", argv[3], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("Queued for VENTURE again.\n");
         return EXIT_SUCCESS;
     }
 
@@ -11688,7 +11728,7 @@ static const ClawtVerb verbs[] = {
       cmd_account },
     { "policy-hook", "--agent ID --token-file PATH", "Claude Code's PreToolUse hook (run by the daemon's settings)",
       cmd_policy_hook },
-    { "task",    "<verb>",   "Tasks: list, show, create, assign, comment, link, unlink, review, diff, checkout-remove, cancel, retry, incidents",
+    { "task",    "<verb>",   "Tasks: list, show, create, assign, comment, link, unlink, review, diff, checkout-remove, venture-retry, cancel, retry, incidents",
       cmd_task },
     { "decision", "<verb>",  "Answer what an agent has asked you",
       cmd_decision },

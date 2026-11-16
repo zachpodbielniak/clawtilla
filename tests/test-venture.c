@@ -1088,6 +1088,7 @@ typedef struct {
     GMainContext *context;
     GPtrArray    *sent;
     const gchar  *extra_yaml;   /* appended to the config, or NULL */
+    const gchar  *integration_extra;  /* more keys on the connector */
 } DaemonFixture;
 
 static void
@@ -1149,10 +1150,12 @@ daemon_fixture_setup(DaemonFixture *fixture)
         "    scope: all\n"
         "    instance: \"https://books.example\"\n"
         "    token_file: \"%s\"\n"
+        "%s"
         "agents:\n  - id: bookkeeper\n"
         "%s",
         fixture->dir, fixture->dir, fixture->dir, secrets, fixture->dir,
         fixture->dir, token_path,
+        fixture->integration_extra != NULL ? fixture->integration_extra : "",
         fixture->extra_yaml != NULL ? fixture->extra_yaml : "");
 
     g_assert_true(g_file_set_contents(fixture->config_path, yaml, -1,
@@ -1239,6 +1242,49 @@ test_a_configured_connector_becomes_a_source(void)
                     "GET https://books.example/api/v1/confirmations");
 
     daemon_fixture_teardown(&fixture);
+}
+
+/*
+ * mirror_tasks on a connector gives its agent a mirroring account and
+ * turns the outbox on; without it, no account and no outbox -- a fleet
+ * that never asked for the mirror keeps no queue of changes.
+ */
+static void
+test_mirror_tasks_gives_the_agent_an_account(void)
+{
+    DaemonFixture plain = { 0 };
+    DaemonFixture mirrored = { 0 };
+    ClawtVentureRef ref = { 0 };
+    g_autoptr(JsonNode) described = NULL;
+
+    daemon_fixture_setup(&plain);
+    g_assert_nonnull(plain.daemon->venture_mirror);
+    g_assert_cmpuint(clawt_venture_mirror_account_count(
+        plain.daemon->venture_mirror), ==, 0);
+    g_assert_false(clawt_task_store_get_mirror(plain.daemon->task_store));
+    daemon_fixture_teardown(&plain);
+
+    mirrored.integration_extra = "    mirror_tasks: true\n";
+    daemon_fixture_setup(&mirrored);
+    g_assert_true(clawt_venture_mirror_has_account(
+        mirrored.daemon->venture_mirror, "bookkeeper"));
+    g_assert_true(clawt_task_store_get_mirror(mirrored.daemon->task_store));
+
+    /* and task.show's `venture` reads the store */
+    ref.task_id = (gchar *)"task-x";
+    ref.instance = (gchar *)"books";
+    ref.ticket_id = 12;
+    ref.state = (gchar *)"synced";
+    ref.url = (gchar *)"https://books.example/tickets/12";
+    g_assert_true(clawt_task_store_put_venture_ref(
+        mirrored.daemon->task_store, &ref, NULL));
+    described = clawt_daemon_venture_mirror_describe(mirrored.daemon,
+                                                     "task-x");
+    g_assert_cmpstr(json_object_get_string_member(
+        json_node_get_object(described), "url"), ==,
+        "https://books.example/tickets/12");
+
+    daemon_fixture_teardown(&mirrored);
 }
 
 /*
@@ -1701,6 +1747,8 @@ main(int argc, char **argv)
                     test_the_token_is_in_the_environment_and_not_the_argv);
     g_test_add_func("/venture/plan/apply-writes",
                     test_apply_writes_reaches_the_server);
+    g_test_add_func("/venture/mirror-tasks-gives-the-agent-an-account",
+                    test_mirror_tasks_gives_the_agent_an_account);
     g_test_add_func("/venture/apply-writes-low-risk",
                     test_apply_writes_low_risk);
     g_test_add_func("/venture/instance-reaches-the-server",

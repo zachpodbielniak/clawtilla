@@ -272,6 +272,14 @@ static const ClawtIntegrationField fields[] = {
       CLAWT_FIELD_CHOICE, apply_writes_levels, apply_writes_labels,
       NULL, NULL, FALSE },
 
+    { "connector", "mirror_tasks", "Mirror tasks as tickets (VENTURE)",
+      "Copies each task of the agents this connector covers into a "
+      "VENTURE ticket -- status, assignee, results, comments -- when its "
+      "repository is one VENTURE knows. Each agent writes as its own "
+      "account.",
+      NULL,
+      CLAWT_FIELD_BOOLEAN, NULL, NULL, NULL, NULL, FALSE },
+
     { "connector", "tools", "Tools",
       "Which of the connector's tools agents may call. Empty means all "
       "of them.",

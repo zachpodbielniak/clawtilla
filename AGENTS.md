@@ -320,6 +320,18 @@ fold over one event stream plus typed commands. Keep it that way: it is
 what makes the GTK client, the web client and an in-process cmacs embed all
 the same program.
 
+## The VENTURE mirror observes; it never steers
+
+Task code knows nothing of VENTURE. `clawt_task_store_save()` and
+`clawt_task_store_add_note()` write a `venture_outbox` row in the same
+transaction as the change, when `clawt_task_store_set_mirror()` is on, and
+`ClawtVentureMirror` (src/integration/clawt-venture-mirror.c) drains it on its
+own timer. Do not call the mirror from task, delegation or turn code, and do
+not make anything on an agent's path wait for it: a new thing to mirror is a
+new outbox row kind, written where the change is stored. Every write goes out
+as the agent it is about, with that agent's own token -- never borrow another
+agent's account to reach a repository it cannot see. See docs/venture.org.
+
 ## Shapes That Keep Recurring
 
 These are the patterns behind most of the bugs this project has had. Each has

@@ -524,6 +524,8 @@ void clawt_team_spec_free(ClawtTeamSpec *self);
  * @monthly_budget_usd: its budget per calendar month; 0 for none
  * @budget_warn_percent: where the operator is warned
  * @budget_hard_stop: whether new work is refused past the budget
+ * @venture_repo_id: the VENTURE `forge_repo` its tasks are mirrored
+ *   against, over matching their remotes; 0 for none (since 0.44.0)
  *
  * One entry from the config's `projects:` list (since 0.40.0).
  */
@@ -537,6 +539,7 @@ typedef struct {
     gdouble   monthly_budget_usd;
     gint      budget_warn_percent;
     gboolean  budget_hard_stop;
+    gint64    venture_repo_id;
 } ClawtProjectSpec;
 
 void clawt_project_spec_free(ClawtProjectSpec *self);

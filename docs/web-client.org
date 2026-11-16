@@ -276,7 +276,7 @@ answers with the page it did it on.
 | =/settings=, =/settings/:page= | the seven settings pages               |
 | =/settings/<page>/...=        | their actions: add, save, remove, health, test, authorize, revoke |
 | =/new=, =/import=, =/design=  | making an agent                         |
-| =/alerts=, =/decisions=, =/routines/...=, =/tasks/new=, =/tasks/:task= (a task's page: thread, history, comment form), =/tasks/:task/assign=, =/tasks/:task/comment=, =/tasks/:task/link=, =/tasks/:task/unlink=, =/tasks/:task/review=, =/tasks/:task/changes= (the diff), =/tasks/:task/checkout_remove=, =/tasks/:task/cancel=, =/tasks/:task/retry=, =/incidents/:incident/retry=, =/incidents/configure= | the standing surfaces |
+| =/alerts=, =/decisions=, =/routines/...=, =/tasks/new=, =/tasks/:task= (a task's page: thread, history, comment form), =/tasks/:task/assign=, =/tasks/:task/comment=, =/tasks/:task/link=, =/tasks/:task/unlink=, =/tasks/:task/review=, =/tasks/:task/changes= (the diff), =/tasks/:task/checkout_remove=, =/tasks/:task/venture_retry= (the VENTURE mirror's Retry), =/tasks/:task/cancel=, =/tasks/:task/retry=, =/incidents/:incident/retry=, =/incidents/configure= | the standing surfaces |
 | =/decisions/proposal=         | Approve, Reject or Edit a skill an agent proposed (~skill.proposal_resolve~); a refusal is shown as an error page, not swallowed by the redirect, since the proposal is still waiting |
 | =/activity/:agent/stop=, =/activity/:agent/steer=, =/f/activity= | the Activity page's actions and its polled panel |
 | =/a/:id/rescue= | the chat's first-reply rescue: Stop, or the same message again on another model (~turn.rescue~); before =/a/:id/:view= |

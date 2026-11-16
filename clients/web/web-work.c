@@ -1457,6 +1457,56 @@ task_page_body(ClawtWebApp *app, const gchar *id, const gchar *notice)
         }
     }
 
+    /*
+     * Its VENTURE ticket (0.44.0): the link when it is kept current, or
+     * why it is not -- and Retry when the mirror skipped it or gave up.
+     */
+    if (json_object_has_member(root, "venture")) {
+        JsonObject *venture = json_object_get_object_member(root, "venture");
+        const gchar *vstate = clawt_web_member(venture, "state", "");
+        const gchar *reason = clawt_web_member(venture, "reason", NULL);
+        const gchar *url = clawt_web_member(venture, "url", NULL);
+        g_autofree gchar *said = NULL;
+
+        if (g_strcmp0(vstate, "synced") == 0)
+            said = g_strdup_printf("Ticket #%" G_GINT64_FORMAT
+                                   ", kept current as the task moves.",
+                                   clawt_web_member_int(venture, "ticket", 0));
+        else if (g_strcmp0(vstate, "queued") == 0)
+            said = g_strdup_printf("Waiting to be sent%s%s",
+                                   reason != NULL ? ": " : ".",
+                                   reason != NULL ? reason : "");
+        else if (g_strcmp0(vstate, "skipped") == 0)
+            said = g_strdup_printf("Not mirrored: %s",
+                                   reason != NULL ? reason : "no reason given");
+        else
+            said = g_strdup_printf("The mirror gave up: %s",
+                                   reason != NULL ? reason : "no reason given");
+
+        clawt_web_add(pad, clawt_web_section_title("VENTURE"));
+        clawt_web_add(pad, clawt_web_text(said, "small muted"));
+
+        if (url != NULL) {
+            HtmxA *link = htmx_a_new_with_href(url);
+
+            htmx_node_set_text_content(HTMX_NODE(link), "Open in VENTURE");
+            htmx_element_set_attribute(HTMX_ELEMENT(link), "target", "_blank");
+            htmx_element_set_attribute(HTMX_ELEMENT(link), "rel", "noopener");
+            htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(link));
+        }
+
+        if (g_strcmp0(vstate, "dead") == 0 ||
+            g_strcmp0(vstate, "skipped") == 0) {
+            g_autofree gchar *escaped = g_uri_escape_string(id, NULL, FALSE);
+            g_autofree gchar *action = g_strdup_printf(
+                "/tasks/%s/venture_retry", escaped);
+            g_autoptr(HtmxForm) retry = clawt_web_form(action);
+
+            add_submit(retry, "Retry");
+            htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(retry));
+        }
+    }
+
     /* Who reviews it, and the operator's two answers while it waits. */
     if (clawt_web_member(task, "reviewer", NULL) != NULL) {
         g_autofree gchar *who = g_strdup_printf(
@@ -1637,6 +1687,24 @@ on_task_checkout_remove(HtmxRequest *request, GHashTable *params,
 }
 
 static HtmxResponse *
+on_task_venture_retry(HtmxRequest *request, GHashTable *params,
+                      gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *id = clawt_web_param(params, "task");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+
+    clawt_web_payload_set(payload, "task", id);
+    reply = clawt_web_app_call(app, "task.venture_retry",
+                               clawt_web_payload_take(g_steal_pointer(&payload)));
+
+    return task_page(app, request, id,
+                     reply == NULL ? clawt_web_app_last_error(app)
+                                   : "Sending to VENTURE again.");
+}
+
+static HtmxResponse *
 on_task_review(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
     ClawtWebApp *app = user_data;
@@ -1812,6 +1880,8 @@ clawt_web_register_work(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_get(router, "/tasks/:task/changes", on_task_changes, app);
     htmx_router_post(router, "/tasks/:task/checkout_remove",
                      on_task_checkout_remove, app);
+    htmx_router_post(router, "/tasks/:task/venture_retry",
+                     on_task_venture_retry, app);
     htmx_router_post(router, "/tasks/:task/unlink", on_task_unlink, app);
     htmx_router_post(router, "/tasks/:task/cancel", on_task_cancel, app);
     htmx_router_post(router, "/tasks/:task/retry", on_task_retry, app);

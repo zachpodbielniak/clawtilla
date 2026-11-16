@@ -29,6 +29,7 @@
 #include "wait/clawt-wait-manager.h"
 #include "task/clawt-routine-runner.h"
 #include "integration/clawt-venture-bridge.h"
+#include "integration/clawt-venture-mirror.h"
 #include "trigger/clawt-trigger-store.h"
 #include "trigger/clawt-webhook-ingress.h"
 #include "usage/clawt-usage.h"
@@ -477,6 +478,15 @@ struct _ClawtDaemon {
      * a `replay_connector`.  Opaque here; daemon-venture.c owns it.
      */
     struct _ClawtVentureReplay *venture_replay;
+
+    /*
+     * Tasks copied into VENTURE tickets (0.44.0): the mirror, the
+     * `task-changed` handler that wakes it, and each directory's git
+     * remotes for ten minutes.  daemon-venture-mirror.c owns them.
+     */
+    ClawtVentureMirror  *venture_mirror;
+    gulong               mirror_task_handler;
+    GHashTable          *mirror_remotes;
 
     /*
      * Grok bots: the job store, the POSTs in flight and the deadline
@@ -1093,6 +1103,21 @@ guint clawt_daemon_trigger_deliver(ClawtDaemon        *self,
 void clawt_daemon_venture_start(ClawtDaemon *self);
 void clawt_daemon_venture_stop(ClawtDaemon *self);
 void clawt_daemon_venture_sync(ClawtDaemon *self);
+
+/* The token file a connector binding names, read; NULL without one. */
+gchar *clawt_daemon_venture_token_for(ClawtIntegrationBinding *binding);
+
+/*
+ * The task mirror, in daemon-venture-mirror.c: started and stopped with
+ * the bridge, re-read on the same reloads.
+ */
+void      clawt_daemon_venture_mirror_start(ClawtDaemon *self);
+void      clawt_daemon_venture_mirror_stop(ClawtDaemon *self);
+void      clawt_daemon_venture_mirror_sync(ClawtDaemon *self);
+JsonNode *clawt_daemon_venture_mirror_describe(ClawtDaemon *self,
+                                               const gchar *task_id);
+guint     clawt_daemon_venture_mirror_retry(ClawtDaemon *self,
+                                            const gchar *task_id);
 
 /*
  * Grok bots, in daemon-grok.c.

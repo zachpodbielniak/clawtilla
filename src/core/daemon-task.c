@@ -317,6 +317,45 @@ clawt_daemon_handle_task(
         g_strcmp0(kind, "task.checkout_remove") == 0)
         return handle_checkout_request(self, kind, request, payload);
 
+    /*
+     * The operator's Retry on a task the mirror gave up on, or found
+     * unmatched: its dead rows queued again, and the task looked at
+     * afresh.
+     */
+    if (g_strcmp0(kind, "task.venture_retry") == 0) {
+        const gchar *task_id = clawt_ipc_payload_string(payload, "task");
+        g_autoptr(ClawtTask) stored = NULL;
+        guint revived;
+
+        /* Kept tasks too, not only the live ones in memory. */
+        if (task_id != NULL && self->task_store != NULL &&
+            clawt_task_manager_get(self->tasks, task_id) == NULL)
+            stored = clawt_task_store_get(self->task_store, task_id);
+
+        if (task_id == NULL ||
+            (clawt_task_manager_get(self->tasks, task_id) == NULL &&
+             stored == NULL))
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "no such task");
+
+        if (self->venture_mirror == NULL ||
+            clawt_venture_mirror_account_count(self->venture_mirror) == 0)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "no venture connector has "
+                                       "mirror_tasks on");
+
+        revived = clawt_daemon_venture_mirror_retry(self, task_id);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "task");
+        json_builder_add_string_value(builder, task_id);
+        json_builder_set_member_name(builder, "queued");
+        json_builder_add_int_value(builder, revived);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
     if (g_strcmp0(kind, "task.show") == 0) {
         const gchar *task_id = clawt_ipc_payload_string(payload, "task");
         ClawtTask *task = (task_id != NULL)
@@ -343,6 +382,21 @@ clawt_daemon_handle_task(
             if (notes != NULL) {
                 json_builder_set_member_name(builder, "notes");
                 json_builder_add_value(builder, notes);
+            }
+        }
+
+        /*
+         * Its VENTURE ticket, when the mirror has looked at it: the
+         * ticket and its page, or why it is not mirrored, or why the
+         * mirror gave up (0.44.0).
+         */
+        {
+            JsonNode *venture = clawt_daemon_venture_mirror_describe(self,
+                                                                     task_id);
+
+            if (venture != NULL) {
+                json_builder_set_member_name(builder, "venture");
+                json_builder_add_value(builder, venture);
             }
         }
 

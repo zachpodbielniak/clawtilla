@@ -177,7 +177,11 @@ Worth keeping:
 - ~agents/*/memory.db~ -- what each agent has remembered
 - ~tasks.db~ -- every task and what happened to it, and the problem
   reports about them; kept across restarts for
-  ~orchestration.task_retention_days~
+  ~orchestration.task_retention_days~.  With the VENTURE mirror on
+  (0.44.0) it also holds the changes still to send to VENTURE and each
+  task's ticket (=venture_outbox=, =venture_refs=) -- restoring an old
+  copy can make the mirror file a ticket again, which VENTURE answers
+  with the existing one (=external_ref=)
 - ~transcripts/~ -- what was said, as each room currently holds it
 - ~events/~ -- the append-only record the transcripts are a view of, and
   the only copy of anything a transcript loses

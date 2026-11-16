@@ -67,13 +67,97 @@ static const gchar *SCHEMA_SQL =
     "  opened_at INTEGER NOT NULL,"
     "  data TEXT NOT NULL"
     ");"
-    "CREATE INDEX IF NOT EXISTS incidents_opened ON incidents(opened_at);";
+    "CREATE INDEX IF NOT EXISTS incidents_opened ON incidents(opened_at);"
+    /*
+     * The VENTURE mirror's side (0.44.0).  The outbox is written in the
+     * same transaction as the change it reports, so a crash between
+     * "the task moved" and "VENTURE must hear of it" cannot happen; the
+     * mirror only ever reads it.  `state` 0 is queued, 2 is dead.  A
+     * task's `sync` row is coalesced -- one queued row per task, its
+     * `gen` bumped by every later change -- while each note is its own
+     * row, in order.
+     */
+    "CREATE TABLE IF NOT EXISTS venture_outbox ("
+    "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "  task_id TEXT NOT NULL,"
+    "  kind TEXT NOT NULL,"
+    "  note_id INTEGER NOT NULL DEFAULT 0,"
+    "  created_at INTEGER NOT NULL,"
+    "  next_at INTEGER NOT NULL,"
+    "  attempts INTEGER NOT NULL DEFAULT 0,"
+    "  gen INTEGER NOT NULL DEFAULT 1,"
+    "  state INTEGER NOT NULL DEFAULT 0,"
+    "  error TEXT"
+    ");"
+    "CREATE UNIQUE INDEX IF NOT EXISTS venture_outbox_queued "
+    "  ON venture_outbox(task_id, kind, note_id) WHERE state = 0;"
+    "CREATE INDEX IF NOT EXISTS venture_outbox_task "
+    "  ON venture_outbox(task_id, id);"
+    "CREATE TABLE IF NOT EXISTS venture_refs ("
+    "  task_id TEXT PRIMARY KEY,"
+    "  instance TEXT,"
+    "  ticket_id INTEGER NOT NULL DEFAULT 0,"
+    "  version INTEGER NOT NULL DEFAULT 0,"
+    "  snapshot TEXT,"
+    "  state TEXT NOT NULL,"
+    "  reason TEXT,"
+    "  url TEXT,"
+    "  updated_at INTEGER NOT NULL"
+    ");"
+    "CREATE TABLE IF NOT EXISTS venture_note_refs ("
+    "  note_id INTEGER PRIMARY KEY,"
+    "  task_id TEXT NOT NULL,"
+    "  comment_id INTEGER NOT NULL"
+    ");";
 
 struct _ClawtTaskStore {
     GObject  parent_instance;
     sqlite3 *db;
     gchar   *path;
+    gboolean mirror;     /* write outbox rows (the VENTURE mirror is on) */
 };
+
+/*
+ * One outbox row for @task_id: a coalesced `sync` (@note_id 0) or one
+ * note.  Inside the caller's transaction.  A queued row already there
+ * has its generation bumped and is made due now, so a change made while
+ * the mirror is sending the previous one is not lost.
+ */
+static gboolean
+outbox_add(ClawtTaskStore *self, const gchar *task_id, const gchar *kind,
+           gint64 note_id, GError **error)
+{
+    sqlite3_stmt *stmt = NULL;
+    gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+    gboolean ok;
+
+    if (sqlite3_prepare_v2(self->db,
+            "INSERT INTO venture_outbox "
+            "  (task_id, kind, note_id, created_at, next_at) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(task_id, kind, note_id) WHERE state = 0 "
+            "DO UPDATE SET gen = gen + 1, next_at = MIN(next_at, excluded.next_at)",
+            -1, &stmt, NULL) != SQLITE_OK) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                    "preparing an outbox row: %s", sqlite3_errmsg(self->db));
+        return FALSE;
+    }
+
+    sqlite3_bind_text(stmt, 1, task_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, kind, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 3, note_id);
+    sqlite3_bind_int64(stmt, 4, now);
+    sqlite3_bind_int64(stmt, 5, now);
+
+    ok = sqlite3_step(stmt) == SQLITE_DONE;
+
+    if (!ok)
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                    "adding an outbox row: %s", sqlite3_errmsg(self->db));
+
+    sqlite3_finalize(stmt);
+    return ok;
+}
 
 G_DEFINE_FINAL_TYPE(ClawtTaskStore, clawt_task_store, G_TYPE_OBJECT)
 
@@ -297,6 +381,11 @@ clawt_task_store_save(ClawtTaskStore  *self,
             goto out;
         }
     }
+
+    g_clear_pointer(&stmt, sqlite3_finalize);
+
+    if (self->mirror && !outbox_add(self, task_id, "sync", 0, error))
+        goto out;
 
     ok = TRUE;
 
@@ -645,12 +734,29 @@ clawt_task_store_add_note(ClawtTaskStore  *self,
     sqlite3_bind_text(stmt, 4, kind, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 5, body, -1, SQLITE_TRANSIENT);
 
+    /* The note and the mirror's row for it, together or not at all. */
+    if (self->mirror && !exec(self, "BEGIN IMMEDIATE", error)) {
+        sqlite3_finalize(stmt);
+        return 0;
+    }
+
     if (sqlite3_step(stmt) == SQLITE_DONE)
         id = sqlite3_last_insert_rowid(self->db);
     else
         set_sqlite_error(error, self->db, "adding a task note");
 
     sqlite3_finalize(stmt);
+
+    if (self->mirror) {
+        if (id > 0 && outbox_add(self, task_id, "note", id, error)) {
+            if (!exec(self, "COMMIT", error))
+                id = 0;
+        } else {
+            sqlite3_exec(self->db, "ROLLBACK", NULL, NULL, NULL);
+            id = 0;
+        }
+    }
+
     return id;
 }
 
@@ -980,6 +1086,429 @@ clawt_task_store_load_incidents(ClawtTaskStore  *self,
 
     sqlite3_finalize(stmt);
     return out;
+}
+
+/* ── The VENTURE mirror's outbox and refs (0.44.0) ──────────────── */
+
+void
+clawt_task_store_set_mirror(ClawtTaskStore *self, gboolean mirror)
+{
+    g_return_if_fail(CLAWT_IS_TASK_STORE(self));
+
+    self->mirror = mirror;
+}
+
+gboolean
+clawt_task_store_get_mirror(ClawtTaskStore *self)
+{
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), FALSE);
+
+    return self->mirror;
+}
+
+void
+clawt_venture_outbox_row_free(ClawtVentureOutboxRow *row)
+{
+    if (row == NULL)
+        return;
+
+    g_free(row->task_id);
+    g_free(row->kind);
+    g_free(row);
+}
+
+void
+clawt_venture_ref_free(ClawtVentureRef *ref)
+{
+    if (ref == NULL)
+        return;
+
+    g_free(ref->task_id);
+    g_free(ref->instance);
+    g_free(ref->snapshot);
+    g_free(ref->state);
+    g_free(ref->reason);
+    g_free(ref->url);
+    g_free(ref);
+}
+
+GPtrArray *
+clawt_task_store_outbox_due(ClawtTaskStore  *self,
+                            gint64           now,
+                            guint            limit,
+                            GError         **error)
+{
+    sqlite3_stmt *stmt = NULL;
+    GPtrArray *rows;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), NULL);
+
+    /*
+     * The oldest queued row of each task, and only when it is due: FIFO
+     * per task, so a comment never reaches VENTURE before the ticket it
+     * belongs to, and a task waiting out a backoff holds its own later
+     * rows without holding anybody else's.
+     */
+    if (sqlite3_prepare_v2(self->db,
+            "SELECT o.id, o.task_id, o.kind, o.note_id, o.attempts, o.gen "
+            "FROM venture_outbox o "
+            "WHERE o.state = 0 AND o.next_at <= ? AND o.id = "
+            "  (SELECT MIN(i.id) FROM venture_outbox i "
+            "   WHERE i.task_id = o.task_id AND i.state = 0) "
+            "ORDER BY o.id LIMIT ?", -1, &stmt, NULL) != SQLITE_OK) {
+        set_sqlite_error(error, self->db, "reading the outbox");
+        return NULL;
+    }
+
+    sqlite3_bind_int64(stmt, 1, now);
+    sqlite3_bind_int(stmt, 2, (gint)limit);
+
+    rows = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)clawt_venture_outbox_row_free);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        ClawtVentureOutboxRow *row = g_new0(ClawtVentureOutboxRow, 1);
+
+        row->id = sqlite3_column_int64(stmt, 0);
+        row->task_id = g_strdup((const gchar *)sqlite3_column_text(stmt, 1));
+        row->kind = g_strdup((const gchar *)sqlite3_column_text(stmt, 2));
+        row->note_id = sqlite3_column_int64(stmt, 3);
+        row->attempts = sqlite3_column_int(stmt, 4);
+        row->gen = sqlite3_column_int64(stmt, 5);
+        g_ptr_array_add(rows, row);
+    }
+
+    sqlite3_finalize(stmt);
+    return rows;
+}
+
+/*
+ * One UPDATE over one outbox row.  @sql binds, in order, @a and @b when
+ * @with_numbers, then @text, then the row's @id.
+ */
+static gboolean
+outbox_update(ClawtTaskStore *self, const gchar *sql, gboolean with_numbers,
+              gint64 a, gint64 b, const gchar *text, gint64 id)
+{
+    sqlite3_stmt *stmt = NULL;
+    gint n = 1;
+    gboolean ok;
+
+    if (sqlite3_prepare_v2(self->db, sql, -1, &stmt, NULL) != SQLITE_OK)
+        return FALSE;
+
+    if (with_numbers) {
+        sqlite3_bind_int64(stmt, n++, a);
+        sqlite3_bind_int64(stmt, n++, b);
+    }
+
+    sqlite3_bind_text(stmt, n++, text, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, n, id);
+
+    ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
+gboolean
+clawt_task_store_outbox_finish(ClawtTaskStore *self, gint64 id, gint64 gen)
+{
+    sqlite3_stmt *stmt = NULL;
+    gboolean ok;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), FALSE);
+
+    /*
+     * Done only if nothing changed since it was read: a `sync` whose
+     * generation moved on is the newer change, still owed, so it goes
+     * back to due-now rather than being deleted.
+     */
+    if (sqlite3_prepare_v2(self->db,
+            "DELETE FROM venture_outbox WHERE id = ? AND gen = ?",
+            -1, &stmt, NULL) != SQLITE_OK)
+        return FALSE;
+
+    sqlite3_bind_int64(stmt, 1, id);
+    sqlite3_bind_int64(stmt, 2, gen);
+    ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+
+    if (ok && sqlite3_changes(self->db) == 0)
+        ok = outbox_update(self,
+            "UPDATE venture_outbox SET attempts = ?, next_at = ?, "
+            "  error = ? WHERE id = ?", TRUE,
+            0, g_get_real_time() / G_USEC_PER_SEC, NULL, id);
+
+    return ok;
+}
+
+gboolean
+clawt_task_store_outbox_retry(ClawtTaskStore *self, gint64 id,
+                              gint attempts, gint64 next_at,
+                              const gchar *why)
+{
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), FALSE);
+
+    return outbox_update(self,
+        "UPDATE venture_outbox SET attempts = ?, next_at = ?, error = ? "
+        "WHERE id = ?", TRUE, attempts, next_at, why, id);
+}
+
+gboolean
+clawt_task_store_outbox_kill(ClawtTaskStore *self, gint64 id,
+                             const gchar *why)
+{
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), FALSE);
+
+    return outbox_update(self,
+        "UPDATE venture_outbox SET state = 2, error = ? WHERE id = ?",
+        FALSE, 0, 0, why, id);
+}
+
+guint
+clawt_task_store_outbox_revive(ClawtTaskStore *self, const gchar *task_id)
+{
+    sqlite3_stmt *stmt = NULL;
+    guint revived = 0;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), 0);
+    g_return_val_if_fail(task_id != NULL, 0);
+
+    /*
+     * Dead rows back to queued, oldest first.  OR IGNORE: a dead `sync`
+     * whose task has since queued a newer one is already covered by it,
+     * and is dropped instead.
+     */
+    if (sqlite3_prepare_v2(self->db,
+            "UPDATE OR IGNORE venture_outbox SET state = 0, attempts = 0, "
+            "  next_at = ?, error = NULL WHERE task_id = ? AND state = 2",
+            -1, &stmt, NULL) != SQLITE_OK)
+        return 0;
+
+    sqlite3_bind_int64(stmt, 1, g_get_real_time() / G_USEC_PER_SEC);
+    sqlite3_bind_text(stmt, 2, task_id, -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(stmt) == SQLITE_DONE)
+        revived = (guint)sqlite3_changes(self->db);
+
+    sqlite3_finalize(stmt);
+
+    if (sqlite3_prepare_v2(self->db,
+            "DELETE FROM venture_outbox WHERE task_id = ? AND state = 2",
+            -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, task_id, -1, SQLITE_TRANSIENT);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
+
+    return revived;
+}
+
+void
+clawt_task_store_outbox_state(ClawtTaskStore  *self,
+                              const gchar     *task_id,
+                              guint           *queued,
+                              guint           *dead,
+                              gchar          **last_error)
+{
+    sqlite3_stmt *stmt = NULL;
+
+    g_return_if_fail(CLAWT_IS_TASK_STORE(self));
+
+    if (queued != NULL)
+        *queued = 0;
+    if (dead != NULL)
+        *dead = 0;
+    if (last_error != NULL)
+        *last_error = NULL;
+
+    if (sqlite3_prepare_v2(self->db,
+            "SELECT state, error FROM venture_outbox WHERE task_id = ? "
+            "ORDER BY id", -1, &stmt, NULL) != SQLITE_OK)
+        return;
+
+    sqlite3_bind_text(stmt, 1, task_id, -1, SQLITE_TRANSIENT);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        gint state = sqlite3_column_int(stmt, 0);
+        const gchar *why = (const gchar *)sqlite3_column_text(stmt, 1);
+
+        if (state == 2 && dead != NULL)
+            (*dead)++;
+        else if (state == 0 && queued != NULL)
+            (*queued)++;
+
+        if (why != NULL && last_error != NULL) {
+            g_free(*last_error);
+            *last_error = g_strdup(why);
+        }
+    }
+
+    sqlite3_finalize(stmt);
+}
+
+ClawtVentureRef *
+clawt_task_store_venture_ref(ClawtTaskStore *self, const gchar *task_id)
+{
+    sqlite3_stmt *stmt = NULL;
+    ClawtVentureRef *ref = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), NULL);
+    g_return_val_if_fail(task_id != NULL, NULL);
+
+    if (sqlite3_prepare_v2(self->db,
+            "SELECT instance, ticket_id, version, snapshot, state, reason, "
+            "  url, updated_at FROM venture_refs WHERE task_id = ?",
+            -1, &stmt, NULL) != SQLITE_OK)
+        return NULL;
+
+    sqlite3_bind_text(stmt, 1, task_id, -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        ref = g_new0(ClawtVentureRef, 1);
+        ref->task_id = g_strdup(task_id);
+        ref->instance = g_strdup((const gchar *)sqlite3_column_text(stmt, 0));
+        ref->ticket_id = sqlite3_column_int64(stmt, 1);
+        ref->version = sqlite3_column_int64(stmt, 2);
+        ref->snapshot = g_strdup((const gchar *)sqlite3_column_text(stmt, 3));
+        ref->state = g_strdup((const gchar *)sqlite3_column_text(stmt, 4));
+        ref->reason = g_strdup((const gchar *)sqlite3_column_text(stmt, 5));
+        ref->url = g_strdup((const gchar *)sqlite3_column_text(stmt, 6));
+        ref->updated_at = sqlite3_column_int64(stmt, 7);
+    }
+
+    sqlite3_finalize(stmt);
+    return ref;
+}
+
+gboolean
+clawt_task_store_put_venture_ref(ClawtTaskStore        *self,
+                                 const ClawtVentureRef *ref,
+                                 GError               **error)
+{
+    sqlite3_stmt *stmt = NULL;
+    gboolean ok;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), FALSE);
+    g_return_val_if_fail(ref != NULL && ref->task_id != NULL, FALSE);
+    g_return_val_if_fail(ref->state != NULL, FALSE);
+
+    if (sqlite3_prepare_v2(self->db,
+            "INSERT OR REPLACE INTO venture_refs (task_id, instance, "
+            "  ticket_id, version, snapshot, state, reason, url, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL)
+        != SQLITE_OK) {
+        set_sqlite_error(error, self->db, "preparing a VENTURE ref");
+        return FALSE;
+    }
+
+    sqlite3_bind_text(stmt, 1, ref->task_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, ref->instance, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 3, ref->ticket_id);
+    sqlite3_bind_int64(stmt, 4, ref->version);
+    sqlite3_bind_text(stmt, 5, ref->snapshot, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 6, ref->state, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 7, ref->reason, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 8, ref->url, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 9, now_seconds());
+
+    ok = sqlite3_step(stmt) == SQLITE_DONE;
+
+    if (!ok)
+        set_sqlite_error(error, self->db, "saving a VENTURE ref");
+
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
+JsonNode *
+clawt_task_store_note(ClawtTaskStore *self, gint64 note_id)
+{
+    sqlite3_stmt *stmt = NULL;
+    JsonNode *node = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), NULL);
+
+    if (sqlite3_prepare_v2(self->db,
+            "SELECT task_id, at, author, kind, body FROM task_notes "
+            "WHERE id = ?", -1, &stmt, NULL) != SQLITE_OK)
+        return NULL;
+
+    sqlite3_bind_int64(stmt, 1, note_id);
+
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        g_autoptr(JsonBuilder) b = json_builder_new();
+        const gchar *author = (const gchar *)sqlite3_column_text(stmt, 2);
+
+        json_builder_begin_object(b);
+        json_builder_set_member_name(b, "id");
+        json_builder_add_int_value(b, note_id);
+        json_builder_set_member_name(b, "task_id");
+        json_builder_add_string_value(b,
+            (const gchar *)sqlite3_column_text(stmt, 0));
+        json_builder_set_member_name(b, "at");
+        json_builder_add_int_value(b, sqlite3_column_int64(stmt, 1));
+        if (author != NULL) {
+            json_builder_set_member_name(b, "author");
+            json_builder_add_string_value(b, author);
+        }
+        json_builder_set_member_name(b, "kind");
+        json_builder_add_string_value(b,
+            (const gchar *)sqlite3_column_text(stmt, 3));
+        json_builder_set_member_name(b, "body");
+        json_builder_add_string_value(b,
+            (const gchar *)sqlite3_column_text(stmt, 4));
+        json_builder_end_object(b);
+        node = json_builder_get_root(b);
+    }
+
+    sqlite3_finalize(stmt);
+    return node;
+}
+
+gint64
+clawt_task_store_venture_comment(ClawtTaskStore *self, gint64 note_id)
+{
+    sqlite3_stmt *stmt = NULL;
+    gint64 comment = 0;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), 0);
+
+    if (sqlite3_prepare_v2(self->db,
+            "SELECT comment_id FROM venture_note_refs WHERE note_id = ?",
+            -1, &stmt, NULL) != SQLITE_OK)
+        return 0;
+
+    sqlite3_bind_int64(stmt, 1, note_id);
+
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+        comment = sqlite3_column_int64(stmt, 0);
+
+    sqlite3_finalize(stmt);
+    return comment;
+}
+
+gboolean
+clawt_task_store_put_venture_comment(ClawtTaskStore *self, gint64 note_id,
+                                     const gchar *task_id, gint64 comment_id)
+{
+    sqlite3_stmt *stmt = NULL;
+    gboolean ok;
+
+    g_return_val_if_fail(CLAWT_IS_TASK_STORE(self), FALSE);
+
+    if (sqlite3_prepare_v2(self->db,
+            "INSERT OR REPLACE INTO venture_note_refs "
+            "  (note_id, task_id, comment_id) VALUES (?, ?, ?)",
+            -1, &stmt, NULL) != SQLITE_OK)
+        return FALSE;
+
+    sqlite3_bind_int64(stmt, 1, note_id);
+    sqlite3_bind_text(stmt, 2, task_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 3, comment_id);
+    ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    return ok;
 }
 
 static void
