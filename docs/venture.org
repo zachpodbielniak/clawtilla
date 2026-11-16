@@ -4,7 +4,7 @@
 #+categories: clawtilla docs integrations venture
 #+created: [2026-11-16]
 #+updated: [2026-11-16]
-#+version: 0.48.0
+#+version: 0.49.0
 
 * What it is
 
@@ -158,7 +158,28 @@ An agent whose connector mirrors is told so in the integrations section of its =
 
 * The contract with VENTURE (since 0.46.0)
 
-What the mirror reads of each VENTURE answer is a contract, recorded on VENTURE's side: its =tests/fixtures/api-contract/= holds the shape -- every key, its type -- of each answer (=whoami=, repository resolve, a ticket filed, listed and updated, its timeline, comments made and listed, the branch link made and given its pull request, a run opened and closed, a milestone, a goal), and VENTURE's tests fail when one stops matching.  clawtilla keeps a copy in =tests/fixtures/venture/=, and =tests/test-venture-contract.c= checks every key the mirror reads is in it with the type it reads it as.  =make check-venture-contract= (with VENTURE checked out beside clawtilla, or =VENTURE_DIR=) diffs the two copies.
+What the mirror reads of each VENTURE answer is a contract, recorded on VENTURE's side: its =tests/fixtures/api-contract/= holds the shape -- every key, its type -- of each answer (=whoami=, repository resolve, a ticket filed, listed and updated, its timeline, comments made and listed, the branch link made and given its pull request, a run opened and closed, a milestone, a goal), and VENTURE's tests fail when one stops matching.  Every call the mirror makes has its answer recorded:
+
+| The mirror calls | Recorded as |
+|------------------+-------------|
+| =GET /api/v1/whoami= | =whoami= |
+| =GET /api/v1/forge_repo/resolve?url== | =forge-repo-resolve= |
+| =GET /api/v1/forge_repo/:id= (a pinned repository) | =forge-repo= |
+| =POST /api/v1/ticket= | =ticket-create= |
+| =GET /api/v1/ticket?…= (adoption, changes, intake) | =ticket-list= |
+| =GET /api/v1/ticket/:id= (after a stale version) | =ticket= |
+| =PATCH /api/v1/ticket/:id= | =ticket-update= |
+| =GET /api/v1/activity/ticket/:id= | =ticket-activity= |
+| =POST /api/v1/ticket_comment= | =ticket-comment-create= |
+| =GET /api/v1/ticket_comment?…= (adoption, the reverse poll) | =ticket-comment-list= |
+| =POST /api/v1/ticket_link= | =ticket-link-create= |
+| =PATCH /api/v1/ticket_link/:id= (a pull request) | =ticket-link-update= |
+| =POST /api/v1/runs/external= | =run-start= |
+| =PATCH /api/v1/runs/external/:id= | =run-finish= |
+| =GET /api/v1/milestone/:id= | =milestone= |
+| =GET /api/v1/goal/:id= | =goal= |
+
+clawtilla keeps a copy in =tests/fixtures/venture/=, and =tests/test-venture-contract.c= checks every key the mirror reads is in it with the type it reads it as.  =make check-venture-contract= (with VENTURE checked out beside clawtilla, or =VENTURE_DIR=) diffs the two copies.
 
 * Seen working
 

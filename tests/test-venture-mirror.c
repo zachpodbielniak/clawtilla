@@ -126,6 +126,11 @@ fake_send(ClawtVentureMirror     *mirror,
         else
             answer->status = 404;
     } else if (g_strcmp0(method, "POST") == 0 &&
+               g_strcmp0(path, "/api/v1/ticket") == 0 &&
+               g_strcmp0(token, "t-viewer") == 0) {
+        answer->status = 202;
+        answer->body = g_strdup("{\"staged\":true}");
+    } else if (g_strcmp0(method, "POST") == 0 &&
                g_strcmp0(path, "/api/v1/ticket") == 0) {
         if (fixture->create_conflicts > 0) {
             fixture->create_conflicts--;
@@ -1297,6 +1302,123 @@ test_pull_request_is_linked(Fixture *fixture, gconstpointer data)
                      ==, 1);
 }
 
+/* ── Accounts, as the plan names them ────────────────────────────── */
+
+/*
+ * A handoff moves the ticket with the work: the new owner's account
+ * writes it, assigned to the new owner's VENTURE user.
+ */
+static void
+test_handoff_reassigns_the_ticket(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = save_task(fixture, "lead", "scout",
+                                          CLAWT_TASK_RUNNING);
+    g_autoptr(JsonNode) patch = NULL;
+    Sent *sent = NULL;
+    guint i;
+
+    (void)data;
+    drain(fixture);
+
+    g_assert_true(clawt_task_transfer_owner(task, "lead"));
+    g_assert_true(clawt_task_store_save(fixture->store, task, NULL, NULL));
+    drain(fixture);
+
+    for (i = 0; i < fixture->sent->len; i++) {
+        Sent *s = g_ptr_array_index(fixture->sent, i);
+
+        if (g_strcmp0(s->method, "PATCH") == 0 &&
+            g_strcmp0(s->url, "/api/v1/ticket/1") == 0)
+            sent = s;
+    }
+
+    g_assert_nonnull(sent);
+    g_assert_cmpstr(sent->token, ==, "t-lead");
+    g_assert_cmpstr(json_object_get_string_member(body_of(sent, &patch),
+                                                  "assignee"), ==, "lead-bot");
+}
+
+/* One agent's refused token stops its own tasks, and nobody else's. */
+static void
+test_a_refused_token_stops_only_its_own(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtTask) theirs = NULL;
+    g_autoptr(ClawtTask) ours = NULL;
+    g_autoptr(JsonNode) dead = NULL;
+    g_autoptr(ClawtVentureRef) ref = NULL;
+
+    (void)data;
+    clawt_venture_mirror_set_account(fixture->mirror, "rogue", "books-rogue",
+                                     "http://v.test", "t-bad");
+
+    g_test_expect_message(G_LOG_DOMAIN, G_LOG_LEVEL_WARNING,
+                          "*refused rogue's token*");
+    theirs = save_task(fixture, "rogue", "rogue", CLAWT_TASK_PENDING);
+    ours = save_task(fixture, "lead", "scout", CLAWT_TASK_PENDING);
+    drain(fixture);
+    g_test_assert_expected_messages();
+
+    dead = clawt_venture_mirror_describe(fixture->store,
+                                         clawt_task_get_id(theirs));
+    g_assert_cmpstr(json_object_get_string_member(json_node_get_object(dead),
+                                                  "state"), ==, "dead");
+
+    ref = clawt_task_store_venture_ref(fixture->store, clawt_task_get_id(ours));
+    g_assert_nonnull(ref);
+    g_assert_cmpstr(ref->state, ==, "synced");
+}
+
+/*
+ * A token whose role stages its writes -- a viewer, answered 202 -- is a
+ * configuration error, named, not retried.
+ */
+static void
+test_a_viewer_token_is_flagged(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = NULL;
+    g_autoptr(JsonNode) dead = NULL;
+    const gchar *reason;
+
+    (void)data;
+    clawt_venture_mirror_set_account(fixture->mirror, "watcher",
+                                     "books-watcher", "http://v.test",
+                                     "t-viewer");
+
+    g_test_expect_message(G_LOG_DOMAIN, G_LOG_LEVEL_WARNING,
+                          "*stages its writes*");
+    task = save_task(fixture, "watcher", "watcher", CLAWT_TASK_PENDING);
+    drain(fixture);
+    g_test_assert_expected_messages();
+
+    dead = clawt_venture_mirror_describe(fixture->store,
+                                         clawt_task_get_id(task));
+    reason = json_object_get_string_member(json_node_get_object(dead),
+                                           "reason");
+    g_assert_nonnull(strstr(reason, "watcher"));
+    g_assert_nonnull(strstr(reason, "editor membership"));
+    g_assert_cmpuint(count_sent(fixture, "POST", "/api/v1/ticket"), ==, 1);
+}
+
+/* A reviewer's verdict is written with the reviewer's own token. */
+static void
+test_review_is_written_by_the_reviewer(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = save_task(fixture, "lead", "scout",
+                                          CLAWT_TASK_REVIEW);
+    Sent *sent;
+
+    (void)data;
+    drain(fixture);
+
+    clawt_task_store_add_note(fixture->store, clawt_task_get_id(task), "lead",
+                              "review", "Changes: add a test.", NULL);
+    drain(fixture);
+
+    sent = find_sent(fixture, "POST", "/api/v1/ticket_comment");
+    g_assert_nonnull(sent);
+    g_assert_cmpstr(sent->token, ==, "t-lead");
+}
+
 #define ADD(name, fn) \
     g_test_add("/venture-mirror/" name, Fixture, NULL, fixture_setup, fn, \
                fixture_teardown)
@@ -1335,6 +1457,12 @@ main(int argc, char *argv[])
     ADD("filed-under-milestone-and-goal", test_filed_under_milestone_and_goal);
     ADD("context-is-read-and-said", test_context_is_read_and_said);
     ADD("pull-request-is-linked", test_pull_request_is_linked);
+    ADD("handoff-reassigns-the-ticket", test_handoff_reassigns_the_ticket);
+    ADD("a-refused-token-stops-only-its-own",
+        test_a_refused_token_stops_only_its_own);
+    ADD("a-viewer-token-is-flagged", test_a_viewer_token_is_flagged);
+    ADD("review-is-written-by-the-reviewer",
+        test_review_is_written_by_the_reviewer);
     g_test_add_func("/venture-mirror/finds-pull-requests",
                     test_finds_pull_requests);
 
