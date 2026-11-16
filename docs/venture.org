@@ -167,6 +167,7 @@ On 2026-11-16 a throwaway VENTURE (0.10.2, a scratch database) and a throwaway t
 - a person's comment on one reached the task's thread as =venture:API token #1=, and cancelling that ticket cancelled the task;
 - with VENTURE stopped, the next task still ran and completed -- its ticket showed queued, "VENTURE did not answer" -- and when VENTURE came back the outbox drained by itself;
 - a pending task survived the daemon's restart, then ran, and its ticket was kept current.
+- an agent whose connector says ~mirror_tasks: false~ had its task left alone -- "Not mirrored" with the reason and Retry on its page -- while the next agent's task, in the same repository, became ticket #1 with *Open in VENTURE* (the web client's task page, screenshotted headless).
 
 * Troubleshooting
 
