@@ -439,6 +439,9 @@ struct _ClawtWindow {
     /* The agent's action rules, MATCH=MODE, comma-separated like skills. */
     GtkWidget         *policy_row;
     GtkWidget         *effort_row;
+    GtkWidget         *review_by_row;
+    GtkWidget         *display_backend_row;
+    GtkWidget         *display_resolution_row;
     GtkWidget         *acp_command_row;  /* model.command */
     /*
      * Which login the agent's CLI uses. The ids are kept beside the

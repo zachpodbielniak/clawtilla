@@ -81,6 +81,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/clawt-backup.h \
 	$(SRCDIR)/clawt-qr.h \
 	$(SRCDIR)/config/clawt-config-schema.h \
+	$(SRCDIR)/config/clawt-choices.h \
 	$(SRCDIR)/config/clawt-appearance.h \
 	$(SRCDIR)/config/clawt-secret-ref.h \
 	$(SRCDIR)/core/clawt-event.h \
@@ -263,6 +264,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/clawt-backup.c \
 	$(SRCDIR)/clawt-qr.c \
 	$(SRCDIR)/config/clawt-config-schema.c \
+	$(SRCDIR)/config/clawt-choices.c \
 	$(SRCDIR)/config/clawt-appearance.c \
 	$(SRCDIR)/config/clawt-revisions.c \
 	$(SRCDIR)/config/clawt-fleet-pack.c \

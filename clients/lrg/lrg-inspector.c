@@ -612,6 +612,7 @@ update_note(FieldView *view)
     case CLAWT_LRG_AGENT_FIELD_COMPUTER_TYPE:
     case CLAWT_LRG_AGENT_FIELD_RESOLUTION:
     case CLAWT_LRG_AGENT_FIELD_COMPUTER_START:
+    case CLAWT_LRG_AGENT_FIELD_REVIEW_BY:
         break;
     }
 
@@ -737,6 +738,11 @@ on_choices_reply(ClawtLrgApp *app, JsonNode *reply, const GError *error,
         choices = clawt_lrg_agent_shared_choices(reply, view->field->value);
         break;
 
+    case CLAWT_LRG_AGENT_FIELD_REVIEW_BY:
+        choices = clawt_lrg_agent_review_by_choices(reply, FALSE,
+                                                    view->field->value);
+        break;
+
     case CLAWT_LRG_AGENT_FIELD_IMAGE:
         g_clear_pointer(&ins.images, json_node_unref);
         ins.images = json_node_copy(reply);
@@ -790,6 +796,13 @@ ask_for_choices(ClawtLrgApp *app)
                           CLAWT_LRG_GUARDED | CLAWT_LRG_QUIET,
                           on_choices_reply,
                           GUINT_TO_POINTER(CLAWT_LRG_AGENT_FIELD_TEAM), NULL);
+
+    if (find_view(CLAWT_LRG_AGENT_FIELD_REVIEW_BY) != NULL)
+        clawt_lrg_request(app, "agent.list", NULL,
+                          CLAWT_LRG_GUARDED | CLAWT_LRG_QUIET,
+                          on_choices_reply,
+                          GUINT_TO_POINTER(CLAWT_LRG_AGENT_FIELD_REVIEW_BY),
+                          NULL);
 
     /* With the agent: the daemon applies the check agent.set will. */
     if (find_view(CLAWT_LRG_AGENT_FIELD_ACCOUNT) != NULL)
@@ -1236,6 +1249,11 @@ build_control(FieldView *view)
         choices = clawt_lrg_agent_shared_choices(NULL, field->value);
         break;
 
+    case CLAWT_LRG_AGENT_FIELD_REVIEW_BY:
+        choices = clawt_lrg_agent_review_by_choices(NULL, FALSE,
+                                                    field->value);
+        break;
+
     case CLAWT_LRG_AGENT_FIELD_PROVIDER:
         choices = clawt_lrg_agent_provider_choices(NULL, field->value);
         break;
@@ -1305,6 +1323,7 @@ view_value(FieldView *view)
     case CLAWT_LRG_AGENT_FIELD_DISK:
     case CLAWT_LRG_AGENT_FIELD_RESOLUTION:
     case CLAWT_LRG_AGENT_FIELD_COMPUTER_START:
+    case CLAWT_LRG_AGENT_FIELD_REVIEW_BY:
         return clawt_lrg_agent_choice_value(
             clawt_lrg_combo_id(view->control),
             view->other != NULL ? clawt_lrg_entry_text(view->other) : NULL);

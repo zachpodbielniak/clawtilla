@@ -287,21 +287,16 @@ ClawtLrgAgentChoices *
 clawt_lrg_agent_effort_choices(const gchar *current)
 {
     /*
-     * The one list here with no enumeration behind it: model.effort is a
-     * string in the schema and the levels are the CLIs', documented in
-     * the schema's own sentence.  GTK carries the same five.  An unknown
-     * level a person typed into the YAML is kept, not replaced.
+     * libclawt's list (0.51.3), the model's default first, in the words
+     * GTK and the web client use.  An unknown level a person typed into
+     * the YAML is kept, not replaced.
      */
-    static const gchar *const levels[] = {
-        "low", "medium", "high", "xhigh", "max", NULL
-    };
     ClawtLrgAgentChoices *choices = clawt_lrg_agent_choices_new();
     guint i;
 
-    clawt_lrg_agent_choices_add(choices, "", "(the model's default)");
-
-    for (i = 0; levels[i] != NULL; i++)
-        clawt_lrg_agent_choices_add(choices, levels[i], levels[i]);
+    for (i = 0; i < clawt_effort_count(); i++)
+        clawt_lrg_agent_choices_add(choices, clawt_effort_nth(i),
+                                    clawt_effort_nth_label(i));
 
     choices_keep_current(choices, current, " (not a known level)");
     return choices;
@@ -315,15 +310,13 @@ clawt_lrg_agent_resolution_choices(const gchar *current)
      * set by hand would otherwise show as the first entry and a save
      * would quietly change it.
      */
-    static const gchar *const common[] = {
-        "1280x800", "1280x1024", "1440x900", "1600x900", "1680x1050",
-        "1920x1080", "1920x1200", "2560x1440", "3840x2160", NULL
-    };
     ClawtLrgAgentChoices *choices = clawt_lrg_agent_choices_new();
     guint i;
 
-    for (i = 0; common[i] != NULL; i++)
-        clawt_lrg_agent_choices_add(choices, common[i], common[i]);
+    /* libclawt's sizes (0.51.3), as GTK and the web client offer them. */
+    for (i = 0; i < clawt_resolution_count(); i++)
+        clawt_lrg_agent_choices_add(choices, clawt_resolution_nth(i),
+                                    clawt_resolution_nth(i));
 
     if (current == NULL || *current == '\0') {
         choices->selected = g_strdup("1280x800");
@@ -386,6 +379,35 @@ clawt_lrg_agent_team_choices(JsonNode *reply, const gchar *current)
     }
 
     choices_keep_current(choices, current, " (not declared)");
+    return choices;
+}
+
+ClawtLrgAgentChoices *
+clawt_lrg_agent_review_by_choices(JsonNode *reply, gboolean project,
+                                  const gchar *current)
+{
+    ClawtLrgAgentChoices *choices = clawt_lrg_agent_choices_new();
+    JsonArray *agents = member_array(clawt_ipc_reply_object(reply), "agents");
+    guint i;
+
+    /* The fixed half from libclawt (0.51.3), then the fleet's agents. */
+    for (i = 0; i < clawt_review_by_count(); i++)
+        clawt_lrg_agent_choices_add(choices, clawt_review_by_nth(i),
+                                    clawt_review_by_nth_label(i, project));
+
+    for (i = 0; agents != NULL && i < json_array_get_length(agents); i++) {
+        const gchar *id = clawt_ipc_payload_string(element_object(agents, i),
+                                                   "id");
+        g_autofree gchar *label = NULL;
+
+        if (id == NULL || *id == '\0')
+            continue;
+        label = clawt_review_by_agent_label(id);
+        clawt_lrg_agent_choices_add(choices, id, label);
+    }
+
+    choices_keep_current(choices, current != NULL ? current : "",
+                         " (as set)");
     return choices;
 }
 
@@ -959,8 +981,11 @@ clawt_lrg_agent_field_kind(const gchar *key, const ClawtSchemaEntry *entry)
         return CLAWT_LRG_AGENT_FIELD_IMAGE;
     if (g_strcmp0(key, "computer.vm.image") == 0)
         return CLAWT_LRG_AGENT_FIELD_DISK;
-    if (g_strcmp0(key, "computer.vm.resolution") == 0)
+    if (g_strcmp0(key, "computer.vm.resolution") == 0 ||
+        g_strcmp0(key, "computer.display.resolution") == 0)
         return CLAWT_LRG_AGENT_FIELD_RESOLUTION;
+    if (g_strcmp0(key, "review_by") == 0)
+        return CLAWT_LRG_AGENT_FIELD_REVIEW_BY;
     if (g_strcmp0(key, "computer.start") == 0)
         return CLAWT_LRG_AGENT_FIELD_COMPUTER_START;
 

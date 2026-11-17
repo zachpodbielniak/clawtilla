@@ -409,6 +409,12 @@ The ~forge~ record type is owner-only in VENTURE, so an editor -- every agent ac
 - *Then (0.50.0):* the plan's scratch agent per test run -- a temporary copy of the named agent with the skill under test alone, never saved, removed when the run settles.
 - *Version:* minor.
 
+** DONE Drop-downs for settings that take a fixed set of values v0.51.3 :clients:configuration:
+- *Requested:* by the user on 2026-11-16: "lots of various settings have just text boxes to fill in, but only accept specific values. these should all be drop downs."
+- *Done:* =src/config/clawt-choices.[ch]=: effort, weekday, schedule, reviewer and screen-size lists (count, nth, label), walked by GTK, web and lrg and enforced by =make parity=. Web: effort, reviewer (agent and project), resolutions, provider and images from the daemon, routine schedule, weekday, agent and enum keys, and trigger agent. GTK: =clawt_gtk_value_row_new()=; effort with the model's default (no longer "medium" written back), reviewer rows on the agent and project, display backend and size rows. lrg: a reviewer chooser on the agent and project, display size, and the shared lists. A value not on a list is kept as its own entry. =test-choices= holds each list against the parser that reads it.
+- *Found on the way:* the web app's finalize leaked the sidebar's room set once 0.51.2 removed the stray free (caught by ASAN; fixed in 0.51.2).
+- *Version:* micro.
+
 ** DONE The web client's unread badges, and two GLib-CRITICALs v0.51.2 :clients:
 - *Requested:* by the user on 2026-11-16, after the 0.51.0 live run's web log.
 - *Done:* =clawt_web_app_set_viewing()= freed the set of rooms the sidebar draws and nothing made it again: from the first page anybody opened, every sidebar render logged a GLib-CRITICAL, and -- worse -- the unread rule counts only a room with a row, so no message was ever counted and the web client's badges never lit.  The stray free is gone.  And the chat page handed a NULL conversation switcher (an agent with no peer conversations) to =clawt_web_add()=.  =test-web-app= includes =web-app.c=, makes criticals fatal, and fails on the old code.

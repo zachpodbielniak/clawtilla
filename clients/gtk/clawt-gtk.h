@@ -349,4 +349,62 @@ GtkWidget *clawt_gtk_build_avatar(ClawtClient  *client,
  */
 GtkWidget *clawt_gtk_combo_row_new(void);
 
+/**
+ * clawt_gtk_value_row_new:
+ * @title: the row's title
+ * @values: (array zero-terminated=1): what each entry saves
+ * @labels: (array zero-terminated=1) (nullable): what each entry reads,
+ *   or %NULL to show @values
+ * @current: (nullable): the value set now
+ *
+ * A combo row that shows words and saves values (0.51.3).  A @current
+ * that is not among @values -- set by hand in the YAML -- joins the list
+ * as its own entry, so a save that did not touch the row cannot replace
+ * it with the first one.
+ *
+ * Returns: (transfer full): the row
+ */
+GtkWidget *clawt_gtk_value_row_new(const gchar        *title,
+                                   const gchar *const *values,
+                                   const gchar *const *labels,
+                                   const gchar        *current);
+
+/**
+ * clawt_gtk_value_row_get:
+ * @row: a row from clawt_gtk_value_row_new()
+ *
+ * Returns: (transfer none) (nullable): the selected entry's value
+ */
+const gchar *clawt_gtk_value_row_get(GtkWidget *row);
+
+/**
+ * clawt_gtk_effort_row_new:
+ * @current: (nullable): model.effort now
+ *
+ * Returns: (transfer full): the effort row, from clawt_effort_count()
+ */
+GtkWidget *clawt_gtk_effort_row_new(const gchar *current);
+
+/**
+ * clawt_gtk_resolution_row_new:
+ * @current: (nullable): the size now
+ *
+ * Returns: (transfer full): a screen-size row, from
+ *   clawt_resolution_count()
+ */
+GtkWidget *clawt_gtk_resolution_row_new(const gchar *current);
+
+/**
+ * clawt_gtk_review_by_row_new:
+ * @agents: (array zero-terminated=1) (nullable): every agent id
+ * @project: %TRUE on a project's page
+ * @current: (nullable): review_by now
+ *
+ * Returns: (transfer full): the reviewer row: clawt_review_by_count()'s
+ *   fixed choices, then each agent
+ */
+GtkWidget *clawt_gtk_review_by_row_new(const gchar *const *agents,
+                                       gboolean            project,
+                                       const gchar        *current);
+
 G_END_DECLS

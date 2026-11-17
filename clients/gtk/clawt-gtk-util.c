@@ -573,3 +573,121 @@ clawt_gtk_build_avatar(
 
     return avatar;
 }
+
+/* ── Rows over fixed lists (0.51.3) ──────────────────────────────── */
+
+#define VALUE_ROW_VALUES "clawt-value-row-values"
+
+GtkWidget *
+clawt_gtk_value_row_new(const gchar *title, const gchar *const *values,
+                        const gchar *const *labels, const gchar *current)
+{
+    GtkWidget *row = clawt_gtk_combo_row_new();
+    g_autoptr(GPtrArray) saved = g_ptr_array_new_with_free_func(g_free);
+    GtkStringList *shown = gtk_string_list_new(NULL);
+    guint selected = 0;
+    gboolean found = FALSE;
+    guint i;
+
+    for (i = 0; values != NULL && values[i] != NULL; i++) {
+        g_ptr_array_add(saved, g_strdup(values[i]));
+        gtk_string_list_append(shown, (labels != NULL && labels[i] != NULL)
+                                          ? labels[i] : values[i]);
+        if (!found && current != NULL && g_strcmp0(values[i], current) == 0) {
+            selected = i;
+            found = TRUE;
+        }
+    }
+
+    /* Kept, not replaced: a value nobody here offers is still the value. */
+    if (!found && current != NULL && *current != '\0') {
+        g_autofree gchar *label = g_strdup_printf("%s (as set)", current);
+
+        g_ptr_array_add(saved, g_strdup(current));
+        gtk_string_list_append(shown, label);
+        selected = saved->len - 1;
+    }
+    g_ptr_array_add(saved, NULL);
+
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), title);
+    adw_combo_row_set_model(ADW_COMBO_ROW(row), G_LIST_MODEL(shown));
+    adw_combo_row_set_selected(ADW_COMBO_ROW(row), selected);
+    g_object_unref(shown);
+    g_object_set_data_full(G_OBJECT(row), VALUE_ROW_VALUES,
+                           g_ptr_array_free(g_steal_pointer(&saved), FALSE),
+                           (GDestroyNotify)g_strfreev);
+    return row;
+}
+
+const gchar *
+clawt_gtk_value_row_get(GtkWidget *row)
+{
+    gchar **values;
+    guint selected;
+
+    g_return_val_if_fail(ADW_IS_COMBO_ROW(row), NULL);
+
+    values = g_object_get_data(G_OBJECT(row), VALUE_ROW_VALUES);
+    selected = adw_combo_row_get_selected(ADW_COMBO_ROW(row));
+    if (values == NULL || selected >= g_strv_length(values))
+        return NULL;
+    return values[selected];
+}
+
+GtkWidget *
+clawt_gtk_effort_row_new(const gchar *current)
+{
+    g_autoptr(GPtrArray) values = g_ptr_array_new();
+    g_autoptr(GPtrArray) labels = g_ptr_array_new();
+    guint i;
+
+    for (i = 0; i < clawt_effort_count(); i++) {
+        g_ptr_array_add(values, (gpointer)clawt_effort_nth(i));
+        g_ptr_array_add(labels, (gpointer)clawt_effort_nth_label(i));
+    }
+    g_ptr_array_add(values, NULL);
+    g_ptr_array_add(labels, NULL);
+    return clawt_gtk_value_row_new("Effort",
+                                   (const gchar *const *)values->pdata,
+                                   (const gchar *const *)labels->pdata,
+                                   current != NULL ? current : "");
+}
+
+GtkWidget *
+clawt_gtk_resolution_row_new(const gchar *current)
+{
+    g_autoptr(GPtrArray) values = g_ptr_array_new();
+    guint i;
+
+    for (i = 0; i < clawt_resolution_count(); i++)
+        g_ptr_array_add(values, (gpointer)clawt_resolution_nth(i));
+    g_ptr_array_add(values, NULL);
+    return clawt_gtk_value_row_new("Screen size",
+                                   (const gchar *const *)values->pdata, NULL,
+                                   current);
+}
+
+GtkWidget *
+clawt_gtk_review_by_row_new(const gchar *const *agents, gboolean project,
+                            const gchar *current)
+{
+    g_autoptr(GPtrArray) values = g_ptr_array_new();
+    g_autoptr(GPtrArray) labels = g_ptr_array_new_with_free_func(g_free);
+    guint i;
+
+    for (i = 0; i < clawt_review_by_count(); i++) {
+        g_ptr_array_add(values, (gpointer)clawt_review_by_nth(i));
+        g_ptr_array_add(labels,
+                        g_strdup(clawt_review_by_nth_label(i, project)));
+    }
+    for (i = 0; agents != NULL && agents[i] != NULL; i++) {
+        g_ptr_array_add(values, (gpointer)agents[i]);
+        g_ptr_array_add(labels, clawt_review_by_agent_label(agents[i]));
+    }
+    g_ptr_array_add(values, NULL);
+    g_ptr_array_add(labels, NULL);
+    return clawt_gtk_value_row_new("Reviewed by",
+                                   (const gchar *const *)values->pdata,
+                                   (const gchar *const *)labels->pdata,
+                                   current != NULL ? current : "");
+}

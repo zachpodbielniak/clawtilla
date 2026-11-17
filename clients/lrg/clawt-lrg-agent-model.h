@@ -85,6 +85,18 @@ ClawtLrgAgentChoices *clawt_lrg_agent_enum_choices(GType        type,
 ClawtLrgAgentChoices *clawt_lrg_agent_computer_type_choices(const gchar *current);
 ClawtLrgAgentChoices *clawt_lrg_agent_effort_choices(const gchar *current);
 ClawtLrgAgentChoices *clawt_lrg_agent_resolution_choices(const gchar *current);
+/**
+ * clawt_lrg_agent_review_by_choices:
+ * @reply: (nullable): agent.list's answer, or %NULL before it arrives
+ * @project: %TRUE on a project's form
+ * @current: (nullable): review_by now
+ *
+ * Returns: (transfer full): who may review: libclawt's fixed choices,
+ *   then each agent; @current kept when it is neither
+ */
+ClawtLrgAgentChoices *clawt_lrg_agent_review_by_choices(JsonNode    *reply,
+                                                        gboolean     project,
+                                                        const gchar *current);
 ClawtLrgAgentChoices *clawt_lrg_agent_computer_start_choices(const gchar *current);
 ClawtLrgAgentChoices *clawt_lrg_agent_mount_mode_choices(void);
 ClawtLrgAgentChoices *clawt_lrg_agent_relabel_choices(void);
@@ -187,6 +199,8 @@ gchar *clawt_lrg_agent_fallback_spell(GPtrArray *list, GError **error);
  * @CLAWT_LRG_AGENT_FIELD_RESOLUTION: a combo of screen sizes
  * @CLAWT_LRG_AGENT_FIELD_COMPUTER_START: a combo walked from the computer
  *   start choices, with the library's labels
+ * @CLAWT_LRG_AGENT_FIELD_REVIEW_BY: a combo of who reviews: libclawt's
+ *   fixed choices, then the agents from agent.list (since 0.51.3)
  *
  * Which control a setting is drawn with.
  */
@@ -207,7 +221,8 @@ typedef enum {
     CLAWT_LRG_AGENT_FIELD_IMAGE,
     CLAWT_LRG_AGENT_FIELD_DISK,
     CLAWT_LRG_AGENT_FIELD_RESOLUTION,
-    CLAWT_LRG_AGENT_FIELD_COMPUTER_START
+    CLAWT_LRG_AGENT_FIELD_COMPUTER_START,
+    CLAWT_LRG_AGENT_FIELD_REVIEW_BY
 } ClawtLrgAgentFieldKind;
 
 /**

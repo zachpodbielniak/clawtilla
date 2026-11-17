@@ -13,6 +13,7 @@
 
 #include "clawt-lrg.h"
 #include "clawt-lrg-settings-model.h"
+#include "clawt-lrg-agent-model.h"
 
 typedef struct {
     LrgWidget *list;
@@ -32,7 +33,7 @@ static const struct {
     { "name",                "Name",            NULL },
     { "goal",                "Goal",            "Every assignment in it starts with this." },
     { "directory",           "Directory",       "Absolute host path of its repository." },
-    { "review_by",           "Reviewed by",     "lead, delegator, operator or an agent." },
+    { "review_by",           "Reviewed by",     NULL },
     { "agents",              "Agents",          "Comma-separated; empty for every agent." },
     { "monthly_budget_usd",  "Monthly budget (USD)", "0 for none." },
     { "budget_warn_percent", "Warn at percent", NULL },
@@ -124,9 +125,14 @@ on_project_save(ClawtLrgApp *app, LrgDialog *dialog, gint response,
     editor->pending = N_FIELDS + 1;
     editor->failed = FALSE;
 
-    for (i = 0; i < N_FIELDS; i++)
-        send_field(editor, fields[i].key,
-                   clawt_lrg_entry_text(editor->entries[i]));
+    for (i = 0; i < N_FIELDS; i++) {
+        /* The reviewer is a combo (0.51.3); the rest are entries. */
+        const gchar *value = (g_strcmp0(fields[i].key, "review_by") == 0)
+            ? clawt_lrg_combo_id(editor->entries[i])
+            : clawt_lrg_entry_text(editor->entries[i]);
+
+        send_field(editor, fields[i].key, value != NULL ? value : "");
+    }
 
     send_field(editor, "budget_hard_stop",
                clawt_lrg_switch_active(editor->hard_stop) ? "true" : "false");
@@ -230,7 +236,20 @@ on_edit_clicked(LrgButton *button, gpointer user_data)
     for (i = 0; i < N_FIELDS; i++) {
         g_autofree gchar *value = field_text(project, fields[i].key);
 
-        editor->entries[i] = clawt_lrg_entry(value, NULL);
+        /*
+         * Who reviews is libclawt's fixed choices and the fleet's agents
+         * (0.51.3), from the agent list the app already holds.
+         */
+        if (g_strcmp0(fields[i].key, "review_by") == 0) {
+            g_autoptr(ClawtLrgAgentChoices) choices =
+                clawt_lrg_agent_review_by_choices(app->agents, TRUE, value);
+
+            editor->entries[i] = clawt_lrg_combo(
+                clawt_lrg_agent_choices_ids(choices),
+                clawt_lrg_agent_choices_labels(choices), choices->selected);
+        } else {
+            editor->entries[i] = clawt_lrg_entry(value, NULL);
+        }
         clawt_lrg_form_add(form, fields[i].label, editor->entries[i],
                            fields[i].hint);
     }
