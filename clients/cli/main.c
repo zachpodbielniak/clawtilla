@@ -8851,8 +8851,15 @@ cmd_skill(int argc, char *argv[])
         for (i = 0; i < json_array_get_length(runs); i++) {
             JsonObject *run = json_array_get_object_element(runs, i);
 
-            g_print("%s: running as %s on %s\n", member_or(run, "test", ""),
-                    member_or(run, "task", ""), member_or(run, "agent", ""));
+            /* on a scratch copy of the agent named, since 0.50.0 */
+            if (json_object_has_member(run, "as"))
+                g_print("%s: running as %s on %s (a scratch copy of %s)\n",
+                        member_or(run, "test", ""), member_or(run, "task", ""),
+                        member_or(run, "agent", ""), member_or(run, "as", ""));
+            else
+                g_print("%s: running as %s on %s\n",
+                        member_or(run, "test", ""), member_or(run, "task", ""),
+                        member_or(run, "agent", ""));
         }
         g_print("`clawtilla skill tests %s` shows the verdicts once they "
                 "finish.\n", name);

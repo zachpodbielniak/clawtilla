@@ -527,6 +527,8 @@ struct _ClawtDaemon {
      */
     GHashTable *teach_recorders;  /* id -> ClawtTeachRecorder */
     GHashTable *teach_drafts;     /* id -> ClawtSkillSynthesizer */
+    /* a skill test's run task id -> the scratch agent's id (0.50.0) */
+    GHashTable *scratch_agents;
 
     gchar   *libreclaw_binary;
     gchar   *state_dir;
@@ -1505,6 +1507,9 @@ JsonNode *clawt_daemon_handle_skill_tests(ClawtDaemon  *self,
                                           JsonObject   *payload,
                                           gboolean     *handled);
 void clawt_daemon_skill_tests_settled(ClawtDaemon *self, ClawtTask *task);
+void clawt_daemon_skill_tests_readd(ClawtDaemon *self, ClawtConfig *previous);
+void clawt_daemon_skill_tests_teardown(ClawtDaemon *self);
+void clawt_daemon_skill_tests_sweep(ClawtDaemon *self);
 gchar *clawt_daemon_skill_test_verdict(const gchar         *result,
                                        const gchar * const *expect,
                                        const gchar * const *reject);

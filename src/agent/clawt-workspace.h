@@ -689,6 +689,39 @@ GStrv clawt_workspace_connector_relay_argv(ClawtConfig *config,
                                            gboolean     app_call);
 
 /**
+ * clawt_workspace_venture_user:
+ * @config: the fleet configuration
+ * @agent_id: an agent
+ *
+ * The VENTURE username the agent's own token belongs to, as the task
+ * mirror last learned it from whoami (since 0.50.0), kept in the
+ * agent's state directory so a restart renders the same TOOLS.org.
+ *
+ * Returns: (transfer full) (nullable): the username, or %NULL before
+ *   the mirror has asked
+ */
+gchar *clawt_workspace_venture_user(ClawtConfig *config,
+                                    const gchar *agent_id);
+
+/**
+ * clawt_workspace_set_venture_user:
+ * @config: the fleet configuration
+ * @agent_id: an agent
+ * @username: what whoami said its token belongs to
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Keeps @username for clawt_workspace_venture_user(), written only when
+ * it differs from what is kept.
+ *
+ * Returns: %TRUE when it changed, so TOOLS.org is worth rewriting;
+ *   %FALSE when it did not, or on error (with @error set)
+ */
+gboolean clawt_workspace_set_venture_user(ClawtConfig  *config,
+                                          const gchar  *agent_id,
+                                          const gchar  *username,
+                                          GError      **error);
+
+/**
  * clawt_workspace_update_projects:
  * @agent: an agent's configuration
  * @described: (nullable): the projects it works in, as org text; %NULL or

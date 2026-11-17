@@ -29,6 +29,7 @@ struct _ClawtConfig {
     GPtrArray   *routines;    /* ClawtRoutine* */
     GPtrArray   *triggers;    /* ClawtTrigger* */
     GPtrArray   *warnings;    /* gchar* */
+    YamlNode    *scratch;     /* sequence of scratch agents, never saved */
 };
 
 G_DEFINE_FINAL_TYPE(ClawtConfig, clawt_config, G_TYPE_OBJECT)
@@ -3409,6 +3410,7 @@ clawt_config_finalize(GObject *object)
     g_clear_pointer(&self->routines, g_ptr_array_unref);
     g_clear_pointer(&self->triggers, g_ptr_array_unref);
     g_clear_pointer(&self->warnings, g_ptr_array_unref);
+    g_clear_pointer(&self->scratch, yaml_node_unref);
 
     G_OBJECT_CLASS(clawt_config_parent_class)->finalize(object);
 }
@@ -3469,8 +3471,38 @@ warn_about_egress(ClawtConfig *self)
             "agents reach public addresses only", bad->message));
 }
 
+static void reload_agents_from_root(ClawtConfig *self);
+
+/*
+ * The agent list: the file's agents, then the scratch agents (0.50.0),
+ * which live in a tree of their own so no save, revision or export ever
+ * renders them.
+ */
 static void
 reload_agents(ClawtConfig *self)
+{
+    YamlSequence *sequence;
+    guint i;
+
+    reload_agents_from_root(self);
+
+    if (self->scratch == NULL)
+        return;
+
+    sequence = yaml_node_get_sequence(self->scratch);
+
+    for (i = 0; i < yaml_sequence_get_length(sequence); i++) {
+        YamlNode *element = yaml_sequence_get_element(sequence, i);
+        const gchar *id = member_string(yaml_node_get_mapping(element), "id");
+
+        if (id != NULL && clawt_config_get_agent(self, id) == NULL)
+            g_ptr_array_add(self->agents,
+                            clawt_agent_config_new(self, id, element));
+    }
+}
+
+static void
+reload_agents_from_root(ClawtConfig *self)
 {
     YamlNode *node;
     YamlSequence *sequence;
@@ -4570,6 +4602,132 @@ clawt_config_add_agent(ClawtConfig *self, const gchar *id, GError **error)
     reload_agents(self);
 
     return clawt_config_get_agent(self, id);
+}
+
+/* ── Scratch agents (0.50.0) ─────────────────────────────────────── */
+
+/*
+ * Keys a scratch agent does not take from the agent it copies: its
+ * identity, where it works, and every role in the fleet.  A copy that
+ * kept `chief_of_staff`, a team or its reviewer would be a second
+ * somebody, not a stand-in for a test.
+ */
+static const gchar *const SCRATCH_DROPPED[] = {
+    "id", "name", "description", "workspace", "team", "team_role",
+    "chief_of_staff", "autostart", "review_by", "skills",
+    NULL
+};
+
+ClawtAgentConfig *
+clawt_config_add_scratch_agent(ClawtConfig  *self,
+                               const gchar  *id,
+                               const gchar  *from_id,
+                               const gchar  *skill,
+                               const gchar  *workspace,
+                               GError      **error)
+{
+    ClawtAgentConfig *from;
+    g_autoptr(YamlNode) entry = NULL;
+    g_autoptr(YamlNode) skills = NULL;
+    g_autoptr(YamlNode) skill_node = NULL;
+    YamlMapping *mapping;
+    gchar *name;
+    gsize i;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), NULL);
+    g_return_val_if_fail(id != NULL && from_id != NULL, NULL);
+    g_return_val_if_fail(skill != NULL && workspace != NULL, NULL);
+
+    if (!clawt_is_valid_id(id) || clawt_config_get_agent(self, id) != NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_ALREADY_EXISTS,
+                    "'%s' cannot be a scratch agent: the id is taken or "
+                    "not usable", id);
+        return NULL;
+    }
+
+    from = clawt_config_get_agent(self, from_id);
+    if (from == NULL || from->node == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                    "no agent '%s' to copy a scratch agent from", from_id);
+        return NULL;
+    }
+
+    /* A copy of how the agent runs: its runtime, model and limits. */
+    entry = yaml_node_copy(from->node);
+    mapping = yaml_node_get_mapping(entry);
+    for (i = 0; SCRATCH_DROPPED[i] != NULL; i++)
+        if (yaml_mapping_has_member(mapping, SCRATCH_DROPPED[i]))
+            yaml_mapping_remove_member(mapping, SCRATCH_DROPPED[i]);
+
+    yaml_mapping_set_string_member(mapping, "id", id);
+    name = g_strdup_printf("Skill test of %s (as %s)", skill, from_id);
+    yaml_mapping_set_string_member(mapping, "name", name);
+    g_free(name);
+    yaml_mapping_set_string_member(mapping, "workspace", workspace);
+    /* what it copied, so a reload can copy it again */
+    yaml_mapping_set_string_member(mapping, "scratch_from", from_id);
+
+    /* The one skill under test, and no other. */
+    skills = yaml_node_new_sequence(NULL);
+    skill_node = yaml_node_new_string(skill);
+    yaml_sequence_add_element(yaml_node_get_sequence(skills), skill_node);
+    yaml_mapping_set_member(mapping, "skills", skills);
+
+    if (self->scratch == NULL)
+        self->scratch = yaml_node_new_sequence(NULL);
+    yaml_sequence_add_element(yaml_node_get_sequence(self->scratch), entry);
+
+    reload_agents(self);
+
+    return clawt_config_get_agent(self, id);
+}
+
+gboolean
+clawt_config_remove_scratch_agent(ClawtConfig *self, const gchar *id)
+{
+    YamlSequence *sequence;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(self), FALSE);
+    g_return_val_if_fail(id != NULL, FALSE);
+
+    if (self->scratch == NULL)
+        return FALSE;
+
+    sequence = yaml_node_get_sequence(self->scratch);
+
+    for (i = 0; i < yaml_sequence_get_length(sequence); i++) {
+        YamlNode *element = yaml_sequence_get_element(sequence, i);
+
+        if (g_strcmp0(member_string(yaml_node_get_mapping(element), "id"),
+                      id) != 0)
+            continue;
+
+        yaml_sequence_remove_element(sequence, i);
+        reload_agents(self);
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+gboolean
+clawt_agent_config_is_scratch(ClawtAgentConfig *agent)
+{
+    YamlSequence *sequence;
+    guint i;
+
+    g_return_val_if_fail(agent != NULL, FALSE);
+
+    if (agent->config == NULL || agent->config->scratch == NULL)
+        return FALSE;
+
+    sequence = yaml_node_get_sequence(agent->config->scratch);
+    for (i = 0; i < yaml_sequence_get_length(sequence); i++)
+        if (yaml_sequence_get_element(sequence, i) == agent->node)
+            return TRUE;
+
+    return FALSE;
 }
 
 /* ── Rooms, as the config holds them ─────────────────────────────── */

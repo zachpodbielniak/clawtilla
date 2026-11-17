@@ -1,0 +1,18 @@
+#+title: Projects
+# BEGIN clawtilla projects -- rewritten on every start
+
+The projects the operator has declared that you work in. This
+region is clawtilla's; keep your own notes below it.
+
+* Shop (~shop~)
+
+- Goal :: Ship order tracking before the spring sale.
+- Directory :: =/src/shop= (pass it as ~repo~ to ~clawtilla_delegate~ for a checkout of its own)
+- Reviewed by :: operator
+- Budget :: $40.00 a month; new work is refused once it is spent
+
+# END clawtilla projects
+
+
+* Mine
+What I keep.

@@ -265,6 +265,54 @@ gchar *clawt_venture_mirror_find_pull_request(const gchar *text,
                                               gint64      *number);
 
 /**
+ * clawt_venture_mirror_fence:
+ * @label: what the text is, e.g. `venture-ticket`
+ * @text: (nullable): what a person wrote in VENTURE
+ *
+ * @text inside an `untrusted-<label>` fence, so an agent reads it as
+ * data about the work, never as instructions: anyone with edit rights
+ * in that organization can write a ticket or a comment.  A fence
+ * inside @text cannot close this one early.
+ *
+ * Returns: (transfer full): the fenced text, ending in a newline
+ */
+gchar *clawt_venture_mirror_fence(const gchar *label,
+                                  const gchar *text);
+
+/**
+ * clawt_venture_mirror_intake_body:
+ * @ticket: the ticket's id
+ * @url: (nullable): the ticket's page
+ * @title: (nullable): its title
+ * @description: (nullable): its description
+ *
+ * What an agent is sent when a VENTURE ticket assigned to it becomes a
+ * task (since 0.45.0): the ticket and its link, then its title and
+ * description fenced (clawt_venture_mirror_fence()).
+ *
+ * Returns: (transfer full): the delivery body
+ */
+gchar *clawt_venture_mirror_intake_body(gint64       ticket,
+                                        const gchar *url,
+                                        const gchar *title,
+                                        const gchar *description);
+
+/**
+ * clawt_venture_mirror_comment_body:
+ * @who: who wrote it, as VENTURE names them
+ * @task_id: the task the ticket is mirrored from
+ * @text: (nullable): the comment
+ *
+ * What an agent is sent for a person's comment on its task's ticket
+ * (since 0.45.0), the comment fenced.
+ *
+ * Returns: (transfer full): the delivery body
+ */
+gchar *clawt_venture_mirror_comment_body(const gchar *who,
+                                         const gchar *task_id,
+                                         const gchar *text);
+
+/**
  * clawt_venture_mirror_new:
  * @store: the task store whose outbox is drained
  * @context: (nullable): the context the drain timer attaches to

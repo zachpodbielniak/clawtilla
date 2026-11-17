@@ -1,0 +1,3 @@
+
+
+[clawtilla] This is task @TASK@. When the work is done, just finish your turn -- your final message becomes the result and the delegator is notified automatically -- or call clawtilla_task_complete to say so explicitly. If you are stopping with work still open, call clawtilla_task_progress. Do not send status updates as messages: progress goes on the task, where it can be read without costing anybody a turn.
