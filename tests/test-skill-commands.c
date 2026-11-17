@@ -287,9 +287,12 @@ test_a_generated_command_points_at_the_skill(void)
     prompt = clawt_skill_commands_expand(builder(&fixture), "release", NULL,
                                          &error);
 
+    /*
+     * Since 0.51.1 a skill is named, not pointed at by path and not
+     * pasted: one line in the transcript, the harness loads the rest.
+     */
     g_assert_no_error(error);
-    g_assert_nonnull(strstr(prompt, "release"));
-    g_assert_nonnull(strstr(prompt, "SKILL.md"));
+    g_assert_cmpstr(prompt, ==, "Use skill: release");
     g_assert_null(strstr(prompt, "Step one."));
 
     fixture_teardown(&fixture);
@@ -297,10 +300,11 @@ test_a_generated_command_points_at_the_skill(void)
 
 /*
  * On a harness with no commands directory -- grok, whose entire slash
- * mechanism *is* skills -- the skill itself is what a slash resolves to.
- *
- * So `/name` works on every provider, and it is the registry rather than
- * clawtilla that decides how.
+ * mechanism *is* skills -- `/name` resolved to the skill's body, which
+ * was then pasted into the message whole: the procedure in the
+ * transcript, a wall of text to scroll past in every client, and a
+ * multi-file skill's other files left behind.  Since 0.51.1 it is named
+ * instead, with the arguments after it, on every provider alike.
  */
 static void
 test_a_skill_expands_where_there_is_no_command_file(void)
@@ -316,9 +320,29 @@ test_a_skill_expands_where_there_is_no_command_file(void)
                                          "v1.2.0", &error);
 
     g_assert_no_error(error);
-    g_assert_nonnull(strstr(prompt, "Cut v1.2.0 and tell me."));
+    g_assert_cmpstr(prompt, ==, "Use skill: release\n\nv1.2.0");
+    g_assert_null(strstr(prompt, "Cut"));
 
     fixture_teardown(&fixture);
+}
+
+/*
+ * The message a skill's slash sends: its name, then what was typed after
+ * it, trimmed; nothing after it when nothing was typed.
+ */
+static void
+test_the_invocation_line(void)
+{
+    g_autofree gchar *bare = clawt_skill_commands_invocation("release",
+                                                             NULL);
+    g_autofree gchar *slash = clawt_skill_commands_invocation("/release",
+                                                              "  ");
+    g_autofree gchar *args = clawt_skill_commands_invocation(
+        "release", "  v1.2 to staging\n");
+
+    g_assert_cmpstr(bare, ==, "Use skill: release");
+    g_assert_cmpstr(slash, ==, "Use skill: release");
+    g_assert_cmpstr(args, ==, "Use skill: release\n\nv1.2 to staging");
 }
 
 static void
@@ -555,6 +579,8 @@ main(int argc, char *argv[])
                     test_a_generated_command_points_at_the_skill);
     g_test_add_func("/skill-commands/skill-without-command-file",
                     test_a_skill_expands_where_there_is_no_command_file);
+    g_test_add_func("/skill-commands/invocation-line",
+                    test_the_invocation_line);
     g_test_add_func("/skill-commands/leading-slash",
                     test_a_leading_slash_is_accepted);
     g_test_add_func("/skill-commands/percent-s",

@@ -40,14 +40,12 @@ clawt_skill_command_free(ClawtSkillCommand *self)
  * code on the daemon's host, which is a permission nobody granted by
  * assigning a skill.  Expansion here produces text and nothing else.
  */
-static AiCommandSet *
-command_set_for(ClawtAgentConfig *agent)
+/* Every command, skill and agent the agent's workspace holds. */
+static AiResourceRegistry *
+registry_for(ClawtAgentConfig *agent)
 {
-    g_autoptr(AiResourceRegistry) registry = NULL;
-    g_autofree gchar *workspace = NULL;
-    AiCommandSet *set;
-
-    workspace = clawt_agent_config_get_workspace(agent);
+    g_autofree gchar *workspace = clawt_agent_config_get_workspace(agent);
+    AiResourceRegistry *registry;
 
     if (workspace == NULL)
         return NULL;
@@ -55,6 +53,17 @@ command_set_for(ClawtAgentConfig *agent)
     registry = ai_resource_registry_new();
     ai_resource_registry_set_working_directory(registry, workspace);
     ai_resource_registry_scan(registry);
+    return registry;
+}
+
+static AiCommandSet *
+command_set_for(ClawtAgentConfig *agent)
+{
+    g_autoptr(AiResourceRegistry) registry = registry_for(agent);
+    AiCommandSet *set;
+
+    if (registry == NULL)
+        return NULL;
 
     set = ai_command_set_new(registry);
     ai_command_set_set_shell_policy(set, AI_COMMAND_SHELL_NEVER);
@@ -146,6 +155,24 @@ clawt_skill_commands_expand(ClawtAgentConfig  *agent,
 
     bare = (name[0] == '/') ? name + 1 : name;
 
+    /*
+     * A skill is named, not pasted (0.51.1).  Its body used to be
+     * expanded into the message -- the whole procedure in the transcript,
+     * a wall of text in every client to scroll past -- and only its
+     * SKILL.md at that, so a skill with scripts or reference files beside
+     * it lost them.  The agent's harness has the skill installed where it
+     * looks for skills (that is what assigning one does), so a line
+     * naming it is enough, and the harness loads it whole.
+     */
+    {
+        g_autoptr(AiResourceRegistry) registry = registry_for(agent);
+
+        if (registry != NULL &&
+            ai_resource_registry_lookup(registry, AI_RESOURCE_SKILL, bare) !=
+                NULL)
+            return clawt_skill_commands_invocation(bare, arguments);
+    }
+
     set = command_set_for(agent);
 
     if (set == NULL) {
@@ -208,4 +235,24 @@ clawt_skill_command_line_is_command(const gchar *line)
         return FALSE;
 
     return ai_command_set_is_command_line(line);
+}
+
+gchar *
+clawt_skill_commands_invocation(const gchar *name, const gchar *arguments)
+{
+    const gchar *bare;
+
+    g_return_val_if_fail(name != NULL, NULL);
+
+    bare = (name[0] == '/') ? name + 1 : name;
+
+    /* What was typed after the name follows on its own, untouched. */
+    {
+        g_autofree gchar *trimmed = g_strstrip(g_strdup(arguments != NULL
+                                                        ? arguments : ""));
+
+        if (*trimmed != '\0')
+            return g_strdup_printf("Use skill: %s\n\n%s", bare, trimmed);
+    }
+    return g_strdup_printf("Use skill: %s", bare);
 }

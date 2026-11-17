@@ -515,7 +515,7 @@ The same set, order and words as GTK (=clawt_lrg_slash_commands()=); =/help= pri
 | =/copy [text\vert{}markdown\vert{}org]= | copy the conversation | ~room.history~ (limit 5000) |
 | =/clear= | clear the transcript on screen only | none |
 | =/new= | create an agent | none |
-| =/<skill> [args]= | expanded by the daemon and sent as an ordinary message | ~skill.expand~, ~msg.send~ |
+| =/<skill> [args]= | sent as =Use skill: <skill>= and the arguments (a command file is expanded) by the daemon, as an ordinary message | ~skill.expand~, ~msg.send~ |
 
 A command about one agent typed in a room says it is about one agent; an unknown command says there is no such command and is never sent.
 

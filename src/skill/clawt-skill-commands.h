@@ -74,7 +74,9 @@ GPtrArray *clawt_skill_commands_list(ClawtAgentConfig *agent);
  * @arguments: (nullable): everything typed after it
  * @error: (out) (optional): return location for a #GError
  *
- * The text to send, with @arguments substituted.
+ * The text to send.  A skill is named rather than pasted
+ * (clawt_skill_commands_invocation(), since 0.51.1); a command file is
+ * expanded, with @arguments substituted.
  *
  * Substitution is ai-glib's, which walks the body and replaces the
  * placeholders it knows.  Nothing here reaches `printf`: a skill body is
@@ -86,6 +88,22 @@ gchar *clawt_skill_commands_expand(ClawtAgentConfig  *agent,
                                    const gchar       *name,
                                    const gchar       *arguments,
                                    GError           **error);
+
+/**
+ * clawt_skill_commands_invocation:
+ * @name: the skill, with or without its leading slash
+ * @arguments: (nullable): everything typed after it
+ *
+ * What `/name args` sends when @name is a skill (since 0.51.1): the line
+ * `Use skill: <name>`, then the arguments on their own -- never the
+ * skill's body.  The agent's harness has the skill installed and loads
+ * it whole, scripts and reference files included; the transcript keeps
+ * one line instead of the procedure.
+ *
+ * Returns: (transfer full): the message
+ */
+gchar *clawt_skill_commands_invocation(const gchar *name,
+                                       const gchar *arguments);
 
 /**
  * clawt_skill_command_line_is_command:
