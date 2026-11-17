@@ -1464,6 +1464,17 @@ test_screen_status_names_the_backend(void)
                     ==, "xvfb");
     g_assert_true(json_object_get_boolean_member(screen, "display_running"));
 
+    /* the display's own grant, not the desktop's (off by default) */
+    g_assert_true(json_object_get_boolean_member(screen, "allow_input"));
+    g_assert_false(json_object_has_member(screen, "viewer"));
+    {
+        g_autoptr(JsonNode) looker = ipc(&fixture, "computer.screen",
+                                         "{\"agent\":\"looker\"}");
+
+        g_assert_false(json_object_get_boolean_member(
+            clawt_ipc_frame_get_payload(looker), "allow_input"));
+    }
+
     daemon_teardown(&fixture);
 }
 

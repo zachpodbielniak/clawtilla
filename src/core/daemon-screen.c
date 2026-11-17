@@ -169,11 +169,17 @@ add_screen_status(ClawtDaemon *self, JsonBuilder *builder,
         builder, computer != NULL && CLAWT_IS_OBSERVABLE(computer) &&
                  clawt_observable_can_input(CLAWT_OBSERVABLE(computer)));
 
+    /*
+     * The agent's grant: a virtual display's own key (0.51.0, on by
+     * default), the desktop's otherwise.
+     */
     json_builder_set_member_name(builder, "allow_input");
     json_builder_add_boolean_value(
         builder, config != NULL &&
                  clawt_agent_config_get_boolean(
-                     config, "computer.desktop.allow_input"));
+                     config, type == CLAWT_COMPUTER_DISPLAY
+                                 ? "computer.display.allow_input"
+                                 : "computer.desktop.allow_input"));
 
     /*
      * Taken from the observer's cache, never asked here.
@@ -188,6 +194,20 @@ add_screen_status(ClawtDaemon *self, JsonBuilder *builder,
     {
         const gchar *viewer = clawt_observer_get_viewer(self->observer,
                                                         agent_id);
+        g_autofree gchar *local = NULL;
+
+        /*
+         * A virtual display's viewer is a port this daemon chose, known
+         * without asking anybody: read straight off the server, so the
+         * button is there before anyone has watched (0.51.0).
+         */
+        if (viewer == NULL && computer != NULL &&
+            CLAWT_IS_DISPLAY_COMPUTER(computer)) {
+            local = clawt_display_server_dup_viewer_uri(
+                clawt_display_computer_get_server(
+                    CLAWT_DISPLAY_COMPUTER(computer)));
+            viewer = local;
+        }
 
         if (viewer != NULL)
             clawt_daemon_add_string_member(builder, "viewer", viewer);

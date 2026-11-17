@@ -1246,7 +1246,12 @@ start_gowl(ClawtDisplayServer *self, const gchar *binary, GError **error)
     launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_SILENCE);
     g_subprocess_launcher_set_stderr_file_path(launcher, self->log);
     g_subprocess_launcher_set_environ(launcher, environment);
-    g_subprocess_launcher_set_cwd(launcher, self->dir);
+    /*
+     * Its working directory is the one its MCP spawn hands to apps, so
+     * the home directory, where an X app starts too -- not the display's
+     * own state directory, which is where a terminal opened first.
+     */
+    g_subprocess_launcher_set_cwd(launcher, g_get_home_dir());
 
     server = clawt_display_spawn_lasting(launcher,
                                          (const gchar * const *)argv, error);
