@@ -2128,6 +2128,10 @@ The status line names the server drawing the screen (~display_backend~), whether
 | "the virtual display is not running" | it was stopped from the Computer tab | Start it again |
 | the agent's clicks are refused | a person is holding the screen | Release it |
 
+*** Seen working
+
+On 2026-11-16, a throwaway fleet of three claude-code agents, one per backend (gowl 0.5.0 headless, Xvnc, Xvfb), each at 1024x700: each was told to open xterm on its display, type ~echo <word>~, press Return and report the word it read back off a screenshot -- and each answered with its own word (MARIGOLD, HEMLOCK, JUNIPER).  With the Xvfb agent's screen taken from the command line, its ~clawtilla_display_click~ came back refused with the takeover's sentence while its screenshot still worked.  The Xvnc agent's ~viewer~ address answered on loopback, and the web client's Screen view drew each display (screenshotted headless).  On the way the run found that the image's gowl answers MCP requests with string ids, which clawtilla's MCP client never matched -- fixed, with ~test-mcp-socket~.
+
 *** Other virtual displays
 
 Not built, and here so the choice is visible:
