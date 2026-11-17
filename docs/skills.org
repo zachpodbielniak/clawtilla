@@ -276,14 +276,25 @@ daemon's own context, and a file dropped into a skills directory
 deciding to run code on the daemon's host, which is not a permission
 anybody granted by assigning a skill.
 
-What ~/name~ expands to differs by harness, correctly.  Where the
-provider has a commands directory, clawtilla's generated command file
-wins and it is a *pointer*: "use your ~release~ skill, reading its
-SKILL.md first", plus the arguments.  Pasting the skill's body into the
-message instead would bypass the harness's own skill mechanism and put
-the whole procedure in the message rather than where the CLI loads it
-from.  Where the provider has no commands directory -- grok --
-the skill itself is what a slash resolves to.
+*A skill is named, never pasted* (since 0.51.1).  ~/release v1.2~ sends
+
+#+begin_example
+Use skill: release
+
+v1.2
+#+end_example
+
+on every provider, and nothing else: the skill is installed where the
+agent's harness looks for skills -- that is what assigning one does --
+so naming it is enough, and the harness loads it whole, its scripts and
+reference files with it.  Until 0.51.1 a provider with no commands
+directory (grok) had the skill's *body* expanded into the message: the
+whole procedure in the transcript, a wall of text to scroll past in
+every client, and only SKILL.md, so a multi-file skill arrived without
+the rest of itself.  A ~/name~ that is a command file rather than a
+skill (a hand-written ~.claude/commands/foo.md~) is still expanded, with
+its arguments substituted -- that file *is* the prompt.
+=clawt_skill_commands_invocation()= writes the line.
 
 ** What an agent is told
 

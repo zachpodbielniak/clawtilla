@@ -409,6 +409,11 @@ The ~forge~ record type is owner-only in VENTURE, so an editor -- every agent ac
 - *Then (0.50.0):* the plan's scratch agent per test run -- a temporary copy of the named agent with the skill under test alone, never saved, removed when the run settles.
 - *Version:* minor.
 
+** DONE /skill sends "Use skill: <name>", not the skill's body v0.51.1 :skills:clients:
+- *Requested:* by the user on 2026-11-16: invoking a skill with ~/name~ dumped the full skill body into the prompt, unreadable in every client.
+- *Done:* =clawt_skill_commands_expand()= names a skill found in the agent's workspace (=clawt_skill_commands_invocation()=: ~Use skill: <name>~, then the arguments) instead of expanding its body; command files still expand.  The harness loads the skill itself, so a multi-file skill keeps its other files.
+- *Version:* micro.
+
 ** DONE P2 Virtual displays: GUI apps on a screen of their own v0.51.0 :computers:clients:
 - *Requested:* by the user on 2026-11-16: run local GUI apps in a virtual framebuffer the agent controls, on Xvfb or gowl (standalone), selectable as a computer type, visible and takeable from the Computer tab; Xvnc added on their answer.
 - *Done:* ~computer.type: display~ (=ClawtDisplayComputer=: a confined =ClawtHostComputer= plus a =ClawtDisplayServer=) with ~computer.display.backend~ ~auto|gowl|xvnc|xvfb~, ~resolution~, ~depth~, ~startup~, ~vnc_port~, ~gowl_binary~, ~allow_input~, ~allow_spawn~; gowl run headless in a private runtime directory with its ipc and mcp modules, Xvfb read from its ~-fbdir~ framebuffer with an in-house XWD→PNG encoder, Xvnc on loopback with its viewer URI; servers chosen by running them (a broken gowl first on PATH is skipped and named); the agent's ~clawtilla_display_*~ tools and gowl's own through the ~clawtilla-desktop~ relay, both refused while a person holds the screen; ~computer.act~; the agent's own process gets the display's variables; the screen bound into bwrap boxes; =clawt_display_status_line()= in GTK, web and lrg; one long-lived spawner shared with the browser.  Found on the way: =clawt_mcp_socket_call()= never matched a reply whose id was a string, which gowl 0.5.0's MCP sends, so every call to it waited out its timeout -- fixed, with a test.

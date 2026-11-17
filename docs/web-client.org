@@ -405,7 +405,9 @@ the built-ins, and only on an agent page.
 **** Running one of an agent's skills
 
 A command that is neither built in nor a room refusal is handed to
-~skill.expand~ and the result sent as an ordinary message.  The
+~skill.expand~ and the result sent as an ordinary message -- for a skill,
+since 0.51.1, the one line ~Use skill: <name>~ and its arguments, not the
+skill's body ([[file:skills.org][skills.org]]).  The
 substitution is the daemon's, never the client's, which is what makes
 this client and the GTK one send identical text for the same
 =/name args=.

@@ -1704,7 +1704,10 @@ would be restarting the daemon.
 ~skill.commands~ takes an ~agent~ and returns the ~/name~ commands that
 agent's workspace offers: ~name~, ~description~, ~argument_hint~ and the
 ~origin~ harness.  ~skill.expand~ takes ~agent~, ~name~ and optional
-~arguments~ and returns the ~prompt~ to send.
+~arguments~ and returns the ~prompt~ to send: for a skill (since
+0.51.1) ~Use skill: <name>~, then a blank line and the arguments when
+there are any -- never the skill's body; for a command file, its text
+with the arguments substituted.
 
 Expansion is **daemon-side on purpose**.  Both graphical clients send
 byte-identical text for the same ~/name args~ because there is one
