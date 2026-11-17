@@ -1102,6 +1102,7 @@ clawt_web_app_finalize(GObject *object)
     g_clear_pointer(&self->last_refusal, g_free);
     g_clear_pointer(&self->unread, g_hash_table_unref);
     g_clear_pointer(&self->dm_rooms, g_hash_table_unref);
+    g_clear_pointer(&self->sidebar_rooms, g_hash_table_unref);
     g_clear_pointer(&self->viewing, g_free);
     g_clear_pointer(&self->viewing_room, g_free);
     g_clear_pointer(&self->alerts, g_ptr_array_unref);
