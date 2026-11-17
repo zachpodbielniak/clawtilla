@@ -378,6 +378,89 @@ clawt_computer_factory_create_shared(const gchar       *computer_id,
     return create_for(any_user, owner, users, default_mounts, bridge, error);
 }
 
+/*
+ * A host computer, with both grants checked: the one `host` builds and
+ * the one under a `display` computer (0.51.0), whose commands run on the
+ * same real machine and so need the same two deliberate acts.
+ */
+static ClawtComputer *
+build_host(ClawtAgentConfig *agent_config, const gchar *agent_id,
+           GError **error)
+{
+    ClawtComputer *computer;
+    g_autoptr(ClawtSandbox) sandbox = build_sandbox(agent_config);
+
+    /*
+     * The confirmation is checked here as well as during config
+     * validation.  Validation catches it at load; this catches an agent
+     * constructed some other way, and the cost of checking twice is
+     * nothing against the cost of missing it once.
+     */
+    if (!clawt_agent_config_get_boolean(
+            agent_config, "computer.host.confirm_host_control")) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED,
+                    "agent '%s' asks for a host computer without "
+                    "computer.host.confirm_host_control: true",
+                    agent_id);
+        return NULL;
+    }
+
+    /*
+     * And the fleet's half of the same decision, for the same reason
+     * and in the same place.
+     *
+     * Running unconfined on the real machine takes two deliberate
+     * acts -- the agent's confirmation above and the fleet's
+     * daemon.allow_unconfined_host -- and until now only the first
+     * of the two was checked here.  Validation catches it at load,
+     * which covers a config file; this catches an agent constructed
+     * some other way, which is the case the first check exists for.
+     * The stronger of the two grants is exactly the one that should
+     * not rest on a single reader.
+     *
+     * Asked of the fleet config rather than through the agent's own
+     * getters: `daemon.*` is not overridable per agent, so it has no
+     * agent-relative spelling and an agent-relative lookup would
+     * answer FALSE from the schema whatever the file says -- which
+     * would refuse every properly-granted host as well.
+     */
+    if (clawt_agent_config_get_enum(agent_config,
+                                    "computer.host.confine") ==
+            CLAWT_CONFINE_NONE) {
+        ClawtConfig *fleet = clawt_agent_config_get_config(agent_config);
+
+        if (fleet == NULL ||
+            !clawt_config_get_boolean(fleet,
+                                      "daemon.allow_unconfined_host")) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED,
+                        "agent '%s' asks for computer.host.confine: none "
+                        "without daemon.allow_unconfined_host: true -- "
+                        "running unconfined on your real machine takes "
+                        "two deliberate acts, not one. Set it, or pick a "
+                        "confinement mode", agent_id);
+            return NULL;
+        }
+    }
+
+    if (!clawt_sandbox_is_available(sandbox, error))
+        return NULL;
+
+    computer = clawt_host_computer_new(agent_id, sandbox);
+    {
+        g_autoptr(GHashTable) env = clawt_agent_config_get_env(agent_config);
+
+        clawt_host_computer_set_environment(CLAWT_HOST_COMPUTER(computer),
+                                            env);
+    }
+
+    clawt_host_computer_set_nice(
+        CLAWT_HOST_COMPUTER(computer),
+        (gint)clawt_agent_config_get_int(agent_config,
+                                         "computer.host.nice"));
+
+    return computer;
+}
+
 static ClawtComputer *
 create_for(ClawtAgentConfig  *agent_config,
            const gchar       *owner,
@@ -406,75 +489,9 @@ create_for(ClawtAgentConfig  *agent_config,
         return clawt_null_computer_new(agent_id);
 
     case CLAWT_COMPUTER_HOST: {
-        g_autoptr(ClawtSandbox) sandbox = build_sandbox(agent_config);
-
-        /*
-         * The confirmation is checked here as well as during config
-         * validation.  Validation catches it at load; this catches an agent
-         * constructed some other way, and the cost of checking twice is
-         * nothing against the cost of missing it once.
-         */
-        if (!clawt_agent_config_get_boolean(
-                agent_config, "computer.host.confirm_host_control")) {
-            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED,
-                        "agent '%s' asks for a host computer without "
-                        "computer.host.confirm_host_control: true",
-                        agent_id);
+        computer = build_host(agent_config, agent_id, error);
+        if (computer == NULL)
             return NULL;
-        }
-
-        /*
-         * And the fleet's half of the same decision, for the same reason
-         * and in the same place.
-         *
-         * Running unconfined on the real machine takes two deliberate
-         * acts -- the agent's confirmation above and the fleet's
-         * daemon.allow_unconfined_host -- and until now only the first
-         * of the two was checked here.  Validation catches it at load,
-         * which covers a config file; this catches an agent constructed
-         * some other way, which is the case the first check exists for.
-         * The stronger of the two grants is exactly the one that should
-         * not rest on a single reader.
-         *
-         * Asked of the fleet config rather than through the agent's own
-         * getters: `daemon.*` is not overridable per agent, so it has no
-         * agent-relative spelling and an agent-relative lookup would
-         * answer FALSE from the schema whatever the file says -- which
-         * would refuse every properly-granted host as well.
-         */
-        if (clawt_agent_config_get_enum(agent_config,
-                                        "computer.host.confine") ==
-                CLAWT_CONFINE_NONE) {
-            ClawtConfig *fleet = clawt_agent_config_get_config(agent_config);
-
-            if (fleet == NULL ||
-                !clawt_config_get_boolean(fleet,
-                                          "daemon.allow_unconfined_host")) {
-                g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_PERMISSION_DENIED,
-                            "agent '%s' asks for computer.host.confine: none "
-                            "without daemon.allow_unconfined_host: true -- "
-                            "running unconfined on your real machine takes "
-                            "two deliberate acts, not one. Set it, or pick a "
-                            "confinement mode", agent_id);
-                return NULL;
-            }
-        }
-
-        if (!clawt_sandbox_is_available(sandbox, error))
-            return NULL;
-
-        computer = clawt_host_computer_new(agent_id, sandbox);
-        {
-            g_autoptr(GHashTable) env = clawt_agent_config_get_env(agent_config);
-
-            clawt_host_computer_set_environment(CLAWT_HOST_COMPUTER(computer),
-                                                env);
-        }
-
-        clawt_host_computer_set_nice(
-            CLAWT_HOST_COMPUTER(computer),
-            (gint)clawt_agent_config_get_int(agent_config,
-                                             "computer.host.nice"));
 
         /*
          * The screen, so the computer can answer #ClawtObservable.
@@ -491,6 +508,71 @@ create_for(ClawtAgentConfig  *agent_config,
             clawt_host_computer_set_desktop(CLAWT_HOST_COMPUTER(computer),
                                             desktop);
         }
+        break;
+    }
+
+    case CLAWT_COMPUTER_DISPLAY: {
+        /*
+         * A host computer with a screen of its own (0.51.0).  The host
+         * underneath is built by the same function, with the same two
+         * grants: these commands run on the real machine too.  No
+         * desktop add-on -- the display is the screen.
+         */
+        g_autoptr(ClawtComputer) host = NULL;
+        g_autoptr(ClawtDisplayServer) server = NULL;
+        g_autoptr(GHashTable) env = NULL;
+        g_auto(GStrv) startup = NULL;
+        g_autofree gchar *resolution = NULL;
+        g_autofree gchar *state = NULL;
+        g_autofree gchar *dir = NULL;
+        g_autofree gchar *gowl_binary = NULL;
+        ClawtConfig *fleet = clawt_agent_config_get_config(agent_config);
+        guint width = 1280;
+        guint height = 800;
+
+        host = build_host(agent_config, agent_id, error);
+        if (host == NULL)
+            return NULL;
+
+        resolution = g_strdup(clawt_agent_config_get_string(
+            agent_config, "computer.display.resolution"));
+        if (resolution != NULL &&
+            !clawt_display_parse_resolution(resolution, &width, &height))
+            g_warning("agent %s: computer.display.resolution '%s' is not "
+                      "WIDTHxHEIGHT between 64 and 8192; using 1280x800",
+                      agent_id, resolution);
+
+        state = (fleet != NULL)
+            ? clawt_config_agent_state_dir(fleet, agent_id)
+            : g_build_filename(g_get_user_state_dir(), "clawtilla", "agents",
+                               agent_id, NULL);
+        dir = g_build_filename(state, "display", NULL);
+
+        server = clawt_display_server_new(
+            (ClawtDisplayBackend)clawt_agent_config_get_enum(
+                agent_config, "computer.display.backend"),
+            dir, width, height);
+        clawt_display_server_set_depth(
+            server, (guint)clawt_agent_config_get_int(
+                        agent_config, "computer.display.depth"));
+        clawt_display_server_set_vnc_port(
+            server, (guint)clawt_agent_config_get_int(
+                        agent_config, "computer.display.vnc_port"));
+        gowl_binary = clawt_agent_config_get_path_value(
+            agent_config, "computer.display.gowl_binary");
+        clawt_display_server_set_gowl_binary(server, gowl_binary);
+
+        computer = clawt_display_computer_new(agent_id,
+                                              CLAWT_HOST_COMPUTER(host),
+                                              server);
+
+        env = clawt_agent_config_get_env(agent_config);
+        clawt_display_computer_set_environment(
+            CLAWT_DISPLAY_COMPUTER(computer), env);
+        startup = clawt_agent_config_get_string_list(
+            agent_config, "computer.display.startup");
+        clawt_display_computer_set_startup(CLAWT_DISPLAY_COMPUTER(computer),
+                                           (const gchar * const *)startup);
         break;
     }
 

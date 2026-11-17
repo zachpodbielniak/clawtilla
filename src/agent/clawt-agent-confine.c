@@ -684,6 +684,30 @@ clawt_agent_confine_build(ClawtAgentConfig     *config,
     for (i = 0; sockets != NULL && sockets[i] != NULL; i++)
         grant(sandbox, sockets[i], TRUE);
 
+    /*
+     * A display computer's screen (0.51.0), so a GUI app the agent starts
+     * from its own shell can draw on it: the X socket directory, and
+     * gowl's private runtime directory -- made now if the display has not
+     * started yet, since a bind needs its source to exist.
+     */
+    if (clawt_agent_config_get_enum(config, "computer.type") ==
+            CLAWT_COMPUTER_DISPLAY) {
+        ClawtConfig *fleet = clawt_agent_config_get_config(config);
+        g_autofree gchar *state = (fleet != NULL)
+            ? clawt_config_agent_state_dir(fleet,
+                                           clawt_agent_config_get_id(config))
+            : NULL;
+
+        grant(sandbox, "/tmp/.X11-unix", TRUE);
+        if (state != NULL) {
+            g_autofree gchar *run = g_build_filename(state, "display", "run",
+                                                     NULL);
+
+            if (g_mkdir_with_parents(run, 0700) == 0)
+                grant(sandbox, run, TRUE);
+        }
+    }
+
     /* What the operator named, read-only. */
     extra = clawt_agent_config_get_string_list(config,
                                                "runtime.confine_paths");
@@ -707,7 +731,9 @@ clawt_agent_confine_build(ClawtAgentConfig     *config,
      * as well, so the sentence is true of its own tools too.
      */
     if (clawt_agent_config_get_enum(config, "computer.type") ==
-            CLAWT_COMPUTER_HOST) {
+            CLAWT_COMPUTER_HOST ||
+        clawt_agent_config_get_enum(config, "computer.type") ==
+            CLAWT_COMPUTER_DISPLAY) {
         g_auto(GStrv) deny = clawt_agent_config_get_string_list(
             config, "computer.host.deny_paths");
 

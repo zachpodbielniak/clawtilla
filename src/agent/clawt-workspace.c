@@ -1421,11 +1421,26 @@ wants_guest_desktop(ClawtAgentConfig *agent)
 {
     ClawtComputerType type;
 
-    if (!clawt_agent_config_get_boolean(agent, "computer.desktop.enabled"))
-        return FALSE;
-
     type = (ClawtComputerType)
         clawt_agent_config_get_enum(agent, "computer.type");
+
+    /*
+     * A display computer on gowl (0.51.0) gets gowl's own tools through
+     * the same relay, pointed at the private compositor's MCP socket.
+     * auto included: it picks gowl first, and when it lands on an X
+     * server the relay says so and the agent still has the
+     * clawtilla_display_* tools.
+     */
+    if (type == CLAWT_COMPUTER_DISPLAY) {
+        ClawtDisplayBackend backend = (ClawtDisplayBackend)
+            clawt_agent_config_get_enum(agent, "computer.display.backend");
+
+        return backend == CLAWT_DISPLAY_BACKEND_GOWL ||
+               backend == CLAWT_DISPLAY_BACKEND_AUTO;
+    }
+
+    if (!clawt_agent_config_get_boolean(agent, "computer.desktop.enabled"))
+        return FALSE;
 
     return type == CLAWT_COMPUTER_VM;
 }

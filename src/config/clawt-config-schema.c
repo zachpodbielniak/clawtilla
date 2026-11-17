@@ -3786,6 +3786,81 @@ static const ClawtSchemaEntry schema[] = {
   "Scheduling niceness for the agent's commands, so a runaway build does\n"
   "not make the desktop unusable.", "0.1.0" },
 
+/* ── agents.computer.display ─────────────────────────────────────── */
+{ "agents.computer.display", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Settings for computer.type: display -- GUI apps on a virtual screen of\n"
+  "their own, which the agent drives and a person can watch and take.\n"
+  "\n"
+  "Commands run on the host exactly as computer.type: host runs them, so\n"
+  "computer.host.confirm_host_control and computer.host.confine apply\n"
+  "here too. See docs/computers.org, \"display\".", "0.51.0" },
+
+{ "agents.computer.display.backend", CLAWT_SCHEMA_ENUM, CLAWT_SCHEMA_FLAG_NONE,
+  "auto", clawt_display_backend_get_type,
+  "What draws the screen: auto, gowl, xvfb or xvnc.\n"
+  "\n"
+  "  gowl  gowl run headless, in a runtime directory of its own; Wayland\n"
+  "        apps draw on it directly, X apps through its XWayland, and the\n"
+  "        agent gets gowl's own window tools as well\n"
+  "  xvnc  TigerVNC's X server: the Computer tab's viewer button opens it\n"
+  "        live in a VNC viewer\n"
+  "  xvfb  an X server drawing into memory; the lightest of the three\n"
+  "\n"
+  "auto takes the first that runs, in that order. Each candidate is run\n"
+  "before it is chosen, so a broken binary first on PATH is skipped, and\n"
+  "the Computer tab says what was skipped and why.", "0.51.0" },
+
+{ "agents.computer.display.resolution", CLAWT_SCHEMA_STRING, CLAWT_SCHEMA_FLAG_NONE,
+  "1280x800", NULL,
+  "The screen's size, WIDTHxHEIGHT, each between 64 and 8192.\n"
+  "\n"
+  "The agent's clicks are in these pixels. Larger screens cost more to\n"
+  "picture, and every picture the agent asks for is part of its turn.", "0.51.0" },
+
+{ "agents.computer.display.depth", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "24", NULL,
+  "Colour depth for an X server: 16, 24 or 32. gowl ignores it.", "0.51.0" },
+
+{ "agents.computer.display.startup", CLAWT_SCHEMA_STRING_LIST, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "Apps started on the screen each time it comes up, as shell command\n"
+  "lines, under the agent's confinement: e.g. [firefox, \"foot -e htop\"].\n"
+  "One that does not start is logged; the others still are.", "0.51.0" },
+
+{ "agents.computer.display.vnc_port", CLAWT_SCHEMA_INT, CLAWT_SCHEMA_FLAG_NONE,
+  "0", NULL,
+  "Xvnc's VNC port on 127.0.0.1. 0 picks a free one at each start.\n"
+  "\n"
+  "The VNC server listens on loopback only and asks for no password: it\n"
+  "is reachable from this machine alone, which is the trust the daemon's\n"
+  "own socket gives.", "0.51.0" },
+
+{ "agents.computer.display.allow_input", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "true", NULL,
+  "Whether the agent may click, type and scroll on its display, not only\n"
+  "look at it.\n"
+  "\n"
+  "On by default, unlike computer.desktop.allow_input: that one is about\n"
+  "the operator's own screen, and this is a private one nobody is sitting\n"
+  "at. A person who takes the screen still refuses the agent's input for\n"
+  "as long as they hold it.", "0.51.0" },
+
+{ "agents.computer.display.allow_spawn", CLAWT_SCHEMA_BOOLEAN, CLAWT_SCHEMA_FLAG_NONE,
+  "true", NULL,
+  "Whether the agent may start apps on its display with display_launch.\n"
+  "\n"
+  "Off leaves it the apps in computer.display.startup and whatever it\n"
+  "starts through clawtilla_computer_exec, which is its own setting.", "0.51.0" },
+
+{ "agents.computer.display.gowl_binary", CLAWT_SCHEMA_PATH, CLAWT_SCHEMA_FLAG_NONE,
+  NULL, NULL,
+  "A gowl to run instead of searching /usr/bin, /usr/sbin and PATH.\n"
+  "\n"
+  "For when the first gowl found is not the one wanted -- an old build in\n"
+  "/usr/local/bin that cannot load its wlroots, say. It must answer\n"
+  "--version or it is not used.", "0.51.0" },
+
 /* ── agents.computer.container ───────────────────────────────────── */
 { "agents.computer.container", CLAWT_SCHEMA_SECTION, CLAWT_SCHEMA_FLAG_NONE,
   NULL, NULL,
