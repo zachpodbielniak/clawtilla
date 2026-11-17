@@ -46,6 +46,71 @@ computer_desktop_reply(ClawtDaemon *self, JsonNode *request,
                                    "there is no such agent");
 
     /*
+     * A display computer on gowl (0.51.0): the relay talks to the private
+     * compositor's MCP socket through gowl's own stdio bridge, and the
+     * tools are filtered by the display's grants -- looking always,
+     * acting with allow_input, starting apps with allow_spawn, recording
+     * never.
+     */
+    if (computer != NULL && CLAWT_IS_DISPLAY_COMPUTER(computer)) {
+        ClawtDisplayServer *server = clawt_display_computer_get_server(
+            CLAWT_DISPLAY_COMPUTER(computer));
+        g_autoptr(GError) start_error = NULL;
+        g_autoptr(ClawtDesktop) gowl = NULL;
+        g_autofree gchar *bridge = NULL;
+        const gchar *socket_path;
+
+        if (!clawt_display_server_is_running(server) &&
+            !clawt_computer_ensure_started(computer, &start_error))
+            return clawt_ipc_error_new(request, CLAWT_ERROR_AGENT_STATE,
+                                       start_error->message);
+        if (clawt_display_server_get_backend(server) !=
+                CLAWT_DISPLAY_BACKEND_GOWL)
+            return clawt_ipc_error_new(
+                request, CLAWT_ERROR_NOT_SUPPORTED,
+                "that agent's display is an X server, not gowl, so there are "
+                "no compositor tools to relay; the clawtilla_display_* tools "
+                "cover it");
+
+        socket_path = clawt_display_server_get_mcp_socket(server);
+        bridge = g_find_program_in_path("gowl-mcp");
+        if (bridge == NULL)
+            return clawt_ipc_error_new(
+                request, CLAWT_ERROR_NOT_FOUND,
+                "gowl-mcp is not installed, so gowl's own tools cannot be "
+                "relayed; the clawtilla_display_* tools still work");
+
+        gowl = clawt_desktop_new(CLAWT_DESKTOP_BACKEND_GOWL, socket_path);
+        clawt_desktop_set_allow_input(
+            gowl, clawt_agent_config_get_boolean(
+                      agent_config, "computer.display.allow_input"));
+        clawt_desktop_set_allow_spawn(
+            gowl, clawt_agent_config_get_boolean(
+                      agent_config, "computer.display.allow_spawn"));
+        clawt_desktop_set_allow_recording(gowl, FALSE);
+        tools = clawt_desktop_get_tool_names(gowl);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "backend");
+        json_builder_add_string_value(builder, "gowl");
+        json_builder_set_member_name(builder, "argv");
+        json_builder_begin_array(builder);
+        json_builder_add_string_value(builder, bridge);
+        json_builder_add_string_value(builder, "--socket");
+        json_builder_add_string_value(builder, socket_path);
+        json_builder_end_array(builder);
+        json_builder_set_member_name(builder, "tools");
+        json_builder_begin_array(builder);
+        for (i = 0; tools != NULL && tools[i] != NULL; i++)
+            json_builder_add_string_value(builder, tools[i]);
+        json_builder_end_array(builder);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request,
+                                      json_builder_get_root(builder));
+    }
+
+    /*
      * The attached desktop when there is one, and otherwise one built
      * from the config.
      *

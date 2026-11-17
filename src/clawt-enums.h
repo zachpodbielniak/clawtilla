@@ -398,7 +398,8 @@ typedef enum {
     CLAWT_COMPUTER_CONTAINER,
     CLAWT_COMPUTER_VM,
     CLAWT_COMPUTER_DISTROBOX,
-    CLAWT_COMPUTER_SSH
+    CLAWT_COMPUTER_SSH,
+    CLAWT_COMPUTER_DISPLAY
 } ClawtComputerType;
 
 /**
@@ -567,6 +568,26 @@ typedef enum {
     CLAWT_DESKTOP_BACKEND_GNOME,
     CLAWT_DESKTOP_BACKEND_GUEST
 } ClawtDesktopBackend;
+
+/**
+ * ClawtDisplayBackend:
+ * @CLAWT_DISPLAY_BACKEND_AUTO: the first that works: gowl, then Xvnc, then
+ *   Xvfb
+ * @CLAWT_DISPLAY_BACKEND_GOWL: gowl, headless, on a private runtime
+ *   directory; apps are Wayland clients (X ones through XWayland)
+ * @CLAWT_DISPLAY_BACKEND_XVFB: an X server drawing into memory
+ * @CLAWT_DISPLAY_BACKEND_XVNC: TigerVNC's X server: Xvfb with a VNC server
+ *   on loopback, so a viewer can watch and drive it live
+ *
+ * What draws a `display` computer's screen (`computer.display.backend`,
+ * since 0.51.0).
+ */
+typedef enum {
+    CLAWT_DISPLAY_BACKEND_AUTO = 0,
+    CLAWT_DISPLAY_BACKEND_GOWL,
+    CLAWT_DISPLAY_BACKEND_XVFB,
+    CLAWT_DISPLAY_BACKEND_XVNC
+} ClawtDisplayBackend;
 
 /**
  * ClawtComputerView:
@@ -1321,6 +1342,7 @@ GType clawt_confine_mode_get_type(void) G_GNUC_CONST;
 GType clawt_action_class_get_type(void) G_GNUC_CONST;
 GType clawt_policy_mode_get_type(void) G_GNUC_CONST;
 GType clawt_desktop_backend_get_type(void) G_GNUC_CONST;
+GType clawt_display_backend_get_type(void) G_GNUC_CONST;
 GType clawt_input_kind_get_type(void) G_GNUC_CONST;
 GType clawt_mount_type_get_type(void) G_GNUC_CONST;
 GType clawt_mount_mode_get_type(void) G_GNUC_CONST;
@@ -1370,6 +1392,7 @@ GType clawt_checkout_mode_get_type(void) G_GNUC_CONST;
 #define CLAWT_TYPE_ACTION_CLASS     (clawt_action_class_get_type())
 #define CLAWT_TYPE_POLICY_MODE      (clawt_policy_mode_get_type())
 #define CLAWT_TYPE_DESKTOP_BACKEND  (clawt_desktop_backend_get_type())
+#define CLAWT_TYPE_DISPLAY_BACKEND  (clawt_display_backend_get_type())
 #define CLAWT_TYPE_INPUT_KIND       (clawt_input_kind_get_type())
 #define CLAWT_TYPE_MOUNT_TYPE       (clawt_mount_type_get_type())
 #define CLAWT_TYPE_MOUNT_MODE       (clawt_mount_mode_get_type())

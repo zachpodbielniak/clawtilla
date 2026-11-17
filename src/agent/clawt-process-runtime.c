@@ -25,6 +25,7 @@ struct _ClawtProcessRuntime {
     gchar        *binary;
     gchar        *config_path;
     GHashTable   *environment;
+    GHashTable   *display;      /* a display computer's variables, on top */
 
     /*
      * `runtime.confine: bwrap`.  NULL runs the child as it always ran.
@@ -156,6 +157,18 @@ clawt_process_runtime_set_environment(ClawtProcessRuntime *self,
 
     if (env != NULL)
         self->environment = g_hash_table_ref(env);
+}
+
+void
+clawt_process_runtime_set_display_environment(ClawtProcessRuntime *self,
+                                              GHashTable          *env)
+{
+    g_return_if_fail(CLAWT_IS_PROCESS_RUNTIME(self));
+
+    g_clear_pointer(&self->display, g_hash_table_unref);
+
+    if (env != NULL && g_hash_table_size(env) > 0)
+        self->display = g_hash_table_ref(env);
 }
 
 void
@@ -710,9 +723,37 @@ clawt_process_runtime_prepare(ClawtProcessRuntime  *self,
      * The shared allowlist plus whatever the agent's own `env:` block
      * names -- never the daemon's environment wholesale.
      */
-    environment = clawt_build_child_environment(
-        network_environment != NULL ? network_environment
-                                    : self->environment);
+    /*
+     * A display computer's DISPLAY or WAYLAND_DISPLAY over the agent's own
+     * env: (0.51.0), so a GUI app the agent starts from its own shell
+     * lands on its private screen rather than on the operator's.
+     */
+    {
+        GHashTable *base = network_environment != NULL ? network_environment
+                                                       : self->environment;
+        g_autoptr(GHashTable) merged = NULL;
+
+        if (self->display != NULL) {
+            GHashTableIter iter;
+            gpointer key;
+            gpointer value;
+
+            merged = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                           g_free);
+            if (base != NULL) {
+                g_hash_table_iter_init(&iter, base);
+                while (g_hash_table_iter_next(&iter, &key, &value))
+                    g_hash_table_insert(merged, g_strdup(key),
+                                        g_strdup(value));
+            }
+            g_hash_table_iter_init(&iter, self->display);
+            while (g_hash_table_iter_next(&iter, &key, &value))
+                g_hash_table_insert(merged, g_strdup(key), g_strdup(value));
+            base = merged;
+        }
+
+        environment = clawt_build_child_environment(base);
+    }
 
     if (self->sandbox == NULL) {
         *out_argv = g_strdupv((gchar **)argv);
@@ -1249,6 +1290,7 @@ clawt_process_runtime_dispose(GObject *object)
     g_clear_object(&self->cancellable);
     g_clear_object(&self->log_stream);
     g_clear_pointer(&self->environment, g_hash_table_unref);
+    g_clear_pointer(&self->display, g_hash_table_unref);
     g_clear_object(&self->sandbox);
     revoke_broker_token(self);
     g_clear_object(&self->broker);

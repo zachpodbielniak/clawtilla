@@ -438,13 +438,19 @@ agent_validate(ClawtAgentConfig *self)
      * be the wrong kind of helpful: the user asked for something the daemon
      * will not do, and should be told so.
      */
-    if (g_strcmp0(computer_type, "host") == 0 &&
+    /*
+     * A display computer's commands run on the same real machine
+     * (0.51.0), so it takes the same two acts as host.
+     */
+    if ((g_strcmp0(computer_type, "host") == 0 ||
+         g_strcmp0(computer_type, "display") == 0) &&
         !clawt_agent_config_get_boolean(self,
                                         "computer.host.confirm_host_control")) {
         agent_mark_shadow(self,
-                          "a host computer needs "
+                          "a %s computer needs "
                           "computer.host.confirm_host_control: true -- it "
-                          "gives the agent your real machine");
+                          "gives the agent your real machine",
+                          computer_type);
         return;
     }
 
@@ -457,7 +463,8 @@ agent_validate(ClawtAgentConfig *self)
      * agent block handed over the whole machine, which is precisely the
      * single typo the two-act rule exists to stop.
      */
-    if (g_strcmp0(computer_type, "host") == 0 &&
+    if ((g_strcmp0(computer_type, "host") == 0 ||
+         g_strcmp0(computer_type, "display") == 0) &&
         clawt_agent_config_get_enum(self, "computer.host.confine") ==
             CLAWT_CONFINE_NONE &&
         (self->config == NULL ||
@@ -516,8 +523,8 @@ agent_validate(ClawtAgentConfig *self)
             }
 
             type = clawt_agent_config_get_enum(self, "computer.type");
-            if (type == CLAWT_COMPUTER_HOST) {
-                agent_mark_shadow(self, "computer.use: '%s' is a host computer, which is "
+            if (type == CLAWT_COMPUTER_HOST || type == CLAWT_COMPUTER_DISPLAY) {
+                agent_mark_shadow(self, "computer.use: '%s' is a host or display computer, which is "
                                   "one agent confined to its own workspace and cannot be "
                                   "shared; make it a container, distrobox, VM or ssh "
                                   "machine", use);

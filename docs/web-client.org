@@ -103,7 +103,7 @@ The same seven the GTK client's view switcher has, in the same order.
 | Chat     | transcript, composer, slash commands, attachments          |
 | Agent    | every setting, the workspace files, the memory store       |
 | Mailbox  | what is waiting, what died, purge and requeue              |
-| Computer | exec console, mounts, the exchange, rebuild                |
+| Computer | exec console, the screen (for a ~display~ computer, its virtual display and which server draws it, from =clawt_display_status_line()=), mounts, the exchange, rebuild |
 | Routines | scheduled work, running one now, turning one back on       |
 | Tasks    | Problems to look at (settings, open incidents, Retry), delegated work, the budget, cancelling, retrying |
 | Flow     | what the agents are saying to each other; each room's card carries the anchor a cross-talk summary's "View in Flow" links to |

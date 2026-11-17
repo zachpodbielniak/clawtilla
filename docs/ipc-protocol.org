@@ -1256,6 +1256,15 @@ pure function of the config, so a stopped agent is answered from the
 config rather than told it has no desktop -- which is what it used to be
 told, naming a key that was already set.
 
+For a ~display~ computer on gowl (since 0.51.0) it answers ~backend:
+gowl~ and an ~argv~ of ~gowl-mcp --socket <the display's run
+directory>/gowl-mcp.sock~ -- gowl's own stdio bridge to the private
+compositor -- with ~tools~ filtered by ~computer.display.allow_input~ and
+~allow_spawn~ (recording tools never).  It starts the display first when
+it is not running.  A display on an X server is =NOT_SUPPORTED= with a
+sentence saying the ~clawtilla_display_*~ tools cover it; no ~gowl-mcp~
+installed is =NOT_FOUND=.
+
 *** computer.screen and the takeover
 
 ~computer.screen~ (~agent~) answers everything a client needs to draw the
@@ -1264,6 +1273,13 @@ Screen tab in one frame: ~type~, ~has_screen~, ~observable~, ~watchers~,
 ~screen_height~, ~held~, ~holder~, ~expires_at~, ~lease_seconds~,
 ~request~, ~can_input~, ~allow_input~, and ~viewer~ and ~error~ when
 there are any.
+
+For a ~display~ computer (since 0.51.0) it also carries
+~display_backend~ (~gowl~, ~xvnc~ or ~xvfb~ once started, or what was
+asked for before), ~display_running~, and when there are any
+~display_notes~ -- what ~auto~ skipped and why, one line each -- and
+~display_failure~, the last lines a server that died wrote.  See
+docs/computers.org, "display".
 
 ~has_screen~ and ~observable~ are two different questions and both are
 needed.  The first is about the *type* -- ~clawt_computer_type_has_screen()~
@@ -1321,6 +1337,26 @@ taking one you already hold extends the lease.
 It *defers*: a keystroke into a guest is an SSH round trip, and waiting
 for it on the daemon's context would be every agent's messages stopped
 once per key.
+
+~computer.act~ (since 0.51.0; ~agent~, ~action~ and the action's own
+fields) is an *agent's* hands on its virtual display, where
+~computer.input~ is a person's during a takeover.  ~action~ is
+~screenshot~, ~windows~, ~launch~ (~command~), ~click~ (~x~, ~y~,
+~button~), ~move~ (~x~, ~y~), ~type~ (~text~), ~key~ (~text~, an XKB
+combo) or ~scroll~ (~x~, ~y~, ~dx~, ~dy~).  It *defers*, since each runs
+a process or a socket call, and answers: ~png~ (base64), ~width~ and
+~height~ for a screenshot; ~windows~ (an array); ~started~ and, when the
+display knows it, ~pid~; or ~sent~.  Refusals: no such agent
+=NOT_FOUND=; an agent whose computer is not a display
+=NOT_SUPPORTED=; an unknown action, or ~type~/~key~ without ~text~, or
+~launch~ without ~command~ =INVALID_ARGUMENT=;
+~computer.display.allow_input~ off for an acting action, or
+~allow_spawn~ off for ~launch~, =PERMISSION_DENIED=.  While a person
+holds the screen an acting action answers ~allowed: false~ with the
+takeover's ~refusal~ sentence -- an answer, not an error, so a tool can
+pass the reason on; ~screenshot~ and ~windows~ are never refused for
+it.  The agent's own ~clawtilla_display_*~ tools do the same work over
+its link (docs/computers.org, "The agent's tools").
 
 ~computer.control~ (~agent~, ~tool~) → ~allowed~ and ~refusal~ is not a
 client frame.  It is what the desktop relay asks before forwarding an

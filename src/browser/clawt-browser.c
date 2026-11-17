@@ -28,7 +28,6 @@
 
 #include <errno.h>
 #include <stdio.h>
-#include <poll.h>
 #include <signal.h>
 #include <string.h>
 #include <unistd.h>
@@ -37,14 +36,10 @@
 #include <gio/gunixinputstream.h>
 #include <gio/gunixsocketaddress.h>
 
-#if defined(__linux__)
-#include <sys/prctl.h>
-#endif
 
 /* A reply bigger than this is refused while it is read, not after. */
 #define REPLY_MAX_BYTES     (64 * 1024 * 1024)
 #define START_TIMEOUT_MS    (20000)
-#define STOP_WAIT_MS        (3000)
 
 gboolean
 clawt_browser_build_available(void)
@@ -180,91 +175,16 @@ resolve_xvfb(GError **error)
     return NULL;
 }
 
-/* Runs in the child between fork and exec: async-signal-safe only. */
-static void
-die_with_parent(gpointer user_data)
-{
-    (void)user_data;
-#if defined(__linux__)
-    prctl(PR_SET_PDEATHSIG, SIGTERM);
-#endif
-}
-
 /*
- * Where the children are forked.
- *
- * PR_SET_PDEATHSIG is tied to the *thread* that forked, not the process:
- * the child is signalled when that thread ends.  A session is started by
- * whichever thread first needs it -- an agent's browser tool runs on a
- * thread of its own that ends with the tool call -- so Xvfb and gsurf
- * were sent SIGTERM moments after starting, and the agent's next call
- * found a new browser on about:blank.  Every fork happens here instead,
- * on one thread that lives as long as the process.
+ * Every child is forked by the display layer's long-lived spawner
+ * (clawt_display_spawn_lasting()), so it dies with the daemon: the death
+ * signal follows the forking thread, and a browser tool call's thread
+ * ends with the call.
  */
-typedef struct {
-    GSubprocessLauncher  *launcher;
-    const gchar * const  *argv;
-    GSubprocess          *child;
-    GError               *error;
-    gboolean              done;
-    GMutex                lock;
-    GCond                 cond;
-} SpawnRequest;
-
-static gpointer
-spawner_main(gpointer data)
-{
-    GAsyncQueue *queue = data;
-
-    for (;;) {
-        SpawnRequest *request = g_async_queue_pop(queue);
-        GSubprocess *child;
-        GError *error = NULL;
-
-        child = g_subprocess_launcher_spawnv(request->launcher, request->argv, &error);
-
-        g_mutex_lock(&request->lock);
-        request->child = child;
-        request->error = error;
-        request->done = TRUE;
-        g_cond_signal(&request->cond);
-        g_mutex_unlock(&request->lock);
-    }
-    return NULL;
-}
-
-/* g_subprocess_launcher_spawnv(), forked from the lasting thread. */
-static GSubprocess *
-spawn_lasting(GSubprocessLauncher *launcher, const gchar * const *argv, GError **error)
-{
-    static GAsyncQueue *queue = NULL;
-    SpawnRequest request = { 0 };
-
-    if (g_once_init_enter(&queue)) {
-        GAsyncQueue *made = g_async_queue_new();
-
-        /* Never joined: it ends with the process, and that is the point. */
-        g_thread_unref(g_thread_new("clawt-browser-spawn", spawner_main, made));
-        g_once_init_leave(&queue, made);
-    }
-
-    request.launcher = launcher;
-    request.argv = argv;
-    g_mutex_init(&request.lock);
-    g_cond_init(&request.cond);
-
-    g_mutex_lock(&request.lock);
-    g_async_queue_push(queue, &request);
-    while (!request.done)
-        g_cond_wait(&request.cond, &request.lock);
-    g_mutex_unlock(&request.lock);
-
-    g_mutex_clear(&request.lock);
-    g_cond_clear(&request.cond);
-    if (request.error != NULL)
-        g_propagate_error(error, request.error);
-    return request.child;
-}
+#define spawn_lasting(launcher, argv, error) \
+    clawt_display_spawn_lasting((launcher), (argv), (error))
+#define child_alive(child) clawt_display_child_alive(child)
+#define end_child(child) clawt_display_end_child(child)
 
 /* ── The session ──────────────────────────────────────────────────── */
 
@@ -430,14 +350,6 @@ clawt_browser_set_transport(ClawtBrowser *self, ClawtBrowserTransport transport,
     self->transport_destroy = destroy;
 }
 
-/* Alive, as the kernel says: GSubprocess reaps on GLib's worker, so a
- * child that exited has no identifier any more. */
-static gboolean
-child_alive(GSubprocess *child)
-{
-    return child != NULL && g_subprocess_get_identifier(child) != NULL;
-}
-
 gboolean
 clawt_browser_is_running(ClawtBrowser *self)
 {
@@ -451,25 +363,6 @@ clawt_browser_is_running(ClawtBrowser *self)
     running = child_alive(self->gsurf) && child_alive(self->xvfb);
     g_mutex_unlock(&self->state);
     return running;
-}
-
-/* Sends SIGTERM, waits a little, then SIGKILL.  A wait that never ends is
- * worse than a browser killed rudely. */
-static void
-end_child(GSubprocess *child)
-{
-    gint waited = 0;
-
-    if (!child_alive(child))
-        return;
-
-    g_subprocess_send_signal(child, SIGTERM);
-    while (child_alive(child) && waited < STOP_WAIT_MS) {
-        g_usleep(50 * 1000);
-        waited += 50;
-    }
-    if (child_alive(child))
-        g_subprocess_force_exit(child);
 }
 
 /* Called with lock held. */
@@ -505,42 +398,11 @@ clawt_browser_stop(ClawtBrowser *self)
     g_mutex_unlock(&self->lock);
 }
 
-/*
- * The X server's display number, from its -displayfd pipe.  Polled with a
- * deadline rather than read: an Xvfb that hangs before writing would
- * otherwise hold this thread for ever.
- */
+/* The X server's display number, from its -displayfd pipe. */
 static gint
 read_display(GSubprocess *xvfb, GError **error)
 {
-    GInputStream *out = g_subprocess_get_stdout_pipe(xvfb);
-    gint fd = g_unix_input_stream_get_fd(G_UNIX_INPUT_STREAM(out));
-    gchar buffer[32] = { 0 };
-    gsize got = 0;
-    gint64 deadline = g_get_monotonic_time() + (gint64)START_TIMEOUT_MS * 1000;
-
-    while (got < sizeof(buffer) - 1) {
-        struct pollfd pfd = { fd, POLLIN, 0 };
-        gint64 left = (deadline - g_get_monotonic_time()) / 1000;
-        gssize n;
-
-        if (left <= 0)
-            break;
-        if (poll(&pfd, 1, (int)left) <= 0)
-            continue;
-        n = read(fd, buffer + got, sizeof(buffer) - 1 - got);
-        if (n <= 0)
-            break;
-        got += (gsize)n;
-        if (memchr(buffer, '\n', got) != NULL)
-            return (gint)g_ascii_strtoll(buffer, NULL, 10);
-    }
-
-    g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_RUNTIME_SPAWN,
-                "Xvfb did not report a display within %d seconds%s",
-                START_TIMEOUT_MS / 1000,
-                child_alive(xvfb) ? "" : " (it exited)");
-    return -1;
+    return clawt_display_read_displayfd(xvfb, START_TIMEOUT_MS, error);
 }
 
 /* The gsurf config: its profile, its window and its control socket. */
@@ -660,7 +522,6 @@ start_locked(ClawtBrowser *self, GError **error)
     xlog = g_build_filename(self->dir, "xvfb.log", NULL);
     xl = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE);
     g_subprocess_launcher_set_stderr_file_path(xl, xlog);
-    g_subprocess_launcher_set_child_setup(xl, die_with_parent, NULL, NULL);
     /*
      * TCP off; the abstract socket left on.  Without it X is reachable
      * only through /tmp/.X11-unix, which a daemon with a private /tmp
@@ -704,7 +565,6 @@ start_locked(ClawtBrowser *self, GError **error)
     g_subprocess_launcher_set_cwd(gl, self->dir);
     g_subprocess_launcher_set_stdout_file_path(gl, log);
     g_subprocess_launcher_set_stderr_file_path(gl, log);
-    g_subprocess_launcher_set_child_setup(gl, die_with_parent, NULL, NULL);
     {
         const gchar *argv[] = { gsurf_path, "-c", config, "--no-c-config", "--no-modules",
                                 home, NULL };

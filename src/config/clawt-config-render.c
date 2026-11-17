@@ -943,6 +943,22 @@ render_computer_directive(ClawtAgentConfig *for_agent)
             "is not visible to the other. That machine is not "
             "clawtilla's: it belongs to somebody who is using it.");
 
+    case CLAWT_COMPUTER_DISPLAY:
+        /*
+         * A virtual display (0.51.0): the commands run on the host, as
+         * host's do, but the screen is a private one nobody is sitting
+         * at -- which is the point, and what makes it safe to click on.
+         */
+        return g_strdup(
+            "[clawtilla] Your computer is a virtual display on the machine "
+            "clawtilla runs on: GUI apps you start appear on a screen of "
+            "their own, which nobody else is using. Start them with "
+            "clawtilla_display_launch or clawtilla_computer_exec, see them with "
+            "clawtilla_display_screenshot and drive them with clawtilla_display_click, "
+            "clawtilla_display_type and clawtilla_display_key. Commands still run on a real "
+            "machine somebody uses. A person may take the screen; while "
+            "they hold it your clicks and keys are refused.");
+
     case CLAWT_COMPUTER_NONE:
         return NULL;
     }

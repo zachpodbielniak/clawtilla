@@ -48,6 +48,9 @@ typedef enum {
     NEEDS_REBUILD,
     NEEDS_SKILL_PROPOSAL,
     NEEDS_CONNECTOR,
+    NEEDS_DISPLAY,
+    NEEDS_DISPLAY_INPUT,
+    NEEDS_DISPLAY_SPAWN,
     NEEDS_NEVER
 } ToolRequirement;
 
@@ -374,6 +377,42 @@ static const ClawtParamInfo computer_exec_params[] = {
     { "timeout",     "integer",
       "Seconds before giving up. Defaults to 120. Always set one for "
       "anything that might wait for input.", FALSE }
+};
+
+/* The display tools (0.51.0): a virtual screen's own pixels. */
+static const ClawtParamInfo display_point_params[] = {
+    { "x", "integer", "Pixels from the left edge of the screen, as in "
+      "clawtilla_display_screenshot.", TRUE },
+    { "y", "integer", "Pixels from the top edge.", TRUE },
+    { "button", "integer", "1 left (the default), 2 middle, 3 right.", FALSE }
+};
+
+static const ClawtParamInfo display_move_params[] = {
+    { "x", "integer", "Pixels from the left edge of the screen.", TRUE },
+    { "y", "integer", "Pixels from the top edge.", TRUE }
+};
+
+static const ClawtParamInfo display_type_params[] = {
+    { "text", "string", "What to type into the focused window, character by "
+      "character. A newline is Enter.", TRUE }
+};
+
+static const ClawtParamInfo display_key_params[] = {
+    { "key", "string", "One key or combo, as XKB names it: Return, Tab, "
+      "Escape, BackSpace, Up, Down, F5, ctrl+s, ctrl+shift+t, alt+F4.", TRUE }
+};
+
+static const ClawtParamInfo display_scroll_params[] = {
+    { "x", "integer", "Where to scroll: pixels from the left.", TRUE },
+    { "y", "integer", "Pixels from the top.", TRUE },
+    { "dy", "integer", "Notches down (negative is up). Defaults to 3.", FALSE },
+    { "dx", "integer", "Notches right (negative is left).", FALSE }
+};
+
+static const ClawtParamInfo display_launch_params[] = {
+    { "command", "string", "The app to start, as a shell command line: "
+      "\"xterm\", \"firefox https://example.org\", \"gedit notes.txt\". "
+      "It is started and left running; this does not wait for it.", TRUE }
 };
 
 static const ClawtParamInfo browser_open_params[] = {
@@ -1151,6 +1190,50 @@ static const ToolDefinition tools[] = {
     TOOL("clawtilla_computer_state",
          "Describe your computer: what it is and what you can reach from it.",
          NEEDS_COMPUTER, no_params, CLAWT_ACTION_READ),
+
+    TOOL("clawtilla_display_screenshot",
+         "A picture of your virtual display. Positions in it are the "
+         "screen's own pixels, which the other display tools take as x and "
+         "y. Look before you click, and again after: a click may open a "
+         "window, a menu or a dialog.",
+         NEEDS_DISPLAY, no_params, CLAWT_ACTION_READ),
+
+    TOOL("clawtilla_display_windows",
+         "The windows open on your virtual display, with their titles.",
+         NEEDS_DISPLAY, no_params, CLAWT_ACTION_READ),
+
+    TOOL("clawtilla_display_launch",
+         "Start a GUI app on your virtual display, under the same "
+         "confinement as your commands. Returns at once; take a screenshot "
+         "a moment later to see it.",
+         NEEDS_DISPLAY_SPAWN, display_launch_params, CLAWT_ACTION_EXEC),
+
+    TOOL("clawtilla_display_click",
+         "Click at a point on your virtual display.",
+         NEEDS_DISPLAY_INPUT, display_point_params,
+         CLAWT_ACTION_DESKTOP_INPUT),
+
+    TOOL("clawtilla_display_move",
+         "Move the pointer to a point on your virtual display, pressing "
+         "nothing -- for hovering over a menu or a tooltip.",
+         NEEDS_DISPLAY_INPUT, display_move_params,
+         CLAWT_ACTION_DESKTOP_INPUT),
+
+    TOOL("clawtilla_display_type",
+         "Type text into whatever window has the focus on your virtual "
+         "display. Click the field first.",
+         NEEDS_DISPLAY_INPUT, display_type_params,
+         CLAWT_ACTION_DESKTOP_INPUT),
+
+    TOOL("clawtilla_display_key",
+         "Press one key or combo on your virtual display.",
+         NEEDS_DISPLAY_INPUT, display_key_params,
+         CLAWT_ACTION_DESKTOP_INPUT),
+
+    TOOL("clawtilla_display_scroll",
+         "Scroll at a point on your virtual display.",
+         NEEDS_DISPLAY_INPUT, display_scroll_params,
+         CLAWT_ACTION_DESKTOP_INPUT),
 
     TOOL("clawtilla_browser_open",
          "Open a page in your web browser -- a real one, which runs the "
@@ -2933,6 +3016,31 @@ clawt_mcp_tools_is_permitted(ClawtMcpTools *self,
 					"computer.type")))
 			return FALSE;
 		break;
+
+    case NEEDS_DISPLAY:
+    case NEEDS_DISPLAY_INPUT:
+    case NEEDS_DISPLAY_SPAWN: {
+        /*
+         * Only an agent whose computer is a virtual display (0.51.0), and
+         * acting only with its grant: a tool it would always be refused
+         * is a tool it would keep trying.
+         */
+        ClawtAgentConfig *display_config = clawt_agent_get_config(agent);
+
+        if (display_config == NULL ||
+            clawt_agent_config_get_enum(display_config, "computer.type") !=
+                CLAWT_COMPUTER_DISPLAY)
+            return FALSE;
+        if (tool->requirement == NEEDS_DISPLAY_INPUT &&
+            !clawt_agent_config_get_boolean(display_config,
+                                            "computer.display.allow_input"))
+            return FALSE;
+        if (tool->requirement == NEEDS_DISPLAY_SPAWN &&
+            !clawt_agent_config_get_boolean(display_config,
+                                            "computer.display.allow_spawn"))
+            return FALSE;
+        break;
+    }
 
     case NEEDS_SCREEN:
         /*
@@ -8779,7 +8887,8 @@ clawt_mcp_tools_call_defers(ClawtMcpTools *self,
     if (g_strcmp0(tool_name, "clawtilla_computer_exec") != 0 &&
         g_strcmp0(tool_name, "clawtilla_grok_dispatch") != 0 &&
         !g_str_has_prefix(tool_name != NULL ? tool_name : "", "clawtilla_web_") &&
-        !g_str_has_prefix(tool_name != NULL ? tool_name : "", "clawtilla_browser_")) {
+        !g_str_has_prefix(tool_name != NULL ? tool_name : "", "clawtilla_browser_") &&
+        !g_str_has_prefix(tool_name != NULL ? tool_name : "", "clawtilla_display_")) {
         /*
          * Any tool defers when a rule says somebody must look first: the
          * answer is minutes away, and only the deferred path can wait.
@@ -9920,6 +10029,181 @@ browser_job_thread(gpointer data)
 }
 
 /* Starts a browser tool on a worker thread; @outer is answered from there. */
+/* ── The display tools (0.51.0) ──────────────────────────────────── */
+
+typedef struct {
+    ClawtMcpTools        *tools;
+    ClawtDisplayComputer *computer;
+    gchar                *agent_id;
+    gchar                *action;
+    JsonObject           *arguments;
+    JsonNode             *request_id;
+    GTask                *outer;
+} DisplayJob;
+
+static void
+display_job_free(DisplayJob *job)
+{
+    g_clear_object(&job->tools);
+    g_clear_object(&job->computer);
+    g_free(job->agent_id);
+    g_free(job->action);
+    g_clear_pointer(&job->arguments, json_object_unref);
+    g_clear_pointer(&job->request_id, json_node_unref);
+    g_clear_object(&job->outer);
+    g_free(job);
+}
+
+/* What an action did, said as a sentence for the agent. */
+static gchar *
+display_said(const gchar *action, JsonObject *arguments, JsonNode *answer)
+{
+    JsonObject *o = JSON_NODE_HOLDS_OBJECT(answer)
+        ? json_node_get_object(answer) : NULL;
+
+    if (g_strcmp0(action, "launch") == 0) {
+        gint64 pid = (o != NULL)
+            ? json_object_get_int_member_with_default(o, "pid", 0) : 0;
+
+        return pid > 0
+            ? g_strdup_printf("Started (pid %" G_GINT64_FORMAT "). It may "
+                              "take a moment to draw its window; take a "
+                              "screenshot to see it.", pid)
+            : g_strdup("Started. It may take a moment to draw its window; "
+                       "take a screenshot to see it.");
+    }
+    if (g_strcmp0(action, "windows") == 0) {
+        g_autoptr(JsonGenerator) generator = json_generator_new();
+        JsonNode *windows = (o != NULL)
+            ? json_object_get_member(o, "windows") : NULL;
+
+        if (windows == NULL)
+            return g_strdup("No windows are open.");
+        json_generator_set_root(generator, windows);
+        json_generator_set_pretty(generator, TRUE);
+        return json_generator_to_data(generator, NULL);
+    }
+    if (g_strcmp0(action, "click") == 0 || g_strcmp0(action, "move") == 0 ||
+        g_strcmp0(action, "scroll") == 0)
+        return g_strdup_printf(
+            "Done at %" G_GINT64_FORMAT ",%" G_GINT64_FORMAT ". Take a "
+            "screenshot to see what it did.",
+            json_object_get_int_member_with_default(arguments, "x", 0),
+            json_object_get_int_member_with_default(arguments, "y", 0));
+    return g_strdup("Done. Take a screenshot to see what it did.");
+}
+
+static gpointer
+display_job_thread(gpointer data)
+{
+    DisplayJob *job = data;
+    g_autoptr(GBytes) png = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(JsonNode) answer = NULL;
+    g_autoptr(JsonObject) arguments = NULL;
+    JsonNode *response;
+
+    /*
+     * The tool's own spellings into the action's: `key` is the key, and a
+     * scroll with no amount is three notches down, a screenful-ish.
+     */
+    arguments = json_object_new();
+    if (job->arguments != NULL) {
+        GList *members = json_object_get_members(job->arguments);
+        GList *l;
+
+        for (l = members; l != NULL; l = l->next)
+            json_object_set_member(arguments, l->data,
+                                   json_node_copy(json_object_get_member(
+                                       job->arguments, l->data)));
+        g_list_free(members);
+    }
+    if (g_strcmp0(job->action, "key") == 0 &&
+        json_object_has_member(arguments, "key"))
+        json_object_set_string_member(
+            arguments, "text",
+            json_object_get_string_member(arguments, "key"));
+    if (g_strcmp0(job->action, "scroll") == 0 &&
+        !json_object_has_member(arguments, "dy") &&
+        !json_object_has_member(arguments, "dx"))
+        json_object_set_int_member(arguments, "dy", 3);
+
+    answer = clawt_display_computer_perform(job->computer, job->action,
+                                            arguments, &png, &error);
+    if (answer == NULL) {
+        response = make_response(job->request_id,
+                                 error != NULL ? error->message
+                                               : "the display did not answer",
+                                 TRUE);
+    } else if (png != NULL) {
+        JsonObject *o = json_node_get_object(answer);
+        g_autofree gchar *text = g_strdup_printf(
+            "Your display, %" G_GINT64_FORMAT "x%" G_GINT64_FORMAT " pixels.",
+            json_object_get_int_member_with_default(o, "width", 0),
+            json_object_get_int_member_with_default(o, "height", 0));
+
+        response = make_image_response(job->request_id, png, text);
+    } else {
+        g_autofree gchar *text = display_said(job->action, arguments, answer);
+
+        response = make_response(job->request_id, text, FALSE);
+    }
+
+    g_task_return_pointer(job->outer, response,
+                          (GDestroyNotify)json_node_unref);
+    display_job_free(job);
+    return NULL;
+}
+
+static void
+display_call_start(ClawtMcpTools *self, const gchar *agent_id,
+                   const gchar *tool, JsonObject *arguments,
+                   JsonNode *request_id, GTask *outer)
+{
+    ClawtAgent *agent = self->agents != NULL
+        ? clawt_agent_manager_get(self->agents, agent_id) : NULL;
+    ClawtComputer *computer = agent != NULL ? clawt_agent_get_computer(agent)
+                                            : NULL;
+    const gchar *action = tool + strlen("clawtilla_display_");
+    DisplayJob *job;
+
+    if (computer == NULL || !CLAWT_IS_DISPLAY_COMPUTER(computer)) {
+        g_task_return_pointer(outer, make_response(request_id,
+                              "You have no virtual display: your computer "
+                              "is not computer.type: display, or your agent "
+                              "is not running.", TRUE),
+                              (GDestroyNotify)json_node_unref);
+        g_object_unref(outer);
+        return;
+    }
+
+    /*
+     * A person holding the screen stops your hands; looking never is.
+     * The same sentence the desktop tools' gate gives.
+     */
+    if (clawt_display_computer_action_is_acting(action) &&
+        self->takeover != NULL &&
+        clawt_takeover_is_held(self->takeover, agent_id)) {
+        g_task_return_pointer(outer, make_response(request_id,
+                              clawt_takeover_refusal_text(), TRUE),
+                              (GDestroyNotify)json_node_unref);
+        g_object_unref(outer);
+        return;
+    }
+
+    job = g_new0(DisplayJob, 1);
+    job->tools = g_object_ref(self);
+    job->computer = CLAWT_DISPLAY_COMPUTER(g_object_ref(computer));
+    job->agent_id = g_strdup(agent_id);
+    job->action = g_strdup(action);
+    job->arguments = arguments != NULL ? json_object_ref(arguments) : NULL;
+    job->request_id = request_id != NULL ? json_node_ref(request_id) : NULL;
+    job->outer = outer;
+
+    g_thread_unref(g_thread_new("clawt-display-tool", display_job_thread,
+                                job));
+}
+
 static void
 browser_call_start(ClawtMcpTools *self, const gchar *agent_id, const gchar *room_id,
                    const gchar *tool, JsonObject *arguments, JsonNode *request_id,
@@ -10009,6 +10293,11 @@ call_async_dispatch(ClawtMcpTools *self, const gchar *agent_id,
         web->request_id = (request_id != NULL) ? json_node_ref(request_id) : NULL;
         web->tool = g_strdup(tool);
         web_call_start(self, agent_id, web->tool, arguments, web);
+        return;
+    }
+
+    if (g_str_has_prefix(tool != NULL ? tool : "", "clawtilla_display_")) {
+        display_call_start(self, agent_id, tool, arguments, request_id, outer);
         return;
     }
 

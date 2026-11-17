@@ -5258,6 +5258,28 @@ start_agent_launch(ClawtDaemon *self, const gchar *agent_id,
     }
 
     /*
+     * A display computer's screen variables, retaken at every launch
+     * (0.51.0): the X display number is chosen when the server starts,
+     * so the value from a previous start would name a screen that is
+     * gone -- or somebody else's.
+     */
+    {
+        ClawtAgentRuntime *runtime = clawt_agent_get_runtime(agent);
+        ClawtComputer *computer = clawt_agent_get_computer(agent);
+
+        if (CLAWT_IS_PROCESS_RUNTIME(runtime)) {
+            g_autoptr(GHashTable) screen = NULL;
+
+            if (computer != NULL && CLAWT_IS_DISPLAY_COMPUTER(computer))
+                screen = clawt_display_server_dup_environment(
+                    clawt_display_computer_get_server(
+                        CLAWT_DISPLAY_COMPUTER(computer)));
+            clawt_process_runtime_set_display_environment(
+                CLAWT_PROCESS_RUNTIME(runtime), screen);
+        }
+    }
+
+    /*
      * The restart policy is retaken on every start, outside the block
      * that builds the runtime.
      *

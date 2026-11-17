@@ -66,6 +66,19 @@ void clawt_process_runtime_set_environment(ClawtProcessRuntime *self,
                                            GHashTable          *env);
 
 /**
+ * clawt_process_runtime_set_display_environment:
+ * @self: a #ClawtProcessRuntime
+ * @env: (element-type utf8 utf8) (nullable): DISPLAY or WAYLAND_DISPLAY
+ *   for the agent's virtual display, or %NULL for none
+ *
+ * Laid over the environment at the next start (since 0.51.0), so the
+ * agent's own shell reaches the screen its display computer started --
+ * whose number is only known once that computer is up.
+ */
+void clawt_process_runtime_set_display_environment(ClawtProcessRuntime *self,
+                                                   GHashTable          *env);
+
+/**
  * clawt_process_runtime_set_sandbox:
  * @self: a #ClawtProcessRuntime
  * @sandbox: (nullable): the bubblewrap sandbox to start the child in, or

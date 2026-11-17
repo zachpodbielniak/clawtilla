@@ -984,6 +984,21 @@ program unchanged, which is sometimes the point. The check runs on the tool
 and on `computer.exec`'s **string** form only; a client that sends an `argv`
 already means every word literally.
 
+### A virtual display is a host computer with a screen
+
+`computer.type: display` (`ClawtDisplayComputer`) wraps a `ClawtHostComputer`
+built by the factory's `build_host()` -- the same two grants, the same
+confinement -- and a `ClawtDisplayServer` (gowl, Xvnc or Xvfb). Do not give it
+a second confinement path: commands go through the host computer, apps
+through `clawt_display_server_launch()` with the host's sandbox. Every child
+that must die with the daemon is forked by `clawt_display_spawn_lasting()`
+(the browser's Xvfb included): `PR_SET_PDEATHSIG` follows the forking
+*thread*, and a tool call's thread ends with the call. The agent's display
+actions are one function, `clawt_display_computer_perform()`, behind both the
+`clawtilla_display_*` tools and `computer.act`; the grants and the takeover
+are checked by each caller before it. A server binary is chosen by running it
+(`clawt_display_resolve()`), never by taking the first on PATH.
+
 ### Lifecycle
 
 - A missing vfunc must **not** answer TRUE. `clawt_computer_teardown()` and

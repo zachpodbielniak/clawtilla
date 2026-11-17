@@ -2104,11 +2104,17 @@ clawt_lrg_computer_screen_text(JsonObject *status, gint64 now_us)
     if (status == NULL)
         return g_strdup("The screen cannot be read.");
 
-    if (!clawt_ipc_payload_boolean(status, "observable", FALSE))
-        return g_strdup(error != NULL
-                        ? error
-                        : "No screen to watch yet: the agent is not running, "
-                          "or it has no desktop.");
+    if (!clawt_ipc_payload_boolean(status, "observable", FALSE)) {
+        g_autofree gchar *display = clawt_display_status_line(status);
+
+        return g_strdup_printf("%s%s%s",
+                               error != NULL
+                               ? error
+                               : "No screen to watch yet: the agent is not "
+                                 "running, or it has no desktop.",
+                               display != NULL ? " " : "",
+                               display != NULL ? display : "");
+    }
 
     /*
      * A stale frame is labelled with its age rather than shown as
@@ -2135,6 +2141,14 @@ clawt_lrg_computer_screen_text(JsonObject *status, gint64 now_us)
 
     if (error != NULL)
         g_string_append_printf(said, " %s", error);
+
+    /* A virtual display says which server draws it (0.51.0). */
+    {
+        g_autofree gchar *display = clawt_display_status_line(status);
+
+        if (display != NULL)
+            g_string_append_printf(said, " %s", display);
+    }
 
     return g_string_free(g_steal_pointer(&said), FALSE);
 }

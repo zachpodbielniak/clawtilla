@@ -344,6 +344,8 @@ static const struct {
       "Distrobox \xe2\x80\x94 a container wired into your session" },
     { CLAWT_COMPUTER_VM, "Virtual machine \xe2\x80\x94 its own kernel" },
     { CLAWT_COMPUTER_SSH, "SSH \xe2\x80\x94 another machine you already run" },
+    { CLAWT_COMPUTER_DISPLAY,
+      "Virtual display \xe2\x80\x94 GUI apps on a screen of their own" },
     { CLAWT_COMPUTER_HOST, "Host \xe2\x80\x94 this machine itself" }
 };
 
@@ -412,7 +414,9 @@ clawt_computer_type_has_machine(ClawtComputerType type)
      */
     return type == CLAWT_COMPUTER_CONTAINER ||
            type == CLAWT_COMPUTER_DISTROBOX ||
-           type == CLAWT_COMPUTER_VM;
+           type == CLAWT_COMPUTER_VM ||
+           /* its display server starts and stops (0.51.0) */
+           type == CLAWT_COMPUTER_DISPLAY;
 }
 
 gboolean
@@ -431,6 +435,8 @@ clawt_computer_type_starts_lazily(ClawtComputerType type)
         return TRUE;
     case CLAWT_COMPUTER_NONE:
     case CLAWT_COMPUTER_HOST:
+    /* its commands run on the host, as host's do; the display starts with it */
+    case CLAWT_COMPUTER_DISPLAY:
         return FALSE;
     }
 
@@ -452,6 +458,8 @@ clawt_computer_type_shares_host_paths(ClawtComputerType type)
     case CLAWT_COMPUTER_CONTAINER:
     case CLAWT_COMPUTER_DISTROBOX:
     case CLAWT_COMPUTER_VM:
+    /* a display computer's commands run on the host (0.51.0) */
+    case CLAWT_COMPUTER_DISPLAY:
         return TRUE;
 
     case CLAWT_COMPUTER_NONE:
@@ -489,6 +497,8 @@ clawt_computer_type_has_screen(ClawtComputerType type)
     switch (type) {
     case CLAWT_COMPUTER_HOST:
     case CLAWT_COMPUTER_VM:
+    /* a virtual display is nothing but a screen (0.51.0) */
+    case CLAWT_COMPUTER_DISPLAY:
         return TRUE;
 
     case CLAWT_COMPUTER_NONE:
@@ -515,6 +525,7 @@ clawt_computer_type_get_type(void)
             { CLAWT_COMPUTER_VM, "CLAWT_COMPUTER_VM", "vm" },
             { CLAWT_COMPUTER_DISTROBOX, "CLAWT_COMPUTER_DISTROBOX", "distrobox" },
             { CLAWT_COMPUTER_SSH, "CLAWT_COMPUTER_SSH", "ssh" },
+            { CLAWT_COMPUTER_DISPLAY, "CLAWT_COMPUTER_DISPLAY", "display" },
             { 0, NULL, NULL }
         };
         GType g_define_type_id = g_enum_register_static("ClawtComputerType", values);
@@ -681,6 +692,26 @@ clawt_desktop_backend_get_type(void)
             { 0, NULL, NULL }
         };
         GType g_define_type_id = g_enum_register_static("ClawtDesktopBackend", values);
+        g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+    }
+    return g_define_type_id__volatile;
+}
+
+/* Register ClawtDisplayBackend as a GLib enum type (0.51.0) */
+GType
+clawt_display_backend_get_type(void)
+{
+    static volatile gsize g_define_type_id__volatile = 0;
+
+    if (g_once_init_enter(&g_define_type_id__volatile)) {
+        static const GEnumValue values[] = {
+            { CLAWT_DISPLAY_BACKEND_AUTO, "CLAWT_DISPLAY_BACKEND_AUTO", "auto" },
+            { CLAWT_DISPLAY_BACKEND_GOWL, "CLAWT_DISPLAY_BACKEND_GOWL", "gowl" },
+            { CLAWT_DISPLAY_BACKEND_XVFB, "CLAWT_DISPLAY_BACKEND_XVFB", "xvfb" },
+            { CLAWT_DISPLAY_BACKEND_XVNC, "CLAWT_DISPLAY_BACKEND_XVNC", "xvnc" },
+            { 0, NULL, NULL }
+        };
+        GType g_define_type_id = g_enum_register_static("ClawtDisplayBackend", values);
         g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
     }
     return g_define_type_id__volatile;

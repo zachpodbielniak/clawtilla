@@ -169,11 +169,17 @@ add_screen_status(ClawtDaemon *self, JsonBuilder *builder,
         builder, computer != NULL && CLAWT_IS_OBSERVABLE(computer) &&
                  clawt_observable_can_input(CLAWT_OBSERVABLE(computer)));
 
+    /*
+     * The agent's grant: a virtual display's own key (0.51.0, on by
+     * default), the desktop's otherwise.
+     */
     json_builder_set_member_name(builder, "allow_input");
     json_builder_add_boolean_value(
         builder, config != NULL &&
                  clawt_agent_config_get_boolean(
-                     config, "computer.desktop.allow_input"));
+                     config, type == CLAWT_COMPUTER_DISPLAY
+                                 ? "computer.display.allow_input"
+                                 : "computer.desktop.allow_input"));
 
     /*
      * Taken from the observer's cache, never asked here.
@@ -188,6 +194,20 @@ add_screen_status(ClawtDaemon *self, JsonBuilder *builder,
     {
         const gchar *viewer = clawt_observer_get_viewer(self->observer,
                                                         agent_id);
+        g_autofree gchar *local = NULL;
+
+        /*
+         * A virtual display's viewer is a port this daemon chose, known
+         * without asking anybody: read straight off the server, so the
+         * button is there before anyone has watched (0.51.0).
+         */
+        if (viewer == NULL && computer != NULL &&
+            CLAWT_IS_DISPLAY_COMPUTER(computer)) {
+            local = clawt_display_server_dup_viewer_uri(
+                clawt_display_computer_get_server(
+                    CLAWT_DISPLAY_COMPUTER(computer)));
+            viewer = local;
+        }
 
         if (viewer != NULL)
             clawt_daemon_add_string_member(builder, "viewer", viewer);
@@ -195,6 +215,32 @@ add_screen_status(ClawtDaemon *self, JsonBuilder *builder,
 
     if (last_error != NULL)
         clawt_daemon_add_string_member(builder, "error", last_error);
+
+    /*
+     * A virtual display (0.51.0): which server is drawing it, what the
+     * resolution skipped on the way -- "/usr/local/bin/gowl does not
+     * run: ..." is the line that explains a surprising choice -- and,
+     * when the server died, the last thing it said.
+     */
+    if (computer != NULL && CLAWT_IS_DISPLAY_COMPUTER(computer)) {
+        ClawtDisplayServer *server = clawt_display_computer_get_server(
+            CLAWT_DISPLAY_COMPUTER(computer));
+        g_autofree gchar *notes = clawt_display_server_dup_notes(server);
+        g_autofree gchar *failure = clawt_display_server_dup_failure(server);
+
+        clawt_daemon_add_string_member(
+            builder, "display_backend",
+            clawt_enum_to_nick(CLAWT_TYPE_DISPLAY_BACKEND,
+                               clawt_display_server_get_backend(server)));
+        json_builder_set_member_name(builder, "display_running");
+        json_builder_add_boolean_value(
+            builder, clawt_display_server_is_running(server));
+        if (notes != NULL)
+            clawt_daemon_add_string_member(builder, "display_notes", notes);
+        if (failure != NULL)
+            clawt_daemon_add_string_member(builder, "display_failure",
+                                           failure);
+    }
 }
 
 /* ── Events ──────────────────────────────────────────────────────── */
@@ -348,6 +394,197 @@ on_input_finished(GObject *source, GAsyncResult *result, gpointer user_data)
         clawt_ipc_response_new(clawt_ipc_pending_get_request(job->pending),
                                json_builder_get_root(builder)));
     input_job_free(job);
+}
+
+/* ── computer.act: an agent's own hands on its display (0.51.0) ──── */
+
+/*
+ * The display tools' actions over IPC.  Separate from computer.input,
+ * which is a *person's* input during a takeover: these are the agent's,
+ * refused while a person holds the screen, and they run whether or not
+ * anybody is watching.  The work itself is
+ * clawt_display_computer_perform(), shared with the agent's tools.
+ */
+typedef struct {
+    ClawtDaemon          *daemon;
+    ClawtIpcPending      *pending;
+    ClawtDisplayComputer *computer;
+    gchar                *agent_id;
+    gchar                *action;
+    JsonObject           *arguments;
+} ActJob;
+
+static void
+act_job_free(ActJob *job)
+{
+    if (job == NULL)
+        return;
+    g_clear_object(&job->daemon);
+    g_clear_object(&job->computer);
+    g_free(job->agent_id);
+    g_free(job->action);
+    g_clear_pointer(&job->arguments, json_object_unref);
+    g_free(job);
+}
+
+/* Runs on a worker: every action may wait on a process or a socket. */
+static void
+act_thread(GTask *task, gpointer source, gpointer task_data,
+           GCancellable *cancellable)
+{
+    ActJob *job = task_data;
+    g_autoptr(GBytes) png = NULL;
+    GError *error = NULL;
+    JsonNode *answer;
+
+    (void)source;
+    (void)cancellable;
+
+    answer = clawt_display_computer_perform(job->computer, job->action,
+                                            job->arguments, &png, &error);
+    if (answer == NULL) {
+        g_task_return_error(task, error);
+        return;
+    }
+
+    /* The picture travels as base64 beside its size. */
+    if (png != NULL) {
+        g_autofree gchar *encoded = g_base64_encode(
+            g_bytes_get_data(png, NULL), g_bytes_get_size(png));
+
+        json_object_set_string_member(json_node_get_object(answer), "png",
+                                      encoded);
+    }
+
+    g_task_return_pointer(task, answer, (GDestroyNotify)json_node_unref);
+}
+
+static void
+on_act_finished(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    ActJob *job = user_data;
+    g_autoptr(GError) error = NULL;
+    JsonNode *answer;
+
+    (void)source;
+    answer = g_task_propagate_pointer(G_TASK(result), &error);
+
+    if (answer == NULL) {
+        clawt_ipc_pending_respond(
+            job->pending,
+            clawt_ipc_error_new(clawt_ipc_pending_get_request(job->pending),
+                                error != NULL ? error->code
+                                              : CLAWT_ERROR_FAILED,
+                                error != NULL ? error->message
+                                              : "the display did not answer"));
+        act_job_free(job);
+        return;
+    }
+
+    /* Something changed on screen: watchers see it now, not next tick. */
+    if (clawt_display_computer_action_is_acting(job->action))
+        clawt_observer_refresh(job->daemon->observer, job->agent_id);
+
+    clawt_ipc_pending_respond(
+        job->pending,
+        clawt_ipc_response_new(clawt_ipc_pending_get_request(job->pending),
+                               answer));
+    act_job_free(job);
+}
+
+static JsonNode *
+handle_computer_act(ClawtDaemon *self, JsonNode *request, JsonObject *payload,
+                    const gchar *agent_id)
+{
+    static const gchar *const actions[] = {
+        "screenshot", "click", "move", "type", "key", "scroll", "launch",
+        "windows", NULL
+    };
+    ClawtComputer *computer = screen_computer(self, agent_id);
+    ClawtAgent *agent = (agent_id != NULL)
+        ? clawt_agent_manager_get(self->agents, agent_id) : NULL;
+    ClawtAgentConfig *config = (agent != NULL) ? clawt_agent_get_config(agent)
+                                               : NULL;
+    const gchar *action = clawt_ipc_payload_string(payload, "action");
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+    g_autoptr(GTask) task = NULL;
+    gboolean acting;
+    ActJob *job;
+
+    if (agent == NULL)
+        return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                   "there is no such agent");
+    if (computer == NULL || !CLAWT_IS_DISPLAY_COMPUTER(computer))
+        return clawt_ipc_error_new(
+            request, CLAWT_ERROR_NOT_SUPPORTED,
+            "that agent's computer is not a virtual display "
+            "(computer.type: display); the display tools need one");
+    if (action == NULL || !g_strv_contains(actions, action))
+        return clawt_ipc_error_new(
+            request, CLAWT_ERROR_INVALID_ARGUMENT,
+            "action must be screenshot, click, move, type, key, scroll, "
+            "launch or windows");
+
+    acting = clawt_display_computer_action_is_acting(action);
+
+    /* The grants, asked of the config at the moment of asking. */
+    if (g_strcmp0(action, "launch") == 0 &&
+        !clawt_agent_config_get_boolean(config,
+                                        "computer.display.allow_spawn"))
+        return clawt_ipc_error_new(
+            request, CLAWT_ERROR_PERMISSION_DENIED,
+            "this agent may not start apps on its display "
+            "(computer.display.allow_spawn is off)");
+    if (acting && g_strcmp0(action, "launch") != 0 &&
+        !clawt_agent_config_get_boolean(config,
+                                        "computer.display.allow_input"))
+        return clawt_ipc_error_new(
+            request, CLAWT_ERROR_PERMISSION_DENIED,
+            "this agent may look at its display but not act on it "
+            "(computer.display.allow_input is off)");
+
+    /*
+     * A person holding the screen stops the agent's hands, exactly as the
+     * desktop tools' gate does -- looking is never refused.  Answered as
+     * allowed: false with the sentence, not as an error, so a tool can
+     * hand the agent the reason to wait.
+     */
+    if (acting && clawt_takeover_is_held(self->takeover, agent_id)) {
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "allowed");
+        json_builder_add_boolean_value(builder, FALSE);
+        clawt_daemon_add_string_member(builder, "refusal",
+                                       clawt_takeover_refusal_text());
+        json_builder_end_object(builder);
+        return clawt_ipc_response_new(request,
+                                      json_builder_get_root(builder));
+    }
+
+    /* Into the recording, as the desktop gate does for its tools. */
+    if (acting) {
+        g_autofree gchar *tool = g_strconcat("display_", action, NULL);
+
+        clawt_observer_note_touched(self->observer, agent_id);
+        clawt_daemon_teach_note_desktop(self, agent_id, tool);
+    }
+
+    job = g_new0(ActJob, 1);
+    job->daemon = g_object_ref(self);
+    job->computer = CLAWT_DISPLAY_COMPUTER(g_object_ref(computer));
+    job->agent_id = g_strdup(agent_id);
+    job->action = g_strdup(action);
+    job->arguments = (payload != NULL) ? json_object_ref(payload) : NULL;
+    job->pending = clawt_ipc_server_defer(self->ipc_server, request);
+    if (job->pending == NULL) {
+        act_job_free(job);
+        return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                   "this request cannot be answered later");
+    }
+
+    task = g_task_new(NULL, NULL, on_act_finished, job);
+    g_task_set_task_data(task, job, NULL);
+    g_task_run_in_thread(task, act_thread);
+    return NULL;
 }
 
 /* ── The verbs ───────────────────────────────────────────────────── */
@@ -602,6 +839,9 @@ clawt_daemon_handle_screen(
 
         return NULL;
     }
+
+    if (g_strcmp0(kind, "computer.act") == 0)
+        return handle_computer_act(self, request, payload, agent_id);
 
     if (g_strcmp0(kind, "computer.control") == 0) {
         const gchar *tool = clawt_ipc_payload_string(payload, "tool");

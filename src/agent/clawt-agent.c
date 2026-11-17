@@ -397,8 +397,21 @@ recompute_caps(ClawtAgent *self)
         if (type != CLAWT_COMPUTER_NONE)
             caps |= CLAWT_AGENT_CAPS_COMPUTER;
 
-        if (type == CLAWT_COMPUTER_HOST)
+        if (type == CLAWT_COMPUTER_HOST || type == CLAWT_COMPUTER_DISPLAY)
             caps |= CLAWT_AGENT_CAPS_HOST_CONTROL;
+
+        /*
+         * A display computer is a screen (0.51.0): the agent sees it, and
+         * acts on it unless computer.display.allow_input says not.  A
+         * private screen nobody sits at, so on by default, unlike the
+         * operator's own desktop.
+         */
+        if (type == CLAWT_COMPUTER_DISPLAY) {
+            caps |= CLAWT_AGENT_CAPS_DESKTOP;
+            if (clawt_agent_config_get_boolean(self->config,
+                                               "computer.display.allow_input"))
+                caps |= CLAWT_AGENT_CAPS_DESKTOP_INPUT;
+        }
     }
 
     {
