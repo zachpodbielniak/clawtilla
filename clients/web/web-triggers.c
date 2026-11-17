@@ -310,7 +310,7 @@ add_match_editor(HtmxElement *form, JsonObject *existing, const gchar *id,
 }
 
 static void
-add_trigger_form(HtmxElement *parent, JsonObject *existing)
+add_trigger_form(ClawtWebApp *app, HtmxElement *parent, JsonObject *existing)
 {
     const gchar *id = clawt_web_member(existing, "id", NULL);
     g_autofree gchar *action = NULL;
@@ -421,6 +421,30 @@ add_trigger_form(HtmxElement *parent, JsonObject *existing)
 
         if (g_strcmp0(leaf, "mode") == 0) {
             add_mode_field(HTMX_ELEMENT(form), existing);
+            continue;
+        }
+
+        /*
+         * Which agent receives it: one of the fleet's, as a drop-down
+         * (0.51.3), as GTK and lrg already offer it.  An agent the
+         * daemon no longer lists stays selected rather than replaced.
+         */
+        if (g_strcmp0(leaf, "agent") == 0) {
+            g_autoptr(JsonNode) listed = clawt_web_app_call(app, "agent.list",
+                                                            NULL);
+            JsonArray *agents = clawt_web_member_array(clawt_web_root(listed),
+                                                       "agents");
+            g_autoptr(GPtrArray) ids = g_ptr_array_new();
+            guint a;
+
+            for (a = 0; agents != NULL && a < json_array_get_length(agents);
+                 a++)
+                g_ptr_array_add(ids, (gpointer)clawt_web_member(
+                    json_array_get_object_element(agents, a), "id", ""));
+            g_ptr_array_add(ids, NULL);
+            clawt_web_add(form, clawt_web_select_field(
+                "Agent", leaf, (const gchar *const *)ids->pdata, NULL,
+                value));
             continue;
         }
 
@@ -611,10 +635,10 @@ clawt_web_triggers_body(ClawtWebApp *app, const gchar *agent_id)
         clawt_web_add(pad, clawt_web_empty("No triggers", NULL));
 
     for (i = 0; triggers != NULL && i < json_array_get_length(triggers); i++)
-        add_trigger_form(HTMX_ELEMENT(pad),
+        add_trigger_form(app, HTMX_ELEMENT(pad),
                          json_array_get_object_element(triggers, i));
 
-    add_trigger_form(HTMX_ELEMENT(pad), NULL);
+    add_trigger_form(app, HTMX_ELEMENT(pad), NULL);
     add_deliveries(app, HTMX_ELEMENT(pad));
 
     htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));

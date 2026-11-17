@@ -21,7 +21,7 @@ static const struct {
     { "name",                "Name" },
     { "goal",                "Goal (every assignment in it starts with this)" },
     { "directory",           "Directory (absolute host path)" },
-    { "review_by",           "Reviewed by (lead, delegator, operator or an agent)" },
+    { "review_by",           "Reviewed by" },
     { "agents",              "Agents who work in it (comma-separated; empty for all)" },
     { "monthly_budget_usd",  "Monthly budget in dollars (0 for none)" },
     { "budget_warn_percent", "Warn at this percent of the budget" },
@@ -53,12 +53,15 @@ on_project_saved(GtkButton *button, gpointer user_data)
     (void)button;
 
     for (i = 0; i < G_N_ELEMENTS(project_fields); i++) {
+        /* The reviewer is a drop-down (0.51.3); the rest are text. */
+        const gchar *value = ADW_IS_COMBO_ROW(editor->rows[i])
+            ? clawt_gtk_value_row_get(editor->rows[i])
+            : gtk_editable_get_text(GTK_EDITABLE(editor->rows[i]));
         g_autoptr(JsonNode) reply = clawt_window_request(
             editor->window, "project.set",
             clawt_build_payload("project", editor->project_id,
                                 "key", project_fields[i].key,
-                                "value", gtk_editable_get_text(
-                                    GTK_EDITABLE(editor->rows[i])),
+                                "value", value != NULL ? value : "",
                                 NULL));
 
         if (reply == NULL)
@@ -189,6 +192,34 @@ on_project_activated(GtkListBox *box, GtkListBoxRow *row, gpointer user_data)
 
     for (i = 0; i < G_N_ELEMENTS(project_fields); i++) {
         g_autofree gchar *value = field_text(project, project_fields[i].key);
+
+        /*
+         * Who reviews is a fixed list and the fleet's agents (0.51.3),
+         * not a word to remember the spelling of.
+         */
+        if (g_strcmp0(project_fields[i].key, "review_by") == 0) {
+            g_autoptr(JsonNode) listed = clawt_window_request(
+                self, "agent.list", NULL);
+            JsonObject *root = (listed != NULL) ? clawt_payload_of(listed)
+                                                : NULL;
+            JsonArray *agents = (root != NULL &&
+                                 json_object_has_member(root, "agents"))
+                ? json_object_get_array_member(root, "agents") : NULL;
+            g_autoptr(GStrvBuilder) ids = g_strv_builder_new();
+            g_auto(GStrv) agent_ids = NULL;
+            guint a;
+
+            for (a = 0; agents != NULL && a < json_array_get_length(agents);
+                 a++)
+                g_strv_builder_add(ids, clawt_json_string(
+                    json_array_get_object_element(agents, a), "id", ""));
+            agent_ids = g_strv_builder_end(ids);
+            editor->rows[i] = clawt_gtk_review_by_row_new(
+                (const gchar *const *)agent_ids, TRUE, value);
+            adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                                      editor->rows[i]);
+            continue;
+        }
 
         editor->rows[i] = adw_entry_row_new();
         adw_preferences_row_set_use_markup(

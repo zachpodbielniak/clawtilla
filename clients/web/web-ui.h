@@ -326,6 +326,69 @@ HtmxDiv *clawt_web_select_field(const gchar        *label,
                                 const gchar        *current);
 
 /**
+ * clawt_web_effort_field:
+ * @name: the form field name
+ * @current: (nullable): the value set now
+ *
+ * The model-effort drop-down, walked from clawt_effort_count() (0.51.3).
+ *
+ * Returns: (transfer full): a labelled select
+ */
+HtmxDiv *clawt_web_effort_field(const gchar *name, const gchar *current);
+
+/**
+ * clawt_web_weekday_field:
+ * @name: the form field name
+ * @current: (nullable): the value set now
+ *
+ * The weekly routine's day, walked from clawt_weekday_count().
+ *
+ * Returns: (transfer full): a labelled select
+ */
+HtmxDiv *clawt_web_weekday_field(const gchar *name, const gchar *current);
+
+/**
+ * clawt_web_schedule_field:
+ * @name: the form field name
+ * @current: (nullable): the value set now
+ *
+ * A routine's schedule, walked from clawt_schedule_count().
+ *
+ * Returns: (transfer full): a labelled select
+ */
+HtmxDiv *clawt_web_schedule_field(const gchar *name, const gchar *current);
+
+/**
+ * clawt_web_resolution_field:
+ * @label: what to call it
+ * @name: the form field name
+ * @current: (nullable): the value set now; any other WxH is kept
+ *
+ * A screen size, walked from clawt_resolution_count().
+ *
+ * Returns: (transfer full): a labelled select
+ */
+HtmxDiv *clawt_web_resolution_field(const gchar *label, const gchar *name,
+                                    const gchar *current);
+
+/**
+ * clawt_web_review_by_field:
+ * @name: the form field name
+ * @agents: (nullable) (array zero-terminated=1): every agent id
+ * @project: %TRUE on a project's form
+ * @current: (nullable): the value set now
+ *
+ * Who reviews: the fixed choices from clawt_review_by_count(), then each
+ * agent.
+ *
+ * Returns: (transfer full): a labelled select
+ */
+HtmxDiv *clawt_web_review_by_field(const gchar        *name,
+                                   const gchar *const *agents,
+                                   gboolean            project,
+                                   const gchar        *current);
+
+/**
  * clawt_web_fallback_card:
  * @agent_id: (nullable): whose list it is
  * @spelled: (nullable): `model.fallbacks` as agent.show reports it

@@ -585,11 +585,12 @@ Each key's control is chosen by =clawt_lrg_agent_field_kind()=, dispatching on t
 | ~computer.use~ | a combo of shareable machines | ~computer.shared~ |
 | =model.provider= | a combo of agent-capable providers | ~model.list~ with =refresh= |
 | =model.model= | a combo of that provider's models, plus "Something else..." | the same ~model.list~ |
-| ~model.effort~ | a combo of effort levels | the five levels the CLIs take |
+| ~model.effort~ | a combo of effort levels, the model's default first | =clawt_effort_*()= (since 0.51.3) |
+| ~review_by~ | a combo of fixed reviewers, then each agent | =clawt_review_by_*()= and ~agent.list~ (since 0.51.3) |
 | =computer.type= | a combo walked from =clawt_computer_type_count()= | the library |
 | =computer.container.image= | a combo plus "Other..." and a typed reference | ~image.list~ (nothing chosen selects its =default=) |
 | ~computer.vm.image~ | a combo plus "Other..." and a typed path | ~image.vm_list~ (no fallback: a VM with no disk must look like it) |
-| ~computer.vm.resolution~ | a combo of common sizes | a fixed list plus the current value |
+| ~computer.vm.resolution~, ~computer.display.resolution~ | a combo of common sizes | =clawt_resolution_*()= plus the current value |
 | anything else | an entry | the value |
 
 ~runtime.confine~ is drawn as its enum, but labelled and explained with =clawt_agent_confine_label()= and =clawt_agent_confine_explanation()= rather than its key and the schema's first line; when the agent's =confine=, =runtime_type= and =confine_available= say it cannot be sandboxed here, a "cannot be sandboxed here" badge and =clawt_agent_confine_notice()= sit under it -- the same words as the GTK and web clients.
@@ -947,7 +948,7 @@ A Directory entry, On import (resolutions) and the allow-dangerous switch, then 
 ~revision.list~ as rows: kind and subject, then "when, by whom -- note", and Open…, which asks ~revision.diff~ against now and shows it monospaced in a dialog whose primary is Restore this version (~revision.restore~, then a toast and a re-read).  Since 0.41.0.  The Skills page's detail has *Tests* beside Enable and Remove: ~skill.tests~ in a dialog, an agent to run them on, and Run them (~skill.test_run~).
 
 *** Projects
-~project.list~ as rows: the name, "$spent of $budget this month -- goal" (or "no budget"), a *stopped* badge once a hard stop is reached, and Edit…, which opens the project: Name, Goal, Directory, Reviewed by, Agents, Monthly budget, Warn at percent and the hard-stop switch, Save changes (one ~project.set~ per field, reported once every one lands), and Remove this project (asked first, ~project.remove~).  "Add a project" asks for an id (~project.create~).  Since 0.40.0.
+~project.list~ as rows: the name, "$spent of $budget this month -- goal" (or "no budget"), a *stopped* badge once a hard stop is reached, and Edit…, which opens the project: Name, Goal, Directory, Reviewed by (a combo from =clawt_lrg_agent_review_by_choices()= since 0.51.3), Agents, Monthly budget, Warn at percent and the hard-stop switch, Save changes (one ~project.set~ per field, reported once every one lands), and Remove this project (asked first, ~project.remove~).  "Add a project" asks for an id (~project.create~).  Since 0.40.0.
 
 *** Spending
 A period combo (All time, Today, Last 7 days, Last 30 days -- the model turns each into =since= in unix seconds), a Group by combo walked from =clawt_usage_group_count()= / =_nth()= / =_label()= (its ids are the library's nicks, so the request needs no mapping), and ~usage.ledger~ for the pair: one row per group titled with its key, =clawt_usage_ledger_row_subtitle()= under it ("12 turns · 3 unpriced · 4,210 tokens out") and =clawt_usage_ledger_cost_label()= on the right ("unpriced" for a group nobody priced), and the Total row highlighted. A paragraph under the list carries =clawt_usage_ledger_unpriced_line()= and is hidden when every turn has a price. *Export CSV* in the toolbar opens =LrgFileDialog='s save dialog with =clawt_usage_ledger_csv_name()= suggested, and writes =clawt_usage_ledger_csv()= of the reply the rows were drawn from -- the document travels with the dialog, so a turn landing meanwhile cannot make the file disagree with the page. GTK's spending page has no budget controls; neither does this one.

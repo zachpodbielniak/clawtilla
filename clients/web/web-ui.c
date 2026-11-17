@@ -3139,3 +3139,101 @@ clawt_web_step_element(ClawtTurnStep *step)
 
     return HTMX_ELEMENT(clawt_web_text(marked != NULL ? marked : text, css));
 }
+
+/* ── Drop-downs over libclawt's fixed lists (0.51.3) ─────────────── */
+
+/* A select from parallel value and label arrays, then freed. */
+static HtmxDiv *
+select_from(const gchar *label, const gchar *name, GPtrArray *values,
+            GPtrArray *labels, const gchar *current)
+{
+    g_ptr_array_add(values, NULL);
+    g_ptr_array_add(labels, NULL);
+    return clawt_web_select_field(label, name,
+                                  (const gchar *const *)values->pdata,
+                                  (const gchar *const *)labels->pdata,
+                                  current);
+}
+
+HtmxDiv *
+clawt_web_effort_field(const gchar *name, const gchar *current)
+{
+    g_autoptr(GPtrArray) values = g_ptr_array_new();
+    g_autoptr(GPtrArray) labels = g_ptr_array_new();
+    guint i;
+
+    for (i = 0; i < clawt_effort_count(); i++) {
+        g_ptr_array_add(values, (gpointer)clawt_effort_nth(i));
+        g_ptr_array_add(labels, (gpointer)clawt_effort_nth_label(i));
+    }
+    return select_from("Effort", name, values, labels,
+                       current != NULL ? current : "");
+}
+
+HtmxDiv *
+clawt_web_weekday_field(const gchar *name, const gchar *current)
+{
+    g_autoptr(GPtrArray) values = g_ptr_array_new();
+    g_autoptr(GPtrArray) labels = g_ptr_array_new();
+    guint i;
+
+    for (i = 0; i < clawt_weekday_count(); i++) {
+        g_ptr_array_add(values, (gpointer)clawt_weekday_nth(i));
+        g_ptr_array_add(labels, (gpointer)clawt_weekday_nth_label(i));
+    }
+    return select_from("Weekday", name, values, labels, current);
+}
+
+HtmxDiv *
+clawt_web_schedule_field(const gchar *name, const gchar *current)
+{
+    g_autoptr(GPtrArray) values = g_ptr_array_new();
+    g_autoptr(GPtrArray) labels = g_ptr_array_new();
+    guint i;
+
+    for (i = 0; i < clawt_schedule_count(); i++) {
+        g_ptr_array_add(values, (gpointer)clawt_schedule_nth(i));
+        g_ptr_array_add(labels, (gpointer)clawt_schedule_nth_label(i));
+    }
+    return select_from("Schedule", name, values, labels, current);
+}
+
+HtmxDiv *
+clawt_web_resolution_field(const gchar *label, const gchar *name,
+                           const gchar *current)
+{
+    g_autoptr(GPtrArray) values = g_ptr_array_new();
+    guint i;
+
+    for (i = 0; i < clawt_resolution_count(); i++)
+        g_ptr_array_add(values, (gpointer)clawt_resolution_nth(i));
+    g_ptr_array_add(values, NULL);
+    return clawt_web_select_field(label, name,
+                                  (const gchar *const *)values->pdata, NULL,
+                                  current);
+}
+
+HtmxDiv *
+clawt_web_review_by_field(const gchar *name, const gchar *const *agents,
+                          gboolean project, const gchar *current)
+{
+    g_autoptr(GPtrArray) values = g_ptr_array_new();
+    g_autoptr(GPtrArray) labels = g_ptr_array_new_with_free_func(g_free);
+    guint i;
+
+    for (i = 0; i < clawt_review_by_count(); i++) {
+        g_ptr_array_add(values, (gpointer)clawt_review_by_nth(i));
+        g_ptr_array_add(labels,
+                        g_strdup(clawt_review_by_nth_label(i, project)));
+    }
+    for (i = 0; agents != NULL && agents[i] != NULL; i++) {
+        g_ptr_array_add(values, (gpointer)agents[i]);
+        g_ptr_array_add(labels, clawt_review_by_agent_label(agents[i]));
+    }
+    g_ptr_array_add(values, NULL);
+    g_ptr_array_add(labels, NULL);
+    return clawt_web_select_field("Reviewed by", name,
+                                  (const gchar *const *)values->pdata,
+                                  (const gchar *const *)labels->pdata,
+                                  current != NULL ? current : "");
+}

@@ -162,6 +162,98 @@ test_badges_are_escaped(void)
 /* ── A control that can represent what is set ────────────────────── */
 
 /*
+ * The 0.51.3 drop-downs: settings that are strings in the schema but take
+ * a fixed set of values.  Each must render as a select carrying every
+ * value from libclawt's list, mark the current one, and keep a value the
+ * list lacks -- else saving an untouched form overwrites it.
+ */
+static guint
+count_options(const gchar *html)
+{
+    g_auto(GStrv) parts = g_strsplit(html, "<option", -1);
+
+    return g_strv_length(parts) - 1;
+}
+
+/* Whether @html shows @label as htmx-glib writes it: a quote as &#39;. */
+static gboolean
+shows_label(const gchar *html, const gchar *label)
+{
+    g_auto(GStrv) parts = g_strsplit(label, "'", -1);
+    g_autofree gchar *escaped = g_strjoinv("&#39;", parts);
+
+    return strstr(html, escaped) != NULL;
+}
+
+static void
+test_effort_field_offers_the_default(void)
+{
+    g_autoptr(HtmxDiv) field = clawt_web_effort_field("effort", NULL);
+    g_autofree gchar *html = htmx_element_render(HTMX_ELEMENT(field));
+    guint i;
+
+    g_assert_nonnull(strstr(html, "<select"));
+    g_assert_cmpuint(count_options(html), ==, clawt_effort_count());
+    for (i = 0; i < clawt_effort_count(); i++)
+        g_assert_true(shows_label(html, clawt_effort_nth_label(i)));
+}
+
+static void
+test_schedule_and_weekday_fields(void)
+{
+    g_autoptr(HtmxDiv) schedule = clawt_web_schedule_field("schedule",
+                                                           "weekly");
+    g_autoptr(HtmxDiv) weekday = clawt_web_weekday_field("weekday",
+                                                         "friday");
+    g_autofree gchar *schedule_html =
+        htmx_element_render(HTMX_ELEMENT(schedule));
+    g_autofree gchar *weekday_html =
+        htmx_element_render(HTMX_ELEMENT(weekday));
+
+    g_assert_cmpuint(count_options(schedule_html), ==,
+                     clawt_schedule_count());
+    g_assert_nonnull(strstr(schedule_html, "Once a week"));
+    g_assert_cmpuint(count_options(weekday_html), ==, 7);
+    g_assert_nonnull(strstr(weekday_html, "Friday"));
+    g_assert_nonnull(strstr(weekday_html, "selected"));
+}
+
+static void
+test_resolution_field_keeps_a_custom_size(void)
+{
+    g_autoptr(HtmxDiv) field = clawt_web_resolution_field(
+        "Screen size", "resolution", "1234x567");
+    g_autofree gchar *html = htmx_element_render(HTMX_ELEMENT(field));
+
+    g_assert_cmpuint(count_options(html), ==, clawt_resolution_count() + 1);
+    g_assert_nonnull(strstr(html, "1234x567"));
+}
+
+static void
+test_review_by_field_lists_agents(void)
+{
+    static const gchar *const agents[] = { "builder", "checker", NULL };
+    g_autoptr(HtmxDiv) project = clawt_web_review_by_field(
+        "review_by", agents, TRUE, "checker");
+    g_autoptr(HtmxDiv) agent = clawt_web_review_by_field(
+        "review_by", agents, FALSE, NULL);
+    g_autofree gchar *project_html =
+        htmx_element_render(HTMX_ELEMENT(project));
+    g_autofree gchar *agent_html = htmx_element_render(HTMX_ELEMENT(agent));
+
+    g_assert_cmpuint(count_options(project_html), ==,
+                     clawt_review_by_count() + 2);
+    g_assert_nonnull(strstr(project_html, "builder"));
+    g_assert_nonnull(strstr(project_html, "selected"));
+    /* "not set" means different things on the two forms */
+    g_assert_true(shows_label(project_html,
+                              clawt_review_by_nth_label(0, TRUE)));
+    g_assert_true(shows_label(agent_html,
+                              clawt_review_by_nth_label(0, FALSE)));
+}
+
+
+/*
  * A value the list does not have is added to it, never dropped. A select
  * that cannot show the current value opens on its first entry, and
  * saving the form -- without anybody touching that control -- writes the
@@ -2897,6 +2989,14 @@ main(int argc, char *argv[])
                     test_a_trimmed_result_is_a_warning);
     g_test_add_func("/web-render/connector-budget-and-apps-forms",
                     test_the_connector_forms_show_their_values);
+    g_test_add_func("/web-render/effort-field-offers-the-default",
+                    test_effort_field_offers_the_default);
+    g_test_add_func("/web-render/schedule-and-weekday-fields",
+                    test_schedule_and_weekday_fields);
+    g_test_add_func("/web-render/resolution-field-keeps-a-custom-size",
+                    test_resolution_field_keeps_a_custom_size);
+    g_test_add_func("/web-render/review-by-field-lists-agents",
+                    test_review_by_field_lists_agents);
     g_test_add_func("/web-render/app-host-bridge",
                     test_the_app_host_bridge_checks_the_source);
     g_test_add_func("/web-render/app-call-route",

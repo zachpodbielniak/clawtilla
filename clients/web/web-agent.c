@@ -416,6 +416,95 @@ network_editable(ClawtWebApp *app, const gchar *agent_id)
                      "bwrap") == 0;
 }
 
+/* Every agent's id, for a reviewer drop-down. */
+static GStrv
+agent_ids(ClawtWebApp *app)
+{
+    g_autoptr(JsonNode) reply = clawt_web_app_call(app, "agent.list", NULL);
+    JsonArray *agents = clawt_web_member_array(clawt_web_root(reply),
+                                               "agents");
+    g_autoptr(GStrvBuilder) ids = g_strv_builder_new();
+    guint i;
+
+    for (i = 0; agents != NULL && i < json_array_get_length(agents); i++) {
+        const gchar *id = clawt_web_member(
+            json_array_get_object_element(agents, i), "id", NULL);
+
+        if (id != NULL)
+            g_strv_builder_add(ids, id);
+    }
+    return g_strv_builder_end(ids);
+}
+
+/*
+ * A drop-down of what the daemon has: agent providers from model.list,
+ * container images from image.list, downloaded VM disks from
+ * image.vm_list.  NULL when the daemon offers nothing, so the caller
+ * falls back to a text field rather than an empty select.
+ */
+static HtmxElement *
+daemon_choices(ClawtWebApp *app, const gchar *key, const gchar *label,
+               const gchar *field_name, const gchar *value)
+{
+    g_autoptr(GPtrArray) ids = g_ptr_array_new_with_free_func(g_free);
+    g_autoptr(GPtrArray) names = g_ptr_array_new_with_free_func(g_free);
+    g_autoptr(JsonNode) reply = NULL;
+    JsonArray *list;
+    guint i;
+
+    if (g_strcmp0(key, "model.provider") == 0) {
+        reply = clawt_web_app_call(app, "model.list", NULL);
+        list = clawt_web_member_array(clawt_web_root(reply), "providers");
+        for (i = 0; list != NULL && i < json_array_get_length(list); i++) {
+            JsonObject *o = json_array_get_object_element(list, i);
+            const gchar *id = clawt_web_member(o, "id", NULL);
+
+            if (id == NULL || !clawt_web_member_bool(o, "agent", FALSE))
+                continue;
+            g_ptr_array_add(ids, g_strdup(id));
+            g_ptr_array_add(names, g_strdup(clawt_web_member(o, "label",
+                                                             id)));
+        }
+    } else if (g_strcmp0(key, "computer.container.image") == 0) {
+        reply = clawt_web_app_call(app, "image.list", NULL);
+        list = clawt_web_member_array(clawt_web_root(reply), "images");
+        for (i = 0; list != NULL && i < json_array_get_length(list); i++) {
+            JsonObject *o = json_array_get_object_element(list, i);
+            const gchar *ref = clawt_web_member(o, "reference", NULL);
+
+            if (ref == NULL)
+                continue;
+            g_ptr_array_add(ids, g_strdup(ref));
+            g_ptr_array_add(names, g_strdup(clawt_web_member(o, "label",
+                                                             ref)));
+        }
+    } else if (g_strcmp0(key, "computer.vm.image") == 0) {
+        reply = clawt_web_app_call(app, "image.vm_list", NULL);
+        list = clawt_web_member_array(clawt_web_root(reply), "images");
+        for (i = 0; list != NULL && i < json_array_get_length(list); i++) {
+            JsonObject *o = json_array_get_object_element(list, i);
+            const gchar *name = clawt_web_member(o, "name", NULL);
+
+            if (name == NULL || clawt_web_member_bool(o, "downloading",
+                                                      FALSE))
+                continue;
+            g_ptr_array_add(ids, g_strdup(name));
+            g_ptr_array_add(names, g_strdup(name));
+        }
+    } else {
+        return NULL;
+    }
+
+    if (ids->len == 0)
+        return NULL;
+
+    g_ptr_array_add(ids, NULL);
+    g_ptr_array_add(names, NULL);
+    return HTMX_ELEMENT(clawt_web_select_field(
+        label, field_name, (const gchar *const *)ids->pdata,
+        (const gchar *const *)names->pdata, value));
+}
+
 static HtmxElement *
 control_for(ClawtWebApp *app, const gchar *agent_id, const ClawtSchemaEntry *entry,
             const gchar *key, const gchar *value)
@@ -519,6 +608,36 @@ control_for(ClawtWebApp *app, const gchar *agent_id, const ClawtSchemaEntry *ent
         return HTMX_ELEMENT(clawt_web_select_field(
             clawt_crosstalk_summary_to_title(), field_name,
             (const gchar *const *)ids, (const gchar *const *)names, value));
+    }
+
+    /*
+     * Strings whose values are a fixed list (0.51.3), from libclawt's
+     * families so all three clients offer the same entries in the same
+     * words -- and a value set by hand stays listed rather than being
+     * replaced by the first entry on save.
+     */
+    if (g_strcmp0(key, "model.effort") == 0)
+        return HTMX_ELEMENT(clawt_web_effort_field(field_name, value));
+
+    if (g_strcmp0(key, "review_by") == 0) {
+        g_auto(GStrv) agents = agent_ids(app);
+
+        return HTMX_ELEMENT(clawt_web_review_by_field(
+            field_name, (const gchar *const *)agents, FALSE, value));
+    }
+
+    if (g_strcmp0(key, "computer.vm.resolution") == 0 ||
+        g_strcmp0(key, "computer.display.resolution") == 0)
+        return HTMX_ELEMENT(clawt_web_resolution_field(label, field_name,
+                                                       value));
+
+    /* And the ones whose values are things the daemon has. */
+    {
+        HtmxElement *choices = daemon_choices(app, key, label, field_name,
+                                              value);
+
+        if (choices != NULL)
+            return choices;
     }
 
     /*

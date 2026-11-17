@@ -812,8 +812,6 @@ on_save_agent(GtkButton *button, gpointer user_data)
     gboolean backend_changes;
     const gchar *account = NULL;
     const gchar *provider;
-    static const gchar *const efforts[] = { "low", "medium", "high",
-                                            "xhigh", "max" };
     static const gchar *const restarts[] = { "never", "on-failure",
                                              "always" };
     gboolean ok = TRUE;
@@ -906,9 +904,13 @@ on_save_agent(GtkButton *button, gpointer user_data)
         ok &= clawt_gtk_apply_setting(self, "model.command",
                   gtk_editable_get_text(GTK_EDITABLE(self->acp_command_row)));
 
+    /* A value, not an index: "" is the model's own default (0.51.3). */
     ok &= clawt_gtk_apply_setting(self, "model.effort",
-                                  efforts[MIN(adw_combo_row_get_selected(
-                                        ADW_COMBO_ROW(self->effort_row)), 4)]);
+                                  clawt_gtk_value_row_get(self->effort_row));
+
+    if (self->review_by_row != NULL)
+        ok &= clawt_gtk_apply_setting(
+            self, "review_by", clawt_gtk_value_row_get(self->review_by_row));
 
     /* After the model it falls back from, for the reason given above. */
     if (fallbacks_change)
@@ -935,6 +937,15 @@ on_save_agent(GtkButton *button, gpointer user_data)
         ok &= clawt_gtk_apply_setting(self, "computer.type",
                                       clawt_gtk_computer_type_nick_at(adw_combo_row_get_selected(
                                 ADW_COMBO_ROW(self->computer_row))));
+
+    if (self->display_backend_row != NULL) {
+        ok &= clawt_gtk_apply_setting(
+            self, "computer.display.backend",
+            clawt_gtk_value_row_get(self->display_backend_row));
+        ok &= clawt_gtk_apply_setting(
+            self, "computer.display.resolution",
+            clawt_gtk_value_row_get(self->display_resolution_row));
+    }
 
     if (self->vm_cpus_row != NULL && *use_row_value(self) == '\0') {
         g_autofree gchar *image = clawt_gtk_disk_chooser_value(&self->inspector_disk);
@@ -966,13 +977,8 @@ on_save_agent(GtkButton *button, gpointer user_data)
          * it with the first entry.
          */
         if (self->vm_resolution_row != NULL) {
-            GtkStringList *sizes = GTK_STRING_LIST(
-                adw_combo_row_get_model(
-                    ADW_COMBO_ROW(self->vm_resolution_row)));
-            const gchar *resolution = gtk_string_list_get_string(
-                sizes,
-                adw_combo_row_get_selected(
-                    ADW_COMBO_ROW(self->vm_resolution_row)));
+            const gchar *resolution =
+                clawt_gtk_value_row_get(self->vm_resolution_row);
 
             if (resolution != NULL && *resolution != '\0')
                 ok &= clawt_gtk_apply_setting(self, "computer.vm.resolution",
@@ -1697,28 +1703,7 @@ combo_row(const gchar *title, const gchar *const *values,
 static GtkWidget *
 resolution_row(const gchar *current)
 {
-    static const gchar *const common[] = {
-        "1280x800", "1280x1024", "1440x900", "1600x900", "1680x1050",
-        "1920x1080", "1920x1200", "2560x1440", "3840x2160", NULL
-    };
-    g_autoptr(GPtrArray) values = g_ptr_array_new();
-    gboolean known = FALSE;
-    gsize i;
-
-    for (i = 0; common[i] != NULL; i++) {
-        if (g_strcmp0(common[i], current) == 0)
-            known = TRUE;
-
-        g_ptr_array_add(values, (gpointer)common[i]);
-    }
-
-    if (current != NULL && *current != '\0' && !known)
-        g_ptr_array_insert(values, 0, (gpointer)current);
-
-    g_ptr_array_add(values, NULL);
-
-    return combo_row("Screen size", (const gchar *const *)values->pdata,
-                     current);
+    return clawt_gtk_resolution_row_new(current);
 }
 
 /*
@@ -3362,8 +3347,6 @@ build_avatar_group(ClawtWindow *self, JsonObject *agent)
 void
 clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payload)
 {
-    static const gchar *const efforts[] = { "low", "medium", "high",
-                                            "xhigh", "max", NULL };
     static const gchar *const restarts[] = { "never", "on-failure",
                                              "always", NULL };
     GtkWidget *group;
@@ -3533,10 +3516,42 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
                                   clawt_json_string(agent, "provider", NULL),
                                   clawt_json_string(agent, "model", NULL));
 
-    self->effort_row = combo_row("Effort", efforts,
-                                 clawt_json_string(agent, "effort",
-                                                   "medium"));
+    /*
+     * From libclawt's list (0.51.3), with "the model's default" first:
+     * the old row showed "medium" for an agent that had none and wrote
+     * it back on every save.
+     */
+    self->effort_row = clawt_gtk_effort_row_new(
+        clawt_json_string(agent, "effort", NULL));
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), self->effort_row);
+
+    /* Who checks this agent's work: fixed choices, then the fleet. */
+    {
+        g_autoptr(JsonNode) listed = clawt_window_request(self, "agent.list",
+                                                          NULL);
+        JsonObject *root = (listed != NULL) ? clawt_payload_of(listed) : NULL;
+        JsonArray *agents = (root != NULL &&
+                             json_object_has_member(root, "agents"))
+            ? json_object_get_array_member(root, "agents") : NULL;
+        g_autoptr(GStrvBuilder) ids = g_strv_builder_new();
+        g_auto(GStrv) agent_ids = NULL;
+        guint a;
+
+        for (a = 0; agents != NULL && a < json_array_get_length(agents); a++)
+            g_strv_builder_add(ids, clawt_json_string(
+                json_array_get_object_element(agents, a), "id", ""));
+        agent_ids = g_strv_builder_end(ids);
+
+        self->review_by_row = clawt_gtk_review_by_row_new(
+            (const gchar *const *)agent_ids, FALSE,
+            (payload != NULL && json_object_has_member(payload, "settings"))
+                ? clawt_json_string(
+                      json_object_get_object_member(payload, "settings"),
+                      "review_by", "")
+                : "");
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                                  self->review_by_row);
+    }
 
     /* An acp agent's program, in libclawt's words (model.command). */
     self->acp_command_row = entry_row(
@@ -3709,6 +3724,47 @@ clawt_gtk_build_inspector(ClawtWindow *self, JsonObject *agent, JsonObject *payl
             clawt_json_string(agent, "vm_ssh_host", ""));
         adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
                                   self->vm_ssh_host_row);
+    }
+
+    /*
+     * A virtual display's server and size (0.51.0), as drop-downs: the
+     * backend from its enumeration, the size from libclawt's list.  The
+     * web and lrg clients draw these from the schema; GTK had no row.
+     */
+    self->display_backend_row = NULL;
+    self->display_resolution_row = NULL;
+
+    if (g_strcmp0(self->inspector_computer, "display") == 0) {
+        JsonObject *settings =
+            (payload != NULL && json_object_has_member(payload, "settings"))
+                ? json_object_get_object_member(payload, "settings") : NULL;
+        GEnumClass *klass = g_type_class_ref(CLAWT_TYPE_DISPLAY_BACKEND);
+        g_autoptr(GPtrArray) nicks = g_ptr_array_new();
+        guint b;
+
+        for (b = 0; b < klass->n_values; b++)
+            g_ptr_array_add(nicks, (gpointer)klass->values[b].value_nick);
+        g_ptr_array_add(nicks, NULL);
+
+        self->display_backend_row = clawt_gtk_value_row_new(
+            "Display server", (const gchar *const *)nicks->pdata, NULL,
+            settings != NULL ? clawt_json_string(
+                                   settings, "computer.display.backend",
+                                   "auto")
+                             : "auto");
+        g_type_class_unref(klass);
+        clawt_gtk_set_row_hint(self->display_backend_row,
+                               "auto takes gowl, then Xvnc, then Xvfb");
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                                  self->display_backend_row);
+
+        self->display_resolution_row = clawt_gtk_resolution_row_new(
+            settings != NULL ? clawt_json_string(
+                                   settings, "computer.display.resolution",
+                                   "1280x800")
+                             : "1280x800");
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),
+                                  self->display_resolution_row);
     }
 
     /*

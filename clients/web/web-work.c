@@ -16,8 +16,32 @@
 
 /* ── Routines ────────────────────────────────────────────────────── */
 
+static void agent_choices(ClawtWebApp *app, gboolean with_nobody,
+                          GPtrArray *values, GPtrArray *labels);
+
+/* An enumerated key's values, walked from its type, as a select. */
+static HtmxDiv *
+enum_select(const ClawtSchemaEntry *entry, const gchar *label,
+            const gchar *name, const gchar *value)
+{
+    GEnumClass *klass = g_type_class_ref(entry->enum_type());
+    g_autoptr(GPtrArray) values = g_ptr_array_new();
+    HtmxDiv *field;
+    guint i;
+
+    for (i = 0; i < klass->n_values; i++)
+        g_ptr_array_add(values, (gpointer)klass->values[i].value_nick);
+    g_ptr_array_add(values, NULL);
+    field = clawt_web_select_field(label, name,
+                                   (const gchar *const *)values->pdata, NULL,
+                                   value != NULL ? value
+                                                 : entry->default_value);
+    g_type_class_unref(klass);
+    return field;
+}
+
 static void
-add_routine_form(HtmxElement *parent, JsonObject *existing)
+add_routine_form(ClawtWebApp *app, HtmxElement *parent, JsonObject *existing)
 {
     const gchar *id = clawt_web_member(existing, "id", NULL);
     g_autofree gchar *action = NULL;
@@ -86,6 +110,44 @@ add_routine_form(HtmxElement *parent, JsonObject *existing)
         if (g_strcmp0(leaf, "instructions") == 0) {
             clawt_web_add(form, clawt_web_textarea_field(
                 "Instructions", leaf, value, 6));
+            continue;
+        }
+
+        /*
+         * The values that are a fixed list, as drop-downs (0.51.3): the
+         * schedule and the weekday from libclawt's families, the agent
+         * from the fleet, and any other enumerated key from its type --
+         * a text box for a value only a few spellings of are accepted is
+         * a save that fails, or worse, one that does not.
+         */
+        if (g_strcmp0(leaf, "schedule") == 0) {
+            clawt_web_add(form, clawt_web_schedule_field(
+                leaf, value != NULL ? value : entry->default_value));
+            continue;
+        }
+
+        if (g_strcmp0(leaf, "weekday") == 0) {
+            clawt_web_add(form, clawt_web_weekday_field(
+                leaf, value != NULL ? value : entry->default_value));
+            continue;
+        }
+
+        if (g_strcmp0(leaf, "agent") == 0) {
+            g_autoptr(GPtrArray) ids = g_ptr_array_new_with_free_func(g_free);
+            g_autoptr(GPtrArray) names =
+                g_ptr_array_new_with_free_func(g_free);
+
+            agent_choices(app, FALSE, ids, names);
+            g_ptr_array_add(ids, NULL);
+            g_ptr_array_add(names, NULL);
+            clawt_web_add(form, clawt_web_select_field(
+                "Agent", leaf, (const gchar *const *)ids->pdata,
+                (const gchar *const *)names->pdata, value));
+            continue;
+        }
+
+        if (entry->type == CLAWT_SCHEMA_ENUM && entry->enum_type != NULL) {
+            clawt_web_add(form, enum_select(entry, leaf, leaf, value));
             continue;
         }
 
@@ -217,10 +279,10 @@ clawt_web_routines_body(ClawtWebApp *app, const gchar *agent_id)
             clawt_web_add(pad, g_steal_pointer(&notice));
         }
 
-        add_routine_form(HTMX_ELEMENT(pad), routine);
+        add_routine_form(app, HTMX_ELEMENT(pad), routine);
     }
 
-    add_routine_form(HTMX_ELEMENT(pad), NULL);
+    add_routine_form(app, HTMX_ELEMENT(pad), NULL);
 
     htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
 

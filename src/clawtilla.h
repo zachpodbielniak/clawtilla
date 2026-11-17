@@ -38,6 +38,7 @@
 #include "config/clawt-revisions.h"
 #include "config/clawt-fleet-pack.h"
 #include "config/clawt-config-schema.h"
+#include "config/clawt-choices.h"
 #include "config/clawt-appearance.h"
 #include "config/clawt-secret-ref.h"
 #include "computer/clawt-mount.h"

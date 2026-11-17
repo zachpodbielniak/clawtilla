@@ -260,16 +260,47 @@ test_provider_and_model_choices(void)
     g_assert_cmpstr(typed->other, ==, "haiku-9");
 }
 
+/*
+ * Who reviews (0.51.3): libclawt's fixed choices, then each agent from
+ * agent.list; a value neither knows is kept, so saving an untouched form
+ * cannot replace it.
+ */
+static void
+test_review_by_choices(void)
+{
+    g_autoptr(JsonNode) reply = parse(
+        "{\"agents\":[{\"id\":\"builder\"},{\"id\":\"checker\"}]}");
+    g_autoptr(ClawtLrgAgentChoices) agent =
+        clawt_lrg_agent_review_by_choices(reply, FALSE, "checker");
+    g_autoptr(ClawtLrgAgentChoices) project =
+        clawt_lrg_agent_review_by_choices(reply, TRUE, NULL);
+    g_autoptr(ClawtLrgAgentChoices) odd =
+        clawt_lrg_agent_review_by_choices(NULL, FALSE, "gone");
+
+    g_assert_cmpuint(agent->ids->len, ==, clawt_review_by_count() + 2);
+    g_assert_cmpstr(agent->selected, ==, "checker");
+    g_assert_cmpstr(g_ptr_array_index(agent->labels, 0), ==,
+                    clawt_review_by_nth_label(0, FALSE));
+
+    /* not set, on a project, falls back to each agent's own reviewer */
+    g_assert_cmpstr(project->selected, ==, "");
+    g_assert_cmpstr(g_ptr_array_index(project->labels, 0), ==,
+                    clawt_review_by_nth_label(0, TRUE));
+
+    g_assert_cmpuint(index_of(odd, "gone"), !=, G_MAXUINT);
+    g_assert_cmpstr(odd->selected, ==, "gone");
+}
+
 static void
 test_resolution_keeps_an_unusual_size(void)
 {
     g_autoptr(ClawtLrgAgentChoices) odd =
-        clawt_lrg_agent_resolution_choices("1366x768");
+        clawt_lrg_agent_resolution_choices("1366x700");
     g_autoptr(ClawtLrgAgentChoices) common =
         clawt_lrg_agent_resolution_choices("1920x1080");
 
-    g_assert_cmpstr(odd->selected, ==, "1366x768");
-    g_assert_cmpuint(index_of(odd, "1366x768"), !=, G_MAXUINT);
+    g_assert_cmpstr(odd->selected, ==, "1366x700");
+    g_assert_cmpuint(index_of(odd, "1366x700"), !=, G_MAXUINT);
     g_assert_cmpuint(odd->ids->len, ==, common->ids->len + 1);
 }
 
@@ -1215,6 +1246,7 @@ main(gint argc, gchar **argv)
     g_test_add_func("/lrg-agent/choices/computer-types",
                     test_computer_types_walk_the_library);
     g_test_add_func("/lrg-agent/choices/teams", test_team_choices);
+    g_test_add_func("/lrg-agent/choices/review-by", test_review_by_choices);
     g_test_add_func("/lrg-agent/choices/accounts",
                     test_account_choices_drop_unusable_but_keep_current);
     g_test_add_func("/lrg-agent/choices/shared",

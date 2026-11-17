@@ -199,7 +199,9 @@ test_schedule_choices_walk_enum(void)
     g_assert_cmpuint(g_strv_length(ids), ==, klass->n_values);
     g_assert_cmpuint(g_strv_length(labels), ==, klass->n_values);
     g_assert_true(g_strv_contains((const gchar *const *)ids, "weekdays"));
-    g_assert_true(g_strv_contains((const gchar *const *)labels, "Custom"));
+    /* libclawt's words (0.51.3), the same in every client */
+    g_assert_true(g_strv_contains((const gchar *const *)labels,
+                                  clawt_schedule_nth_label(0)));
     g_type_class_unref(klass);
 }
 

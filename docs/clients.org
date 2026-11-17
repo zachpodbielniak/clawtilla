@@ -640,6 +640,30 @@ Both are switched off by ~stream_steps: false~.  The reasoning, and why
 a step is deliberately not a message, is in
 [[file:orchestration.org::#turn-steps][Watching a turn while it runs]].
 
+*** Settings that take a fixed set of values
+:PROPERTIES:
+:CUSTOM_ID: fixed-choices
+:END:
+
+Some settings are strings in the schema but only take certain values. From 0.51.3, every graphical client draws each of them as a drop-down, not a text box. The values and labels come from one list in libclawt (=src/config/clawt-choices.c=), so GTK, the web client and the libregnum client offer the same entries in the same order with the same words. =make parity= makes all three walk each list.
+
+| Setting | Where | Entries | From |
+|---------+-------+---------+------|
+| ~model.effort~ | agent | "The model's default" (empty), Low, Medium, High, Extra high, Maximum | =clawt_effort_*()= |
+| ~review_by~ | agent and project | Not set, Nobody, You (the operator), Whoever delegated the task, The team's lead, then each agent | =clawt_review_by_*()= and ~agent.list~ |
+| ~computer.vm.resolution~, ~computer.display.resolution~ | agent | twelve common sizes, 1024x768 to 3840x2160 | =clawt_resolution_*()= |
+| ~computer.display.backend~ | agent (display computers) | auto, gowl, xvnc, xvfb | the enumeration |
+| a routine's schedule | routine form | Only when started by hand, Every hour, Every day, Monday to Friday, Once a week, A cron expression | =clawt_schedule_*()= (the enumeration's nicks) |
+| a routine's weekday | routine form | Sunday to Saturday | =clawt_weekday_*()= |
+| a routine's or trigger's agent | routine and trigger forms | the fleet's agents | ~agent.list~ |
+| ~model.provider~, ~computer.container.image~, ~computer.vm.image~ | web agent page | what the daemon reports | ~model.list~, ~image.list~, ~image.vm_list~ |
+
+"Not set" means different things in two places. On an agent, an empty ~review_by~ means no review. On a project, it means each agent's own reviewer applies. The label says which.
+
+A value that is not in the list is kept. It is added as its own entry and selected, for example a size set by hand in the YAML or an agent that was since removed. Without this, the control would open on its first entry, and saving the form without touching that row would replace the value.
+
+Effort used to default to "medium" in GTK when an agent had none, and every save wrote it back. The first entry is now the model's own default, which saves as empty.
+
 *** A VM agent's hardware
 
 Cores, memory, disk and screen size sit together in the agent editor,

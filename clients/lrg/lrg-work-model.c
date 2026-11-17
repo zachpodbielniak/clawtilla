@@ -374,24 +374,18 @@ add_boolean(JsonBuilder *builder, const gchar *name, gboolean value)
 void
 clawt_lrg_schedule_choices(GStrv *ids, GStrv *labels)
 {
-    GEnumClass *klass = g_type_class_ref(CLAWT_TYPE_SCHEDULE);
     GPtrArray *id_array = g_ptr_array_new();
     GPtrArray *label_array = g_ptr_array_new();
     guint i;
 
-    for (i = 0; i < klass->n_values; i++) {
-        const gchar *nick = klass->values[i].value_nick;
-        gchar *label = g_strdup(nick);
-
-        label[0] = g_ascii_toupper(label[0]);
-        g_ptr_array_add(id_array, g_strdup(nick));
-        g_ptr_array_add(label_array, label);
+    /* libclawt's family (0.51.3): GTK and the web client say the same. */
+    for (i = 0; i < clawt_schedule_count(); i++) {
+        g_ptr_array_add(id_array, g_strdup(clawt_schedule_nth(i)));
+        g_ptr_array_add(label_array, g_strdup(clawt_schedule_nth_label(i)));
     }
 
     g_ptr_array_add(id_array, NULL);
     g_ptr_array_add(label_array, NULL);
-    g_type_class_unref(klass);
-
     *ids = (GStrv)g_ptr_array_free(id_array, FALSE);
     *labels = (GStrv)g_ptr_array_free(label_array, FALSE);
 }
@@ -399,26 +393,17 @@ clawt_lrg_schedule_choices(GStrv *ids, GStrv *labels)
 void
 clawt_lrg_weekday_choices(GStrv *ids, GStrv *labels)
 {
-    static const gchar *const days[] = {
-        "sunday", "monday", "tuesday", "wednesday", "thursday", "friday",
-        "saturday"
-    };
     GPtrArray *id_array = g_ptr_array_new();
     GPtrArray *label_array = g_ptr_array_new();
     guint i;
 
-    for (i = 0; i < G_N_ELEMENTS(days); i++) {
-        /* 2023-01-01 was a Sunday: day i of that week names day i */
-        g_autoptr(GDateTime) day =
-            g_date_time_new_utc(2023, 1, 1 + (gint)i, 12, 0, 0.0);
-
-        g_ptr_array_add(id_array, g_strdup(days[i]));
-        g_ptr_array_add(label_array, g_date_time_format(day, "%A"));
+    for (i = 0; i < clawt_weekday_count(); i++) {
+        g_ptr_array_add(id_array, g_strdup(clawt_weekday_nth(i)));
+        g_ptr_array_add(label_array, g_strdup(clawt_weekday_nth_label(i)));
     }
 
     g_ptr_array_add(id_array, NULL);
     g_ptr_array_add(label_array, NULL);
-
     *ids = (GStrv)g_ptr_array_free(id_array, FALSE);
     *labels = (GStrv)g_ptr_array_free(label_array, FALSE);
 }

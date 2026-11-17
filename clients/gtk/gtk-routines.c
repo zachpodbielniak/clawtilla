@@ -68,14 +68,44 @@ routine_dialog_free(gpointer data)
     g_free(dialog);
 }
 
-static const gchar *const schedule_ids[] = {
-    "manual", "hourly", "daily", "weekdays", "weekly", "custom"
-};
+/*
+ * The schedule and the weekday, from libclawt's families (0.51.3): the
+ * same values and words in every client, and a schedule added to the
+ * enumeration offered here without touching this file.
+ */
+static const gchar *
+schedule_id(guint selected)
+{
+    return clawt_schedule_nth(MIN(selected, clawt_schedule_count() - 1));
+}
 
-static const gchar *const weekday_ids[] = {
-    "sunday", "monday", "tuesday", "wednesday", "thursday", "friday",
-    "saturday"
-};
+static const gchar *
+weekday_id(guint selected)
+{
+    return clawt_weekday_nth(MIN(selected, clawt_weekday_count() - 1));
+}
+
+static GtkStringList *
+schedule_labels(void)
+{
+    GtkStringList *labels = gtk_string_list_new(NULL);
+    guint i;
+
+    for (i = 0; i < clawt_schedule_count(); i++)
+        gtk_string_list_append(labels, clawt_schedule_nth_label(i));
+    return labels;
+}
+
+static GtkStringList *
+weekday_labels(void)
+{
+    GtkStringList *labels = gtk_string_list_new(NULL);
+    guint i;
+
+    for (i = 0; i < clawt_weekday_count(); i++)
+        gtk_string_list_append(labels, clawt_weekday_nth_label(i));
+    return labels;
+}
 
 /*
  * Shows only the fields the chosen schedule uses, and says when it will
@@ -90,8 +120,7 @@ update_schedule_rows(RoutineDialog *dialog)
 {
     guint selected = adw_combo_row_get_selected(
         ADW_COMBO_ROW(dialog->schedule_row));
-    const gchar *preset = schedule_ids[MIN(selected,
-                                           G_N_ELEMENTS(schedule_ids) - 1)];
+    const gchar *preset = schedule_id(selected);
     gboolean timed = g_strcmp0(preset, "daily") == 0 ||
                      g_strcmp0(preset, "weekdays") == 0 ||
                      g_strcmp0(preset, "weekly") == 0 ||
@@ -211,14 +240,13 @@ on_routine_saved(GtkButton *button, gpointer user_data)
     json_builder_add_string_value(builder, instructions);
     json_builder_set_member_name(builder, "schedule");
     json_builder_add_string_value(
-        builder, schedule_ids[MIN(schedule,
-                                  G_N_ELEMENTS(schedule_ids) - 1)]);
+        builder, schedule_id(schedule));
     json_builder_set_member_name(builder, "at");
     json_builder_add_string_value(
         builder, gtk_editable_get_text(GTK_EDITABLE(dialog->at_row)));
     json_builder_set_member_name(builder, "weekday");
     json_builder_add_string_value(
-        builder, weekday_ids[MIN(weekday, G_N_ELEMENTS(weekday_ids) - 1)]);
+        builder, weekday_id(weekday));
     json_builder_set_member_name(builder, "cron");
     json_builder_add_string_value(
         builder, gtk_editable_get_text(GTK_EDITABLE(dialog->cron_row)));
@@ -326,13 +354,6 @@ open_routine_editor(ClawtWindow *self, JsonObject *existing)
     g_autoptr(GPtrArray) ids = g_ptr_array_new();
     g_autoptr(JsonNode) agents = NULL;
     GtkWidget *save;
-    static const gchar *const schedules[] = {
-        "Manual", "Hourly", "Daily", "Weekdays", "Weekly", "Custom", NULL
-    };
-    static const gchar *const weekdays[] = {
-        "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
-        "Saturday", NULL
-    };
     guint i;
 
     dialog->window = self;
@@ -462,19 +483,22 @@ open_routine_editor(ClawtWindow *self, JsonObject *existing)
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->schedule_row),
                                   "Schedule");
     adw_combo_row_set_model(ADW_COMBO_ROW(dialog->schedule_row),
-                            G_LIST_MODEL(gtk_string_list_new(schedules)));
+                            G_LIST_MODEL(schedule_labels()));
 
     if (existing != NULL) {
         const gchar *schedule = clawt_json_string(existing, "schedule",
                                                   "daily");
 
-        for (i = 0; i < G_N_ELEMENTS(schedule_ids); i++) {
-            if (g_strcmp0(schedule_ids[i], schedule) == 0)
+        for (i = 0; i < clawt_schedule_count(); i++) {
+            if (g_strcmp0(clawt_schedule_nth(i), schedule) == 0)
                 adw_combo_row_set_selected(
                     ADW_COMBO_ROW(dialog->schedule_row), i);
         }
     } else {
-        adw_combo_row_set_selected(ADW_COMBO_ROW(dialog->schedule_row), 2);
+        for (i = 0; i < clawt_schedule_count(); i++)
+            if (g_strcmp0(clawt_schedule_nth(i), "daily") == 0)
+                adw_combo_row_set_selected(
+                    ADW_COMBO_ROW(dialog->schedule_row), i);
     }
 
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(when),
@@ -491,13 +515,13 @@ open_routine_editor(ClawtWindow *self, JsonObject *existing)
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(dialog->weekday_row),
                                   "Day");
     adw_combo_row_set_model(ADW_COMBO_ROW(dialog->weekday_row),
-                            G_LIST_MODEL(gtk_string_list_new(weekdays)));
+                            G_LIST_MODEL(weekday_labels()));
 
     if (existing != NULL) {
         const gchar *day = clawt_json_string(existing, "weekday", "monday");
 
-        for (i = 0; i < G_N_ELEMENTS(weekday_ids); i++) {
-            if (g_strcmp0(weekday_ids[i], day) == 0)
+        for (i = 0; i < clawt_weekday_count(); i++) {
+            if (g_ascii_strcasecmp(clawt_weekday_nth(i), day) == 0)
                 adw_combo_row_set_selected(
                     ADW_COMBO_ROW(dialog->weekday_row), i);
         }

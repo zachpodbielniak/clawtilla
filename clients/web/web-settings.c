@@ -598,7 +598,7 @@ static const struct {
     { "name",                "Name",       NULL },
     { "goal",                "Goal",       "Every assignment in it starts with this" },
     { "directory",           "Directory",  "Absolute host path of its repository" },
-    { "review_by",           "Reviewed by", "lead, delegator, operator or an agent" },
+    { "review_by",           "Reviewed by", NULL },
     { "agents",              "Agents",     "Comma-separated; empty for every agent" },
     { "monthly_budget_usd",  "Monthly budget (USD)", "0 for none" },
     { "budget_warn_percent", "Warn at percent", "80" },
@@ -679,6 +679,31 @@ projects_content(ClawtWebApp *app)
         for (f = 0; f < G_N_ELEMENTS(project_fields); f++) {
             g_autofree gchar *value = project_field_text(
                 project, project_fields[f].key);
+
+            /*
+             * Who reviews is a fixed list plus the agents (0.51.3), not a
+             * word to remember the spelling of.
+             */
+            if (g_strcmp0(project_fields[f].key, "review_by") == 0) {
+                g_autoptr(JsonNode) listed = clawt_web_app_call(
+                    app, "agent.list", NULL);
+                JsonArray *agents = clawt_web_member_array(
+                    clawt_web_root(listed), "agents");
+                g_autoptr(GStrvBuilder) ids = g_strv_builder_new();
+                g_auto(GStrv) agent_ids = NULL;
+                guint a;
+
+                for (a = 0; agents != NULL &&
+                            a < json_array_get_length(agents); a++)
+                    g_strv_builder_add(ids, clawt_web_member(
+                        json_array_get_object_element(agents, a), "id",
+                        ""));
+                agent_ids = g_strv_builder_end(ids);
+                clawt_web_add(form, clawt_web_review_by_field(
+                    "review_by", (const gchar *const *)agent_ids, TRUE,
+                    value));
+                continue;
+            }
 
             clawt_web_add(form, clawt_web_field(project_fields[f].label,
                                                 project_fields[f].key, value,
