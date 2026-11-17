@@ -1675,7 +1675,17 @@ clawt_web_chat_body_full(ClawtWebApp *app, const gchar *agent_id,
      * is outside the swap target on purpose, so its state is not thrown
      * away by the arrival that set it.
      */
-    clawt_web_add(main_el, conversation_switcher(app, agent_id, peer));
+    /*
+     * No switcher at all for an agent with no other conversations -- the
+     * function answers NULL then, and handing that on was a critical on
+     * every chat page.
+     */
+    {
+        HtmxElement *switcher = conversation_switcher(app, agent_id, peer);
+
+        if (switcher != NULL)
+            clawt_web_add(main_el, switcher);
+    }
 
     {
         g_autoptr(HtmxDiv) body = htmx_div_new();

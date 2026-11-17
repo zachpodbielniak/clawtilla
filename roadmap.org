@@ -409,6 +409,11 @@ The ~forge~ record type is owner-only in VENTURE, so an editor -- every agent ac
 - *Then (0.50.0):* the plan's scratch agent per test run -- a temporary copy of the named agent with the skill under test alone, never saved, removed when the run settles.
 - *Version:* minor.
 
+** DONE The web client's unread badges, and two GLib-CRITICALs v0.51.2 :clients:
+- *Requested:* by the user on 2026-11-16, after the 0.51.0 live run's web log.
+- *Done:* =clawt_web_app_set_viewing()= freed the set of rooms the sidebar draws and nothing made it again: from the first page anybody opened, every sidebar render logged a GLib-CRITICAL, and -- worse -- the unread rule counts only a room with a row, so no message was ever counted and the web client's badges never lit.  The stray free is gone.  And the chat page handed a NULL conversation switcher (an agent with no peer conversations) to =clawt_web_add()=.  =test-web-app= includes =web-app.c=, makes criticals fatal, and fails on the old code.
+- *Version:* micro.
+
 ** DONE /skill sends "Use skill: <name>", not the skill's body v0.51.1 :skills:clients:
 - *Requested:* by the user on 2026-11-16: invoking a skill with ~/name~ dumped the full skill body into the prompt, unreadable in every client.
 - *Done:* =clawt_skill_commands_expand()= names a skill found in the agent's workspace (=clawt_skill_commands_invocation()=: ~Use skill: <name>~, then the arguments) instead of expanding its body; command files still expand.  The harness loads the skill itself, so a multi-file skill keeps its other files.

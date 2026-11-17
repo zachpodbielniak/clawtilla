@@ -532,10 +532,16 @@ clawt_web_app_set_viewing(ClawtWebApp *self, const gchar *agent_id)
     g_free(self->viewing);
     self->viewing = g_strdup(agent_id);
 
-    /* And no longer a room; the two are exclusive. */
+    /*
+     * And no longer a room; the two are exclusive.  Only the selection
+     * goes: the set of rooms the sidebar draws is the fleet's, refilled
+     * by clawt_web_app_note_fleet().  It used to be freed here as well,
+     * and never made again -- so from the first page anybody opened,
+     * every sidebar render warned about a NULL table and the unread
+     * pruner, finding no room "drawn", threw every count away.
+     */
     if (agent_id != NULL)
         g_clear_pointer(&self->viewing_room, g_free);
-    g_clear_pointer(&self->sidebar_rooms, g_hash_table_unref);
 
     /*
      * Opening a conversation is the only thing that clears its count --
@@ -1096,6 +1102,7 @@ clawt_web_app_finalize(GObject *object)
     g_clear_pointer(&self->last_refusal, g_free);
     g_clear_pointer(&self->unread, g_hash_table_unref);
     g_clear_pointer(&self->dm_rooms, g_hash_table_unref);
+    g_clear_pointer(&self->sidebar_rooms, g_hash_table_unref);
     g_clear_pointer(&self->viewing, g_free);
     g_clear_pointer(&self->viewing_room, g_free);
     g_clear_pointer(&self->alerts, g_ptr_array_unref);

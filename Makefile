@@ -734,6 +734,9 @@ $(OUTDIR)/tests/test-lrgui-%: $(TESTDIR)/test-lrgui-%.c $(LRG_CLIENT_SOURCES) \
 		$< $(LRG_CLIENT_SOURCES) -o $@ $(LIB_STATIC) $(LRG_LDFLAGS)
 endif
 
+# test-web-app.c #includes the web client's state, for the same reason.
+$(OUTDIR)/tests/test-web-app: $(WEB_SRCDIR)/web-app.c $(WEB_SRCDIR)/clawt-web.h
+
 $(OUTDIR)/tests/test-web-render: $(WEB_SRCDIR)/web-ui.c \
                                  $(WEB_SRCDIR)/web-navigation.c \
                                  $(WEB_SRCDIR)/web-style.c \
