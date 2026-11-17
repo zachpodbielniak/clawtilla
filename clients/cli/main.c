@@ -5852,6 +5852,14 @@ cmd_computer(int argc, char *argv[])
         if (json_object_has_member(screen, "error"))
             g_print("error:    %s\n", member_or(screen, "error", ""));
 
+        /* A virtual display: which server, and what auto skipped. */
+        {
+            g_autofree gchar *display = clawt_display_status_line(screen);
+
+            if (display != NULL)
+                g_print("display:  %s\n", display);
+        }
+
         return EXIT_SUCCESS;
     }
 
