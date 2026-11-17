@@ -206,6 +206,8 @@ That run found the one thing it was for: a comment made in the minute before the
 
 The whole list once more against the released clawtilla 0.49.0 and VENTURE 0.10.6, scripted with a check per step: intake, a comment made the moment the daemon was up reaching the agent (it answered with the comment's word), an agent's task completed with its ticket done, result comment by its own token, branch linked and run costed, the opt-in switch off leaving a task unmirrored, done in VENTURE accepting a reviewed task, cancel in VENTURE, VENTURE down and back with the outbox draining, a pending task surviving a daemon restart, and both task pages screenshotted.
 
+And for 0.50.0 (the same VENTURE 0.10.6), 23 checks, none failing: everything above again, plus the agent's =TOOLS.org= naming its VENTURE user (=lead-bot=, learned from whoami), and a skill test run on a scratch copy of an agent -- passed, never in the saved config, and the copy and its workspace gone once it settled.
+
 * Troubleshooting
 
 | Seen | Why, and what to do |
