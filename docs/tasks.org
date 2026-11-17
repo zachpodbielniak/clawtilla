@@ -4,7 +4,7 @@
 #+categories: clawtilla docs orchestration tasks
 #+created: [2026-11-16]
 #+updated: [2026-11-16]
-#+version: 0.49.0
+#+version: 0.50.0
 
 * What a task is
 

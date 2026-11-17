@@ -2146,9 +2146,72 @@ describe_connector_directory(GString                 *out,
  * channel, where nothing in a session reveals that the person on the
  * other end is in a room with four other people.
  */
+/* Where an agent's VENTURE username is kept: its state directory. */
+static gchar *
+venture_user_path(ClawtConfig *config, const gchar *agent_id)
+{
+    g_autofree gchar *dir = clawt_config_agent_state_dir(config, agent_id);
+
+    return (dir != NULL) ? g_build_filename(dir, "venture-user", NULL)
+                         : NULL;
+}
+
+gchar *
+clawt_workspace_venture_user(ClawtConfig *config, const gchar *agent_id)
+{
+    g_autofree gchar *path = NULL;
+    gchar *text = NULL;
+
+    g_return_val_if_fail(agent_id != NULL, NULL);
+
+    if (config == NULL)
+        return NULL;
+
+    path = venture_user_path(config, agent_id);
+    if (path == NULL || !g_file_get_contents(path, &text, NULL, NULL))
+        return NULL;
+
+    g_strstrip(text);
+    if (*text == '\0') {
+        g_free(text);
+        return NULL;
+    }
+
+    return text;
+}
+
+gboolean
+clawt_workspace_set_venture_user(ClawtConfig  *config,
+                                 const gchar  *agent_id,
+                                 const gchar  *username,
+                                 GError      **error)
+{
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *dir = NULL;
+    g_autofree gchar *kept = NULL;
+    g_autofree gchar *line = NULL;
+
+    g_return_val_if_fail(config != NULL, FALSE);
+    g_return_val_if_fail(agent_id != NULL, FALSE);
+    g_return_val_if_fail(username != NULL, FALSE);
+
+    kept = clawt_workspace_venture_user(config, agent_id);
+    if (g_strcmp0(kept, username) == 0)
+        return FALSE;
+
+    path = venture_user_path(config, agent_id);
+    dir = g_path_get_dirname(path);
+    if (!clawt_ensure_dir(dir, 0700, error))
+        return FALSE;
+
+    line = g_strconcat(username, "\n", NULL);
+    return clawt_write_file_atomic(path, line, -1, 0600, FALSE, error);
+}
+
 static void
 describe_integration(GString *out, ClawtIntegrationBinding *binding,
-                     ClawtAgentConfig *agent, GPtrArray *bindings)
+                     ClawtAgentConfig *agent, GPtrArray *bindings,
+                     const gchar *venture_user)
 {
     const ClawtIntegrationInfo *info =
         clawt_integration_binding_get_info(binding);
@@ -2204,6 +2267,17 @@ describe_integration(GString *out, ClawtIntegrationBinding *binding,
         if (g_strcmp0(provider, "venture") == 0) {
             ClawtApplyWrites level =
                 clawt_connector_venture_apply_writes(binding);
+
+            /*
+             * Who it is there, once the mirror has asked (0.50.0): what
+             * people see on its tickets and comments, and what a ticket
+             * is assigned to when it is meant for this agent.
+             */
+            if (venture_user != NULL)
+                g_string_append_printf(out,
+                    "In VENTURE you are the user ~%s~: everything you do\n"
+                    "there is recorded as that user, and a ticket meant\n"
+                    "for you is assigned to it.\n\n", venture_user);
 
             if (level == CLAWT_APPLY_WRITES_ALL)
                 g_string_append(out,
@@ -2540,6 +2614,8 @@ render_integrations_section(ClawtConfig *config, ClawtAgentConfig *agent)
 {
     g_autoptr(GString) out = g_string_new(NULL);
     g_autoptr(GPtrArray) bindings = NULL;
+    g_autofree gchar *venture_user =
+        clawt_workspace_venture_user(config, clawt_agent_config_get_id(agent));
     guint i;
 
     g_string_append_printf(out, "%s\n\n", TOOLS_BEGIN);
@@ -2569,7 +2645,7 @@ render_integrations_section(ClawtConfig *config, ClawtAgentConfig *agent)
 
     for (i = 0; i < bindings->len; i++)
         describe_integration(out, g_ptr_array_index(bindings, i), agent,
-                             bindings);
+                             bindings, venture_user);
 
     g_string_append_printf(out, "%s\n", TOOLS_END);
 

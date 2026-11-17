@@ -1,0 +1,28 @@
+# BEGIN clawtilla integrations -- rewritten on every start
+
+* Your integrations
+
+These connect you to things outside the fleet. Some of them put
+a person on the other end of your reply.
+
+** venture-builder (~connector~)
+
+Tools for venture appear beside your own, under
+~clawtilla-venture-builder~.
+
+This is somebody's actual account, not a test one. What you
+do through it is done as them and is visible to everyone
+else who can see it. Reading is cheap; anything that writes,
+sends or deletes is worth being sure about first.
+
+Your writes to VENTURE are held for the operator's
+approval: a create, update or delete answers that it
+is waiting, and lands only once approved. Say what
+you proposed rather than assuming it is done.
+
+You do not have the credential and cannot get it. clawtilla
+holds it and hands it to the tool server, so there is no
+token in your config, your environment or anywhere else to
+look -- and no need for one.
+
+# END clawtilla integrations

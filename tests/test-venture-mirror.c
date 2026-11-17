@@ -345,6 +345,61 @@ body_of(Sent *sent, JsonNode **holder)
 
 /* ── Tests ───────────────────────────────────────────────────────── */
 
+/* Counts ::account-learned, keeping the last agent and username. */
+typedef struct {
+    guint  count;
+    gchar *agent;
+    gchar *user;
+} Learned;
+
+static void
+on_learned(ClawtVentureMirror *mirror, const gchar *agent_id,
+           const gchar *username, gpointer data)
+{
+    Learned *learned = data;
+
+    (void)mirror;
+    learned->count++;
+    g_free(learned->agent);
+    g_free(learned->user);
+    learned->agent = g_strdup(agent_id);
+    learned->user = g_strdup(username);
+}
+
+/*
+ * Each account's username is announced once, when whoami first answers:
+ * the daemon tells the agent who it is in VENTURE from this, and a
+ * signal on every pass would rewrite its TOOLS.org for nothing.
+ */
+static void
+test_account_learned_once(Fixture *fixture, gconstpointer data)
+{
+    g_autoptr(ClawtTask) task = NULL;
+    g_autoptr(ClawtTask) again = NULL;
+    Learned learned = { 0 };
+    gulong handler;
+
+    (void)data;
+    handler = g_signal_connect(fixture->mirror, "account-learned",
+                               G_CALLBACK(on_learned), &learned);
+
+    task = save_task(fixture, "lead", "scout", CLAWT_TASK_PENDING);
+    drain(fixture);
+    g_assert_cmpuint(learned.count, ==, 2);
+    g_assert_nonnull(learned.agent);
+    g_assert_true(g_str_has_suffix(learned.user, "-bot"));
+
+    /* another task, the same accounts: nothing new to say */
+    again = save_task(fixture, "lead", "scout", CLAWT_TASK_PENDING);
+    drain(fixture);
+    g_assert_cmpuint(learned.count, ==, 2);
+
+    g_signal_handler_disconnect(fixture->mirror, handler);
+    g_free(learned.agent);
+    g_free(learned.user);
+}
+
+
 /*
  * The delegator files the ticket as its own account, assigned to the
  * assignee's VENTURE username; the assignee's account then writes only
@@ -1463,6 +1518,7 @@ main(int argc, char *argv[])
     ADD("a-viewer-token-is-flagged", test_a_viewer_token_is_flagged);
     ADD("review-is-written-by-the-reviewer",
         test_review_is_written_by_the_reviewer);
+    ADD("account-learned-once", test_account_learned_once);
     g_test_add_func("/venture-mirror/finds-pull-requests",
                     test_finds_pull_requests);
 
