@@ -325,6 +325,48 @@ ClawtAgentConfig *clawt_config_add_agent(ClawtConfig  *self,
                                          GError      **error);
 
 /**
+ * clawt_config_add_scratch_agent:
+ * @self: a #ClawtConfig
+ * @id: the scratch agent's id
+ * @from_id: the agent whose runtime, model, computer and limits it copies
+ * @skill: the one skill it has
+ * @workspace: where it works, a directory of its own
+ *
+ * Adds a temporary agent for a skill test (since 0.50.0): a copy of
+ * @from_id with no name, team, roles or other skills of its own, and
+ * @skill alone.  It is kept apart from the file's agents, so
+ * clawt_config_save(), clawt_config_to_string(), the revision history
+ * and a fleet export never contain it; a configuration loaded afresh
+ * does not have it.
+ *
+ * Returns: (transfer none) (nullable): the agent, or %NULL with @error set
+ */
+ClawtAgentConfig *clawt_config_add_scratch_agent(ClawtConfig  *self,
+                                                 const gchar  *id,
+                                                 const gchar  *from_id,
+                                                 const gchar  *skill,
+                                                 const gchar  *workspace,
+                                                 GError      **error);
+
+/**
+ * clawt_config_remove_scratch_agent:
+ * @self: a #ClawtConfig
+ * @id: a scratch agent's id
+ *
+ * Returns: %TRUE if a scratch agent of that id was removed
+ */
+gboolean clawt_config_remove_scratch_agent(ClawtConfig *self,
+                                           const gchar *id);
+
+/**
+ * clawt_agent_config_is_scratch:
+ * @agent: an agent's configuration
+ *
+ * Returns: %TRUE for an agent added with clawt_config_add_scratch_agent()
+ */
+gboolean clawt_agent_config_is_scratch(ClawtAgentConfig *agent);
+
+/**
  * clawt_config_remove_agent:
  * @self: a #ClawtConfig
  * @id: an agent id

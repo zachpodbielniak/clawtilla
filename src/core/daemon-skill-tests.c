@@ -17,10 +17,15 @@
  *   expect: ["## Fixes"]    # each must appear, case-insensitively
  *   reject: ["TODO"]        # none may appear
  *
- * skill.test_run hands each input to the agent as a task of its own, in
- * a room of its own (`skill-test:<skill>`, so it neither inherits nor
- * leaves anything in the operator's conversation), and records the run
- * against the skill's current revision.  When the task settles its
+ * skill.test_run hands each input to a *scratch agent* (0.50.0): a
+ * temporary copy of the named agent -- its runtime, model and computer,
+ * but no name, team, roles, memory or other skills -- that has the skill
+ * under test and nothing else, made for the run and removed when it
+ * settles.  So a test checks the skill, not whatever the named agent
+ * has learned or been given since.  The run is a task of its own, in a
+ * room of its own (`skill-test:<skill>`), recorded against the skill's
+ * current revision.  The scratch agent is never in the saved
+ * configuration (clawt_config_add_scratch_agent()).  When the task settles its
  * result is checked and the run marked passed or failed, with why.
  * skill.tests lists a skill's tests with each one's last run.
  */
@@ -213,6 +218,266 @@ clawt_daemon_skill_test_verdict(
 	return NULL;
 }
 
+/* ── Scratch agents (0.50.0) ─────────────────────────────────────── */
+
+#define SCRATCH_PREFIX "skilltest-"
+
+/* A run's scratch agent and the room it ran in. */
+typedef struct {
+	gchar *agent_id;
+	gchar *room_id;
+} Scratch;
+
+static void
+scratch_free(
+	Scratch *scratch
+){
+	g_free(scratch->agent_id);
+	g_free(scratch->room_id);
+	g_free(scratch);
+}
+
+/* Where scratch agents work: under the daemon's state, never a user's. */
+static gchar *
+scratch_root(ClawtDaemon *self)
+{
+	return g_build_filename(self->state_dir, "scratch", NULL);
+}
+
+/*
+ * A scratch agent and everything it left: stopped, its workspace and
+ * state directory removed, and out of the configuration.
+ */
+static void
+scratch_remove(
+	ClawtDaemon *self,
+	const gchar *agent_id
+){
+	g_autofree gchar *root = scratch_root(self);
+	g_autofree gchar *workspace = g_build_filename(root, agent_id, NULL);
+	g_autofree gchar *agents_root = g_build_filename(self->state_dir,
+	                                                 "agents", NULL);
+	g_autofree gchar *state = g_build_filename(agents_root, agent_id, NULL);
+	g_autoptr(GError) error = NULL;
+
+	if (clawt_agent_manager_get(self->agents, agent_id) != NULL)
+		clawt_daemon_stop_agent(self, agent_id, FALSE);
+
+	if (!clawt_remove_tree(workspace, root, &error)) {
+		g_message("skill test: scratch agent %s's workspace was not "
+		          "removed: %s", agent_id, error->message);
+		g_clear_error(&error);
+	}
+	if (!clawt_remove_tree(state, agents_root, &error))
+		g_message("skill test: scratch agent %s's state was not removed: "
+		          "%s", agent_id, error->message);
+
+	if (self->config != NULL &&
+	    clawt_config_remove_scratch_agent(self->config, agent_id)) {
+		clawt_agent_manager_load(self->agents, NULL);
+		clawt_event_bus_emit(self->bus, "agent.removed", agent_id);
+	}
+}
+
+/*
+ * A scratch agent for a run of @skill, copied from @from_id and
+ * started.  Refused for a VM: a machine built and torn down per test is
+ * not a test of a skill.
+ */
+static gchar *
+scratch_make(
+	ClawtDaemon  *self,
+	const gchar  *from_id,
+	const gchar  *skill,
+	GError      **error
+){
+	ClawtAgentConfig *from = clawt_config_get_agent(self->config, from_id);
+	g_autofree gchar *root = scratch_root(self);
+	g_autofree gchar *id = NULL;
+	g_autofree gchar *workspace = NULL;
+	const gchar *computer;
+
+	if (from == NULL) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+		            "no agent '%s' to run the test as", from_id);
+		return NULL;
+	}
+
+	computer = clawt_agent_config_get_string(from, "computer.type");
+	if (g_strcmp0(computer, "vm") == 0) {
+		g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+		            "'%s' works in a VM, and a test's scratch agent would "
+		            "build a machine of its own; name an agent on the host "
+		            "or in a container", from_id);
+		return NULL;
+	}
+
+	id = g_strdup_printf(SCRATCH_PREFIX "%08x", g_random_int());
+	workspace = g_build_filename(root, id, NULL);
+	if (!clawt_ensure_dir(workspace, 0700, error))
+		return NULL;
+
+	if (clawt_config_add_scratch_agent(self->config, id, from_id, skill,
+	                                   workspace, error) == NULL)
+		return NULL;
+
+	clawt_agent_manager_load(self->agents, NULL);
+	clawt_event_bus_emit(self->bus, "agent.created", id);
+
+	if (!clawt_daemon_start_agent(self, id, error)) {
+		scratch_remove(self, id);
+		return NULL;
+	}
+
+	return g_steal_pointer(&id);
+}
+
+void
+clawt_daemon_skill_tests_readd(
+	ClawtDaemon *self,
+	ClawtConfig *previous
+){
+	GPtrArray *agents;
+	guint i;
+
+	g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+	if (previous == NULL || self->config == NULL)
+		return;
+
+	/* Each scratch agent the old configuration had, copied over as is. */
+	agents = clawt_config_get_agents(previous);
+	for (i = 0; agents != NULL && i < agents->len; i++) {
+		ClawtAgentConfig *agent = g_ptr_array_index(agents, i);
+		const gchar *workspace;
+		g_auto(GStrv) skills = NULL;
+		const gchar *from;
+		g_autoptr(GError) error = NULL;
+
+		if (!clawt_agent_config_is_scratch(agent))
+			continue;
+
+		workspace = clawt_agent_config_get_string(agent, "workspace");
+		skills = clawt_agent_config_get_string_list(agent, "skills");
+		from = clawt_agent_config_get_string(agent, "scratch_from");
+
+		if (from == NULL || skills == NULL || skills[0] == NULL ||
+		    clawt_config_add_scratch_agent(self->config,
+		        clawt_agent_config_get_id(agent), from, skills[0],
+		        workspace, &error) == NULL)
+			g_message("skill test: scratch agent %s did not survive the "
+			          "reload: %s", clawt_agent_config_get_id(agent),
+			          error != NULL ? error->message
+			                        : "the agent it copied is gone");
+	}
+}
+
+void
+clawt_daemon_skill_tests_teardown(ClawtDaemon *self)
+{
+	g_autoptr(GList) ids = NULL;
+	GList *l;
+
+	g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+	if (self->scratch_agents == NULL)
+		return;
+
+	ids = g_hash_table_get_values(self->scratch_agents);
+	for (l = ids; l != NULL; l = l->next)
+		scratch_remove(self, ((Scratch *)l->data)->agent_id);
+
+	g_clear_pointer(&self->scratch_agents, g_hash_table_unref);
+}
+
+void
+clawt_daemon_skill_tests_sweep(ClawtDaemon *self)
+{
+	g_autofree gchar *root = NULL;
+	g_autofree gchar *agents_root = NULL;
+	g_autoptr(GDir) dir = NULL;
+	const gchar *entry;
+
+	g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+	if (self->state_dir == NULL)
+		return;
+
+	/*
+	 * Left by a daemon that stopped mid-test: its scratch agents were
+	 * never saved, so only their directories remain, and only the
+	 * ones named as scratch agents are touched.
+	 */
+	root = scratch_root(self);
+	agents_root = g_build_filename(self->state_dir, "agents", NULL);
+	dir = g_dir_open(root, 0, NULL);
+
+	while (dir != NULL && (entry = g_dir_read_name(dir)) != NULL) {
+		g_autofree gchar *workspace = NULL;
+		g_autofree gchar *state = NULL;
+
+		/* a scratch agent of this daemon's own, still running a test */
+		if (!g_str_has_prefix(entry, SCRATCH_PREFIX) ||
+		    (self->config != NULL &&
+		     clawt_config_get_agent(self->config, entry) != NULL))
+			continue;
+
+		workspace = g_build_filename(root, entry, NULL);
+		state = g_build_filename(agents_root, entry, NULL);
+		clawt_remove_tree(workspace, root, NULL);
+		clawt_remove_tree(state, agents_root, NULL);
+	}
+}
+
+/* The removal itself, off the task-changed emission it was asked from. */
+typedef struct {
+	ClawtDaemon *daemon;
+	Scratch     *scratch;
+} ScratchRelease;
+
+static gboolean
+scratch_release_idle(
+	gpointer data
+){
+	ScratchRelease *release = data;
+
+	scratch_remove(release->daemon, release->scratch->agent_id);
+	if (release->scratch->room_id != NULL)
+		clawt_room_manager_remove(release->daemon->rooms,
+		                          release->scratch->room_id);
+
+	g_object_unref(release->daemon);
+	scratch_free(release->scratch);
+	g_free(release);
+	return G_SOURCE_REMOVE;
+}
+
+/*
+ * The run of @task_id settled: its scratch agent goes -- not now, inside
+ * the signal that said so, but once that has returned.
+ */
+static void
+scratch_release(
+	ClawtDaemon *self,
+	const gchar *task_id
+){
+	ScratchRelease *release;
+	gpointer key = NULL;
+	gpointer value = NULL;
+
+	if (self->scratch_agents == NULL ||
+	    !g_hash_table_steal_extended(self->scratch_agents, task_id, &key,
+	                                 &value))
+		return;
+
+	g_free(key);
+	release = g_new0(ScratchRelease, 1);
+	release->daemon = g_object_ref(self);
+	release->scratch = value;
+	g_main_context_invoke_full(self->main_context, G_PRIORITY_DEFAULT_IDLE,
+	                           scratch_release_idle, release, NULL);
+}
+
 /* A task that ended: if it is a skill test's, check it and record why. */
 void
 clawt_daemon_skill_tests_settled(
@@ -227,6 +492,9 @@ clawt_daemon_skill_tests_settled(
 	guint i;
 
 	g_return_if_fail(CLAWT_IS_DAEMON(self));
+
+	if (task != NULL)
+		scratch_release(self, clawt_task_get_id(task));
 
 	if (self->revisions == NULL || task == NULL ||
 	    !clawt_revisions_test_run_for_task(self->revisions,
@@ -286,6 +554,8 @@ run_one(
 	ClawtSkill   *skill,
 	SkillTest    *test,
 	const gchar  *agent_id,
+	const gchar  *as,
+	gchar       **room_id,
 	GError      **error
 ){
 	const gchar *name = clawt_skill_get_name(skill);
@@ -295,6 +565,8 @@ run_one(
 	gint64 revision;
 
 	room = clawt_room_manager_get_skill_test(self->rooms, name, agent_id);
+	if (room_id != NULL)
+		*room_id = g_strdup(clawt_room_get_id(room));
 	task = clawt_task_manager_create(self->tasks, "skill-test", agent_id,
 	                                 test->input, NULL, error);
 
@@ -311,7 +583,7 @@ run_one(
 
 	revision = clawt_revisions_newest_id(self->revisions, "skill", name);
 	clawt_revisions_start_test_run(self->revisions, name, test->name,
-	                               revision, agent_id,
+	                               revision, as != NULL ? as : agent_id,
 	                               clawt_task_get_id(task));
 	clawt_task_manager_start(self->tasks, clawt_task_get_id(task));
 
@@ -452,6 +724,8 @@ clawt_daemon_handle_skill_tests(
 			const gchar *who = (agent != NULL) ? agent : test->agent;
 			g_autoptr(GError) error = NULL;
 			g_autofree gchar *task_id = NULL;
+			g_autofree gchar *scratch_id = NULL;
+			g_autofree gchar *room_id = NULL;
 
 			if (only != NULL && g_strcmp0(only, test->name) != 0)
 				continue;
@@ -462,22 +736,52 @@ clawt_daemon_handle_skill_tests(
 				    "name the agent to run it (`agent`), or put one in the "
 				    "test file");
 
-			if (!agent_has_skill(self, who, name))
-				return clawt_ipc_error_new(request,
-				    CLAWT_ERROR_INVALID_ARGUMENT,
-				    "that agent does not have this skill in effect, so the "
-				    "test would test nothing; give it the skill first");
-
-			task_id = run_one(self, skill, test, who, &error);
-
-			if (task_id == NULL)
+			/*
+			 * A scratch copy of the agent named, with this skill
+			 * alone (0.50.0): the run checks the skill, not what
+			 * the agent has learned or been given since.
+			 */
+			scratch_id = scratch_make(self, who, name, &error);
+			if (scratch_id == NULL)
 				return clawt_ipc_error_new(request, error->code,
 				                           error->message);
+
+			if (!agent_has_skill(self, scratch_id, name)) {
+				scratch_remove(self, scratch_id);
+				return clawt_ipc_error_new(request,
+				    CLAWT_ERROR_INVALID_ARGUMENT,
+				    "this skill is not in effect even for an agent given "
+				    "it alone (is it switched off in the library?), so "
+				    "the test would test nothing");
+			}
+
+			task_id = run_one(self, skill, test, scratch_id, who,
+			                  &room_id, &error);
+
+			if (task_id == NULL) {
+				scratch_remove(self, scratch_id);
+				return clawt_ipc_error_new(request, error->code,
+				                           error->message);
+			}
+
+			{
+				Scratch *scratch = g_new0(Scratch, 1);
+
+				scratch->agent_id = g_strdup(scratch_id);
+				scratch->room_id = g_steal_pointer(&room_id);
+				if (self->scratch_agents == NULL)
+					self->scratch_agents = g_hash_table_new_full(
+						g_str_hash, g_str_equal, g_free,
+						(GDestroyNotify)scratch_free);
+				g_hash_table_insert(self->scratch_agents,
+				                    g_strdup(task_id), scratch);
+			}
 
 			json_builder_begin_object(builder);
 			clawt_daemon_add_string_member(builder, "test", test->name);
 			clawt_daemon_add_string_member(builder, "task", task_id);
-			clawt_daemon_add_string_member(builder, "agent", who);
+			clawt_daemon_add_string_member(builder, "agent", scratch_id);
+			clawt_daemon_add_string_member(builder, "as", who);
 			json_builder_end_object(builder);
 			started++;
 		}

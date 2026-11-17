@@ -335,6 +335,65 @@ test_agent_list_and_lookup(void)
     g_assert_null(clawt_config_get_agent(config, "nobody"));
 }
 
+/*
+ * A scratch agent (0.50.0) copies how an agent runs but none of its
+ * roles, has one skill, and is never part of the text that is saved --
+ * not even after the file's own agents change.
+ */
+static void
+test_scratch_agent(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autoptr(ClawtConfig) config = clawt_config_load_from_string(
+        "agents:\n"
+        "  - id: tester\n"
+        "    chief_of_staff: true\n"
+        "    review_by: operator\n"
+        "    skills: [a, b]\n"
+        "    model:\n      provider: claude-code\n      model: sonnet\n",
+        &error);
+    ClawtAgentConfig *copy;
+    g_auto(GStrv) skills = NULL;
+    g_autofree gchar *text = NULL;
+
+    g_assert_no_error(error);
+    copy = clawt_config_add_scratch_agent(config, "skilltest-1", "tester",
+                                          "b", "/tmp/nowhere", &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(copy);
+    g_assert_true(clawt_agent_config_is_scratch(copy));
+    g_assert_false(clawt_agent_config_is_scratch(
+        clawt_config_get_agent(config, "tester")));
+
+    g_assert_cmpstr(clawt_agent_config_get_string(copy, "model.model"), ==,
+                    "sonnet");
+    g_assert_false(clawt_agent_config_get_boolean(copy, "chief_of_staff"));
+    g_assert_null(clawt_agent_config_get_string(copy, "review_by"));
+    skills = clawt_agent_config_get_string_list(copy, "skills");
+    g_assert_cmpuint(g_strv_length(skills), ==, 1);
+    g_assert_cmpstr(skills[0], ==, "b");
+
+    /* the same id twice, or a copy of nobody, is refused */
+    g_assert_null(clawt_config_add_scratch_agent(config, "skilltest-1",
+                                                 "tester", "b", "/tmp/x",
+                                                 &error));
+    g_clear_error(&error);
+    g_assert_null(clawt_config_add_scratch_agent(config, "skilltest-2",
+                                                 "ghost", "b", "/tmp/x",
+                                                 &error));
+    g_clear_error(&error);
+
+    /* never rendered, and still listed after the file's agents change */
+    text = clawt_config_to_string(config);
+    g_assert_null(strstr(text, "skilltest-1"));
+    g_assert_nonnull(clawt_config_add_agent(config, "other", &error));
+    g_assert_nonnull(clawt_config_get_agent(config, "skilltest-1"));
+
+    g_assert_true(clawt_config_remove_scratch_agent(config, "skilltest-1"));
+    g_assert_null(clawt_config_get_agent(config, "skilltest-1"));
+    g_assert_false(clawt_config_remove_scratch_agent(config, "skilltest-1"));
+}
+
 static void
 test_add_and_remove_agent(void)
 {
@@ -2173,6 +2232,7 @@ main(int argc, char *argv[])
 
     g_test_add_func("/config/agents/list", test_agent_list_and_lookup);
     g_test_add_func("/config/agents/add-remove", test_add_and_remove_agent);
+    g_test_add_func("/config/agents/scratch", test_scratch_agent);
     g_test_add_func("/config/agents/duplicate-id",
                     test_duplicate_agent_id_is_refused);
     g_test_add_func("/config/agents/invalid-ids",

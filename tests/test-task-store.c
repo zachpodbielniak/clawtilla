@@ -2454,6 +2454,10 @@ test_skill_history_and_tests(void)
 	g_autofree gchar *tests_dir = NULL;
 	g_autofree gchar *pass_task = NULL;
 	g_autofree gchar *fail_task = NULL;
+	g_autofree gchar *scratch = NULL;
+	g_autofree gchar *fake_libreclaw = g_build_filename(CLAWT_TEST_FIXTURES,
+	                                                    "fake-libreclaw",
+	                                                    NULL);
 	ClawtTask *task;
 
 	fixture.dir = g_dir_make_tmp("clawt-skilltest-XXXXXX", NULL);
@@ -2462,15 +2466,17 @@ test_skill_history_and_tests(void)
 		"daemon:\n  tailscale: false\n  state_dir: \"%s/state\"\n"
 		"  socket: \"%s/d.sock\"\n  automation_dir: \"%s/pods\"\n"
 		"defaults:\n  workspace_root: \"%s/agents\"\n"
+		"  libreclaw_binary: \"%s\"\n"
 		"skills:\n  enabled: true\n  dir: \"%s/skills\"\n"
 		"agents:\n"
-		"  - id: tester\n    skills: [release]\n"
+		"  - id: tester\n    skills: [release]\n    review_by: operator\n"
 		"    model:\n      provider: claude-code\n"
 		"    runtime:\n      autostart: false\n"
 		"  - id: other\n"
 		"    model:\n      provider: claude-code\n"
 		"    runtime:\n      autostart: false\n",
-		fixture.dir, fixture.dir, fixture.dir, fixture.dir, fixture.dir);
+		fixture.dir, fixture.dir, fixture.dir, fixture.dir, fake_libreclaw,
+		fixture.dir);
 	g_assert_true(g_file_set_contents(fixture.config, yaml, -1, &error));
 
 	/* written by hand before the start, so the agent's skill exists */
@@ -2517,10 +2523,10 @@ test_skill_history_and_tests(void)
 		g_assert_true(g_file_set_contents(bad, "expect: [x]\n", -1, NULL));
 	}
 
-	/* an agent without the skill, or none named, is refused */
+	/* an agent that does not exist, or none named, is refused */
 	{
 		g_autoptr(JsonNode) wrong = ask(&fixture, "skill.test_run",
-			clawt_ipc_payload_new("skill", "release", "agent", "other",
+			clawt_ipc_payload_new("skill", "release", "agent", "ghost",
 			                      NULL));
 		g_autoptr(JsonNode) nobody = ask(&fixture, "skill.test_run",
 			clawt_ipc_payload_new("skill", "release", NULL));
@@ -2542,17 +2548,71 @@ test_skill_history_and_tests(void)
 		g_assert_cmpuint(json_array_get_length(runs), ==, 2);
 		pass_task = g_strdup(json_object_get_string_member(
 			json_array_get_object_element(runs, 0), "task"));
+		scratch = g_strdup(json_object_get_string_member(
+			json_array_get_object_element(runs, 0), "agent"));
+		g_assert_cmpstr(json_object_get_string_member(
+			json_array_get_object_element(runs, 0), "as"), ==, "tester");
 		fail_task = g_strdup(json_object_get_string_member(
 			json_array_get_object_element(runs, 1), "task"));
 	}
 
+	/*
+	 * On a scratch agent (0.50.0): a copy of tester with the skill under
+	 * test alone, none of its roles, and never in the saved file.
+	 */
+	g_assert_true(g_str_has_prefix(scratch, "skilltest-"));
+	{
+		ClawtAgentConfig *copy = clawt_config_get_agent(
+			fixture.daemon->config, scratch);
+		g_auto(GStrv) skills = NULL;
+		g_autofree gchar *saved = NULL;
+
+		g_assert_nonnull(copy);
+		g_assert_true(clawt_agent_config_is_scratch(copy));
+		skills = clawt_agent_config_get_string_list(copy, "skills");
+		g_assert_cmpuint(g_strv_length(skills), ==, 1);
+		g_assert_cmpstr(skills[0], ==, "release");
+		g_assert_null(clawt_agent_config_get_string(copy, "review_by"));
+		g_assert_cmpstr(clawt_agent_config_get_string(copy,
+		                "model.provider"), ==, "claude-code");
+		g_assert_true(g_file_get_contents(fixture.config, &saved, NULL,
+		                                  NULL));
+		g_assert_null(strstr(saved, scratch));
+	}
+
 	/* in a room of its own, not the operator's */
 	task = clawt_task_manager_get(fixture.daemon->tasks, pass_task);
-	g_assert_cmpuint(queued_for(&fixture, "tester", pass_task), ==, 1);
+	g_assert_cmpuint(queued_for(&fixture, scratch, pass_task), ==, 1);
+	g_assert_cmpuint(queued_for(&fixture, "tester", pass_task), ==, 0);
 	{
-		g_autofree gchar *body = queued_body(&fixture, "tester", pass_task);
+		g_autofree gchar *body = queued_body(&fixture, scratch, pass_task);
 
 		g_assert_nonnull(strstr(body, "test a-basic of your skill release"));
+	}
+
+	/* a reload mid-run keeps the scratch agent; the file still lacks it */
+	g_assert_true(clawt_daemon_reload(fixture.daemon, &error));
+	g_assert_no_error(error);
+	g_assert_nonnull(clawt_config_get_agent(fixture.daemon->config, scratch));
+
+	/* what a daemon that stopped mid-test left is swept, and only that */
+	{
+		g_autofree gchar *dead = g_build_filename(fixture.dir, "state",
+		                                          "scratch",
+		                                          "skilltest-deadbeef", NULL);
+		g_autofree gchar *other = g_build_filename(fixture.dir, "state",
+		                                           "scratch", "keep-me",
+		                                           NULL);
+
+		g_assert_cmpint(g_mkdir_with_parents(dead, 0700), ==, 0);
+		g_assert_cmpint(g_mkdir_with_parents(other, 0700), ==, 0);
+		g_autofree gchar *live = g_build_filename(fixture.dir, "state",
+		                                          "scratch", scratch, NULL);
+
+		clawt_daemon_skill_tests_sweep(fixture.daemon);
+		g_assert_false(g_file_test(dead, G_FILE_TEST_EXISTS));
+		g_assert_true(g_file_test(other, G_FILE_TEST_EXISTS));
+		g_assert_true(g_file_test(live, G_FILE_TEST_IS_DIR));
 	}
 
 	clawt_task_manager_complete(fixture.daemon->tasks, pass_task,
@@ -2560,6 +2620,27 @@ test_skill_history_and_tests(void)
 	clawt_task_manager_complete(fixture.daemon->tasks, fail_task,
 	                            "## Fixes only. TODO features");
 	(void)task;
+
+	/* settled: both scratch agents gone, with their workspaces */
+	{
+		gint spins;
+
+		for (spins = 0; spins < 200 &&
+		     clawt_config_get_agent(fixture.daemon->config, scratch) != NULL;
+		     spins++)
+			g_main_context_iteration(fixture.context, FALSE);
+		g_assert_null(clawt_config_get_agent(fixture.daemon->config,
+		                                     scratch));
+		g_assert_null(clawt_agent_manager_get(fixture.daemon->agents,
+		                                      scratch));
+		{
+			g_autofree gchar *ws = g_build_filename(fixture.dir, "state",
+			                                        "scratch", scratch,
+			                                        NULL);
+
+			g_assert_false(g_file_test(ws, G_FILE_TEST_EXISTS));
+		}
+	}
 
 	{
 		g_autoptr(JsonNode) listed = ask(&fixture, "skill.tests",

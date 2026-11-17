@@ -5862,6 +5862,9 @@ release_components(ClawtDaemon *self)
      */
     clawt_daemon_teach_teardown(self);
 
+    /* Scratch agents made for skill tests: stopped and their files gone. */
+    clawt_daemon_skill_tests_teardown(self);
+
     /*
      * The listener before anything it can reach.  A delivery dispatched
      * after the router and the agents are gone would find a half-built
@@ -8335,6 +8338,9 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     clawt_daemon_tasks_reconcile(self);
     clawt_daemon_tasks_start_pruning(self);
 
+    /* Scratch agents a previous daemon made for skill tests: their files. */
+    clawt_daemon_skill_tests_sweep(self);
+
     autostart_schedule(self);
 
     /*
@@ -8542,8 +8548,18 @@ clawt_daemon_reload_internal(ClawtDaemon *self, GPtrArray *refusals,
      */
     g_clear_pointer(&self->connector_catalog, g_ptr_array_unref);
 
-    g_clear_object(&self->config);
-    self->config = g_steal_pointer(&reloaded);
+    /*
+     * Scratch agents are not in the file, so the configuration just read
+     * has none: carried over, so a skill test running across a reload
+     * keeps its agent.
+     */
+    {
+        ClawtConfig *previous = self->config;
+
+        self->config = g_steal_pointer(&reloaded);
+        clawt_daemon_skill_tests_readd(self, previous);
+        g_clear_object(&previous);
+    }
 
     configure_limits(self);
 
