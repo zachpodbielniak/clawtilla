@@ -255,7 +255,7 @@ defaults:
   # none is the default on purpose. An agent that can run commands is a
   # bigger grant than an agent that can only talk, and it should be asked
   # for rather than inherited.
-  # Values: none, host, container, vm, distrobox, ssh
+  # Values: none, host, container, vm, distrobox, ssh, display
   computer: "none"
 
   # Image a container agent gets when it does not name one.
@@ -3282,7 +3282,7 @@ agents:
       #
       # Desktop control is not a type -- it is the desktop block below, and
       # works alongside any of these.
-      # Values: none, host, container, vm, distrobox, ssh
+      # Values: none, host, container, vm, distrobox, ssh, display
       type: null
 
       # When the machine is started: with the agent, or the first time
@@ -3480,6 +3480,72 @@ agents:
         # Scheduling niceness for the agent's commands, so a runaway build does
         # not make the desktop unusable.
         nice: 0
+
+      # Settings for computer.type: display -- GUI apps on a virtual screen of
+      # their own, which the agent drives and a person can watch and take.
+      #
+      # Commands run on the host exactly as computer.type: host runs them, so
+      # computer.host.confirm_host_control and computer.host.confine apply
+      # here too. See docs/computers.org, "display".
+      display:
+
+        # What draws the screen: auto, gowl, xvfb or xvnc.
+        #
+        #   gowl  gowl run headless, in a runtime directory of its own; Wayland
+        #         apps draw on it directly, X apps through its XWayland, and the
+        #         agent gets gowl's own window tools as well
+        #   xvnc  TigerVNC's X server: the Computer tab's viewer button opens it
+        #         live in a VNC viewer
+        #   xvfb  an X server drawing into memory; the lightest of the three
+        #
+        # auto takes the first that runs, in that order. Each candidate is run
+        # before it is chosen, so a broken binary first on PATH is skipped, and
+        # the Computer tab says what was skipped and why.
+        # Values: auto, gowl, xvfb, xvnc
+        backend: "auto"
+
+        # The screen's size, WIDTHxHEIGHT, each between 64 and 8192.
+        #
+        # The agent's clicks are in these pixels. Larger screens cost more to
+        # picture, and every picture the agent asks for is part of its turn.
+        resolution: "1280x800"
+
+        # Colour depth for an X server: 16, 24 or 32. gowl ignores it.
+        depth: 24
+
+        # Apps started on the screen each time it comes up, as shell command
+        # lines, under the agent's confinement: e.g. [firefox, "foot -e htop"].
+        # One that does not start is logged; the others still are.
+        startup: []
+
+        # Xvnc's VNC port on 127.0.0.1. 0 picks a free one at each start.
+        #
+        # The VNC server listens on loopback only and asks for no password: it
+        # is reachable from this machine alone, which is the trust the daemon's
+        # own socket gives.
+        vnc_port: 0
+
+        # Whether the agent may click, type and scroll on its display, not only
+        # look at it.
+        #
+        # On by default, unlike computer.desktop.allow_input: that one is about
+        # the operator's own screen, and this is a private one nobody is sitting
+        # at. A person who takes the screen still refuses the agent's input for
+        # as long as they hold it.
+        allow_input: true
+
+        # Whether the agent may start apps on its display with display_launch.
+        #
+        # Off leaves it the apps in computer.display.startup and whatever it
+        # starts through clawtilla_computer_exec, which is its own setting.
+        allow_spawn: true
+
+        # A gowl to run instead of searching /usr/bin, /usr/sbin and PATH.
+        #
+        # For when the first gowl found is not the one wanted -- an old build in
+        # /usr/local/bin that cannot load its wlroots, say. It must answer
+        # --version or it is not used.
+        gowl_binary: null
 
       # Settings for computer.type: container.
       container:

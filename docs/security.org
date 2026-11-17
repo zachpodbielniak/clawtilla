@@ -1101,6 +1101,38 @@ Said on the agent's view, per key, with the reason, so "keys brokered" can never
 
 libreclaw's other channels (Matrix, email) speak through libsoup and GIO, which follow ~HTTPS_PROXY~ only when GLib's proxy resolver reads the environment; where it does not, a gated agent's channel has no route and fails closed rather than reaching anything directly.
 
+** Virtual displays
+
+A ~display~ computer (since 0.51.0) is ~host~ with a private screen: its
+commands and apps run as you, under ~computer.host.confine~, and it
+needs the same two acts -- ~confirm_host_control~, and
+~daemon.allow_unconfined_host~ for ~confine: none~.  The screen is the
+safe part: nobody is using it, so an agent's misjudged click lands
+there and not on your desktop, and a person can take it at any time.
+
+What it opens, and to whom:
+
+- *The display itself* is reachable by anything running as you that can
+  reach its socket: the X server's under ~/tmp/.X11-unix~ (its abstract
+  socket too; no TCP), or gowl's in a 0700 directory under the agent's
+  state.  An X server trusts local clients, so another process of yours
+  could read its keystrokes -- the keystrokes an agent types into it.
+  Under ~bwrap~ only that socket is bound in, and the Landlock scope
+  keeps a box from reaching other abstract sockets.
+- *Xvnc's VNC port* listens on 127.0.0.1 with no password: anyone who
+  can open a TCP connection on this machine can watch and drive that
+  screen.  That is the trust the daemon's own unix socket gives, and the
+  reason it is never bound beyond loopback.  On a shared machine, use
+  ~xvfb~ or ~gowl~ instead.
+- *gowl* runs with only its IPC and MCP modules, its MCP over a unix
+  socket only, and none of your gowl configuration; its runtime
+  directory is its own, so it cannot replace your session's ~gowl.sock~.
+- *The agent's grants* are ~computer.display.allow_input~ and
+  ~allow_spawn~, both on by default because the screen is private;
+  ~computer.desktop.allow_input~ still guards your own desktop and
+  defaults off.  A takeover refuses the agent's acting tools, its own
+  and gowl's, until you release it.
+
 ** Desktop control
 
 ~computer.desktop~ is a second grant beside the computer, and the whole

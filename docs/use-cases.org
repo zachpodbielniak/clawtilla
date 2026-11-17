@@ -12,7 +12,7 @@ The rest of ~docs/~ is organised by subsystem: mailboxes here, computers
 there, integrations somewhere else.  That is the right shape for looking
 something up and the wrong shape for the question people actually arrive
 with, which is /what do I do with this/.  This file answers that
-instead: sixteen scenarios, each one a thing somebody wanted, worked
+instead: seventeen scenarios, each one a thing somebody wanted, worked
 through from an empty fleet to the result.
 
 Every case is self-contained and every case has the same five parts ---
@@ -1559,6 +1559,56 @@ Then, in VENTURE, assign a =todo= ticket to builder's VENTURE user.
 *VENTURE being down never stops an agent.* Writes wait in the outbox and drain when it is back.
 
 More in [[file:venture.org][venture.org]] and [[file:venture-setup.org][venture-setup.org]].
+
+** 17. An agent working a GUI app on a virtual display
+
+*** What you want
+
+An agent that opens and drives desktop apps -- a form in a GTK program, a settings dialog, a spreadsheet -- on a screen of its own, which you can watch and take over, without it ever touching your own desktop.
+
+*** The configuration
+
+#+begin_src yaml
+daemon:
+  allow_unconfined_host: false
+agents:
+  - id: painter
+    computer:
+      type: display
+      host:
+        confirm_host_control: true
+        confine: workspace
+      display:
+        backend: auto           # gowl, then Xvnc, then Xvfb
+        resolution: 1280x800
+        startup: [xterm]
+#+end_src
+
+*** The commands
+
+#+begin_src bash
+clawtilla agent start painter
+clawtilla computer screen painter        # which server, and who holds it
+clawtilla message painter "Open gedit, write 'hello' in a new file and save it as ~/hello.txt. Tell me what the screen shows when you are done."
+clawtilla computer takeover painter       # stop its hands and drive it yourself
+clawtilla computer release painter        # give it back
+#+end_src
+
+*** What you see
+
+The Computer tab's Screen view shows the virtual display, with "Virtual display: gowl, running." (or ~xvnc~ / ~xvfb~) under it, and the xterm from ~startup~.  The agent calls ~clawtilla_display_launch~ for gedit, ~clawtilla_display_screenshot~ to see it, ~clawtilla_display_click~ and ~clawtilla_display_type~ to write, ~clawtilla_display_key~ with ~ctrl+s~ to save, and answers with what the screen shows.  While you hold the screen its clicks come back refused with the takeover's sentence, and its screenshots still work.  With ~backend: xvnc~ the *Open in viewer* button gives you the screen live in a VNC viewer.
+
+*** What to watch out for
+
+*It is your machine.*  The apps run as you under ~computer.host.confine~; the screen is private, the files are not.  Use ~confine: bwrap~ for anything you would not run yourself.
+
+*A gowl first on PATH that does not run is skipped, and said.*  The status line names it ("/usr/local/bin/gowl does not run: ... libwlroots") and the next one is used; ~computer.display.gowl_binary~ pins one.
+
+*X needs xdotool for hands.*  Without it an Xvfb or Xvnc display can be watched but not driven.
+
+*Xvnc's port has no password.*  It listens on 127.0.0.1 only; on a machine other people log into, prefer ~xvfb~ or ~gowl~.
+
+More in [[file:computers.org::#display][computers.org]].
 
 * When something does not work
 

@@ -3261,7 +3261,8 @@ test_every_computer_type_is_offered_and_round_trips(void)
 {
     static const ClawtComputerType every[] = {
         CLAWT_COMPUTER_NONE, CLAWT_COMPUTER_HOST, CLAWT_COMPUTER_CONTAINER,
-        CLAWT_COMPUTER_DISTROBOX, CLAWT_COMPUTER_VM, CLAWT_COMPUTER_SSH
+        CLAWT_COMPUTER_DISTROBOX, CLAWT_COMPUTER_VM, CLAWT_COMPUTER_SSH,
+        CLAWT_COMPUTER_DISPLAY
     };
     guint i;
     guint j;
@@ -3351,6 +3352,84 @@ test_the_type_predicates_cover_every_type(void)
     g_assert_true(clawt_computer_type_shares_host_paths(CLAWT_COMPUTER_VM));
     g_assert_false(clawt_computer_type_shares_host_paths(CLAWT_COMPUTER_NONE));
     g_assert_false(clawt_computer_type_shares_host_paths(CLAWT_COMPUTER_SSH));
+
+    /*
+     * A virtual display (0.51.0) runs its commands on the host, so it
+     * shares host paths as host does and takes neither an image nor
+     * mounts; it is a screen; and its display server is something a
+     * person starts and stops, so the clients offer the power verbs.
+     */
+    g_assert_true(
+        clawt_computer_type_shares_host_paths(CLAWT_COMPUTER_DISPLAY));
+    g_assert_false(clawt_computer_type_takes_image(CLAWT_COMPUTER_DISPLAY));
+    g_assert_false(clawt_computer_type_takes_mounts(CLAWT_COMPUTER_DISPLAY));
+    g_assert_true(clawt_computer_type_has_screen(CLAWT_COMPUTER_DISPLAY));
+    g_assert_true(clawt_computer_type_has_machine(CLAWT_COMPUTER_DISPLAY));
+    g_assert_false(clawt_computer_type_starts_lazily(CLAWT_COMPUTER_DISPLAY));
+}
+
+/*
+ * A display computer is built by the factory with the host's two
+ * grants: without confirm_host_control it is refused exactly as host
+ * is, and with them it is a #ClawtDisplayComputer over a confined host
+ * computer, its settings read from computer.display.*.
+ */
+static void
+test_the_factory_builds_a_display_computer(void)
+{
+    g_autofree gchar *root = g_dir_make_tmp("clawt-display-XXXXXX", NULL);
+    g_autofree gchar *refused_yaml = g_strdup_printf(
+        "daemon:\n  state_dir: \"%s/state\"\n"
+        "defaults:\n  workspace_root: \"%s/agents\"\n"
+        "agents:\n  - id: painter\n    computer:\n      type: display\n",
+        root, root);
+    g_autofree gchar *yaml = g_strdup_printf(
+        "daemon:\n  state_dir: \"%s/state\"\n"
+        "defaults:\n  workspace_root: \"%s/agents\"\n"
+        "agents:\n  - id: painter\n    computer:\n      type: display\n"
+        "      host:\n        confirm_host_control: true\n"
+        "        confine: workspace\n"
+        "      display:\n        backend: xvfb\n"
+        "        resolution: 1024x768\n        startup: [xterm]\n",
+        root, root);
+    g_autoptr(ClawtConfig) refused = clawt_config_load_from_string(
+        refused_yaml, NULL);
+    g_autoptr(ClawtConfig) config = clawt_config_load_from_string(yaml, NULL);
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(GError) error = NULL;
+    ClawtAgentConfig *agent;
+    ClawtDisplayServer *server;
+    guint w = 0;
+    guint h = 0;
+
+    /* no confirmation: a shadow at load, as host is */
+    agent = clawt_config_get_agent(refused, "painter");
+    g_assert_nonnull(agent);
+    g_assert_true(clawt_agent_config_is_shadow(agent));
+    g_assert_nonnull(strstr(clawt_agent_config_get_shadow_reason(agent),
+                            "confirm_host_control"));
+
+    agent = clawt_config_get_agent(config, "painter");
+    g_assert_false(clawt_agent_config_is_shadow(agent));
+    computer = clawt_computer_factory_create(agent, NULL, NULL, &error);
+    g_assert_no_error(error);
+    g_assert_true(CLAWT_IS_DISPLAY_COMPUTER(computer));
+    g_assert_cmpint(clawt_computer_get_computer_type(computer), ==,
+                    CLAWT_COMPUTER_DISPLAY);
+
+    server = clawt_display_computer_get_server(
+        CLAWT_DISPLAY_COMPUTER(computer));
+    g_assert_cmpint(clawt_display_server_get_backend(server), ==,
+                    CLAWT_DISPLAY_BACKEND_XVFB);
+    clawt_display_server_get_size(server, &w, &h);
+    g_assert_cmpuint(w, ==, 1024);
+    g_assert_cmpuint(h, ==, 768);
+    g_assert_cmpint(clawt_sandbox_get_mode(clawt_host_computer_get_sandbox(
+                        clawt_display_computer_get_host(
+                            CLAWT_DISPLAY_COMPUTER(computer)))), ==,
+                    CLAWT_CONFINE_WORKSPACE);
+
+    clawt_test_remove_tree(root);
 }
 
 /*
@@ -5937,6 +6016,8 @@ main(int argc, char *argv[])
                     test_every_computer_type_is_offered_and_round_trips);
     g_test_add_func("/computer/type-predicates-cover-every-type",
                     test_the_type_predicates_cover_every_type);
+    g_test_add_func("/computer/factory-builds-a-display-computer",
+                    test_the_factory_builds_a_display_computer);
     g_test_add_func("/computer/distrobox/does-not-share-a-home",
                     test_a_distrobox_does_not_share_a_home_by_accident);
     g_test_add_func("/computer/distrobox/says-whose-home-it-has",

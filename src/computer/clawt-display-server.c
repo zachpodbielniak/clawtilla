@@ -804,8 +804,12 @@ runs(const gchar * const *argv, gchar **why)
     return FALSE;
 }
 
-/* The candidates for @name: /usr/bin, /usr/sbin, then every PATH entry,
- * each real file once and only those that exist. */
+/*
+ * The candidates for @name: every PATH entry, then /usr/bin and
+ * /usr/sbin for a daemon started with a thin PATH -- each real file once
+ * and only those that exist.  Every one is tried in that order, so a
+ * broken build early on PATH costs a line in the notes, not the display.
+ */
 static GPtrArray *
 candidates_for(const gchar *name)
 {
@@ -818,11 +822,11 @@ candidates_for(const gchar *name)
                                         ? g_getenv("PATH") : "", ":", -1);
     guint i;
 
-    g_ptr_array_add(dirs, g_strdup("/usr/bin"));
-    g_ptr_array_add(dirs, g_strdup("/usr/sbin"));
     for (i = 0; path[i] != NULL; i++)
         if (*path[i] != '\0')
             g_ptr_array_add(dirs, g_strdup(path[i]));
+    g_ptr_array_add(dirs, g_strdup("/usr/bin"));
+    g_ptr_array_add(dirs, g_strdup("/usr/sbin"));
 
     for (i = 0; i < dirs->len; i++) {
         g_autofree gchar *candidate =
@@ -844,11 +848,11 @@ candidates_for(const gchar *name)
 }
 
 /*
- * The first @name that answers @probe_arg, noting each that did not.
- * X servers have no --version that exits cleanly everywhere, so they
- * are probed with `-help` and allowed to exit 1 as long as they ran;
- * gowl must answer --version, because a gowl that cannot load its
- * wlroots fails there and nowhere earlier.
+ * The first @name that works, noting each that did not.  gowl must
+ * answer --version, because a gowl that cannot load its wlroots fails
+ * there and nowhere earlier.  An X server is not run to be asked: there
+ * is no flag every build exits cleanly on, and one that ignores it would
+ * sit there being a server -- a start that fails says why soon enough.
  */
 static gchar *
 first_working(const gchar *name, gboolean strict, GString *notes)
@@ -858,11 +862,10 @@ first_working(const gchar *name, gboolean strict, GString *notes)
 
     for (i = 0; i < found->len; i++) {
         const gchar *candidate = g_ptr_array_index(found, i);
-        const gchar *argv[] = { candidate, strict ? "--version" : "-version",
-                                NULL };
+        const gchar *argv[] = { candidate, "--version", NULL };
         g_autofree gchar *why = NULL;
 
-        if (runs(argv, &why) || !strict)
+        if (!strict || runs(argv, &why))
             return g_strdup(candidate);
 
         g_string_append_printf(notes, "%s does not run: %s\n", candidate,
@@ -1891,21 +1894,25 @@ spawn_app(ClawtDisplayServer *self, const gchar *command,
     }
 }
 
-gint
+gboolean
 clawt_display_server_launch(ClawtDisplayServer *self, const gchar *command,
                             GHashTable *environment, ClawtSandbox *sandbox,
-                            GError **error)
+                            gint *pid_out, GError **error)
 {
     gboolean boxed;
+    gboolean ok = FALSE;
     gint pid = 0;
 
-    g_return_val_if_fail(CLAWT_IS_DISPLAY_SERVER(self), 0);
-    g_return_val_if_fail(command != NULL, 0);
+    g_return_val_if_fail(CLAWT_IS_DISPLAY_SERVER(self), FALSE);
+    g_return_val_if_fail(command != NULL, FALSE);
+
+    if (pid_out != NULL)
+        *pid_out = 0;
 
     if (*command == '\0') {
         g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
                             "launch what? the command is empty");
-        return 0;
+        return FALSE;
     }
 
     boxed = sandbox != NULL &&
@@ -1914,7 +1921,7 @@ clawt_display_server_launch(ClawtDisplayServer *self, const gchar *command,
     g_mutex_lock(&self->lock);
     if (!check_running(self, error)) {
         g_mutex_unlock(&self->lock);
-        return 0;
+        return FALSE;
     }
 
     if (self->backend == CLAWT_DISPLAY_BACKEND_GOWL && !boxed) {
@@ -1927,12 +1934,13 @@ clawt_display_server_launch(ClawtDisplayServer *self, const gchar *command,
         g_autoptr(JsonBuilder) builder = json_builder_new();
         g_autoptr(JsonNode) params = NULL;
         g_autoptr(JsonNode) result = NULL;
+        g_autoptr(GError) rpc_error = NULL;
         const gchar *shell[] = { "/bin/sh", "-c", command, NULL };
 
         if (sandbox != NULL &&
             !clawt_sandbox_check_argv(sandbox, shell, error)) {
             g_mutex_unlock(&self->lock);
-            return 0;
+            return FALSE;
         }
 
         json_builder_begin_object(builder);
@@ -1957,20 +1965,45 @@ clawt_display_server_launch(ClawtDisplayServer *self, const gchar *command,
         json_builder_end_object(builder);
         params = json_builder_get_root(builder);
 
-        result = gowl_ipc_call(self->ipc_socket, "spawn", params, error);
-        if (result != NULL && JSON_NODE_HOLDS_OBJECT(result))
-            pid = (gint)json_object_get_int_member_with_default(
-                json_node_get_object(result), "pid", 0);
-        if (result != NULL && pid <= 0)
-            g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
-                                "gowl started nothing (no pid in its "
-                                "answer)");
+        /*
+         * JSON-RPC first, for its pid; a gowl that predates it (0.5.0
+         * speaks only the text dialect on gowl.sock) is asked through its
+         * MCP spawn tool instead, which starts the app and says nothing
+         * of its pid.
+         */
+        result = gowl_ipc_call(self->ipc_socket, "spawn", params, &rpc_error);
+        if (result != NULL) {
+            if (JSON_NODE_HOLDS_OBJECT(result))
+                pid = (gint)json_object_get_int_member_with_default(
+                    json_node_get_object(result), "pid", 0);
+            ok = TRUE;
+        } else {
+            g_autoptr(JsonNode) arguments = json_node_new(JSON_NODE_OBJECT);
+            g_autoptr(JsonObject) object = json_object_new();
+            g_autoptr(JsonNode) spawned = NULL;
+            g_autoptr(GError) mcp_error = NULL;
+
+            json_object_set_string_member(object, "command", command);
+            json_node_set_object(arguments, object);
+            spawned = clawt_mcp_socket_call(self->mcp_socket, "spawn",
+                                            arguments, CALL_TIMEOUT_S,
+                                            &mcp_error);
+            if (spawned != NULL)
+                ok = TRUE;
+            else
+                g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_FAILED,
+                            "gowl would not start it: %s (and over its IPC: "
+                            "%s)", mcp_error->message, rpc_error->message);
+        }
     } else {
         pid = spawn_app(self, command, environment, sandbox, error);
+        ok = pid > 0;
     }
 
     g_mutex_unlock(&self->lock);
-    return pid;
+    if (ok && pid_out != NULL)
+        *pid_out = pid;
+    return ok;
 }
 
 /* gowl's MCP text answer, as JSON when it is JSON. */

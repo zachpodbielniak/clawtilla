@@ -12,8 +12,7 @@
  *   argument checks, its allowlisted environment -- plus the screen's
  *   variables, so a GUI app any command starts appears on the display;
  * - under bwrap the sandbox binds what a client needs to reach the
- *   screen (the X socket directory, or gowl's runtime directory), read
- *   only, which is enough to connect to a socket;
+ *   screen (the X socket directory, or gowl's runtime directory);
  * - the screen is #ClawtObservable: pictures, keys and clicks go to the
  *   server, so the observer, the takeover and every client's Screen tab
  *   work as they do for a VM's desktop.
@@ -188,9 +187,9 @@ display_start(ClawtComputer *computer, GError **error)
 
         if (*self->startup[i] == '\0')
             continue;
-        if (clawt_display_server_launch(
+        if (!clawt_display_server_launch(
                 self->server, self->startup[i], NULL,
-                clawt_host_computer_get_sandbox(self->host), &failed) <= 0)
+                clawt_host_computer_get_sandbox(self->host), NULL, &failed))
             g_warning("display: startup app '%s' did not start: %s",
                       self->startup[i],
                       failed != NULL ? failed->message : "no reason given");
@@ -504,27 +503,28 @@ clawt_display_computer_get_host(ClawtDisplayComputer *self)
     return self->host;
 }
 
-gint
+gboolean
 clawt_display_computer_launch(ClawtDisplayComputer *self,
                               const gchar          *command,
+                              gint                 *pid,
                               GError              **error)
 {
-    g_return_val_if_fail(CLAWT_IS_DISPLAY_COMPUTER(self), 0);
-    g_return_val_if_fail(command != NULL, 0);
+    g_return_val_if_fail(CLAWT_IS_DISPLAY_COMPUTER(self), FALSE);
+    g_return_val_if_fail(command != NULL, FALSE);
 
     if (!clawt_display_server_is_running(self->server) &&
         !clawt_computer_ensure_started(CLAWT_COMPUTER(self), error))
-        return 0;
+        return FALSE;
     if (!clawt_display_server_is_running(self->server)) {
         g_set_error_literal(error, CLAWT_ERROR, CLAWT_ERROR_NOT_CONNECTED,
                             "the virtual display is not running; start the "
                             "computer");
-        return 0;
+        return FALSE;
     }
 
     return clawt_display_server_launch(
         self->server, command, self->environment,
-        clawt_host_computer_get_sandbox(self->host), error);
+        clawt_host_computer_get_sandbox(self->host), pid, error);
 }
 
 /* ── One action, for the agent's tools and the IPC verb ──────────── */
@@ -619,7 +619,7 @@ clawt_display_computer_perform(ClawtDisplayComputer *self,
             *png = g_steal_pointer(&picture);
     } else if (g_strcmp0(action, "launch") == 0) {
         const gchar *command = member_string(arguments, "command");
-        gint pid;
+        gint pid = 0;
 
         if (command == NULL || *command == '\0') {
             g_set_error_literal(error, CLAWT_ERROR,
@@ -628,11 +628,15 @@ clawt_display_computer_perform(ClawtDisplayComputer *self,
                                 "a shell command line");
             return NULL;
         }
-        pid = clawt_display_computer_launch(self, command, error);
-        if (pid <= 0)
+        if (!clawt_display_computer_launch(self, command, &pid, error))
             return NULL;
-        json_builder_set_member_name(builder, "pid");
-        json_builder_add_int_value(builder, pid);
+        json_builder_set_member_name(builder, "started");
+        json_builder_add_boolean_value(builder, TRUE);
+        /* gowl's MCP spawn does not say; then there is no pid to give */
+        if (pid > 0) {
+            json_builder_set_member_name(builder, "pid");
+            json_builder_add_int_value(builder, pid);
+        }
     } else if (g_strcmp0(action, "windows") == 0) {
         JsonNode *windows = clawt_display_server_list_windows(self->server,
                                                               error);
@@ -685,4 +689,50 @@ clawt_display_computer_perform(ClawtDisplayComputer *self,
 
     json_builder_end_object(builder);
     return json_builder_get_root(builder);
+}
+
+gchar *
+clawt_display_status_line(JsonObject *screen)
+{
+    GString *out;
+    const gchar *backend;
+    const gchar *failure;
+    const gchar *notes;
+
+    if (screen == NULL || !json_object_has_member(screen, "display_backend"))
+        return NULL;
+
+    backend = json_object_get_string_member_with_default(
+        screen, "display_backend", "auto");
+    failure = json_object_get_string_member_with_default(
+        screen, "display_failure", NULL);
+    notes = json_object_get_string_member_with_default(screen,
+                                                       "display_notes", NULL);
+
+    out = g_string_new(NULL);
+    if (json_object_get_boolean_member_with_default(screen,
+                                                    "display_running",
+                                                    FALSE))
+        g_string_append_printf(out, "Virtual display: %s, running.", backend);
+    else if (g_strcmp0(backend, "auto") == 0)
+        g_string_append(out, "Virtual display: not started yet.");
+    else
+        g_string_append_printf(out, "Virtual display: %s, stopped.", backend);
+
+    if (failure != NULL && *failure != '\0') {
+        g_auto(GStrv) lines = g_strsplit(failure, "\n", -1);
+        g_autofree gchar *joined = g_strjoinv(" / ", lines);
+
+        g_string_append_printf(out, " The server exited: %s", joined);
+    }
+
+    /* What auto passed over, so a surprising choice explains itself. */
+    if (notes != NULL && *notes != '\0') {
+        g_auto(GStrv) lines = g_strsplit(notes, "\n", -1);
+        g_autofree gchar *joined = g_strjoinv("; ", lines);
+
+        g_string_append_printf(out, " Skipped: %s", joined);
+    }
+
+    return g_string_free(out, FALSE);
 }

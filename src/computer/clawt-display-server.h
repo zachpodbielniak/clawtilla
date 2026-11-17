@@ -416,21 +416,25 @@ gboolean clawt_display_server_send_input(ClawtDisplayServer *self,
  * @environment: (nullable) (element-type utf8 utf8): extra variables
  * @sandbox: (nullable): the agent's confinement, applied to the app as it
  *   is to a command it runs (`computer.host.confine`)
+ * @pid: (out) (optional): the app's process id, or 0 when the compositor
+ *   that started it does not say
  * @error: (out) (optional): return location for a #GError
  *
  * Starts an app on the screen, not waiting for it.  On gowl, unconfined,
- * it goes through the compositor's own `spawn`, so it gets XWayland's
- * DISPLAY as well as WAYLAND_DISPLAY; under bwrap it is started here,
- * inside the box, as a Wayland client.  The app is stopped with the
- * server.
+ * it goes through the compositor's own spawn -- its JSON-RPC `spawn`
+ * where it has one, which answers with the pid, else its MCP `spawn`
+ * tool -- so it gets XWayland's DISPLAY as well as WAYLAND_DISPLAY;
+ * under bwrap it is started here, inside the box, as a Wayland client.
+ * The app is stopped with the server.
  *
- * Returns: the app's process id, or 0 with @error set
+ * Returns: %TRUE when it was started
  */
-gint clawt_display_server_launch(ClawtDisplayServer *self,
-                                 const gchar        *command,
-                                 GHashTable         *environment,
-                                 ClawtSandbox       *sandbox,
-                                 GError            **error);
+gboolean clawt_display_server_launch(ClawtDisplayServer *self,
+                                     const gchar        *command,
+                                     GHashTable         *environment,
+                                     ClawtSandbox       *sandbox,
+                                     gint               *pid,
+                                     GError            **error);
 
 /**
  * clawt_display_server_list_windows:

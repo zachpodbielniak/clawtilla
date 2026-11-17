@@ -351,6 +351,7 @@ test_has_screen_covers_every_type(void)
 
     g_assert_true(clawt_computer_type_has_screen(CLAWT_COMPUTER_HOST));
     g_assert_true(clawt_computer_type_has_screen(CLAWT_COMPUTER_VM));
+    g_assert_true(clawt_computer_type_has_screen(CLAWT_COMPUTER_DISPLAY));
     g_assert_false(clawt_computer_type_has_screen(CLAWT_COMPUTER_NONE));
     g_assert_false(clawt_computer_type_has_screen(CLAWT_COMPUTER_CONTAINER));
     g_assert_false(clawt_computer_type_has_screen(CLAWT_COMPUTER_DISTROBOX));
@@ -366,8 +367,8 @@ test_has_screen_covers_every_type(void)
 }
 
 /*
- * The two backends that do implement it are exactly the two the
- * predicate names.
+ * The backends that do implement it are exactly the ones the predicate
+ * names: host, vm, and the virtual display (0.51.0).
  *
  * Asked of the type system rather than by constructing a computer of
  * each kind, which would need podman and libvirt.
@@ -377,6 +378,8 @@ test_the_backends_that_implement_it_are_the_ones_named(void)
 {
     g_assert_true(g_type_is_a(CLAWT_TYPE_VM_COMPUTER, CLAWT_TYPE_OBSERVABLE));
     g_assert_true(g_type_is_a(CLAWT_TYPE_HOST_COMPUTER,
+                              CLAWT_TYPE_OBSERVABLE));
+    g_assert_true(g_type_is_a(CLAWT_TYPE_DISPLAY_COMPUTER,
                               CLAWT_TYPE_OBSERVABLE));
 
     g_assert_false(g_type_is_a(CLAWT_TYPE_CONTAINER_COMPUTER,

@@ -87,16 +87,19 @@ ClawtHostComputer *clawt_display_computer_get_host(ClawtDisplayComputer *self);
  * clawt_display_computer_launch:
  * @self: a #ClawtDisplayComputer
  * @command: a shell command line
+ * @pid: (out) (optional): its process id, or 0 when the compositor does
+ *   not say
  * @error: (out) (optional): return location for a #GError
  *
  * Starts an app on the display under the agent's confinement, without
  * waiting for it.  Starts the computer first when it is not running.
  *
- * Returns: the app's process id, or 0 with @error set
+ * Returns: %TRUE when it was started
  */
-gint clawt_display_computer_launch(ClawtDisplayComputer *self,
-                                   const gchar          *command,
-                                   GError              **error);
+gboolean clawt_display_computer_launch(ClawtDisplayComputer *self,
+                                       const gchar          *command,
+                                       gint                 *pid,
+                                       GError              **error);
 
 /**
  * clawt_display_computer_action_is_acting:
@@ -126,13 +129,28 @@ gboolean clawt_display_computer_action_is_acting(const gchar *action);
  * the agent's tools both do, before calling this.
  *
  * Returns: (transfer full) (nullable): what happened, as an object node
- *   (`sent`, `pid`, `windows`, or the picture's `width` and `height`)
+ *   (`sent`; `started` and, when known, `pid`; `windows`; or the
+ *   picture's `width` and `height`)
  */
 JsonNode *clawt_display_computer_perform(ClawtDisplayComputer *self,
                                          const gchar          *action,
                                          JsonObject           *arguments,
                                          GBytes              **png,
                                          GError              **error);
+
+/**
+ * clawt_display_status_line:
+ * @screen: (nullable): what `computer.screen` answered
+ *
+ * The sentence every client shows under a virtual display's screen
+ * (since 0.51.0): which server is drawing it, whether it is up, why it
+ * died if it did, and what `auto` skipped on the way.  One function, so
+ * GTK, the web client and lrg say the same thing.
+ *
+ * Returns: (transfer full) (nullable): the sentence, or %NULL for a
+ *   computer that is not a display
+ */
+gchar *clawt_display_status_line(JsonObject *screen);
 
 /**
  * clawt_display_computer_describe_display:

@@ -400,6 +400,8 @@ build_screen_panel(ClawtWebApp *app, const gchar *agent_id)
     }
 
     if (!clawt_web_member_bool(root, "observable", FALSE)) {
+        g_autofree gchar *display = clawt_display_status_line(root);
+
         clawt_web_add(panel, clawt_web_empty(
             "No screen to watch yet",
             clawt_web_member(root, "error",
@@ -407,6 +409,8 @@ build_screen_panel(ClawtWebApp *app, const gchar *agent_id)
                              "desktop. computer.desktop.enabled is the "
                              "grant; a VM installs one at first boot, so "
                              "turning it on afterwards needs a rebuild.")));
+        if (display != NULL)
+            clawt_web_add(panel, clawt_web_text(display, "small muted"));
 
         return HTMX_ELEMENT(g_steal_pointer(&panel));
     }
@@ -463,6 +467,14 @@ build_screen_panel(ClawtWebApp *app, const gchar *agent_id)
                 clawt_web_member(root, "error", ""), "bad"));
 
         htmx_node_add_child(HTMX_NODE(panel), HTMX_NODE(badges));
+    }
+
+    /* A virtual display says which server draws it (0.51.0). */
+    {
+        g_autofree gchar *display = clawt_display_status_line(root);
+
+        if (display != NULL)
+            clawt_web_add(panel, clawt_web_text(display, "small muted"));
     }
 
     /*

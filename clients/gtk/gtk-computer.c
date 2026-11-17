@@ -260,12 +260,16 @@ clawt_gtk_refresh_screen(ClawtWindow *self)
         gtk_widget_set_sensitive(GTK_WIDGET(self->screen_click), held);
 
         if (!observable) {
-            gtk_label_set_text(
-                self->screen_status,
+            g_autofree gchar *display = clawt_display_status_line(root);
+            g_autofree gchar *text = g_strdup_printf(
+                "%s%s%s",
                 clawt_json_string(
                     root, "error",
                     "No screen to watch yet: the agent is not running, or "
-                    "it has no desktop."));
+                    "it has no desktop."),
+                display != NULL ? " " : "", display != NULL ? display : "");
+
+            gtk_label_set_text(self->screen_status, text);
             gtk_picture_set_paintable(self->screen_picture, NULL);
             continue;
         }
@@ -309,6 +313,14 @@ clawt_gtk_refresh_screen(ClawtWindow *self)
             if (clawt_json_string(root, "error", NULL) != NULL)
                 g_string_append_printf(
                     said, " %s", clawt_json_string(root, "error", ""));
+
+            /* A virtual display says which server draws it (0.51.0). */
+            {
+                g_autofree gchar *display = clawt_display_status_line(root);
+
+                if (display != NULL)
+                    g_string_append_printf(said, " %s", display);
+            }
 
             gtk_label_set_text(self->screen_status, said->str);
         }

@@ -1,14 +1,14 @@
 #+title: Computers
-#+description: The six backends, host confinement, mount paths and the exchange
+#+description: The seven backends, host confinement, virtual displays, mount paths and the exchange
 #+authors: Zach Podbielniak
 #+categories: software documentation
 #+created: [2026-08-21 Fri]
 #+updated: [2026-08-29 Sat]
-#+version: 0.2.0
+#+version: 0.51.0
 
 * Computers
 
-A computer is what an agent can run commands on.  Six types, and an
+A computer is what an agent can run commands on.  Seven types, and an
 optional desktop add-on that works alongside any of them.
 
 | Type | What the agent gets | Isolation |
@@ -19,9 +19,10 @@ optional desktop add-on that works alongside any of them.
 | ~distrobox~ | a distrobox container, wired into the host | namespaces, deliberately porous |
 | ~vm~ | a libvirt or QEMU virtual machine | a kernel of its own |
 | ~ssh~ | another machine you already run | a different computer entirely |
+| ~display~ | this machine, with a virtual screen of its own for GUI apps (0.51.0) | confinement, as host |
 
-Five of the six are things clawtilla creates and can destroy.  ~ssh~ is
-not: it is somebody's server, and that single fact is what every
+Six of the seven are things clawtilla creates and can destroy (for
+~display~, the screen; the machine is the host).  ~ssh~ is not: it is somebody's server, and that single fact is what every
 difference in its section below comes from.
 
 ** Three things that are true of every backend
@@ -1953,6 +1954,190 @@ Failing towards "I could not tell" is the point.  A flaky link read as
 exists --- and on a machine clawtilla does not own, that is somebody
 else's data.
 
+** display
+:PROPERTIES:
+:CUSTOM_ID: display
+:END:
+
+Since 0.51.0.  GUI apps on a virtual screen of their own: a private display that nobody is sitting at, which the agent sees and drives, and which a person can watch and take from the Computer tab.  The agent's commands run on the host, exactly as a ~host~ computer's do; the difference is the screen, started with the computer, that every command and app is pointed at.
+
+#+begin_src yaml
+agents:
+  - id: painter
+    computer:
+      type: display
+      host:
+        confirm_host_control: true
+        confine: bwrap            # or workspace / allowlist / none
+      display:
+        backend: auto             # gowl, then Xvnc, then Xvfb
+        resolution: 1280x800
+        startup: [firefox]
+#+end_src
+
+*** When to pick it
+
+| You want | Pick |
+|----------+------|
+| an agent that drives GUI apps, without touching your screen | ~display~ |
+| an agent that drives *your* desktop, where you can see it | ~host~ with ~computer.desktop.enabled~ |
+| a whole other machine with a desktop, to break freely | ~vm~ with ~computer.desktop.enabled~ |
+| only a web browser | ~browser.mode~ on any computer (a gsurf on its own Xvfb) |
+
+The display is the cheap middle: no VM to build, apps you already have installed, and a screen where a misjudged click lands somewhere nobody is working.  It is *not* isolation: the apps run as you, on your files, under ~computer.host.confine~ like any host command.
+
+*** The three backends
+
+| ~computer.display.backend~ | What draws the screen | Pictures | Keys and clicks | A person's live view |
+|------+------+------+------+------|
+| ~gowl~ | gowl, headless, in a runtime directory of its own | gowl's MCP ~screenshot_monitor~ | gowl's MCP ~send_key~, ~send_text~, ~send_mouse_move~ + ~send_mouse~, ~send_scroll~ | the Screen tab |
+| ~xvnc~ | TigerVNC's X server | ImageMagick ~import -window root~ | ~xdotool~ | the Screen tab, and a VNC viewer |
+| ~xvfb~ | an X server drawing into memory | its framebuffer file, read and encoded here | ~xdotool~ | the Screen tab |
+
+**** gowl
+
+Started as ~gowl --config <dir>/gowl.yaml --no-c-config~, with an environment of its own:
+
+#+begin_example
+XDG_RUNTIME_DIR=<state>/agents/<id>/display/run    its sockets, not yours
+WLR_BACKENDS=headless  WLR_HEADLESS_OUTPUTS=1       no screen, no GPU
+WLR_RENDERER=pixman    WLR_LIBINPUT_NO_DEVICES=1
+GOWL_OUTPUT_SIZE=1280x800                            computer.display.resolution
+GOWL_DISABLE_SYSTEMD=1                               never touches your session
+WAYLAND_DISPLAY=  DISPLAY=                           nothing inherited
+#+end_example
+
+The generated ~gowl.yaml~ turns on exactly two modules -- ~ipc~ (for starting apps) and ~mcp~ (pictures and input, stdio transport only, no HTTP port) -- and nothing of your own gowl config is loaded.  The display is up when ~gowl.sock~ and ~gowl-mcp.sock~ exist in the run directory.
+
+- *Apps* are Wayland clients: commands get ~WAYLAND_DISPLAY~ as the socket's absolute path (it survives a sandbox replacing ~XDG_RUNTIME_DIR~), ~GDK_BACKEND=wayland~ and ~QT_QPA_PLATFORM=wayland~.  An app started with ~clawtilla_display_launch~ goes through gowl's own spawn -- its JSON-RPC ~spawn~ where it has one, else its MCP ~spawn~ tool -- so an X app reaches gowl's XWayland too, whose display only gowl knows.  Under ~confine: bwrap~ the app is started inside the box instead, as a Wayland client only.
+- *The agent gets gowl's own tools as well*: window lists, focusing and placing windows, reading text on screen (OCR), through the same relay a VM's desktop uses (~clawtilla-desktop~ in its ~.mcp.json~), filtered by the display's grants.  See [[#display-tools][The agent's tools]].
+- *What it cannot do.* The pointer moves only through gowl's MCP tools: gowl does not implement ~wlr-virtual-pointer~, so ~wlrctl~ and the like reach nothing.  Clicks, keys and pictures all go through the MCP module, so a gowl built without it (~make MCP=1~) cannot be driven.
+
+**** Xvnc
+
+~Xvnc -displayfd 1 -geometry 1280x800 -depth 24 -rfbport <port> -localhost -SecurityTypes None -AlwaysShared -nolisten tcp~.
+
+- The VNC server listens on 127.0.0.1 only, with no password -- reachable from this machine alone, which is the trust the daemon's own socket gives.  ~computer.display.vnc_port~ pins the port; 0 picks a free one at each start.
+- The Computer tab's *Open in viewer* button opens ~vnc://127.0.0.1:<port>~ (GTK starts ~remote-viewer~; the web client hands you a ~.vv~ file), which is the live, full-rate way to drive it -- the Screen tab is pictures a few times a second.
+- Pictures come from ImageMagick's ~import~: Xvnc has no framebuffer file.  Without ImageMagick the frame says so.
+
+**** Xvfb
+
+~Xvfb -displayfd 1 -screen 0 1280x800x24 -nolisten tcp -fbdir <dir>/fb~.
+
+- The lightest of the three.  Xvfb keeps its screen in a memory-mapped file in XWD format; a picture is a read of that file encoded to PNG by clawtilla itself -- no X round trip, no image library, no extra package.
+- Keys and clicks go through ~xdotool~.  A click moves the pointer first (~mousemove --sync~), so it lands where it was aimed; a combo's modifiers are lower-cased as xdotool wants them (~Ctrl+Shift+t~ is sent as ~ctrl+shift+t~); scrolling is buttons 4-7, one press a notch.
+- X apps get ~DISPLAY=:N~, ~GDK_BACKEND=x11~, ~QT_QPA_PLATFORM=xcb~ and a ~WAYLAND_DISPLAY~ that names nothing, so a toolkit cannot wander onto your Wayland session.
+
+*** How ~auto~ chooses, and why it says so
+
+~auto~ tries gowl, then Xvnc, then Xvfb, and takes the first that works.  Each candidate binary is looked for on ~PATH~, then in ~/usr/bin~ and ~/usr/sbin~, every match in order; a gowl must answer ~--version~ before it is used, because a gowl that cannot load its wlroots fails there and nowhere earlier.  What was skipped is kept, and the Computer tab's status shows it:
+
+#+begin_example
+/usr/local/bin/gowl does not run: gowl: error while loading shared
+libraries: libwlroots-0.19.so: cannot open shared object file
+#+end_example
+
+That is the case this exists for: an old gowl built by hand in ~/usr/local/bin~ sits ahead of the image's working one on ~PATH~.  ~computer.display.gowl_binary~ pins a path instead of searching; it must still answer ~--version~.
+
+X servers are not run to be asked -- there is no flag every build exits on cleanly -- so an Xvfb that is installed but broken fails at start, with its own last lines as the reason.
+
+*** Size, depth and apps at start
+
+- ~computer.display.resolution~: ~WIDTHxHEIGHT~, each 64-8192; anything else is warned about and 1280x800 is used.  The agent's coordinates are these pixels.  Bigger screens cost more per picture, and every picture the agent asks for is part of its turn.
+- ~computer.display.depth~: 16, 24 or 32, for the X servers.
+- ~computer.display.startup~: shell command lines started each time the display comes up, under the agent's confinement.  One that will not start is logged and the rest still are.
+
+*** The agent's tools
+:PROPERTIES:
+:CUSTOM_ID: display-tools
+:END:
+
+Served by the daemon over the agent's own link, like the browser tools, and offered only to an agent whose computer is a display:
+
+| Tool | Does | Needs |
+|------+------+-------|
+| ~clawtilla_display_screenshot~ | a picture of the screen, with its size | -- |
+| ~clawtilla_display_windows~ | the windows open, with their titles | -- |
+| ~clawtilla_display_launch~ | start an app (~command~, a shell line); returns at once | ~allow_spawn~ |
+| ~clawtilla_display_click~ | click at ~x~, ~y~ (~button~ 1-3) | ~allow_input~ |
+| ~clawtilla_display_move~ | move the pointer, pressing nothing | ~allow_input~ |
+| ~clawtilla_display_type~ | type text into the focused window | ~allow_input~ |
+| ~clawtilla_display_key~ | one key or combo, as XKB names it (~Return~, ~ctrl+s~) | ~allow_input~ |
+| ~clawtilla_display_scroll~ | scroll at ~x~, ~y~ by ~dy~ (and ~dx~) notches | ~allow_input~ |
+
+~computer.display.allow_input~ and ~allow_spawn~ are *on* by default, unlike ~computer.desktop.allow_input~: that one is about your own screen, and this is a private one.  An agent with them off is not offered those tools at all, rather than offered them and refused.
+
+An exchange looks like this:
+
+#+begin_example
+agent: clawtilla_display_launch {"command": "gedit /tmp/notes.txt"}
+       -> Started (pid 41822). It may take a moment to draw its window;
+          take a screenshot to see it.
+agent: clawtilla_display_screenshot {}
+       -> [image]  Your display, 1280x800 pixels.
+agent: clawtilla_display_click {"x": 640, "y": 300}
+agent: clawtilla_display_type {"text": "hello from the agent\n"}
+agent: clawtilla_display_key {"key": "ctrl+s"}
+#+end_example
+
+On gowl the agent also has gowl's own tools under ~clawtilla-desktop~, filtered the same way: looking always, acting with ~allow_input~, ~spawn~ with ~allow_spawn~, recording never.  On an X server that relay answers that there is nothing to relay, and the ~clawtilla_display_*~ tools cover it.
+
+*The agent's own shell reaches the screen too.*  Its process is started with the display's ~DISPLAY~ or ~WAYLAND_DISPLAY~, retaken at every start because an X display number is chosen when the server starts.  So ~xterm &~ from the agent's own Bash appears on the virtual display, not on yours.
+
+The same actions are on the wire as ~computer.act~ (see [[file:ipc-protocol.org][ipc-protocol.org]]), for a client or a script.
+
+*** Confinement
+
+The commands and apps run under ~computer.host.confine~, exactly as ~host~ runs them, and a display computer needs the same two deliberate acts as ~host~: ~computer.host.confirm_host_control: true~, and for ~confine: none~ the fleet's ~daemon.allow_unconfined_host~.
+
+Under ~bwrap~ the box has a private ~/tmp~ and none of your runtime directory, so the screen is bound in: ~/tmp/.X11-unix~ for an X server, the display's run directory for gowl.  The agent's own process sandbox (~runtime.confine: bwrap~) binds the same two.  ~computer.host.deny_paths~ is applied to the agent's own box as it is for ~host~.
+
+*** Watching it, and taking it
+
+The Screen tab works as it does for any computer with a screen (see [[#computer-screen][Watching a screen, and taking it]]): pictures while somebody is looking, *Take control* to stop the agent's hands and drive it yourself, *Release* to give it back.  While you hold it, the agent's ~clawtilla_display_*~ acting tools and gowl's acting tools are refused with the takeover's sentence; screenshots are not, so it can wait usefully.
+
+The status line names the server drawing the screen (~display_backend~), whether it is running, what ~auto~ skipped, and -- when the server died -- its last lines.  Start, Stop and Restart start and stop the display server; stopping it stops every app on it.
+
+*** Where its files are
+
+~<state_dir>/agents/<id>/display/~: ~server.log~ (the server's stderr), ~apps.log~ (apps started there, for X), ~gowl.yaml~, ~run/~ (gowl's sockets) and ~fb/~ (Xvfb's framebuffer).  ~run/~ and ~fb/~ are removed when the display stops.  The run directory's path has to fit a unix socket address (108 bytes); a state directory deep enough to break that is refused at start with the path named.
+
+*** Requirements
+
+| Backend | Fedora packages |
+|---------+-----------------|
+| gowl | ~gowl~ built with ~MCP=1~ (its ~mcp.so~ module, and ~gowl-mcp~ for its own tools) |
+| xvnc | ~tigervnc-server-minimal~, ~xdotool~, ~ImageMagick~ |
+| xvfb | ~xorg-x11-server-Xvfb~, ~xdotool~ |
+
+~xdotool~ is needed for keys, clicks and the window list on X; without it the screen can still be watched.
+
+*** Troubleshooting
+
+| You see | Why | Fix |
+|---------+-----+-----|
+| "no virtual display server could be started for 'auto'" | none of the three is installed, or none runs | install one (above); read the reasons in the message |
+| status: "/usr/local/bin/gowl does not run: ... libwlroots" | an old hand-built gowl ahead of the working one on PATH | remove it, or set ~computer.display.gowl_binary~ |
+| "gowl did not open its sockets in time" | the gowl found has no MCP module | build gowl with ~MCP=1~, or use ~backend: xvfb~ |
+| "typing and clicking on an X display needs xdotool" | ~xdotool~ missing | install ~xdotool~ |
+| "a picture of an Xvnc display needs import" | ImageMagick missing | install ~ImageMagick~, or use ~xvfb~ |
+| a black or empty picture | nothing is open yet | ~clawtilla_display_launch~ something, or set ~startup~ |
+| an app never appears | it went to another display: started with an ~env:~ that sets ~DISPLAY~, or a toolkit ignored ~GDK_BACKEND~ | the display's own variables win over ~env:~; check ~apps.log~ |
+| under bwrap an app cannot open the display | the screen was not bound into the box | restart the agent after changing ~confine~; the bind is made at start |
+| "the virtual display is not running" | it was stopped from the Computer tab | Start it again |
+| the agent's clicks are refused | a person is holding the screen | Release it |
+
+*** Other virtual displays
+
+Not built, and here so the choice is visible:
+
+- *Xephyr* -- a nested X server; it needs a display to draw *into*, so it is not headless.
+- *weston*, *cage*, *sway*, *labwc* headless -- wlroots or libweston compositors with headless backends, as gowl uses; none is installed here, and gowl is the one clawtilla already speaks to.
+- *Xpra* -- a persistent X with an HTML5 viewer; a heavier answer to "watch it from a browser" than the Screen tab.
+- *x11vnc* -- adds a VNC server to an existing X display; Xvnc already is one.
+- *rootful Xwayland* -- an X server as a Wayland window; it needs a Wayland session to run in.
+
 ** Reaching another machine without the ssh backend
 
 Two settings look as though they already reach a remote.  One mostly
@@ -3313,8 +3498,9 @@ the check in front of the MCP relay.
 *** Which computers have a screen
 
 ~clawt_computer_type_has_screen()~ answers, and every client asks it
-rather than keeping a list.  ~host~ and ~vm~ are %TRUE; ~none~,
-~container~, ~distrobox~ and ~ssh~ are %FALSE.
+rather than keeping a list.  ~host~, ~vm~ and ~display~ are %TRUE;
+~none~, ~container~, ~distrobox~ and ~ssh~ are %FALSE.  ~display~ is the
+one that is nothing *but* a screen: see [[#display][display]].
 
 A container is the interesting one.  You can perfectly well install a
 compositor in a container, and saying yes here would mean every

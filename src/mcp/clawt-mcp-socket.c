@@ -51,6 +51,31 @@ render(JsonObject *object)
 }
 
 /*
+ * The id a reply carries, as a number, whether the server wrote it as
+ * one or as a string.  JSON-RPC allows either, and gowl 0.5.0's MCP
+ * module answers `"id":"1"` to a request sent with `"id":1` -- read as
+ * an integer only, that never matched, and every call waited out its
+ * timeout against a server that had answered at once.
+ */
+static gint64
+reply_id(JsonObject *object)
+{
+    JsonNode *node = json_object_get_member(object, "id");
+    const gchar *text;
+    gchar *end = NULL;
+    gint64 value;
+
+    if (node == NULL || !JSON_NODE_HOLDS_VALUE(node))
+        return -1;
+    if (json_node_get_value_type(node) != G_TYPE_STRING)
+        return json_node_get_int(node);
+
+    text = json_node_get_string(node);
+    value = g_ascii_strtoll(text, &end, 10);
+    return (end != NULL && end != text && *end == '\0') ? value : -1;
+}
+
+/*
  * Reads lines until one carries @id, or until the stream ends.
  *
  * A server is free to send notifications and log messages between the
@@ -92,7 +117,7 @@ read_reply(GDataInputStream *in, gint64 id, GError **error)
         if (object == NULL || !json_object_has_member(object, "id"))
             continue;
 
-        if (json_object_get_int_member_with_default(object, "id", -1) != id)
+        if (reply_id(object) != id)
             continue;
 
         if (json_object_has_member(object, "error")) {

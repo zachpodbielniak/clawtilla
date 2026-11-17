@@ -10061,12 +10061,17 @@ display_said(const gchar *action, JsonObject *arguments, JsonNode *answer)
     JsonObject *o = JSON_NODE_HOLDS_OBJECT(answer)
         ? json_node_get_object(answer) : NULL;
 
-    if (g_strcmp0(action, "launch") == 0)
-        return g_strdup_printf(
-            "Started (pid %" G_GINT64_FORMAT "). It may take a moment to "
-            "draw its window; take a screenshot to see it.",
-            o != NULL ? json_object_get_int_member_with_default(o, "pid", 0)
-                      : (gint64)0);
+    if (g_strcmp0(action, "launch") == 0) {
+        gint64 pid = (o != NULL)
+            ? json_object_get_int_member_with_default(o, "pid", 0) : 0;
+
+        return pid > 0
+            ? g_strdup_printf("Started (pid %" G_GINT64_FORMAT "). It may "
+                              "take a moment to draw its window; take a "
+                              "screenshot to see it.", pid)
+            : g_strdup("Started. It may take a moment to draw its window; "
+                       "take a screenshot to see it.");
+    }
     if (g_strcmp0(action, "windows") == 0) {
         g_autoptr(JsonGenerator) generator = json_generator_new();
         JsonNode *windows = (o != NULL)

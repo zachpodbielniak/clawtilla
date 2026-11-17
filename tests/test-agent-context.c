@@ -450,6 +450,22 @@ test_venture_fence_cannot_be_closed(void)
     }
 }
 
+/*
+ * What an agent with a virtual display is told about it (0.51.0): per
+ * backend, because gowl adds its own tools and Xvnc a person's viewer.
+ */
+static void
+test_display_description(void)
+{
+    g_autofree gchar *gowl = clawt_display_computer_describe_display(
+        CLAWT_DISPLAY_BACKEND_GOWL, 1280, 800, NULL);
+    g_autofree gchar *xvnc = clawt_display_computer_describe_display(
+        CLAWT_DISPLAY_BACKEND_XVNC, 1024, 768, "vnc://127.0.0.1:5901");
+
+    assert_golden("display-gowl.txt", gowl);
+    assert_golden("display-xvnc.txt", xvnc);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -475,6 +491,8 @@ main(int argc, char *argv[])
                     test_venture_intake_body);
     g_test_add_func("/agent-context/venture/comment",
                     test_venture_comment_body);
+    g_test_add_func("/agent-context/display/description",
+                    test_display_description);
     g_test_add_func("/agent-context/venture/fence-cannot-be-closed",
                     test_venture_fence_cannot_be_closed);
 
