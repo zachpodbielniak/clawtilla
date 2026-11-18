@@ -289,8 +289,93 @@ bot_row(ClawtWindow *self, JsonObject *bot)
     return row;
 }
 
+/* ── Cancelling or removing a job ────────────────────────────────── */
+
+static void
+on_remove_confirmed(AdwAlertDialog *dialog, const gchar *response,
+                    gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    const gchar *id = g_object_get_data(G_OBJECT(dialog), "job");
+
+    if (g_strcmp0(response, "remove") != 0 || id == NULL)
+        return;
+
+    /* the reply's failure is the request's toast; success is the list */
+    g_autoptr(JsonNode) reply = clawt_window_request(self, "grok.remove",
+        clawt_build_payload("job", id, NULL));
+
+    if (reply != NULL)
+        clawt_gtk_refresh_grok(self);
+}
+
+/*
+ * Asks before `grok.remove`, in libclawt's words: cancelling an open job
+ * tells an agent to stop waiting, which is not a thing to do by a stray
+ * click.
+ */
+static void
+ask_remove(GtkWidget *row)
+{
+    ClawtWindow *self = g_object_get_data(G_OBJECT(row), "clawt-window");
+    const gchar *id = g_object_get_data(G_OBJECT(row), "job");
+    ClawtGrokJobState state = (ClawtGrokJobState)GPOINTER_TO_INT(
+        g_object_get_data(G_OBJECT(row), "state"));
+    g_autofree gchar *heading = NULL;
+    AdwAlertDialog *ask;
+
+    if (self == NULL || id == NULL)
+        return;
+
+    heading = g_strdup_printf("%s %s?", clawt_grok_job_remove_label(state),
+                              id);
+    ask = ADW_ALERT_DIALOG(adw_alert_dialog_new(heading,
+        clawt_grok_job_remove_question(state)));
+    adw_alert_dialog_add_responses(ask, "cancel", "Keep", "remove",
+                                   clawt_grok_job_remove_label(state), NULL);
+    adw_alert_dialog_set_response_appearance(ask, "remove",
+                                             ADW_RESPONSE_DESTRUCTIVE);
+    adw_alert_dialog_set_default_response(ask, "cancel");
+    adw_alert_dialog_set_close_response(ask, "cancel");
+    g_object_set_data_full(G_OBJECT(ask), "job", g_strdup(id), g_free);
+    g_signal_connect(ask, "response", G_CALLBACK(on_remove_confirmed), self);
+    adw_dialog_present(ADW_DIALOG(ask), GTK_WIDGET(self));
+}
+
+static void
+on_remove_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+
+    ask_remove(GTK_WIDGET(user_data));
+}
+
+static void
+on_job_secondary_click(GtkGestureClick *gesture, gint n_press, gdouble x,
+                       gdouble y, gpointer user_data)
+{
+    (void)n_press;
+    (void)x;
+    (void)y;
+
+    gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
+    ask_remove(GTK_WIDGET(user_data));
+}
+
+/* Touch has no second button; a long press is the same gesture there. */
+static void
+on_job_long_press(GtkGestureLongPress *gesture, gdouble x, gdouble y,
+                  gpointer user_data)
+{
+    (void)gesture;
+    (void)x;
+    (void)y;
+
+    ask_remove(GTK_WIDGET(user_data));
+}
+
 static GtkWidget *
-job_row(JsonObject *job, gint64 now)
+job_row(ClawtWindow *self, JsonObject *job, gint64 now)
 {
     GtkWidget *row = adw_expander_row_new();
     gint state = CLAWT_GROK_JOB_FAILED;
@@ -347,6 +432,41 @@ job_row(JsonObject *job, gint64 now)
         adw_expander_row_add_row(ADW_EXPANDER_ROW(row), label);
     } else {
         adw_expander_row_set_enable_expansion(ADW_EXPANDER_ROW(row), FALSE);
+    }
+
+    /*
+     * Cancel or Remove, on a button and on a right-click: a job nothing
+     * will ever answer otherwise sat on the badge until the 30-day prune.
+     */
+    {
+        GtkWidget *remove = gtk_button_new_from_icon_name(
+            clawt_grok_job_state_is_settled((ClawtGrokJobState)state)
+                ? "user-trash-symbolic" : "process-stop-symbolic");
+        GtkGesture *click = gtk_gesture_click_new();
+        GtkGesture *press = gtk_gesture_long_press_new();
+
+        g_object_set_data(G_OBJECT(row), "clawt-window", self);
+        g_object_set_data_full(G_OBJECT(row), "job",
+                               g_strdup(clawt_json_string(job, "id", NULL)),
+                               g_free);
+        g_object_set_data(G_OBJECT(row), "state", GINT_TO_POINTER(state));
+
+        gtk_widget_set_tooltip_text(remove,
+            clawt_grok_job_remove_label((ClawtGrokJobState)state));
+        gtk_widget_set_valign(remove, GTK_ALIGN_CENTER);
+        gtk_widget_add_css_class(remove, "flat");
+        g_signal_connect(remove, "clicked", G_CALLBACK(on_remove_clicked),
+                         row);
+        adw_expander_row_add_suffix(ADW_EXPANDER_ROW(row), remove);
+
+        gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click),
+                                      GDK_BUTTON_SECONDARY);
+        g_signal_connect(click, "pressed",
+                         G_CALLBACK(on_job_secondary_click), row);
+        gtk_widget_add_controller(row, GTK_EVENT_CONTROLLER(click));
+        g_signal_connect(press, "pressed", G_CALLBACK(on_job_long_press),
+                         row);
+        gtk_widget_add_controller(row, GTK_EVENT_CONTROLLER(press));
     }
 
     return row;
@@ -482,7 +602,8 @@ refresh_grok_once(ClawtWindow *self)
 
     for (i = 0; jobs != NULL && i < json_array_get_length(jobs); i++)
         gtk_list_box_append(self->grok_job_list,
-                            job_row(json_array_get_object_element(jobs, i),
+                            job_row(self,
+                                    json_array_get_object_element(jobs, i),
                                     now));
 
     if (jobs == NULL || json_array_get_length(jobs) == 0) {

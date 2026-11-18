@@ -301,6 +301,22 @@ clawt_grok_job_state_tone(ClawtGrokJobState state)
     return "neutral";
 }
 
+const gchar *
+clawt_grok_job_remove_label(ClawtGrokJobState state)
+{
+    return clawt_grok_job_state_is_settled(state) ? "Remove" : "Cancel";
+}
+
+const gchar *
+clawt_grok_job_remove_question(ClawtGrokJobState state)
+{
+    return clawt_grok_job_state_is_settled(state)
+        ? "Remove this job from the list? Nothing is sent; it stops "
+          "counting on the badge."
+        : "Cancel this job? The agent is told it was given up, and a "
+          "report the bot sends later is refused.";
+}
+
 /* ── Which bot ───────────────────────────────────────────────────── */
 
 static gchar *

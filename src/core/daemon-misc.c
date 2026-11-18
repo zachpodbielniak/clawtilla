@@ -942,6 +942,32 @@ clawt_daemon_handle_misc(
 
         json_builder_set_member_name(builder, "bytes");
         json_builder_add_int_value(builder, (gint64)length);
+
+        /*
+         * And a copy in the daemon's own keeping, named by id, as an
+         * agent's file is -- so the operator's message can carry
+         * `clawt:<id>` and every client shows the picture by asking for
+         * it over IPC.  The host path alone only drew a preview for a
+         * client that could open that exact path itself: a remote or
+         * sandboxed one showed nothing, and the exchange's size cap
+         * would have taken even a local one's picture in time.  Best
+         * effort: the agent has its file either way.
+         */
+        if (self->attachment_dir != NULL) {
+            g_autoptr(GError) store_error = NULL;
+            g_autofree gchar *id = clawt_attachment_store(
+                self->attachment_dir, host_path, &store_error);
+
+            if (id != NULL) {
+                json_builder_set_member_name(builder, "id");
+                json_builder_add_string_value(builder, id);
+            } else {
+                g_warning("attachment.put: %s was saved for %s but not "
+                          "kept for the clients: %s", safe, agent_id,
+                          store_error != NULL ? store_error->message : "?");
+            }
+        }
+
         json_builder_end_object(builder);
 
         return clawt_ipc_response_new(request, json_builder_get_root(builder));

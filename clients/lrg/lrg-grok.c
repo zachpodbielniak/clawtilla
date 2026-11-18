@@ -270,6 +270,96 @@ bot_row(ClawtLrgApp *app, JsonObject *bot)
     return row;
 }
 
+/* ── Cancelling or removing a job ────────────────────────────────── */
+
+static void
+on_removed(ClawtLrgApp *app, JsonNode *reply, const GError *error,
+           gpointer user_data)
+{
+    (void)error;
+    (void)user_data;
+
+    /* a failure is the request's toast; success redraws the list */
+    if (reply != NULL)
+        request_grok(app);
+}
+
+static void
+on_remove_confirmed(ClawtLrgApp *app, gpointer user_data)
+{
+    clawt_lrg_request(app, "grok.remove",
+                      clawt_ipc_payload_new("job", (const gchar *)user_data,
+                                            NULL),
+                      CLAWT_LRG_REQUEST_NONE, on_removed, NULL, NULL);
+}
+
+/*
+ * Asks before `grok.remove`, in libclawt's words: cancelling an open job
+ * tells an agent to stop waiting, which is not for a stray click.
+ */
+static void
+ask_remove(ClawtLrgApp *app, GObject *holder)
+{
+    const gchar *id = g_object_get_data(holder, "job");
+    ClawtGrokJobState state = (ClawtGrokJobState)GPOINTER_TO_INT(
+        g_object_get_data(holder, "state"));
+    g_autofree gchar *heading = NULL;
+
+    if (id == NULL)
+        return;
+
+    heading = g_strdup_printf("%s %s?", clawt_grok_job_remove_label(state),
+                              id);
+    clawt_lrg_confirm(app, heading, clawt_grok_job_remove_question(state),
+                      clawt_grok_job_remove_label(state), TRUE,
+                      on_remove_confirmed, g_strdup(id), g_free);
+}
+
+static void
+on_remove_clicked(LrgButton *button, gpointer user_data)
+{
+    ask_remove(user_data, G_OBJECT(button));
+}
+
+static void
+on_remove_action(GSimpleAction *action, GVariant *parameter,
+                 gpointer user_data)
+{
+    (void)parameter;
+
+    ask_remove(user_data, G_OBJECT(action));
+}
+
+/*
+ * Cancel or Remove, on a button and on the row's right-click menu: a job
+ * nothing will ever answer otherwise sat on the badge until the 30-day
+ * prune.
+ */
+static void
+add_remove(ClawtLrgApp *app, LrgWidget *row, const gchar *id,
+           ClawtGrokJobState state)
+{
+    g_autoptr(GSimpleActionGroup) group = g_simple_action_group_new();
+    g_autoptr(GSimpleAction) action = g_simple_action_new("remove", NULL);
+    g_autoptr(GMenu) menu = g_menu_new();
+    LrgWidget *remove = clawt_lrg_button(clawt_grok_job_remove_label(state),
+                                         "flat",
+                                         G_CALLBACK(on_remove_clicked), app);
+
+    g_object_set_data_full(G_OBJECT(remove), "job", g_strdup(id), g_free);
+    g_object_set_data(G_OBJECT(remove), "state", GINT_TO_POINTER(state));
+    clawt_lrg_row_add_suffix(row, remove);
+
+    g_object_set_data_full(G_OBJECT(action), "job", g_strdup(id), g_free);
+    g_object_set_data(G_OBJECT(action), "state", GINT_TO_POINTER(state));
+    g_signal_connect(action, "activate", G_CALLBACK(on_remove_action), app);
+    g_action_map_add_action(G_ACTION_MAP(group), G_ACTION(action));
+    g_menu_append(menu, clawt_grok_job_remove_label(state), "job.remove");
+
+    lrg_widget_insert_action_group(row, "job", G_ACTION_GROUP(group));
+    lrg_widget_set_context_menu(row, G_MENU_MODEL(menu));
+}
+
 static LrgWidget *
 job_row(ClawtLrgApp *app, JsonObject *job)
 {
@@ -309,6 +399,10 @@ job_row(ClawtLrgApp *app, JsonObject *job)
                                g_free);
         clawt_lrg_row_add_suffix(row, show);
     }
+
+    if (clawt_ipc_payload_string(job, "id") != NULL)
+        add_remove(app, row, clawt_ipc_payload_string(job, "id"),
+                   (ClawtGrokJobState)state);
 
     return row;
 }

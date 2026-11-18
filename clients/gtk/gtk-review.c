@@ -74,7 +74,7 @@ clawt_gtk_refresh_memory_review(
 	if (self->inspector_memory_review == NULL || self->selected_agent == NULL)
 		return;
 
-	reply = clawt_window_request(self, "memory.journal",
+	reply = clawt_window_request_quiet(self, "memory.journal",
 		clawt_build_payload("agent", self->selected_agent, NULL));
 
 	/* The request iterates the loop; the inspector may have gone. */
@@ -335,7 +335,7 @@ refresh_memory_proposals(
 		self->selected_agent == NULL)
 		return;
 
-	reply = clawt_window_request(self, "memory.proposals",
+	reply = clawt_window_request_quiet(self, "memory.proposals",
 		clawt_build_payload("agent", self->selected_agent, NULL));
 
 	/* The request iterates the loop; the inspector may have gone. */

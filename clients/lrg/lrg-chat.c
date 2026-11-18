@@ -2897,6 +2897,26 @@ on_conversation_chosen(GSimpleAction *action, GVariant *parameter,
     fill_conversation_bar(app);
 }
 
+void
+clawt_lrg_chat_reopen(ClawtLrgApp *app)
+{
+    /*
+     * A re-click did nothing while a peer conversation was open, so
+     * replies arriving in the operator's own conversation kept counting
+     * on the agent's row, and clicking the row -- the gesture anybody
+     * tries -- neither showed them nor cleared the badge.
+     */
+    if (clawt_lrg_unread_clear(app->unread, app->room_id))
+        fleet_marks_changed(app);
+
+    if (chat.page == NULL || chat.conversation == NULL)
+        return;
+
+    g_clear_pointer(&chat.conversation, g_free);
+    load_history(app);
+    fill_conversation_bar(app);
+}
+
 static void
 conversation_picker(LrgButton *button, gpointer user_data)
 {
@@ -4427,6 +4447,7 @@ on_put(ClawtLrgApp *app, JsonNode *reply, const GError *error,
         file->host_path = g_strdup(clawt_ipc_payload_string(root,
                                                             "host_path"));
         file->path = g_strdup(clawt_ipc_payload_string(root, "path"));
+        file->id = g_strdup(clawt_ipc_payload_string(root, "id"));
     }
 
     /* the message goes once every file has an answer, saved or not */

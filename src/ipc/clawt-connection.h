@@ -531,6 +531,81 @@ gboolean clawt_connection_list_save(const gchar *path,
 ClawtConnection *clawt_connection_list_find(GPtrArray   *connections,
                                             const gchar *name);
 
+/* ── The daemon a client was last on ───────────────────────────────── */
+
+/**
+ * clawt_connection_last_default_path:
+ *
+ * Returns: (transfer full): `$XDG_STATE_HOME/clawtilla/last-connection`
+ */
+gchar *clawt_connection_last_default_path(void);
+
+/**
+ * clawt_connection_last_load:
+ * @path: (nullable): the file, or %NULL for the default
+ *
+ * The name of the saved connection a client was last switched to, or
+ * %NULL when it was the local daemon, or nothing was ever written, or
+ * the file cannot be read -- never an error: a client that cannot
+ * remember starts on the local daemon, as it did before it could.
+ *
+ * Returns: (transfer full) (nullable): the profile name
+ */
+gchar *clawt_connection_last_load(const gchar *path);
+
+/**
+ * clawt_connection_last_save:
+ * @path: (nullable): the file, or %NULL for the default
+ * @connection: (nullable): the connection now in use
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Remembers @connection for the next start, by name only.  Never the
+ * address and never the token: those stay in `connections.yaml`, so a
+ * remembered name is looked up there afresh and a token rotated or a
+ * profile deleted since is simply honoured.  A local connection (or
+ * %NULL) removes the file, so the next start is on the local daemon.
+ *
+ * Returns: %TRUE if the file now says what it should
+ */
+gboolean clawt_connection_last_save(const gchar      *path,
+                                    ClawtConnection  *connection,
+                                    GError          **error);
+
+/**
+ * clawt_connection_choose:
+ * @host: (nullable): `--host`
+ * @port: `--port`, or 0 for the default
+ * @token: (nullable): `--token`
+ * @profile: (nullable): `--profile`
+ * @socket_path: (nullable): `--socket`
+ * @connections_path: (nullable): the connections file, or %NULL for the
+ *   default
+ * @last_path: (nullable): the remembered-connection file, or %NULL for
+ *   the default
+ * @remembered: whether to fall back on the remembered connection
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Which daemon a client opens on, in one place for every client:
+ * `--host`, then `--profile`, then `--socket`, then (when @remembered)
+ * the connection it was last switched to, then the local daemon.  Every
+ * flag beats the memory, so a script or a test that names its daemon
+ * gets that daemon.  A remembered profile that no longer exists is not
+ * an error -- it falls back to the local daemon -- where an unknown
+ * `--profile` is.
+ *
+ * Returns: (transfer full) (nullable): the connection, or %NULL with
+ *   @error set
+ */
+ClawtConnection *clawt_connection_choose(const gchar  *host,
+                                         guint16       port,
+                                         const gchar  *token,
+                                         const gchar  *profile,
+                                         const gchar  *socket_path,
+                                         const gchar  *connections_path,
+                                         const gchar  *last_path,
+                                         gboolean      remembered,
+                                         GError      **error);
+
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(ClawtConnection, clawt_connection_free)
 
 G_END_DECLS

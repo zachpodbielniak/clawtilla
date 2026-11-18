@@ -1468,6 +1468,7 @@ append_attachment_previews(ClawtWindow *self, GtkWidget *row,
 {
     g_auto(GStrv) lines = NULL;
     gboolean in_block = FALSE;
+    gboolean item_shown = FALSE;
     gsize i;
 
     if (body == NULL || strstr(body, ATTACHMENT_MARKER) == NULL)
@@ -1505,6 +1506,18 @@ append_attachment_previews(ClawtWindow *self, GtkWidget *row,
             in_block = FALSE;
             continue;
         }
+
+        /*
+         * One preview per item.  An operator's file is named twice -- by
+         * its host path, for the agent, and by `clawt:<id>`, for clients
+         * that cannot open that path -- and whichever is found first
+         * draws it.
+         */
+        if (lines[i][0] == '-')
+            item_shown = FALSE;
+
+        if (item_shown)
+            continue;
 
         /*
          * An agent's attachment is `clawt:<id>`, not a path: the file
@@ -1545,6 +1558,8 @@ append_attachment_previews(ClawtWindow *self, GtkWidget *row,
          * thumbnail: a name, a size and the same menu. A PDF in a
          * conversation was previously a path and nothing else.
          */
+        item_shown = TRUE;
+
         if (!looks_like_an_image(candidate)) {
             append_file_chip(self, row, candidate, from_user);
             continue;
@@ -3470,6 +3485,15 @@ body_with_attachments(ClawtWindow *self, const gchar *body)
             if (g_strcmp0(host, guest) != 0)
                 g_string_append_printf(
                     out, "  (inside your container: %s)\n", guest);
+
+            /*
+             * The daemon's own copy, by id: what every client previews
+             * from when it cannot open the host path itself -- remote,
+             * sandboxed, or after the exchange's cap swept the file.
+             */
+            if (clawt_json_string(result, "id", NULL) != NULL)
+                g_string_append_printf(out, "  clawt:%s\n",
+                                       clawt_json_string(result, "id", ""));
         }
     }
 

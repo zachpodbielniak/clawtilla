@@ -85,6 +85,23 @@ JsonNode *clawt_window_request(ClawtWindow *self, const gchar *kind,
                                JsonNode *payload);
 
 /**
+ * clawt_window_request_quiet:
+ * @self: a #ClawtWindow
+ * @kind: the request kind
+ * @payload: (transfer full) (nullable): the request body
+ *
+ * Sends a request and shows no toast when it fails.  For loads a view
+ * makes by itself -- on opening a chat, on choosing an agent -- whose
+ * failure the view already says in place (an agent without memories
+ * answers "memories.enabled is off" every time it is chosen; a toast
+ * for that each time is noise, not news).
+ *
+ * Returns: (transfer full) (nullable): the reply payload, or %NULL
+ */
+JsonNode *clawt_window_request_quiet(ClawtWindow *self, const gchar *kind,
+                                     JsonNode *payload);
+
+/**
  * clawt_json_string:
  * @object: (nullable): a JSON object
  * @key: the member to read

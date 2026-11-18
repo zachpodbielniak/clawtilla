@@ -88,6 +88,25 @@ job_element(JsonObject *job, gint64 now)
         }
     }
 
+    /*
+     * Cancel or Remove, asked first in libclawt's words: a job nothing
+     * will ever answer otherwise sat on the badge until the 30-day prune.
+     */
+    if (clawt_web_member(job, "id", NULL) != NULL) {
+        g_autoptr(HtmxDiv) actions = htmx_div_new();
+        g_autofree gchar *escaped = g_uri_escape_string(
+            clawt_web_member(job, "id", NULL), NULL, FALSE);
+        g_autofree gchar *url = g_strdup_printf("/grok/jobs/%s/remove",
+                                                escaped);
+
+        htmx_element_add_class(HTMX_ELEMENT(actions), "btn-row");
+        clawt_web_add(actions, clawt_web_post_button(
+            clawt_grok_job_remove_label((ClawtGrokJobState)state), url,
+            "danger",
+            clawt_grok_job_remove_question((ClawtGrokJobState)state)));
+        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(actions));
+    }
+
     return HTMX_ELEMENT(g_steal_pointer(&row));
 }
 
@@ -489,6 +508,35 @@ on_mint(HtmxRequest *request, GHashTable *params, gpointer user_data)
     return clawt_web_after_action(app, request, here, CLAWT_PAGE_GROK, told);
 }
 
+static HtmxResponse *
+on_remove(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *job = clawt_web_param(params, "job");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autofree gchar *told = NULL;
+
+    clawt_web_payload_set(payload, "job", job);
+    reply = clawt_web_app_call(app, "grok.remove",
+                               clawt_web_payload_take(
+                                   g_steal_pointer(&payload)));
+
+    if (reply == NULL) {
+        g_autofree gchar *why = g_strdup(clawt_web_app_last_error(app));
+
+        return clawt_web_error_page(app, request, NULL, CLAWT_PAGE_GROK, why);
+    }
+
+    if (clawt_web_member_bool(clawt_web_root(reply), "cancelled", FALSE))
+        told = g_strdup_printf("Cancelled %s; its agent was told to stop "
+                               "waiting.", job);
+    else
+        told = g_strdup_printf("Removed %s.", job);
+
+    return clawt_web_after_action(app, request, NULL, CLAWT_PAGE_GROK, told);
+}
+
 void
 clawt_web_register_grok(HtmxRouter *router, ClawtWebApp *app)
 {
@@ -496,5 +544,6 @@ clawt_web_register_grok(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_get(router, "/f/grok/:bot/prompt", on_prompt_fragment, app);
     htmx_router_post(router, "/grok/send", on_send, app);
     htmx_router_post(router, "/grok/:bot/mcp-key", on_mint, app);
+    htmx_router_post(router, "/grok/jobs/:job/remove", on_remove, app);
 }
 

@@ -10,6 +10,8 @@
 #include "clawtilla.h"
 #include "ipc/clawt-connection.h"
 
+#include <errno.h>
+#include <glib/gstdio.h>
 #include <string.h>
 
 #include <yaml-glib.h>
@@ -949,4 +951,134 @@ clawt_connection_notice_text(ClawtDaemonLink        link,
 
         return NULL;
     }
+}
+
+/* ── The daemon a client was last on ───────────────────────────────── */
+
+gchar *
+clawt_connection_last_default_path(void)
+{
+    /*
+     * State, not configuration: it is what a client did last, not
+     * anything a person wrote, and keeping it out of connections.yaml
+     * means saving the profiles can never drop it, nor it a profile.
+     */
+    return g_build_filename(g_get_user_state_dir(), "clawtilla",
+                            "last-connection", NULL);
+}
+
+gchar *
+clawt_connection_last_load(const gchar *path)
+{
+    g_autofree gchar *resolved = NULL;
+    g_autofree gchar *text = NULL;
+
+    resolved = path != NULL ? clawt_expand_path(path)
+                            : clawt_connection_last_default_path();
+
+    if (!g_file_get_contents(resolved, &text, NULL, NULL))
+        return NULL;
+
+    g_strstrip(text);
+
+    if (*text == '\0')
+        return NULL;
+
+    return g_steal_pointer(&text);
+}
+
+gboolean
+clawt_connection_last_save(const gchar     *path,
+                           ClawtConnection *connection,
+                           GError         **error)
+{
+    g_autofree gchar *resolved = NULL;
+    g_autofree gchar *dir = NULL;
+    g_autofree gchar *text = NULL;
+
+    resolved = path != NULL ? clawt_expand_path(path)
+                            : clawt_connection_last_default_path();
+
+    /* the local daemon is the default: nothing to remember */
+    if (connection == NULL || clawt_connection_is_local(connection)) {
+        if (g_unlink(resolved) != 0 && errno != ENOENT) {
+            g_set_error(error, G_IO_ERROR, g_io_error_from_errno(errno),
+                        "could not forget the last connection at %s: %s",
+                        resolved, g_strerror(errno));
+            return FALSE;
+        }
+
+        return TRUE;
+    }
+
+    dir = g_path_get_dirname(resolved);
+
+    if (!clawt_ensure_dir(dir, 0700, error))
+        return FALSE;
+
+    /* the name alone: never the address, never the token */
+    text = g_strconcat(clawt_connection_get_name(connection), "\n", NULL);
+
+    return clawt_write_file_atomic(resolved, text, -1, 0600, FALSE, error);
+}
+
+ClawtConnection *
+clawt_connection_choose(const gchar  *host,
+                        guint16       port,
+                        const gchar  *token,
+                        const gchar  *profile,
+                        const gchar  *socket_path,
+                        const gchar  *connections_path,
+                        const gchar  *last_path,
+                        gboolean      remembered,
+                        GError      **error)
+{
+    g_autofree gchar *last = NULL;
+
+    if (host != NULL)
+        return clawt_connection_new_remote(
+            host, host, port > 0 ? port : CLAWT_DEFAULT_TCP_PORT, token);
+
+    if (profile != NULL) {
+        g_autoptr(GPtrArray) saved = clawt_connection_list_load(
+            connections_path, error);
+        ClawtConnection *found;
+
+        if (saved == NULL)
+            return NULL;
+
+        found = clawt_connection_list_find(saved, profile);
+
+        if (found == NULL) {
+            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
+                        "there is no saved connection called '%s'", profile);
+            return NULL;
+        }
+
+        /* copied: `saved` owns it and goes out of scope here */
+        return clawt_connection_copy(found);
+    }
+
+    /* an explicit socket is an explicit choice of the local daemon */
+    if (socket_path != NULL || !remembered)
+        return clawt_connection_new_local("Local", socket_path);
+
+    last = clawt_connection_last_load(last_path);
+
+    if (last != NULL) {
+        g_autoptr(GPtrArray) saved = clawt_connection_list_load(
+            connections_path, NULL);
+        ClawtConnection *found = saved != NULL
+            ? clawt_connection_list_find(saved, last) : NULL;
+
+        /*
+         * Gone since -- deleted, renamed, or the file unreadable: the
+         * local daemon, quietly, as an unknown --profile is not.  The
+         * name was remembered, not asked for.
+         */
+        if (found != NULL)
+            return clawt_connection_copy(found);
+    }
+
+    return clawt_connection_new_local("Local", NULL);
 }

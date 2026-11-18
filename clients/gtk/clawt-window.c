@@ -302,6 +302,16 @@ clawt_window_request(ClawtWindow *self, const gchar *kind, JsonNode *payload)
     return reply;
 }
 
+JsonNode *
+clawt_window_request_quiet(ClawtWindow *self, const gchar *kind,
+                           JsonNode *payload)
+{
+    g_return_val_if_fail(CLAWT_IS_WINDOW(self), NULL);
+
+    /* the caller says the failure in its own view; see the header */
+    return clawt_client_request(self->client, kind, payload, NULL);
+}
+
 /*
  * Sets a row's title and subtitle as plain text.
  *
@@ -642,6 +652,46 @@ clawt_gtk_select_room(ClawtWindow *self, const gchar *room_id)
     }
 }
 
+/*
+ * Clicking the agent that is already selected: back to its conversation
+ * with the operator, and that conversation's count cleared.
+ *
+ * A re-click did nothing while a peer conversation ("with gnuisaince")
+ * was open, so replies arriving in the operator's own conversation kept
+ * counting on the agent's row and clicking the row -- the one gesture
+ * anybody tries -- neither showed them nor cleared the badge.
+ */
+void
+clawt_gtk_reopen_agent(ClawtWindow *self)
+{
+    g_autofree gchar *room = NULL;
+
+    if (self->selected_agent == NULL)
+        return;
+
+    room = clawt_room_manager_direct_id("user", self->selected_agent);
+
+    if (g_hash_table_remove(self->unread, room))
+        clawt_gtk_update_unread_tab(self);
+
+    if (self->selected_conversation != NULL) {
+        g_clear_pointer(&self->selected_conversation, g_free);
+
+        if (self->history_inflight == 0)
+            clawt_gtk_load_history(self);
+
+        clawt_gtk_fill_conversation_menu(self);
+        return;
+    }
+
+    /*
+     * The retry a re-click has always been: a load that failed left the
+     * pane empty, and stops being retried the moment one succeeds.
+     */
+    if (self->selected_room == NULL && self->history_inflight == 0)
+        clawt_gtk_load_history(self);
+}
+
 void
 clawt_gtk_select_agent(ClawtWindow *self, const gchar *agent_id)
 {
@@ -662,6 +712,12 @@ clawt_gtk_select_agent(ClawtWindow *self, const gchar *agent_id)
      * where a blanket reload is not, because it stops the moment a load
      * succeeds, and the inflight guard keeps the sidebar-rebuild path
      * from nesting a second request inside the first one's wait.
+     */
+    /*
+     * Not clawt_gtk_reopen_agent(): a sidebar rebuild re-selects the row
+     * and lands here too, and must not pull anybody out of the peer
+     * conversation they are reading.  A person's second click is
+     * caught by clawt_gtk_on_sidebar_pressed() instead.
      */
     if (g_strcmp0(agent_id, self->selected_agent) == 0) {
         if (self->selected_agent != NULL && self->selected_room == NULL &&
@@ -4135,6 +4191,20 @@ switch_connection(ClawtWindow *self, ClawtConnection *connection)
 
     self->client = g_steal_pointer(&client);
 
+    /*
+     * Remembered for the next start, by name -- only now it has
+     * connected: a switch that failed above is not where anybody wants
+     * the next launch to land.  A failure to write is a line on stderr,
+     * not a toast; the switch itself worked.
+     */
+    {
+        g_autoptr(GError) remember_error = NULL;
+
+        if (!clawt_connection_last_save(NULL, connection, &remember_error))
+            g_warning("could not remember the connection: %s",
+                      remember_error->message);
+    }
+
     /* Connected above, before watch_the_connection() could hear it. */
     self->connected_once = clawt_client_is_connected(self->client);
 
@@ -5934,6 +6004,24 @@ clawt_window_new(AdwApplication *app, ClawtClient *client,
     gtk_widget_add_css_class(GTK_WIDGET(self->sidebar), "navigation-sidebar");
     g_signal_connect(self->sidebar, "row-selected",
                      G_CALLBACK(clawt_gtk_on_row_selected), self);
+
+    /*
+     * ::row-selected does not fire for the row that is already selected,
+     * so a second click on an agent is watched for here, before the list
+     * sees it: its row is still the selected one then.
+     */
+    {
+        GtkGesture *again = gtk_gesture_click_new();
+
+        gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(again),
+                                      GDK_BUTTON_PRIMARY);
+        gtk_event_controller_set_propagation_phase(
+            GTK_EVENT_CONTROLLER(again), GTK_PHASE_CAPTURE);
+        g_signal_connect(again, "pressed",
+                         G_CALLBACK(clawt_gtk_on_sidebar_pressed), self);
+        gtk_widget_add_controller(GTK_WIDGET(self->sidebar),
+                                  GTK_EVENT_CONTROLLER(again));
+    }
 
     sidebar_scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sidebar_scroll),

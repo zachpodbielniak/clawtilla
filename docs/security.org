@@ -1498,7 +1498,11 @@ unix socket. ~clawtillad --bind IP[:PORT]~ replaces them instead, and
 
 Anything holding the token has the whole fleet, exactly as anything
 holding the unix socket does.  ~clawtilla daemon token~ prints it, and
-the client's ~connections.yaml~ stores it at mode 0600.
+the client's ~connections.yaml~ stores it at mode 0600.  The GTK and
+libregnum clients also remember which saved connection they were last
+switched to, in ~$XDG_STATE_HOME/clawtilla/last-connection~ (0600): the
+profile's name only, never its address or token, which stay in
+~connections.yaml~ alone.
 
 ** TCP and TLS
 

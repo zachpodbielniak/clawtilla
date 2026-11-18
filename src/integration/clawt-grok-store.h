@@ -154,6 +154,19 @@ GPtrArray *clawt_grok_store_due(ClawtGrokStore *self, gint64 now);
 guint clawt_grok_store_prune(ClawtGrokStore *self, gint64 before);
 
 /**
+ * clawt_grok_store_remove:
+ * @self: a #ClawtGrokStore
+ * @id: the job
+ *
+ * Forgets a settled job -- the operator saying "I have seen it" to a
+ * job that needs somebody.  An open job is refused: settle it first, so
+ * the agent waiting on it is told, and a late report finds nothing.
+ *
+ * Returns: %TRUE if a settled job was removed
+ */
+gboolean clawt_grok_store_remove(ClawtGrokStore *self, const gchar *id);
+
+/**
  * clawt_grok_store_add_reply:
  * @self: a #ClawtGrokStore
  * @bot: the bot the reply is for

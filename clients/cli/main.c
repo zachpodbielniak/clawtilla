@@ -9808,6 +9808,8 @@ print_grok_usage(gboolean asked_for)
         "                                 bot's routine in Grok, once\n"
         "  mcp-key <bot>                  mint the key that connects the bot to\n"
         "                                 clawtilla's MCP endpoint; printed ONCE\n"
+        "  remove <job>                   cancel an open job (its agent is told)\n"
+        "                                 or forget a settled one\n"
         "\n"
         "A bot is a `grokbot` integration named for it, whose url and token\n"
         "are a Grok routine's webhook address and key. The bot reports back\n"
@@ -9825,7 +9827,8 @@ print_grok_usage(gboolean asked_for)
         "  clawtilla grok test chief --agent oryx\n"
         "  clawtilla grok send chief --agent oryx \\\n"
         "      \"Find three venues near the office for Thursday\"\n"
-        "  clawtilla grok jobs --open\n";
+        "  clawtilla grok jobs --open\n"
+        "  clawtilla grok remove gj-70d186db8fb7\n";
 
     print_usage_text(text, asked_for);
 }
@@ -10003,6 +10006,34 @@ cmd_grok(int argc, char *argv[])
 
         for (i = 0; i < json_array_get_length(jobs); i++)
             print_grok_job(json_array_get_object_element(jobs, i), now);
+
+        return EXIT_SUCCESS;
+    }
+
+    if (g_strcmp0(verb, "remove") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+
+        if (bot == NULL) {
+            g_printerr("clawtilla: say which job: its id, from `clawtilla "
+                       "grok jobs`\n");
+            print_grok_usage(FALSE);
+            return EXIT_FAILURE;
+        }
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "job");
+        json_builder_add_string_value(builder, bot);
+        json_builder_end_object(builder);
+
+        reply = call(client, "grok.remove", json_builder_get_root(builder));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        if (member_flag(json_node_get_object(reply), "cancelled", FALSE))
+            g_print("Cancelled %s; its agent was told to stop waiting.\n",
+                    bot);
+        else
+            g_print("Removed %s.\n", bot);
 
         return EXIT_SUCCESS;
     }

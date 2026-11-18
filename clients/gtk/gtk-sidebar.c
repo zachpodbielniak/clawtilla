@@ -1478,6 +1478,32 @@ clawt_gtk_on_new_room(GtkButton *button, gpointer user_data)
 }
 
 void
+clawt_gtk_on_sidebar_pressed(GtkGestureClick *gesture, gint n_press,
+                             gdouble x, gdouble y, gpointer user_data)
+{
+    ClawtWindow *self = user_data;
+    GtkListBoxRow *row;
+    const gchar *agent_id;
+
+    (void)gesture;
+    (void)x;
+
+    /* Watched, never claimed: the list still selects and drags as before. */
+    if (n_press != 1)
+        return;
+
+    row = gtk_list_box_get_row_at_y(self->sidebar, (gint)y);
+
+    if (row == NULL || row != gtk_list_box_get_selected_row(self->sidebar))
+        return;
+
+    agent_id = g_object_get_data(G_OBJECT(row), "agent-id");
+
+    if (agent_id != NULL && g_strcmp0(agent_id, self->selected_agent) == 0)
+        clawt_gtk_reopen_agent(self);
+}
+
+void
 clawt_gtk_on_row_selected(GtkListBox *box, GtkListBoxRow *row, gpointer user_data)
 {
     ClawtWindow *self = user_data;

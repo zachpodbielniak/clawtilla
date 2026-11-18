@@ -116,37 +116,17 @@ static const gchar *license_text =
     "Public License along with this program.  If not, see\n"
     "<https://www.gnu.org/licenses/>.\n";
 
-/* Which daemon to open on: --host, then --profile, then the local socket. */
+/*
+ * Which daemon to open on: --host, then --profile, then --socket, then
+ * the one this client was last switched to, then the local socket.  The
+ * self-test never remembers: it runs against what it was told.
+ */
 static ClawtConnection *
-choose_connection(GError **error)
+choose_connection(gboolean remembered, GError **error)
 {
-    if (opt_host != NULL)
-        return clawt_connection_new_remote(
-            opt_host, opt_host,
-            opt_port > 0 ? (guint16)opt_port : CLAWT_DEFAULT_TCP_PORT,
-            opt_token);
-
-    if (opt_profile != NULL) {
-        g_autoptr(GPtrArray) saved = clawt_connection_list_load(NULL, error);
-        ClawtConnection *found;
-
-        if (saved == NULL)
-            return NULL;
-
-        found = clawt_connection_list_find(saved, opt_profile);
-
-        if (found == NULL) {
-            g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND,
-                        "there is no saved connection called '%s'",
-                        opt_profile);
-            return NULL;
-        }
-
-        /* copied: `saved` owns it and goes out of scope here */
-        return clawt_connection_copy(found);
-    }
-
-    return clawt_connection_new_local("Local", opt_socket_path);
+    return clawt_connection_choose(
+        opt_host, opt_port > 0 ? (guint16)opt_port : 0, opt_token,
+        opt_profile, opt_socket_path, NULL, NULL, remembered, error);
 }
 
 int
@@ -198,7 +178,7 @@ main(int argc, char *argv[])
         opt_open = g_steal_pointer(&target);
     }
 
-    connection = choose_connection(&error);
+    connection = choose_connection(opt_self_test == NULL, &error);
 
     if (connection == NULL) {
         g_printerr("%s: %s\n", CLAWT_LRG_BIN_NAME, error->message);

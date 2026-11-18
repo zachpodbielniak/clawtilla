@@ -108,9 +108,20 @@ switch_to(ClawtLrgApp *app, ClawtConnection *connection)
         "Connected to %s (%s).", clawt_connection_get_name(connection),
         where);
 
+    g_autoptr(GError) remember_error = NULL;
+
     clawt_lrg_app_switch_connection(app, connection);
     clawt_lrg_toast(app, text);
     rebuild_list(app);
+
+    /*
+     * Remembered for the next start, by name -- after the probe this
+     * switch waited on said it answers.  Failing to write is a line on
+     * stderr; the switch itself worked.
+     */
+    if (!clawt_connection_last_save(NULL, connection, &remember_error))
+        g_warning("could not remember the connection: %s",
+                  remember_error->message);
 
     /*
      * The version belongs to the daemon, not to the window: a version
