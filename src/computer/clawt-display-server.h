@@ -342,8 +342,12 @@ GHashTable *clawt_display_server_dup_environment(ClawtDisplayServer *self);
  * clawt_display_server_dup_bind_paths:
  * @self: a #ClawtDisplayServer
  *
- * The paths a sandbox must bind for a client to reach the screen: the X
- * socket for an X server, the runtime directory for gowl.
+ * The paths a sandbox must bind for a client to reach the screen, and
+ * nothing more: the X socket `/tmp/.X11-unix/X<N>` for an X server, the
+ * Wayland socket file for gowl.  Never a directory (0.51.4): the X
+ * socket directory holds the operator's own X server, and gowl's runtime
+ * directory holds gowl.sock and gowl-mcp.sock, whose `spawn` runs a
+ * command outside any box.  Empty before a start; N changes per start.
  *
  * Returns: (transfer full): the paths, possibly empty
  */

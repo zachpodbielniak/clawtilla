@@ -37,6 +37,21 @@ clawt_config_agent_state_dir(ClawtConfig *config, const gchar *agent_id)
     return g_build_filename(state_dir, "agents", agent_id, NULL);
 }
 
+gchar *
+clawt_config_display_dir(ClawtConfig *config, const gchar *agent_id)
+{
+    g_autofree gchar *state_dir = NULL;
+
+    g_return_val_if_fail(CLAWT_IS_CONFIG(config), NULL);
+    g_return_val_if_fail(agent_id != NULL, NULL);
+
+    state_dir = clawt_config_get_path_value(config, "daemon.state_dir");
+    if (state_dir == NULL)
+        state_dir = clawt_expand_path("~/.clawtilla");
+
+    return g_build_filename(state_dir, "displays", agent_id, NULL);
+}
+
 /*
  * YAML quoting for the values we emit.
  *

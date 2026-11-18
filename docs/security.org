@@ -1114,11 +1114,20 @@ What it opens, and to whom:
 
 - *The display itself* is reachable by anything running as you that can
   reach its socket: the X server's under ~/tmp/.X11-unix~ (its abstract
-  socket too; no TCP), or gowl's in a 0700 directory under the agent's
-  state.  An X server trusts local clients, so another process of yours
+  socket too; no TCP), or gowl's in a 0700 directory under
+  ~<state_dir>/displays/<id>~.  An X server trusts local clients, so another process of yours
   could read its keystrokes -- the keystrokes an agent types into it.
-  Under ~bwrap~ only that socket is bound in, and the Landlock scope
-  keeps a box from reaching other abstract sockets.
+- *Under ~bwrap~, only the screen's own socket is bound in* (since 0.51.4), into the ~clawtilla_computer_exec~ box and the agent's own box alike: ~/tmp/.X11-unix/X<N>~ for an X server, the ~wayland-N~ socket file for gowl. Never their directories, and the Landlock scope keeps a box from the abstract sockets. Before 0.51.4 a box was given more, and each was an escape:
+  - *~/tmp/.X11-unix~, the directory.* It holds every X server on the machine, including the operator's own session (GNOME's Xwayland trusts ~localuser~, and a box runs as the same uid). A boxed agent could type into the operator's terminal or read the real screen.
+  - *gowl's runtime directory.* It also holds ~gowl.sock~ and ~gowl-mcp.sock~, and both answer ~spawn~ by running a command as the operator, outside any box, past ~allow_spawn~, ~deny_paths~ and the network gate.
+  - *The display's state under the agent's state directory*, which the agent's box has writable. An agent could reach gowl's sockets there, and could put a symlink where the unconfined daemon opens ~server.log~ or ~apps.log~, so the daemon wrote output the agent chose to a file of the agent's choosing.
+
+  The fixes:
+  - The display's state now lives in ~<state_dir>/displays/<id>~, which no box is granted (=clawt_config_display_dir()=).
+  - Each start removes the previous start's socket binds and adds the current ones, since ~N~ changes.
+  - The logs are opened with ~O_NOFOLLOW~ and must be regular files.
+  
+  Tests: =/display/computer/binds-the-socket-alone=, =/display/server/logs-refuse-symlinks=, =/agent-confine/display-box-has-no-screen-directories=, =/agent-confine/prepare-binds-the-screen-socket-alone=.
 - *Xvnc's VNC port* listens on 127.0.0.1 with no password: anyone who
   can open a TCP connection on this machine can watch and drive that
   screen.  That is the trust the daemon's own unix socket gives, and the

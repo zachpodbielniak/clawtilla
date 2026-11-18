@@ -39,7 +39,9 @@
 #include <glib/gstdio.h>
 
 #if defined(__linux__)
+#include <fcntl.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
 #endif
 
 #define START_TIMEOUT_MS   (20000)
@@ -1153,9 +1155,43 @@ find_wayland_socket(const gchar *run_dir)
     return NULL;
 }
 
+/*
+ * A log the daemon writes for a child, opened here rather than by name in
+ * GLib (0.51.4).  Not through a symlink and only as a regular file: the
+ * daemon is unconfined, so a link planted where the log goes would have
+ * it write -- with output an agent chooses -- wherever the link points.
+ * The display's directory is outside every box now, which closes that
+ * on its own; this keeps it closed if a directory is ever shared again.
+ */
+static gint
+open_log(const gchar *path, GError **error)
+{
+    struct stat st;
+    gint fd = g_open(path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW |
+                               O_CLOEXEC | O_NOCTTY, 0600);
+
+    if (fd < 0) {
+        gint saved = errno;
+
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_RUNTIME_SPAWN,
+                    "could not open the log %s: %s%s", path,
+                    g_strerror(saved),
+                    saved == ELOOP ? " (it is a symlink; refused)" : "");
+        return -1;
+    }
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_RUNTIME_SPAWN,
+                    "the log %s is not a regular file; refused", path);
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
 static gboolean
 start_x(ClawtDisplayServer *self, const gchar *binary, GError **error)
 {
+    gint log_fd;
     g_autoptr(GSubprocessLauncher) launcher = NULL;
     g_autoptr(GSubprocess) server = NULL;
     g_autoptr(GHashTable) extra = g_hash_table_new(g_str_hash, g_str_equal);
@@ -1182,8 +1218,11 @@ start_x(ClawtDisplayServer *self, const gchar *binary, GError **error)
                                      self->height, self->depth, fbdir,
                                      self->vnc_port, NULL);
 
+    log_fd = open_log(self->log, error);
+    if (log_fd < 0)
+        return FALSE;
     launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE);
-    g_subprocess_launcher_set_stderr_file_path(launcher, self->log);
+    g_subprocess_launcher_take_stderr_fd(launcher, log_fd);
     environment = clawt_build_child_environment(extra);
     g_subprocess_launcher_set_environ(launcher, environment);
 
@@ -1212,6 +1251,7 @@ start_x(ClawtDisplayServer *self, const gchar *binary, GError **error)
 static gboolean
 start_gowl(ClawtDisplayServer *self, const gchar *binary, GError **error)
 {
+    gint log_fd;
     g_autoptr(GSubprocessLauncher) launcher = NULL;
     g_autoptr(GSubprocess) server = NULL;
     g_autoptr(GHashTable) extra = NULL;
@@ -1243,8 +1283,11 @@ start_gowl(ClawtDisplayServer *self, const gchar *binary, GError **error)
                                      self->width, self->height, self->depth,
                                      NULL, 0, config);
 
+    log_fd = open_log(self->log, error);
+    if (log_fd < 0)
+        return FALSE;
     launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_SILENCE);
-    g_subprocess_launcher_set_stderr_file_path(launcher, self->log);
+    g_subprocess_launcher_take_stderr_fd(launcher, log_fd);
     g_subprocess_launcher_set_environ(launcher, environment);
     /*
      * Its working directory is the one its MCP spawn hands to apps, so
@@ -1454,8 +1497,13 @@ clawt_display_server_dup_bind_paths(ClawtDisplayServer *self)
 
         g_strv_builder_add(out, socket);
     }
-    if (self->run_dir != NULL)
-        g_strv_builder_add(out, self->run_dir);
+    /*
+     * gowl's Wayland socket and nothing else of its runtime directory
+     * (0.51.4): gowl.sock and gowl-mcp.sock beside it both have a
+     * `spawn` that runs a command as the operator, outside any box.
+     */
+    if (self->wayland != NULL)
+        g_strv_builder_add(out, self->wayland);
     g_mutex_unlock(&self->lock);
     return g_strv_builder_end(out);
 }
@@ -1822,6 +1870,7 @@ static gint
 spawn_app(ClawtDisplayServer *self, const gchar *command,
           GHashTable *environment, ClawtSandbox *sandbox, GError **error)
 {
+    gint log_fd;
     g_autoptr(GSubprocessLauncher) launcher = NULL;
     g_autoptr(GSubprocess) child = NULL;
     g_autoptr(GHashTable) extra = g_hash_table_new_full(
@@ -1878,10 +1927,13 @@ spawn_app(ClawtDisplayServer *self, const gchar *command,
         argv = g_strdupv((gchar **)shell);
     }
 
+    log_fd = open_log(log, error);
+    if (log_fd < 0)
+        return 0;
     launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDIN_INHERIT);
     g_subprocess_launcher_set_environ(launcher, env);
-    g_subprocess_launcher_set_stdout_file_path(launcher, log);
-    g_subprocess_launcher_set_stderr_file_path(launcher, log);
+    g_subprocess_launcher_take_stderr_fd(launcher, dup(log_fd));
+    g_subprocess_launcher_take_stdout_fd(launcher, log_fd);
     g_subprocess_launcher_set_cwd(launcher, g_get_home_dir());
 
     child = spawn_lasting_with(launcher, (const gchar * const *)argv,

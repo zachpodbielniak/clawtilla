@@ -5269,13 +5269,22 @@ start_agent_launch(ClawtDaemon *self, const gchar *agent_id,
 
         if (CLAWT_IS_PROCESS_RUNTIME(runtime)) {
             g_autoptr(GHashTable) screen = NULL;
+            g_auto(GStrv) sockets = NULL;
 
-            if (computer != NULL && CLAWT_IS_DISPLAY_COMPUTER(computer))
-                screen = clawt_display_server_dup_environment(
+            if (computer != NULL && CLAWT_IS_DISPLAY_COMPUTER(computer)) {
+                ClawtDisplayServer *server =
                     clawt_display_computer_get_server(
-                        CLAWT_DISPLAY_COMPUTER(computer)));
+                        CLAWT_DISPLAY_COMPUTER(computer));
+
+                screen = clawt_display_server_dup_environment(server);
+                sockets = clawt_display_server_dup_bind_paths(server);
+            }
             clawt_process_runtime_set_display_environment(
                 CLAWT_PROCESS_RUNTIME(runtime), screen);
+            /* the screen's sockets alone, never their directories */
+            clawt_process_runtime_set_display_binds(
+                CLAWT_PROCESS_RUNTIME(runtime),
+                (const gchar * const *)sockets);
         }
     }
 

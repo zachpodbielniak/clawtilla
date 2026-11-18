@@ -523,7 +523,6 @@ create_for(ClawtAgentConfig  *agent_config,
         g_autoptr(GHashTable) env = NULL;
         g_auto(GStrv) startup = NULL;
         g_autofree gchar *resolution = NULL;
-        g_autofree gchar *state = NULL;
         g_autofree gchar *dir = NULL;
         g_autofree gchar *gowl_binary = NULL;
         ClawtConfig *fleet = clawt_agent_config_get_config(agent_config);
@@ -542,11 +541,11 @@ create_for(ClawtAgentConfig  *agent_config,
                       "WIDTHxHEIGHT between 64 and 8192; using 1280x800",
                       agent_id, resolution);
 
-        state = (fleet != NULL)
-            ? clawt_config_agent_state_dir(fleet, agent_id)
-            : g_build_filename(g_get_user_state_dir(), "clawtilla", "agents",
-                               agent_id, NULL);
-        dir = g_build_filename(state, "display", NULL);
+        /* Outside the agent's own state, which its box can write. */
+        dir = (fleet != NULL)
+            ? clawt_config_display_dir(fleet, agent_id)
+            : g_build_filename(g_get_user_state_dir(), "clawtilla",
+                               "displays", agent_id, NULL);
 
         server = clawt_display_server_new(
             (ClawtDisplayBackend)clawt_agent_config_get_enum(

@@ -1999,7 +1999,7 @@ The display is the cheap middle: no VM to build, apps you already have installed
 Started as ~gowl --config <dir>/gowl.yaml --no-c-config~, with an environment of its own:
 
 #+begin_example
-XDG_RUNTIME_DIR=<state>/agents/<id>/display/run    its sockets, not yours
+XDG_RUNTIME_DIR=<state>/displays/<id>/run          its sockets, not yours
 WLR_BACKENDS=headless  WLR_HEADLESS_OUTPUTS=1       no screen, no GPU
 WLR_RENDERER=pixman    WLR_LIBINPUT_NO_DEVICES=1
 GOWL_OUTPUT_SIZE=1280x800                            computer.display.resolution
@@ -2091,7 +2091,7 @@ The same actions are on the wire as ~computer.act~ (see [[file:ipc-protocol.org]
 
 The commands and apps run under ~computer.host.confine~, exactly as ~host~ runs them, and a display computer needs the same two deliberate acts as ~host~: ~computer.host.confirm_host_control: true~, and for ~confine: none~ the fleet's ~daemon.allow_unconfined_host~.
 
-Under ~bwrap~ the box has a private ~/tmp~ and none of your runtime directory, so the screen is bound in: ~/tmp/.X11-unix~ for an X server, the display's run directory for gowl.  The agent's own process sandbox (~runtime.confine: bwrap~) binds the same two.  ~computer.host.deny_paths~ is applied to the agent's own box as it is for ~host~.
+Under ~bwrap~ the box has a private ~/tmp~ and none of your runtime directory, so the screen's socket is bound in, by itself: ~/tmp/.X11-unix/X<N>~ for an X server, the ~wayland-N~ socket file for gowl (whose ~WAYLAND_DISPLAY~ is that absolute path). Each start takes the previous start's bind out first, because ~N~ changes. The agent's own process sandbox (~runtime.confine: bwrap~) binds the same socket at each of its starts. Never the directories, since 0.51.4: ~/tmp/.X11-unix~ also holds your own session's X server, and gowl's run directory also holds ~gowl.sock~ and ~gowl-mcp.sock~, whose ~spawn~ runs commands outside the box. See [[file:security.org::*Virtual displays][security.org]].  ~computer.host.deny_paths~ is applied to the agent's own box as it is for ~host~.
 
 *** Watching it, and taking it
 
@@ -2101,7 +2101,7 @@ The status line names the server drawing the screen (~display_backend~), whether
 
 *** Where its files are
 
-~<state_dir>/agents/<id>/display/~: ~server.log~ (the server's stderr), ~apps.log~ (apps started there, for X), ~gowl.yaml~, ~run/~ (gowl's sockets) and ~fb/~ (Xvfb's framebuffer).  ~run/~ and ~fb/~ are removed when the display stops.  The run directory's path has to fit a unix socket address (108 bytes); a state directory deep enough to break that is refused at start with the path named.
+~<state_dir>/displays/<id>/~ (since 0.51.4; under ~agents/<id>/display/~ before, where the agent's own box could write it): ~server.log~ (the server's stderr), ~apps.log~ (apps started there, for X), ~gowl.yaml~, ~run/~ (gowl's sockets) and ~fb/~ (Xvfb's framebuffer). No box is granted this directory. The logs are opened with ~O_NOFOLLOW~, and a log that is a symlink or not a regular file is refused with the reason. A leftover ~agents/<id>/display/~ from 0.51.0 to 0.51.3 is no longer used and can be removed.  ~run/~ and ~fb/~ are removed when the display stops.  The run directory's path has to fit a unix socket address (108 bytes); a state directory deep enough to break that is refused at start with the path named.
 
 *** Requirements
 

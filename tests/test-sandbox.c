@@ -448,6 +448,47 @@ test_bwrap_wrapping(void)
     paths_teardown(&paths);
 }
 
+/*
+ * A mount taken back out (0.51.4) is gone from the box and from the
+ * argument check -- every entry for it -- while the others stay.  A
+ * display's X socket moves per start; the old one must not linger.
+ */
+static void
+test_remove_mount_path(void)
+{
+    g_autoptr(ClawtSandbox) sandbox =
+        clawt_sandbox_new(CLAWT_CONFINE_BWRAP, "/tmp");
+    g_auto(GStrv) wrapped = NULL;
+    const gchar *argv[] = { "ls", NULL };
+    g_autofree gchar *removed = NULL;
+    g_autofree gchar *kept = NULL;
+    guint i;
+    gboolean saw_kept = FALSE;
+
+    clawt_sandbox_add_mount_path(sandbox, "/opt/screen-a", TRUE);
+    clawt_sandbox_add_mount_path(sandbox, "/opt/screen-b", FALSE);
+    clawt_sandbox_add_mount_path(sandbox, "/opt/screen-a", TRUE);
+    clawt_sandbox_remove_mount_path(sandbox, "/opt/screen-a");
+    clawt_sandbox_remove_mount_path(sandbox, "/opt/never-added");
+    clawt_sandbox_remove_mount_path(sandbox, NULL);
+
+    g_assert_false(clawt_sandbox_path_is_allowed(sandbox, "/opt/screen-a"));
+    g_assert_true(clawt_sandbox_path_is_allowed(sandbox, "/opt/screen-b"));
+
+    /* stored canonical: /opt is /var/opt on an ostree host */
+    removed = clawt_canonicalize_missing("/opt/screen-a");
+    kept = clawt_canonicalize_missing("/opt/screen-b");
+    wrapped = clawt_sandbox_wrap_argv(sandbox, argv);
+    for (i = 0; wrapped[i] != NULL; i++) {
+        g_assert_cmpstr(wrapped[i], !=, removed);
+        if (g_strcmp0(wrapped[i], kept) == 0 && i > 0 &&
+            g_strcmp0(wrapped[i - 1], "--ro-bind") == 0)
+            saw_kept = TRUE;
+    }
+    /* the remaining mount kept its own mode, not its neighbour's */
+    g_assert_true(saw_kept);
+}
+
 /* Weaker modes must not wrap anything. */
 static void
 test_non_bwrap_modes_do_not_wrap(void)
@@ -1055,6 +1096,7 @@ main(int argc, char *argv[])
     g_test_add_func("/sandbox/none", test_none_permits_everything);
     g_test_add_func("/sandbox/bwrap-availability", test_bwrap_availability_is_checked);
     g_test_add_func("/sandbox/bwrap-wrapping", test_bwrap_wrapping);
+    g_test_add_func("/sandbox/remove-mount-path", test_remove_mount_path);
     g_test_add_func("/sandbox/no-wrap-otherwise", test_non_bwrap_modes_do_not_wrap);
     g_test_add_func("/sandbox/bwrap-denies", test_bwrap_denies_reach_the_sandbox);
     g_test_add_func("/sandbox/bwrap-deny-unbound",

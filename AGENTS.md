@@ -1221,6 +1221,12 @@ Other VM facts:
 - **`-nolisten unix-abstract` is a private-`/tmp` trap.** X is then
   reachable only through `/tmp/.X11-unix`, which a daemon with
   PrivateTmp or a sandbox does not share with the child it starts.
+- **Into a box, bind the socket -- never the directory it lives in.**
+  `/tmp/.X11-unix` holds the operator's own X server; gowl's runtime
+  directory holds `gowl.sock`, whose `spawn` runs outside the box (0.51.4
+  security review). And anything the unconfined daemon writes by name --
+  logs, configs -- lives outside every box's writable grant, or is opened
+  `O_NOFOLLOW`: a box's state directory is the agent's to plant links in.
 - **An environment built from two lists needs one winner.**
   `clawt_build_child_environment()` wrote an allowlisted name and the
   same name from the extras, and getenv() returns the first -- so an

@@ -750,6 +750,66 @@ test_default_login_paths(void)
  * state directory is kept apart from the agent's here, or the agent's rw
  * grant would cover the key and the test could not tell.
  */
+/*
+ * A display agent's box (0.51.4) is not granted the X socket directory --
+ * which holds the operator's own X server -- nor anything of the
+ * display's directory, which holds gowl's control sockets and the logs
+ * the unconfined daemon opens.  And that directory is not inside the
+ * agent's state directory, which the box has writable.
+ */
+static void
+test_display_box_has_no_screen_directories(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *daemon_state = NULL;
+    g_autofree gchar *yaml = NULL;
+    g_autofree gchar *agent_state = NULL;
+    g_autofree gchar *display = NULL;
+    g_auto(GStrv) wrapped = NULL;
+    const gchar *argv[] = { "/bin/true", NULL };
+    guint i;
+
+    fixture_setup(&fixture);
+    with_bwrap(&fixture);
+
+    daemon_state = g_build_filename(fixture.base, "daemon", NULL);
+    yaml = g_strdup_printf(
+        "daemon:\n"
+        "  state_dir: \"%s\"\n"
+        "agents:\n"
+        "  - id: painter\n"
+        "    workspace: \"%s\"\n"
+        "    computer:\n"
+        "      type: display\n"
+        "    runtime:\n"
+        "      confine: bwrap\n",
+        daemon_state, fixture.workspace);
+    config = clawt_config_load_from_string(yaml, &error);
+    g_assert_no_error(error);
+
+    agent_state = clawt_config_agent_state_dir(config, "painter");
+    display = clawt_config_display_dir(config, "painter");
+    g_assert_false(clawt_path_is_within(display, agent_state));
+    g_assert_true(clawt_path_is_within(display, daemon_state));
+
+    sandbox = clawt_agent_confine_build(clawt_config_get_agent(config,
+                                                               "painter"),
+                                        agent_state, NULL, NULL, NULL,
+                                        &error);
+    g_assert_no_error(error);
+    wrapped = clawt_sandbox_wrap_argv(sandbox, argv);
+
+    for (i = 0; wrapped[i] != NULL; i++) {
+        g_assert_cmpstr(wrapped[i], !=, "/tmp/.X11-unix");
+        g_assert_false(clawt_path_is_within(wrapped[i], display));
+    }
+    g_assert_false(clawt_sandbox_path_is_allowed(sandbox, display));
+    fixture_teardown(&fixture);
+}
+
 static void
 test_broker_key_is_bound_alone(void)
 {
@@ -847,6 +907,59 @@ confined_runtime(Fixture *fixture, ClawtConfig *config, GHashTable *env,
     clawt_process_runtime_set_sandbox(runtime, sandbox);
 
     return runtime;
+}
+
+/*
+ * The display's sockets in the agent's own box (0.51.4): each bound by
+ * itself, and a start after the screen moved binds the new one and not
+ * the old -- the old number may be somebody else's screen by then.
+ */
+static void
+test_prepare_binds_the_screen_socket_alone(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(ClawtConfig) config = NULL;
+    g_autoptr(ClawtProcessRuntime) runtime = NULL;
+    g_autoptr(GError) error = NULL;
+    g_auto(GStrv) first = NULL;
+    g_auto(GStrv) first_env = NULL;
+    g_auto(GStrv) second = NULL;
+    g_auto(GStrv) second_env = NULL;
+    g_autofree gchar *old_socket = NULL;
+    g_autofree gchar *new_socket = NULL;
+    g_autofree gchar *binary = NULL;
+    g_autofree gchar *config_path = NULL;
+    const gchar *old_binds[2] = { NULL, NULL };
+    const gchar *new_binds[2] = { NULL, NULL };
+
+    fixture_setup(&fixture);
+    with_bwrap(&fixture);
+
+    old_socket = g_build_filename(fixture.base, "X41", NULL);
+    new_socket = g_build_filename(fixture.base, "X42", NULL);
+    g_assert_true(g_file_set_contents(old_socket, "", 0, NULL));
+    g_assert_true(g_file_set_contents(new_socket, "", 0, NULL));
+    old_binds[0] = old_socket;
+    new_binds[0] = new_socket;
+
+    config = load(&fixture, NULL, "    runtime:\n      confine: bwrap\n");
+    runtime = confined_runtime(&fixture, config, NULL, &binary,
+                               &config_path);
+
+    clawt_process_runtime_set_display_binds(runtime, old_binds);
+    g_assert_true(clawt_process_runtime_prepare(runtime, &first, &first_env,
+                                                &error));
+    g_assert_no_error(error);
+    g_assert_cmpint(find_pair(first, "--bind", old_socket), >=, 0);
+
+    clawt_process_runtime_set_display_binds(runtime, new_binds);
+    g_assert_true(clawt_process_runtime_prepare(runtime, &second,
+                                                &second_env, &error));
+    g_assert_no_error(error);
+    g_assert_cmpint(find_pair(second, "--bind", new_socket), >=, 0);
+    g_assert_cmpint(find_pair(second, "--bind", old_socket), <, 0);
+
+    fixture_teardown(&fixture);
 }
 
 /*
@@ -1291,6 +1404,10 @@ main(int argc, char *argv[])
     g_test_add_func("/agent-confine/notice", test_notice);
     g_test_add_func("/agent-confine/broker-key-alone",
                     test_broker_key_is_bound_alone);
+    g_test_add_func("/agent-confine/display-box-has-no-screen-directories",
+                    test_display_box_has_no_screen_directories);
+    g_test_add_func("/agent-confine/prepare-binds-the-screen-socket-alone",
+                    test_prepare_binds_the_screen_socket_alone);
     g_test_add_func("/agent-confine/integration-real-box",
                     test_integration_real_box);
 
