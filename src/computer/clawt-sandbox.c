@@ -182,6 +182,29 @@ clawt_sandbox_add_mount_path(ClawtSandbox *self, const gchar *path,
     g_array_append_val(self->mount_writable, writable);
 }
 
+void
+clawt_sandbox_remove_mount_path(ClawtSandbox *self, const gchar *path)
+{
+    g_autofree gchar *normal = NULL;
+    guint i;
+
+    g_return_if_fail(CLAWT_IS_SANDBOX(self));
+
+    if (path == NULL)
+        return;
+
+    /* Backwards, so a removal does not skip the entry after it. */
+    normal = sandbox_normalize(self, path);
+    for (i = self->mount_paths->len; i > 0; i--) {
+        if (g_strcmp0(g_ptr_array_index(self->mount_paths, i - 1),
+                      normal) != 0)
+            continue;
+        g_ptr_array_remove_index(self->mount_paths, i - 1);
+        if (i - 1 < self->mount_writable->len)
+            g_array_remove_index(self->mount_writable, i - 1);
+    }
+}
+
 /*
  * Every stored path is canonicalised, because the candidate always is.
  *

@@ -685,28 +685,13 @@ clawt_agent_confine_build(ClawtAgentConfig     *config,
         grant(sandbox, sockets[i], TRUE);
 
     /*
-     * A display computer's screen (0.51.0), so a GUI app the agent starts
-     * from its own shell can draw on it: the X socket directory, and
-     * gowl's private runtime directory -- made now if the display has not
-     * started yet, since a bind needs its source to exist.
+     * A display computer's screen is not granted here (0.51.4): its X
+     * socket's number is only known once the display starts, and the
+     * directories that hold it are not the agent's to have -- the X
+     * socket directory holds the operator's own X server, gowl's runtime
+     * directory its control sockets.  The process runtime binds the one
+     * socket at each start (clawt_process_runtime_set_display_binds()).
      */
-    if (clawt_agent_config_get_enum(config, "computer.type") ==
-            CLAWT_COMPUTER_DISPLAY) {
-        ClawtConfig *fleet = clawt_agent_config_get_config(config);
-        g_autofree gchar *state = (fleet != NULL)
-            ? clawt_config_agent_state_dir(fleet,
-                                           clawt_agent_config_get_id(config))
-            : NULL;
-
-        grant(sandbox, "/tmp/.X11-unix", TRUE);
-        if (state != NULL) {
-            g_autofree gchar *run = g_build_filename(state, "display", "run",
-                                                     NULL);
-
-            if (g_mkdir_with_parents(run, 0700) == 0)
-                grant(sandbox, run, TRUE);
-        }
-    }
 
     /* What the operator named, read-only. */
     extra = clawt_agent_config_get_string_list(config,

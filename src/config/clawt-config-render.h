@@ -34,6 +34,23 @@ gchar *clawt_config_agent_state_dir(ClawtConfig *config,
                                     const gchar *agent_id);
 
 /**
+ * clawt_config_display_dir:
+ * @config: the fleet configuration
+ * @agent_id: the agent
+ *
+ * Where a display computer's server keeps its logs, its framebuffer and
+ * gowl's runtime directory: `<state_dir>/displays/<agent>` (since
+ * 0.51.4).  Deliberately not under clawt_config_agent_state_dir(), which
+ * an agent's bwrap box has writable: from there an agent could reach
+ * gowl's control sockets, whose `spawn` runs outside the box, and plant
+ * a symlink where the unconfined daemon opens a log.  No box is granted
+ * this directory; only a screen's socket is bound in, by itself.
+ *
+ * Returns: (transfer full): the expanded directory path
+ */
+gchar *clawt_config_display_dir(ClawtConfig *config, const gchar *agent_id);
+
+/**
  * clawt_config_render_agent:
  * @config: the fleet configuration
  * @agent: the agent to render

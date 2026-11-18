@@ -409,6 +409,21 @@ The ~forge~ record type is owner-only in VENTURE, so an editor -- every agent ac
 - *Then (0.50.0):* the plan's scratch agent per test run -- a temporary copy of the named agent with the skill under test alone, never saved, removed when the run settles.
 - *Version:* minor.
 
+** DONE Security review: a display's screen, and only its screen, in a box v0.51.4 :computers:security:
+- *Requested:* by the user on 2026-11-18, as a security review of 0.51.0-0.51.3 with fixes in a micro release.
+- *Found:* three ways out of a ~bwrap~ box, all added with the display computer in 0.51.0.
+  - Both boxes were given gowl's runtime directory, whose ~gowl.sock~ and ~gowl-mcp.sock~ ~spawn~ commands outside any box.
+  - Both boxes were given ~/tmp/.X11-unix~, which also holds the operator's own X server.
+  - The display's logs sat in the agent's writable state directory, and the unconfined daemon opened them by name, following symlinks.
+- *Done:*
+  - The display's state moved to ~<state_dir>/displays/<id>~ (=clawt_config_display_dir()=).
+  - =clawt_display_server_dup_bind_paths()= returns only the X socket or the Wayland socket file.
+  - Both boxes re-bind it at each start: =clawt_sandbox_remove_mount_path()= and =clawt_process_runtime_set_display_binds()=.
+  - =clawt_agent_confine_build()= no longer grants either directory.
+  - The logs are opened with ~O_NOFOLLOW~ and must be regular files.
+  - Tests for each.
+- *Version:* micro.
+
 ** DONE Drop-downs for settings that take a fixed set of values v0.51.3 :clients:configuration:
 - *Requested:* by the user on 2026-11-16: "lots of various settings have just text boxes to fill in, but only accept specific values. these should all be drop downs."
 - *Done:* =src/config/clawt-choices.[ch]=: effort, weekday, schedule, reviewer and screen-size lists (count, nth, label), walked by GTK, web and lrg and enforced by =make parity=. Web: effort, reviewer (agent and project), resolutions, provider and images from the daemon, routine schedule, weekday, agent and enum keys, and trigger agent. GTK: =clawt_gtk_value_row_new()=; effort with the model's default (no longer "medium" written back), reviewer rows on the agent and project, display backend and size rows. lrg: a reviewer chooser on the agent and project, display size, and the shared lists. A value not on a list is kept as its own entry. =test-choices= holds each list against the parser that reads it.

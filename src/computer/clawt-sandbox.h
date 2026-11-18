@@ -120,6 +120,19 @@ void clawt_sandbox_add_allow_path(ClawtSandbox *self, const gchar *path);
  */
 void clawt_sandbox_add_mount_path(ClawtSandbox *self, const gchar *path,
                                   gboolean writable);
+
+/**
+ * clawt_sandbox_remove_mount_path:
+ * @self: a #ClawtSandbox
+ * @path: a path given to clawt_sandbox_add_mount_path()
+ *
+ * Takes a mount back out (since 0.51.4): every entry for @path, by the
+ * same canonical spelling it was stored under.  For a grant that moves
+ * -- a display's X socket is /tmp/.X11-unix/X<N> with a new N each
+ * start -- so the box holds the screen it has now and not every screen
+ * it ever had, one of which may since be somebody else's.
+ */
+void clawt_sandbox_remove_mount_path(ClawtSandbox *self, const gchar *path);
 void clawt_sandbox_add_deny_path(ClawtSandbox *self, const gchar *path);
 
 /**

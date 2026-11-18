@@ -79,6 +79,20 @@ void clawt_process_runtime_set_display_environment(ClawtProcessRuntime *self,
                                                    GHashTable          *env);
 
 /**
+ * clawt_process_runtime_set_display_binds:
+ * @self: a #ClawtProcessRuntime
+ * @paths: (array zero-terminated=1) (nullable): the screen's sockets,
+ *   from clawt_display_server_dup_bind_paths(), or %NULL for none
+ *
+ * The sockets bound into the agent's box at the next start (since
+ * 0.51.4), each by itself; those of the previous start are taken back
+ * out first, since an X display's number changes per start.  Nothing
+ * when the agent is not confined.
+ */
+void clawt_process_runtime_set_display_binds(ClawtProcessRuntime *self,
+                                             const gchar * const *paths);
+
+/**
  * clawt_process_runtime_set_sandbox:
  * @self: a #ClawtProcessRuntime
  * @sandbox: (nullable): the bubblewrap sandbox to start the child in, or

@@ -23,6 +23,7 @@
 #include <clawtilla.h>
 #include <glib/gstdio.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "clawt-test-util.h"
 #include "core/clawt-daemon-private.h"
@@ -689,6 +690,11 @@ test_server_lifecycle(void)
     g_assert_cmpstr(g_hash_table_lookup(env, "DISPLAY"), ==, ":77");
     g_assert_cmpstr(g_hash_table_lookup(env, "GDK_BACKEND"), ==, "x11");
     binds = clawt_display_server_dup_bind_paths(server);
+    /*
+     * The socket alone (0.51.4).  The directory would hand a bwrap box
+     * every X server on the machine, the operator's own included.
+     */
+    g_assert_cmpuint(g_strv_length(binds), ==, 1);
     g_assert_cmpstr(binds[0], ==, "/tmp/.X11-unix/X77");
 
     /* the picture is the framebuffer the server wrote */
@@ -747,6 +753,58 @@ test_server_death_is_explained(void)
  * An app launched on the display gets the screen's DISPLAY and none of
  * the daemon's own environment, and stops with the server.
  */
+/*
+ * The unconfined daemon opens the server's and the apps' logs (0.51.4):
+ * a symlink where a log goes is refused, not followed -- following it
+ * wrote output an agent chose wherever the link pointed, as the
+ * operator.  The target is left exactly as it was.
+ */
+static void
+test_logs_refuse_symlinks(void)
+{
+    FakeX fake = { 0 };
+    g_autofree gchar *dir = NULL;
+    g_autofree gchar *target = NULL;
+    g_autofree gchar *server_log = NULL;
+    g_autofree gchar *apps_log = NULL;
+    g_autofree gchar *after = NULL;
+    g_autoptr(ClawtDisplayServer) server = NULL;
+    g_autoptr(GError) error = NULL;
+
+    fake_x_setup(&fake);
+    dir = g_build_filename(fake.root, "display", NULL);
+    target = g_build_filename(fake.root, "victim", NULL);
+    server_log = g_build_filename(dir, "server.log", NULL);
+    apps_log = g_build_filename(dir, "apps.log", NULL);
+    g_assert_cmpint(g_mkdir_with_parents(dir, 0700), ==, 0);
+    g_assert_true(g_file_set_contents(target, "keep\n", -1, NULL));
+    server = clawt_display_server_new(CLAWT_DISPLAY_BACKEND_XVFB, dir, 640,
+                                      480);
+
+    /* the server's log */
+    g_assert_cmpint(symlink(target, server_log), ==, 0);
+    g_assert_false(clawt_display_server_start(server, &error));
+    g_assert_nonnull(error);
+    g_assert_nonnull(strstr(error->message, "symlink"));
+    g_clear_error(&error);
+    g_assert_cmpint(unlink(server_log), ==, 0);
+
+    /* an app's log, the one an agent's own command writes into */
+    g_assert_true(clawt_display_server_start(server, &error));
+    g_assert_no_error(error);
+    g_assert_cmpint(symlink(target, apps_log), ==, 0);
+    g_assert_false(clawt_display_server_launch(server, "echo overwritten",
+                                               NULL, NULL, NULL, &error));
+    g_assert_nonnull(error);
+    g_clear_error(&error);
+
+    g_assert_true(g_file_get_contents(target, &after, NULL, NULL));
+    g_assert_cmpstr(after, ==, "keep\n");
+
+    clawt_display_server_stop(server);
+    fake_x_teardown(&fake);
+}
+
 static void
 test_server_launch(void)
 {
@@ -817,6 +875,65 @@ fake_display_computer(FakeX *fake, ClawtDisplayServer **server_out)
         *server_out = g_object_ref(server);
     return clawt_display_computer_new("painter",
                                       CLAWT_HOST_COMPUTER(host), server);
+}
+
+/*
+ * Under bwrap the computer's box gets the screen's socket and nothing
+ * around it (0.51.4): not /tmp/.X11-unix, which holds the operator's own
+ * X server too.  A second start binds it once, not twice, and a stop and
+ * start re-takes it rather than keeping the old one beside it.
+ */
+static void
+test_computer_binds_the_socket_alone(void)
+{
+    FakeX fake = { 0 };
+    g_autofree gchar *dir = NULL;
+    g_autofree gchar *work = NULL;
+    g_autoptr(ClawtSandbox) sandbox = NULL;
+    g_autoptr(ClawtComputer) host = NULL;
+    g_autoptr(ClawtDisplayServer) server = NULL;
+    g_autoptr(ClawtComputer) computer = NULL;
+    g_autoptr(GError) error = NULL;
+    const gchar *argv[] = { "true", NULL };
+    guint round;
+
+    fake_x_setup(&fake);
+    dir = g_build_filename(fake.root, "display", NULL);
+    work = g_build_filename(fake.root, "work", NULL);
+    g_assert_cmpint(g_mkdir_with_parents(work, 0700), ==, 0);
+    sandbox = clawt_sandbox_new(CLAWT_CONFINE_BWRAP, work);
+    host = clawt_host_computer_new("painter", sandbox);
+    server = clawt_display_server_new(CLAWT_DISPLAY_BACKEND_XVFB, dir, 640,
+                                      480);
+    computer = clawt_display_computer_new("painter",
+                                          CLAWT_HOST_COMPUTER(host), server);
+
+    for (round = 0; round < 2; round++) {
+        g_auto(GStrv) wrapped = NULL;
+        guint binds = 0;
+        guint i;
+
+        g_assert_true(clawt_computer_start(computer, &error));
+        g_assert_no_error(error);
+        /* a second start of a running computer */
+        g_assert_true(clawt_computer_start(computer, &error));
+        g_assert_no_error(error);
+
+        wrapped = clawt_sandbox_wrap_argv(sandbox, argv);
+        for (i = 0; wrapped[i] != NULL; i++) {
+            g_assert_cmpstr(wrapped[i], !=, "/tmp/.X11-unix");
+            g_assert_false(g_str_has_prefix(wrapped[i], dir));
+            if (g_strcmp0(wrapped[i], "--bind") == 0 &&
+                g_strcmp0(wrapped[i + 1], "/tmp/.X11-unix/X77") == 0)
+                binds++;
+        }
+        g_assert_cmpuint(binds, ==, 1);
+
+        g_assert_true(clawt_computer_stop(computer, &error));
+        g_assert_no_error(error);
+    }
+
+    fake_x_teardown(&fake);
 }
 
 /*
@@ -1695,6 +1812,18 @@ test_real_gowl(void)
                                                        "WAYLAND_DISPLAY"),
                                    dir));
 
+    /*
+     * Only the Wayland socket is bound into a box (0.51.4): gowl.sock and
+     * gowl-mcp.sock beside it both spawn commands outside any box.
+     */
+    {
+        g_auto(GStrv) binds = clawt_display_server_dup_bind_paths(server);
+
+        g_assert_cmpuint(g_strv_length(binds), ==, 1);
+        g_assert_cmpstr(binds[0], ==,
+                        g_hash_table_lookup(env, "WAYLAND_DISPLAY"));
+    }
+
     png = clawt_display_server_capture(server, &error);
     g_assert_no_error(error);
     g_assert_true(clawt_screen_png_size(png, &w, &h));
@@ -1760,6 +1889,10 @@ main(int argc, char *argv[])
     g_test_add_func("/display/server/death-is-explained",
                     test_server_death_is_explained);
     g_test_add_func("/display/server/launch", test_server_launch);
+    g_test_add_func("/display/server/logs-refuse-symlinks",
+                    test_logs_refuse_symlinks);
+    g_test_add_func("/display/computer/binds-the-socket-alone",
+                    test_computer_binds_the_socket_alone);
     g_test_add_func("/display/computer/commands-and-startup",
                     test_computer_commands_and_startup);
     g_test_add_func("/display/computer/observable",

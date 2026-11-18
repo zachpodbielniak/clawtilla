@@ -27,7 +27,7 @@ struct _ClawtDisplayComputer {
     ClawtDisplayServer  *server;
     GHashTable          *environment;    /* the agent's own env: */
     GStrv                startup;
-    gboolean             bound;          /* sandbox binds added */
+    GStrv                bound;          /* sandbox binds now in the box */
 };
 
 static void display_observable_init(ClawtObservableInterface *iface);
@@ -122,10 +122,15 @@ apply_environment(ClawtDisplayComputer *self)
 /*
  * Under bwrap the box has a private /tmp and no XDG runtime of the
  * host's: the screen's socket must be bound in or no app can draw.
+ *
+ * The socket and only the socket (0.51.4): binding /tmp/.X11-unix gave
+ * the box every X server on the machine, the operator's own included,
+ * and binding gowl's runtime directory gave it gowl.sock, whose `spawn`
+ * runs a command outside the box.  The X socket's number changes per
+ * start, so the previous start's binds are taken back out first: a box
+ * keeps the screen it has, not one that may since be somebody else's.
  * Writable, as the agent's own box binds the daemon's sockets: connect()
  * on a unix socket counts as a write to some confinement layers.
- * Once per computer: the X socket directory and gowl's runtime directory
- * do not move between starts.
  */
 static void
 bind_screen(ClawtDisplayComputer *self)
@@ -134,19 +139,18 @@ bind_screen(ClawtDisplayComputer *self)
     g_auto(GStrv) paths = NULL;
     guint i;
 
-    if (self->bound || sandbox == NULL ||
+    if (sandbox == NULL ||
         clawt_sandbox_get_mode(sandbox) != CLAWT_CONFINE_BWRAP)
         return;
 
-    paths = clawt_display_server_dup_bind_paths(self->server);
-    for (i = 0; paths != NULL && paths[i] != NULL; i++) {
-        /* the X socket's directory, not the socket: :N changes per start */
-        g_autofree gchar *path = g_str_has_prefix(paths[i], "/tmp/.X11-unix/")
-            ? g_strdup("/tmp/.X11-unix") : g_strdup(paths[i]);
+    for (i = 0; self->bound != NULL && self->bound[i] != NULL; i++)
+        clawt_sandbox_remove_mount_path(sandbox, self->bound[i]);
+    g_clear_pointer(&self->bound, g_strfreev);
 
-        clawt_sandbox_add_mount_path(sandbox, path, TRUE);
-    }
-    self->bound = TRUE;
+    paths = clawt_display_server_dup_bind_paths(self->server);
+    for (i = 0; paths != NULL && paths[i] != NULL; i++)
+        clawt_sandbox_add_mount_path(sandbox, paths[i], TRUE);
+    self->bound = g_steal_pointer(&paths);
 }
 
 static gboolean
@@ -416,6 +420,7 @@ clawt_display_computer_dispose(GObject *object)
     g_clear_object(&self->host);
     g_clear_pointer(&self->environment, g_hash_table_unref);
     g_clear_pointer(&self->startup, g_strfreev);
+    g_clear_pointer(&self->bound, g_strfreev);
 
     G_OBJECT_CLASS(clawt_display_computer_parent_class)->dispose(object);
 }

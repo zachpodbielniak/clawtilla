@@ -26,6 +26,8 @@ struct _ClawtProcessRuntime {
     gchar        *config_path;
     GHashTable   *environment;
     GHashTable   *display;      /* a display computer's variables, on top */
+    GStrv         display_binds; /* its sockets, for the next start */
+    GStrv         display_bound; /* those in the box now */
 
     /*
      * `runtime.confine: bwrap`.  NULL runs the child as it always ran.
@@ -169,6 +171,17 @@ clawt_process_runtime_set_display_environment(ClawtProcessRuntime *self,
 
     if (env != NULL && g_hash_table_size(env) > 0)
         self->display = g_hash_table_ref(env);
+}
+
+void
+clawt_process_runtime_set_display_binds(ClawtProcessRuntime *self,
+                                        const gchar * const *paths)
+{
+    g_return_if_fail(CLAWT_IS_PROCESS_RUNTIME(self));
+
+    g_clear_pointer(&self->display_binds, g_strfreev);
+    if (paths != NULL && paths[0] != NULL)
+        self->display_binds = g_strdupv((gchar **)paths);
 }
 
 void
@@ -783,6 +796,27 @@ clawt_process_runtime_prepare(ClawtProcessRuntime  *self,
         }
 
         /*
+         * The display's sockets, exactly (0.51.4): last start's out,
+         * this start's in.  Done on the sandbox here because only this
+         * start knows which screen is up now.
+         */
+        {
+            guint d;
+
+            for (d = 0; self->display_bound != NULL &&
+                        self->display_bound[d] != NULL; d++)
+                clawt_sandbox_remove_mount_path(self->sandbox,
+                                                self->display_bound[d]);
+            g_clear_pointer(&self->display_bound, g_strfreev);
+            for (d = 0; self->display_binds != NULL &&
+                        self->display_binds[d] != NULL; d++)
+                clawt_sandbox_add_mount_path(self->sandbox,
+                                             self->display_binds[d], TRUE);
+            if (self->display_binds != NULL)
+                self->display_bound = g_strdupv(self->display_binds);
+        }
+
+        /*
          * libreclaw itself, which in a checkout lives in a build tree
          * under $HOME that the box would otherwise not contain.  Bound
          * here rather than by whoever built the sandbox, because only
@@ -1290,6 +1324,8 @@ clawt_process_runtime_dispose(GObject *object)
     g_clear_object(&self->cancellable);
     g_clear_object(&self->log_stream);
     g_clear_pointer(&self->environment, g_hash_table_unref);
+    g_clear_pointer(&self->display_binds, g_strfreev);
+    g_clear_pointer(&self->display_bound, g_strfreev);
     g_clear_pointer(&self->display, g_hash_table_unref);
     g_clear_object(&self->sandbox);
     revoke_broker_token(self);
