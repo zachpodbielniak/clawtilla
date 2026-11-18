@@ -272,36 +272,19 @@ main(int argc, char *argv[])
     }
 
     /*
-     * Which daemon to open on.  --host wins over --profile, which wins
-     * over the local socket; a laptop with no fleet of its own can start
-     * straight on a workstation rather than being shown "the daemon is
-     * not running" for a daemon it was never asking about.
+     * Which daemon to open on: --host, then --profile, then --socket,
+     * then the one this client was last switched to, then the local
+     * socket.  A laptop with no fleet of its own starts straight on the
+     * workstation it was using, rather than on "the daemon is not
+     * running" for a daemon it was never asking about.
      */
-    if (opt_host != NULL) {
-        connection = clawt_connection_new_remote(
-            opt_host, opt_host,
-            opt_port > 0 ? (guint16)opt_port : CLAWT_DEFAULT_TCP_PORT,
-            opt_token);
-    } else if (opt_profile != NULL) {
-        g_autoptr(GPtrArray) saved = clawt_connection_list_load(NULL, &error);
+    connection = clawt_connection_choose(
+        opt_host, opt_port > 0 ? (guint16)opt_port : 0, opt_token,
+        opt_profile, opt_socket_path, NULL, NULL, TRUE, &error);
 
-        if (saved == NULL) {
-            g_printerr("clawtilla-gtk: %s\n", error->message);
-            return EXIT_FAILURE;
-        }
-
-        connection = clawt_connection_list_find(saved, opt_profile);
-
-        if (connection == NULL) {
-            g_printerr("clawtilla-gtk: there is no saved connection called "
-                       "'%s'\n", opt_profile);
-            return EXIT_FAILURE;
-        }
-
-        /* Copied: `saved` owns it and goes out of scope here. */
-        connection = clawt_connection_copy(connection);
-    } else {
-        connection = clawt_connection_new_local("Local", opt_socket_path);
+    if (connection == NULL) {
+        g_printerr("clawtilla-gtk: %s\n", error->message);
+        return EXIT_FAILURE;
     }
 
     client = clawt_connection_create_client(connection);

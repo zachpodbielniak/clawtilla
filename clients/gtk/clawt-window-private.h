@@ -1236,6 +1236,15 @@ clawt_gtk_follow_viewport_width(ClawtWindow *self, GtkWidget *scroll);
 void
 clawt_gtk_load_history(ClawtWindow *self);
 
+/* A click on the sidebar's selected row, which ::row-selected misses. */
+void
+clawt_gtk_on_sidebar_pressed(GtkGestureClick *gesture, gint n_press,
+                             gdouble x, gdouble y, gpointer user_data);
+
+/* Re-clicking the selected agent: its own conversation, count cleared. */
+void
+clawt_gtk_reopen_agent(ClawtWindow *self);
+
 void
 clawt_gtk_note_arrival(ClawtWindow *self);
 

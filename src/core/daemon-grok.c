@@ -51,6 +51,13 @@
 /* Settled jobs are kept this long for the page and `grok jobs`. */
 #define GROK_RETENTION_DAYS (30)
 
+/*
+ * A job that needs somebody counts on the page's badge this long after
+ * it settled.  It stays listed for the whole retention; it only stops
+ * asking.  An unanswered connection test from last week is not news.
+ */
+#define GROK_ATTENTION_DAYS (3)
+
 /* The longest a job may ask to wait, whatever it asks for. */
 #define GROK_MAX_TTL_MINUTES (24 * 60)
 
@@ -580,9 +587,20 @@ job_room(ClawtDaemon *daemon, ClawtGrokJob *job)
  * work that starts another job still counts toward max_hops.
  */
 static void
+deliver_body(ClawtDaemon *daemon, ClawtGrokJob *job, const gchar *body);
+
+static void
 deliver_settled(ClawtDaemon *daemon, ClawtGrokJob *job, const gchar *extra)
 {
     g_autofree gchar *body = settled_message(job, extra);
+
+    deliver_body(daemon, job, body);
+}
+
+/* Sends @body to the job's room as the bot, at the job's depth. */
+static void
+deliver_body(ClawtDaemon *daemon, ClawtGrokJob *job, const gchar *body)
+{
     g_autofree gchar *sender = g_strconcat("grok:",
                                            clawt_grok_job_get_bot(job), NULL);
     g_autoptr(GError) error = NULL;
@@ -2529,6 +2547,10 @@ clawt_daemon_handle_grok(ClawtDaemon *self,
             return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
                                        "Grok jobs are not available");
 
+        gint64 since = g_get_real_time() -
+                       (gint64)GROK_ATTENTION_DAYS * 24 * 3600 *
+                       G_USEC_PER_SEC;
+
         jobs = clawt_grok_store_list(
             self->grok->store, clawt_ipc_payload_string(payload, "bot"),
             clawt_ipc_payload_string(payload, "agent"),
@@ -2545,8 +2567,14 @@ clawt_daemon_handle_grok(ClawtDaemon *self,
 
             clawt_grok_job_to_json(job, builder);
 
+            /*
+             * Recent ones only: a job settled days ago that nobody
+             * removed has been seen, or will not be, and a badge that
+             * cannot go down is one people learn to ignore.
+             */
             if (clawt_grok_job_state_needs_attention(
-                    clawt_grok_job_get_state(job)))
+                    clawt_grok_job_get_state(job)) &&
+                clawt_grok_job_get_updated_at(job) >= since)
                 attention++;
         }
 
@@ -2598,6 +2626,70 @@ clawt_daemon_handle_grok(ClawtDaemon *self,
                                on_ipc_sent, pending);
 
         return NULL;
+    }
+
+    if (g_strcmp0(kind, "grok.remove") == 0) {
+        const gchar *id = clawt_ipc_payload_string(payload, "job");
+        g_autoptr(ClawtGrokJob) job = NULL;
+        gboolean cancelled = FALSE;
+
+        if (self->grok == NULL || self->grok->store == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_SUPPORTED,
+                                       "Grok jobs are not available");
+
+        if (id == NULL || *id == '\0')
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "say which job: \"job\" is its id");
+
+        job = clawt_grok_store_get(self->grok->store, id);
+
+        if (job == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "there is no Grok job by that id");
+
+        /*
+         * An open job is cancelled first: settled as unanswered, so the
+         * one statement that settles refuses the bot's late report, and
+         * the agent told -- in words that say a person gave it up, not
+         * the deadline -- rather than left waiting for an answer that
+         * now has nowhere to land.
+         */
+        if (!clawt_grok_job_state_is_settled(clawt_grok_job_get_state(job))) {
+            g_autoptr(ClawtGrokJob) settled = clawt_grok_store_settle(
+                self->grok->store, id, CLAWT_GROK_JOB_EXPIRED,
+                "cancelled by the operator", g_get_real_time(), NULL);
+
+            if (settled != NULL) {
+                g_autofree gchar *asked = asked_summary(settled);
+                g_autofree gchar *body = g_strdup_printf(
+                    "Your operator cancelled Grok job %s, sent to the bot "
+                    "\"%s\", before it reported. Stop waiting for it: a "
+                    "late report will be refused.\n\nYou asked: %s\n",
+                    clawt_grok_job_get_id(settled),
+                    clawt_grok_job_get_bot(settled), asked);
+
+                deliver_body(self, settled, body);
+                cancelled = TRUE;
+            }
+        }
+
+        if (!clawt_grok_store_remove(self->grok->store, id))
+            return clawt_ipc_error_new(request, CLAWT_ERROR_FAILED,
+                                       "the job could not be removed");
+
+        publish(self, job);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "job");
+        json_builder_add_string_value(builder, id);
+        json_builder_set_member_name(builder, "removed");
+        json_builder_add_boolean_value(builder, TRUE);
+        json_builder_set_member_name(builder, "cancelled");
+        json_builder_add_boolean_value(builder, cancelled);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request,
+                                      json_builder_get_root(builder));
     }
 
     if (g_strcmp0(kind, "grok.routine_prompt") == 0) {

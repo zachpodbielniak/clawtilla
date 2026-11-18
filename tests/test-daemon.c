@@ -3509,6 +3509,61 @@ test_an_attachment_cannot_escape_its_directory(void)
 }
 
 /*
+ * What the operator attaches is kept by id, as an agent's file is, and
+ * read back over IPC.  Only the host path was returned before, so a
+ * client that could not open that exact path -- remote, sandboxed, or
+ * after the exchange cap swept it -- drew no preview of the person's own
+ * pasted image, while the agent's images (by id) always showed.
+ */
+static void
+test_an_attachment_is_kept_by_id(void)
+{
+    Fixture fixture = { 0 };
+    g_autofree gchar *payload = NULL;
+    g_autofree gchar *encoded = NULL;
+    g_autofree gchar *get = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(JsonNode) back = NULL;
+    g_autofree guchar *bytes = NULL;
+    gsize length = 0;
+    const gchar *id;
+
+    fixture_setup(&fixture,
+                  "  exchange_dir: \"/tmp/clawt-test-exchange-id\"\n"
+                  "agents:\n  - id: alpha\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    encoded = g_base64_encode((const guchar *)"\x89PNG pixels", 11);
+    payload = g_strdup_printf(
+        "{\"agent\":\"alpha\",\"name\":\"pasted-1.png\",\"data\":\"%s\"}",
+        encoded);
+
+    reply = request(&fixture, "attachment.put", payload);
+    g_assert_nonnull(reply);
+
+    id = json_object_get_string_member_with_default(payload_of(reply), "id",
+                                                    NULL);
+    g_assert_nonnull(id);
+
+    /* the host path is still there, for the agent */
+    g_assert_nonnull(json_object_get_string_member(payload_of(reply),
+                                                   "host_path"));
+
+    get = g_strdup_printf("{\"id\":\"%s\"}", id);
+    back = request(&fixture, "attachment.get", get);
+    g_assert_nonnull(back);
+
+    bytes = g_base64_decode(json_object_get_string_member(payload_of(back),
+                                                          "base64"),
+                            &length);
+    g_assert_cmpuint(length, ==, 11);
+    g_assert_cmpint(memcmp(bytes, "\x89PNG pixels", 11), ==, 0);
+
+    clawt_test_remove_tree("/tmp/clawt-test-exchange-id");
+    fixture_teardown(&fixture);
+}
+
+/*
  * An agent's overlay is built on its base image and records the path, so
  * deleting that image breaks the VM the next time it starts -- with an
  * error from qemu about a missing backing file, a long way from the
@@ -12328,6 +12383,8 @@ main(int argc, char *argv[])
                     test_a_channel_turn_starts_from_zero);
     g_test_add_func("/daemon/attachment-cannot-escape",
                     test_an_attachment_cannot_escape_its_directory);
+    g_test_add_func("/daemon/attachment/kept-by-id",
+                    test_an_attachment_is_kept_by_id);
     g_test_add_func("/daemon/vm-agent-needs-a-disk",
                     test_creating_a_vm_agent_without_a_disk_is_refused);
     g_test_add_func("/daemon/image-in-use",

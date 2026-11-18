@@ -291,6 +291,135 @@ test_the_file_is_written_private(void)
 }
 
 /*
+ * The daemon a client was last switched to is remembered by name, and
+ * nothing else: the token stays in connections.yaml.  Going back to the
+ * local daemon forgets it, so the next start is local again.
+ */
+static void
+test_the_last_connection_is_a_name(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-last-XXXXXX", NULL);
+    g_autofree gchar *path = g_build_filename(dir, "state", "last", NULL);
+    g_autoptr(ClawtConnection) remote = clawt_connection_new_remote(
+        "workstation", "10.0.0.9", 8792, "s3cret-token");
+    g_autoptr(ClawtConnection) local = clawt_connection_new_local("Local",
+                                                                  NULL);
+    g_autoptr(GError) error = NULL;
+    g_autofree gchar *text = NULL;
+    g_autofree gchar *name = NULL;
+    g_autofree gchar *none = NULL;
+    GStatBuf info;
+
+    g_assert_null(clawt_connection_last_load(path));
+
+    g_assert_true(clawt_connection_last_save(path, remote, &error));
+    g_assert_no_error(error);
+
+    g_assert_true(g_file_get_contents(path, &text, NULL, NULL));
+    g_assert_null(strstr(text, "s3cret-token"));
+    g_assert_null(strstr(text, "10.0.0.9"));
+    g_assert_cmpint(g_stat(path, &info), ==, 0);
+    g_assert_cmpuint(info.st_mode & 0777, ==, 0600);
+
+    name = clawt_connection_last_load(path);
+    g_assert_cmpstr(name, ==, "workstation");
+
+    g_assert_true(clawt_connection_last_save(path, local, &error));
+    g_assert_no_error(error);
+    g_assert_false(g_file_test(path, G_FILE_TEST_EXISTS));
+    none = clawt_connection_last_load(path);
+    g_assert_null(none);
+
+    /* forgetting what was never remembered is not an error */
+    g_assert_true(clawt_connection_last_save(path, NULL, &error));
+    g_assert_no_error(error);
+
+    clawt_test_remove_tree(dir);
+}
+
+/*
+ * Which daemon a client opens on: every flag beats the memory, the
+ * memory beats the local default, and a remembered profile that has
+ * since gone falls back to local quietly -- where an unknown --profile
+ * is an error, because somebody asked for it.
+ */
+static void
+test_choosing_a_daemon(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-choose-XXXXXX", NULL);
+    g_autofree gchar *list_path = g_build_filename(dir, "conn.yaml", NULL);
+    g_autofree gchar *last_path = g_build_filename(dir, "last", NULL);
+    g_autoptr(GPtrArray) list = empty_list();
+    g_autoptr(ClawtConnection) remembered = NULL;
+    g_autoptr(ClawtConnection) host = NULL;
+    g_autoptr(ClawtConnection) profile = NULL;
+    g_autoptr(ClawtConnection) socket = NULL;
+    g_autoptr(ClawtConnection) not_asked = NULL;
+    g_autoptr(ClawtConnection) fresh = NULL;
+    g_autoptr(ClawtConnection) gone = NULL;
+    g_autoptr(ClawtConnection) unknown = NULL;
+    g_autoptr(GError) error = NULL;
+
+    g_ptr_array_add(list, clawt_connection_new_remote("workstation",
+                                                       "10.0.0.9", 8792,
+                                                       "tok-w"));
+    g_ptr_array_add(list, clawt_connection_new_remote("laptop", "10.0.0.7",
+                                                       8792, "tok-l"));
+    g_assert_true(clawt_connection_list_save(list_path, list, NULL));
+
+    /* nothing remembered yet: the local daemon */
+    fresh = clawt_connection_choose(NULL, 0, NULL, NULL, NULL, list_path,
+                                    last_path, TRUE, &error);
+    g_assert_no_error(error);
+    g_assert_true(clawt_connection_is_local(fresh));
+
+    g_assert_true(clawt_connection_last_save(
+        last_path, g_ptr_array_index(list, 0), NULL));
+
+    /* remembered: the workstation, with its token read afresh */
+    remembered = clawt_connection_choose(NULL, 0, NULL, NULL, NULL,
+                                         list_path, last_path, TRUE, &error);
+    g_assert_no_error(error);
+    g_assert_cmpstr(clawt_connection_get_name(remembered), ==,
+                    "workstation");
+    g_assert_cmpstr(clawt_connection_get_token(remembered), ==, "tok-w");
+
+    /* every flag beats it */
+    host = clawt_connection_choose("10.0.0.5", 0, "t", NULL, NULL,
+                                   list_path, last_path, TRUE, &error);
+    g_assert_cmpstr(clawt_connection_get_host(host), ==, "10.0.0.5");
+    profile = clawt_connection_choose(NULL, 0, NULL, "laptop", NULL,
+                                      list_path, last_path, TRUE, &error);
+    g_assert_cmpstr(clawt_connection_get_name(profile), ==, "laptop");
+    socket = clawt_connection_choose(NULL, 0, NULL, NULL, "/run/x.sock",
+                                     list_path, last_path, TRUE, &error);
+    g_assert_true(clawt_connection_is_local(socket));
+    g_assert_cmpstr(clawt_connection_get_socket_path(socket), ==,
+                    "/run/x.sock");
+
+    /* and a caller that does not remember (the self-test) is local */
+    not_asked = clawt_connection_choose(NULL, 0, NULL, NULL, NULL,
+                                        list_path, last_path, FALSE, &error);
+    g_assert_true(clawt_connection_is_local(not_asked));
+
+    /* the remembered profile deleted since: local, and no error */
+    g_ptr_array_remove_index(list, 0);
+    g_assert_true(clawt_connection_list_save(list_path, list, NULL));
+    gone = clawt_connection_choose(NULL, 0, NULL, NULL, NULL, list_path,
+                                   last_path, TRUE, &error);
+    g_assert_no_error(error);
+    g_assert_true(clawt_connection_is_local(gone));
+
+    /* an unknown --profile is still an error: somebody asked for it */
+    unknown = clawt_connection_choose(NULL, 0, NULL, "nowhere", NULL,
+                                      list_path, last_path, TRUE, &error);
+    g_assert_null(unknown);
+    g_assert_error(error, CLAWT_ERROR, CLAWT_ERROR_NOT_FOUND);
+
+    clawt_test_remove_tree(dir);
+}
+
+/*
  * Never having saved a remote host is the ordinary state, not a fault --
  * so a missing file must not be an error the clients have to special-case
  * on every start.
@@ -2030,6 +2159,9 @@ main(int argc, char *argv[])
     g_test_add_func("/connection/describe-hides-the-token",
                     test_a_description_never_carries_the_token);
     g_test_add_func("/connection/find", test_find_matches_on_the_name);
+    g_test_add_func("/connection/last-is-a-name",
+                    test_the_last_connection_is_a_name);
+    g_test_add_func("/connection/choose", test_choosing_a_daemon);
     g_test_add_func("/connection/file-is-private",
                     test_the_file_is_written_private);
     g_test_add_func("/connection/missing-file",

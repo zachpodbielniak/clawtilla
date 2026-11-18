@@ -198,6 +198,28 @@ address is both last-resort and first-priority for the same reason: it is
 what you reach for when a saved profile is the thing you are working
 around.
 
+*The GTK and libregnum clients start on the daemon they were last
+switched to* (since 0.51.5).  Choosing a saved connection from the
+connection menu (GTK) or Settings → Connections (libregnum) writes its
+*name* -- never its address or token -- to
+~$XDG_STATE_HOME/clawtilla/last-connection~, 0600
+(=clawt_connection_last_save()=); switching back to Local removes the
+file.  The next start looks that name up in ~connections.yaml~ afresh, so
+a token rotated or a profile deleted since is honoured.  The whole order,
+in =clawt_connection_choose()= for both clients:
+
+1. ~--host~
+2. ~--profile~ (an unknown name is an error: somebody asked for it)
+3. ~--socket~ (an explicit choice of a local daemon)
+4. the remembered connection (one that no longer exists falls back to
+   the local daemon, quietly: nobody asked for it this time)
+5. the local daemon
+
+The CLI does not remember: a script expects the local daemon unless told
+otherwise.  ~clawtilla-lrg --self-test~ does not either.  An ad-hoc
+~--host~ connection is not remembered, since it has no saved profile to
+look up.
+
 ~daemon token~ reads the token from disk rather than asking the daemon
 for it, because nothing may write a secret's value into an IPC response.
 That also means it only works on the machine the daemon runs on, which is
@@ -1817,6 +1839,20 @@ scroll position.
 scrolling, not the window gaining focus, not time passing: a counter that
 decays on its own is a counter you stop trusting.
 
+*Clicking the agent that is already selected opens its conversation with
+you*, and clears that count (since 0.51.5).  The count is against your
+conversation with the agent; when one of its conversations with another
+agent was open ("with gnuisaince"), replies arriving in yours kept
+counting, and a second click on the row -- the one thing anybody tries
+-- did nothing at all: GTK's ~::row-selected~ does not fire for the row
+already selected, and the selection code returned early.  GTK now watches
+the sidebar for a press on the selected row (=clawt_gtk_on_sidebar_pressed()=,
+in the capture phase, never claiming it) and calls
+=clawt_gtk_reopen_agent()=; libregnum calls =clawt_lrg_chat_reopen()= from
+the row's click.  Both clear the count, drop the peer conversation and
+load yours.  The web client always rendered the agent's own conversation
+from its link, so it had no such gap.
+
 *The Chat tab is not badged while you are reading Chat* with the sidebar
 open, because the sidebar beside it is saying exactly /which/ agent --
 strictly more information.  With the sidebar collapsed to a drawer the
@@ -2475,7 +2511,12 @@ does not.
 - pasted-1750000000.png
   /home/you/.local/share/clawtilla/exchange/researcher/pasted-1750000000.png
   (inside your container: /mnt/clawtilla/exchange/researcher/pasted-1750000000.png)
+  clawt:a1b2c3d4e5f6-pasted-1750000000.png
 #+end_example
+
+The last line is the daemon's own copy, by the ~id~ ~attachment.put~
+answers with (since 0.51.5) -- the same ~clawt:<id>~ an agent's file is
+named by, and what the clients preview from.
 
 Both, and the host one first, because they are for different tools. An
 agent's own read tool runs on the host even when its shell runs in a
@@ -2496,10 +2537,18 @@ path in a message body is a thing nobody remembers the contents of ten
 minutes later, and the whole point of a transcript is that you can
 scroll back.
 
-The client recognises its own attachment block and reads the *host*
-paths out of it, so this works for anything still on disk and quietly
-does nothing for anything that is not -- including for a client running
-on a different machine from the daemon. Thumbnails are decoded at
+The client recognises the attachment block and draws one preview per
+file: from the host path when this machine can open it, otherwise from
+the ~clawt:<id>~ line, fetched with ~attachment.get~ into
+~$XDG_CACHE_HOME/clawtilla/attachments~ -- as an agent's file always
+was.  Until 0.51.5 your own files were named only by host path, so a
+client on another machine, in a sandbox with its own home, or reading a
+file the exchange's size cap had since swept, drew nothing under your
+message while the agent's images showed.  libregnum prefers the id
+outright (=clawt_lrg_attachment_refs()= keeps one ref per item); the web
+client has only ever previewed ids, and now shows the files sent from
+GTK and libregnum too.  A message sent before 0.51.5 still has only the
+path. Thumbnails are decoded at
 thumbnail size rather than shrunk in the widget: GTK has no
 maximum-size property, a size request is a minimum, and a GtkPicture
 takes its natural size from the paintable, so a full screenshot handed
@@ -3001,7 +3050,7 @@ Under Work, after Fleet, in all three graphical clients (=clients/gtk/gtk-grok.c
 - *A composer*: a bot, the agent the answer goes to (only agents some bot is shared with), the instructions and optional context, sent with ~grok.send~.
 - *The jobs*, newest first: the state in =clawt_grok_job_state_label()= and =clawt_grok_job_state_tone()=, the bot and what was asked, the agent and how long ago, Grok's run id, and -- expandable -- what the bot reported, drawn as text.
 
-The tab's badge is ~grok.jobs~' ~attention~: jobs that failed, were refused, went unanswered or came back with a question. Every client re-reads it when ~grok.job_updated~ or ~grok.bots_changed~ arrives, and the Work section's badge sums it with the decision count. The web panel also reloads itself every fifteen seconds while visible. ~clawtilla grok~ is the CLI for the same; see [[file:grok.org][grok.org]].
+The tab's badge is ~grok.jobs~' ~attention~: jobs that failed, were refused, went unanswered or came back with a question in the last three days.  Each job carries *Cancel* (open) or *Remove* (settled), asked first in =clawt_grok_job_remove_question()='s words and sent as ~grok.remove~: GTK a button on the row and its right-click (or long-press), libregnum a button and the row's context menu, the web client a button. Every client re-reads it when ~grok.job_updated~ or ~grok.bots_changed~ arrives, and the Work section's badge sums it with the decision count. The web panel also reloads itself every fifteen seconds while visible. ~clawtilla grok~ is the CLI for the same; see [[file:grok.org][grok.org]].
 
 *** The activity line
 

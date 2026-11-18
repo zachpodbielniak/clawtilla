@@ -946,6 +946,53 @@ test_body_with_attachments(void)
     g_assert_true(clawt_lrg_attachment_too_big(32u * 1024u * 1024u + 1u));
 }
 
+/*
+ * An operator's file is named twice -- by host path for the agent, and
+ * by `clawt:<id>` for the clients -- and drawn once, from the daemon's
+ * copy: the host path opens only on the daemon's machine, so a remote
+ * client previewing from it showed nothing.  An older message with only
+ * a path still previews from the path.
+ */
+static void
+test_attachment_prefers_the_daemon_copy(void)
+{
+    g_autoptr(GPtrArray) files = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)clawt_lrg_sent_file_free);
+    ClawtLrgSentFile *file = g_new0(ClawtLrgSentFile, 1);
+    g_autofree gchar *body = NULL;
+    g_autoptr(GPtrArray) refs = NULL;
+    g_autoptr(GPtrArray) old = NULL;
+    ClawtLrgAttachmentRef *ref;
+
+    file->name = g_strdup("pasted-1.png");
+    file->host_path = g_strdup("/host/pasted-1.png");
+    file->path = g_strdup("/host/pasted-1.png");
+    file->id = g_strdup("feed01");
+    file->saved = TRUE;
+    g_ptr_array_add(files, file);
+
+    body = clawt_lrg_body_with_attachments("see this", files);
+
+    /* the agent is still told the path it opens */
+    g_assert_nonnull(strstr(body, "  /host/pasted-1.png\n"));
+    g_assert_nonnull(strstr(body, "  clawt:feed01\n"));
+
+    refs = clawt_lrg_attachment_refs(body);
+    g_assert_cmpuint(refs->len, ==, 1);
+    ref = g_ptr_array_index(refs, 0);
+    g_assert_true(ref->daemon_copy);
+    g_assert_cmpstr(ref->value, ==, "feed01");
+
+    old = clawt_lrg_attachment_refs(
+        CLAWT_ATTACHMENT_MARKER ".\n- a.png\n  /host/a.png\n"
+        "- b.png\n  clawt:b1\n  /host/b.png\n");
+    g_assert_cmpuint(old->len, ==, 2);
+    g_assert_cmpstr(((ClawtLrgAttachmentRef *)
+                     g_ptr_array_index(old, 0))->value, ==, "/host/a.png");
+    g_assert_cmpstr(((ClawtLrgAttachmentRef *)
+                     g_ptr_array_index(old, 1))->value, ==, "b1");
+}
+
 /* ── Mentions and conversations ───────────────────────────────────── */
 
 static void
@@ -1248,6 +1295,8 @@ main(gint argc, gchar **argv)
     g_test_add_func("/lrg/chat/steps/trim-notice", test_step_trim_notice);
     g_test_add_func("/lrg/chat/attachments/refs", test_attachment_refs);
     g_test_add_func("/lrg/chat/attachments/body", test_body_with_attachments);
+    g_test_add_func("/lrg/chat/attachments/prefers-daemon-copy",
+                    test_attachment_prefers_the_daemon_copy);
     g_test_add_func("/lrg/chat/mentions", test_mentions);
     g_test_add_func("/lrg/chat/conversations", test_conversations);
     g_test_add_func("/lrg/chat/history-payload", test_history_payload);

@@ -247,7 +247,14 @@ code is short-lived, single use and guess-limited, and never a token.
 *** attachment.*
 
 ~attachment.put~ carries a file from a client *into* an agent's exchange
-directory --- what somebody drags into the composer.  ~attachment.get~ is
+directory --- what somebody drags into the composer.  It answers ~name~,
+~host_path~, ~path~ (where the agent sees it), ~bytes~ and, since 0.51.5,
+~id~: a copy kept in the daemon's attachment store, as an agent's file
+is.  A client names the file in its message by both -- the host path for
+the agent, an indented ~clawt:<id>~ line for every client -- so the
+operator's own image is previewed through ~attachment.get~ wherever the
+client runs.  Before, the preview was drawn only by a client that could
+open the host path itself.  ~attachment.get~ is
 the other direction: it takes an ~id~ and answers with ~name~, ~bytes~
 and ~base64~, which is how a client gets at a file an agent sent.
 
@@ -1656,7 +1663,9 @@ and =posted=.
 
 ~grok.bots~ takes nothing and returns ~bots~ -- each bot once, by ~name~, with ~description~, ~key_configured~ (the integration names a routine key), ~mcp_key~ (a key has been minted for the MCP endpoint) and ~agents~ (who it is shared with, walked from each agent's resolved bindings) -- and ~reachable~: whether a job could be sent right now.  When it could, ~callback_host~ names where bots report; when it could not, ~unreachable_reason~ says why, in the same words a send's refusal uses.  ~mcp_url~ is present when the endpoint can be reached.
 
-~grok.jobs~ takes optional ~bot~, ~agent~, ~open~ (unsettled only) and ~limit~ (50, at most 500), and returns ~jobs~ newest first -- each with ~id~, ~bot~, ~agent~, ~room~, ~task~, ~run_uuid~, ~instructions~, ~result~, ~note~, ~state~ (a =ClawtGrokJobState= nick), ~settled~, ~needs_attention~ and ~created_at~, ~updated_at~, ~expires_at~ in microseconds -- and ~attention~, the number of listed jobs that need somebody, which is the page badge.  Never a token.
+~grok.jobs~ takes optional ~bot~, ~agent~, ~open~ (unsettled only) and ~limit~ (50, at most 500), and returns ~jobs~ newest first -- each with ~id~, ~bot~, ~agent~, ~room~, ~task~, ~run_uuid~, ~instructions~, ~result~, ~note~, ~state~ (a =ClawtGrokJobState= nick), ~settled~, ~needs_attention~ and ~created_at~, ~updated_at~, ~expires_at~ in microseconds -- and ~attention~, the number of listed jobs that need somebody, which is the page badge.  Never a token.  A job counts toward ~attention~ for three days after it last changed (=GROK_ATTENTION_DAYS=); it stays listed until the 30-day prune.
+
+~grok.remove~ takes ~job~ (its id) and answers ~job~, ~removed~ and ~cancelled~.  A settled job is deleted and nobody is told.  An open one is first settled as ~expired~ -- the same one-statement settle a report races, so the bot's late report is refused -- and its agent is sent a message from ~grok:<bot>~ saying the operator cancelled it and it should stop waiting; then it is deleted.  ~cancelled~ says which happened.  Publishes ~grok.job_updated~.  An unknown id is ~not_found~.
 
 ~grok.send~ takes ~agent~ (whose job it is; its answer goes to that agent's conversation with its operator), ~bot~ (resolved by name, case or unique prefix among the bots shared with that agent), ~instructions~, and optional ~context~ and ~timeout_minutes~.  It is answered later: after Grok has said whether it started a run, with ~job~ -- or with an error whose message says why it was not started.
 

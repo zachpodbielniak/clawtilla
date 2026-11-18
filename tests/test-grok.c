@@ -379,6 +379,64 @@ test_only_past_deadlines_are_due(void)
     clawt_test_remove_tree(dir);
 }
 
+/*
+ * Removing is for settled jobs only.  An open job has an agent waiting
+ * on it; dropping its row would leave that agent waiting forever, so
+ * the store refuses and the daemon settles it first (tested below).
+ */
+static void
+test_the_store_removes_settled_jobs_only(void)
+{
+    g_autofree gchar *dir = g_dir_make_tmp("clawt-grok-rm-XXXXXX", NULL);
+    g_autofree gchar *path = g_build_filename(dir, "grok-jobs.db", NULL);
+    g_autoptr(ClawtGrokStore) store = clawt_grok_store_new(path, NULL);
+    gint64 now = g_get_real_time();
+    g_autoptr(ClawtGrokJob) open = make_job("gj-open", "chief",
+                                            now + (gint64)3600 * G_USEC_PER_SEC);
+    g_autoptr(ClawtGrokJob) gone = make_job("gj-gone", "chief", now - 1);
+    g_autoptr(ClawtGrokJob) settled = NULL;
+    g_autoptr(ClawtGrokJob) still = NULL;
+
+    g_assert_true(clawt_grok_store_add(store, open, "d1", NULL));
+    g_assert_true(clawt_grok_store_add(store, gone, "d2", NULL));
+
+    g_assert_false(clawt_grok_store_remove(store, "gj-open"));
+    still = clawt_grok_store_get(store, "gj-open");
+    g_assert_nonnull(still);
+
+    settled = clawt_grok_store_settle(store, "gj-gone",
+                                      CLAWT_GROK_JOB_EXPIRED, NULL, now,
+                                      NULL);
+    g_assert_nonnull(settled);
+    g_assert_true(clawt_grok_store_remove(store, "gj-gone"));
+    g_assert_null(clawt_grok_store_get(store, "gj-gone"));
+
+    /* twice is not twice: nothing is left to remove */
+    g_assert_false(clawt_grok_store_remove(store, "gj-gone"));
+    g_assert_false(clawt_grok_store_remove(store, "gj-never"));
+
+    g_clear_object(&store);
+    clawt_test_remove_tree(dir);
+}
+
+/*
+ * The verb and the question every client puts on a job: Cancel for an
+ * open one (an agent is told), Remove for a settled one (nothing is).
+ * Swapped, a person would cancel work believing they only tidied a list.
+ */
+static void
+test_remove_is_worded_by_state(void)
+{
+    g_assert_cmpstr(clawt_grok_job_remove_label(CLAWT_GROK_JOB_WORKING), ==,
+                    "Cancel");
+    g_assert_cmpstr(clawt_grok_job_remove_label(CLAWT_GROK_JOB_EXPIRED), ==,
+                    "Remove");
+    g_assert_nonnull(strstr(clawt_grok_job_remove_question(
+                                CLAWT_GROK_JOB_SENT), "agent is told"));
+    g_assert_nonnull(strstr(clawt_grok_job_remove_question(
+                                CLAWT_GROK_JOB_FAILED), "Nothing is sent"));
+}
+
 /* ── The daemon ──────────────────────────────────────────────────── */
 
 typedef struct {
@@ -812,6 +870,114 @@ test_an_unanswered_job_expires_once(void)
     fixture_teardown(&fixture);
 }
 
+static JsonObject *
+remove_job(Fixture *fixture, const gchar *id, JsonNode **out)
+{
+    g_autoptr(JsonNode) frame = clawt_ipc_request_new("grok.remove", "v1");
+
+    clawt_ipc_frame_set_payload(frame, clawt_ipc_payload_new("job", id,
+                                                             NULL));
+    *out = clawt_daemon_handle_request(fixture->daemon, frame);
+
+    return clawt_ipc_frame_is_error(*out)
+        ? NULL : clawt_ipc_frame_get_payload(*out);
+}
+
+/*
+ * The two jobs that sat on the badge for good: one that never answered,
+ * removed without a word to anybody, and one still open, cancelled --
+ * its agent told once, its row gone, and the bot's late report refused.
+ */
+static void
+test_remove_cancels_or_forgets(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) removed = NULL;
+    g_autoptr(JsonNode) cancelled = NULL;
+    g_autoptr(JsonNode) missing = NULL;
+    JsonObject *answer;
+    gint64 now = g_get_real_time();
+
+    fixture_setup(&fixture);
+
+    /* settled: forgotten, and nobody told */
+    add_job(&fixture, "gj-old", "chief", "tok1", now + G_USEC_PER_SEC);
+    clawt_daemon_grok_sweep(fixture.daemon, now + 2 * G_USEC_PER_SEC);
+    g_assert_cmpuint(fixture.messages->len, ==, 1);
+
+    answer = remove_job(&fixture, "gj-old", &removed);
+    g_assert_nonnull(answer);
+    g_assert_true(json_object_get_boolean_member(answer, "removed"));
+    g_assert_false(json_object_get_boolean_member(answer, "cancelled"));
+    g_assert_cmpuint(fixture.messages->len, ==, 1);
+    g_assert_null(clawt_grok_store_get(
+        clawt_daemon_grok_get_store(fixture.daemon), "gj-old"));
+
+    /* open: the agent is told once, and the bot's report finds nothing */
+    add_job(&fixture, "gj-live", "chief", "tok2",
+            now + (gint64)3600 * G_USEC_PER_SEC);
+    answer = remove_job(&fixture, "gj-live", &cancelled);
+    g_assert_nonnull(answer);
+    g_assert_true(json_object_get_boolean_member(answer, "cancelled"));
+    g_assert_cmpuint(fixture.messages->len, ==, 2);
+    g_assert_cmpstr(g_ptr_array_index(fixture.messages, 1), ==,
+                    "grok:chief");
+    g_assert_cmpuint(report(&fixture, "gj-live", "tok2",
+                            "{\"status\":\"done\",\"result\":\"late\"}"),
+                     !=, 200);
+
+    /* and the sweep has nothing left to expire */
+    clawt_daemon_grok_sweep(fixture.daemon,
+                            now + (gint64)7200 * G_USEC_PER_SEC);
+    g_assert_cmpuint(fixture.messages->len, ==, 2);
+
+    g_assert_null(remove_job(&fixture, "gj-nope", &missing));
+
+    fixture_teardown(&fixture);
+}
+
+/*
+ * A job that needs somebody stops counting on the badge three days after
+ * it settled.  It stays listed; it only stops asking.  An unanswered
+ * connection test from last week counted until the 30-day prune.
+ */
+static void
+test_attention_lapses(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(JsonNode) frame = clawt_ipc_request_new("grok.jobs", "v1");
+    g_autoptr(JsonNode) reply = NULL;
+    ClawtGrokStore *store;
+    g_autoptr(ClawtGrokJob) stale = NULL;
+    g_autoptr(ClawtGrokJob) recent = NULL;
+    gint64 now = g_get_real_time();
+    gint64 four_days = (gint64)4 * 24 * 3600 * G_USEC_PER_SEC;
+
+    fixture_setup(&fixture);
+    store = clawt_daemon_grok_get_store(fixture.daemon);
+
+    add_job(&fixture, "gj-stale", "chief", "t1", now);
+    add_job(&fixture, "gj-recent", "chief", "t2", now);
+    stale = clawt_grok_store_settle(store, "gj-stale",
+                                    CLAWT_GROK_JOB_EXPIRED, NULL,
+                                    now - four_days, NULL);
+    recent = clawt_grok_store_settle(store, "gj-recent",
+                                     CLAWT_GROK_JOB_FAILED, "no", now, NULL);
+    g_assert_nonnull(stale);
+    g_assert_nonnull(recent);
+
+    reply = clawt_daemon_handle_request(fixture.daemon, frame);
+    g_assert_false(clawt_ipc_frame_is_error(reply));
+    g_assert_cmpint(json_object_get_int_member(
+                        clawt_ipc_frame_get_payload(reply), "attention"),
+                    ==, 1);
+    g_assert_cmpuint(json_array_get_length(json_object_get_array_member(
+                         clawt_ipc_frame_get_payload(reply), "jobs")),
+                     ==, 2);
+
+    fixture_teardown(&fixture);
+}
+
 /*
  * The listing every client draws from: each bot once, with the agents it
  * is shared with, and the reason no job could be sent right now.
@@ -1070,6 +1236,13 @@ main(int argc, char **argv)
     g_test_add_func("/grok/store/reopen-and-settle-once",
                     test_the_store_survives_a_reopen_and_settles_once);
     g_test_add_func("/grok/store/due", test_only_past_deadlines_are_due);
+    g_test_add_func("/grok/store/remove-settled-only",
+                    test_the_store_removes_settled_jobs_only);
+    g_test_add_func("/grok/state/remove-words",
+                    test_remove_is_worded_by_state);
+    g_test_add_func("/grok/daemon/remove-cancels-or-forgets",
+                    test_remove_cancels_or_forgets);
+    g_test_add_func("/grok/daemon/attention-lapses", test_attention_lapses);
 
     g_test_add_func("/grok/daemon/scoped-and-needs-listener",
                     test_dispatch_is_scoped_and_refuses_without_a_listener);

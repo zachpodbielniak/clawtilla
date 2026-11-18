@@ -143,6 +143,29 @@ gboolean clawt_grok_job_state_is_settled(ClawtGrokJobState state);
 gboolean clawt_grok_job_state_needs_attention(ClawtGrokJobState state);
 
 /**
+ * clawt_grok_job_remove_label:
+ * @state: a #ClawtGrokJobState
+ *
+ * The verb every client puts on a job's `grok.remove`: "Cancel" while
+ * the job is open (the agent is told it was given up), "Remove" once it
+ * has settled (it is only forgotten).
+ *
+ * Returns: (transfer none): the label
+ */
+const gchar *clawt_grok_job_remove_label(ClawtGrokJobState state);
+
+/**
+ * clawt_grok_job_remove_question:
+ * @state: a #ClawtGrokJobState
+ *
+ * The confirmation every client asks before `grok.remove`, saying what
+ * happens to the agent waiting on an open job.
+ *
+ * Returns: (transfer none): the question
+ */
+const gchar *clawt_grok_job_remove_question(ClawtGrokJobState state);
+
+/**
  * clawt_grok_job_state_tone:
  * @state: a #ClawtGrokJobState
  *

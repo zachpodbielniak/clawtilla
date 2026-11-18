@@ -299,6 +299,12 @@ void clawt_lrg_refresh_fleet(ClawtLrgApp *app);
  */
 void clawt_lrg_chat_open_conversation(ClawtLrgApp *app, const gchar *peer);
 
+/*
+ * For a click on the agent already selected (lrg-sidebar.c): back to its
+ * conversation with the operator, and that conversation's count cleared.
+ */
+void clawt_lrg_chat_reopen(ClawtLrgApp *app);
+
 /* The currently selected agent's object from the last agent.list. */
 JsonObject *clawt_lrg_selected_agent(ClawtLrgApp *app);
 

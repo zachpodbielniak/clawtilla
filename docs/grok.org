@@ -194,6 +194,10 @@ Re-run =clawtilla grok routine-prompt <bot>= after upgrading to 0.11.0 and paste
 
 The table is =ClawtGrokJobState=; =clawt_grok_job_state_label()=, =clawt_grok_job_state_tone()=, =clawt_grok_job_state_is_settled()= and =clawt_grok_job_state_needs_attention()= are what every client draws from, so they cannot disagree.  The Grok page's badge -- and the Work section's, which sums its pages -- is the daemon's count of jobs that need somebody, read from ~grok.jobs~.
 
+A job counts on the badge for three days after it settled.  It stays listed for the 30-day retention; it only stops asking.
+
+*Cancelling or removing a job.*  Every job has *Cancel* while it is open and *Remove* once it has settled (=clawt_grok_job_remove_label()=), asked first.  Remove forgets a settled job and tells nobody.  Cancel settles an open one as *No answer*, tells its agent the operator gave it up and that a late report will be refused, then forgets it.  From the CLI: =clawtilla grok remove <job>=.  Over IPC: ~grok.remove~.
+
 A =needs_input= job is settled: a job cannot be resumed.  To answer the bot's question, send a new job with the answer and the original request.
 
 ** When it does not work
@@ -223,7 +227,7 @@ A =needs_input= job is settled: a job cannot be resumed.  To answer the bot's qu
 
 | Client | Where |
 |--------+-------|
-| CLI | =clawtilla grok bots=, =jobs=, =send=, =test=, =routine-prompt=, =mcp-key=; =clawtilla grok help= |
+| CLI | =clawtilla grok bots=, =jobs=, =send=, =test=, =routine-prompt=, =mcp-key=, =remove=; =clawtilla grok help= |
 | GTK | Work → Grok |
 | Web | Work → Grok |
 | libregnum | Work → Grok |

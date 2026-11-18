@@ -943,7 +943,14 @@ attach_agent_menu(ClawtLrgApp *app, LrgWidget *row,
 static void
 on_agent_clicked(ClawtLrgApp *app, gpointer user_data)
 {
+    gboolean again = app->page == CLAWT_PAGE_CHAT &&
+                     g_strcmp0(app->agent_id, user_data) == 0;
+
     clawt_lrg_select_agent(app, user_data);
+
+    /* the agent on screen, clicked again: its own conversation, read */
+    if (again)
+        clawt_lrg_chat_reopen(app);
 }
 
 static void

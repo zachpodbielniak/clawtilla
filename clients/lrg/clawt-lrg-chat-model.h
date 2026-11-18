@@ -643,12 +643,14 @@ GPtrArray *clawt_lrg_attachment_refs(const gchar *body);
  * @host_path: (nullable): where the daemon put it on the host
  * @path: (nullable): where the agent sees it
  * @saved: whether `attachment.put` succeeded
+ * @id: (nullable): the daemon's own copy, which every client previews
  */
 typedef struct {
     gchar    *name;
     gchar    *host_path;
     gchar    *path;
     gboolean  saved;
+    gchar    *id;
 } ClawtLrgSentFile;
 
 void clawt_lrg_sent_file_free(ClawtLrgSentFile *file);

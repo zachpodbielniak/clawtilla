@@ -515,6 +515,36 @@ clawt_grok_store_prune(ClawtGrokStore *self, gint64 before)
     return removed;
 }
 
+gboolean
+clawt_grok_store_remove(ClawtGrokStore *self, const gchar *id)
+{
+    sqlite3_stmt *stmt = NULL;
+    g_autofree gchar *sql = NULL;
+    gboolean removed;
+
+    g_return_val_if_fail(CLAWT_IS_GROK_STORE(self), FALSE);
+    g_return_val_if_fail(id != NULL, FALSE);
+
+    /*
+     * Settled-only in the DELETE itself, as settle() is open-only in its
+     * UPDATE: a job that is still owed an answer has an agent waiting on
+     * it, and dropping its row would leave that agent waiting forever.
+     */
+    sql = g_strdup_printf("DELETE FROM jobs WHERE id = ? AND state IN (%s)",
+                          self->settled);
+
+    if (sqlite3_prepare_v2(self->db, sql, -1, &stmt, NULL) != SQLITE_OK)
+        return FALSE;
+
+    bind_text(stmt, 1, id);
+
+    removed = sqlite3_step(stmt) == SQLITE_DONE &&
+              sqlite3_changes(self->db) == 1;
+    sqlite3_finalize(stmt);
+
+    return removed;
+}
+
 /* ── Replies to a bot ────────────────────────────────────────────── */
 
 gint64

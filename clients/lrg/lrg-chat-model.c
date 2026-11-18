@@ -1522,6 +1522,8 @@ clawt_lrg_attachment_refs(const gchar *body)
         (GDestroyNotify)clawt_lrg_attachment_ref_free);
     g_auto(GStrv) lines = NULL;
     gboolean in_block = FALSE;
+    gint item_path = -1;   /* this item's host-path ref, while it has one */
+    gboolean item_copy = FALSE;   /* this item already has a daemon copy */
     gsize i;
 
     if (body == NULL || strstr(body, CLAWT_ATTACHMENT_MARKER) == NULL)
@@ -1554,6 +1556,12 @@ clawt_lrg_attachment_refs(const gchar *body)
             continue;
         }
 
+        /* a new item: none of its refs seen yet */
+        if (lines[i][0] == '-') {
+            item_path = -1;
+            item_copy = FALSE;
+        }
+
         ref = g_new0(ClawtLrgAttachmentRef, 1);
 
         /* an agent's file is `clawt:<id>`: the bytes are the daemon's */
@@ -1581,6 +1589,33 @@ clawt_lrg_attachment_refs(const gchar *body)
             continue;
         }
 
+        /*
+         * One ref per item, and the daemon's copy wins: an operator's
+         * file is named by its host path (for the agent) and by
+         * `clawt:<id>` (for the clients), and the path opens only on the
+         * daemon's own machine.
+         */
+        if (ref->daemon_copy) {
+            if (item_copy) {
+                clawt_lrg_attachment_ref_free(ref);
+                continue;
+            }
+
+            item_copy = TRUE;
+
+            if (item_path >= 0) {
+                g_ptr_array_remove_index(refs, (guint)item_path);
+                item_path = -1;
+            }
+        } else {
+            if (item_copy || item_path >= 0) {
+                clawt_lrg_attachment_ref_free(ref);
+                continue;
+            }
+
+            item_path = (gint)refs->len;
+        }
+
         g_ptr_array_add(refs, ref);
     }
 
@@ -1596,6 +1631,7 @@ clawt_lrg_sent_file_free(ClawtLrgSentFile *file)
     g_free(file->name);
     g_free(file->host_path);
     g_free(file->path);
+    g_free(file->id);
     g_free(file);
 }
 
@@ -1641,6 +1677,13 @@ clawt_lrg_body_with_attachments(const gchar *body, GPtrArray *files)
         if (g_strcmp0(file->host_path, file->path) != 0 && file->path != NULL)
             g_string_append_printf(out, "  (inside your container: %s)\n",
                                    file->path);
+
+        /*
+         * The daemon's own copy, by id: what every client previews from,
+         * since the host path opens only on the daemon's machine.
+         */
+        if (file->id != NULL)
+            g_string_append_printf(out, "  clawt:%s\n", file->id);
     }
 
     return g_string_free(out, FALSE);
