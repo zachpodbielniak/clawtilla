@@ -1570,6 +1570,18 @@ the paragraph above, is a fleet with no login on it.  The sandbox gives
 it an opaque origin and no scripting while leaving it renderable, which
 serving it as a download would not.
 
+*** A PDF is parsed inside the daemon, one page of it
+
+The Files gallery shows a PDF's first page, and ~attachment.thumbnail~ draws it inside the daemon with poppler-glib (when the build has it).  A PDF an agent or a web page produced is untrusted input to a large parser running with the daemon's privileges, so what it can do is bounded:
+
+- Only an id from the daemon's own attachment store is ever opened: =clawt_attachment_path()= refuses anything outside an id's character set, so a request cannot name a file of its choosing (~../x.pdf~ is refused before any file is touched).
+- Only page 1 is rendered, onto a surface no larger than 512 pixels square (the requested size is clamped to 16..512), and a page whose size is zero, negative, not a number or absurd is refused.
+- A file over 64 MB is not handed to poppler at all.
+- The PNG is written to ~<state_dir>/attachments/.thumbs/~ (0700, files 0600), named ~<id>.<size>.png~.  The directory starts with a dot, which no id can, so it cannot be asked for as an attachment; ids name immutable bytes, so a cached thumbnail never goes stale.  Nothing prunes the store or its thumbnails yet.
+- A text file's tile reads at most 8 KiB and returns valid UTF-8 with NULs replaced.
+
+The render runs on the daemon's main loop, so a PDF crafted to be slow to draw stalls the daemon while it renders; the size and page limits bound that rather than remove it.  A build without poppler (~POPPLER=0~) has none of this surface.  The web client serves the PNG from =/f/attachment/<id>/thumb= with ~X-Content-Type-Options: nosniff~ and ~Content-Security-Policy: sandbox~, like an attachment.
+
 ** Plugins
 
 A plugin runs in the daemon's process with the daemon's privileges.

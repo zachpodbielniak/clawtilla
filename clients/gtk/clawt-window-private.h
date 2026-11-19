@@ -1236,6 +1236,10 @@ clawt_gtk_follow_viewport_width(ClawtWindow *self, GtkWidget *scroll);
 void
 clawt_gtk_load_history(ClawtWindow *self);
 
+/* The Files dialog: every file the conversation on screen carried. */
+void
+clawt_gtk_show_conversation_files(ClawtWindow *self);
+
 /* A click on the sidebar's selected row, which ::row-selected misses. */
 void
 clawt_gtk_on_sidebar_pressed(GtkGestureClick *gesture, gint n_press,

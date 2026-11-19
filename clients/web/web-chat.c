@@ -39,65 +39,36 @@
 static GPtrArray *
 attachment_ids(const gchar *body, gchar **out_prose)
 {
-    g_auto(GStrv) lines = NULL;
-    g_autoptr(GString) prose = NULL;
+    g_autoptr(GPtrArray) refs = NULL;
     GPtrArray *ids = NULL;
-    gboolean in_block = FALSE;
-    gsize i;
+    guint i;
 
     *out_prose = NULL;
 
     if (body == NULL || strstr(body, CLAWT_ATTACHMENT_MARKER) == NULL)
         return NULL;
 
-    lines = g_strsplit(body, "\n", -1);
-    prose = g_string_new(NULL);
+    /*
+     * The shared reader, which attachment.list and the libregnum client
+     * use too: one ref per item, the daemon's copy preferred.  Only ids
+     * are drawn here -- a host path opens on the daemon's machine, and
+     * this page may be read anywhere.
+     */
+    refs = clawt_attachment_refs_parse(body);
 
-    for (i = 0; lines[i] != NULL; i++) {
-        const gchar *at;
+    for (i = 0; i < refs->len; i++) {
+        ClawtAttachmentRef *ref = g_ptr_array_index(refs, i);
 
-        if (strstr(lines[i], CLAWT_ATTACHMENT_MARKER) != NULL) {
-            in_block = TRUE;
-            continue;
-        }
-
-        if (!in_block) {
-            if (prose->len > 0)
-                g_string_append_c(prose, '\n');
-
-            g_string_append(prose, lines[i]);
-            continue;
-        }
-
-        /*
-         * The block is its list items and their indented continuations.
-         * Anything at the left margin ends it, so a line an agent wrote
-         * after the files is prose again.
-         */
-        if (lines[i][0] != '\0' && lines[i][0] != ' ' &&
-            lines[i][0] != '-' && lines[i][0] != '\t') {
-            in_block = FALSE;
-            g_string_append_c(prose, '\n');
-            g_string_append(prose, lines[i]);
-            continue;
-        }
-
-        at = strstr(lines[i], "clawt:");
-
-        if (at == NULL)
+        if (!ref->daemon_copy)
             continue;
 
         if (ids == NULL)
             ids = g_ptr_array_new_with_free_func(g_free);
 
-        {
-            gchar *id = g_strdup(at + strlen("clawt:"));
-
-            g_ptr_array_add(ids, g_strchomp(id));
-        }
+        g_ptr_array_add(ids, g_strdup(ref->value));
     }
 
-    *out_prose = g_strdup(g_strchomp(prose->str));
+    *out_prose = clawt_attachment_prose(body);
 
     return ids;
 }
@@ -1539,6 +1510,24 @@ composer_for(ClawtWebApp *app, const gchar *base, const gchar *target,
      * chosen" pair, which says nothing once the chips below list what
      * was picked.  Paste and drop add to the same input (web-ui.c).
      */
+    /*
+     * Every file this conversation has carried, as a grid.  Beside the
+     * composer rather than above the transcript, which is the page's
+     * scroller and whose grid track would have to make room for a row.
+     */
+    {
+        g_autofree gchar *gallery = g_strdup_printf("/%s/%s/attachments",
+                                                    base, escaped);
+        g_autoptr(HtmxA) files = htmx_a_new_with_href(gallery);
+
+        htmx_element_add_class(HTMX_ELEMENT(files), "btn");
+        htmx_element_add_class(HTMX_ELEMENT(files), "files-link");
+        htmx_element_set_attribute(HTMX_ELEMENT(files), "title",
+                                   "Every file sent in this conversation");
+        htmx_node_set_text_content(HTMX_NODE(files), "Files");
+        htmx_node_add_child(HTMX_NODE(inner), HTMX_NODE(files));
+    }
+
     if (attachments) {
         g_autoptr(HtmxLabel) pick = htmx_label_new_with_text("Attach");
         g_autoptr(HtmxInput) picker = htmx_input_new(HTMX_INPUT_FILE);
@@ -2850,6 +2839,188 @@ on_attachment(HtmxRequest *request, GHashTable *params, gpointer user_data)
     return response;
 }
 
+/* ── A conversation's files ──────────────────────────────────────── */
+
+/*
+ * A text file's first lines for each text tile, asked of the daemon.
+ *
+ * Capped, because each is a request made while the page renders: a
+ * conversation with hundreds of logs would otherwise hold the page for
+ * hundreds of round trips.  The rest show as a "text" label.
+ */
+#define GALLERY_TEXT_TILES (24)
+
+static GHashTable *
+gallery_texts(ClawtWebApp *app, JsonArray *items)
+{
+    GHashTable *texts = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                              g_free, g_free);
+    guint asked = 0;
+    guint i;
+
+    for (i = 0; items != NULL && i < json_array_get_length(items) &&
+                asked < GALLERY_TEXT_TILES; i++) {
+        JsonObject *item = json_array_get_object_element(items, i);
+        const gchar *id = clawt_web_member(item, "id", NULL);
+        g_autoptr(ClawtWebPayload) payload = NULL;
+        g_autoptr(JsonNode) reply = NULL;
+        const gchar *text;
+
+        if (id == NULL ||
+            g_strcmp0(clawt_web_member(item, "kind", ""), "text") != 0 ||
+            !clawt_web_member_bool(item, "exists", FALSE) ||
+            g_hash_table_contains(texts, id))
+            continue;
+
+        asked++;
+        payload = clawt_web_payload_new();
+        clawt_web_payload_set(payload, "id", id);
+        reply = clawt_web_app_call(app, "attachment.thumbnail",
+                                   clawt_web_payload_take(
+                                       g_steal_pointer(&payload)));
+        text = clawt_web_member(clawt_web_root(reply), "text", NULL);
+
+        if (text != NULL)
+            g_hash_table_insert(texts, g_strdup(id), g_strdup(text));
+    }
+
+    return texts;
+}
+
+/*
+ * The Files page for one conversation: attachment.list's items as a
+ * grid.  @member is "agent" or "room", the key attachment.list takes.
+ *
+ * Returns: (transfer full): the view
+ */
+static HtmxElement *
+gallery_view(ClawtWebApp *app, const gchar *member, const gchar *target,
+             const gchar *back)
+{
+    g_autoptr(HtmxElement) view = HTMX_ELEMENT(htmx_main_new());
+    g_autoptr(HtmxDiv) pad = htmx_div_new();
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GHashTable) texts = NULL;
+    JsonArray *items;
+
+    htmx_element_add_class(view, "view");
+    htmx_element_add_class(HTMX_ELEMENT(pad), "view-pad");
+    clawt_web_add(pad, clawt_web_section_title("Files in this conversation"));
+
+    {
+        g_autoptr(HtmxA) link = htmx_a_new_with_href(back);
+
+        htmx_element_add_class(HTMX_ELEMENT(link), "btn");
+        htmx_node_set_text_content(HTMX_NODE(link), "\xe2\x86\x90 Chat");
+        htmx_node_add_child(HTMX_NODE(pad), HTMX_NODE(link));
+    }
+
+    clawt_web_payload_set(payload, member, target);
+    reply = clawt_web_app_call(app, "attachment.list",
+                               clawt_web_payload_take(
+                                   g_steal_pointer(&payload)));
+
+    if (reply == NULL) {
+        clawt_web_add(pad, clawt_web_notice(clawt_web_app_last_error(app),
+                                            "error"));
+    } else {
+        items = clawt_web_member_array(clawt_web_root(reply), "items");
+        texts = gallery_texts(app, items);
+        clawt_web_add(pad, clawt_web_files_grid(items, texts));
+    }
+
+    htmx_node_add_child(HTMX_NODE(view), HTMX_NODE(pad));
+
+    return g_steal_pointer(&view);
+}
+
+static HtmxResponse *
+on_agent_gallery(HtmxRequest *request, GHashTable *params,
+                 gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+    g_autofree gchar *escaped = g_uri_escape_string(agent_id, NULL, FALSE);
+    g_autofree gchar *back = g_strdup_printf("/a/%s/chat", escaped);
+    g_autoptr(HtmxElement) view = gallery_view(app, "agent", agent_id, back);
+    g_autofree gchar *html = clawt_web_page(app, agent_id, CLAWT_PAGE_CHAT,
+                                            view, request);
+
+    return clawt_web_html_response(html);
+}
+
+static HtmxResponse *
+on_room_gallery(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *room_id = clawt_web_param(params, "id");
+    g_autofree gchar *escaped = g_uri_escape_string(room_id, NULL, FALSE);
+    g_autofree gchar *back = g_strdup_printf("/r/%s", escaped);
+    g_autoptr(HtmxElement) view = gallery_view(app, "room", room_id, back);
+    g_autofree gchar *html = clawt_web_shell_page(app, "Files", view,
+                                                  request);
+
+    return clawt_web_html_response(html);
+}
+
+/*
+ * A PDF's first page, as the PNG attachment.thumbnail draws.
+ *
+ * Served with the headers /f/attachment/<id> uses, though the bytes are
+ * a PNG the daemon wrote rather than the file itself: the type is pinned
+ * and the page that would open it sandboxed.  Anything the daemon will
+ * not draw -- an image, a text file, an unknown or hostile id, a build
+ * without poppler -- is a 404, and the tile's <img> shows its alt text.
+ */
+static HtmxResponse *
+on_attachment_thumb(HtmxRequest *request, GHashTable *params,
+                    gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *id = clawt_web_param(params, "id");
+    const gchar *size = htmx_request_get_query_param(request, "size");
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GBytes) bytes = NULL;
+    HtmxResponse *response;
+    const gchar *encoded;
+    guchar *raw;
+    gsize length = 0;
+
+    clawt_web_payload_set(payload, "id", id);
+
+    if (size != NULL)
+        clawt_web_payload_set_int(
+            payload, "size",
+            (gint64)clawt_attachment_thumbnail_size(
+                g_ascii_strtoll(size, NULL, 10)));
+
+    reply = clawt_web_app_call(app, "attachment.thumbnail",
+                               clawt_web_payload_take(
+                                   g_steal_pointer(&payload)));
+    encoded = clawt_web_member(clawt_web_root(reply), "base64", NULL);
+
+    if (encoded == NULL)
+        return htmx_response_not_found();
+
+    raw = g_base64_decode(encoded, &length);
+    bytes = g_bytes_new_take(raw, length);
+
+    response = htmx_response_new();
+    htmx_response_set_bytes(response, bytes);
+    htmx_response_set_content_type(response, "image/png");
+    htmx_response_add_header(response, "X-Content-Type-Options", "nosniff");
+    htmx_response_add_header(response, "Content-Security-Policy",
+                             "sandbox; default-src 'none'");
+
+    /* Ids name immutable bytes, so its picture never changes either. */
+    htmx_response_add_header(response, "Cache-Control",
+                             "private, max-age=86400");
+
+    return response;
+}
+
 /*
  * Kills the CLI carrying out this agent's turn, and leaves the agent up.
  *
@@ -3183,6 +3354,10 @@ clawt_web_register_chat(HtmxRouter *router, ClawtWebApp *app)
     htmx_router_get(router, "/f/a/:id/transcript", on_transcript_fragment, app);
     htmx_router_get(router, "/f/a/:id/steps", on_steps_fragment, app);
     htmx_router_get(router, "/f/attachment/:id", on_attachment, app);
+    htmx_router_get(router, "/f/attachment/:id/thumb", on_attachment_thumb,
+                    app);
+    htmx_router_get(router, "/a/:id/attachments", on_agent_gallery, app);
+    htmx_router_get(router, "/r/:id/attachments", on_room_gallery, app);
     htmx_router_get(router, "/a/:id/export", on_export, app);
     htmx_router_get(router, "/a/:id/copy", on_copy, app);
     htmx_router_get(router, "/a/:id/compose", on_compose, app);

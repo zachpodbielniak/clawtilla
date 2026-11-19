@@ -149,6 +149,14 @@ declare -A AFFORDANCES=(
     # spelled the one way the previews and the gallery read.
     #
     ["send a file with a message"]="body_with_attachments|clawt_attachment_block_add|clawt_lrg_body_with_attachments"
+    #
+    # A conversation's files as a grid (since 0.52.0): every client asks
+    # attachment.list (layer 1 compares the kind) and draws tiles from
+    # it; and each draws a PDF's first page and a text file's first lines
+    # from attachment.thumbnail, an image from its own bytes.
+    #
+    ["conversation files"]="clawt_gtk_show_conversation_files|clawt_web_files_grid|clawt_lrg_gallery_rows"
+    ["file thumbnails"]="gallery_preview|/thumb?size=|on_gallery_thumbnail"
     ["unread count"]="clawt-unread-badge|unread-badge|unread-badge"
     ["unread tab total"]="adw_view_stack_page_set_badge_number|unread_total|clawt_lrg_unread_badge"
     ["message runs"]="clawt_chat_run_is_start|clawt_chat_run_is_start|clawt_chat_run_is_start"

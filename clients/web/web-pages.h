@@ -734,6 +734,25 @@ gchar *clawt_web_body_with_files(const gchar      *agent_id,
                                  ClawtWebPutFunc   put,
                                  gpointer          user_data);
 
+/**
+ * clawt_web_files_grid:
+ * @items: (nullable): `attachment.list`'s `items`
+ * @texts: (nullable) (element-type utf8 utf8): the first lines of each
+ *   text file, by id, from `attachment.thumbnail`
+ *
+ * A conversation's files as a grid of tiles: a picture for an image,
+ * the first page for a PDF (from /f/attachment/<id>/thumb), the first
+ * lines for a text file, and a label otherwise.  Each name opens the
+ * file through /f/attachment/<id>; a file that is gone, or named only
+ * by a host path, is a name with nothing to click.
+ *
+ * Built from htmx-glib's own elements only, so a test can render it
+ * without the rest of the client.
+ *
+ * Returns: (transfer full): the grid
+ */
+HtmxElement *clawt_web_files_grid(JsonArray *items, GHashTable *texts);
+
 /* Register the shared destination search entry point. */
 void clawt_web_register_navigation(HtmxRouter *router, ClawtWebApp *app);
 

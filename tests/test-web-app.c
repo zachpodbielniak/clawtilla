@@ -339,6 +339,60 @@ test_a_room_files_under_its_one_agent(void)
     g_assert_null(clawt_web_room_file_agent(NULL));
 }
 
+/*
+ * The Files page: a PDF tile is its first page from the thumb route, an
+ * image tile is the image itself, a text tile its first lines (escaped),
+ * and a file that is gone has no link.
+ *
+ * What breaks without it: a PDF drawn as <img src=/f/attachment/<id>>
+ * is a broken image (the browser cannot draw a PDF in an <img>), and a
+ * text file's lines unescaped would put a model's words into the page
+ * as markup.
+ */
+static void
+test_the_files_grid(void)
+{
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autoptr(GHashTable) texts = g_hash_table_new_full(
+        g_str_hash, g_str_equal, g_free, g_free);
+    g_autoptr(HtmxElement) grid = NULL;
+    g_autoptr(HtmxElement) empty = NULL;
+    g_autofree gchar *html = NULL;
+    g_autofree gchar *none = NULL;
+    JsonArray *items;
+
+    g_assert_true(json_parser_load_from_data(parser,
+        "[{\"id\":\"1-paper.pdf\",\"name\":\"paper.pdf\",\"kind\":\"pdf\","
+        "  \"bytes\":2048,\"exists\":true,\"sender\":\"scout\",\"ts\":1},"
+        " {\"id\":\"2-shot.png\",\"name\":\"shot.png\",\"kind\":\"image\","
+        "  \"bytes\":10,\"exists\":true,\"sender\":\"user\",\"ts\":1},"
+        " {\"id\":\"3-log.txt\",\"name\":\"log.txt\",\"kind\":\"text\","
+        "  \"bytes\":10,\"exists\":true,\"sender\":\"scout\",\"ts\":1},"
+        " {\"id\":\"4-gone.pdf\",\"name\":\"gone.pdf\",\"kind\":\"pdf\","
+        "  \"bytes\":0,\"exists\":false,\"sender\":\"scout\",\"ts\":1}]",
+        -1, NULL));
+    items = json_node_get_array(json_parser_get_root(parser));
+    g_hash_table_insert(texts, g_strdup("3-log.txt"),
+                        g_strdup("<script>alert(1)</script>"));
+
+    grid = clawt_web_files_grid(items, texts);
+    html = htmx_element_render(grid);
+
+    g_assert_nonnull(strstr(html, "src=\"/f/attachment/1-paper.pdf/thumb"
+                                  "?size=256\""));
+    g_assert_nonnull(strstr(html, "src=\"/f/attachment/2-shot.png\""));
+    g_assert_nonnull(strstr(html, "&lt;script&gt;"));
+    g_assert_null(strstr(html, "<script>"));
+    g_assert_nonnull(strstr(html, "href=\"/f/attachment/1-paper.pdf\""));
+    g_assert_null(strstr(html, "href=\"/f/attachment/4-gone.pdf\""));
+    g_assert_null(strstr(html, "4-gone.pdf/thumb"));
+    g_assert_nonnull(strstr(html, "file-gone"));
+
+    empty = clawt_web_files_grid(NULL, NULL);
+    none = htmx_element_render(empty);
+    g_assert_nonnull(strstr(none, "No files have been sent"));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -362,6 +416,7 @@ main(int argc, char *argv[])
                     test_a_refused_file_is_listed);
     g_test_add_func("/web-app/files/room-files-under-one-agent",
                     test_a_room_files_under_its_one_agent);
+    g_test_add_func("/web-app/files/grid", test_the_files_grid);
 
     return g_test_run();
 }

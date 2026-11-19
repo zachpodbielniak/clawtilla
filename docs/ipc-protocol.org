@@ -271,6 +271,51 @@ same way ~attachment.put~ does, so a client asking to delete
 ~../../../etc/passwd~ gets a refusal about a file in its own drop-box
 that does not exist.
 
+**** attachment.list and attachment.thumbnail: a conversation's files
+
+Since 0.52.0 the clients draw a *Files* gallery for each conversation from two frames.
+
+~attachment.list~ takes ~room~ (a room id, or an agent id, which resolves to the operator's direct room with that agent as ~room.history~ resolves it) or ~agent~ (an agent id only).  It reads the room's whole history -- every room keeps all of its messages in memory -- for attachment blocks, with the same parser every client previews from (=clawt_attachment_refs_parse()=), and answers the room it read and ~items~, newest message first and in block order within a message:
+
+| Member    | What it is |
+|-----------+------------|
+| ~id~      | the daemon's copy (=clawt:<id>=), when the block named one; absent otherwise |
+| ~path~    | the host path, when the block named no id (a message from before 0.51.5) |
+| ~name~    | the item's name |
+| ~kind~    | ~image~, ~pdf~, ~text~ or ~other~, from the name (=clawt_attachment_kind()=) |
+| ~bytes~   | the size now, or 0 when it is gone |
+| ~exists~  | whether the file is still there |
+| ~message~ | the id of the message that carried it |
+| ~sender~  | who sent that message (~user~ for the operator) |
+| ~ts~      | when, in seconds |
+
+#+begin_example
+→ {"type":"request","id":"7","kind":"attachment.list","payload":{"agent":"scout"}}
+← {"type":"response","id":"7","payload":{"room":"dm:user:scout","items":[
+     {"id":"0f3c9a1b2c3d-report.pdf","name":"report.pdf","kind":"pdf","bytes":48211,
+      "exists":true,"message":"0f3c9a1b2c40","sender":"scout","ts":1763475600},
+     {"path":"/home/you/.local/share/clawtilla/exchange/scout/old.png","name":"old.png",
+      "kind":"image","bytes":0,"exists":false,"message":"0f3c8e7d6a10","sender":"user",
+      "ts":1763389200}]}}
+#+end_example
+
+The list is built from the transcript rather than from the attachment directory because that directory is shared by every conversation and records nothing about which one a file came from.  An id in a message body -- text any agent can write -- is resolved through =clawt_attachment_path()=, so one that is not ours is listed as gone rather than turned into a path.  Neither ~room~ nor ~agent~ is ~INVALID_ARGUMENT~; one that names nothing is ~NOT_FOUND~.
+
+~attachment.thumbnail~ takes ~id~ and an optional integer ~size~ (the longer edge in pixels, clamped to 16..512, default 256) and answers ~id~, ~kind~ and, by kind:
+
+- *pdf*: ~mime~ (~image/png~), ~width~, ~height~ and ~base64~ -- page 1 only, drawn with poppler-glib onto white so its longer edge is ~size~.  Cached as ~<state_dir>/attachments/.thumbs/<id>.<size>.png~; an id names bytes that never change, so the cache never goes stale.  A build without poppler (~POPPLER=0~, or no ~poppler-glib-devel~) answers ~NOT_SUPPORTED~, "no PDF renderer in this build".
+- *text*: ~text~, the first twelve lines (at most 8 KiB read, each line cut at 160 characters, always valid UTF-8).  Not cached; it is cheaper to read than to look up.
+- *image*: ~NOT_SUPPORTED~ -- a picture is its own thumbnail, and every client already decodes images at thumbnail size from ~attachment.get~.
+- *other*: ~NOT_SUPPORTED~.
+
+#+begin_example
+→ {"type":"request","id":"8","kind":"attachment.thumbnail","payload":{"id":"0f3c9a1b2c3d-report.pdf","size":160}}
+← {"type":"response","id":"8","payload":{"id":"0f3c9a1b2c3d-report.pdf","kind":"pdf",
+     "mime":"image/png","width":124,"height":160,"base64":"iVBORw0KGgo..."}}
+#+end_example
+
+The id is checked by =clawt_attachment_path()= before any file is opened: ~../x.pdf~ is ~INVALID_ARGUMENT~, an id with no file behind it ~NOT_FOUND~.
+
 *** decision.*
 
 ~decision.list~ takes ~open~ (default true) and answers with

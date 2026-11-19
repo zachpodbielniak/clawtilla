@@ -115,6 +115,8 @@ licence, send nothing, and exit 0.
 | ~integration matrix-rooms <name>~ | |
 | ~integration test <name>~ | send one notification now |
 | ~routine list/add/set/rm/run~ | standing work on a schedule |
+| ~attachment list <agent or room>~ | every file a conversation carried, newest first: kind, size, sender, date, name, and the id (or old host path) |
+| ~attachment get <id> [-o FILE]~ | the daemon's copy of one file, written to its own name (or FILE; ~-o -~ for stdout) |
 | ~computer rebuild <agent>~ | destroy the guest and build it again from the image |
 
 Two verbs are not for people.  ~connector relay <name>~ and
@@ -2536,6 +2538,25 @@ Since 0.52.0 the web composer sends files *with* a message, as GTK and libregnum
 The block is built in one place for all three clients: =clawt_attachment_block_new()=, =clawt_attachment_block_add()= and =clawt_attachment_block_add_unsaved()= in =src/chat/clawt-attachment.c=.  GTK's =body_with_attachments()=, libregnum's =clawt_lrg_body_with_attachments()= and the web client's =clawt_web_body_with_files()= only put the files and pass on what the daemon answered.  A client that wrote the block itself and spelled any part of it differently would send messages the others draw no previews for, with nothing to say why.
 
 A group room's composer offers files only when the room has exactly one agent member: ~attachment.put~ files each upload under one agent's exchange directory, and in a room of several agents the others would be sent a path they cannot open.  [[file:web-client.org::*Sending files with a message][web-client.org]] has the details.
+
+*** Files in a conversation
+
+Since 0.52.0 every client has a *Files* view for the conversation on screen: every file it has carried, by you or the agent, newest first, as a grid.
+
+| Client   | Where | What a tile shows |
+|----------+-------+-------------------|
+| GTK      | the folder button beside the paperclip opens a dialog (=clawt_gtk_show_conversation_files()=) | a picture, a PDF's first page, a text file's first lines, or the kind's icon; name; sender and date |
+| libregnum | *Files* beside *Attach* opens a dialog (=clawt_lrg_gallery_rows()=) | the same, the kind as a badge until the picture arrives |
+| web      | *Files* beside *Attach*, =/a/<id>/attachments= or =/r/<id>/attachments= (=clawt_web_files_grid()=) | the same; the PDF page from =/f/attachment/<id>/thumb= |
+| CLI      | ~clawtilla attachment list <agent or room>~, ~clawtilla attachment get <id>~ | a line per file |
+
+*How it is found.*  ~attachment.list~ reads the room's whole history for attachment blocks with =clawt_attachment_refs_parse()= -- the parser the transcript previews use -- so the gallery lists exactly what the transcript names.  The attachment directory is shared by every conversation and keeps no record of which one a file came from; the block in each message does.  A file named only by a host path (a message from before 0.51.5) is listed with that path and opens only where that path exists.  A file deleted since it was sent is listed as gone.
+
+*How tiles are drawn.*  An image is its own thumbnail: the client decodes it at tile size from ~attachment.get~, as the transcript does.  A PDF's first page and a text file's first lines come from ~attachment.thumbnail~; the daemon draws the PDF with poppler-glib and caches the PNG under ~<state_dir>/attachments/.thumbs/~.  poppler is an optional build dependency (=CLAWT_HAVE_POPPLER=, Fedora ~poppler-glib-devel~ / ~poppler-glib~); without it a PDF tile shows its kind.  Each client asks for at most a few dozen pictures when the view opens, so a conversation with hundreds of files does not wait on hundreds of requests.
+
+*Opening one.*  A click opens the file -- GTK and libregnum fetch the daemon's copy into =$XDG_CACHE_HOME/clawtilla/attachments= and hand it to the desktop; the web client opens =/f/attachment/<id>=, served inert as below.  Right-click (GTK, libregnum) offers Open, Save a copy… and Copy path.  Not Delete: that removes a file from an agent's exchange, which is not where the gallery's copies are kept.
+
+The frames are in [[file:ipc-protocol.org::*attachment.list and attachment.thumbnail: a conversation's files][ipc-protocol.org]]; what parsing a PDF inside the daemon costs is in [[file:security.org::*A PDF is parsed inside the daemon, one page of it][security.org]].
 
 *** Seeing them again
 

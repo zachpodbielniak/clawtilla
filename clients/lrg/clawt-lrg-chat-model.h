@@ -614,14 +614,12 @@ gboolean clawt_lrg_looks_like_image(const gchar *path);
 
 /**
  * ClawtLrgAttachmentRef:
- * @daemon_copy: %TRUE for `clawt:<id>` (an agent's file, fetched with
- *   `attachment.get`), %FALSE for a host path
- * @value: the id or the path
+ *
+ * One file an attachment block names: libclawt's #ClawtAttachmentRef
+ * (@daemon_copy, @value, @name), under the name this client's code has
+ * always used for it.
  */
-typedef struct {
-    gboolean  daemon_copy;
-    gchar    *value;
-} ClawtLrgAttachmentRef;
+typedef ClawtAttachmentRef ClawtLrgAttachmentRef;
 
 void clawt_lrg_attachment_ref_free(ClawtLrgAttachmentRef *ref);
 
@@ -629,13 +627,49 @@ void clawt_lrg_attachment_ref_free(ClawtLrgAttachmentRef *ref);
  * clawt_lrg_attachment_refs:
  * @body: (nullable): a message body
  *
- * The files a message's attachment block names, in order: the block is
- * the list under CLAWT_ATTACHMENT_MARKER, ended by anything at the left
- * margin, and the container path in brackets is skipped.
+ * The files a message's attachment block names, in order, one per item:
+ * clawt_attachment_refs_parse(), the reader every client and
+ * `attachment.list` share, so a file this client previews is a file the
+ * gallery lists.
  *
  * Returns: (transfer full) (element-type ClawtLrgAttachmentRef): refs
  */
 GPtrArray *clawt_lrg_attachment_refs(const gchar *body);
+
+/**
+ * ClawtLrgGalleryRow:
+ * @target: the daemon's copy's id, or an old message's host path
+ * @daemon_copy: %TRUE when @target is an id (fetch with attachment.get)
+ * @name: the file's name
+ * @kind: "image", "pdf", "text" or "other" (clawt_attachment_kind())
+ * @subtitle: who sent it, when, and how big: "you · 2026-11-18 14:02 ·
+ *   1.2 kB"
+ * @exists: whether the file is still there
+ *
+ * One tile of a conversation's Files panel.
+ */
+typedef struct {
+    gchar    *target;
+    gboolean  daemon_copy;
+    gchar    *name;
+    gchar    *kind;
+    gchar    *subtitle;
+    gboolean  exists;
+} ClawtLrgGalleryRow;
+
+void clawt_lrg_gallery_row_free(ClawtLrgGalleryRow *row);
+
+/**
+ * clawt_lrg_gallery_rows:
+ * @reply: (nullable): an `attachment.list` reply
+ *
+ * The tiles of a conversation's Files panel, in the order the daemon
+ * gives them (newest first).  An item with neither an id nor a path is
+ * skipped: there is nothing to open.
+ *
+ * Returns: (transfer full) (element-type ClawtLrgGalleryRow): the rows
+ */
+GPtrArray *clawt_lrg_gallery_rows(JsonNode *reply);
 
 /**
  * ClawtLrgSentFile:

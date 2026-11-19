@@ -141,6 +141,220 @@ void clawt_attachment_block_add(GString     *block,
  */
 void clawt_attachment_block_add_unsaved(GString *block, const gchar *name);
 
+/* ── Reading the block back, and a conversation's files ──────────── */
+
+/**
+ * ClawtAttachmentRef:
+ * @daemon_copy: %TRUE for `clawt:<id>` (a copy the daemon keeps, fetched
+ *   with `attachment.get`), %FALSE for a host path
+ * @value: the id or the path
+ * @name: (nullable): the item's name, from its "- name" line (or the
+ *   basename of an old "- /path" item)
+ *
+ * One file an attachment block names.
+ */
+typedef struct {
+    gboolean  daemon_copy;
+    gchar    *value;
+    gchar    *name;
+} ClawtAttachmentRef;
+
+/**
+ * clawt_attachment_ref_free:
+ * @ref: (nullable): a #ClawtAttachmentRef
+ */
+void clawt_attachment_ref_free(ClawtAttachmentRef *ref);
+
+/**
+ * clawt_attachment_refs_parse:
+ * @body: (nullable): a message body
+ *
+ * The files a message's attachment block names, in order, one per item.
+ *
+ * The block is the list under #CLAWT_ATTACHMENT_MARKER: its "- " items
+ * and their indented continuation lines.  Anything at the left margin
+ * ends it, so a path an agent quotes further down does not count.  The
+ * container path (in brackets) is skipped.  An operator's file is named
+ * twice -- host path for the agent, `clawt:<id>` for the clients -- and
+ * the id wins, because the path opens only on the daemon's machine.  An
+ * older message with only a path (or a "- /path" item) gives the path.
+ *
+ * The one reader of the format: the libregnum previews, the web
+ * client's previews and `attachment.list` all call it, so a block that
+ * draws a preview is a block the gallery lists.
+ *
+ * Returns: (transfer full) (element-type ClawtAttachmentRef): the refs,
+ *   possibly empty
+ */
+GPtrArray *clawt_attachment_refs_parse(const gchar *body);
+
+/**
+ * clawt_attachment_prose:
+ * @body: (nullable): a message body
+ *
+ * @body with its attachment block taken out: the marker line and the
+ * block's items, ended where clawt_attachment_refs_parse() ends it, so
+ * a line written after the files is kept.
+ *
+ * Returns: (transfer full): the prose, trailing whitespace removed
+ */
+gchar *clawt_attachment_prose(const gchar *body);
+
+/**
+ * clawt_attachment_kind:
+ * @name: (nullable): a file name
+ *
+ * What a file is, from its extension: "image", "pdf", "text" or
+ * "other".  By name and not by content, because the clients choose how
+ * to draw a tile before fetching any bytes; the daemon renders a
+ * thumbnail only for "pdf" and "text", and a file that is not what its
+ * name says simply fails to render.
+ *
+ * Returns: (transfer none): the kind; never %NULL
+ */
+const gchar *clawt_attachment_kind(const gchar *name);
+
+/**
+ * ClawtAttachmentItem:
+ * @id: (nullable): the daemon's copy, when the block named one
+ * @name: the file's name
+ * @path: (nullable): the host path, when the block named no id
+ * @kind: from clawt_attachment_kind()
+ * @bytes: its size, or 0 when it is gone
+ * @exists: whether the file is still there
+ * @message: the id of the message that carried it
+ * @sender: who sent that message
+ * @ts: when, in seconds since the epoch
+ *
+ * One file in a conversation, as `attachment.list` answers it.
+ */
+typedef struct {
+    gchar       *id;
+    gchar       *name;
+    gchar       *path;
+    const gchar *kind;
+    gint64       bytes;
+    gboolean     exists;
+    gchar       *message;
+    gchar       *sender;
+    gint64       ts;
+} ClawtAttachmentItem;
+
+/**
+ * clawt_attachment_item_free:
+ * @item: (nullable): a #ClawtAttachmentItem
+ */
+void clawt_attachment_item_free(ClawtAttachmentItem *item);
+
+/**
+ * clawt_attachment_list:
+ * @dir: (nullable): the directory attachments are kept in
+ * @messages: (element-type ClawtMessage): a room's history, oldest first
+ *   (as clawt_room_get_history() returns it)
+ *
+ * Every file the conversation's messages carried, newest message first
+ * and in block order within a message.
+ *
+ * Built from the transcript rather than from the attachment directory:
+ * that directory is shared by every conversation and keeps no record of
+ * which one a file came from, while the block in each message says
+ * exactly that.  Whether each file still exists is checked as it is
+ * listed, so a file deleted since it was sent is listed as gone rather
+ * than offered to open.
+ *
+ * Returns: (transfer full) (element-type ClawtAttachmentItem): the items
+ */
+GPtrArray *clawt_attachment_list(const gchar *dir, GPtrArray *messages);
+
+/**
+ * CLAWT_ATTACHMENT_THUMB_MIN:
+ *
+ * The smallest thumbnail edge attachment.thumbnail draws, in pixels.
+ */
+#define CLAWT_ATTACHMENT_THUMB_MIN (16)
+
+/**
+ * CLAWT_ATTACHMENT_THUMB_MAX:
+ *
+ * The largest thumbnail edge attachment.thumbnail draws, in pixels.
+ * The request comes off the wire; without a ceiling one frame could ask
+ * the daemon for a gigapixel surface.
+ */
+#define CLAWT_ATTACHMENT_THUMB_MAX (512)
+
+/**
+ * CLAWT_ATTACHMENT_THUMB_DEFAULT:
+ *
+ * The edge used when a request names none.
+ */
+#define CLAWT_ATTACHMENT_THUMB_DEFAULT (256)
+
+/**
+ * clawt_attachment_thumbnail_size:
+ * @requested: the size a request asked for, or 0 or less for the default
+ *
+ * Returns: @requested clamped to #CLAWT_ATTACHMENT_THUMB_MIN ..
+ *   #CLAWT_ATTACHMENT_THUMB_MAX
+ */
+guint clawt_attachment_thumbnail_size(gint64 requested);
+
+/**
+ * clawt_attachment_can_render_pdf:
+ *
+ * Whether this build was made with poppler-glib (`CLAWT_HAVE_POPPLER`).
+ *
+ * Returns: %TRUE when PDF thumbnails can be drawn
+ */
+gboolean clawt_attachment_can_render_pdf(void);
+
+/**
+ * clawt_attachment_thumbnail:
+ * @dir: the directory attachments are kept in
+ * @id: an id from clawt_attachment_store() naming a PDF
+ * @size: the longest edge wanted; clamped by
+ *   clawt_attachment_thumbnail_size()
+ * @width: (out) (optional): the PNG's width
+ * @height: (out) (optional): the PNG's height
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The first page of a stored PDF as a PNG whose longer edge is @size.
+ *
+ * Only page 1 is ever drawn, and only into a surface no larger than
+ * #CLAWT_ATTACHMENT_THUMB_MAX square: the file is untrusted input parsed
+ * inside the daemon, so what it can cost is bounded.  The PNG is cached
+ * as `<dir>/.thumbs/<id>.<size>.png` and served from there afterwards;
+ * an id names immutable bytes, so the cache never goes stale.  An id
+ * that is not one of ours is refused before anything is opened.
+ *
+ * Returns: (transfer full) (nullable): the PNG, or %NULL with @error set
+ *   (%CLAWT_ERROR_NOT_SUPPORTED in a build without poppler)
+ */
+GBytes *clawt_attachment_thumbnail(const gchar  *dir,
+                                   const gchar  *id,
+                                   guint         size,
+                                   guint        *width,
+                                   guint        *height,
+                                   GError      **error);
+
+/**
+ * clawt_attachment_text_head:
+ * @dir: the directory attachments are kept in
+ * @id: an id from clawt_attachment_store()
+ * @lines: how many lines to return at most
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The first @lines lines of a stored text file, for a gallery tile.
+ * At most 8 KiB is read and each line is cut at 160 characters; the
+ * result is valid UTF-8 whatever the file held.
+ *
+ * Returns: (transfer full) (nullable): the text, or %NULL with @error
+ *   set
+ */
+gchar *clawt_attachment_text_head(const gchar  *dir,
+                                  const gchar  *id,
+                                  guint         lines,
+                                  GError      **error);
+
 G_END_DECLS
 
 #endif /* CLAWT_ATTACHMENT_H */

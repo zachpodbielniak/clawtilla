@@ -81,6 +81,7 @@ a dependency means adding a row there and a row here.
 | ~gtk4-devel~ | ~libgtk-4-dev~ | ~gtk4~ | the GTK client |
 | ~libadwaita-devel~ | ~libadwaita-1-dev~ | ~libadwaita~ | the GTK client |
 | ~qrencode-devel~ | ~libqrencode-dev~ | ~qrencode~ | QR codes for pairing a phone (optional) |
+| ~poppler-glib-devel~ | ~libpoppler-glib-dev~ | ~poppler-glib~ | the first page of a PDF as a thumbnail in the Files gallery (optional; brings cairo) |
 
 Every one of those is needed to *build*, whether or not you will use what
 it is for: a package missing from ~PKG_DEPS~ makes ~pkg-config~ fail for
@@ -94,6 +95,7 @@ optional too, and detected rather than requested: without it
 builds, and every client shows the pairing link as text where it would
 have drawn a QR code (~QRENCODE=0~ turns it off on a host that has it).
 At runtime the library is ~qrencode-libs~ on Fedora.
+poppler-glib is optional in the same way: without it ~config.mk~ leaves ~CLAWT_HAVE_POPPLER~ undefined, everything still builds, ~attachment.thumbnail~ answers "no PDF renderer in this build" for a PDF, and the Files gallery shows the file's kind where it would have drawn its first page (~POPPLER=0~ turns it off on a host that has it).  Fedora: ~poppler-glib-devel~ to build, ~poppler-glib~ at runtime; cairo comes in with it.
 
 Arch has no ~libpq~ package of its own; ~postgresql-libs~ carries it.
 

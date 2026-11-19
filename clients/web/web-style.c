@@ -1094,6 +1094,29 @@ clawt_web_stylesheet(void)
     ".file-chip-drop{border:0;background:none;color:var(--muted);"
       "cursor:pointer;font-size:14px;line-height:1;padding:0 4px}"
     ".file-chip-drop:hover{color:var(--ink)}"
+    /*
+     * A conversation's Files page: tiles that wrap, each a fixed-height
+     * preview over a name and a line of who and when.  The preview box
+     * is the same for every kind so a grid of mixed files lines up.
+     */
+    ".file-grid{display:grid;gap:14px;"
+      "grid-template-columns:repeat(auto-fill,minmax(min(11rem,100%),1fr))}"
+    ".file-tile{display:flex;flex-direction:column;border:1px solid var(--line);"
+      "border-radius:8px;background:var(--surface);overflow:hidden;min-width:0}"
+    ".file-tile.file-gone{opacity:0.6}"
+    ".file-tile-thumb,.file-tile-text,.file-tile-label{height:9rem;width:100%;"
+      "margin:0;background:var(--canvas);box-sizing:border-box}"
+    ".file-tile-thumb{object-fit:contain;display:block}"
+    ".file-tile-text{padding:8px;font-family:var(--mono);font-size:11px;"
+      "overflow:hidden;white-space:pre;color:var(--ink)}"
+    ".file-tile-label{display:flex;align-items:center;justify-content:center;"
+      "color:var(--muted);font-size:13px;text-transform:uppercase}"
+    ".file-tile-caption{display:flex;flex-direction:column;gap:2px;"
+      "padding:8px 10px;min-width:0}"
+    ".file-tile-name{font-size:13px;overflow:hidden;text-overflow:ellipsis;"
+      "white-space:nowrap}"
+    ".file-tile-meta{font-size:11px;color:var(--muted);overflow:hidden;"
+      "text-overflow:ellipsis;white-space:nowrap}"
 
     /* ── Console ── */
     ".console{font-family:var(--mono);font-size:var(--mono-size);white-space:pre-wrap;"

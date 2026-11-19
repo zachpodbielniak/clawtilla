@@ -9865,6 +9865,160 @@ flag_present(int argc, char *argv[], const gchar *flag, GHashTable *used)
     return FALSE;
 }
 
+/* ── Files sent in a conversation ──────────────────────────────────── */
+
+static void
+print_attachment_usage(gboolean asked_for)
+{
+    static const gchar *text =
+        "Usage: clawtilla attachment <verb> [...]\n"
+        "\n"
+        "  list <agent|room>              every file a conversation carried,\n"
+        "                                 newest first: id, kind, size, who\n"
+        "                                 sent it and when\n"
+        "  get <id> [-o FILE]             the daemon's copy of one, written to\n"
+        "                                 FILE (default: its own name, in the\n"
+        "                                 current directory); -o - for stdout\n"
+        "\n"
+        "An agent id lists your conversation with it; a room id lists that\n"
+        "room. A file named only by a host path (a message from before\n"
+        "0.51.5) is listed with that path and has no id to get.\n"
+        "\n"
+        "Examples:\n"
+        "  clawtilla attachment list scout\n"
+        "  clawtilla attachment get 0f3c9a1b2c3d-report.pdf\n"
+        "  clawtilla attachment get 0f3c9a1b2c3d-shot.png -o /tmp/shot.png\n";
+
+    if (asked_for)
+        g_print("%s", text);
+    else
+        g_printerr("%s", text);
+}
+
+static int
+cmd_attachment(int argc, char *argv[])
+{
+    g_autoptr(ClawtClient) client = NULL;
+    g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GHashTable) used = g_hash_table_new(NULL, NULL);
+    const gchar *verb = (argc > 2) ? argv[2] : "help";
+    const gchar *what = (argc > 3 && argv[3][0] != '-') ? argv[3] : NULL;
+    guint i;
+
+    if (g_strcmp0(verb, "help") == 0 || g_strcmp0(verb, "--help") == 0 ||
+        g_strcmp0(verb, "-h") == 0) {
+        print_attachment_usage(TRUE);
+        return EXIT_SUCCESS;
+    }
+
+    if ((g_strcmp0(verb, "list") != 0 && g_strcmp0(verb, "get") != 0) ||
+        what == NULL) {
+        print_attachment_usage(FALSE);
+        return EXIT_FAILURE;
+    }
+
+    client = connect_to_daemon();
+    if (client == NULL)
+        return EXIT_FAILURE;
+
+    if (g_strcmp0(verb, "list") == 0) {
+        JsonArray *items;
+
+        /*
+         * `room`, which the daemon resolves as a room id first and an
+         * agent's direct room second -- the same pair room.history takes.
+         */
+        reply = call(client, "attachment.list",
+                     clawt_ipc_payload_new("room", what, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        items = json_object_get_array_member(json_node_get_object(reply),
+                                             "items");
+
+        if (items == NULL || json_array_get_length(items) == 0) {
+            g_print("No files in that conversation yet.\n");
+            return EXIT_SUCCESS;
+        }
+
+        for (i = 0; i < json_array_get_length(items); i++) {
+            JsonObject *item = json_array_get_object_element(items, i);
+            gint64 ts = json_object_get_int_member_with_default(item, "ts",
+                                                                0);
+            gint64 bytes = json_object_get_int_member_with_default(
+                item, "bytes", 0);
+            g_autoptr(GDateTime) when = ts > 0
+                ? g_date_time_new_from_unix_local(ts) : NULL;
+            g_autofree gchar *date = when != NULL
+                ? g_date_time_format(when, "%Y-%m-%d %H:%M") : g_strdup("?");
+            g_autofree gchar *size = g_format_size((guint64)bytes);
+
+            g_print("%-6s %-10s %-16s %s  %s\n",
+                    member_or(item, "kind", "other"),
+                    member_flag(item, "exists", FALSE) ? size : "gone",
+                    member_or(item, "sender", "?"), date,
+                    member_or(item, "name", "?"));
+            g_print("    %s\n", member_or(item, "id", NULL) != NULL
+                                    ? member_or(item, "id", "")
+                                    : member_or(item, "path", ""));
+        }
+
+        return EXIT_SUCCESS;
+    }
+
+    /* get */
+    {
+        const gchar *output = flag_value(argc, argv, "-o", used);
+        const gchar *encoded;
+        g_autofree gchar *name = NULL;
+        g_autofree guchar *bytes = NULL;
+        g_autoptr(GError) error = NULL;
+        gsize length = 0;
+
+        reply = call(client, "attachment.get",
+                     clawt_ipc_payload_new("id", what, NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        encoded = member_or(json_node_get_object(reply), "base64", NULL);
+
+        if (encoded == NULL) {
+            g_printerr("clawtilla: the daemon sent no bytes\n");
+            return EXIT_FAILURE;
+        }
+
+        bytes = g_base64_decode(encoded, &length);
+
+        if (g_strcmp0(output, "-") == 0) {
+            if (fwrite(bytes, 1, length, stdout) != length) {
+                g_printerr("clawtilla: could not write to stdout\n");
+                return EXIT_FAILURE;
+            }
+
+            return EXIT_SUCCESS;
+        }
+
+        /*
+         * Its own name by default -- the daemon's, which it rebuilt from
+         * a basename, so it cannot name a path outside this directory.
+         */
+        name = g_path_get_basename(
+            member_or(json_node_get_object(reply), "name", what));
+
+        if (!g_file_set_contents(output != NULL ? output : name,
+                                 (const gchar *)bytes, (gssize)length,
+                                 &error)) {
+            g_printerr("clawtilla: %s\n", error->message);
+            return EXIT_FAILURE;
+        }
+
+        g_print("Wrote %s (%" G_GSIZE_FORMAT " bytes).\n",
+                output != NULL ? output : name, length);
+    }
+
+    return EXIT_SUCCESS;
+}
+
 static void
 print_grok_job(JsonObject *job, gint64 now)
 {
@@ -11817,6 +11971,8 @@ static const ClawtVerb verbs[] = {
       cmd_trigger },
     { "grok",    "<verb>",   "Hand work to Grok bots, and hear back",
       cmd_grok },
+    { "attachment", "<verb>", "Files sent in a conversation (list, get)",
+      cmd_attachment },
     { "skill",   "<verb>",   "Procedures agents can be given",
       cmd_skill },
     { "teach",   "<verb>",   "Record a task, and write a skill from it",

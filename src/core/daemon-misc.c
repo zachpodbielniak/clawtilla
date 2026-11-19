@@ -241,6 +241,193 @@ clawt_daemon_handle_misc(
         return clawt_ipc_response_new(request, json_builder_get_root(builder));
     }
 
+    /*
+     * Every file one conversation carried, for the clients' Files
+     * gallery.
+     *
+     * Read from the room's whole history, which every room keeps in
+     * memory: the attachment directory is shared by all conversations
+     * and records nothing about which one a file came from, while each
+     * message's block says exactly that.  `room` takes a room id or an
+     * agent id (resolved to the operator's direct room with it, as
+     * room.history does); `agent` takes only an agent.
+     */
+    if (g_strcmp0(kind, "attachment.list") == 0) {
+        const gchar *room_id = clawt_ipc_payload_string(payload, "room");
+        const gchar *agent_id = clawt_ipc_payload_string(payload, "agent");
+        ClawtRoom *room = NULL;
+        g_autoptr(GPtrArray) history = NULL;
+        g_autoptr(GPtrArray) items = NULL;
+        guint i;
+
+        if (room_id != NULL)
+            room = clawt_room_manager_get(self->rooms, room_id);
+
+        /*
+         * An agent's conversation is its direct room with the operator,
+         * named by the room manager rather than spelled here: a direct
+         * room's id is derived, and a second spelling of the rule is a
+         * second chance to name a room that does not exist.
+         */
+        if (room == NULL) {
+            const gchar *agent = (agent_id != NULL) ? agent_id : room_id;
+
+            if (agent != NULL &&
+                clawt_agent_manager_get(self->agents, agent) != NULL)
+                room = clawt_room_manager_get_direct(self->rooms, "user",
+                                                     agent);
+        }
+
+        if (room_id == NULL && agent_id == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "which room or agent?");
+
+        if (room == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "no such room or agent");
+
+        history = clawt_room_get_history(room, 0);
+        items = clawt_attachment_list(self->attachment_dir, history);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "room");
+        json_builder_add_string_value(builder, clawt_room_get_id(room));
+        json_builder_set_member_name(builder, "items");
+        json_builder_begin_array(builder);
+
+        for (i = 0; i < items->len; i++) {
+            ClawtAttachmentItem *item = g_ptr_array_index(items, i);
+
+            json_builder_begin_object(builder);
+
+            /* `id` or `path`, whichever the block named the file by */
+            if (item->id != NULL) {
+                json_builder_set_member_name(builder, "id");
+                json_builder_add_string_value(builder, item->id);
+            }
+
+            if (item->path != NULL) {
+                json_builder_set_member_name(builder, "path");
+                json_builder_add_string_value(builder, item->path);
+            }
+
+            json_builder_set_member_name(builder, "name");
+            json_builder_add_string_value(builder, item->name);
+            json_builder_set_member_name(builder, "kind");
+            json_builder_add_string_value(builder, item->kind);
+            json_builder_set_member_name(builder, "bytes");
+            json_builder_add_int_value(builder, item->bytes);
+            json_builder_set_member_name(builder, "exists");
+            json_builder_add_boolean_value(builder, item->exists);
+            json_builder_set_member_name(builder, "message");
+            json_builder_add_string_value(builder, item->message);
+            json_builder_set_member_name(builder, "sender");
+            json_builder_add_string_value(builder, item->sender);
+            json_builder_set_member_name(builder, "ts");
+            json_builder_add_int_value(builder, item->ts);
+            json_builder_end_object(builder);
+        }
+
+        json_builder_end_array(builder);
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
+    /*
+     * A small picture of one stored file, for a gallery tile.
+     *
+     * A PDF's first page as a PNG (poppler, when this build has it); a
+     * text file's first lines as `text`.  Pictures are not drawn here --
+     * the clients already decode images at thumbnail size from
+     * attachment.get -- and anything else has no thumbnail.  The id is
+     * checked by clawt_attachment_path() before any file is opened, and
+     * `size` is clamped, so a request cannot name a path or a surface
+     * of its own choosing.
+     */
+    if (g_strcmp0(kind, "attachment.thumbnail") == 0) {
+        const gchar *id = clawt_ipc_payload_string(payload, "id");
+        guint size = clawt_attachment_thumbnail_size(
+            clawt_ipc_payload_int(payload, "size", 0));
+        g_autofree gchar *path = NULL;
+        g_autofree gchar *name = NULL;
+        const gchar *file_kind;
+
+        if (id == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "which attachment?");
+
+        if (self->attachment_dir == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "this daemon keeps no attachments");
+
+        path = clawt_attachment_path(self->attachment_dir, id);
+
+        if (path == NULL)
+            return clawt_ipc_error_new(request, CLAWT_ERROR_INVALID_ARGUMENT,
+                                       "that is not an attachment id");
+
+        if (!g_file_test(path, G_FILE_TEST_IS_REGULAR))
+            return clawt_ipc_error_new(request, CLAWT_ERROR_NOT_FOUND,
+                                       "no such attachment");
+
+        name = clawt_attachment_name(id);
+        file_kind = clawt_attachment_kind(name);
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "id");
+        json_builder_add_string_value(builder, id);
+        json_builder_set_member_name(builder, "kind");
+        json_builder_add_string_value(builder, file_kind);
+
+        if (g_strcmp0(file_kind, "text") == 0) {
+            g_autofree gchar *text = clawt_attachment_text_head(
+                self->attachment_dir, id, 12, &error);
+
+            if (text == NULL)
+                return clawt_ipc_error_new(request, error->code,
+                                           error->message);
+
+            json_builder_set_member_name(builder, "text");
+            json_builder_add_string_value(builder, text);
+        } else if (g_strcmp0(file_kind, "pdf") == 0) {
+            guint width = 0;
+            guint height = 0;
+            g_autoptr(GBytes) png = clawt_attachment_thumbnail(
+                self->attachment_dir, id, size, &width, &height, &error);
+            g_autofree gchar *encoded = NULL;
+            gsize length = 0;
+            const guchar *data;
+
+            if (png == NULL)
+                return clawt_ipc_error_new(request, error->code,
+                                           error->message);
+
+            data = g_bytes_get_data(png, &length);
+            encoded = g_base64_encode(data, length);
+
+            json_builder_set_member_name(builder, "mime");
+            json_builder_add_string_value(builder, "image/png");
+            json_builder_set_member_name(builder, "width");
+            json_builder_add_int_value(builder, (gint64)width);
+            json_builder_set_member_name(builder, "height");
+            json_builder_add_int_value(builder, (gint64)height);
+            json_builder_set_member_name(builder, "base64");
+            json_builder_add_string_value(builder, encoded);
+        } else {
+            return clawt_ipc_error_new(
+                request, CLAWT_ERROR_NOT_SUPPORTED,
+                g_strcmp0(file_kind, "image") == 0
+                    ? "a picture is its own thumbnail: fetch it with "
+                      "attachment.get"
+                    : "there is no thumbnail for this kind of file");
+        }
+
+        json_builder_end_object(builder);
+
+        return clawt_ipc_response_new(request, json_builder_get_root(builder));
+    }
+
     if (g_strcmp0(kind, "decision.list") == 0) {
         gboolean open_only = clawt_ipc_payload_boolean(payload, "open", TRUE);
         const gchar *room = clawt_ipc_payload_string(payload, "room");
