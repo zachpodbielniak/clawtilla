@@ -712,6 +712,17 @@ struct _ClawtWindow {
      */
     GMenu             *agent_menu_computer;
     gboolean           menu_stop_removes;
+
+    /*
+     * The notice section at the top of the menu -- "Mark as read" and
+     * "Mark all as read" -- filled per right-click like the two above,
+     * because the label carries the count.  It is the section a Mute
+     * item joins.  `menu_read_room` is the conversation the right-click
+     * was on, copied off the row, which a refresh may free while the
+     * menu is open.
+     */
+    GMenu             *agent_menu_read;
+    gchar             *menu_read_room;
     JsonNode          *teams_seen;
 
     gboolean           refreshing[CLAWT_N_REFRESH];
@@ -1823,6 +1834,14 @@ clawt_gtk_team_index_of(GStrv ids, const gchar *current);
 
 void
 clawt_gtk_update_unread_tab(ClawtWindow *self);
+
+void
+clawt_gtk_mark_room_read(ClawtWindow *self, const gchar *room_id,
+                         const gchar *upto);
+
+void
+clawt_gtk_apply_room_read(ClawtWindow *self, const gchar *room_id,
+                          gint64 unread);
 
 /* ── Defined in clawt-window.c: moving between pages ─────────────── */
 

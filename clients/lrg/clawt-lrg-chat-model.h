@@ -84,6 +84,42 @@ gboolean clawt_lrg_unread_clear(GHashTable *unread, const gchar *room_id);
  */
 gboolean clawt_lrg_unread_prune(GHashTable *unread, GHashTable *rows);
 
+/**
+ * clawt_lrg_unread_seed:
+ * @unread: the table
+ * @agents: (nullable): an `agent.list` reply
+ * @rooms: (nullable): a `room.list` reply
+ * @viewing_room: (nullable): the room on screen
+ *
+ * Takes the daemon's counts from a `room.list` reply, for every room
+ * the sidebar draws (clawt_unread_seed() with
+ * clawt_lrg_chat_row_rooms()).  The daemon holds the read marks, so a
+ * conversation read in another client, or before a restart, is read
+ * here too.  A daemon too old to send `unread` changes nothing.
+ *
+ * Returns: %TRUE if the daemon supplied counts
+ */
+gboolean clawt_lrg_unread_seed(GHashTable  *unread,
+                               JsonNode    *agents,
+                               JsonNode    *rooms,
+                               const gchar *viewing_room);
+
+/**
+ * clawt_lrg_unread_apply_read:
+ * @unread: the table
+ * @room_id: (nullable): the `room.read` event's subject
+ * @count: the event's `unread`, the count left after the mark
+ *
+ * A conversation was read somewhere -- this client, another one, the
+ * CLI: its count becomes the daemon's, which is 0 unless the mark was
+ * set short of the newest message.
+ *
+ * Returns: %TRUE if the table changed
+ */
+gboolean clawt_lrg_unread_apply_read(GHashTable  *unread,
+                                     const gchar *room_id,
+                                     gint64       count);
+
 /* The count for one room, and across all of them. */
 guint clawt_lrg_unread_count(GHashTable *unread, const gchar *room_id);
 guint clawt_lrg_unread_total(GHashTable *unread);

@@ -2589,10 +2589,21 @@ draw_history(ClawtLrgApp *app, JsonNode *history, GPtrArray *steps,
     guint n = (messages != NULL) ? json_array_get_length(messages) : 0;
     guint s_at = 0;
     guint d_at = 0;
+    gint rule_at = -1;
     guint i;
 
     reset_transcript();
     g_hash_table_remove_all(chat.shown);
+
+    /*
+     * Where "New messages" goes: above the first message somebody else
+     * sent after the operator's read mark (`read_upto`, held by the
+     * daemon), by the rule every client shares.  Not in a peer
+     * conversation, which has no mark.
+     */
+    if (chat.conversation == NULL)
+        rule_at = clawt_unread_rule_index(
+            messages, clawt_ipc_payload_string(root, "read_upto"));
 
     /* held for the inline view, which redraws them as events arrive */
     for (i = 0; decisions != NULL && i < decisions->len; i++)
@@ -2632,6 +2643,12 @@ draw_history(ClawtLrgApp *app, JsonNode *history, GPtrArray *steps,
         if (id != NULL)
             g_hash_table_add(chat.shown, g_strdup(id));
 
+        /* above the message, labelling the block underneath it */
+        if ((gint)i == rule_at && chat.unread_rule == NULL) {
+            chat.unread_rule = unread_rule_new(app);
+            clawt_lrg_take(chat.transcript, chat.unread_rule);
+        }
+
         append_round_marks(app, clawt_ipc_payload_int(message, "round", 0),
                            NULL, NULL, TRUE);
         append_message(app, sender != NULL ? sender : "?",
@@ -2670,6 +2687,18 @@ draw_history(ClawtLrgApp *app, JsonNode *history, GPtrArray *steps,
      */
     if (clawt_lrg_unread_clear(app->unread, chat.room))
         fleet_marks_changed(app);
+
+    /*
+     * And read for the daemon, up to the last message drawn -- after the
+     * history, whose `read_upto` placed the rule above, and only when
+     * the daemon holds marks at all.
+     */
+    if (chat.conversation == NULL && n > 0 && root != NULL &&
+        json_object_has_member(root, "read_upto"))
+        clawt_lrg_mark_room_read(
+            app, chat.room,
+            clawt_ipc_payload_string(
+                json_array_get_object_element(messages, n - 1), "id"));
 
     set_following(TRUE);
     chat.jump_instantly = TRUE;
@@ -2898,6 +2927,37 @@ on_conversation_chosen(GSimpleAction *action, GVariant *parameter,
 }
 
 void
+clawt_lrg_mark_room_read(ClawtLrgApp *app, const gchar *room_id,
+                         const gchar *upto)
+{
+    if (room_id == NULL)
+        return;
+
+    clawt_lrg_request(app, "room.read",
+                      clawt_ipc_payload_new("room", room_id, "upto", upto,
+                                            NULL),
+                      CLAWT_LRG_QUIET, NULL, NULL, NULL);
+}
+
+void
+clawt_lrg_mark_all_read(ClawtLrgApp *app)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "all");
+    json_builder_add_boolean_value(builder, TRUE);
+    json_builder_end_object(builder);
+
+    /* Cleared here at once; the daemon's events say the same a moment on. */
+    g_hash_table_remove_all(app->unread);
+    fleet_marks_changed(app);
+
+    clawt_lrg_request(app, "room.read", json_builder_get_root(builder),
+                      CLAWT_LRG_QUIET, NULL, NULL, NULL);
+}
+
+void
 clawt_lrg_chat_reopen(ClawtLrgApp *app)
 {
     /*
@@ -2908,6 +2968,9 @@ clawt_lrg_chat_reopen(ClawtLrgApp *app)
      */
     if (clawt_lrg_unread_clear(app->unread, app->room_id))
         fleet_marks_changed(app);
+
+    /* And for every other client, whose counts are the daemon's. */
+    clawt_lrg_mark_room_read(app, app->room_id, NULL);
 
     if (chat.page == NULL || chat.conversation == NULL)
         return;
@@ -5001,6 +5064,14 @@ on_message_event(ClawtLrgApp *app, ClawtEvent *event)
          */
         if (clawt_chat_reply_ends_wait(from, app->agent_id))
             set_activity(NULL);
+
+        /*
+         * On screen is read: without this the daemon's count climbs for
+         * the conversation being watched, and the next client to connect
+         * shows it.  Not a peer conversation, which is never counted.
+         */
+        if (chat.conversation == NULL && g_strcmp0(from, "user") != 0)
+            clawt_lrg_mark_room_read(app, chat.room, id);
     } else if (chat.history_inflight == 0 && chat.conversation == NULL &&
                app->agent_id != NULL && room != NULL &&
                g_strcmp0(room, chat.room) != 0 &&
@@ -5073,6 +5144,19 @@ on_event(ClawtLrgApp *app, ClawtEvent *event)
 
     if (kind == NULL)
         return;
+
+    /*
+     * A conversation read anywhere -- here, another client, the CLI --
+     * takes the daemon's count.  Before the page check, because the
+     * sidebar's pills are drawn whether or not the chat was ever built.
+     */
+    if (g_strcmp0(kind, "room.read") == 0) {
+        if (clawt_lrg_unread_apply_read(
+                app->unread, clawt_event_get_subject(event),
+                clawt_event_get_detail_int(event, "unread")))
+            fleet_marks_changed(app);
+        return;
+    }
 
     /*
      * Before the page is built there is no transcript to draw into, but

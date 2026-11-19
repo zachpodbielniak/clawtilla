@@ -153,6 +153,47 @@ clawt_lrg_unread_clear(GHashTable *unread, const gchar *room_id)
 }
 
 gboolean
+clawt_lrg_unread_seed(GHashTable  *unread,
+                      JsonNode    *agents,
+                      JsonNode    *rooms,
+                      const gchar *viewing_room)
+{
+    g_autoptr(GHashTable) rows = NULL;
+    JsonArray *array;
+
+    if (unread == NULL || rooms == NULL)
+        return FALSE;
+
+    /*
+     * The same rows the live count is restricted to, so a seeded count
+     * is always on a row somebody can click to clear it.
+     */
+    rows = clawt_lrg_chat_row_rooms(agents, rooms);
+    array = reply_array(rooms, "rooms");
+
+    return clawt_unread_seed(unread, array, rows, viewing_room);
+}
+
+gboolean
+clawt_lrg_unread_apply_read(GHashTable  *unread,
+                            const gchar *room_id,
+                            gint64       count)
+{
+    if (unread == NULL || room_id == NULL)
+        return FALSE;
+
+    if (count <= 0)
+        return g_hash_table_remove(unread, room_id);
+
+    if (clawt_lrg_unread_count(unread, room_id) == (guint)count)
+        return FALSE;
+
+    g_hash_table_insert(unread, g_strdup(room_id),
+                        GUINT_TO_POINTER((guint)count));
+    return TRUE;
+}
+
+gboolean
 clawt_lrg_unread_prune(GHashTable *unread, GHashTable *rows)
 {
     GHashTableIter iter;

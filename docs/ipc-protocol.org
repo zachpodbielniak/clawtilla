@@ -855,7 +855,7 @@ A room has one state per member, so there is no single honest answer and
 the key is omitted rather than guessed at.
 
 ~room.list~, ~room.create~, ~room.set~, ~room.add~, ~room.remove~,
-~room.history~, ~room.steps~.
+~room.history~, ~room.steps~, ~room.read~.
 
 Each room in ~room.list~ carries ~declared~ (somebody made it) and, since incidents, ~incidents~ (a JSON boolean: it is a team's *Problems to look at* room, ~incidents:<team>~ or ~incidents:+fleet~).  Which rooms get a sidebar row is =clawt_room_is_listed()=, the same in every client: the declared ones and the incidents ones.
 
@@ -898,6 +898,43 @@ read and post into the operator's private conversation with another.
 ~room.history~ accepts an agent id as well as a room id: an agent id
 means the direct room with that agent, the same way it does for
 ~msg.send~.  Pass ~as~ to say who is asking; it defaults to ~user~.
+
+**** Read marks: ~room.read~, and ~unread~ / ~read_upto~ (since 0.52.0)
+
+The daemon holds one *read mark* per room -- the last message the operator has read in it -- in ~<state_dir>/reads.db~, and every unread count is derived from the room's history and that mark when it is asked for.  The counts every client draws come from here, so reading in one client clears the count in all of them and a restart forgets nothing.  See "Unread" in [[file:clients.org][clients.org]].
+
+Each ~room.list~ entry gains:
+
+| member | what it is |
+|--------+------------|
+| ~unread~ | messages after the mark sent by anybody but ~user~ (an integer) |
+| ~read_upto~ | the id of the last message read, or ~""~ for a room nobody has read |
+
+~room.history~ gains ~read_upto~, the same value, read *before* the client marks the room read on opening it -- it is where the "New messages" rule goes (=clawt_unread_rule_index()=).  Both members are absent when the store could not be opened; a client takes that as "keep counting from events", which is what every client did before 0.52.0.
+
+~room.read~ moves a mark:
+
+#+begin_src json
+{"v":1,"id":"7","kind":"room.read","payload":{"agent":"zed"}}
+{"v":1,"id":"7","kind":"response","payload":{"room":"dm:user:zed","read_upto":"01jc8w4m5ae7qz3t9hxk","unread":0}}
+
+{"v":1,"id":"8","kind":"room.read","payload":{"room":"standup","upto":"01jc8w4m5ae7qz3t9hxk"}}
+{"v":1,"id":"9","kind":"room.read","payload":{"all":true}}
+{"v":1,"id":"9","kind":"response","payload":{"marked":3}}
+#+end_src
+
+- ~room~ names a room, or an agent id meaning the operator's direct room with it (the ~room.history~ resolver).  ~agent~ names an agent explicitly; its direct room is named by =clawt_room_manager_direct_id()= -- ~dm:user:zed~ for an agent ~zed~, ~dm:alice:user~ for ~alice~, because the two ids are sorted -- so no client ever spells one.  An unknown agent is ~not_found~.
+- ~upto~ is the id of the last message read; without it, the newest message.  It must be a message the room holds, or the request is ~not_found~: a mark that named nothing would fall back to a timestamp a client could set to any second, swallowing every message until then.
+- *A mark never moves backwards.*  Two clients reading the same room can report in either order; a mark behind the one held -- by position in the history, or by timestamp when the held message is gone -- is not written.  The reply and the event still go out, carrying the room's real count.  Not by id: ids sort by time only to the millisecond.
+- ~all: true~ marks every room that has anything unread, up to its newest message, and answers ~marked~, how many it touched.
+- An empty room has nothing to mark; the request succeeds and nothing is written.
+- ~not_supported~ when the store could not be opened.
+
+The reply carries ~room~ (what was resolved), ~read_upto~ and ~unread~ (what is left after the mark, 0 unless ~upto~ stopped short of the newest message).
+
+Every room marked publishes a ~room.read~ event whose subject is the room, with ~room~, ~upto~ (the mark as it now stands) and ~unread~ (an integer).  Every client zeroes -- or sets -- that room's pill on it, which is how a read in one client clears the badge in every other one.
+
+The count itself (=clawt_room_count_unread()=): walk back from the newest message to the marked one and count the messages not sent by ~user~; when the marked message is no longer in the history, count those stamped after the mark's second.  A room with no mark counts all of them.  The first time ~reads.db~ is created the daemon marks every existing room read at its newest message, so an upgrade does not light up the fleet's whole history.
 
 ~room.steps~ takes the same ~room~ and ~as~ pair, through the same
 resolver, and answers with the steps that room has seen: an array of
@@ -2105,7 +2142,7 @@ Every kind published, by subject:
 |---------+-------|
 | the daemon | ~daemon.started~, ~daemon.stopped~, ~daemon.reloaded~, ~config.changed~, ~hold.changed~ |
 | an agent | ~agent.created~, ~agent.removed~, ~agent.changed~, ~agent.started~, ~agent.stopped~, ~agent.interrupted~, ~agent.state~, ~agent.connected~, ~agent.disconnected~, ~agent.typing~, ~agent.identity~, ~agent.contested~ (~evictions~), ~agent.failover~ (~state~, ~provider~, ~model~, ~primary_provider~, ~primary_model~, ~reason~, ~reset_at~, ~retry_at~, ~context_lost~, ~message~) |
-| a room | ~message~, ~message.refused~, ~exchange.stalled~, ~room.created~, ~room.changed~ |
+| a room | ~message~, ~message.refused~, ~exchange.stalled~, ~room.created~, ~room.changed~, ~room.read~ (~room~, ~upto~, ~unread~) |
 | an agent's mailbox | ~mailbox.queued~, ~mailbox.delivered~ |
 | a team | ~team.changed~ |
 | an agent | ~decision.asked~ (~decision~, ~room~), ~decision.settled~ (~decision~, ~how~: ~answered~, ~dismissed~, ~defaulted~ or ~deleted~, ~room~, ~answer~, ~via~), ~decision.deleted~ (~decision~, ~room~) |

@@ -540,6 +540,73 @@ clawt_web_post_button(const gchar *label, const gchar *action,
     return (HtmxButton *)g_steal_pointer(&button);
 }
 
+HtmxElement *
+clawt_web_agent_row_menu(const gchar *agent_id, guint unread)
+{
+    g_autoptr(HtmxElement) details = NULL;
+    g_autoptr(HtmxElement) summary = NULL;
+    g_autoptr(HtmxDiv) items = NULL;
+    guint count = 0;
+
+    if (agent_id == NULL)
+        return NULL;
+
+    details = HTMX_ELEMENT(htmx_details_new());
+    summary = HTMX_ELEMENT(htmx_summary_new());
+    items = htmx_div_new();
+
+    htmx_element_add_class(details, "row-menu");
+    htmx_element_set_attribute(details, "data-agent", agent_id);
+
+    /*
+     * A summary that says what the menu is for, for a reader who opens
+     * it with the keyboard; the script opens it on right-click.
+     */
+    htmx_node_set_text_content(HTMX_NODE(summary), "Actions");
+    htmx_element_set_attribute(summary, "aria-label", "Agent actions");
+    htmx_node_add_child(HTMX_NODE(details), HTMX_NODE(summary));
+    htmx_element_add_class(HTMX_ELEMENT(items), "row-menu-items");
+
+    /*
+     * Mark as read, only with something to read: the GTK and lrg menus
+     * grey it out instead, and a browser has no greyed menu item that is
+     * not also a button somebody can press.
+     */
+    if (unread > 0) {
+        g_autofree gchar *escaped = g_uri_escape_string(agent_id, NULL,
+                                                        FALSE);
+        g_autofree gchar *action = g_strdup_printf("/a/%s/read", escaped);
+        g_autofree gchar *label = clawt_agent_menu_read_label(unread);
+
+        clawt_web_add(items, clawt_web_post_button(label, action, "default",
+                                                   NULL));
+        count++;
+    }
+
+    /* Nothing to offer: no menu, and the browser's own one on right-click. */
+    if (count == 0)
+        return NULL;
+
+    htmx_node_add_child(HTMX_NODE(details), HTMX_NODE(items));
+
+    return g_steal_pointer(&details);
+}
+
+HtmxElement *
+clawt_web_mark_all_read_button(guint total)
+{
+    g_autoptr(HtmxButton) button = NULL;
+
+    if (total == 0)
+        return NULL;
+
+    button = clawt_web_post_button("Mark all as read", "/read-all",
+                                   "default", NULL);
+    htmx_element_add_class(HTMX_ELEMENT(button), "mark-all-read");
+
+    return HTMX_ELEMENT(g_steal_pointer(&button));
+}
+
 HtmxForm *
 clawt_web_form(const gchar *action)
 {
@@ -1594,7 +1661,31 @@ open_document(HtmxBuilder *builder, const gchar *title,
         "e.preventDefault();"
         "if(q){q.focus();q.select();return;}"
         "if(a){navigation_go(a.href);}}});"
-        "var seen=-1,mark=false,keep=0;"
+        /*
+         * Right-click on an agent row opens its menu -- the
+         * `<details class="row-menu">` drawn as the row's next sibling --
+         * so the gesture that works in the GTK and lrg sidebars works
+         * here.  Delegated on `document`, because the sidebar is replaced
+         * on every fleet event.  A row with no menu (nothing to offer)
+         * keeps the browser's own.  A click anywhere else, or Escape,
+         * closes it.
+         */
+        "function close_menus(keep){"
+        "var all=document.querySelectorAll('details.row-menu[open]');"
+        "for(var i=0;i<all.length;i++){if(all[i]!==keep){all[i].open=false;}}}"
+        "document.addEventListener('contextmenu',function(e){"
+        "var row=e.target.closest?e.target.closest('.agent-row'):null;"
+        "if(!row){return;}"
+        "var m=row.nextElementSibling;"
+        "if(!m||!m.classList.contains('row-menu')){return;}"
+        "e.preventDefault();close_menus(m);m.open=true;"
+        "var b=m.querySelector('button');if(b){b.focus();}});"
+        "document.addEventListener('click',function(e){"
+        "var m=e.target.closest?e.target.closest('details.row-menu'):null;"
+        "close_menus(m);});"
+        "document.addEventListener('keydown',function(e){"
+        "if(e.key==='Escape'){close_menus(null);}});"
+        "var seen=-1,mark=false,keep=0,held=-1;"
         "function box(){return document.getElementById('transcript');}"
         "function pill(){return document.getElementById('jump-pill');}"
         "function at_end(b){return b.scrollHeight-b.scrollTop-b.clientHeight<40;}"
@@ -1608,11 +1699,26 @@ open_document(HtmxBuilder *builder, const gchar *title,
         "document.addEventListener('htmx:beforeSwap',function(e){"
         "var b=box();if(!b||e.detail.target.id!=='transcript'){return;}"
         "keep=b.scrollTop;"
-        "seen=at_end(b)?-1:b.querySelectorAll('.msg').length;});"
+        "seen=at_end(b)?-1:b.querySelectorAll('.msg').length;"
+        /*
+         * And where a "New messages" rule stands, counted in messages
+         * above it.  The daemon draws one on opening a conversation,
+         * from its read mark; the mark then moves to the end, so the
+         * next fragment comes back without it, and it is put back here
+         * at the same place rather than vanishing on the first event.
+         */
+        "held=-1;var r=document.getElementById('unread-rule');"
+        "if(r){var all=b.querySelectorAll('.msg,#unread-rule');held=0;"
+        "for(var i=0;i<all.length&&all[i]!==r;i++){held++;}}});"
         /* After: follow, or say what came in while we were not. */
         "document.addEventListener('htmx:afterSwap',function(e){"
         "var b=box();if(!b||e.detail.target.id!=='transcript'){return;}"
         "var msgs=b.querySelectorAll('.msg');"
+        "if(held>=0&&held<msgs.length&&!document.getElementById('unread-rule')){"
+        "var q=document.createElement('div');"
+        "q.className='unread-rule';q.id='unread-rule';"
+        "q.appendChild(document.createTextNode('New messages'));"
+        "msgs[held].parentNode.insertBefore(q,msgs[held]);}"
         "if(seen<0){b.scrollTop=b.scrollHeight;return;}"
         /*
          * Put back where they were reading. The swap replaces the whole
@@ -1625,7 +1731,7 @@ open_document(HtmxBuilder *builder, const gchar *title,
         "b.scrollTop=keep;"
         "if(msgs.length<=seen){return;}"
         "var p=pill();if(p){p.classList.add('on');}"
-        "if(mark){return;}"
+        "if(mark||document.getElementById('unread-rule')){return;}"
         "var r=document.createElement('div');"
         "r.className='unread-rule';r.id='unread-rule';"
         "r.appendChild(document.createTextNode('New messages'));"

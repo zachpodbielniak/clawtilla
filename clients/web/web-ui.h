@@ -249,6 +249,37 @@ HtmxButton *clawt_web_post_button(const gchar *label,
                                   const gchar *confirm);
 
 /**
+ * clawt_web_agent_row_menu:
+ * @agent_id: the agent the row is for
+ * @unread: how many messages wait in its conversation with the operator
+ *
+ * The agent list's per-row menu: a `<details class="row-menu">` drawn
+ * after the row, which the page script opens on a right-click of the
+ * row (the `contextmenu` handler in this file's script) so the gesture
+ * that works in the GTK and lrg clients works here too.
+ *
+ * "Mark as read" -- worded by clawt_agent_menu_read_label(), as every
+ * client words it -- posts to `/a/<id>/read` and appears only when there
+ * is something to read; a menu offering to do nothing is noise.  Further
+ * per-agent notice actions (muting, say) belong in this same menu.
+ *
+ * Returns: (transfer full) (nullable): the menu, or %NULL when it would
+ *   hold nothing
+ */
+HtmxElement *clawt_web_agent_row_menu(const gchar *agent_id, guint unread);
+
+/**
+ * clawt_web_mark_all_read_button:
+ * @total: every conversation's unread count added up
+ *
+ * "Mark all as read", for the Chat heading: posts to `/read-all`.
+ *
+ * Returns: (transfer full) (nullable): the button, or %NULL when
+ *   nothing is unread
+ */
+HtmxElement *clawt_web_mark_all_read_button(guint total);
+
+/**
  * clawt_web_field:
  * @label: what to call it
  * @name: the form field name

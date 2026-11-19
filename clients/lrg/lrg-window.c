@@ -604,6 +604,14 @@ on_rooms(ClawtLrgApp *app, JsonNode *reply, const GError *error,
     g_clear_pointer(&app->rooms, json_node_unref);
     app->rooms = json_node_copy(reply);
 
+    /*
+     * The daemon's unread counts, shared by every client: a conversation
+     * read elsewhere, or before a restart, is read here too.  Taken on
+     * every listing, so a missed event cannot leave a pill wrong.
+     */
+    clawt_lrg_unread_seed(app->unread, app->agents, app->rooms,
+                          app->room_id);
+
     if (open_pending(app))
         return;
 

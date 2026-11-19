@@ -522,6 +522,26 @@ clawt_web_app_note_fleet(ClawtWebApp *self, JsonArray *agents,
                 g_hash_table_iter_remove(&iter);
         }
     }
+
+    /*
+     * And the daemon's counts, which every client shares: the daemon
+     * holds the read marks, so a conversation read in the GTK client,
+     * or before this server restarted, is read here too.  Taken on every
+     * listing, so a stream with a hole in it corrects itself at the next
+     * render rather than at the next reconnect.
+     */
+    {
+        g_autofree gchar *viewing_room = NULL;
+
+        if (self->viewing_room != NULL)
+            viewing_room = g_strdup(self->viewing_room);
+        else if (self->viewing != NULL)
+            viewing_room = clawt_room_manager_direct_id("user",
+                                                        self->viewing);
+
+        clawt_unread_seed(self->unread, rooms, self->sidebar_rooms,
+                          viewing_room);
+    }
 }
 
 void
@@ -578,6 +598,14 @@ clawt_web_app_set_viewing_room(ClawtWebApp *self, const gchar *room_id)
         g_clear_pointer(&self->viewing, g_free);
         g_hash_table_remove(self->unread, room_id);
     }
+}
+
+const gchar *
+clawt_web_app_get_viewing(ClawtWebApp *self)
+{
+    g_return_val_if_fail(CLAWT_IS_WEB_APP(self), NULL);
+
+    return self->viewing;
 }
 
 const gchar *
@@ -818,6 +846,20 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
      * has already been bitten by.  The room map is filled in from the
      * fleet listing the sidebar fetches anyway.
      */
+    /*
+     * A conversation read anywhere -- a browser, the GTK client, the CLI
+     * -- takes the daemon's count, so its pill clears here as well.
+     */
+    if (g_strcmp0(kind, "room.read") == 0 && subject != NULL) {
+        gint64 left = clawt_event_get_detail_int(event, "unread");
+
+        if (left <= 0)
+            g_hash_table_remove(self->unread, subject);
+        else
+            g_hash_table_insert(self->unread, g_strdup(subject),
+                                GUINT_TO_POINTER((guint)left));
+    }
+
     if (g_strcmp0(kind, "message") == 0) {
         const gchar *from = clawt_event_get_detail(event, "from");
         g_autofree gchar *viewing_room = NULL;

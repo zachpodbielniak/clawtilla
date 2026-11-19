@@ -101,6 +101,7 @@
 #include "chat/clawt-draft-store.h"
 #include "chat/clawt-room.h"
 #include "chat/clawt-room-manager.h"
+#include "chat/clawt-read-store.h"
 
 #include "mailbox/clawt-mailbox-router.h"
 

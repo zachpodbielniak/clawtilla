@@ -959,6 +959,21 @@ clawt_web_stylesheet(void)
     "margin-left:6px;}"
     /* Colour is never the only signal; the name goes bold beside it. */
     ".agent-row.is-unread .agent-name{font-weight:700;}"
+    /*
+     * An agent row's menu, drawn after the row and opened by a
+     * right-click (the page script).  The summary is there for the
+     * keyboard and kept small; the items appear only while it is open.
+     */
+    ".row-menu{margin:0 20px 4px;font-size:12px}"
+    ".row-menu>summary{cursor:pointer;color:var(--muted);"
+      "opacity:0.6;list-style:none;font-size:11px;padding:0 4px}"
+    ".row-menu>summary::-webkit-details-marker{display:none}"
+    ".row-menu:not([open])>summary{position:absolute;width:1px;height:1px;"
+      "overflow:hidden;clip:rect(0 0 0 0)}"
+    ".row-menu[open]{padding:6px;border:1px solid var(--line);"
+      "border-radius:8px;background:var(--surface)}"
+    ".row-menu-items{display:flex;flex-direction:column;gap:4px}"
+    ".mark-all-read{margin:4px 20px 8px;font-size:12px}"
     ".unread-rule{display:flex;align-items:center;gap:12px;margin:26px 0 22px;"
       "font-size:11px;letter-spacing:0.08em;text-transform:uppercase;"
       "color:var(--bad-fg)}"

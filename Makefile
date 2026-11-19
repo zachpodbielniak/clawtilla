@@ -204,6 +204,7 @@ PUBLIC_HEADERS = \
 	$(SRCDIR)/chat/clawt-draft-store.h \
 	$(SRCDIR)/chat/clawt-room.h \
 	$(SRCDIR)/chat/clawt-room-manager.h \
+	$(SRCDIR)/chat/clawt-read-store.h \
 	$(SRCDIR)/task/clawt-cron.h \
 	$(SRCDIR)/task/clawt-task.h \
 	$(SRCDIR)/task/clawt-task-manager.h \
@@ -437,6 +438,7 @@ LIB_SOURCES = \
 	$(SRCDIR)/chat/clawt-draft-store.c \
 	$(SRCDIR)/chat/clawt-room.c \
 	$(SRCDIR)/chat/clawt-room-manager.c \
+	$(SRCDIR)/chat/clawt-read-store.c \
 	$(SRCDIR)/task/clawt-cron.c \
 	$(SRCDIR)/task/clawt-task.c \
 	$(SRCDIR)/task/clawt-task-manager.c \

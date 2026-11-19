@@ -152,6 +152,54 @@ clawt_gtk_note_unread(ClawtWindow *self, ClawtEvent *event, const gchar *from)
 }
 
 /*
+ * Tells the daemon a conversation has been read.
+ *
+ * The count is the daemon's now (see room.read in docs/ipc-protocol.org),
+ * so clearing it here alone would light up again on the next listing --
+ * and every other client would go on showing it.  Fire and forget: the
+ * daemon answers with a `room.read` event that every client, this one
+ * included, zeroes its pill on, and a daemon too old to know the verb
+ * answers an error nobody needs to see.
+ *
+ * @upto is the last message on screen, so a reply that lands between
+ * the history load and this request still counts; %NULL means the
+ * newest, which is what "Mark as read" and a re-click mean.
+ */
+void
+clawt_gtk_mark_room_read(ClawtWindow *self, const gchar *room_id,
+                         const gchar *upto)
+{
+    if (self->client == NULL || room_id == NULL)
+        return;
+
+    clawt_client_request_async(self->client, "room.read",
+                               clawt_build_payload("room", room_id,
+                                                   "upto", upto, NULL),
+                               NULL, NULL, NULL);
+}
+
+/*
+ * The `room.read` event: somebody -- this client, another one, the CLI
+ * -- has read a conversation, so its pill takes the daemon's number,
+ * which is 0 unless the mark was set short of the newest message.
+ */
+void
+clawt_gtk_apply_room_read(ClawtWindow *self, const gchar *room_id,
+                          gint64 unread)
+{
+    if (room_id == NULL || self->unread == NULL)
+        return;
+
+    if (unread <= 0 || g_strcmp0(room_id, self->selected_room) == 0)
+        g_hash_table_remove(self->unread, room_id);
+    else
+        g_hash_table_insert(self->unread, g_strdup(room_id),
+                            GUINT_TO_POINTER((guint)unread));
+
+    clawt_gtk_update_unread_tab(self);
+}
+
+/*
  * The count of messages waiting for *you*, as a filled pill.
  *
  * Filled is the whole signal.  Everything else in that row -- HOST,
@@ -1952,6 +2000,17 @@ refresh_agents_once(ClawtWindow *self)
     }
 
     /*
+     * The daemon's counts, which are the ones every client shares: a
+     * conversation read in another window, or before a restart, is read
+     * here too.  Taken on every listing rather than once at connect, so
+     * an event this client missed cannot leave a pill wrong until the
+     * next reconnect.  A daemon that holds no marks leaves the table to
+     * the live count, as before.
+     */
+    clawt_unread_seed(self->unread, rooms, self->sidebar_rooms,
+                      self->selected_room);
+
+    /*
      * Anything the sidebar no longer draws stops being counted.  Without
      * this a removed agent's -- or a removed room's -- number stays in
      * the Chat tab total for ever, pointing at a row nobody can open.
@@ -2151,6 +2210,40 @@ on_menu_action(GSimpleAction *action, GVariant *parameter, gpointer user_data)
 
     if (g_strcmp0(name, "delete") == 0) {
         clawt_gtk_delete_agent(self);
+        return;
+    }
+
+    /*
+     * The conversation the right-click was on, read for every client:
+     * the pill here goes when the daemon's `room.read` event comes back,
+     * the same path a read in any other client takes.
+     */
+    if (g_strcmp0(name, "mark-read") == 0) {
+        if (self->menu_read_room != NULL &&
+            g_hash_table_remove(self->unread, self->menu_read_room))
+            clawt_gtk_update_unread_tab(self);
+
+        clawt_gtk_mark_room_read(self, self->menu_read_room, NULL);
+        return;
+    }
+
+    /* Every conversation at once, as `clawtilla room read --all` does. */
+    if (g_strcmp0(name, "mark-all-read") == 0) {
+        g_autoptr(JsonBuilder) builder = json_builder_new();
+
+        if (self->client == NULL)
+            return;
+
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "all");
+        json_builder_add_boolean_value(builder, TRUE);
+        json_builder_end_object(builder);
+
+        g_hash_table_remove_all(self->unread);
+        clawt_gtk_update_unread_tab(self);
+        clawt_client_request_async(self->client, "room.read",
+                                   json_builder_get_root(builder), NULL,
+                                   NULL, NULL);
         return;
     }
 
@@ -2507,6 +2600,44 @@ fill_computer_menu(ClawtWindow *self, gboolean machine, const gchar *type)
                           G_MENU_MODEL(verbs));
 }
 
+/*
+ * Fills the notice section: "Mark as read" for the conversation that was
+ * right-clicked, and "Mark all as read" for every one.
+ *
+ * Refilled per right-click because the label carries the count
+ * (clawt_agent_menu_read_label(), the same words every client uses), and
+ * each item is greyed out when there is nothing for it to clear -- a
+ * menu that offers to do nothing is one people stop reading.  New
+ * notice actions (muting, say) are appended here, so the whole section
+ * stays one place.
+ */
+static void
+fill_read_menu(ClawtWindow *self, guint unread)
+{
+    g_autofree gchar *label = NULL;
+    GHashTableIter iter;
+    gpointer value;
+    guint total = 0;
+
+    if (self->agent_menu_read == NULL)
+        return;
+
+    g_menu_remove_all(self->agent_menu_read);
+
+    g_hash_table_iter_init(&iter, self->unread);
+
+    while (g_hash_table_iter_next(&iter, NULL, &value))
+        total += GPOINTER_TO_UINT(value);
+
+    label = clawt_agent_menu_read_label(unread);
+    g_menu_append(self->agent_menu_read, label, "agent.mark-read");
+    g_menu_append(self->agent_menu_read, "Mark all as read",
+                  "agent.mark-all-read");
+
+    enable_agent_action(self, "mark-read", unread > 0);
+    enable_agent_action(self, "mark-all-read", total > 0);
+}
+
 static void
 popup_agent_menu(ClawtWindow *self, gdouble x, gdouble y)
 {
@@ -2519,6 +2650,7 @@ popup_agent_menu(ClawtWindow *self, gdouble x, gdouble y)
     graphene_point_t clicked;
     graphene_point_t at;
     gboolean machine;
+    guint unread;
 
     if (row == NULL || self->agent_menu == NULL)
         return;
@@ -2544,10 +2676,20 @@ popup_agent_menu(ClawtWindow *self, gdouble x, gdouble y)
         GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row),
                                           "agent-stop-removes"));
 
+    /*
+     * The count before selecting, because selecting opens the
+     * conversation and opening it reads it -- after that there would
+     * never be anything for "Mark as read" to say.
+     */
+    g_free(self->menu_read_room);
+    self->menu_read_room = clawt_room_manager_direct_id("user", agent_id);
+    unread = unread_for(self, self->menu_read_room);
+
     /* Act on what was right-clicked, not on what happened to be selected. */
     gtk_list_box_select_row(self->sidebar, row);
 
     set_agent_action_states(self, state);
+    fill_read_menu(self, unread);
     fill_team_menu(self, team);
     fill_computer_menu(self, machine, computer_type);
 
@@ -2599,7 +2741,8 @@ void
 clawt_gtk_build_agent_menu(ClawtWindow *self)
 {
     static const gchar *const names[] = { "start", "stop", "restart",
-                                          "delete" };
+                                          "delete", "mark-read",
+                                          "mark-all-read" };
     g_autoptr(GMenu) menu = g_menu_new();
     g_autoptr(GMenu) lifecycle = g_menu_new();
     g_autoptr(GMenu) grouping = g_menu_new();
@@ -2662,6 +2805,14 @@ clawt_gtk_build_agent_menu(ClawtWindow *self)
         g_action_map_add_action(G_ACTION_MAP(self->agent_actions),
                                 G_ACTION(action));
     }
+
+    /*
+     * The notice section first: reading what an agent said is the most
+     * common thing done to it from here.  Filled per right-click by
+     * fill_read_menu().
+     */
+    self->agent_menu_read = g_menu_new();
+    g_menu_append_section(menu, NULL, G_MENU_MODEL(self->agent_menu_read));
 
     g_menu_append(lifecycle, "Start", "agent.start");
     g_menu_append(lifecycle, "Stop", "agent.stop");

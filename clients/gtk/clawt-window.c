@@ -674,6 +674,13 @@ clawt_gtk_reopen_agent(ClawtWindow *self)
     if (g_hash_table_remove(self->unread, room))
         clawt_gtk_update_unread_tab(self);
 
+    /*
+     * And for every other client: the count is the daemon's, so a
+     * re-click that cleared only this window's pill would leave the
+     * others -- and this one, at its next listing -- still showing it.
+     */
+    clawt_gtk_mark_room_read(self, room, NULL);
+
     if (self->selected_conversation != NULL) {
         g_clear_pointer(&self->selected_conversation, g_free);
 
@@ -1598,6 +1605,19 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
          g_strcmp0(kind, "spending.limit-reached") == 0))
         clawt_gtk_refresh_fleet(self);
 
+    /*
+     * A conversation was read -- here, in another client, or from the
+     * CLI.  Its pill takes the daemon's number, so reading in one window
+     * clears the badge in every window.
+     */
+    if (g_strcmp0(kind, "room.read") == 0) {
+        clawt_gtk_apply_room_read(self, clawt_event_get_subject(event),
+                                  clawt_event_get_detail_int(event,
+                                                             "unread"));
+        clawt_gtk_refresh_agents(self);
+        return;
+    }
+
     if (g_strcmp0(kind, "message") == 0) {
         const gchar *from = clawt_event_get_detail(event, "from");
         const gchar *body = clawt_event_get_detail(event, "body");
@@ -1663,6 +1683,19 @@ on_daemon_event(ClawtClient *client, ClawtEvent *event, gpointer user_data)
                 clawt_gtk_set_activity(self, NULL);
 
             clawt_gtk_queue_scroll(self);
+
+            /*
+             * On screen is read.  Without this the daemon's count goes
+             * on climbing for the conversation being watched, and the
+             * next client to connect -- or this one after a restart --
+             * shows a number for messages the operator already saw.
+             * Only for a conversation the operator is part of: a peer
+             * conversation is never counted to begin with.
+             */
+            if (self->selected_conversation == NULL &&
+                g_strcmp0(from, "user") != 0)
+                clawt_gtk_mark_room_read(self, self->selected_room,
+                                         clawt_event_get_detail(event, "id"));
         } else if (self->history_inflight == 0 &&
                    self->selected_conversation == NULL &&
                    self->selected_agent != NULL &&
@@ -6618,6 +6651,8 @@ clawt_window_dispose(GObject *object)
     g_clear_object(&self->agent_actions);
     g_clear_object(&self->agent_menu_teams);
     g_clear_object(&self->agent_menu_computer);
+    g_clear_object(&self->agent_menu_read);
+    g_clear_pointer(&self->menu_read_room, g_free);
     g_clear_pointer(&self->teams_seen, json_node_unref);
 
     g_clear_pointer(&self->appearance, clawt_appearance_free);

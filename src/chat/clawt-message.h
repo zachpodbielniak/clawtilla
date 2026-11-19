@@ -14,6 +14,7 @@
 #endif
 
 #include <glib-object.h>
+#include <json-glib/json-glib.h>
 
 #include "clawt-enums.h"
 #include "clawt-types.h"
@@ -924,6 +925,88 @@ gboolean clawt_unread_should_count(const gchar *room_id,
                                    gint64       event_ts,
                                    gint64       connected_at,
                                    GHashTable  *rows);
+
+/**
+ * clawt_unread_rule_index:
+ * @messages: (nullable): a `room.history` reply's `messages`, oldest
+ *   first -- objects with at least `id` and `sender`
+ * @read_upto: (nullable): the reply's `read_upto`: the id of the last
+ *   message the operator read, "" for a room never read, or %NULL when
+ *   the daemon did not say
+ *
+ * Where the "New messages" rule goes when a conversation is opened.
+ *
+ * Before the first message after the read mark that somebody else
+ * sent.  The operator's own messages never start the unread run, the
+ * same exclusion clawt_room_count_unread() makes, so the rule and the
+ * sidebar's count agree on what is new.
+ *
+ * - @read_upto %NULL is a daemon too old to hold read marks: no rule,
+ *   because a rule above the whole transcript says nothing true.
+ * - @read_upto "" is a room never read: the rule goes above the first
+ *   message from somebody else.
+ * - A @read_upto that is not in @messages is older than the window
+ *   loaded, or rewritten away.  Ids are time-sortable, so the rule goes
+ *   before the first later message by id.
+ *
+ * Shared by the GTK, lrg and web clients so the rule is in the same
+ * place in all three.
+ *
+ * Returns: the index of the message the rule goes above, or -1 for none
+ *
+ * Since: 0.52.0
+ */
+gint clawt_unread_rule_index(JsonArray   *messages,
+                             const gchar *read_upto);
+
+/**
+ * clawt_unread_seed:
+ * @unread: (element-type utf8 guint): room id -> GUINT_TO_POINTER(count),
+ *   the table a client draws its pills from
+ * @rooms: (nullable): a `room.list` reply's `rooms`
+ * @rows: (nullable) (element-type utf8 gpointer): the rooms the client
+ *   draws a row for, as clawt_unread_should_count() takes them
+ * @viewing_room: (nullable): the room on screen
+ *
+ * Takes the daemon's counts into a client's table.
+ *
+ * The daemon holds the read marks, so its `unread` is the count every
+ * client should show -- including one that has just connected, or one
+ * that missed the events while it was away.  Each listed room the client
+ * draws a row for is set to the daemon's number; the room on screen is
+ * 0 whatever the daemon says, because a conversation being read never
+ * shows a count (the client marks it read as it goes, and its `room.read`
+ * may still be on its way).
+ *
+ * A listing with no `unread` member at all is a daemon too old to hold
+ * marks: nothing is changed, and the client keeps counting from events
+ * as it always did.
+ *
+ * Returns: %TRUE if the daemon supplied counts
+ *
+ * Since: 0.52.0
+ */
+gboolean clawt_unread_seed(GHashTable  *unread,
+                           JsonArray   *rooms,
+                           GHashTable  *rows,
+                           const gchar *viewing_room);
+
+/**
+ * clawt_agent_menu_read_label:
+ * @unread: how many messages are waiting in that conversation
+ *
+ * The words on the agent list's "Mark as read" item.
+ *
+ * The count is in the label when there is one, so the menu says what
+ * the action will clear; with nothing waiting it is the plain words, on
+ * an item the client greys out.  One helper so the GTK, lrg and web
+ * menus say the same thing.
+ *
+ * Returns: (transfer full): the label
+ *
+ * Since: 0.52.0
+ */
+gchar *clawt_agent_menu_read_label(guint unread);
 
 /**
  * CLAWT_TRANSCRIPT_FOLLOW_TOLERANCE:

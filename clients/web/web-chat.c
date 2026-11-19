@@ -948,6 +948,23 @@ inline_decisions_before(HtmxDiv *into, JsonArray *asked, guint from,
     return at;
 }
 
+/*
+ * The "New messages" rule, as the page script draws it live -- the same
+ * class and id, so the script finds a server-drawn rule and leaves it
+ * alone instead of drawing a second one.
+ */
+static HtmxElement *
+unread_rule(void)
+{
+    g_autoptr(HtmxDiv) rule = htmx_div_new();
+
+    htmx_element_add_class(HTMX_ELEMENT(rule), "unread-rule");
+    htmx_element_set_id(HTMX_ELEMENT(rule), "unread-rule");
+    htmx_node_set_text_content(HTMX_NODE(rule), "New messages");
+
+    return HTMX_ELEMENT(g_steal_pointer(&rule));
+}
+
 static HtmxElement *
 transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
            const gchar *peer)
@@ -957,6 +974,7 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
     g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
     g_autoptr(JsonNode) reply = NULL;
     JsonArray *messages;
+    gint rule_at = -1;
     guint i;
 
     htmx_element_add_class(HTMX_ELEMENT(scroll), "transcript");
@@ -1031,6 +1049,19 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
     reply = clawt_web_app_call(app, "room.history",
                                clawt_web_payload_take(g_steal_pointer(&payload)));
     messages = clawt_web_member_array(clawt_web_root(reply), "messages");
+
+    /*
+     * Where "New messages" goes: above the first message somebody else
+     * sent after the operator's read mark, which the daemon holds
+     * (`read_upto`) -- the rule every client shares.  Not in a peer
+     * conversation, which the operator is not part of.  The page script
+     * keeps it in place across the fragment refreshes that follow,
+     * since by then the mark has moved on.
+     */
+    if (peer == NULL)
+        rule_at = clawt_unread_rule_index(
+            messages, clawt_web_member(clawt_web_root(reply), "read_upto",
+                                       NULL));
 
     if (messages == NULL || json_array_get_length(messages) == 0) {
         clawt_web_add(inner,
@@ -1150,6 +1181,9 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
             g_free(run_day);
             run_day = g_steal_pointer(&day);
 
+            if ((gint)i == rule_at)
+                clawt_web_add(inner, unread_rule());
+
             clawt_web_add(inner,
                           message_element(one, agent_id, has_avatar,
                                           run_start, color,
@@ -1172,6 +1206,36 @@ transcript(ClawtWebApp *app, const gchar *agent_id, gboolean cleared,
             clawt_web_add(inner, steps_block(steps, s_at, steps->len));
 
         inline_decisions_before(inner, asked, d_at, G_MAXINT64);
+    }
+
+    /*
+     * On screen is read: the conversation's mark moves to the last
+     * message drawn, which clears its count in every client.  Only when
+     * it is not there already -- the `room.read` event that answers is
+     * itself a fleet event, which re-renders this fragment, and
+     * re-marking unconditionally would go round that loop for ever.
+     */
+    if (peer == NULL && messages != NULL &&
+        json_array_get_length(messages) > 0 &&
+        json_object_has_member(clawt_web_root(reply), "read_upto")) {
+        const gchar *last = clawt_web_member(
+            json_array_get_object_element(messages,
+                                          json_array_get_length(messages) - 1),
+            "id", NULL);
+        const gchar *room = clawt_web_member(clawt_web_root(reply), "room",
+                                             NULL);
+
+        if (last != NULL && room != NULL &&
+            g_strcmp0(last, clawt_web_member(clawt_web_root(reply),
+                                             "read_upto", NULL)) != 0) {
+            ClawtWebPayload *mark = clawt_web_payload_new();
+            g_autoptr(JsonNode) marked = NULL;
+
+            clawt_web_payload_set(mark, "room", room);
+            clawt_web_payload_set(mark, "upto", last);
+            marked = clawt_web_app_call(app, "room.read",
+                                        clawt_web_payload_take(mark));
+        }
     }
 
     /*

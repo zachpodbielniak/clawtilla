@@ -201,6 +201,12 @@ transcript can be rebuilt from, and
 makes the exposure a decision rather than an oversight, which is the
 only part of it worth changing.
 
+*** The read marks hold room ids and message ids, never bodies
+
+~<state_dir>/reads.db~ (since 0.52.0) is one row per conversation: the room's id, the id and timestamp of the last message the operator read there, and when that was recorded.  No message text, no sender.  It says which conversations exist and roughly when the operator last looked at each -- the same room ids the transcript directory already names, so it adds a time of reading and nothing more.  It is created with the state directory's mode (0700 directory) and goes into a backup with everything else there.  Deleting it is safe: the next daemon recreates it and marks every conversation read at its newest message.
+
+A client can only move a mark to a message the room holds (~room.read~ refuses any other =upto=), so nothing reachable over the socket can plant a timestamp in the future that would hide messages from the operator until then.
+
 ** Paired devices
 
 One daemon token copied to every laptop and phone meant that losing any

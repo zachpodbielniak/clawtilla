@@ -2829,11 +2829,53 @@ test_the_bridge_reads_a_views_message(void)
     }
 }
 
+/*
+ * An agent row's menu: a `<details class="row-menu">` carrying "Mark as
+ * read" with the count -- the words every client uses -- posting to the
+ * agent's /read route, and no menu at all with nothing unread, so a
+ * right-click there keeps the browser's own.  The agent id is escaped in
+ * the URL.  "Mark all as read" appears only with a total.  Regressing it
+ * offers to mark nothing, or a menu the right-click handler cannot find.
+ */
+static void
+test_the_row_menu_offers_mark_as_read_only_with_unread(void)
+{
+    g_autoptr(HtmxElement) menu = clawt_web_agent_row_menu("alpha", 3);
+    g_autoptr(HtmxElement) none = clawt_web_agent_row_menu("alpha", 0);
+    g_autoptr(HtmxElement) hostile = clawt_web_agent_row_menu("a b", 1);
+    g_autoptr(HtmxElement) all = clawt_web_mark_all_read_button(5);
+    g_autoptr(HtmxElement) no_all = clawt_web_mark_all_read_button(0);
+    g_autofree gchar *html = NULL;
+    g_autofree gchar *escaped = NULL;
+    g_autofree gchar *all_html = NULL;
+
+    g_assert_nonnull(menu);
+    html = htmx_element_render(menu);
+    g_assert_nonnull(strstr(html, "<details"));
+    g_assert_nonnull(strstr(html, "row-menu"));
+    g_assert_nonnull(strstr(html, "Mark as read (3)"));
+    g_assert_nonnull(strstr(html, "/a/alpha/read"));
+
+    g_assert_null(none);
+
+    g_assert_nonnull(hostile);
+    escaped = htmx_element_render(hostile);
+    g_assert_nonnull(strstr(escaped, "/a/a%20b/read"));
+
+    g_assert_nonnull(all);
+    all_html = htmx_element_render(all);
+    g_assert_nonnull(strstr(all_html, "Mark all as read"));
+    g_assert_nonnull(strstr(all_html, "/read-all"));
+    g_assert_null(no_all);
+}
+
 int
 main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/web/navigation-result", test_navigation_result);
+    g_test_add_func("/web/row-menu-mark-as-read",
+                    test_the_row_menu_offers_mark_as_read_only_with_unread);
     g_test_add_func("/web/the-failover-badge", test_the_failover_badge);
     g_test_add_func("/web/the-fallback-editor", test_the_fallback_editor);
     g_test_add_func("/web/the-fallback-editor-will-not-save-over-a-bad-list",

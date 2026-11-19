@@ -378,6 +378,15 @@ void clawt_web_app_set_viewing_room(ClawtWebApp *self,
 const gchar *clawt_web_app_get_viewing_room(ClawtWebApp *self);
 
 /**
+ * clawt_web_app_get_viewing:
+ * @self: a #ClawtWebApp
+ *
+ * Returns: (nullable) (transfer none): the agent whose chat was last
+ *   rendered, or %NULL
+ */
+const gchar *clawt_web_app_get_viewing(ClawtWebApp *self);
+
+/**
  * clawt_web_app_switch:
  * @self: a #ClawtWebApp
  * @connection: (transfer none): the daemon to talk to instead

@@ -3033,11 +3033,12 @@ clawt_gtk_set_following(ClawtWindow *self, gboolean following)
  *
  *   ---------------------  New messages  ---------------------
  *
- * It stores nothing: no read receipt, no per-agent position, nothing on
- * disk.  It is exactly as durable as `following` itself, which is what
- * lets it promise something the client can always keep -- "these arrived
- * while you were up there" -- rather than "this is where you left off",
- * which would need state across restarts to be true.
+ * Drawn in two places.  Live, it says "these arrived while you were up
+ * there" and is exactly as durable as `following`.  On opening a
+ * conversation, it says "this is where you left off", from the read
+ * mark the daemon holds (`read_upto`, placed by clawt_unread_rule_index())
+ * -- which is the state across restarts that promise needs, kept once
+ * for every client rather than in this one.
  *
  * `accent` on the label rather than a colour, so the palette work
  * redefines it for free; the separators keep the platform colour,
@@ -4708,6 +4709,7 @@ clawt_gtk_load_history(ClawtWindow *self)
     g_autoptr(JsonNode) reply = NULL;
     JsonArray *messages;
     guint generation;
+    gint rule_at = -1;
     guint i;
 
     /*
@@ -4798,6 +4800,19 @@ clawt_gtk_load_history(ClawtWindow *self)
                                             "messages");
 
     /*
+     * Where the "New messages" rule goes: above the first message
+     * somebody else sent after the operator's read mark, which the
+     * daemon holds (`read_upto`) -- so the rule marks what is new since
+     * the conversation was last read anywhere, not only since this
+     * window last looked.  Not in a peer conversation, which the
+     * operator is not part of and has no mark in.
+     */
+    if (self->selected_conversation == NULL)
+        rule_at = clawt_unread_rule_index(
+            messages, clawt_json_string(clawt_payload_of(reply), "read_upto",
+                                        NULL));
+
+    /*
      * Messages and steps, merged on time.
      *
      * They are fetched separately -- one is the room's transcript, the
@@ -4862,6 +4877,17 @@ clawt_gtk_load_history(ClawtWindow *self)
             if (id != NULL)
                 g_hash_table_add(self->shown, g_strdup(id));
 
+            /*
+             * Above the message, as the live rule is: it labels the
+             * block underneath it.  The borrowed pointer is the same one
+             * the live rule uses, so reaching the bottom by hand clears
+             * either the same way.
+             */
+            if ((gint)i == rule_at && self->unread_marker == NULL) {
+                self->unread_marker = unread_marker_new();
+                gtk_box_append(self->transcript, self->unread_marker);
+            }
+
             clawt_gtk_append_round_marks(self,
                                      clawt_json_int(message, "round", 0),
                                      NULL, NULL, TRUE);
@@ -4908,6 +4934,23 @@ clawt_gtk_load_history(ClawtWindow *self)
     if (self->selected_room != NULL &&
         g_hash_table_remove(self->unread, self->selected_room))
         clawt_gtk_update_unread_tab(self);
+
+    /*
+     * And read for the daemon, up to the last message drawn -- after
+     * the history, never before it, because the history's `read_upto`
+     * is what placed the rule above.  Only when the daemon holds marks
+     * (it sent `read_upto`), and only in a conversation the operator is
+     * part of.
+     */
+    if (self->selected_conversation == NULL &&
+        json_object_has_member(clawt_payload_of(reply), "read_upto") &&
+        json_array_get_length(messages) > 0)
+        clawt_gtk_mark_room_read(
+            self, self->selected_room,
+            clawt_json_string(json_array_get_object_element(
+                                  messages,
+                                  json_array_get_length(messages) - 1),
+                              "id", NULL));
 
     clawt_gtk_set_following(self, TRUE);
     clawt_gtk_queue_scroll(self);

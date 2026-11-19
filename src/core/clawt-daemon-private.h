@@ -26,6 +26,7 @@
 #include "integration/clawt-notify.h"
 #include "plugin/clawt-automation.h"
 #include "task/clawt-handoff-store.h"
+#include "chat/clawt-read-store.h"
 #include "wait/clawt-wait-manager.h"
 #include "task/clawt-routine-runner.h"
 #include "integration/clawt-venture-bridge.h"
@@ -361,6 +362,15 @@ struct _ClawtDaemon {
      * happened" hands the same work over twice.  See daemon-handoff.c.
      */
     ClawtHandoffStore *handoffs;
+
+    /*
+     * How far the operator has read in each conversation: one mark per
+     * room in <state_dir>/reads.db.  The unread counts every client
+     * draws are derived from it, so reading in one client clears the
+     * count in all of them and the count survives a restart.  See
+     * daemon-room.c and chat/clawt-read-store.h.
+     */
+    ClawtReadStore    *reads;
 
     /*
      * Conditions agents asked to be told about, checked by code rather
@@ -2131,6 +2141,28 @@ void clawt_daemon_turn_set_grace_seconds(ClawtDaemon *self, guint seconds);
  * exist before one can.
  */
 void clawt_daemon_handoff_setup(ClawtDaemon *self);
+
+/*
+ * Opens <state_dir>/reads.db.  The first time the file is made, every
+ * room is marked read up to its newest message, so the build that
+ * introduces shared read marks does not light up every conversation the
+ * fleet ever had.  Called after the rooms are loaded, which is what the
+ * seeding reads.  In daemon-room.c.
+ */
+void clawt_daemon_reads_setup(ClawtDaemon *self);
+void clawt_daemon_reads_teardown(ClawtDaemon *self);
+
+/**
+ * clawt_daemon_room_unread:
+ * @self: a #ClawtDaemon
+ * @room: the room
+ *
+ * How many messages in @room the operator has not read, from the read
+ * store's mark.  0 when there is no store.
+ *
+ * Returns: the count
+ */
+guint clawt_daemon_room_unread(ClawtDaemon *self, ClawtRoom *room);
 void clawt_daemon_search_setup(ClawtDaemon *self);
 const gchar *clawt_daemon_shared_computer_id(ClawtDaemon *self, const gchar *agent_id);
 GPtrArray *clawt_daemon_shared_users(ClawtDaemon *self, const gchar *computer_id,

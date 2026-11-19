@@ -3936,7 +3936,7 @@ cmd_room(int argc, char *argv[])
 
     if (verb == NULL) {
         g_printerr("Usage: clawtilla room "
-                   "<list|create|add|history> [ARGS...]\n");
+                   "<list|create|add|history|read> [ARGS...]\n");
         return EXIT_FAILURE;
     }
 
@@ -4043,6 +4043,53 @@ cmd_room(int argc, char *argv[])
                     member_or(message, "body", ""));
         }
 
+        return EXIT_SUCCESS;
+    }
+
+    /*
+     * Marks a conversation read -- the same `room.read` a client sends
+     * when it is opened -- so the count clears in every client at once.
+     * An agent's id names the operator's conversation with it; the
+     * daemon resolves it, so this never has to know how a direct room
+     * is spelled.
+     */
+    if (g_strcmp0(verb, "read") == 0) {
+        gboolean all = (argc == 4 && g_strcmp0(argv[3], "--all") == 0);
+
+        if (argc != 4) {
+            g_printerr("Usage: clawtilla room read <agent|room>\n"
+                       "       clawtilla room read --all\n");
+            return EXIT_FAILURE;
+        }
+
+        if (all) {
+            g_autoptr(JsonBuilder) builder = json_builder_new();
+
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "all");
+            json_builder_add_boolean_value(builder, TRUE);
+            json_builder_end_object(builder);
+
+            reply = call(client, "room.read", json_builder_get_root(builder));
+            if (reply == NULL)
+                return EXIT_FAILURE;
+
+            g_print("Marked %" G_GINT64_FORMAT " conversation(s) read.\n",
+                    json_object_has_member(json_node_get_object(reply),
+                                           "marked")
+                        ? json_object_get_int_member(
+                              json_node_get_object(reply), "marked")
+                        : 0);
+            return EXIT_SUCCESS;
+        }
+
+        reply = call(client, "room.read",
+                     build_payload("room", argv[3], NULL));
+        if (reply == NULL)
+            return EXIT_FAILURE;
+
+        g_print("%s is read.\n",
+                member_or(json_node_get_object(reply), "room", argv[3]));
         return EXIT_SUCCESS;
     }
 

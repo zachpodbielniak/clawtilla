@@ -152,6 +152,78 @@ test_unread_two_rooms(void)
     g_assert_cmpuint(clawt_lrg_unread_badge(unread, FALSE), ==, 1);
 }
 
+/*
+ * The daemon's counts, taken from room.list: every room with a row gets
+ * the daemon's number, the room on screen and a zero are dropped, and a
+ * peer room -- no row to clear it from -- is never seeded.  Two rooms,
+ * so a seed that wrote one key for all would show.  Regressing this is a
+ * window that opens showing nothing for conversations read nowhere, or
+ * one that keeps a count another client already cleared.
+ */
+static void
+test_unread_seed(void)
+{
+    g_autoptr(JsonNode) agents = parse(AGENTS_JSON);
+    g_autoptr(JsonNode) rooms = parse(
+        "{\"rooms\":["
+        "{\"id\":\"dm:ann:user\",\"unread\":3,\"read_upto\":\"\"},"
+        "{\"id\":\"dm:ann:chief\",\"unread\":9,\"read_upto\":\"\"},"
+        "{\"id\":\"war\",\"declared\":true,\"unread\":2,"
+        " \"read_upto\":\"x\"},"
+        "{\"id\":\"lobby\",\"declared\":true,\"unread\":0,"
+        " \"read_upto\":\"y\"}"
+        "]}");
+    g_autoptr(JsonNode) old_daemon = parse(ROOMS_JSON);
+    g_autoptr(GHashTable) unread = new_unread();
+
+    /* a count the daemon now says is zero goes */
+    g_hash_table_insert(unread, g_strdup("lobby"), GUINT_TO_POINTER(5));
+
+    g_assert_true(clawt_lrg_unread_seed(unread, agents, rooms, NULL));
+    g_assert_cmpuint(clawt_lrg_unread_count(unread, "dm:ann:user"), ==, 3);
+    g_assert_cmpuint(clawt_lrg_unread_count(unread, "war"), ==, 2);
+    g_assert_cmpuint(clawt_lrg_unread_count(unread, "lobby"), ==, 0);
+    g_assert_cmpuint(clawt_lrg_unread_count(unread, "dm:ann:chief"), ==, 0);
+    g_assert_cmpuint(clawt_lrg_unread_total(unread), ==, 5);
+
+    /* the room on screen never shows a count, whatever the daemon says */
+    g_assert_true(clawt_lrg_unread_seed(unread, agents, rooms, "war"));
+    g_assert_cmpuint(clawt_lrg_unread_count(unread, "war"), ==, 0);
+    g_assert_cmpuint(clawt_lrg_unread_count(unread, "dm:ann:user"), ==, 3);
+
+    /* a daemon without marks leaves the live count alone */
+    g_hash_table_insert(unread, g_strdup("lobby"), GUINT_TO_POINTER(1));
+    g_assert_false(clawt_lrg_unread_seed(unread, agents, old_daemon, NULL));
+    g_assert_cmpuint(clawt_lrg_unread_count(unread, "lobby"), ==, 1);
+}
+
+/*
+ * A `room.read` event: that room takes the daemon's count -- 0 clears
+ * it, a mark set short of the end leaves the rest -- and the other room
+ * is untouched.  Regressing this leaves a badge lit in this client for
+ * a conversation read in another one.
+ */
+static void
+test_unread_apply_read(void)
+{
+    g_autoptr(GHashTable) unread = new_unread();
+
+    g_hash_table_insert(unread, g_strdup("dm:ann:user"), GUINT_TO_POINTER(3));
+    g_hash_table_insert(unread, g_strdup("war"), GUINT_TO_POINTER(2));
+
+    g_assert_true(clawt_lrg_unread_apply_read(unread, "dm:ann:user", 0));
+    g_assert_cmpuint(clawt_lrg_unread_count(unread, "dm:ann:user"), ==, 0);
+    g_assert_cmpuint(clawt_lrg_unread_count(unread, "war"), ==, 2);
+
+    /* already clear: nothing changed, nothing to redraw */
+    g_assert_false(clawt_lrg_unread_apply_read(unread, "dm:ann:user", 0));
+
+    g_assert_true(clawt_lrg_unread_apply_read(unread, "war", 1));
+    g_assert_cmpuint(clawt_lrg_unread_count(unread, "war"), ==, 1);
+    g_assert_false(clawt_lrg_unread_apply_read(unread, "war", 1));
+    g_assert_false(clawt_lrg_unread_apply_read(unread, NULL, 0));
+}
+
 static void
 test_unread_prune(void)
 {
@@ -1270,6 +1342,8 @@ main(gint argc, gchar **argv)
     g_test_add_func("/lrg/chat/unread/rows", test_row_rooms);
     g_test_add_func("/lrg/chat/unread/two-rooms", test_unread_two_rooms);
     g_test_add_func("/lrg/chat/unread/prune", test_unread_prune);
+    g_test_add_func("/lrg/chat/unread/seed", test_unread_seed);
+    g_test_add_func("/lrg/chat/unread/apply-read", test_unread_apply_read);
     g_test_add_func("/lrg/chat/typing/level", test_typing_is_a_level_per_room);
     g_test_add_func("/lrg/chat/typing/forget", test_typing_forget);
     g_test_add_func("/lrg/chat/typing/activity", test_typing_activity);

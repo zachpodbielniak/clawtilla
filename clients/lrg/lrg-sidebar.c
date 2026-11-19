@@ -783,6 +783,7 @@ make_draggable(LrgWidget *row, const gchar *token)
 typedef struct {
     ClawtLrgApp *app;
     gchar       *agent_id;
+    gchar       *dm_room;    /* the operator's conversation with it */
 } MenuTarget;
 
 static void
@@ -791,7 +792,65 @@ menu_target_free(gpointer data)
     MenuTarget *target = data;
 
     g_free(target->agent_id);
+    g_free(target->dm_room);
     g_free(target);
+}
+
+/*
+ * "Mark as read" and "Mark all as read": the conversation's count, or
+ * every count, cleared for every client through `room.read`.
+ */
+static void
+on_menu_read(GSimpleAction *action, GVariant *parameter, gpointer user_data)
+{
+    MenuTarget *target = user_data;
+    const gchar *name = g_action_get_name(G_ACTION(action));
+
+    (void)parameter;
+
+    if (g_strcmp0(name, "mark-all-read") == 0) {
+        clawt_lrg_mark_all_read(target->app);
+        return;
+    }
+
+    if (target->dm_room == NULL)
+        return;
+
+    if (clawt_lrg_unread_clear(target->app->unread, target->dm_room))
+        clawt_lrg_sidebar_refresh(target->app);
+
+    clawt_lrg_mark_room_read(target->app, target->dm_room, NULL);
+}
+
+/*
+ * The notice section, first in the menu: reading what an agent said is
+ * the most common thing done to it from here.  The label carries the
+ * count (clawt_agent_menu_read_label(), the words every client uses) and
+ * each item is greyed when there is nothing for it to clear.  New notice
+ * actions -- muting, say -- are appended here, so the section stays one
+ * place.
+ */
+static void
+append_read_section(GMenu *menu, GSimpleActionGroup *group,
+                    MenuTarget *target, guint unread, guint total)
+{
+    static const gchar *const verbs[] = { "mark-read", "mark-all-read" };
+    g_autoptr(GMenu) section = g_menu_new();
+    g_autofree gchar *label = clawt_agent_menu_read_label(unread);
+    gsize i;
+
+    for (i = 0; i < G_N_ELEMENTS(verbs); i++) {
+        g_autoptr(GSimpleAction) action = g_simple_action_new(verbs[i], NULL);
+
+        g_signal_connect(action, "activate", G_CALLBACK(on_menu_read),
+                         target);
+        g_simple_action_set_enabled(action, i == 0 ? unread > 0 : total > 0);
+        g_action_map_add_action(G_ACTION_MAP(group), G_ACTION(action));
+    }
+
+    g_menu_append(section, label, "agent.mark-read");
+    g_menu_append(section, "Mark all as read", "agent.mark-all-read");
+    g_menu_append_section(menu, NULL, G_MENU_MODEL(section));
 }
 
 static void
@@ -864,8 +923,12 @@ attach_agent_menu(ClawtLrgApp *app, LrgWidget *row,
 
     target->app = app;
     target->agent_id = g_strdup(agent->id);
+    target->dm_room = g_strdup(agent->dm_room);
     g_object_set_data_full(G_OBJECT(row), "clawt-menu-target", target,
                            menu_target_free);
+
+    append_read_section(menu, group, target, agent->unread,
+                        clawt_lrg_unread_total(app->unread));
 
     for (i = 0; i < G_N_ELEMENTS(verbs); i++) {
         g_autoptr(GSimpleAction) action = g_simple_action_new(verbs[i], NULL);

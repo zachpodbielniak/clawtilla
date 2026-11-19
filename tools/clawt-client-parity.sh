@@ -152,6 +152,16 @@ declare -A AFFORDANCES=(
     ["alerts surface"]="build_alerts_panel|alert-row|build_alerts_panel"
     ["alert severity tiers"]="clawt_alert_tier_for_event|clawt_alert_tier_for_event|clawt_alert_tier_for_event"
     ["unread rule"]="clawt_unread_should_count|clawt_unread_should_count|clawt_unread_should_count"
+    #
+    # Unread held by the daemon (docs/clients.org, "Unread"): each client
+    # takes the daemon's counts from room.list, places "New messages"
+    # from the read mark, and offers Mark as read in the agent list's
+    # menu with libclawt's words.  room.read itself is layer 1's.
+    #
+    ["unread from the daemon"]="clawt_unread_seed|clawt_unread_seed|clawt_lrg_unread_seed"
+    ["new messages from the read mark"]="clawt_unread_rule_index|clawt_unread_rule_index|clawt_unread_rule_index"
+    ["agent list mark as read"]="clawt_agent_menu_read_label|clawt_agent_menu_read_label|clawt_agent_menu_read_label"
+    ["agent list mark all as read"]="mark-all-read|clawt_web_mark_all_read_button|clawt_lrg_mark_all_read"
     ["team tally"]="clawt_team_tally|clawt_team_tally|clawt_team_tally"
     ["fleet warnings"]="append_warning_rows|clawt_web_warnings|append_warning_rows"
     ["peer conversations"]="fill_conversation_menu|conversation_switcher|conversation_picker"

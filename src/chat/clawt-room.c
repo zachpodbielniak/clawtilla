@@ -908,6 +908,134 @@ clawt_room_get_history(ClawtRoom *self, guint limit)
     return out;
 }
 
+/*
+ * Whether a message is one the operator is waiting to read.
+ *
+ * Everything but their own: the same exclusion the live rule
+ * (clawt_unread_should_count()) makes, so a count seeded from the
+ * daemon and one kept from events agree on what they count.
+ */
+static gboolean
+counts_as_unread(ClawtMessage *message)
+{
+    return g_strcmp0(clawt_message_get_sender_id(message), "user") != 0;
+}
+
+guint
+clawt_room_count_unread(ClawtRoom   *self,
+                        const gchar *last_id,
+                        gint64       last_ts)
+{
+    guint count = 0;
+    guint i;
+
+    g_return_val_if_fail(CLAWT_IS_ROOM(self), 0);
+
+    /*
+     * By id: walked backwards from the newest, stopping on the mark.
+     * The common case is a mark a few messages from the end, so this
+     * reads a handful of entries rather than the whole history.
+     *
+     * The walk also stops once it is past the mark's second -- a
+     * message older than that cannot be the one marked -- and then the
+     * id is gone, so the count falls back to the time below.
+     */
+    if (last_id != NULL) {
+        for (i = self->messages->len; i > 0; i--) {
+            ClawtMessage *message = g_ptr_array_index(self->messages, i - 1);
+
+            if (g_strcmp0(clawt_message_get_id(message), last_id) == 0)
+                return count;
+
+            if (clawt_message_get_timestamp(message) < last_ts)
+                break;
+
+            if (counts_as_unread(message))
+                count++;
+        }
+
+        count = 0;
+    }
+
+    /*
+     * By time: what is left when the id is missing or was never given.
+     * Strictly after the mark's second, so a message from the same
+     * second as a mark whose message is gone is taken as read -- the
+     * conservative side, since a count that is one short is noticed far
+     * less than one that never clears.
+     */
+    for (i = self->messages->len; i > 0; i--) {
+        ClawtMessage *message = g_ptr_array_index(self->messages, i - 1);
+
+        if (clawt_message_get_timestamp(message) <= last_ts)
+            break;
+
+        if (counts_as_unread(message))
+            count++;
+    }
+
+    return count;
+}
+
+gboolean
+clawt_room_get_latest(ClawtRoom    *self,
+                      const gchar **out_id,
+                      gint64       *out_ts)
+{
+    ClawtMessage *message;
+
+    if (out_id != NULL)
+        *out_id = NULL;
+
+    if (out_ts != NULL)
+        *out_ts = 0;
+
+    g_return_val_if_fail(CLAWT_IS_ROOM(self), FALSE);
+
+    if (self->messages->len == 0)
+        return FALSE;
+
+    message = g_ptr_array_index(self->messages, self->messages->len - 1);
+
+    if (out_id != NULL)
+        *out_id = clawt_message_get_id(message);
+
+    if (out_ts != NULL)
+        *out_ts = clawt_message_get_timestamp(message);
+
+    return TRUE;
+}
+
+gint
+clawt_room_message_index(ClawtRoom   *self,
+                         const gchar *message_id,
+                         gint64      *out_ts)
+{
+    guint i;
+
+    if (out_ts != NULL)
+        *out_ts = 0;
+
+    g_return_val_if_fail(CLAWT_IS_ROOM(self), -1);
+
+    if (message_id == NULL)
+        return -1;
+
+    /* From the newest, where a mark almost always is. */
+    for (i = self->messages->len; i > 0; i--) {
+        ClawtMessage *message = g_ptr_array_index(self->messages, i - 1);
+
+        if (g_strcmp0(clawt_message_get_id(message), message_id) == 0) {
+            if (out_ts != NULL)
+                *out_ts = clawt_message_get_timestamp(message);
+
+            return (gint)(i - 1);
+        }
+    }
+
+    return -1;
+}
+
 static void
 clawt_room_finalize(GObject *object)
 {

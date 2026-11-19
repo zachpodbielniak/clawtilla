@@ -271,7 +271,8 @@ answers with the page it did it on.
 |-------------------------------+-----------------------------------------|
 | =/=, =/fleet=                 | the fleet index                         |
 | =/a/:id/:view=                | the seven agent views                   |
-| =/a/:id/...=                  | everything done to one agent: send, start, stop, restart, reset, set, team, reorder, remove, exec, rebuild, attach, mount, mailbox, memories, file, files, compose, export, copy |
+| =/a/:id/...=                  | everything done to one agent: send, start, stop, restart, reset, set, team, reorder, read, remove, exec, rebuild, attach, mount, mailbox, memories, file, files, compose, export, copy |
+| =/read-all=                   | *Mark all as read* at the head of the agent list (~room.read~ with ~all: true~) |
 | =/f/...=                      | fragments htmx swaps in: the sidebar, a transcript, an attachment, an inline decision answered (=/f/decision/answer=) |
 | =/settings=, =/settings/:page= | the seven settings pages               |
 | =/settings/<page>/...=        | their actions: add, save, remove, health, test, authorize, revoke |
@@ -310,6 +311,18 @@ Depth is what bounds the hazard: because ~:param~ stops at a slash,
 does not swallow ~/settings/teams/add~ for the same reason.  The rule to
 follow is still the simple one -- register the catch-all last -- because
 counting segments is how somebody gets it wrong.
+
+*** Unread, the "New messages" rule and the row menu
+
+The counts are the daemon's since 0.52.0 (see "Unread" in [[file:clients.org][clients.org]]).  Every sidebar render lists the rooms and =clawt_web_app_note_fleet()= takes their =unread= into the server's table with =clawt_unread_seed()= -- only for rooms with a row, and never for the conversation last rendered.  Between renders a live =message= event still counts (=clawt_unread_should_count()=), and a ~room.read~ event from any client sets that room's count to the event's =unread=.
+
+*The transcript marks what it draws as read.*  =transcript()= reads =read_upto= from ~room.history~, draws a =.unread-rule= (=id="unread-rule"=, the same element the page script draws live) above the message =clawt_unread_rule_index()= picks, and then sends ~room.read~ up to the last message drawn -- *only when the mark is not already there*.  That condition is load-bearing: the ~room.read~ event is itself a fleet event, which re-renders this very fragment, and an unconditional mark would go round that loop for ever.  A peer conversation (=?with==) draws no rule and marks nothing.
+
+*The rule survives the refreshes that follow.*  After the first render the mark has moved to the end, so the next fragment comes back without a rule.  The page script counts the messages above a rule before each swap (=htmx:beforeSwap=) and puts it back above the same message after (=htmx:afterSwap=), so the rule stays where reading stopped for as long as the page is open.  The live rule (messages arriving while scrolled up) is drawn only when no rule is on the page, so there is never a second one.
+
+*The row menu.*  After each agent row the sidebar draws =clawt_web_agent_row_menu()=: a =<details class="row-menu">= -- the row's next sibling rather than inside it, because the row is a link and a button inside a link is two targets for one click.  It holds *Mark as read (N)* (=clawt_agent_menu_read_label()=, the words every client uses), posting to =/a/<id>/read= (~room.read~ with =agent=), and appears only when that agent's conversation has something unread; a row with nothing to offer has no menu and a right-click there keeps the browser's own.  A =contextmenu= handler in the page script, delegated on =document= because the sidebar is replaced on every fleet event, opens the menu that follows the row right-clicked and focuses its first button; a click elsewhere or Escape closes it.  The summary is visually hidden but focusable, so the menu is reachable from the keyboard.  The page that comes back is the one being read -- marking a conversation read is not opening it.
+
+*Mark all as read* (=clawt_web_mark_all_read_button()=) sits above the agent list whenever anything is unread, and posts to =/read-all=.
 
 *** Slash commands
 
@@ -786,7 +799,9 @@ from two places.
 A reconnect that could not resume -- the daemon's replay buffer had
 dropped events past this client's cursor -- pushes the same nudge and
 *drops the unread counts*.  They were counted from a stream with a hole
-in it, and a count nobody can trust is worse than none.
+in it, and a count nobody can trust is worse than none.  Since 0.52.0
+the next sidebar render takes the daemon's counts again, so nothing is
+lost for longer than one render.
 
 *** Which version the daemon is
 

@@ -305,6 +305,18 @@ void clawt_lrg_chat_open_conversation(ClawtLrgApp *app, const gchar *peer);
  */
 void clawt_lrg_chat_reopen(ClawtLrgApp *app);
 
+/*
+ * Tells the daemon the operator has read @room_id up to @upto (the
+ * newest message when %NULL), so its count clears in every client
+ * (lrg-chat.c).  Fire and forget: the daemon's `room.read` event is what
+ * zeroes the pill, here as in every other client.
+ */
+void clawt_lrg_mark_room_read(ClawtLrgApp *app, const gchar *room_id,
+                              const gchar *upto);
+
+/* Every conversation read at once, as `clawtilla room read --all`. */
+void clawt_lrg_mark_all_read(ClawtLrgApp *app);
+
 /* The currently selected agent's object from the last agent.list. */
 JsonObject *clawt_lrg_selected_agent(ClawtLrgApp *app);
 

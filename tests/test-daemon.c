@@ -1145,6 +1145,148 @@ test_room_post_reaches_every_member(void)
     fixture_teardown(&fixture);
 }
 
+/* ── Read marks ──────────────────────────────────────────────────── */
+
+/* A message from @sender in @room, written as a turn ending writes it. */
+static void
+room_say(ClawtRoom *room, const gchar *sender)
+{
+    g_autoptr(ClawtMessage) message = clawt_message_new(
+        clawt_room_get_id(room), sender, "news");
+
+    g_assert_true(clawt_room_append(room, message, NULL));
+}
+
+/* What room.list says is unread in @room_id, or -1 if it says nothing. */
+static gint64
+room_unread(Fixture *fixture, const gchar *room_id)
+{
+    g_autoptr(JsonNode) reply = request(fixture, "room.list", "{}");
+    JsonArray *rooms = json_object_get_array_member(payload_of(reply),
+                                                    "rooms");
+    guint i;
+
+    for (i = 0; i < json_array_get_length(rooms); i++) {
+        JsonObject *room = json_array_get_object_element(rooms, i);
+
+        if (g_strcmp0(json_object_get_string_member(room, "id"),
+                      room_id) == 0)
+            return json_object_has_member(room, "unread")
+                ? json_object_get_int_member(room, "unread") : -1;
+    }
+
+    return -1;
+}
+
+static void
+on_room_read_event(ClawtEventBus *bus, ClawtEvent *event, gpointer user_data)
+{
+    GPtrArray *seen = user_data;
+
+    (void)bus;
+
+    if (g_strcmp0(clawt_event_get_kind(event), "room.read") == 0)
+        g_ptr_array_add(seen, g_strdup_printf(
+            "%s=%" G_GINT64_FORMAT, clawt_event_get_subject(event),
+            clawt_event_get_detail_int(event, "unread")));
+}
+
+/*
+ * Reading is held by the daemon: `room.read` names the operator's
+ * conversation by the agent (resolved through
+ * clawt_room_manager_direct_id(), which gives `dm:user:zed` for an agent
+ * named zed and `dm:alice:user` for alice -- one each side of "user"),
+ * publishes `room.read` with the count left, and room.list reports 0.  A
+ * message after the mark counts 1, and the count survives a restart in
+ * the same state directory.
+ *
+ * Regressing the resolution marks a room nobody is in and leaves the
+ * real one lit; regressing the event leaves every other client's badge
+ * up; regressing the store forgets every read on a restart.
+ */
+static void
+test_room_read_is_shared_and_survives_a_restart(void)
+{
+    Fixture fixture = { 0 };
+    g_autoptr(GPtrArray) seen = g_ptr_array_new_with_free_func(g_free);
+    g_autoptr(JsonNode) zed = NULL;
+    g_autoptr(JsonNode) alice = NULL;
+    ClawtRoom *zed_room;
+    ClawtRoom *alice_room;
+
+    fixture_setup(&fixture, "agents:\n  - id: zed\n  - id: alice\n");
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+
+    zed_room = clawt_room_manager_get_direct(fixture.daemon->rooms, "user",
+                                             "zed");
+    alice_room = clawt_room_manager_get_direct(fixture.daemon->rooms,
+                                               "alice", "user");
+    g_assert_cmpstr(clawt_room_get_id(zed_room), ==, "dm:user:zed");
+    g_assert_cmpstr(clawt_room_get_id(alice_room), ==, "dm:alice:user");
+
+    room_say(zed_room, "zed");
+    room_say(zed_room, "user");
+    room_say(zed_room, "zed");
+    room_say(alice_room, "alice");
+    g_assert_cmpint(room_unread(&fixture, "dm:user:zed"), ==, 2);
+    g_assert_cmpint(room_unread(&fixture, "dm:alice:user"), ==, 1);
+
+    g_signal_connect(clawt_daemon_get_event_bus(fixture.daemon), "event",
+                     G_CALLBACK(on_room_read_event), seen);
+
+    zed = request(&fixture, "room.read", "{\"agent\":\"zed\"}");
+    g_assert_false(clawt_ipc_frame_is_error(zed));
+    g_assert_cmpstr(json_object_get_string_member(payload_of(zed), "room"),
+                    ==, "dm:user:zed");
+    alice = request(&fixture, "room.read", "{\"agent\":\"alice\"}");
+    g_assert_cmpstr(json_object_get_string_member(payload_of(alice), "room"),
+                    ==, "dm:alice:user");
+
+    g_signal_handlers_disconnect_by_data(
+        clawt_daemon_get_event_bus(fixture.daemon), seen);
+
+    g_assert_cmpuint(seen->len, ==, 2);
+    g_assert_cmpstr(g_ptr_array_index(seen, 0), ==, "dm:user:zed=0");
+    g_assert_cmpstr(g_ptr_array_index(seen, 1), ==, "dm:alice:user=0");
+    g_assert_cmpint(room_unread(&fixture, "dm:user:zed"), ==, 0);
+    g_assert_cmpint(room_unread(&fixture, "dm:alice:user"), ==, 0);
+
+    /* one more after the mark, in one room only */
+    room_say(zed_room, "zed");
+    g_assert_cmpint(room_unread(&fixture, "dm:user:zed"), ==, 1);
+    g_assert_cmpint(room_unread(&fixture, "dm:alice:user"), ==, 0);
+
+    /* and a restart in the same state directory forgets none of it */
+    clawt_daemon_stop(fixture.daemon);
+    g_clear_object(&fixture.daemon);
+
+    while (g_main_context_iteration(fixture.context, FALSE))
+        ;
+
+    fixture.daemon = clawt_daemon_new(fixture.config_path, fixture.context);
+    g_assert_true(clawt_daemon_start(fixture.daemon, NULL));
+    g_assert_cmpint(room_unread(&fixture, "dm:user:zed"), ==, 1);
+    g_assert_cmpint(room_unread(&fixture, "dm:alice:user"), ==, 0);
+
+    {
+        g_autoptr(JsonNode) history = request(
+            &fixture, "room.history", "{\"room\":\"zed\",\"as\":\"user\"}");
+
+        g_assert_true(json_object_has_member(payload_of(history),
+                                             "read_upto"));
+    }
+
+    /* an agent that does not exist is refused, not given a room */
+    {
+        g_autoptr(JsonNode) nobody = request(&fixture, "room.read",
+                                             "{\"agent\":\"nobody\"}");
+
+        g_assert_true(clawt_ipc_frame_is_error(nobody));
+    }
+
+    fixture_teardown(&fixture);
+}
+
 /* ── Live client over the socket ─────────────────────────────────── */
 
 static void
@@ -12299,6 +12441,8 @@ main(int argc, char *argv[])
                     test_message_to_nobody_is_refused);
     g_test_add_func("/daemon/room-fanout",
                     test_room_post_reaches_every_member);
+    g_test_add_func("/daemon/room-read-shared-and-durable",
+                    test_room_read_is_shared_and_survives_a_restart);
 
     g_test_add_func("/daemon/client-over-socket",
                     test_a_client_can_talk_over_the_socket);

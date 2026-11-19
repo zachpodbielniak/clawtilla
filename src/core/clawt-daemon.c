@@ -5961,6 +5961,7 @@ release_components(ClawtDaemon *self)
     clawt_daemon_tree_teardown(self);
     clawt_daemon_crosstalk_teardown(self);
     clawt_daemon_handoff_teardown(self);
+    clawt_daemon_reads_teardown(self);
     clawt_daemon_wait_teardown(self);
     clawt_daemon_search_teardown(self);
     clawt_daemon_policy_teardown(self);
@@ -8243,6 +8244,13 @@ clawt_daemon_start(ClawtDaemon *self, GError **error)
     clawt_daemon_search_setup(self);
 
     /*
+     * The read marks, after the rooms are loaded -- the first open of
+     * the file seeds a mark at every room's newest message, and a room
+     * not yet loaded would be left to count its whole history.
+     */
+    clawt_daemon_reads_setup(self);
+
+    /*
      * After the tools exist, whose wait tools it supplies, and after
      * start can no longer refuse: it arms a timer, and one armed by a
      * daemon that never ran is one nothing takes down.
@@ -8448,6 +8456,7 @@ clawt_daemon_stop(ClawtDaemon *self)
     clawt_daemon_tree_teardown(self);
     clawt_daemon_crosstalk_teardown(self);
     clawt_daemon_handoff_teardown(self);
+    clawt_daemon_reads_teardown(self);
     clawt_daemon_wait_teardown(self);
     clawt_daemon_search_teardown(self);
     clawt_daemon_policy_teardown(self);

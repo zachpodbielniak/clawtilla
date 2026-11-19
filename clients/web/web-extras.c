@@ -1487,10 +1487,66 @@ on_matrix_rooms(HtmxRequest *request, GHashTable *params, gpointer user_data)
     return clawt_web_html_response(html);
 }
 
+/*
+ * "Mark as read" from an agent row's menu: the operator's conversation
+ * with it, read for every client through `room.read`.
+ *
+ * The page that comes back is the one being read -- the agent whose chat
+ * was on screen -- not the agent marked, because marking a conversation
+ * read is not opening it; somebody tidying the list from another
+ * agent's chat should still be in that chat afterwards.
+ */
+static HtmxResponse *
+on_mark_read(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *agent_id = clawt_web_param(params, "id");
+    g_autofree gchar *viewing = g_strdup(clawt_web_app_get_viewing(app));
+    ClawtWebPayload *payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+
+    clawt_web_payload_set(payload, "agent", agent_id);
+    reply = clawt_web_app_call(app, "room.read",
+                               clawt_web_payload_take(payload));
+
+    if (reply == NULL)
+        return clawt_web_error_page(app, request, viewing, CLAWT_PAGE_CHAT,
+                                    clawt_web_app_last_error(app));
+
+    return clawt_web_after_action(app, request, viewing, CLAWT_PAGE_CHAT,
+                                  NULL);
+}
+
+/* "Mark all as read" from the head of the list: every conversation. */
+static HtmxResponse *
+on_mark_all_read(HtmxRequest *request, GHashTable *params,
+                 gpointer user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autofree gchar *viewing = g_strdup(clawt_web_app_get_viewing(app));
+    ClawtWebPayload *payload = clawt_web_payload_new();
+    g_autoptr(JsonNode) reply = NULL;
+
+    (void)params;
+
+    clawt_web_payload_set_bool(payload, "all", TRUE);
+    reply = clawt_web_app_call(app, "room.read",
+                               clawt_web_payload_take(payload));
+
+    if (reply == NULL)
+        return clawt_web_error_page(app, request, viewing, CLAWT_PAGE_CHAT,
+                                    clawt_web_app_last_error(app));
+
+    return clawt_web_after_action(app, request, viewing, CLAWT_PAGE_CHAT,
+                                  NULL);
+}
+
 void
 clawt_web_register_extras(HtmxRouter *router, ClawtWebApp *app)
 {
     htmx_router_post(router, "/a/:id/reorder", on_reorder, app);
+    htmx_router_post(router, "/a/:id/read", on_mark_read, app);
+    htmx_router_post(router, "/read-all", on_mark_all_read, app);
     htmx_router_post(router, "/a/:id/team", on_set_team, app);
     htmx_router_post(router, "/a/:id/attach", on_attach, app);
     htmx_router_post(router, "/a/:id/attach/remove", on_attach_remove, app);

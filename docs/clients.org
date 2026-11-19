@@ -70,6 +70,7 @@ licence, send nothing, and exit 0.
 | ~chat <agent>~ | interactive |
 | ~mailbox list/dead/ack/requeue/purge <agent> [item]~ | |
 | ~room list/create/add/history~ | |
+| ~room read <agent or room>~, ~room read --all~ | mark a conversation (or every one) read, in every client at once (0.52.0) |
 | ~team list~ | teams, what each handles, who leads it, how many running |
 | ~team create <id> [DESCRIPTION]~ | |
 | ~team set <id> <key> <value>~ | ~name~, ~description~, ~color~, ~order~ |
@@ -1819,62 +1820,60 @@ scheme rather than only under a palette.
 
 *** Unread
 
-A filled pill at the trailing edge of the row, and the fleet-wide total
-on the *Chat* tab.  It counts messages an agent sent *to you* while you
-were looking somewhere else -- a different agent's conversation, or a
-different page.
+A filled pill at the trailing edge of the row, and the fleet-wide total on the *Chat* tab.  It counts messages an agent sent *to you* that you have not read -- in this client, in any other client, or before the last restart.
 
-This is not the same as the transcript's *New messages* rule, and the
-two never fire for the same message:
+**Since 0.52.0 the count is the daemon's.**  The daemon keeps one *read mark* per conversation -- the last message you have read in it -- in ~<state_dir>/reads.db~, and derives every count from the room's history and that mark on each ~room.list~.  Every client shows that number, so:
 
-| where the message landed | what says so |
-|--------------------------+--------------|
-| the conversation on screen, below the fold | the *New messages* rule and pill, no count |
-| any other conversation | the sidebar count, and the total on Chat |
+- reading a conversation in the GTK client clears its pill in the web and libregnum clients at once, through the ~room.read~ event every client listens for;
+- a restart of the daemon or of a client forgets nothing -- a conversation you had not read before is still unread after;
+- a client that missed events (a laptop asleep, a dropped connection) is right again at its next listing, because each listing takes the daemon's counts afresh.
 
-So a conversation that is on screen never accrues a count, whatever the
-scroll position.
+Before 0.52.0 each client counted the =message= events it saw while it was connected, in memory.  Reading in one window left the badge on another, a restart lit nothing, and the counts disagreed between clients as soon as either missed an event.  That counting still happens between listings, with the same rule (~clawt_unread_should_count()~), so a pill appears the moment a message lands rather than at the next listing; the daemon's number then replaces it.
 
-*Opening the conversation is the only thing that clears it.*  Not
-scrolling, not the window gaining focus, not time passing: a counter that
-decays on its own is a counter you stop trusting.
+**What counts.**  Every message after the mark that somebody other than you sent.  Your own messages never count, in the daemon's count (~clawt_room_count_unread()~) or the live one.  Only conversations with a row in the sidebar show a count -- your direct conversation with each agent and each declared room -- because a number on something with no row to click can only ever climb.
 
-*Clicking the agent that is already selected opens its conversation with
-you*, and clears that count (since 0.51.5).  The count is against your
-conversation with the agent; when one of its conversations with another
-agent was open ("with gnuisaince"), replies arriving in yours kept
-counting, and a second click on the row -- the one thing anybody tries
--- did nothing at all: GTK's ~::row-selected~ does not fire for the row
-already selected, and the selection code returned early.  GTK now watches
-the sidebar for a press on the selected row (=clawt_gtk_on_sidebar_pressed()=,
-in the capture phase, never claiming it) and calls
-=clawt_gtk_reopen_agent()=; libregnum calls =clawt_lrg_chat_reopen()= from
-the row's click.  Both clear the count, drop the peer conversation and
-load yours.  The web client always rendered the agent's own conversation
-from its link, so it had no such gap.
+**What marks a conversation read.**
 
-*The Chat tab is not badged while you are reading Chat* with the sidebar
-open, because the sidebar beside it is saying exactly /which/ agent --
-strictly more information.  With the sidebar collapsed to a drawer the
-badge stays, since then nothing else is saying so.
+| what you do | what is sent |
+|-------------+--------------|
+| open the conversation | ~room.read~ up to the last message drawn, after the history has loaded |
+| a message arrives in the conversation on screen | ~room.read~ up to that message |
+| click the agent that is already selected | ~room.read~ up to the newest message |
+| *Mark as read* in the agent's right-click menu | ~room.read~ up to the newest message |
+| *Mark all as read* | =room.read {all: true}= |
+| =clawtilla room read <agent or room>= / =--all= | the same, from the CLI |
 
-**Both clients ask the same function.**  ~clawt_unread_should_count()~ is
-in libclawt and takes the four conditions --- not your own, not the room
-on screen, not a replay, and a room that is somebody's conversation with
-the operator.  It was written twice before that, once per client, which
-is the shape of drift =make parity= exists to catch and cannot see: a
-rule that decides a number sends no frame and answers no command.
+Not scrolling, not the window gaining focus, not time passing: a counter that decays on its own is a counter you stop trusting.  A mark never moves backwards -- if two clients read the same conversation and the one that read less reports second, the mark stays where the other put it (see ~room.read~ in [[file:ipc-protocol.org][ipc-protocol.org]]).
 
-Two limits, stated rather than buried:
+**Upgrading.**  The first daemon to create ~reads.db~ marks every existing conversation read up to its newest message, so the upgrade does not greet you with every message the fleet ever sent as unread.  A conversation that appears afterwards has no mark, and every message in it from somebody else counts.
 
-- *It is what arrived while this client was connected.*  It does not
-  survive a restart, and it deliberately ignores the events the daemon
-  replays when a client subscribes -- those may well have been read in
-  the previous session, and counting them would open a fresh window
-  already showing a number for a conversation nobody has touched.
-- *In the web client the count belongs to the server, not the browser.*
-  ~clawtilla-web~ binds the loopback and the tailnet for one operator; a
-  second browser would share the counts rather than get its own.
+*** The "New messages" rule
+
+A line across the transcript reading *New messages*, above the first message you have not read.  It is drawn in two situations:
+
+- *On opening a conversation*, from the daemon's read mark (=read_upto= in the ~room.history~ reply): above the first message after the mark that somebody else sent.  The same function places it in all three clients, ~clawt_unread_rule_index()~, so it is in the same place everywhere.  The client then marks the conversation read, so the next time you open it the rule has moved on.  A daemon older than 0.52.0 sends no =read_upto=, and no rule is drawn on opening -- a rule above the whole transcript would say nothing true.
+- *Live*, when messages arrive while you are scrolled up in the conversation: the rule goes above the first of them, with a *Jump to latest* pill.  Reaching the bottom clears both.
+
+A conversation that is on screen never accrues a sidebar count, whatever the scroll position; the rule is what tells you about those messages.
+
+*Clicking the agent that is already selected opens its conversation with you*, and clears that count (since 0.51.5).  The count is against your conversation with the agent; when one of its conversations with another agent was open ("with gnuisaince"), replies arriving in yours kept counting, and a second click on the row -- the one thing anybody tries -- did nothing at all: GTK's ~::row-selected~ does not fire for the row already selected, and the selection code returned early.  GTK now watches the sidebar for a press on the selected row (=clawt_gtk_on_sidebar_pressed()=, in the capture phase, never claiming it) and calls =clawt_gtk_reopen_agent()=; libregnum calls =clawt_lrg_chat_reopen()= from the row's click.  Both clear the count, drop the peer conversation, load yours, and (since 0.52.0) send ~room.read~ so every other client clears it too.  The web client always rendered the agent's own conversation from its link, so it had no such gap.
+
+*The Chat tab is not badged while you are reading Chat* with the sidebar open, because the sidebar beside it is saying exactly /which/ agent -- strictly more information.  With the sidebar collapsed to a drawer the badge stays, since then nothing else is saying so.
+
+**All three clients ask the same functions.**  ~clawt_unread_should_count()~ (the live rule: not your own, not the room on screen, not a replay, a room with a row), ~clawt_unread_seed()~ (taking the daemon's counts from ~room.list~), ~clawt_unread_rule_index()~ (where the rule goes) and ~clawt_agent_menu_read_label()~ (the words on the menu item) are all in libclawt.  They were once written per client, which is the shape of drift =make parity= exists to catch and cannot see on its own: a rule that decides a number sends no frame.  The parity check declares each as an affordance.
+
+One limit, stated rather than buried: *in the web client the live count belongs to the server, not the browser.*  ~clawtilla-web~ binds the loopback and the tailnet for one operator; a second browser shares the counts rather than getting its own.  Since the counts are the daemon's, that matters only between listings.
+
+*** Mark as read
+
+*Right-click an agent* in the agent list and the first section of the menu is about its messages:
+
+- *Mark as read (N)* -- the operator's conversation with that agent, read up to its newest message.  The count is in the label; with nothing unread the item reads *Mark as read* and is greyed out (GTK, libregnum) or absent (web).
+- *Mark all as read* -- every conversation at once, greyed out when nothing anywhere is unread.
+
+Both send ~room.read~, and the pill clears in every client when the daemon's ~room.read~ event comes back.  In GTK, right-clicking also selects the row (so the rest of the menu acts on it), and selecting opens the conversation, which reads it -- the count shown in the label is the one from before the click, and the item is mostly useful on the libregnum and web clients, which do not select on right-click, and for *Mark all as read*.
+
+The web client has no native context menu to add to: each agent row is followed by a =<details class="row-menu">= that its page script opens on a right-click of the row (a =contextmenu= handler, delegated on the document because the sidebar is redrawn on every fleet event).  A row with nothing to offer has no menu and keeps the browser's own.  *Mark all as read* sits at the head of the agent list.  See [[file:web-client.org][web-client.org]].
 
 The number is not capped at =99+=.  The usual justification is width and
 it is measurably false: at the client's caption size =99+= is wider than

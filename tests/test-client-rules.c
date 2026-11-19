@@ -987,6 +987,75 @@ test_toast_text_names_a_refused_agent(void)
     g_assert_nonnull(strstr(said, "bob"));
 }
 
+/* ── The agent list's notice menu ──────────────────────────────────── */
+
+/*
+ * One set of words for "Mark as read" in every client, carrying the
+ * count when there is one.  Regressing it puts different words in the
+ * GTK, lrg and web menus -- the drift this helper exists to stop.
+ */
+static void
+test_the_read_label_carries_the_count(void)
+{
+    g_autofree gchar *none = clawt_agent_menu_read_label(0);
+    g_autofree gchar *one = clawt_agent_menu_read_label(1);
+    g_autofree gchar *many = clawt_agent_menu_read_label(12);
+
+    g_assert_cmpstr(none, ==, "Mark as read");
+    g_assert_cmpstr(one, ==, "Mark as read (1)");
+    g_assert_cmpstr(many, ==, "Mark as read (12)");
+}
+
+/*
+ * The daemon's counts are taken for rows the sidebar draws, never for a
+ * room without one, never for the room on screen, and not at all from a
+ * daemon that holds no marks (no `unread` in its listing).  Regressing
+ * it either lights a count nobody can clear or wipes the live count a
+ * daemon too old for marks depends on.
+ */
+static void
+test_the_daemons_counts_seed_the_table(void)
+{
+    g_autoptr(GHashTable) rows =
+        rows_for("dm:alpha:user", "dm:beta:user", "standup", NULL);
+    g_autoptr(GHashTable) unread = g_hash_table_new_full(g_str_hash,
+                                                         g_str_equal,
+                                                         g_free, NULL);
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_autoptr(JsonParser) old = json_parser_new();
+    JsonArray *rooms;
+
+    g_assert_true(json_parser_load_from_data(parser,
+        "[{\"id\":\"dm:alpha:user\",\"unread\":4},"
+        " {\"id\":\"dm:beta:user\",\"unread\":2},"
+        " {\"id\":\"standup\",\"unread\":0},"
+        " {\"id\":\"dm:alpha:beta\",\"unread\":7}]", -1, NULL));
+    rooms = json_node_get_array(json_parser_get_root(parser));
+
+    g_hash_table_insert(unread, g_strdup("standup"), GUINT_TO_POINTER(3));
+
+    g_assert_true(clawt_unread_seed(unread, rooms, rows, "dm:beta:user"));
+    g_assert_cmpuint(GPOINTER_TO_UINT(g_hash_table_lookup(unread,
+                                                          "dm:alpha:user")),
+                     ==, 4);
+    g_assert_false(g_hash_table_contains(unread, "dm:beta:user"));
+    g_assert_false(g_hash_table_contains(unread, "standup"));
+    g_assert_false(g_hash_table_contains(unread, "dm:alpha:beta"));
+
+    /* a daemon too old to hold marks changes nothing */
+    g_assert_true(json_parser_load_from_data(old,
+        "[{\"id\":\"dm:alpha:user\",\"messages\":9}]", -1, NULL));
+    g_assert_false(clawt_unread_seed(
+        unread, json_node_get_array(json_parser_get_root(old)), rows, NULL));
+    g_assert_cmpuint(GPOINTER_TO_UINT(g_hash_table_lookup(unread,
+                                                          "dm:alpha:user")),
+                     ==, 4);
+
+    /* and no table, no listing: nothing to do, nothing claimed */
+    g_assert_false(clawt_unread_seed(NULL, rooms, rows, NULL));
+    g_assert_false(clawt_unread_seed(unread, NULL, rows, NULL));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1092,6 +1161,11 @@ g_test_add_func("/client-rules/tier/unknown",
                     test_toast_text_skips_not_connected);
     g_test_add_func("/client-rules/reply/toast-names-refusal",
                     test_toast_text_names_a_refused_agent);
+
+    g_test_add_func("/client-rules/menu/read-label",
+                    test_the_read_label_carries_the_count);
+    g_test_add_func("/client-rules/unread/seed",
+                    test_the_daemons_counts_seed_the_table);
 
     return g_test_run();
 }

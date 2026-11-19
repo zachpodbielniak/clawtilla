@@ -870,6 +870,19 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view,
      */
     clawt_web_app_note_fleet(app, agents, rooms);
 
+    /*
+     * "Mark all as read" at the head of the list, once the counts are
+     * the daemon's (note_fleet() just took them) -- and only when there
+     * is anything to mark.
+     */
+    {
+        HtmxElement *all = clawt_web_mark_all_read_button(
+            clawt_web_app_unread_total(app));
+
+        if (all != NULL)
+            clawt_web_add(aside, all);
+    }
+
     if (agents == NULL) {
         const gchar *why = clawt_web_app_last_error(app);
 
@@ -927,12 +940,27 @@ clawt_web_sidebar(ClawtWebApp *app, const gchar *selected, ClawtPage view,
             first = FALSE;
         }
 
-        clawt_web_add(scroll,
-                      agent_row(agent, selected, view,
-                                clawt_web_app_unread(
-                                    app,
-                                    clawt_web_member(agent, "dm_room", "")),
-                                show_description));
+        {
+            guint unread = clawt_web_app_unread(
+                app, clawt_web_member(agent, "dm_room", ""));
+            HtmxElement *menu = NULL;
+
+            clawt_web_add(scroll, agent_row(agent, selected, view, unread,
+                                            show_description));
+
+            /*
+             * Its menu, as the row's next sibling rather than inside it:
+             * the row is a link, and a button inside a link is two
+             * targets for one click.  The page script opens it on a
+             * right-click of the row.
+             */
+            menu = clawt_web_agent_row_menu(clawt_web_member(agent, "id",
+                                                             NULL),
+                                            unread);
+
+            if (menu != NULL)
+                clawt_web_add(scroll, menu);
+        }
 
         /*
          * Shown only for the row somebody is looking at, so the sidebar
