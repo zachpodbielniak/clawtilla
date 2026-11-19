@@ -371,9 +371,23 @@ test_every_settings_page_builds(Fixture *fixture, gconstpointer data)
         n++;
     }
 
-    /* GTK's nine pages, and Connections */
-    g_assert_cmpuint(n, ==, 10);
+    /*
+     * Images, Teams, Projects, History, Pack, Spending, Orchestration,
+     * Integrations, Connectors, Folders, Appearance, Devices -- GTK's
+     * pages -- and Connections last.  A page added to the table without
+     * a line here fails this count, which is the point: it means the new
+     * page was never opened by this test's loop on purpose.
+     */
+    g_assert_cmpuint(n, ==, 13);
     g_assert_cmpstr(pages[n - 1]->id, ==, "connections");
+
+    /* every id distinct, or clawt_lrg_open_settings() opens the wrong one */
+    for (i = 0; i < n; i++) {
+        guint j;
+
+        for (j = i + 1; j < n; j++)
+            g_assert_cmpstr(pages[i]->id, !=, pages[j]->id);
+    }
 }
 
 static void
