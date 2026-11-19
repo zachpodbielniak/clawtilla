@@ -409,6 +409,11 @@ The ~forge~ record type is owner-only in VENTURE, so an editor -- every agent ac
 - *Then (0.50.0):* the plan's scratch agent per test run -- a temporary copy of the named agent with the skill under test alone, never saved, removed when the run settles.
 - *Version:* minor.
 
+** DONE libregnum's start notice stays up long enough to read v0.52.2 :clients:
+- *Found:* checking the remembered-daemon fallback by eye in both clients under Xvfb (GTK and libregnum: *Use Local* on an unreachable remembered daemon, which switched and removed ~last-connection~; a deleted remembered profile, which toasts and prints the notice).  libregnum's toast was gone about a second and a half after the window appeared.
+- *Done:* the notice is queued before the first frame and libregnum's toast clock runs from then; =clawt_lrg_toast_for()= with =CLAWT_LRG_START_NOTICE_SECONDS= (10) for it, =clawt_lrg_toast()= unchanged.  Tests: =/lrgui/widgets/start-notice-stays-up=, =/lrgui/widgets/ordinary-toast-default=.
+- *Version:* micro.
+
 ** DONE Papercuts found looking at 0.52.0: libregnum, and a display app that finished too fast v0.52.1 :clients:computers:
 - *Found:* by running the GTK and libregnum clients under Xvfb against a throwaway daemon after 0.52.0, which the automated gate does not do.
 - *Done:*

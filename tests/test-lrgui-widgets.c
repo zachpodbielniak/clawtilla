@@ -326,6 +326,74 @@ test_section_tabs_walk_the_library(Fixture *fixture, gconstpointer data)
     g_assert_false(shows(fixture->app, "Cloud images"));
 }
 
+/*
+ * A notice about how the window started stays up long enough to read.
+ * It is queued before the first frame, and at libregnum's default 3.5 s
+ * the remembered-connection notice was visible for about a second and a
+ * half.  Breaks if the start notice falls back to the default, or if an
+ * ordinary toast stops using it.
+ */
+/*
+ * The duration of the visible toast saying @text.  By text, because the
+ * app is shared and another toast may still be up.
+ */
+static gdouble
+toast_duration(ClawtLrgApp *app, const gchar *text)
+{
+    guint i;
+
+    drain(app);
+
+    for (i = 0; i < lrg_toast_queue_get_n_visible(app->toasts); i++) {
+        LrgToast *toast = lrg_toast_queue_get_visible_toast(app->toasts, i);
+
+        if (toast != NULL &&
+            g_strcmp0(lrg_toast_get_message(toast), text) == 0)
+            return lrg_toast_get_duration(toast);
+    }
+
+    g_assert_not_reached();
+    return 0.0;
+}
+
+/*
+ * The app is shared by every test here, and a later one asserts that
+ * nothing has been toasted (/lrgui/widgets/disconnected): leave neither
+ * a toast on screen nor the sentence the de-duplication remembers.
+ */
+static void
+forget_toasts(ClawtLrgApp *app)
+{
+    lrg_toast_queue_clear(app->toasts);
+    g_clear_pointer(&app->last_toast, g_free);
+    app->last_toast_at = 0;
+}
+
+static void
+test_start_notice_stays_up(Fixture *fixture, gconstpointer data)
+{
+    (void)data;
+
+    clawt_lrg_toast_for(fixture->app, "how this window started",
+                        CLAWT_LRG_START_NOTICE_SECONDS);
+    g_assert_cmpfloat(toast_duration(fixture->app, "how this window started"),
+                      ==, CLAWT_LRG_START_NOTICE_SECONDS);
+    g_assert_cmpfloat(CLAWT_LRG_START_NOTICE_SECONDS, >=, 8.0);
+    forget_toasts(fixture->app);
+}
+
+/* And an ordinary toast keeps libregnum's default. */
+static void
+test_ordinary_toast_default(Fixture *fixture, gconstpointer data)
+{
+    (void)data;
+
+    clawt_lrg_toast(fixture->app, "an ordinary toast");
+    g_assert_cmpfloat(toast_duration(fixture->app, "an ordinary toast"),
+                      ==, LRG_TOAST_DEFAULT_DURATION);
+    forget_toasts(fixture->app);
+}
+
 static void
 test_disconnected_says_so_once(Fixture *fixture, gconstpointer data)
 {
@@ -805,6 +873,10 @@ main(int argc, char *argv[])
 
     g_test_init(&argc, &argv, NULL);
 
+    g_test_add("/lrgui/widgets/start-notice-stays-up", Fixture, NULL,
+               fixture_set_up, test_start_notice_stays_up, fixture_tear_down);
+    g_test_add("/lrgui/widgets/ordinary-toast-default", Fixture, NULL,
+               fixture_set_up, test_ordinary_toast_default, fixture_tear_down);
     g_test_add("/lrgui/widgets/every-page", Fixture, NULL, fixture_set_up,
                test_every_page_builds_and_lays_out, fixture_tear_down);
     g_test_add("/lrgui/widgets/every-page-fits", Fixture, NULL, fixture_set_up,

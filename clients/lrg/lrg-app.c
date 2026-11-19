@@ -139,6 +139,12 @@ clawt_lrg_request(ClawtLrgApp *app, const gchar *kind, JsonNode *payload,
 void
 clawt_lrg_toast(ClawtLrgApp *app, const gchar *text)
 {
+    clawt_lrg_toast_for(app, text, LRG_TOAST_DEFAULT_DURATION);
+}
+
+void
+clawt_lrg_toast_for(ClawtLrgApp *app, const gchar *text, gdouble seconds)
+{
     gint64 now = g_get_monotonic_time();
     LrgToast *toast;
 
@@ -161,6 +167,7 @@ clawt_lrg_toast(ClawtLrgApp *app, const gchar *text)
     app->last_toast_at = now;
 
     toast = lrg_toast_new(NULL, text);
+    lrg_toast_set_duration(toast, seconds);
     lrg_toast_queue_show(app->toasts, toast);
     g_object_unref(toast);
     clawt_lrg_app_wake(app);
@@ -875,7 +882,7 @@ clawt_lrg_app_run(ClawtLrgApp *app, const gchar *self_test_page)
     if (app->start_notice != NULL) {
         g_autofree gchar *notice = g_steal_pointer(&app->start_notice);
 
-        clawt_lrg_toast(app, notice);
+        clawt_lrg_toast_for(app, notice, CLAWT_LRG_START_NOTICE_SECONDS);
     }
 
     if (self_test_page != NULL)

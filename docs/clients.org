@@ -263,7 +263,7 @@ A daemon the client chose from memory is one nobody asked for this time, so when
 The connection you last used, “workstation”, is no longer saved; connected to Local.
 #+end_example
 
-The same line goes to stderr.  The sentence comes from =clawt_connection_choose()= itself, through its ~notice~ out-parameter, so GTK and libregnum cannot word it differently.  Before 0.52.0 this fallback was silent, and somebody who had been on the workstation yesterday read an empty local fleet as the workstation's fleet having vanished.
+The same line goes to stderr.  libregnum keeps this toast up for ten seconds (=CLAWT_LRG_START_NOTICE_SECONDS=) rather than its usual 3.5: it is queued before the first frame is drawn and the toast's clock runs from then, so at the default it was readable for about a second and a half (fixed in 0.52.1's follow-up, 0.52.2).  The sentence comes from =clawt_connection_choose()= itself, through its ~notice~ out-parameter, so GTK and libregnum cannot word it differently.  Before 0.52.0 this fallback was silent, and somebody who had been on the workstation yesterday read an empty local fleet as the workstation's fleet having vanished.
 
 *The remembered daemon has not answered since the client started.*  The workstation is switched off, asleep, or off the tailnet.  The banner says that this is the daemon the client was last on, and offers two ways out instead of one:
 
