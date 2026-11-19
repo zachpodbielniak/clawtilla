@@ -927,7 +927,13 @@ on_notices_reply(GObject *source, GAsyncResult *result, gpointer user_data)
      * A daemon too old to keep the list answers an error: the panel then
      * shows nothing but the history expander, which is still true.
      */
-    if (reply == NULL || clawt_ipc_frame_is_error(reply)) {
+    /*
+     * And nothing to draw on for a window closed while the request was
+     * in flight: the reference kept the object, but dispose has already
+     * taken its tables and widgets.
+     */
+    if (reply == NULL || clawt_ipc_frame_is_error(reply) ||
+        self->muted == NULL) {
         g_object_unref(self);
         return;
     }
