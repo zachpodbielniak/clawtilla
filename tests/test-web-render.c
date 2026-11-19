@@ -686,6 +686,29 @@ test_the_composer_does_not_clip_its_completions(void)
 }
 
 /*
+ * The sidebar's head wraps.  The wordmark and its three tabs are wider
+ * than the 17rem column; unwrapped, Alerts -- the only link to the
+ * Notifications page -- sat under the main pane with just its count
+ * showing at the pane's edge, seen in a headless Chromium screenshot of
+ * 0.52.2.  Breaks if the head stops wrapping or the sidebar can grow past
+ * its column again.
+ */
+static void
+test_the_sidebar_head_wraps(void)
+{
+    const gchar *css = clawt_web_stylesheet();
+    const gchar *head = strstr(css, ".sidebar-head{");
+    const gchar *side = strstr(css, ".sidebar{");
+
+    g_assert_nonnull(head);
+    g_assert_nonnull(side);
+    g_assert_nonnull(g_strstr_len(head, (gssize)(strchr(head, '}') - head),
+                                  "flex-wrap:wrap"));
+    g_assert_nonnull(g_strstr_len(side, (gssize)(strchr(side, '}') - side),
+                                  "min-width:0"));
+}
+
+/*
  * The lists keep the entry's column rather than the composer's width,
  * and they do it with the same two variables the entry itself uses.
  * A second copy of the clamp is a second answer that drifts.
@@ -3046,6 +3069,8 @@ main(int argc, char *argv[])
                     test_the_narrow_sidebar_is_a_drawer);
     g_test_add_func("/web/the-palette-is-defined-outside-a-media-query",
                     test_the_palette_is_defined_outside_a_media_query);
+    g_test_add_func("/web/style/sidebar-head-wraps",
+                    test_the_sidebar_head_wraps);
     g_test_add_func("/web/the-composer-does-not-clip-its-completions",
                     test_the_composer_does_not_clip_its_completions);
     g_test_add_func("/web/the-completion-column-is-the-entry-column",

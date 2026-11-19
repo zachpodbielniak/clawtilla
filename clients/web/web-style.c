@@ -195,9 +195,20 @@ clawt_web_stylesheet(void)
      */
     ".app{display:grid;grid-template-columns:17rem 1fr;height:100vh;height:100dvh}"
     ".sidebar{border-right:1px solid var(--line);background:var(--surface);"
-      "display:flex;flex-direction:column;min-height:0}"
+      "display:flex;flex-direction:column;min-height:0;min-width:0}"
+    /*
+     * Wraps: the wordmark and three tabs (Memory, Settings, Alerts) are
+     * wider than the 17rem column, and unwrapped the last one -- Alerts,
+     * the only way to the Notifications page -- was pushed out under the
+     * main pane, its count peeking from the pane's edge.  The wordmark
+     * takes its own line, so the tabs share one row beneath it at the
+     * start, as they read; min-width:0 on the sidebar keeps a long label
+     * in its column too.
+     */
     ".sidebar-head{padding:20px 20px 14px;border-bottom:1px solid var(--line);"
-      "display:flex;align-items:baseline;justify-content:space-between;gap:8px}"
+      "display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 2px}"
+    /* the wordmark on its own line, the tabs in one row under it */
+    ".sidebar-head .wordmark{flex-basis:100%;margin-bottom:4px}"
     ".wordmark{font-family:var(--serif);font-size:19px;letter-spacing:-0.02em;"
       "line-height:1.1;margin:0}"
     ".sidebar-scroll{overflow-y:auto;flex:1;min-height:0;padding:8px 0 16px}"
