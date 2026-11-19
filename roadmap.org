@@ -409,6 +409,20 @@ The ~forge~ record type is owner-only in VENTURE, so an editor -- every agent ac
 - *Then (0.50.0):* the plan's scratch agent per test run -- a temporary copy of the named agent with the skill under test alone, never saved, removed when the run settles.
 - *Version:* minor.
 
+** DONE Shared read state, one notification list, Grok windows, file sends and a Files gallery v0.52.0 :clients:notifications:
+- *Requested:* by the user on 2026-11-18, as the follow-ups to 0.51.5, plus right-click → Mark as read on the agent list in every client.
+- *Done:*
+  - *Unread lives in the daemon.*  ~reads.db~ (=ClawtReadStore=) keeps a read mark per room; ~room.list~ answers ~unread~ and ~read_upto~, ~room.history~ answers ~read_upto~, ~room.read~ moves a mark forward (an agent, a room, or ~all~) and publishes a ~room.read~ event.  Every client seeds its counts from the daemon, clears on the event, and draws the "New messages" rule at the mark, so reading in one client clears the count in all of them and the count survives a restart.  =clawtilla room read=.
+  - *Right-click on the agent list:* Mark as read, Mark all as read, Mute notifications / Unmute, in GTK (right-click no longer selects the row), libregnum and web (a row menu opened by right-click).
+  - *One notification list held by the daemon.*  ~notices.db~ (=ClawtNoticeStore=) records every error- and notice-tier event in the words of =clawt_alert_text_for_event()=; ~notice.list~ answers it with the chats, decisions and Grok jobs waiting, and ~notice.read~, ~notice.dismiss~, ~notice.clear~, ~notice.mute~, ~notice.unmute~ act on it.  A muted agent's notices arrive read, leave every total, and skip the push and desktop notifiers.  Each client's alert panel draws the four sections with a menu on every row; the per-client alert lists are gone.  =clawtilla notices=, =clawtilla mute=, =clawtilla unmute=; ~notices.keep~, ~notices.keep_days~.
+  - *Grok windows are settings:* ~grok.attention_days~ (3; 0 counts until removed) and ~grok.retention_days~ (30), and the prune runs hourly from the sweep, not only at start.
+  - *The remembered daemon:* a toast when its saved connection is gone, and *Use Local* beside *Connections…* when it cannot be reached at launch (=clawt_connection_offer_local()=).
+  - *The web client sends files with a message:* one multipart composer with paste, drop and removable chips; the block is built by =clawt_attachment_block_add()=, now shared by every client.
+  - *A Files gallery per conversation:* ~attachment.list~ and ~attachment.thumbnail~ (page 1 of a PDF through optional poppler-glib, the first lines of a text file); a Files dialog in GTK and libregnum, an attachments page in web, =clawtilla attachment list|get=.
+  - Tests for each: =test-read-store=, =test-chat-room=, =test-notices=, =test-attachment=, and additions to =test-daemon=, =test-grok=, =test-connection=, =test-client-rules=, =test-config=, =test-web-app=, =test-web-render= and =test-lrg-models-chat=.
+- *Packages:* ~poppler-glib-devel~ to build, ~poppler-glib~ at run time; optional (=POPPLER=0= builds without it).
+- *Version:* minor.
+
 ** DONE Client papercuts: toasts, Grok jobs, image previews, unread, last daemon v0.51.5 :clients:
 - *Requested:* by the user on 2026-11-18, as one micro release.
 - *Done:*
