@@ -242,6 +242,74 @@ test_dotted_names_round_trip(void)
 	fixture_teardown(&fixture);
 }
 
+/*
+ * The block an operator's message carries, byte for byte.
+ *
+ * This is the text GTK's body_with_attachments() and lrg's
+ * clawt_lrg_body_with_attachments() each wrote by hand before they
+ * shared a builder, copied from them.  If it drifts, every message sent
+ * from then on is spelled differently from every message already in a
+ * transcript: the previews, the gallery and the agent's own
+ * instructions all read this exact shape, and a change here breaks
+ * them for one half of history with no error anywhere.
+ */
+static void
+test_the_block_is_spelled_as_before(void)
+{
+    static const gchar *const expected =
+        "look at these\n"
+        "\n"
+        "[clawtilla] Files sent with this message. Open them with your "
+        "own read tool at the host path below; it runs on the host even "
+        "when your shell does not.\n"
+        "- shot.png\n"
+        "  /home/op/.local/state/x/exchange/scout/shot.png\n"
+        "  (inside your container: /exchange/scout/shot.png)\n"
+        "  clawt:0abc-shot.png\n"
+        "- notes.txt\n"
+        "  /exchange/scout/notes.txt\n"
+        "  clawt:0abd-notes.txt\n"
+        "- huge.iso (could not be saved)\n";
+    GString *block = clawt_attachment_block_new("look at these");
+    g_autofree gchar *text = NULL;
+
+    clawt_attachment_block_add(block, "shot.png",
+                               "/home/op/.local/state/x/exchange/scout/"
+                               "shot.png",
+                               "/exchange/scout/shot.png", "0abc-shot.png");
+
+    /* the same path twice: a host agent, so no container line */
+    clawt_attachment_block_add(block, "notes.txt",
+                               "/exchange/scout/notes.txt",
+                               "/exchange/scout/notes.txt",
+                               "0abd-notes.txt");
+    clawt_attachment_block_add_unsaved(block, "huge.iso");
+
+    text = g_string_free(block, FALSE);
+    g_assert_cmpstr(text, ==, expected);
+
+    /* The marker is the prefix every reader matches on. */
+    g_assert_nonnull(strstr(text, CLAWT_ATTACHMENT_MARKER "."));
+}
+
+/*
+ * Files with no text: the block starts the message, with no blank line
+ * above it.  A leading "\n\n" would make the transcript draw an empty
+ * bubble above the files.
+ */
+static void
+test_a_block_alone_has_no_leading_gap(void)
+{
+    GString *block = clawt_attachment_block_new(NULL);
+    g_autofree gchar *text = NULL;
+
+    clawt_attachment_block_add(block, "a.pdf", "/x/a.pdf", NULL, NULL);
+    text = g_string_free(block, FALSE);
+
+    g_assert_true(g_str_has_prefix(text, CLAWT_ATTACHMENT_MARKER));
+    g_assert_true(g_str_has_suffix(text, "- a.pdf\n  /x/a.pdf\n"));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -257,6 +325,9 @@ main(int argc, char *argv[])
     g_test_add_func("/attachment/missing-file",
                     test_a_missing_file_is_refused);
 	g_test_add_func("/attachment/dotted-names-round-trip", test_dotted_names_round_trip);
+    g_test_add_func("/attachment/block-spelled-as-before",
+                    test_the_block_is_spelled_as_before);
+    g_test_add_func("/attachment/block-alone", test_a_block_alone_has_no_leading_gap);
 
     return g_test_run();
 }

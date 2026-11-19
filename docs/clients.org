@@ -2529,6 +2529,14 @@ Naming them at all is what makes them reachable: an agent reads files
 with its own tools, and one it has not been told about is one it will
 not open.
 
+*** Sending files from the web client
+
+Since 0.52.0 the web composer sends files *with* a message, as GTK and libregnum do: *Attach* beside *Send*, a paste that carries files, or files dropped on the composer, each shown as a chip with an × until you send.  The text and the files are one multipart post to =/a/<id>/send=; each file goes through ~attachment.put~ and the body is built with the same block builder, so the agent receives the block above, byte for byte.  Before 0.52.0 the web client's Attach only wrote the file into the agent's exchange and said nothing, so the agent never knew to open it.
+
+The block is built in one place for all three clients: =clawt_attachment_block_new()=, =clawt_attachment_block_add()= and =clawt_attachment_block_add_unsaved()= in =src/chat/clawt-attachment.c=.  GTK's =body_with_attachments()=, libregnum's =clawt_lrg_body_with_attachments()= and the web client's =clawt_web_body_with_files()= only put the files and pass on what the daemon answered.  A client that wrote the block itself and spelled any part of it differently would send messages the others draw no previews for, with nothing to say why.
+
+A group room's composer offers files only when the room has exactly one agent member: ~attachment.put~ files each upload under one agent's exchange directory, and in a room of several agents the others would be sent a path they cannot open.  [[file:web-client.org::*Sending files with a message][web-client.org]] has the details.
+
 *** Seeing them again
 
 A message that carried an image shows a thumbnail under it, and clicking

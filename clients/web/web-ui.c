@@ -1890,6 +1890,65 @@ open_document(HtmxBuilder *builder, const gchar *title,
         "var act=l[i].querySelector('.completion-active');"
         "if(act){act.classList.remove('completion-active');}}});"
         /*
+         * Files sent with a message: paste, drop, and the chips.
+         *
+         * Everything goes through the composer's one file input, so
+         * what is posted is exactly what the chips show -- the chips
+         * are redrawn from `input.files` rather than kept beside it.
+         * DataTransfer is the only way a page may set an input's
+         * files, which is what lets a pasted screenshot and a dropped
+         * PDF join whatever the picker already chose.  Delegated from
+         * the document, as everything here is, because htmx replaces
+         * the composer on a swap.
+         */
+        "function picked(){return document.getElementById('composer-files');}"
+        "function chips(){var i=picked(),c=document.getElementById("
+        "'composer-chips');if(!i||!c){return;}c.textContent='';"
+        "Array.prototype.forEach.call(i.files,function(f,n){"
+        "var s=document.createElement('span');s.className='file-chip';"
+        "s.appendChild(document.createTextNode(f.name));"
+        "var x=document.createElement('button');x.type='button';"
+        "x.className='file-chip-drop';x.dataset.index=String(n);"
+        "x.setAttribute('aria-label','Do not send '+f.name);"
+        "x.textContent='\\u00d7';s.appendChild(x);c.appendChild(s);});}"
+        "function add_files(list){var i=picked();"
+        "if(!i||!list||!list.length||typeof DataTransfer==='undefined'){"
+        "return false;}var d=new DataTransfer();"
+        "Array.prototype.forEach.call(i.files,function(f){d.items.add(f);});"
+        "Array.prototype.forEach.call(list,function(f){d.items.add(f);});"
+        "i.files=d.files;chips();return true;}"
+        "document.addEventListener('change',function(e){"
+        "if(e.target&&e.target.id==='composer-files'){chips();}});"
+        "document.addEventListener('click',function(e){"
+        "var b=e.target.closest?e.target.closest('.file-chip-drop'):null;"
+        "var i=picked();if(!b||!i){return;}e.preventDefault();"
+        "var k=parseInt(b.dataset.index,10),d=new DataTransfer();"
+        "Array.prototype.forEach.call(i.files,function(f,n){"
+        "if(n!==k){d.items.add(f);}});i.files=d.files;chips();});"
+        /*
+         * A paste with files in it is an attachment; a paste of text
+         * is left alone, so copying a paragraph still types it.
+         */
+        "document.addEventListener('paste',function(e){"
+        "if(!e.target||e.target.id!=='composer-body'){return;}"
+        "var c=e.clipboardData;if(!c||!c.files||!c.files.length){return;}"
+        "if(add_files(c.files)){e.preventDefault();}});"
+        "function over_composer(e){return e.target&&e.target.closest&&"
+        "e.target.closest('.composer')&&picked();}"
+        "document.addEventListener('dragover',function(e){"
+        "if(over_composer(e)){e.preventDefault();}});"
+        "document.addEventListener('drop',function(e){"
+        "if(!over_composer(e)||!e.dataTransfer||"
+        "!e.dataTransfer.files.length){return;}"
+        "if(add_files(e.dataTransfer.files)){e.preventDefault();}});"
+        /*
+         * After a send the form is reset, which empties the input but
+         * fires before it does -- so the chips are redrawn a tick later.
+         */
+        "document.addEventListener('reset',function(e){"
+        "if(e.target&&e.target.querySelector&&"
+        "e.target.querySelector('#composer-files')){setTimeout(chips,0);}});"
+        /*
          * A profile picture, larger.
          *
          * Delegated for the reason everything else here is: htmx

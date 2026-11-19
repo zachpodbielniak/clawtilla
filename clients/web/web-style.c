@@ -1076,6 +1076,24 @@ clawt_web_stylesheet(void)
      * cursor that was aiming at it.
      */
     ".composer-inner .stop-turn{white-space:nowrap;flex:none}"
+    /*
+     * Attach sits beside Send at its height and never wraps, for the
+     * reason Stop does not; the chips above the row are the files that
+     * will go, each with its own x.
+     */
+    ".composer-inner .attach-pick{white-space:nowrap;flex:none;"
+      "cursor:pointer;align-self:stretch;display:flex;align-items:center}"
+    ".file-chips{max-width:var(--chat-measure);margin:0 auto;display:flex;"
+      "flex-wrap:wrap;gap:6px}"
+    ".file-chips:not(:empty){padding:8px 0 0}"
+    ".file-chip{display:inline-flex;align-items:center;gap:4px;"
+      "padding:2px 4px 2px 10px;border:1px solid var(--line);"
+      "border-radius:999px;background:var(--canvas);font-size:12px;"
+      "max-width:16rem;overflow:hidden;text-overflow:ellipsis;"
+      "white-space:nowrap}"
+    ".file-chip-drop{border:0;background:none;color:var(--muted);"
+      "cursor:pointer;font-size:14px;line-height:1;padding:0 4px}"
+    ".file-chip-drop:hover{color:var(--ink)}"
 
     /* ── Console ── */
     ".console{font-family:var(--mono);font-size:var(--mono-size);white-space:pre-wrap;"

@@ -3427,21 +3427,18 @@ on_attach_clicked(GtkButton *button, gpointer user_data)
 static gchar *
 body_with_attachments(ClawtWindow *self, const gchar *body)
 {
-    g_autoptr(GString) out = NULL;
+    GString *out = NULL;
     guint i;
 
     if (self->pending->len == 0)
         return g_strdup(body);
 
-    out = g_string_new(body);
-
-    if (out->len > 0)
-        g_string_append(out, "\n\n");
-
-    g_string_append(out,
-                    "[clawtilla] Files sent with this message. Open them "
-                    "with your own read tool at the host path below; it "
-                    "runs on the host even when your shell does not.\n");
+    /*
+     * The block itself is clawt_attachment_block_*()'s, shared with lrg
+     * and the web composer: one spelling of the format, so every client
+     * previews what every other one sent and attachment.list finds it.
+     */
+    out = clawt_attachment_block_new(body);
 
     for (i = 0; i < self->pending->len; i++) {
         Attachment *attachment = g_ptr_array_index(self->pending, i);
@@ -3459,48 +3456,32 @@ body_with_attachments(ClawtWindow *self, const gchar *body)
                                 "data", encoded, NULL));
 
         if (reply == NULL) {
-            g_string_append_printf(out, "- %s (could not be saved)\n",
-                                   attachment->name);
+            clawt_attachment_block_add_unsaved(out, attachment->name);
             continue;
         }
 
         {
+            /*
+             * Both paths and the id, as attachment.put reports them:
+             * the host path for the agent's own read tool, the guest
+             * path for a command inside its container, and the id for
+             * every client's preview -- remote, sandboxed, or after the
+             * exchange's cap swept the file.
+             */
             JsonObject *result = clawt_payload_of(reply);
-            const gchar *host = clawt_json_string(result, "host_path", "");
-            const gchar *guest = clawt_json_string(result, "path", "");
 
-            g_string_append_printf(out, "- %s\n  %s\n",
-                                   attachment->name, host);
-
-            /*
-             * Both paths, and the host one first, because they are for
-             * different tools.
-             *
-             * An agent's own read tool runs on the host even when its
-             * shell runs in a container -- so given only the container
-             * path it could stat the file with clawtilla_computer_exec
-             * and never open it, which is exactly what happened to the
-             * first image anybody sent.
-             */
-            if (g_strcmp0(host, guest) != 0)
-                g_string_append_printf(
-                    out, "  (inside your container: %s)\n", guest);
-
-            /*
-             * The daemon's own copy, by id: what every client previews
-             * from when it cannot open the host path itself -- remote,
-             * sandboxed, or after the exchange's cap swept the file.
-             */
-            if (clawt_json_string(result, "id", NULL) != NULL)
-                g_string_append_printf(out, "  clawt:%s\n",
-                                       clawt_json_string(result, "id", ""));
+            clawt_attachment_block_add(
+                out, attachment->name,
+                clawt_json_string(result, "host_path", ""),
+                clawt_json_string(result, "path", ""),
+                clawt_json_string(result, "id", NULL));
         }
     }
 
     g_ptr_array_set_size(self->pending, 0);
     refresh_attachment_strip(self);
 
-    return g_string_free(g_steal_pointer(&out), FALSE);
+    return g_string_free(out, FALSE);
 }
 
 /* ── Composing in $EDITOR ────────────────────────────────────────── */

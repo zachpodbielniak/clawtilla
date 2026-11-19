@@ -142,3 +142,67 @@ clawt_attachment_name(const gchar *id)
 
     return g_strdup(dash + 1);
 }
+
+/* ── The block an operator's message carries ─────────────────────── */
+
+GString *
+clawt_attachment_block_new(const gchar *body)
+{
+    GString *out = g_string_new(body);
+
+    if (out->len > 0)
+        g_string_append(out, "\n\n");
+
+    /*
+     * The marker, then the instruction.  The marker is what clients
+     * match on; the sentence after it is for the agent, which reads
+     * files with its own tools and needs telling which path those
+     * tools can open.
+     */
+    g_string_append(out, CLAWT_ATTACHMENT_MARKER
+                         ". Open them with your own read tool at the host "
+                         "path below; it runs on the host even when your "
+                         "shell does not.\n");
+
+    return out;
+}
+
+void
+clawt_attachment_block_add(GString     *block,
+                           const gchar *name,
+                           const gchar *host_path,
+                           const gchar *path,
+                           const gchar *id)
+{
+    g_return_if_fail(block != NULL);
+    g_return_if_fail(name != NULL);
+
+    g_string_append_printf(block, "- %s\n  %s\n", name,
+                           host_path != NULL ? host_path : "");
+
+    /*
+     * Both paths, host first: given only the container one, an agent
+     * could stat the file with computer_exec and never open it with its
+     * own read tool -- which is what happened to the first image anybody
+     * sent.
+     */
+    if (path != NULL && *path != '\0' && g_strcmp0(host_path, path) != 0)
+        g_string_append_printf(block, "  (inside your container: %s)\n",
+                               path);
+
+    /*
+     * The daemon's own copy, by id: what every client previews from,
+     * since the host path opens only on the daemon's machine.
+     */
+    if (id != NULL && *id != '\0')
+        g_string_append_printf(block, "  clawt:%s\n", id);
+}
+
+void
+clawt_attachment_block_add_unsaved(GString *block, const gchar *name)
+{
+    g_return_if_fail(block != NULL);
+    g_return_if_fail(name != NULL);
+
+    g_string_append_printf(block, "- %s (could not be saved)\n", name);
+}

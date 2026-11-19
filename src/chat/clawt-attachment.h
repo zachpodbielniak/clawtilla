@@ -81,6 +81,66 @@ gchar *clawt_attachment_path(const gchar *dir, const gchar *id);
  */
 gchar *clawt_attachment_name(const gchar *id);
 
+/**
+ * clawt_attachment_block_new:
+ * @body: (nullable): what the operator typed
+ *
+ * Starts the message an operator sends with files: @body, a blank line
+ * when there is one, and the CLAWT_ATTACHMENT_MARKER line that tells the
+ * agent how to open what follows.
+ *
+ * One copy of the block format for every client.  GTK, lrg and the web
+ * client each wrote it by hand, and a client that spelled any part of
+ * it differently -- the marker, the indentation, the `clawt:` prefix --
+ * sends a message the others draw no previews for and the gallery
+ * cannot index, with nothing to say why.
+ *
+ * Returns: (transfer full): the body so far; add each file with
+ *   clawt_attachment_block_add() and free it with g_string_free()
+ */
+GString *clawt_attachment_block_new(const gchar *body);
+
+/**
+ * clawt_attachment_block_add:
+ * @block: a block from clawt_attachment_block_new()
+ * @name: the file's name
+ * @host_path: (nullable): where `attachment.put` wrote it on the host
+ * @path: (nullable): where the agent sees it (the container path for a
+ *   container or VM agent)
+ * @id: (nullable): the daemon's own copy, from `attachment.put`
+ *
+ * Names one saved file in the block:
+ *
+ * |[
+ * - name
+ *   /host/path
+ *   (inside your container: /exchange/agent/name)
+ *   clawt:<id>
+ * ]|
+ *
+ * The host path comes first because an agent's own read tool runs on
+ * the host even when its shell is in a container; the container line
+ * appears only when @path differs from @host_path; the `clawt:` line
+ * is what every client previews from and what `attachment.list` finds.
+ */
+void clawt_attachment_block_add(GString     *block,
+                                const gchar *name,
+                                const gchar *host_path,
+                                const gchar *path,
+                                const gchar *id);
+
+/**
+ * clawt_attachment_block_add_unsaved:
+ * @block: a block from clawt_attachment_block_new()
+ * @name: the file's name
+ *
+ * Names a file `attachment.put` refused, as "- name (could not be
+ * saved)".  Listed rather than dropped: an agent told nothing about a
+ * file it was meant to have answers as if it had been sent nothing,
+ * and the operator never learns the upload failed.
+ */
+void clawt_attachment_block_add_unsaved(GString *block, const gchar *name);
+
 G_END_DECLS
 
 #endif /* CLAWT_ATTACHMENT_H */

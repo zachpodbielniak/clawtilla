@@ -141,7 +141,14 @@ declare -A AFFORDANCES=(
     ["jump to latest"]="jump_revealer|jump-pill|on_jump_clicked"
     ["transcript measure"]="adw_clamp_new|transcript-inner|clawt_measure_resolve_px"
     ["markdown rendering"]="clawt_markdown_to_pango|clawt_markdown_to_html|clawt_lrg_markdown"
-    ["attachment previews"]="append_attachment_previews|attachment|attachment_previews_append"
+    ["attachment previews"]="append_attachment_previews|attachment_element|attachment_previews_append"
+    #
+    # Files sent with a message: each client puts them with
+    # attachment.put and names them in the body with the shared block
+    # builder (clawt_attachment_block_*), so every client's message is
+    # spelled the one way the previews and the gallery read.
+    #
+    ["send a file with a message"]="body_with_attachments|clawt_attachment_block_add|clawt_lrg_body_with_attachments"
     ["unread count"]="clawt-unread-badge|unread-badge|unread-badge"
     ["unread tab total"]="adw_view_stack_page_set_badge_number|unread_total|clawt_lrg_unread_badge"
     ["message runs"]="clawt_chat_run_is_start|clawt_chat_run_is_start|clawt_chat_run_is_start"

@@ -1358,6 +1358,20 @@ composer_for(ClawtWebApp *app, const gchar *base, const gchar *target,
                                "keyup changed delay:1s");
     htmx_element_set_attribute(HTMX_ELEMENT(area), "hx-swap", "none");
 
+    /*
+     * Only the text, and as an ordinary form post.  htmx sends the
+     * enclosing form's fields with this request and inherits its
+     * hx-encoding: once the form carries files, every debounced draft
+     * save would upload whatever was chosen as well -- and arrive as
+     * multipart, which the draft route does not read, so the draft
+     * would be wiped by the save meant to keep it.
+     */
+    if (attachments) {
+        htmx_element_set_attribute(HTMX_ELEMENT(area), "hx-params", "body");
+        htmx_element_set_attribute(HTMX_ELEMENT(area), "hx-encoding",
+                                   "application/x-www-form-urlencoded");
+    }
+
     htmx_node_add_child(HTMX_NODE(inner), HTMX_NODE(area));
 
     /*
@@ -1510,6 +1524,40 @@ composer_for(ClawtWebApp *app, const gchar *base, const gchar *target,
     if (busy)
         clawt_web_add(inner, stop_turn_button(agent_id));
 
+    /*
+     * Files go with the message, in the same post.
+     *
+     * The picker used to be a form of its own posting to /attach, which
+     * wrote the file into the agent's workspace and stopped: nothing
+     * told the agent it was there, so it was a file the agent would
+     * never open.  One form means one send -- the files are put, the
+     * block naming them is added to the text, and the agent reads both
+     * as one message, as it does from the GTK and lrg composers.
+     *
+     * A <label> around a hidden input, so the control reads as a button
+     * beside Send rather than the browser's own "Choose files / No file
+     * chosen" pair, which says nothing once the chips below list what
+     * was picked.  Paste and drop add to the same input (web-ui.c).
+     */
+    if (attachments) {
+        g_autoptr(HtmxLabel) pick = htmx_label_new_with_text("Attach");
+        g_autoptr(HtmxInput) picker = htmx_input_new(HTMX_INPUT_FILE);
+
+        htmx_element_add_class(HTMX_ELEMENT(pick), "btn");
+        htmx_element_add_class(HTMX_ELEMENT(pick), "attach-pick");
+        htmx_element_set_attribute(HTMX_ELEMENT(pick), "title",
+                                   "Send files with this message "
+                                   "(or paste or drop them here)");
+
+        htmx_input_set_name(picker, "file");
+        htmx_element_set_id(HTMX_ELEMENT(picker), "composer-files");
+        htmx_element_set_attribute(HTMX_ELEMENT(picker), "multiple",
+                                   "multiple");
+        htmx_element_set_attribute(HTMX_ELEMENT(picker), "hidden", "hidden");
+        htmx_node_add_child(HTMX_NODE(pick), HTMX_NODE(picker));
+        htmx_node_add_child(HTMX_NODE(inner), HTMX_NODE(pick));
+    }
+
     {
         g_autoptr(HtmxButton) send = clawt_web_button("Send", "primary");
 
@@ -1525,6 +1573,32 @@ composer_for(ClawtWebApp *app, const gchar *base, const gchar *target,
     htmx_node_add_child(HTMX_NODE(pop), HTMX_NODE(pop_inner));
     htmx_node_add_child(HTMX_NODE(foot), HTMX_NODE(pop));
 
+    /*
+     * What is waiting to go, one chip per file with an x to drop it.
+     * Empty in the markup: the browser alone knows what was chosen, and
+     * the script in web-ui.c draws the chips from the input itself so
+     * the list cannot disagree with what will be posted.
+     */
+    if (attachments) {
+        g_autoptr(HtmxDiv) chips = htmx_div_new();
+
+        htmx_element_add_class(HTMX_ELEMENT(chips), "file-chips");
+        htmx_element_set_id(HTMX_ELEMENT(chips), "composer-chips");
+        htmx_element_set_attribute(HTMX_ELEMENT(chips), "aria-live",
+                                   "polite");
+        htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(chips));
+
+        /*
+         * Multipart only when files can be chosen.  A room with no one
+         * agent to file under keeps the plain encoding, and the send
+         * routes read either.
+         */
+        htmx_element_set_attribute(HTMX_ELEMENT(form), "enctype",
+                                   "multipart/form-data");
+        htmx_element_set_attribute(HTMX_ELEMENT(form), "hx-encoding",
+                                   "multipart/form-data");
+    }
+
     htmx_node_add_child(HTMX_NODE(form), HTMX_NODE(inner));
 
     /*
@@ -1532,45 +1606,62 @@ composer_for(ClawtWebApp *app, const gchar *base, const gchar *target,
      * on any 2xx, so a refusal that came back as a rendered page would
      * also take the text with it -- and a message lost because the daemon
      * said no is worse than the refusal.
+     *
+     * And only for the form's own request.  htmx events bubble, so the
+     * textarea's debounced draft save also lands here; resetting on it
+     * would empty the chosen files (and put the text back to what the
+     * page was rendered with) a second after somebody stopped typing.
      */
     htmx_element_set_attribute(HTMX_ELEMENT(form), "hx-on::after-request",
-                               "if(event.detail.successful)this.reset()");
+                               "if(event.detail.successful&&"
+                               "event.detail.elt===this)this.reset()");
 
     htmx_element_add_class(HTMX_ELEMENT(form), "composer-form");
     htmx_node_add_child(HTMX_NODE(foot), HTMX_NODE(form));
-
-    /*
-     * A separate form, because it posts multipart and the message form
-     * does not. Sharing one would mean encoding every message as a file
-     * upload for the sake of the attachment nobody added.
-     */
-    if (attachments) {
-        g_autofree gchar *attach_action =
-            g_strdup_printf("/a/%s/attach", escaped);
-        g_autoptr(HtmxForm) attach = clawt_web_form(attach_action);
-        g_autoptr(HtmxDiv) row = htmx_div_new();
-        g_autoptr(HtmxInput) picker = htmx_input_new(HTMX_INPUT_FILE);
-        g_autoptr(HtmxButton) send = clawt_web_button("Attach", "default");
-
-        htmx_element_set_attribute(HTMX_ELEMENT(attach), "enctype",
-                                   "multipart/form-data");
-        htmx_element_set_attribute(HTMX_ELEMENT(attach), "hx-encoding",
-                                   "multipart/form-data");
-
-        htmx_input_set_name(picker, "file");
-        htmx_element_add_class(HTMX_ELEMENT(row), "btn-row");
-        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(picker));
-
-        htmx_element_set_attribute(HTMX_ELEMENT(send), "type", "submit");
-        htmx_node_add_child(HTMX_NODE(row), HTMX_NODE(send));
-        htmx_node_add_child(HTMX_NODE(attach), HTMX_NODE(row));
-        htmx_node_add_child(HTMX_NODE(foot), HTMX_NODE(attach));
-    }
 
     return g_steal_pointer(&foot);
 }
 
 /* ── The view ────────────────────────────────────────────────────── */
+
+/*
+ * A room's entry in room.list, for its members.
+ *
+ * Asked for at the moment it is needed rather than cached beside the
+ * sidebar's set of room ids: a member added or removed while somebody
+ * has the page open would otherwise be offered, or missing, until the
+ * next fleet listing -- and an `@name` for somebody who has left, or a
+ * file filed under an agent no longer in the room, reaches nobody with
+ * nothing in the reply to say so.
+ *
+ * Returns: (transfer full) (nullable): the reply that owns *@members
+ */
+static JsonNode *
+room_members(ClawtWebApp *app, const gchar *room_id, JsonArray **members)
+{
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+    JsonNode *reply;
+    JsonArray *rooms;
+    guint i;
+
+    *members = NULL;
+    reply = clawt_web_app_call(app, "room.list",
+                               clawt_web_payload_take(
+                                   g_steal_pointer(&payload)));
+    rooms = clawt_web_member_array(clawt_web_root(reply), "rooms");
+
+    for (i = 0; rooms != NULL && i < json_array_get_length(rooms); i++) {
+        JsonObject *room = json_array_get_object_element(rooms, i);
+
+        if (g_strcmp0(clawt_web_member(room, "id", ""), room_id) != 0)
+            continue;
+
+        *members = clawt_web_member_array(room, "members");
+        break;
+    }
+
+    return reply;
+}
 
 /*
  * A group room's chat.
@@ -1579,8 +1670,8 @@ composer_for(ClawtWebApp *app, const gchar *base, const gchar *target,
  * room id: `room.history` takes a room directly, and `msg.send`
  * resolves a room target the same way it resolves an agent one.  What
  * a room does not have is the agent chrome -- the conversation
- * switcher is about one agent's peers, and attachments are not offered
- * because the attach route is agent-scoped.
+ * switcher is about one agent's peers.  Files can be sent only when the
+ * room has exactly one agent to file them under (see room_members()).
  */
 HtmxElement *
 clawt_web_room_body(ClawtWebApp *app, const gchar *room_id)
@@ -1622,29 +1713,19 @@ clawt_web_room_body(ClawtWebApp *app, const gchar *room_id)
      * the reply to say so.
      */
     {
-        g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
-        g_autoptr(JsonNode) reply = NULL;
-        JsonArray *rooms;
         JsonArray *members = NULL;
-        guint i;
+        g_autoptr(JsonNode) reply = room_members(app, room_id, &members);
+        g_autofree gchar *file_agent = clawt_web_room_file_agent(members);
 
-        reply = clawt_web_app_call(app, "room.list",
-                                   clawt_web_payload_take(
-                                       g_steal_pointer(&payload)));
-        rooms = clawt_web_member_array(clawt_web_root(reply), "rooms");
-
-        for (i = 0; rooms != NULL && i < json_array_get_length(rooms); i++) {
-            JsonObject *room = json_array_get_object_element(rooms, i);
-
-            if (g_strcmp0(clawt_web_member(room, "id", ""), room_id) != 0)
-                continue;
-
-            members = clawt_web_member_array(room, "members");
-            break;
-        }
-
+        /*
+         * Attach only when the room has exactly one agent to file the
+         * upload under: attachment.put writes into one agent's
+         * exchange, and in a room of several the others could not open
+         * what they were sent.
+         */
         clawt_web_add(main_el,
-                      composer_for(app, "r", room_id, FALSE, FALSE, members));
+                      composer_for(app, "r", room_id, FALSE,
+                                   file_agent != NULL, members));
     }
 
     return g_steal_pointer(&main_el);
@@ -2073,10 +2154,11 @@ run_command(ClawtWebApp *app, HtmxRequest *request, const gchar *agent_id,
     if (g_strcmp0(verb, "/attach") == 0)
         return clawt_web_after_action(
             app, request, agent_id, CLAWT_PAGE_CHAT,
-            "Use the file picker under the message box. The file goes to "
-            "the agent's workspace and is named to it -- both paths, "
-            "because its own tools run on the host and only "
-            "clawtilla_computer_exec enters its computer.");
+            "Use Attach beside Send, or paste or drop files on the "
+            "message box. They go with the message you send: each is "
+            "saved to the agent's workspace and named in the message "
+            "with both paths, because its own tools run on the host "
+            "and only clawtilla_computer_exec enters its computer.");
 
     /* ── The conversation itself ── */
 
@@ -2397,6 +2479,80 @@ clawt_web_send_message(ClawtWebApp *app, HtmxRequest *request,
                                   CLAWT_PAGE_CHAT, NULL);
 }
 
+/* attachment.put through the daemon, for clawt_web_body_with_files(). */
+static JsonNode *
+put_through_daemon(const gchar *agent_id,
+                   const gchar *name,
+                   const gchar *encoded,
+                   gpointer     user_data)
+{
+    ClawtWebApp *app = user_data;
+    g_autoptr(ClawtWebPayload) payload = clawt_web_payload_new();
+
+    clawt_web_payload_set(payload, "agent", agent_id);
+    clawt_web_payload_set(payload, "name", name);
+    clawt_web_payload_set(payload, "data", encoded);
+
+    return clawt_web_app_call(app, "attachment.put",
+                              clawt_web_payload_take(
+                                  g_steal_pointer(&payload)));
+}
+
+/*
+ * What a composer post says: the typed text, trimmed, plus the block
+ * naming every file sent with it.
+ *
+ * Either encoding is read.  The agent composer posts multipart (it has
+ * a file input); a room with no one agent to file under posts a plain
+ * form, as does anything scripted against the old route.  @with_files
+ * says whether any file came, because a message with files is sent as
+ * a message even when its text starts with "/" -- running a command
+ * and dropping the files would lose what was chosen.
+ *
+ * Returns: (transfer full) (nullable): the body to send, or %NULL with
+ *   @error set
+ */
+static gchar *
+read_composer(ClawtWebApp  *app,
+              HtmxRequest  *request,
+              const gchar  *file_agent,
+              gboolean     *with_files,
+              GError      **error)
+{
+    g_autofree gchar *multipart_body = NULL;
+    g_autofree gchar *trimmed = NULL;
+    g_autoptr(GPtrArray) files = NULL;
+    const gchar *typed;
+
+    *with_files = FALSE;
+    files = clawt_web_composer_read(htmx_request_get_content_type(request),
+                                    htmx_request_get_body_bytes(request),
+                                    &multipart_body, error);
+
+    if (files == NULL)
+        return NULL;
+
+    typed = multipart_body != NULL
+        ? multipart_body : clawt_web_form_value(request, "body");
+    trimmed = g_strdup(typed != NULL ? typed : "");
+    g_strstrip(trimmed);
+
+    if (files->len == 0)
+        return g_steal_pointer(&trimmed);
+
+    if (file_agent == NULL) {
+        g_set_error(error, CLAWT_ERROR, CLAWT_ERROR_INVALID_ARGUMENT,
+                    "This room has no single agent to keep the files "
+                    "for, so nothing was sent.");
+        return NULL;
+    }
+
+    *with_files = TRUE;
+
+    return clawt_web_body_with_files(file_agent, trimmed, files,
+                                     put_through_daemon, app);
+}
+
 /*
  * Posting into a group room.
  *
@@ -2432,16 +2588,32 @@ on_room_send(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
     ClawtWebApp *app = user_data;
     g_autofree gchar *room_id = clawt_web_param(params, "id");
-    const gchar *body = clawt_web_form_value(request, "body");
     g_autofree gchar *trimmed = NULL;
+    g_autofree gchar *file_agent = NULL;
     g_autoptr(ClawtWebPayload) payload = NULL;
     g_autoptr(JsonNode) reply = NULL;
+    g_autoptr(GError) error = NULL;
+    gboolean with_files = FALSE;
 
-    if (body == NULL)
-        return room_redirect(room_id);
+    /*
+     * The agent the room's files go to, asked for now rather than
+     * trusted from the page: the room may have gained a second agent
+     * since it was drawn, and then there is no right exchange to use.
+     */
+    if (g_str_has_prefix(htmx_request_get_content_type(request) != NULL
+                             ? htmx_request_get_content_type(request) : "",
+                         "multipart/form-data")) {
+        JsonArray *members = NULL;
+        g_autoptr(JsonNode) rooms = room_members(app, room_id, &members);
 
-    trimmed = g_strdup(body);
-    g_strstrip(trimmed);
+        file_agent = clawt_web_room_file_agent(members);
+    }
+
+    trimmed = read_composer(app, request, file_agent, &with_files, &error);
+
+    if (trimmed == NULL)
+        return clawt_web_error_page(app, request, NULL, CLAWT_PAGE_CHAT,
+                                    error->message);
 
     if (*trimmed == '\0')
         return room_redirect(room_id);
@@ -2455,7 +2627,7 @@ on_room_send(HtmxRequest *request, GHashTable *params, gpointer user_data)
      * has always dispatched them; the room composer is the same box and
      * had no reason to behave differently.
      */
-    if (trimmed[0] == '/')
+    if (!with_files && trimmed[0] == '/')
         return run_command(app, request, NULL, room_id, trimmed);
 
     payload = clawt_web_payload_new();
@@ -2508,21 +2680,27 @@ on_send(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
     ClawtWebApp *app = user_data;
     g_autofree gchar *agent_id = clawt_web_param(params, "id");
-    const gchar *body = clawt_web_form_value(request, "body");
     g_autofree gchar *trimmed = NULL;
+    g_autoptr(GError) error = NULL;
+    gboolean with_files = FALSE;
 
-    if (body == NULL)
-        return clawt_web_after_action(app, request, agent_id,
-                                      CLAWT_PAGE_CHAT, NULL);
+    /*
+     * The text and any files, in one post: each file is put into the
+     * agent's exchange and named in the message by the shared block
+     * builder, so the agent is told about it in the same message --
+     * a file put there and never mentioned is one it will not open.
+     */
+    trimmed = read_composer(app, request, agent_id, &with_files, &error);
 
-    trimmed = g_strdup(body);
-    g_strstrip(trimmed);
+    if (trimmed == NULL)
+        return clawt_web_error_page(app, request, agent_id, CLAWT_PAGE_CHAT,
+                                    error->message);
 
     if (*trimmed == '\0')
         return clawt_web_after_action(app, request, agent_id,
                                       CLAWT_PAGE_CHAT, NULL);
 
-    if (trimmed[0] == '/')
+    if (!with_files && trimmed[0] == '/')
         return run_command(app, request, agent_id, NULL, trimmed);
 
     return clawt_web_send_message(app, request, agent_id, trimmed);

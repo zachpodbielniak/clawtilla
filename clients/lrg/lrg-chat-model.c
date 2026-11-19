@@ -1644,46 +1644,21 @@ clawt_lrg_body_with_attachments(const gchar *body, GPtrArray *files)
     if (files == NULL || files->len == 0)
         return g_strdup(body != NULL ? body : "");
 
-    out = g_string_new(body);
-
-    if (out->len > 0)
-        g_string_append(out, "\n\n");
-
     /*
-     * Named in the message, because an agent reads files with its own
-     * tools and one it has not been told about is one it will not open.
+     * The shared block builder, so this client's messages are spelled
+     * exactly as GTK's and the web composer's are: the previews and
+     * the gallery all read the one format.
      */
-    g_string_append(out, CLAWT_ATTACHMENT_MARKER
-                         ". Open them with your own read tool at the host "
-                         "path below; it runs on the host even when your "
-                         "shell does not.\n");
+    out = clawt_attachment_block_new(body);
 
     for (i = 0; i < files->len; i++) {
         ClawtLrgSentFile *file = g_ptr_array_index(files, i);
 
-        if (!file->saved) {
-            g_string_append_printf(out, "- %s (could not be saved)\n",
-                                   file->name);
-            continue;
-        }
-
-        g_string_append_printf(out, "- %s\n  %s\n", file->name,
-                               file->host_path != NULL ? file->host_path : "");
-
-        /*
-         * Both paths, host first: given only the container one, an agent
-         * could stat the file with computer_exec and never open it.
-         */
-        if (g_strcmp0(file->host_path, file->path) != 0 && file->path != NULL)
-            g_string_append_printf(out, "  (inside your container: %s)\n",
-                                   file->path);
-
-        /*
-         * The daemon's own copy, by id: what every client previews from,
-         * since the host path opens only on the daemon's machine.
-         */
-        if (file->id != NULL)
-            g_string_append_printf(out, "  clawt:%s\n", file->id);
+        if (!file->saved)
+            clawt_attachment_block_add_unsaved(out, file->name);
+        else
+            clawt_attachment_block_add(out, file->name, file->host_path,
+                                       file->path, file->id);
     }
 
     return g_string_free(out, FALSE);

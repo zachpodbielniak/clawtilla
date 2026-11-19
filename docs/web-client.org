@@ -271,7 +271,7 @@ answers with the page it did it on.
 |-------------------------------+-----------------------------------------|
 | =/=, =/fleet=                 | the fleet index                         |
 | =/a/:id/:view=                | the seven agent views                   |
-| =/a/:id/...=                  | everything done to one agent: send, start, stop, restart, reset, set, team, reorder, remove, exec, rebuild, attach, mount, mailbox, memories, file, files, compose, export, copy |
+| =/a/:id/...=                  | everything done to one agent: send, start, stop, restart, reset, set, team, reorder, remove, exec, rebuild, attach/remove, mount, mailbox, memories, file, files, compose, export, copy |
 | =/f/...=                      | fragments htmx swaps in: the sidebar, a transcript, an attachment, an inline decision answered (=/f/decision/answer=) |
 | =/settings=, =/settings/:page= | the seven settings pages               |
 | =/settings/<page>/...=        | their actions: add, save, remove, health, test, authorize, revoke |
@@ -322,7 +322,7 @@ so rather than leaving anybody to find out.
 | =/help=             | list them                                           |
 | =/start= =/stop= =/restart= | the agent's lifecycle                       |
 | =/reset=            | start its AI session again, from nothing            |
-| =/attach=           | send a file with the next message                   |
+| =/attach=           | say how to send files: Attach, paste or drop        |
 | =/compose=          | a full-page box, where GTK opens =$EDITOR=          |
 | =/edit [file]=      | open a workspace file *in the page*                 |
 | =/files=            | this agent's workspace files                        |
@@ -494,6 +494,45 @@ and a browser cannot call it.  The duplication is bounded to *what to
 offer*: the worst a disagreement can do is show a name that would not
 have matched, or fail to show one that would.  It cannot change what a
 sent message does.
+
+*** Sending files with a message
+
+The composer sends files *with* a message, the way the GTK and libregnum composers do: the files and the text go in one post, and the agent receives one message that names every file.
+
+**** What you do
+
+- *Attach*, beside *Send*, opens the browser's file picker; several files may be chosen at once.
+- *Paste* into the message box: a paste that carries files (a screenshot, a file copied in a file manager) adds them, and a paste of text is left alone, so copying a paragraph still types it.
+- *Drop* files anywhere on the composer.
+
+Each waiting file is a chip above the message box with an × to drop it.  Nothing is uploaded until *Send*; a draft you abandon leaves nothing in the agent's workspace.  Files may go with no text at all.
+
+**** What is sent
+
+The composer form is ~multipart/form-data~ (both ~enctype~ and ~hx-encoding~), with the text as ~body~ and every file as ~file~, posted to =/a/<id>/send=.  =on_send= (=web-chat.c=) then:
+
+1. reads the post with =clawt_web_composer_read()= (=web-files.c=), which takes the text from the multipart fields and drops the empty part a file input sends when nothing was chosen;
+2. sends each file to the daemon with ~attachment.put~ (~agent~, ~name~, ~data~ as base64), which writes it into that agent's exchange directory, keeps a copy by id, and answers ~host_path~, ~path~ and ~id~;
+3. builds the body with =clawt_web_body_with_files()=, which uses the library's shared block builder (=clawt_attachment_block_new()= and =clawt_attachment_block_add()=), so the block is spelled exactly as the other clients spell it;
+4. sends that one body with ~msg.send~.
+
+A file the daemon refuses, an empty file, or one over 32 MB (=CLAWT_WEB_ATTACHMENT_MAX=, the libregnum client's limit -- the bytes cross the socket base64-encoded in one frame) is listed in the block as ~- name (could not be saved)~ rather than dropped, so the agent and you both see it did not arrive.
+
+A message with files is always sent as a message, even if its text begins with ~/~: running the command and dropping the files would lose what you chose.
+
+Before 0.52.0 the web client had a separate Attach form posting to =/a/<id>/attach=.  It wrote the file into the workspace and showed a toast -- and told the agent nothing, so the agent never opened it.  That route is gone.
+
+**** The draft save stays a plain form post
+
+The message box saves a draft a second after you stop typing (=hx-post= to =/draft=).  htmx sends the enclosing form's fields with that request and inherits the form's ~hx-encoding~, so the textarea carries ~hx-params="body"~ and its own ~hx-encoding~ of ~application/x-www-form-urlencoded~: otherwise every draft save would upload the chosen files, arrive as multipart, which the draft route does not read, and wipe the draft it was meant to keep.  For the same reason the form resets after a send only when the finished request is its own (~event.detail.elt===this~) -- htmx events bubble, and a reset on the draft save would empty the chips a second after you stopped typing.
+
+**** In a group room
+
+A room's composer has Attach only when the room has *exactly one* agent member.  ~attachment.put~ writes a file into one agent's exchange directory, so in a room of two or more agents there is no workspace every recipient can open; a file only one of them could read is worse than no button.  =clawt_web_room_file_agent()= decides, from ~room.list~'s ~members~, and =on_room_send= asks again when the post arrives, so a room that gained a second agent since the page was drawn refuses the files in words instead of filing them under one.
+
+**** Without JavaScript
+
+The form is a real multipart form, so the picker and Send work with scripting off.  Paste, drop and the chips are the script's (inline in =web-ui.c=, delegated from ~document~ because htmx replaces the composer on a swap); the chips are redrawn from the input's own ~files~, so they cannot disagree with what will be posted.  ~DataTransfer~ is the only way a page may set an input's files, which is what lets a pasted screenshot join files already picked.
 
 *** Editing workspace files
 
